@@ -1,6 +1,5 @@
 // Command-layer tests borrow platform::paths::tests::ENV_LOCK (a std Mutex) to serialize global env; cargo test runs on multiple threads, but env-writing tests are serialized by the mutex, and within a current_thread runtime holding the lock across await has no reentrant path, so it cannot deadlock.
 // architecture-guard: allow-target-cfg -- artifact 调用链回归需用 Windows 独占句柄模拟 ReplaceFileW 1177 布局
-#![allow(clippy::await_holding_lock)]
 
 use super::prelude::*;
 use super::{
@@ -9,7 +8,7 @@ use super::{
 };
 use crate::platform::filesystem::tests::{remove_dir_link, try_link_dir, try_link_file};
 use crate::platform::path_policy::validate_user_path;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[test]
 fn generic_file_staging_preserves_the_gui_image_wrapper_contract() {
@@ -141,13 +140,11 @@ fn marketplace_oauth_messages_are_connector_neutral() {
     );
     assert!(connected_token);
     assert!(!connected_message.contains("元典"));
-    assert!(!connected_message.contains("华宇元典"));
 
     let (_, pending_message, pending_token) =
         marketplace_auth_status_fields(true, true, true, None);
     assert!(!pending_token);
     assert!(!pending_message.contains("元典"));
-    assert!(!pending_message.contains("华宇元典"));
 
     let error_result = marketplace_oauth_error_result(
         "canva_mcp".to_string(),
@@ -155,43 +152,6 @@ fn marketplace_oauth_messages_are_connector_neutral() {
     );
     assert_eq!(error_result.status, "provider_error");
     assert!(!error_result.message.contains("元典"));
-    assert!(!error_result.message.contains("华宇元典"));
-}
-
-struct TempPinvou3Home {
-    root: PathBuf,
-    previous: Option<String>,
-}
-
-impl TempPinvou3Home {
-    fn new(tag: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "pinvou3-{tag}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let previous = std::env::var("PINVOU3_HOME").ok();
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-        Self { root, previous }
-    }
-}
-
-impl Drop for TempPinvou3Home {
-    fn drop(&mut self) {
-        match &self.previous {
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
 }
 
 fn write_json(path: &Path, value: serde_json::Value) {
@@ -201,7 +161,15 @@ fn write_json(path: &Path, value: serde_json::Value) {
     std::fs::write(path, serde_json::to_string_pretty(&value).unwrap()).unwrap();
 }
 
-fn write_test_oauth_marketplace_files(server_name: &str, mcp_server: serde_json::Value) {
+/// Writes the yuandian-mcp fixture pack. `validate_on_install` enables the
+/// install's validation leg (it then fails fast on the unparsable URL); the
+/// OAuth tests pass `false` — an explicit `false` and the absent key are the
+/// same parsed state (`types.rs` plain bool field).
+fn write_test_marketplace_files(
+    server_name: &str,
+    mcp_server: serde_json::Value,
+    validate_on_install: bool,
+) {
     let manifest = serde_json::json!({
         "id": "yuandian-mcp",
         "name": "华宇元典法律数据",
@@ -209,6 +177,7 @@ fn write_test_oauth_marketplace_files(server_name: &str, mcp_server: serde_json:
         "version": "1.0.0",
         "icon": "BookOpen",
         "category": "kb",
+        "validate_on_install": validate_on_install,
         "mcp_tools": [],
         "command": "",
         "args": [],
@@ -267,42 +236,49 @@ fn test_oauth_token_exists(key: &str) -> bool {
         .is_some()
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn marketplace_auth_status_does_not_treat_missing_or_corrupt_token_as_connected() {
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let _home = TempPinvou3Home::new("oauth-status");
-    let server_name = "yuandian-mcp-status-test";
-    let url = "not-a-url";
-    write_test_oauth_marketplace_files(
-        server_name,
-        serde_json::json!({
-            "url": url,
-            "scopes": ["legal"],
-            "oauth": { "client_id": "test-client" }
-        }),
-    );
+#[test]
+fn marketplace_auth_status_does_not_treat_missing_or_corrupt_token_as_connected() {
+    crate::platform::test_support::with_temp_home("oauth-status", || {
+        let server_name = "yuandian-mcp-status-test";
+        let url = "not-a-url";
+        write_test_marketplace_files(
+            server_name,
+            serde_json::json!({
+                "url": url,
+                "scopes": ["legal"],
+                "oauth": { "client_id": "test-client" }
+            }),
+            false,
+        );
 
-    let missing = get_marketplace_tool_auth_status("yuandian-mcp".to_string())
-        .await
-        .unwrap();
-    assert!(missing.installed);
-    assert!(missing.oauth_required);
-    assert!(missing.mcp_configured);
-    assert!(!missing.oauth_token_present);
-    assert_eq!(missing.status, "config_installed_auth_pending");
-
-    let key = set_test_oauth_token(server_name, url, "not-json");
-    let corrupt = get_marketplace_tool_auth_status("yuandian-mcp".to_string())
-        .await
-        .unwrap();
-    assert!(corrupt.installed);
-    assert!(corrupt.oauth_required);
-    assert!(corrupt.mcp_configured);
-    assert!(!corrupt.oauth_token_present);
-    assert_eq!(corrupt.status, "config_installed_auth_pending");
-    delete_test_oauth_token_key(&key);
+        // The env lock is held by with_temp_home for the whole block_on, so
+        // the await still runs under the serialized env (see the file-top note).
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let missing = get_marketplace_tool_auth_status("yuandian-mcp".to_string())
+                    .await
+                    .unwrap();
+                let key = set_test_oauth_token(server_name, url, "not-json");
+                let corrupt = get_marketplace_tool_auth_status("yuandian-mcp".to_string())
+                    .await
+                    .unwrap();
+                delete_test_oauth_token_key(&key);
+                for (phase, snapshot) in [("missing", &missing), ("corrupt", &corrupt)] {
+                    assert!(
+                        snapshot.installed && snapshot.oauth_required && snapshot.mcp_configured,
+                        "{phase}: fixture precondition"
+                    );
+                    assert!(
+                        !snapshot.oauth_token_present,
+                        "{phase} token must not read as connected"
+                    );
+                    assert_eq!(snapshot.status, "config_installed_auth_pending", "{phase}");
+                }
+            });
+    });
 }
 
 #[tokio::test]
@@ -395,61 +371,63 @@ async fn forkguard_marketplace_oauth_remembers_cancel_before_register() {
 
 #[test]
 fn uninstall_marketplace_tool_deletes_oauth_token_before_mcp_config() {
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let _home = TempPinvou3Home::new("oauth-uninstall");
-    let server_name = "yuandian-mcp-uninstall-test";
-    let url = "not-a-url";
-    write_test_oauth_marketplace_files(
-        server_name,
-        serde_json::json!({
-            "url": url,
-            "scopes": ["legal"],
-            "oauth": { "client_id": "test-client" }
-        }),
-    );
-    let key = set_test_oauth_token(server_name, url, "not-json");
-    assert!(test_oauth_token_exists(&key));
+    crate::platform::test_support::with_temp_home("oauth-uninstall", || {
+        let server_name = "yuandian-mcp-uninstall-test";
+        let url = "not-a-url";
+        write_test_marketplace_files(
+            server_name,
+            serde_json::json!({
+                "url": url,
+                "scopes": ["legal"],
+                "oauth": { "client_id": "test-client" }
+            }),
+            false,
+        );
+        let key = set_test_oauth_token(server_name, url, "not-json");
+        assert!(test_oauth_token_exists(&key));
 
-    uninstall_marketplace_tool_sync("yuandian-mcp").unwrap();
+        uninstall_marketplace_tool_sync("yuandian-mcp").unwrap();
 
-    assert!(!test_oauth_token_exists(&key));
-    assert!(
-        !crate::features::marketplace::MarketplaceManager::new()
-            .installed_ids()
-            .contains(&"yuandian-mcp".to_string())
-    );
-    let mcp_content = std::fs::read_to_string(crate::platform::paths::mcp_config_path()).unwrap();
-    let mcp: serde_json::Value = serde_json::from_str(&mcp_content).unwrap();
-    assert!(mcp["servers"].get(server_name).is_none());
+        assert!(!test_oauth_token_exists(&key));
+        assert!(
+            !crate::features::marketplace::MarketplaceManager::new()
+                .installed_ids()
+                .contains(&"yuandian-mcp".to_string())
+        );
+        let mcp_content =
+            std::fs::read_to_string(crate::platform::paths::mcp_config_path()).unwrap();
+        let mcp: serde_json::Value = serde_json::from_str(&mcp_content).unwrap();
+        assert!(mcp["servers"].get(server_name).is_none());
+    });
 }
 
 #[test]
 fn uninstall_marketplace_tool_aborts_if_oauth_token_delete_fails() {
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let _home = TempPinvou3Home::new("oauth-uninstall-error");
-    let server_name = "yuandian-mcp-uninstall-error-test";
-    write_test_oauth_marketplace_files(
-        server_name,
-        serde_json::json!({
-            "scopes": ["legal"],
-            "oauth": { "client_id": "test-client" }
-        }),
-    );
+    crate::platform::test_support::with_temp_home("oauth-uninstall-error", || {
+        let server_name = "yuandian-mcp-uninstall-error-test";
+        // The omitted "url" key is load-bearing: the fixture manifest then
+        // falls back to "not-a-url" while mcp.json carries no url at all.
+        write_test_marketplace_files(
+            server_name,
+            serde_json::json!({
+                "scopes": ["legal"],
+                "oauth": { "client_id": "test-client" }
+            }),
+            false,
+        );
 
-    let err = uninstall_marketplace_tool_sync("yuandian-mcp").unwrap_err();
-    assert!(err.contains("删除 MCP OAuth token 失败"));
-    assert!(
-        crate::features::marketplace::MarketplaceManager::new()
-            .installed_ids()
-            .contains(&"yuandian-mcp".to_string())
-    );
-    let mcp_content = std::fs::read_to_string(crate::platform::paths::mcp_config_path()).unwrap();
-    let mcp: serde_json::Value = serde_json::from_str(&mcp_content).unwrap();
-    assert!(mcp["servers"].get(server_name).is_some());
+        let err = uninstall_marketplace_tool_sync("yuandian-mcp").unwrap_err();
+        assert!(err.contains("删除 MCP OAuth token 失败"));
+        assert!(
+            crate::features::marketplace::MarketplaceManager::new()
+                .installed_ids()
+                .contains(&"yuandian-mcp".to_string())
+        );
+        let mcp_content =
+            std::fs::read_to_string(crate::platform::paths::mcp_config_path()).unwrap();
+        let mcp: serde_json::Value = serde_json::from_str(&mcp_content).unwrap();
+        assert!(mcp["servers"].get(server_name).is_some());
+    });
 }
 
 /// Vacuous uninstall guard, both channels (the skill channel got the same
@@ -602,45 +580,27 @@ fn standalone_preset_install_never_folds_package_ids_on_save_or_remove() {
     });
 }
 
-struct TestPinvouHome {
-    root: std::path::PathBuf,
-    previous: Option<String>,
-    _guard: std::sync::MutexGuard<'static, ()>,
-}
-
-impl Drop for TestPinvouHome {
-    fn drop(&mut self) {
-        match self.previous.take() {
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
-fn test_pinvou_home(tag: &str) -> TestPinvouHome {
-    let guard = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let root = std::env::temp_dir().join(format!("{tag}-{}", std::process::id()));
-    let previous = std::env::var("PINVOU3_HOME").ok();
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-    unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-    TestPinvouHome {
-        root,
-        previous,
-        _guard: guard,
-    }
-}
-
-fn session_artifact_path(session_id: &str, name: &str) -> std::path::PathBuf {
-    let dir = crate::platform::paths::session_artifacts_dir(session_id);
+/// All callers probe the same throwaway session; hardcode it so call sites
+/// read as a plain "path inside the session artifact dir" factory.
+fn session_artifact_path(name: &str) -> std::path::PathBuf {
+    let dir = crate::platform::paths::session_artifacts_dir("s1");
     std::fs::create_dir_all(&dir).unwrap();
     dir.join(name)
+}
+
+/// File names directly under `dir` containing any of `needles` — the
+/// leftover-scan the atomic-write tests assert against.
+fn temp_file_leftovers(dir: &Path, needles: &[&str]) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            needles.iter().any(|needle| name.contains(needle))
+        })
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect()
 }
 
 #[test]
@@ -651,63 +611,44 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
         load_disabled_bundles_for, save_disabled_bundles_for,
     };
 
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let root = std::env::temp_dir().join(format!(
-        "pinvou3-skill-reinstall-test-{}",
-        std::process::id()
-    ));
-    let previous = std::env::var("PINVOU3_HOME").ok();
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-    unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+    crate::platform::test_support::with_temp_home("skill-reinstall", || {
+        // 用户关闭 visualizer（包开关统一落 disabled_bundles.json）→
+        // 组合目录计算排除该技能。
+        save_disabled_bundles_for(ConnectorScope::Plain, &["visualizer".to_string()]).unwrap();
+        install_marketplace_skill_sync("visualizer").unwrap();
+        assert!(
+            !sm::enabled_skills_for(ConnectorScope::Plain, None)
+                .iter()
+                .any(|(n, _)| n == "visualizer"),
+            "安装后仍受用户关闭状态约束（plain scope 禁用集）"
+        );
+        // code scope 未初始化时新装技能默认全禁，初始化后自动加入 code 禁用集。
+        assert!(
+            load_disabled_bundles_for(ConnectorScope::Code)
+                .iter()
+                .any(|id| id == "visualizer")
+        );
 
-    // 用户关闭 visualizer（包开关统一落 disabled_bundles.json）→
-    // 组合目录计算排除该技能。
-    save_disabled_bundles_for(ConnectorScope::Plain, &["visualizer".to_string()]).unwrap();
-    install_marketplace_skill_sync("visualizer").unwrap();
-    assert!(
-        !sm::enabled_skills_for(ConnectorScope::Plain, None)
-            .iter()
-            .any(|(n, _)| n == "visualizer"),
-        "安装后仍受用户关闭状态约束（plain scope 禁用集）"
-    );
-    // code scope 未初始化时新装技能默认全禁，初始化后自动加入 code 禁用集。
-    assert!(
-        load_disabled_bundles_for(ConnectorScope::Code)
-            .iter()
-            .any(|id| id == "visualizer")
-    );
-
-    uninstall_marketplace_skill_sync("visualizer").unwrap();
-    // Uninstall clears the pack's residue from both scope disabled sets (same semantics as connectors).
-    assert!(
-        !load_disabled_bundles_for(ConnectorScope::Plain)
-            .iter()
-            .any(|id| id == "visualizer"),
-        "卸载应从禁用集清除残留 id"
-    );
-    install_marketplace_skill_sync("visualizer").unwrap();
-    // With every mode DenyAll (tool switches default-off), a reinstall counts
-    // as a fresh install: initialized scopes keep it off by default until the
-    // user explicitly enables it (matching the connectors' fresh-install
-    // default-off semantics).
-    assert!(
-        crate::features::marketplace::load_disabled_bundles_for(ConnectorScope::Plain)
-            .iter()
-            .any(|id| id == "visualizer"),
-        "after reinstall the plain scope is disabled by default (DenyAll convergence semantics)"
-    );
-
-    match previous {
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-    }
-    let _ = std::fs::remove_dir_all(&root);
+        uninstall_marketplace_skill_sync("visualizer").unwrap();
+        // Uninstall clears the pack's residue from both scope disabled sets (same semantics as connectors).
+        assert!(
+            !load_disabled_bundles_for(ConnectorScope::Plain)
+                .iter()
+                .any(|id| id == "visualizer"),
+            "卸载应从禁用集清除残留 id"
+        );
+        install_marketplace_skill_sync("visualizer").unwrap();
+        // With every mode DenyAll (tool switches default-off), a reinstall counts
+        // as a fresh install: initialized scopes keep it off by default until the
+        // user explicitly enables it (matching the connectors' fresh-install
+        // default-off semantics).
+        assert!(
+            crate::features::marketplace::load_disabled_bundles_for(ConnectorScope::Plain)
+                .iter()
+                .any(|id| id == "visualizer"),
+            "after reinstall the plain scope is disabled by default (DenyAll convergence semantics)"
+        );
+    });
 }
 
 /// companion 联动契约：MCP manifest 的 companion_skills 声明真实存在（预置技能可装），
@@ -715,48 +656,30 @@ fn direct_skill_install_uninstall_scope_state_roundtrip() {
 /// 覆盖 gongwen→government-writing（异名配对）与 pptx→pptx（同名配对）。
 #[test]
 fn mcp_install_links_companion_skills() {
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let root = std::env::temp_dir().join(format!(
-        "pinvou3-companion-link-test-{}",
-        std::process::id()
-    ));
-    let previous = std::env::var("PINVOU3_HOME").ok();
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-    unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-
-    let mgr = crate::features::marketplace::MarketplaceManager::new();
-    let skill_mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
-    for (mcp_id, skill_id) in [("gongwen", "government-writing"), ("pptx", "pptx")] {
-        let companions = mgr.companion_skills(mcp_id);
-        assert!(
-            companions.contains(&skill_id.to_string()),
-            "{mcp_id} 应声明 companion 技能 {skill_id}"
-        );
-        // 复刻命令层联动路径：装 MCP 后遍历装 companion 技能（技能增强，失败只记日志）
-        for sid in &companions {
-            skill_mgr.install(sid).unwrap();
+    crate::platform::test_support::with_temp_home("companion-link", || {
+        let mgr = crate::features::marketplace::MarketplaceManager::new();
+        let skill_mgr =
+            crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
+        for (mcp_id, skill_id) in [("gongwen", "government-writing"), ("pptx", "pptx")] {
+            let companions = mgr.companion_skills(mcp_id);
+            assert!(
+                companions.contains(&skill_id.to_string()),
+                "{mcp_id} 应声明 companion 技能 {skill_id}"
+            );
+            // 复刻命令层联动路径：装 MCP 后遍历装 companion 技能（技能增强，失败只记日志）
+            for sid in &companions {
+                skill_mgr.install(sid).unwrap();
+            }
+            assert!(
+                skill_mgr
+                    .list_skills()
+                    .iter()
+                    .any(|s| s.id == skill_id && s.installed),
+                "{skill_id} 应随 {mcp_id} 安装落盘"
+            );
+            skill_mgr.uninstall(skill_id).unwrap();
         }
-        assert!(
-            skill_mgr
-                .list_skills()
-                .iter()
-                .any(|s| s.id == skill_id && s.installed),
-            "{skill_id} 应随 {mcp_id} 安装落盘"
-        );
-        skill_mgr.uninstall(skill_id).unwrap();
-    }
-
-    match previous {
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-    }
-    let _ = std::fs::remove_dir_all(&root);
+    });
 }
 
 /// 卸载回归：MCP 已装时 companion 技能落盘在 `bundles/<pkg>/skills/`（条件认领，
@@ -766,78 +689,76 @@ fn mcp_install_links_companion_skills() {
 /// （gongwen 先卸 → government-writing 删不掉的回归）。
 #[test]
 fn mcp_uninstall_removes_companion_skills_from_package_dir() {
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let _home = TempPinvou3Home::new("companion-unlink");
-
-    let mgr = crate::features::marketplace::MarketplaceManager::new();
-    let skill_mgr = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
-    // 复刻命令层安装路径的**安装态**而不跑真实 install 管线（`mgr.install`
-    // 会真实执行 pip install python-docx，邻测 mcp_install_links_companion_skills
-    // 因此也不调它）：条件认领（bundle_installed）只查 BundleStore 记录。
-    crate::features::marketplace::store::plant_installed_record(
-        "gongwen",
-        crate::features::marketplace::store::BundleSource::Preset,
-    );
-    for sid in mgr.companion_skills("gongwen") {
-        skill_mgr.install(&sid).unwrap();
-    }
-    let skill_dir = crate::platform::paths::bundles_root()
-        .join("gongwen")
-        .join("skills")
-        .join("government-writing");
-    assert!(skill_dir.is_dir(), "companion 技能应随包装入包目录");
-    for scope in [
-        crate::features::marketplace::ConnectorScope::Plain,
-        crate::features::marketplace::ConnectorScope::Code,
-    ] {
-        crate::features::marketplace::save_disabled_bundles_for(
-            scope,
-            &["government-writing".to_string()],
-        )
-        .unwrap();
-        crate::features::marketplace::save_hidden_bundles_for(
-            scope,
-            &["government-writing".to_string()],
-        )
-        .unwrap();
-        assert_eq!(
-            crate::features::marketplace::load_disabled_bundles_for(scope),
-            vec!["gongwen".to_string()]
+    crate::platform::test_support::with_temp_home("companion-unlink", || {
+        let mgr = crate::features::marketplace::MarketplaceManager::new();
+        let skill_mgr =
+            crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
+        // 复刻命令层安装路径的**安装态**而不跑真实 install 管线（`mgr.install`
+        // 会真实执行 pip install python-docx，邻测 mcp_install_links_companion_skills
+        // 因此也不调它）：条件认领（bundle_installed）只查 BundleStore 记录。
+        crate::features::marketplace::store::plant_installed_record(
+            "gongwen",
+            crate::features::marketplace::store::BundleSource::Preset,
         );
-        assert_eq!(
-            crate::features::marketplace::load_hidden_bundles_for(scope),
-            vec!["gongwen".to_string()]
-        );
-    }
+        for sid in mgr.companion_skills("gongwen") {
+            skill_mgr.install(&sid).unwrap();
+        }
+        let skill_dir = crate::platform::paths::bundles_root()
+            .join("gongwen")
+            .join("skills")
+            .join("government-writing");
+        assert!(skill_dir.is_dir(), "companion 技能应随包装入包目录");
+        for scope in [
+            crate::features::marketplace::ConnectorScope::Plain,
+            crate::features::marketplace::ConnectorScope::Code,
+        ] {
+            crate::features::marketplace::save_disabled_bundles_for(
+                scope,
+                &["government-writing".to_string()],
+            )
+            .unwrap();
+            crate::features::marketplace::save_hidden_bundles_for(
+                scope,
+                &["government-writing".to_string()],
+            )
+            .unwrap();
+            assert_eq!(
+                crate::features::marketplace::load_disabled_bundles_for(scope),
+                vec!["gongwen".to_string()]
+            );
+            assert_eq!(
+                crate::features::marketplace::load_hidden_bundles_for(scope),
+                vec!["gongwen".to_string()]
+            );
+        }
 
-    uninstall_marketplace_tool_sync("gongwen").unwrap();
+        uninstall_marketplace_tool_sync("gongwen").unwrap();
 
-    assert!(
-        !skill_dir.exists(),
-        "卸 MCP 后 companion 技能目录不得残留（顺序依赖回归）"
-    );
-    assert!(
-        !skill_mgr
-            .list_skills()
-            .iter()
-            .any(|s| s.id == "government-writing" && s.installed),
-        "卸 MCP 后 companion 技能不得仍为已装态"
-    );
-    for scope in [
-        crate::features::marketplace::ConnectorScope::Plain,
-        crate::features::marketplace::ConnectorScope::Code,
-    ] {
         assert!(
-            crate::features::marketplace::load_disabled_bundles_for(scope).is_empty(),
-            "卸载成功后 companion/package 禁用 scope 必须清理"
+            !skill_dir.exists(),
+            "卸 MCP 后 companion 技能目录不得残留（顺序依赖回归）"
         );
         assert!(
-            crate::features::marketplace::load_hidden_bundles_for(scope).is_empty(),
-            "卸载成功后 companion/package 隐藏 scope 必须清理"
+            !skill_mgr
+                .list_skills()
+                .iter()
+                .any(|s| s.id == "government-writing" && s.installed),
+            "卸 MCP 后 companion 技能不得仍为已装态"
         );
-    }
+        for scope in [
+            crate::features::marketplace::ConnectorScope::Plain,
+            crate::features::marketplace::ConnectorScope::Code,
+        ] {
+            assert!(
+                crate::features::marketplace::load_disabled_bundles_for(scope).is_empty(),
+                "卸载成功后 companion/package 禁用 scope 必须清理"
+            );
+            assert!(
+                crate::features::marketplace::load_hidden_bundles_for(scope).is_empty(),
+                "卸载成功后 companion/package 隐藏 scope 必须清理"
+            );
+        }
+    });
 }
 
 /// Claim-flip guard (safety-relevant): if the companion skill cannot be
@@ -849,48 +770,45 @@ fn mcp_uninstall_removes_companion_skills_from_package_dir() {
 /// must also stay untouched while the skill is still installed.
 #[test]
 fn mcp_uninstall_aborts_when_companion_uninstall_fails() {
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let _home = TempPinvou3Home::new("companion-abort");
+    crate::platform::test_support::with_temp_home("companion-abort", || {
+        // gongwen installed (store record drives the conditional claim).
+        crate::features::marketplace::store::plant_installed_record(
+            "gongwen",
+            crate::features::marketplace::store::BundleSource::Preset,
+        );
+        // Failure injection without platform-specific permission tricks: the
+        // companion exists only as an *unmarked* legacy flat dir, which skill
+        // uninstall refuses to delete ("非市场安装" protection).
+        let legacy = crate::platform::paths::bundle_skills_dir().join("government-writing");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(
+            legacy.join("SKILL.md"),
+            "---\nname: government-writing\n---\n",
+        )
+        .unwrap();
+        // The package-level disable entry (normalized to the package id while the
+        // claim holds) must survive the abort.
+        crate::features::marketplace::save_disabled_bundles(&["government-writing".to_string()]);
 
-    // gongwen installed (store record drives the conditional claim).
-    crate::features::marketplace::store::plant_installed_record(
-        "gongwen",
-        crate::features::marketplace::store::BundleSource::Preset,
-    );
-    // Failure injection without platform-specific permission tricks: the
-    // companion exists only as an *unmarked* legacy flat dir, which skill
-    // uninstall refuses to delete ("非市场安装" protection).
-    let legacy = crate::platform::paths::bundle_skills_dir().join("government-writing");
-    std::fs::create_dir_all(&legacy).unwrap();
-    std::fs::write(
-        legacy.join("SKILL.md"),
-        "---\nname: government-writing\n---\n",
-    )
-    .unwrap();
-    // The package-level disable entry (normalized to the package id while the
-    // claim holds) must survive the abort.
-    crate::features::marketplace::save_disabled_bundles(&["government-writing".to_string()]);
-
-    let err = uninstall_marketplace_tool_sync("gongwen").unwrap_err();
-    assert!(
-        err.contains("government-writing"),
-        "中止错误应点名失败的配套技能，实际: {err}"
-    );
-    assert!(
-        crate::features::marketplace::store::BundleStore::new()
-            .get("gongwen")
-            .unwrap()
-            .is_some(),
-        "companion 卸载失败时 MCP 记录必须保留（认领不得翻转）"
-    );
-    assert!(legacy.join("SKILL.md").is_file(), "保护对象目录不得被动");
-    assert_eq!(
-        crate::features::marketplace::load_disabled_bundles(),
-        vec!["gongwen".to_string()],
-        "companion 卸载失败时禁用集条目不得清除（仍在装的技能不得被重新启用）"
-    );
+        let err = uninstall_marketplace_tool_sync("gongwen").unwrap_err();
+        assert!(
+            err.contains("government-writing"),
+            "中止错误应点名失败的配套技能，实际: {err}"
+        );
+        assert!(
+            crate::features::marketplace::store::BundleStore::new()
+                .get("gongwen")
+                .unwrap()
+                .is_some(),
+            "companion 卸载失败时 MCP 记录必须保留（认领不得翻转）"
+        );
+        assert!(legacy.join("SKILL.md").is_file(), "保护对象目录不得被动");
+        assert_eq!(
+            crate::features::marketplace::load_disabled_bundles(),
+            vec!["gongwen".to_string()],
+            "companion 卸载失败时禁用集条目不得清除（仍在装的技能不得被重新启用）"
+        );
+    });
 }
 
 #[test]
@@ -904,15 +822,10 @@ fn file_url_from_path_encodes_local_artifact_paths() {
     let url = crate::platform::os::file_url_from_path(&canon).unwrap();
     let text = url.as_str();
 
-    assert_eq!(url.scheme(), "file");
     assert!(text.starts_with("file://"), "unexpected file URL: {text}");
     assert!(
         !text.contains('\\'),
         "file URL must not contain backslashes: {text}"
-    );
-    assert!(
-        !text.contains(r"\\?\"),
-        "file URL must not contain verbatim prefix: {text}"
     );
     assert!(
         text.contains("%20"),
@@ -930,43 +843,46 @@ fn write_artifact_text_allows_markdown_extensions() {
         ("pinvou3-md-write-test", "md"),
         ("pinvou3-markdown-write-test", "markdown"),
     ] {
-        let _home = test_pinvou_home(tag);
-        let md = session_artifact_path("s1", &format!("note.{ext}"));
-        std::fs::write(&md, "# Old\n").unwrap();
+        crate::platform::test_support::with_temp_home(tag, || {
+            let md = session_artifact_path(&format!("note.{ext}"));
+            std::fs::write(&md, "# Old\n").unwrap();
 
-        write_artifact_text_impl(md.to_str().unwrap(), "# New\n\nBody").unwrap();
+            write_artifact_text_impl(md.to_str().unwrap(), "# New\n\nBody").unwrap();
 
-        assert_eq!(std::fs::read_to_string(&md).unwrap(), "# New\n\nBody");
+            assert_eq!(std::fs::read_to_string(&md).unwrap(), "# New\n\nBody");
+        });
     }
 }
 
 #[test]
 fn write_artifact_text_blocks_non_markdown() {
-    let _home = test_pinvou_home("pinvou3-non-md-write-test");
-    let txt = session_artifact_path("s1", "note.txt");
-    std::fs::write(&txt, "old").unwrap();
+    crate::platform::test_support::with_temp_home("pinvou3-non-md-write-test", || {
+        let txt = session_artifact_path("note.txt");
+        std::fs::write(&txt, "old").unwrap();
 
-    let err = write_artifact_text_impl(txt.to_str().unwrap(), "new").unwrap_err();
+        let err = write_artifact_text_impl(txt.to_str().unwrap(), "new").unwrap_err();
 
-    assert!(err.contains("only markdown artifacts"));
-    assert_eq!(std::fs::read_to_string(&txt).unwrap(), "old");
+        assert!(err.contains("only markdown artifacts"));
+        assert_eq!(std::fs::read_to_string(&txt).unwrap(), "old");
+    });
 }
 
 #[test]
 fn write_artifact_text_blocks_markdown_outside_session_storage() {
-    let _home = test_pinvou_home("pinvou3-md-outside-session-test");
-    let outside =
-        std::env::temp_dir().join(format!("pinvou3-md-outside-session-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&outside);
-    std::fs::create_dir_all(&outside).unwrap();
-    let md = outside.join("note.md");
-    std::fs::write(&md, "old").unwrap();
+    crate::platform::test_support::with_temp_home("pinvou3-md-outside-session-test", || {
+        let outside =
+            std::env::temp_dir().join(format!("pinvou3-md-outside-session-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&outside);
+        std::fs::create_dir_all(&outside).unwrap();
+        let md = outside.join("note.md");
+        std::fs::write(&md, "old").unwrap();
 
-    let err = write_artifact_text_impl(md.to_str().unwrap(), "new").unwrap_err();
+        let err = write_artifact_text_impl(md.to_str().unwrap(), "new").unwrap_err();
 
-    assert!(err.contains("outside session storage"));
-    assert_eq!(std::fs::read_to_string(&md).unwrap(), "old");
-    let _ = std::fs::remove_dir_all(&outside);
+        assert!(err.contains("outside session storage"));
+        assert_eq!(std::fs::read_to_string(&md).unwrap(), "old");
+        let _ = std::fs::remove_dir_all(&outside);
+    });
 }
 
 #[test]
@@ -1006,60 +922,59 @@ fn write_artifact_text_requires_existing_file() {
 
 #[test]
 fn write_artifact_text_blocks_directory_target() {
-    let _home = test_pinvou_home("pinvou3-md-dir-write-test");
-    let md_dir = session_artifact_path("s1", "note.md");
-    std::fs::create_dir_all(&md_dir).unwrap();
+    crate::platform::test_support::with_temp_home("pinvou3-md-dir-write-test", || {
+        let md_dir = session_artifact_path("note.md");
+        std::fs::create_dir_all(&md_dir).unwrap();
 
-    let err = write_artifact_text_impl(md_dir.to_str().unwrap(), "new").unwrap_err();
+        let err = write_artifact_text_impl(md_dir.to_str().unwrap(), "new").unwrap_err();
 
-    assert!(err.contains("not a file"));
-    assert!(md_dir.is_dir());
+        assert!(err.contains("not a file"));
+        assert!(md_dir.is_dir());
+    });
 }
 
 #[test]
 fn write_artifact_text_blocks_oversized_content() {
-    let _home = test_pinvou_home("pinvou3-md-large-write-test");
-    let md = session_artifact_path("s1", "note.md");
-    std::fs::write(&md, "old").unwrap();
-    let content = "x".repeat(MAX_EDITABLE_MARKDOWN_BYTES + 1);
+    crate::platform::test_support::with_temp_home("pinvou3-md-large-write-test", || {
+        let md = session_artifact_path("note.md");
+        std::fs::write(&md, "old").unwrap();
+        let content = "x".repeat(MAX_EDITABLE_MARKDOWN_BYTES + 1);
 
-    let err = write_artifact_text_impl(md.to_str().unwrap(), &content).unwrap_err();
+        let err = write_artifact_text_impl(md.to_str().unwrap(), &content).unwrap_err();
 
-    assert!(err.contains("too large"));
-    assert_eq!(std::fs::read_to_string(&md).unwrap(), "old");
+        assert!(err.contains("too large"));
+        assert_eq!(std::fs::read_to_string(&md).unwrap(), "old");
+    });
 }
 
 #[test]
 fn write_artifact_text_preserves_utf8_content() {
-    let _home = test_pinvou_home("pinvou3-md-utf8-write-test");
-    let md = session_artifact_path("s1", "note.md");
-    std::fs::write(&md, "old").unwrap();
-    let content =
-        "# 标题\n\n| 名称 | 状态 |\n| --- | --- |\n| Alpha | 进行中 |\n\n```text\n保留中文\n```";
+    crate::platform::test_support::with_temp_home("pinvou3-md-utf8-write-test", || {
+        let md = session_artifact_path("note.md");
+        std::fs::write(&md, "old").unwrap();
+        let content = "# 标题\n\n| 名称 | 状态 |\n| --- | --- |\n| Alpha | 进行中 |\n\n```text\n保留中文\n```";
 
-    write_artifact_text_impl(md.to_str().unwrap(), content).unwrap();
+        write_artifact_text_impl(md.to_str().unwrap(), content).unwrap();
 
-    assert_eq!(std::fs::read_to_string(&md).unwrap(), content);
+        assert_eq!(std::fs::read_to_string(&md).unwrap(), content);
+    });
 }
 
 #[test]
 fn write_artifact_text_cleans_backup_file_after_success() {
-    let _home = test_pinvou_home("pinvou3-md-backup-clean-test");
-    let md = session_artifact_path("s1", "note.md");
-    std::fs::write(&md, "old").unwrap();
+    crate::platform::test_support::with_temp_home("pinvou3-md-backup-clean-test", || {
+        let md = session_artifact_path("note.md");
+        std::fs::write(&md, "old").unwrap();
 
-    write_artifact_text_impl(md.to_str().unwrap(), "new").unwrap();
+        write_artifact_text_impl(md.to_str().unwrap(), "new").unwrap();
 
-    let leftovers: Vec<_> = std::fs::read_dir(md.parent().unwrap())
-        .unwrap()
-        .filter_map(Result::ok)
-        .filter(|e| e.file_name().to_string_lossy().contains(".bak-"))
-        .collect();
-    assert!(
-        leftovers.is_empty(),
-        "backup files left behind: {leftovers:?}"
-    );
-    assert_eq!(std::fs::read_to_string(&md).unwrap(), "new");
+        let leftovers = temp_file_leftovers(md.parent().unwrap(), &[".bak-"]);
+        assert!(
+            leftovers.is_empty(),
+            "backup files left behind: {leftovers:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&md).unwrap(), "new");
+    });
 }
 
 #[test]
@@ -1073,19 +988,14 @@ fn write_artifact_text_cleans_temp_file_on_error() {
     let md = tmp.join("note.md");
     std::fs::create_dir_all(&md).unwrap();
 
-    let err = super::artifacts::atomic_write_utf8_unlocked_with(
+    super::artifacts::atomic_write_utf8_unlocked_with(
         &md,
         "new",
         crate::platform::filesystem::replace_file_atomically,
     )
     .unwrap_err();
 
-    assert!(!err.to_string().is_empty());
-    let leftovers: Vec<_> = std::fs::read_dir(&tmp)
-        .unwrap()
-        .filter_map(Result::ok)
-        .filter(|e| e.file_name().to_string_lossy().contains(".tmp-"))
-        .collect();
+    let leftovers = temp_file_leftovers(&tmp, &[".tmp-"]);
     assert!(
         leftovers.is_empty(),
         "temp files left behind: {leftovers:?}"
@@ -1147,58 +1057,45 @@ fn artifact_read_recovers_an_occupied_1177_layout_after_release() {
     use std::cell::RefCell;
     use std::os::windows::fs::OpenOptionsExt as _;
 
-    let _home = test_pinvou_home("pinvou3-artifact-1177-recovery");
-    let md = session_artifact_path("s1", "note.md");
-    std::fs::write(&md, "old").unwrap();
-    let occupied = RefCell::new(None);
+    crate::platform::test_support::with_temp_home("pinvou3-artifact-1177-recovery", || {
+        let md = session_artifact_path("note.md");
+        std::fs::write(&md, "old").unwrap();
+        let occupied = RefCell::new(None);
 
-    let error = atomic_write_utf8_unlocked_with(&md, "new", |replacement, target, backup| {
-        crate::platform::filesystem::replace_file_atomically_with(
-            replacement,
-            target,
-            backup,
-            |target, _, backup| {
-                std::fs::rename(target, backup)?;
-                *occupied.borrow_mut() = Some(
-                    std::fs::OpenOptions::new()
-                        .read(true)
-                        .share_mode(0)
-                        .open(backup)?,
-                );
-                Err(std::io::Error::from_raw_os_error(1177))
-            },
-        )
-    })
-    .unwrap_err();
-
-    assert!(error.to_string().contains("RecoveryRequired"));
-    assert!(!md.exists());
-    let leftovers_while_occupied: Vec<_> = std::fs::read_dir(md.parent().unwrap())
-        .unwrap()
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            name.contains(".note.md.tmp-") || name.contains(".note.md.bak-")
+        let error = atomic_write_utf8_unlocked_with(&md, "new", |replacement, target, backup| {
+            crate::platform::filesystem::replace_file_atomically_with(
+                replacement,
+                target,
+                backup,
+                |target, _, backup| {
+                    std::fs::rename(target, backup)?;
+                    *occupied.borrow_mut() = Some(
+                        std::fs::OpenOptions::new()
+                            .read(true)
+                            .share_mode(0)
+                            .open(backup)?,
+                    );
+                    Err(std::io::Error::from_raw_os_error(1177))
+                },
+            )
         })
-        .collect();
-    assert_eq!(leftovers_while_occupied.len(), 2);
+        .unwrap_err();
 
-    drop(occupied.borrow_mut().take());
-    assert_eq!(
-        read_artifact_text_impl(md.to_str().unwrap()).unwrap(),
-        "old"
-    );
-    let leftovers_after_recovery: Vec<_> = std::fs::read_dir(md.parent().unwrap())
-        .unwrap()
-        .filter_map(Result::ok)
-        .filter(|entry| {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            name.contains(".note.md.tmp-") || name.contains(".note.md.bak-")
-        })
-        .collect();
-    assert!(leftovers_after_recovery.is_empty());
+        assert!(error.to_string().contains("RecoveryRequired"));
+        assert!(!md.exists());
+        let leftovers_while_occupied =
+            temp_file_leftovers(md.parent().unwrap(), &[".tmp-", ".bak-"]);
+        assert_eq!(leftovers_while_occupied.len(), 2);
+
+        drop(occupied.borrow_mut().take());
+        assert_eq!(
+            read_artifact_text_impl(md.to_str().unwrap()).unwrap(),
+            "old"
+        );
+        let leftovers_after_recovery =
+            temp_file_leftovers(md.parent().unwrap(), &[".tmp-", ".bak-"]);
+        assert!(leftovers_after_recovery.is_empty());
+    });
 }
 
 #[cfg(windows)]
@@ -1207,34 +1104,35 @@ fn artifact_writes_never_expose_partial_utf8_to_concurrent_readers() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    let _home = test_pinvou_home("pinvou3-artifact-concurrent-read");
-    let md = session_artifact_path("s1", "note.md");
-    let old = "a".repeat(32 * 1024);
-    let new = "b".repeat(32 * 1024);
-    std::fs::write(&md, &old).unwrap();
-    let running = Arc::new(AtomicBool::new(true));
-    let reader_running = Arc::clone(&running);
-    let reader_path = md.clone();
-    let old_for_reader = old.clone();
-    let new_for_reader = new.clone();
-    let reader = std::thread::spawn(move || {
-        // Bound the loop so a writer panic cannot leave the reader spinning
-        // forever and hang the test runner.
-        let mut spins = 0;
-        while reader_running.load(Ordering::Acquire) && spins < 1_000_000 {
-            spins += 1;
-            if let Ok(value) = std::fs::read_to_string(&reader_path) {
-                assert!(value == old_for_reader || value == new_for_reader);
+    crate::platform::test_support::with_temp_home("pinvou3-artifact-concurrent-read", || {
+        let md = session_artifact_path("note.md");
+        let old = "a".repeat(32 * 1024);
+        let new = "b".repeat(32 * 1024);
+        std::fs::write(&md, &old).unwrap();
+        let running = Arc::new(AtomicBool::new(true));
+        let reader_running = Arc::clone(&running);
+        let reader_path = md.clone();
+        let old_for_reader = old.clone();
+        let new_for_reader = new.clone();
+        let reader = std::thread::spawn(move || {
+            // Bound the loop so a writer panic cannot leave the reader spinning
+            // forever and hang the test runner.
+            let mut spins = 0;
+            while reader_running.load(Ordering::Acquire) && spins < 1_000_000 {
+                spins += 1;
+                if let Ok(value) = std::fs::read_to_string(&reader_path) {
+                    assert!(value == old_for_reader || value == new_for_reader);
+                }
             }
-        }
-    });
+        });
 
-    for index in 0..16 {
-        let content = if index % 2 == 0 { &new } else { &old };
-        write_artifact_text_impl(md.to_str().unwrap(), content).unwrap();
-    }
-    running.store(false, Ordering::Release);
-    reader.join().unwrap();
+        for index in 0..16 {
+            let content = if index % 2 == 0 { &new } else { &old };
+            write_artifact_text_impl(md.to_str().unwrap(), content).unwrap();
+        }
+        running.store(false, Ordering::Release);
+        reader.join().unwrap();
+    });
 }
 
 /// accept_plan 切 Yolo 后注入的执行指令必须裹住方案全文 + 带"立即执行"信号——
@@ -1265,44 +1163,41 @@ fn agentic_guide_mentions_collection_and_kb_search() {
 }
 
 #[test]
-fn parses_local_asr_plain_text_output() {
-    let text = parse_local_asr_text("hello from voice\n", "").expect("plain text");
-    assert_eq!(text, "hello from voice");
-    assert_eq!(
-        parse_local_asr_text("[0-.5] Hello\n[.5-1] .\n[1-1.5] World\n", ""),
-        Some("Hello. World".to_string())
-    );
-}
-
-#[test]
-fn parses_local_asr_numeric_only_output() {
-    let text = parse_local_asr_text("123\n", "").expect("numeric transcript");
-    assert_eq!(text, "123");
-    assert_eq!(
-        parse_local_asr_text("123\n100%\n", "100/100%\n12:34:56\n"),
-        Some("123".to_string())
-    );
-    assert_eq!(parse_local_asr_text("100%\n", ""), None);
-    assert_eq!(
-        parse_local_asr_text("１２３\n", ""),
-        Some("１２３".to_string())
-    );
-    assert_eq!(
-        parse_local_asr_text(r#"{"text":"123"}"#, ""),
-        Some("123".to_string())
-    );
-    assert_eq!(parse_local_asr_text("", "100/100%\n100\n12:34:56\n"), None);
-    assert_eq!(
-        parse_local_asr_text(
-            "{\"timestamp\":0,\"text\":\"hello\"}\n{\"timestamp\":1,\"text\":\"world\"}\n",
-            ""
+fn parses_local_asr_output_shapes() {
+    // (stdout, stderr, expected transcript) — plain text, timestamped lines,
+    // numeric-only speech, JSON objects/arrays, SRT indexes and log noise.
+    for (stdout, stderr, want) in [
+        ("hello from voice\n", "", Some("hello from voice")),
+        (
+            "[0-.5] Hello\n[.5-1] .\n[1-1.5] World\n",
+            "",
+            Some("Hello. World"),
         ),
-        Some("hello world".to_string())
-    );
-    assert_eq!(
-        parse_local_asr_text("1\n00:00:03,000 --> 00:00:04,000\n", ""),
-        None
-    );
+        ("123\n", "", Some("123")),
+        ("123\n100%\n", "100/100%\n12:34:56\n", Some("123")),
+        ("100%\n", "", None),
+        ("１２３\n", "", Some("１２３")),
+        (r#"{"text":"123"}"#, "", Some("123")),
+        ("", "100/100%\n100\n12:34:56\n", None),
+        (
+            "{\"timestamp\":0,\"text\":\"hello\"}\n{\"timestamp\":1,\"text\":\"world\"}\n",
+            "",
+            Some("hello world"),
+        ),
+        ("1\n00:00:03,000 --> 00:00:04,000\n", "", None),
+        (
+            "[INFO] loading\n['hello from voice']\n",
+            "",
+            Some("hello from voice"),
+        ),
+    ] {
+        assert_eq!(
+            parse_local_asr_text(stdout, stderr),
+            want.map(str::to_string),
+            "stdout={stdout:?} stderr={stderr:?}"
+        );
+    }
+
     assert_eq!(
         parse_local_asr_text("hello world\n", "4\n"),
         Some("hello world".to_string()),
@@ -1323,28 +1218,17 @@ fn parses_local_asr_numeric_only_output() {
 fn explicit_asr_cli_fallback_accepts_all_supported_env_names() {
     assert!(!has_nonempty_asr_cli_config(&[None, None, None]));
     assert!(!has_nonempty_asr_cli_config(&[Some(""), Some(" \t"), None]));
-    assert!(has_nonempty_asr_cli_config(&[
-        Some("/tmp/pinvou-asr"),
-        None,
-        None
-    ]));
-    assert!(has_nonempty_asr_cli_config(&[
-        None,
-        Some("/tmp/deepspeech2"),
-        None
-    ]));
-    assert!(has_nonempty_asr_cli_config(&[
-        None,
-        None,
-        Some("/tmp/paddlespeech")
-    ]));
-}
-
-#[test]
-fn parses_local_asr_list_output() {
-    let text =
-        parse_local_asr_text("[INFO] loading\n['hello from voice']\n", "").expect("list output");
-    assert_eq!(text, "hello from voice");
+    for (slot, cli) in ["/tmp/pinvou-asr", "/tmp/deepspeech2", "/tmp/paddlespeech"]
+        .into_iter()
+        .enumerate()
+    {
+        let mut env: [Option<&str>; 3] = [None, None, None];
+        env[slot] = Some(cli);
+        assert!(
+            has_nonempty_asr_cli_config(&env),
+            "a nonempty cli in env slot {slot} must count as configured"
+        );
+    }
 }
 
 #[test]
@@ -1370,160 +1254,131 @@ fn local_asr_env_points_wrapper_to_resolved_model_path() {
 /// 否则 `validate_user_path` 直接拒「path must be absolute」。
 #[test]
 fn resolve_artifact_path_relative_joins_active_workspace() {
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
     // Round-12 review: this used a fixed `/tmp/pinvou3-resolve-test`, which
     // collides across parallel test binaries and leaked the env value after
     // the test. Unique dir + restore-on-drop like the other env tests.
-    let home = std::env::temp_dir().join(format!(
-        "pinvou3-resolve-test-{}-{}",
-        std::process::id(),
-        crate::platform::paths::tests::unique_suffix()
-    ));
-    std::fs::create_dir_all(&home).expect("create temp home");
-    let _env = crate::platform::test_support::EnvRestore::capture(&["PINVOU3_HOME"]);
-    // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-    unsafe { std::env::set_var("PINVOU3_HOME", &home) };
-    let store = SessionStore::boot().expect("boot");
+    crate::platform::test_support::with_temp_home("resolve-artifact", || {
+        let store = SessionStore::boot().expect("boot");
 
-    // 无 active session 且无显式 session → 相对路径原样返回(行为同旧版)
-    assert_eq!(
-        resolve_artifact_path("snake-game.html", None, &store).expect("no active workspace"),
-        "snake-game.html"
-    );
+        // 无 active session 且无显式 session → 相对路径原样返回(行为同旧版)
+        assert_eq!(
+            resolve_artifact_path("snake-game.html", None, &store).expect("no active workspace"),
+            "snake-game.html"
+        );
 
-    // 有 active session、无显式 session → 回退 active 的 workspace
-    store.set_active(Some("sess-1".into()));
-    let want = crate::platform::paths::session_workspace_dir("sess-1")
-        .join("snake-game.html")
-        .to_string_lossy()
-        .into_owned();
-    assert_eq!(
-        resolve_artifact_path("snake-game.html", None, &store).expect("active workspace"),
-        want
-    );
+        // 有 active session、无显式 session → 回退 active 的 workspace
+        store.set_active(Some("sess-1".into()));
+        let want = crate::platform::paths::session_workspace_dir("sess-1")
+            .join("snake-game.html")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            resolve_artifact_path("snake-game.html", None, &store).expect("active workspace"),
+            want
+        );
 
-    // 显式 session **优先**于 active:卡片自带 session 才能跨会话切换稳定解析
-    // (active 停在切走时去的会话也不影响)。这是本次跨 session「打不开」的修复点。
-    let want_explicit = crate::platform::paths::session_workspace_dir("sess-owner")
-        .join("snake-game.html")
-        .to_string_lossy()
-        .into_owned();
-    assert_eq!(
-        resolve_artifact_path("snake-game.html", Some("sess-owner"), &store)
-            .expect("explicit workspace"),
-        want_explicit
-    );
+        // 显式 session **优先**于 active:卡片自带 session 才能跨会话切换稳定解析
+        // (active 停在切走时去的会话也不影响)。这是本次跨 session「打不开」的修复点。
+        let want_explicit = crate::platform::paths::session_workspace_dir("sess-owner")
+            .join("snake-game.html")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            resolve_artifact_path("snake-game.html", Some("sess-owner"), &store)
+                .expect("explicit workspace"),
+            want_explicit
+        );
 
-    // 绝对路径原样返回,无视 session(present_artifact 成功 / 产物面板给的已是绝对)
-    let absolute = std::env::current_dir().unwrap().join("artifact-test.html");
-    let absolute = absolute.to_string_lossy().to_string();
-    assert_eq!(
-        resolve_artifact_path(&absolute, Some("sess-owner"), &store).expect("absolute artifact"),
-        absolute
-    );
-
-    let _ = std::fs::remove_dir_all(&home);
+        // 绝对路径原样返回,无视 session(present_artifact 成功 / 产物面板给的已是绝对)
+        let absolute = std::env::current_dir().unwrap().join("artifact-test.html");
+        let absolute = absolute.to_string_lossy().to_string();
+        assert_eq!(
+            resolve_artifact_path(&absolute, Some("sess-owner"), &store)
+                .expect("absolute artifact"),
+            absolute
+        );
+    });
 }
 
 #[test]
 fn scheduled_attachment_staging_and_artifact_resolution_use_task_workspace() {
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile};
 
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let root = std::env::temp_dir().join(format!(
-        "pinvou3-scheduled-workspace-test-{}",
-        std::process::id()
-    ));
-    let previous = std::env::var("PINVOU3_HOME").ok();
-    let _ = std::fs::remove_dir_all(&root);
-    // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-    unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-    let scheduled_root = root.join("scheduled");
-    std::fs::create_dir_all(&root).expect("test root");
-    let source = root.join("source.png");
-    std::fs::write(&source, b"\x89PNG\r\n\x1a\nfake-bytes").expect("image source");
-    let store =
-        SessionStore::boot_with_scheduled_root(scheduled_root.clone()).expect("session store");
-    let scheduled = store
-        .create_scheduled_run(ScheduledRunProfile {
-            task_id: "workspace-task".to_string(),
-            model: "scheduled-model".to_string(),
-            model_id: None,
-            workspace: root.join("ignored-task-workspace"),
-            mode: ScheduledRunMode::Agent,
-            allow_shell: false,
-            trust_mode: false,
-            auto_approve: false,
-        })
-        .expect("scheduled session");
-    // transcript 覆盖类命令仍拒绝 scheduled 会话(引擎独占持久化)。
-    let manage_error =
-        ensure_chat_session(&store, &scheduled.metadata.id, "save_session_artifacts")
-            .expect_err("scheduled runs must reject UI transcript overwrites");
-    assert!(manage_error.contains("scheduled-run sessions are managed from Scheduled"));
-    let locked = store
-        .ledger_root(&scheduled.metadata.id)
-        .expect("locked scheduled workspace");
-    // 每次运行对话独立，同一 automation 共享自己的工作间；输入路径不会生效。
-    assert_eq!(
-        locked,
-        scheduled_root.join("workspace-task").join("workspace")
-    );
-    let workspace = locked.clone();
-    std::fs::create_dir_all(&workspace).expect("session workspace");
-    let staged_dir = format!(
-        ".pinvou3/scheduled-attachments/{}/attachments",
-        scheduled.metadata.id
-    );
-    let prompt = build_message_with_attachments_in_dir(
-        "inspect".to_string(),
-        vec![crate::features::files::file_ingest::ingest(&source)],
-        &locked,
-        &staged_dir,
-        false,
-    );
+    crate::platform::test_support::with_temp_home("scheduled-workspace", || {
+        let root = crate::platform::paths::pinvou3_home();
+        let scheduled_root = root.join("scheduled");
+        let source = root.join("source.png");
+        std::fs::write(&source, b"\x89PNG\r\n\x1a\nfake-bytes").expect("image source");
+        let store =
+            SessionStore::boot_with_scheduled_root(scheduled_root.clone()).expect("session store");
+        let scheduled = store
+            .create_scheduled_run(ScheduledRunProfile {
+                task_id: "workspace-task".to_string(),
+                model: "scheduled-model".to_string(),
+                model_id: None,
+                workspace: root.join("ignored-task-workspace"),
+                mode: ScheduledRunMode::Agent,
+                allow_shell: false,
+                trust_mode: false,
+                auto_approve: false,
+            })
+            .expect("scheduled session");
+        // transcript 覆盖类命令仍拒绝 scheduled 会话(引擎独占持久化)。
+        let manage_error =
+            ensure_chat_session(&store, &scheduled.metadata.id, "save_session_artifacts")
+                .expect_err("scheduled runs must reject UI transcript overwrites");
+        assert!(manage_error.contains("scheduled-run sessions are managed from Scheduled"));
+        let locked = store
+            .ledger_root(&scheduled.metadata.id)
+            .expect("locked scheduled workspace");
+        // 每次运行对话独立，同一 automation 共享自己的工作间；输入路径不会生效。
+        assert_eq!(
+            locked,
+            scheduled_root.join("workspace-task").join("workspace")
+        );
+        std::fs::create_dir_all(&locked).expect("session workspace");
+        let staged_dir = format!(
+            ".pinvou3/scheduled-attachments/{}/attachments",
+            scheduled.metadata.id
+        );
+        let prompt = build_message_with_attachments_in_dir(
+            "inspect".to_string(),
+            vec![crate::features::files::file_ingest::ingest(&source)],
+            &locked,
+            &staged_dir,
+            false,
+        );
 
-    let staged_relative = format!("{staged_dir}/source.png");
-    let large_text_relative = format!("{staged_dir}/big.txt");
-    let large_text_prompt = build_message_with_attachments_in_dir(
-        "inspect all".to_string(),
-        vec![mk_attachment("text", "big.log", 9_000, 50_000)],
-        &locked,
-        &staged_dir,
-        false,
-    );
-    let report = workspace.join("report.md");
-    std::fs::write(&report, "scheduled result").expect("scheduled workspace artifact");
+        let staged_relative = format!("{staged_dir}/source.png");
+        let large_text_relative = format!("{staged_dir}/big.txt");
+        let large_text_prompt = build_message_with_attachments_in_dir(
+            "inspect all".to_string(),
+            vec![mk_attachment("text", "big.log", 9_000, 50_000)],
+            &locked,
+            &staged_dir,
+            false,
+        );
+        let report = locked.join("report.md");
+        std::fs::write(&report, "scheduled result").expect("scheduled workspace artifact");
 
-    assert_eq!(locked, workspace);
-    assert!(workspace.join(&staged_relative).exists());
-    assert!(prompt.contains(&staged_relative));
-    assert!(workspace.join(&large_text_relative).exists());
-    assert!(large_text_prompt.contains(&large_text_relative));
-    assert!(
-        list_workspace_files_for_session(&scheduled.metadata.id, &store)
-            .expect("scan scheduled workspace")
-            .contains(&report.to_string_lossy().into_owned()),
-        "workspace reconciliation must scan the configured execution workspace"
-    );
-    assert_eq!(
-        resolve_artifact_path("report.md", Some(&scheduled.metadata.id), &store)
-            .expect("scheduled artifact workspace"),
-        workspace.join("report.md").to_string_lossy().into_owned()
-    );
+        assert!(locked.join(&staged_relative).exists());
+        assert!(prompt.contains(&staged_relative));
+        assert!(locked.join(&large_text_relative).exists());
+        assert!(large_text_prompt.contains(&large_text_relative));
+        assert!(
+            list_workspace_files_for_session(&scheduled.metadata.id, &store)
+                .expect("scan scheduled workspace")
+                .contains(&report.to_string_lossy().into_owned()),
+            "workspace reconciliation must scan the configured execution workspace"
+        );
+        assert_eq!(
+            resolve_artifact_path("report.md", Some(&scheduled.metadata.id), &store)
+                .expect("scheduled artifact workspace"),
+            locked.join("report.md").to_string_lossy().into_owned()
+        );
 
-    drop(store);
-    match previous {
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-    }
-    let _ = std::fs::remove_dir_all(root);
+        drop(store);
+    });
 }
 
 /// 定时运行会话按 SessionKind 分发后，重命名/置顶/归档复用 Session 元数据
@@ -1533,129 +1388,99 @@ fn scheduled_attachment_staging_and_artifact_resolution_use_task_workspace() {
 fn scheduled_session_metadata_dispatch_supports_rename_pin_archive() {
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile};
 
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let root = std::env::temp_dir().join(format!(
-        "pinvou3-scheduled-metadata-test-{}",
-        std::process::id()
-    ));
-    let previous = std::env::var("PINVOU3_HOME").ok();
-    let _ = std::fs::remove_dir_all(&root);
-    // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-    unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-    let store =
-        SessionStore::boot_with_scheduled_root(root.join("scheduled")).expect("session store");
-    let scheduled = store
-        .create_scheduled_run(ScheduledRunProfile {
-            task_id: "metadata-task".to_string(),
-            model: "scheduled-model".to_string(),
-            model_id: None,
-            workspace: root.join("ignored"),
-            mode: ScheduledRunMode::Yolo,
-            allow_shell: false,
-            trust_mode: true,
-            auto_approve: true,
-        })
-        .expect("scheduled session");
-    let id = scheduled.metadata.id.clone();
-    assert!(matches!(
-        store.session_kind(&id),
-        Ok(SessionKind::ScheduledRun)
-    ));
+    crate::platform::test_support::with_temp_home("scheduled-metadata", || {
+        let root = crate::platform::paths::pinvou3_home();
+        let store =
+            SessionStore::boot_with_scheduled_root(root.join("scheduled")).expect("session store");
+        let scheduled = store
+            .create_scheduled_run(ScheduledRunProfile {
+                task_id: "metadata-task".to_string(),
+                model: "scheduled-model".to_string(),
+                model_id: None,
+                workspace: root.join("ignored"),
+                mode: ScheduledRunMode::Yolo,
+                allow_shell: false,
+                trust_mode: true,
+                auto_approve: true,
+            })
+            .expect("scheduled session");
+        let id = scheduled.metadata.id.clone();
+        assert!(matches!(
+            store.session_kind(&id),
+            Ok(SessionKind::ScheduledRun)
+        ));
 
-    // rename_session 路径：set_title 对 scheduled 会话生效并落盘。
-    store
-        .set_title(&id, "重命名后的定时运行".to_string())
-        .expect("rename");
-    assert_eq!(
-        store.load(&id).expect("reload").metadata.title,
-        "重命名后的定时运行"
-    );
-
-    // set_session_pinned 路径：共用置顶表。
-    store.set_pinned(&id, true).expect("pin");
-    assert!(store.is_pinned(&id));
-    assert!(store.pinned_at(&id).is_some());
-
-    // set_session_archived 路径：共用收起表,且归档列表能列出 sched-* 会话。
-    store.set_hidden(&id, true).expect("archive");
-    assert!(store.is_hidden(&id));
-    assert!(
+        // rename_session 路径：set_title 对 scheduled 会话生效并落盘。
         store
-            .list_scheduled()
-            .expect("list scheduled")
-            .iter()
-            .any(|metadata| metadata.id == id)
-    );
-    // 收起会强制取消置顶(与普通会话一致)。
-    assert!(!store.is_pinned(&id));
-    store.set_hidden(&id, false).expect("restore");
-    assert!(!store.is_hidden(&id));
+            .set_title(&id, "重命名后的定时运行".to_string())
+            .expect("rename");
+        assert_eq!(
+            store.load(&id).expect("reload").metadata.title,
+            "重命名后的定时运行"
+        );
 
-    // 删除不允许绕过 automation 联动直删。
-    let delete_error = store
-        .delete(&id)
-        .expect_err("scheduled sessions must not be deleted as ordinary chats");
-    assert!(
-        delete_error
-            .to_string()
-            .contains("deleted through their automation")
-    );
+        // set_session_pinned 路径：共用置顶表。
+        store.set_pinned(&id, true).expect("pin");
+        assert!(store.is_pinned(&id));
+        assert!(store.pinned_at(&id).is_some());
 
-    drop(store);
-    match previous {
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-    }
-    let _ = std::fs::remove_dir_all(root);
+        // set_session_archived 路径：共用收起表,且归档列表能列出 sched-* 会话。
+        store.set_hidden(&id, true).expect("archive");
+        assert!(store.is_hidden(&id));
+        assert!(
+            store
+                .list_scheduled()
+                .expect("list scheduled")
+                .iter()
+                .any(|metadata| metadata.id == id)
+        );
+        // 收起会强制取消置顶(与普通会话一致)。
+        assert!(!store.is_pinned(&id));
+        store.set_hidden(&id, false).expect("restore");
+        assert!(!store.is_hidden(&id));
+
+        // 删除不允许绕过 automation 联动直删。
+        let delete_error = store
+            .delete(&id)
+            .expect_err("scheduled sessions must not be deleted as ordinary chats");
+        assert!(
+            delete_error
+                .to_string()
+                .contains("deleted through their automation")
+        );
+
+        drop(store);
+    });
 }
 
 #[test]
 fn ordinary_ledger_root_behavior_is_unchanged() {
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let root = std::env::temp_dir().join(format!(
-        "pinvou3-chat-workspace-test-{}",
-        std::process::id()
-    ));
-    let previous = std::env::var("PINVOU3_HOME").ok();
-    let _ = std::fs::remove_dir_all(&root);
-    // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-    unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-    let store = SessionStore::boot().expect("session store");
-    let chat = store
-        .create_new(
-            "chat-model".to_string(),
-            None,
-            root.join("legacy-metadata-workspace"),
-        )
-        .expect("ordinary chat");
-    let expected = crate::platform::paths::session_workspace_dir(&chat.metadata.id);
+    crate::platform::test_support::with_temp_home("ordinary-ledger", || {
+        let root = crate::platform::paths::pinvou3_home();
+        let store = SessionStore::boot().expect("session store");
+        let chat = store
+            .create_new(
+                "chat-model".to_string(),
+                None,
+                root.join("legacy-metadata-workspace"),
+            )
+            .expect("ordinary chat");
+        let expected = crate::platform::paths::session_workspace_dir(&chat.metadata.id);
 
-    assert_eq!(
-        store
-            .ledger_root(&chat.metadata.id)
-            .expect("ordinary ledger root"),
-        expected
-    );
-    assert_eq!(
-        resolve_artifact_path("report.md", Some(&chat.metadata.id), &store)
-            .expect("ordinary artifact workspace"),
-        expected.join("report.md").to_string_lossy().into_owned()
-    );
+        assert_eq!(
+            store
+                .ledger_root(&chat.metadata.id)
+                .expect("ordinary ledger root"),
+            expected
+        );
+        assert_eq!(
+            resolve_artifact_path("report.md", Some(&chat.metadata.id), &store)
+                .expect("ordinary artifact workspace"),
+            expected.join("report.md").to_string_lossy().into_owned()
+        );
 
-    drop(store);
-    match previous {
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-    }
-    let _ = std::fs::remove_dir_all(root);
+        drop(store);
+    });
 }
 
 /// merge_resolutions 锁住实测 bug:勾选写进 sidecar 的 resolution 不能被后续不含
@@ -1764,94 +1589,56 @@ fn user_clicked_external_urls_allow_http_https_only() {
 /// 扩 EXTERNAL_URL_ALLOWLIST 必须加测试:目标域名放行,仿冒/非 https 拒绝。
 #[test]
 fn external_allowlist_allows_known_targets_rejects_lookalikes() {
-    assert!(url_in_external_allowlist("https://obsidian.md/download"));
-    assert!(url_in_external_allowlist("https://metaso.cn/"));
-    assert!(url_in_external_allowlist(
-        "https://console.amap.com/dev/key/app"
-    ));
-    assert!(url_in_external_allowlist(
-        "https://ima.qq.com/agent-interface"
-    ));
-    assert!(!url_in_external_allowlist(
-        "https://open.chineselaw.com/oauth/authorize"
-    ));
-    assert!(!url_in_external_allowlist(
-        "https://passport.legalmind.cn/ssologin?appId=apiplatform"
-    ));
-    assert!(url_in_external_allowlist(
-        "https://open.zhihuiya.com/dashboard/api-keys"
-    ));
-    assert!(url_in_external_allowlist(
-        "https://www.canva.cn/api/action?token=abc"
-    ));
-    assert!(url_in_external_allowlist(
-        "https://export-download.canva.cn/example/preview.png"
-    ));
-    assert!(url_in_external_allowlist(
-        "https://meeting.tencent.com/qrcode-login.html?code=abc"
-    ));
-    assert!(url_in_external_allowlist(
-        "https://docs.qq.com/scenario/open-claw.html?nlc=1"
-    ));
-    // WeCom scan-to-authorize page (wecom-cli auth init landing page)
-    assert!(url_in_external_allowlist(
-        "https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&scode=abc"
-    ));
-    assert!(url_in_external_allowlist(
-        "https://work.weixin.qq.com/ai/qc/c?s=abc&for_native=true"
-    ));
-    // DingTalk device authorization login page (printed by `dws auth login --device`, carries user_code)
-    assert!(url_in_external_allowlist(
-        "https://login.dingtalk.com/device?user_code=ABCDEF"
-    ));
-    assert!(url_in_external_allowlist("http://localhost:8080/"));
-    assert!(url_in_external_allowlist("https://127.0.0.1:8443/preview"));
-    assert!(url_in_external_allowlist("http://[::1]:3000/"));
-    assert!(!url_in_external_allowlist("https://obsidian.md.evil.com/"));
-    assert!(!url_in_external_allowlist(
-        "https://console.amap.com.evil.com/dev/key/app"
-    ));
-    assert!(!url_in_external_allowlist("https://ima.qq.com.evil.com/"));
-    assert!(!url_in_external_allowlist(
-        "https://open.zhihuiya.com.evil.com/dashboard/api-keys"
-    ));
-    assert!(!url_in_external_allowlist(
-        "https://www.canva.cn.evil.com/api/action?token=abc"
-    ));
-    assert!(!url_in_external_allowlist(
-        "https://export-download.canva.cn.evil.com/example/preview.png"
-    ));
-    assert!(!url_in_external_allowlist(
-        "https://meeting.tencent.com.evil.com/qrcode-login.html"
-    ));
-    assert!(!url_in_external_allowlist(
-        "https://work.weixin.qq.com.evil.com/ai/qc/gen"
-    ));
-    assert!(!url_in_external_allowlist(
-        "https://login.dingtalk.com.evil.com/device"
-    ));
-    assert!(!url_in_external_allowlist(
-        "https://dingtalk.com.evil.com/device"
-    ));
-    assert!(!url_in_external_allowlist(
-        "https://docs.qq.com.evil.com/scenario/open-claw.html?nlc=1"
-    ));
-    assert!(!url_in_external_allowlist(
-        "https://docs.qq.com.evil.com/openapi/mcp"
-    ));
-    assert!(!url_in_external_allowlist("http://docs.qq.com/"));
-    assert!(!url_in_external_allowlist("http://obsidian.md/"));
-    assert!(!url_in_external_allowlist("http://meeting.tencent.com/"));
-    assert!(!url_in_external_allowlist("http://open.zhihuiya.com/"));
-    assert!(!url_in_external_allowlist(
-        "http://www.canva.cn/api/action?token=abc"
-    ));
-    assert!(!url_in_external_allowlist("https://evil.example.com/"));
-    assert!(!url_in_external_allowlist(
-        "http://localhost.evil.com:8080/"
-    ));
-    assert!(!url_in_external_allowlist("http://192.168.1.10:8080/"));
-    assert!(!url_in_external_allowlist("file://localhost/tmp/demo.html"));
+    let allowed = [
+        "https://obsidian.md/download",
+        "https://metaso.cn/",
+        "https://console.amap.com/dev/key/app",
+        "https://ima.qq.com/agent-interface",
+        "https://open.zhihuiya.com/dashboard/api-keys",
+        "https://www.canva.cn/api/action?token=abc",
+        "https://export-download.canva.cn/example/preview.png",
+        "https://meeting.tencent.com/qrcode-login.html?code=abc",
+        "https://docs.qq.com/scenario/open-claw.html?nlc=1",
+        // WeCom scan-to-authorize page (wecom-cli auth init landing page)
+        "https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&scode=abc",
+        "https://work.weixin.qq.com/ai/qc/c?s=abc&for_native=true",
+        // DingTalk device authorization login page (printed by `dws auth login --device`, carries user_code)
+        "https://login.dingtalk.com/device?user_code=ABCDEF",
+        "http://localhost:8080/",
+        "https://127.0.0.1:8443/preview",
+        "http://[::1]:3000/",
+    ];
+    for url in allowed {
+        assert!(url_in_external_allowlist(url), "must allow {url}");
+    }
+    let rejected = [
+        "https://open.chineselaw.com/oauth/authorize",
+        "https://passport.legalmind.cn/ssologin?appId=apiplatform",
+        "https://obsidian.md.evil.com/",
+        "https://console.amap.com.evil.com/dev/key/app",
+        "https://ima.qq.com.evil.com/",
+        "https://open.zhihuiya.com.evil.com/dashboard/api-keys",
+        "https://www.canva.cn.evil.com/api/action?token=abc",
+        "https://export-download.canva.cn.evil.com/example/preview.png",
+        "https://meeting.tencent.com.evil.com/qrcode-login.html",
+        "https://work.weixin.qq.com.evil.com/ai/qc/gen",
+        "https://login.dingtalk.com.evil.com/device",
+        "https://dingtalk.com.evil.com/device",
+        "https://docs.qq.com.evil.com/scenario/open-claw.html?nlc=1",
+        "https://docs.qq.com.evil.com/openapi/mcp",
+        "http://docs.qq.com/",
+        "http://obsidian.md/",
+        "http://meeting.tencent.com/",
+        "http://open.zhihuiya.com/",
+        "http://www.canva.cn/api/action?token=abc",
+        "https://evil.example.com/",
+        "http://localhost.evil.com:8080/",
+        "http://192.168.1.10:8080/",
+        "file://localhost/tmp/demo.html",
+    ];
+    for url in rejected {
+        assert!(!url_in_external_allowlist(url), "must reject {url}");
+    }
 }
 
 /// detect_obsidian 选库规则:open:true 优先,否则 ts 最大;空/无 vaults → None;容忍 BOM。
@@ -1908,7 +1695,7 @@ fn validate_user_path_blocks_etc_shadow() {
 /// 用临时 png + 临时 workspace,不依赖外部文件,正常跑(非 ignore)。
 #[test]
 fn image_attachment_stages_and_guides_image_analyze() {
-    let tmp = std::env::temp_dir().join(format!("pinvou3-vis-test-{}", std::process::id()));
+    let tmp = mk_test_ws("vis");
     let ws = tmp.join("workspace");
     std::fs::create_dir_all(&ws).expect("建 workspace");
     let src = tmp.join("shot.png");
@@ -1963,7 +1750,7 @@ fn mk_image_attachment(
 /// 路径一致;标记路径只来自暂存结果(不接受前端直给路径)。
 #[test]
 fn native_image_message_builds_marker_lines_in_order() {
-    let tmp = std::env::temp_dir().join(format!("pinvou3-native-test-{}", std::process::id()));
+    let tmp = mk_test_ws("native");
     let ws = tmp.join("workspace");
     std::fs::create_dir_all(&ws).expect("建 workspace");
     let src_a = tmp.join("a.png");
@@ -2027,7 +1814,7 @@ fn native_image_message_builds_marker_lines_in_order() {
 /// Native: 纯图片消息(空文字 + 图片)允许发送,不伪造用户文字(设计 §9.4)。
 #[test]
 fn native_image_message_allows_pure_image() {
-    let tmp = std::env::temp_dir().join(format!("pinvou3-native-pure-{}", std::process::id()));
+    let tmp = mk_test_ws("native-pure");
     let ws = tmp.join("workspace");
     std::fs::create_dir_all(&ws).expect("建 workspace");
     let src = tmp.join("only.png");
@@ -2057,7 +1844,7 @@ fn native_image_message_allows_pure_image() {
 /// Native: 任一图片暂存失败 → 整条消息 Err,不静默降级为纯文本(设计 §10.2)。
 #[test]
 fn native_image_message_stage_failure_is_error_not_silent_text() {
-    let tmp = std::env::temp_dir().join(format!("pinvou3-native-fail-{}", std::process::id()));
+    let tmp = mk_test_ws("native-fail");
     let ws = tmp.join("workspace");
     std::fs::create_dir_all(&ws).expect("建 workspace");
     let missing = tmp.join("missing.png"); // 故意不创建
@@ -2223,36 +2010,37 @@ fn remote_artifact_authorization_stays_on_private_ledger_root() {
     // 红线回归：即使原生代码会话把执行根绑到用户项目目录，远程下载授权根也必须
     // 是会话私有目录——resolve_session_artifact_path 的 workspace_root 来自
     // SessionStore::ledger_root（账本语义），项目内文件不可下载。
-    let _home = test_pinvou_home("pinvou3-remote-authz-test");
-    let store = SessionStore::boot().expect("session store");
-    let chat = store
-        .create_new("remote-authz-test".to_string(), None, std::env::temp_dir())
-        .expect("chat session");
-    let sid = chat.metadata.id.clone();
-    let ledger = store.ledger_root(&sid).expect("ledger workspace");
-    std::fs::create_dir_all(&ledger).expect("ledger dir");
-    std::fs::write(ledger.join("ok.txt"), "ok").expect("ledger file");
+    crate::platform::test_support::with_temp_home("pinvou3-remote-authz-test", || {
+        let store = SessionStore::boot().expect("session store");
+        let chat = store
+            .create_new("remote-authz-test".to_string(), None, std::env::temp_dir())
+            .expect("chat session");
+        let sid = chat.metadata.id.clone();
+        let ledger = store.ledger_root(&sid).expect("ledger workspace");
+        std::fs::create_dir_all(&ledger).expect("ledger dir");
+        std::fs::write(ledger.join("ok.txt"), "ok").expect("ledger file");
 
-    let project = mk_test_ws("remote-authz-project");
-    let outside = project.join("secret.txt");
-    std::fs::write(&outside, "secret").expect("project file");
+        let project = mk_test_ws("remote-authz-project");
+        let outside = project.join("secret.txt");
+        std::fs::write(&outside, "secret").expect("project file");
 
-    crate::features::remote_control::file_access::resolve_session_artifact_path(
-        &store, &sid, "ok.txt",
-    )
-    .expect("账本根内的文件必须可下载");
-    assert!(
         crate::features::remote_control::file_access::resolve_session_artifact_path(
-            &store,
-            &sid,
-            outside.to_str().expect("utf8 path"),
+            &store, &sid, "ok.txt",
         )
-        .is_err(),
-        "项目目录（执行根）内的文件不得经远程通道下载"
-    );
+        .expect("账本根内的文件必须可下载");
+        assert!(
+            crate::features::remote_control::file_access::resolve_session_artifact_path(
+                &store,
+                &sid,
+                outside.to_str().expect("utf8 path"),
+            )
+            .is_err(),
+            "项目目录（执行根）内的文件不得经远程通道下载"
+        );
 
-    let _ = store.delete(&sid);
-    let _ = std::fs::remove_dir_all(&project);
+        let _ = store.delete(&sid);
+        let _ = std::fs::remove_dir_all(&project);
+    });
 }
 
 #[test]
@@ -2453,8 +2241,7 @@ fn atomic_staging_keeps_legal_image_and_text_behavior() {
 
 #[test]
 fn remote_attachment_source_survives_upload_temp_cleanup() {
-    let root =
-        std::env::temp_dir().join(format!("pinvou3-remote-source-test-{}", std::process::id()));
+    let root = mk_test_ws("remote-source");
     let workspace = root.join("workspace");
     std::fs::create_dir_all(&workspace).expect("create workspace");
 
@@ -2514,9 +2301,11 @@ fn post_reservation_failure_never_unlinks_the_current_path() {
         "failure must leave the exclusively-created orphan instead of unlinking by path"
     );
 
+    // Second scenario on a fresh workspace: the writer swaps the reserved
+    // path out for a replacement before failing. The injection and the
+    // content assert are unconditional — gating them on the injection having
+    // run would silently skip the pin if the rename ever failed.
     let replacement_workspace = mk_test_ws("post-reserve-replacement");
-    let replacement_survived = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let replacement_flag = replacement_survived.clone();
     let result = stage_text_in_workspace_with_writer(
         "report.md",
         "txt",
@@ -2524,21 +2313,17 @@ fn post_reservation_failure_never_unlinks_the_current_path() {
         "attachments",
         move |_destination, path| {
             let orphan = path.with_extension("reserved-orphan");
-            if std::fs::rename(path, &orphan).is_ok() {
-                std::fs::write(path, "replacement").expect("install replacement");
-                replacement_flag.store(true, std::sync::atomic::Ordering::Release);
-            }
+            std::fs::rename(path, &orphan).expect("install the replacement");
+            std::fs::write(path, "replacement").expect("install the replacement");
             Err(std::io::Error::other("injected after path replacement"))
         },
     );
     assert!(result.is_none());
-    if replacement_survived.load(std::sync::atomic::Ordering::Acquire) {
-        assert_eq!(
-            std::fs::read_to_string(replacement_workspace.join("attachments/report.txt"))
-                .expect("replacement remains"),
-            "replacement"
-        );
-    }
+    assert_eq!(
+        std::fs::read_to_string(replacement_workspace.join("attachments/report.txt"))
+            .expect("replacement remains"),
+        "replacement"
+    );
 
     let _ = std::fs::remove_dir_all(workspace);
     let _ = std::fs::remove_dir_all(replacement_workspace);
@@ -2699,48 +2484,6 @@ fn e2e_build_llm_cases() {
 // fast offline.
 // ---------------------------------------------------------------------------
 
-/// Writes the yuandian-mcp fixture with `validate_on_install` enabled so the
-/// install's validation leg actually runs (and fails fast on the bad URL).
-fn write_test_validating_marketplace_files(server_name: &str) {
-    let manifest = serde_json::json!({
-        "id": "yuandian-mcp",
-        "name": "华宇元典法律数据",
-        "description": "test",
-        "version": "1.0.0",
-        "icon": "BookOpen",
-        "category": "kb",
-        "validate_on_install": true,
-        "mcp_tools": [],
-        "command": "",
-        "args": [],
-        "servers": [{
-            "name": server_name,
-            "url": "not-a-url",
-            "scopes": ["legal"],
-            "oauth": { "client_id": "test-client" }
-        }]
-    });
-    write_json(
-        &crate::features::marketplace::mcp_catalog::package_mcp_dir("yuandian-mcp")
-            .join("manifest.json"),
-        manifest,
-    );
-    write_json(
-        &crate::platform::paths::pinvou3_home()
-            .join("marketplace")
-            .join("installed.json"),
-        serde_json::json!(["yuandian-mcp"]),
-    );
-    write_json(
-        &crate::platform::paths::mcp_config_path(),
-        serde_json::json!({ "servers": { server_name: {
-            "url": "not-a-url",
-            "scopes": ["legal"],
-            "oauth": { "client_id": "test-client" }
-        } } }),
-    );
-}
-
 fn disabled_file_ids() -> (Vec<String>, Vec<String>, Vec<String>) {
     let file = crate::features::marketplace::scope::load_disabled_bundles_file();
     (
@@ -2767,83 +2510,94 @@ fn disabled_file_ledger() -> Vec<String> {
 /// pack ends up neither installed nor consent-stranded. Fails if the
 /// teardown is dropped from the rollback path (round-32 minor 2: the pin
 /// now reads all four sets the teardown clears, ledger included).
-#[tokio::test]
-async fn install_validation_failure_rollback_leaves_no_consent_rows() {
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let _home = TempPinvou3Home::new("install-validation-rollback");
-    write_test_validating_marketplace_files("yuandian-rollback-test");
-    // The bundles.json mirror record a real install commits alongside the
-    // installed.json entry: the rollback uninstall's in-lock consent strip
-    // (`strip_uninstalled_scope_state`) is gated on removing THIS record, so
-    // without it the rollback would be vacuous at the mirror level and the
-    // seeded consent rows below would strand — the pin would hold only via
-    // the removed post-return strip instead of the in-lock teardown it
-    // exists to pin.
-    crate::features::marketplace::store::plant_installed_record(
-        "yuandian-mcp",
-        crate::features::marketplace::store::BundleSource::Preset,
-    );
+#[test]
+fn install_validation_failure_rollback_leaves_no_consent_rows() {
+    crate::platform::test_support::with_temp_home("install-validation-rollback", || {
+        write_test_marketplace_files(
+            "yuandian-rollback-test",
+            serde_json::json!({
+                "url": "not-a-url",
+                "scopes": ["legal"],
+                "oauth": { "client_id": "test-client" }
+            }),
+            true,
+        );
+        // The bundles.json mirror record a real install commits alongside the
+        // installed.json entry: the rollback uninstall's in-lock consent strip
+        // (`strip_uninstalled_scope_state`) is gated on removing THIS record, so
+        // without it the rollback would be vacuous at the mirror level and the
+        // seeded consent rows below would strand — the pin would hold only via
+        // the removed post-return strip instead of the in-lock teardown it
+        // exists to pin.
+        crate::features::marketplace::store::plant_installed_record(
+            "yuandian-mcp",
+            crate::features::marketplace::store::BundleSource::Preset,
+        );
 
-    // Seed consent rows exactly where the pre-validation sync writes them:
-    // `save_disabled_bundles_for` initializes both scopes with the pack
-    // stored-off (the same store, rows and teardown the sync/rollback pair
-    // exercises).
-    crate::features::marketplace::scope::save_disabled_bundles_for(
-        crate::features::marketplace::ConnectorScope::Plain,
-        &["yuandian-mcp".to_string()],
-    )
-    .unwrap();
-    crate::features::marketplace::scope::save_disabled_bundles_for(
-        crate::features::marketplace::ConnectorScope::Code,
-        &["yuandian-mcp".to_string()],
-    )
-    .unwrap();
-    let (dis, _hid, _def) = disabled_file_ids();
-    assert!(
-        dis.contains(&"yuandian-mcp".to_string()),
-        "fixture precondition: the pack is stored-off before the rollback"
-    );
+        // Seed consent rows exactly where the pre-validation sync writes them:
+        // `save_disabled_bundles_for` initializes both scopes with the pack
+        // stored-off (the same store, rows and teardown the sync/rollback pair
+        // exercises).
+        crate::features::marketplace::scope::save_disabled_bundles_for(
+            crate::features::marketplace::ConnectorScope::Plain,
+            &["yuandian-mcp".to_string()],
+        )
+        .unwrap();
+        crate::features::marketplace::scope::save_disabled_bundles_for(
+            crate::features::marketplace::ConnectorScope::Code,
+            &["yuandian-mcp".to_string()],
+        )
+        .unwrap();
+        let (dis, _hid, _def) = disabled_file_ids();
+        assert!(
+            dis.contains(&"yuandian-mcp".to_string()),
+            "fixture precondition: the pack is stored-off before the rollback"
+        );
 
-    let err = install_marketplace_tool_post_install("yuandian-mcp".to_string())
-        .await
-        .unwrap_err();
-    assert!(
-        !err.contains("installed, but persisting their default-off consent state failed"),
-        "the failure is the validation leg, not the consent-sync leg: {err}"
-    );
+        let err = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(install_marketplace_tool_post_install(
+                "yuandian-mcp".to_string(),
+            ))
+            .unwrap_err();
+        assert!(
+            !err.contains("installed, but persisting their default-off consent state failed"),
+            "the failure is the validation leg, not the consent-sync leg: {err}"
+        );
 
-    // The rollback uninstall consumed the install...
-    assert!(
-        !crate::features::marketplace::MarketplaceManager::new()
-            .installed_ids()
-            .contains(&"yuandian-mcp".to_string()),
-        "the failed validation must roll the pack back out of installed.json"
-    );
-    // ...and its teardown must leave no consent rows or markers behind.
-    let (dis, hid, def) = disabled_file_ids();
-    assert!(
-        !dis.contains(&"yuandian-mcp".to_string()),
-        "rollback teardown must remove the disabled rows the sync wrote: {dis:?}"
-    );
-    assert!(
-        !hid.contains(&"yuandian-mcp".to_string()),
-        "rollback teardown must remove hidden rows too: {hid:?}"
-    );
-    assert!(
-        !def.contains(&"yuandian-mcp".to_string()),
-        "rollback teardown must remove install-default markers too: {def:?}"
-    );
-    // Round-32 minor 2 (review #455): the ledger is the fourth set the exact
-    // teardown clears — a stranded `plain:yuandian-mcp` entry would keep the
-    // startup refresh from ever re-syncing default-off for a same-id
-    // reinstall.
-    let ledger = disabled_file_ledger();
-    assert!(
-        ledger.iter().all(|entry| !entry.ends_with(":yuandian-mcp")),
-        "rollback teardown must clear the pack's ledger entries too: {ledger:?}"
-    );
+        // The rollback uninstall consumed the install...
+        assert!(
+            !crate::features::marketplace::MarketplaceManager::new()
+                .installed_ids()
+                .contains(&"yuandian-mcp".to_string()),
+            "the failed validation must roll the pack back out of installed.json"
+        );
+        // ...and its teardown must leave no consent rows or markers behind.
+        let (dis, hid, def) = disabled_file_ids();
+        assert!(
+            !dis.contains(&"yuandian-mcp".to_string()),
+            "rollback teardown must remove the disabled rows the sync wrote: {dis:?}"
+        );
+        assert!(
+            !hid.contains(&"yuandian-mcp".to_string()),
+            "rollback teardown must remove hidden rows too: {hid:?}"
+        );
+        assert!(
+            !def.contains(&"yuandian-mcp".to_string()),
+            "rollback teardown must remove install-default markers too: {def:?}"
+        );
+        // Round-32 minor 2 (review #455): the ledger is the fourth set the exact
+        // teardown clears — a stranded `plain:yuandian-mcp` entry would keep the
+        // startup refresh from ever re-syncing default-off for a same-id
+        // reinstall.
+        let ledger = disabled_file_ledger();
+        assert!(
+            ledger.iter().all(|entry| !entry.ends_with(":yuandian-mcp")),
+            "rollback teardown must clear the pack's ledger entries too: {ledger:?}"
+        );
+    });
 }
 
 /// Pin 2: a consent-sync persist failure fails the install with the honest
@@ -2852,55 +2606,66 @@ async fn install_validation_failure_rollback_leaves_no_consent_rows() {
 /// Order-sensitive: under the pre-round-21 ordering (validation first) the
 /// bad URL would produce the validation error instead, so this pin also
 /// guards the sync-before-validation reorder itself.
-#[tokio::test]
-async fn install_consent_sync_persist_failure_is_honest_and_keeps_pack() {
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let _home = TempPinvou3Home::new("install-sync-persist-fail");
-    write_test_validating_marketplace_files("yuandian-syncfail-test");
-    // Pre-warm the store so the first-boot freeze persist (inside the sync's
-    // read path) consumes nothing — the failpoint must be consumed by the
-    // sync's own write. The freeze's own failure mode is already memoized
-    // in-process (round-11 M4), which is exactly what the pre-warm settles.
-    let _ = crate::features::marketplace::scope::load_disabled_bundles_file();
-    let _failpoint =
-        crate::features::marketplace::scope::fail_next_disabled_bundles_write_for_test();
+#[test]
+fn install_consent_sync_persist_failure_is_honest_and_keeps_pack() {
+    crate::platform::test_support::with_temp_home("install-sync-persist-fail", || {
+        write_test_marketplace_files(
+            "yuandian-syncfail-test",
+            serde_json::json!({
+                "url": "not-a-url",
+                "scopes": ["legal"],
+                "oauth": { "client_id": "test-client" }
+            }),
+            true,
+        );
+        // Pre-warm the store so the first-boot freeze persist (inside the sync's
+        // read path) consumes nothing — the failpoint must be consumed by the
+        // sync's own write. The freeze's own failure mode is already memoized
+        // in-process (round-11 M4), which is exactly what the pre-warm settles.
+        let _ = crate::features::marketplace::scope::load_disabled_bundles_file();
+        let _failpoint =
+            crate::features::marketplace::scope::fail_next_disabled_bundles_write_for_test();
 
-    let err = install_marketplace_tool_post_install("yuandian-mcp".to_string())
-        .await
-        .unwrap_err();
-    assert!(
-        err.contains("installed, but persisting their default-off consent state failed"),
-        "the consent-sync persist failure must surface the honest sibling copy: {err}"
-    );
+        let err = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(install_marketplace_tool_post_install(
+                "yuandian-mcp".to_string(),
+            ))
+            .unwrap_err();
+        assert!(
+            err.contains("installed, but persisting their default-off consent state failed"),
+            "the consent-sync persist failure must surface the honest sibling copy: {err}"
+        );
 
-    // No rollback runs on this arm: the pack stays installed and registered.
-    assert!(
-        crate::features::marketplace::MarketplaceManager::new()
-            .installed_ids()
-            .contains(&"yuandian-mcp".to_string()),
-        "the pack must stay in installed.json — the honest copy says so"
-    );
-    let mcp: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(crate::platform::paths::mcp_config_path()).unwrap(),
-    )
-    .unwrap();
-    assert!(
-        mcp["servers"].get("yuandian-syncfail-test").is_some(),
-        "the mcp.json server must survive the consent-sync failure"
-    );
-    // And the failed write persisted nothing — ledger included (round-32
-    // minor 2).
-    let (dis, hid, def) = disabled_file_ids();
-    assert!(
-        dis.is_empty() && hid.is_empty() && def.is_empty(),
-        "a failed consent persist must not strand rows: {dis:?} {hid:?} {def:?}"
-    );
-    assert!(
-        disabled_file_ledger().is_empty(),
-        "a failed consent persist must not strand ledger entries either"
-    );
+        // No rollback runs on this arm: the pack stays installed and registered.
+        assert!(
+            crate::features::marketplace::MarketplaceManager::new()
+                .installed_ids()
+                .contains(&"yuandian-mcp".to_string()),
+            "the pack must stay in installed.json — the honest copy says so"
+        );
+        let mcp: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(crate::platform::paths::mcp_config_path()).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            mcp["servers"].get("yuandian-syncfail-test").is_some(),
+            "the mcp.json server must survive the consent-sync failure"
+        );
+        // And the failed write persisted nothing — ledger included (round-32
+        // minor 2).
+        let (dis, hid, def) = disabled_file_ids();
+        assert!(
+            dis.is_empty() && hid.is_empty() && def.is_empty(),
+            "a failed consent persist must not strand rows: {dis:?} {hid:?} {def:?}"
+        );
+        assert!(
+            disabled_file_ledger().is_empty(),
+            "a failed consent persist must not strand ledger entries either"
+        );
+    });
 }
 
 // ---- model deletion ordering (delete_model saves prefs before the keyring) ----
@@ -2938,148 +2703,138 @@ fn seed_model_deletion_prefs(models: &[SavedModel]) {
 
 #[test]
 fn delete_model_persists_prefs_before_touching_the_keyring() {
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let _home = TempPinvou3Home::new("delete-model-order");
-    seed_model_deletion_prefs(&[
-        model_deletion_test_model("m-keep", false),
-        model_deletion_test_model("m-drop", true),
-    ]);
-    let store = crate::platform::credential_store::RecordingCredentialStore::new();
-    store.fail_delete();
+    crate::platform::test_support::with_temp_home("delete-model-order", || {
+        seed_model_deletion_prefs(&[
+            model_deletion_test_model("m-keep", false),
+            model_deletion_test_model("m-drop", true),
+        ]);
+        let store = crate::platform::credential_store::RecordingCredentialStore::new();
+        store.fail_delete();
 
-    // With the keyring delete failing, Ok + a persisted removal is only
-    // reachable when the prefs save commits BEFORE the delete attempt: the
-    // reverted ordering (delete first) would have failed the command and
-    // left the model in place.
-    super::settings::delete_model_inner("m-drop", &store).expect("delete must succeed");
+        // With the keyring delete failing, Ok + a persisted removal is only
+        // reachable when the prefs save commits BEFORE the delete attempt: the
+        // reverted ordering (delete first) would have failed the command and
+        // left the model in place.
+        super::settings::delete_model_inner("m-drop", &store).expect("delete must succeed");
 
-    let prefs = UserPrefs::load();
-    assert!(
-        prefs.model_by_id("m-drop").is_none(),
-        "the model must be removed from the persisted prefs"
-    );
-    assert!(prefs.model_by_id("m-keep").is_some());
-    let ops = store.ops();
-    assert_eq!(ops.len(), 1, "exactly one keyring call: {ops:?}");
-    assert!(
-        ops[0].starts_with("delete:"),
-        "the keyring delete must be attempted for the removed model: {ops:?}"
-    );
+        let prefs = UserPrefs::load();
+        assert!(
+            prefs.model_by_id("m-drop").is_none(),
+            "the model must be removed from the persisted prefs"
+        );
+        assert!(prefs.model_by_id("m-keep").is_some());
+        let ops = store.ops();
+        assert_eq!(ops.len(), 1, "exactly one keyring call: {ops:?}");
+        assert!(
+            ops[0].starts_with("delete:"),
+            "the keyring delete must be attempted for the removed model: {ops:?}"
+        );
+    });
 }
 
 #[test]
 fn delete_model_keyring_success_removes_the_secret() {
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let _home = TempPinvou3Home::new("delete-model-ok");
-    seed_model_deletion_prefs(&[
-        model_deletion_test_model("m-keep", false),
-        model_deletion_test_model("m-drop", true),
-    ]);
-    let store = crate::platform::credential_store::RecordingCredentialStore::new();
+    crate::platform::test_support::with_temp_home("delete-model-ok", || {
+        seed_model_deletion_prefs(&[
+            model_deletion_test_model("m-keep", false),
+            model_deletion_test_model("m-drop", true),
+        ]);
+        let store = crate::platform::credential_store::RecordingCredentialStore::new();
 
-    super::settings::delete_model_inner("m-drop", &store).expect("delete must succeed");
+        super::settings::delete_model_inner("m-drop", &store).expect("delete must succeed");
 
-    assert_eq!(
-        store.ops(),
-        vec!["delete:pinvou3-model-api-key:model:m-drop".to_string()],
-        "the deferred keyring delete must target the removed model's credential"
-    );
-    assert!(UserPrefs::load().model_by_id("m-drop").is_none());
+        assert_eq!(
+            store.ops(),
+            vec!["delete:pinvou3-model-api-key:model:m-drop".to_string()],
+            "the deferred keyring delete must target the removed model's credential"
+        );
+        assert!(UserPrefs::load().model_by_id("m-drop").is_none());
+    });
 }
 
 #[test]
 fn delete_model_rejects_the_last_model_without_touching_the_keyring() {
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let _home = TempPinvou3Home::new("delete-model-last");
-    seed_model_deletion_prefs(&[model_deletion_test_model("m-only", true)]);
-    let store = crate::platform::credential_store::RecordingCredentialStore::new();
+    crate::platform::test_support::with_temp_home("delete-model-last", || {
+        seed_model_deletion_prefs(&[model_deletion_test_model("m-only", true)]);
+        let store = crate::platform::credential_store::RecordingCredentialStore::new();
 
-    let error = super::settings::delete_model_inner("m-only", &store)
-        .expect_err("the last model must not be deletable");
+        let error = super::settings::delete_model_inner("m-only", &store)
+            .expect_err("the last model must not be deletable");
 
-    assert!(error.contains("delete_model"));
-    assert!(
-        store.ops().is_empty(),
-        "a rejected deletion must not reach the keyring: {:?}",
-        store.ops()
-    );
-    assert!(UserPrefs::load().model_by_id("m-only").is_some());
+        assert!(error.contains("delete_model"));
+        assert!(
+            store.ops().is_empty(),
+            "a rejected deletion must not reach the keyring: {:?}",
+            store.ops()
+        );
+        assert!(UserPrefs::load().model_by_id("m-only").is_some());
+    });
 }
 
 #[test]
 fn save_model_delete_action_defers_the_keyring_delete() {
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let _home = TempPinvou3Home::new("save-model-defer");
-    let mut model = model_deletion_test_model("m-edit", true);
-    model.credential_action = Some(CredentialEditAction::Delete);
-    let store = crate::platform::credential_store::RecordingCredentialStore::new();
+    crate::platform::test_support::with_temp_home("save-model-defer", || {
+        let mut model = model_deletion_test_model("m-edit", true);
+        model.credential_action = Some(CredentialEditAction::Delete);
+        let store = crate::platform::credential_store::RecordingCredentialStore::new();
 
-    let (model, deferred) = super::settings::apply_model_credential(model, None, &store)
-        .expect("the delete action must not fail");
+        let (model, deferred) = super::settings::apply_model_credential(model, None, &store)
+            .expect("the delete action must not fail");
 
-    assert!(
-        deferred.is_some(),
-        "the delete action must return a deferred credential delete"
-    );
-    assert_eq!(
-        model.credential_state,
-        CredentialState::Missing,
-        "the saved record must carry the missing state"
-    );
-    assert!(
-        store.ops().is_empty(),
-        "no keyring call may run before the prefs save committed: {:?}",
-        store.ops()
-    );
+        assert!(
+            deferred.is_some(),
+            "the delete action must return a deferred credential delete"
+        );
+        assert_eq!(
+            model.credential_state,
+            CredentialState::Missing,
+            "the saved record must carry the missing state"
+        );
+        assert!(
+            store.ops().is_empty(),
+            "no keyring call may run before the prefs save committed: {:?}",
+            store.ops()
+        );
+    });
 }
 
 #[test]
 fn save_model_inner_commits_prefs_before_the_deferred_delete() {
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let _home = TempPinvou3Home::new("save-model-order");
-    seed_model_deletion_prefs(&[
-        model_deletion_test_model("m-keep", false),
-        model_deletion_test_model("m-edit", true),
-    ]);
-    let mut model = model_deletion_test_model("m-edit", true);
-    model.credential_action = Some(CredentialEditAction::Delete);
-    let store = crate::platform::credential_store::RecordingCredentialStore::new();
-    store.fail_delete();
+    crate::platform::test_support::with_temp_home("save-model-order", || {
+        seed_model_deletion_prefs(&[
+            model_deletion_test_model("m-keep", false),
+            model_deletion_test_model("m-edit", true),
+        ]);
+        let mut model = model_deletion_test_model("m-edit", true);
+        model.credential_action = Some(CredentialEditAction::Delete);
+        let store = crate::platform::credential_store::RecordingCredentialStore::new();
+        store.fail_delete();
 
-    // With the keyring delete failing, Ok + a committed Missing edit is only
-    // reachable when the prefs save landed BEFORE the delete attempt: a
-    // delete-inside-the-transaction ordering would have failed the command
-    // and left the stale credential reference in place.
-    super::settings::save_model_inner(model, &store).expect("the save must succeed");
+        // With the keyring delete failing, Ok + a committed Missing edit is only
+        // reachable when the prefs save landed BEFORE the delete attempt: a
+        // delete-inside-the-transaction ordering would have failed the command
+        // and left the stale credential reference in place.
+        super::settings::save_model_inner(model, &store).expect("the save must succeed");
 
-    let prefs = UserPrefs::load();
-    let saved = prefs
-        .model_by_id("m-edit")
-        .expect("the edited model must stay in prefs");
-    assert_eq!(
-        saved.credential_state,
-        CredentialState::Missing,
-        "the delete edit must persist the missing state"
-    );
-    assert!(
-        saved.credential_ref.is_none(),
-        "the cleared reference must not survive in prefs"
-    );
-    assert_eq!(
-        store.ops(),
-        vec!["delete:pinvou3-model-api-key:model:m-edit".to_string()],
-        "exactly one deferred keyring delete, attempted after the commit"
-    );
+        let prefs = UserPrefs::load();
+        let saved = prefs
+            .model_by_id("m-edit")
+            .expect("the edited model must stay in prefs");
+        assert_eq!(
+            saved.credential_state,
+            CredentialState::Missing,
+            "the delete edit must persist the missing state"
+        );
+        assert!(
+            saved.credential_ref.is_none(),
+            "the cleared reference must not survive in prefs"
+        );
+        assert_eq!(
+            store.ops(),
+            vec!["delete:pinvou3-model-api-key:model:m-edit".to_string()],
+            "exactly one deferred keyring delete, attempted after the commit"
+        );
+    });
 }
 
 // ---- search credential deletion ordering (search settings save commits before the keyring) ----
@@ -3118,77 +2873,74 @@ fn seed_search_deletion_prefs() {
 
 #[test]
 fn persist_search_settings_commits_before_the_deferred_keyring_delete() {
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let _home = TempPinvou3Home::new("search-delete-order");
-    seed_search_deletion_prefs();
-    let search = search_deletion_payload(Some(CredentialEditAction::Delete));
-    let store = crate::platform::credential_store::RecordingCredentialStore::new();
-    store.fail_delete();
+    crate::platform::test_support::with_temp_home("search-delete-order", || {
+        seed_search_deletion_prefs();
+        let search = search_deletion_payload(Some(CredentialEditAction::Delete));
+        let store = crate::platform::credential_store::RecordingCredentialStore::new();
+        store.fail_delete();
 
-    // With the keyring delete failing, Ok + a committed removal is only
-    // reachable when the prefs save landed BEFORE the delete attempt: the
-    // reverted ordering runs the delete inside the transaction, where its
-    // failure aborts the save (and records the keyring op).
-    super::settings::persist_search_settings_inner(search, &store).expect("the save must succeed");
+        // With the keyring delete failing, Ok + a committed removal is only
+        // reachable when the prefs save landed BEFORE the delete attempt: the
+        // reverted ordering runs the delete inside the transaction, where its
+        // failure aborts the save (and records the keyring op).
+        super::settings::persist_search_settings_inner(search, &store)
+            .expect("the save must succeed");
 
-    let prefs = UserPrefs::load();
-    let credential = prefs.search.credentials.get(&SearchProvider::Tavily);
-    // SearchPrefs::normalize retains out the secretless/refless entry, so
-    // absence on disk is what a committed delete must produce.
-    assert!(
-        credential.is_none(),
-        "the deleted credential must not survive in prefs: {:?}",
-        credential
-    );
-    assert_eq!(
-        store.ops(),
-        vec!["delete:pinvou3-search-api-key:search:tavily".to_string()],
-        "exactly one deferred keyring delete, attempted after the commit"
-    );
+        let prefs = UserPrefs::load();
+        let credential = prefs.search.credentials.get(&SearchProvider::Tavily);
+        // SearchPrefs::normalize retains out the secretless/refless entry, so
+        // absence on disk is what a committed delete must produce.
+        assert!(
+            credential.is_none(),
+            "the deleted credential must not survive in prefs: {:?}",
+            credential
+        );
+        assert_eq!(
+            store.ops(),
+            vec!["delete:pinvou3-search-api-key:search:tavily".to_string()],
+            "exactly one deferred keyring delete, attempted after the commit"
+        );
+    });
 }
 
 #[test]
 fn persist_search_settings_failure_leaves_the_deferred_delete_unrun() {
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let _home = TempPinvou3Home::new("search-delete-abort");
-    seed_search_deletion_prefs();
-    let mut search = search_deletion_payload(Some(CredentialEditAction::Delete));
-    search.credentials.insert(
-        SearchProvider::Bocha,
-        SearchCredential {
-            api_key: "sk-test-secret-1234567890".to_string(),
-            credential_action: Some(CredentialEditAction::Replace),
-            ..Default::default()
-        },
-    );
-    let store = crate::platform::credential_store::RecordingCredentialStore::new();
-    store.fail_set();
+    crate::platform::test_support::with_temp_home("search-delete-abort", || {
+        seed_search_deletion_prefs();
+        let mut search = search_deletion_payload(Some(CredentialEditAction::Delete));
+        search.credentials.insert(
+            SearchProvider::Bocha,
+            SearchCredential {
+                api_key: "sk-test-secret-1234567890".to_string(),
+                credential_action: Some(CredentialEditAction::Replace),
+                ..Default::default()
+            },
+        );
+        let store = crate::platform::credential_store::RecordingCredentialStore::new();
+        store.fail_set();
 
-    // A sibling provider's keyring set failure aborts the whole transaction;
-    // the already-captured Tavily delete must stay unrun, or Tavily would be
-    // left configured-but-secretless on disk.
-    let error = super::settings::persist_search_settings_inner(search, &store)
-        .expect_err("the failing sibling set must fail the save");
+        // A sibling provider's keyring set failure aborts the whole transaction;
+        // the already-captured Tavily delete must stay unrun, or Tavily would be
+        // left configured-but-secretless on disk.
+        let error = super::settings::persist_search_settings_inner(search, &store)
+            .expect_err("the failing sibling set must fail the save");
 
-    assert!(error.contains("credential store unavailable"), "{error}");
-    assert_eq!(
-        store.ops(),
-        vec!["set:pinvou3-search-api-key:search:bocha=sk-test-secret-1234567890".to_string()],
-        "the aborted save must record only the failed sibling set, no keyring delete: {:?}",
-        store.ops()
-    );
-    let prefs = UserPrefs::load();
-    let credential = prefs
-        .search
-        .credentials
-        .get(&SearchProvider::Tavily)
-        .expect("the aborted save must leave the provider configured in prefs");
-    assert_eq!(credential.credential_state, CredentialState::Configured);
-    assert!(credential.has_secret);
+        assert!(error.contains("credential store unavailable"), "{error}");
+        assert_eq!(
+            store.ops(),
+            vec!["set:pinvou3-search-api-key:search:bocha=sk-test-secret-1234567890".to_string()],
+            "the aborted save must record only the failed sibling set, no keyring delete: {:?}",
+            store.ops()
+        );
+        let prefs = UserPrefs::load();
+        let credential = prefs
+            .search
+            .credentials
+            .get(&SearchProvider::Tavily)
+            .expect("the aborted save must leave the provider configured in prefs");
+        assert_eq!(credential.credential_state, CredentialState::Configured);
+        assert!(credential.has_secret);
+    });
 }
 
 // The injection mechanism (read-only PINVOU3_HOME directory) only exists on
@@ -3202,82 +2954,88 @@ fn persist_search_settings_failure_leaves_the_deferred_delete_unrun() {
 #[test]
 fn persist_search_settings_disk_failure_leaves_the_deferred_delete_unrun() {
     use std::os::unix::fs::PermissionsExt as _;
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let home = TempPinvou3Home::new("search-delete-disk-fail");
-    seed_search_deletion_prefs();
-    let search = search_deletion_payload(Some(CredentialEditAction::Delete));
-    let store = crate::platform::credential_store::RecordingCredentialStore::new();
+    crate::platform::test_support::with_temp_home("search-delete-disk-fail", || {
+        seed_search_deletion_prefs();
+        let search = search_deletion_payload(Some(CredentialEditAction::Delete));
+        let store = crate::platform::credential_store::RecordingCredentialStore::new();
 
-    // A read-only PINVOU3_HOME fails the save's disk write AFTER the closure
-    // captured the deferred delete — the one abort direction where the
-    // post-commit hook placement (the hook runs only after save_unlocked
-    // succeeded, no matter that the closure already captured the delete) is
-    // the only thing keeping the keyring delete unrun.
-    std::fs::set_permissions(&home.root, std::fs::Permissions::from_mode(0o555))
+        // A read-only PINVOU3_HOME fails the save's disk write AFTER the closure
+        // captured the deferred delete — the one abort direction where the
+        // post-commit hook placement (the hook runs only after save_unlocked
+        // succeeded, no matter that the closure already captured the delete) is
+        // the only thing keeping the keyring delete unrun.
+        std::fs::set_permissions(
+            crate::platform::paths::pinvou3_home(),
+            std::fs::Permissions::from_mode(0o555),
+        )
         .expect("make PINVOU3_HOME read-only");
-    let error = super::settings::persist_search_settings_inner(search, &store)
-        .expect_err("the failing disk write must fail the save");
-    std::fs::set_permissions(&home.root, std::fs::Permissions::from_mode(0o755))
+        let error = super::settings::persist_search_settings_inner(search, &store)
+            .expect_err("the failing disk write must fail the save");
+        std::fs::set_permissions(
+            crate::platform::paths::pinvou3_home(),
+            std::fs::Permissions::from_mode(0o755),
+        )
         .expect("restore PINVOU3_HOME permissions");
 
-    assert!(error.contains("save settings failed"), "{error}");
-    assert!(
-        store.ops().is_empty(),
-        "the aborted save must run no keyring op, deferred delete included: {:?}",
-        store.ops()
-    );
-    let prefs = UserPrefs::load();
-    let credential = prefs
-        .search
-        .credentials
-        .get(&SearchProvider::Tavily)
-        .expect("the aborted save must leave the provider configured in prefs");
-    assert_eq!(credential.credential_state, CredentialState::Configured);
-    assert!(credential.has_secret);
+        assert!(error.contains("save settings failed"), "{error}");
+        assert!(
+            store.ops().is_empty(),
+            "the aborted save must run no keyring op, deferred delete included: {:?}",
+            store.ops()
+        );
+        let prefs = UserPrefs::load();
+        let credential = prefs
+            .search
+            .credentials
+            .get(&SearchProvider::Tavily)
+            .expect("the aborted save must leave the provider configured in prefs");
+        assert_eq!(credential.credential_state, CredentialState::Configured);
+        assert!(credential.has_secret);
+    });
+}
+
+fn web_patch(search: SearchPrefs) -> super::settings::WebSettingsPatch {
+    super::settings::WebSettingsPatch {
+        memory_enabled: None,
+        search: Some(search),
+    }
 }
 
 fn web_deletion_patch(action: Option<CredentialEditAction>) -> super::settings::WebSettingsPatch {
-    super::settings::WebSettingsPatch {
-        memory_enabled: None,
-        search: Some(search_deletion_payload(action)),
-    }
+    web_patch(search_deletion_payload(action))
 }
 
 #[test]
 fn persist_web_settings_commits_before_the_deferred_keyring_delete() {
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let _home = TempPinvou3Home::new("web-delete-order");
-    seed_search_deletion_prefs();
-    let patch = web_deletion_patch(Some(CredentialEditAction::Delete));
-    let store = crate::platform::credential_store::RecordingCredentialStore::new();
-    store.fail_delete();
+    crate::platform::test_support::with_temp_home("web-delete-order", || {
+        seed_search_deletion_prefs();
+        let patch = web_deletion_patch(Some(CredentialEditAction::Delete));
+        let store = crate::platform::credential_store::RecordingCredentialStore::new();
+        store.fail_delete();
 
-    // Web clients carry the same Delete action through WebSettingsPatch.search
-    // (web_access_update_settings), so the web persist path must obey the
-    // identical ordering: commit first, then attempt the deferred delete —
-    // with the delete failing, Ok + a committed removal is only reachable
-    // when the save landed first.
-    super::settings::persist_web_settings_inner(patch, &store).expect("the save must succeed");
+        // Web clients carry the same Delete action through WebSettingsPatch.search
+        // (web_access_update_settings), so the web persist path must obey the
+        // identical ordering: commit first, then attempt the deferred delete —
+        // with the delete failing, Ok + a committed removal is only reachable
+        // when the save landed first.
+        super::settings::persist_web_settings_inner(patch, &store).expect("the save must succeed");
 
-    let prefs = UserPrefs::load();
-    // SearchPrefs::normalize retains out the secretless/refless entry, so
-    // absence on disk is what a committed delete must produce.
-    assert!(
-        !prefs
-            .search
-            .credentials
-            .contains_key(&SearchProvider::Tavily),
-        "the deleted credential must not survive in prefs"
-    );
-    assert_eq!(
-        store.ops(),
-        vec!["delete:pinvou3-search-api-key:search:tavily".to_string()],
-        "exactly one deferred keyring delete, attempted after the commit"
-    );
+        let prefs = UserPrefs::load();
+        // SearchPrefs::normalize retains out the secretless/refless entry, so
+        // absence on disk is what a committed delete must produce.
+        assert!(
+            !prefs
+                .search
+                .credentials
+                .contains_key(&SearchProvider::Tavily),
+            "the deleted credential must not survive in prefs"
+        );
+        assert_eq!(
+            store.ops(),
+            vec!["delete:pinvou3-search-api-key:search:tavily".to_string()],
+            "exactly one deferred keyring delete, attempted after the commit"
+        );
+    });
 }
 
 // ---- deferred delete vs a concurrent replacement of the same credential ----
@@ -3450,66 +3208,58 @@ fn run_delete_replacement_barrier(
 
 #[test]
 fn search_settings_deferred_delete_serializes_with_a_concurrent_replacement() {
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let _home = TempPinvou3Home::new("search-delete-replace-race");
-    seed_search_deletion_prefs();
-    let (store, gate, delete_started) = barrier_store();
-    let a_store = store.clone();
-    let b_store = store.clone();
+    crate::platform::test_support::with_temp_home("search-delete-replace-race", || {
+        seed_search_deletion_prefs();
+        let (store, gate, delete_started) = barrier_store();
+        let a_store = store.clone();
+        let b_store = store.clone();
 
-    run_delete_replacement_barrier(
-        "save_search_settings",
-        move || {
-            super::settings::persist_search_settings_inner(
-                search_deletion_payload(Some(CredentialEditAction::Delete)),
-                a_store.as_ref(),
-            )
-        },
-        move || {
-            super::settings::persist_search_settings_inner(
-                search_replacement_payload(BARRIER_REPLACEMENT_KEY),
-                b_store.as_ref(),
-            )
-        },
-        store,
-        gate,
-        delete_started,
-    );
+        run_delete_replacement_barrier(
+            "save_search_settings",
+            move || {
+                super::settings::persist_search_settings_inner(
+                    search_deletion_payload(Some(CredentialEditAction::Delete)),
+                    a_store.as_ref(),
+                )
+            },
+            move || {
+                super::settings::persist_search_settings_inner(
+                    search_replacement_payload(BARRIER_REPLACEMENT_KEY),
+                    b_store.as_ref(),
+                )
+            },
+            store,
+            gate,
+            delete_started,
+        );
+    });
 }
 
 #[test]
 fn web_settings_deferred_delete_serializes_with_a_concurrent_replacement() {
-    let _g = crate::platform::paths::tests::ENV_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let _home = TempPinvou3Home::new("web-delete-replace-race");
-    seed_search_deletion_prefs();
-    let (store, gate, delete_started) = barrier_store();
-    let a_store = store.clone();
-    let b_store = store.clone();
+    crate::platform::test_support::with_temp_home("web-delete-replace-race", || {
+        seed_search_deletion_prefs();
+        let (store, gate, delete_started) = barrier_store();
+        let a_store = store.clone();
+        let b_store = store.clone();
 
-    let web_patch = |search: SearchPrefs| super::settings::WebSettingsPatch {
-        memory_enabled: None,
-        search: Some(search),
-    };
-    run_delete_replacement_barrier(
-        "save_web_settings",
-        move || {
-            super::settings::persist_web_settings_inner(
-                web_patch(search_deletion_payload(Some(CredentialEditAction::Delete))),
-                a_store.as_ref(),
-            )
-        },
-        move || {
-            super::settings::persist_web_settings_inner(
-                web_patch(search_replacement_payload(BARRIER_REPLACEMENT_KEY)),
-                b_store.as_ref(),
-            )
-        },
-        store,
-        gate,
-        delete_started,
-    );
+        run_delete_replacement_barrier(
+            "save_web_settings",
+            move || {
+                super::settings::persist_web_settings_inner(
+                    web_patch(search_deletion_payload(Some(CredentialEditAction::Delete))),
+                    a_store.as_ref(),
+                )
+            },
+            move || {
+                super::settings::persist_web_settings_inner(
+                    web_patch(search_replacement_payload(BARRIER_REPLACEMENT_KEY)),
+                    b_store.as_ref(),
+                )
+            },
+            store,
+            gate,
+            delete_started,
+        );
+    });
 }
