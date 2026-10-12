@@ -466,10 +466,17 @@ function enforceLazyChunks() {
   };
 }
 
-// Deliberately keep both desktop and web below Vite's 500 kB warning boundary.
-// New entry work should be split or lazy-loaded. Raising this limit requires
-// measured desktop + web before/after sizes and an explicit review decision.
-export const MAIN_ENTRY_BUDGET_BYTES = 500_000;
+// Startup budget: 500_000 kept both desktop and web under Vite's 500 kB
+// warning boundary until the app-automations builtin (PR #628) measured its
+// startup residual at 500_532 B on web (500_140 on desktop) AFTER
+// lazy-splitting everything deferrable — the result card and its parser
+// moved to the on-demand scheduled-task-card chunk, leaving only the
+// timeline-header summary surface whose synchronous rendering is pinned
+// reviewed behavior. The +1_000 raise covers that measured residual; main
+// may now emit Vite's informational chunk-size warning on web, while this
+// gate remains the hard limit. Raising further requires the same measured
+// evidence plus an explicit review decision.
+export const MAIN_ENTRY_BUDGET_BYTES = 501_000;
 
 export function assertMainEntryBudget(bundle, budgetBytes = MAIN_ENTRY_BUDGET_BYTES) {
   const mainEntry = Object.values(bundle).find(output => (

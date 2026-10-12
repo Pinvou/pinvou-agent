@@ -1,8 +1,14 @@
 /**
- * Pure logic for the app-automations scheduled-task tool cards
+ * Pure logic for the app-automations scheduled-task timeline headers
  * (docs/builtin-toolset-contract.md §3.2 execution visibility; the
  * state-changing tools are L1, so what the model asked for and what the app
  * answered must be fully visible on the timeline).
+ *
+ * Startup-entry module: the summaries render synchronously in the
+ * timeline's tool header. The result-card parser and the prompt excerpt
+ * live in scheduled-task-card-logic.js, loaded only inside the lazy
+ * scheduled-task card chunk (the startup-budget policy in
+ * vite.config.mjs).
  *
  * Kept framework-free (mirroring spawn-aggregation.mjs / session-message-block.js)
  * so tests/ can exercise it directly.
@@ -13,8 +19,6 @@ export const SCHEDULED_TASK_READ_TOOL = 'mcp_app-automations_read_scheduled_task
 export const SCHEDULED_TASK_LIST_TOOL = 'mcp_app-automations_list_scheduled_tasks';
 export const SCHEDULED_TASK_UPDATE_TOOL = 'mcp_app-automations_update_scheduled_task';
 export const SCHEDULED_TASK_DELETE_TOOL = 'mcp_app-automations_delete_scheduled_task';
-
-const PROMPT_EXCERPT_CHARS = 120;
 
 /**
  * Header summary for a create call: task name + rrule (the two fields that
@@ -64,68 +68,4 @@ export const scheduledTaskListSummary = (args, listLabel, limitSuffix) => {
     ? limitSuffix(args.limit)
     : '';
   return `${listLabel}${limit}`;
-};
-
-/**
- * Parses a create/update/delete tool's text output into a render shape:
- * - { kind:'created'|'updated'|'deleted', taskId, taskName, duplicate? } —
- *   the watcher confirmed the operation (`duplicate` marks the recorded
- *   result of an idempotent replay);
- * - { kind:'pending', taskName }  — queued, no confirmation within the
- *   server's short wait (still NOT an error);
- * - null                          — failures and anything unparseable (drift
- *   defense: error outputs render through the is_error path, and unknown
- *   shapes fall back to the default raw output view).
- */
-export const parseScheduledTaskToolOutput = output => {
-  if (typeof output !== 'string' || !output.trim()) return null;
-  let payload;
-  try {
-    payload = JSON.parse(output.trim());
-  } catch {
-    return null;
-  }
-  if (!payload || typeof payload !== 'object') return null;
-  if (payload.ok === true && payload.delivery === 'pending') {
-    return {
-      kind: 'pending',
-      taskName: typeof payload.taskName === 'string' ? payload.taskName : '',
-    };
-  }
-  if (payload.ok === true && payload.taskId) {
-    const opByKind = { create: 'created', update: 'updated', delete: 'deleted' };
-    const kind = opByKind[payload.kind];
-    // An unknown kind is drift: fall back to the raw view instead of
-    // asserting a specific affirmative outcome.
-    if (!kind) return null;
-    return {
-      kind,
-      taskId: String(payload.taskId),
-      taskName: typeof payload.taskName === 'string' ? payload.taskName : '',
-      duplicate: payload.duplicate === true,
-      // Round-7 MAJOR 3: surface the server's divergence signal — a keyed
-      // retry whose payload changed must not render as a benign duplicate.
-      payloadMismatch: payload.payload_mismatch === true,
-      mismatchNote: typeof payload.mismatch_note === 'string' ? payload.mismatch_note : '',
-    };
-  }
-  return null;
-};
-
-/**
- * Prompt excerpt for the card body: first N chars + ellipsis marker, so a
- * 32k prompt cannot flood the timeline.
- */
-export const scheduledTaskPromptExcerpt = args => {
-  const prompt = args && typeof args.prompt === 'string' ? args.prompt.trim() : '';
-  if (!prompt) return '';
-  if (prompt.length <= PROMPT_EXCERPT_CHARS) return prompt;
-  // Round-8 minor 13: back off one code unit when the cut would split a
-  // surrogate pair (a lone high surrogate renders U+FFFD before the
-  // ellipsis).
-  let cut = PROMPT_EXCERPT_CHARS;
-  // An ASTRAL code point STARTING at cut-1 has its low surrogate at cut
-  // (excluded) — back off so the pair is never split.
-  if (prompt.codePointAt(cut - 1) > 0xFFFF) cut -= 1;
-  return `${prompt.slice(0, cut)}…`;
 };
