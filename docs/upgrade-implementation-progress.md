@@ -1442,3 +1442,48 @@ diff checks passed. Both independent scoped roles gave final PASS; their events
 runs with 24 receipt and 168 input comparisons passed (12.009s/13.425s). Service
 commit: `45e73ee`. Client architecture/version checks passed. Continue actual
 protected historical lineage and durable composition without pausing the task.
+
+
+### T20 fourth batch: actual protected historical lifecycle binding (2026-10-12)
+
+The service joins current Root/deny/input verification to actual same-transaction
+T44 Session and consumed Authorization/immutable Update/Transaction facts and
+complete scope references. All thirteen source migrations, shared provisioning
+owner, actual database/login/identity/isolation, catalog parsing, source relation
+ownership/ACLs/column rights/triggers and private function rights are checked.
+Originating decision ID/revision is required for each transaction purpose in
+addition to original ID/start/auth JTI/install/scope/channel/purpose/final identity.
+
+Narrow historical ports can read original due or terminal records without future
+execution rights. Ordinary Session capture preserves its due rejection. Combined
+Root/deny/lifecycle dependencies independently enforce 4096 references and 1 MiB
+canonical bytes; exact ceilings pass and +1 refuses without partial snapshots.
+Current key deny wins over absent/unreadable lineage; T22 task credentials cannot
+borrow execution lineage. No SQL migration bytes or original API schema change.
+
+Real PostgreSQL storage/signature controls cover actual historical Session and
+all three consumed transaction relations, original-decision mismatch/restoration,
+terminal preservation, migration/actual column-write failures and deny ordering.
+Fixtures establish actual reads, not issuance, T17 eligibility or accepted writes.
+Durable ledger, normal/diagnostic cursor, workflow/outbox/contribution composition,
+fixed owner command and protected client transport remain subsequent work. Full
+T20 stays open; download duration remains unlimited and pending decisions remain
+skipped as requested.
+
+
+The complete ten-test actual PostgreSQL source regression passed (156.513s).
+The strengthened three-purpose 31-day original occurrence/37-day upload control
+then passed (23.213s): ordinary due transaction capture refuses while historical
+binding preserves the original active/terminal record, without executing it.
+Exact combined read-set bounds passed (1.306s). Final default Go tests passed
+(events: 16.022s; adapter: 3.575s), with both original Node reference suites.
+Full vet, module verification, all command builds, pinned contract and diff
+checks passed. Both independent scoped roles gave final PASS for the complete code, tests and
+documentation after all findings were repaired. This closes the historical read
+batch only; actual atomic event reception remains subsequent work.
+
+
+Service commit: `28659ce`. Both independent roles passed the final complete
+historical-source code/tests/documentation. Client architecture/version/diff
+checks passed. Continue protected durable reception and final trust locking;
+source snapshots remain observations rather than acceptance authority.
