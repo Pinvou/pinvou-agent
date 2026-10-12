@@ -149,8 +149,9 @@ const FALLBACK_SCHEMAS = {
     properties: {
       function: { type: 'string' },
       // No `items` keyword: an empty `items: {}` fails Moonshot MFJS
-      // validation, which makes providers silently drop the whole tool from
-      // the request. A bare array type keeps "any JSON argument" semantics.
+      // validation, and the Moonshot request builder responds by silently
+      // dropping the whole tool from the request. A bare array type keeps
+      // "any JSON argument" semantics.
       args: { type: 'array', description: 'Positional arguments passed to the function.' },
     },
     required: ['function'],

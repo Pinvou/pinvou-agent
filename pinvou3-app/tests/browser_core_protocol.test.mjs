@@ -254,26 +254,43 @@ test('every core tool schema stays free of empty subschemas that MFJS providers 
   // otherwise the model sees a tool_search reference it can never call.
   const { toolsListResult } = createPinvouBrowserCoreCatalog();
   const offenders = [];
-  // Only schema nodes can be empty-schema offenders: `properties` is a name
-  // map (an empty map is legal), so its own emptiness is fine but every
-  // property value is a schema.
+  // Only schema nodes can be empty-schema offenders, so the walker follows
+  // schema-valued positions explicitly: name maps (`properties`,
+  // `patternProperties`, `$defs`, `dependentSchemas`) and JSON-data
+  // positions (`enum`, `examples`, `default`, `const`) may legally hold
+  // empty objects, but every schema position below must not.
   const visitSchema = (node, path) => {
     if (!node || typeof node !== 'object' || Array.isArray(node)) return;
     if (Object.keys(node).length === 0) {
       offenders.push(path);
       return;
     }
-    if (node.properties) {
-      for (const [name, value] of Object.entries(node.properties)) {
-        visitSchema(value, `${path}.${name}`);
+    for (const map of ['properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas']) {
+      if (node[map] && typeof node[map] === 'object' && !Array.isArray(node[map])) {
+        for (const [name, value] of Object.entries(node[map])) {
+          visitSchema(value, `${path}.${map}.${name}`);
+        }
       }
     }
-    if (node.items) visitSchema(node.items, `${path}.items`);
-    if (node.additionalProperties && typeof node.additionalProperties === 'object') {
-      visitSchema(node.additionalProperties, `${path}.additionalProperties`);
+    // `items` is either one schema or a draft-07 tuple of schemas.
+    if (Array.isArray(node.items)) {
+      node.items.forEach((element, index) => visitSchema(element, `${path}.items[${index}]`));
+    } else if (node.items) {
+      visitSchema(node.items, `${path}.items`);
     }
-    if (Array.isArray(node.anyOf)) {
-      node.anyOf.forEach((branch, index) => visitSchema(branch, `${path}.anyOf[${index}]`));
+    if (Array.isArray(node.prefixItems)) {
+      node.prefixItems.forEach((element, index) => visitSchema(element, `${path}.prefixItems[${index}]`));
+    }
+    for (const keyword of ['additionalProperties', 'contains', 'propertyNames', 'not', 'if', 'then', 'else']) {
+      const value = node[keyword];
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        visitSchema(value, `${path}.${keyword}`);
+      }
+    }
+    for (const keyword of ['allOf', 'anyOf', 'oneOf']) {
+      if (Array.isArray(node[keyword])) {
+        node[keyword].forEach((branch, index) => visitSchema(branch, `${path}.${keyword}[${index}]`));
+      }
     }
   };
   for (const tool of toolsListResult.tools) {
