@@ -59,20 +59,20 @@ const isRestrictedExternalAuthTool = (tool) => !!tool && !!(
 );
 
 const PlatformToolAction = ({ copy, t, ...props }) => {
+  const isRestricted = isRestrictedExternalAuthTool(props.tool);
+  // 无变更权限(Web 只读)或无法发起外部登录时,动作退化为纯状态徽标:
+  // 受限工具显示「已连接」,其余显示「已安装」;未安装则不渲染任何动作。
+  let statusLabel = null;
   if (!can('toolStoreMutations')) {
-    if (!props.tool?.installed) return null;
-    const label = isRestrictedExternalAuthTool(props.tool) ? copy.connected : copy.installed;
-    return (
-      <span className={`${props.size === 'lg' ? 'px-6 py-2.5 text-[15px]' : 'px-4 py-1.5 text-[13px]'} rounded-full font-bold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 whitespace-nowrap`}>
-        {label}
-      </span>
-    );
+    statusLabel = isRestricted ? copy.connected : copy.installed;
+  } else if (!canStartExternalAuth() && isRestricted) {
+    statusLabel = copy.connected;
   }
-  if (!canStartExternalAuth() && isRestrictedExternalAuthTool(props.tool)) {
-    if (!props.tool.installed) return null;
+  if (statusLabel && !props.tool?.installed) return null;
+  if (statusLabel) {
     return (
       <span className={`${props.size === 'lg' ? 'px-6 py-2.5 text-[15px]' : 'px-4 py-1.5 text-[13px]'} rounded-full font-bold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-700 dark:text-emerald-300 whitespace-nowrap`}>
-        {copy.connected}
+        {statusLabel}
       </span>
     );
   }
@@ -2775,10 +2775,6 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         </div>
       );
     };
-
-    // ==========================================
-    // Shared Components
-    // ==========================================
 
 export { ToolStoreView };
 /* eslint-enable sonarjs/cognitive-complexity -- tool store main view;legacy view */

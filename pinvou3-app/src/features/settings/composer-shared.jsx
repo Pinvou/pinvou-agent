@@ -145,9 +145,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         bridge.models.saveModel(next)
           .then(() => { setOpen(false); setEffortSaveError(''); })
           .catch((error) => {
-            const message = (error && error.message)
-              ? error.message
-              : ((t && t.saveModelFailed) || '保存失败');
+            const message = (error && error.message) ? error.message : t.saveModelFailed;
             setEffortSaveError(message);
           });
       }
