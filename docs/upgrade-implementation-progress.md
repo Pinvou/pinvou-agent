@@ -1343,3 +1343,31 @@ passed (111.344s). Final default checks passed after the production fix.
 Both independent scoped roles gave final PASS after the catalog fix. Service
 commit: `780bdea`. Client architecture/version/diff checks passed. Full T21
 remains open at the production event/eligibility/evaluation boundaries above.
+
+
+### T20 first batch: original six-role event input verification (2026-10-12)
+
+The service compiles the six original event request schemas from pinned OpenAPI.
+Bounded closed JSON, canonical nested credential bytes, scoped Ed25519 under
+already-protected Root/role-deny inputs and intrinsic occurrence/upload windows
+precede checked values. Request scope/installId and each event's purpose, lineage,
+allowed kind and facts hash must bind exactly. The original canonical event bytes
+and full-event SHA are retained without aliasing caller input. Current claimed
+key deny gives fixed EVENT_KEY_DENIED before any event existence lookup.
+
+Actual original Node API/signature/occurrence verification agrees on 168 cases
+including canonical bytes/hashes (4.225s). Fixed signatures for six roles, binding
+mutations, parser/credential bounds, actual fresh synthetic signatures and lawful
+nbf/event-end-minus-one/upload-end-minus-one controls passed. Final default Go
+tests (events: 8.651s), full vet, module verification, all command builds, pinned
+artifacts and diff checks passed. No SQL/provider/browser integration changed.
+
+Checked observations do not accept events, acknowledge persistence, authorize
+state changes or contribute quality. Complete production T07/T08 final sources,
+actual lineage/sequence, exp+two-minute durable ledger, T44 atomic normal/late
+composition, contribution cursor and protected client outbox remain subsequent
+work. Full T20 remains in progress. Downloads retain no hard total duration limit.
+
+Both independent scoped roles gave final PASS; their actual original Node
+runs passed (4.335s/4.149s). Service commit: `5d47583`. Client architecture,
+version and diff checks passed. Continue actual protected source/ledger work.
