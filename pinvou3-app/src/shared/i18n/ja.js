@@ -84,7 +84,7 @@ const codexJa = {
   rewindUndoBody:n=>`ワークスペースのファイルを巻き戻し前の状態に復元し、削除された ${n} ターンの会話を復元します。`,
   rewindUndoBodyConversationOnly:n=>`その巻き戻しは会話のみが対象でした（ファイルは変更されていません）。削除された ${n} ターンの会話を復元し、ファイルは現在の状態のままにします。`,
   rewindUndoConfirm:'巻き戻しを取り消す', rewindUndoBusy:'取消し中…',
-  rewindUndoExpiryNote:'巻き戻し後に新しいメッセージを送信したり会話の末尾を編集すると取り消せなくなります。ロールバックポイントは直近 20 件のみ保持され、破棄された場合も取り消せません。',
+  rewindUndoExpiryNote:'巻き戻し後に新しいメッセージを送信したり会話の末尾を編集すると取り消せなくなります。チェックポイント（ロールバックポイントを含む）は合計で直近 20 件のみ保持され、通常ターンのスナップショットも同じ枠を占有するため、破棄された場合も取り消せません。',
   rewindUndoDone:'巻き戻しを取り消しました：ファイルと会話が巻き戻し前の状態に復元されました。',
   compactStart:'コンテキストを圧縮中', compactDone:'コンテキストを圧縮しました', compactFail:'コンテキストの圧縮に失敗しました', compactCancel:'コンテキストの圧縮をキャンセルしました',
   nativeToolGateDecision:(tool,decision,reason,risk,agent)=>`権限ゲート: ${tool || 'ツール'} を${decision === 'allowed' ? '許可' : decision === 'denied' ? '拒否' : 'レビュー不能のため拒否'}${agent ? `（エージェント ${agent}）` : ''}${risk ? ` · リスク ${risk}` : ''}${reason ? ` · ${reason}` : ''}`,

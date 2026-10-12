@@ -69,9 +69,15 @@ export function summarizeCheckpointChanges(changes) {
  * count_user_turns）非空时，若时间线数出的用户 turn 总数与之不一致（如压缩后
  * 前端时间线保留全部气泡而后端已收缩为载体+摘要尾），序号↔后端 turn 的映射
  * 不再可靠——返回空 map 不渲染任何入口，把「错点成功」降级为诚实拒绝； durable
- * 重载后时间线按收缩后的 messages 重建（载体被投影过滤），两侧重新对齐。
+ * 重载后时间线按收缩后的 messages 重建（载体被投影过滤），两侧计数重新对齐
+ * （注意：对齐的只是计数——checkpoint 身份仍是压缩前打的，身份级错位由
+ * 设计文档 §12 记录为 v2 议题，durable 重载不修复身份）。
+ *
+ * busy 容忍（评审 r6 minor 9）：发送在途时前端时间线已含乐观用户气泡，而后端
+ * 计数要等消息落盘才 +1——恰差 1 属期望状态，不触发拒绝（busy→false 边沿
+ * refreshKey 会重拉收紧到精确比对），避免每轮发送期间入口整体消失。
  */
-export function rewindEntriesByTurnId(turns, checkpoints, backendUserTurns) {
+export function rewindEntriesByTurnId(turns, checkpoints, backendUserTurns, { busy = false } = {}) {
   const entries = new Map();
   const list = Array.isArray(checkpoints) ? checkpoints : [];
   if (!list.length) return entries;
@@ -89,7 +95,8 @@ export function rewindEntriesByTurnId(turns, checkpoints, backendUserTurns) {
     });
   }
   if (Number.isSafeInteger(backendUserTurns) && backendUserTurns >= 0 && ordinal !== backendUserTurns) {
-    return new Map();
+    const inFlightTolerance = busy && ordinal === backendUserTurns + 1;
+    if (!inFlightTolerance) return new Map();
   }
   return entries;
 }
@@ -203,7 +210,11 @@ export function useSessionCheckpoints({ sessionId, enabled, refreshKey }) {
       }
     } catch {
       // 列表失败（会话被删/索引损坏/非原生车道）不打扰主流程：该会话没有回退入口。
-      if (sessionRef.current === id) setCheckpoints([]);
+      // userTurns 一并复位：陈旧的后端计数对着新时间线比对会产生假拒绝。
+      if (sessionRef.current === id) {
+        setCheckpoints([]);
+        setUserTurns(null);
+      }
     }
     try {
       const state = await invoke('rewind_undo_state', { sessionId: id });

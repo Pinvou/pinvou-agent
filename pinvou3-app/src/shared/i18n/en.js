@@ -84,7 +84,7 @@ const codexEn = {
   rewindUndoBody:n=>`This restores your files to their pre-rewind state and brings back the ${n} truncated turn(s) of conversation.`,
   rewindUndoBodyConversationOnly:n=>`That rewind only truncated the conversation (your files were not changed); this brings back the ${n} truncated turn(s) of conversation and leaves the files as is.`,
   rewindUndoConfirm:'Undo rewind', rewindUndoBusy:'Undoing…',
-  rewindUndoExpiryNote:'The undo window closes once a new message is sent after the rewind or the transcript tail is edited; rollback points keep only the most recent 20, and eviction also ends the window.',
+  rewindUndoExpiryNote:'The undo window closes once a new message is sent after the rewind or the transcript tail is edited; checkpoints (rollback points included) keep only the most recent 20 in total — ordinary turn snapshots occupy the same quota, and eviction also ends the window.',
   rewindUndoDone:'Rewind undone: files and conversation are back to their pre-rewind state.',
   compactStart:'Compacting context', compactDone:'Context compacted', compactFail:'Context compaction failed', compactCancel:'Context compaction canceled',
   nativeToolGateDecision:(tool,decision,reason,risk,agent)=>`Permission gate ${decision === 'allowed' ? 'allowed' : decision === 'denied' ? 'denied' : 'could not review'} ${tool || 'tool'}${agent ? ` for agent ${agent}` : ''}${risk ? ` · risk ${risk}` : ''}${reason ? ` · ${reason}` : ''}`,
