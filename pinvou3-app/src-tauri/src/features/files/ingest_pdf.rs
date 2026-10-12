@@ -29,8 +29,9 @@ pub(super) fn ingest_pdf(
             crate::platform::os::pdf_text_missing_message(),
         );
     }
-    // 扫描件 PDF（图层 PDF）没有文字层，pdftotext 返回空白 —— 此时
-    // 走 OCR 兜底：pdftoppm 逐页转图再喂给 tesseract。
+    // Scanned PDFs (image-layer PDFs) have no text layer, so pdftotext
+    // returns blank — fall back to OCR: pdftoppm renders page images that
+    // are then fed to tesseract.
     match pdftotext_extract(path) {
         Ok(content) if !content.trim().is_empty() => {
             IngestResult::with_markdown("pdf", &basename, path, byte_size, content)

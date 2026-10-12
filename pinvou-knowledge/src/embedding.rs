@@ -25,8 +25,9 @@ impl Embedder {
         let read = |file: &str| -> Result<Vec<u8>, String> {
             std::fs::read(dir.join(file)).map_err(|error| format!("{file}: {error}"))
         };
-        // 目录布局（ONNX 候选与 tokenizer 文件）以下载清单所在的
-        // model_download 为准，避免装载路径与下载/完整性探测各自维护一份。
+        // The directory layout (ONNX candidates and tokenizer files) follows
+        // the download manifest's model_layout, so the load path, the
+        // download, and the completeness probe share one description.
         let onnx = std::fs::read(crate::model_layout::find_onnx_in(dir)?)
             .map_err(|error| error.to_string())?;
         let [

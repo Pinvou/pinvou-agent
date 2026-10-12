@@ -55,8 +55,10 @@ pub(crate) fn sanitize_command_error(context: &str, err: impl std::fmt::Display)
     )
 }
 
-/// 解析当前会话 id：优先入参，否则取 store.active_id()；二者皆无时返回
-/// None，由调用方决定回退语义（报错或静默跳过，如 memory 域的可选刷新）。
+/// Resolve the current session id: prefer the argument, else
+/// `store.active_id()`; when both are absent return None and let the caller
+/// pick the fallback semantics (error or silent skip, e.g. memory's optional
+/// refresh).
 pub(super) fn resolve_session_id(
     session_id: Option<String>,
     store: &SessionStore,
@@ -64,7 +66,8 @@ pub(super) fn resolve_session_id(
     session_id.or_else(|| store.active_id())
 }
 
-/// 解析当前会话 id，无活跃会话时统一报 `"no active session"`。
+/// Resolve the current session id, erroring uniformly with
+/// `"no active session"` when none is active.
 ///
 /// 收敛原本散落在 workflows/interaction/memory/chat 共 14 处的
 /// `session_id.or_else(|| store.active_id()).ok_or_else(|| "no active session")`

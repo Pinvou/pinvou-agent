@@ -32,12 +32,16 @@ pub(crate) fn is_tailscale_ipv6(address: std::net::Ipv6Addr) -> bool {
     segments[0] == 0xfd7a && segments[1] == 0x115c && segments[2] == 0xa1e0
 }
 
-/// 组合私网判定：IPv4 为 RFC1918 / 链路本地 / Tailscale，IPv6 为 ULA /
-/// fe80::/10 链路本地（IPv4-mapped 地址先归一化为 v4 再判定）。
+/// Composed private-network check: IPv4 means RFC1918 / link-local /
+/// Tailscale, IPv6 means ULA / fe80::/10 link-local (IPv4-mapped addresses
+/// normalize to their v4 form before classification).
 ///
-/// `allow_loopback` 决定是否接受回环地址：加入（join）请求校验的是直连来源，
-/// 宿主本机回环同样是合法来源；分享端点则必须拒绝回环，避免端点指向调用方
-/// 自身。server/service 与桌面端共用本判定，避免各自手写同一组合。
+/// `allow_loopback` decides whether loopback counts as private: join
+/// requests validate the directly-connected source, for which the host's own
+/// loopback is a legitimate source; share endpoints must reject loopback so
+/// an endpoint cannot point back at the caller itself. server/service and
+/// the desktop app share this check instead of hand-writing the same
+/// composition twice.
 pub fn is_private_network_ip(address: std::net::IpAddr, allow_loopback: bool) -> bool {
     match address {
         std::net::IpAddr::V4(address) => {
@@ -74,13 +78,15 @@ mod tests {
     #[test]
     fn private_network_classification_respects_the_loopback_flag() {
         use std::net::IpAddr;
-        // 回环地址仅在接受回环的语义（server 加入来源）下为私网。
+        // Loopback is private only under the loopback-accepting semantics
+        // (the server's join-source check).
         for address in ["127.0.0.1", "::1"] {
             let address: IpAddr = address.parse().unwrap();
             assert!(is_private_network_ip(address, true), "{address}");
             assert!(!is_private_network_ip(address, false), "{address}");
         }
-        // IPv4-mapped 地址两种语义下都按映射后的 v4 判定。
+        // IPv4-mapped addresses classify by their mapped v4 form under both
+        // semantics.
         let mapped: IpAddr = "::ffff:192.168.1.10".parse().unwrap();
         assert!(is_private_network_ip(mapped, true));
         assert!(is_private_network_ip(mapped, false));

@@ -9,14 +9,18 @@
 //! 真 vLLM 端到端 scenario 仍留在 `l1_dialog_harness.rs`（`#[ignore]`，需 vLLM
 //! 在线、按需手跑）；本模块只跑不依赖运行时与外部模型的确定性校验，CI 可常跑。
 //!
-//! 下面的纯辅助函数源自 `l1_dialog_harness.rs` 中的同名函数（那份同时被真模型
-//! scenario 使用，无法整体迁出）；本模块的 `TurnSummary` / `summarize` 只裁剪出
-//! 这三个测试读取的字段，与那份同名结构不再逐字段一致，改动需两边评估。
+//! The pure helpers below originate from same-named functions in
+//! `l1_dialog_harness.rs` (that copy is also used by the real-model scenario
+//! and cannot be moved out wholesale); this module's `TurnSummary` /
+//! `summarize` keep only the fields these three tests read, so the two
+//! same-named structures are no longer field-for-field identical — evaluate
+//! both sides when changing either.
 
 use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
 use deepseek_tui::error_taxonomy::ErrorEnvelope;
 
-/// scenario 跑完后聚合结果（本副本只保留本模块三个测试读取的字段）。
+/// Aggregate a finished scenario run (this copy keeps only the fields the
+/// three tests in this module read).
 struct TurnSummary {
     /// Engine 在 turn 内发出的错误；严格真模型验收中任意一条都必须失败。
     engine_errors: Vec<String>,

@@ -190,7 +190,8 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn write_host_owner_claim(path: &std::path::Path, claim: &serde_json::Value) -> anyhow::Result<()> {
-    // 凭据声明是首写文件：复用 TLS 模块的 0600 原子写入，不预删旧目标。
+    // The owner claim is a first-write file: reuse the TLS module's 0600
+    // atomic write without pre-deleting the old target.
     let mut bytes = serde_json::to_vec(claim)?;
     bytes.push(b'\n');
     pinvou_knowledge::tls::write_private_file(path, &bytes, false).map_err(anyhow::Error::msg)

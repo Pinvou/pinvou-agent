@@ -118,9 +118,11 @@ fn acceptable_certificate_address(address: IpAddr) -> bool {
     !address.is_unspecified() && !address.is_multicast()
 }
 
-/// 以 0600（Unix）权限原子写入私有文件：写临时文件、sync 后 rename 换入。
-/// `replace_existing` 控制换入前是否先移除旧目标——TLS 身份刷新沿用先删后换
-/// 的语义；宿主所有者凭据声明（裸二进制 main）为首写文件，不预删旧目标。
+/// Atomically write a private file with 0600 (Unix) permissions: write a
+/// temp file, sync, then rename it into place. `replace_existing` controls
+/// whether the old target is removed before the swap — TLS identity refresh
+/// keeps the delete-then-swap semantics; the host owner claim (bare-binary
+/// main) is a first-write file and does not pre-delete the old target.
 pub fn write_private_file(path: &Path, bytes: &[u8], replace_existing: bool) -> Result<(), String> {
     let temporary = path.with_extension("tmp");
     let _ = fs::remove_file(&temporary);

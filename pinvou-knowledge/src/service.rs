@@ -1418,7 +1418,9 @@ fn is_private_share_endpoint(endpoint: &str) -> bool {
         return false;
     };
     match url.host() {
-        // 分享端点不允许回环（拒绝回环语义），其余私网判定与加入来源共用。
+        // Share endpoints reject loopback (loopback-rejecting semantics);
+        // the rest of the private-network classification is shared with the
+        // join-source check.
         Some(url::Host::Ipv4(address)) => {
             crate::net_policy::is_private_network_ip(IpAddr::V4(address), false)
         }
@@ -1559,7 +1561,8 @@ mod tests {
         ] {
             assert!(!is_private_share_endpoint(endpoint), "{endpoint}");
         }
-        // IPv4-mapped 地址按映射后的 v4 私网判定（与加入来源语义一致）。
+        // IPv4-mapped addresses classify by their mapped v4 private-network
+        // form (same semantics as the join source).
         assert!(is_private_share_endpoint(
             "https://[::ffff:192.168.1.10]:3210"
         ));

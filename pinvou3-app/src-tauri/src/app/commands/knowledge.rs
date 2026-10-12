@@ -260,8 +260,9 @@ sync_command_passthrough!(
     knowledge_domain,
     kb_start_scan(state: State<'_, KnowledgeService>, roots: Option<Vec<String>>) -> ScanState
 );
-// 纯透传命令不经 features/knowledge 的包装，直接调 `state.<method>`；
-// 其余 kb_* 命令带域层逻辑（spawn_db / 默认 roots / 门控刷新），仍走 passthrough。
+// The pure passthrough commands skip the features/knowledge wrapper and call
+// `state.<method>` directly; the other kb_* commands carry domain logic
+// (spawn_db / default roots / gated refresh) and still go through passthrough.
 #[tauri::command]
 pub fn kb_scan_status(state: State<'_, KnowledgeService>) -> ScanState {
     state.status()

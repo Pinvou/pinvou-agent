@@ -71,8 +71,9 @@ fn status_is_logged_in(s: &str) -> bool {
     s.contains("Logged in")
 }
 
-/// `tmeet auth status` 判当前是否已登录。会 spawn tmeet;未安装时 spawn
-/// 失败折叠为 false(单探测,同企微/飞书,不必先白跑一次 `--version`)。
+/// Logged-in check via `tmeet auth status`. Spawns tmeet; when not installed
+/// the spawn failure folds to false (single probe, same as wecom/feishu —
+/// no wasted `--version` boot first).
 pub(crate) fn is_logged_in() -> bool {
     if let Ok((_, so, se)) = cc::run(tmeet(&["auth", "status"])) {
         return status_is_logged_in(&so) || status_is_logged_in(&se);

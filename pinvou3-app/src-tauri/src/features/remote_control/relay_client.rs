@@ -366,9 +366,10 @@ async fn run_revocation_loop(
         let (ws, _) = match connected {
             Ok(pair) => pair,
             Err(error) => {
-                // 撤销通道的 Connection 事件只有本 loop 的 channel-closure 检测在
-                // 消费（manager 侧只匹配 Message），失败原因在这里补一条日志，
-                // 与主循环的连接失败日志对齐。
+                // The revocation channel's Connection events are consumed
+                // only by this loop's channel-closure detection (the manager
+                // side matches only Message), so log the failure reason here,
+                // aligned with the main loop's connect-failure log.
                 eprintln!(
                     "[web-access] connect relay for revocation failed: {error} ({relay_url})"
                 );

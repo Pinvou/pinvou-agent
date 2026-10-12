@@ -1,8 +1,10 @@
 //! Tauri 命令实现。前端通过 `invoke(name, args)` 调到这里。
 //!
-//! 本模块按域拆分为数十个子模块、注册约四百条命令，逐条清单不在这里维护：
-//! 权威命令面以 `lib.rs` 的 `generate_handler!` 为准，`protocol_tests.rs`
-//! 把该清单钉为本模块的协议契约，新增命令时两边同步。
+//! This module is split into dozens of domain submodules registering ~400
+//! commands; the itemized list is not maintained here. The authoritative
+//! command surface is `lib.rs`'s `generate_handler!`, and `protocol_tests.rs`
+//! pins each domain module's source-side command list as its protocol
+//! contract — keep the two sides in sync when adding commands.
 
 pub(crate) mod acp_providers;
 pub(crate) mod artifacts;

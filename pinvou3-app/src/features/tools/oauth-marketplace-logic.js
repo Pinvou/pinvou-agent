@@ -1,4 +1,5 @@
-// copy 文案由 UI 边界(ToolStoreView)按当前语言传入 storeCopy.oauthOutcome,必填。
+// copy: the UI boundary (ToolStoreView) passes storeCopy.oauthOutcome for the
+// current language; required, there is no built-in default.
 export function resolveOAuthInstallOutcome(toolName, loginResult, authStatus, copy) {
   const connected = !!authStatus?.oauth_token_present;
   if (connected) {

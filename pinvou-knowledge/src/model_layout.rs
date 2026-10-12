@@ -1,18 +1,21 @@
-//! 模型目录布局的单一事实来源。
+//! Single source of truth for the model directory layout.
 //!
-//! 独立于 `client`/`server`/`local-embed` 特性门：下载清单（`model_download`）、
-//! 完整性探测与进程内 Embedder 装载（`embedding`）共用同一份布局描述，
-//! 避免各处分别维护同一份目录布局。
+//! Independent of the `client`/`server`/`local-embed` feature gates: the
+//! download manifest (`model_download`), the completeness probe, and the
+//! in-process Embedder load (`embedding`) share one layout description
+//! instead of each maintaining its own copy.
 
 use std::path::{Path, PathBuf};
 
-/// 运行时加载所需的 ONNX 文件候选（相对模型目录，按优先级排列）：优先根目录
-/// 单文件，其次 onnx/ 子目录。下载落盘布局、完整性探测与 Embedder 装载共用，
-/// 避免各处分别维护同一份目录布局。
+/// ONNX file candidates needed at load time (relative to the model directory,
+/// in priority order): prefer a root-level single file, then the `onnx/`
+/// subdirectory. Shared by the download layout, the completeness probe, and
+/// the Embedder load so the list is maintained in one place.
 pub const MODEL_ONNX_CANDIDATES: [&str; 3] =
     ["model.onnx", "onnx/model_int8.onnx", "onnx/model.onnx"];
 
-/// 运行时加载所需的 tokenizer/config 文件（相对模型目录）。
+/// Tokenizer/config files needed at load time (relative to the model
+/// directory).
 pub const MODEL_TOKENIZER_FILES: [&str; 4] = [
     "tokenizer.json",
     "config.json",
@@ -20,7 +23,8 @@ pub const MODEL_TOKENIZER_FILES: [&str; 4] = [
     "tokenizer_config.json",
 ];
 
-/// 按 [`MODEL_ONNX_CANDIDATES`] 顺序定位模型目录中可加载的 ONNX 文件。
+/// Locate a loadable ONNX file inside the model directory, in
+/// [`MODEL_ONNX_CANDIDATES`] order.
 pub fn find_onnx_in(dir: &Path) -> Result<PathBuf, String> {
     MODEL_ONNX_CANDIDATES
         .iter()

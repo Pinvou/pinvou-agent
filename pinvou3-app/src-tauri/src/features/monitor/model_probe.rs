@@ -659,13 +659,16 @@ fn parse_prom_metric(text: &str, name: &str) -> Option<f64> {
     None
 }
 
-/// 按 base_url 主机段判后端类型:环回/私有 IP 段(含 docker 主机别名)= 本地推理引擎
-/// (`local`,自托管 vLLM,有 Prometheus 指标);公网域名/IP = 云端 API(`remote`);
-/// 空/解析失败 = 配置异常(`invalid`)。
-/// 前端监控卡的「本地模型/远端模型/配置异常」标签 + 指标适用性 + 小窗口告警都据此。
-/// 本地/私有判定与引擎路由共用 core 的 `base_url_uses_local_or_private`(同一真相,
-/// `local_native_display_window` 的门控也用它),不再各持一套字符串解析:
-/// host.docker.internal 等别名与带尾点的本机主机同判本地,而非误判云端。
+/// Classify the backend kind by the base_url host: loopback/private IP
+/// ranges (including docker host aliases) = local inference engine
+/// (`local`, self-hosted vLLM with Prometheus metrics); public domain/IP =
+/// cloud API (`remote`); empty/unparseable = invalid config (`invalid`).
+/// Drives the monitor card's local/remote/invalid label, metric
+/// applicability, and the native-window alert. The local/private decision
+/// shares core's `base_url_uses_local_or_private` with engine routing (one
+/// source of truth; the `local_native_display_window` gate uses it too) —
+/// no more separate string parsing: `host.docker.internal`-style aliases
+/// and trailing-dot local hosts classify as local instead of cloud.
 fn vllm_target_kind(upstream: &str) -> &'static str {
     let s = upstream.trim();
     if s.is_empty() {
@@ -797,7 +800,9 @@ mod tests {
         assert_eq!(vllm_target_kind("http://localhost:8000/v1"), "local");
         assert_eq!(vllm_target_kind("http://192.168.1.5:8000/v1"), "local");
         assert_eq!(vllm_target_kind("http://172.16.0.9:8000/v1"), "local");
-        // docker 主机别名(host.docker.internal):与引擎路由共用 core 分类器,同判本地
+        // docker host alias (host.docker.internal): shares the core
+        // classifier with engine routing, so it classifies local like the
+        // engine does
         assert_eq!(
             vllm_target_kind("http://host.docker.internal:8000/v1"),
             "local"

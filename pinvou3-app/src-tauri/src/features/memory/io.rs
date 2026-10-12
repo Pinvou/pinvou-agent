@@ -1186,7 +1186,8 @@ fn compact_timed_memory_items(items: Vec<TimedMemoryItem>, kind: &str) -> Vec<Ti
     } else {
         CURRENT_FOCUS_ACTIVE_MAX_STORED
     };
-    // write_timed_memory_file 已在上一步完成 normalize + dedupe，这里只做分桶截断。
+    // write_timed_memory_file already normalized + deduped in the previous
+    // step; this only does the two-bucket truncation.
     compact_two_buckets(
         items,
         |_| true,
@@ -1854,8 +1855,9 @@ fn compact_never_memory_items(items: &[NeverMemoryItem]) -> Vec<NeverMemoryItem>
         })
         .collect();
     normalized.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-    // 单桶 store：首见 pattern 去重后整体截断到容量上限（与原“去重 + break”
-    // 单趟循环等价），复用双桶骨架时 active 桶恒空。
+    // Single-bucket store: dedupe by first-seen pattern, then truncate to
+    // the capacity cap (equivalent to the old dedupe + break single pass);
+    // the active bucket stays empty when reusing the two-bucket skeleton.
     let mut deduped: Vec<NeverMemoryItem> = Vec::new();
     for item in normalized {
         if !deduped
@@ -1901,8 +1903,8 @@ fn compact_recent_work_items(items: &[RecentWorkItem]) -> Vec<RecentWorkItem> {
     )
 }
 
-/// “active 或 archived”二值 status 归一化：recent_work 与 timed store 各有一份
-/// 相同的 match，收敛到这里避免两处漂移。
+/// Normalize a binary "active or archived" status: the recent_work and timed
+/// stores each had an identical match; converge here so they cannot drift.
 fn normalize_status_active_or_archived(status: &str) -> String {
     match clean_text(status, 20).as_str() {
         "active" => "active".to_string(),
@@ -1947,9 +1949,10 @@ fn normalize_timed_memory(item: &mut TimedMemoryItem) {
     item.ttl_days = item.ttl_days.clamp(1, 90);
 }
 
-/// Timed store 的内容同一性 key：与 `pending_content_key` 一致用单空格拼接
-/// （旧的 "" 拼接会把 "a b" 和 "ab" 归并成同一个 key）。收紧后最激进的归并
-/// 由 `timed_memory_texts_are_related` 的 bigram 相似度兜底。
+/// Content-identity key for the timed store: joined with a single space,
+/// matching `pending_content_key` (the old "" join collapsed "a b" and "ab"
+/// into the same key). The most aggressive merging is still backed by the
+/// bigram similarity in `timed_memory_texts_are_related`.
 fn timed_memory_text_key(text: &str) -> String {
     clean_text(text, 120)
         .split_whitespace()
@@ -2152,8 +2155,9 @@ fn compact_pending_memory_items(items: &[PendingMemoryItem]) -> Vec<PendingMemor
                 .cmp(&a.updated_at)
                 .then_with(|| b.created_at.cmp(&a.created_at))
         },
-        // normalize_pending_memory 之后 status 只剩 pending/confirmed/ignored，
-        // 观察态（"observed"）无生产者，未知值一并落入 pending 桶。
+        // After normalize_pending_memory only pending/confirmed/ignored
+        // remain; the observed state has no producer, and unknown values
+        // land in the pending bucket as well.
         |item| item.status == PENDING_STATUS_PENDING,
         PENDING_MEMORY_ACTIVE_MAX_STORED,
         PENDING_MEMORY_RESOLVED_MAX_STORED,

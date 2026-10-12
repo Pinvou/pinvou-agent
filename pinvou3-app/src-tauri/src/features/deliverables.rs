@@ -65,8 +65,9 @@ const DV_VIEW_CACHE_LIMIT: usize = 512;
 static DV_VIEW_CACHE: StampCache<DvSessionView> = StampCache::new(DV_VIEW_CACHE_LIMIT);
 
 fn deliverable_category(ext: &str) -> &'static str {
-    // 仅收 DELIVERABLE_EXTS 过滤后的扩展名(唯一调用点先经该过滤),更宽的
-    // 扩展名(如 mhtml/odp/bmp)在此永不命中,不列。
+    // Only extensions that survive the DELIVERABLE_EXTS filter (the sole
+    // caller filters first) can reach this match; broader extensions such as
+    // mhtml/odp/bmp never get here, so they are not listed.
     match ext {
         "html" | "htm" => "web",
         "ppt" | "pptx" => "ppt",

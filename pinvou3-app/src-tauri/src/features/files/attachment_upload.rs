@@ -443,9 +443,11 @@ fn ingest_managed_file(path: &Path) -> Result<IngestResult, String> {
     file_ingest::ingest_attachment(&compatible)
 }
 
-/// 摄入跑 LibreOffice/pandoc 子进程（分钟级），必须离开 async worker 线程。
-/// join 失败或管线报错时删除 `cleanup_dir`（调用方各自的已采纳/已提交附件
-/// 目录）再返回错误；成功时保留该目录，由调用方自行收尾（如清理来源草稿）。
+/// Ingestion runs LibreOffice/pandoc subprocesses (minutes-scale), so it must
+/// leave the async worker thread. On join failure or pipeline error the
+/// caller's `cleanup_dir` is removed (each caller's own adopted/committed
+/// attachment directory) before returning the error; on success the directory
+/// is kept for the caller to finish with (e.g. clearing the source draft).
 async fn ingest_managed_file_async(
     path: &Path,
     cleanup_dir: &Path,

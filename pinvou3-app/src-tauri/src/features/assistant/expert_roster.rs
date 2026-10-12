@@ -121,9 +121,12 @@ impl ExpertRosterSnapshot {
                     // 对存储描述的子串匹配永远失配（字面 `<` 查询匹配不到
                     // `\u003c` 文本），还往 overlay 塞 `\u003c` 噪声。正文
                     // （instructions）是卡片的产品本体，不动。
-                    // composed 的两个成分都已剥过不可见字符，这里的剥除是
-                    // 幂等空转，与纯截断限长同义；统一走 personas 的
-                    // bounded_visible 出口（同 mcp_inventory），不再本地另写。
+                    // Both parts of `composed` already had invisible chars
+                    // stripped, so the strip inside bounded_visible is an
+                    // idempotent no-op here — equivalent to a pure
+                    // length-capped truncation; route through the personas
+                    // bounded_visible helper (same as mcp_inventory) instead
+                    // of keeping a local copy.
                     description: Some(crate::features::personas::bounded_visible(
                         &composed,
                         PROFILE_DESCRIPTION_CHAR_LIMIT,

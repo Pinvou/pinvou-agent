@@ -163,8 +163,10 @@ fn drain_for_auth_event<R: std::io::Read + Send + 'static>(
                     break;
                 }
             };
-            // 不开兜底 "token"：钉钉 CLI 的正常 JSON 行含 camelCase token 字段名，
-            // 开了会把非敏感行也整体吞掉（与旧本地实现行为一致）。
+            // No bare-"token" fallback: the dingtalk CLI's normal JSON lines
+            // contain camelCase token field names, so the fallback would
+            // swallow non-sensitive lines wholesale (same as the old local
+            // implementation).
             if let Some(safe_line) = cc::safe_auth_log_line(&line, false) {
                 let _ = tx.send(AuthEvent::Line(safe_line));
             }
@@ -178,8 +180,9 @@ fn drain_for_auth_event<R: std::io::Read + Send + 'static>(
     })
 }
 
-/// `dws auth status --format json` 判当前是否已登录。会 spawn dws;未安装时
-/// spawn 失败折叠为 false(单探测,同企微/飞书,不必先白跑一次 `--version`)。
+/// Logged-in check via `dws auth status --format json`. Spawns dws; when
+/// not installed the spawn failure folds to false (single probe, same as
+/// wecom/feishu — no wasted `--version` boot first).
 pub(crate) fn is_authenticated() -> bool {
     if let Ok((_, so, se)) = cc::run(dws(&["auth", "status", "--format", "json"])) {
         return auth_is_authenticated_str(&so) || auth_is_authenticated_str(&se);

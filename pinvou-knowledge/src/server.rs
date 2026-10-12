@@ -740,7 +740,8 @@ async fn source_window(
 }
 
 fn is_private_network_ip(address: IpAddr) -> bool {
-    // 加入请求校验的是直连来源，宿主本机回环同样是合法来源（接受回环）。
+    // Join requests validate the directly-connected source, for which the
+    // host's own loopback is a legitimate source (allow loopback).
     crate::net_policy::is_private_network_ip(address, true)
 }
 
@@ -915,8 +916,9 @@ mod tests {
             .unwrap()
             .service;
         let app = router(service);
-        // /api/v1/info 是唯一公开端点：CLI --health-check(deploy/install.sh)与
-        // 打包 host-helper 的探活都依赖未认证可达，本测试同时钉住这一点。
+        // /api/v1/info is the only public endpoint: the CLI --health-check
+        // (deploy/install.sh) and the packaged host-helper probe both depend
+        // on unauthenticated reachability; this test pins that too.
         let info = app
             .clone()
             .oneshot(

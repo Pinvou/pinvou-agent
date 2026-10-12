@@ -17,7 +17,8 @@ const { resolveOAuthInstallOutcome } = ctx;
 const toolName = 'Canva 可画';
 const pendingAuth = { mcp_configured: true, oauth_token_present: false, status: 'config_installed_auth_pending', server_name: 'canva_mcp' };
 const connectedAuth = { mcp_configured: true, oauth_token_present: true, status: 'connected', server_name: 'canva_mcp', message: 'OAuth 授权已完成。' };
-// copy 参数必填(生产侧传 tri-lingual storeCopy.oauthOutcome):测试用与原 zh 缺省一致的文案作本地 fixture。
+// copy is required (production passes the tri-lingual storeCopy.oauthOutcome);
+// the test uses a local fixture identical to the original zh default.
 const zhOutcomeCopy = {
   connectedTitle: (name) => `已连接「${name}」`,
   timeoutTitle: (name) => `${name}授权超时`,

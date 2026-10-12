@@ -142,10 +142,12 @@ pub(super) fn pdf_tool_command(command: &str) -> Command {
     crate::platform::process::HiddenCommand::new(crate::platform::os::pdf_tool_path(command))
 }
 
-/// `pdftotext -layout <pdf> -` → stdout 文本，pdf 正文与演示稿转 PDF 后的
-/// 抽取共用。带 kill 的超时兜底（60s）：损坏/诡异封装的输入可让 demuxer 挂死。
-/// 失败文案沿用两处调用点的历史措辞（spawn 失败 → 「pdftotext 调用失败」，
-/// 非零退出 → 「pdftotext 失败」）；kind/warning 的 IngestResult 包装由调用方负责。
+/// `pdftotext -layout <pdf> -` → stdout text, shared by pdf-body extraction
+/// and presentation-to-PDF extraction. Kill-backed timeout (60s): corrupt or
+/// oddly wrapped input can hang the demuxer. Failure wording keeps the two
+/// call sites' historical strings (spawn failure → 「pdftotext 调用失败」,
+/// non-zero exit → 「pdftotext 失败」); the kind/warning IngestResult wrapping
+/// stays with the caller.
 pub(super) fn pdftotext_extract(pdf: &Path) -> Result<String, String> {
     let mut command = pdf_tool_command("pdftotext");
     command.arg("-layout").arg(pdf).arg("-");

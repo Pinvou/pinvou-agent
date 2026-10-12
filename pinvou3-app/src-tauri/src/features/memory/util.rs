@@ -26,8 +26,9 @@ pub(super) fn clean_scalar(value: &str) -> String {
     clean_text(value, 200)
 }
 
-/// 把连续空白折叠为单个空格（无字数上限）。`clean_text` = 本函数 + 截断；
-/// render 的快照行拼装只需要不截断的版本。
+/// Collapse consecutive whitespace into single spaces (no length cap).
+/// `clean_text` = this function + truncation; render's snapshot-line assembly
+/// only needs the uncapped version.
 pub(super) fn collapse_whitespace(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -658,10 +659,11 @@ pub(super) fn looks_ongoing_work_status(value: &str) -> bool {
         .any(|needle| value.contains(needle))
 }
 
-/// “交付/工作已完成” CJK needles 的唯一数据源：定时库状态探测
-/// （`looks_completed_work_status`）与 LLM 复盘的交付触发器
-/// （`assistant_suggests_delivery_complete`）共用，保持一个 const 让两个
-/// 探针无法漂移（此前“已经交付”只触发了复盘触发器）。
+/// Single source for the "delivery / work completed" CJK needles: shared by
+/// the timed-store status probe (`looks_completed_work_status`) and the LLM
+/// review's delivery trigger (`assistant_suggests_delivery_complete`); one
+/// const keeps the two probes from drifting (previously "已经交付" only
+/// triggered the review trigger).
 pub(super) const COMPLETED_WORK_STATUS_NEEDLES: [&str; 25] = [
     "已完成",
     "已经完成",

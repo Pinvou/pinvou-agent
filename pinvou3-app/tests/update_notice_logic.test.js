@@ -94,7 +94,7 @@ assert.strictEqual(vmWindowsReady.disabled, true);
 
 // macOS 与 Linux 同型:后端 Ok(false) → 前端自动 restartApp(app.restart() 按路径 exec 新
 // bundle,inode 语义与 Linux 一致)。与 Windows 启动外部 MSI 安装器不同。因此 macOS ready
-// 应走 restart 分支(label=立即重启, action=restart, disabled=false)。
+// resolves through the restart branch (label=立即重启, action=restart, disabled=false).
 const vmMacReady = logic.viewModel(
   { updateReady: true },
   { available: true, latest_version: '1.2.0', platform: 'macos' }
@@ -133,9 +133,10 @@ assert.strictEqual(
 );
 
 // unknown platform falls back to download-and-install (no auto-restart):
-// restartAfterInstall 只对 linux/macos 为 true(见 update-notice-logic.js),未知平台(如未来
-// 新增的 freebsd)不应假定可自动重启,故 idle 态走"下载并安装"而非"升级并重启",
-// action='download'(非 'restart')、restartAfterInstall=false。
+// only linux/macos support auto-restart (see update-notice-logic.js), so an
+// unknown platform (e.g. a future freebsd) must not assume it can restart:
+// the idle state resolves to download-and-install rather than
+// upgrade-and-restart (action='download', not 'restart').
 const vmUnknownIdle = logic.viewModel(
   { appVersion: '1.1.0' },
   { available: true, latest_version: '1.2.0', platform: 'freebsd' }
