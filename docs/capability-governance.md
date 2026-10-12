@@ -210,9 +210,13 @@ over-refusal direction), and the next write renames the symlink aside into a
 preserved `.unreadable.<timestamp>` copy and recovers with a regular file;
 when the file is corrupt (a parse failure or invalid UTF-8), the locked path
 runs the corrupt-recovery flow disclosed below, and the
-sibling-evidence branch (either a `.corrupt.*` quarantine backup or an
-`.unreadable.*` preserved copy — both count) that deliberately skips the
-legacy migration in §7's sibling-evidence bullet.
+sibling-evidence branch (a `.corrupt.*` quarantine backup, an `.unreadable.*`
+preserved copy, or the Windows atomic-replace crash strand
+`.disabled_bundles.json.bak-<pid>-<nanos>` — all three count; the POSIX
+replace is a single rename and never produces the strand, and the `.tmp-`
+staging strand is deliberately NOT evidence: beside an absent live file it
+means a crashed first write, the never-had-a-store cohort) that deliberately
+skips the legacy migration in §7's sibling-evidence bullet.
 
 **During a corrupt/unreadable window**, unlocked policy reads uniformly
 return the over-deny guess (the disabled set
@@ -429,7 +433,16 @@ shares the family — the refusal and the consent sync's own fold are two
 unsynchronized evaluations (the import channel re-checks under its lock; the
 install/connect channels read the package state twice around it), so a
 claimant installed inside that gap can swallow an already-approved
-registration into its known-bundle skip (disclosed).
+registration into its known-bundle skip (disclosed). A consent-REVERTING
+member sits at the gate's degraded probe: a contended read that misses a
+just-written ledger pair routes an already-enabled pack into the un-gated
+sync, whose locked re-check does not consult the ledger — the pushed
+default-off row reverts that enable until it is re-enabled (failed-persist
+cohort plus a same-instant gated pass; fail-closed, self-converging on
+re-enable, never exposing anything). Making the inner sync always
+ledger-aware is the registered convergence; deferred because the restore
+gate's unconditional registration shares that path and deserves its own
+analysis.
 
 **The install-rollback leg** (clearing consent rows
 when the network verification fails after a
@@ -553,7 +566,20 @@ committed, leaving a dead engine entry pointing at the moved directory (the
 fail-closed direction; no active scan will mistakenly adopt it, and a
 manual uninstall cleans it up; the marker itself survived the crash — which
 is what routed the case to this arm — and is cleared once the arm
-converges).
+converges). Two further crash windows sit OUTSIDE the import journal's
+coverage, both consent-closed and data-preserving, disclosed here as the
+same residue class: a crash in the recycle leg between the pack-directory
+rename into the bin and the manifest save strands the sole Upload copy at
+the recycle root with no manifest entry — invisible to list/restore/purge
+until moved by hand (in-process failures in the same window are compensated
+by the directory rollback; only the crash is not); and a crash during a
+restore's `take_back` (or between its return and the registration rebuild)
+leaves a live, unregistered pack directory at the restore target — consent
+rows were persisted BEFORE `take_back` by the deny-first gate, so the pack
+fails closed (record-driven uninstalls keep the scope rows), but retry is
+blocked until the stale bin entry is purged and the directory removed by
+hand. A recycle/restore journal of the import lane's shape is the registered
+convergence direction.
 
 **The lease/marker/lock/backup files' deletion rules are stated in one
 place: the runtime-data table of `工具市场.md`.** Its shared closing
@@ -770,8 +796,7 @@ UI 或状态层出 bug 也放不出白名单外能力。已知开放侧翼：CLI
   materializing write — in steady state the owner row survives whole-table
   writes except under boundary (1)'s stale-snapshot race (see boundary (1)
   above) — and that exposure does not disappear across scope migration.
-- **By-name catalog reinstall is not landing-lease-covered**（round-31 review
-  MAJOR 3，评审 #5482149908）：`install_marketplace_tool_sync` →
+- **By-name catalog reinstall is not landing-lease-covered**：`install_marketplace_tool_sync` →
   `install_inner` 只串行于进程内事务锁，而 landing lease 的取用方是导入管
   道、用户卸载、回收站还原与启动残留清扫——同 id 目录重装与持 lease 卸载
   跨进程交错时，重装门的 known-skip 可对卸载即将清除的登记放行，包落地时

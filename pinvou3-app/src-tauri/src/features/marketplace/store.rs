@@ -1355,7 +1355,7 @@ mod tests {
         });
     }
 
-    /// Round-27 review (NIT): a planted DIRECTORY at `.installed-from` must
+    /// A planted DIRECTORY at `.installed-from` must
     /// abort the legacy import exactly like the unreadable regular file —
     /// the is_file gate reads it as "no marker", which would silently latch
     /// the one-shot `legacy_imported` gate over a skipped mirror.
@@ -1953,7 +1953,7 @@ mod tests {
         });
     }
 
-    /// round-21 review: `load_locked` runs inside the bundles.json file lock
+    /// `load_locked` runs inside the bundles.json file lock
     /// and — via the scope DenyAll expansion — inside the scope lock's
     /// critical section, so it must route through the hardened read. Symlink
     /// pin (unix-only API, same convention as recycle_bin.rs): a planted

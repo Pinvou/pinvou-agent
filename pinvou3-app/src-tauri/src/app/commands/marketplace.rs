@@ -233,7 +233,14 @@ pub async fn install_marketplace_tool(
     .await
     .map_err(|e| format!("任务执行失败: {e}"))??;
 
-    install_marketplace_tool_post_install(tool_id).await?;
+    // Post-install may refuse (consent persist, divergent-companion gate)
+    // AFTER the sync install above has committed the tool and its mcp.json
+    // server — the revision bump + hot refresh must run on BOTH outcomes, or
+    // a refused post-install leaves live engines blind to the committed
+    // server until respawn (the exact staleness mark_mcp_config_updated
+    // exists to close). After a validation rollback the file no longer
+    // carries the server and the refresh is a harmless re-read.
+    let post_install = install_marketplace_tool_post_install(tool_id).await;
     // 联动安装的 companion 技能影响两个 scope 的启用集：重写在线会话组合目录
     // （下一轮 prompt 即生效，与 uninstall_marketplace_tool 对称，skill 双 scope
     // 治理事件驱动时机 §2.3.2）。
@@ -251,7 +258,7 @@ pub async fn install_marketplace_tool(
     // admission — a package's native tool stays denied, and a newly installed
     // connector's tools stay admitted — until respawn.
     hot_refresh(&pool, true).await;
-    Ok(())
+    post_install
 }
 
 /// Post-install legs of `install_marketplace_tool`, extracted verbatim so the
@@ -1658,13 +1665,10 @@ mod tests {
     }
 
     /// Initialize the code scope while the cross-process lock still works
-    /// (initialized is what makes the DenyAll sync a required write).
+    /// (initialized is what makes the DenyAll sync a required write). Routes
+    /// onto the canonical seed helper in scope.rs.
     fn init_code_scope() {
-        crate::features::marketplace::save_disabled_bundles_for(
-            crate::features::marketplace::ConnectorScope::Code,
-            &["seed-bundle".to_string()],
-        )
-        .expect("code scope must initialize while the lock works");
+        crate::features::marketplace::scope::seed_initialized_code_scope_for_test(&["seed-bundle"]);
     }
 
     fn init_code_scope_then_break_lock() {

@@ -1962,11 +1962,15 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         } catch (e) {
           reportConnectorFailure('ima', e, 'connect');
           // Round-25 minor 5 + round-30 m9 (review #455), merged with #615's
-          // reportConnectorFailure routing: the consent-sync failure copy
-          // (with its "turn them off in the tools list" guidance) must still
-          // surface through the localized template — the generic
-          // operationFailed copy would swallow actionable guidance. The
-          // matcher keys on the backend marker pinned by
+          // reportConnectorFailure routing. Since the deny-first consent gate
+          // (PR #517) the connect flow registers consent BEFORE credentials or
+          // skill content, so today no ima_connect error carries the consent
+          // marker — a refused connect lands nothing and the generic
+          // operationFailed copy is the honest state. The localized template
+          // branch stays defensive: if a post-landing consent leg ever emits
+          // the marker again, its "turn them off in the tools list" guidance
+          // must surface through it instead of the generic copy. The matcher
+          // keys on the backend marker pinned by
           // skill_gate::skill_gate_consent_failure_message_keeps_the_frontend_marker
           // and cross-compared against the Rust constant by
           // consent_marker_frontend.test.mjs.

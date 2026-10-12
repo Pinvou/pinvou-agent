@@ -174,7 +174,7 @@ where
 }
 
 /// The one blocking `write()` discipline, shared by the lock funnel above and
-/// the landing-lease takers (round-28 review: the lease sites took the OS
+/// the landing-lease takers (the lease sites previously took the OS
 /// lock bare, so the same transient race failed an install/uninstall/restore
 /// that the funnel would have absorbed — fail-closed, but inconsistently
 /// hardened). A signal-interrupted flock retries instead of surfacing as a

@@ -297,10 +297,10 @@ pub(crate) fn fail_next_disabled_bundles_write_for_test() -> super::FailpointRes
 /// Test fixture: initialize the Code scope through the real guarded writer
 /// while the cross-process lock still works ("initialized" is what makes the
 /// DenyAll sync a required write). Canonical home of the deny-first seed —
-/// previously hand-rolled twins in connectors/ima.rs and
-/// app/commands/marketplace.rs; new deny-first tests copy this helper. Must
-/// run BEFORE any read-only-home chmod (the write needs a writable home; see
-/// [`pre_create_disabled_bundles_lock_for_test`] for the lock-file ordering).
+/// the connectors/ima.rs and app/commands/marketplace.rs test modules route
+/// onto this helper. Must run BEFORE any read-only-home chmod (the write
+/// needs a writable home; see [`pre_create_disabled_bundles_lock_for_test`]
+/// for the lock-file ordering).
 #[cfg(test)]
 pub(crate) fn seed_initialized_code_scope_for_test(ids: &[&str]) {
     let ids: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
@@ -466,7 +466,7 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
             if corrupt_sidecar_evidence_exists(&home) {
                 log_scope_read_failure(
                     LOG_RECOVERY,
-                    "[marketplace] disabled_bundles.json is gone but a .corrupt.* copy proves a lost store; recovering fail-closed (all scopes fall back to DenyAll), freeze persisted",
+                    "[marketplace] disabled_bundles.json is gone but a crash-evidence sibling (.corrupt.* / .unreadable.* / Windows .bak- strand) proves a lost store; recovering fail-closed (all scopes fall back to DenyAll), freeze persisted",
                 );
                 let recovered = fail_closed_recovered_file();
                 try_freeze_verdict(&recovered, persist_repairs, "lost-store recovery verdict");
@@ -575,8 +575,7 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
                 // freeze — the fail-open direction. The
                 // memo is in-process, consulted only while the file is still
                 // absent, and cleared by the next successful save; a
-                // misjudged fresh keeps the DenyAll fallback (fail-closed,
-                // the registered R11-M4 shape).
+                // misjudged fresh keeps the DenyAll fallback (fail-closed).
                 if !legacy_existed && !upgraded_install {
                     arm_unpersisted_verdict(&file);
                 }
@@ -1472,9 +1471,23 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
 /// round-21 minor 1 keeps the two kinds in separate namespaces) both prove
 /// the converged-era store existed (round-20 MAJOR B).
 fn corrupt_sidecar_evidence_exists(home: &std::path::Path) -> bool {
-    const EVIDENCE_PREFIXES: [&str; 2] = [
+    const EVIDENCE_PREFIXES: [&str; 3] = [
         "disabled_bundles.json.corrupt.",
         "disabled_bundles.json.unreadable.",
+        // Windows atomic-replace crash strand (`.disabled_bundles.json
+        // .bak-<pid>-<nanos>`): ReplaceFileW renames the live store to the
+        // backup before promoting the staged copy, so a crash between the
+        // two leaves the live path ABSENT with the backup beside it — the
+        // same "store existed and was lost without a successful overwrite"
+        // shape the quarantine namespaces prove, under a name this check
+        // must also recognize or the wide signal below initializes plain
+        // EMPTY over it (the fail-open flip this arm exists to prevent).
+        // POSIX never produces the strand (its replace is a single rename);
+        // the `.tmp-` staging strand is deliberately NOT evidence: beside
+        // an absent live file it means a crashed FIRST write (the store
+        // never existed), the never-had-a-store cohort this arm must keep
+        // protecting.
+        ".disabled_bundles.json.bak-",
     ];
     match std::fs::read_dir(home) {
         Ok(entries) => entries.flatten().any(|entry| {
@@ -1547,12 +1560,12 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
     // would strip every installed pack from an uninitialized scope's
     // effective disabled set (plain sessions pass with zero consent,
     // a fail-open flip), and an enable at that moment would
-    // materialize the shrunken expansion into a permanent opt-in
-    // (review #455 R5-B2). Over-disabling uninstalled packs is
+    // materialize the shrunken expansion into a permanent opt-in.
+    // Over-disabling uninstalled packs is
     // harmless: packs installed later are still off by default,
     // consistent with this branch's semantics.
     let manager = MarketplaceManager::new();
-    // Round-23 MINOR 3 hoist: one manifest walk per resolution pass —
+    // One manifest walk per resolution pass —
     // `skill_owner_package`/`skill_gating_owner` each parse every
     // manifest under `bundles_root`, so the skill arms below were
     // O(skills × packs) manifest reads per expansion before this.
@@ -1575,7 +1588,7 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
             // registered skills have no physical nested layout to fall back to. Only the
             // disk leg below walks `skill_gating_owner`: it enumerates exactly the
             // **unclaimed** physical directories and must stay on the same lens as
-            // materialization's directory scan (round-20 minor 3: the asymmetry vs the
+            // materialization's directory scan (the asymmetry vs the
             // record arms is annotated here deliberately, not an oversight).
             for info in SkillMarketplaceManager::new().list_skills() {
                 let pkg = skill_owner_package_with(&tools, &info.id);
@@ -1585,7 +1598,7 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
         }
     };
     ids.extend(builtin_cli_bundle_ids().map(str::to_string));
-    // Same as above (round-20 minor 3): the record arm uses the claim mapping, the disk leg the gating mapping.
+    // Same as above: the record arm uses the claim mapping, the disk leg the gating mapping.
     // #584 composition: the record arm probes STRICTLY — when skill
     // enumeration degrades, the blanket union below biases the freshly
     // computed default toward over-denial instead of letting a failed
@@ -1620,7 +1633,7 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
         let pkg = skill_owner_package_with(&tools, &skill_id);
         push_unique(&mut ids, pkg);
     }
-    // Disk-derived skill arm (round-19 MAJOR 2): the record-driven
+    // Disk-derived skill arm: the record-driven
     // enumeration above misses packs whose skills live on disk but
     // whose ids never enter the records — MCP-free plugin.json packs
     // (import skips install_upload), under-declared combinations,
@@ -1631,7 +1644,7 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
     // materialization on one truth.
     if let Ok(rd) = std::fs::read_dir(paths::bundles_root()) {
         for entry in rd.flatten() {
-            // Round-26 minor 8 (review #455): skip import staging
+            // Skip import staging
             // (`<id>.tmp`) and landing backup (`<id>.old`) dirs — the
             // same exclusion materialization's scan applies
             // (skill_materialization::skill_source_dirs). A staging
@@ -1647,7 +1660,7 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
                 continue;
             };
             for skill in skills_dir.flatten() {
-                // Same walk, one truth (round-23 MINOR 2): skip stray
+                // Same walk, one truth: skip stray
                 // non-directory entries exactly like materialization's
                 // scan — a `skills/README.md` file would otherwise
                 // become a junk owner id that the seeding below then
@@ -1657,6 +1670,15 @@ fn resolve_scope_disabled_ids(file: &DisabledBundlesFile, scope: ConnectorScope)
                 }
                 let name = skill.file_name().to_string_lossy().into_owned();
                 if name.is_empty() {
+                    continue;
+                }
+                // Same guard as the pack-level scan above, one level down:
+                // a preset install's staged skill dir
+                // (`bundles/<owner>/skills/<name>.tmp`, stranded by a crash
+                // mid-install — the skill lane holds no landing mark) would
+                // otherwise resolve through the physical fallback to a
+                // `<name>.tmp` suffix-owner id the seeding below persists.
+                if name.ends_with(".tmp") || name.ends_with(".old") {
                     continue;
                 }
                 let pkg =
@@ -1721,7 +1743,7 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Resul
         let key = scope.as_str().to_string();
         let was_uninitialized = !file.initialized.contains(&key);
         let previous = file.scopes.get(&key).cloned().unwrap_or_default();
-        // First composer write on an uninitialized DenyAll scope (round-13 B1):
+        // First composer write on an uninitialized DenyAll scope:
         // the composer holds the *effective* set — the full on-the-fly DenyAll
         // expansion on a fresh install, every pack rendered off — and sends the
         // whole list. Without seeding, that write would materialize the expansion
@@ -1764,12 +1786,12 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Resul
         // and stay off (`previous ∩ new`): the user did not transition them in
         // this write, and dropping the marker would turn a pack they never touched
         // into an explicit opt-out that the welcome/scene opt-in has to refuse —
-        // the round-11 B2 contradiction, re-opened by any unrelated composer
-        // toggle (round-12 self-review). Entries entering the list here are the
+        // a contradiction re-opened by any unrelated composer
+        // toggle. Entries entering the list here are the
         // user's own verdict and carry no marker; entries leaving it are on again,
         // so their marker goes with them.
         let retained: Vec<String> = if was_uninitialized {
-            // Round-13 B1: markers come from the pre-write expansion (above), not
+            // Markers come from the pre-write expansion (above), not
             // from `previous ∩ new` — on a fresh install `previous` is empty, so
             // the persisted-list filter would retain nothing and strand every
             // default as an unattributed opt-out. Over-attribution is safe: a
@@ -1792,26 +1814,25 @@ pub fn save_disabled_bundles_for(scope: ConnectorScope, ids: &[String]) -> Resul
         } else {
             file.default_off_scopes.insert(key.clone(), retained);
         }
-        // Round-23 MINOR 4 honesty note (direction corrected in round-24 minor
-        // 9): when this write lands over an unreadable/recovered store (the
+        // Honesty note: when this write lands over an unreadable/recovered store (the
         // `UNREADABLE_ORIGINAL` / `PENDING_CORRUPT_RECOVERY` paths), the
         // in-memory file's scopes are uninitialized — the next composer save
         // takes the seeding arm above, which ADDS install-default markers to the
         // re-seeded entries. The original bytes are preserved rename-aside, but
-        // attribution is lost in the opposite direction the round-23 wording
-        // claimed: trapped user opt-outs are re-persisted as liftable
+        // attribution is lost in the opposite direction: trapped user opt-outs
+        // are re-persisted as liftable
         // install-defaults, not as explicit verdicts — persisting entries
         // without markers would have made them MORE explicit, not less.
         // Attribution is lost, not
         // the verdicts; recovering the original's markers is the corrupt-recovery
         // rebuild's job, not this writer's.
-        // The persist is fail-loud (round-19 MAJOR 1): main's #563 made this
+        // The persist is fail-loud: main's #563 made this
         // writer's failure a user-visible command error (the frontend rolls the
         // toggle back and alerts), and with #563 now in this PR's merge base,
         // keeping the old fire-and-forget tail would silently downgrade a shipped
         // contract. The #515 rework still owns the deeper composer concerns — the
         // whole-list replace's cross-process RMW and the stale-snapshot
-        // resurrection (round-14 M1) — but a lost write now surfaces instead of
+        // resurrection — but a lost write now surfaces instead of
         // rendering success over unpersisted state.
         try_save_disabled_bundles_file(&file)
     })
@@ -1922,7 +1943,7 @@ pub(crate) fn refuse_owner_claimed_id(id: &str, folded: &str) -> Result<(), Stri
 /// gated show materializing IN FLIGHT across such a teardown — the dirs
 /// re-land after the strip — re-registers through its post-materialization
 /// sync instead of vouching for the cleared consent.
-pub fn deny_first_register_connector(connector_id: &str, show: bool) -> Result<(), String> {
+pub(crate) fn deny_first_register_connector(connector_id: &str, show: bool) -> Result<(), String> {
     if !show {
         return Ok(());
     }
@@ -1969,7 +1990,7 @@ pub fn deny_first_register_connector(connector_id: &str, show: bool) -> Result<(
 /// (`"<scope>:<package_id>"`): the writers (install/connect sync, the
 /// enable-path recording) and the read sides (gate probe, teardown clear)
 /// must spell the same format — the ledger is match-EXACT by design (see the
-/// round-32 minor 1 note at the teardown clear), so a divergence between any
+/// note at the teardown clear), so a divergence between any
 /// writer and the probe/clear silently breaks ledger attribution.
 fn ledger_key(scope: &str, package_id: &str) -> String {
     format!("{scope}:{package_id}")
@@ -1977,7 +1998,7 @@ fn ledger_key(scope: &str, package_id: &str) -> String {
 
 /// The sync-ledger keys a pack owns across all scope modes
 /// (`"<mode>:<package_id>"`; the teardown clear must match them exactly —
-/// see the round-32 minor 1 note at the clear).
+/// see the note at the clear).
 fn ledger_keys_for(package_id: &str) -> Vec<String> {
     SessionMode::ALL
         .iter()
@@ -2036,7 +2057,17 @@ pub(crate) fn consent_gate_bundle_already_known(package_id: &str) -> bool {
         // sync instead of letting the re-landed dirs vouch for the stripped
         // consent (cross-process — the per-id import lock is process-local).
         // Degrade direction: a contended read may miss a just-written entry
-        // and register (over-denial, idempotent).
+        // and fall through to the gate's registration. For a fresh pack that
+        // is the over-denial default. The one corner where it is not
+        // idempotent is the failed-persist cohort: the user's enable and its
+        // ledger pair land in ONE save, and a probe reading the pre-save
+        // snapshot routes the already-enabled pack into the un-gated sync,
+        // whose locked re-check does not consult the ledger — the pushed
+        // default-off row reverts that enable until it is re-enabled. Narrow
+        // (needs the cohort plus a same-instant gated pass), fail-closed, and
+        // disclosed in §3.2; making the inner sync always ledger-aware is the
+        // registered follow-up (deferred: the restore gate's unconditional
+        // registration shares that path and deserves its own analysis).
         let ledger = load_disabled_bundles_file().install_default_synced;
         if ledger_has_any_mode(&ledger, package_id) {
             return true;
@@ -2114,7 +2145,7 @@ fn sync_deny_all_scopes_inner(raw_id: &str, ledger_gated: bool) -> Result<(), St
             let key = mode.as_str();
             let ledger_key = ledger_key(key, &package_id);
             if !file.initialized.contains(key) {
-                // Round-32 MAJOR 1 (review #455): the uninitialized arm must still
+                // The uninitialized arm must still
                 // record the pair. A connect/install sync on a fresh home runs
                 // exactly here — plain is uninitialized by design until the
                 // user's first composer/welcome/scene write materializes it — so
@@ -2136,7 +2167,7 @@ fn sync_deny_all_scopes_inner(raw_id: &str, ledger_gated: bool) -> Result<(), St
             let ids = file.scopes.entry(key.to_string()).or_default();
             if !ids.iter().any(|id| id == &package_id) {
                 ids.push(package_id.clone());
-                // Mark the entry as install-written (round-11 B2): the off is a
+                // Mark the entry as install-written: the off is a
                 // default, not a user verdict — later user-initiated enables may
                 // remove it without tripping the explicit-opt-out refusal.
                 let defaults = file.default_off_scopes.entry(key.to_string()).or_default();
@@ -2228,7 +2259,7 @@ pub fn remove_bundle_from_disabled_scopes_exact(package_id: &str) -> Result<(), 
         // The removal sweeps all three maps identically: the stored switches,
         // the visibility sets (a leftover hidden entry would keep a future
         // same-id reinstall invisible), and the install-default markers
-        // (round-12 self-review: a stale marker would later let a
+        // (a stale marker would later let a
         // welcome/scene opt-in lift a *user* off that re-added the same id
         // — uninstall or logout clears the stored entry, then the user
         // switches the connector off again).
@@ -2242,13 +2273,13 @@ pub fn remove_bundle_from_disabled_scopes_exact(package_id: &str) -> Result<(), 
             ids.retain(|id| id != package_id);
             changed |= ids.len() != before;
         }
-        // Round-31 BLOCKER (review #455): teardown also clears the pack's
+        // Teardown also clears the pack's
         // install-default sync ledger entries, so a fresh install / reconnect
         // re-syncs default-off. This is the TEARDOWN-only hook: the composer
         // enable path rewrites the scope lists wholesale and deliberately does
         // NOT come through here — a user enable must keep the ledger entry
         // (that is what makes the enable sticky against the startup refresh).
-        // Round-32 minor 1 (review #455): the entries are `"<scope>:<pack>"`, so
+        // The entries are `"<scope>:<pack>"`, so
         // the clear matches them EXACTLY per scope key — a suffix match would let
         // a pack id whose tail equals another pack id (`a:b` vs `b`) lose its
         // ledger entry on the other pack's teardown (spurious default-off re-push
@@ -2332,10 +2363,10 @@ pub fn enable_packages_in_scope(
         if file.initialized.contains(key) {
             // Initialized scope: refuse only ids the **user** explicitly turned
             // off — stored entries not attributable to the install default
-            // (round-11 B2 fixes the round-10 Major 2 contradiction: install-sync
+            // (the install-sync
             // writes stored+default_off, so a just-installed pack stays enableable
             // and the welcome/scene opt-in works for the upgraded cohort).
-            // Round-16 minor 2 caveat: ids absent from the stored list are treated
+            // Caveat: ids absent from the stored list are treated
             // as already-on (`not_applied` stays empty here) — the
             // install-commits-after-snapshot race that m3 reports for the
             // expansion arm has no equivalent signal in this arm.
@@ -2395,7 +2426,7 @@ pub fn enable_packages_in_scope(
                 changed = true;
             } else {
                 // No requested id sits in the expansion: an explicit user action
-                // would be silently voided — log it (round-11 m5; the id is
+                // would be silently voided — log it (the id is
                 // likely not installed/known yet, so there is nothing to persist).
                 log::warn!(
                     "[scope] enable_packages_in_scope({key}): none of {ids:?} matched the DenyAll expansion; no opt-in materialized"
@@ -2408,7 +2439,7 @@ pub fn enable_packages_in_scope(
             hidden.retain(|id| !ids.contains(id));
             changed |= hidden.len() != before;
         }
-        // Round-37 C1 (review #455): an explicit enable also RECORDS the ledger
+        // An explicit enable also RECORDS the ledger
         // pair. The connect/install sync normally wrote it first (the
         // uninitialized arm records without pushing a row); recording here closes
         // the surviving window where that sync's persist FAILED between connect
@@ -2427,7 +2458,7 @@ pub fn enable_packages_in_scope(
             }
         }
         if changed {
-            // Fail-visible (round-12 review): the caller must not report
+            // Fail-visible: the caller must not report
             // "enabled" when the state did not reach disk — the hot refresh reads
             // the file back, so a swallowed failure leaves the tool invisible to
             // the model while the UI claims the opt-in happened.
@@ -2512,7 +2543,7 @@ fn apply_restore_consent_gate_impl(
     super::file_lock::with_file_lock(&disabled_bundles_path(), || {
         let mut file = load_disabled_bundles_file_locked();
         let mut changed = false;
-        // Round-16 MAJOR1, force pass: materialize uninitialized DenyAll scopes
+        // Force pass: materialize uninitialized DenyAll scopes
         // once, before the per-id loop — `expansion ∪ ids` with install-default
         // markers, then initialize the scope. Per-id re-add below then finds every
         // id already stored and only asserts the markers.
@@ -2547,10 +2578,10 @@ fn apply_restore_consent_gate_impl(
         }
         for id in &ids {
             // Initialized DenyAll scopes: add the id back into the disabled set
-            // (consent gate) and mark it install-default (round-11 B2): the
+            // (consent gate) and mark it install-default: the
             // restore click is not a verdict against future opt-ins — the
             // welcome/scene enable may still lift it, same as a fresh install's
-            // default-off. Round-16 minor 1: the marker push lives inside the
+            // default-off. The marker push lives inside the
             // new-entry guard — re-arming a marker on a stored entry without one
             // would re-attribute a surviving user verdict as install-default.
             for mode in SessionMode::ALL {
@@ -2574,7 +2605,7 @@ fn apply_restore_consent_gate_impl(
         }
         if changed {
             // Fire-and-forget here would leave a restored pack live with zero
-            // consent after a failed save (round-10 m4): propagate so the caller
+            // consent after a failed save: propagate so the caller
             // can fail the restore — restore is idempotent, the user retries.
             try_save_disabled_bundles_file(&file)?;
         }
@@ -2610,7 +2641,7 @@ mod tests {
     use crate::features::marketplace::tests::{corrupt_sibling_count, tool_manifest_fixture};
     // Every `quarantine_backups` call in this module sits in a `#[cfg(unix)]`
     // test/helper; an unconditional import dies under Windows' `-D
-    // unused-imports` (round-31 review, Windows CI leg).
+    // unused-imports`.
     #[cfg(unix)]
     use crate::features::marketplace::tests::quarantine_backups;
     use crate::platform::test_support::{make_dir_unreadable_for_test, with_temp_home};
@@ -3018,7 +3049,7 @@ mod tests {
         });
     }
 
-    /// Round-20 MAJOR B, crash-window arm: the live store is gone but a
+    /// Crash-window arm: the live store is gone but a
     /// `.corrupt.*` sibling proves it existed — the NotFound read must
     /// recover fail-closed (no scope initialized, freeze persisted) instead
     /// of letting the wide upgrade signal (installed.json ∪ non-empty
@@ -3038,6 +3069,21 @@ mod tests {
     #[test]
     fn not_found_read_with_unreadable_sidecar_fails_closed() {
         pin_not_found_with_sidecar_evidence_fails_closed("disabled_bundles.json.unreadable.456");
+    }
+
+    /// The Windows atomic-replace crash strand
+    /// (`.disabled_bundles.json.bak-<pid>-<nanos>`) is a third evidence
+    /// namespace — ReplaceFileW renames the live store to the backup before
+    /// promoting the staged copy, so a crash between the two strands the
+    /// backup beside an ABSENT live file. A regression to the two
+    /// quarantine-namespace prefixes only would judge the same lost store
+    /// "upgraded" and initialize plain empty (the fail-open flip, frozen).
+    /// The `.tmp-` staging strand is deliberately not seeded here: beside an
+    /// absent live file it means a crashed FIRST write — the
+    /// never-had-a-store cohort this arm must keep protecting.
+    #[test]
+    fn not_found_read_with_windows_replace_strand_fails_closed() {
+        pin_not_found_with_sidecar_evidence_fails_closed(".disabled_bundles.json.bak-42-7");
     }
 
     #[test]
@@ -3822,21 +3868,10 @@ mod tests {
     }
 
     /// Opens the scope lock file and holds a foreign OS write lock through a
-    /// second fd (the peer-process shape) while `body` runs; the lock
-    /// releases when `body` returns. Closure form: the guard borrows the
-    /// lock, so it must never escape.
+    /// second fd (the peer-process shape) while `body` runs — the shared
+    /// test-only helper in `file_lock`, closed over the scope lock path.
     fn with_foreign_scope_write_lock<T>(body: impl FnOnce() -> T) -> T {
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .open(disabled_bundles_lock_path())
-            .expect("test should be able to open the lock file");
-        let mut foreign = fd_lock::RwLock::new(file);
-        let _foreign_guard = foreign
-            .write()
-            .expect("test should be able to take the foreign cross-process write lock");
-        body()
+        file_lock::with_foreign_write_lock(&disabled_bundles_lock_path(), body)
     }
 
     /// A persistently failing quarantine (read-only
@@ -4076,26 +4111,7 @@ mod tests {
                 // the mutex is parked on (or just failed) the OS-lock acquisition.
                 // Without this handshake the absence assert below could pass
                 // before the worker even reached the lock.
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-                loop {
-                    match file_lock::process_mutex_for(&disabled_bundles_lock_path()).try_lock() {
-                        // Not held by the worker yet — retry shortly.
-                        Ok(guard) => drop(guard),
-                        // Held by the worker: with the foreign lock held, it is
-                        // now either blocked on the OS lock or its acquisition
-                        // failed.
-                        Err(std::sync::TryLockError::WouldBlock) => break,
-                        Err(std::sync::TryLockError::Poisoned(p)) => {
-                            drop(p.into_inner());
-                            break;
-                        }
-                    }
-                    assert!(
-                        std::time::Instant::now() < deadline,
-                        "worker never reached the scope lock acquisition point"
-                    );
-                    std::thread::sleep(std::time::Duration::from_millis(2));
-                }
+                file_lock::wait_until_process_mutex_parked(&disabled_bundles_lock_path(), "scope");
                 assert_data_file_absent_within();
                 handle
             });
@@ -4274,8 +4290,7 @@ mod tests {
     /// baseline so a host test can pin extra clean-shape facts; `None` = the
     /// unreadable-dir fixture was not effective (root, non-unix) and the
     /// host must return — the pin would otherwise pass vacuously (loud
-    /// ROOT-SKIP per the round-11 m12 convention; round-26 minor 9,
-    /// review #455).
+    /// ROOT-SKIP).
     fn pin_degraded_scan_biases_to_overdeny(
         install: &dyn Fn() -> PathBuf,
         owner: &str,
@@ -4690,6 +4705,14 @@ mod tests {
                 std::fs::create_dir_all(&dir).unwrap();
                 std::fs::write(dir.join("SKILL.md"), "# leak").unwrap();
             }
+            // The same guard one level down — a preset
+            // install's staged skill dir (`bundles/<owner>/skills/<name>.tmp`,
+            // the shape a crash mid-install strands; the skill lane holds no
+            // landing mark) must not resolve through the physical fallback
+            // into a `<name>.tmp` suffix-owner id either.
+            let staged = bundles.join("real-pack").join("skills").join("leak.tmp");
+            std::fs::create_dir_all(&staged).unwrap();
+            std::fs::write(staged.join("SKILL.md"), "# leak").unwrap();
             // Round-33 merge note (#585): builtins are feature-switch-governed —
             // the computed default drops ids that normalize to a builtin, so the
             // pin is twofold: no staging-residue suffix-owner junk joins the

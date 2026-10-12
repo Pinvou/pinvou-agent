@@ -431,7 +431,7 @@ fn uninstall_marketplace_tool_aborts_if_oauth_token_delete_fails() {
 }
 
 /// Vacuous uninstall guard, both channels (the skill channel got the same
-/// guard as the tool channel in round-10 review): deny-first registers the
+/// guard as the tool channel): deny-first registers the
 /// consent entry before the install record lands, so a mid-install id has
 /// an entry but no record. An id with no install record and nothing on disk
 /// uninstalls nothing, so both sync cores must leave every deny entry alone
@@ -472,7 +472,7 @@ fn vacuous_uninstall_keeps_fresh_consent_entries() {
     });
 }
 
-/// Round-27 review (minor): the by-hand skill-uninstall lane must refuse a
+/// The by-hand skill-uninstall lane must refuse a
 /// name that belongs to a live claimant pack (companion claim or physical
 /// nesting) — deleting it would remove the claimant's materialized dir and
 /// strip the claimant's own consent rows, re-enabling its still-installed
@@ -2588,7 +2588,7 @@ fn install_validation_failure_rollback_leaves_no_consent_rows() {
             !def.contains(&"yuandian-mcp".to_string()),
             "rollback teardown must remove install-default markers too: {def:?}"
         );
-        // Round-32 minor 2 (review #455): the ledger is the fourth set the exact
+        // The ledger is the fourth set the exact
         // teardown clears — a stranded `plain:yuandian-mcp` entry would keep the
         // startup refresh from ever re-syncing default-off for a same-id
         // reinstall.
@@ -2621,7 +2621,7 @@ fn install_consent_sync_persist_failure_is_honest_and_keeps_pack() {
         // Pre-warm the store so the first-boot freeze persist (inside the sync's
         // read path) consumes nothing — the failpoint must be consumed by the
         // sync's own write. The freeze's own failure mode is already memoized
-        // in-process (round-11 M4), which is exactly what the pre-warm settles.
+        // in-process, which is exactly what the pre-warm settles.
         let _ = crate::features::marketplace::scope::load_disabled_bundles_file();
         let _failpoint =
             crate::features::marketplace::scope::fail_next_disabled_bundles_write_for_test();
@@ -2654,8 +2654,7 @@ fn install_consent_sync_persist_failure_is_honest_and_keeps_pack() {
             mcp["servers"].get("yuandian-syncfail-test").is_some(),
             "the mcp.json server must survive the consent-sync failure"
         );
-        // And the failed write persisted nothing — ledger included (round-32
-        // minor 2).
+        // And the failed write persisted nothing — ledger included.
         let (dis, hid, def) = disabled_file_ids();
         assert!(
             dis.is_empty() && hid.is_empty() && def.is_empty(),

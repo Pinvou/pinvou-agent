@@ -641,10 +641,13 @@ pub use types::{
 // callers) are test-only now and are `cfg(test)` along with their
 // implementations.
 pub use crate::features::marketplace::scope::{
-    deny_first_register_connector, load_disabled_bundles_for, load_disabled_bundles_startup,
-    load_hidden_bundles_for, save_disabled_bundles_for, save_hidden_bundles_for,
-    sync_deny_all_scopes_after_install, sync_deny_all_scopes_refresh, unavailable_bundles_for,
+    load_disabled_bundles_for, load_disabled_bundles_startup, load_hidden_bundles_for,
+    save_disabled_bundles_for, save_hidden_bundles_for, sync_deny_all_scopes_after_install,
+    sync_deny_all_scopes_refresh, unavailable_bundles_for,
 };
+// The connector gate is crate-internal (skill_gate.rs is the only caller);
+// no command layer or engine surface needs it.
+pub(crate) use crate::features::marketplace::scope::deny_first_register_connector;
 #[cfg(test)]
 pub use crate::features::marketplace::scope::{load_disabled_bundles, save_disabled_bundles};
 
@@ -1614,7 +1617,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             .into_iter()
             .find(|r| r.id == tool_id && matches!(r.source, store::BundleSource::Upload(_)));
         // fail-closed：bundles.json 读不出就当可能是 Upload（不可删），不把读失败按
-        // 非 Upload 照删（六轮评审 R1）。
+        // 非 Upload 照删。
         let source_may_be_upload = records_failed || upload_record.is_some();
         // Snapshot before the transaction closure moves `upload_record`: the
         // in-lock cleanup needs to know whether companion dirs were recycled
@@ -2938,7 +2941,7 @@ pub(crate) mod tests {
     /// whose name starts with `{path's file name}{marker}` in `path`'s parent
     /// (the production sidecar naming is `{name}.corrupt.{ts}` — see
     /// `backup_corrupt_json_file`). The regular-file filter keeps the
-    /// no-sibling rule's FIFO skip (round-11 M2). Shared with scope.rs's
+    /// no-sibling rule's FIFO skip. Shared with scope.rs's
     /// tests, which import it as
     /// `crate::features::marketplace::tests::quarantine_backups`; callers
     /// wanting the count use `.len()`.
@@ -5695,7 +5698,7 @@ pub(crate) mod tests {
             std::fs::write(&mcp_path, r#"{"servers":{}}"#).unwrap();
             let installed_path = write_installed_json_raw(b"[\"weather\"]");
             // Root probe: mode bits are no-ops for root, so a green root run
-            // would exercise nothing here — skip loudly (round-11 m12).
+            // would exercise nothing here — skip loudly.
             if !file_unreadable_or_skip(
                 &installed_path,
                 "reconcile_fails_visible_on_unreadable_registry",
@@ -7095,7 +7098,7 @@ pub(crate) mod tests {
             std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
             std::fs::write(&legacy, r#"["weather"]"#).unwrap();
             // Root probe: mode bits are no-ops for root, so a green root run
-            // would exercise nothing here — skip loudly (round-11 m12).
+            // would exercise nothing here — skip loudly.
             if !file_unreadable_or_skip(
                 &legacy,
                 "unreadable_legacy_file_fails_closed_with_frozen_verdict",
@@ -7252,7 +7255,7 @@ pub(crate) mod tests {
             // write this test pins, not an earlier lock-path error.
             crate::features::marketplace::scope::pre_create_disabled_bundles_lock_for_test();
             // Root probe: mode bits are no-ops for root — skip loudly when
-            // the read-only-home fixture cannot take effect (round-11 m12).
+            // the read-only-home fixture cannot take effect.
             if !dir_read_only_or_skip(
                 &home,
                 "enable_packages_persist_failure_is_reported_and_retryable",
@@ -7399,7 +7402,7 @@ pub(crate) mod tests {
             std::fs::write(&path, original).unwrap();
             // 0o000: exists but unreadable. The root probe skips loudly when
             // mode bits have no effect (R7 nit) — a green root run covers
-            // nothing here (round-11 m12).
+            // nothing here.
             if !file_unreadable_or_skip(
                 &path,
                 "unreadable_disabled_bundles_stays_untouched_fail_closed_in_memory",
@@ -7472,7 +7475,7 @@ pub(crate) mod tests {
             let path = write_installed_json_raw(b"[\"feishu\"]");
             // 0o000: exists but unreadable. The root probe skips loudly when
             // mode bits have no effect (R7 nit) — a green root run covers
-            // nothing here (round-11 m12).
+            // nothing here.
             if !file_unreadable_or_skip(
                 &path,
                 "unreadable_installed_json_deny_all_expansion_fails_closed",
@@ -9814,7 +9817,7 @@ pub(crate) mod tests {
 
             // Now make installed.json unreadable and resync: the previous
             // registry must survive untouched. The root probe skips loudly
-            // when mode bits have no effect (round-11 m12).
+            // when mode bits have no effect.
             if !file_unreadable_or_skip(
                 &installed_path,
                 "secret_values_resync_unreadable_registry_keeps_previous",

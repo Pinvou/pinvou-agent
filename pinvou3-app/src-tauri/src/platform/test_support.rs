@@ -217,7 +217,7 @@ impl Drop for UnreadableDirForTest {
     }
 }
 
-/// Root-skip probes for the fail-closed permission fixtures (round-11 m12):
+/// Root-skip probes for the fail-closed permission fixtures:
 /// chmod the target to the denial mode, check the denial actually took
 /// effect, and report `false` — restoring the default mode and eprintln-ing
 /// the loud, per-test greppable `ROOT-SKIP[<test>]` marker — when it did not

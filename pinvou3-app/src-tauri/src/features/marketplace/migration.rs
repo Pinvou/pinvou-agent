@@ -84,7 +84,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
         path: &std::path::Path,
         spec: &LegacyMcpSecretSpec,
     ) -> Result<(), String> {
-        // Round-28 review: 同一族裸读——本读可达时调用方持有
+        // 同一族裸读——本读可达时调用方持有
         // MARKETPLACE_TRANSACTION_LOCK(install_inner),probe→open 的 swap 窗口
         // 内被换成 FIFO 的 manifest 会楔死该进程的安装道。与 mcp.json 段同一
         // 加固原语;NotFound(被并发删走)按缺失条目无操作处理。
@@ -97,7 +97,9 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
             .get("env")
             .and_then(|env| env.get(spec.key))
             .and_then(|v| v.as_str())
-            .filter(|v| !v.trim().is_empty())
+            // 与 mcp.json 段同口径：占位符文本不是明文——凭据库被清空时把它
+            // 当 secret 存回去，等于把占位符伪装成凭据。
+            .filter(|v| !v.trim().is_empty() && v.trim() != mcp_secret_placeholder(spec.key))
             .map(ToOwned::to_owned)
         else {
             return Ok(());
@@ -150,7 +152,7 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                 if let Some(value) = env
                     .get(spec.key)
                     .and_then(|v| v.as_str())
-                    // 已迁移的条目值就是占位符本身:跳过(round-28 review)——
+                    // 已迁移的条目值就是占位符本身:跳过——
                     // 否则占位符非空、每次启动都在 mcp.lock 内重写同一份
                     // mcp.json,且凭据库被清空时会把占位符文本当明文重新写回。
                     .filter(|v| {
@@ -256,7 +258,7 @@ mod tests {
         }
     }
 
-    /// Round-28 review: an already-migrated entry holds the placeholder
+    /// An already-migrated entry holds the placeholder
     /// itself. The migration must converge to a no-write — no mcp.json
     /// rewrite under mcp.lock on every boot, and no placeholder-text
     /// round-trip into the credential store (a wiped store used to re-store

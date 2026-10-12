@@ -504,7 +504,7 @@ impl Pinvou3Bundle {
     /// 现在源码资源已经移除的 marketplace 工具。
     pub(super) fn cleanup_removed_marketplace_tools(&self) -> std::io::Result<()> {
         let tool_id = "data_analysis";
-        // 退役 id 保护（二轮评审）：`bundles/` 已是用户上传落盘区，用户可能上传过
+        // 退役 id 保护：`bundles/` 已是用户上传落盘区，用户可能上传过
         // 同名包——其 Upload 记录存在时跳过整段清理（不删登记、不删 mcp.json），
         // 只清理确定无主的内嵌退役残留。
         // Fail-closed like the uninstall path's `source_may_be_upload`: an
@@ -513,11 +513,11 @@ impl Pinvou3Bundle {
         if Self::user_upload_record_exists(tool_id) {
             return Ok(());
         }
-        // Round-32 minor 4 (review #455): the id's import lock (the
+        // The id's import lock (the
         // same lock the import path serializes its landing under) is
         // held from here down — the top probe above is pre-lock and
         // advisory only; the LOAD-BEARING piece is the under-lock
-        // re-check below (the round-31 m4 lock covered only the final
+        // re-check below (the earlier, narrower lock covered only the final
         // re-probe + delete pair, so an Upload import completing
         // between the top probe and the uninstall still got its
         // just-landed pack recycled wholesale by that uninstall).
@@ -643,7 +643,7 @@ impl Pinvou3Bundle {
         // 搬进 bundles/<id>/mcp/，而 uninstall 的 can_redeliver=false 规则
         // （非内嵌 id 不可重释放）保留包目录——不删则 manifest 存活、退役
         // 工具以「自定义 MCP 卡」复活（G8a）。Upload 保护已在上方判定。
-        // Round-30 m5 (review #455): the top probe is checked ONCE, but
+        // The top probe is checked ONCE, but
         // a same-id Upload import can land in the window (the uninstall
         // above is not instantaneous) — deleting wholesale at this
         // point would destroy the user's unique uploaded copy, the
@@ -653,8 +653,7 @@ impl Pinvou3Bundle {
         // `bundles/<id>` and defer the residue sweep to the next
         // startup, the same defer-with-retry contract as the
         // uninstall-deferred arm above.
-        // Round-31 m4 (review #455), reworked by round-32 minor 4:
-        // the re-probe alone was check-then-act, and holding the
+        // The re-probe alone was check-then-act, and holding the
         // import lock only here left the uninstall itself outside —
         // an Upload import completing before this point still lost
         // its just-landed pack to the uninstall above. The lock is
@@ -968,8 +967,8 @@ impl Pinvou3Bundle {
         // 本函数是 boot 链的 mcp.json 写方，与 GUI/headless 并发安装/卸载的写入器
         // 互斥（mcp.lock 是叶子锁，锁内不取其他市场锁）；boot 链此处无外层持锁，
         // 函数体内也无嵌套取锁。
-        // 锁等待没有超时（对端冻结时本 boot 线程无限等待——round-28 review 记录的
-        // 既定取舍）：前后打点把「卡在 mcp.lock 等待」与维护链其余步骤区分开，
+        // 锁等待没有超时（对端冻结时本 boot 线程无限等待的既定取舍）：前后打点把
+        // 「卡在 mcp.lock 等待」与维护链其余步骤区分开，
         // startup.log 可直接定位这类挂起。
         crate::platform::startup::mark("bundle_extract:mcp_upsert:lock_wait:start");
         let result = crate::features::marketplace::with_mcp_json_lock(|| {
@@ -1061,9 +1060,9 @@ impl Pinvou3Bundle {
     /// 备份过的坏文件之外),这条重建路径只覆盖直接调用方与防御兜底;数据保全
     /// (备份 + 整轮保持原样)优先于坏文件自动重置。
     ///
-    /// Round-28 review MAJOR 1: 本加载器在 mcp.lock 临界区内、每次 boot 的内置
-    /// upsert 都会走到。原先 `is_file()` 探针后的裸 `read_to_string` 与 round-27
-    /// 为迁移读修掉的是同一类 swap-in FIFO 楔死:探针把窗口收窄成 swap 窗口,
+    /// 本加载器在 mcp.lock 临界区内、每次 boot 的内置
+    /// upsert 都会走到。原先 `is_file()` 探针后的裸 `read_to_string` 与迁移读
+    /// 此前修掉的是同一类 swap-in FIFO 楔死:探针把窗口收窄成 swap 窗口,
     /// 但一旦在 open 前被换成 FIFO,裸读会永远阻塞在持锁的 open() 上,楔死共享
     /// home 的所有 mcp.json 读写方。加固原语对非普通文件直接拒绝;任何
     /// 拒绝/缺失都与探针时代的空骨架回退语义一致。
@@ -2304,7 +2303,7 @@ mod tests {
         );
     }
 
-    /// Round-28 review MAJOR 1: `load_mcp_json_for_repair` runs INSIDE the
+    /// `load_mcp_json_for_repair` runs INSIDE the
     /// mcp.lock critical section on the every-boot builtin upsert. A planted
     /// FIFO at the mcp.json path must be refused by the hardened read
     /// without blocking the lock holder (the raw `read_to_string` behind the

@@ -361,7 +361,7 @@ fn ima_connect_sync_with_store<S: CredentialStore>(
         // the previous directory may be partially removed) — the
         // old skill dir may then be damaged on disk. That is the skill
         // installer's disclosed semantics, not a rollback defect.
-        // Round-37 C5 (review #455): a rollback failure must not replace the
+        // A rollback failure must not replace the
         // primary error (which carries the consent-guidance copy and the
         // frontend marker) nor skip the second rollback — log each rollback
         // failure and continue, letting the primary err win.
@@ -461,14 +461,10 @@ mod tests {
     }
 
     /// Initialize the code scope with the given deny ids while the scope lock
-    /// still works (the DenyAll sync then requires a real write).
+    /// still works (the DenyAll sync then requires a real write). Routes onto
+    /// the canonical seed helper in scope.rs.
     fn init_code_scope(ids: &[&str]) {
-        let ids: Vec<String> = ids.iter().map(|id| id.to_string()).collect();
-        crate::features::marketplace::save_disabled_bundles_for(
-            crate::features::marketplace::ConnectorScope::Code,
-            &ids,
-        )
-        .expect("code scope must initialize while the lock works");
+        crate::features::marketplace::scope::seed_initialized_code_scope_for_test(ids);
     }
 
     #[test]

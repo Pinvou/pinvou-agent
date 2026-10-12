@@ -333,6 +333,20 @@ impl RecycleBin {
         })
     }
 
+    /// 条目的快照 record id（条目缺失返回 `None`）：restore preflight 的
+    /// snapshot-id 镜像用，take_back 在文件锁内复查并仍是权威。try 锁读取，
+    /// 与 `contains` 同一退化口径（锁被占用/不可用时退化为不落盘的解锁快照）。
+    fn entry_snapshot_record_id(&self, pkg_id: &str) -> Result<Option<String>, String> {
+        file_lock::try_file_lock_for_read(&self.file, || {
+            let file = load_locked(&self.file)?;
+            Ok(file
+                .entries
+                .iter()
+                .find(|e| e.id == pkg_id)
+                .map(|e| e.record.id.clone()))
+        })
+    }
+
     /// 回收站列表：读清单 + 校验包目录存在（缺失标记 `package_missing`，
     /// 前端据此禁用"恢复"）。清单损坏 fail loud（返回 Err）。
     /// try 锁读取 + 校验（锁被占用/不可用时退化为不落盘的解锁快照）：拿到的
@@ -378,7 +392,7 @@ impl RecycleBin {
             let Some(index) = file.entries.iter().position(|e| e.id == pkg_id) else {
                 return Err(format!("包 '{pkg_id}' 不在回收站"));
             };
-            // Round-28 review: the manifest is a 0600 state file, but still a
+            // The manifest is a 0600 state file, but still a
             // hand-editable one — a snapshot whose record declares a different
             // id would register the restored tree under the record's id (a
             // live record no directory backs, and a `source: Preset` record
@@ -649,6 +663,19 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
     if !bin.contains(pkg_id)? {
         return Err(format!("包 '{pkg_id}' 不在回收站"));
     }
+    // Mirror take_back's snapshot-id guard too — a
+    // hand-edited manifest whose record declares a different id otherwise
+    // persists the consent rows + install-default markers for the id before
+    // take_back refuses (the same doomed-restore-writes-consent class as the
+    // guard above; take_back re-checks under the lock and stays the
+    // authority).
+    if let Some(record_id) = bin.entry_snapshot_record_id(pkg_id)? {
+        if record_id != pkg_id {
+            return Err(format!(
+                "回收站条目 '{pkg_id}' 的快照 record id '{record_id}' 不一致，拒绝恢复"
+            ));
+        }
+    }
     // 恢复碰撞 preflight（fail-closed，先于任何搬移）：回收期间市场状态可能已
     // 变（例如导入了把同名技能作为 companion 的包），碰撞状态下恢复会造出同
     // 技能双份物理副本，后续技能卸载的候选目录清理会连唯一副本一起删。检查
@@ -660,7 +687,7 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
     let recycled_skills_dir = bin.root.join(pkg_id).join("skills");
     let mut skill_names: Vec<String> = Vec::new();
     if recycled_skills_dir.is_dir() {
-        // Round-31 m3 (review #455): propagate mid-scan entry/type errors —
+        // Propagate mid-scan entry/type errors —
         // `.flatten()` + `unwrap_or(false)` silently skipped skills, and a
         // collision missed here would double-materialize the same skill; a
         // dropped entry would equally shrink the consent cohort. Errors before
@@ -965,7 +992,7 @@ mod tests {
         pkg
     }
 
-    /// Round-28 review: a hand-edited manifest whose snapshot record declares
+    /// A hand-edited manifest whose snapshot record declares
     /// a different id must be refused BEFORE anything moves — restoring it
     /// would register the tree under the record's id (a live record no
     /// directory backs, and a Preset-source record downgrades the later
@@ -998,6 +1025,45 @@ mod tests {
         });
     }
 
+    /// The restore preflight mirrors take_back's
+    /// snapshot-id guard too. With the scope lock BROKEN the consent gate
+    /// cannot run, so the mismatch refusal below can only come from the
+    /// preflight — proving it fires BEFORE the gate, which would otherwise
+    /// persist the consent rows + install-default markers for the id first
+    /// and take_back would refuse afterwards (the same
+    /// doomed-restore-writes-consent class as the destination/entry guards).
+    #[test]
+    fn restore_refuses_a_snapshot_record_id_mismatch_before_the_gate() {
+        crate::platform::test_support::with_temp_home("pinvou3-restore-id-mismatch", || {
+            bin_package("demo", "demo");
+            let bin = RecycleBin::new();
+
+            let mut manifest: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&bin.file).unwrap()).unwrap();
+            manifest["entries"][0]["record"]["id"] =
+                serde_json::Value::String("victim".to_string());
+            std::fs::write(&bin.file, manifest.to_string()).unwrap();
+
+            // Break the lock: a gate reach would fail naming
+            // disabled_bundles.lock, so the mismatch error is the preflight's.
+            crate::features::marketplace::scope::break_scope_lock_for_test();
+
+            let error = restore_plugin("demo").unwrap_err();
+            assert!(
+                error.contains("不一致"),
+                "the preflight must refuse the mismatch before the gate: {error}"
+            );
+            assert!(
+                !error.contains("disabled_bundles.lock"),
+                "the refusal must be the preflight's, not a gate lock error: {error}"
+            );
+            assert!(
+                !paths::bundles_root().join("demo").exists(),
+                "nothing may land at the restore target"
+            );
+        });
+    }
+
     /// RAII-locked, freshly seeded PINVOU3_HOME for the deny-first restore
     /// pins: takes the env lock, points PINVOU3_HOME at a fresh temp dir, and
     /// seeds an initialized Code scope (deny list = ["seed-bundle"]) so the
@@ -1012,7 +1078,7 @@ mod tests {
         std::sync::MutexGuard<'static, ()>,
         crate::platform::test_support::EnvRestore,
     ) {
-        // RAII lock + env snapshot (round 9): a failing assertion unwinds
+        // RAII lock + env snapshot: a failing assertion unwinds
         // past a straight-line env restore and would cascade unrelated
         // failures for every later test in the process.
         let (lock, env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
@@ -1374,7 +1440,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// The restore's deny-first consent gate (#517 review round 6): under
+    /// The restore's deny-first consent gate (#517): under
     /// initialized DenyAll scopes the restore registers the deny entry
     /// before anything moves (a restored package starts disabled); a refused
     /// registration aborts before landing and the package stays in the bin
@@ -1421,7 +1487,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// Round-9 regression: the restore gate must NOT consult the known-bundle
+    /// Regression: the restore gate must NOT consult the known-bundle
     /// skip. A mid-uninstall `store.remove` failure is a log-only mirror
     /// delete while the recycle still proceeds, so a binned package can keep
     /// a stale `installed = true` record — under the skip that record would
@@ -1471,7 +1537,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// Round-9 pin: bin-entry validation runs BEFORE the consent gate, so a
+    /// Pin: bin-entry validation runs BEFORE the consent gate, so a
     /// bogus id must fail on the missing entry — never after writing a deny
     /// entry it would leave behind for a never-restorable id.
     #[test]
@@ -1504,7 +1570,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// Round-10 pin: a `package_missing` entry (manifest present, package
+    /// Pin: a `package_missing` entry (manifest present, package
     /// directory deleted externally) is rejected at entry validation —
     /// BEFORE the consent gate consumes a registration for a
     /// never-restorable id. Purge remains the only way to clear it.
@@ -1548,7 +1614,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// Round-12 pin: the destination preflight runs BEFORE the consent gate.
+    /// Pin: the destination preflight runs BEFORE the consent gate.
     /// A stale bin entry whose destination was reinstalled/re-imported since
     /// (dst exists) must be refused before the gate registers a deny entry —
     /// otherwise the gate would first re-disable the live enabled
@@ -2897,22 +2963,7 @@ mod tests {
             // Handshake: wait until the worker holds the in-process recycle-bin
             // mutex — with the foreign lock held, it is now parked on (or just
             // failed) the OS-lock acquisition (#517 test shape).
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            loop {
-                match file_lock::process_mutex_for(&lock_path).try_lock() {
-                    Ok(guard) => drop(guard),
-                    Err(std::sync::TryLockError::WouldBlock) => break,
-                    Err(std::sync::TryLockError::Poisoned(p)) => {
-                        drop(p.into_inner());
-                        break;
-                    }
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "worker never reached the recycle-bin lock acquisition point"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
+            file_lock::wait_until_process_mutex_parked(&lock_path, "recycle-bin");
             // The rewrite must not land while the peer holds the lock.
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
             while std::time::Instant::now() < deadline {

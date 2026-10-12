@@ -297,14 +297,21 @@ fn atomic_write_impl(path: &Path, content: &[u8], private: bool) -> io::Result<(
     let backup = parent.join(format!(".{file_name}.bak-{token}"));
 
     let stage_result = (|| -> io::Result<()> {
-        let mut file = if private {
-            create_secret_file(&tmp)?
-        } else {
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&tmp)?
-        };
+        // Stage with create_new (O_EXCL / CREATE_NEW) on both legs, not a
+        // truncate-open: the pid+nanos name makes collisions unreachable,
+        // so an existing entry at the staged path (a planted symlink, a
+        // leftover strand) must fail the open instead of being truncated
+        // through — the private leg must not be weaker than the plain one.
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        if private {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                options.mode(0o600);
+            }
+        }
+        let mut file = options.open(&tmp)?;
         file.write_all(content)?;
         file.sync_all()?;
         drop(file);
@@ -484,8 +491,9 @@ pub(crate) fn open_private_lock_file(path: &Path) -> io::Result<std::fs::File> {
 /// regular file (a FIFO or device node would otherwise feed the reader
 /// forever — `/dev/zero` is an unbounded read) plus anything larger than the
 /// caller's size bound ([`MAX_PRIVATE_DATA_READ_BYTES`] for the state-file
-/// family; a planted huge REGULAR file is the same
-/// unbounded-allocation shape on hot per-turn paths).
+/// family). The open-time size check is the fail-fast half: it refuses at
+/// one `stat` before any read; `read_capped` below closes the
+/// append-after-gate window and bounds the allocation either way.
 /// Unlike the lock file this is read-intent: no create, no mode tightening.
 ///
 /// Cohort note: a state file that is itself a symlink —
@@ -504,7 +512,7 @@ pub(crate) fn open_private_lock_file(path: &Path) -> io::Result<std::fs::File> {
 /// payloads whose legitimate size is the import package budget, not the
 /// state-file cap — bounding the disk read below what the importer accepts
 /// would make an identical re-import of a large package report conflicting
-/// content (round-31 P2).
+/// content.
 fn open_private_data_file_within(path: &Path, max_bytes: u64) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
@@ -585,7 +593,7 @@ pub(crate) fn read_private_data_file_bytes(path: &Path) -> io::Result<Vec<u8>> {
 /// marketplace same-content comparison reads landed package payloads whose
 /// legitimate size is the import package budget, not the state-file cap —
 /// a disk-side cap below what the importer accepts makes an identical
-/// re-import of a large package report conflicting content (round-31 P2).
+/// re-import of a large package report conflicting content.
 /// Every other hardening (no-follow, non-blocking, Windows share mode,
 /// regular-file gate, the bound enforced again past the gate) is the
 /// shared primitive's, unchanged.
@@ -2498,7 +2506,7 @@ pub(crate) fn rotate_log_if_oversized(
 /// panic/assert messages as sensitive information reaching logs; on test failure the
 /// specific file is identifiable from the call site).
 #[cfg(test)]
-pub(crate) fn assert_private_mode(path: &Path, expected: u32) {
+fn assert_private_mode(path: &Path, expected: u32) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -2517,10 +2525,10 @@ pub(crate) fn assert_private_mode(path: &Path, expected: u32) {
     }
 }
 
-/// Test helper (round-10 review m12): assert the file mode is 0600. The tool layer's CI
+/// Test helper: assert the file mode is 0600. The tool layer's CI
 /// tests check the screenshot capture_and_store wrote through this — the target cfg stays
 /// in this adapter layer (architecture guard rule). Windows has no POSIX mode bits, always
-/// passes. Thin wrapper over [`assert_private_mode`], which owns the round-12
+/// passes. Thin wrapper over [`assert_private_mode`], which owns the
 /// never-repeat-the-path rule.
 #[cfg(test)]
 pub(crate) fn assert_private_file_mode(path: &Path) {
@@ -2553,7 +2561,7 @@ pub(crate) mod tests {
     ))]
     use super::{ensure_private_real_directory, open_private_file_directory};
 
-    /// Round-28 review: the open-time metadata gate bounds the read only at
+    /// The open-time metadata gate bounds the read only at
     /// open time — a file appended past the cap between the gate and EOF
     /// (the fd pins the inode, so no swap is needed) must be refused by the
     /// read itself instead of being read and allocated whole.

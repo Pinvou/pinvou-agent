@@ -103,10 +103,13 @@ assert.ok(
 
 // (b)/(c) The marketplace command layer (the post-landing consent-failure
 // channels: tool/skill/import) and the skill gate route every emit site
-// through the shared helper (lower bound 1) and NONE of them may hand-roll
-// the template — the tail exists exactly once system-wide, inside the helper
-// ((a)). A hand-rolled copy (marker interpolated or not) fails here; deleting
-// the emit site drops the lower-bound leg.
+// through the shared helper (lower bound 1) and neither of these two files
+// may hand-roll the template. Scope of the uniqueness claim: leg (a) pins
+// the tail to exactly once in scope.rs production only, and these legs cover
+// only these two files — a consent-failure emitter added in a THIRD file is
+// not guarded here today (grep the tail across src-tauri when adding one).
+// A hand-rolled copy in either covered file (marker interpolated or not)
+// fails here; deleting the emit site drops the lower-bound leg.
 const assertRoutesThroughSharedHelper = (label, src) => {
   const production = productionOf(src);
   const calls = production.split('consent_sync_failure_message(').length - 1;

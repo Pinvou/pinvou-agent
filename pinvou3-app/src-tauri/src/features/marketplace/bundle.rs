@@ -268,7 +268,7 @@ pub(crate) fn skill_gating_owner_with(tools: &[super::ToolManifest], skill_name:
                 None
             }
         })
-        // Round-27 m4 (review #455): skip import staging (`<id>.tmp`) and
+        // Skip import staging (`<id>.tmp`) and
         // landing backup (`<id>.old`) dirs — the same exclusion the two
         // lenses this fallback shares with (materialization's
         // `skill_source_dirs`, the expansion disk leg) already apply; a

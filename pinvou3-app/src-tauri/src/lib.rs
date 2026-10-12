@@ -1814,7 +1814,7 @@ mod startup_order_contract {
         // self-match — this test lives in the same lib.rs as the production
         // call site, and include_str! scans the test module too, so a full
         // needle appearing verbatim in the test would degenerate into a
-        // self-match, review #455 R4-S1). The old leg pinning the startup
+        // self-match). The old leg pinning the startup
         // marks on both sides only preserved the mark sandwich: deleting or
         // moving the hoist call between the two marks still passed (review
         // #455 R5-S1). The later needle pins the
@@ -1864,7 +1864,7 @@ mod startup_order_contract {
     /// BOTH startup sites (the hoisted freeze and the second-chance
     /// re-read); headless keeps one. Needle assembled from fragments so this
     /// test module's own source (scanned together with lib.rs) cannot
-    /// self-match — the established review #455 R4-S1 trick.
+    /// self-match.
     #[test]
     fn freeze_persist_failures_mirror_onto_the_startup_timeline_in_every_host() {
         let mirrored_read = ["load_disabled_bundles_startup_", "mirrored()"].concat();
