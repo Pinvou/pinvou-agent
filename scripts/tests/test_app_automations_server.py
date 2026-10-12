@@ -217,7 +217,10 @@ class CreateValidationTests(unittest.TestCase):
         self.assertIn("rrule: exceeds", error)
 
     def test_invalid_sender_ids_are_rejected(self):
-        for bad in ("../escape", "with space", "a" * 300, "sched-run1", "eval_b1", "aux-x1"):
+        # Round-15 REQUIRED-1: the case variants pin the server's
+        # case-insensitive isolation matching on all three prefixes.
+        for bad in ("../escape", "with space", "a" * 300, "sched-run1", "eval_b1", "aux-x1",
+                    "SCHED-run1", "EVAL_b1", "AUX-x1"):
             payload, error = self.create(from_session=bad)
             self.assertIsNone(payload, bad)
             self.assertIsNotNone(error, bad)
@@ -359,6 +362,45 @@ class CreateSpoolAndResultTests(unittest.TestCase):
         self.assertTrue(payload["ok"], payload)
         self.assertEqual(payload.get("delivery"), "pending", payload)
         self.assertIsNone(payload.get("taskId"), payload)
+
+    def test_marker_reader_refuses_non_regular_and_oversize(self):
+        """Round-15 REQUIRED-5: _read_result_marker's lstat/S_ISREG/cap gate
+        is behaviorally pinned — a symlink (never followed), a FIFO-shaped
+        non-regular entry, and an oversize marker are all refused unread (the
+        pre-gate shape blocked the single-threaded stdio server forever on a
+        FIFO and slurped a sparse file whole)."""
+        done_dir = Path(self.requests, "spool", ".done")
+        done_dir.mkdir(parents=True, exist_ok=True)
+        real = done_dir / "real.json"
+        real.write_text('{"ok": true}', encoding="utf-8")
+
+        if os.name == "posix":
+            # A symlink to a regular file: never followed (policy: refused).
+            link = done_dir / "link.json"
+            try:
+                os.symlink(real, link)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks unavailable")
+            marker, error = server._read_result_marker(link)
+            self.assertIsNone(marker)
+            # A FIFO at the marker path: refused at lstat, open never runs.
+            fifo = done_dir / "fifo.json"
+            try:
+                os.mkfifo(fifo)
+            except (OSError, AttributeError):
+                self.skipTest("mkfifo unavailable")
+            marker, error = server._read_result_marker(fifo)
+            self.assertIsNone(marker)
+
+        # An oversize marker is refused at the stat gate.
+        oversize = done_dir / "big.json"
+        oversize.write_text("x" * (server.MAX_RESULT_MARKER_BYTES + 1), encoding="utf-8")
+        marker, error = server._read_result_marker(oversize)
+        self.assertIsNone(marker)
+
+        # The real marker still reads.
+        marker, error = server._read_result_marker(real)
+        self.assertEqual(marker, {"ok": True})
 
     def _create_kwargs(self, **overrides):
         args = {
