@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use adapter_gaia::test_fixtures::{
-    FixtureRow, FixtureSchema, MetadataShape, valid_rows, write_fixture, write_fixture_schema,
+    FixtureRow, FixtureSchema, GAIA_PARQUET_RELATIVE_PATH as PARQUET_PATH, MetadataShape,
+    valid_rows, write_fixture, write_fixture_schema,
 };
 use adapter_gaia::{
     GAIA_ADAPTER_VERSION, GAIA_DATASET_REVISION, GAIA_LEVEL, GAIA_PARQUET_SHA256,
@@ -23,7 +24,6 @@ use benchmark_core::{
 };
 use sha2::{Digest, Sha256};
 
-const PARQUET_PATH: &str = "2023/validation/metadata.level1.parquet";
 const EXPECTED_COLUMNS: [&str; 7] = [
     "task_id",
     "Question",

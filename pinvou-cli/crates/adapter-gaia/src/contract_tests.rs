@@ -14,9 +14,10 @@ use benchmark_core::{
 use sha2::{Digest, Sha256};
 
 use crate::test_fixtures::{FixtureRow, FixtureSchema, write_fixture_schema};
-use crate::{GAIA_DATASET_REVISION, GaiaAdapter, GaiaDataset, GaiaPrivateInputs};
-
-const PARQUET_PATH: &str = "2023/validation/metadata.level1.parquet";
+use crate::{
+    GAIA_DATASET_REVISION, GAIA_PARQUET_PATH as PARQUET_PATH, GaiaAdapter, GaiaDataset,
+    GaiaPrivateInputs,
+};
 
 struct TempSnapshot(PathBuf);
 

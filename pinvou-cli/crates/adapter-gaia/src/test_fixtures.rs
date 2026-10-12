@@ -19,6 +19,11 @@ use crate::{GAIA_PARQUET_PATH, GAIA_REVISION_MARKER};
 pub const ATTACHMENT_PATH: &str = "2023/validation/attachment.txt";
 pub const ATTACHMENT_BYTES: &[u8] = b"synthetic attachment";
 
+/// The pinned parquet path, re-exported for the `test-support`-gated
+/// integration tests (the crate const itself is `pub(crate)`; a const copy
+/// needs no visibility widening).
+pub const GAIA_PARQUET_RELATIVE_PATH: &str = GAIA_PARQUET_PATH;
+
 #[derive(Clone)]
 pub struct FixtureRow<'a> {
     pub task_id: &'a str,
