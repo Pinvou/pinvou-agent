@@ -13,10 +13,12 @@
 
 mod common;
 
+use std::path::PathBuf;
+
 use pinvou_cli::{CliCommand, OutputMode, parse_args};
 
 use common::{
-    HomeGuard, Isolation, assert_usage, command_error, env_lock, expect_failed, parsed_debug, run,
+    HomeGuard, Isolation, assert_usage, command_error, env_lock, expect_failed, parsed_debug,
     run_json, run_ok,
 };
 
@@ -57,16 +59,21 @@ fn seeded_preference_id() -> String {
         .clone()
 }
 
+/// The pending queue file under the sandbox home (`user/memory/_pending.jsonl`),
+/// shared by the queue pins below.
+fn pending_queue_path(home: &HomeGuard) -> PathBuf {
+    home.path()
+        .join("user")
+        .join("memory")
+        .join("_pending.jsonl")
+}
+
 /// A refused add must leave the pending queue untouched: the queue file is
 /// absent, or present but empty/whitespace. The queue resolves under the
 /// `user/` component of the home (round-44 review: missing that component
 /// made `.exists()` always false and the pin vacuous).
 fn assert_pending_queue_untouched(home: &HomeGuard) {
-    let pending = home
-        .path()
-        .join("user")
-        .join("memory")
-        .join("_pending.jsonl");
+    let pending = pending_queue_path(home);
     assert!(
         !pending.exists() || std::fs::read_to_string(&pending).unwrap().trim().is_empty(),
         "the refused add must not enqueue a memory item"
@@ -441,7 +448,7 @@ fn pending_never_reason_over_the_cap_discloses_the_truncation() {
     // the assertable contract here (the stderr half is the same
     // `note_truncation` helper the add/update lanes' tested disclosures
     // share).
-    let outcome = run(&[
+    let value = run_json(&[
         "pinvou",
         "memory",
         "pending",
@@ -449,24 +456,21 @@ fn pending_never_reason_over_the_cap_discloses_the_truncation() {
         &id,
         "--reason",
         &long_reason,
-        "--output",
-        "json",
-    ])
-    .expect("never with a seeded pending row");
-    assert!(
-        outcome.stdout.contains("\"truncated\":true"),
-        "the JSON must carry the truncation fact: {}",
-        outcome.stdout
+    ]);
+    assert_eq!(
+        value["truncated"],
+        serde_json::json!(true),
+        "the JSON must carry the truncation fact: {value}"
     );
-    assert!(
-        outcome.stdout.contains("\"submitted_characters\":120"),
-        "the JSON must carry the submitted count: {}",
-        outcome.stdout
+    assert_eq!(
+        value["submitted_characters"],
+        serde_json::json!(120),
+        "the JSON must carry the submitted count: {value}"
     );
-    assert!(
-        outcome.stdout.contains("\"stored_characters\":80"),
-        "the JSON must carry the stored count: {}",
-        outcome.stdout
+    assert_eq!(
+        value["stored_characters"],
+        serde_json::json!(80),
+        "the JSON must carry the stored count: {value}"
     );
 }
 
@@ -487,7 +491,7 @@ fn pending_never_reason_padding_does_not_publish_false_truncation_facts() {
     // 20 characters, well under the 80-character cap, so nothing is
     // truncated and no truncation fact may appear.
     let padded_reason = format!("{}{}", "r".repeat(20), " ".repeat(100));
-    let outcome = run(&[
+    let value = run_json(&[
         "pinvou",
         "memory",
         "pending",
@@ -495,14 +499,10 @@ fn pending_never_reason_padding_does_not_publish_false_truncation_facts() {
         &id,
         "--reason",
         &padded_reason,
-        "--output",
-        "json",
-    ])
-    .expect("never with a seeded pending row");
+    ]);
     assert!(
-        !outcome.stdout.contains("\"truncated\""),
-        "a whitespace-padded reason under the collapsed cap is not truncated: {}",
-        outcome.stdout
+        value.get("truncated").is_none(),
+        "a whitespace-padded reason under the collapsed cap is not truncated: {value}"
     );
 }
 
@@ -2528,10 +2528,6 @@ fn memory_pending_confirm_refuses_block_marker_content_before_materializing() {
             .unwrap()
             .is_empty()
     );
-    let pending_file = home
-        .path()
-        .join("user")
-        .join("memory")
-        .join("_pending.jsonl");
+    let pending_file = pending_queue_path(&home);
     assert!(pending_file.exists(), "the fixture row must still exist");
 }

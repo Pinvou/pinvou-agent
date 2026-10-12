@@ -8,13 +8,14 @@
 //!
 //! 1. ENV serialization — a test that touches the process-global environment
 //!    holds [`env_lock`] for its whole body, and nothing else takes it.
-//! 2. One argv convention — the `run*` helpers here take the FULL argv
+//! 2. One argv convention — the in-process `run*` helpers take the FULL argv
 //!    including the leading `"pinvou"` token, and the JSON helper appends
-//!    `--output json` at the END of the line.
+//!    `--output json` at the END of the line. The child-process `run_child`
+//!    is the deliberate exception: its argv starts after the binary name.
 
 #![allow(dead_code)]
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -196,6 +197,16 @@ impl HomeGuard {
     pub fn sessions_root(&self) -> PathBuf {
         self.root.join("sessions")
     }
+
+    /// `sessions_root()/{id}.json` — the durable session record path.
+    pub fn session_record(&self, id: &str) -> PathBuf {
+        self.sessions_root().join(format!("{id}.json"))
+    }
+
+    /// `sessions_root()/{id}/workspace` — the session workspace ledger dir.
+    pub fn workspace_of(&self, id: &str) -> PathBuf {
+        self.sessions_root().join(id).join("workspace")
+    }
 }
 
 impl Drop for HomeGuard {
@@ -230,12 +241,6 @@ impl RestoreCwd {
     }
 }
 
-impl Default for RestoreCwd {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Drop for RestoreCwd {
     fn drop(&mut self) {
         let _ = std::env::set_current_dir(&self.0);
@@ -251,6 +256,25 @@ pub fn create_session_fixture() -> String {
         .create_new("test-model".to_owned(), None, std::env::temp_dir())
         .expect("create session");
     session.metadata.id
+}
+
+/// Spawns the real CLI binary as a child process against `root` as
+/// `PINVOU3_HOME` (plus `PINVOU_NO_COLOR=1`, then any `extra_env` applied
+/// last so callers can override). Takes the argv AFTER the binary name —
+/// unlike the in-process `run*` helpers there is no leading `"pinvou"`
+/// token. Returns the raw [`std::process::Output`] on purpose: several
+/// callers assert on stderr or non-zero exits, so success is the caller's
+/// judgement.
+pub fn run_child(root: &Path, args: &[&str], extra_env: &[(&str, &OsStr)]) -> std::process::Output {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"));
+    command
+        .args(args)
+        .env("PINVOU3_HOME", root)
+        .env("PINVOU_NO_COLOR", "1");
+    for (name, value) in extra_env {
+        command.env(name, value);
+    }
+    command.output().expect("binary runs")
 }
 
 /// Runs one command through the in-process dispatch: parse (which must

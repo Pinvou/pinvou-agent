@@ -52,7 +52,7 @@ use std::time::{Duration, Instant};
 
 use common::{
     HomeGuard, Isolation, assert_usage, create_session_fixture, env_lock, execute_error,
-    expect_failed, parsed_debug, run_json, run_ok,
+    expect_failed, parsed_debug, run_child, run_json, run_ok,
 };
 
 /// A throwaway `PINVOU3_HOME` for one test.
@@ -108,29 +108,20 @@ fn strand_running_job(home: &HomeGuard, id: i64, sources: &[PathBuf]) -> String 
         .spawn()
         .expect("spawn add-sources child");
 
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
-    let job_id = loop {
-        let polled = run_child(home, &["knowledge", "index", "status", "--output", "json"]);
-        assert!(
-            polled.status.success(),
-            "index status must succeed while the import runs"
-        );
-        let state: serde_json::Value = serde_json::from_slice(&polled.stdout).unwrap();
-        let done = state["done"].as_u64().unwrap_or(0);
-        let total = state["total"].as_u64().unwrap_or(0);
-        if state["running"] == serde_json::json!(true) && done >= 1 && total > done {
-            break state["jobId"]
-                .as_str()
-                .expect("running job carries its id")
-                .to_owned();
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the import child never reached a killable mid-run state \
-             (last status: {state})"
-        );
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    };
+    let state = poll_json_until(
+        "the import child never reached a killable mid-run state",
+        120,
+        &["pinvou", "knowledge", "index", "status"],
+        |state| {
+            let done = state["done"].as_u64().unwrap_or(0);
+            let total = state["total"].as_u64().unwrap_or(0);
+            state["running"] == serde_json::json!(true) && done >= 1 && total > done
+        },
+    );
+    let job_id = state["jobId"]
+        .as_str()
+        .expect("running job carries its id")
+        .to_owned();
     child.kill().expect("SIGKILL the importing child");
     child.wait().expect("reap the killed child");
     job_id
@@ -251,18 +242,6 @@ fn poll_json_until(
     }
 }
 
-/// Runs the real binary as a child over `home` and returns its raw output —
-/// for the assertions that must observe a separate process (exit status,
-/// stderr), not the in-process dispatch the `run_ok`/`run_json` helpers use.
-fn run_child(home: &HomeGuard, args: &[&str]) -> std::process::Output {
-    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"));
-    command
-        .args(args)
-        .env("PINVOU3_HOME", home.path())
-        .env("PINVOU_NO_COLOR", "1");
-    command.output().expect("binary runs")
-}
-
 /// Builds the deterministic stall fixture: a wide-and-deep tree of EMPTY
 /// directories (30×30×10 = 9000 traversed entries, zero importable files).
 /// Every entry is walked by the importer with the excluder's per-entry name
@@ -298,19 +277,20 @@ fn stalled_add_sources(
     root: &Path,
     stall_millis: &str,
 ) -> std::process::Output {
-    std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
-        .args([
+    run_child(
+        home.path(),
+        &[
             "knowledge",
             "collections",
             "add-sources",
             &id.to_string(),
             root.to_str().unwrap(),
-        ])
-        .env("PINVOU3_HOME", home.path())
-        .env("PINVOU_NO_COLOR", "1")
-        .env("PINVOU_KB_IMPORT_STALL_MILLIS", stall_millis)
-        .output()
-        .expect("walking add-sources child runs")
+        ],
+        &[(
+            "PINVOU_KB_IMPORT_STALL_MILLIS",
+            std::ffi::OsStr::new(stall_millis),
+        )],
+    )
 }
 
 /// Seeds a live-owner import through `seed_running_job` and parks its thread
@@ -334,32 +314,19 @@ fn hold_import_until_parked(home: &HomeGuard, label: &str) -> (HoldEnvGuard, Pat
     unsafe { std::env::set_var("PINVOU_KB_IMPORT_HOLD_FILE", &hold) };
     let guard = HoldEnvGuard;
     let (collection, job_id) = seed_running_job(home, label);
-    let parked_deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let state = run_json(&["pinvou", "knowledge", "index", "status"]);
-        if state["running"] == serde_json::json!(true)
-            && state["total"] == serde_json::json!(2)
-            && state["done"] == serde_json::json!(0)
-        {
-            break;
-        }
-        assert!(
-            Instant::now() < parked_deadline,
-            "the seeded import never reached its parked live-owner window: {state}"
-        );
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    poll_json_until(
+        "the seeded import never reached its parked live-owner window",
+        30,
+        &["pinvou", "knowledge", "index", "status"],
+        |state| {
+            state["running"] == serde_json::json!(true)
+                && state["total"] == serde_json::json!(2)
+                && state["done"] == serde_json::json!(0)
+        },
+    );
     unsafe { std::env::remove_var("PINVOU_KB_IMPORT_HOLD_FILE") };
     (guard, hold, job_id, collection)
 }
-
-// The strict `poll_index_phase` helper lost its last caller when the
-// stall-timeout coverage moved into `a_frozen_import_is_interrupted_and_
-// resumable` (which reads the settled state once instead of polling), and
-// the relaxed bounded-drain twin followed it out once the live-owner
-// refusal test swapped its racing 400-file import for the deterministic
-// `PINVOU_KB_IMPORT_HOLD_FILE` park — its drain became a strict inline
-// poll over a released two-file import, so neither twin has a caller left.
 
 // ---- parse-level coverage ----
 
@@ -1191,8 +1158,7 @@ fn index_resume_and_retry_refuse_a_running_job_and_leave_it_untouched() {
         scan_root.to_str().unwrap(),
     ]);
     assert!(scan.is_object(), "scan start must emit a JSON object");
-    let polled = run_child(&home, &["knowledge", "index", "status", "--output", "json"]);
-    let state: serde_json::Value = serde_json::from_slice(&polled.stdout).unwrap();
+    let state = run_json(&["pinvou", "knowledge", "index", "status"]);
     assert_eq!(
         state["phase"],
         serde_json::json!("running"),
@@ -1350,7 +1316,7 @@ fn index_resume_refuses_a_stranded_running_job_then_continues_after_recovery() {
     // CLI cannot distinguish a dead owner from a live desktop-app import
     // (no cross-process owner heartbeat), and the app's next boot — not a
     // CLI lane — is what relabels it.
-    let refused = run_child(&home, &["knowledge", "index", "resume", &job_id]);
+    let refused = run_child(home.path(), &["knowledge", "index", "resume", &job_id], &[]);
     assert!(
         !refused.status.success(),
         "resume on a running stranded job must refuse"
@@ -1375,7 +1341,7 @@ fn index_resume_refuses_a_stranded_running_job_then_continues_after_recovery() {
     let extra = home.path().join("second.txt");
     std::fs::write(&extra, "must not be enqueued.").unwrap();
     let refused_enqueue = run_child(
-        &home,
+        home.path(),
         &[
             "knowledge",
             "collections",
@@ -1383,6 +1349,7 @@ fn index_resume_refuses_a_stranded_running_job_then_continues_after_recovery() {
             &other_id.to_string(),
             extra.to_str().unwrap(),
         ],
+        &[],
     );
     assert!(
         !refused_enqueue.status.success(),
@@ -1433,8 +1400,9 @@ fn index_resume_refuses_a_stranded_running_job_then_continues_after_recovery() {
     // The resume re-arms the job and waits for it: the printed state is the
     // job's FINAL state under the same id, never a stranded `running`.
     let resumed = run_child(
-        &home,
+        home.path(),
         &["knowledge", "index", "resume", &job_id, "--output", "json"],
+        &[],
     );
     assert!(
         resumed.status.success(),
@@ -1459,7 +1427,7 @@ fn index_resume_refuses_a_stranded_running_job_then_continues_after_recovery() {
     // Document-level end state: the resumed import really completed — the
     // item finished before the kill and the one still pending both parsed.
     let documents = run_child(
-        &home,
+        home.path(),
         &[
             "knowledge",
             "documents",
@@ -1467,6 +1435,7 @@ fn index_resume_refuses_a_stranded_running_job_then_continues_after_recovery() {
             "--output",
             "json",
         ],
+        &[],
     );
     assert!(documents.status.success(), "documents listing must succeed");
     let documents: serde_json::Value = serde_json::from_slice(&documents.stdout).unwrap();
@@ -2299,7 +2268,7 @@ fn index_cancel_targets_a_stranded_running_job() {
     let home = temp_home("index-cancel-stranded");
     let (_id, job_id) = stranded_two_source_job(&home, "cancellable");
 
-    let cancelled = run_child(&home, &["knowledge", "index", "cancel", &job_id]);
+    let cancelled = run_child(home.path(), &["knowledge", "index", "cancel", &job_id], &[]);
     assert!(cancelled.status.success(), "index cancel must succeed");
     let stdout = String::from_utf8_lossy(&cancelled.stdout);
     assert!(
@@ -2322,7 +2291,7 @@ fn index_cancel_targets_a_stranded_running_job() {
 
     // The cancelled job is finished, so a second cancel honestly reports
     // there was nothing left to signal.
-    let again = run_child(&home, &["knowledge", "index", "cancel", &job_id]);
+    let again = run_child(home.path(), &["knowledge", "index", "cancel", &job_id], &[]);
     assert!(again.status.success(), "second index cancel must succeed");
     let stdout = String::from_utf8_lossy(&again.stdout);
     assert!(

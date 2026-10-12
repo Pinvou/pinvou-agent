@@ -17,9 +17,8 @@ mod common;
 
 use pinvou_cli::{CliCommand, parse_args};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-use common::{HomeGuard, Isolation, env_lock, run_ok, scratch_dir, usage_error};
+use common::{HomeGuard, Isolation, env_lock, run_child, run_ok, scratch_dir, usage_error};
 
 /// The `AutomationManager::open(<home>/automations)` layout the GUI uses:
 /// definitions under `automations/automations`, runs under
@@ -86,16 +85,12 @@ fn a_held_store_lock_fails_mutating_commands_fast_with_store_busy() {
     let guard = lock.write().expect("hold the store write lock");
 
     let prompt = write_prompt_file(&home, "busy.md", "Summarize the reports.");
-    let message = expect_failed(&[
-        "scheduled",
-        "create",
-        "--name",
+    let message = expect_failed(&create_argv(
         "Busy",
-        "--prompt-file",
         prompt.to_str().unwrap(),
-        "--rrule",
         VALID_RRULE,
-    ]);
+        &[],
+    ));
     assert!(
         message.contains("scheduled_store_busy"),
         "the busy refusal must carry the documented error code: {message}"
@@ -151,6 +146,27 @@ fn write_prompt_file(home: &HomeGuard, name: &str, prompt: &str) -> PathBuf {
     path
 }
 
+/// `scheduled create` argv: standard name/prompt/rrule core plus extras.
+fn create_argv<'a>(
+    name: &'a str,
+    prompt: &'a str,
+    rrule: &'a str,
+    extra: &[&'a str],
+) -> Vec<&'a str> {
+    let mut argv = vec![
+        "scheduled",
+        "create",
+        "--name",
+        name,
+        "--prompt-file",
+        prompt,
+        "--rrule",
+        rrule,
+    ];
+    argv.extend_from_slice(extra);
+    argv
+}
+
 /// Reads a JSON store/fixture file from the sandbox home (every call site
 /// asserts both the read and the parse succeed).
 fn read_json(path: &Path) -> serde_json::Value {
@@ -176,16 +192,12 @@ fn create_refuses_an_oversized_prompt_file() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "prompt-cap", Isolation::ProductHome);
     let prompt = write_prompt_file(&home, "big.md", &"x".repeat(4 * 1024 * 1024 + 1));
-    let message = expect_failed(&[
-        "scheduled",
-        "create",
-        "--name",
+    let message = expect_failed(&create_argv(
         "cap",
-        "--prompt-file",
         prompt.to_str().unwrap(),
-        "--rrule",
         VALID_RRULE,
-    ]);
+        &[],
+    ));
     assert!(
         message.contains("exceeds the 4194304-byte read limit"),
         "{message}"
@@ -236,18 +248,12 @@ fn create_memory_organize_task(home: &HomeGuard) -> String {
     )
     .unwrap();
     let prompt = write_prompt_file(home, "prompt.md", "Organize the memory stores.");
-    let created = run_json(&[
-        "scheduled",
-        "create",
-        "--name",
+    let created = run_json(&create_argv(
         "Nightly organize",
-        "--prompt-file",
         prompt.to_str().unwrap(),
-        "--rrule",
         "FREQ=HOURLY;INTERVAL=12",
-        "--kind",
-        "memory-organize",
-    ]);
+        &["--kind", "memory-organize"],
+    ));
     created["id"].as_str().unwrap().to_owned()
 }
 
@@ -301,21 +307,22 @@ fn seed_completed_run(home: &HomeGuard, task_id: &str, run_id: &str) -> String {
 /// models store bootstrap; `models add` prints the id on stdout) — and
 /// returns that id.
 fn add_saved_model(home: &HomeGuard, name: &str, wire: &str) -> String {
-    let mut add = Command::new(env!("CARGO_BIN_EXE_pinvou"));
-    add.args([
-        "models",
-        "add",
-        "--preset",
-        "deepseek",
-        "--name",
-        name,
-        "--model",
-        wire,
-        "--base-url",
-        "https://api.deepseek.com",
-    ])
-    .env("PINVOU3_HOME", home.path());
-    let added = add.output().expect("models add runs");
+    let added = run_child(
+        home.path(),
+        &[
+            "models",
+            "add",
+            "--preset",
+            "deepseek",
+            "--name",
+            name,
+            "--model",
+            wire,
+            "--base-url",
+            "https://api.deepseek.com",
+        ],
+        &[],
+    );
     assert!(
         added.status.success(),
         "{}",
@@ -948,18 +955,12 @@ fn create_rejects_memory_organize_kind_while_memory_is_disabled() {
     // Fresh home: memory is disabled by default, exactly like the GUI create
     // dialog's refusal for memory-organize tasks.
     let prompt = write_prompt_file(&home, "prompt.md", "Organize the memory stores.");
-    let arguments = [
-        "scheduled",
-        "create",
-        "--name",
+    let arguments = create_argv(
         "Nightly organize",
-        "--prompt-file",
         prompt.to_str().unwrap(),
-        "--rrule",
         "FREQ=HOURLY;INTERVAL=12",
-        "--kind",
-        "memory-organize",
-    ];
+        &["--kind", "memory-organize"],
+    );
     let error = expect_failed(&arguments);
     assert!(
         error.starts_with("scheduled_memory_organize_disabled"),
@@ -980,18 +981,12 @@ fn create_refuses_non_yolo_modes_like_the_app() {
     let home = HomeGuard::new("scheduled", "mode-refusal", Isolation::ProductHome);
     let prompt = write_prompt_file(&home, "mode.md", "Summarize the reports.");
     for refused in ["agent", "plan"] {
-        let error = assert_usage(&[
-            "scheduled",
-            "create",
-            "--name",
+        let error = assert_usage(&create_argv(
             "Moded",
-            "--prompt-file",
             prompt.to_str().unwrap(),
-            "--rrule",
             VALID_RRULE,
-            "--mode",
-            refused,
-        ]);
+            &["--mode", refused],
+        ));
         assert!(error.contains(refused), "{refused}: {error}");
         assert!(error.contains("yolo"), "{refused}: {error}");
         let listed = run_json(&["scheduled", "list"]);
@@ -1003,18 +998,12 @@ fn create_refuses_non_yolo_modes_like_the_app() {
     }
 
     // The one accepted value still creates, and persists the yolo shape.
-    let created = run_json(&[
-        "scheduled",
-        "create",
-        "--name",
+    let created = run_json(&create_argv(
         "Yolo task",
-        "--prompt-file",
         prompt.to_str().unwrap(),
-        "--rrule",
         VALID_RRULE,
-        "--mode",
-        "yolo",
-    ]);
+        &["--mode", "yolo"],
+    ));
     assert_eq!(created["mode"].as_str(), Some("yolo"));
     assert_eq!(created["trustMode"].as_bool(), Some(true));
     assert_eq!(created["autoApprove"].as_bool(), Some(true));
@@ -1333,16 +1322,12 @@ fn create_rolls_the_task_back_when_the_workspace_cannot_be_created() {
     let _restore = RestorePerms(scheduled_root);
 
     let prompt = write_prompt_file(&home, "rollback.md", "Summarize the reports.");
-    let message = expect_failed(&[
-        "scheduled",
-        "create",
-        "--name",
+    let message = expect_failed(&create_argv(
         "Rollback",
-        "--prompt-file",
         prompt.to_str().unwrap(),
-        "--rrule",
         VALID_RRULE,
-    ]);
+        &[],
+    ));
     assert!(
         message.contains("scheduled_workspace_unavailable"),
         "{message}"
@@ -1534,34 +1519,50 @@ fn once_at_rejects_calendar_overflow_like_the_foundation() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "once-at-calendar", Isolation::ProductHome);
     let prompt = write_prompt_file(&home, "once.md", "Summarize the reports.");
-    // 2026-02-30 cannot exist; the foundation parser rejects it and one such
-    // record would fail the GUI scheduler's whole sweep.
-    for bad in [
-        "FREQ=ONCE;AT=2026-02-30T08:30",
-        "FREQ=ONCE;AT=2025-02-29T08:30",
+    // The foundation parser (chrono) rejects these on the naive and the
+    // RFC3339 channel alike, and one unparseable record would stall the GUI
+    // scheduler's whole sweep. Grammar rejection happens at parse time
+    // through the foundation grammar, so the rejection is a usage error
+    // (exit 2).
+    for (label, stamp, channel) in [
+        ("naive 2026-02-30", "FREQ=ONCE;AT=2026-02-30T08:30", "naive"),
+        ("naive 2025-02-29", "FREQ=ONCE;AT=2025-02-29T08:30", "naive"),
+        (
+            "RFC3339 2026-02-30Z",
+            "FREQ=ONCE;AT=2026-02-30T08:30:00Z",
+            "RFC3339",
+        ),
+        (
+            "RFC3339 2025-02-29Z",
+            "FREQ=ONCE;AT=2025-02-29T08:30:00Z",
+            "RFC3339",
+        ),
+        (
+            "RFC3339 +08:00 2026-04-31",
+            "FREQ=ONCE;AT=2026-04-31T08:30:00+08:00",
+            "RFC3339",
+        ),
     ] {
-        // 2026-02-30 cannot exist; the foundation's chrono parser rejects
-        // it and one such record would fail the GUI scheduler's whole
-        // sweep. Grammar rejection happens at parse time through the
-        // foundation parser (exit 2), the same class as before — only the
-        // message source changed (chrono's own error).
-        let error = assert_usage(&[
-            "scheduled",
-            "create",
-            "--name",
-            "bad once",
-            "--prompt-file",
+        let message = assert_usage(&create_argv(
+            "Overflow",
             prompt.to_str().unwrap(),
-            "--rrule",
-            bad,
-        ]);
+            stamp,
+            &[],
+        ));
         assert!(
-            error.contains("invalid rrule"),
-            "the refusal must come from the foundation grammar: {error}"
+            message.contains("invalid rrule"),
+            "the refusal must come from the foundation grammar: {channel} {label}: {message}"
         );
     }
-    // A real date passes validation (the create then proceeds to the
-    // next-run recompute).
+    // A real RFC3339 stamp on the same channels is still accepted (it must
+    // also be in the future — see once_at_rejects_past_times_like_the_gui).
+    let value = run_json(&create_argv(
+        "Real date",
+        prompt.to_str().unwrap(),
+        "FREQ=ONCE;AT=2030-02-28T08:30:00Z",
+        &[],
+    ));
+    assert_eq!(value["name"], "Real date");
 }
 
 #[test]
@@ -1925,49 +1926,6 @@ fn delete_refuses_a_definition_whose_id_diverges_from_its_file() {
 // ---- round-3 fixes: RFC3339 ONCE AT calendar truth, delete pause semantics ----
 
 #[test]
-fn once_at_rejects_calendar_overflow_on_the_rfc3339_channel_too() {
-    let _env_guard = env_lock();
-    let home = HomeGuard::new("scheduled", "once-at-rfc3339", Isolation::ProductHome);
-    let prompt = write_prompt_file(&home, "task.md", "Do the thing.");
-    // The foundation parser (chrono) rejects these on both channels, and one
-    // unparseable record stalls the GUI scheduler's whole sweep. Validation
-    // happens at parse time, so the rejection is a usage error (exit 2).
-    for bad_at in [
-        "FREQ=ONCE;AT=2026-02-30T08:30:00Z",
-        "FREQ=ONCE;AT=2025-02-29T08:30:00Z",
-        "FREQ=ONCE;AT=2026-04-31T08:30:00+08:00",
-    ] {
-        let message = assert_usage(&[
-            "scheduled",
-            "create",
-            "--name",
-            "Overflow",
-            "--prompt-file",
-            prompt.to_str().unwrap(),
-            "--rrule",
-            bad_at,
-        ]);
-        assert!(
-            message.contains("invalid rrule"),
-            "the refusal must come from the foundation grammar: {bad_at}: {message}"
-        );
-    }
-    // A real RFC3339 stamp on the same channels is still accepted (it must
-    // also be in the future — see once_at_rejects_past_times_like_the_gui).
-    let value = run_json(&[
-        "scheduled",
-        "create",
-        "--name",
-        "Real date",
-        "--prompt-file",
-        prompt.to_str().unwrap(),
-        "--rrule",
-        "FREQ=ONCE;AT=2030-02-28T08:30:00Z",
-    ]);
-    assert_eq!(value["name"], "Real date");
-}
-
-#[test]
 fn leap_day_schedules_are_accepted_on_every_channel() {
     // Feb 29 exists in leap years: the naive ONCE channel, the RFC3339 ONCE
     // channel, and a cron February-29 expression (kept realizable by the
@@ -1981,16 +1939,12 @@ fn leap_day_schedules_are_accepted_on_every_channel() {
         "FREQ=ONCE;AT=2028-02-29T08:30:00Z",
         "FREQ=CRON;EXPR=0 0 29 2 *",
     ] {
-        let created = run_json(&[
-            "scheduled",
-            "create",
-            "--name",
+        let created = run_json(&create_argv(
             "Leap day",
-            "--prompt-file",
             prompt.to_str().unwrap(),
-            "--rrule",
             rrule,
-        ]);
+            &[],
+        ));
         assert_eq!(created["rrule"].as_str(), Some(rrule), "{rrule}");
     }
 }
@@ -2016,16 +1970,12 @@ fn once_at_rejects_past_times_like_the_gui() {
         // rejects the same record — a state-dependent failure (exit 1),
         // like the GUI command's Err. A past one-shot must never be
         // persisted as a live task.
-        let error = expect_failed(&[
-            "scheduled",
-            "create",
-            "--name",
+        let error = expect_failed(&create_argv(
             "past once",
-            "--prompt-file",
             prompt.to_str().unwrap(),
-            "--rrule",
             bad,
-        ]);
+            &[],
+        ));
         assert!(error.contains("no future run"), "{bad}: {error}");
         let listed = run_json(&["scheduled", "list"]);
         assert_eq!(
@@ -2051,17 +2001,12 @@ fn paused_create_accepts_a_past_once_stamp_like_the_gui() {
     let yesterday = chrono::Local::now().date_naive() - chrono::Duration::days(1);
     let naive_stamp = format!("FREQ=ONCE;AT={yesterday}T08:30");
     for past in ["FREQ=ONCE;AT=2020-01-01T00:00:00Z", naive_stamp.as_str()] {
-        let created = run_json(&[
-            "scheduled",
-            "create",
-            "--name",
+        let created = run_json(&create_argv(
             "paused once",
-            "--prompt-file",
             prompt.to_str().unwrap(),
-            "--rrule",
             past,
-            "--paused",
-        ]);
+            &["--paused"],
+        ));
         assert_eq!(created["status"].as_str(), Some("paused"), "{past}");
         assert_eq!(created["rrule"].as_str(), Some(past), "{past}");
         // Persisted the same way, so the GUI reads back a paused record with
@@ -2083,17 +2028,12 @@ fn paused_create_still_validates_the_rrule_grammar() {
     let home = HomeGuard::new("scheduled", "paused-grammar", Isolation::ProductHome);
     let prompt = write_prompt_file(&home, "paused-grammar.md", "Summarize the reports.");
     for bad in ["FREQ=BOGUS", "FREQ=ONCE", "FREQ=HOURLY;INTERVAL=4000000000"] {
-        assert_usage(&[
-            "scheduled",
-            "create",
-            "--name",
+        assert_usage(&create_argv(
             "Paused grammar",
-            "--prompt-file",
             prompt.to_str().unwrap(),
-            "--rrule",
             bad,
-            "--paused",
-        ]);
+            &["--paused"],
+        ));
         let listed = run_json(&["scheduled", "list"]);
         assert_eq!(
             listed["tasks"].as_array().map(Vec::len),
@@ -2141,40 +2081,28 @@ fn hourly_interval_beyond_scheduler_range_is_refused() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "hourly-interval-bound", Isolation::ProductHome);
     let prompt = write_prompt_file(&home, "interval.md", "Summarize the reports.");
-    let error = assert_usage(&[
-        "scheduled",
-        "create",
-        "--name",
+    let error = assert_usage(&create_argv(
         "huge interval",
-        "--prompt-file",
         prompt.to_str().unwrap(),
-        "--rrule",
         "FREQ=HOURLY;INTERVAL=4000000000",
-    ]);
+        &[],
+    ));
     assert!(error.contains("INTERVAL must be <="), "{error}");
 
     // Just past the bound is refused, the bound itself is accepted.
-    let error = assert_usage(&[
-        "scheduled",
-        "create",
-        "--name",
+    let error = assert_usage(&create_argv(
         "past bound",
-        "--prompt-file",
         prompt.to_str().unwrap(),
-        "--rrule",
         "FREQ=HOURLY;INTERVAL=1000001",
-    ]);
+        &[],
+    ));
     assert!(error.contains("INTERVAL must be <="), "{error}");
-    let created = run_json(&[
-        "scheduled",
-        "create",
-        "--name",
+    let created = run_json(&create_argv(
         "at bound",
-        "--prompt-file",
         prompt.to_str().unwrap(),
-        "--rrule",
         "FREQ=HOURLY;INTERVAL=1000000",
-    ]);
+        &[],
+    ));
     assert_eq!(created["rrule"], "FREQ=HOURLY;INTERVAL=1000000");
 }
 
@@ -2186,16 +2114,12 @@ fn rfc3339_once_accepts_lowercase_separator_like_the_foundation() {
     let _env_guard = env_lock();
     let home = HomeGuard::new("scheduled", "once-lowercase-t", Isolation::ProductHome);
     let prompt = write_prompt_file(&home, "lower.md", "Summarize the reports.");
-    let created = run_json(&[
-        "scheduled",
-        "create",
-        "--name",
+    let created = run_json(&create_argv(
         "lowercase separator",
-        "--prompt-file",
         prompt.to_str().unwrap(),
-        "--rrule",
         "FREQ=ONCE;AT=2030-02-28t08:30:00z",
-    ]);
+        &[],
+    ));
     assert_eq!(created["id"].as_str().map(str::len), Some(36));
 }
 
@@ -2352,26 +2276,15 @@ fn once_at_rejects_dst_gap_times_like_the_foundation() {
     // a runtime TZ switch inside this test process is unreliable — drive the
     // real binary with a pinned timezone instead (UTC runners have no gap,
     // so the zone must be pinned regardless).
-    let bin = env!("CARGO_BIN_EXE_pinvou");
     let root = scratch_dir("pinvou-cli-scheduled-once-at-dst");
     let prompt = root.join("dst.md");
     std::fs::write(&prompt, "Summarize the reports.").unwrap();
     let run = |rrule: &str| {
-        let mut command = std::process::Command::new(bin);
-        command
-            .args([
-                "scheduled",
-                "create",
-                "--name",
-                "DST task",
-                "--prompt-file",
-                prompt.to_str().unwrap(),
-                "--rrule",
-                rrule,
-            ])
-            .env("PINVOU3_HOME", &root)
-            .env("TZ", "America/New_York");
-        command.output().expect("binary runs")
+        run_child(
+            &root,
+            &create_argv("DST task", prompt.to_str().unwrap(), rrule, &[]),
+            &[("TZ", std::ffi::OsStr::new("America/New_York"))],
+        )
     };
     // 2027-03-14 02:30 does not exist in America/New_York (clocks jump
     // 02:00 -> 03:00); the foundation's `resolve_local_datetime` returns
@@ -2865,16 +2778,12 @@ fn one_shot_tasks_get_an_eager_next_run_slot_on_create_pause_and_resume() {
     let at = chrono::Local::now() + chrono::Duration::hours(26);
     let rrule = format!("FREQ=ONCE;AT={}", at.format("%Y-%m-%dT%H:%M"));
 
-    let created = run_json(&[
-        "scheduled",
-        "create",
-        "--name",
+    let created = run_json(&create_argv(
         "Eager once",
-        "--prompt-file",
         prompt.to_str().unwrap(),
-        "--rrule",
         &rrule,
-    ]);
+        &[],
+    ));
     let task_id = created["id"].as_str().unwrap().to_owned();
     assert!(
         created["nextRunAt"].as_str().is_some(),
@@ -2992,18 +2901,12 @@ fn create_model_id_round_trips_the_selected_records_wire_name() {
     let home = HomeGuard::new("scheduled", "model-id-round-trip", Isolation::ProductHome);
     write_saved_models(&home);
     let prompt = write_prompt_file(&home, "model-id.md", "Summarize the reports.");
-    let created = run_json(&[
-        "scheduled",
-        "create",
-        "--name",
+    let created = run_json(&create_argv(
         "Bound task",
-        "--prompt-file",
         prompt.to_str().unwrap(),
-        "--rrule",
         VALID_RRULE,
-        "--model-id",
-        "sel-1",
-    ]);
+        &["--model-id", "sel-1"],
+    ));
     assert_eq!(created["modelId"].as_str(), Some("sel-1"));
     assert_eq!(created["model"].as_str(), Some("deepseek-flash"));
     // On-disk definition: the selected record's wire name in the `model`
@@ -3033,18 +2936,12 @@ fn create_model_id_unknown_id_is_a_state_error() {
     let home = HomeGuard::new("scheduled", "model-id-unknown", Isolation::ProductHome);
     write_saved_models(&home);
     let prompt = write_prompt_file(&home, "model-id.md", "Summarize the reports.");
-    let error = expect_failed(&[
-        "scheduled",
-        "create",
-        "--name",
+    let error = expect_failed(&create_argv(
         "Dangling task",
-        "--prompt-file",
         prompt.to_str().unwrap(),
-        "--rrule",
         VALID_RRULE,
-        "--model-id",
-        "missing-1",
-    ]);
+        &["--model-id", "missing-1"],
+    ));
     assert!(
         error.contains("model not found") && error.contains("missing-1"),
         "{error}"
@@ -3066,16 +2963,13 @@ fn once_tasks_persist_their_anchor_on_create_and_resume() {
     let home = HomeGuard::new("scheduled", "once-anchor", Isolation::ProductHome);
     let prompt = write_prompt_file(&home, "once.md", "Summarize the reports.");
     let at = "2027-06-01T09:30";
-    let created = run_json(&[
-        "scheduled",
-        "create",
-        "--name",
+    let rrule = format!("FREQ=ONCE;AT={at}");
+    let created = run_json(&create_argv(
         "Once reminder",
-        "--prompt-file",
         prompt.to_str().unwrap(),
-        "--rrule",
-        &format!("FREQ=ONCE;AT={at}"),
-    ]);
+        &rrule,
+        &[],
+    ));
     let task_id = created["id"].as_str().unwrap().to_owned();
     // The anchor landed on disk as the GUI would persist it (RFC3339 UTC
     // millis): the sweep never needs to initialize it, so a first tick that
@@ -3138,17 +3032,13 @@ fn once_tasks_with_a_past_anchor_are_refused_at_resume() {
     let home = HomeGuard::new("scheduled", "once-past-resume", Isolation::ProductHome);
     let prompt = write_prompt_file(&home, "once-past.md", "Summarize the reports.");
     let yesterday = chrono::Local::now().date_naive() - chrono::Duration::days(1);
-    let created = run_json(&[
-        "scheduled",
-        "create",
-        "--name",
+    let rrule = format!("FREQ=ONCE;AT={yesterday}T08:30");
+    let created = run_json(&create_argv(
         "Past once",
-        "--prompt-file",
         prompt.to_str().unwrap(),
-        "--rrule",
-        &format!("FREQ=ONCE;AT={yesterday}T08:30"),
-        "--paused",
-    ]);
+        &rrule,
+        &["--paused"],
+    ));
     let task_id = created["id"].as_str().unwrap().to_owned();
     let paused_def = read_json(&home.def_path(&task_id));
     assert_eq!(paused_def["status"].as_str(), Some("paused"));
@@ -3198,11 +3088,11 @@ fn run_reports_a_failed_run_through_a_nonzero_exit() {
     std::fs::create_dir_all(&memory_dir).unwrap();
     std::fs::write(memory_dir.join("_pending.jsonl"), "{not json\n").unwrap();
 
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
-        .args(["scheduled", "run", &task_id, "--output", "json"])
-        .env("PINVOU3_HOME", home.path())
-        .output()
-        .expect("spawn pinvou scheduled run");
+    let output = run_child(
+        home.path(),
+        &["scheduled", "run", &task_id, "--output", "json"],
+        &[],
+    );
     assert_eq!(
         output.status.code(),
         Some(1),
@@ -3223,11 +3113,11 @@ fn run_reports_a_failed_run_through_a_nonzero_exit() {
     // thread for the windowless host, so any in-process invocation in the
     // same test would hit `EventLoop must be created on the main thread` /
     // `runtime already initialized` and fail the suite spuriously.
-    let runs_output = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
-        .args(["scheduled", "runs", &task_id, "--output", "json"])
-        .env("PINVOU3_HOME", home.path())
-        .output()
-        .expect("spawn pinvou scheduled runs");
+    let runs_output = run_child(
+        home.path(),
+        &["scheduled", "runs", &task_id, "--output", "json"],
+        &[],
+    );
     assert_eq!(runs_output.status.code(), Some(0));
     let runs: serde_json::Value =
         serde_json::from_str(&String::from_utf8_lossy(&runs_output.stdout))
@@ -3276,16 +3166,12 @@ fn create_refuses_a_credential_path_prompt_file() {
     let key = ssh.join("id_rsa");
     std::fs::write(&key, "PRIVATE KEY").unwrap();
 
-    let message = expect_failed(&[
-        "scheduled",
-        "create",
-        "--name",
+    let message = expect_failed(&create_argv(
         "credential-gate",
-        "--prompt-file",
         key.to_str().unwrap(),
-        "--rrule",
         VALID_RRULE,
-    ]);
+        &[],
+    ));
     assert!(
         message.contains("refusing prompt file"),
         "the credential-path gate must name the refusal: {message}"

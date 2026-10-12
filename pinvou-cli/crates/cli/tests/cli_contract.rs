@@ -49,7 +49,6 @@ fn gaia_score_rejects_every_mutated_manifest_contract_dimension() {
     // epilogue this replaces was exactly the cleanup a panic skipped).
     let home = HomeGuard::new("gaia", "manifest", Isolation::ProductHome);
     let root = home.path();
-    let expected = gaia_manifest("gaia-manifest-probe");
     assert_eq!(GAIA_LEVEL, 1);
     // Round-47 review: the constant alone is only half the pin — the level
     // is an external contract documented in the gaia doc's dataset table. A
@@ -81,8 +80,7 @@ fn gaia_score_rejects_every_mutated_manifest_contract_dimension() {
         let run_id = format!("gaia-manifest-{index}");
         let manifest = gaia_manifest(&run_id);
         let store = RunStore::create(root, &manifest).unwrap();
-        let mut stored = serde_json::to_value(&expected).unwrap();
-        stored["run_id"] = serde_json::json!(run_id);
+        let mut stored = serde_json::to_value(&manifest).unwrap();
         stored[field] = replacement;
         std::fs::write(store.manifest_path(), serde_json::to_vec(&stored).unwrap()).unwrap();
 
@@ -284,14 +282,25 @@ fn gaia_verify_keeps_raw_snapshot_validation_separate_from_the_ready_gate() {
     assert!(!error.to_string().contains(source.to_str().unwrap()));
 }
 
+/// Extracts one `lib.rs` helper's body between its `fn` signature prefix and
+/// the landmark that opens the next function, so the boundary pins below
+/// panic (instead of silently pinning nothing) when a rename or reformat
+/// moves either landmark.
+fn lib_rs_body(owner: &str, start: &str, end: &str) -> String {
+    include_str!("../src/lib.rs")
+        .split_once(start)
+        .and_then(|(_, tail)| tail.split_once(end))
+        .map(|(body, _)| body.to_owned())
+        .unwrap_or_else(|| panic!("{owner} must remain a distinct narrow boundary"))
+}
+
 #[test]
 fn gaia_official_consumers_take_the_digest_bound_dataset_from_the_ready_gate() {
-    let source = include_str!("../src/lib.rs");
-    let helper = source
-        .split_once("fn open_official_gaia_dataset")
-        .and_then(|(_, tail)| tail.split_once("\nfn verify_gaia"))
-        .map(|(body, _)| body)
-        .expect("official GAIA loader must remain a distinct narrow boundary");
+    let helper = lib_rs_body(
+        "official GAIA loader",
+        "fn open_official_gaia_dataset",
+        "\nfn verify_gaia",
+    );
 
     assert!(helper.contains(".verify_offline(snapshot_root)"));
     assert!(helper.contains("acquisition.into_dataset()"));
@@ -300,12 +309,11 @@ fn gaia_official_consumers_take_the_digest_bound_dataset_from_the_ready_gate() {
 
 #[test]
 fn gaia_raw_verify_uses_the_trusted_source_boundary() {
-    let source = include_str!("../src/lib.rs");
-    let helper = source
-        .split_once("fn verify_gaia(source")
-        .and_then(|(_, tail)| tail.split_once("\nfn verify_gaia_with"))
-        .map(|(body, _)| body)
-        .expect("raw GAIA verifier must remain a distinct narrow boundary");
+    let helper = lib_rs_body(
+        "raw GAIA verifier",
+        "fn verify_gaia(source",
+        "\nfn verify_gaia_with",
+    );
 
     assert!(helper.contains(".verify_source(source)"));
     assert!(!helper.contains("GaiaDataset::verify"));
@@ -385,28 +393,6 @@ fn gaia_run_requires_product_backend_without_exposing_error_chains() {
     assert_eq!(error.exit_code(), ExitCode::Failed);
     assert_eq!(error.to_string(), "product_backend_not_enabled");
     assert!(!error.to_string().contains("Caused by"));
-}
-
-#[test]
-fn gaia_score_rejects_a_run_id_that_differs_from_the_stored_manifest() {
-    let _env_guard = env_lock();
-    let home = HomeGuard::new("gaia", "run-id-mismatch", Isolation::ProductHome);
-    let root = home.path();
-    let manifest = gaia_manifest("gaia-run-id-mismatch");
-    let store = RunStore::create(root, &manifest).unwrap();
-    let mut stored = serde_json::to_value(&manifest).unwrap();
-    stored["run_id"] = serde_json::json!("different-run-id");
-    std::fs::write(store.manifest_path(), serde_json::to_vec(&stored).unwrap()).unwrap();
-
-    let error = execute_error(&[
-        "pinvou",
-        "benchmark",
-        "score",
-        "gaia",
-        "--run-id",
-        "gaia-run-id-mismatch",
-    ]);
-    assert_eq!(error.to_string(), "gaia_run_manifest_mismatch");
 }
 
 #[test]

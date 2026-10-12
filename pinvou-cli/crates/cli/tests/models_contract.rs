@@ -119,6 +119,34 @@ fn add_args<'a>(extra: &[&'a str]) -> Vec<&'a str> {
     args
 }
 
+/// Builds one `pinvou models add` argv: the command spine is spelled once and
+/// `extra` carries the case's own flags verbatim (the `code` contract's
+/// `add()` discipline). Every call site keeps its own assertions so a
+/// regression names its exact case.
+fn add_model<'a>(
+    preset: &'a str,
+    name: &'a str,
+    model: &'a str,
+    base_url: &'a str,
+    extra: &[&'a str],
+) -> Vec<&'a str> {
+    let mut arguments = vec![
+        "pinvou",
+        "models",
+        "add",
+        "--preset",
+        preset,
+        "--name",
+        name,
+        "--model",
+        model,
+        "--base-url",
+        base_url,
+    ];
+    arguments.extend_from_slice(extra);
+    arguments
+}
+
 /// `models add` carrying every optional GUI-form metadata field (the
 /// openai_compatible fixture shared by the metadata tests).
 const METADATA_ADD_ARGS: &[&str] = &[
@@ -261,47 +289,21 @@ fn models_add_rejects_bad_presets_and_efforts() {
 
 #[test]
 fn models_add_requires_core_fields() {
-    for missing in [
-        vec![
-            "pinvou",
-            "models",
-            "add",
-            "--name",
-            "N",
-            "--model",
-            "M",
-            "--base-url",
-            "U",
-        ],
-        vec![
-            "pinvou",
-            "models",
-            "add",
-            "--preset",
-            "deepseek",
-            "--model",
-            "M",
-            "--base-url",
-            "U",
-        ],
-        vec![
-            "pinvou",
-            "models",
-            "add",
-            "--preset",
-            "deepseek",
-            "--name",
-            "N",
-            "--base-url",
-            "U",
-        ],
-        vec![
-            "pinvou", "models", "add", "--preset", "deepseek", "--name", "N", "--model", "M",
-        ],
-    ] {
-        let error = parse_args(missing).expect_err("missing required field");
+    // Each case is PARSE_ADD_BASE minus exactly the dropped flag/value pair.
+    for dropped in ["--preset", "--name", "--model", "--base-url"] {
+        let mut arguments = PARSE_ADD_BASE[..3].to_vec();
+        for pair in PARSE_ADD_BASE[3..].chunks(2) {
+            if pair[0] != dropped {
+                arguments.extend_from_slice(pair);
+            }
+        }
+        let error = parse_args(arguments).expect_err("missing required field");
         assert_eq!(error.exit_code(), ExitCode::Usage);
-        assert!(error.to_string().contains("is required"), "{error}");
+        let message = error.to_string();
+        assert!(
+            message.contains("is required"),
+            "dropping {dropped} must name the missing field: {message}"
+        );
     }
 }
 
@@ -787,26 +789,21 @@ fn models_add_set_active_and_unknown_ids() {
     let _env = env_lock();
     let _home = sandbox_home("model-set-active");
 
-    let stdout = run_ok(&[
-        "pinvou",
-        "models",
-        "add",
-        "--preset",
+    let stdout = run_ok(&add_model(
         "kimi",
-        "--name",
         "Kimi",
-        "--model",
         "kimi-k3",
-        "--base-url",
         "https://api.moonshot.cn/v1",
-        "--context-window",
-        "262144",
-        "--max-output",
-        "8192",
-        "--reasoning-effort",
-        "high",
-        "--set-active",
-    ]);
+        &[
+            "--context-window",
+            "262144",
+            "--max-output",
+            "8192",
+            "--reasoning-effort",
+            "high",
+            "--set-active",
+        ],
+    ));
     let id = added_model_id(&stdout);
     let prefs = load_prefs();
     assert_eq!(prefs.advanced.active_model_id.as_deref(), Some(id.as_str()));
@@ -839,21 +836,13 @@ fn models_add_set_active_and_unknown_ids() {
 fn models_add_reports_missing_secret_env_as_host_failure() {
     let _env = env_lock();
     let _home = sandbox_home("missing-secret-env");
-    let (message, code) = run_err(&[
-        "pinvou",
-        "models",
-        "add",
-        "--preset",
+    let (message, code) = run_err(&add_model(
         "deepseek",
-        "--name",
         "N",
-        "--model",
         "M",
-        "--base-url",
         "https://api.deepseek.com",
-        "--api-key-env",
-        "PINVOU_CLI_TEST_DEFINITELY_MISSING_KEY",
-    ]);
+        &["--api-key-env", "PINVOU_CLI_TEST_DEFINITELY_MISSING_KEY"],
+    ));
     assert_eq!(code, ExitCode::Failed);
     assert_eq!(
         message,
@@ -978,20 +967,13 @@ fn probe_local_without_url_orders_usage_before_env_and_reports_stored_url_failur
     let _home = sandbox_home("probe-local-active-model");
 
     // No key is passed, so `models add` never touches the credential store.
-    let stdout = run_ok(&[
-        "pinvou",
-        "models",
-        "add",
-        "--preset",
+    let stdout = run_ok(&add_model(
         "deepseek",
-        "--name",
         "Remote",
-        "--model",
         "deepseek-v4-pro",
-        "--base-url",
         "https://api.deepseek.com/v1",
-        "--set-active",
-    ]);
+        &["--set-active"],
+    ));
     assert!(stdout.starts_with("id: "), "{stdout}");
 
     // Ordering: the stored base_url is non-loopback AND the env var is
@@ -1020,20 +1002,13 @@ fn probe_local_without_url_orders_usage_before_env_and_reports_stored_url_failur
     // Classification: a malformed stored base_url is a host failure (1),
     // matching `models test`'s invalid_url, not a usage error about argv.
     // Before the fix this exits 2.
-    let stdout = run_ok(&[
-        "pinvou",
-        "models",
-        "add",
-        "--preset",
+    let stdout = run_ok(&add_model(
         "openai_compatible",
-        "--name",
         "Broken",
-        "--model",
         "local",
-        "--base-url",
         "not a url",
-        "--set-active",
-    ]);
+        &["--set-active"],
+    ));
     assert!(stdout.starts_with("id: "), "{stdout}");
     let broken_id = added_model_id(&stdout);
     let (message, code) = run_err(&["pinvou", "models", "probe-local"]);
@@ -1480,19 +1455,13 @@ fn models_list_and_show_collapse_control_characters_in_human_rows() {
     let _env = env_lock();
     let _home = sandbox_home("models-row-hygiene");
     let hostile = "ok\n*m_fake\tEvil";
-    let stdout = run_ok(&[
-        "pinvou",
-        "models",
-        "add",
-        "--preset",
+    let stdout = run_ok(&add_model(
         "deepseek",
-        "--name",
         hostile,
-        "--model",
         "deepseek-v4-pro",
-        "--base-url",
         "https://api.deepseek.com",
-    ]);
+        &[],
+    ));
     let id = added_model_id(&stdout);
 
     let human = run_ok(&["pinvou", "models", "list"]);
@@ -1623,21 +1592,13 @@ fn models_add_writes_the_gui_form_metadata() {
 
     // A vision fallback must name a model that exists, or it is a routing
     // preference that silently never fires.
-    let (message, code) = run_err(&[
-        "pinvou",
-        "models",
-        "add",
-        "--preset",
+    let (message, code) = run_err(&add_model(
         "deepseek",
-        "--name",
         "Vision",
-        "--model",
         "deepseek-v4-pro",
-        "--base-url",
         "https://api.deepseek.com",
-        "--vision-model-id",
-        "m_does_not_exist",
-    ]);
+        &["--vision-model-id", "m_does_not_exist"],
+    ));
     assert_eq!(code, ExitCode::Failed);
     assert!(message.contains("vision model not found"), "{message}");
 
@@ -1689,25 +1650,20 @@ fn models_edit_reports_unknown_id_before_resolving_the_credential() {
 fn models_edit_mutates_in_place_and_preserves_the_id() {
     let _env = env_lock();
     let _home = sandbox_home("models-edit");
-    let stdout = run_ok(&[
-        "pinvou",
-        "models",
-        "add",
-        "--preset",
+    let stdout = run_ok(&add_model(
         "deepseek",
-        "--name",
         "Before",
-        "--model",
         "deepseek-v4-pro",
-        "--base-url",
         "https://api.deepseek.com",
-        "--context-window",
-        "131072",
-        "--reasoning-effort",
-        "high",
-        "--alias",
-        "DS",
-    ]);
+        &[
+            "--context-window",
+            "131072",
+            "--reasoning-effort",
+            "high",
+            "--alias",
+            "DS",
+        ],
+    ));
     let id = added_model_id(&stdout);
 
     let value = run_json(&[
@@ -2037,21 +1993,13 @@ fn configured_model_show_without_reveal_key_leaks_nothing() {
     // The guard restores the ambient value on every exit path.
     let _key_env = EnvGuard::set(&[("PINVOU_CLI_TEST_NOREVEAL_KEY", Some(secret))]);
 
-    let stdout = run_ok(&[
-        "pinvou",
-        "models",
-        "add",
-        "--preset",
+    let stdout = run_ok(&add_model(
         "deepseek",
-        "--name",
         "No reveal",
-        "--model",
         "M",
-        "--base-url",
         "U",
-        "--api-key-env",
-        "PINVOU_CLI_TEST_NOREVEAL_KEY",
-    ]);
+        &["--api-key-env", "PINVOU_CLI_TEST_NOREVEAL_KEY"],
+    ));
     let id = added_model_id(&stdout);
 
     let human = run_ok(&["pinvou", "models", "show", &id]);

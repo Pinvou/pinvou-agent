@@ -21,7 +21,7 @@ use pinvou3_lib::features::sessions::SessionStore;
 
 use common::{
     HomeGuard, Isolation, assert_usage, create_session_fixture, env_lock, expect_failed,
-    parsed_debug, run, run_json, scratch_dir, usage_error,
+    parsed_debug, run, run_child, run_json, scratch_dir, usage_error,
 };
 
 /// `~/.pinvou3/projects/projects.json` — the single projects store file.
@@ -97,8 +97,9 @@ fn seed_acp_state(home: &HomeGuard, session_id: &str, workspace: &Path) {
 
 /// Runs `projects rebind <from> <to> --yes` through the in-process dispatch:
 /// the exact argv every rebind report/lane test shares (the sites whose argv
-/// genuinely differs — the `--output json` variant and the no-`--yes`/
-/// shape-error refusals — keep their inline `run` calls).
+/// or verdict genuinely differs — the no-`--yes` and shape-error refusals,
+/// the corrupt-legacy-table error lane, and the real-binary spawns — keep
+/// their inline calls).
 fn rebind(from: &Path, to: &Path) -> Result<CliOutcome, CliError> {
     run(&[
         "pinvou",
@@ -121,6 +122,13 @@ fn rebind_json(from: &Path, to: &Path) -> serde_json::Value {
         to.to_str().unwrap(),
         "--yes",
     ])
+}
+
+/// Asserts the rebind report carried no `failed_session_ids`; `label` keeps
+/// the caller's context in the failure message.
+fn assert_no_failed_sessions(value: &serde_json::Value, label: &str) {
+    let failed = value["failed_session_ids"].as_array().unwrap();
+    assert!(failed.is_empty(), "{label}: {failed:?}");
 }
 
 /// An owning project-root fixture: `Drop` removes the directory tree, so a
@@ -150,6 +158,16 @@ impl Drop for TempRoot {
 fn make_root_dir(label: &str) -> TempRoot {
     let path = scratch_dir(&format!("pinvou-cli-projects-root-{label}"));
     TempRoot(std::fs::canonicalize(path).unwrap())
+}
+
+/// Creates a project through the JSON lane; `roots` appends one `--root` per entry.
+fn create_project(name: &str, roots: &[&Path]) -> serde_json::Value {
+    let mut arguments = vec!["pinvou", "projects", "create", "--name", name];
+    for root in roots {
+        arguments.push("--root");
+        arguments.push(root.to_str().unwrap());
+    }
+    run_json(&arguments)
 }
 
 // ── parse-level coverage ────────────────────────────────────────────────────
@@ -305,7 +323,7 @@ fn projects_create_list_update_delete_round_trip_persists_the_store() {
     let home = HomeGuard::new("projects", "crud-round-trip", Isolation::ProductHome);
 
     // create — generated prj- id, GUI list-DTO fields, no roots.
-    let value = run_json(&["pinvou", "projects", "create", "--name", "Alpha"]);
+    let value = create_project("Alpha", &[]);
     assert_eq!(value["name"], "Alpha");
     assert_eq!(value["position"], 0);
     assert_eq!(value["assigned_session_count"], 0);
@@ -470,7 +488,7 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
     let home = HomeGuard::new("projects", "move", Isolation::ProductHome);
     let session_id = create_session_fixture();
 
-    let value = run_json(&["pinvou", "projects", "create", "--name", "Inbox"]);
+    let value = create_project("Inbox", &[]);
     let project_id = value["id"].as_str().unwrap().to_owned();
 
     // move returns the outcome fields and persists the assignment.
@@ -568,7 +586,7 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
     );
 
     // Inside a project it resolves, so the ungroup is allowed exactly once.
-    let value = run_json(&["pinvou", "projects", "create", "--name", "Temp"]);
+    let value = create_project("Temp", &[]);
     let project_id = value["id"].as_str().unwrap().to_owned();
     let value = run_json(&["pinvou", "projects", "move", &session_id, &project_id]);
     assert_eq!(value["project_id"], project_id);
@@ -678,15 +696,7 @@ fn projects_rebind_migrates_roots_both_binding_lanes_and_metadata() {
     let to = make_root_dir("rebind-to");
 
     // A project whose root sits under `from`.
-    let value = run_json(&[
-        "pinvou",
-        "projects",
-        "create",
-        "--name",
-        "Moved",
-        "--root",
-        from.to_str().unwrap(),
-    ]);
+    let value = create_project("Moved", &[&from]);
     let project_id = value["id"].as_str().unwrap().to_owned();
 
     // Plain lane: session JSON + workspace-binding.json sidecar, both seeded
@@ -703,11 +713,7 @@ fn projects_rebind_migrates_roots_both_binding_lanes_and_metadata() {
     seed_acp_state(&home, &code_id, &from);
 
     let value = rebind_json(&from, &to);
-    let failed = value["failed_session_ids"].as_array().unwrap();
-    assert!(
-        failed.is_empty(),
-        "a healthy two-lane rebind must not report failures: {failed:?}"
-    );
+    assert_no_failed_sessions(&value, "a healthy two-lane rebind must not report failures");
     let rebound = report_ids(&value, "rebound_session_ids");
     assert!(
         rebound.contains(&plain_id) && rebound.contains(&code_id),
@@ -833,19 +839,8 @@ fn projects_rebind_rerun_converges_a_half_migrated_session() {
         .expect("move the code binding to to");
     drop(agents);
 
-    let value = run_json(&[
-        "pinvou",
-        "projects",
-        "rebind",
-        from.to_str().unwrap(),
-        to.to_str().unwrap(),
-        "--yes",
-    ]);
-    let failed = value["failed_session_ids"].as_array().unwrap();
-    assert!(
-        failed.is_empty(),
-        "a converged rerun must not report failures: {failed:?}"
-    );
+    let value = rebind_json(&from, &to);
+    assert_no_failed_sessions(&value, "a converged rerun must not report failures");
     let rebound = report_ids(&value, "rebound_session_ids");
     assert!(
         rebound.contains(&plain_id) && rebound.contains(&code_id),
@@ -936,11 +931,7 @@ fn projects_rebind_rerun_translates_storage_behind_the_binding() {
     // Run 2 (mid→to): nothing is left under `mid` except this binding, so
     // only the per-session pre-sync geometry can reach the `origin` paths.
     let value = rebind_json(&mid, &to);
-    let failed = value["failed_session_ids"].as_array().unwrap();
-    assert!(
-        failed.is_empty(),
-        "the stranded session must converge: {failed:?}"
-    );
+    assert_no_failed_sessions(&value, "the stranded session must converge");
     let rebound = report_ids(&value, "rebound_session_ids");
     assert!(
         rebound.contains(&stranded_id),
@@ -1014,11 +1005,7 @@ fn projects_rebind_translates_storage_for_a_session_bound_under_a_subpath() {
     seed_acp_state(&home, &session_id, &from_sub);
 
     let value = rebind_json(&from, &to);
-    let failed = value["failed_session_ids"].as_array().unwrap();
-    assert!(
-        failed.is_empty(),
-        "the subpath session must rebind cleanly: {failed:?}"
-    );
+    assert_no_failed_sessions(&value, "the subpath session must rebind cleanly");
     let rebound = report_ids(&value, "rebound_session_ids");
     assert!(
         rebound.contains(&session_id),
@@ -1171,15 +1158,7 @@ fn projects_rebind_from_equal_to_is_a_reported_noop() {
 
     // Seed state that WOULD match a real rebind: if the short-circuit were
     // missing, the run would rewrite (or at least touch) all of it.
-    let value = run_json(&[
-        "pinvou",
-        "projects",
-        "create",
-        "--name",
-        "Same",
-        "--root",
-        same.to_str().unwrap(),
-    ]);
+    let value = create_project("Same", &[&same]);
     let project_id = value["id"].as_str().unwrap().to_owned();
     let session_id = bind_plain_session(&same);
 
@@ -1239,15 +1218,7 @@ fn projects_rebind_refuses_nested_roots_in_both_mirror_directions() {
         ),
     ] {
         let home = HomeGuard::new("projects", "rebind-mirror-nested", Isolation::ProductHome);
-        let value = run_json(&[
-            "pinvou",
-            "projects",
-            "create",
-            "--name",
-            label,
-            "--root",
-            project_root.to_str().unwrap(),
-        ]);
+        let value = create_project(label, &[&project_root]);
         let project_id = value["id"].as_str().unwrap().to_owned();
         let session_id = bind_plain_session(&from);
 
@@ -1405,11 +1376,7 @@ fn projects_rebind_preserves_legacy_table_only_bindings() {
     .expect("seed the legacy table");
 
     let value = rebind_json(&from, &to);
-    let failed = value["failed_session_ids"].as_array().unwrap();
-    assert!(
-        failed.is_empty(),
-        "the legacy-bound session must rebind cleanly: {failed:?}"
-    );
+    assert_no_failed_sessions(&value, "the legacy-bound session must rebind cleanly");
     let rebound = report_ids(&value, "rebound_session_ids");
     assert!(
         rebound.contains(&legacy_id),
@@ -1444,15 +1411,7 @@ fn update_clear_roots_expresses_the_gui_empty_roots_form() {
     let _env_guard = env_lock();
     let _home = HomeGuard::new("projects", "clear-roots", Isolation::ProductHome);
     let root_dir = make_root_dir("clear-roots");
-    let created = run_json(&[
-        "pinvou",
-        "projects",
-        "create",
-        "--name",
-        "Doc",
-        "--root",
-        root_dir.to_str().unwrap(),
-    ]);
+    let created = create_project("Doc", &[&root_dir]);
     let id = created["id"].as_str().unwrap().to_owned();
     assert_eq!(
         created["roots"].as_array().map(Vec::len),
@@ -1514,15 +1473,7 @@ fn projects_rebind_to_a_missing_destination_is_a_typed_refusal() {
         .unwrap()
         .join("rebind-never-created-destination");
 
-    run_json(&[
-        "pinvou",
-        "projects",
-        "create",
-        "--name",
-        "UnusableTarget",
-        "--root",
-        from.to_str().unwrap(),
-    ]);
+    create_project("UnusableTarget", &[&from]);
     let id = bind_plain_session(&from);
 
     let error = rebind(&from, &to).expect_err("rebind to a missing destination must refuse");
@@ -1551,24 +1502,8 @@ fn projects_rebind_to_an_overlapping_existing_root_is_a_typed_conflict() {
     let from = make_root_dir("rebind-conflict-from");
     let to = make_root_dir("rebind-conflict-to");
 
-    run_json(&[
-        "pinvou",
-        "projects",
-        "create",
-        "--name",
-        "Moving",
-        "--root",
-        from.to_str().unwrap(),
-    ]);
-    run_json(&[
-        "pinvou",
-        "projects",
-        "create",
-        "--name",
-        "Occupied",
-        "--root",
-        to.to_str().unwrap(),
-    ]);
+    create_project("Moving", &[&from]);
+    create_project("Occupied", &[&to]);
 
     let error = rebind(&from, &to).expect_err("rebinding onto an occupied root must refuse");
     assert!(
@@ -1611,15 +1546,7 @@ fn projects_move_ungroups_a_tier2_auto_grouped_session() {
     let _home = HomeGuard::new("projects", "rebind-tier2-ungroup", Isolation::ProductHome);
     let root = make_root_dir("rebind-tier2-root");
 
-    let value = run_json(&[
-        "pinvou",
-        "projects",
-        "create",
-        "--name",
-        "AutoGroup",
-        "--root",
-        root.to_str().unwrap(),
-    ]);
+    let value = create_project("AutoGroup", &[&root]);
     let _project_id = value["id"].as_str().unwrap().to_owned();
 
     // The session's workspace sits UNDER the project root, and no explicit
@@ -1655,15 +1582,7 @@ fn projects_move_ungroup_gate_discloses_a_corrupt_agent_index_without_the_app_li
     let home = HomeGuard::new("projects", "move-corrupt-index", Isolation::ProductHome);
     let root = make_root_dir("move-corrupt-index-root");
 
-    let value = run_json(&[
-        "pinvou",
-        "projects",
-        "create",
-        "--name",
-        "CorruptIndex",
-        "--root",
-        root.to_str().unwrap(),
-    ]);
+    let value = create_project("CorruptIndex", &[&root]);
     let _project_id = value["id"].as_str().unwrap().to_owned();
 
     // Healthy codex lane first: the session's project workspace comes from
@@ -1684,10 +1603,11 @@ fn projects_move_ungroup_gate_discloses_a_corrupt_agent_index_without_the_app_li
     let agents_path = home.path().join("session-agents.json");
     std::fs::write(&agents_path, "{not json").unwrap();
 
-    let spawned = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
-        .args(["projects", "move", &corrupt_id, "--yes"])
-        .output()
-        .expect("spawn the pinvou binary");
+    let spawned = run_child(
+        home.path(),
+        &["projects", "move", &corrupt_id, "--yes"],
+        &[],
+    );
     let stderr = String::from_utf8_lossy(&spawned.stderr);
     assert_eq!(
         spawned.status.code(),
@@ -1734,16 +1654,17 @@ fn projects_rebind_refuses_a_corrupt_agent_index_without_the_app_line_or_the_zh_
     let agents_path = home.path().join("session-agents.json");
     std::fs::write(&agents_path, "{not json").unwrap();
 
-    let spawned = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
-        .args([
+    let spawned = run_child(
+        home.path(),
+        &[
             "projects",
             "rebind",
             from.to_str().unwrap(),
             to.to_str().unwrap(),
             "--yes",
-        ])
-        .output()
-        .expect("spawn the pinvou binary");
+        ],
+        &[],
+    );
     let stderr = String::from_utf8_lossy(&spawned.stderr);
     assert_eq!(
         spawned.status.code(),

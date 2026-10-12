@@ -56,7 +56,7 @@ fn set_message_role(id: &str, index: usize, role: &str) {
 /// check), so expectations must use the canonical form (on macOS $TMPDIR
 /// canonicalizes to /private/var/...).
 fn seed_tracked_artifact(home: &HomeGuard, id: &str, file_name: &str, content: &str) -> PathBuf {
-    let workspace_dir = home.sessions_root().join(id).join("workspace");
+    let workspace_dir = home.workspace_of(id);
     std::fs::create_dir_all(&workspace_dir).unwrap();
     let artifact = workspace_dir.join(file_name);
     std::fs::write(&artifact, content).unwrap();
@@ -213,7 +213,7 @@ fn sessions_delete_without_yes_is_a_usage_error() {
     assert_eq!(error.exit_code(), ExitCode::Usage);
     assert!(error.to_string().contains("--yes"));
     // The session must still exist.
-    assert!(home.sessions_root().join(format!("{id}.json")).is_file());
+    assert!(home.session_record(&id).is_file());
 }
 
 /// Round-18 review finding, red-first: `sessions rename <id> see --output
@@ -244,7 +244,7 @@ fn rename_trailing_garbage_after_output_json_is_refused_and_leaves_the_store_unc
     // Store unchanged: the persisted title survives the refused rename.
     let value = run_json(&["pinvou", "sessions", "show", &id]);
     assert_eq!(value["title"], "original title");
-    assert!(home.sessions_root().join(format!("{id}.json")).is_file());
+    assert!(home.session_record(&id).is_file());
 
     // The same pair at the END of the line (legal position) keeps working:
     // mode applied, title made of the words before it.
@@ -293,7 +293,7 @@ fn sessions_list_collapses_control_characters_in_human_titles() {
         "control characters collapse to spaces: {human:?}"
     );
     assert!(
-        home.sessions_root().join(format!("{id}.json")).is_file(),
+        home.session_record(&id).is_file(),
         "the collapse is a rendering choice; the stored title is untouched"
     );
 
@@ -351,7 +351,7 @@ fn sessions_metadata_round_trip_updates_list_and_state() {
     // delete --yes removes the session from the store
     let value = run_json(&["pinvou", "sessions", "delete", &id, "--yes"]);
     assert_eq!(value["action"], "deleted");
-    assert!(!home.sessions_root().join(format!("{id}.json")).exists());
+    assert!(!home.session_record(&id).exists());
     let listed = run_json(&["pinvou", "sessions", "list"]);
     assert_eq!(listed["sessions"].as_array().unwrap().len(), 0);
 }
@@ -405,10 +405,10 @@ fn sessions_delete_reaches_a_corrupt_record_but_show_still_refuses_it() {
     // Corrupt the record the way a crashed writer or a restored backup
     // would, and plant a session directory with the code-session sidecar so
     // the delete cascade has durable state to sweep.
-    let record = home.sessions_root().join(format!("{id}.json"));
+    let record = home.session_record(&id);
     std::fs::write(&record, "not-json-at-all").unwrap();
     let session_dir = home.sessions_root().join(&id);
-    std::fs::create_dir_all(session_dir.join("workspace")).unwrap();
+    std::fs::create_dir_all(home.workspace_of(&id)).unwrap();
     std::fs::write(session_dir.join("code-session.json"), "{}").unwrap();
 
     // show keeps the strict load: the parse error surfaces (exit 1) through
@@ -448,7 +448,7 @@ fn sessions_delete_reaches_a_corrupt_record_but_show_still_refuses_it() {
         "the unknown-id refusal must carry the usual store_error shape: {error}"
     );
     assert!(
-        !home.sessions_root().join("missing-session.json").exists(),
+        !home.session_record("missing-session").exists(),
         "the refused delete must not have created anything"
     );
 }
@@ -859,7 +859,7 @@ fn sessions_subagents_human_row_survives_control_characters_in_model_text() {
     // The worker ledger the multiagent transcript listing reads, seeded at
     // the same path the engine writes it to under the session ledger root
     // (`sessions_root/<id>/workspace` for a plain chat session).
-    let ledger = home.sessions_root().join(&id).join("workspace");
+    let ledger = home.workspace_of(&id);
     let state_dir = ledger.join(".codewhale").join("state");
     std::fs::create_dir_all(&state_dir).unwrap();
     std::fs::write(
@@ -1010,23 +1010,22 @@ fn artifacts_list_read_write_round_trip_with_fixture_session() {
     // (`sessions_root/<id>/workspace`), the same base the GUI uses.
     let report = seed_tracked_artifact(&home, &id, "report.md", "# Report\n\nfirst version\n");
 
+    // The list row's full field shape (name/ext/category/path, the
+    // skipped_sessions disclosure, the read/write payload fields and the
+    // human read) is pinned byte-for-byte by artifacts_contract.rs
+    // (`artifacts_list_read_write_happy_paths_pin_the_json_contract`) over
+    // the same in-process dispatch; only the routing fields the aux-skip
+    // assertion below needs are re-checked here.
     let value = run_json(&["pinvou", "artifacts", "list"]);
     let rows = value["artifacts"].as_array().unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["session_id"], id);
-    assert_eq!(rows[0]["name"], "report.md");
-    assert_eq!(rows[0]["ext"], "md");
-    assert_eq!(rows[0]["category"], "doc");
-    assert_eq!(rows[0]["path"], report.display().to_string());
 
     // Filtered index by --session.
     let value = run_json(&["pinvou", "artifacts", "list", "--session", &id]);
     assert_eq!(value["artifacts"].as_array().unwrap().len(), 1);
     let value = run_json(&["pinvou", "artifacts", "list", "--session", "other"]);
     assert_eq!(value["artifacts"].as_array().unwrap().len(), 0);
-    // Always present, so a JSON consumer can tell an empty index apart from
-    // one truncated by the per-record scan cap.
-    assert_eq!(value["skipped_sessions"], serde_json::json!([]));
 
     // An aux side-chat session's deliverable stays inside the aux boundary,
     // same as the GUI index this command mirrors (its upstream skips aux
@@ -1040,9 +1039,7 @@ fn artifacts_list_read_write_round_trip_with_fixture_session() {
         .update_artifacts(&aux.metadata.id, vec![report.to_string_lossy().to_string()])
         .expect("track artifact on aux session");
     drop(aux_store);
-    let aux_from = home
-        .sessions_root()
-        .join(format!("{}.json", aux.metadata.id));
+    let aux_from = home.session_record(&aux.metadata.id);
     let aux_to = home
         .sessions_root()
         .join(format!("aux-{}.json", aux.metadata.id));
@@ -1057,17 +1054,12 @@ fn artifacts_list_read_write_round_trip_with_fixture_session() {
     );
     assert_eq!(rows[0]["session_id"], id);
 
-    // read returns the validated text content
-    let value = run_json(&["pinvou", "artifacts", "read", &id, "report.md"]);
-    assert_eq!(value["content"], "# Report\n\nfirst version\n");
-    assert_eq!(value["path"], report.display().to_string());
-    let outcome = run(&["pinvou", "artifacts", "read", &id, "report.md"]).expect("human read");
-    assert_eq!(outcome.stdout, "# Report\n\nfirst version\n");
-
-    // write --file overwrites the markdown artifact in place
+    // write --file overwrites the markdown artifact in place; the read and
+    // write payload shapes are pinned by artifacts_contract.rs, so the
+    // read-back below is this test's observable.
     let source = unique_root("pinvou-cli-artifact-source").with_extension("md");
     std::fs::write(&source, "# Report\n\nsecond version\n").unwrap();
-    let value = run_json(&[
+    run_json(&[
         "pinvou",
         "artifacts",
         "write",
@@ -1076,7 +1068,6 @@ fn artifacts_list_read_write_round_trip_with_fixture_session() {
         "--file",
         source.to_str().unwrap(),
     ]);
-    assert_eq!(value["bytes"], "# Report\n\nsecond version\n".len());
     std::fs::remove_file(&source).unwrap();
     let outcome =
         run(&["pinvou", "artifacts", "read", &id, "report.md"]).expect("read after write");
@@ -1222,7 +1213,7 @@ fn artifacts_write_rejects_non_markdown_suffix() {
     let home = HomeGuard::new("sessions", "artifacts-md-only", Isolation::ProductHome);
     let id = create_session_fixture();
 
-    let workspace_dir = home.sessions_root().join(&id).join("workspace");
+    let workspace_dir = home.workspace_of(&id);
     std::fs::create_dir_all(&workspace_dir).unwrap();
     std::fs::write(workspace_dir.join("notes.txt"), "plain").unwrap();
 
@@ -1269,7 +1260,7 @@ fn artifacts_refuses_credential_components_inside_the_session_workspace() {
     let home = HomeGuard::new("sessions", "artifacts-sensitive", Isolation::ProductHome);
     let id = create_session_fixture();
 
-    let workspace_dir = home.sessions_root().join(&id).join("workspace");
+    let workspace_dir = home.workspace_of(&id);
     std::fs::create_dir_all(workspace_dir.join(".ssh")).unwrap();
     std::fs::write(workspace_dir.join(".ssh").join("id_rsa"), "PRIVATE KEY").unwrap();
     std::fs::write(workspace_dir.join(".env"), "TOKEN=secret\n").unwrap();
@@ -1322,11 +1313,7 @@ fn artifacts_read_reaches_scheduled_run_workspace_artifacts() {
     // The store's boot reconciliation prunes profiles whose session JSON is
     // gone, so the transcript file must exist for the profile to survive.
     std::fs::create_dir_all(home.sessions_root()).unwrap();
-    std::fs::write(
-        home.sessions_root().join(format!("{session_id}.json")),
-        "{}",
-    )
-    .unwrap();
+    std::fs::write(home.session_record(session_id), "{}").unwrap();
 
     let profiles = home.path().join("scheduled-runs");
     std::fs::create_dir_all(&profiles).unwrap();

@@ -21,7 +21,7 @@ use pinvou_cli::{ExitCode, OutputMode, parse_args};
 
 use common::{
     HomeGuard, Isolation, assert_usage, create_session_fixture, env_lock, expect_failed,
-    parsed_debug, run, run_json, unique_root, usage_error,
+    parsed_debug, run, run_child, run_json, unique_root, usage_error,
 };
 
 /// A throwaway `PINVOU3_HOME` for one test.
@@ -68,14 +68,7 @@ fn active_distinguishes_an_unreadable_pool_from_a_deleted_card() {
     )
     .unwrap();
 
-    let run_active = || {
-        std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
-            .args(["personas", "active", &session_id])
-            .env("PINVOU3_HOME", home.path())
-            .env("PINVOU_NO_COLOR", "1")
-            .output()
-            .expect("active child runs")
-    };
+    let run_active = || run_child(home.path(), &["personas", "active", &session_id], &[]);
 
     // The personas directory is absent entirely: the first enumeration
     // faults, the empty pool proves nothing, and the remedy must NOT be
@@ -100,10 +93,38 @@ fn active_distinguishes_an_unreadable_pool_from_a_deleted_card() {
     );
 }
 
-fn write_body_file(label: &str, body: &str) -> PathBuf {
+/// An owning persona body-file fixture: `Drop` removes the file, so a
+/// failing assertion can no longer leak it (the manual `remove_file`
+/// epilogues this replaces were exactly the cleanup a panic skipped).
+/// `AsRef<Path>` covers the `read_to_string`/`File::open` call sites, whose
+/// generic parameter blocks deref coercion.
+struct BodyFile(PathBuf);
+
+impl std::ops::Deref for BodyFile {
+    type Target = PathBuf;
+
+    fn deref(&self) -> &PathBuf {
+        &self.0
+    }
+}
+
+impl AsRef<Path> for BodyFile {
+    fn as_ref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for BodyFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Writes a persona body file under the temp directory as a [`BodyFile`].
+fn write_body_file(label: &str, body: &str) -> BodyFile {
     let path = unique_root(&format!("pinvou-cli-personas-body-{label}")).with_extension("md");
     std::fs::write(&path, body).unwrap();
-    path
+    BodyFile(path)
 }
 
 /// Creates a user card through the CLI's JSON lane and returns its generated
@@ -531,8 +552,6 @@ fn personas_create_show_update_delete_round_trip_persists_user_card() {
             .iter()
             .any(|entry| entry["id"] == id)
     );
-
-    std::fs::remove_file(&body_path).unwrap();
 }
 
 #[test]
@@ -642,8 +661,6 @@ fn personas_equip_unequip_active_round_trip_with_fixture_session() {
     assert_eq!(value["id"], "pinvou-card-creator");
     let value = run_json(&["pinvou", "personas", "active", &session_id]);
     assert_eq!(value["id"], "pinvou-card-creator");
-
-    std::fs::remove_file(&body_path).unwrap();
 }
 
 /// `personas delete` must sweep the CLI's own equip persistence: every
@@ -705,8 +722,6 @@ fn personas_delete_sweeps_equipped_sidecars_for_the_deleted_card_only() {
             .contains("cleared the equipped-persona sidecar on 1 session"),
         "the human output must report the cleared-session count"
     );
-
-    std::fs::remove_file(&body_path).unwrap();
 }
 
 /// Regression: the delete-time sweep reads each sidecar through a bounded
@@ -749,8 +764,6 @@ fn personas_delete_sweep_clears_sidecars_with_large_bodies() {
     );
     let value = run_json(&["pinvou", "personas", "active", &session_id]);
     assert!(value.is_null(), "the deleted persona must not stay active");
-
-    std::fs::remove_file(&body_path).unwrap();
 }
 
 /// The human `personas list` and `personas active` rows are tab-separated
@@ -812,8 +825,6 @@ fn personas_list_and_active_rows_survive_control_characters_in_card_text() {
         format!("{persona_id}\tAlpha Beta Gamma [31m\tuser"),
         "the active row must stay one line of three collapsed columns"
     );
-
-    std::fs::remove_file(&body_path).unwrap();
 }
 
 /// The desktop app's persona delete never touches `persona_equipped.json`
@@ -870,8 +881,6 @@ fn personas_active_reports_an_orphaned_sidecar_and_unequip_clears_it() {
     assert!(!sidecar.exists());
     let value = run_json(&["pinvou", "personas", "active", &session_id]);
     assert!(value.is_null(), "cleared state is the honest 'none'");
-
-    std::fs::remove_file(&body_path).unwrap();
 }
 
 /// `personas delete` deliberately reports sweep failures on a `sidecar_errors`
@@ -933,8 +942,6 @@ fn personas_delete_reports_sidecar_errors_and_still_exits_zero() {
         blocked.is_dir(),
         "the sweep must not delete what it cannot read"
     );
-
-    std::fs::remove_file(&body_path).unwrap();
 }
 
 /// The 4 MiB stdin body cap (`read_body`'s `--stdin` lane) is a content
@@ -974,8 +981,6 @@ fn personas_create_refuses_an_oversized_stdin_body_and_persists_nothing() {
         .map(|entries| entries.count())
         .unwrap_or(0);
     assert_eq!(persisted, 0, "a refused body must not persist a card");
-
-    std::fs::remove_file(&body_path).unwrap();
 }
 
 /// Round-36 review minor: a flag-shaped token in the persona-id slot (a

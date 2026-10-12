@@ -1696,12 +1696,30 @@ fn seed_bundle_record(home: &std::path::Path, record_json: &str) {
 fn readiness_separates_cli_disconnect_from_cli_asset_damage() {
     let _env_guard = env_lock();
 
-    // Cause 1: the routine disconnect reason both writers store verbatim.
-    {
-        let home = HomeGuard::new("plugins", "readiness-disconnected", Isolation::ProductHome);
+    // (HomeGuard label, the degraded string the store record carries, the
+    // cause-specific verdict it must resolve to, and that verdict's pin).
+    for (label, degraded, expected_reason, verdict_note) in [
+        // Cause 1: the routine disconnect reason both writers store verbatim.
+        (
+            "readiness-disconnected",
+            "已断开授权：配套技能已随断开移除，重新连接即可恢复",
+            "cli_disconnected",
+            "a logged-out connector must not be reported as a damaged binary",
+        ),
+        // Cause 2: the legacy asset check.
+        (
+            "readiness-degraded",
+            "CLI 二进制 SHA-256 与 lock 表不符，待重新下载",
+            "cli_assets_mismatch",
+            "the SHA-256 mismatch must keep its own verdict",
+        ),
+    ] {
+        let home = HomeGuard::new("plugins", label, Isolation::ProductHome);
         seed_bundle_record(
             home.path(),
-            r#"{"id":"feishu","source":"builtin","installed":true,"installed_at":"2026-09-23T00:00:00Z","degraded":"已断开授权：配套技能已随断开移除，重新连接即可恢复"}"#,
+            &format!(
+                r#"{{"id":"feishu","source":"builtin","installed":true,"installed_at":"2026-09-23T00:00:00Z","degraded":"{degraded}"}}"#
+            ),
         );
         let value = run_json(&["pinvou", "plugins", "readiness"]);
         let feishu = row_of(&value, "bundles", "bundle_id", "feishu");
@@ -1709,23 +1727,9 @@ fn readiness_separates_cli_disconnect_from_cli_asset_damage() {
         assert_eq!(feishu["ready"], serde_json::json!(false));
         assert_eq!(
             feishu["reason"],
-            serde_json::json!("cli_disconnected"),
-            "a logged-out connector must not be reported as a damaged binary"
+            serde_json::json!(expected_reason),
+            "{verdict_note}: {feishu}"
         );
-        assert_eq!(feishu["probe"], serde_json::json!("unavailable_in_cli"));
-    }
-
-    // Cause 2: the legacy asset check.
-    {
-        let home = HomeGuard::new("plugins", "readiness-degraded", Isolation::ProductHome);
-        seed_bundle_record(
-            home.path(),
-            r#"{"id":"feishu","source":"builtin","installed":true,"installed_at":"2026-09-23T00:00:00Z","degraded":"CLI 二进制 SHA-256 与 lock 表不符，待重新下载"}"#,
-        );
-        let value = run_json(&["pinvou", "plugins", "readiness"]);
-        let feishu = row_of(&value, "bundles", "bundle_id", "feishu");
-        assert_eq!(feishu["ready"], serde_json::json!(false));
-        assert_eq!(feishu["reason"], serde_json::json!("cli_assets_mismatch"));
         assert_ne!(
             feishu["reason"],
             serde_json::json!("not_connected"),

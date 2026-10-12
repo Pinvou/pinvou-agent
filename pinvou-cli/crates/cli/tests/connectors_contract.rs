@@ -666,6 +666,20 @@ fn connectors_ima_reports_zero_state_and_missing_client_id_env() {
 // login-link surfacing, the wecom QR note) execute against actual child
 // processes. Unix only: the stand-ins are /bin/sh scripts.
 
+/// The pinned `dws --version` answer every dingtalk fake shares.
+#[cfg(unix)]
+const DWS_VERSION: &str = "dws version 1.0.0";
+
+/// The clean not-connected `dws auth status` answer the not-connected
+/// verdicts below key on.
+#[cfg(unix)]
+const DWS_NOT_CONNECTED: &str = "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo '{\"authenticated\": false}'; exit 0; fi\n";
+
+/// The authorize link the dingtalk login fakes print and every failure path
+/// must surface.
+#[cfg(unix)]
+const DINGTALK_LOGIN_URL: &str = "https://login.dingtalk.com/oauth/authorize?x=1";
+
 #[cfg(unix)]
 fn write_fake_cli(bin: &std::path::Path, name: &str, version: &str, body: &str) {
     write_fake_cli_logged(bin, name, version, body, None);
@@ -750,8 +764,10 @@ fn connect_failure_carries_the_captured_login_link() {
     write_fake_cli(
         &bin,
         "dws",
-        "dws version 1.0.0",
-        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo '{\"authenticated\": false}'; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then echo \"visit https://login.dingtalk.com/oauth/authorize?x=1 to continue\"; /bin/sleep 30; exit 0; fi\n",
+        DWS_VERSION,
+        &format!(
+            "{DWS_NOT_CONNECTED}if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then echo \"visit {DINGTALK_LOGIN_URL} to continue\"; /bin/sleep 30; exit 0; fi\n"
+        ),
     );
     let _path = VendorCliGuard::new_at(bin.clone());
 
@@ -766,7 +782,7 @@ fn connect_failure_carries_the_captured_login_link() {
     .expect_err("the fake login never completes");
     let message = error.to_string();
     assert!(
-        message.contains("https://login.dingtalk.com/oauth/authorize?x=1"),
+        message.contains(DINGTALK_LOGIN_URL),
         "the failure must surface the captured login link: {message}"
     );
 }
@@ -787,8 +803,10 @@ fn connect_does_not_wait_out_the_url_window_when_no_user_code_arrives() {
     write_fake_cli(
         &bin,
         "dws",
-        "dws version 1.0.0",
-        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then echo \"visit https://login.dingtalk.com/oauth/authorize?x=1 to continue\"; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo '{\"authenticated\": false}'; exit 0; fi\n",
+        DWS_VERSION,
+        &format!(
+            "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then echo \"visit {DINGTALK_LOGIN_URL} to continue\"; exit 0; fi\n{DWS_NOT_CONNECTED}"
+        ),
     );
     let _path = VendorCliGuard::new_at(bin.clone());
 
@@ -803,7 +821,7 @@ fn connect_does_not_wait_out_the_url_window_when_no_user_code_arrives() {
     );
     let message = error.to_string();
     assert!(
-        message.contains("https://login.dingtalk.com/oauth/authorize?x=1"),
+        message.contains(DINGTALK_LOGIN_URL),
         "the failure must surface the captured login link: {message}"
     );
     assert!(
@@ -828,8 +846,10 @@ fn connect_keeps_draining_the_dingtalk_user_code_after_a_bare_url() {
     write_fake_cli(
         &bin,
         "dws",
-        "dws version 1.0.0",
-        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then echo \"visit https://login.dingtalk.com/oauth/authorize?x=1 to continue\"; /bin/sleep 1; echo \"user code: DTK123\"; /bin/sleep 300; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo '{\"authenticated\": false}'; exit 0; fi\n",
+        DWS_VERSION,
+        &format!(
+            "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then echo \"visit {DINGTALK_LOGIN_URL} to continue\"; /bin/sleep 1; echo \"user code: DTK123\"; /bin/sleep 300; exit 0; fi\n{DWS_NOT_CONNECTED}"
+        ),
     );
     let _path = VendorCliGuard::new_at(bin.clone());
 
@@ -856,7 +876,7 @@ fn connect_keeps_draining_the_dingtalk_user_code_after_a_bare_url() {
         "the failure must surface the captured user code: {message}"
     );
     assert!(
-        message.contains("https://login.dingtalk.com/oauth/authorize?x=1"),
+        message.contains(DINGTALK_LOGIN_URL),
         "the failure must surface the captured login link: {message}"
     );
 }
@@ -913,8 +933,10 @@ fn connect_failure_surfaces_the_redacted_vendor_output_tail() {
     write_fake_cli(
         &bin,
         "dws",
-        "dws version 1.0.0",
-        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo '{\"authenticated\": false}'; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then echo \"access_token=SUPERSECRETVALUE\"; echo \"Error: CLI data access is not enabled\"; exit 1; fi\n",
+        DWS_VERSION,
+        &format!(
+            "{DWS_NOT_CONNECTED}if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then echo \"access_token=SUPERSECRETVALUE\"; echo \"Error: CLI data access is not enabled\"; exit 1; fi\n"
+        ),
     );
     let _path = VendorCliGuard::new_at(bin.clone());
 
@@ -953,7 +975,7 @@ fn logout_and_apply_skills_remove_the_companion_skill_directories() {
     write_fake_cli(
         &bin,
         "dws",
-        "dws version 1.0.0",
+        DWS_VERSION,
         "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"logout\" ]; then exit 0; fi\n",
     );
     let _path = VendorCliGuard::new_at(bin.clone());
@@ -1319,12 +1341,7 @@ fn enable_with_a_clean_not_connected_verdict_removes_the_skill_tree() {
     // `--version` answers (the enable path does not gate on it, the probe
     // just needs a spawnable CLI); `auth status` exits 0 with an explicit
     // not-authenticated JSON — a CLEAN not-connected verdict, not an error.
-    write_fake_cli(
-        &bin,
-        "dws",
-        "dws version 1.0.0",
-        "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo '{\"authenticated\": false}'; exit 0; fi\n",
-    );
+    write_fake_cli(&bin, "dws", DWS_VERSION, DWS_NOT_CONNECTED);
     let _path = VendorCliGuard::new_at(bin.clone());
 
     let skills = plant_skill_tree(&home, "dingtalk", "dws", "# dws");
@@ -1497,7 +1514,7 @@ fn logout_success_leg_spawns_auth_logout_once_and_flags_the_store_disconnected()
     write_fake_cli_logged(
         &bin,
         "dws",
-        "dws version 1.0.0",
+        DWS_VERSION,
         "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"logout\" ]; then exit 0; fi\n",
         Some(&args_file),
     );
@@ -1698,7 +1715,7 @@ fn connect_reapplies_the_deny_all_code_scope_after_a_fresh_connection() {
     write_fake_cli(
         &bin,
         "dws",
-        "dws version 1.0.0",
+        DWS_VERSION,
         "if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then echo \"User Code: ZXCV1234\"; echo \"open https://login.dingtalk.com/oauth/authorize?user_code=ZXCV1234 to authorize\"; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then echo '{\"authenticated\":true}'; exit 0; fi\nexit 1\n",
     );
     let _path = VendorCliGuard::new_at(bin.clone());
@@ -1918,8 +1935,6 @@ fn ensure_cli_never_reports_success_for_a_binary_that_cannot_execute() {
             );
         }
     }
-
-    let _ = std::fs::remove_dir_all(&bin);
 }
 
 // ── terminal-interrupt coverage ─────────────────────────────────────────────
@@ -2075,5 +2090,4 @@ fn connect_interrupt_takes_the_vendor_child_group_down_with_the_cli() {
             verdict.0, verdict.1
         );
     }
-    let _ = std::fs::remove_dir_all(&bin);
 }

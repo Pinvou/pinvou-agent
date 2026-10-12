@@ -644,9 +644,7 @@ fn voice_transcribe_reports_missing_engine_cleanly_without_asr() {
     // have an arbitrary external binary executed by a default test run.
     let error = {
         let _path = EnvGuard::set(&[("PATH", Some(""))]);
-        let wav = home.path().join("capture.wav");
-        // 44-byte header-only WAV: large enough to pass the empty-audio gate.
-        std::fs::write(&wav, vec![0u8; 44]).unwrap();
+        let wav = stage_wav(home.path());
         run(&["pinvou", "voice", "transcribe", wav.to_str().unwrap()])
             .expect_err("no ASR runtime exists in the sandbox")
     };
@@ -679,6 +677,15 @@ fn voice_transcribe_uses_installed_asr_runtime() {
     assert!(outcome.stdout.contains("Text: "));
 }
 
+/// Writes a 44-byte header-only `capture.wav` under `home` — no audio
+/// frames, but large enough to pass the empty-audio gate — and returns its
+/// path.
+fn stage_wav(home: &std::path::Path) -> PathBuf {
+    let wav = home.join("capture.wav");
+    std::fs::write(&wav, vec![0u8; 44]).unwrap();
+    wav
+}
+
 /// Writes and chmods +x a fake ASR engine script under `home` and returns its
 /// path; the process-tree tests point `PINVOU3_ASR_CMD` at it.
 #[cfg(unix)]
@@ -689,6 +696,16 @@ fn stage_fake_asr(home: &std::path::Path, script: &str) -> PathBuf {
     std::fs::write(&engine, script).unwrap();
     std::fs::set_permissions(&engine, std::fs::Permissions::from_mode(0o755)).unwrap();
     engine
+}
+
+/// Reads back the descendant pid the fake engine recorded in `marker`.
+#[cfg(unix)]
+fn descendant_pid(marker: &std::path::Path) -> i32 {
+    std::fs::read_to_string(marker)
+        .expect("the fake engine records its descendant pid")
+        .trim()
+        .parse()
+        .expect("the descendant pid is numeric")
 }
 
 /// The ASR child is spawned as a process-group leader, so the timeout kill
@@ -714,9 +731,7 @@ fn voice_transcribe_timeout_kills_the_external_asr_process_tree() {
         ("PINVOU3_ASR_CMD", Some(engine.to_str().unwrap())),
         ("PINVOU3_ASR_TIMEOUT_SECS", Some("1")),
     ]);
-    let wav = home.path().join("capture.wav");
-    // 44-byte header-only WAV: passes the empty-audio gate.
-    std::fs::write(&wav, vec![0u8; 44]).unwrap();
+    let wav = stage_wav(home.path());
 
     let error = run(&["pinvou", "voice", "transcribe", wav.to_str().unwrap()])
         .expect_err("the wedged fake engine must time out");
@@ -726,11 +741,7 @@ fn voice_transcribe_timeout_kills_the_external_asr_process_tree() {
         "expected the timeout code, got: {error}"
     );
 
-    let descendant: i32 = std::fs::read_to_string(&marker)
-        .expect("the fake engine records its descendant pid")
-        .trim()
-        .parse()
-        .expect("the descendant pid is numeric");
+    let descendant = descendant_pid(&marker);
     let mut reaped = false;
     for _ in 0..50 {
         // Safety: `kill(pid, 0)` only probes for existence; the pid came from
@@ -772,9 +783,7 @@ fn voice_transcribe_no_speech_exit_does_not_kill_the_reaped_process_group() {
         ),
     );
     let _overrides = EnvGuard::set(&[("PINVOU3_ASR_CMD", Some(engine.to_str().unwrap()))]);
-    let wav = home.path().join("capture.wav");
-    // 44-byte header-only WAV: passes the empty-audio gate.
-    std::fs::write(&wav, vec![0u8; 44]).unwrap();
+    let wav = stage_wav(home.path());
 
     let error = run(&["pinvou", "voice", "transcribe", wav.to_str().unwrap()])
         .expect_err("exit code 6 is the no-speech failure");
@@ -784,11 +793,7 @@ fn voice_transcribe_no_speech_exit_does_not_kill_the_reaped_process_group() {
         "expected the no-speech code, got: {error}"
     );
 
-    let descendant: i32 = std::fs::read_to_string(&marker)
-        .expect("the fake engine records its descendant pid")
-        .trim()
-        .parse()
-        .expect("the descendant pid is numeric");
+    let descendant = descendant_pid(&marker);
     // Safety: `kill(pid, 0)` only probes for existence; the pid came from this
     // test's own fake engine seconds ago.
     let alive = unsafe { libc::kill(descendant, 0) } == 0;
@@ -884,7 +889,7 @@ fn voice_postprocess_draft_file_refuses_a_special_file() {
 fn voice_postprocess_empty_input_reports_the_omitted_pipeline_stages() {
     let _env = common::env_lock();
     let _home = HomeGuard::new("misc", "voice-postprocess-empty", Isolation::ProductHome);
-    let value = run_json(&[
+    let arguments = [
         "pinvou",
         "voice",
         "postprocess",
@@ -894,7 +899,8 @@ fn voice_postprocess_empty_input_reports_the_omitted_pipeline_stages() {
         "   ",
         "--draft",
         "整理会议纪要。",
-    ]);
+    ];
+    let value = run_json(&arguments);
     assert_eq!(value["source"], "empty");
     assert_eq!(value["text"], "");
     let omitted = value["omitted_stages"]
@@ -905,18 +911,7 @@ fn voice_postprocess_empty_input_reports_the_omitted_pipeline_stages() {
     // The human output carries the same disclosure as its trailing Note line
     // — the module header promises it on EVERY postprocess result, the
     // empty short-circuit included.
-    let outcome = run(&[
-        "pinvou",
-        "voice",
-        "postprocess",
-        "--mode",
-        "edit",
-        "--text",
-        "   ",
-        "--draft",
-        "整理会议纪要。",
-    ])
-    .expect("the empty short-circuit must succeed");
+    let outcome = run(&arguments).expect("the empty short-circuit must succeed");
     assert!(
         outcome
             .stdout
@@ -1641,62 +1636,48 @@ fn feedback_submit_keeps_only_a_receipt_after_a_concluded_submission() {
 /// Nothing is read or uploaded from an attachment, but its path is written
 /// into a receipt that lives forever — and the GUI picker refuses credential
 /// locations outright. The CLI must not be the way around that rule.
-#[test]
-fn feedback_submit_refuses_an_attachment_under_a_credential_path() {
-    let _env = common::env_lock();
-    let home = HomeGuard::new("misc", "feedback-attach-secret", Isolation::ProductHome);
-    let body = home.path().join("body.md");
-    std::fs::write(&body, "Reproduction steps go here.\n").unwrap();
-    let key = write_credential_fixture(home.path(), ".ssh", "id_rsa", "PRIVATE KEY");
-
-    let error = run(&[
-        "pinvou",
-        "feedback",
-        "submit",
-        "--type",
-        "issue",
-        "--title",
-        "secret",
-        "--body-file",
-        body.to_str().unwrap(),
-        "--attach",
-        key.to_str().unwrap(),
-    ])
-    .expect_err("a credential attachment must be refused");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
-    assert!(error.to_string().contains("refusing attachment"), "{error}");
-    // The refusal happens before anything is staged.
-    let pending_dir = home.path().join("feedback").join("pending");
-    assert!(!pending_dir.exists(), "nothing may be staged: {error}");
-}
-
+///
 /// Round-27 review: the `--body-file` credential gate (the same
 /// `check_sensitive_path` rule `--attach` applies, per the disclosure and
 /// docs) had no contract test — deleting the gate passed the whole suite.
 /// This pins it on its own input.
 #[test]
-fn feedback_submit_refuses_a_body_file_under_a_credential_path() {
+fn feedback_submit_refuses_a_credential_path_on_attach_and_body_file() {
     let _env = common::env_lock();
-    let home = HomeGuard::new("misc", "feedback-body-secret", Isolation::ProductHome);
+    let home = HomeGuard::new("misc", "feedback-credential-gates", Isolation::ProductHome);
+    let body = home.path().join("body.md");
+    std::fs::write(&body, "Reproduction steps go here.\n").unwrap();
     let key = write_credential_fixture(home.path(), ".ssh", "id_rsa", "PRIVATE KEY");
 
-    let error = run(&[
-        "pinvou",
-        "feedback",
-        "submit",
-        "--type",
-        "issue",
-        "--title",
-        "secret body",
-        "--body-file",
-        key.to_str().unwrap(),
-    ])
-    .expect_err("a credential body file must be refused");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
-    assert!(error.to_string().contains("refusing body file"), "{error}");
-    // The refusal happens before anything is staged.
-    let pending_dir = home.path().join("feedback").join("pending");
-    assert!(!pending_dir.exists(), "nothing may be staged: {error}");
+    for (tail, needle) in [
+        (
+            vec![
+                "--body-file",
+                body.to_str().unwrap(),
+                "--attach",
+                key.to_str().unwrap(),
+            ],
+            "refusing attachment",
+        ),
+        (
+            vec!["--body-file", key.to_str().unwrap()],
+            "refusing body file",
+        ),
+    ] {
+        let mut arguments = vec![
+            "pinvou", "feedback", "submit", "--type", "issue", "--title", "secret",
+        ];
+        arguments.extend(tail);
+        let error = run(&arguments).expect_err("a credential path must be refused");
+        assert_eq!(error.exit_code(), ExitCode::Failed);
+        assert!(
+            error.to_string().contains(needle),
+            "the refusal must name the gated input ({needle}): {error}"
+        );
+        // The refusal happens before anything is staged.
+        let pending_dir = home.path().join("feedback").join("pending");
+        assert!(!pending_dir.exists(), "nothing may be staged: {error}");
+    }
 }
 
 /// Round-37 review: the migration note tells users `agent run --prompt-file`

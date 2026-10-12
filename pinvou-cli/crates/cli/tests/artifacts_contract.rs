@@ -56,17 +56,6 @@ const SAVE_CAP_BYTES: usize = 10 * 1024 * 1024;
 /// pinned by value for the same reason.
 const SCAN_CAP_BYTES: u64 = 32 * 1024 * 1024;
 
-/// The ledger workspace relative artifact paths resolve against
-/// (`sessions_root/<id>/workspace` for a plain chat session fixture). An
-/// inherent method on the shared harness's `HomeGuard` (the `common` module
-/// is compiled into this same test binary), so call sites keep plain method
-/// syntax.
-impl HomeGuard {
-    fn workspace_of(&self, id: &str) -> PathBuf {
-        self.sessions_root().join(id).join("workspace")
-    }
-}
-
 /// Creates `<id>/workspace/report.md` under the sandbox home with `content`
 /// and returns the canonicalized path: the index reports canonical paths,
 /// and on macOS $TMPDIR (/var/folders/…) canonicalizes to /private/var/…,

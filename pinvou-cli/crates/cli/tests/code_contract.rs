@@ -358,27 +358,8 @@ fn every_code_subcommand_parses() {
                 "--api-key-stdin",
             ],
         ),
-        vec![
-            "pinvou",
-            "code",
-            "providers",
-            "update",
-            "pv-1234567890ab",
-            "--agent",
-            "codex",
-            "--name",
-            "Renamed",
-        ],
-        vec![
-            "pinvou",
-            "code",
-            "providers",
-            "update",
-            "pv-1234567890ab",
-            "--agent",
-            "claude",
-            "--delete-key",
-        ],
+        update("pv-1234567890ab", "codex", &["--name", "Renamed"]),
+        update("pv-1234567890ab", "claude", &["--delete-key"]),
         vec![
             "pinvou",
             "code",
@@ -417,17 +398,7 @@ fn every_code_subcommand_parses() {
             "codex",
             "in.json",
         ],
-        vec![
-            "pinvou",
-            "code",
-            "providers",
-            "update",
-            "pv-1234567890ab",
-            "--agent",
-            "kimi",
-            "--context-window",
-            "64000",
-        ],
+        update("pv-1234567890ab", "kimi", &["--context-window", "64000"]),
         vec!["pinvou", "code", "sessions", "list"],
         vec!["pinvou", "code", "sessions", "info", "s-1"],
         vec!["pinvou", "code", "sessions", "timeline", "s-1"],
@@ -827,17 +798,7 @@ fn invalid_code_usage_exits_two_and_names_valid_values() {
                 "MY_KEY",
             ],
         ),
-        vec![
-            "pinvou",
-            "code",
-            "providers",
-            "update",
-            "pv-1234567890ab",
-            "--agent",
-            "claude",
-            "--model-slot",
-            "bogus=x",
-        ],
+        update("pv-1234567890ab", "claude", &["--model-slot", "bogus=x"]),
     ];
     for arguments in &invalid {
         // The common helper asserts the exit-2 usage class for every case.
@@ -2698,6 +2659,31 @@ fn open_lock(path: &Path) -> fd_lock::RwLock<std::fs::File> {
     fd_lock::RwLock::new(file)
 }
 
+/// The shared lock-table argvs: the four mutating commands every session-lock
+/// test drives (rewind / undo / diff / workspace checkout, in that order —
+/// each row's expected code is `{action}_{suffix}` where the suffix selects
+/// the busy vs broken-lock-file twin).
+fn lock_case_argv(id: &str) -> Vec<Vec<&str>> {
+    vec![
+        vec!["pinvou", "code", "checkpoints", "rewind", id, "1", "--yes"],
+        vec!["pinvou", "code", "checkpoints", "undo", id, "--yes"],
+        vec!["pinvou", "code", "checkpoints", "diff", id, "abc"],
+        // Confirmed on purpose: the point of this row is the lock error, and
+        // `require_yes` runs first.
+        vec![
+            "pinvou",
+            "code",
+            "workspace",
+            "checkout",
+            id,
+            "main",
+            "--mode",
+            "stash",
+            "--yes",
+        ],
+    ]
+}
+
 #[test]
 fn session_lock_reports_busy_for_every_mutating_command() {
     let _env_guard = common::env_lock();
@@ -2713,40 +2699,15 @@ fn session_lock_reports_busy_for_every_mutating_command() {
     let mut lock = open_lock(&lock_path);
     let _guard = lock.try_write().expect("test acquires the contended lock");
 
-    for (arguments, code) in [
-        (
-            vec!["pinvou", "code", "checkpoints", "rewind", &id, "1", "--yes"],
-            "rewind_busy",
-        ),
-        (
-            vec!["pinvou", "code", "checkpoints", "undo", &id, "--yes"],
-            "undo_busy",
-        ),
-        (
-            vec!["pinvou", "code", "checkpoints", "diff", &id, "abc"],
-            "diff_busy",
-        ),
-        (
-            vec![
-                "pinvou",
-                "code",
-                "workspace",
-                "checkout",
-                &id,
-                "main",
-                "--mode",
-                "stash",
-                // Confirmed on purpose: the point of this row is the busy
-                // error from the held lock, and `require_yes` runs first.
-                "--yes",
-            ],
-            "checkout_busy",
-        ),
-    ] {
+    for (arguments, action) in lock_case_argv(&id)
+        .into_iter()
+        .zip(["rewind", "undo", "diff", "checkout"])
+    {
+        let code = format!("{action}_busy");
         let error = run(&arguments).expect_err("the held lock must fail the mutation");
         assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
         assert!(
-            error.to_string().contains(code),
+            error.to_string().contains(code.as_str()),
             "expected {code} in: {error}"
         );
     }
@@ -2783,38 +2744,15 @@ fn lock_file_failures_report_the_stable_lock_codes() {
     std::fs::remove_dir_all(&locks).ok();
     std::fs::write(&locks, b"not a directory").unwrap();
 
-    for (arguments, code) in [
-        (
-            vec!["pinvou", "code", "checkpoints", "rewind", &id, "1", "--yes"],
-            "rewind_lock",
-        ),
-        (
-            vec!["pinvou", "code", "checkpoints", "undo", &id, "--yes"],
-            "undo_lock",
-        ),
-        (
-            vec!["pinvou", "code", "checkpoints", "diff", &id, "abc"],
-            "diff_lock",
-        ),
-        (
-            vec![
-                "pinvou",
-                "code",
-                "workspace",
-                "checkout",
-                &id,
-                "main",
-                "--mode",
-                "stash",
-                "--yes",
-            ],
-            "checkout_lock",
-        ),
-    ] {
+    for (arguments, action) in lock_case_argv(&id)
+        .into_iter()
+        .zip(["rewind", "undo", "diff", "checkout"])
+    {
+        let code = format!("{action}_lock");
         let error = run(&arguments).expect_err("the broken lock must fail the mutation");
         assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
         assert!(
-            error.to_string().contains(code),
+            error.to_string().contains(code.as_str()),
             "expected {code} in: {error}"
         );
     }
@@ -3027,7 +2965,7 @@ fn providers_export_refuses_to_overwrite_and_creates_fresh_destinations_0600() {
 
 #[test]
 fn code_login_rejects_conflicting_code_sources() {
-    let error = parse_args([
+    let message = usage_error(&[
         "pinvou",
         "code",
         "login",
@@ -3035,10 +2973,8 @@ fn code_login_rejects_conflicting_code_sources() {
         "--code",
         "C",
         "--code-stdin",
-    ])
-    .expect_err("conflicting code sources must be a usage error");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
-    assert!(error.to_string().contains("only one of"), "{error}");
+    ]);
+    assert!(message.contains("only one of"), "{message}");
 }
 
 #[test]
@@ -3242,10 +3178,7 @@ fn login_drives_the_real_vendor_spawn_path() {
     ]);
     let _codex_path = EnvGuard::set(&[("PINVOU3_CODEX_PATH", Some(script.to_str().unwrap()))]);
 
-    let outcome = run(&["pinvou", "code", "login", "codex", "--output", "json"])
-        .expect("login against the fake codex must succeed");
-    let value: serde_json::Value =
-        serde_json::from_str(&outcome.stdout).expect("single-line JSON login result");
+    let value = run_json(&["pinvou", "code", "login", "codex"]);
     assert_eq!(
         value["status"], "completed",
         "the login result must report status completed"
@@ -4210,11 +4143,9 @@ fn providers_update_delete_key_requires_yes() {
 /// store lookup; it must be refused as usage, naming the real mistake.
 #[test]
 fn flag_shaped_token_in_the_session_id_slot_is_a_usage_error() {
-    let error = parse_args(["pinvou", "code", "sessions", "info", "--workspace"])
-        .expect_err("a flag-shaped session id must be refused at parse time");
-    assert_eq!(error.exit_code(), ExitCode::Usage);
+    let message = usage_error(&["pinvou", "code", "sessions", "info", "--workspace"]);
     assert!(
-        error.to_string().contains("flag-shaped"),
-        "the refusal must name the flag-shaped token: {error}"
+        message.contains("flag-shaped"),
+        "the refusal must name the flag-shaped token: {message}"
     );
 }
