@@ -110,7 +110,7 @@ fn elapsed_ms(started: Instant) -> u64 {
 /// spuriously trip the conservative `cleanup_failed` preset; that is
 /// accepted (the flag is diagnostics-only and the detached run still
 /// records the true outcome).
-const TURN_GATE_AWAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+pub(crate) const TURN_GATE_AWAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Total wait per op for the detached retry that re-delivers the reclaim
 /// shutdown ops after the gate-held send gave up (issue #255). The retry
@@ -957,6 +957,47 @@ where
                 break;
             }
         }
+    }
+}
+
+/// Tears down a just-spawned engine whose session hydration failed.
+/// `get_or_spawn` sits on the submit path under the session turn gate
+/// (issue #525), so the `Shutdown` send is bounded by
+/// [`TURN_GATE_AWAIT_TIMEOUT`] — the same bound as the submit send and the
+/// reclaim shutdown sends, keeping a wedged engine from extending the gate
+/// hold even when it wedged between spawn and teardown. An undelivered
+/// `Shutdown` moves to the detached [`retry_shutdown_sends`]: the engine
+/// owns a `tx_op` clone that keeps its ops channel open, so without
+/// re-delivery its run loop could only exit at process exit.
+async fn teardown_failed_spawn_engine(
+    engine: &AppEngine,
+    forwarder: tauri::async_runtime::JoinHandle<()>,
+) {
+    let handle = engine.handle.clone();
+    bounded_teardown_shutdown(move |op| {
+        let handle = handle.clone();
+        async move { handle.send(op).await }
+    })
+    .await;
+    forwarder.abort();
+}
+
+/// The testable core of [`teardown_failed_spawn_engine`]: one gate-held
+/// bounded `Shutdown` send, and the detached retry for the shortfall. The
+/// sender closure is `Clone` so the retry task can hold its own copy
+/// without touching the turn gate, the pool, or the session maps.
+async fn bounded_teardown_shutdown<S, Fut>(send: S)
+where
+    S: FnMut(Op) -> Fut + Clone + Send + 'static,
+    Fut: Future<Output = Result<()>> + Send + 'static,
+{
+    let delivered = bounded_shutdown_sends(send.clone(), [Op::Shutdown]).await;
+    if delivered < 1 {
+        let _ = tokio::spawn(retry_shutdown_sends(
+            send,
+            vec![Op::Shutdown],
+            RECLAIM_SHUTDOWN_RETRY_PATIENCE,
+        ));
     }
 }
 
@@ -2448,8 +2489,7 @@ impl EnginePool {
                     .await
                 {
                     if is_scheduled {
-                        let _ = engine.handle.send(Op::Shutdown).await;
-                        forwarder.abort();
+                        teardown_failed_spawn_engine(&engine, forwarder).await;
                         return Err(error).with_context(|| {
                             format!("sync scheduled session {session_id} before its first turn")
                         });
@@ -2466,8 +2506,7 @@ impl EnginePool {
                 }
             }
             Err(error) => {
-                let _ = engine.handle.send(Op::Shutdown).await;
-                forwarder.abort();
+                teardown_failed_spawn_engine(&engine, forwarder).await;
                 return Err(error).with_context(|| {
                     format!("load session {session_id} before spawning its engine")
                 });
@@ -2943,7 +2982,22 @@ impl EnginePool {
                     }
                 }
                 forwarder.abort();
-                let _ = forwarder.await;
+                // The abort-join is bounded (issue #525): reclaim holds the
+                // turn gate, and a forwarder wedged outside an await point
+                // can only be reaped once it next reaches an await — which
+                // may never happen. Dropping the join handle on timeout
+                // detaches it (tauri's JoinHandle has no abort-on-drop); a
+                // detached straggler lingers like an undelivered Shutdown
+                // does (accepted #483 residue), and holds no gate, pool, or
+                // session-map state, so it cannot re-block evict/delete.
+                if tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, forwarder)
+                    .await
+                    .is_err()
+                {
+                    eprintln!(
+                        "[engine_pool] forwarder drain did not settle within {TURN_GATE_AWAIT_TIMEOUT:?} while holding the turn gate; detaching it (issue #525)"
+                    );
+                }
             },
             || {
                 engine.finish_reclaimed_turn(
@@ -4426,16 +4480,17 @@ mod scheduled_model_tests {
         SESSION_MODEL_BINDING_STALE_ERROR, ScheduledUnattendedGuard, SessionShellManagers,
         SessionTurnLifecycles, SessionTurnLocks, SessionTurnShellTasks, TURN_GATE_AWAIT_TIMEOUT,
         TranscriptOperation, TurnIdentity, bounded_join_while_holding_turn_gate,
-        bounded_shutdown_sends, cancel_turn_with_gates, default_model_for_new_session_from,
-        delete_chat_session_with_aux_cascade, delete_chat_session_with_gate,
-        delete_scheduled_run_with_gate, delete_then_forget, dispatch_turn_bound_cancel,
-        entry_is_fresh, evict_if_idle_with_gates, forward_edit_resend_with_reminder,
-        forward_forced_turn_restrict, generation_matches, identity_for_active_model,
-        identity_for_saved_model, merge_aux_zero_tool_reminder, quiesce_engine_before_reclaim,
-        rebind_evict_with_gates, rebind_evictable, reset_aux_session_delete_with_gate,
-        resolve_eval_model_selection_from, resolve_runtime_model_override, resolve_scheduled_model,
-        resolve_spawn_model, retry_shutdown_sends, scheduled_profile_after_turn_gate,
-        should_still_reap_after_snapshot, turn_restrict_tools, user_display_message,
+        bounded_shutdown_sends, bounded_teardown_shutdown, cancel_turn_with_gates,
+        default_model_for_new_session_from, delete_chat_session_with_aux_cascade,
+        delete_chat_session_with_gate, delete_scheduled_run_with_gate, delete_then_forget,
+        dispatch_turn_bound_cancel, entry_is_fresh, evict_if_idle_with_gates,
+        forward_edit_resend_with_reminder, forward_forced_turn_restrict, generation_matches,
+        identity_for_active_model, identity_for_saved_model, merge_aux_zero_tool_reminder,
+        quiesce_engine_before_reclaim, rebind_evict_with_gates, rebind_evictable,
+        reset_aux_session_delete_with_gate, resolve_eval_model_selection_from,
+        resolve_runtime_model_override, resolve_scheduled_model, resolve_spawn_model,
+        retry_shutdown_sends, scheduled_profile_after_turn_gate, should_still_reap_after_snapshot,
+        turn_restrict_tools, user_display_message,
     };
     use crate::features::assistant::engine::TurnBoundCancelOps;
     use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
@@ -7126,6 +7181,68 @@ mod scheduled_model_tests {
         assert!(started.elapsed() < TURN_GATE_AWAIT_TIMEOUT);
     }
 
+    // issue #525: the spawn-failure teardown (`get_or_spawn` hydration arms
+    // on the submit path) must bound its `Shutdown` send by the turn-gate
+    // bound and move a shortfall to the detached retry, which re-delivers
+    // once capacity frees up. The forkguard_ prefix registers it as a
+    // fork-guard layer-3 behavior test (fork-policy §3).
+    #[tokio::test]
+    async fn forkguard_spawn_failure_teardown_shutdown_bounded_and_retried() {
+        // Capacity 1, filled and never drained: the gate-held teardown send
+        // parks exactly like on a wedged engine.
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Op>(1);
+        tx.send(Op::CancelSubAgents)
+            .await
+            .expect("wedged slot filled");
+        let started = std::time::Instant::now();
+        tokio::time::timeout(
+            2 * TURN_GATE_AWAIT_TIMEOUT,
+            bounded_teardown_shutdown(move |op| {
+                let tx = tx.clone();
+                async move { tx.send(op).await.map_err(anyhow::Error::from) }
+            }),
+        )
+        .await
+        .expect(
+            "the teardown must settle within twice the gate bound; an unbounded regression would hang here",
+        );
+        assert!(
+            started.elapsed() >= TURN_GATE_AWAIT_TIMEOUT,
+            "the teardown must wait the full budget"
+        );
+        // The teardown returned while wedged (gate responsive) and spawned
+        // the detached retry: once the filler is drained, the retry must
+        // deliver the Shutdown so the engine can exit its normal path.
+        assert!(matches!(rx.try_recv(), Ok(Op::CancelSubAgents)));
+        assert!(
+            matches!(
+                tokio::time::timeout(2 * TURN_GATE_AWAIT_TIMEOUT, rx.recv())
+                    .await
+                    .expect("retry Shutdown must arrive within twice the gate bound"),
+                Some(Op::Shutdown)
+            ),
+            "the detached retry must re-deliver the undelivered Shutdown"
+        );
+    }
+
+    // Control for the teardown wedge test: a healthy engine accepts the
+    // Shutdown inline — the helper bounds the wait, it does not skip the
+    // send, and no retry task is left pending on a delivered op.
+    #[tokio::test]
+    async fn spawn_failure_teardown_shutdown_delivers_when_engine_accepts() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Op>(1);
+        tokio::time::timeout(
+            2 * TURN_GATE_AWAIT_TIMEOUT,
+            bounded_teardown_shutdown(move |op| {
+                let tx = tx.clone();
+                async move { tx.send(op).await.map_err(anyhow::Error::from) }
+            }),
+        )
+        .await
+        .expect("the teardown must settle on an accepting engine");
+        assert!(matches!(rx.recv().await, Some(Op::Shutdown)));
+    }
+
     // The Detached arm must be distinguishable too: a task that outlives
     // the (parameterized) budget is detached — it keeps running while the
     // caller stops waiting — and must not be counted as settled or
@@ -8512,6 +8629,56 @@ mod scheduled_model_tests {
         assert!(
             gate_at < remove_at,
             "the evictability recheck must precede the entry removal"
+        );
+    }
+
+    // issue #525 wiring pins: the behavioral test on
+    // `bounded_teardown_shutdown` covers the composition, but the
+    // get_or_spawn hydration arms cannot be unit-constructed — pin that the
+    // production bodies route through the bounded teardown and keep no raw
+    // unbounded Shutdown send.
+    #[test]
+    fn spawn_failure_teardown_is_bounded_in_production() {
+        let src = include_str!("engine_pool.rs");
+        let src = &src[..src
+            .find("#[allow(clippy::await_holding_lock)]\nmod scheduled_model_tests {")
+            .expect("the test module marker must exist")];
+        let body = production_body(src, "async fn get_or_spawn_with_policy(");
+        assert_eq!(
+            body.matches("teardown_failed_spawn_engine(&engine, forwarder)")
+                .count(),
+            2,
+            "both hydration-failure arms (sync failure on a scheduled session, store load failure) must use the bounded teardown"
+        );
+        assert!(
+            !body.contains("engine.handle.send(Op::Shutdown)"),
+            "no direct unbounded Shutdown send may remain in the spawn-failure teardown"
+        );
+    }
+
+    #[test]
+    fn reclaim_forwarder_join_is_bounded_in_production() {
+        let src = include_str!("engine_pool.rs");
+        let src = &src[..src
+            .find("#[allow(clippy::await_holding_lock)]\nmod scheduled_model_tests {")
+            .expect("the test module marker must exist")];
+        let body = production_body(
+            src,
+            "async fn reclaim_engine_entry(&self, session_id: &str, entry: EngineEntry) {",
+        );
+        let abort_at = body
+            .find("forwarder.abort()")
+            .expect("reclaim must abort the forwarder");
+        let join_at = body
+            .find("tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, forwarder)")
+            .expect("the forwarder abort-join must be bounded (issue #525)");
+        assert!(
+            abort_at < join_at,
+            "the forwarder must be aborted before the bounded join"
+        );
+        assert!(
+            !body.contains("let _ = forwarder.await;"),
+            "no direct unbounded forwarder join may remain in reclaim"
         );
     }
 }
