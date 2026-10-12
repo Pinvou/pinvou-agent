@@ -245,3 +245,41 @@ test('page runtime scrolls an offscreen element before resolving a native input 
     'native hit testing must use the post-scroll viewport coordinate',
   );
 });
+
+test('every core tool schema stays free of empty subschemas that MFJS providers drop', () => {
+  // Moonshot MFJS validation rejects empty schema nodes ({} has no concrete
+  // type) with MissingType, and the Kimi adapter responds by silently
+  // dropping the whole tool from the request. An empty `items` is exactly
+  // equivalent to omitting `items`, so the catalog must never ship one —
+  // otherwise the model sees a tool_search reference it can never call.
+  const { toolsListResult } = createPinvouBrowserCoreCatalog();
+  const offenders = [];
+  // Only schema nodes can be empty-schema offenders: `properties` is a name
+  // map (an empty map is legal), so its own emptiness is fine but every
+  // property value is a schema.
+  const visitSchema = (node, path) => {
+    if (!node || typeof node !== 'object' || Array.isArray(node)) return;
+    if (Object.keys(node).length === 0) {
+      offenders.push(path);
+      return;
+    }
+    if (node.properties) {
+      for (const [name, value] of Object.entries(node.properties)) {
+        visitSchema(value, `${path}.${name}`);
+      }
+    }
+    if (node.items) visitSchema(node.items, `${path}.items`);
+    if (node.additionalProperties && typeof node.additionalProperties === 'object') {
+      visitSchema(node.additionalProperties, `${path}.additionalProperties`);
+    }
+    if (Array.isArray(node.anyOf)) {
+      node.anyOf.forEach((branch, index) => visitSchema(branch, `${path}.anyOf[${index}]`));
+    }
+  };
+  for (const tool of toolsListResult.tools) {
+    visitSchema(tool.inputSchema, tool.name);
+  }
+  assert.deepEqual(offenders, []);
+  const evaluate = toolsListResult.tools.find((tool) => tool.name === 'evaluate_script');
+  assert.equal(evaluate.inputSchema.properties.args.items, undefined);
+});
