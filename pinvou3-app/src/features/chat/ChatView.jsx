@@ -279,6 +279,12 @@ const makeSettleSessionRefSend = ({ mentionDraftKeyRef, sessionMentionEnabledRef
           const carriedIds = new Set(carried.map(ref => ref && ref.sessionId));
           if (mentionDraftKeyRef.current === target) {
             setSessionRefs(current => current.filter(ref => ref && !carriedIds.has(ref.sessionId)));
+          } else if (mentionDraftKeyRef.current === draftKeyAtSend) {
+            // The user is BACK on the draft (round-20 MAJOR-1): merge the
+            // carried picks into the live set too — stash-only would be
+            // overwritten by the next scope cleanup's live snapshot and the
+            // picks would vanish silently.
+            setSessionRefs(current => dedupeSessionRefs([...current, ...carried]));
           }
         }
       }

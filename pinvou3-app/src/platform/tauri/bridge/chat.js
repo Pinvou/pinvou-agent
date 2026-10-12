@@ -1877,9 +1877,11 @@ function persistPinvouReviews() { return pinvouSharedtauriChat().persistPinvouRe
         }
       });
       // The turn already ended (that is what "dropped" means here): nothing
-      // will retrigger the flush for the degraded entry — compensate like
-      // onSteerFailure does.
-      if (!restored && !isBusyFor(sid)) flushQueued(sid);
+      // will retrigger the flush — compensate on BOTH verdicts like
+      // onSteerFailure does (round-20 M1: the restored branch also spliced
+      // the steered queue head, and its chat:done flush was consumed by the
+      // steer).
+      if (!isBusyFor(sid)) flushQueued(sid);
     }
     notify();
   }

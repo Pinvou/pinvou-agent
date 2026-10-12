@@ -1728,7 +1728,11 @@ test('handleSend clears the refs at dispatch and restores them on non-acceptance
 
 test('the scene-send block-prepend into meta.pinvouPayloadText is pinned (round-8 M3)', () => {
   const chatViewSource = readFileSync(new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
-  assert.match(chatViewSource, /pinvouPayloadText: buildSessionMentionBlock\(dedupeSessionRefs\(mentionSplit\.refs\)\) \+ meta\.pinvouPayloadText,/);
+  // Round-20 MAJOR-2: the gate itself is part of the pin — the round-9 M1
+  // regex omitted it, so deleting `sessionMentionEnabled &&` stayed green
+  // (reviewer-verified twice). With the gate in the pattern, a feature-off
+  // scene payload must not have its hand-pasted block re-canonicalized.
+  assert.match(chatViewSource, /sessionMentionEnabled && meta && meta\.pinvouPayloadText && mentionSplit\.refs\.length[\s\S]{0,220}pinvouPayloadText: buildSessionMentionBlock\(dedupeSessionRefs\(mentionSplit\.refs\)\) \+ meta\.pinvouPayloadText,/);
 });
 
 test('the disabledNotice copy lives in uiSessionMention in all three locales (round-8 B1)', () => {
@@ -2312,6 +2316,73 @@ test('failure restores are stash-backed across unmount and draft materialization
         'the carried pick is disarmed live in the misread target',
       );
       stashSessionMentionDraft('draft:12', []);
+    }
+
+    // Round-20 MAJOR-1 (the combination both prior pins missed): the user is
+    // BACK on the draft AND picks were carried — the rollback must merge the
+    // carried picks into the LIVE set, or the next scope-switch cleanup
+    // overwrites the stash with the live snapshot and the picks vanish.
+    {
+      const comboStore = recordingDraftStore();
+      const comboKeyRef = { current: null };
+      const comboRefs = { current: [] };
+      const comboLive = { applied: [] };
+      const comboSends = { current: new Set() };
+      const comboPick = { sessionId: 'combo777', title: '回到草稿前的挑选' };
+      const comboSend = {
+        mentionDraftKeyRef: comboKeyRef,
+        mentionPendingDraftSendsRef: comboSends,
+        sessionMentionEnabledRef: { current: true },
+        isMultiAgentReadOnly: false,
+        canSend: true,
+        chatVoice: null,
+        inputText: '正文',
+        inputTextRef: { current: '正文' },
+        constrainChatInput: (value) => ({ text: value, truncated: false }),
+        setInputText: () => {},
+        sessionMentionEnabled: true,
+        buildSessionMentionBlock,
+        dedupeSessionRefs,
+        stashSessionMentionDraft: comboStore.stashSessionMentionDraft,
+        restoreSessionMentionDraft: comboStore.restoreSessionMentionDraft,
+        resolveMaterializedDraftKey,
+        clearDraftMaterialization,
+        sessionRefs: REFS,
+        sendChatMessage: async () => {
+          // carry: the misread scope stashed + armed the mid-await pick,
+          // then the user navigated back to the draft (live = draft stash)
+          recordDraftMaterialization('draft:13', 'session:TGT13');
+          comboStore.stashSessionMentionDraft('session:TGT13', [comboPick]);
+          comboKeyRef.current = 'session:TGT13';
+          comboRefs.current = [comboPick];
+          comboKeyRef.current = 'draft:13';
+          comboRefs.current = [];
+          return 'restored';
+        },
+        setSessionRefs: (value) => { comboRefs.current = typeof value === 'function' ? value(comboRefs.current) : value; comboLive.applied.push([...comboRefs.current]); },
+        bridge: { chat: { prefillComposer: () => {} } },
+        personalWorkbenchTemplateIdRef: { current: null },
+        setPersonalWorkbenchTemplateId: () => {},
+        console,
+      };
+      comboKeyRef.current = 'draft:13';
+      vm.runInNewContext(`${settlePrefix}${sendFn}\nthis.handleSend = handleSend;`, comboSend);
+      await comboSend.handleSend();
+      // the settle's failure tail live-restores refsAtSend, the rollback
+      // merges the carried pick into live — BOTH visible in the composer
+      assert.deepEqual(
+        comboLive.applied.at(-1) || [],
+        [...REFS, comboPick],
+        'the carried pick merges into the live draft set on rollback',
+      );
+      // and the next cleanup snapshot (live) no longer loses it
+      comboStore.stashSessionMentionDraft('draft:13', [...comboRefs.current]);
+      assert.deepEqual(
+        restoreSessionMentionDraft('draft:13'),
+        [...REFS, comboPick],
+        'the cleanup snapshot keeps the carried pick',
+      );
+      stashSessionMentionDraft('draft:13', []);
     }
 
     // Round-15 m1 (negative): plain navigation (no in-flight send) must NOT

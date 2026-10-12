@@ -251,9 +251,9 @@ pub(crate) fn strip_session_mention_block(text: &str) -> &str {
     // carrying such content is `matched` on the JS side but fail-open
     // passthrough here. Unreachable through the real send path (Tauri's IPC
     // JSON rejects the escaped lone surrogate at the command boundary; real
-    // blocks are one flat ref array), and both sides fail OPEN toward "keep
-    // the raw text" on dirty data, so the asymmetry only ever surfaces as a
-    // kept-block title on hand-crafted input.
+    // blocks are one flat ref array). Divergence direction: on these
+    // inputs the JS side STRIPS (matched) while this side keeps the raw
+    // text — one-way, dirty-data-only, and unreachable through real sends.
     let Ok(value) = serde_json::from_str::<serde_json::Value>(json_line) else {
         return text;
     };
