@@ -4822,42 +4822,54 @@ mod tests {
             return;
         }
         let workspace = unique_temp_root("pinvou-cli-connectors-safe-select");
-        // The traversal bait lives two levels ABOVE the directory tar runs
-        // from, so the member name `../../wecom-cli` points back into the
-        // fixture while staying traversal-shaped in the archive listing.
-        let root = workspace.join("root");
-        let staging = root.join("l1").join("l2");
-        std::fs::create_dir_all(staging.join("safe").join("dir")).expect("test workspace");
-        let safe_contents = b"safe-binary";
-        std::fs::write(
-            staging.join("safe").join("dir").join("wecom-cli"),
-            safe_contents,
-        )
-        .expect("seed the safe member");
-        std::fs::write(root.join("wecom-cli"), b"traversal-bait").expect("seed the bait");
-        // Create from the nested directory so the listing carries BOTH
-        // same-named members, traversal-shaped first.
-        let archive = root.join("a.tar");
-        let create = Command::new("tar")
-            .arg("-cf")
-            .arg(&archive)
-            .arg("--")
-            .arg("../../wecom-cli")
-            .arg("safe/dir/wecom-cli")
-            .current_dir(&staging)
-            .output()
-            .expect("tar create must run");
-        assert!(create.status.success(), "tar create: {create:?}");
+        // The archive is written as raw ustar bytes because no tar create can
+        // produce this fixture: GNU tar strips every leading component chain
+        // that ends in `..` at create time ("Removing leading `a/b/../../'
+        // from member names"), so a tar-built bait would come out with a
+        // clean, selectable name on Linux and the scenario would silently
+        // degenerate. Bait first — the exact list `find` would fall for.
+        let mut archive_bytes = Vec::new();
+        append_ustar_member(&mut archive_bytes, "../../wecom-cli", b"traversal-bait");
+        append_ustar_member(&mut archive_bytes, "safe/dir/wecom-cli", b"safe-binary");
+        // Two zero blocks end the archive; the reader stops there.
+        archive_bytes.extend_from_slice(&[0u8; 1024]);
+        let archive = workspace.join("a.tar");
+        std::fs::create_dir_all(&workspace).expect("test workspace");
+        std::fs::write(&archive, &archive_bytes).expect("write the hand-built archive");
         let target = workspace.join("out");
         std::fs::create_dir_all(&target).expect("target dir");
         extract_member(&archive, "wecom-cli", &target)
             .expect("the safe member must extract past the traversal-shaped sibling");
         assert_eq!(
             std::fs::read(target.join("wecom-cli")).expect("extracted member lands under target"),
-            safe_contents,
+            b"safe-binary" as &[u8],
             "the SAFE member must be selected; the traversal-shaped bait must never win"
         );
         let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    /// Appends one minimal ustar member (header + `contents`, padded to the
+    /// 512-byte block) to `out`. Header layout per POSIX.1-1988; the checksum
+    /// is the byte sum over the header with its own field counted as eight
+    /// spaces, written as six octal digits, NUL, space.
+    fn append_ustar_member(out: &mut Vec<u8>, name: &str, contents: &[u8]) {
+        let mut header = [0u8; 512];
+        header[..name.len()].copy_from_slice(name.as_bytes());
+        header[100..107].copy_from_slice(b"0000644"); // mode
+        header[108..115].copy_from_slice(b"0000000"); // uid
+        header[116..123].copy_from_slice(b"0000000"); // gid
+        header[124..124 + 12].copy_from_slice(format!("{:011o}\0", contents.len()).as_bytes());
+        header[136..147].copy_from_slice(b"00000000000"); // mtime 0
+        header[156] = b'0'; // typeflag: regular file
+        header[257..262].copy_from_slice(b"ustar");
+        header[263..265].copy_from_slice(b"00");
+        header[148..156].copy_from_slice(b"        ");
+        let sum: u32 = header.iter().map(|&byte| u32::from(byte)).sum();
+        header[148..156].copy_from_slice(format!("{sum:06o}\0 ").as_bytes());
+        out.extend_from_slice(&header);
+        out.extend_from_slice(contents);
+        let padding = (512 - contents.len() % 512) % 512;
+        out.extend(std::iter::repeat_n(0u8, padding));
     }
 
     /// Both tar child constructions must carry the `--` operator separator
