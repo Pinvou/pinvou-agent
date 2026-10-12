@@ -2607,9 +2607,12 @@ mod tests {
     use super::*;
     use crate::features::marketplace::file_lock;
     use crate::features::marketplace::store::{BundleSource, plant_installed_record};
-    use crate::features::marketplace::tests::{
-        corrupt_sibling_count, quarantine_backups, tool_manifest_fixture,
-    };
+    use crate::features::marketplace::tests::{corrupt_sibling_count, tool_manifest_fixture};
+    // Every `quarantine_backups` call in this module sits in a `#[cfg(unix)]`
+    // test/helper; an unconditional import dies under Windows' `-D
+    // unused-imports` (round-31 review, Windows CI leg).
+    #[cfg(unix)]
+    use crate::features::marketplace::tests::quarantine_backups;
     use crate::platform::test_support::{make_dir_unreadable_for_test, with_temp_home};
     // The ROOT-SKIP helpers are `#[cfg(all(test, unix))]`; their callers are
     // `#[cfg(unix)]` tests.
