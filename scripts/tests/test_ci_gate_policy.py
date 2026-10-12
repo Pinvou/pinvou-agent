@@ -172,19 +172,9 @@ def _matches_paths_filter(path, patterns):
     return included and not excluded
 
 
-def _job_between(text, start, end):
-    """切出 `start` job 的完整块:从它的 2 空格键到 `end` 键之前(注释保留)。
-
-    套件里十余处逐字相同的
-    `split("\\n  <job>:", maxsplit=1)[1].split("\\n  <end>:", maxsplit=1)[0]`
-    的共享形状;切分 token 与各调用点原本的字面量完全一致。
-    """
-    return text.split(f"\n  {start}:", maxsplit=1)[1].split(f"\n  {end}:", maxsplit=1)[0]
-
-
 def _changes_block(text):
     """changes job 的完整块(含注释);按路径路由的 pin 在其上继续切片。"""
-    return _job_between(text, "changes", "fast-gate")
+    return _extract_job_block(text, "changes")
 
 
 def _frontend_filter_paths(changes):
@@ -843,7 +833,7 @@ class CiGatePolicyTests(unittest.TestCase):
         )
 
         knowledge = _without_yaml_comments(
-            _job_between(self.pr_workflow, "knowledge-rust", "rust-lint")
+            _extract_job_block(self.pr_workflow, "knowledge-rust")
         )
         self.assertIn("needs.changes.outputs.knowledge_rust == 'true'", knowledge)
         self.assertIn(
@@ -963,6 +953,31 @@ class CiGatePolicyTests(unittest.TestCase):
         )[1]
         self.assertIn("name: required-gate", required_gate)
         return required_gate
+
+    def assert_required_gate_wiring(self, job, result_env):
+        """断言 required-gate 对单个 leg 的三重接线:needs 条目、`<JOB>_RESULT:`
+        env 回填、汇总循环条目。评论剥离后断言:只活在注释里的同名行不满足接线。
+        """
+        required_gate = self._required_gate(_without_yaml_comments(self.pr_workflow))
+        self.assertIn(
+            f"- {job}",
+            required_gate,
+            f"{job} must stay in required-gate's needs list: without "
+            "the wire the gate cannot consume the leg at all",
+        )
+        self.assertIn(
+            f"{result_env}: ${{{{ needs.{job}.result }}}}",
+            required_gate,
+            f"{job}'s result must be backfilled into required-gate's "
+            "summary env; a dropped line orphans the loop entry",
+        )
+        self.assertIn(
+            f'"{job}:${result_env}"',
+            required_gate,
+            f"{job} must enter the failure loop "
+            "(success|skipped accepted so path-filtered skips do "
+            "not false-fail)",
+        )
 
     def test_cli_crate_has_its_own_required_gate(self):
         changes = _without_yaml_comments(_changes_block(self.pr_workflow))
@@ -1230,7 +1245,7 @@ class CiGatePolicyTests(unittest.TestCase):
             assert_group_paths_reachable(block, group)
 
         cli_test = _without_yaml_comments(
-            _job_between(self.pr_workflow, "cli-test", "windows-rust-test")
+            _extract_job_block(self.pr_workflow, "cli-test")
         )
         self.assertIn("needs.changes.outputs.cli_rust == 'true'", cli_test)
         self.assertIn(
@@ -1295,8 +1310,8 @@ class CiGatePolicyTests(unittest.TestCase):
         # CLI's cfg(target_os = "windows") branches (exe/cmd shims, taskkill,
         # CREATE_NO_WINDOW) only type-check on a Windows runner, and cli_rust
         # must trigger that leg exactly like it triggers cli-test.
-        windows_rust_test = _job_between(
-            self.pr_workflow, "windows-rust-test", "windows-codex-runtime-test"
+        windows_rust_test = _extract_job_block(
+            self.pr_workflow, "windows-rust-test"
         )
         self.assertIn(
             "needs.changes.outputs.cli_rust == 'true'",
@@ -1454,17 +1469,7 @@ class CiGatePolicyTests(unittest.TestCase):
         required_gate = self._required_gate()
         self.assertIn("- cli-test", required_gate)
         self.assertIn('"cli-test:$CLI_TEST_RESULT"', required_gate)
-        self.assertIn("- macos-cli-check", required_gate)
-        self.assertIn(
-            "MACOS_CLI_RESULT: ${{ needs.macos-cli-check.result }}",
-            required_gate,
-        )
-        self.assertIn(
-            '"macos-cli-check:$MACOS_CLI_RESULT"',
-            required_gate,
-            "macos-cli-check must enter the failure loop like cli-test "
-            "(success|skipped accepted so path-filtered skips do not false-fail)",
-        )
+        self.assert_required_gate_wiring("macos-cli-check", "MACOS_CLI_RESULT")
 
     def test_cli_lint_tauri_deps_stay_identical_with_cli_test(self):
         # Round-45 review: cli-test and cli-lint carry the same "Install Tauri
@@ -1728,16 +1733,7 @@ class CiGatePolicyTests(unittest.TestCase):
             cli_lint,
         )
 
-        required_gate = self._required_gate()
-        self.assertIn("- cli-lint", required_gate)
-        self.assertIn("CLI_LINT_RESULT: ${{ needs.cli-lint.result }}", required_gate)
-        self.assertIn(
-            '"cli-lint:$CLI_LINT_RESULT"',
-            required_gate,
-            "cli-lint must enter the failure loop like cli-test "
-            "(success|skipped accepted so path-filtered skips do not "
-            "false-fail)",
-        )
+        self.assert_required_gate_wiring("cli-lint", "CLI_LINT_RESULT")
 
     def test_required_gate_accepts_only_success_or_skipped(self):
         # Round-28: the `case "$result" in success|skipped) ;;` line is the
@@ -1999,8 +1995,6 @@ class CiGatePolicyTests(unittest.TestCase):
         # summary-loop entry) kept the whole suite green while the gate
         # silently stopped consuming that leg. Pin the same triple for
         # each: needs entry, `<JOB>_RESULT:` backfill, loop entry.
-        required_gate = self._required_gate(_without_yaml_comments(self.pr_workflow))
-        self.assertIn("name: required-gate", required_gate)
         for job, result_env in (
             ("rust-test", "RUST_RESULT"),
             ("frontend-test", "FRONTEND_RESULT"),
@@ -2009,25 +2003,7 @@ class CiGatePolicyTests(unittest.TestCase):
             ("macos-codex-runtime-test", "MACOS_CODEX_RESULT"),
         ):
             with self.subTest(job=job):
-                self.assertIn(
-                    f"- {job}",
-                    required_gate,
-                    f"{job} must stay in required-gate's needs list: without "
-                    "the wire the gate cannot consume the leg at all",
-                )
-                self.assertIn(
-                    f"{result_env}: ${{{{ needs.{job}.result }}}}",
-                    required_gate,
-                    f"{job}'s result must be backfilled into required-gate's "
-                    "summary env; a dropped line orphans the loop entry",
-                )
-                self.assertIn(
-                    f'"{job}:${result_env}"',
-                    required_gate,
-                    f"{job} must enter the failure loop "
-                    "(success|skipped accepted so path-filtered skips do "
-                    "not false-fail)",
-                )
+                self.assert_required_gate_wiring(job, result_env)
 
     def test_fast_gate_checkout_has_no_ref_indirection(self):
         # Round-52 review: fast-gate RUNS this suite (the runner line is
@@ -2178,14 +2154,14 @@ class CiGatePolicyTests(unittest.TestCase):
     def test_rust_modes_run_combined_full_regression_only_for_high_risk(self):
         self.assertIn("merge_group:", self.pr_workflow)
         self.assertIn("ci:full-rust", self.pr_workflow)
-        rust_lint = _job_between(self.pr_workflow, "rust-lint", "rust-test")
+        rust_lint = _extract_job_block(self.pr_workflow, "rust-lint")
         self.assertIn("timeout-minutes: 60", rust_lint)
         self.assertIn("RUN_HEAVY_RUST_CHECKS", rust_lint)
         self.assertIn("github.event.pull_request.draft == false", rust_lint)
         self.assertIn("needs.changes.outputs.rust_dependencies == 'true'", rust_lint)
         self.assertNotIn("headless_bridge_contract_tests", rust_lint)
 
-        rust_test = _job_between(self.pr_workflow, "rust-test", "windows-rust-test")
+        rust_test = _extract_job_block(self.pr_workflow, "rust-test")
         self.assertRegex(
             rust_test,
             r"github\.event_name == 'merge_group'\s*&&\s*"
@@ -2412,7 +2388,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # turn either leg into an optional check, add a cache writer, or drop
         # a step from its leg.
         windows_rust_test = _without_yaml_comments(
-            _job_between(self.pr_workflow, "windows-rust-test", "macos-rust-check")
+            _extract_job_block(self.pr_workflow, "windows-rust-test")
         )
         self.assertIn("name: windows-rust-test (${{ matrix.phase }})", windows_rust_test)
         self.assertIn("fail-fast: false", windows_rust_test)
@@ -2589,8 +2565,8 @@ class CiGatePolicyTests(unittest.TestCase):
 
     def test_windows_rust_test_cumulative_main_push_is_path_independent(self):
         # Main's Windows regression must remain independent of adjacent diff paths.
-        windows_rust_test = _job_between(
-            self.pr_workflow, "windows-rust-test", "windows-codex-runtime-test"
+        windows_rust_test = _extract_job_block(
+            self.pr_workflow, "windows-rust-test"
         )
         self.assertIn(
             "github.event_name == 'push' ||", windows_rust_test
@@ -2615,9 +2591,7 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("timeout-minutes: 240", windows_rust_test)
 
         windows_rust_test = _without_yaml_comments(
-            _job_between(
-                self.pr_workflow, "windows-rust-test", "windows-codex-runtime-test"
-            )
+            _extract_job_block(self.pr_workflow, "windows-rust-test")
         )
         self.assertIn(
             "defaults:\n      run:\n        shell: bash",
@@ -2652,13 +2626,6 @@ class CiGatePolicyTests(unittest.TestCase):
         regression = windows_rust_test.split(
             "- name: Windows 原子替换状态机回归", maxsplit=1
         )[1]
-        # Cut at the next job boundary: the round-17 macos-rust-check leg
-        # legitimately runs `cargo test` (computer_use unit tests) and sits
-        # between the regression step and the previous extraction boundary —
-        # this assertion only guards the Windows regression against
-        # re-invoking cargo, which would re-link the exe and lose the
-        # embedded Common-Controls manifest.
-        regression = regression.split("\n  macos-rust-check:", maxsplit=1)[0]
         self.assertIn('"$test_exe" "$filter" --test-threads=1', regression)
         self.assertNotIn("cargo test", regression)
         self.assertIn(
@@ -2667,10 +2634,7 @@ class CiGatePolicyTests(unittest.TestCase):
             "Windows must execute the PowerShell connector-introspection hook regression",
         )
 
-        required_gate = self._required_gate()
-        self.assertIn("- windows-rust-test", required_gate)
-        self.assertIn("WINDOWS_RUST_RESULT", required_gate)
-        self.assertIn('"windows-rust-test:$WINDOWS_RUST_RESULT"', required_gate)
+        self.assert_required_gate_wiring("windows-rust-test", "WINDOWS_RUST_RESULT")
 
     def test_macos_rust_check_is_wired_into_required_gate(self):
         # Review finding: the new native macOS leg must satisfy the same
@@ -2792,16 +2756,8 @@ class CiGatePolicyTests(unittest.TestCase):
 
         # Same three-wiring rule as the other native legs: needs entry, env
         # backfill, and summary-loop entry.
-        required_gate = self._required_gate()
-        self.assertIn("- windows-rustup-repair-test", required_gate)
-        self.assertIn(
-            "WINDOWS_RUSTUP_REPAIR_RESULT: "
-            "${{ needs.windows-rustup-repair-test.result }}",
-            required_gate,
-        )
-        self.assertIn(
-            '"windows-rustup-repair-test:$WINDOWS_RUSTUP_REPAIR_RESULT"',
-            required_gate,
+        self.assert_required_gate_wiring(
+            "windows-rustup-repair-test", "WINDOWS_RUSTUP_REPAIR_RESULT"
         )
 
     def test_release_contract_runs_for_ready_pr_queue_and_main(self):
@@ -2827,7 +2783,7 @@ class CiGatePolicyTests(unittest.TestCase):
         )
 
         release_contract = _without_yaml_comments(
-            _job_between(self.pr_workflow, "release-contract-test", "knowledge-rust")
+            _extract_job_block(self.pr_workflow, "release-contract-test")
         )
         self.assertIn(
             "needs.changes.outputs.release_contract == 'true'",
@@ -2955,9 +2911,7 @@ class CiGatePolicyTests(unittest.TestCase):
                 f"changing would silently skip the bundle smoke: {entry}",
             )
 
-        macos_job = _job_between(
-            self.pr_workflow, "macos-rust-check", "windows-codex-runtime-test"
-        )
+        macos_job = _extract_job_block(self.pr_workflow, "macos-rust-check")
         smoke_step = _without_yaml_comments(
             macos_job.split(
                 "- name: Tauri bundle smoke", maxsplit=1
@@ -2991,9 +2945,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # lockfile affects the build). Formerly pinned the standalone
         # mac-build.yml trigger; the workflow was folded into pr-check's
         # macos-rust-check in 2026-10.
-        macos_job = _job_between(
-            self.pr_workflow, "macos-rust-check", "windows-codex-runtime-test"
-        )
+        macos_job = _extract_job_block(self.pr_workflow, "macos-rust-check")
         job_if = macos_job.split("\n    if: >-", maxsplit=1)[1].split(
             "\n    runs-on:", maxsplit=1
         )[0]
@@ -3049,9 +3001,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # folded into macos-rust-check. Its old failure mode was silent: the
         # workflow kept "running" (cancel-failing) for weeks with zero
         # coverage. Pin each folded leg so removing one cannot go unnoticed.
-        macos_job = _job_between(
-            self.pr_workflow, "macos-rust-check", "windows-codex-runtime-test"
-        )
+        macos_job = _extract_job_block(self.pr_workflow, "macos-rust-check")
         # mac-build died inside its own 50-minute cap; the fold replaces it
         # with 180. Reverting to the default (360) or deleting the cap burns
         # a hung runner for hours — the exact waste this PR removes.
@@ -3195,9 +3145,7 @@ class CiGatePolicyTests(unittest.TestCase):
         #   a usable lld fails in seconds ahead of any cache restore or
         #   build work (cargo fingerprints inside target/, not the cache
         #   key, keep the lld-built artifacts consistent).
-        macos_job = _job_between(
-            self.pr_workflow, "macos-rust-check", "windows-codex-runtime-test"
-        )
+        macos_job = _extract_job_block(self.pr_workflow, "macos-rust-check")
 
         # No linker env at job level (comments excluded: they document
         # the scoping and legitimately name the variables).
@@ -3322,9 +3270,7 @@ class CiGatePolicyTests(unittest.TestCase):
         #   regenerated a lockfile instead of honoring it (--locked parity).
         self.assertIn('CARGO_INCREMENTAL: "0"', self.pr_workflow)
 
-        knowledge_job = _job_between(
-            self.pr_workflow, "knowledge-rust", "rust-lint"
-        )
+        knowledge_job = _extract_job_block(self.pr_workflow, "knowledge-rust")
         knowledge_cache = _without_yaml_comments(
             knowledge_job.split(
                 "uses: Swatinem/rust-cache@v2", maxsplit=1
@@ -3332,8 +3278,8 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         self.assertIn("cache-targets: false", knowledge_cache)
 
-        windows_rust_job = _job_between(
-            self.pr_workflow, "windows-rust-test", "macos-rust-check"
+        windows_rust_job = _extract_job_block(
+            self.pr_workflow, "windows-rust-test"
         )
         self.assertIn(
             "RUSTUP_TOOLCHAIN: ${{ steps.pinned_toolchain.outputs.version }}",
