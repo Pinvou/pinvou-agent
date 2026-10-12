@@ -1,5 +1,6 @@
 # app-automations 内置工具（会话创建定时任务）设计与验收
 
+> 英文镜像：[`app-automations-定时任务创建工具-设计与验收.en.md`](./app-automations-定时任务创建工具-设计与验收.en.md)（按 CONTRIBUTING 对新开发者文档的英文要求补充；两文内容一一对应，分歧以中文原文为准）。
 > 状态：**已实施**（设计定稿 2026-09-29，随本分支落地；§9 为 CRUD 阶段增补，同样已实施）。配套契约：`docs/builtin-toolset-contract.md`（§9 注册表行已由 "not initiated" 更新为已注册）。
 > 基线：`luzeyang-dev`（0a9fb107e）——本设计依赖 builtin 工具集契约、`session-reader` 包与 `features/messaging`（PR 尚未合入 main），实施分支须链接在该依赖之后。
 > 实现模式：完全复用 `send_message_to_session`（26b575a17）的 "MCP 工具 + spool + 应用侧 watcher" 骨架，**新开能力族** `app-automations`，零 CodeWhale 变更。
