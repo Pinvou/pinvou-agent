@@ -1746,16 +1746,6 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 // Why withdraw: see the builtin-CLI bullet in the
                 // disposition list above — the gate's materialized-dirs
                 // clause keys on these files.
-                //
-                // Deletion failures propagate: the consent
-                // strip only runs after THIS transaction commits, so a failed
-                // withdrawal aborts the uninstall with the consent rows and
-                // the ledger intact — a committed uninstall with stripped
-                // rows but surviving dirs would let the gate vouch for a
-                // consent state that no longer exists. A NotEmpty on the pack dir
-                // itself after both subtrees are gone means unexpected
-                // (non-materialized) content: failing closed keeps it
-                // undeleted rather than destroying it unrecycled.
                 if pkg_dir.exists() {
                     if let Err(withdraw_error) =
                         withdraw_materialized_connector_dirs(tool_id, &pkg_dir)

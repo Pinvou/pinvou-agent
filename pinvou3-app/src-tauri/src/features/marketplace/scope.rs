@@ -260,6 +260,13 @@ static PENDING_CORRUPT_RECOVERY: Mutex<Option<(PathBuf, DisabledBundlesFile)>> =
 /// violation the read path already refuses for itself.
 static UNREADABLE_ORIGINAL: Mutex<Option<PathBuf>> = Mutex::new(None);
 
+/// Shared poisoned-lock recovery for the memo statics above: a panic while a
+/// guard is held cannot invalidate the plain data they hold, so every access
+/// resumes from the inner value instead of propagating the poison.
+fn lock_memo<T>(slot: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Clears the verdict memos. Test-only hygiene: the statics are process-global
 /// and keyed by home path, so a memo left behind by an aborted earlier case
 /// (or by a harness that recreates the same path) must not bleed into the
@@ -268,15 +275,9 @@ static UNREADABLE_ORIGINAL: Mutex<Option<PathBuf>> = Mutex::new(None);
 /// later writer's save succeeds).
 #[cfg(test)]
 pub(crate) fn clear_unpersisted_verdict_for_test() {
-    *UNPERSISTED_VERDICT
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-    *PENDING_CORRUPT_RECOVERY
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-    *UNREADABLE_ORIGINAL
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    *lock_memo(&UNPERSISTED_VERDICT) = None;
+    *lock_memo(&PENDING_CORRUPT_RECOVERY) = None;
+    *lock_memo(&UNREADABLE_ORIGINAL) = None;
 }
 
 /// Test-only write-failure injection for `try_save_disabled_bundles_file`
@@ -347,10 +348,7 @@ fn fail_closed_recovered_file() -> DisabledBundlesFile {
 /// read just evaluated could not be persisted, so later reads in this
 /// process must reuse it instead of re-evaluating from first-boot traces.
 fn arm_unpersisted_verdict(file: &DisabledBundlesFile) {
-    *UNPERSISTED_VERDICT
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-        Some((paths::pinvou3_home(), file.clone()));
+    *lock_memo(&UNPERSISTED_VERDICT) = Some((paths::pinvou3_home(), file.clone()));
 }
 
 /// Shared freeze-persist tail of the NotFound-branch recovery arms (the
@@ -474,32 +472,28 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
                 try_freeze_verdict(&recovered, persist_repairs, "lost-store recovery verdict");
                 return recovered;
             }
-            {
-                // Verdict not yet persisted: this process keeps the first
-                // verdict, denying first-boot traces a chance to re-evaluate.
-                let memo_hit = {
-                    let memo = UNPERSISTED_VERDICT
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    memo.as_ref().and_then(|(memo_home, file)| {
+            // Verdict not yet persisted: this process keeps the first
+            // verdict, denying first-boot traces a chance to re-evaluate.
+            let memo_hit =
+                lock_memo(&UNPERSISTED_VERDICT)
+                    .as_ref()
+                    .and_then(|(memo_home, file)| {
                         (*memo_home == paths::pinvou3_home()).then(|| file.clone())
-                    })
-                };
-                if let Some(file) = memo_hit {
-                    // A fully locked read re-attempts the freeze
-                    // persist — the healing path must not die with the first
-                    // attempt. The original failure armed this memo; once a
-                    // retry lands, `try_save_disabled_bundles_file`'s success
-                    // tail clears it (home-guarded) and the next read takes
-                    // the normal on-disk path. Without the retry, a
-                    // persisted-then-healed home never lands the freeze: a
-                    // restart re-evaluates the first-boot-polluted wide
-                    // signal and can flip plain to AllowAll permanently.
-                    // Degraded reads still return without persisting or
-                    // logging (the memo is a fully-locked-read artifact).
-                    try_freeze_verdict(&file, persist_repairs, "lost-store recovery verdict");
-                    return file;
-                }
+                    });
+            if let Some(file) = memo_hit {
+                // A fully locked read re-attempts the freeze
+                // persist — the healing path must not die with the first
+                // attempt. The original failure armed this memo; once a
+                // retry lands, `try_save_disabled_bundles_file`'s success
+                // tail clears it (home-guarded) and the next read takes
+                // the normal on-disk path. Without the retry, a
+                // persisted-then-healed home never lands the freeze: a
+                // restart re-evaluates the first-boot-polluted wide
+                // signal and can flip plain to AllowAll permanently.
+                // Degraded reads still return without persisting or
+                // logging (the memo is a fully-locked-read artifact).
+                try_freeze_verdict(&file, persist_repairs, "lost-store recovery verdict");
+                return file;
             }
             let legacy_existed = home.join("disabled_connectors.json").exists()
                 || home.join("disabled_skills.json").exists();
@@ -653,10 +647,7 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
                     // Round-19 MAJOR 4: mark the home so the next persist
                     // preserves the unreadable bytes (rename-aside) instead of
                     // destroying them.
-                    *UNREADABLE_ORIGINAL
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                        Some(paths::pinvou3_home());
+                    *lock_memo(&UNREADABLE_ORIGINAL) = Some(paths::pinvou3_home());
                     return recovered;
                 }
             }
@@ -728,7 +719,9 @@ fn read_disabled_bundles_file(persist_repairs: bool) -> DisabledBundlesFile {
     // next read.
     if persist_repairs && !freeze_persist_failed {
         if normalize_stored_lists(&mut file) {
-            save_disabled_bundles_file(&file);
+            if let Err(error) = try_save_disabled_bundles_file(&file) {
+                log::warn!("[scope] {error}");
+            }
         }
         // Clean read (the store parsed): the data leg succeeded. Re-arm the
         // latch only on a FULLY locked read, same as the migration tail above —
@@ -793,13 +786,9 @@ pub fn load_disabled_bundles_startup() -> bool {
     // though the log line landed before the logger attached (or, on the
     // headless host, attaches never). A memo armed by an earlier degraded
     // hot read counts too: the boot still runs on an unpersisted verdict.
-    let freeze_persist_failed = UNPERSISTED_VERDICT
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    lock_memo(&UNPERSISTED_VERDICT)
         .as_ref()
-        .map(|(memo_home, _)| *memo_home == paths::pinvou3_home())
-        .unwrap_or(false);
-    freeze_persist_failed
+        .is_some_and(|(memo_home, _)| *memo_home == paths::pinvou3_home())
 }
 
 /// The freeze-persist failure notice shared by every host channel: the GUI
@@ -879,14 +868,9 @@ fn quarantine_and_recover_disabled_bundles(
     persist_repairs: bool,
 ) -> (DisabledBundlesFile, bool) {
     let recovered = fail_closed_recovered_file();
-    {
-        let memo = PENDING_CORRUPT_RECOVERY
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some((home, file)) = memo.as_ref() {
-            if *home == paths::pinvou3_home() {
-                return (file.clone(), false);
-            }
+    if let Some((home, file)) = lock_memo(&PENDING_CORRUPT_RECOVERY).as_ref() {
+        if *home == paths::pinvou3_home() {
+            return (file.clone(), false);
         }
     }
     if !persist_repairs {
@@ -898,12 +882,11 @@ fn quarantine_and_recover_disabled_bundles(
         // exactly like the quarantine-failure arm below: a later writer must
         // rename those bytes aside instead of blind-writing over the only
         // copy.
-        *UNREADABLE_ORIGINAL
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(paths::pinvou3_home());
+        *lock_memo(&UNREADABLE_ORIGINAL) = Some(paths::pinvou3_home());
         return (recovered, false);
     }
-    if let Err(quarantine_err) = quarantine_corrupt_disabled_bundles(raw, error) {
+    if let Err(quarantine_err) = super::quarantine_corrupt_state_file(&disabled_bundles_path(), raw)
+    {
         // Latched: a persistently failing quarantine (read-
         // only home) reached this arm on every locked read and printed one
         // warn per read.
@@ -920,11 +903,14 @@ fn quarantine_and_recover_disabled_bundles(
         // bytes aside before overwriting (differential transient failure:
         // the quarantine write fails now, the main write succeeds later).
         // Cleared by try_save's successful-persist tail.
-        *UNREADABLE_ORIGINAL
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(paths::pinvou3_home());
+        *lock_memo(&UNREADABLE_ORIGINAL) = Some(paths::pinvou3_home());
         return (recovered, false);
     }
+    // Log, not stderr: packaged Windows GUIs never see
+    // eprintln output — same routing as the read-failure latch above.
+    log::warn!(
+        "[marketplace] disabled_bundles.json was corrupt ({error}); quarantined, attempting the fail-closed reset"
+    );
     if let Err(save_error) = try_save_disabled_bundles_file(&recovered) {
         log_scope_read_failure(
             LOG_RECOVERY,
@@ -932,10 +918,7 @@ fn quarantine_and_recover_disabled_bundles(
                 "[marketplace] {save_error}; corrupt recovery overwrite failed - holding the in-memory fail-closed state, re-quarantine suppressed until a save succeeds"
             ),
         );
-        *PENDING_CORRUPT_RECOVERY
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-            Some((paths::pinvou3_home(), recovered.clone()));
+        *lock_memo(&PENDING_CORRUPT_RECOVERY) = Some((paths::pinvou3_home(), recovered.clone()));
         return (recovered, false);
     }
     (recovered, true)
@@ -1347,24 +1330,6 @@ fn merge_ids_into_scope(file: &mut DisabledBundlesFile, key: &str, ids: Vec<Stri
     }
 }
 
-/// Write the full file (atomic replace, same as the legacy files). Create the
-/// parent directory first: the first persist of a migration freeze or corrupt
-/// recovery may precede any directory-creating startup step, `write_atomic`
-/// does not create parent directories, and a failed write would silently
-/// unfreeze the "fresh vs upgraded" verdict and fail open on the next read
-/// (review #455).
-///
-/// Best-effort entry point: failures are logged, not propagated. Governance
-/// callers (toggles, visibility, install sync, freeze) use
-/// [`try_save_disabled_bundles_file`] instead — a silently lost write would
-/// let them continue on a half-applied state while the frontend reports
-/// success (#571).
-fn save_disabled_bundles_file(file: &DisabledBundlesFile) {
-    if let Err(error) = try_save_disabled_bundles_file(file) {
-        log::warn!("[scope] {error}");
-    }
-}
-
 /// Reports persist failures as Err (review #455 R7-M2): semantically
 /// sensitive callers such as freeze need to distinguish "written" from
 /// "silently lost".
@@ -1388,12 +1353,9 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
     // back, restoring "unreadable original in place, marker armed" exactly.
     let mut renamed_aside: Option<PathBuf> = None;
     {
-        let degraded = UNREADABLE_ORIGINAL
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        let degraded = lock_memo(&UNREADABLE_ORIGINAL)
             .as_ref()
-            .map(|p| p == &home)
-            .unwrap_or(false);
+            .is_some_and(|p| *p == home);
         if degraded && path.exists() {
             // An armed marker must never precede an
             // unpreserved destruction, so the on-disk bytes are renamed
@@ -1483,7 +1445,7 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
     // Successful persist = the file is valid JSON again: both "write-failed"
     // memos are now stale (R9-M1).
     for memo in [&UNPERSISTED_VERDICT, &PENDING_CORRUPT_RECOVERY] {
-        let mut slot = memo.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut slot = lock_memo(memo);
         if let Some((memo_home, _)) = slot.as_ref() {
             if *memo_home == home {
                 *slot = None;
@@ -1496,10 +1458,8 @@ fn try_save_disabled_bundles_file(file: &DisabledBundlesFile) -> Result<(), Stri
     // marker armed for home B (tests switch PINVOU3_HOME; production has
     // one home).
     {
-        let mut slot = UNREADABLE_ORIGINAL
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if slot.as_ref().map(|p| p == &home).unwrap_or(false) {
+        let mut slot = lock_memo(&UNREADABLE_ORIGINAL);
+        if slot.as_ref().is_some_and(|p| *p == home) {
             *slot = None;
         }
     }
@@ -2366,6 +2326,9 @@ pub fn enable_packages_in_scope(
     super::file_lock::with_file_lock(&disabled_bundles_path(), || {
         let mut file = load_disabled_bundles_file_locked();
         let key = scope.as_str();
+        let mut not_applied: Vec<String> = Vec::new();
+        let mut changed = false;
+        let mut applied: Vec<String> = Vec::new();
         if file.initialized.contains(key) {
             // Initialized scope: refuse only ids the **user** explicitly turned
             // off — stored entries not attributable to the install default
@@ -2394,11 +2357,6 @@ pub fn enable_packages_in_scope(
                     state_changed: false,
                 });
             }
-        }
-        let mut not_applied: Vec<String> = Vec::new();
-        let mut changed = false;
-        let mut applied: Vec<String> = Vec::new();
-        if file.initialized.contains(key) {
             if let Some(list) = file.scopes.get_mut(key) {
                 let before = list.len();
                 list.retain(|id| !ids.contains(id));
@@ -2858,10 +2816,7 @@ mod tests {
             // load having hit a transient read failure) while the memo is
             // armed.
             std::fs::write(&path, on_disk).unwrap();
-            *UNREADABLE_ORIGINAL
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                Some(crate::platform::paths::pinvou3_home());
+            *lock_memo(&UNREADABLE_ORIGINAL) = Some(crate::platform::paths::pinvou3_home());
 
             try_save_disabled_bundles_file(&DisabledBundlesFile::default())
                 .expect("an armed marker must not block the write");
@@ -2881,10 +2836,7 @@ mod tests {
             serde_json::from_str::<DisabledBundlesFile>(&landed)
                 .expect("the new state must be the live store again");
             assert!(
-                UNREADABLE_ORIGINAL
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .is_none(),
+                lock_memo(&UNREADABLE_ORIGINAL).is_none(),
                 "the marker must be cleared by the successful-persist tail"
             );
         });
@@ -3772,7 +3724,7 @@ mod tests {
                 ready_tx
                     .send(())
                     .expect("reader start signal before taking the lock");
-                load_disabled_bundles_for_plain_for_lock_test()
+                load_disabled_bundles_for(ConnectorScope::Plain)
             });
             ready_rx
                 .recv()
@@ -3801,7 +3753,7 @@ mod tests {
             assert!(!disabled_bundles_path().exists());
             // The next uncontended read runs fully locked and converges the
             // file to the new format.
-            let got = load_disabled_bundles_for_plain_for_lock_test();
+            let got = load_disabled_bundles_for(ConnectorScope::Plain);
             assert_eq!(got, vec!["weather".to_string()]);
             let content = std::fs::read_to_string(disabled_bundles_path()).unwrap();
             assert!(
@@ -3822,10 +3774,6 @@ mod tests {
             !disabled_bundles_path().exists(),
             "data file written while the lock was held — serialization is broken"
         );
-    }
-
-    fn load_disabled_bundles_for_plain_for_lock_test() -> Vec<String> {
-        load_disabled_bundles_for(ConnectorScope::Plain)
     }
 
     /// Collect the evidence sidecar paths beside `dir` whose file name
@@ -4089,7 +4037,7 @@ mod tests {
             let reader = with_foreign_scope_write_lock(|| {
                 let (done_tx, done_rx) = std::sync::mpsc::channel();
                 let reader = std::thread::spawn(move || {
-                    let got = load_disabled_bundles_for_plain_for_lock_test();
+                    let got = load_disabled_bundles_for(ConnectorScope::Plain);
                     done_tx.send(got).expect("reader should send its result");
                 });
                 // A contended read must return promptly. recv_timeout doubles as
@@ -5137,21 +5085,4 @@ mod tests {
             );
         });
     }
-}
-
-/// Quarantines the raw bytes of a corrupt disabled_bundles.json into a
-/// `.corrupt.<ts>` copy (sharing `quarantine_corrupt_state_file` with
-/// installed.json); the read path then self-heals via fail-closed degrade.
-/// Quarantine failure propagates as Err — the caller uses that to give up
-/// overwriting the original, avoiding wiping recoverable raw bytes when the
-/// quarantine copy never landed (review #455 R5-m4).
-fn quarantine_corrupt_disabled_bundles(content: &[u8], error: &str) -> Result<(), String> {
-    let path = disabled_bundles_path();
-    super::quarantine_corrupt_state_file(&path, content)?;
-    // Log, not stderr: packaged Windows GUIs never see
-    // eprintln output — same routing as the read-failure latch above.
-    log::warn!(
-        "[marketplace] disabled_bundles.json was corrupt ({error}); quarantined, attempting the fail-closed reset"
-    );
-    Ok(())
 }
