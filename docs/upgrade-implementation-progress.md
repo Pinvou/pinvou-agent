@@ -1526,3 +1526,33 @@ Both independent scoped roles gave final PASS for the complete fifth-batch code,
 tests and documents. Continue protected recovery and actual owner composition.
 Service commit: `fff5e1c` (pushed). This freezes the new reception migration;
 subsequent SQL changes must use additive migrations.
+
+### T20 sixth batch: no-update diagnostic calculation (2026-10-12)
+
+The service domain planner distinguishes live state writes from lawful late
+diagnostic cursor writes and existing receipt replay, using actual original
+Session state and trusted time. Replay precedes new fences/cursor/sequence work.
+T44 validates a historical edge at original occurrence using an ephemeral
+projection; the original Session is preserved and no future action is renewed.
+No-update records cannot invent freezing/preparation or quality contribution.
+Malformed/mismatched/exhausted cursors, sequence/edge errors, channel cutoffs
+and upload expiry refuse; output cursor retains exact original diagnostic fields
+and original credential retention. Calculations do not alias input records.
+
+The unmodified original Node event model supplies 51 comparisons over all three
+execution purposes and live/late/reserved/full-cursor/replay/conflict/expiry cases.
+Exact receipt/cursor bytes and write separation match. Additional domain tests
+cover corrupted/exhausted cursors, fence equality and original revision exhaustion.
+Targeted tests passed (3.077s). No SQL or normative contract changes; actual late
+cursor/receipt/outbox transactions, recoverable registered owner and HTTP/client
+transport remain later work. Full T20 is open; downloads have no hard time cap.
+
+Final default full Go tests passed (events: 23.468s) with the original input,
+receipt and 51 no-update Node comparisons enabled. Module verification, vet,
+all command builds, pinned contract and client architecture/version/diff checks
+passed. No SQL change requires a new database test in this pure batch; default
+database/provider opt-ins remain skipped. Actual late reception/E2E remains open.
+Both independent scoped roles passed the complete frozen code/tests/documents;
+their independent targeted Node/domain runs passed (7.384s and 3.490s).
+Service commit: `a92fbf4` (pushed). Continue actual diagnostic SQL composition
+without rewriting the frozen reception migration or pausing later work.
