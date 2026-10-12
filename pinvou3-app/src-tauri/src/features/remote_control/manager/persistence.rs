@@ -175,8 +175,9 @@ pub(super) fn remove_config() -> Result<(), String> {
 }
 
 // ── 用户自定义 Relay 地址 ─────────────────────────────────────────────
-// 设置页填写的域名/IP 规范化为「WebSocket 地址 + 页面基址」一对后持久化；
-// 生效优先级：运行时 env 覆盖 > PINVOU_REMOTE_* env > 本设置 > 内置默认。
+// 没有应用内设置入口：web-relay.json 由用户手工维护，格式为「WebSocket
+// 地址 + 页面基址」一对；生效优先级：运行时 env 覆盖 > PINVOU_REMOTE_* env
+// > 本设置 > 内置默认。
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelaySettings {
@@ -213,7 +214,7 @@ pub(super) fn validate_relay_settings(settings: &RelaySettings) -> Result<(), St
 }
 
 /// 读取失败（不存在/损坏/非法）一律回落默认 relay：设置文件不是凭据，宁可
-/// 降级也不把「启用 Web 访问」整个卡死；重新保存会原子覆盖坏文件。
+/// 降级也不把「启用 Web 访问」整个卡死；文件损坏时由用户手工修复或删除。
 pub(super) fn load_relay_settings() -> Option<RelaySettings> {
     let file = File::open(relay_settings_path()).ok()?;
     let mut text = String::new();
