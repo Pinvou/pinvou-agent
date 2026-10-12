@@ -836,13 +836,10 @@ fn legacy_skill_records() -> Result<Vec<BundleRecord>, String> {
         // ABORTS the one-shot import fail-closed instead of silently
         // skipping (and latching the gate over a skipped mirror).
         let marker_path = dir.join(".installed-from");
-        let marker = if marker_path.exists() {
-            match read_private_data_file(&marker_path) {
-                Ok(marker) => marker,
-                Err(e) => return Err(format!("读取 {} 失败: {e}", marker_path.display())),
-            }
-        } else {
-            continue;
+        let marker = match read_private_data_file(&marker_path) {
+            Ok(marker) => marker,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("读取 {} 失败: {e}", marker_path.display())),
         };
         let marker = marker.trim();
         let dir_name = entry.file_name().to_string_lossy().into_owned();
