@@ -1916,3 +1916,143 @@ SQL migration changes, actual writer registration, public atomic batches or
 physical/database E2E are claimed. Full T20 remains open. Deployment stays
 deferred; downloads have no hard total/cumulative duration limit.
 Service transaction calculation commit: `b159d18`.
+
+### T20 fifteenth batch: protected transaction reception observation (2026-10-12)
+
+The service binds the three-purpose calculator to actual current Root/role deny,
+original T44 Session/authorization/transaction and complete scope inventories.
+Receipt and independent transaction cursor point reads precede final same-token
+original trust/input/SQL-time consistency checks. The returned complete bounded
+read set and live/late/replay plan are observations, never event ACK or commit
+permission. The source reads no outbox and proves no quality contribution.
+
+Reception migration five adds a distinct transaction cursor table with composite
+scope/transaction PK and actual T44 transaction FK. The old Session cursor table,
+including its Session FK, stays unchanged. Equal textual IDs cannot collide in
+storage or reference kind. Original reception SQL one through four remains byte-
+identical; the new migration is LF-only and creates no function or writer grant.
+Structure, digest/count, read-only role and protected maintenance/owner guards
+include the new warehouse. Explicit initialization verifies old native structure
+before adding the table and full current structure afterward.
+
+Runtime remains without direct writes/new EXECUTE. Actual symmetric existing
+reserve_owner/apply_owner privileges can coexist with the reader; singleton or
+unsafe PUBLIC/named/inherited/SET grants refuse. The request cannot choose a
+schema privilege mode. Repeated initialization still revokes the enabled owner
+ports and requires explicit enablement. Current null-only no-update outbox policy
+is unchanged; a null watermark is not transaction quality completion.
+
+Targeted actual PostgreSQL live and day-31 original late observations passed for
+all three purposes (36.54s). The namespace fixture's first assertion expected
+eight references after adding another real Session; nine is the correct complete
+inventory, and both Session references are now required. Fixed namespace/role
+control passed (3.92s). Cursor native identity/revision/shape, named/PUBLIC column
+ACL and FK fault/restoration controls passed (4.50s). All three immutable receipt
+candidate/digest conflict/current-deny before unavailable existence controls
+passed (17.89s). Storage samples are explicitly protected fixtures, not T19
+issued authorization/eligibility, accepted T20 transaction events or quality.
+Receipt-only samples deliberately contain no outbox/contribution evidence.
+
+The final source additionally requires ordered safe initial/native/final SQL
+timestamps; checking only initial/final cannot hide an intermediate regression.
+Its targeted missing-dependency/time-pair unit controls passed (1.549s).
+Default full Go tests/vet, module verification, all command builds and pinned
+comparison passed on that final source guard; client architecture/version/diff
+checks passed without changing the application version.
+
+The first complete actual event regression (1163.502s) had one failed protected
+retention CLI assertion after the natural shared window; all five new transaction
+and additive-upgrade cases passed. Fixed-only command failure categories were
+added without copying private subprocess output or relaxing production guards.
+With rebuilt commands on the final source guard, the natural boundary and all
+five new transaction cases passed (235.652s), including native sealed identity
+preservation. The final complete actual event regression passed (1254.003s):
+61 applicable named cases passed and only the subprocess parent helper skipped
+by design; actual child-crash recovery passed. The natural retention/CLI boundary
+passed (154.72s). All five new transaction controls, additive sealed upgrade and
+prior owner/recovery/maintenance/native guards passed. This positive complete
+run does not prove the first CLI failure's cause; that observation remains
+disclosed. Both independent roles gave final scoped PASS; the independent pure
+dependency/time-order control passed (1.614s). No mandatory observation finding
+remains. Deployment,
+physical platform acceptance, transaction writers/public batches/T25 composition
+and full T20 remain unfinished. Downloads retain no hard duration cap.
+Service protected transaction observation commit: `5f7ffb6`.
+
+### T25 first batch: fixed network weekly calculation (2026-10-12)
+
+A separate `networkprivacy` feature calculates bounded fixed five-dimensional
+ISO UTC weekly leaf candidates. It applies scope/week/full-leaf once, prefix/
+week/full-leaf/day once and a shared prefix/week maximum seven together only
+on actual selection. Rejected prefix candidates do not burn scope allowance;
+already counted scopes do not steal new prefix/day buckets. Network scope limits
+are per complete leaf, without T24's first-workflow/one-leaf rule. Original point
+identity duplicates are idempotent; changed projection conflicts.
+
+The result exposes only week and complete leaf fields. k>=20 exposes exact count;
+smaller leaves expose only suppressed without count/approximation/bounds. No
+event/scope/prefix/HMAC/key binding, aggregate or cross-plane join key is returned.
+Typed internal projections prove no actual authentication, KMS derivation or ASN
+provenance; production report ports remain closed. Final full-source ownership,
+persistent freeze, privacy permissions/exports, expiry cleanup and three-language
+integration remain unfinished. T21/T24 cannot use this calculation as eligibility.
+
+Independent review caught and repaired the invented network purpose label: the
+actual normative label is `quality-prefix` (security section 15.1), with literal
+positive and invented/other-purpose negative controls. It also found refusal of
+the final ISO week containing safe integer MAX; internal full-week bounds are
+now preserved and event instants separately limited to MAX. Verification was
+strengthened for same-instant eventId ascending competition and the exact shared
+weekly cap seven; caps six/eight and a per-leaf seven cannot satisfy the controls.
+The expanded seven focused unit groups passed (3.674s). Final full default Go
+tests passed (networkprivacy 5.966s), with vet/all command builds/diff; module
+verification and pinned comparison passed without dependency/artifact changes.
+Both independent roles gave final scoped PASS after the four repairs; their
+final seven-group pure tests passed (1.258s and 5.986s). No mandatory calculation
+finding remains. External provider/database opt-ins
+remain skipped; these pure tests claim no actual event acceptance or E2E.
+
+Distinct original identities may tie on occurrence and eventId. The tie rule is
+awaiting the owner's explicit decision; until then the complete ambiguous input
+returns no candidate/counts. Arrival/map order or an unapproved third key cannot
+choose winners. No T24 week-end+seven-days rule is imported into network freezing.
+This batch is pure calculation, not full T25 or physical/provider/database E2E.
+Deployment remains deferred; downloads have no hard elapsed-duration cap.
+Service fixed network calculation commit: `0ba848f`.
+
+### T25 second batch: in-memory edge prefix normalization (2026-10-12)
+
+The edge adapter normalizes an actual trusted `netip.Addr` peer into IPv4 /24 or
+IPv6 /48, discards host bits and canonicalizes compressed lowercase IPv6.
+IPv4-mapped IPv6 uses the same IPv4 prefix. Invalid/zoned peers produce no
+prefix; local interface names cannot enter the KMS input. It reads no forwarding
+headers, writes no raw IP/prefix and makes no network-based update/identity
+decision. The protected plaintext object refuses ordinary JSON/text encoding
+and redacts conventional formatting; only independently copied explicit Input
+bytes may enter the KMS adapter in edge memory. This does not prevent explicit
+misuse of those bytes or arbitrary reflection.
+
+Three focused groups passed (1.309s), covering prefix boundaries/mapped families,
+host-bit removal, canonical spelling, owned input copies, direct/nested encoding
+refusal, ordinary format redaction and invalid/zone/zero-object refusal. Independent
+review found a normal fmt recursion leak through unexported wrappers despite
+direct String/GoString methods. Private plaintext now uses an indirect payload;
+direct/pointer/exported/unexported wrapper/slice/map controls passed on the repair
+(0.897s package). Final full default Go tests passed (edge 1.764s), with
+vet/all command builds/diff checks. Module verification and pinned comparison
+passed without dependency/artifact changes. Both independent roles gave final
+scoped PASS after the formatting repair; independent pure three-group tests
+passed (1.468s and 5.809s). No mandatory prefix finding remains.
+
+An isolated actual OpenBao 2.7.1 capability probe found that hmac derived=true
+was unavailable (HTTP 500); an AES-derived Transit key accepted HMAC and remained
+stable for the same context, but changing the ISO week context produced the same
+digest. The initial isolation expectation failed (6.39s probe; 10.094s package).
+The later purpose-change case was not reached. Keys/tokens/responses/digest bytes
+stayed private and no deployed provider was touched. No adapter is registered
+on that behavior and no secret-bearing probe is committed. Request context alone
+cannot prove a derived week key. Selecting a compliant KMS-side derivation or
+changing approved key semantics is an unresolved decision, skipped while this
+independent prefix primitive proceeds. The normative HMAC/weekly isolation,
+deferred deployment and no-hard-duration download rule remain unchanged.
+Service protected edge prefix commit: `f2af566`.
