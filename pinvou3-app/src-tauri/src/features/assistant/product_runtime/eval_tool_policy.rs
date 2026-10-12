@@ -182,6 +182,39 @@ mod tests {
     }
 
     #[test]
+    fn resolved_policy_fields_match_their_id_arms() {
+        // Production gating consumes `EvalTurnPolicy.allowed_tools` (the
+        // field) while the per-id contract lives in the enum arm; a static
+        // initializer that drifts from its id must fail here. Probes include
+        // tools no eval policy may allow ("File", "web_search").
+        const PROBES: [&str; 8] = [
+            "read",
+            "list_dir",
+            "file_search",
+            "grep_files",
+            "Web",
+            "image_analyze",
+            "File",
+            "web_search",
+        ];
+        let policies = [
+            resolve_eval_policy("pinvou-read-only-web/v1").unwrap(),
+            resolve_eval_policy("pinvou-gaia-public-web/v1").unwrap(),
+            resolve_eval_policy("pinvou-gaia-offline/v1").unwrap(),
+            resolve_eval_policy("pinvou-gaia-final-answer-only/v1").unwrap(),
+        ];
+        for policy in policies {
+            for tool in PROBES {
+                assert_eq!(
+                    policy.allowed_tools.contains(&tool),
+                    policy.id.allows(tool),
+                    "{policy:?}: field and id arm disagree on {tool:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn profiles_have_exact_network_separation() {
         let product = resolve_eval_policy("pinvou-read-only-web/v1").unwrap();
         let public = resolve_eval_policy("pinvou-gaia-public-web/v1").unwrap();
