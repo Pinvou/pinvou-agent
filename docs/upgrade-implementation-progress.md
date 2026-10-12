@@ -1720,3 +1720,37 @@ This completes no production HTTP or batch endpoint. Full T20 stays open until
 retention maintenance, transport, other event roles, quality composition and
 client outbox are implemented. Deployment/HA and cross-repository E2E remain
 postponed. Downloads have no hard total/cumulative time limit.
+
+### T20 eleventh batch: explicit owner commands (2026-10-12)
+
+The service adds three closed internal commands: initialize, enable-no-update,
+recover-no-update. Provisioning requires the protected admin connection and an
+explicit runtime role; recovery uses only runtime authority and the original
+independent T06 key. No automatic schema/permission setup, client input, HTTP or
+generic dispatch is added. Actual current deny/owner checks and the single fixed
+OwnerReplay registry are reused. Worker cancellation returns before the pool is
+closed, and all diagnostics remain fixed secret-safe categories.
+
+Built-binary actual PostgreSQL E2E passed (83.85s); the expanded final run includes
+the real run/worker/pool context-cancellation helper (108.76s). Repeated read-only
+initialization and explicit enablement, forbidden read-only/admin runtime, missing
+and wrong keys, natural SQL lease expiry and original sealed pending-result
+recovery are verified. The new process receives no original request and uses a
+new epoch while preserving one intent/receipt/outbox. Actual fixture connection
+identities are serialized and parsed back; pgx's original ConnString alone cannot
+describe fields modified for the isolated database/runtime login.
+
+Default full Go tests, vet, module verification, command builds and pinned checks
+passed. Database/provider opt-ins stay skipped by default; command E2E was
+explicitly enabled. The final test-only DSN query/Unix socket and single-Wait
+cleanup delta changes no product behavior and is checked separately.
+The final DSN unit check passed (7.022s package), scoped vet and client
+architecture/version/diff checks passed. Both independent roles passed the final
+code, tests and three documents without remaining required findings. Frozen
+reception SQL is unchanged.
+Context cancellation is tested at startup without active work. Harness kill is
+not native Windows/POSIX signal or active-work signal certification. Deployment
+remains postponed; T06 cleanup does not complete T20 event/intent maintenance.
+Full T20, public batches/remaining roles/contribution/client outbox remain open.
+Downloads have no hard total or cumulative time limit.
+Service command batch commit: `bdd306a`.
