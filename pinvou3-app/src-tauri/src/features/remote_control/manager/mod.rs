@@ -114,15 +114,28 @@ fn validate_multi_agent_session_web_scope(
     command: &str,
     session_id: &str,
 ) -> Result<(), String> {
-    // Documented exception (round-34 minor 7): the three aux commands are
-    // NOT in the denylist even when the MAIN session runs multi-agent — an
-    // aux conversation on a multi-agent main stays fully usable over the
-    // relay. Intended: the aux engine is the isolated pure-Q&A config
-    // (zero tools, no subagents — the denylist's threat model never
-    // applies to it), the desktop offers the same entry, and blocking it
-    // would break the side chat for exactly the heaviest users. The
-    // denylist's "web is read-only" promise is scoped to the multi-agent
-    // EXECUTION surface, not to its side chat.
+    // Documented exception (round-34 minor 7; comment reworded per the
+    // round-37 review — that reword (commit ef48f0701) was dropped by a
+    // branch rewrite before it could merge, never reaching main in any
+    // form, and is restored here re-keyed on the mechanism, ADR-0024): the
+    // early return keys on the SESSION ARGUMENT being aux-shaped — an
+    // `aux-` id bypasses this denylist scope check for ANY command. That
+    // is exactly what keeps an aux conversation fully usable over the
+    // relay while its MAIN session runs multi-agent. The aux-id carriers
+    // through this validator today are the WebUI aux send (`web_access_chat`,
+    // denylist entry #11) and the aux panel's hydration reads
+    // (`web_access_load_session_chunk`, `get_session_timeline`, the
+    // persona/reviews/scene sidecar reads, `web_access_cancel_session_download`);
+    // the three aux management commands carry the PARENT id (the aux id is
+    // minted server-side and never sent back). The invariant to preserve is
+    // "aux ids are never subject to the multi-agent web execution denylist",
+    // because the aux engine is the isolated pure-Q&A config (at most one
+    // scoped read-only context tool, never an execution surface, no
+    // subagents — the denylist's threat model never applies to it), the
+    // desktop offers the same entry, and blocking it would break the side
+    // chat for exactly the heaviest users. The denylist's "web is read-only"
+    // promise is scoped to the multi-agent EXECUTION surface, not to its
+    // side chat.
     if crate::features::sessions::is_aux_session_id(session_id) {
         return Ok(());
     }

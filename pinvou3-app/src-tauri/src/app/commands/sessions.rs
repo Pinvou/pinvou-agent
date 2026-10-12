@@ -451,6 +451,10 @@ pub struct DesktopSavedSession {
 
 /// 加载指定 session 的完整对话（含 messages）。
 /// 前端切换历史时调用 → 用返回的 messages 重渲染对话区。
+///
+/// 读面登记（ADR-0024）：任何已持久化会话 id 均可加载（字符集校验与大小写别名
+/// 检查，无 id 类别拒绝）——它正是辅助面板自身的渲染承载：前端以服务端派生的
+/// aux id 调用本命令（`set_active=false`，aux 永不成为活动会话）。
 #[tauri::command]
 pub async fn load_session(
     id: String,
@@ -888,10 +892,13 @@ fn normalized_archive_name(default_name: &str, session_id: &str) -> String {
 /// the user cancels.
 ///
 /// Accepts any persisted session id under read-only semantics (same as
-/// `load_session`, without calling `ensure_chat_session`): scheduled run
-/// sessions can be exported too; external ACP sessions have no local
-/// persisted record, and `store.export_archive` naturally reports "not
-/// found". The menu entry only appears on chat sessions.
+/// `load_session`, without calling `ensure_chat_session`) — a deliberate
+/// any-id read stance registered in ADR-0024's read-surface register:
+/// scheduled run sessions AND auxiliary side chats (`aux-<parent_id>` records,
+/// persisted like any other session) can be exported too; external ACP
+/// sessions have no local persisted record, and `store.export_archive`
+/// naturally reports "not found". The menu entry only appears on chat
+/// sessions — the capability itself never rejects an id class.
 #[tauri::command]
 pub async fn export_session(
     app: AppHandle,
