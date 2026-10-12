@@ -4,7 +4,7 @@
 //! 只做传输边界：原生车道校验、两个根解析、忙碌门与错误文案。原生车道 = 工作模式
 //! 会话 + 品悟原生 code 会话（`SessionKind::Chat` + 非 ACP）：ACP 会话与定时
 //! 会话如实拒绝（设计 §11：ACP 不做；定时会话无每轮快照，与 fork 拒绝口径一致）。
-//! aux 侧聊会话（`aux-`）按同一车道配方放行：零工具纯问答，快照/回退都落其
+//! aux 侧聊会话（`aux-`）零工具且无回退 UI 消费（r5 评审起 chat() 侧跳过快照；此处仅历史会话查询照常放行）：
 //! 私有目录（小且自排除），无 UI 消费——如实放行不设特判（配方与 list_sessions
 //! 车道过滤保持同源）。
 
@@ -135,12 +135,23 @@ pub(super) async fn drop_unsent_turn_checkpoint(
     }
 }
 
+/// list_checkpoints 的响应体：列表 + 后端权威的用户 turn 计数（评审 M2 调和门）。
+/// 前端用它校验「时间线序号 ↔ 后端 turn 号」映射是否成立（压缩会让后端
+/// count 收缩而前端时间线保留全部气泡、前端-only 回显不计后端 turn），不一致
+/// 时不渲染回退入口——把「错点回退却报成功」降级为诚实拒绝。durable 重载后
+/// 时间线按收缩后的 messages 重建，两侧重新对齐、入口恢复。
+#[derive(Serialize)]
+pub struct CheckpointListForUi {
+    pub checkpoints: Vec<CheckpointMeta>,
+    pub user_turns: u32,
+}
+
 #[tauri::command]
 pub async fn list_checkpoints(
     session_id: String,
     acp_pool: State<'_, AcpPool>,
     store: State<'_, SessionStore>,
-) -> Result<Vec<CheckpointMeta>, String> {
+) -> Result<CheckpointListForUi, String> {
     // 列表只读账本根索引，不触碰执行根（执行根被删的历史会话仍可查看/清理认知）。
     if !is_native_checkpoint_lane(&session_id, &store, |id| acp_pool.is_acp(id)) {
         return Err("仅原生会话支持检查点".to_string());
@@ -149,8 +160,20 @@ pub async fn list_checkpoints(
         .session_roots(&session_id)
         .map_err(|error| format!("解析会话根失败: {error:#}"))?
         .ledger;
+    // 与 rewind_to_turn 预检同源的计数（count_user_turns，is_user_turn_prompt
+    // 同口径）：调和门比对的必须是后端回退时实际校验的那个数。
+    let user_turns = {
+        let session = store
+            .load(&session_id)
+            .map_err(|error| format!("读取会话失败: {error:#}"))?;
+        checkpoints::count_user_turns(&session.messages)
+    };
     tauri::async_runtime::spawn_blocking(move || {
         checkpoints::list_checkpoints(&ledger)
+            .map(|checkpoints| CheckpointListForUi {
+                checkpoints,
+                user_turns,
+            })
             .map_err(|error| format!("读取检查点列表失败: {error:#}"))
     })
     .await
@@ -179,6 +202,7 @@ pub async fn checkpoint_diff(
     reject_if_peer_busy(
         &store,
         &pool,
+        &acp_pool,
         &session_id,
         &execution,
         "请稍后再读取变更预览",
@@ -258,13 +282,21 @@ fn normalize_root(path: &std::path::Path) -> std::path::PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// 跨会话忙碌门的 async 包装（diff / rewind / undo 三处共用的 4 个 State clone +
+/// 跨会话忙碌门的 async 包装（diff / rewind / undo 三处共用的 State clone +
 /// spawn_blocking + map_err 编排）：在阻塞线程上执行
 /// [`busy_peer_on_same_execution_root`]，任一同执行根 peer 在跑时返回带上下文
 /// 的错误（`action` 为各调用方的动作文案，如「请先停止该会话再回退」）。
+///
+/// ACP 腿（评审 M4）：ACP 会话的 turn 不经 EnginePool（外部 agent 进程），
+/// 原生闭包对其恒 false——补一条 ACP 专用检查：同执行根的 ACP 会话中任一
+/// 处于忙碌（busy/configuring/prompt_pending，与 rebind fence 共用
+/// [`AcpPool::rebind_blocking_sessions`] 的谓词）即拒绝。回退的 force-checkout
+/// + clean -fd 比 rebind 更具破坏性，二者必须同门。状态暂不可读（冷启动握手
+/// 持锁，fence 返回 None）时如实拒绝，不静默放行。
 async fn reject_if_peer_busy(
     store: &SessionStore,
     pool: &EnginePool,
+    acp_pool: &AcpPool,
     session_id: &str,
     execution: &std::path::Path,
     action: &str,
@@ -273,46 +305,70 @@ async fn reject_if_peer_busy(
     let session_id_gate = session_id.to_string();
     let execution_gate = execution.to_path_buf();
     let pool_gate = pool.clone();
-    if let Some(busy) = tauri::async_runtime::spawn_blocking(move || {
-        busy_peer_on_same_execution_root(&store_gate, &session_id_gate, &execution_gate, |id| {
-            pool_gate.is_turn_active(id) || pool_gate.is_scheduled_turn_running(id)
-        })
+    let acp_store = store.clone();
+    let acp_session = session_id.to_string();
+    let acp_execution = execution.to_path_buf();
+    let (busy, acp_peers) = tauri::async_runtime::spawn_blocking(move || {
+        let busy = busy_peer_on_same_execution_root(
+            &store_gate,
+            &session_id_gate,
+            &execution_gate,
+            |id| pool_gate.is_turn_active(id) || pool_gate.is_scheduled_turn_running(id),
+        )?;
+        let peers = peers_on_same_execution_root(&acp_store, &acp_session, &acp_execution)?;
+        Ok::<_, String>((busy, peers))
     })
     .await
-    .map_err(|error| format!("跨会话忙碌检查任务失败: {error}"))??
-    {
+    .map_err(|error| format!("跨会话忙碌检查任务失败: {error}"))??;
+    if let Some(busy) = busy {
         return Err(format!(
             "会话「{busy}」绑定同一项目目录且正在执行，{action}"
         ));
     }
+    let acp_peer_ids: Vec<String> = acp_peers
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .filter(|id| acp_pool.is_acp(id))
+        .map(str::to_string)
+        .collect();
+    if !acp_peer_ids.is_empty() {
+        match acp_pool.rebind_blocking_sessions(&acp_peer_ids).await {
+            None => {
+                return Err(format!(
+                    "同目录 ACP 会话的忙碌状态暂时不可读（并发冷启动握手中），{action}"
+                ));
+            }
+            Some(blocking) => {
+                if let Some(blocked_id) = blocking.first() {
+                    let label = acp_peers
+                        .iter()
+                        .find(|(id, _)| id == blocked_id)
+                        .map(|(_, label)| label.clone())
+                        .unwrap_or_else(|| blocked_id.clone());
+                    return Err(format!(
+                        "会话「{label}」绑定同一项目目录且正在执行，{action}"
+                    ));
+                }
+            }
+        }
+    }
     Ok(())
 }
 
-/// 跨会话忙碌门（设计 §6 防线二）：枚举全部会话（`list_sessions_cached`，含
-/// scheduled 的 sched- 前缀会话——`store.list()` 会把它们滤掉，那是确定性
-/// 漏判），找出 execution 根相同的其它会话，任一 `is_busy` 即返回其展示名
-/// （标题，空则 id）。调用方的 is_busy 应覆盖 `is_turn_active` 与
-/// `is_scheduled_turn_running`（scheduled 轮的 spawn→submit 窗口）。
-///
-/// 调用方必须先在 `begin_execution_root_rewind` 置位互斥 flag 再调本函数：
-/// 在途 peer 由本函数复查拦下，新 peer 由 flag 门在预约侧拦下（两侧在同一把
-/// flag 锁上做 check-and-act，消除 check-then-act 竞态）。
-///
-/// 已知盲区：ACP 会话的 turn 不经 EnginePool（外部 agent 进程），在途写文件
-/// 无法被本门感知；设计文档如实记录。
-///
-/// 性能取舍：全量读会话元数据与历史面板同价；根解析失败（如目录被删）的
-/// 会话无从比较执行根，跳过。
-fn busy_peer_on_same_execution_root(
+/// 同执行根 peer 枚举（不含自身与 aux、跳过根解析失败项），返回 (id, 展示名)。
+/// 原生忙碌门与 ACP 忙碌门（评审 M4）共用：前者在
+/// [`busy_peer_on_same_execution_root`] 内联判定，后者由调用方对 ACP 子集走
+/// `AcpPool::rebind_blocking_sessions`。
+fn peers_on_same_execution_root(
     store: &SessionStore,
     session_id: &str,
     execution_root: &std::path::Path,
-    is_busy: impl Fn(&str) -> bool,
-) -> Result<Option<String>, String> {
+) -> Result<Vec<(String, String)>, String> {
     let target = normalize_root(execution_root);
     let sessions = store
         .list_sessions_cached()
         .map_err(|error| format!("枚举会话失败: {error:#}"))?;
+    let mut peers = Vec::new();
     for metadata in sessions.iter() {
         if metadata.id == session_id {
             continue;
@@ -335,12 +391,39 @@ fn busy_peer_on_same_execution_root(
             // 根解析失败的会话（如目录被删）无从比较执行根，跳过。
             Err(_) => continue,
         };
-        if normalize_root(&roots.execution) == target && is_busy(&metadata.id) {
+        if normalize_root(&roots.execution) == target {
             let label = if metadata.title.is_empty() {
                 metadata.id.clone()
             } else {
                 metadata.title.clone()
             };
+            peers.push((metadata.id.clone(), label));
+        }
+    }
+    Ok(peers)
+}
+
+/// 跨会话忙碌门（设计 §6 防线二）：枚举全部会话（`list_sessions_cached`，含
+/// scheduled 的 sched- 前缀会话——`store.list()` 会把它们滤掉，那是确定性
+/// 漏判），找出 execution 根相同的其它会话，任一 `is_busy` 即返回其展示名
+/// （标题，空则 id）。调用方的 is_busy 应覆盖 `is_turn_active` 与
+/// `is_scheduled_turn_running`（scheduled 轮的 spawn→submit 窗口）。
+///
+/// 调用方必须先在 `begin_execution_root_rewind` 置位互斥 flag 再调本函数：
+/// 在途 peer 由本函数复查拦下，新 peer 由 flag 门在预约侧拦下（两侧在同一把
+/// flag 锁上做 check-and-act，消除 check-then-act 竞态）。
+///
+/// ACP 会话：本函数的 is_busy 闭包只覆盖 EnginePool（原生车道）；ACP turn 不
+/// 经 EnginePool，其忙碌由 [`reject_if_peer_busy`] 的 ACP 腿
+/// （`rebind_blocking_sessions` 同谓词）补齐——单测直接调本函数时不含 ACP 判定。
+fn busy_peer_on_same_execution_root(
+    store: &SessionStore,
+    session_id: &str,
+    execution_root: &std::path::Path,
+    is_busy: impl Fn(&str) -> bool,
+) -> Result<Option<String>, String> {
+    for (id, label) in peers_on_same_execution_root(store, session_id, execution_root)? {
+        if is_busy(&id) {
             return Ok(Some(label));
         }
     }
@@ -393,6 +476,7 @@ pub async fn rewind_to_turn(
     reject_if_peer_busy(
         &store,
         &pool,
+        &acp_pool,
         &session_id,
         &execution,
         "请先停止该会话再回退",
@@ -459,8 +543,18 @@ pub async fn rewind_to_turn(
         let ledger_restore = ledger.clone();
         let execution_restore = execution.clone();
         let undo = tauri::async_runtime::spawn_blocking(move || {
-            checkpoints::restore_checkpoint(&ledger_restore, &execution_restore, &checkpoint.id)
-                .map_err(|error| format!("回滚检查点失败: {error:#}"))
+            checkpoints::restore_checkpoint(&ledger_restore, &execution_restore, &checkpoint.id).map_err(
+                |error| {
+                    // 评审 M3：恢复是多步变更（read-tree → purge → checkout-index
+                    // → clean -fd），中途失败（ENOSPC/EACCES/AV 锁）时工作区已是
+                    // 目标态与回退前的混合体，且本分支尚未写 undo 记录（「撤销回
+                    // 退」不可用）——与截断失败分支对齐，如实披露混合态并引导
+                    // 重试：恢复幂等，重试会重做全部恢复步骤。
+                    format!(
+                        "回滚检查点失败: {error:#}。工作区当前可能处于混合状态（部分文件已恢复、部分仍为回退前），请勿在此状态继续工作；直接重试回退可重新执行恢复（幂等）并完成后续截断"
+                    )
+                },
+            )
         })
         .await
         .map_err(|error| format!("回滚检查点任务失败: {error}"))??;
@@ -652,6 +746,7 @@ pub async fn undo_last_rewind(
     reject_if_peer_busy(
         &store,
         &pool,
+        &acp_pool,
         &session_id,
         &execution,
         "请先停止该会话再反悔",

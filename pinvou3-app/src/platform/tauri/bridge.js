@@ -1139,6 +1139,7 @@ function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedtauri
   // re-reads the session from disk. Returned to feature code with that
   // single purpose documented — returns boolean success, does NOT reject.
   const switchToSessionInternal = sessionsFeature.switchToSessionInternal;
+  const invalidateSessionBuffer = sessionsFeature.invalidateSessionBuffer;
   const openScheduledRunChat = sessionsFeature.openScheduledRunChat;
   const exitScheduledRunChat = sessionsFeature.exitScheduledRunChat;
   const deleteSession = sessionsFeature.deleteSession;
@@ -2298,6 +2299,10 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       // rejects); desktop only (no web bridge counterpart — rewind is
       // desktop-only, callers guard on method existence).
       switchToSessionInternal,
+      // r8 M1：回退在途切走、重载被跳过时失效被跳过会话的缓存 buffer——否则
+      // 切回的快速路径直接复用回退前缓存，展示陈旧时间线。仅丢弃缓存，
+      // 无删除语义；desktop only（与 rewind 同域）。
+      invalidateSessionBuffer,
     },
     projects: {
       loadProjects,
