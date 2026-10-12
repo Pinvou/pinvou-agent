@@ -1336,6 +1336,17 @@ class CiGatePolicyTests(unittest.TestCase):
             "the rebind case-fold half executes only on this leg; deleting "
             "the filter must fail the suite like its siblings' pins",
         )
+        # Round-53 review: the rebind no-op fold's Windows alias half is the
+        # same orphan class — pin its run_filtered line so deleting the
+        # filter cannot silently strand the cfg(windows) control on no leg.
+        self.assert_run_filtered_filter(
+            windows_rust_steps,
+            "pinvou-cli",
+            "rebind_noop_fold_still_collapses_windows_alias_spellings",
+            "the rebind no-op fold's Windows alias half executes only on "
+            "this leg; deleting the filter must fail the suite like its "
+            "siblings' pins",
+        )
         # Round-44 review: benchmark-core's cfg(windows) security pins (the
         # DPAPI fail-closed blob tests and the Windows ACL parse pin) ran on
         # NO leg either — `-p benchmark-core` appeared in no workflow, the

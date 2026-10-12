@@ -2182,6 +2182,9 @@ jobs:
           # into this standalone test; the filter keeps the rename guard
           # over it.
           run_filtered test --manifest-path pinvou-cli/Cargo.toml -p pinvou-cli --lib --locked rebind_nesting_rejection_folds_case_where_the_os_folds
+          # Round-53 review: the rebind no-op fold's Windows alias half
+          # (case + both trailing separator spellings) executes only here.
+          run_filtered test --manifest-path pinvou-cli/Cargo.toml -p pinvou-cli --lib --locked rebind_noop_fold_still_collapses_windows_alias_spellings
           run_filtered test --manifest-path pinvou-cli/Cargo.toml -p adapter-gaia --features test-support --lib --locked dataset_windows
           run_filtered test --manifest-path pinvou-cli/Cargo.toml -p adapter-gaia --features test-support --lib --locked fetch_windows_acl
           run_filtered test --manifest-path pinvou-cli/Cargo.toml -p benchmark-core --lib --locked private_prediction::tests::windows_

@@ -856,12 +856,16 @@ fn rebind_target_is_same_or_nested(to_display: &Path, from: &Path) -> bool {
         || pinvou3_lib::platform::path_identity_is_same_or_nested(&from_key, &to_key)
 }
 
-/// The folded path-identity comparison shared by the metadata-replay
-/// classifier and the to-lane admit scan: a workspace is behind (or ahead
-/// of) its binding when the case/separator-folded identity keys — with the
-/// trailing `/` trimmed on BOTH sides, the GUI's round-14 SF-2 trim —
-/// disagree. (The no-op-rename short-circuit above deliberately trims both
-/// separators instead and keeps its own spelling.)
+/// The folded path-identity comparison shared by the no-op-rename
+/// short-circuit, the metadata-replay classifier and the to-lane admit
+/// scan: two paths are the same workspace when the case/separator-folded
+/// identity keys — with the trailing `/` trimmed on BOTH sides, the GUI's
+/// round-14 SF-2 trim — agree. The trim runs AFTER the key fold, and that
+/// order is load-bearing (round-53 review P2): the fold has already turned
+/// every Windows separator into `/` (so one trim covers both spellings
+/// there), while on Unix a trailing `\` is a legal filename character the
+/// fold must preserve — trimming the raw separators first would erase it
+/// and fold the distinct directory `proj\` onto `proj`.
 fn folded_workspace_differs(a: &Path, b: &Path) -> bool {
     pinvou3_lib::platform::filesystem_path_identity_key(&a.to_string_lossy()).trim_end_matches('/')
         != pinvou3_lib::platform::filesystem_path_identity_key(&b.to_string_lossy())
@@ -995,21 +999,18 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     let from_display = rebind_source_display(from);
     // Folded identity comparison (GUI 497-500, its round-20 minor 7): a
     // case-only or separator-only spelling of the same directory is the
-    // same no-op rename, not a full case-rewriting rebind. Round-40 review:
-    // the same trailing-separator trim the GUI applies on both sides —
-    // unreachable today (`from_display`/`to_display` come from
-    // canonicalizing validators that never emit one) but exactly the
-    // asymmetry a future validator edit would trip on, so both sides trim
-    // like the nesting predicate one line below.
-    // Round-49 review: the trim covers BOTH separators — a canonicalized
-    // Windows path can only ever carry `\`, but trimming `/` alone would let
-    // a future validator edit that emits a trailing `/` on Windows slip past
-    // the fold.
-    if pinvou3_lib::platform::filesystem_path_identity_key(
-        from_display.to_string_lossy().trim_end_matches(['/', '\\']),
-    ) == pinvou3_lib::platform::filesystem_path_identity_key(
-        to_display.to_string_lossy().trim_end_matches(['/', '\\']),
-    ) {
+    // same no-op rename, not a full case-rewriting rebind. Round-53 review
+    // P2: the comparison runs through [`folded_workspace_differs`] — the
+    // key fold FIRST, the trailing `/` trim after. The previous spelling
+    // trimmed BOTH separators off the raw paths before keying: harmless on
+    // Windows (where `\` is always a separator the key folds anyway) but on
+    // Unix it erased a literal trailing backslash — a legal filename
+    // character — so the distinct directory `proj\` collapsed onto its
+    // sibling `proj` and the command returned an empty no-op success while
+    // every store binding stayed at the vanished source (reproduced
+    // end-to-end on Linux; the GUI's own comparison keys first and trims
+    // only `/`, so it never had the bug).
+    if !folded_workspace_differs(&from_display, &to_display) {
         // Same short-circuit as the store lanes and the GUI: a rename onto
         // itself is a no-op success, not an error.
         return rebind_report(output, Vec::new(), Vec::new(), Vec::new());
@@ -1716,6 +1717,184 @@ mod tests {
         assert!(rebind_target_is_same_or_nested(
             Path::new("C:\\Data\\Proj\\new"),
             Path::new("c:\\data\\proj")
+        ));
+    }
+
+    /// Round-53 review P2 (cfg(unix): a trailing `\` is a legal filename
+    /// character only there): moving a directory literally named `proj\`
+    /// onto its distinct sibling `proj` must REBIND. The no-op comparison
+    /// used to trim both separators off the raw paths before keying, which
+    /// made the two spellings compare equal and return an empty no-op
+    /// success while every store binding stayed at the vanished source —
+    /// reproduced end-to-end on Linux before the fix. Driven through the
+    /// real stores (a created SavedSession plus a codex lane binding), so
+    /// the lane rewrites behind the report are pinned, not just a
+    /// predicate.
+    #[cfg(unix)]
+    #[test]
+    fn rebind_translates_a_literal_trailing_backslash_directory_name() {
+        let _env_lock = crate::support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-cli-projects-backslash-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create temp home");
+        let previous = std::env::var_os("PINVOU3_HOME");
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        let from = root.join("proj\\");
+        std::fs::create_dir_all(&from).expect("create the backslash directory");
+        let sessions = SessionStore::boot().expect("boot the session store");
+        let saved = sessions
+            .create_new("probe-model".to_owned(), None, from.clone())
+            .expect("create the bound session");
+        let session_id = saved.metadata.id;
+        SessionAgentStore::load_or_empty()
+            .set_acp_workspace(
+                &session_id,
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Project,
+                Some(from.clone()),
+            )
+            .expect("bind the session to the backslash directory");
+        let to = root.join("proj");
+        std::fs::rename(&from, &to).expect("the user's physical move");
+
+        let outcome = rebind(&from, &to, true, OutputMode::Json).expect("the rebind runs");
+        let report: serde_json::Value =
+            serde_json::from_str(&outcome.stdout).expect("a JSON report");
+        assert_eq!(
+            report["rebound_session_ids"],
+            serde_json::json!([session_id]),
+            "the rebind must move the binding, not report an empty no-op: {report}"
+        );
+        assert_eq!(
+            report["failed_session_ids"],
+            serde_json::json!([]),
+            "no lane may fail for this shape: {report}"
+        );
+        // The durable truth behind the report: the codex index record sits
+        // under the destination (and nowhere under the vanished source), and
+        // the SavedSession metadata was synced to it.
+        let reloaded = SessionAgentStore::load().expect("reload the codex index");
+        assert!(
+            reloaded
+                .sessions_under_workspace(&to)
+                .iter()
+                .any(|(id, path)| id == &session_id && path == &to),
+            "the index record must sit under the destination"
+        );
+        assert!(
+            reloaded.sessions_under_workspace(&from).is_empty(),
+            "no record may remain under the vanished backslash spelling"
+        );
+        assert_eq!(
+            sessions
+                .load(&session_id)
+                .expect("reload the session")
+                .metadata
+                .workspace,
+            to,
+            "the SavedSession metadata must be synced to the destination"
+        );
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The other half of the same comparison: a genuine no-op (the same
+    /// canonical directory on both sides) must stay an EMPTY success. This
+    /// is the arm the Windows alias fold serves; a regression to a raw
+    /// `!=` here would run the full lane suite against itself and report
+    /// phantom work. Portable: both displays canonicalize to one path on
+    /// every platform.
+    #[test]
+    fn rebind_onto_the_same_directory_stays_a_no_op_success() {
+        let _env_lock = crate::support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-cli-projects-noop-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("create temp home");
+        let previous = std::env::var_os("PINVOU3_HOME");
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        let dir = root.join("proj");
+        std::fs::create_dir_all(&dir).expect("create the directory");
+        let sessions = SessionStore::boot().expect("boot the session store");
+        let saved = sessions
+            .create_new("probe-model".to_owned(), None, dir.clone())
+            .expect("create the bound session");
+        let session_id = saved.metadata.id;
+        SessionAgentStore::load_or_empty()
+            .set_acp_workspace(
+                &session_id,
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Project,
+                Some(dir.clone()),
+            )
+            .expect("bind the session");
+
+        let outcome = rebind(&dir, &dir, true, OutputMode::Json).expect("the rebind runs");
+        let report: serde_json::Value =
+            serde_json::from_str(&outcome.stdout).expect("a JSON report");
+        assert_eq!(
+            report,
+            serde_json::json!({
+                "rebound_session_ids": [],
+                "failed_session_ids": [],
+                "affected_project_ids": [],
+            }),
+            "a self-rebind is a no-op success, not a rewrite: {report}"
+        );
+
+        match previous {
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Round-53 review: the Windows half of the no-op fold — the helper the
+    /// rebind short-circuit now shares must keep collapsing case and BOTH
+    /// trailing separator spellings where the OS treats them as aliases. A
+    /// trailing `\` reaches the trim already folded to `/` by the identity
+    /// key, which is exactly the ordering the round-53 fix pinned; a trim
+    /// moved back before the fold would still pass these (on Windows both
+    /// separators fold away) but the Unix regression above is what fails
+    /// it, on the Linux leg. Executes on the Windows regression leg via its
+    /// run_filtered filter; the gate-policy suite pins that line.
+    #[cfg(windows)]
+    #[test]
+    fn rebind_noop_fold_still_collapses_windows_alias_spellings() {
+        assert!(!folded_workspace_differs(
+            Path::new("C:\\Data\\Proj\\"),
+            Path::new("c:\\data\\proj")
+        ));
+        assert!(!folded_workspace_differs(
+            Path::new("C:\\Data\\Proj"),
+            Path::new("c:/data/proj/")
+        ));
+        assert!(!folded_workspace_differs(
+            Path::new("C:\\Data\\Proj\\"),
+            Path::new("C:\\Data\\Proj/")
+        ));
+        assert!(folded_workspace_differs(
+            Path::new("C:\\Data\\Proj"),
+            Path::new("C:\\Data\\Other")
         ));
     }
 }
