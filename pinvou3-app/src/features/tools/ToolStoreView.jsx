@@ -1763,6 +1763,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         } catch (e) {
           if (t?.oauthMcp && !isCurrentOAuthRequest(backendId, oauthRequestId)) return;
           console.error('install failed:', e);
+          // A post-landing consent failure returns after the pack committed:
+          // refresh so the card shows the real (installed) state instead of
+          // staying stale until the next mount or pinvou:tools-changed.
+          await loadBackendState();
           setAlert({ visible: true, loading: false, title: detailCopy.actions.operationFailed, subtitle: String(e && e.message ? e.message : e).slice(0, 240), isInstall: false, isError: true });
         } finally {
           if (t?.oauthMcp) {
@@ -1925,6 +1929,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           }
         } catch (e) {
           console.error('import skill failed:', e);
+          // Post-landing consent failures return after the pack committed:
+          // refresh so the new card shows instead of staying stale until the
+          // next mount or pinvou:tools-changed.
+          loadBackendState();
           setAlert({ visible: true, loading: false, title: storeCopy.importFailedWith(String(e)), isInstall: false, isError: true });
         } finally {
           setBusyId((current) => releaseBusy(current, '__upload__'));
@@ -2132,7 +2140,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           notifyComposerToolsChanged();
         } catch (e) {
           console.error('uninstall failed:', e);
-          setAlert({ visible: true, loading: false, title: detailCopy.actions.operationFailed, isInstall: false, isError: true });
+          // Surface the refusal detail (companion-teardown abort, recycle
+          // preflight, scope-lock refusal) — the sibling install path does;
+          // a bare title hides actionable guidance.
+          setAlert({ visible: true, loading: false, title: detailCopy.actions.operationFailed, subtitle: String(e && e.message ? e.message : e).slice(0, 240), isInstall: false, isError: true });
         } finally {
           setBusyId((current) => releaseBusy(current, backendId));
         }
