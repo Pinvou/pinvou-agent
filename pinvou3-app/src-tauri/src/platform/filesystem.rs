@@ -490,8 +490,9 @@ pub(crate) fn open_private_lock_file(path: &Path) -> io::Result<std::fs::File> {
 /// atomic rename-replace (`MoveFileEx` persist) is never blocked by this
 /// reader. The post-open gate is platform-general: it refuses anything that is not a
 /// regular file (a FIFO or device node would otherwise feed the reader
-/// forever — `/dev/zero` is an unbounded read) plus anything larger than
-/// [`MAX_PRIVATE_DATA_READ_BYTES`] (a planted huge REGULAR file is the same
+/// forever — `/dev/zero` is an unbounded read) plus anything larger than the
+/// caller's size bound ([`MAX_PRIVATE_DATA_READ_BYTES`] for the state-file
+/// family; a planted huge REGULAR file is the same
 /// unbounded-allocation shape on hot per-turn paths).
 /// Unlike the lock file this is read-intent: no create, no mode tightening.
 ///
@@ -506,6 +507,16 @@ pub(crate) fn open_private_lock_file(path: &Path) -> io::Result<std::fs::File> {
 /// residual applies (profile-directory ACL reliance, consistent with the
 /// rest of the application data tree).
 fn open_private_data_file(path: &Path) -> io::Result<std::fs::File> {
+    open_private_data_file_within(path, MAX_PRIVATE_DATA_READ_BYTES)
+}
+
+/// [`open_private_data_file`] with a caller-chosen size bound: the
+/// marketplace same-content comparison reads landed package payloads whose
+/// legitimate size is the import package budget, not the state-file cap —
+/// bounding the disk read below what the importer accepts would make an
+/// identical re-import of a large package report conflicting content
+/// (round-31 P2). The hardening is otherwise identical.
+fn open_private_data_file_within(path: &Path, max_bytes: u64) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -527,11 +538,11 @@ fn open_private_data_file(path: &Path) -> io::Result<std::fs::File> {
     }
     let file = options.open(path)?;
     let metadata = refuse_non_regular_file(&file, path)?;
-    if metadata.len() > MAX_PRIVATE_DATA_READ_BYTES {
+    if metadata.len() > max_bytes {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
-                "{} exceeds the private-state read cap ({MAX_PRIVATE_DATA_READ_BYTES} bytes); rename it aside if it is yours",
+                "{} exceeds the read cap ({max_bytes} bytes); rename it aside if it is yours",
                 path.display()
             ),
         ));
@@ -583,6 +594,23 @@ pub(crate) fn read_private_data_file_bytes(path: &Path) -> io::Result<Vec<u8>> {
         .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))
 }
 
+/// [`read_private_data_file_bytes`] with a caller-chosen size bound: the
+/// marketplace same-content comparison reads landed package payloads whose
+/// legitimate size is the import package budget, not the state-file cap —
+/// a disk-side cap below what the importer accepts makes an identical
+/// re-import of a large package report conflicting content (round-31 P2).
+/// Every other hardening (no-follow, non-blocking, Windows share mode,
+/// regular-file gate, the bound enforced again past the gate) is the
+/// shared primitive's, unchanged.
+pub(crate) fn read_private_data_file_bytes_within(
+    path: &Path,
+    max_bytes: u64,
+) -> io::Result<Vec<u8>> {
+    let mut file = open_private_data_file_within(path, max_bytes)?;
+    read_capped(&mut file, max_bytes)
+        .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))
+}
+
 /// One bounded read: at most `cap` bytes, with a one-byte overshoot window
 /// so the overflow arm can distinguish "exactly cap" from "cap or more".
 /// The metadata gate in [`open_private_data_file`] bounds the read at open
@@ -596,7 +624,7 @@ fn read_capped<R: std::io::Read>(reader: &mut R, cap: u64) -> io::Result<Vec<u8>
     if bytes.len() as u64 > cap {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("exceeds the private-state read cap ({cap} bytes)"),
+            format!("exceeds the read cap ({cap} bytes)"),
         ));
     }
     Ok(bytes)

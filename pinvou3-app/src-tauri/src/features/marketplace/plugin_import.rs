@@ -148,6 +148,20 @@ pub fn is_safe_component_id(id: &str) -> bool {
 /// 跨进程 landing lease 之内——裸 `fs::read` 会在持锁期间阻塞在植入 FIFO 的
 /// `open()` 上，楔死同 id 导入道直至持有进程退出。加固原语拒绝非普通文件
 /// 而不阻塞；所有 Err 一律映射到既有的「判冲突」保守口径，语义不变。
+///
+/// 磁盘侧载荷读取（同包比对专用）：普通条目的合法大小是包预算
+/// （[`MAX_PLUGIN_SIZE_BYTES`]，zip 侧 pass1/pass2 的有界读取都按此收口），
+/// 而非 16 MiB 私有状态上限——首导放行的 >16 MiB 条目在重导比对时会被状态
+/// 上限拒收，同包重导被误判「内容不同」（round-31 P2）。开口加固
+/// （O_NOFOLLOW|O_NONBLOCK、Windows 共享模式、非普通文件闸）与闸后仍生效的
+/// 大小界语义全部来自共享原语，仅大小界不同。
+fn read_landed_payload_bytes(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
+    crate::platform::filesystem::read_private_data_file_bytes_within(path, MAX_PLUGIN_SIZE_BYTES)
+}
+
+/// Round-31 review P2: 磁盘侧大小界走 [`read_landed_payload_bytes`]（包预算）
+/// 而非私有状态上限——首导放行的 >16 MiB 普通条目在重导比对时曾被状态上限
+/// 拒收，同包重导被误判冲突。
 fn same_package_content(
     pkg_dir: &std::path::Path,
     archive: &mut zip::ZipArchive<std::fs::File>,
@@ -161,11 +175,9 @@ fn same_package_content(
         Some(bytes) => plugin_manifest_semantic_eq(&pkg_dir.join("plugin.json"), bytes),
         None => {
             let synth = serde_json::to_value(synthesized_manifest(det)).ok();
-            let disk = crate::platform::filesystem::read_private_data_file_bytes(
-                &pkg_dir.join("plugin.json"),
-            )
-            .ok()
-            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
+            let disk = read_landed_payload_bytes(&pkg_dir.join("plugin.json"))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
             match (disk, synth) {
                 (Some(disk), Some(synth)) => disk == synth,
                 _ => false,
@@ -197,9 +209,7 @@ fn same_package_content(
         let Ok(buf) = read_zip_entry_bounded(&mut entry, declared_size, path_str) else {
             return false; // 条目不可读/伪造头部 → 保守判冲突
         };
-        let Ok(existing) = crate::platform::filesystem::read_private_data_file_bytes(
-            &pkg_dir.join(&subdir).join(&rel),
-        ) else {
+        let Ok(existing) = read_landed_payload_bytes(&pkg_dir.join(&subdir).join(&rel)) else {
             return false; // zip 有而磁盘无（或磁盘侧拒绝）→ 内容不同
         };
         if existing != buf {
@@ -215,9 +225,7 @@ fn same_package_content(
         } else {
             "svg"
         };
-        match crate::platform::filesystem::read_private_data_file_bytes(
-            &pkg_dir.join(format!("icon.{ext}")),
-        ) {
+        match read_landed_payload_bytes(&pkg_dir.join(format!("icon.{ext}"))) {
             Ok(existing) if existing == *bytes => {}
             _ => return false,
         }
@@ -3240,6 +3248,135 @@ mod tests {
         }
         let err = import_plugin_package(&zip_path.to_string_lossy(), "combo.zip").unwrap_err();
         assert!(err.contains("内容不同"), "不同内容应报冲突，实际: {err}");
+
+        match prev {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Round-31 review P2：超过 16 MiB 私有状态读取上限的普通
+    /// 条目是合法包载荷（包预算 200 MiB 收口），同包重导必须仍判「同一包」——
+    /// 磁盘侧若按状态上限收口，首导成功而每次同包重导都被误判「内容不同」。
+    /// 对照组：同 id、载荷内容不同（同样超限）仍必须判冲突。回归测试按评审
+    /// 要求走完整 导入 → 重导 路径，而非只测读原语。
+    #[test]
+    fn reimport_above_the_private_read_cap_is_still_same_content() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-reimport-large-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        // 高度可压缩的 17 MiB 载荷：超过 16 MiB 状态上限，远低于 200 MiB 包预算。
+        let payload = vec![0xABu8; 17 * 1024 * 1024];
+        let make_zip = |path: &std::path::Path, payload: &[u8]| {
+            let f = std::fs::File::create(path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("my-skill/SKILL.md", opts).unwrap();
+            zw.write_all(b"---\nname: greet\ndescription: large\n---\n# hi")
+                .unwrap();
+            zw.start_file("my-skill/assets/data.bin", opts).unwrap();
+            zw.write_all(payload).unwrap();
+            zw.finish().unwrap();
+        };
+        make_zip(&dir.join("v1.zip"), &payload);
+
+        let first = import_plugin_package(&dir.join("v1.zip").to_string_lossy(), "v1.zip").unwrap();
+        assert_eq!(first.id, "greet");
+        let landed = dir.join("bundles/greet/skills/greet/assets/data.bin");
+        assert_eq!(
+            std::fs::metadata(&landed).unwrap().len(),
+            payload.len() as u64,
+            "载荷必须按普通条目落盘（fixtures 的前提）"
+        );
+
+        // 回归点：同包重导放行（磁盘侧按包预算读取，而非 16 MiB 状态上限）。
+        let second = import_plugin_package(&dir.join("v1.zip").to_string_lossy(), "v1.zip")
+            .unwrap_or_else(|e| panic!("同包重导（>16 MiB 普通条目）应放行，实际报错: {e}"));
+        assert_eq!(second.id, "greet");
+
+        // 对照：同 id、载荷内容不同（同样超限）仍必须判冲突。
+        let changed = vec![0x01u8; payload.len()];
+        make_zip(&dir.join("v2.zip"), &changed);
+        let err = import_plugin_package(&dir.join("v2.zip").to_string_lossy(), "v2.zip")
+            .expect_err("内容不同的大包必须判冲突");
+        assert!(
+            err.contains("已存在且内容不同"),
+            "不同内容应报冲突，实际: {err}"
+        );
+
+        match prev {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 同包比对的磁盘侧读取必须保持加固开口（round-31 P2 修大小时不得回退）：
+    /// 落在载荷路径上的植入 FIFO 应被非普通文件闸拒收（保守判冲突）而非阻塞
+    /// `open()`——调用方持有 per-id 导入锁与跨进程 landing lease，阻塞式开口
+    /// 会楔死同 id 导入道直至持有进程退出（round-28 M2 的楔形）。本测试同时
+    /// 是挂起金丝雀：若开口回退为阻塞式，测试将超时而非假绿。
+    #[test]
+    #[cfg(unix)]
+    fn same_content_disk_read_refuses_a_planted_fifo() {
+        use std::io::Write;
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-reimport-fifo-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prev = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        let zip_path = dir.join("v1.zip");
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("my-skill/SKILL.md", opts).unwrap();
+            zw.write_all(b"---\nname: greet\ndescription: fifo\n---\n# hi")
+                .unwrap();
+            zw.start_file("my-skill/assets/data.bin", opts).unwrap();
+            zw.write_all(b"payload").unwrap();
+            zw.finish().unwrap();
+        }
+        let first = import_plugin_package(&zip_path.to_string_lossy(), "v1.zip").unwrap();
+        assert_eq!(first.id, "greet");
+
+        // 把落盘载荷换成植入 FIFO 后同包重导：磁盘侧必须拒收非普通文件
+        // （判冲突、快速失败），而不是阻塞在持锁的 open() 上。
+        let landed = dir.join("bundles/greet/skills/greet/assets/data.bin");
+        std::fs::remove_file(&landed).unwrap();
+        crate::platform::paths::tests::plant_fifo(&landed);
+        let err = import_plugin_package(&zip_path.to_string_lossy(), "v1.zip")
+            .expect_err("植入 FIFO 必须经非普通文件闸判冲突");
+        assert!(
+            err.contains("已存在且内容不同"),
+            "FIFO 拒收应走保守判冲突口径，实际: {err}"
+        );
 
         match prev {
             // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
