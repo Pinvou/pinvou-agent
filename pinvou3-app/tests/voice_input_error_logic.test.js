@@ -525,11 +525,11 @@ assert.match(
 );
 const voiceRecordingStopAt = voiceHookSource.indexOf("if (voiceInput.status === 'recording') {");
 const voiceBusyGateAt = voiceHookSource.indexOf("if (voiceBusy) return false;", voiceRecordingStopAt);
-const voiceBeforeStartAt = voiceHookSource.indexOf("current.onBeforeStart(nextMode)", voiceRecordingStopAt);
+const voiceCanStartGateAt = voiceHookSource.indexOf("current.canStart(nextMode)", voiceRecordingStopAt);
 assert.ok(voiceRecordingStopAt >= 0 && voiceBusyGateAt > voiceRecordingStopAt,
   "recording stop must run before busy startup gates");
-assert.ok(voiceRecordingStopAt >= 0 && voiceBeforeStartAt > voiceRecordingStopAt,
-  "recording stop must run before the ASR-ready shortcut intro gate");
+assert.ok(voiceRecordingStopAt >= 0 && voiceCanStartGateAt > voiceRecordingStopAt,
+  "recording stop must run before the post-stop startup gates");
 assert.match(
   voiceHookSource,
   /if \(mode === 'edit'\) \{[\s\S]*?setEditPreview\(\{[\s\S]*?original,[\s\S]*?next,[\s\S]*?instruction:[\s\S]*?context,[\s\S]*?\}\);[\s\S]*?return;/,
@@ -537,7 +537,7 @@ assert.match(
 );
 assert.match(
   voiceHookSource,
-  /next === original[\s\S]*onEditUnchanged/,
+  /next === original[\s\S]*?discardVoiceResult\(context\)/,
   "edit mode must not silently swallow unchanged model output",
 );
 assert.match(
