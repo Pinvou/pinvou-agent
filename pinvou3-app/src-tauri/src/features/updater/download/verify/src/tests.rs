@@ -3,16 +3,17 @@ use std::io::{self, Cursor, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const ABC_HASH: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+pub(super) const ABC_HASH: &str =
+    "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 const TEN_HASH: &str = "84d89877f0d4041efb6bf91a16f0248f2fd573e6af05c19f96bedb9f882f7882";
 static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
 
-struct OwnedFile {
-    path: PathBuf,
+pub(super) struct OwnedFile {
+    pub(super) path: PathBuf,
     file: Option<File>,
 }
 impl OwnedFile {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -33,7 +34,7 @@ impl OwnedFile {
             file: Some(file),
         }
     }
-    fn file(&mut self) -> &mut File {
+    pub(super) fn file(&mut self) -> &mut File {
         self.file.as_mut().unwrap()
     }
 }
@@ -43,10 +44,10 @@ impl Drop for OwnedFile {
         let _ = std::fs::remove_file(&self.path);
     }
 }
-fn target(size: u64, digest: &str) -> Artifact<'static> {
+pub(super) fn target(size: u64, digest: &str) -> Artifact<'static> {
     Artifact::new("package-1", size, digest).unwrap()
 }
-fn error(result: Result<ByteMatch<'_>, ByteCheckError>, expected: ByteCheckError) {
+pub(super) fn error(result: Result<ByteMatch<'_>, ByteCheckError>, expected: ByteCheckError) {
     match result {
         Err(actual) => assert_eq!(actual, expected),
         Ok(_) => panic!("unexpected byte match"),

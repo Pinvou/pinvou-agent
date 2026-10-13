@@ -18,6 +18,15 @@ pub(crate) fn check_file_bytes<'a>(
     pinvou_upgrade_byte_check::check_file(file, target, cancelled)
 }
 
+pub(crate) fn copy_checked_file_bytes<'a>(
+    source: &mut std::fs::File,
+    destination: &mut std::fs::File,
+    target: pinvou_upgrade_transfer::Artifact<'a>,
+    cancelled: impl FnMut() -> bool,
+) -> Result<pinvou_upgrade_byte_check::ByteMatch<'a>, pinvou_upgrade_byte_check::ByteCheckError> {
+    pinvou_upgrade_byte_check::copy_and_check(source, destination, target, cancelled)
+}
+
 pub(crate) fn plan_file_response<'target, 'headers>(
     request: pinvou_upgrade_transfer::RequestPlan<'target>,
     status: u16,
@@ -42,7 +51,7 @@ mod tests {
     };
 
     #[test]
-    fn application_byte_check_graph_reads_actual_bytes_from_the_original_handle() {
+    fn application_byte_check_graph_scans_and_copies_original_handles() {
         use std::io::{Seek, SeekFrom, Write};
         let path =
             std::env::temp_dir().join(format!("pinvou-app-byte-check-{}", uuid::Uuid::new_v4()));
@@ -72,6 +81,24 @@ mod tests {
             check_file_bytes(&mut file, target, || false),
             Err(pinvou_upgrade_byte_check::ByteCheckError::HashMismatch)
         ));
+        file.seek(SeekFrom::Start(0)).unwrap();
+        file.write_all(b"abc").unwrap();
+        let destination_path =
+            std::env::temp_dir().join(format!("pinvou-app-byte-copy-{}", uuid::Uuid::new_v4()));
+        let mut destination = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&destination_path)
+            .unwrap();
+        assert!(
+            copy_checked_file_bytes(&mut file, &mut destination, target, || false)
+                .unwrap()
+                .target()
+                == target
+        );
+        drop(destination);
+        std::fs::remove_file(destination_path).unwrap();
         drop(file);
         std::fs::remove_file(path).unwrap();
     }

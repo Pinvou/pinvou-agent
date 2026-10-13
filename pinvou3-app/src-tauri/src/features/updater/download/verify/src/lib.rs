@@ -7,6 +7,9 @@ use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
+mod copy;
+pub use copy::copy_and_check;
+
 const BUFFER_BYTES: usize = 65_536;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,6 +19,8 @@ pub enum ByteCheckError {
     TooLong,
     TooShort,
     HashMismatch,
+    DestinationNotEmpty,
+    NotRegular,
 }
 impl std::fmt::Display for ByteCheckError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -25,6 +30,8 @@ impl std::fmt::Display for ByteCheckError {
             Self::TooLong => "FILE_CHECK_TOO_LONG",
             Self::TooShort => "FILE_CHECK_TOO_SHORT",
             Self::HashMismatch => "FILE_CHECK_HASH_MISMATCH",
+            Self::DestinationNotEmpty => "FILE_COPY_DESTINATION_NOT_EMPTY",
+            Self::NotRegular => "FILE_COPY_NOT_REGULAR",
         })
     }
 }
@@ -73,6 +80,15 @@ fn check_reader<'a>(
     target: Artifact<'a>,
     cancelled: &mut impl FnMut() -> bool,
 ) -> Result<ByteMatch<'a>, ByteCheckError> {
+    scan_reader(reader, target, cancelled, &mut |_, _| Ok(()))
+}
+
+fn scan_reader<'a, F: FnMut() -> bool>(
+    reader: &mut impl Read,
+    target: Artifact<'a>,
+    cancelled: &mut F,
+    visit: &mut impl FnMut(&[u8], &mut F) -> Result<(), ByteCheckError>,
+) -> Result<ByteMatch<'a>, ByteCheckError> {
     let mut buffer = vec![0_u8; BUFFER_BYTES];
     let mut hash = Sha256::new();
     let mut length = 0_u64;
@@ -90,6 +106,7 @@ fn check_reader<'a>(
             .checked_add(count as u64)
             .filter(|length| *length <= target.size())
             .ok_or(ByteCheckError::TooLong)?;
+        visit(&buffer[..count], cancelled)?;
         hash.update(&buffer[..count]);
     }
     if cancelled() {

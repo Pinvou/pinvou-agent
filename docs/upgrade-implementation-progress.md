@@ -2288,3 +2288,37 @@ Both independent roles gave final B3 scoped PASS after reviewing the final
 App/locked-graph evidence and documentation. No mandatory finding remains.
 Their independent eight-group runs preceded the lock correction; the final
 lock was independently checked and the primary role reran its tests/Clippy.
+
+### T29 fourth batch: copy and rescan the actual destination (2026-10-13)
+
+The verify crate now copies current source bytes from the original open handle
+into an independently protected fresh destination. It rejects nonregular handles
+or a nonempty destination without truncation/deletion. B3's bounded scanner checks
+actual source count before each chunk write and requires full source EOF/hash.
+Partial/EINTR/zero-write and cancellation paths cannot produce success. After
+sync_all, B3 rescans that same destination handle from zero through actual EOF
+and compares the whole size/hash again. Old ByteMatch facts are not copy inputs.
+Failure keeps untrusted bytes for owner isolation/cleanup; a new match remains
+only observed byte evidence, without durable protection or execution rights.
+
+Seven copy groups plus eight B3 groups passed (3.61s). Real 65,537-byte/33 MiB
+copy/rescan, cursor reset, nonempty/alias preservation, source changes before copy,
+read-only/write-only errors and all copy/sync/EOF cancellation boundaries were
+tested. Private partial-write/EINTR/zero-write and sync-failure/pre-rescan pollution
+controls are identified as unit evidence. Standalone fmt/Clippy, 48 CI policies,
+architecture, version and diff checks passed. Actual Windows App integration
+passed all eleven updater tests (0.01s after a 1m37s build), including actual copy
+through the App facade; no App-wide pass is claimed. This batch changes no
+dependency, lock, workflow, product version or submodule.
+
+Original T26 validation timing spans copy/sync/rescan without a new origin.
+OS operations cannot be interrupted mid-call by the predicate; the owner must
+confirm safe stop before releasing physical protection. Empty length and regular
+metadata do not establish ownership. Already scanned positions changing later
+are not universally detected. Physical cache/staging protection, safe unpacking,
+installer authenticity and current rights remain subsequent work. Full T29 and
+deployment remain unfinished, and downloads retain no elapsed cap. Details:
+[copy and rescan](client-upgrade-byte-copy.md).
+Both independent roles gave final B4 scoped PASS after reviewing the frozen
+implementation, final App evidence and documentation. Each independently passed
+all fifteen groups (3.47s and 3.52s), plus fmt/Clippy. No mandatory finding remains.
