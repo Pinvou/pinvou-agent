@@ -22,6 +22,10 @@ pub mod model_download;
 // cannot name the transitive `pinvou-knowledge` crate, and a copy silently
 // desynced the two surfaces every time the manifest changed.
 pub use pinvou_knowledge::model_download::model_directory_is_complete;
+// The headless CLI's `model status` consumes the same env-override-first
+// resolution (and the injectable variant the app tests drive) through these
+// re-exports instead of its former five-line mirror.
+pub use model_download::{configured_model_dir, configured_model_dir_from};
 mod query;
 mod scanner;
 mod store;
