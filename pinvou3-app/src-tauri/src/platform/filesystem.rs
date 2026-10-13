@@ -594,6 +594,29 @@ fn open_private_data_file_within(path: &Path, max_bytes: u64) -> io::Result<std:
     Ok(file)
 }
 
+/// Open a private temp file for a write-then-rename publish: create or
+/// truncate, `O_NOFOLLOW|O_NONBLOCK`, 0600, and a post-open non-regular
+/// refusal. The refusal is the point here, unlike
+/// [`open_private_lock_file`]'s deliberate FIFO tolerance: O_RDWR alone
+/// succeeds on a planted FIFO (it supplies its own reader), so the payload
+/// would vanish into the pipe buffer and the publish rename would install
+/// the FIFO as the data file (round-18 MAJOR-1 on #628 — silent receipt
+/// loss plus a duplicate-apply window on the scheduled-task marker).
+pub(crate) fn open_private_tmp_write_file(path: &Path) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    refuse_non_regular_file(&file, path)?;
+    Ok(file)
+}
+
 /// Shared post-open gate of the hardened private-data primitives: a handle
 /// that is not a regular file (a planted FIFO or device node) is refused
 /// before any byte is read or written. On success it returns the handle's

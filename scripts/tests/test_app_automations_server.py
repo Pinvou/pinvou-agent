@@ -496,9 +496,11 @@ class CreateSpoolAndResultTests(unittest.TestCase):
     def test_digest_mismatch_poll_path_sleeps(self):
         """Round-12 MAJOR-5: the keyed poll's digest-mismatch arm sleeps
         between reads at the poll cadence — the bare `continue` used to
-        busy-spin the marker re-read for the whole wait window. Counting
-        time.sleep during the mismatch window pins the cadence; deleting
-        the sleep turns this red (count 0)."""
+        busy-spin the marker re-read for the whole wait window. The pin
+        lives at the marker-read boundary (round-17 MAJOR-5): the loop
+        must meet a digest-mismatched marker at least once, and the total
+        marker reads must stay at the poll cadence — deleting the
+        mismatch arm's sleep explodes the read count and turns this red."""
         import hashlib
 
         digest = server.spool_request_digest(
@@ -772,6 +774,58 @@ class ReadScheduledTaskTests(unittest.TestCase):
             payload, error = server.read_scheduled_task(str(self.automations), bad)
             self.assertIsNone(payload, bad)
             self.assertIn("invalid task_id", error, bad)
+
+    def test_features_reader_refuses_non_regular_and_oversize(self):
+        """Round-18 MAJOR-2: load_disabled_features' gate is behaviorally
+        pinned — a symlink, a FIFO, and an oversize builtin_features.json
+        are all refused (fail-open empty set). The round-17 gate shipped
+        unpinned: deleting the three gate lines reverted to the ungated
+        read_text (a planted FIFO at this path wedges the whole stdio
+        server) and kept the full suite green — this fixture closes
+        that."""
+        mkt = Path(self.tmp) / "marketplace"
+        mkt.mkdir(parents=True, exist_ok=True)
+        gated_path = mkt / "builtin_features.json"
+        base_dir = str(self.automations)
+        real_payload = json.dumps(
+            {"disabled_features": ["scheduled-task-automation"]}
+        )
+
+        if os.name == "posix":
+            # A symlink at the gated path: refused (fail-open empty set).
+            try:
+                os.symlink(
+                    mkt / "elsewhere.json",
+                    gated_path,
+                )
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks unavailable")
+            (mkt / "elsewhere.json").write_text(
+                json.dumps({"disabled_features": ["scheduled-task-automation"]})
+            )
+            self.assertEqual(server.load_disabled_features(base_dir), set())
+            os.remove(gated_path)
+            # A FIFO at the gated path: refused at lstat, open never runs
+            # (the pre-gate shape blocked the single-threaded stdio server
+            # forever).
+            try:
+                os.mkfifo(gated_path)
+            except (OSError, AttributeError):
+                self.skipTest("mkfifo unavailable")
+            self.assertEqual(server.load_disabled_features(base_dir), set())
+            os.remove(gated_path)
+
+        # An oversize regular file is refused at the stat gate.
+        gated_path.write_text("x" * (server.MAX_FEATURES_FILE_BYTES + 1), encoding="utf-8")
+        self.assertEqual(server.load_disabled_features(base_dir), set())
+        os.remove(gated_path)
+
+        # The real mapping still reads.
+        gated_path.write_text(real_payload, encoding="utf-8")
+        self.assertEqual(
+            server.load_disabled_features(base_dir),
+            {"scheduled-task-automation"},
+        )
 
     def test_read_corrupt_store_entry(self):
         (Path(self.automations, "automations")).mkdir(parents=True)
