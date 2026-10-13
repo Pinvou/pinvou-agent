@@ -179,7 +179,6 @@ import {
   shouldUsePptDesignScene,
 } from './work-scene-routes.js';
 import {
-  PERSONAL_WORKBENCH_SCENE_KEY,
   PERSONAL_WORKBENCH_TEMPLATES,
   createPersonalWorkbenchMessageMeta,
   findPersonalWorkbenchTemplateDraft,
@@ -191,6 +190,7 @@ import {
 import {
   DATA_VISUALIZATION_SCENE_KEY,
   DOCUMENT_WRITING_SCENE_KEY,
+  PERSONAL_WORKBENCH_SCENE_KEY,
   PINVOU_SCENE_KEYS,
   PPT_DESIGN_SCENE_KEY,
   POSTER_SCENE_KEY,
