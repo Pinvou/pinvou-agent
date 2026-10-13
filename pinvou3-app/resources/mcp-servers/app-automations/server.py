@@ -147,6 +147,9 @@ MAX_PROMPT_CHARS = 32 * 1024
 # answer a legitimate large task with "not found" (inviting a duplicate)
 # and list_scheduled_tasks silently skip it.
 MAX_STORE_RECORD_BYTES = 256 * 1024
+# builtin_features.json is a small mapping shipped with the app; 64 KiB is
+# an order of magnitude above any real state of it (round-17 MAJOR-3).
+MAX_FEATURES_FILE_BYTES = 64 * 1024
 MAX_MODEL_ID_CHARS = 200
 # Bounded like every other field: an oversize-but-valid-shape rrule must be a
 # validation error here, not a spool file that the watcher's byte cap turns
@@ -427,6 +430,16 @@ def load_disabled_features(base_dir):
     """
     path = Path(base_dir).parent / "marketplace" / "builtin_features.json"
     try:
+        # Round-17 MAJOR-3: this read runs on every tools/call — the same
+        # gated shape as the marker/store readers (lstat without following
+        # the final component, regular-file check, byte cap). A planted
+        # FIFO here blocked the single-threaded stdio server forever (all
+        # five tools dead, ping included) and a /dev/zero symlink read
+        # unbounded. A gate refusal keeps the existing fail-open fallback
+        # (features enabled), which cannot wedge the server.
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_FEATURES_FILE_BYTES:
+            return set()
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return set()

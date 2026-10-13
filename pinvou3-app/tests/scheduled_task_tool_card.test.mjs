@@ -179,6 +179,16 @@ test('renderer wiring is present (timeline card + summary routing)', () => {
     /import\('\.\/scheduled-task-card\.jsx'\)/,
     'the renderer must route done items through the lazy card chunk',
   );
+  // Round-17 MAJOR-6: the boundary composition itself is pinned — the
+  // round-16 commit message claimed this pin existed and it did not. The
+  // lazy result must render inside the local error boundary: a rejected
+  // chunk import re-throws during render and unmounts the root.
+  assert.match(
+    renderers,
+    /<ScheduledTaskLoadBoundary fallback=\{<OutputPre text=\{out\} \/>\}>\s*<Suspense fallback=\{null\}>\s*<ScheduledTaskToolResult/,
+    'the lazy card must render inside the local error boundary',
+  );
+  assert.match(renderers, /class ScheduledTaskLoadBoundary/, 'the boundary must be defined');
   const cardModule = read('features/tools/scheduled-task-card.jsx');
   assert.match(cardModule, /ScheduledTaskToolCard/, 'the result card must be defined');
   assert.match(cardModule, /data-testid="scheduled-task-tool-card"/, 'the card must be testable');
