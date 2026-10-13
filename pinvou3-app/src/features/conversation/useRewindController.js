@@ -59,9 +59,9 @@ export function useRewindController({
   const { preview: previewCheckpointDiff, refresh: refreshCheckpoints } = checkpoints;
   const rewindEntries = useMemo(
     () => (enabled
-      ? rewindEntriesByTurnId(turns, checkpoints.checkpoints, checkpoints.userTurns)
+      ? rewindEntriesByTurnId(turns, checkpoints.checkpoints, checkpoints.userTurns, { busy: Boolean(busy) })
       : new Map()),
-    [enabled, turns, checkpoints.checkpoints, checkpoints.userTurns],
+    [enabled, turns, checkpoints.checkpoints, checkpoints.userTurns, busy],
   );
 
   // 待确认的回退目标（{ keepTurns, checkpoint, conversationOnly }）；非 null 时渲染确认弹窗。

@@ -83,7 +83,7 @@ const codexZh = {
   rewindUndoBody:n=>`将恢复工作区文件到回退前的状态，并还原被截掉的 ${n} 轮对话。`,
   rewindUndoBodyConversationOnly:n=>`该次回退仅截断了对话（工作区文件未改动）；将还原被截掉的 ${n} 轮对话，文件保持当前状态。`,
   rewindUndoConfirm:'撤销回退', rewindUndoBusy:'正在撤销…',
-  rewindUndoExpiryNote:'反悔窗口在回退后发出新消息或编辑对话末尾时失效；回滚点仅保留最近 20 个，被淘汰后同样无法反悔。',
+  rewindUndoExpiryNote:'反悔窗口在回退后发出新消息或编辑对话末尾时失效；检查点（含回滚点）总共仅保留最近 20 个，普通轮次的快照同样占用名额，超量淘汰后无法反悔。',
   rewindUndoDone:'已撤销回退：文件与对话已恢复到回退前的状态。',
   compactStart:'正在压缩上下文', compactDone:'上下文压缩完成', compactFail:'上下文压缩失败', compactCancel:'已取消上下文压缩',
   nativeToolGateDecision:(tool,decision,reason,risk,agent)=>`权限闸门${decision === 'allowed' ? '允许' : decision === 'denied' ? '拒绝' : '无法审查并拒绝'}了 ${tool || '工具'}${agent ? `（子智能体 ${agent}）` : ''}${risk ? ` · 风险 ${risk}` : ''}${reason ? ` · ${reason}` : ''}`,
