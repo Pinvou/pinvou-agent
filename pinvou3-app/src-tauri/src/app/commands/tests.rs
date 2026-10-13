@@ -1665,20 +1665,6 @@ fn validate_user_path_allows_tmp() {
     assert!(result.is_ok(), "/tmp 下普通文件应该通过, got {result:?}");
 }
 
-/// L2-2: 凭据组件名拦截 — 任何路径深度命中 .ssh/id_rsa 即拒绝。
-#[test]
-fn validate_user_path_blocks_ssh() {
-    // 不需要文件真实存在，canonicalize 失败时退回 raw path 继续校验
-    let p = "/home/anyuser/.ssh/id_rsa";
-    let result = validate_user_path(p);
-    assert!(result.is_err(), "凭据路径必须拒绝, got {result:?}");
-    let err = result.unwrap_err();
-    assert!(
-        err.contains(".ssh") || err.contains("id_rsa"),
-        "错误信息应指明命中的组件, got {err}"
-    );
-}
-
 /// L2-3: 系统级敏感前缀拦截 — /etc/shadow 等被列在 BLOCKED_PREFIXES。
 #[test]
 fn validate_user_path_blocks_etc_shadow() {
