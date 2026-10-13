@@ -128,8 +128,9 @@ impl MemoryOrganizeReport {
     /// `memory organize` output (both used to carry byte-identical copies;
     /// only the app side was test-pinned, so the copy could drift).
     pub fn summary(&self) -> String {
-        let total =
-            |counts: &std::collections::BTreeMap<String, u32>| counts.values().copied().sum::<u32>();
+        let total = |counts: &std::collections::BTreeMap<String, u32>| {
+            counts.values().copied().sum::<u32>()
+        };
         let scanned = total(&self.scanned);
         if self.no_change {
             return format!("Memory organize completed: scanned {scanned}, no changes needed");
