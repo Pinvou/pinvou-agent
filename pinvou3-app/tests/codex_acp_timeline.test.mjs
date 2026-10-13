@@ -5,9 +5,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
-  activateRightDockPanel,
   createRightDockState,
-  hideRightDockPanel,
+  reduceRightDockState,
   rightDockSnapshot,
 } from '../src/components/layout/right-dock-state.mjs';
 
@@ -975,10 +974,10 @@ try {
   'the code-mode aux chat must reuse the shared Right Dock panel, remember scroll on open, keep its entry highlight tied to real dock visibility, and gate the panel mount and the quote selection on isNativeAgent like the entry button (external-ACP tasks must never reach the aux session)');
 
   let codexDockState = createRightDockState();
-  codexDockState = activateRightDockPanel(codexDockState, 'codex-workspace');
-  codexDockState = activateRightDockPanel(codexDockState, 'subagent-transcript');
+  codexDockState = reduceRightDockState(codexDockState, { type: 'activate', panelId: 'codex-workspace' });
+  codexDockState = reduceRightDockState(codexDockState, { type: 'activate', panelId: 'subagent-transcript' });
   assert.equal(rightDockSnapshot(codexDockState).activePanelId, 'subagent-transcript');
-  codexDockState = hideRightDockPanel(codexDockState, 'subagent-transcript');
+  codexDockState = reduceRightDockState(codexDockState, { type: 'hide', panelId: 'subagent-transcript' });
   assert.equal(rightDockSnapshot(codexDockState).activePanelId, 'codex-workspace',
     'closing the active subagent panel must reveal the still-mounted workspace');
   assert.ok(codexWorkspace.includes('listAcpWorkspace({')

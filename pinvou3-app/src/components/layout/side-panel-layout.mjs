@@ -12,7 +12,7 @@ export function normalizeSidePanelRatio(value, fallback = 0.42) {
   return Math.max(MIN_RATIO, Math.min(MAX_RATIO, ratio));
 }
 
-export function sidePanelWidthBounds(
+function sidePanelWidthBounds(
   containerWidth,
   { minWidth = 360, minMainWidth = 520, maxWidthRatio = 0.65 } = {},
 ) {

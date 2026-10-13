@@ -11,7 +11,8 @@ import {
   auxChatHasContent,
   projectAuxChatTurns,
 } from './aux-chat-state.mjs';
-import { createAuxChatController, reconcileLiveTaskIds, removeAuxQuote } from './aux-chat-controller.mjs';
+import { removeAuxQuote } from './aux-quote.mjs';
+import { createAuxChatController, reconcileLiveTaskIds } from './aux-chat-controller.mjs';
 
 /**
  * Auxiliary chat panel (right-side RightDock): each main task gets one
