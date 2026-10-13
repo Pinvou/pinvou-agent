@@ -2519,3 +2519,47 @@ Both independent roles gave final B9 scoped PASS after final App evidence and
 documentation review. Each independently passed sixteen actual HTTPS groups
 (6.25s and 6.44s), 55 wire assertions, fmt/Clippy and diff checks; one additionally
 reran 49 CI policies (0.066s). No mandatory finding remains.
+
+### T29 tenth batch: transient response/write/wait observations (2026-10-13)
+
+The owner can observe actual validated response shape (original target/mode/span
+and optional opaque strong tag), successful whole-write counts and pinned-future
+Fetch/Body waiting. Private constructors, temporary borrowed fields and no automatic
+Debug/serialization prevent these facts from becoming public trust wrappers. Tags
+do not establish immutable-source continuity or retained prefix identity. Checked
+Progress counts only completed actual writes; a failed partial write may leave
+bytes without Progress. Waiting comes only from the timer branch and does not
+infer DNS phase, trustworthy time, contact loss, quality or signed event authority.
+
+Stop returns fixed OwnerStopped, consumes the actual body/future and yields no
+success receipt. Response Stop precedes writer start and preserves old bytes/
+length/cursor; Progress/Waiting Stop can leave untrusted output. Continue cannot
+authorize replacement or infer EOF from count. Noop wrappers preserve the existing
+entry points and original cancellation-poll sequence without new filesystem
+preconditions. Callbacks must promptly return, cannot reenter or nest block_on,
+and Waiting may run inside a future poll. No timer interrupts an active callback,
+OS operation or future poll; no total/cumulative deadline or retry cap is added.
+
+Final isolated actual HTTPS regression passed twenty-two groups (10.16s) and
+65 wire assertions; six new groups exercise Response preservation, complete-count
+Progress Stop without a receipt, original strong tag and two actual appended
+bytes before disconnect, short-range progress, Fetch/Body/DNS waiting Stop,
+Continue with denied replacement and existing read-idle timeout, continuing
+progress and VerifyExisting with no synthetic notices/DNS. A private write hook
+writes one real byte then injects IO failure, testing absence of completed-block
+Progress; this is unit injection, not physical disk-failure certification.
+Clippy passed (18.87s). Standalone/App fmt, 49 CI policies (0.063s), architecture,
+version and diff checks passed. Actual Windows App integration passed all thirteen
+updater tests (0.03s after a 3m37s build). It compiles the observer facade and keeps
+existing controls; actual HTTPS execution is the isolated fixture, not a full App
+workflow or App-wide pass. No dependency, lock, CI, version or gitlink changed.
+
+Physical cache/staging protection, persisted resume state, current qualification,
+URL renewal, signed progress ingestion, native authenticity/rights and full T29
+remain open. The owner later validates complete bytes under original T26 timing
+and confirms safe stop before releasing protection. Downloads retain no hard
+elapsed or retry cap. Details: [cache observations](client-upgrade-cache-observations.md).
+Both independent roles gave final B10 scoped PASS after final App evidence and
+documentation review. Each independently passed twenty-two actual HTTPS groups
+(10.57s and 10.16s), 65 wire assertions, fmt/Clippy and diff checks; one additionally
+reran 49 CI policies (0.055s). No mandatory finding remains.

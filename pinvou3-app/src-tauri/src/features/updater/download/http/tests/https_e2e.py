@@ -29,7 +29,7 @@ def verify(records):
     assert records["redirectHits"] == 0, "redirect was followed"
     requests = records["requests"]
     assert requests, "no HTTPS requests observed"
-    assert sum(item["path"] == "/cache-header-wait" for item in requests) == 1, "header cancellation never reached the peer"
+    assert sum(item["path"] == "/cache-header-wait" for item in requests) == 2, "header wait stops never reached the peer"
     for request in requests:
         assert request["path"] not in ("/unapproved-pin", "/denied")
         assert request["method"] == "GET"

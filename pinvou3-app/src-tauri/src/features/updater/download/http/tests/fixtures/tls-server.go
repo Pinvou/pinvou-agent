@@ -197,6 +197,19 @@ func main() {
 			w.(http.Flusher).Flush()
 			w.Write([]byte("012345678"))
 			return
+		case "/cache-partial-error":
+			w.Header().Set("ETag", "\"original\"")
+			w.Header().Set("Content-Range", "bytes 4-9/10")
+			w.Header().Set("Content-Length", "6")
+			w.WriteHeader(206)
+			w.Write([]byte("45"))
+			w.(http.Flusher).Flush()
+			time.Sleep(25 * time.Millisecond)
+			connection, _, hijackErr := w.(http.Hijacker).Hijack()
+			if hijackErr == nil {
+				connection.Close()
+			}
+			return
 		case "/network-error":
 			w.Header().Set("Content-Length", "10")
 			w.Write([]byte("0123"))

@@ -1,9 +1,10 @@
 //! One original restricted GET/cache attempt; qualification and URL renewal are external.
 use crate::cache::await_or_cancel;
+use crate::observer::{CacheObserver, NoopObserver, WaitPhase};
 use crate::stream::{StallLimits, fetch_with_profile};
 use crate::{
     AddressResolver, CacheReceiveError, DestinationPolicy, FetchResult,
-    receive_cache_body_on_worker,
+    receive_cache_body_with_observer_on_worker,
 };
 use pinvou_upgrade_byte_check::{ByteCheckError, CacheWritePermission, SegmentWriteError};
 use pinvou_upgrade_transfer::{Artifact, RequestPlan, RestartReason, SegmentReceipt, WriteMode};
@@ -73,11 +74,41 @@ pub fn fetch_cache_once_on_worker<'a>(
     )
 }
 
+/// The same single attempt with transient response/write/wait observations.
+/// Callback Continue grants no new write permission; Stop returns no receipt.
+pub fn fetch_cache_once_with_observer_on_worker<'a>(
+    runtime: &tokio::runtime::Handle,
+    request: CacheFetchRequest<'_, 'a>,
+    file: &mut File,
+    mut cancelled: impl FnMut() -> bool,
+    observer: &mut dyn CacheObserver,
+) -> Result<CacheFetchOutcome<'a>, CacheReceiveError> {
+    fetch_with_cache_observer_profile(
+        runtime,
+        request,
+        file,
+        &mut cancelled,
+        observer,
+        StallLimits::default(),
+    )
+}
+
 pub(super) fn fetch_with_cache_profile<'a>(
     runtime: &tokio::runtime::Handle,
     request: CacheFetchRequest<'_, 'a>,
     file: &mut File,
     cancelled: &mut impl FnMut() -> bool,
+    limits: StallLimits,
+) -> Result<CacheFetchOutcome<'a>, CacheReceiveError> {
+    fetch_with_cache_observer_profile(runtime, request, file, cancelled, &mut NoopObserver, limits)
+}
+
+pub(super) fn fetch_with_cache_observer_profile<'a>(
+    runtime: &tokio::runtime::Handle,
+    request: CacheFetchRequest<'_, 'a>,
+    file: &mut File,
+    cancelled: &mut impl FnMut() -> bool,
+    observer: &mut dyn CacheObserver,
     limits: StallLimits,
 ) -> Result<CacheFetchOutcome<'a>, CacheReceiveError> {
     let fetched = runtime.block_on(await_or_cancel(
@@ -89,6 +120,9 @@ pub(super) fn fetch_with_cache_profile<'a>(
             limits,
         ),
         cancelled,
+        observer,
+        request.plan.target(),
+        WaitPhase::Fetch,
     ))?;
     // Even an immediate local outcome or a ready fetch must observe cancellation
     // before a write or returning a future-action projection.
@@ -114,8 +148,10 @@ pub(super) fn fetch_with_cache_profile<'a>(
                     ));
                 }
             };
-            receive_cache_body_on_worker(runtime, *body, file, permission, cancelled)
-                .map(CacheFetchOutcome::Segment)
+            receive_cache_body_with_observer_on_worker(
+                runtime, *body, file, permission, cancelled, observer,
+            )
+            .map(CacheFetchOutcome::Segment)
         }
     }
 }

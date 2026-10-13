@@ -282,3 +282,4 @@ async fn real_https_progress_and_large_chunks_write_without_a_total_limit() {
 }
 
 mod attempt_tests;
+mod observer_tests;
