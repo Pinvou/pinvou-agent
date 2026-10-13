@@ -309,7 +309,11 @@ const makeSettleSessionRefSend = ({ mentionDraftKeyRef, sessionMentionEnabledRef
     // live until AFTER this guard and the stash write: clearing earlier
     // would unresolve the current scope mid-race.
     if (verdict !== 'restored' && resolveMaterializedDraftKey(mentionDraftKeyRef.current) === stashKey) {
-      setSessionRefs(current => dedupeSessionRefs([...refsAtSend, ...carriedRefs, ...current]));
+      // Carry-first priority here too (round-23 zhuowp): refsAtSend-first in
+      // the live merge dropped the carry at the cap, and the next scope
+      // cleanup then overwrote the (correct, carry-first) stash with the
+      // live snapshot — the carry vanished after navigation.
+      setSessionRefs(current => dedupeSessionRefs([...carriedRefs, ...refsAtSend, ...current]));
     }
     stashSessionMentionDraft(stashKey, dedupeSessionRefs(
       [...carriedRefs, ...refsAtSend, ...restoreSessionMentionDraft(stashKey)]));

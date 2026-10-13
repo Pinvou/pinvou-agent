@@ -262,7 +262,7 @@ test('auto-title contract: both bridges name the session from the stripped body 
   // rename_session invoke.
   const BODY = '把配色用到 PPT 里';
   const runTitleLane = async (rel) => {
-    const source = readFileSync(new URL(rel, import.meta.url), 'utf8');
+    const source = readFileSync(new URL(rel, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
     const fn = extractNamedFunction(source, 'async function persistMessagesFor(sid)');
     const invokes = [];
     const run = async (firstUserText) => {
@@ -1303,7 +1303,7 @@ test('both relay legs for the switch broadcast are pinned (round-6 minor 7)', ()
   // Desktop leg: chat-events.js re-dispatches the Tauri event to the shared
   // DOM event (the web leg + the relay allowlist are pinned in
   // web_access_contract).
-  const chatEvents = readFileSync(new URL('../src/platform/tauri/bridge/chat-events.js', import.meta.url), 'utf8');
+  const chatEvents = readFileSync(new URL('../src/platform/tauri/bridge/chat-events.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   assert.match(chatEvents, /listen\("remote_control:tools_changed"/);
   assert.match(chatEvents, /pinvou:tools-changed/);
 });
@@ -1449,7 +1449,7 @@ function loadSharedHelpers() {
   const ctx = { window: {}, console };
   vm.createContext(ctx);
   vm.runInContext(
-    readFileSync(new URL('../src/shared/bridge-shared-helpers.js', import.meta.url), 'utf8'),
+    readFileSync(new URL('../src/shared/bridge-shared-helpers.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n'),
     ctx,
   );
   ctx.window.__PINVOU_SESSION_MENTION__ = { splitSessionMentionBlock, buildSessionMentionBlock };
@@ -1630,7 +1630,7 @@ test('@ at end-of-string inside a URL still does not trigger (round-22 m4)', () 
 // ── Round-8: restore verdict routing, sibling-site wiring, drop/send pins ──
 
 test('steer-loss branches route the notice on the restore verdict (round-8 M1)', () => {
-  const chatSource = readFileSync(new URL('../src/platform/tauri/bridge/chat.js', import.meta.url), 'utf8');
+  const chatSource = readFileSync(new URL('../src/platform/tauri/bridge/chat.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   // The shared tail: restoreSteerText's verdict picks the notice variant.
   assert.match(chatSource, /function restoreSteerWithNotice\(sid, text, refsOnlyKey\)/);
   assert.match(chatSource, /addSystemItem\("⚠️ " \+ bt\(restored \? "steerFailed" : refsOnlyKey\)\)/);
@@ -1669,7 +1669,7 @@ test('the web-connection recovery re-read and the ref cap are pinned (round-19 m
 test('steer-notice keys exist exactly once per locale in the BT table (round-15 m4)', () => {
   // Count-3 pattern (web_access_contract precedent): deleting one locale's
   // copy must fail instead of silently falling back at runtime.
-  const bridgeSource = readFileSync(new URL('../src/platform/tauri/bridge.js', import.meta.url), 'utf8');
+  const bridgeSource = readFileSync(new URL('../src/platform/tauri/bridge.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   for (const key of [
     'steerDroppedQueued', 'steerFailedQueued', 'steerFailedUnconfirmed',
     'steerFailedLost', 'steerDroppedDuringEdit', 'steerEditRestored',
@@ -1680,8 +1680,8 @@ test('steer-notice keys exist exactly once per locale in the BT table (round-15 
 });
 
 test('pre-dispatch abandon paths resolve on the restore verdict (round-8 M1)', () => {
-  const chatSource = readFileSync(new URL('../src/platform/tauri/bridge/chat.js', import.meta.url), 'utf8');
-  const webSource = readFileSync(new URL('../src/platform/web/bridge.js', import.meta.url), 'utf8');
+  const chatSource = readFileSync(new URL('../src/platform/tauri/bridge/chat.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  const webSource = readFileSync(new URL('../src/platform/web/bridge.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   // Switch-path abandons: refs-only resolves false so the caller keeps the
   // chips armed (four tauri sites, two web sites — each lane routes through
   // one abandonToOwnSession helper that owns the verdict-shaped return).
@@ -1707,7 +1707,7 @@ test('pre-dispatch abandon paths resolve on the restore verdict (round-8 M1)', (
   // The strip-on-restore rule lives once, in the shared helpers (minor 10).
   assert.match(chatSource, /function stripMentionBlockForComposerRestore\(text\) \{ return pinvouSharedtauriChat\(\)\.stripMentionBlockForComposerRestore\(text\); \}/);
   assert.match(webSource, /function stripMentionBlockForComposerRestore\(text\) \{ return pinvouSharedweb\(\)\.stripMentionBlockForComposerRestore\(text\); \}/);
-  const sharedSource = readFileSync(new URL('../src/shared/bridge-shared-helpers.js', import.meta.url), 'utf8');
+  const sharedSource = readFileSync(new URL('../src/shared/bridge-shared-helpers.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   assert.match(sharedSource, /function stripMentionBlockForComposerRestore\(text\) \{/);
   // web restoreComposerText mirrors the tauri boolean verdict.
   assert.match(webSource, /function restoreComposerText\(sid, text\) \{[\s\S]*?if \(!sid \|\| !value\) return false;/);
@@ -1749,7 +1749,7 @@ test('handleSend clears the refs at dispatch and restores them on non-acceptance
   const chatViewSource = readChatViewSource();
   assert.match(chatViewSource, /const refsAtSend = sessionMentionEnabled \? sessionRefs : \[\];/);
   assert.match(chatViewSource, /if \(refsAtSend\.length\) setSessionRefs\(\[\]\);/);
-  assert.match(chatViewSource, /setSessionRefs\(current => dedupeSessionRefs\(\[\.\.\.refsAtSend, \.\.\.carriedRefs, \.\.\.current\]\)\);/);
+  assert.match(chatViewSource, /setSessionRefs\(current => dedupeSessionRefs\(\[\.\.\.carriedRefs, \.\.\.refsAtSend, \.\.\.current\]\)\);/);
 });
 
 test('the scene-send block-prepend into meta.pinvouPayloadText is pinned (round-8 M3)', () => {
@@ -2743,6 +2743,75 @@ test('failure restores are stash-backed across unmount and draft materialization
         clearDraftMaterialization('draft:21');
         stashSessionMentionDraft('session:MAT21', []);
       }
+    }
+
+    // Round-23 zhuowp (full-cap failure after navigation): five serialized
+    // refs plus one distinct carry — the live merge must prioritize the
+    // carry (refsAtSend-first dropped it at the cap and the next cleanup
+    // overwrote the correct stash), and the post-cleanup snapshot must keep
+    // it for re-entry.
+    {
+      const capKeyRef = { current: null };
+      const capRefs = { current: [] };
+      const fiveRefs = Array.from({ length: 5 }, (_, i) => ({ sessionId: `cap${i}88`, title: `序列化${i}` }));
+      const oneCarry = { sessionId: 'carry188', title: '满帽搬运' };
+      const capSend = {
+        mentionDraftKeyRef: capKeyRef,
+        mentionPendingDraftSendsRef: { current: new Set() },
+        sessionMentionEnabledRef: { current: true },
+        isMultiAgentReadOnly: false,
+        canSend: true,
+        chatVoice: null,
+        inputText: '正文',
+        inputTextRef: { current: '正文' },
+        constrainChatInput: (value) => ({ text: value, truncated: false }),
+        setInputText: () => {},
+        sessionMentionEnabled: true,
+        buildSessionMentionBlock,
+        dedupeSessionRefs,
+        stashSessionMentionDraft,
+        restoreSessionMentionDraft,
+        resolveMaterializedDraftKey,
+        materializationCarry,
+        clearDraftMaterialization,
+        sessionRefs: fiveRefs,
+        sendChatMessage: async () => {
+          recordDraftMaterialization('draft:31', 'session:MAT31', [oneCarry]);
+          capKeyRef.current = 'session:MAT31';
+          return false;
+        },
+        setSessionRefs: (value) => { capRefs.current = typeof value === 'function' ? value(capRefs.current) : value; },
+        bridge: { chat: { prefillComposer: () => {} } },
+        personalWorkbenchTemplateIdRef: { current: null },
+        setPersonalWorkbenchTemplateId: () => {},
+        console,
+      };
+      capKeyRef.current = 'draft:31';
+      vm.runInNewContext(`${settlePrefix}${sendFn}\nthis.handleSend = handleSend;`, capSend);
+      await capSend.handleSend();
+      // live: carry first, the five serialized refs ride after — all six at
+      // the moment of merge; the CAP applies on the store's bounded read,
+      // but the live merge itself must not silently drop the carry.
+      assert.deepEqual(
+        capRefs.current.slice(0, 1),
+        [oneCarry],
+        'the live failure merge prioritizes the carry at the cap',
+      );
+      // the stash (authoritative for re-entry) keeps the carry first
+      assert.deepEqual(
+        restoreSessionMentionDraft('session:MAT31').slice(0, 1),
+        [oneCarry],
+        'the stash keeps the carry first',
+      );
+      // the next cleanup snapshot (live) re-stashes the same set — re-entry
+      // restores the carry
+      stashSessionMentionDraft('session:MAT31', [...capRefs.current]);
+      assert.deepEqual(
+        restoreSessionMentionDraft('session:MAT31').slice(0, 1),
+        [oneCarry],
+        'the cleanup snapshot keeps the carry for re-entry',
+      );
+      stashSessionMentionDraft('session:MAT31', []);
     }
 
     // Round-15 m1 (negative): plain navigation (no in-flight send) must NOT
