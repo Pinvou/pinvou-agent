@@ -73,9 +73,10 @@
 //!   `connectors::ima::ima_status` instead (`bundle_readiness`'s ima arm):
 //!   ready = both OpenAPI credentials present (ima secret namespace) AND the
 //!   `ima-skills` companion installed, credentials judged first, installed =
-//!   credentials OR skill. The CLI mirrors those semantics exactly (see
-//!   [`ima_readiness_parts`]; the GUI helpers are app-crate-private, so the
-//!   check is replicated with ima.rs as the source of truth) — the ima row
+//!   credentials OR skill. The CLI consumes the exported
+//!   `connectors::ima::status_with_store` directly (with the module's
+//!   documented degrade wrapper for a credential-store read failure) — the
+//!   ima row
 //!   must not route through `readiness_for`, whose `IMA_CLIENT_ID` /
 //!   `IMA_API_KEY` lookup is the wrong namespace and would report
 //!   `missing_credentials` for a connected ima. CLI-connector live status
@@ -145,6 +146,7 @@ use pinvou3_lib::features::marketplace::{
     store::{BundleSource, BundleStore, is_display_unsafe_char},
     sync_deny_all_scopes_after_install,
 };
+use pinvou3_lib::features::status_with_store;
 use pinvou3_lib::platform::credential_store::{
     CredentialReference, CredentialStore, SystemCredentialStore,
 };
@@ -1970,22 +1972,15 @@ const REASON_ASSETS_MISSING: &str = "assets_missing";
 /// same reason vocabulary for ima.
 const REASON_IMA_SKILL_NOT_INSTALLED: &str = "skill_not_installed";
 
-/// The companion skill `ima_connect` installs alongside the ima credentials
-/// (mirror of `features/connectors/ima.rs` `IMA_SKILL_ID`, which is
-/// app-crate-private and not importable from here).
-const IMA_SKILL_ID: &str = "ima-skills";
-
-/// ima readiness inputs, mirroring the GUI's `bundle_readiness` ima arm
+/// ima readiness inputs, the CLI lane of the GUI's `bundle_readiness` ima arm
 /// (`app/commands/marketplace.rs`) → `connectors::ima::ima_status` →
 /// `status_with_store`: ima is the ONE bundle the desktop does not judge
-/// through `readiness_for`, so neither does the CLI. Source of truth:
-/// `pinvou3-app/src-tauri/src/features/connectors/ima.rs` (`status_with_store`
-/// and `credentials`). Those helpers are app-crate-private, so this function
-/// replicates the smallest faithful check: both OpenAPI credentials
-/// (`client_id` and `api_key`, non-empty after trim, in the ima secret
+/// through `readiness_for`, so neither does the CLI. The status computation
+/// (both OpenAPI credentials non-empty after trim in the ima secret
 /// namespace — NOT the IMA_CLIENT_ID/IMA_API_KEY MCP-namespace keys the
-/// registry branch would look for) and the `ima-skills` companion package's
-/// installed flag.
+/// registry branch would look for — plus the `ima-skills` companion
+/// package's installed flag) is consumed directly from the exported
+/// `connectors::ima::status_with_store`.
 ///
 /// A credential-store READ failure degrades to "absent" with a stderr note
 /// and is named again in the row's reason (`credential_store_unavailable`),
@@ -1998,30 +1993,17 @@ const IMA_SKILL_ID: &str = "ima-skills";
 /// the two apart for scripts. (The GUI's `ima_status` fails its whole
 /// command on a read failure; that is a one-card surface, this is a table.)
 fn ima_readiness_parts(credential_store: &SystemCredentialStore) -> (bool, bool, bool) {
-    let credential_present = |name: &str| -> (bool, bool) {
-        match credential_store.get(&CredentialReference::for_ima_secret(name)) {
-            Ok(value) => (value.is_some_and(|secret| !secret.trim().is_empty()), false),
-            Err(error) => {
-                note!(
-                    "[plugins] readiness ima: credential store read failed \
-                     (reporting the credential as absent): {}",
-                    error.user_message()
-                );
-                (false, true)
-            }
+    match status_with_store(credential_store) {
+        Ok(status) => (status.credentials_present, status.skill_installed, false),
+        Err(error) => {
+            note!(
+                "[plugins] readiness ima: credential store read failed \
+                 (reporting the credential as absent): {}",
+                error
+            );
+            (false, false, true)
         }
-    };
-    let (client_ok, client_failed) = credential_present("client_id");
-    let (api_ok, api_failed) = credential_present("api_key");
-    let skill_installed = SkillMarketplaceManager::new()
-        .list_skills()
-        .into_iter()
-        .any(|skill| skill.id == IMA_SKILL_ID && skill.installed);
-    (
-        client_ok && api_ok,
-        skill_installed,
-        client_failed || api_failed,
-    )
+    }
 }
 
 fn readiness(output: OutputMode) -> Result<CliOutcome, CliError> {
