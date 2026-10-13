@@ -564,7 +564,9 @@ fn apply_display_meta(
 ///   无法表达，效果等同换行。
 /// std 无通用 Unicode 类别 API，此处按具名范围精确拒绝；未列出的 Cf 变体
 /// （如变体选择符）不拦——宁可少拦可见字符，不误伤正常文案。
-fn is_display_unsafe_char(c: char) -> bool {
+/// `pub`：headless CLI 的 plugins 家族为共享 `bundles.json` 的导入显示名
+/// 直接复用本判定（曾因 crate-private 而逐字手抄镜像）。
+pub fn is_display_unsafe_char(c: char) -> bool {
     c.is_control()
         || matches!(c,
             '\u{00AD}' // SOFT HYPHEN
