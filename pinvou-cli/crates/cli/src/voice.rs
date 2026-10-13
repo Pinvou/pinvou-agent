@@ -88,7 +88,7 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crate::support::{family_lock, render, success};
+use crate::support::{family_lock, file_is_sha256, render, success};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::platform::paths::pinvou3_home;
 
@@ -1039,12 +1039,6 @@ fn download_asr_model() -> Result<PathBuf, CliError> {
          verify manually and retry",
         last_error.unwrap_or_default()
     )))
-}
-
-fn file_is_sha256(path: &Path, expected: &str) -> bool {
-    pinvou3_lib::platform::sha256_file(path)
-        .map(|actual| actual == expected)
-        .unwrap_or(false)
 }
 
 /// The exclusive-create primitive the staged `.part` and the private audio
