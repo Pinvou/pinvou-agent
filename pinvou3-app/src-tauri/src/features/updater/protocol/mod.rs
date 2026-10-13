@@ -12,6 +12,16 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+/// Supplied task-create response contract; never authenticated task/action rights.
+pub(crate) fn check_supplied_task_create_response_bytes(
+    bytes: &[u8],
+    operation: pinvou_upgrade_codec::TaskCreateResponseOperation,
+) -> Result<(), pinvou_upgrade_codec::TaskCreateResponseError> {
+    decode_metadata(bytes)
+        .map_err(pinvou_upgrade_codec::TaskCreateResponseError::Json)?
+        .assert_supplied_task_create_response_contract(operation)
+}
+
 /// Supplied transaction-control response contract, never current review or ACK.
 pub(crate) fn check_supplied_transaction_control_response_bytes(
     bytes: &[u8],
@@ -376,6 +386,54 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_binds_task_responses_without_creating_a_task_or_action_authority() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        use pinvou_upgrade_codec::{
+            TaskCreateResponseError as ContractError, TaskCreateResponseOperation as Operation,
+        };
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/envelopes.json"
+        )))
+        .unwrap();
+        let envelope = |name: &str| -> serde_json::Value {
+            let v = vectors["vectors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["name"] == name)
+                .unwrap();
+            serde_json::from_slice(
+                &URL_SAFE_NO_PAD
+                    .decode(v["envelopeBase64Url"].as_str().unwrap())
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        for (operation, prefix) in [
+            (Operation::Reconciliation, "reconciliation"),
+            (Operation::RecoveryReview, "recovery-review"),
+        ] {
+            let action = envelope(&format!("{prefix}-action"));
+            let event = envelope(&format!("{prefix}-event"));
+            let mut response = serde_json::json!({"protocolVersion":1,"requestId":"request-1",
+                "task":action["signed"]["task"],"actionCredential":action,"eventCredential":event});
+            let check = |v: &serde_json::Value| {
+                check_supplied_task_create_response_bytes(
+                    &serde_json::to_vec(v).unwrap(),
+                    operation,
+                )
+            };
+            assert_eq!(check(&response), Ok(()));
+            response["eventCredential"]["signed"]["task"]["revision"] = serde_json::json!(2);
+            assert_eq!(check(&response), Err(ContractError::BindingMismatch));
+            response["task"]["revision"] = serde_json::json!(2);
+            response["actionCredential"]["signed"]["task"]["revision"] = serde_json::json!(2);
+            assert_eq!(check(&response), Ok(()));
+        }
+    }
 
     #[test]
     fn feature_facade_checks_transaction_responses_without_creating_review_or_ack() {

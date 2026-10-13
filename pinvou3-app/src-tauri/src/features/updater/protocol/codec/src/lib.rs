@@ -1,6 +1,8 @@
 //! Bounded Upgrade V1 JSON and canonical bytes. Successful decoding is not
 //! signature verification, established Root trust, current eligibility or ACK.
 
+mod task_create_response;
+pub use task_create_response::{TaskCreateResponseError, TaskCreateResponseOperation};
 mod transaction_control;
 pub use transaction_control::{TransactionControlError, TransactionControlOperation};
 mod purpose_response;

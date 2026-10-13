@@ -4107,3 +4107,44 @@ VERSION/gitlinks changes. Details:
 [transaction responses](client-upgrade-transaction-control-responses.md).
 Complete T27/T32 remain unfinished. Downloads retain no total/cumulative
 duration or retry cap.
+
+## T27 twenty-ninth batch - supplied task-create responses (2026-10-14)
+
+Scope: complete original reconciliation-create/recovery-review-create response
+API contracts. Fixed two-operation enum/closed Schemas and exactly five local
+resources; whole canonical bounded reparse; both credentials independently
+retain64KiB and unchanged supplied semantics at max(iat,nbf). Complete declared
+task equals both credential tasks; full credential scopes and three identities
+match. Unit success is not authenticated task/action rights, current read set,
+durable outcome, occupancy release or owner revival.
+Outside-repository actual original Node generated5694 nested/control cases.
+Preparing the oracle caught a positive-control helper incorrectly classifying
+restored bindings as negatives, then a no-op guard incorrectly covering raw
+scalar enumeration; both test-only preparation issues were fixed before source
+entered the worktree. Named mutations now require a genuine difference and
+binding negatives preflight original full Schema/credential semantics before
+exact API_RESPONSE_MISMATCH. All named intended outcomes then passed.
+Root task-scoped5 passed: integration4/actual original5694 in51.69s,
+resourceunit1 in0.03s (five unrelated units filtered). Clippy alltargets passed
+in14.24s; codec+App facade format passed. Architecture/version/diff passed and
+CI policy51 in0.102s. No production source/helper change beyond this independent
+module/export and App facade; unchanged full116/31556 were not repeated.
+Root self-review confirms full bounded inputs, both original credential
+semantic gates/caps, full task/scope and three identity bindings, meaningful
+precise negative/restore controls and no elevation to task/action authority.
+Both independent static reviews found no mandatory issue. Actual Windows
+updater App44 passed in0.26s after2m50s compilation. Dependency independent5
+passed: integration4/actual original5694 in55.73s, resourceunit1 in0.02s
+(five unrelated units filtered), Clippy3.33s/fmt/App facade format/diff passed.
+Actual Node22/both legacy environments; no repeat of old116/31556 or App.
+Compatibility independent5 passed: integration4/actual original5694 in46.63s,
+resourceunit1 in0.02s (five unrelated units filtered), Clippy2.42s/codec+App facade
+format/diff passed; CI policy51 in0.074s. Actual Node22/both legacy environments,
+no repeat of old116/31556 or App. Both scoped reviews passed with no mandatory
+issue and all processes closed. Both independent final documentation reviews
+passed before commit.
+No Schema/OpenAPI/profile/vectors/dependencies/locks/CI/crypto/trust/limits/
+VERSION/gitlinks changes. Details:
+[task-create responses](client-upgrade-task-create-responses.md).
+Complete T27/T32 remain unfinished. Downloads retain no total/cumulative
+duration or retry cap.
