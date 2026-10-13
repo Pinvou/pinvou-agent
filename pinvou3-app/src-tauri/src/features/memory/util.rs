@@ -45,7 +45,12 @@ pub fn clean_text(value: &str, max_chars: usize) -> String {
         .collect()
 }
 
-pub(super) fn clean_id(value: &str) -> String {
+/// `pub` + re-exported from `features::memory` (round-41 review pattern):
+/// the CLI's `pending confirm`/`pending never` lanes must resolve the argv
+/// id the very way `confirm_pending_memory` does, so they call this function
+/// instead of hand-mirroring it — a local copy drifted the moment either
+/// side changed.
+pub fn clean_id(value: &str) -> String {
     value
         .chars()
         .map(|c| {
