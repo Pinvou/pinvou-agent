@@ -6652,6 +6652,7 @@ name = "pinvou-upgrade-file-http"
 version = "0.0.0"
 dependencies = [
  "bytes",
+ "pinvou-upgrade-byte-check",
  "pinvou-upgrade-transfer",
  "reqwest 0.13.4",
  "tokio",

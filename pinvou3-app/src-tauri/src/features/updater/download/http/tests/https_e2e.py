@@ -81,7 +81,7 @@ def main():
                 ["cargo", "test", "--locked", "--lib", "--", "--include-ignored",
                  "--test-threads=1"], cwd=crate, env=child_env,
                 creationflags=hidden, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, text=True)
+                stderr=subprocess.STDOUT, text=True, encoding="utf-8")
             print(outcome.stdout, end="", flush=True)
             peer.stdin.write("\n")
             peer.stdin.flush()

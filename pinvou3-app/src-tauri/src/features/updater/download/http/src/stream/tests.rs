@@ -505,3 +505,5 @@ async fn real_output_chunks_are_bounded_without_collecting_the_entire_response()
     assert!(bytes.iter().all(|byte| *byte == b'x'));
     assert!(receipt.has_full_byte_count());
 }
+
+mod cache_tests;

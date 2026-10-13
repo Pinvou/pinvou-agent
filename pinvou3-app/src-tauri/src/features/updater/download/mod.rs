@@ -10,6 +10,19 @@ pub(crate) async fn fetch_file<'a>(
     pinvou_upgrade_file_http::fetch(url, request, policy, resolver).await
 }
 
+pub(crate) fn receive_file_body_on_worker<'a>(
+    runtime: &tokio::runtime::Handle,
+    body: pinvou_upgrade_file_http::FileBody<'a>,
+    file: &mut std::fs::File,
+    permission: pinvou_upgrade_byte_check::CacheWritePermission,
+    cancelled: impl FnMut() -> bool,
+) -> Result<pinvou_upgrade_transfer::SegmentReceipt<'a>, pinvou_upgrade_file_http::CacheReceiveError>
+{
+    pinvou_upgrade_file_http::receive_cache_body_on_worker(
+        runtime, body, file, permission, cancelled,
+    )
+}
+
 pub(crate) fn start_cache_segment<'file, 'target>(
     file: &'file mut std::fs::File,
     plan: pinvou_upgrade_transfer::BodyPlan<'target>,

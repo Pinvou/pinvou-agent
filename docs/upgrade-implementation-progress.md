@@ -2434,3 +2434,49 @@ Both independent roles passed the frozen 26 groups (4.56s and 4.40s), fmt and
 Clippy; one additionally reran all 49 CI policies (0.045s).
 Both independent roles gave final B7 scoped PASS after reviewing the frozen
 implementation, actual App result and final documents. No mandatory finding remains.
+
+### T29 eighth batch: actual HTTPS-to-cache composition (2026-10-13)
+
+The receiver consumes the restricted actual FileBody and derives its sole plan
+from it. It feeds real Data chunks to the actual-file writer and completes only
+from the transport's actual SegmentFinished EOF receipt. Every network/file/
+permission/cancellation failure drops that body and returns no receipt, preserving
+untrusted cache bytes. It runs on an owner's independent blocking worker with a
+live actively driven runtime; current-thread IO requires the owner to keep
+Runtime::block_on running, as the actual spawn_blocking E2E demonstrates.
+A pinned next_chunk future survives false cancellation polls while a 100 ms timer
+allows cancellation during pending reads. This is no total/idle download deadline;
+active OS calls or future polls cannot be interrupted mid-call.
+
+Final isolated real HTTPS verification passed all thirteen groups (5.60s) and
+47 wire requests, including four new actual-file groups. These cover 200 explicit
+replacement/refusal, short 206 followed by continuation and B3 verification,
+truncation/excess/disconnect, real read-only output and wrong prefix length,
+pending-read cancellation, ongoing progress and bounded writes of 131,073 bytes.
+The synthetic large-response digest intentionally mismatches, so its successful
+count is followed by B3 HashMismatch rather than trusted cache evidence.
+Self-review and independent review found that a 500 ms stall plus a two-second
+test allowance could mask await cancellation through a later write poll. The
+primary role replaced it with a peer that sends headers but never Data/EOF,
+recorded the first true poll after all writer-start polls and added the same
+exchange's always-false control ending only at the fixture's read-idle limit.
+The repaired proof passes; test allowances never impose product download limits.
+
+Actual Windows App integration passed all thirteen updater tests (0.05s after a
+4m05s build). It compiles the new receiver facade and retains existing integration
+controls; the real HTTPS-to-file execution is the isolated fixture, not a full App
+workflow or App-wide pass. Standalone/App fmt, 49 CI policies (0.068s), architecture,
+version and diff checks passed. Parent App/CLI locks each add only one local HTTP
+to verify edge, with no external version change. All 178 isolated HTTP packages
+match the parent versions/sources/checksums. No product version or gitlink changed.
+
+Physical cache protection, immutable provider evidence, qualification/URL renewal,
+protected staging, native authenticity/current rights and full T29 remain open.
+The owner later performs complete protected validation under the original T26
+budget and confirms safe worker stop before releasing protection. There is no
+total/cumulative download deadline or retry cap. Details:
+[HTTPS-to-cache receive](client-upgrade-http-cache-receive.md).
+Both independent roles gave final B8 scoped PASS after the repaired cancellation
+test and final evidence documents. Each independently passed all thirteen actual
+HTTPS groups (5.64s and 5.72s), 47 wire assertions, fmt/Clippy and diff checks; one
+additionally reran 49 CI policies (0.053s). No mandatory finding remains.

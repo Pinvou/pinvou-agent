@@ -206,6 +206,12 @@ func main() {
 				connection.Close()
 			}
 			return
+		case "/cache-cancel-wait":
+			w.Header().Set("Content-Length", "10")
+			w.(http.Flusher).Flush()
+			// Send no data or EOF. Only client cancellation closes this exchange.
+			<-r.Context().Done()
+			return
 		case "/stall":
 			w.Header().Set("Content-Length", "10")
 			w.(http.Flusher).Flush()
