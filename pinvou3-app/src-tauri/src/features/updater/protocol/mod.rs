@@ -12,6 +12,20 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+pub(crate) fn assert_rollout_opening_bytes(
+    target: &[u8],
+    release_hash: &[u8],
+    opening: &[u8],
+) -> Result<(), pinvou_upgrade_codec::OpeningBindingError> {
+    let target =
+        decode_metadata(target).map_err(pinvou_upgrade_codec::OpeningBindingError::Json)?;
+    let hash =
+        decode_metadata(release_hash).map_err(pinvou_upgrade_codec::OpeningBindingError::Json)?;
+    let opening =
+        decode_metadata(opening).map_err(pinvou_upgrade_codec::OpeningBindingError::Json)?;
+    pinvou_upgrade_codec::assert_rollout_opening(&target, &hash, &opening)
+}
+
 pub(crate) fn match_metadata_reference_bytes(
     declared: &[u8],
     original_envelope: &[u8],
@@ -86,6 +100,29 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_binds_supplied_target_hash_opening_and_rejects_null_or_wrong_hash() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/digests.json"
+        )))
+        .unwrap();
+        let opening = serde_json::to_vec(&vector["opening"]).unwrap();
+        let hash = serde_json::to_vec(&vector["opening"]["releaseEnvelopeSha256"]).unwrap();
+        let target = serde_json::json!({"scope":{"targetKey":vector["opening"]["targetKey"]},"rolloutSetCommitment":vector["expectedOpeningCommitment"]});
+        let target = serde_json::to_vec(&target).unwrap();
+        assert!(assert_rollout_opening_bytes(&target, &hash, &opening).is_ok());
+        assert_eq!(
+            assert_rollout_opening_bytes(&target, &hash, b"null"),
+            Err(pinvou_upgrade_codec::OpeningBindingError::Mismatch)
+        );
+        let wrong = serde_json::to_vec(&serde_json::json!("0".repeat(64))).unwrap();
+        assert_eq!(
+            assert_rollout_opening_bytes(&target, &wrong, &opening),
+            Err(pinvou_upgrade_codec::OpeningBindingError::Mismatch)
+        );
+    }
 
     #[test]
     fn feature_facade_matches_complete_metadata_reference_to_original_wire_bytes() {

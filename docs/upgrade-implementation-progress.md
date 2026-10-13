@@ -3167,3 +3167,54 @@ used unchanged frozen source; root self-review found no remaining in-scope gap.
 Details: [metadata reference](client-upgrade-metadata-reference.md). Complete T27
 trust/chain/high-watermark integration remains unfinished. Downloads retain no
 total/cumulative duration or retry cap.
+
+
+## T27 eleventh batch - supplied opening consistency (2026-10-13)
+
+A supplied signed-body Target, JSON Release hash string and nonnull opening are
+checked through original complete bounded/duplicate-aware Documents. Nonnull
+opening reuses closed7 validation and fixed22-byte domain/fixed-array commitment.
+Three strict string comparisons bind targetKey, Release-envelope hash and computed
+commitment; safe field access never unwraps a Target envelope or coerces/trims/
+casefolds. Null always fails, even against a correct empty commitment. Ignored
+Target/scope extras still undergo complete raw resource and duplicate checks.
+Only supplied-value consistency follows, not FullTargetSchema/signatures/current
+membership/context/selection/entropy/freshness/qualification or execution rights.
+Fixed safe errors do not promise original short-circuit error-class equivalence.
+
+Four groups cover every7 opening leaf with old and recomputed commitment, three
+independent bindings, minimal/non-Target positive bodies, null/empty commitment,
+wrong scope/primitive/fields/types/case/line endings, JSON order/escaped key
+equivalence and all three raw inputs' exact/+1 wire/decoded-string/duplicate/
+invalidUTF8 controls. Final152 actual original Node/AJV cases include separate
+missing Target scope/commitment, actual targetKey/commitment uppercasing and hash
+padding. Recomputed valid revisions/IDs/salt remain math-positive without invented
+selection or entropy guards. No dependency/lock/Schema/CI/version/gitlink changes.
+
+Root initial all50 codec regressions passed with Node22 and both old oracle flags:
+signing6 in5.19s, bytes7 in0.65s, consume4 in1.38s, native3 in0.63s, opening4
+in0.95s (147), reference4 in2.16s (730), rollout4 in0.60s, Root4 in5.36s (639),
+Source5 in0.79s (218), status5 in0.65s and version4 in0.94s (348). After adding
+the dedicated safe JSON error variant for facade decoding and final five negative
+controls, latest opening4 passed2.32s (152) and Clippy8.27s/fmt passed. Earlier147
+evidence is not substituted for final152; the other46 tests remained unchanged.
+CI51 passed0.212s, architecture/version/diff passed. Final actual Windows App
+passed all27 updater tests in0.11s after3m00s build, including matching the supplied
+binding and rejecting null/wrong Release hash. No App-wide pass is claimed.
+
+Both independent latest frozen-source scoped reviews passed without mandatory.
+Dependency actual Node22 and both old oracle flags all50 PASS: signing6 in9.59s,
+bytes7 in6.27s, consume4 in4.19s, native3 in1.73s, opening4 in1.07s (152),
+reference4 in1.13s (730), rollout4 in1.73s, Root4 in4.96s (639), Source5 in1.43s
+(218), status5 in0.71s and version4 in1.01s (348); Clippy0.11s/fmt/diff passed.
+Compatibility actual Node22 and both flags all50 PASS: signing6 in4.74s, bytes7
+in0.66s, consume4 in1.83s, native3 in0.84s, opening4 in1.00s (152), reference4
+in1.04s (730), rollout4 in6.82s, Root4 in10.01s (639), Source5 in2.01s (218),
+status5 in1.68s and version4 in8.75s (348); Clippy2.86s/fmt, CI51 in0.067s/diff
+passed. Both final documentation/evidence reviews returned scoped PASS on
+unchanged frozen source without rebuilding. Root self-review found no remaining
+in-scope gap.
+
+Details: [opening binding](client-upgrade-opening-binding.md). Full T27 trust/
+selection/high-watermark integration remains unfinished. Downloads retain no
+total/cumulative duration or retry cap.
