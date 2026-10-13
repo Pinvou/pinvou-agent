@@ -400,6 +400,18 @@ pub(crate) fn read_bytes_capped(
     Ok(bytes)
 }
 
+/// The artifact-integrity check the connectors and voice download lanes
+/// share, moved verbatim from the byte-identical twins that used to live in
+/// `connectors.rs` and `voice.rs` (same shape as the `drain_capped_to_eof`
+/// hoist): both compare the `platform::sha256_file` digest against the
+/// expected lowercase hex digest, treating an unreadable/missing file as a
+/// mismatch.
+pub(crate) fn file_is_sha256(path: &Path, expected: &str) -> bool {
+    pinvou3_lib::platform::sha256_file(path)
+        .map(|actual| actual == expected)
+        .unwrap_or(false)
+}
+
 /// The canonicalize → sensitive-path gate the family ingest lanes share,
 /// and the single home of the round-46 doctrine each call site's comment
 /// restates: the credential-path gate every model-context ingest lane

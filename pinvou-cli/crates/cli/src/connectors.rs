@@ -72,7 +72,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use wait_timeout::ChildExt;
 
-use crate::support::{render, require_yes, resolve_secret, sandbox_home, success};
+use crate::support::{file_is_sha256, render, require_yes, resolve_secret, sandbox_home, success};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::marketplace::bundle::CLI_DISCONNECTED_DEGRADED_REASON;
 use pinvou3_lib::features::marketplace::skill_marketplace::SkillMarketplaceManager;
@@ -84,7 +84,6 @@ use pinvou3_lib::platform::connector_lock::{executable_name, locked_cli_path};
 use pinvou3_lib::platform::connector_skills::{
     DINGTALK_SKILL_DIRS, LARK_SKILL_DIRS, TMEET_SKILL_DIRS, WECOM_SKILL_DIRS,
 };
-use pinvou3_lib::platform::sha256_file;
 
 use pinvou3_lib::platform::connector_state::skills_visible_for;
 use pinvou3_lib::platform::credential_store::{
@@ -2705,12 +2704,6 @@ fn write_license(version_dir: &Path, artifact_name: &str) -> Result<(), CliError
             "connector installed, but its license file could not be written: {error}"
         ))
     })
-}
-
-fn file_is_sha256(path: &Path, expected: &str) -> bool {
-    sha256_file(path)
-        .map(|actual| actual == expected)
-        .unwrap_or(false)
 }
 
 /// Removes install debris left by a DEAD process: `<name>-extract-<pid>`
