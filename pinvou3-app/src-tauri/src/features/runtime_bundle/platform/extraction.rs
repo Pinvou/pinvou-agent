@@ -91,11 +91,431 @@ pub(super) fn browser_last_error_hint(raw: &str, now: u64) -> Option<(&'static s
         .copied()
         .find(|(candidate, _)| *candidate == code)
 }
+
+impl Pinvou3Bundle {
+    pub fn paths() -> Self {
+        Self {
+            root: paths::bundle_root(),
+            skills_dir: paths::bundle_skills_dir(),
+            mcp_json: paths::bundle_mcp_json(),
+            deny_sensitive_sh: paths::bundle_root().join("deny_sensitive_paths.sh"),
+            deny_sensitive_ps1: paths::bundle_root().join("deny_sensitive_paths.ps1"),
+            multiagent_depth_guard_sh: paths::bundle_root().join("multiagent_depth_guard.sh"),
+            multiagent_depth_guard_ps1: paths::bundle_root().join("multiagent_depth_guard.ps1"),
+            shell_env_sh: paths::bundle_root().join("shell_env.sh"),
+        }
+    }
+
+    /// 比对 `bundle/VERSION` 与 [`BUNDLE_VERSION`]：相同跳过；
+    /// 不同则覆写 bundle 内文件并更新 VERSION。**不动 user/ 和 settings.json**。
+    ///
+    /// 引擎侧 system prompt 走 `mod.rs` 的 `instructions_md()` 内嵌渲染
+    /// （per-session locale / workspace / sudo 占位符在会话渲染层就地替换），
+    /// 不再落盘 `bundle/instructions.md` 副本。
+    pub fn ensure_extracted(&self) -> std::io::Result<()> {
+        let marketplace = crate::features::marketplace::MarketplaceManager::new();
+        self.ensure_extracted_with_marketplace(&marketplace, |manager| {
+            manager.repair_installed_python_tools()
+        })
+    }
+
+    pub(super) fn ensure_extracted_with_marketplace<S, F>(
+        &self,
+        marketplace: &crate::features::marketplace::MarketplaceManager<S>,
+        repair_python_tools: F,
+    ) -> std::io::Result<()>
+    where
+        S: crate::platform::credential_store::CredentialStore,
+        F: FnOnce(
+            &crate::features::marketplace::MarketplaceManager<S>,
+        ) -> Result<Vec<String>, String>,
+    {
+        paths::ensure_dirs()?;
+        let version_file = paths::bundle_version_file();
+        // Hardened read — family rationale on `open_private_data_file_within`. Any
+        // refusal (or absence) degrades to the empty string, so the bundle
+        // re-extracts.
+        let current =
+            crate::platform::filesystem::read_private_data_file(&version_file).unwrap_or_default();
+        let bundle_changed = current.trim() != BUNDLE_VERSION;
+
+        // 已下线 skills 每次启动都清理(防御性):既有装机的残留目录若不清,
+        // SkillRegistry 仍会从 disk 发现它们、重新触发对应协议 prompt。
+        crate::platform::startup::mark("bundle_extract:cleanup_retired:start");
+        self.cleanup_retired_skills()?;
+        // 已从技能市场下架的预置技能(pua/女娲/头脑风暴):它们曾走 marketplace 装、带
+        // `pinvou3-marketplace:` 标记,故按标记内容精确删,只跳过用户上传的同名目录。
+        self.cleanup_removed_marketplace_skills()?;
+        // Round-32 minor 6 (review #455): resolve import-crash residue BEFORE
+        // any other cleanup walks bundles_root — a crashed import's landed dir
+        // must be quarantined, not admitted live-by-absence with zero consent
+        // (nor swept by a later cleanup). Best-effort: a failure is logged and
+        // retried next boot.
+        if let Err(e) = crate::features::marketplace::plugin_import::reconcile_import_journal() {
+            log::warn!("[runtime-bundle] import-crash journal reconciliation failed: {e}");
+        }
+        // 已从工具市场下架的预置 MCP 工具也要清理运行态残留;否则旧 manifest 仍会被
+        // MarketplaceManager 扫到,在 composer「已接入工具」里继续出现。
+        self.cleanup_removed_marketplace_tools()?;
+        crate::platform::startup::mark("bundle_extract:cleanup_retired:done");
+        // PR #132 早期构建曾把 CLI 解包进 immutable bundle；统一在线安装后清掉该
+        // app 自有旧目录，避免旧二进制掩盖按需安装与 hash 校验。
+        let _ = std::fs::remove_dir_all(paths::bundle_root().join("connectors"));
+        // Migrate plaintext MCP secrets before bundled manifests are rewritten. If migration
+        // fails, keep the old files as a recoverable source instead of overwriting the only
+        // remaining plaintext copy.
+        crate::platform::startup::mark("bundle_extract:migrate_mcp_secrets:start");
+        let mcp_secret_migration_ok = match marketplace.migrate_mcp_plaintext_secrets() {
+            Ok(_) => true,
+            Err(err) => {
+                eprintln!("[pinvou3-app] MCP secret migration skipped: {err}");
+                false
+            }
+        };
+        crate::platform::startup::mark("bundle_extract:migrate_mcp_secrets:done");
+        // Built-in skills and workflow resources are immutable bundle assets.
+        crate::platform::startup::mark("bundle_extract:write_builtin_skills:start");
+        self.write_builtin_skills()?;
+        crate::platform::startup::mark("bundle_extract:write_builtin_skills:done");
+        // 首启一次性导入旧布局安装态到 BundleStore（marketplace-unification §9）。
+        // 位置：cleanups 之后（退役目录不导入）、技能迁移与 gates 之前（迁移按 import
+        // 的登记反推归属；gates 会把 CLI companion 技能解包到新布局，见下）；manifest
+        // 清单取自内嵌目录，不再依赖 write_mcp_servers 的落盘。必须在
+        // `if !bundle_changed` 提前返回之前——bundle 版本不变的老用户首次跑到新版本时
+        // 也要完成导入；`legacy_imported` 闸使后续启动成为读一次的廉价 no-op。
+        Self::import_legacy_bundle_store();
+        // Boot seed for default-installed preset MCP tools (session-reader
+        // etc.): installs only when no BundleStore record exists; placed
+        // before write_mcp_servers' embedded-content check of installed
+        // records so release and registration complete within the same boot.
+        // Skipped for this cycle when the plaintext secret migration failed
+        // (same gating as write_mcp_servers' relocation: install reruns the
+        // migration internally and failure paths must not touch the old
+        // layout); the next boot self-heals.
+        if mcp_secret_migration_ok {
+            marketplace.ensure_default_installed_mcp_tools();
+        }
+        // Boot-time replay of the builtin feature-switch state file from
+        // prefs (the authoritative store): heals a crash window between the
+        // prefs commit and the state write. Best-effort, failures only log.
+        crate::features::marketplace::builtin::replay_feature_state_from_prefs();
+        // 强制迁移自定义 MCP（不在内嵌目录）到新布局：bundle/mcp-servers/<id>/ →
+        // bundles/<id>/mcp/。排在技能迁移之前（四轮评审 M-7）：迁完后 available_tools
+        // 才能从新布局读到自定义 MCP manifest 的 companion_skills 声明，技能迁移的
+        // companion 归属（条件认领）才有直接依据，不必只靠旧布局现算兜底。沿用原
+        // write_mcp_servers 的门控：明文密钥迁移失败时不搬动旧目录（保留可救援副本），
+        // 此时技能迁移回退旧布局现算映射（legacy_companion_owners），口径一致。幂等。
+        if mcp_secret_migration_ok {
+            match crate::features::marketplace::migrate_custom_mcp_layout() {
+                Ok((moved, kept)) => {
+                    if moved > 0 || kept > 0 {
+                        log::info!("[runtime-bundle] 自定义 MCP 迁移: moved={moved} kept={kept}");
+                    }
+                }
+                Err(e) => log::warn!("[runtime-bundle] 自定义 MCP 迁移失败: {e}"),
+            }
+        }
+        // 扁平技能布局 → 按包聚合的一次性物理迁移（§9.1，刀十）。排在 import 之后
+        // （import 按旧布局反推登记，迁移随后把目录搬进 bundles/<pkg>/skills/ 并补写
+        // 预置技能指纹）、gates 之前：已连接 CLI 的存量用户首启时，若 gates 先把技能
+        // 解包到新布局，迁移会撞 move_skill_dir 的 target.exists()，每次启动都留下
+        // warn 与双份物理拷贝；先迁移则 gates 的防御性重写天然幂等。单个目录失败
+        // 保留旧位置（读路径 find_skill_dir 回退）。
+        let migration =
+            crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+                .migrate_flat_skills_layout();
+        crate::platform::startup::mark_with_detail(
+            "rust",
+            "bundle_extract:skills_migration:done",
+            &format!(
+                "moved={} stale={}",
+                migration.moved.len(),
+                migration.removed_stale.len()
+            ),
+        );
+        // 自愈对账：认领错位归位/去重、孤儿副本、瘫记录、内置释放目录残旧收敛。
+        // 名称无关（按归属证明判定，各发行版构建自动适配），排在布局迁移之后
+        // （旧扁平目录已搬完）、gates 之前（CLI 静态所有目录不受影响）。
+        let heal = crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new()
+            .self_heal_skills(Self::BUILTIN_RELEASED_SKILL_DIRS);
+        crate::platform::startup::mark_with_detail(
+            "rust",
+            "bundle_extract:skills_self_heal:done",
+            &format!(
+                "rehomed={} deduped={} orphan={} stale_records={} converged={}",
+                heal.rehomed.len(),
+                heal.deduped.len(),
+                heal.removed_orphan_dirs.len(),
+                heal.removed_stale_records.len(),
+                heal.converged_builtin_dirs.len()
+            ),
+        );
+        // 飞书 / 企微 / 钉钉鉴权 CLI 不得阻塞 Tauri setup。启动阶段只沿用上次落盘的完整
+        // 技能目录作为缓存；React 首屏提交后调用 refresh_connector_auth_gates 并行
+        // 实时探测，再按真实状态修正目录。bundle 升级时仅刷新当前可见的缓存目录。
+        crate::platform::startup::mark("bundle_extract:apply_skill_gates:start");
+        let feishu_show = self.cached_feishu_skills_visible();
+        crate::platform::startup::mark_with_detail(
+            "rust",
+            "bundle_extract:feishu_cached_gate",
+            &format!("show={feishu_show}"),
+        );
+        if bundle_changed || !feishu_show {
+            self.apply_feishu_skills(feishu_show)?;
+        }
+        let wecom_show = self.cached_wecom_skills_visible();
+        crate::platform::startup::mark_with_detail(
+            "rust",
+            "bundle_extract:wecom_cached_gate",
+            &format!("show={wecom_show}"),
+        );
+        if bundle_changed || !wecom_show {
+            self.apply_wecom_skills(wecom_show)?;
+        }
+        let dingtalk_show = self.cached_dingtalk_skills_visible();
+        crate::platform::startup::mark_with_detail(
+            "rust",
+            "bundle_extract:dingtalk_cached_gate",
+            &format!("show={dingtalk_show}"),
+        );
+        if bundle_changed || !dingtalk_show {
+            self.apply_dingtalk_skills(dingtalk_show)?;
+        }
+        let tmeet_show = self.cached_tmeet_skills_visible();
+        crate::platform::startup::mark_with_detail(
+            "rust",
+            "bundle_extract:tmeet_cached_gate",
+            &format!("show={tmeet_show}"),
+        );
+        if bundle_changed || !tmeet_show {
+            self.apply_tmeet_skills(tmeet_show)?;
+        }
+        crate::platform::startup::mark("bundle_extract:apply_skill_gates:done");
+
+        // MCP server scripts are immutable as well, but wait for secret migration to avoid
+        // deleting legacy plaintext before it has been copied into the credential store.
+        crate::platform::startup::mark("bundle_extract:write_mcp_servers:start");
+        self.write_mcp_servers(mcp_secret_migration_ok)?;
+        // Reconcile → Python repair → builtin upsert, in that order; see
+        // `run_mcp_startup_maintenance` for why the order is load-bearing.
+        // Coverage boundary: tests pin the order and the corrupt-file gate
+        // *inside* `run_mcp_startup_maintenance`
+        // (`startup_maintenance_restores_missing_entry_before_python_repair`,
+        // `startup_maintenance_preserves_corrupt_mcp_json_bytes`); this call
+        // site itself is driven end to end by
+        // `ensure_extracted_preserves_corrupt_mcp_json_bytes`, which runs the
+        // real boot chain including the retired-tool cleanup that precedes it.
+        self.run_mcp_startup_maintenance(marketplace, repair_python_tools)?;
+        crate::platform::startup::mark("bundle_extract:write_mcp_servers:done");
+
+        if !bundle_changed {
+            return Ok(());
+        }
+        std::fs::create_dir_all(&self.root)?;
+        std::fs::create_dir_all(&self.skills_dir)?;
+        // PINVOU 自有 hooks：写入 + 加可执行位。加固写族文档见
+        // `open_private_data_file_within`；write 的 0600 创建模式随后被下方 0o755
+        // 循环补回可执行位。
+        crate::platform::filesystem::write_private_data_file(
+            &self.deny_sensitive_sh,
+            DENY_SENSITIVE_PATHS_SH.as_bytes(),
+        )?;
+        crate::platform::filesystem::write_private_data_file(
+            &self.deny_sensitive_ps1,
+            DENY_SENSITIVE_PATHS_PS1.as_bytes(),
+        )?;
+        crate::platform::filesystem::write_private_data_file(
+            &self.multiagent_depth_guard_sh,
+            MULTIAGENT_DEPTH_GUARD_SH.as_bytes(),
+        )?;
+        crate::platform::filesystem::write_private_data_file(
+            &self.multiagent_depth_guard_ps1,
+            MULTIAGENT_DEPTH_GUARD_PS1.as_bytes(),
+        )?;
+        crate::platform::filesystem::write_private_data_file(
+            &self.shell_env_sh,
+            SHELL_ENV_SH.as_bytes(),
+        )?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for script in [
+                &self.deny_sensitive_sh,
+                &self.multiagent_depth_guard_sh,
+                &self.shell_env_sh,
+            ] {
+                let mut perm = std::fs::metadata(script)?.permissions();
+                perm.set_mode(0o755);
+                std::fs::set_permissions(script, perm)?;
+            }
+        }
+        crate::platform::filesystem::write_private_data_file(
+            &version_file,
+            BUNDLE_VERSION.as_bytes(),
+        )?;
+        eprintln!(
+            "[pinvou3-app] bundle extracted to {} (version {})",
+            self.root.display(),
+            BUNDLE_VERSION
+        );
+        Ok(())
+    }
+
+    /// MCP startup maintenance, in a fixed order: reconcile the marketplace
+    /// registry into mcp.json first (the managed-runtime patch fails while an
+    /// entry is missing entirely, so restoring missing/dead entries first lets
+    /// one startup converge to the managed form), then the Python repair
+    /// (upgrades a restored entry to the managed-runtime form before any engine
+    /// reads mcp.json), then the builtin-server upsert. Engine-owned keys
+    /// (pinvou3/pinvou/browser — see `ENGINE_OWNED_MCP_SERVER_KEYS`) are skipped
+    /// by the reconcile, and `ensure_builtin_mcp_servers` re-asserts them
+    /// afterwards; note it also runs `refresh_mcp_python_commands`, which may
+    /// rewrite the python command of any stale entry — a complementary self-heal
+    /// outside the key-set footprint.
+    ///
+    /// A corrupt mcp.json is preserved for the whole boot: the reconcile backs
+    /// it up and returns early, and the builtin upsert below is skipped (its
+    /// repair loader would reset the file to a builtin-only skeleton). Sessions
+    /// degrade to an empty MCP pool rather than fail, and the recovery path is
+    /// the backup plus the timeline note. Pinned end to end by
+    /// `startup_maintenance_preserves_corrupt_mcp_json_bytes`.
+    ///
+    /// The ordering and the reconcile call itself are load-bearing and pinned by
+    /// `startup_maintenance_restores_missing_entry_before_python_repair`:
+    /// deleting the reconcile call, or moving it after the repair, fails that
+    /// test. Reconcile actions go through the startup timeline, keeping their
+    /// outcomes visible independent of the rotating app log. Reconcile failures
+    /// never block startup; the repair closure's integrity result and the
+    /// builtin upsert's structural errors propagate to the caller, which treats
+    /// them like any other extraction failure.
+    pub(super) fn run_mcp_startup_maintenance<S, F>(
+        &self,
+        marketplace: &crate::features::marketplace::MarketplaceManager<S>,
+        repair_python_tools: F,
+    ) -> std::io::Result<Vec<String>>
+    where
+        S: crate::platform::credential_store::CredentialStore,
+        F: FnOnce(
+            &crate::features::marketplace::MarketplaceManager<S>,
+        ) -> Result<Vec<String>, String>,
+    {
+        let reconcile_actions = match marketplace.reconcile_installed_mcp_entries() {
+            Ok(actions) => actions,
+            Err(error) => {
+                log::warn!("[pinvou3-app] mcp.json reconcile failed (non-blocking): {error}");
+                crate::platform::startup::mark_with_detail("rust", "mcp_reconcile:failed", &error);
+                Vec::new()
+            }
+        };
+        for action in &reconcile_actions {
+            log::info!("[pinvou3-app] mcp.json reconcile: {action}");
+            crate::platform::startup::mark_with_detail("rust", "mcp_reconcile", action);
+        }
+        // Existing Python MCP entries may still launch server.py directly without the managed
+        // dependency environment. Repair or atomically downgrade them before any engine reads
+        // mcp.json, leaving a stable install target for the UI to retry.
+        let repair_errors = repair_python_tools(marketplace).map_err(std::io::Error::other)?;
+        for error in repair_errors {
+            // The packaged Windows GUI has no stderr; the log is the only way users see downgrade/retry outcomes.
+            log::warn!("[pinvou3-app] {error}");
+        }
+        // mcp.json merge:每次启动 upsert 内置 pinvou server,保留 marketplace 条目。
+        // 不受 VERSION gate 限制——marketplace 安装可能在任何时候发生。启动自愈(刷新
+        // 陈旧的本地 python server command)也在同一次调用里完成,两者共享一次读盘
+        // +parse;必须在引擎 spawn 前跑(引擎从 mcp.json 拉起 server)。
+        // 损坏文件例外:reconcile 刚刚备份过的坏文件绝不能在这里被 repair loader
+        // 重置成 builtin-only 骨架——那会毁掉备份刚保护下来的自定义条目。跳过本次
+        // upsert(引擎对解析失败降级为空 MCP 池,会话不受阻),恢复路径 = 备份 +
+        // timeline 提示。检测独立于 reconcile 的返回值:即使 reconcile 因其它原因
+        // 提前失败,这条防线依然挡住对坏文件的重写。
+        if crate::features::marketplace::mcp_json_unparseable() {
+            let note = "mcp.json is unparseable; builtin MCP upsert skipped this boot to \
+                        preserve the backed-up original — fix or delete the file to restore \
+                        MCP servers";
+            log::warn!("[pinvou3-app] {note}");
+            crate::platform::startup::mark_with_detail("rust", "mcp_builtin_skip", note);
+        } else {
+            // 跨进程锁在 ensure_builtin_mcp_servers 内部取得(写方自带锁,#521)。
+            self.ensure_builtin_mcp_servers()?;
+        }
+        Ok(reconcile_actions)
+    }
+
+    /// 清理已下线内置 skills 的残留目录(被 ensure_extracted 在 VERSION check 前
+    /// 调用,每次启动都跑):
+    /// - legacy-ppt-workflow:0.5 下线(workflow 功能转"开发中")
+    /// - pinvou-review-plan / pinvou-review-final:0.7 下线(EXIT GATE 评审被推翻)
+    ///
+    /// 技能市场([`super::skill_marketplace`])装的技能带 `.installed-from` 标记、
+    /// 落在同一 `bundle/skills/` 目录。清理时显式跳过带标记的目录——这是保护契约,
+    /// 任何未来对 `skills_dir` 的全量重写也必须遵守,否则会误删用户装的技能。
+    fn cleanup_retired_skills(&self) -> std::io::Result<()> {
+        std::fs::create_dir_all(&self.skills_dir)?;
+        for retired in [
+            "legacy-ppt-workflow",
+            "pinvou-review-plan",
+            "pinvou-review-final",
+        ] {
+            let dir = self.skills_dir.join(retired);
+            if dir.join(".installed-from").is_file() {
+                continue; // marketplace 技能占用了该名,保护不删
+            }
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        Ok(())
+    }
+
+    /// 清理已从技能市场移除的预置技能残留(dir 名 → 原市场 id)。
+    ///
+    /// 与 [`Self::cleanup_retired_skills`] 相反:这些**曾是** marketplace 技能、装时写了
+    /// `pinvou3-marketplace:<id>` 标记,所以不能沿用"带标记即跳过"的保护——否则永远删不掉。
+    /// 改为**按标记内容精确匹配**:只删标记恰为本技能市场安装(或无标记的裸残留),
+    /// 显式跳过 `upload:` 开头的用户上传目录,避免误删用户自己传的同名技能。
+    pub(super) fn cleanup_removed_marketplace_skills(&self) -> std::io::Result<()> {
+        for (dir_name, market_id) in [
+            ("pua", "pua"),
+            ("huashu-nuwa", "nuwa"),
+            ("brainstorming", "brainstorming"),
+        ] {
+            let dir = self.skills_dir.join(dir_name);
+            if !dir.exists() {
+                continue;
+            }
+            // Hardened read — family rationale on `open_private_data_file_within`.
+            // 数据保底：只有"标记确实不存在"（裸残留）或"读到内容且恰为空/本市场
+            // id"才允许删除；其余任何读 refusal（symlink 不穿透、FIFO/设备、超
+            // cap、非 UTF-8、权限）一律保留目录——main 的 read_to_string 会穿透
+            // symlink 读到 upload: 内容并据此保护，硬化读把这一类变成 Err，若
+            // fail-open 成空标记会把用户内容连同目录一起删掉。
+            let marker = match crate::platform::filesystem::read_private_data_file(
+                &dir.join(".installed-from"),
+            ) {
+                Ok(content) => content,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(error) => {
+                    log::warn!(
+                        "[pinvou3-app] marketplace skill cleanup preserved '{}' (unreadable .installed-from: {error})",
+                        dir.display()
+                    );
+                    continue;
+                }
+            };
+            let marker = marker.trim();
+            if marker.starts_with("upload:") {
+                continue; // 用户上传的同名技能,保护不删
+            }
+            if marker.is_empty() || marker == format!("pinvou3-marketplace:{market_id}") {
+                let _ = std::fs::remove_dir_all(&dir);
+            }
+        }
+        Ok(())
+    }
+
     /// 清理已从工具市场移除的预置 MCP 工具残留。
     ///
     /// 不能删除所有未知目录:未来/本地可能有自定义 MCP 工具。这里只精确处理曾经内置、
     /// 现在源码资源已经移除的 marketplace 工具。
-pub(super) fn cleanup_removed_marketplace_tools(&self) -> std::io::Result<()> {
+    pub(super) fn cleanup_removed_marketplace_tools(&self) -> std::io::Result<()> {
         let tool_id = "data_analysis";
         // 退役 id 保护：`bundles/` 已是用户上传落盘区，用户可能上传过
         // 同名包——其 Upload 记录存在时跳过整段清理（不删登记、不删 mcp.json），

@@ -1605,7 +1605,13 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
     // The wrapper-zip lane's temp name is CLI-generated ASCII; the direct
     // lane's path is the validated `path_str` from above.
     let pipeline_path: &str = wrapper_pipeline_path(&import_path, path_str)?;
-    let result = plugin_import::import_plugin_package(pipeline_path, &display);
+    // The gated pipeline (#517's landing lease + staging exclusion) with a
+    // no-op pre-land hook: the CLI's DenyAll registration stays post-land in
+    // `sync_after_install_or_fail` below, as reviewed — the GUI's pre-land
+    // deny-first gate (commands-layer deny_all_pre_land) is the disclosed
+    // divergence, not wired headless.
+    let result =
+        plugin_import::import_plugin_package_gated(pipeline_path, &display, &|_, _| Ok(()));
     // Dropping the armed guard removes the wrapper; every earlier failure
     // path already removed it through Drop.
     drop(temp_zip);

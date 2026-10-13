@@ -1115,6 +1115,10 @@ pub fn reconcile_import_journal() -> Result<(), String> {
             Err(error) => {
                 log::warn!(
                     "[plugin-import] import journal: the landing lease for '{id}' is un-lockable, deferring crash recovery to the next startup: {error}"
+                );
+                continue;
+            }
+        };
         // The in-process import lock cannot see a second process: a CLI
         // `plugins import` that has landed its dir but not yet registered
         // looks exactly like crash residue here — mark, landed dir, no
@@ -1288,7 +1292,7 @@ fn ensure_package_id_self_mapping(id: &str) -> Result<(), String> {
 /// rolling an already-landed import back via uninstall would destroy a
 /// pre-existing installation (re-import overwrites), while a deny-first
 /// refusal loses nothing.
-pub(crate) fn import_plugin_package_gated(
+pub fn import_plugin_package_gated(
     zip_path: &str,
     display_name: &str,
     pre_land: &dyn Fn(&str, &[String]) -> Result<(), String>,
@@ -1655,7 +1659,7 @@ pub(crate) fn import_plugin_package_gated(
     // Nothing has landed at this point, so the refusal aborts with the home
     // untouched (the gate's earlier registration is an over-denial row on an
     // installed claimant — fail-closed).
-        // 上传包 id 冲突：目标包目录已存在且内容不同 → 拒绝（提示改名重试），避免
+    // 上传包 id 冲突：目标包目录已存在且内容不同 → 拒绝（提示改名重试），避免
     // 不同包静默互覆盖（二轮评审：冲突检查需覆盖上传包）。内容一致视为同包
     // 重导/升级，允许走原子替换。比对为全内容口径（五轮评审，详见
     // same_package_content）：plugin.json 语义 + 全部可落盘条目字节 + 图标 +

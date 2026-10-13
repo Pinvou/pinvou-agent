@@ -1357,6 +1357,11 @@ pub async fn export_recycled_plugin(
     .await
 }
 
+/// 导出默认文件名：`<包id>.zip`（id 已是安全字符集，直接使用）。
+fn recycle_export_default_name(id: &str) -> String {
+    format!("{id}.zip")
+}
+
 /// 导出已安装包为标准插件包 zip（变更操作；Web 只读不放行）：弹原生保存
 /// 对话框，zip 内容对齐插件包规范（可经统一导入管线重新导入；manifest args
 /// 的包内绝对路径导出时还原为相对形式）。

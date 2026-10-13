@@ -971,18 +971,23 @@ impl SkillMarketplaceManager {
         if !is_safe_skill_name(&dir_name) {
             return Err(format!("非法技能名 '{dir_name}'"));
         }
-        // 自此持同 id import_lock 至函数尾：与统一导入/遗留导入/展示编辑
-        // （update_display_meta）共用同一把锁、同一锁序（import_lock → store
-        // file_lock）。此前并发卸载不持锁，展示编辑「读备份 → 写 SKILL.md」
-        // 临界区可能被卸载插队（编辑成功返回而目录已删，仅注释披露的窄窗口）。
-        let import_lock = super::plugin_import::import_lock_for(skill_id);
-        let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
-        // Round-51 review: the in-process mutex cannot see the CLI's second
-        // process — hold the same cross-process market lock every market
-        // mutator holds (order: import_lock → market file lock → store
-        // file lock).
+        Ok(dir_name)
+    }
+
+    /// The lock-protected teardown of `uninstall`: deletes the on-disk
+    /// copies and the bundles.json mirror entry, and reports whether an
+    /// installation was actually torn down (see `uninstall`'s contract).
+    /// Caller MUST hold the per-id `import_lock_for(skill_id)`; split out of
+    /// `uninstall` so `uninstall_and_strip_scope` can hold ONE guard across
+    /// this teardown and its scope strip.
+
+    fn uninstall_locked(&self, skill_id: &str, dir_name: &str) -> Result<bool, String> {
+        // Round-51 review: the in-process mutex held by the caller cannot see
+        // the CLI's second process — hold the same cross-process market lock
+        // every market mutator holds (order: import_lock → market file lock →
+        // store file lock).
         let _market_lock = super::plugin_import::MarketplaceWriteLock::acquire_map_err()?;
-        let legacy = self.legacy_skills_dir.join(&dir_name);
+        let legacy = self.legacy_skills_dir.join(dir_name);
 
         // Upload 独立技能包回收（必须先于一切物理删除；fail-closed 与 MCP 卸载
         // 同口径：bundles.json 读不出按可能 Upload 处理 —— 中止卸载报错，不照删
@@ -1071,6 +1076,23 @@ impl SkillMarketplaceManager {
         }
         Ok(record_present || deleted_any)
     }
+
+    /// Uninstall plus the caller-side scope strip, with the per-id import
+    /// lock held across BOTH: the teardown and the strip share one critical
+    /// section, so a deny-first registration a concurrent same-id install
+    /// makes after this function returns survives, and the strip can never
+    /// delete a just-registered fresh entry. The residual is the same
+    /// in-section window the MCP tool lane has: a gate that reads the store
+    /// in the instant between the record removal and the strip still
+    /// registers and is then stripped (microsecond scale, fail-open,
+    /// disclosed in capability-governance §3.2). A vacuous `Ok(false)`
+    /// strips nothing; a refused strip only logs (the leftover entry fails
+    /// closed). The strip targets the pre-teardown owner snapshot via the
+    /// exact form. Only for teardown paths with no outer transaction lock
+    /// (ima logout); the skill command lane keeps its own post-return strip
+    /// with a pre-teardown owner snapshot (its callers are the ones that
+    /// know the owner), and the tool uninstall's companion legs strip inside
+    /// `cleanup_uninstalled_tool_state` instead.
 
     /// Uninstall plus the caller-side scope strip, with the per-id import
     /// lock held across BOTH: the teardown and the strip share one critical

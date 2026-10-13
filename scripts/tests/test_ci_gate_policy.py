@@ -534,7 +534,7 @@ class CiGatePolicyTests(unittest.TestCase):
         ):
             self.assertIn(
                 path,
-                frontend_entries,
+                frontend_paths,
                 f"静态门禁配置 {path} 不在 frontend filter 中,config-only PR 会静默跳过 frontend-test",
             )
 
@@ -564,7 +564,7 @@ class CiGatePolicyTests(unittest.TestCase):
         ):
             self.assertIn(
                 path,
-                frontend_entries,
+                frontend_paths,
                 f"跨语言契约测试读取的 Rust 源 {path} 不在 frontend filter 中,Rust-only PR 会静默跳过该 node 门禁",
             )
 
@@ -576,7 +576,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # Rust read 而不路由、或把已路由文件挪走,都会在这里失败(本套件
         # 在 fast-gate 每个 PR 必跑)。
         changes = _without_yaml_comments(_changes_block(self.pr_workflow))
-        frontend_entries = _extract_quoted_paths(_frontend_filter_paths(changes))
+        frontend_paths = _extract_quoted_paths(_frontend_filter_paths(changes))
         contract_test = (
             ROOT / "pinvou3-app/tests/multiagent_plan_normalize.test.mjs"
         ).read_text(encoding="utf-8")
@@ -589,7 +589,7 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         for target in targets:
             self.assertTrue(
-                _is_covered_by_trigger(target, frontend_entries),
+                _is_covered_by_trigger(target, frontend_paths),
                 f"跨语言契约测试读取的 {target} 未被 frontend filter 覆盖,"
                 "Rust-only 改动会静默跳过该 node 门禁",
             )
@@ -602,7 +602,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # .rs 读取目标逐一断言 frontend filter 覆盖;新增读取而未路由、
         # 或已路由文件被挪走,都会在这里失败(本套件在 fast-gate 每个 PR
         # 必跑)。
-        frontend_entries = _frontend_filter_entries(self.pr_workflow)
+        frontend_paths = _frontend_filter_entries(self.pr_workflow)
         consent_test = (
             ROOT / "pinvou3-app/tests/consent_marker_frontend.test.mjs"
         ).read_text(encoding="utf-8")
@@ -621,7 +621,7 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         for target in targets:
             self.assertTrue(
-                _is_covered_by_trigger(target, frontend_entries),
+                _is_covered_by_trigger(target, frontend_paths),
                 f"consent marker 契约测试读取的 {target} 未被 frontend filter 覆盖,"
                 "Rust-only 改动会静默跳过该 node 门禁",
             )

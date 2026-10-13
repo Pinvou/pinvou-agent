@@ -1106,9 +1106,11 @@ fn legacy_disabled_marker(kind: ConnectorKind) -> bool {
 fn scope_state_disabled(kind: ConnectorKind) -> bool {
     let package_id =
         pinvou3_lib::features::marketplace::scope::resolve_pack_owner_id(kind.as_str());
-    pinvou3_lib::features::marketplace::load_disabled_bundles()
-        .iter()
-        .any(|id| id == &package_id || id == kind.as_str())
+    pinvou3_lib::features::marketplace::load_disabled_bundles_for(
+        pinvou3_lib::features::marketplace::ConnectorScope::Plain,
+    )
+    .iter()
+    .any(|id| id == &package_id || id == kind.as_str())
 }
 
 /// The on-disk skill gate, mirroring `features/connectors/skill_gate.rs::
@@ -4391,7 +4393,7 @@ fn ima_logout(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     // one is collected here and named in the error below rather than being
     // swallowed — and it GATES the consent cleanup (see the module doc).
     let skill_uninstall_failure = match SkillMarketplaceManager::new().uninstall(IMA_SKILL_ID) {
-        Ok(()) => None,
+        Ok(_) => None,
         Err(error) => Some(format!("skill uninstall: {error}")),
     };
     let cleanup_note = if skill_uninstall_failure.is_some() {
