@@ -4243,3 +4243,35 @@ vectors/dependencies/locks/CI/crypto/trust/limits/VERSION/gitlinks changes. Deta
 [channel-change response](client-upgrade-channel-change-response.md).
 Complete T27/T28/T40 remain unfinished. Downloads retain no total/cumulative
 duration or retry cap.
+
+## T27 thirty-third batch - fixed client response entry (2026-10-14)
+
+Scope: exhaustive fixed26 non-management client response enum and one supplied
+contract entry, delegating unchanged family validators. Original actual registry
+contains26 client/11 management operations; all exact client names roundtrip,
+management/unknown/aliases fail. Typed wrapped errors keep original fixed codes.
+Unit success never proves transport/current state/Root/signature/ACK or rights.
+No lifecycle/settings writes or owner revival. Separate task-create contracts
+remain outside the client entry as their original operations are management.
+Outside-repository actual original complete Node generated773 cases, including
+all26 positive fixtures/26x26 cross-operation pairs and semantic/relation errors.
+Relation negatives preflight original full Schema/independent credential
+semantics before exact API_RESPONSE_MISMATCH. Root task-scoped3 passed:
+all773 actual original cases in2.91s, including negative fixed-code comparisons.
+Clippy alltargets36.44s/codec+App facade format passed; architecture/version/diff
+passed and CI policy51 in0.141s. Root self-review confirms exhaustive26 exact
+mappings and11 management exclusions, no changed family validator/interface,
+original error-code preservation, metadata byte profile and no authority
+upgrade. Unchanged full135/31556 were not repeated. Both independent static
+reviews found no mandatory issue. Actual Windows updater App48 passed
+in0.25s after2m44s compilation. Dependency independent3 passed (actual original
+773 in3.15s, Clippy2.08s/codec+App facade format/diff passed). Compatibility
+independent3 passed (actual original773 in3.16s, Clippy1.78s/codec+App facade
+format/diff passed; CI policy51 in0.073s). Both actual Node22/both legacy
+environments, no new resource unit and no old135/31556/App repeat.
+Both scoped reviews passed without mandatory finding and all processes closed.
+Both independent final documentation reviews passed before commit. No Schema/OpenAPI/profile/
+vectors/dependencies/locks/CI/crypto/trust/limits/VERSION/gitlinks changes. Details:
+[client response entry](client-upgrade-response-entry.md).
+Full T27/real transport/ownership remain unfinished. Downloads retain no
+total/cumulative duration or retry cap.

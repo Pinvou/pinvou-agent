@@ -12,6 +12,16 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+/// Fixed supplied client response contract; never authenticated transport or ACK.
+pub(crate) fn check_supplied_client_response_bytes(
+    bytes: &[u8],
+    operation: pinvou_upgrade_codec::ClientResponseOperation,
+) -> Result<(), pinvou_upgrade_codec::ClientResponseError> {
+    decode_metadata(bytes)
+        .map_err(pinvou_upgrade_codec::ClientResponseError::Json)?
+        .assert_supplied_client_response_contract(operation)
+}
+
 /// Supplied channel response, never persisted settings or permission carry-over.
 pub(crate) fn check_supplied_channel_change_response_bytes(
     bytes: &[u8],
@@ -414,6 +424,49 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_routes_client_bytes_without_transport_or_trusted_ack() {
+        use pinvou_upgrade_codec::{
+            ChannelChangeResponseError, ClientResponseError as ContractError,
+            ClientResponseOperation as Operation, Error,
+        };
+        let mut channel = serde_json::json!({"protocolVersion":1,"requestId":"request-1",
+            "channel":"stable","channelRevision":1});
+        let check = |value: &serde_json::Value, operation| {
+            check_supplied_client_response_bytes(&serde_json::to_vec(value).unwrap(), operation)
+        };
+        assert_eq!(check(&channel, Operation::ChannelChange), Ok(()));
+        channel["channelRevision"] = serde_json::json!(0);
+        assert_eq!(
+            check(&channel, Operation::ChannelChange),
+            Err(ContractError::ChannelChange(
+                ChannelChangeResponseError::InvalidContract
+            ))
+        );
+        channel["channelRevision"] = serde_json::json!(1);
+        let mut padded = serde_json::to_vec(&channel).unwrap();
+        padded.resize(65537, b' ');
+        assert_eq!(
+            check_supplied_client_response_bytes(&padded, Operation::ChannelChange),
+            Ok(())
+        );
+        let duplicate = serde_json::to_string(&channel).unwrap().replacen(
+            "{",
+            r#"{"requestId":"duplicate","#,
+            1,
+        );
+        assert_eq!(
+            check_supplied_client_response_bytes(duplicate.as_bytes(), Operation::ChannelChange),
+            Err(ContractError::Json(Error::DuplicateKey))
+        );
+        let consumed = serde_json::json!({"protocolVersion":1,"requestId":"request-1",
+            "state":"consumed","transactionId":"transaction-1"});
+        assert_eq!(check(&consumed, Operation::ConsumeStatus), Ok(()));
+        let receipt = serde_json::json!({"protocolVersion":1,"requestId":"request-1",
+            "acknowledgements":[{"eventId":"event-1","disposition":"committed"}]});
+        assert_eq!(check(&receipt, Operation::TelemetryEvents), Ok(()));
+    }
 
     #[test]
     fn feature_facade_checks_channel_response_without_changing_settings_or_qualifications() {
