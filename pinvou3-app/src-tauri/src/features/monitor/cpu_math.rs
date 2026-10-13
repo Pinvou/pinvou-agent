@@ -4,6 +4,7 @@
 //! 这里只收与平台无关的部分:聚合节拍结构、两次采样的差分→使用率换算、
 //! 百分比钳制,以及跨两次调用的差分状态机。Windows 的 `SystemTimes` 口径不同
 //! (100ns 粒度、busy 由 total−idle 反推),差分状态机不共用(仅共用 `clamp_pct`)。
+// architecture-guard: allow-target-cfg -- the delta-state half below is consumed exclusively by the cfg-gated linux/macos samplers (platform/{linux,macos}_cpu.rs); it is cfg-gated in this shared pure-math module so Windows lib builds carry no dead delta machinery, while clamp_pct stays universal for all three samplers. The delta path is exercised by this module's unit tests on linux/macos.
 
 /// `/proc/stat` 首行 / `host_statistics64` 的聚合节拍。busy 含 user/nice/system/
 /// irq/softirq/steal(steal 时间本机不可用,计入占用而非空闲);idle 含 iowait
