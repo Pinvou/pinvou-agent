@@ -4251,12 +4251,15 @@ fn retention_purge_notifies_session_purged_hooks() {
 
 /// The composition root's purge hook also removes the session's entry from
 /// the codex_acp agents index — durable, id-scoped IO performed WHILE the
-/// purge runs. The store.rs contract promises every store-side lock is
-/// released before hooks fire (a hook touching a sidecar writer would
-/// otherwise self-deadlock on the non-reentrant io mutexes), and the hook
-/// must receive exactly the evicted id. Pinned with a file stand-in for the
-/// index: sessions must not depend on codex_acp here, the real wiring is
-/// unit-tested at the composition root (lib.rs).
+/// purge runs. The store's hook contract (store.rs) keeps the sidecar io
+/// mutexes released while hooks fire (`scheduled_mutation` stays held), so
+/// a hook may touch its own files without self-deadlock; this test cannot
+/// pin that lock contract itself — it pins that the hook fires with exactly
+/// the evicted id and can perform durable, id-keyed IO while the purge
+/// runs. Pinned with a file stand-in for the index: sessions must not
+/// depend on codex_acp here. The removal leg is unit-tested in lib.rs
+/// against a real agents store, and the run() capture is pinned textually
+/// by the startup-order contract test.
 #[test]
 fn retention_purge_runs_hooks_that_remove_durable_state_for_the_id() {
     let (store, _guard) = isolated_store();
@@ -8059,12 +8062,15 @@ fn boot_migration_partial_failure_retains_and_extends() {
 
 /// Ghost entries in the legacy table (their `<id>.json` was already deleted —
 /// out-of-process removals, retention evictions; #464/#567) must be dropped
-/// WITHOUT migration: no `sessions/<id>/` directory may be created for them
-/// and none may enter the in-memory table, while live entries migrate
-/// normally and a fully-migrated table is retired. Without the ghost-skip the
-/// boot migration would resurrect eviction leftovers as binding-only ghost
-/// directories (the exact failure mode the codex_acp sidecar backfill gate
-/// guards against on its side).
+/// WITHOUT migration: none may enter the in-memory table, and a table whose
+/// only remaining entries are dead must still be retired. Live entries
+/// migrate normally. Without the ghost-skip, dead entries would stay
+/// unmigrated: the legacy file would never retire and the dead bindings
+/// would ride back into the in-memory table — the binding-side sibling of
+/// the ghost factory the codex_acp sidecar backfill gate guards against on
+/// its side. The directory assertions pin the compound invariant that a
+/// migrated entry — never a skipped ghost — is what materializes
+/// `sessions/<id>/`.
 #[test]
 fn boot_migration_drops_ghost_entries_without_creating_dirs() {
     let (store, _g) = isolated_store();

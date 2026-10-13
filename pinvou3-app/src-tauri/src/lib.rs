@@ -681,10 +681,12 @@ fn mark_knowledge_service_failed(error: impl std::fmt::Display) {
 /// (runtime retention evictions, scheduled-run cleanups) via the
 /// `SessionPurgedHook` (same dependency inversion as the other hook legs —
 /// sessions must not depend on codex_acp in reverse). The windowless host
-/// registers no purge hooks; its evictions are converged by the boot scan's
-/// prune at the next GUI start. Failure tolerance matches the other purge
-/// legs: a missing entry is fine, and any error is logged without aborting or
-/// rolling back the eviction itself.
+/// registers no purge hooks; dead code-mode entries its evictions leave
+/// behind are converged by the boot scan's prune at the next GUI start
+/// (dead ACP-mode entries are inert and intentionally left in place).
+/// Failure tolerance matches the other purge legs: a missing entry is fine,
+/// and any error is logged without aborting or rolling back the eviction
+/// itself.
 pub(crate) fn remove_agents_index_entry(
     agents: &crate::features::codex_acp::SessionAgentStore,
     session_id: &str,
@@ -1967,6 +1969,40 @@ mod startup_order_contract {
         assert!(
             bin_mirrors >= 1,
             "dump_system_prompt.rs must keep its freeze-persist failure eprintln mirror (this host has neither window nor log plugin)"
+        );
+    }
+
+    /// Wiring pin for the ghost-session fix's root-cause leg: the purge
+    /// hook's agents-index leg must capture the store derived from
+    /// `AcpPool::new` (`pool.agents().clone()`), never a second
+    /// `SessionAgentStore` instance over the same file — a second instance
+    /// would rewrite `session-agents.json` from its own memory on every
+    /// purge, clobbering concurrent binds. Textual pin like the legs above
+    /// (needles fragment-concatenated against self-match, `find` takes the
+    /// first = production occurrence): deleting the capture, or swapping it
+    /// for an independent `SessionAgentStore::load_or_empty`, fails here.
+    #[test]
+    fn purge_hook_captures_the_pool_agents_store() {
+        let source = include_str!("lib.rs");
+        let capture = source
+            .find(
+                &[
+                    "let agents_index_for_purge_hook = code_session_",
+                    "agents.clone();",
+                ]
+                .concat(),
+            )
+            .unwrap_or_else(|| {
+                panic!(
+                    "lib.rs is missing the purge-hook agents-index capture from code_session_agents"
+                )
+            });
+        let pool_binding = source
+            .find(&["let (code_session_", "agents, acp_pool_for_capabilities)"].concat())
+            .unwrap_or_else(|| panic!("lib.rs is missing the AcpPool agents binding"));
+        assert!(
+            pool_binding < capture,
+            "the purge hook must capture the store derived from AcpPool::new (pool.agents()), not an independent instance"
         );
     }
 }
