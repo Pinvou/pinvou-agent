@@ -568,7 +568,7 @@ pub(crate) fn forward_forced_turn_restrict<F>(
 /// the engine dispatch are folded into one function so the wiring (not only
 /// the pure helper) is covered by an executing test (round-31 M9-rust: this
 /// was the second unpinned `merge_aux_scoped_tool_reminder` call site).
-pub(crate) fn forward_edit_resend_with_reminder<F>(
+fn forward_edit_resend_with_reminder<F>(
     session_id: &str,
     new_message: String,
     send: impl FnOnce(String) -> F,

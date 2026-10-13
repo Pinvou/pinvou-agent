@@ -55,7 +55,7 @@ pub(crate) const KIND_BUNDLE: &str = "bundle";
 /// 清单条目：`record` 是回收时 bundles.json 原记录的快照（恢复重建登记用：
 /// source=Upload、原 installed_at 等一并保留）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RecycledEntry {
+struct RecycledEntry {
     pub id: String,
     /// Upload 来源保留的原 zip 展示名
     pub display_name: String,
@@ -71,7 +71,7 @@ pub struct RecycledEntry {
 
 /// recycle-bin.json 顶层结构。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RecycleBinFile {
+struct RecycleBinFile {
     #[serde(default = "current_schema_version")]
     pub schema_version: u32,
     #[serde(default)]

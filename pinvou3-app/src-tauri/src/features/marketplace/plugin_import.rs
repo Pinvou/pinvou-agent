@@ -384,15 +384,14 @@ pub(crate) fn checked_zip_entry_path(
 /// `translate_plugin_import_error` anchors on; they are single-sourced here
 /// so the anchor test below pins the production strings, not hand copies
 /// (round-38 review: the copies had drifted from being a test of anything).
-pub(crate) const REJECT_TRAVERSAL: &str = "zip 含不安全路径(穿越),拒绝";
-pub(crate) const REJECT_SYMLINK: &str = "zip 含 symlink,拒绝";
-pub(crate) const REJECT_FORGED_HEADER: &str =
-    " 实际解压大小超过 zip 头声明（疑似伪造头部/zip bomb），拒绝";
+const REJECT_TRAVERSAL: &str = "zip 含不安全路径(穿越),拒绝";
+const REJECT_SYMLINK: &str = "zip 含 symlink,拒绝";
+const REJECT_FORGED_HEADER: &str = " 实际解压大小超过 zip 头声明（疑似伪造头部/zip bomb），拒绝";
 
 /// Declared-size cap rejection (the head-declared budget `checked_zip_entry_path`
 /// enforces). `label` names the entry; the fixed halves carry the substrings
 /// the headless CLI's `translate_plugin_import_error` anchors on (解压+上限).
-pub(crate) fn reject_declared_cap(label: &str, max_bytes: u64) -> String {
+fn reject_declared_cap(label: &str, max_bytes: u64) -> String {
     format!("{label}解压超过 {} MiB 上限", max_bytes / 1024 / 1024)
 }
 
@@ -401,7 +400,7 @@ pub(crate) fn reject_declared_cap(label: &str, max_bytes: u64) -> String {
 /// format sites (pass-1 read and pass-2 write) now share this helper
 /// (round-39 review: rewording either site silently reverted the CLI's cap
 /// rejection to verbatim Chinese while the anchor test stayed green).
-pub(crate) fn reject_actual_cap(max_bytes: u64) -> String {
+fn reject_actual_cap(max_bytes: u64) -> String {
     format!(
         "插件包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
         max_bytes / 1024 / 1024

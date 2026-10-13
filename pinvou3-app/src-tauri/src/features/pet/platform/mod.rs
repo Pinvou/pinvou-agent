@@ -40,7 +40,7 @@ pub(super) use standard::resize_pet_window;
 pub(super) fn resize_pet_window_fallback(
     win: &tauri::WebviewWindow,
     logical_size: (f64, f64),
-    anchor: super::pet_window::ScaleAnchor,
+    anchor: super::geometry::ScaleAnchor,
 ) {
     let before = win.inner_size().ok().zip(win.inner_position().ok());
     let work_area = win.current_monitor().ok().flatten().map(|monitor| {
@@ -70,7 +70,7 @@ pub(super) fn resize_pet_window_fallback(
         }
     }
     if let Some((size, pos)) = before {
-        let (nx, ny) = super::pet_window::resized_position(
+        let (nx, ny) = super::geometry::resized_position(
             (pos.x, pos.y),
             (size.width, size.height),
             (nw, nh),
