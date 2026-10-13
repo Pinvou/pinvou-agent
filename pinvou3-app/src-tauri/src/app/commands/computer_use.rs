@@ -251,10 +251,16 @@ pub async fn computer_use_set_enabled(
     if enabled && !crate::features::computer_use::backend_supported() {
         return Err("computer use has no backend on this operating system".to_string());
     }
-    UserPrefs::update_transaction(|prefs| {
-        prefs.computer_use.enabled = enabled;
-        Ok(())
-    })?;
+    // Round-54 audit A5: the settings transaction holds the cross-process
+    // settings.json.lock across keychain I/O — join it on a blocking worker
+    // like the settings family instead of parking this runtime worker.
+    super::settings::join_blocking("computer_use_set_enabled", move || {
+        UserPrefs::update_transaction(|prefs| {
+            prefs.computer_use.enabled = enabled;
+            Ok(())
+        })
+    })
+    .await?;
     // set_enabled itself performs the consent sweeps (re-enable: reset_stop
     // semantics; disable: revoke_all_sessions semantics — see guard.rs), so
     // the explicit reset_stop/revoke_all_sessions calls the command used to

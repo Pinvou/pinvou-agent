@@ -360,12 +360,22 @@ pub async fn set_pet_enabled(enabled: bool, app: AppHandle) -> Result<(), String
     if enabled {
         create_or_show(&app)?;
     }
-    let mut was_enabled = false;
-    if let Err(error) = crate::platform::prefs::UserPrefs::update_transaction(|prefs| {
-        was_enabled = prefs.pet.enabled;
-        prefs.pet.enabled = enabled;
-        Ok(())
-    }) {
+    // Round-54 audit A5: the settings transaction holds the cross-process
+    // settings.json.lock across keychain I/O — run it on a blocking worker
+    // instead of parking this async command's runtime worker (the same
+    // discipline the settings family applies).
+    let (persist_result, was_enabled) = tauri::async_runtime::spawn_blocking(move || {
+        let mut was_enabled = false;
+        let result = crate::platform::prefs::UserPrefs::update_transaction(|prefs| {
+            was_enabled = prefs.pet.enabled;
+            prefs.pet.enabled = enabled;
+            Ok(())
+        });
+        (result, was_enabled)
+    })
+    .await
+    .map_err(|error| format!("set_pet_enabled 任务失败: {error}"))?;
+    if let Err(error) = persist_result {
         if enabled && !was_enabled {
             if let Some(win) = app.get_webview_window(PET_LABEL) {
                 if window_existed {

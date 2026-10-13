@@ -59,7 +59,14 @@ pub struct VoiceCommandError {
 }
 
 #[tauri::command]
-pub(crate) fn set_voice_shortcut_enabled(enabled: bool) -> Result<(), String> {
+pub(crate) async fn set_voice_shortcut_enabled(enabled: bool) -> Result<(), String> {
+    // Round-54 audit A5: sync commands run on the main thread, and the
+    // settings transaction below holds the cross-process settings.json.lock
+    // across keychain I/O — a CLI `models` command parked at a keychain
+    // prompt would freeze the whole UI. The async conversion is transparent
+    // to the frontend invoke; the transaction joins on a blocking worker
+    // like the settings family (persist-first order unchanged: the hook
+    // flip below only runs after a successful persist).
     // Persist first, then flip the in-memory hook (same order as
     // save_model/set_active_model): if the settings write fails, the native
     // hook must not disagree with what settings.json still says, or the
@@ -68,10 +75,13 @@ pub(crate) fn set_voice_shortcut_enabled(enabled: bool) -> Result<(), String> {
     // Rust side (replayed into the AtomicBool at startup by lib.rs), so
     // repeated invokes from multi-window mounts are idempotent and clearing
     // WebView storage cannot lose the setting.
-    crate::platform::prefs::UserPrefs::update_transaction(|prefs| {
-        prefs.voice_shortcut_enabled = enabled;
-        Ok(())
-    })?;
+    super::settings::join_blocking("set_voice_shortcut_enabled", move || {
+        crate::platform::prefs::UserPrefs::update_transaction(|prefs| {
+            prefs.voice_shortcut_enabled = enabled;
+            Ok(())
+        })
+    })
+    .await?;
     crate::features::voice_shortcut::set_enabled(enabled);
     Ok(())
 }
