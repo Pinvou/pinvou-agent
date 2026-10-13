@@ -23,6 +23,7 @@ import {
   externalMarkdownUrl,
   fetchToolDetails,
   isFetchTool,
+  isOperationItemType,
   isSearchTool,
   searchToolDetails,
   terminalStatus,
@@ -778,7 +779,7 @@ function DefaultItem({
       />
     );
   }
-  if (['tool', 'command_execution', 'file_change'].includes(item.type)) {
+  if (isOperationItemType(item.type)) {
     return (
       <ToolItem
         item={item}
