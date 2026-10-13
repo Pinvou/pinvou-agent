@@ -1,3 +1,5 @@
+import { pathBasename } from '../../shared/path-utils.js';
+
 const ESC = String.fromCodePoint(0x1b);
 const BEL = String.fromCodePoint(0x07);
 const C1_CSI = String.fromCodePoint(0x9b);
@@ -94,7 +96,7 @@ export function toolWorkspaceResources(tool) {
     const path = String(value || '').trim();
     if (!path || seen.has(path)) return;
     seen.add(path);
-    const basename = path.split(/[\\/]/).pop() || path;
+    const basename = pathBasename(path, { fallback: path });
     const label = String(name || '').trim();
     resources.push({ path, name: !label || label === path ? basename : label });
   };
