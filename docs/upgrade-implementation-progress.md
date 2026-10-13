@@ -4662,3 +4662,53 @@ admission or deployment policy is selected by this batch. No SQL/contract/
 dependency/version changes; unchanged database/provider/deployment opt-ins
 are not claimed. Full T09 remains incomplete; download has no total/cumulative
 elapsed deadline or retry budget.
+
+
+## T09 sixth batch - explicit offline CycloneDX Schema (2026-10-14)
+
+The separate service now supports explicit CycloneDX1.6 structural validation
+using the complete original versioned Draft7 BOM Schema, SPDX/JSF closure and
+Apache License2.0 from fixed upstream commit55343ba19dee1785acf1ce9191540d5fd7b590db.
+All four raw digests/inventory are checked before compilation and Git preserves
+the bytes. A closed loader refuses runtime Schema retrieval; an instance's
+schema annotation cannot select resources. Unknown factory versions refuse
+without fallback, actual specVersion must match1.6, and original format/pattern
+checks apply. The independent dependency role compared all four original upstream
+resources byte-for-byte with the local copies and confirmed equality.
+
+The new strict JSON explicit-capacity parser retains all Unicode/duplicate/
+depth32/string64KiB/member4096/binary64 limits; legacy metadata/JCS entry points
+still enforce1MiB. The isolated SBOM inspector requires explicit version and
+source/snapshot/JSON capacities, reads through the existing supported safe
+source adapter into an owned Snapshot, then prints only supported schemaVersion
+and the original observed source size/hash after success. Fixed diagnostics
+expose no input path, body or provider details.
+
+Initial core3/Schema4 groups passed in1.053s/1.407s, including actual SPDX/JSF
+references, noncanonical raw JSON above1MiB under explicit capacity, independent
+concurrent reads, schema/format/version negatives and restored positives,
+ambiguous strict parser input, exact capacity/cancel, unknown version, resource
+drift/missing/extra and closed-reference loader. Later core/Schema/defaultCLI
+passed in5.862s/1.636s/1.505s; built CLI was explicitly skipped pending actual
+rebuild/E2E. Source/parsed/validator copies have separate explicit finite memory
+boundaries; synchronous JSON/Schema calls cannot be interrupted internally.
+The root full default Go suite passed (core3=6.160s/Schema4=6.794s/
+defaultSBOMCLI1=11.472s) along with all existing metadata/signing/claims/trust/
+archive/evidence regressions. Full vet/module verification/server+CLI builds/
+pinned contracts/format/diff and client architecture/version/diff passed.
+Rebuilt actual SBOMCLI2 including positive and mismatched-version child E2E
+passed in7.669s. Both independent implementation/test reviews passed.
+Dependency actual Windows Go1.27.2 core3=1.688s/archive1.565s/capture3.963s/
+extraction7.103s/Schema4=3.780s/sourcefile3.675s/verification8=9.189s/
+actualSBOMCLI2+childE2E4.446s and affected vet/format/diff passed.
+Compatibility independently passed core3=1.647s/archive6.058s/capture4.037s/
+extraction4.712s/Schema4=3.784s/sourcefile5.969s/verification9.364s/
+actualSBOMCLI2+childE2E4.457s and affected vet/format/diff passed.
+Test processes are closed.
+Both independent final documentation reviews passed before commit.
+
+This adapter does not approve the owner's accepted-version policy, bind SBOM to
+the final installer, authenticate a fake JSF structure, validate provenance/
+pipeline or scan risks, or grant Artifact admission/storage/deployment. No SQL,
+protocol, external dependency or application version changes. Full T09 remains
+unfinished; downloads retain no total/cumulative elapsed deadline or retry budget.
