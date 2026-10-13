@@ -1994,8 +1994,9 @@ fn memory_add_still_confirms_when_every_field_matches_this_adds_own_candidate() 
     let stored = pinvou3_lib::features::memory::list_preferences().unwrap();
     assert_eq!(stored.len(), 1, "{stored:?}");
     assert_eq!(stored[0].text, "Prefer concise answers", "{stored:?}");
-    // The answer_style literal in memory.rs mirrors the feature default
-    // bucket; this assertion is what makes that mirror a checked fact.
+    // The CLI's add lane predicts the pending topic via the feature layer's
+    // DEFAULT_PREFERENCE_TOPIC; this assertion is what keeps that prediction
+    // checked against the stored bucket.
     assert_eq!(stored[0].topic, "answer_style", "{stored:?}");
 
     // Work-context arm: the CLI's own add leaves the pending row's topic

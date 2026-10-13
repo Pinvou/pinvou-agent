@@ -1227,25 +1227,23 @@ fn load_store_items(
 ///
 /// Warning against the store cap (160) instead of the cap that is really
 /// applied is what made the loss silent, so this constant is deliberately the
-/// pending-queue cap rather than either store constant. It is a plain literal
-/// because the feature layer does not export the pending-queue cap: the 120
-/// in `pending_item_from_suggestion` is an unnamed literal, and
-/// `PREFERENCE_TEXT_MAX_CHARS` — which happens to share the value — is now
-/// `pub` and re-exported by the feature layer, but still describes a
-/// different, later stage (round-45 review updated this remark; the
-/// pending-queue cap remains the honest one to name).
+/// pending-queue cap rather than either store constant. It is now derived
+/// from the feature layer's `PENDING_CONTENT_MAX_CHARS` (formerly an unnamed
+/// literal in `pending_item_from_suggestion`; re-exported once the CLI lanes
+/// needed to name it), so a cap change moves both surfaces together;
+/// `PREFERENCE_TEXT_MAX_CHARS` — which happens to share the value — still
+/// describes a different, later stage (round-45 review remark kept for that
+/// distinction).
 /// `memory_add_work_context_over_the_cap_reports_the_truncation` pins the
 /// value against the feature layer's observable behavior — it asserts the
-/// stored length against the store itself — so this cannot drift unnoticed.
-const ADD_PIPELINE_TEXT_MAX_CHARS: usize = 120;
+/// stored length against the store itself.
+const ADD_PIPELINE_TEXT_MAX_CHARS: usize = feature::PENDING_CONTENT_MAX_CHARS;
 
 /// The never-store reason cap: `never_pending_memory` stores
-/// `clean_text(reason, 80)` — another `pub(super)` literal the CLI cannot
-/// name, so this mirror follows the `ADD_PIPELINE_TEXT_MAX_CHARS` pattern:
-/// plain literal, disclosed in the module docs, and pinned against the
-/// feature layer's observable stored length by
-/// `pending_never_reason_over_the_cap_discloses_the_truncation`.
-const NEVER_REASON_CAP_CHARS: usize = 80;
+/// `clean_text(reason, NEVER_REASON_MAX_CHARS)`. Derived from the feature
+/// layer's re-export (formerly a hand-mirrored plain literal pinned by
+/// `pending_never_reason_over_the_cap_discloses_the_truncation`).
+const NEVER_REASON_CAP_CHARS: usize = feature::NEVER_REASON_MAX_CHARS;
 
 /// The stderr half of the truncation disclosure shared by `memory add` and
 /// `memory update`, emitted at measurement time — before the store write — so
@@ -1394,17 +1392,18 @@ fn expected_stored_text(kind: AddKind, content: &str) -> String {
 /// `pending_item_from_suggestion` normalizes topics ONLY for preference-kind
 /// suggestions (`features/memory/io.rs`: `if kind == "preference" { topic =
 /// normalize_preference_topic(&topic) }`), and the CLI adds without a topic,
-/// so the two kinds land on different row topics. Both normalizers are
-/// `pub(super)` to the app crate, so the values are documented literals
-/// rather than calls; each is pinned by `memory add`'s own contract — a
-/// drifting literal fails every ordinary add in the divergence check, which
-/// is what `memory_add_still_confirms_when_every_field_matches_this_adds_own_
-/// candidate` turns into a red test.
+/// so the two kinds land on different row topics. The preference value names
+/// the feature layer's `DEFAULT_PREFERENCE_TOPIC` re-export (formerly a
+/// documented literal pinned by `memory add`'s own contract — a drift failed
+/// every ordinary add in the divergence check, which is what
+/// `memory_add_still_confirms_when_every_field_matches_this_adds_own_
+/// candidate` turns into a red test); the work-context empty string has no
+/// feature-side constant to name and stays a literal.
 fn expected_pending_topic(kind: AddKind) -> &'static str {
     match kind {
         // `normalize_preference_topic` (features/memory/types.rs) maps the
         // empty suggestion topic onto the default preference bucket.
-        AddKind::Preference => "answer_style",
+        AddKind::Preference => feature::DEFAULT_PREFERENCE_TOPIC,
         // No topic normalization for work context at the pending stage: the
         // row an add of this kind calls its own carries the topic verbatim,
         // which for a topic-less CLI add is the empty string. (The store-side
