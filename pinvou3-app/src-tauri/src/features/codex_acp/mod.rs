@@ -775,30 +775,25 @@ struct SidecarRecoverySummary {
     cleaned_ghost_sidecars: usize,
 }
 
-/// Owner liveness probe: does the durable record `sessions/<id>.json` still
-/// exist? Same path and same judgment as the private store.rs probe
-/// `binding_owner_exists` (the root is derived from `agents.path()` the same
-/// way), with a more conservative disposition: invalid ids count as ALIVE —
-/// the caller decides deletions from this probe, and a deletion must never
-/// rest on "uncertain"; the read side's "invalid id ⇒ no owner" disposition
-/// does not apply to deletion. Non-NotFound stat errors also count as alive
-/// and are logged (fail-safe, matching the store probe).
+/// Owner liveness probe for deletions: does the durable record
+/// `sessions/<id>.json` still exist? Delegates to the shared
+/// `SessionAgentStore::owner_record_state` core (same path and stat judgment
+/// as the private store.rs probe `binding_owner_exists`, enforced by code),
+/// with a more conservative disposition: invalid ids and probe errors count
+/// as ALIVE — the caller decides deletions from this probe, and a deletion
+/// must never rest on "uncertain"; the read side's "invalid id ⇒ no owner"
+/// disposition does not apply to deletion. Only a genuine NotFound (including
+/// a non-file entry at the record path) counts as dead.
 fn code_session_owner_alive(agents: &SessionAgentStore, session_id: &str) -> bool {
-    if crate::features::sessions::validate_session_id(session_id).is_err() {
-        return true;
-    }
-    match store::code_session_sidecar_root(agents.path())
-        .join(format!("{session_id}.json"))
-        .metadata()
-    {
-        Ok(metadata) => metadata.is_file(),
-        // Only a real NotFound counts as dead: on a transient stat error it
-        // is better to miss a deletion than to make a wrong one.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-        Err(error) => {
+    match agents.owner_record_state(session_id) {
+        store::OwnerRecordState::Live => true,
+        // Only a real NotFound counts as dead: it is better to miss a
+        // deletion than to make a wrong one.
+        store::OwnerRecordState::NotFound => false,
+        store::OwnerRecordState::InvalidId => true,
+        store::OwnerRecordState::ProbeError(kind) => {
             eprintln!(
-                "[pinvou3-app] code session owner probe failed, treating {session_id} as live (io kind: {})",
-                error.kind()
+                "[pinvou3-app] code session owner probe failed, treating {session_id} as live (io kind: {kind})"
             );
             true
         }

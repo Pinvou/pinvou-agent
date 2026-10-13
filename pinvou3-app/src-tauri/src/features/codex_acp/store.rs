@@ -461,6 +461,24 @@ pub struct SessionAgentStore {
     records: Arc<RwLock<HashMap<String, SessionAgentRecord>>>,
 }
 
+/// Outcome of the durable-owner-record probe: does `sessions/<id>.json`
+/// still exist? The path derivation and the stat judgment live in exactly
+/// one place (`SessionAgentStore::owner_record_state`) so the read side
+/// (rebind lanes) and the deletion side (boot prune, backfill gate) cannot
+/// drift; each caller maps this state onto its own disposition.
+pub(super) enum OwnerRecordState {
+    /// The durable record exists as a regular file. (A non-file entry at
+    /// the record path counts as absent — the app never creates one, so a
+    /// stray directory there is not a durable record.)
+    Live,
+    /// No durable record: the path is gone, or it is not a regular file.
+    NotFound,
+    /// The id fails validation, so the record path was not probed at all.
+    InvalidId,
+    /// A non-NotFound stat error: the record's state is unknowable.
+    ProbeError(std::io::ErrorKind),
+}
+
 impl SessionAgentStore {
     pub fn load() -> Result<Self> {
         let path = crate::platform::paths::pinvou3_home().join("session-agents.json");
@@ -820,35 +838,51 @@ impl SessionAgentStore {
     /// rebind scan/write passes gate on it the same way so a dead session is
     /// never rewritten and never classified Rebound.
     fn binding_owner_exists(&self, session_id: &str) -> bool {
+        match self.owner_record_state(session_id) {
+            OwnerRecordState::Live => true,
+            // Round-24 minor 2 (was round-20 minor 10 + round-21 SF-3):
+            // a non-NotFound stat error is treated as LIVE and logged.
+            // The conservative direction here is inclusion, not death: a
+            // transient EACCES blip must not silently drop a live
+            // session from the scan, both write passes, the fence and
+            // the post-lane rescan while the run reports success. A
+            // session included on a stale probe whose reads then fail is
+            // reported failed (retryable) by the passes themselves.
+            OwnerRecordState::ProbeError(kind) => {
+                eprintln!(
+                    "[codex] rebind owner probe failed, treating the session as live (io kind: {kind})"
+                );
+                true
+            }
+            // Read-side disposition: an invalid id owns nothing.
+            OwnerRecordState::NotFound | OwnerRecordState::InvalidId => false,
+        }
+    }
+
+    /// The shared owner-record probe (see `OwnerRecordState`): one path
+    /// derivation and one stat judgment for every caller. The test seam
+    /// (`OWNER_PROBE_DEAD_IDS`) applies to every consumer by construction.
+    pub(super) fn owner_record_state(&self, session_id: &str) -> OwnerRecordState {
         #[cfg(test)]
         if let Ok(armed) = OWNER_PROBE_DEAD_IDS.lock() {
             if armed.iter().any(|sid| sid == session_id) {
-                return false;
+                return OwnerRecordState::NotFound;
             }
         }
-        crate::features::sessions::validate_session_id(session_id).is_ok()
-            && match code_session_sidecar_root(&self.path)
-                .join(format!("{session_id}.json"))
-                .metadata()
-            {
-                Ok(meta) => meta.is_file(),
-                // Round-24 minor 2 (was round-20 minor 10 + round-21 SF-3):
-                // a non-NotFound stat error is treated as LIVE and logged.
-                // The conservative direction here is inclusion, not death: a
-                // transient EACCES blip must not silently drop a live
-                // session from the scan, both write passes, the fence and
-                // the post-lane rescan while the run reports success. A
-                // session included on a stale probe whose reads then fail is
-                // reported failed (retryable) by the passes themselves.
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-                Err(error) => {
-                    eprintln!(
-                        "[codex] rebind owner probe failed, treating the session as live (io kind: {})",
-                        error.kind()
-                    );
-                    true
-                }
+        if crate::features::sessions::validate_session_id(session_id).is_err() {
+            return OwnerRecordState::InvalidId;
+        }
+        match code_session_sidecar_root(&self.path)
+            .join(format!("{session_id}.json"))
+            .metadata()
+        {
+            Ok(meta) if meta.is_file() => OwnerRecordState::Live,
+            Ok(_) => OwnerRecordState::NotFound,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                OwnerRecordState::NotFound
             }
+            Err(error) => OwnerRecordState::ProbeError(error.kind()),
+        }
     }
 
     /// Directory rebind (broken-link repair): translates every project
