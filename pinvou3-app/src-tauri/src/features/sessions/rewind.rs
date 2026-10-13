@@ -110,8 +110,6 @@ fn system_prompt_has_compaction_summary(system_prompt: Option<&String>) -> bool 
 pub struct RewoundTurnsRecord {
     /// 截断时间（RFC3339）。
     pub rewound_at: String,
-    /// 截断前 transcript 的 revision（恢复线索 + 调试锚点）。
-    pub original_revision: String,
     /// 截断后保留的用户 turn 数（即「回退到第 N 轮」的 N）。
     pub kept_turns: u32,
     /// 本次回退在代码侧强制的 PreRestore checkpoint id（undo 的代码恢复目标，
@@ -320,7 +318,6 @@ impl SessionStore {
         }
         // turn_prompt_indices[keep_turns] 即第 N+1 个用户 turn prompt 的下标。
         let cut = turn_prompt_indices[keep_turns as usize];
-        let original_revision = transcript_revision(&session.messages)?;
         let removed_messages: Vec<Message> = session.messages.split_off(cut);
         // New revision after truncation (undo re-check condition; the same data is counted only once).
         let truncated_revision = transcript_revision(&session.messages)?;
@@ -329,7 +326,6 @@ impl SessionStore {
         // read-modify-write 经 REWIND_BACKUP_LOCK 与 purge/restore 串行（评审 M8）。
         let record = RewoundTurnsRecord {
             rewound_at: Utc::now().to_rfc3339(),
-            original_revision,
             kept_turns: keep_turns,
             pre_restore_checkpoint_id,
             truncated_revision,

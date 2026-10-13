@@ -4773,7 +4773,6 @@ fn rewind_truncates_at_turn_boundary_with_interleaved_tool_results() {
     store
         .update_messages(&id, messages.clone())
         .expect("seed transcript");
-    let original_revision = transcript_revision(&messages).expect("revision");
 
     let outcome = store
         .truncate_to_user_turn(&id, 1, None)
@@ -4787,15 +4786,14 @@ fn rewind_truncates_at_turn_boundary_with_interleaved_tool_results() {
         "保留第 1 轮全部消息（含 tool_result 交错段）"
     );
 
-    // sidecar backup: truncation time, original revision, and the removed
-    // messages are complete; the post-truncation revision is recorded (the
-    // undo precise-recheck condition) and bound to the code rollback point
-    // (not passed this time → None).
+    // sidecar backup: truncation time and the removed messages are complete;
+    // the post-truncation revision is recorded (the undo precise-recheck
+    // condition) and bound to the code rollback point (not passed this time
+    // → None).
     let records = rewound_records(&id);
     assert_eq!(records.len(), 1);
     let record = &records[0];
     assert!(!record.rewound_at.is_empty());
-    assert_eq!(record.original_revision, original_revision);
     assert_eq!(record.kept_turns, 1);
     assert_eq!(
         record.truncated_revision,
