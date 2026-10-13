@@ -243,8 +243,7 @@ test('oversized session ids degrade like deleted sessions on every path (round-1
 });
 
 test('drag reuses the contract: the composer accepts sidebar session-row drags (#462 payload) via the same add path', () => {
-  const chatViewSource = readFileSync(
-    new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  const chatViewSource = readChatViewSource();
   // Reuses the #462 drag payload type (single source: projectGrouping.js); no new protocol.
   assert.match(chatViewSource, /PROJECT_SESSION_DRAG_TYPE/);
   assert.match(chatViewSource, /getData\(PROJECT_SESSION_DRAG_TYPE\)/);
@@ -309,7 +308,7 @@ test('auto-title contract: both bridges name the session from the stripped body 
   // The global publishes exactly this pair of contract functions (bridges
   // cannot import features back, so the block format still has one source of truth).
   const mentionSource = readFileSync(
-    new URL('../src/features/chat/session-mention.js', import.meta.url), 'utf8');
+    new URL('../src/features/chat/session-mention.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   assert.match(mentionSource, /window\.__PINVOU_SESSION_MENTION__ = \{ buildSessionMentionBlock, splitSessionMentionBlock \}/);
 });
 
@@ -1403,8 +1402,7 @@ test('with the feature off the @ trigger never fires (layer 1); on / default-arg
 });
 
 test('cascade wiring contract: ChatView gates all four layers, stops the block when off, and ships degradation copy', () => {
-  const chatViewSource = readFileSync(
-    new URL('../src/features/chat/ChatView.jsx', import.meta.url), 'utf8');
+  const chatViewSource = readChatViewSource();
   // Layer 1: the @ trigger carries the switch gate; the add path (shared by
   // the @ panel and drag-drop) carries the switch gate.
   assert.match(chatViewSource, /sessionMentionTriggerAt\(inputText, sessionMentionEnabled\)/);
