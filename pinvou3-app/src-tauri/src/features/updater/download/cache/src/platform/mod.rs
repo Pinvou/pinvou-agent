@@ -2,10 +2,14 @@
 #[cfg(target_os = "windows")]
 mod windows;
 #[cfg(target_os = "windows")]
-pub(super) use windows::create;
+pub(super) use windows::{create, duplicate_read};
 
 #[cfg(not(target_os = "windows"))]
 pub(super) fn create(_: &std::path::Path) -> Result<std::fs::File, crate::CacheObjectError> {
+    Err(crate::CacheObjectError::Unsupported)
+}
+#[cfg(not(target_os = "windows"))]
+pub(super) fn duplicate_read(_: &std::fs::File) -> Result<std::fs::File, crate::CacheObjectError> {
     Err(crate::CacheObjectError::Unsupported)
 }
 #[cfg(all(test, not(target_os = "windows")))]

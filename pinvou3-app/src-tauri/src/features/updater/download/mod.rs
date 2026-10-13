@@ -10,6 +10,15 @@ pub(crate) fn create_exclusive_cache(
     pinvou_upgrade_cache_object::create_exclusive_cache(path)
 }
 
+pub(crate) fn duplicate_cache_read_handle(
+    cache: &pinvou_upgrade_cache_object::ExclusiveCacheFile,
+) -> Result<
+    pinvou_upgrade_cache_object::ReadOnlyCacheHandle,
+    pinvou_upgrade_cache_object::CacheObjectError,
+> {
+    cache.read_only_duplicate()
+}
+
 pub(crate) async fn fetch_file<'a>(
     url: &str,
     request: pinvou_upgrade_transfer::RequestPlan<'a>,
@@ -152,6 +161,37 @@ mod tests {
         Artifact, PrefixState, ResponseDecision, SourceContinuity, StrongEtag, TransferError,
         WriteMode, plan_request,
     };
+
+    #[test]
+    fn application_read_only_cache_duplicate_denies_writes_and_keeps_original_sharing() {
+        use std::io::{Read, Seek, SeekFrom, Write};
+        let path = std::env::temp_dir().join(format!(
+            "pinvou-app-cache-read-only-{}",
+            uuid::Uuid::new_v4()
+        ));
+        match create_exclusive_cache(&path) {
+            Err(pinvou_upgrade_cache_object::CacheObjectError::Unsupported) => {
+                assert!(!path.exists())
+            }
+            Ok(mut source) => {
+                source.file_mut().write_all(b"cache bytes").unwrap();
+                let reader = duplicate_cache_read_handle(&source).unwrap();
+                drop(source);
+                let mut view = reader.file();
+                view.seek(SeekFrom::Start(0)).unwrap();
+                let mut bytes = vec![];
+                view.read_to_end(&mut bytes).unwrap();
+                assert_eq!(bytes, b"cache bytes");
+                assert!(view.write_all(b"wrong").is_err());
+                assert!(reader.file().set_len(0).is_err());
+                assert!(std::fs::OpenOptions::new().write(true).open(&path).is_err());
+                drop(reader);
+                assert_eq!(std::fs::read(&path).unwrap(), b"cache bytes");
+                std::fs::remove_file(path).unwrap();
+            }
+            Err(_) => panic!("cache object unavailable on this test host"),
+        }
+    }
 
     #[test]
     fn application_cache_object_facade_preserves_exclusive_handle_or_reports_unsupported() {

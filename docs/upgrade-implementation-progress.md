@@ -2902,3 +2902,47 @@ dependency stays disclosed and deferred under the instruction to continue other 
 Details: [exclusive cache object](client-upgrade-exclusive-cache-object.md). Full
 T29, namespace/ACL/staging/readonly handoff and physical platform certification
 remain unfinished. Downloads retain no total/cumulative duration or retry cap.
+
+## T29 thirteenth batch - read-only cache handle duplicate (2026-10-13)
+
+A new method borrows the trusted current ExclusiveCacheFile File and duplicates
+its Windows handle into private ReadOnlyCacheHandle with immutable &File access.
+DuplicateHandle uses current process twice, exact FILE_GENERIC_READ, inheritance
+false and flags0: no SAME_ACCESS/CLOSE_SOURCE/path reopen. The new valid handle
+gets one File RAII owner; source remains unchanged/open. Factoring original live-
+handle observation preserves B12 validation. Other OS adapters fail Unsupported.
+Only the existing parent windows-sys Threading feature is enabled; all locks/
+versions/sources/checksums remain unchanged and the isolated3 graph matches parent.
+
+This narrows only that handle's write rights. Original/prior trusted writers may
+still modify bytes; no sealed content or writer retirement is attested. Explicit
+read-only clones extend original sharing rules. Duplicates share a file pointer,
+so Read/Seek through &File moves the source/alias cursor and owners must serialize
+uses. It proves no ACL/namespace/native identity/current eligibility/VMO/rights.
+Trusted borrower handle replacement/duplication remains the owner's duty.
+
+Root actual Windows8 tests passed0.07s,1 privileged symlink test remains ignored/
+unverified. Two new groups show source/duplicate volume/file index equality, real
+read/seek/shared cursor, write/set_len/set_times refusal with unchanged bytes, then
+original-writer success and visible changed bytes to disprove content sealing.
+Read-only wrapper/clone keep original share0 after the source closes; same-path
+read/write/rename/delete succeed only after all copies close. Prior six fresh/ADS
+controls remain regressions. Clippy4.22s/fmt passed; CI50 0.072s, architecture/
+version/diff passed. No Schema, product version or gitlink changes.
+
+Both independent source reviewers returned scoped PASS without mandatory.
+Dependency Windows8 passed0.02s/1ignored, Clippy1.80s/fmt, CI50 0.066s/diff; its
+first metadata validation script used default GBK and failed decoding, then the
+same read-only graph check passed with explicit UTF8. No repository file changed.
+Compatibility Windows8 passed0.04s/1ignored, Clippy0.05s/fmt, CI50 0.068s/diff.
+Both checked existing parent feature/unchanged locks and exact graph compatibility.
+Actual final Windows App passed all21 updater tests (0.06s after3m00s build),
+including real read-only duplicate read/write/truncate and retained sharing through
+the facade. No App-wide pass is claimed. Both reviewers returned final scoped
+PASS after frozen-source/final doc/evidence review without rebuilding. Root self-
+review found no remaining in-scope gap.
+
+Details: [read-only duplicate](client-upgrade-read-only-cache-handle.md). Full T29,
+sealed content/retired-writer proof, protected staging/namespace/native identity
+and actual original-clock/budget integration remain unfinished. Downloads retain
+no total/cumulative duration or retry cap.

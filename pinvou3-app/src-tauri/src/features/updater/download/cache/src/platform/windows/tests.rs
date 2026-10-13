@@ -185,3 +185,81 @@ fn stream_syntax_is_refused_in_all_components_without_rejecting_drive_prefixes()
         "CACHE_OBJECT_PATH_INVALID"
     );
 }
+
+#[test]
+fn actual_read_only_duplicate_same_object_denies_writes_and_shares_cursor_not_sealed_bytes() {
+    use std::io::{Read, Seek, SeekFrom};
+    let fixture = Fixture::new();
+    let mut source = create_exclusive_cache(&fixture.path("fresh")).unwrap();
+    source.file_mut().write_all(b"first").unwrap();
+    source.file_mut().seek(SeekFrom::Start(0)).unwrap();
+    let read_only = source.read_only_duplicate().unwrap();
+    let original = observe(source.file_mut()).unwrap();
+    let duplicated = observe(read_only.file()).unwrap();
+    assert_eq!(
+        (
+            original.dwVolumeSerialNumber,
+            original.nFileIndexHigh,
+            original.nFileIndexLow
+        ),
+        (
+            duplicated.dwVolumeSerialNumber,
+            duplicated.nFileIndexHigh,
+            duplicated.nFileIndexLow
+        )
+    );
+    let mut view = read_only.file();
+    let mut bytes = [0; 5];
+    view.read_exact(&mut bytes).unwrap();
+    assert_eq!(&bytes, b"first");
+    assert_eq!(source.file_mut().stream_position().unwrap(), 5);
+    assert!(view.write_all(b"wrong").is_err());
+    assert!(read_only.file().set_len(0).is_err());
+    assert!(
+        read_only
+            .file()
+            .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+            .is_err()
+    );
+    view.seek(SeekFrom::Start(0)).unwrap();
+    view.read_exact(&mut bytes).unwrap();
+    assert_eq!(&bytes, b"first");
+    // The original writer still works and its changes are visible through the
+    // duplicate: this proves handle permissions, never immutable/sealed content.
+    source.file_mut().seek(SeekFrom::Start(0)).unwrap();
+    source.file_mut().write_all(b"other").unwrap();
+    view.seek(SeekFrom::Start(0)).unwrap();
+    view.read_exact(&mut bytes).unwrap();
+    assert_eq!(&bytes, b"other");
+}
+#[test]
+fn read_only_duplicate_and_explicit_clone_keep_original_share_rules_until_last_close() {
+    use std::io::{Read, Seek, SeekFrom};
+    let fixture = Fixture::new();
+    let path = fixture.path("fresh");
+    let mut source = create_exclusive_cache(&path).unwrap();
+    source.file_mut().write_all(b"payload").unwrap();
+    let read_only = source.read_only_duplicate().unwrap();
+    let mut clone = read_only.file().try_clone().unwrap();
+    drop(source);
+    assert!(OpenOptions::new().read(true).open(&path).is_err());
+    assert!(OpenOptions::new().write(true).open(&path).is_err());
+    assert!(fs::remove_file(&path).is_err());
+    assert!(fs::rename(&path, fixture.path("renamed")).is_err());
+    assert!(clone.write_all(b"wrong").is_err());
+    assert!(clone.set_len(0).is_err());
+    clone.seek(SeekFrom::Start(0)).unwrap();
+    let mut bytes = vec![];
+    clone.read_to_end(&mut bytes).unwrap();
+    assert_eq!(bytes, b"payload");
+    drop(read_only);
+    assert!(OpenOptions::new().read(true).open(&path).is_err());
+    drop(clone);
+    assert_eq!(fs::read(&path).unwrap(), b"payload");
+    let mut writer = OpenOptions::new().append(true).open(&path).unwrap();
+    writer.write_all(b"!").unwrap();
+    drop(writer);
+    fs::rename(&path, fixture.path("renamed")).unwrap();
+    assert_eq!(fs::read(fixture.path("renamed")).unwrap(), b"payload!");
+    fs::remove_file(fixture.path("renamed")).unwrap();
+}

@@ -31,7 +31,25 @@ impl std::error::Error for CacheObjectError {}
 pub struct ExclusiveCacheFile {
     file: File,
 }
+/// Owns one actual read-only duplicate. Other writer handles may remain; this
+/// is not content sealing or writer retirement. Duplicates share the source file
+/// pointer, so even Read/Seek through &File require owner coordination. Explicit
+/// clones/raw handle use remain trusted caller duties, not a rights certificate.
+pub struct ReadOnlyCacheHandle {
+    file: File,
+}
+impl ReadOnlyCacheHandle {
+    pub fn file(&self) -> &File {
+        &self.file
+    }
+}
 impl ExclusiveCacheFile {
+    /// Duplicate this current handle with read-only access without closing the
+    /// source or reopening a path. The owner preserves the original File and
+    /// accounts for all duplicates; this does not seal bytes or retire writers.
+    pub fn read_only_duplicate(&self) -> Result<ReadOnlyCacheHandle, CacheObjectError> {
+        platform::duplicate_read(&self.file).map(|file| ReadOnlyCacheHandle { file })
+    }
     pub fn file_mut(&mut self) -> &mut File {
         &mut self.file
     }
