@@ -78,7 +78,7 @@ use pinvou3_lib::features::marketplace::bundle::CLI_DISCONNECTED_DEGRADED_REASON
 use pinvou3_lib::features::marketplace::skill_marketplace::SkillMarketplaceManager;
 use pinvou3_lib::features::marketplace::store::{BundleRecord, BundleSource, BundleStore};
 use pinvou3_lib::features::{
-    LARK_MIN_VERSION as FEISHU_MIN_VERSION, TMEET_MIN_VERSION, WECOM_MIN_VERSION,
+    IMA_SKILL_ID, LARK_MIN_VERSION as FEISHU_MIN_VERSION, TMEET_MIN_VERSION, WECOM_MIN_VERSION,
 };
 use pinvou3_lib::platform::connector_lock::{executable_name, locked_cli_path};
 use pinvou3_lib::platform::connector_skills::{
@@ -105,8 +105,8 @@ const USAGE: &str =
 // command surface, so future raises are expected.
 const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.18";
 
-/// ima skill installed by `ima_connect` (mirror of ima.rs `IMA_SKILL_ID`).
-const IMA_SKILL_ID: &str = "ima-skills";
+/// ima companion skill version (`IMA_SKILL_ID` itself is imported from the
+/// feature layer alongside the version floors above).
 const IMA_SKILL_VERSION: &str = "1.1.8";
 
 /// Archive size cap, mirroring `native_installer::MAX_ARCHIVE_BYTES`.

@@ -18,7 +18,9 @@ use crate::platform::credential_store::{
 
 const CLIENT_ID_SECRET: &str = "client_id";
 const API_KEY_SECRET: &str = "api_key";
-const IMA_SKILL_ID: &str = "ima-skills";
+/// `pub`（经 `features::mod` 越界，见其 re-export 注释）：CLI 的 connectors
+/// ima 通道与 plugins readiness 表直接引用，替代各自的手抄镜像。
+pub const IMA_SKILL_ID: &str = "ima-skills";
 const IMA_BASE_URL: &str = "https://ima.qq.com";
 const IMA_SKILL_VERSION: &str = "1.1.8";
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
@@ -44,11 +46,13 @@ const WRITE_API_PATHS: &[&str] = &[
     "openapi/wiki/v1/add_knowledge",
 ];
 
+/// ima 连接状态（`pub` + 经 `features::mod` 越界：CLI 的 readiness 表消费
+/// 同一计算结果，仅保留其降级包装）。
 #[derive(Debug, Clone, Serialize)]
-struct ImaConnectorStatus {
-    connected: bool,
-    credentials_present: bool,
-    skill_installed: bool,
+pub struct ImaConnectorStatus {
+    pub connected: bool,
+    pub credentials_present: bool,
+    pub skill_installed: bool,
 }
 
 fn client_id_ref() -> CredentialReference {
@@ -72,7 +76,9 @@ fn credentials<S: CredentialStore>(store: &S) -> Result<Option<(String, String)>
     })
 }
 
-fn status_with_store<S: CredentialStore>(store: &S) -> Result<ImaConnectorStatus, String> {
+/// `pub`（经 `features::mod` 越界）：CLI 的 readiness 表复用本判定，替代其
+/// `ima_readiness_parts` 手抄镜像（CLI 侧仅保留凭证读取失败时的降级包装）。
+pub fn status_with_store<S: CredentialStore>(store: &S) -> Result<ImaConnectorStatus, String> {
     let credentials_present = credentials(store)?.is_some();
     let skill_installed = SkillMarketplaceManager::new()
         .list_skills()
