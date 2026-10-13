@@ -371,7 +371,10 @@ pub(super) fn read_code_session_sidecar(
 }
 
 /// 删除原生代码会话 sidecar（会话删除时调用）。
-pub(super) fn remove_code_session_sidecar(store_path: &Path, session_id: &str) {
+///
+/// Returns whether the sidecar file was actually removed, so callers that
+/// count or log the removal stay silent when there was nothing to remove.
+pub(super) fn remove_code_session_sidecar(store_path: &Path, session_id: &str) -> bool {
     let sidecar = code_session_sidecar_path(store_path, session_id);
     match fs::remove_file(&sidecar) {
         Ok(()) => {
@@ -382,12 +385,16 @@ pub(super) fn remove_code_session_sidecar(store_path: &Path, session_id: &str) {
             if let Some(parent) = sidecar.parent() {
                 let _ = fs::remove_dir(parent);
             }
+            true
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => eprintln!(
-            "[pinvou3-app] 清理原生代码会话 sidecar 失败（{}）: {error:#}",
-            sidecar.display()
-        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            eprintln!(
+                "[pinvou3-app] 清理原生代码会话 sidecar 失败（{}）: {error:#}",
+                sidecar.display()
+            );
+            false
+        }
     }
 }
 
@@ -1307,7 +1314,17 @@ impl SessionAgentStore {
 
     pub fn remove(&self, session_id: &str) -> Result<()> {
         let _section = self.lock_and_reload()?;
-        self.records.write().remove(session_id);
+        // Most purged sessions (plain chats) have no index entry; without
+        // this short-circuit every such purge would rewrite the whole index
+        // file for nothing, serialized inside the purge flow. It must sit
+        // AFTER `lock_and_reload`: only the fresh disk table proves durable
+        // absence. An in-memory miss on a boot-era snapshot proves nothing
+        // — a prior call whose persist failed leaves the entry on disk
+        // while memory already dropped it, and short-circuiting on that
+        // state would make the removal silently unretryable.
+        if self.records.write().remove(session_id).is_none() {
+            return Ok(());
+        }
         self.persist()?;
         // 删除会话时同步清理权威 sidecar，避免残留的 sidecar 让重建后的索引
         // 误恢复一个已删除的原生代码会话。

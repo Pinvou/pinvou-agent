@@ -877,12 +877,15 @@ fn restore_code_native_sessions_from_sidecars(
         }
         if record.backend.is_acp() {
             // 会话已被 ACP 绑定：sidecar 是历史残留，恢复必然被拒，直接清理并
-            // 如实记日志，而不是每次启动重复报 degraded。
-            store::remove_code_session_sidecar(agents.path(), &session_id);
-            summary.cleaned += 1;
-            eprintln!(
-                "[pinvou3-app] removed leftover native code session sidecar for ACP session {session_id}"
-            );
+            // 如实记日志，而不是每次启动重复报 degraded。仅当 sidecar 文件真的
+            // 被删除时才计数/记日志：正常 ACP 会话的目录里本就没有
+            // code-session.json，无条件计数会把每次启动都变成假清理报告。
+            if store::remove_code_session_sidecar(agents.path(), &session_id) {
+                summary.cleaned += 1;
+                eprintln!(
+                    "[pinvou3-app] removed leftover native code session sidecar for ACP session {session_id}"
+                );
+            }
             continue;
         }
         // Ghost dir: no index record and the durable record is gone —
@@ -892,13 +895,17 @@ fn restore_code_native_sessions_from_sidecars(
         // corrupt or future-version `code-session.json` in a dead owner's
         // dir must converge too, not log a parse error every boot forever.
         // Only the sidecar file plus the now-empty dir are removed, so a
-        // leftover dir holding other content survives untouched.
+        // leftover dir holding other content survives untouched. The count
+        // and log fire only when the sidecar file was really removed: a
+        // dead owner's bare dir (no sidecar) removes nothing, and counting
+        // it would repeat a false report on every boot forever.
         if !code_session_owner_alive(agents, &session_id) {
-            store::remove_code_session_sidecar(agents.path(), &session_id);
-            summary.cleaned_ghost_sidecars += 1;
-            eprintln!(
-                "[pinvou3-app] removed ghost native code session sidecar for deleted session {session_id}"
-            );
+            if store::remove_code_session_sidecar(agents.path(), &session_id) {
+                summary.cleaned_ghost_sidecars += 1;
+                eprintln!(
+                    "[pinvou3-app] removed ghost native code session sidecar for deleted session {session_id}"
+                );
+            }
             continue;
         }
         // Round-44 review: the sidecar content is re-read under the section
@@ -6464,6 +6471,39 @@ mod tests {
             serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert!(index["sessions"].get("corrupt-1").is_none());
         assert!(!agents.is_code_session("corrupt-1"));
+        // A live ACP session's normal dir shape: session data under
+        // sessions/<id>/ with NO code-session.json (ACP bindings never write
+        // one). The ACP-leftover branch must stay silent for it — no cleaned
+        // count, no log — and the dir must survive. Before the count was
+        // gated on an actual removal, this shape fired a false "removed
+        // leftover sidecar" report on every boot for every ACP session.
+        agents
+            .set_acp_workspace(
+                "acp-live",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Temporary,
+                None,
+            )
+            .unwrap();
+        let acp_live_dir = root.join("sessions").join("acp-live");
+        std::fs::create_dir_all(&acp_live_dir).unwrap();
+        std::fs::write(acp_live_dir.join("events.jsonl"), b"{}").unwrap();
+        let summary = restore_code_native_sessions_from_sidecars(&agents);
+        assert_eq!(summary, SidecarRecoverySummary::default());
+        assert!(acp_live_dir.is_dir());
+        assert!(acp_live_dir.join("events.jsonl").is_file());
+        // A dead owner's bare dir (no sidecar — crash between durable-record
+        // deletion and dir removal): the ghost branch removes nothing, so it
+        // must count and log nothing; otherwise the report would repeat on
+        // every boot forever. The dir holding other content survives
+        // untouched.
+        let bare_dead_dir = root.join("sessions").join("bare-dead");
+        std::fs::create_dir_all(&bare_dead_dir).unwrap();
+        std::fs::write(bare_dead_dir.join("events.jsonl"), b"{}").unwrap();
+        let summary = restore_code_native_sessions_from_sidecars(&agents);
+        assert_eq!(summary, SidecarRecoverySummary::default());
+        assert!(bare_dead_dir.is_dir());
+        assert!(bare_dead_dir.join("events.jsonl").is_file());
         // Ghosts fully converged: a second boot scan is a no-op.
         let summary = restore_code_native_sessions_from_sidecars(&agents);
         assert_eq!(summary, SidecarRecoverySummary::default());
