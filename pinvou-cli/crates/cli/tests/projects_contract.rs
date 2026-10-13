@@ -1688,3 +1688,31 @@ fn projects_rebind_refuses_a_corrupt_agent_index_without_the_app_line_or_the_zh_
         "a refused rebind must not move the binding: {sidecar}"
     );
 }
+
+/// Round-54 audit A2 pin: the rebind's baseline recapture must be
+/// staleness-gated like the GUI's drain — a baseline already current for
+/// the new root is the session-start reference and must not be reset
+/// (resetting wipes the changes-since-session-start view or flips
+/// currently-dirty files to preexisting on a rerun). Comment lines are
+/// stripped so prose cannot satisfy the shape; removing the gate, dropping
+/// its negation, or reordering it after the capture all fail.
+#[test]
+fn rebind_baseline_recapture_is_staleness_gated() {
+    let code: String = include_str!("../src/projects.rs")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let gate = "&& !pinvou3_lib::features::codex_acp::workspace::baseline_is_current(";
+    let capture = "capture_baseline(session_id, &new_path)";
+    let gate_at = code
+        .find(gate)
+        .expect("the rebind drain lost its baseline staleness gate");
+    let capture_at = code
+        .find(capture)
+        .expect("the rebind drain lost its baseline recapture call");
+    assert!(
+        gate_at < capture_at,
+        "the staleness gate must guard (precede) the recapture call"
+    );
+}

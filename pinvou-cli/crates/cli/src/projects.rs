@@ -1399,6 +1399,14 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
         // it captured a codex-workspace-baseline.json the plain lane never
         // reads, the exact stray-file-plus-wasted-walk this gate exists to
         // prevent.
+        //
+        // Round-54 audit A2: the recapture itself is staleness-gated like
+        // the GUI's drain (`baseline_is_current`): a baseline already
+        // current for the new root IS the session-start reference, and
+        // resetting it would wipe the changes-since-session-start view
+        // (non-git) or flip currently-dirty files to preexisting (git) —
+        // the unconditional recapture here did exactly that on a rerun
+        // whose earlier pass had already recaptured before failing.
         let is_code_session = agents.code_project_workspace(session_id).is_some();
         if (code_rebound_ids.contains(session_id)
             || (metadata_behind_binding && is_code_session)
@@ -1410,6 +1418,9 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
                     .iter()
                     .any(|(sid, _)| sid == session_id)
                 && !final_stale.contains(session_id)))
+            && !pinvou3_lib::features::codex_acp::workspace::baseline_is_current(
+                session_id, &new_path,
+            )
             && let Err(error) =
                 pinvou3_lib::features::codex_acp::workspace::capture_baseline(session_id, &new_path)
         {
