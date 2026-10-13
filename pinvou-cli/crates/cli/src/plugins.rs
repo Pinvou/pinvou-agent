@@ -127,7 +127,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::support::{
-    collapse_control_characters, family_option, join_rows, render, require_yes, sandbox_home,
+    self, collapse_control_characters, family_option, join_rows, render, require_yes, sandbox_home,
     success,
 };
 use crate::{CliError, CliOutcome, OutputMode};
@@ -295,7 +295,10 @@ pub fn parse(values: &[String]) -> Result<PluginsCommand, CliError> {
             let path = rest
                 .first()
                 .ok_or_else(|| CliError::usage("plugins import requires a PATH (zip, .md/.markdown skill file, or SKILL.md directory)"))?;
-            require_no_args(&rest[1..], "plugins import accepts no options".to_owned())?;
+            support::expect_no_arguments_message(
+                &rest[1..],
+                "plugins import accepts no options".to_owned(),
+            )?;
             Ok(PluginsCommand::Import {
                 path: PathBuf::from(path),
             })
@@ -326,7 +329,10 @@ pub fn parse(values: &[String]) -> Result<PluginsCommand, CliError> {
         }
         "recycle" => parse_recycle(rest),
         "readiness" => {
-            require_no_args(rest, "plugins readiness accepts no arguments".to_owned())?;
+            support::expect_no_arguments_message(
+                rest,
+                "plugins readiness accepts no arguments".to_owned(),
+            )?;
             Ok(PluginsCommand::Readiness)
         }
         "enable" | "disable" => {
@@ -401,7 +407,7 @@ fn parse_tools(rest: &[String]) -> Result<PluginsCommand, CliError> {
         }
         "auth" => {
             let id = require_id(tail.first())?;
-            require_no_args(
+            support::expect_no_arguments_message(
                 &tail[1..],
                 "plugins tools auth accepts no options".to_owned(),
             )?;
@@ -418,7 +424,7 @@ fn parse_tools(rest: &[String]) -> Result<PluginsCommand, CliError> {
         }
         "oauth-cancel" => {
             let id = require_id(tail.first())?;
-            require_no_args(
+            support::expect_no_arguments_message(
                 &tail[1..],
                 "plugins tools oauth-cancel accepts no options".to_owned(),
             )?;
@@ -443,7 +449,7 @@ fn parse_skills(rest: &[String]) -> Result<PluginsCommand, CliError> {
         }
         "install" | "update" => {
             let id = require_id(tail.first())?;
-            require_no_args(
+            support::expect_no_arguments_message(
                 &tail[1..],
                 format!("plugins skills {action} accepts no options"),
             )?;
@@ -480,7 +486,7 @@ fn parse_recycle(rest: &[String]) -> Result<PluginsCommand, CliError> {
         }
         "restore" => {
             let id = require_id(tail.first())?;
-            require_no_args(
+            support::expect_no_arguments_message(
                 &tail[1..],
                 "plugins recycle restore accepts no options".to_owned(),
             )?;
@@ -555,18 +561,6 @@ fn require_id(value: Option<&String>) -> Result<String, CliError> {
         )));
     }
     Ok(id)
-}
-
-/// The "accepts no options/arguments" guards shared by the subcommands that
-/// take nothing beyond their required positionals (`args` is what remains
-/// after those). `message` is passed verbatim so each site keeps its pinned
-/// usage text.
-fn require_no_args(args: &[String], message: String) -> Result<(), CliError> {
-    if args.is_empty() {
-        Ok(())
-    } else {
-        Err(CliError::usage(message))
-    }
 }
 
 /// Shared implementation in `support::parse_family_flags`; `family`
