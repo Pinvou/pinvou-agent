@@ -171,7 +171,7 @@ function RewindDialogShell({
 // 工作模式「回退范围」选择项：checkbox 默认勾选（推荐值 = 双层回退）；取消
 // 勾选时展示「文件保持不动」的中性说明。仅在有快照的边界渲染（无快照边界恒为
 // 仅对话回退，选择项无法兑现文件恢复的承诺）。
-function RewindScopeToggle({ includeWorkspace, onToggle, copy }) {
+function RewindScopeToggle({ includeWorkspace, onToggle, busy, copy }) {
   return (
     <div className="mt-3">
       <label
@@ -181,8 +181,9 @@ function RewindScopeToggle({ includeWorkspace, onToggle, copy }) {
         <input
           type="checkbox"
           checked={includeWorkspace}
+          disabled={busy}
           onChange={event => onToggle(event.target.checked)}
-          className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-blue-600"
+          className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-blue-600 disabled:cursor-not-allowed disabled:opacity-45"
         />
         <span className="text-[12px] leading-5 text-[#444746] dark:text-[#C4C7C5]">
           {copy.rewindScopeWorkspace}
@@ -309,6 +310,7 @@ export function RewindConfirmDialog({ entry, previewState, error, busy, theme, c
             <RewindScopeToggle
               includeWorkspace={includeWorkspace}
               onToggle={setIncludeWorkspace}
+              busy={busy}
               copy={copy}
             />
           )}

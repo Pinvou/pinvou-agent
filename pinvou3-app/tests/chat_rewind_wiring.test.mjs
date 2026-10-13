@@ -37,6 +37,14 @@ const rewindChip = source('features/conversation/RewindChip.jsx');
 // ── ChatView 接线：共享模块 + 时间线入口 + 弹窗 ──────────────────────
 // 共享模块导入（搬家后唯一来源是 features/conversation）。
 assert.match(chatView, /from '\.\.\/conversation\/useRewindController\.js'/, 'ChatView 必须使用共享编排 hook');
+// 评审 r7 M3(d)：回退后重载必须走 force-durable-load 的 switchToSessionInternal
+// （换 plain switchToSession 的同 id 快路径会把截断前的陈旧时间线当成功上屏，
+// 全部套件对此静默）。
+assert.match(
+  chatView,
+  /switchToSessionInternal/,
+  '回退重载必须调用 switchToSessionInternal（force-durable-load），不得退回 plain switchToSession',
+);
 assert.match(chatView, /from '\.\.\/conversation\/RewindChip\.jsx'/, 'ChatView 必须导入共享回退组件');
 assert.match(chatView, /from '\.\.\/conversation\/checkpoints\.js'/, 'ChatView 必须导入共享纯逻辑（rewindUndoAvailable）');
 
