@@ -12,6 +12,14 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+pub(crate) fn decode_native_identity_shape(
+    bytes: &[u8],
+) -> Result<pinvou_upgrade_codec::NativeIdentityShape, pinvou_upgrade_codec::NativeIdentityError> {
+    decode_metadata(bytes)
+        .map_err(pinvou_upgrade_codec::NativeIdentityError::Json)?
+        .native_identity_shape()
+}
+
 pub(crate) fn derive_consume_request_digest(
     bytes: &[u8],
 ) -> Result<pinvou_upgrade_codec::ConsumeRequestDigest, pinvou_upgrade_codec::ConsumeDigestError> {
@@ -47,6 +55,31 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_compares_all_native_facts_not_only_package_bytes() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/digests.json"
+        )))
+        .unwrap();
+        let mut actual = vector["sourceFacts"]["application"].clone();
+        let expected = decode_native_identity_shape(&serde_json::to_vec(&actual).unwrap()).unwrap();
+        let same =
+            decode_native_identity_shape(&serde_json::to_vec_pretty(&actual).unwrap()).unwrap();
+        assert!(pinvou_upgrade_codec::assert_native_identity(&expected, &same).is_ok());
+        actual["publisher"] = serde_json::json!("different-publisher");
+        let changed = decode_native_identity_shape(&serde_json::to_vec(&actual).unwrap()).unwrap();
+        assert_eq!(
+            pinvou_upgrade_codec::assert_native_identity(&expected, &changed),
+            Err(pinvou_upgrade_codec::NativeIdentityError::Mismatch)
+        );
+        actual["extra"] = serde_json::Value::Null;
+        assert!(matches!(
+            decode_native_identity_shape(&serde_json::to_vec(&actual).unwrap()),
+            Err(pinvou_upgrade_codec::NativeIdentityError::InvalidIdentity)
+        ));
+    }
 
     #[test]
     fn feature_facade_binds_semantic_consume_request_without_transport_or_null_defaults() {

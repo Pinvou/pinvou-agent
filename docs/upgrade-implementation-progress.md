@@ -2730,3 +2730,45 @@ Details: [semantic consume digest](client-upgrade-consume-digest.md). Full T27/T
 actual secret custody, ConsumeAttempt, current trust and backup/slot authenticity
 remain later work. Unresolved Ed25519 policy is not bypassed. Downloads retain no
 total/cumulative duration or retry cap.
+
+## T27 seventh batch - native identity shape/comparison (2026-10-13)
+
+This continued batch validates bounded duplicate-free native JSON as a closed
+five-field identity: positive safe binary64 size, lowercase hex64 sha256, original
+ASCII identity/publisher and all five formats. The immutable privately constructed
+NativeIdentityShape retains bounded JCS without Debug/Serialize. Both operands
+must pass the complete Schema shape before whole canonical bytes are compared.
+All fields participate, including publisher/identity/format with identical size/
+hash. There is no role/platform cross-rule, domain or digest. The private native
+predicate moved equivalently from Source to shared shape, preserving its behavior.
+Supplied actual facts do not attest OS identity, signature, protected object,
+Registry match, VerifiedExecutionObject or rights.
+
+Root actual Node22.23.3 run passed34 groups: signing6 7.31s, consume4 2.01s/1093
+original cases, native3 1.15s/324 original Node/Ajv operand pairs, rollout4 1.27s/132,
+source5 1.49s/218, status5 1.11s/144. The collected first byte-suite output was not
+visible, so only that unchanged suite was rerun for concrete evidence: byte7
+passed0.68s with its actual original Node oracle enabled. Both old oracle switches
+were enabled throughout. Native controls check exact JCS, reordered/pretty input,
+equivalent numeric spellings, every field mismatch in both directions, self-equality
+and invalid either operand. The original reference validates both operands and
+compares actual complete canonical bytes; all original formats, missing/null/types/
+extras, identifier/hash endings, escaped duplicates, safe limits and rounding are
+covered. Clippy passed29.52s; standalone/App formatting, CI49 (0.064s), architecture,
+version and diff passed. No dependency, lock, Schema, CI, version or gitlink changed.
+Actual Windows App passed all18 updater tests (0.17s after3m36s build), including
+same native identity, publisher mismatch with identical size/hash and root-extra
+refusal through the actual facade. No App-wide pass is claimed.
+
+Both independent source reviews returned scoped PASS. Dependency passed all34
+actual Node22 groups, including324 native operand pairs in1.19s and source regression;
+fmt/Clippy/diff passed. Compatibility passed sign/byte/consume/native/rollout/source/
+status in6.15s/0.69s/2.35s/4.50s/2.31s/1.69s/7.05s; Clippy0.22s, CI49 0.062s and
+fmt/diff passed. Both reviewers returned final scoped PASS after reviewing the
+frozen source and final App/document evidence without rebuilding. Root self-review
+found no remaining in-scope gap.
+
+Details: [native identity shape](client-upgrade-native-identity-shape.md). Full
+T27/T29 and actual native probes/authoritative identity checks remain unfinished.
+Unresolved Ed25519 policy is not bypassed. Downloads retain no total/cumulative
+duration or retry cap.

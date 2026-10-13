@@ -1,5 +1,5 @@
 //! Closed stable-fact projection of supplied JSON, not actual source detection.
-use crate::shape::{TARGETS, closed, identifier, one_of, positive_safe_integer, sha256_hex};
+use crate::shape::{TARGETS, closed, identifier, native_identity, one_of};
 use crate::{Document, Error};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -15,7 +15,6 @@ const STABLE_FIELDS: [&str; 9] = [
     "installation",
     "dataMigration",
 ];
-const NATIVE_FIELDS: [&str; 5] = ["size", "sha256", "identity", "publisher", "format"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceProfileError {
@@ -69,7 +68,7 @@ impl Document {
             && version(&facts["canonicalAppVersion"])
             && ["application", "helper", "launcher"]
                 .iter()
-                .all(|name| native(&facts[*name]))
+                .all(|name| native_identity(&facts[*name]))
             && installation(&facts["installation"])
             && data_migration(&facts["dataMigration"]);
         if !valid {
@@ -110,20 +109,6 @@ fn version(value: &Value) -> bool {
         }
     }
     parts.next().is_none()
-}
-fn native(value: &Value) -> bool {
-    let Some(facts) = closed(value, &NATIVE_FIELDS) else {
-        return false;
-    };
-    let size = positive_safe_integer(&facts["size"]);
-    let hash = sha256_hex(&facts["sha256"]);
-    size && hash
-        && identifier(&facts["identity"])
-        && identifier(&facts["publisher"])
-        && one_of(
-            &facts["format"],
-            &["nsis", "deb", "dmg", "helper", "launcher"],
-        )
 }
 fn installation(value: &Value) -> bool {
     let Some(facts) = closed(value, &["format", "installScope", "ownershipProtocol"]) else {

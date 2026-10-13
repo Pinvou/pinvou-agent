@@ -44,3 +44,21 @@ pub(super) fn positive_safe_integer(value: &Value) -> bool {
         (1.0..=9_007_199_254_740_991.0).contains(&number) && number.fract() == 0.0
     })
 }
+
+pub(super) fn native_identity(value: &Value) -> bool {
+    let Some(facts) = closed(
+        value,
+        &["size", "sha256", "identity", "publisher", "format"],
+    ) else {
+        return false;
+    };
+    let size = positive_safe_integer(&facts["size"]);
+    let hash = sha256_hex(&facts["sha256"]);
+    size && hash
+        && identifier(&facts["identity"])
+        && identifier(&facts["publisher"])
+        && one_of(
+            &facts["format"],
+            &["nsis", "deb", "dmg", "helper", "launcher"],
+        )
+}

@@ -4,7 +4,9 @@
 mod bindings;
 mod consume;
 pub use consume::{ConsumeDigestError, ConsumeRequestDigest};
+mod native;
 mod parse;
+pub use native::{NativeIdentityError, NativeIdentityShape, assert_native_identity};
 mod rollout;
 mod shape;
 pub use rollout::{RolloutCommitment, RolloutCommitmentError};
