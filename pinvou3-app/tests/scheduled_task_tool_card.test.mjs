@@ -171,9 +171,9 @@ test('renderer wiring is present (timeline card + summary routing)', () => {
   assert.match(renderers, /SCHEDULED_TASK_TOOL_OPS = \{[\s\S]*SCHEDULED_TASK_CREATE_TOOL[\s\S]*SCHEDULED_TASK_UPDATE_TOOL[\s\S]*SCHEDULED_TASK_DELETE_TOOL/,
     'create/update/delete must route to the result card');
   // Startup-budget lazy route: the card and its parser live in the lazy
-  // scheduled-task chunk (the vite.config lazyChunkContracts
-  // 'scheduledTaskCard' entry pins the module to exactly one non-entry
-  // chunk), and the entry routes done items through it.
+  // scheduled-task chunk, and the entry routes done items through the
+  // dynamic import below (re-inlining the card re-trips the main-entry
+  // budget; this pin catches the route disappearing).
   assert.match(
     renderers,
     /import\('\.\/scheduled-task-card\.jsx'\)/,

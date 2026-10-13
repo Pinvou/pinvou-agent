@@ -4,8 +4,7 @@
  * tool-name constants stay in scheduled-task-tool-logic.js because the
  * startup entry renders them synchronously).
  *
- * Loaded inside the lazy scheduled-task card chunk (the vite.config
- * lazyChunkContracts 'scheduledTaskCard' entry): nothing in the startup
+ * Loaded inside the lazy scheduled-task card chunk: nothing in the startup
  * entry imports this module, so its bytes only arrive when such a tool item
  * actually renders. Kept framework-free (mirroring
  * spawn-aggregation.mjs / session-message-block.js) so tests/ can exercise
