@@ -219,12 +219,6 @@ pub struct SkillMarketplaceManager {
     recycle_bin: super::recycle_bin::RecycleBin,
 }
 
-impl Default for SkillMarketplaceManager {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Builtin-ownership predicate for the skill lane (review round-3 M2): a
 /// skill is pinned to the feature-switch mechanism only when a builtin
 /// package actually CLAIMS it — the owner package differs from the skill
