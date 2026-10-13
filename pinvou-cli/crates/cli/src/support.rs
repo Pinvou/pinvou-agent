@@ -661,14 +661,24 @@ pub(crate) fn require_family_id(
 }
 
 /// The leaf-subcommand guard the families share: an empty argument tail
-/// passes, anything at all is a usage error.
+/// passes, anything at all is a usage error. Renders the families' shared
+/// `{command} accepts no options or arguments` template; a site with its own
+/// pinned usage text calls [`expect_no_arguments_message`] directly.
 pub(crate) fn expect_no_arguments(values: &[String], command: &str) -> Result<(), CliError> {
+    expect_no_arguments_message(values, format!("{command} accepts no options or arguments"))
+}
+
+/// [`expect_no_arguments`] with a caller-owned full message, so a family
+/// whose usage text is contract-pinned keeps its wording on this one guard
+/// (the plugins family's former local `require_no_args`).
+pub(crate) fn expect_no_arguments_message(
+    values: &[String],
+    message: String,
+) -> Result<(), CliError> {
     if values.is_empty() {
         Ok(())
     } else {
-        Err(CliError::usage(format!(
-            "{command} accepts no options or arguments"
-        )))
+        Err(CliError::usage(message))
     }
 }
 
