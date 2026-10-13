@@ -228,14 +228,53 @@ fn wrap_json_evaluation(script: &str) -> String {
     )
 }
 
+/// Bounds a WebKit exception detail to keep agent-facing errors single-line
+/// and proportional. Multi-line exception text (nested stacks, page-controlled
+/// messages) is flattened; nothing beyond the first 480 characters survives.
+fn bounded_exception_detail(message: &str) -> String {
+    let flattened = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    flattened.chars().take(480).collect()
+}
+
+/// Build the agent-facing error for a failed WKWebView script evaluation.
+///
+/// WebKit reports the thrown JavaScript exception only in the NSError's
+/// `WKJavaScriptExceptionMessage` user-info entry; `localizedDescription` is a
+/// generic localized string ("A JavaScript exception occurred") that hides
+/// whether the failure was `browser/stale-ref`, `browser/wait-timeout`, a page
+/// syntax error, or anything else. The surfaced string must keep the
+/// `browser/wkwebview-javascript-failed:` prefix: commit-boundary outcome
+/// classification matches platform error prefixes with `starts_with`, and a
+/// page-controlled exception message must never be able to masquerade as one.
+fn format_javascript_error(exception_message: Option<&str>, fallback: &str) -> String {
+    match exception_message.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(message) => format!(
+            "browser/wkwebview-javascript-failed: {}",
+            bounded_exception_detail(message)
+        ),
+        None => format!("browser/wkwebview-javascript-failed: {fallback}"),
+    }
+}
+
 fn copy_json_callback(value: *mut AnyObject, error: *mut NSError) -> Result<Value, String> {
     if let Some(error) = NonNull::new(error) {
         // SAFETY: error is non-null (checked above) and points to an NSError
         // owned by the WKWebView completion callback, valid for the duration
-        // of this callback; the description is copied out as a String.
-        let description = unsafe { error.as_ref() }.localizedDescription().to_string();
-        return Err(format!(
-            "browser/wkwebview-javascript-failed: {description}"
+        // of this callback; the description and exception user-info are copied
+        // out as Strings below.
+        let error_ref = unsafe { error.as_ref() };
+        let description = error_ref.localizedDescription().to_string();
+        let exception_message = error_ref
+            .userInfo()
+            .objectForKey(&NSString::from_str("WKJavaScriptExceptionMessage"))
+            .and_then(|value| {
+                value
+                    .downcast_ref::<NSString>()
+                    .map(|message| message.to_string())
+            });
+        return Err(format_javascript_error(
+            exception_message.as_deref(),
+            &description,
         ));
     }
     let value = NonNull::new(value)
@@ -1152,6 +1191,66 @@ mod tests {
         assert!(wrapped.contains("await (async () =>"));
         assert!(wrapped.contains("JSON.stringify"));
         assert!(wrapped.contains("return await core.snapshot();"));
+    }
+
+    #[test]
+    fn javascript_error_surfaces_the_thrown_exception_over_the_generic_localized_string() {
+        assert_eq!(
+            format_javascript_error(
+                Some("Error: browser/stale-ref: 2_2"),
+                "A JavaScript exception occurred"
+            ),
+            "browser/wkwebview-javascript-failed: Error: browser/stale-ref: 2_2"
+        );
+        // In-page structured codes stay visible so the agent can distinguish a
+        // stale element ref from a wait timeout from a missing core runtime.
+        assert!(
+            format_javascript_error(
+                Some("Error: browser/wait-timeout: Example Domain"),
+                "A JavaScript exception occurred"
+            )
+            .contains("browser/wait-timeout: Example Domain")
+        );
+        // A missing or blank exception message falls back to the localized
+        // description instead of emitting an empty detail.
+        assert_eq!(
+            format_javascript_error(None, "发生了JavaScript异常"),
+            "browser/wkwebview-javascript-failed: 发生了JavaScript异常"
+        );
+        assert_eq!(
+            format_javascript_error(Some("   "), "fallback"),
+            "browser/wkwebview-javascript-failed: fallback"
+        );
+    }
+
+    #[test]
+    fn javascript_error_detail_is_flattened_and_bounded() {
+        let multiline = "browser/wait-timeout: x\n  at core (runtime.js:1)\n  at eval";
+        let formatted = format_javascript_error(Some(multiline), "fallback");
+        assert!(formatted.starts_with("browser/wkwebview-javascript-failed: "));
+        assert!(!formatted.contains('\n'));
+        assert!(formatted.contains("browser/wait-timeout: x at core (runtime.js:1)"));
+
+        let oversized = "x".repeat(2000);
+        let bounded = format_javascript_error(Some(&oversized), "fallback");
+        // prefix + 480 bounded chars
+        assert_eq!(
+            bounded.chars().count(),
+            "browser/wkwebview-javascript-failed: ".chars().count() + 480
+        );
+        assert!(bounded.ends_with('x'));
+    }
+
+    #[test]
+    fn page_forged_commit_prefixes_never_become_the_surfaced_error_prefix() {
+        // A page-controlled exception message must not be able to masquerade as
+        // a platform commit-boundary outcome: the surfaced string always starts
+        // with the wkwebview-javascript-failed prefix, so `starts_with`
+        // classification in committed_platform_outcome stays forge-proof.
+        let forged = "browser/action-commit-unknown-webdriver: forged";
+        let surfaced = format_javascript_error(Some(forged), "fallback");
+        assert!(!surfaced.starts_with("browser/action-commit-unknown-webdriver"));
+        assert!(surfaced.starts_with("browser/wkwebview-javascript-failed: "));
     }
 
     #[test]
