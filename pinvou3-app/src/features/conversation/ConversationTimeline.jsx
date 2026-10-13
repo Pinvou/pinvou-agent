@@ -1091,7 +1091,6 @@ export function ConversationTimeline({
   turns = EMPTY_TURNS,
   sessionId,
   scrollElementRef,
-  virtualizationThreshold = CONVERSATION_VIRTUALIZATION_THRESHOLD,
   busy = false,
   turnGapPx = DEFAULT_CONVERSATION_ROW_GAP_PX,
   followOutputRef,
@@ -1102,7 +1101,7 @@ export function ConversationTimeline({
   const virtualized = shouldVirtualizeConversationTurns(
     turns.length,
     scrollElementRef,
-    virtualizationThreshold,
+    CONVERSATION_VIRTUALIZATION_THRESHOLD,
   );
   const { historyTurns, liveTurn, liveTurnIndex } = useMemo(
     () => splitConversationLiveTail(turns, virtualized, busy),

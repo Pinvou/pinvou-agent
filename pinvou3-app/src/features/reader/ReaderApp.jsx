@@ -52,7 +52,7 @@ export function ReaderApp() {
   const [activeKey, setActiveKey] = useState('');
   const [previews, setPreviews] = useState({});
   const [fontSize, adjustFontSize] = useViewerFontSize();
-  const [copied, copyText] = useCopyFlash(1200);
+  const [copied, copyText] = useCopyFlash();
   const fontBounds = viewerFontSizeBounds();
   const loadedKeysRef = useRef(new Set());
   // Appearance follows the app preference; while it is `system` the reader must

@@ -106,7 +106,6 @@ export function ResizableSidePanel({
   children,
   panelId,
   storageKey,
-  legacyPixelStorageKey = '',
   legacyPixelStorageKeys = EMPTY_STORAGE_KEYS,
   legacyRatioStorageKeys = EMPTY_STORAGE_KEYS,
   defaultRatio = 0.42,
@@ -127,7 +126,7 @@ export function ResizableSidePanel({
   const resizeCleanupRef = useRef(null);
   const normalizedDefaultRatio = normalizeSidePanelRatio(defaultRatio);
   const [legacyStorageKeys] = useState(() => ({
-    pixel: uniqueStorageKeys([legacyPixelStorageKey, ...legacyPixelStorageKeys]),
+    pixel: uniqueStorageKeys(legacyPixelStorageKeys),
     ratio: uniqueStorageKeys(legacyRatioStorageKeys),
   }));
   const [initialPreference] = useState(() => (
