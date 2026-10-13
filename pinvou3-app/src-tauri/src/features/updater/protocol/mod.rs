@@ -12,6 +12,15 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+/// Supplied channel response, never persisted settings or permission carry-over.
+pub(crate) fn check_supplied_channel_change_response_bytes(
+    bytes: &[u8],
+) -> Result<(), pinvou_upgrade_codec::ChannelChangeResponseError> {
+    decode_metadata(bytes)
+        .map_err(pinvou_upgrade_codec::ChannelChangeResponseError::Json)?
+        .assert_supplied_channel_change_response_contract()
+}
+
 /// Supplied helper-cleanup response contract, never protected-object deletion rights.
 pub(crate) fn check_supplied_helper_cleanup_response_bytes(
     bytes: &[u8],
@@ -405,6 +414,24 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_checks_channel_response_without_changing_settings_or_qualifications() {
+        use pinvou_upgrade_codec::ChannelChangeResponseError as ContractError;
+        let mut response = serde_json::json!({"protocolVersion":1,"requestId":"request-1",
+            "channel":"stable","channelRevision":1});
+        let check = |v: &serde_json::Value| {
+            check_supplied_channel_change_response_bytes(&serde_json::to_vec(v).unwrap())
+        };
+        for channel in ["stable", "beta", "internal"] {
+            response["channel"] = serde_json::json!(channel);
+            assert_eq!(check(&response), Ok(()));
+        }
+        response["channelRevision"] = serde_json::json!(0);
+        assert_eq!(check(&response), Err(ContractError::InvalidContract));
+        response["channelRevision"] = serde_json::json!(1);
+        assert_eq!(check(&response), Ok(()));
+    }
 
     #[test]
     fn feature_facade_checks_cleanup_response_without_authorizing_protected_object_deletion() {

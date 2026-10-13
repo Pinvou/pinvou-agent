@@ -1,6 +1,8 @@
 //! Bounded Upgrade V1 JSON and canonical bytes. Successful decoding is not
 //! signature verification, established Root trust, current eligibility or ACK.
 
+mod channel_change_response;
+pub use channel_change_response::ChannelChangeResponseError;
 mod helper_cleanup_response;
 pub use helper_cleanup_response::HelperCleanupResponseError;
 mod receipt_response;

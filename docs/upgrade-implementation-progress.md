@@ -4213,3 +4213,33 @@ vectors/dependencies/locks/CI/crypto/trust/limits/VERSION/gitlinks changes. Deta
 [helper-cleanup response](client-upgrade-helper-cleanup-response.md).
 Complete T27/T28/T31/T32 remain unfinished. Downloads retain no total/cumulative
 duration or retry cap.
+
+## T27 thirty-second batch - supplied channel-change response (2026-10-14)
+
+Scope: complete original channel-change response API contract. Fixed frozen
+closed Schema/common-only dependency, whole bounded canonical reparse. Original
+response contains no credential or extra semantic binding guard; three channel
+names and positive safe revision boundaries remain fixed. Unit success is not
+persisted settings/current selection/correlation or cross-channel permission.
+Outside-repository actual original complete Node generated40 controls with all
+named intended outcomes checked. Root task-scoped4 passed: integration3/actual
+original40 in0.95s, resourceunit1 in0.02s (eight unrelated units filtered);
+Clippy alltargets22.93s/codec+App facade format passed. Architecture/version/diff
+passed; CI policy51 in0.179s. Actual Windows updater App47 passed in0.30s after
+2m57s compilation. Root self-review confirms exact common-only/fixed closed
+contract, original channel/revision/required boundaries and no invented current
+revision/settings-write/request-correlation or permission carry-over rule.
+No existing helper changed and unchanged full116/31556 were not repeated.
+Both independent static reviews found no mandatory issue. Dependency
+independent4 passed (integration3/actual40 in1.09s/resourceunit1 in0.03s/eight
+unrelated units filtered, Clippy2.03s/fmt/App facade format/diff passed).
+Compatibility independent4 passed (integration3/actual40 in1.34s/resourceunit1
+in0.05s/eight unrelated units filtered, Clippy1.81s/fmt/App facade format/diff;
+CI policy51 in0.093s). Both actual Node22/both legacy environments, no old116/
+31556/App repeat. Both scoped reviews passed without mandatory findings and
+all processes closed. Both independent final documentation reviews passed
+before commit. No Schema/OpenAPI/profile/
+vectors/dependencies/locks/CI/crypto/trust/limits/VERSION/gitlinks changes. Details:
+[channel-change response](client-upgrade-channel-change-response.md).
+Complete T27/T28/T40 remain unfinished. Downloads retain no total/cumulative
+duration or retry cap.
