@@ -12,6 +12,34 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+pub(crate) fn check_supplied_candidate_bytes(
+    target_bytes: &[u8],
+    release_bytes: &[u8],
+    opening_bytes: &[u8],
+) -> Result<(), pinvou_upgrade_codec::CandidateBindingError> {
+    fn decode(
+        bytes: &[u8],
+    ) -> Result<
+        pinvou_upgrade_codec::SchemaCheckedEnvelope,
+        pinvou_upgrade_codec::CandidateBindingError,
+    > {
+        pinvou_upgrade_codec::decode_canonical_envelope(
+            bytes,
+            pinvou_upgrade_codec::InputKind::Metadata,
+        )
+        .map_err(pinvou_upgrade_codec::CandidateBindingError::Envelope)?
+        .check_full_schema()
+        .map_err(pinvou_upgrade_codec::CandidateBindingError::Schema)
+    }
+    let opening = decode_metadata(opening_bytes)
+        .map_err(pinvou_upgrade_codec::CandidateBindingError::Json)?;
+    pinvou_upgrade_codec::assert_supplied_candidate_binding(
+        &decode(target_bytes)?,
+        &decode(release_bytes)?,
+        &opening,
+    )
+}
+
 pub(crate) fn check_supplied_release_package_bytes(
     release_bytes: &[u8],
     package_bytes: &[u8],
@@ -266,6 +294,74 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_binds_candidate_raw_release_and_opening_without_selecting_it() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        use sha2::{Digest, Sha256};
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/envelopes.json"
+        )))
+        .unwrap();
+        let original = |role: &str| {
+            let v = vectors["vectors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["name"] == role)
+                .unwrap();
+            URL_SAFE_NO_PAD
+                .decode(v["envelopeBase64Url"].as_str().unwrap())
+                .unwrap()
+        };
+        let release = original("release");
+        let mut target: serde_json::Value = serde_json::from_slice(&original("target")).unwrap();
+        let hash: String = Sha256::digest(&release)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let opening = serde_json::json!({
+            "targetKey": target["signed"]["scope"]["targetKey"],
+            "deploymentId": "qa-deployment", "deploymentRevision": 1,
+            "rolloutId": "qa-rollout", "rolloutRevision": 1,
+            "releaseEnvelopeSha256": hash, "leafSalt": "0".repeat(64),
+        });
+        let opening_raw = serde_json::to_vec(&opening).unwrap();
+        let commitment = decode_metadata(&opening_raw)
+            .unwrap()
+            .rollout_commitment()
+            .unwrap();
+        target["signed"]["rolloutSetCommitment"] = serde_json::json!(commitment.commitment_hash());
+        target["signed"]["baselineRelease"]["envelopeSha256"] = serde_json::json!("0".repeat(64));
+        let raw = decode_metadata(&serde_json::to_vec(&target).unwrap())
+            .unwrap()
+            .canonical_bytes()
+            .unwrap();
+        assert!(check_supplied_candidate_bytes(&raw, &release, &opening_raw).is_ok());
+        target["signed"]["baselineRelease"]["envelopeSha256"] =
+            opening["releaseEnvelopeSha256"].clone();
+        let raw = decode_metadata(&serde_json::to_vec(&target).unwrap())
+            .unwrap()
+            .canonical_bytes()
+            .unwrap();
+        assert_eq!(
+            check_supplied_candidate_bytes(&raw, &release, &opening_raw),
+            Err(pinvou_upgrade_codec::CandidateBindingError::IsBaseline)
+        );
+        target["signed"]["baselineRelease"]["envelopeSha256"] = serde_json::json!("0".repeat(64));
+        let raw = decode_metadata(&serde_json::to_vec(&target).unwrap())
+            .unwrap()
+            .canonical_bytes()
+            .unwrap();
+        assert!(check_supplied_candidate_bytes(&raw, &release, &opening_raw).is_ok());
+        assert_eq!(
+            check_supplied_candidate_bytes(&raw, &release, b"null"),
+            Err(pinvou_upgrade_codec::CandidateBindingError::Opening(
+                pinvou_upgrade_codec::OpeningBindingError::Mismatch,
+            )),
+        );
+    }
 
     #[test]
     fn feature_facade_binds_release_package_after_matching_the_complete_reference() {

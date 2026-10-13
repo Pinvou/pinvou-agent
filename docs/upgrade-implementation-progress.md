@@ -3801,3 +3801,61 @@ production source. Details:
 [Release/Package relationship](client-upgrade-release-package-binding.md).
 Complete T27 authenticity/protected persistence/selection remains unfinished.
 Downloads retain no total/cumulative duration or retry cap.
+
+
+## T27 twenty-second batch - supplied candidate opening relationship (2026-10-14)
+
+The three original verifyCandidateRelease guards follow two full-Schema canonical
+Target/Release factories and a bounded opening Document. Complete original
+Release SHA must differ from the declared baseline SHA; unchanged B11 checks
+the exact seven-field opening/Target commitment with that same hash; Release
+targets must include the Target key. Signed Target Document is borrowed and
+only an internally computed64hex scalar gets a private Document construction.
+
+No verifyEnvelope or independent product/component/channel/release-ID context,
+trusted time/current membership/eligibility/selection, high-water persistence,
+ownership/execution/consumption/erasure guarantee is introduced. Cross context,
+zero signature/salt and Schema-valid reversed-time relationship positives remain
+explicit. This does not provide package or actual native file authentication.
+
+Four groups include all keys, baseline refusal, seven opening fields, exact raw
+signature changes/old opening refusal/rebinding positive, closed shape/duplicates/
+resources and wrong roles. The missing-target negative first rebuilds the opening
+with the actual changed Release SHA and Target commitment and independently
+proves B11 success plus baseline inequality before requiring TargetMissing.
+Original Node executes the precisely extracted original three statements and
+original assertOpening/sha256 after full original parser/encoding and the actual
+bindings/opening Schema. No fake verifier or whole-export equivalence is claimed.
+App checks coherent candidate, baseline counterpart and null opening.
+
+Initial four groups passed in5.27s, including608 actual original Node candidate
+guard cases, with no observed acceptance divergence.
+
+Both independent static reviews identified a test-only P2: the App null-opening
+negative used the already baseline-equal Target and stopped at IsBaseline.
+Root restored the nonbaseline hash, re-canonicalized that same Target, retained
+a legal opening positive and now requires exact Opening(Mismatch) for null.
+No production relationship change or acceptance divergence was found.
+
+No dependency/lock/Schema/CI/version/gitlink changes. Final regression selects
+92 applicable tests, filtering only the unchanged B15 31556-case Schema mutation
+test; CI retains complete93. Root final applicable92 passed with actual
+Node22.23.3 and both legacy oracle flags, including608 candidate cases in4.06s
+and7287 credential cases in52.32s. Schema golden and every other applicable
+group passed. Clippy all-targets -D warnings passed in28.29s with codec fmt
+and App facade rustfmt. Architecture/version/diff passed; CI51 passed in0.080s.
+Actual Windows App passed all38 updater tests in0.24s after2m55s build,
+including the repaired exact null-opening control; no App-wide pass is claimed.
+Root self-review found no remaining in-scope gap. Independent dependency review
+returned scoped PASS without remaining mandatory findings. ActualNode22.23.3+
+both legacy flags applicable92 passed, including608 candidate cases in4.08s and
+7287 credential cases in44.10s. Clippy all-targets -D warnings passed in2.38s,
+with fmt/diff. Independent compatibility review also returned scoped PASS without
+remaining mandatory findings. ActualNode22.23.3+both legacy flags applicable92
+passed, including608 candidate cases in4.11s and7287 credential cases in50.88s.
+Clippy passed in4.54s with fmt/diff; CI51 passed in0.052s. Both reviews explicitly
+filtered only the unchanged31556 Schema mutation test and did not repeat App/
+graphs/downloads. The App P2 is closed. Final scoped evidence/document reviews
+precede commit on unchanged production source. Details: [candidate relationship](client-upgrade-candidate-binding.md).
+Complete T27 authenticity/protected persistence/current selection stays unfinished.
+Downloads retain no total/cumulative duration or retry cap.
