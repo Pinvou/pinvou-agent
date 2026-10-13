@@ -74,7 +74,7 @@ export function CodeViewerModal({
   const resizeCleanupRef = useRef(null);
   const [size, setSize] = useState(savedViewerSize);
   const [fontSize, adjustViewerFontSize] = useViewerFontSize();
-  const [copied, copyText] = useCopyFlash(1200);
+  const [copied, copyText] = useCopyFlash();
 
   const fileName = preview?.name || name || pathBasename(relativePath);
 

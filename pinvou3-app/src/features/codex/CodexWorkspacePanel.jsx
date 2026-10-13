@@ -54,7 +54,7 @@ function WorkspaceTree({
   const entries = entriesByDirectory[directory] || [];
   // Copy-row-path + "copied" feedback (1200ms reset) consolidated into useCopyFlash (the inline
   // version wrote straight to navigator.clipboard via setTimeout, with no execCommand fallback).
-  const [copiedPath, copyRowPath] = useCopyFlash(1200);
+  const [copiedPath, copyRowPath] = useCopyFlash();
 
   return entries.map(entry => {
     const isDirectory = entry.kind === 'directory';

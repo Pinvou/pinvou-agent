@@ -4562,7 +4562,7 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
       const SceneIcon = sceneDisplay && sceneDisplay.Icon;
       const [editing, setEditing] = useState(false);
       const [val, setVal] = useState(mentionSplit.text);
-      const [copied, copyToClipboard] = useCopyFlash(1200);
+      const [copied, copyToClipboard] = useCopyFlash();
       // Edit-resend keeps layer 2 of the feature gate: with the feature off
       // only the body is resent — the injection block is never re-injected.
       function commit() {

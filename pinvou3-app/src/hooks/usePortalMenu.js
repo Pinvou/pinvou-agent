@@ -8,18 +8,20 @@
 // interaction PR, not to a refactor.
 import { useEffect, useState } from 'react';
 
-export function usePortalMenu({ width = 176, height = 184 } = {}) {
+const MENU_WIDTH = 176;
+
+export function usePortalMenu({ height = 184 } = {}) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuStyle, setMenuStyle] = useState(null);
 
   const closeMenu = () => setMenuOpen(false);
   const placeMenu = (target) => {
     const rect = target.getBoundingClientRect();
-    const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+    const left = Math.max(8, Math.min(rect.right - MENU_WIDTH, window.innerWidth - MENU_WIDTH - 8));
     const top = rect.bottom + 6 + height > window.innerHeight
       ? Math.max(8, rect.top - height - 6)
       : Math.max(8, rect.bottom + 6);
-    setMenuStyle({ left, top, width });
+    setMenuStyle({ left, top, width: MENU_WIDTH });
   };
   const toggleMenu = (e) => {
     e.stopPropagation();
