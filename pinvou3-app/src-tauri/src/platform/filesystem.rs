@@ -425,15 +425,31 @@ pub(crate) fn metadata_file_identity(metadata: &std::fs::Metadata) -> Option<Fil
 /// stay group/world-readable forever, so re-tighten the mode on every open
 /// (round-6 review). Windows relies on the owning profile directory's
 /// ACL, consistent with the rest of the application data tree.
+///
+/// The open is hardened against a planted or swapped path (round-17
+/// MAJOR-2 on #628, where a planted FIFO at an audit jsonl blocked the
+/// watcher's single drain task forever): `O_NOFOLLOW` refuses a symlink,
+/// `O_NONBLOCK` turns a FIFO open into an immediate error instead of a
+/// block, and the portable fstat refuses any non-regular entry that still
+/// made it through. Callers' existing write-failure handling absorbs the
+/// refusal.
 pub(crate) fn open_private_append_file(path: &Path) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).append(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::other(format!(
+            "{} is not a regular file",
+            path.display()
+        )));
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
