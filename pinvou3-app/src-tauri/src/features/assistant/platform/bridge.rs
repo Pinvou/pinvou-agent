@@ -2502,7 +2502,29 @@ impl Pinvou3Bridge {
         ]);
         // An auxiliary conversation (aux- prefix) is a scoped Q&A session:
         // its engine is isolated, mirroring the foundation's isolated-chat
-        // field set (runtime_threads.rs), not merely tool-denied. ADR-0024
+        // field set (runtime_threads.rs) IN SPIRIT, not merely tool-denied.
+        // One deliberate divergence (round-4 R2, disclosed): the scoped
+        // branch keeps `Feature::Mcp` enabled, so the foundation appends its
+        // registry-first instruction block after the persona
+        // (`Engine::new`, engine.rs — gated on `Feature::Mcp &&
+        // !runtime_chat_isolated`, and the host never sets the isolated
+        // flag). The block pressures toward `registry_sync`/`tool_search`/
+        // `start_registry_mcp_server` — invisible tools for the aux engine,
+        // contradicting the persona's "除它之外你没有其他工具". Setting
+        // `runtime_chat_isolated` wholesale is NOT the fix (it also swaps
+        // the system prompt, suppresses turn metadata, and flips relay
+        // participant flags — a much broader cut than this feature needs);
+        // the narrow foundation seam (skip the registry instruction on an
+        // explicit narrow allowlist) is upstream-first per AGENTS.md §2.
+        // Accepted interim: the allowlist binds at the catalog AND at
+        // per-call execution (turn_loop rejects hallucinated names), so the
+        // block opens no call surface — it is prompt noise the reminder
+        // (`AUX_SCOPED_TOOL_REMINDER`, merged per turn closer to the user
+        // message) answers with the exact-one-tool boundary. MCP
+        // boot-failure briefings can now also append to aux turns
+        // (foundation behavior with `Feature::Mcp` on) — surfaced, not
+        // suppressed, so a dead scoped server is visible to the user.
+        // ADR-0024
         // upgrades the zero-tool invariant to a scoped-read-only invariant —
         // the surface decision (`engine_pool::aux_tool_surface`, the one
         // seam both spawn and per-turn enforcement consume) yields either:
@@ -7276,6 +7298,73 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// Round-4 should-fix: the spawn-side demotion arm (scoped-config write
+    /// failure → zero-tool shape) must hold — a mutation returning the
+    /// scoped shape on writer failure stays green without this pin (the
+    /// half-state round-3 MAJOR-2 fixed). Drives the arm by removing the
+    /// released package from the isolated home: the entry builder judges
+    /// the launch target, so the writer returns None and the spawn demotes.
+    #[test]
+    fn aux_spawn_demotes_to_zero_tool_when_scoped_config_cannot_be_written() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-aux-demote-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: platform::paths::tests::ENV_LOCK held via locked_env; env
+        // writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+        // No ensure_package_released here: the isolated home has no released
+        // session-reader package, so the scoped entry cannot be built.
+        let bridge = fixture_bridge();
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-aux-demote-root-{}-{:p}",
+            std::process::id(),
+            &bridge
+        ));
+        let roots = SessionRoots {
+            execution: root.join("exec"),
+            ledger: root.join("ledger"),
+            bound: false,
+        };
+
+        let cfg = bridge.build_engine_config_for_session_roots("aux-xyz", roots);
+        assert_eq!(
+            cfg.allowed_tools,
+            Some(Vec::new()),
+            "a scoped-config write failure must demote to zero tools (fail closed)"
+        );
+        assert!(
+            !cfg.features.enabled(deepseek_tui::features::Feature::Mcp),
+            "the demoted engine keeps Feature::Mcp disabled"
+        );
+        assert_eq!(
+            cfg.mcp_config_path,
+            crate::platform::paths::mcp_config_path(),
+            "the demoted engine keeps the global mcp path (never a scoped boot)"
+        );
+        assert_eq!(cfg.instructions.len(), 1);
+        match &cfg.instructions[0] {
+            InstructionSource::Inline { content, .. } => assert_eq!(
+                content,
+                &Pinvou3Bridge::AUX_ZERO_TOOL_INSTRUCTIONS,
+                "the demoted engine carries the legacy zero-tool persona"
+            ),
+            InstructionSource::File(path) => panic!("demoted aux inline, got {path:?}"),
+        }
+        assert!(
+            !crate::platform::paths::aux_session_mcp_json("aux-xyz").exists(),
+            "no config file may be left behind by a failed scoped write"
+        );
+
+        // SAFETY: platform::paths::tests::ENV_LOCK held via locked_env; env
+        // writes are serialized.
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[cfg(feature = "benchmark-hooks")]

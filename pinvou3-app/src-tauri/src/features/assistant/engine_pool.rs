@@ -3300,8 +3300,18 @@ impl EnginePool {
                         tokio::spawn(async move { shell_reclaim_after_panic.finalize().await });
                     }
                 }
+                // abort() only requests cancellation: the forwarder
+                // can only be reaped once it next reaches an await — which
+                // may never happen. Dropping the join handle on timeout
+                // detaches it (tauri's JoinHandle has no abort-on-drop); a
+                // detached straggler lingers like an undelivered Shutdown
+                // does (accepted #483 residue), and holds no gate, pool, or
+                // session-map state, so it cannot re-block evict/delete.
                 forwarder.abort();
-                let _ = forwarder.await;
+                bounded_while_holding_turn_gate("forwarder drain", async move {
+                    let _ = forwarder.await;
+                })
+                .await;
             },
             || {
                 engine.finish_reclaimed_turn(
@@ -9419,6 +9429,8 @@ mod scheduled_model_tests {
             "\n    pub ",
             "\n    pub(crate) ",
             "\n    pub(super) ",
+            "\n    fn ",
+            "\n    async fn ",
             "\n    ///",
         ]
         .iter()
@@ -9461,6 +9473,37 @@ mod scheduled_model_tests {
         assert!(
             gate_at < remove_at,
             "the evictability recheck must precede the entry removal"
+        );
+    }
+
+    // issue #525 wiring pin: the reclaim drain runs under the session turn
+    // gate and the shared idle reaper walks candidates sequentially, so an
+    // unbounded abort-join can wedge one session's gate (and stall the
+    // reaper) forever — pin that production routes through the bounded
+    // drain and keeps no raw unbounded join.
+    #[test]
+    fn reclaim_forwarder_join_is_bounded_in_production() {
+        let src = include_str!("engine_pool.rs");
+        let src = &src[..src
+            .find("#[allow(clippy::await_holding_lock)]\nmod scheduled_model_tests {")
+            .expect("the test module marker must exist")];
+        let body = production_body(
+            src,
+            "async fn reclaim_engine_entry(&self, session_id: &str, entry: EngineEntry) {",
+        );
+        let abort_at = body
+            .find("forwarder.abort()")
+            .expect("reclaim must abort the forwarder");
+        let join_at = body
+            .find("bounded_while_holding_turn_gate(\"forwarder drain\", async move {")
+            .expect("the forwarder abort-join must be bounded (issue #525)");
+        assert!(
+            abort_at < join_at,
+            "the forwarder must be aborted before the bounded join"
+        );
+        assert!(
+            !body.contains("tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, forwarder)"),
+            "no direct unbounded forwarder join may remain in reclaim"
         );
     }
 }

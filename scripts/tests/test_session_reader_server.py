@@ -20,8 +20,9 @@ Covers the session-mention P2 acceptance points:
   union semantics; missing/corrupt manifest or state file allows the call;
 - scoped instance (--only-session, ADR-0024): startup validation refuses
   isolated-prefix pins; scoped read_session accepts only the pinned id
-  (siblings/isolated ids → structured not-readable; deleted parent →
-  structured not_found); scoped list_sessions returns exactly the pinned
+  (siblings/isolated ids AND the pinned-but-absent parent → one identical,
+  id-free not-readable denial — no existence oracle, round-3 M3(b));
+  scoped list_sessions returns exactly the pinned
   entry (empty when absent, no directory scan); the union feature gate and
   the untrusted envelope hold in scoped mode; an end-to-end scoped stdio
   journey.

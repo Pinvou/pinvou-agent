@@ -48,7 +48,9 @@ instances — which is exactly why the explicit --sessions-dir argument exists.
 
 Scoped instance (--only-session <id>, ADR-0024): the auxiliary side chat's
 engine is spawned with a per-aux MCP config whose session-reader entry appends
-`--only-session <parent_task_id>`. In that mode the scope is enforced
+`--only-session=<parent_task_id>` (the `=` form — the session-id charset
+admits leading `-`, and a two-token pin would make argparse read the value as
+an option; the shipped per-aux config emits the `=` form). In that mode the scope is enforced
 process-side and app-anchored (the host derives the parent from the aux id;
 the model can never claim or widen it): read_session accepts exactly the
 scoped session id (any other id — sibling, aux-, sched-, eval_ — is a
