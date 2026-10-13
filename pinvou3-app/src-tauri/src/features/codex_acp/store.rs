@@ -1700,8 +1700,20 @@ impl AcpConfigDefaultsStore {
                 .entry(backend)
                 .or_default()
                 .insert(config_id.to_string(), value_id.to_string());
+            // Round-54 audit A4: persist INSIDE the write guard. A
+            // get_after_reload acquiring the guard in the release-to-persist
+            // window used to reload the disk map over the not-yet-persisted
+            // insert, and this fn's persist then wrote the stomped map — the
+            // saved default silently lost in memory AND on disk (the
+            // reader's own answer was fine; the side effect was the loss).
+            // The providers store closed the same shape with persist_locked;
+            // now a reader either orders before the mutate or after the
+            // persist.
+            Self::persist_locked(&records, &self.path)?;
         }
-        self.persist()
+        #[cfg(test)]
+        set_persist_park_point();
+        Ok(())
     }
 
     pub fn set_all_if_absent(
@@ -1723,8 +1735,10 @@ impl AcpConfigDefaultsStore {
                 return Ok(false);
             }
             records.insert(backend, values);
+            // Round-54 audit A4: persist under the write guard — same
+            // lost-update window as `set` (see its comment).
+            Self::persist_locked(&records, &self.path)?;
         }
-        self.persist()?;
         Ok(true)
     }
 
@@ -1761,14 +1775,27 @@ impl AcpConfigDefaultsStore {
     }
 
     fn persist(&self) -> Result<()> {
+        let agents = self.records.read().clone();
+        Self::persist_locked(&agents, &self.path)
+    }
+
+    /// Writes the defaults file from an ALREADY-CAPTURED map: `set` /
+    /// `set_all_if_absent` pass the write-guarded records so the persist
+    /// lands inside the same critical section as the mutate (round-54
+    /// audit A4); `persist` snapshots under the read guard for the
+    /// remaining callers.
+    fn persist_locked(
+        records: &HashMap<AgentBackend, HashMap<String, String>>,
+        path: &Path,
+    ) -> Result<()> {
         // `atomic_write` stages inside the target's parent, so the directory
         // must exist first (unchanged from the hand-rolled writer).
-        if let Some(parent) = self.path.parent() {
+        if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
         let value = AcpConfigDefaultsFile {
             version: CONFIG_DEFAULTS_VERSION,
-            agents: self.records.read().clone(),
+            agents: records.clone(),
         };
         // Round-51 review: the hand-rolled pid-suffixed tmp+rename carried
         // no fsync, so power loss could land a truncated/empty
@@ -1779,7 +1806,7 @@ impl AcpConfigDefaultsStore {
         // would let two surfaces rename each other's half-written file into
         // place), the fsync-before-rename the sibling stores migrated for,
         // and the same two-arm tmp cleanup.
-        crate::platform::filesystem::atomic_write(&self.path, &serde_json::to_vec_pretty(&value)?)?;
+        crate::platform::filesystem::atomic_write(path, &serde_json::to_vec_pretty(&value)?)?;
         Ok(())
     }
 }
@@ -1800,6 +1827,33 @@ pub fn validate_codex_project_workspace(path: &Path) -> Result<PathBuf> {
     Ok(crate::platform::os::platform_compat_path(
         &canonical.to_string_lossy(),
     ))
+}
+
+#[cfg(test)]
+pub(crate) mod set_persist_park {
+    //! Test-only seam for the lost-update regression test: `set` parks at
+    //! the point after its critical section so the test can run
+    //! `get_after_reload` in exactly the window the round-54 audit's
+    //! lost-update interleave needs (with the fix, the persist has already
+    //! run inside the guard by the time the park signals).
+
+    use std::sync::mpsc::Sender;
+    use std::sync::{Condvar, Mutex};
+
+    pub static ARMED: Mutex<Option<Sender<()>>> = Mutex::new(None);
+    pub static RELEASE: Mutex<bool> = Mutex::new(false);
+    pub static RELEASE_CV: Condvar = Condvar::new();
+}
+
+#[cfg(test)]
+fn set_persist_park_point() {
+    if let Some(tx) = set_persist_park::ARMED.lock().unwrap().take() {
+        let _ = tx.send(());
+        let mut released = set_persist_park::RELEASE.lock().unwrap();
+        while !*released {
+            released = set_persist_park::RELEASE_CV.wait(released).unwrap();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1837,6 +1891,62 @@ mod tests {
             path: path.to_path_buf(),
             records: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Round-54 audit A4: `set` must persist INSIDE the write guard. A
+    /// `get_after_reload` running in the guard-release-to-persist window
+    /// reloads the disk map over the not-yet-persisted insert and the
+    /// subsequent persist writes the stomped map — the saved default is
+    /// silently lost in memory and on disk. The park seam makes the
+    /// interleave deterministic: the worker signals at the seam, the main
+    /// thread reloads, and the value must survive both the reload and the
+    /// eventual persist.
+    #[test]
+    fn set_survives_concurrent_get_after_reload() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-acp-defaults-lost-update-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let path = root.join("acp-agent-defaults.json");
+        let store = AcpConfigDefaultsStore {
+            path: path.clone(),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let worker_store = AcpConfigDefaultsStore {
+            path: path.clone(),
+            records: Arc::clone(&store.records),
+        };
+
+        // Seed the disk first: reload_into is a no-op while the file is
+        // absent, so the audited stomp (a reload REPLACING the memory map)
+        // needs an existing file with sibling content to restore.
+        store
+            .set(AgentBackend::CodexAcp, "config-0", "model-0")
+            .expect("seed set must succeed");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        *set_persist_park::ARMED.lock().unwrap() = Some(tx);
+        let handle = std::thread::spawn(move || {
+            worker_store
+                .set(AgentBackend::CodexAcp, "config-a", "model-b")
+                .expect("set under the park must succeed");
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(30))
+            .expect("worker reached the park point");
+        let seen = store.get_after_reload(AgentBackend::CodexAcp);
+        assert_eq!(
+            seen.get("config-a").map(String::as_str),
+            Some("model-b"),
+            "get_after_reload in the park window must observe the concurrent set"
+        );
+        *set_persist_park::RELEASE.lock().unwrap() = true;
+        set_persist_park::RELEASE_CV.notify_all();
+        handle.join().unwrap();
+        // And the disk truth carries it after everything settles.
+        let reread = store.get_after_reload(AgentBackend::CodexAcp);
+        assert_eq!(reread.get("config-a").map(String::as_str), Some("model-b"));
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
