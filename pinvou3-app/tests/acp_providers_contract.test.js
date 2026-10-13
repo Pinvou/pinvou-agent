@@ -34,6 +34,7 @@ const CREDENTIALS = fs.readFileSync(
   'utf8'
 );
 const STORE = fs.readFileSync(path.join(TAU, 'features', 'codex_acp', 'store.rs'), 'utf8');
+const FILESYSTEM = fs.readFileSync(path.join(TAU, 'platform', 'filesystem.rs'), 'utf8');
 
 // ---------------------------------------------------------------- 1. 命令注册
 
@@ -107,29 +108,36 @@ for (const file of [CLAUDE, CODEX, KIMI, PROVIDERS_MOD]) {
 // round-49 review: `persist_locked` 的正式写入路径是共享
 // `platform::filesystem::atomic_write`（唯一 pid+nanos staging + fsync）；
 // 旧的 `json.{}.tmp` 拼写只存在于已被替换的空转测试里，本 pin 改锚真实
-// 生产调用；模块内本地第二 helper 的 pid staging 由下一个 pin 锚定。
+// 生产调用；唯一的 pid+nanos staging 名改锚共享实现（platform/filesystem.rs）。
 assert.ok(
   PROVIDERS_MOD.includes('crate::platform::filesystem::atomic_write'),
   'persist_locked 必须走共享 atomic_write（唯一 pid+nanos staging + fsync）'
 );
+// round-52 fix wave: the CLI-config `atomic_write` helper in this module
+// moved off its hand-rolled `tmp.{pid}` + rename staging onto the shared
+// `filesystem::atomic_write_private` (the hand-rolled pair carried no
+// fsync, so a power cut could land a truncated CLI config, and its fixed
+// staging name let two surfaces trample each other). The pin re-anchors
+// on the shared helper — which carries the unique per-writer staging, the
+// fsync-before-rename, and the two-arm tmp cleanup — and now also rejects
+// a bare hand-rolled `fs::rename(` persist sneaking back into the module
+// outside the helper.
 assert.ok(
-  PROVIDERS_MOD.includes('std::process::id()') &&
-    PROVIDERS_MOD.includes('fs::rename'),
-  '本地写入助手必须 pid 后缀 staging + fs::rename 原子替换'
+  PROVIDERS_MOD.includes('crate::platform::filesystem::atomic_write_private'),
+  'CLI 配置写入必须走共享 atomic_write_private（唯一 staging + fsync + 0600 临时文件）'
 );
-// round-47 review: the module has a SECOND pid-staged helper — the local
-// `atomic_write` stages `tmp.{pid}` (the pin above anchors the shared
-// `platform::filesystem::atomic_write` call in `persist_locked`; this one
-// anchors the local helper's spelling). If that helper's staging name
-// regressed to a fixed suffix, the pin below would still pass.
 assert.ok(
-  PROVIDERS_MOD.includes("tmp.{}") &&
-    PROVIDERS_MOD.includes('std::process::id()'),
-  '共享 atomic_write 助手必须同样使用 pid 后缀 staging 名'
+  !/^\s*fs::rename\(/m.test(PROVIDERS_MOD),
+  'providers 不得再留手写 fs::rename 暂存（统一走 atomic_write_private）'
 );
 assert.ok(
   PROVIDERS_MOD.includes('pinvou3-bak'),
   '首次受管写入必须备份 .pinvou3-bak'
+);
+assert.ok(
+  FILESYSTEM.includes('std::process::id()') &&
+    FILESYSTEM.includes('.{file_name}.tmp-{token}'),
+  '共享 atomic_write 实现必须保留 pid+nanos 唯一 staging 名'
 );
 // round-52 fix wave: AcpConfigDefaultsStore::persist moved off its local
 // hand-rolled `json.tmp.{pid}` + rename staging onto the shared

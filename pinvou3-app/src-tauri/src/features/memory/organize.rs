@@ -348,7 +348,7 @@ impl OrganizeSnapshot {
     pub(super) fn load() -> std::io::Result<Self> {
         Ok(Self {
             profile: io::load_profile()?,
-            preferences: io::load_preferences()?,
+            preferences: io::list_preferences()?,
             work_context: io::load_work_context()?,
             current_focus: io::load_current_focus()?,
             recent_activity: io::load_recent_activity()?,
@@ -725,7 +725,7 @@ impl FreshOrganizeState {
     /// holding [`io::write_lock`] across the whole apply phase.
     fn load() -> std::io::Result<Self> {
         Ok(Self {
-            preferences: io::load_preferences()?,
+            preferences: io::list_preferences()?,
             work_context: io::load_work_context()?,
             current_focus: io::load_current_focus()?,
             recent_activity: io::load_recent_activity()?,

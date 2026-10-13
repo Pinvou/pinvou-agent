@@ -105,11 +105,8 @@ pub struct ScheduledTaskState {
     operation_locks: ParkingMutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
     pool: Option<EnginePool>,
     fallback_model: String,
-    #[allow(dead_code)]
     scheduler_cancel: Option<CancellationToken>,
-    #[allow(dead_code)]
     scheduler_handle: Option<tokio::task::JoinHandle<()>>,
-    #[allow(dead_code)]
     retention_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -457,9 +454,6 @@ impl ScheduledTaskState {
     ) -> Result<ScheduledTaskDto, String> {
         let _operation = self.lock_operation(&id).await;
         let manager = self.automations.lock().await;
-        let _current_exists = manager
-            .get_automation(&id)
-            .map_err(|err| format!("Failed to update scheduled task '{id}': {err}"))?;
         let requested_model_update = input.model.clone();
         let requested_model_id = input.model_id.clone();
         let requires_model_binding = requested_model_id.is_some();
@@ -588,11 +582,13 @@ impl ScheduledTaskState {
             .map_err(|err| format!("Failed to run scheduled task '{id}': {err}"))?;
         let session_titles = scheduled_session_titles(&self.sessions)
             .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
-        Ok(map_scheduled_run(
+        Ok(map_scheduled_run_with_task(
             run,
             &self.sessions,
             &self.read_state,
             &session_titles,
+            None,
+            None,
         ))
     }
 
@@ -918,19 +914,24 @@ impl ScheduledTaskState {
     }
 }
 
-fn default_automation_model(bridge: Option<&Pinvou3Bridge>) -> String {
+/// The active model configured in the user's saved prefs, if any; both model
+/// selectors below layer their own fallbacks on top of this read.
+fn prefs_model() -> Option<String> {
     UserPrefs::load()
         .active_model()
         .map(|model| model.model.clone())
+}
+
+fn default_automation_model(bridge: Option<&Pinvou3Bridge>) -> String {
+    prefs_model()
         .or_else(|| bridge.map(Pinvou3Bridge::model))
         .unwrap_or_else(|| "default-model".to_string())
 }
 
+/// The model new automation runs resolve to right now: the saved active
+/// model, else the caller's already-computed fallback.
 fn current_automation_model(fallback: &str) -> String {
-    UserPrefs::load()
-        .active_model()
-        .map(|model| model.model.clone())
-        .unwrap_or_else(|| fallback.to_string())
+    prefs_model().unwrap_or_else(|| fallback.to_string())
 }
 
 /// 会话归属判定的可注入核心：`session_exists` 决定 thread_id 是否仍指向一个
@@ -1281,15 +1282,6 @@ fn map_scheduled_task_from_manager(
         task_kinds,
         ui_metadata,
     ))
-}
-
-fn map_scheduled_run(
-    record: AutomationRunRecord,
-    sessions: &SessionStore,
-    read_state: &ScheduledRunReadStore,
-    session_titles: &HashMap<String, String>,
-) -> ScheduledRunDto {
-    map_scheduled_run_with_task(record, sessions, read_state, session_titles, None, None)
 }
 
 fn map_scheduled_run_with_task(
@@ -3864,11 +3856,13 @@ mod tests {
             error: None,
         };
 
-        let owned = serde_json::to_value(map_scheduled_run(
+        let owned = serde_json::to_value(map_scheduled_run_with_task(
             owned_run.clone(),
             &store,
             &read_state,
             &session_titles,
+            None,
+            None,
         ))
         .expect("serialize owned run");
         assert_eq!(
@@ -3879,7 +3873,7 @@ mod tests {
         assert!(owned.get("outputPaths").is_none());
         assert!(owned.get("messageId").is_none());
 
-        let mismatched = serde_json::to_value(map_scheduled_run(
+        let mismatched = serde_json::to_value(map_scheduled_run_with_task(
             AutomationRunRecord {
                 automation_id: "automation-2".to_string(),
                 ..owned_run.clone()
@@ -3887,6 +3881,8 @@ mod tests {
             &store,
             &read_state,
             &session_titles,
+            None,
+            None,
         ))
         .expect("serialize mismatched run");
         assert!(
@@ -3900,11 +3896,13 @@ mod tests {
         )
         .expect("remove scheduled session payload");
         session_titles.remove(&saved.metadata.id);
-        let missing_payload = serde_json::to_value(map_scheduled_run(
+        let missing_payload = serde_json::to_value(map_scheduled_run_with_task(
             owned_run,
             &store,
             &read_state,
             &session_titles,
+            None,
+            None,
         ))
         .expect("serialize run with missing session payload");
         assert!(

@@ -279,10 +279,14 @@ impl AcpProvidersStore {
         }
     }
 
+    // Test-only seam; production uses the *_fresh_locked / *_locked twins.
+    #[cfg(test)]
     pub(crate) fn state(&self, agent: &str) -> AgentProvidersState {
         self.agents.read().get(agent).cloned().unwrap_or_default()
     }
 
+    // Test-only seam; production uses the *_fresh_locked / *_locked twins.
+    #[cfg(test)]
     pub fn current(&self, agent: &str) -> Option<String> {
         self.agents
             .read()
@@ -310,6 +314,8 @@ impl AcpProvidersStore {
     /// mutates, and persists inside ONE write-guard critical section (see
     /// `persist_locked`): at any quiescent point the file is the latest
     /// truth, and re-reading it can only pull in the other surface's writes.
+    // Test-only seam; production uses the *_fresh_locked / *_locked twins.
+    #[cfg(test)]
     pub fn upsert(&self, agent: &str, record: ProviderRecord) -> Result<()> {
         let _section = self.section_lock();
         self.upsert_locked(agent, record)
@@ -505,6 +511,8 @@ impl AcpProvidersStore {
         })
     }
 
+    // Test-only seam; production uses the *_fresh_locked / *_locked twins.
+    #[cfg(test)]
     pub fn official_default_model(&self, agent: &str) -> Option<String> {
         self.agents
             .read()
@@ -530,6 +538,8 @@ impl AcpProvidersStore {
 
     /// 一次持久化设置切换状态（current + official_default_model）：
     /// 两次独立 persist 中途失败会留下半切换态（复审低危 3）。
+    // Test-only seam; production uses the *_fresh_locked / *_locked twins.
+    #[cfg(test)]
     pub fn set_switch_state(
         &self,
         agent: &str,

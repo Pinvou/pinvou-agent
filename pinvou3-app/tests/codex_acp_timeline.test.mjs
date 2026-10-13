@@ -624,9 +624,12 @@ try {
   assert.ok(codexCommands.includes('list_codex_acp_sessions'));
   assert.ok(codexCommands.includes('workspace_path: Option<String>'), 'Codex creation must accept an explicit project directory');
   assert.ok(codexCommands.includes('agent_id: Option<String>')
-    && codexCommands.includes('let bind_session_id = session.metadata.id.clone();')
-    && /set_acp_workspace\(\s*&bind_session_id,\s*backend,/.test(codexCommands),
-  'code-session creation must bind the selected ACP Agent for the lifetime of the session (the binding now joins on a blocking worker; pin the moved id chain)');
+    && codexCommands.includes('let bind_session_id')
+    && codexCommands.indexOf('let bind_session_id')
+      < codexCommands.search(/set_acp_workspace\(\s*&bind_session_id,\s*backend,/),
+  'code-session creation must bind the selected ACP Agent for the lifetime of the session '
+    + '(the binding now joins on a blocking worker; pin the moved id chain by ordering — '
+    + "indexOf('let bind_session_id') must precede its set_acp_workspace(&bind_session_id, backend, use)");
   assert.ok(codexCommands.includes('or(Some("pinvou"))'),
     'code-session creation without an explicit agent must default to the built-in Pinwu backend');
   assert.ok(codexCommands.includes('pub async fn login_acp_agent')

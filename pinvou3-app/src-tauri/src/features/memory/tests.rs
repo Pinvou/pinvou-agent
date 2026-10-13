@@ -14,7 +14,7 @@ use crate::platform::prefs::ModelPreset;
 
 use super::io::{
     commit_topic_migration_unlocked_with, compact_timed_memory_store_unlocked, current_focus_path,
-    enqueue_memory_candidate, is_delivery_tool, load_preferences, load_profile,
+    enqueue_memory_candidate, is_delivery_tool, list_preferences, load_profile,
     pending_item_from_suggestion, recent_activity_path,
     reconcile_topic_migration_journals_unlocked, summarize_tool_start,
     topic_migration_journal_path, upsert_timed_memory_unlocked, write_lock,
@@ -443,7 +443,7 @@ fn preference_and_work_context_topic_updates_commit_before_old_cleanup() {
     assert_eq!(context.value.topic, "project_context");
     assert!(!old_preference_path.exists());
     assert!(!old_context_path.exists());
-    assert_eq!(load_preferences().unwrap().len(), 1);
+    assert_eq!(list_preferences().unwrap().len(), 1);
     assert_eq!(load_work_context().unwrap().len(), 1);
     drop(home);
 }
@@ -483,7 +483,7 @@ fn topic_migration_lifecycle_hides_intermediate_duplicate_from_overview() {
     });
     ready.wait();
     let (sent, received) = std::sync::mpsc::channel();
-    let reader = std::thread::spawn(move || sent.send(load_preferences()).unwrap());
+    let reader = std::thread::spawn(move || sent.send(list_preferences()).unwrap());
     assert!(
         received
             .recv_timeout(std::time::Duration::from_millis(30))
@@ -894,7 +894,7 @@ fn authoritative_writes_commit_when_derived_runtime_source_is_unavailable() {
     })
     .unwrap();
     confirm_pending_memory(&preference.id).unwrap().unwrap();
-    let preference_id = load_preferences().unwrap()[0].id.clone();
+    let preference_id = list_preferences().unwrap()[0].id.clone();
 
     fs::create_dir_all(recent_work_path().parent().unwrap()).unwrap();
     fs::write(recent_work_path(), "not-json\n").unwrap();
@@ -910,11 +910,11 @@ fn authoritative_writes_commit_when_derived_runtime_source_is_unavailable() {
     .unwrap();
     assert_eq!(updated.value.text, "Use detailed answers");
     assert!(updated.cleanup_warning.is_none());
-    assert_eq!(load_preferences().unwrap()[0].text, "Use detailed answers");
+    assert_eq!(list_preferences().unwrap()[0].text, "Use detailed answers");
     assert!(render_memory_block().is_err());
 
     assert!(delete_preference(&preference_id).unwrap());
-    assert!(load_preferences().unwrap().is_empty());
+    assert!(list_preferences().unwrap().is_empty());
     assert!(render_memory_block().is_err());
 
     let profile_candidate = enqueue_memory_candidate(MemorySuggestion {
@@ -1327,7 +1327,7 @@ fn scenario_review_writes_long_and_recent_memories() {
 
     let profile = load_profile().unwrap();
     assert_eq!(profile.identity.call_name, "欣哥");
-    assert!(load_preferences().unwrap().is_empty());
+    assert!(list_preferences().unwrap().is_empty());
     let pending = load_pending_memory().unwrap();
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].kind, "preference");
@@ -1359,7 +1359,7 @@ fn scenario_review_writes_long_and_recent_memories() {
     assert!(!block_before_confirm.contains("回答默认先给结论"));
 
     confirm_pending_memory(&pending[0].id).unwrap().unwrap();
-    let preferences = load_preferences().unwrap();
+    let preferences = list_preferences().unwrap();
     assert_eq!(preferences.len(), 1);
     assert_eq!(preferences[0].topic, "answer_style");
     assert!(preferences[0].text.contains("先给结论"));
@@ -1405,7 +1405,7 @@ fn scenario_review_filters_low_quality_memory() {
     assert!(outcome.events.is_empty());
     assert!(outcome.pending.is_empty());
     assert!(load_profile().unwrap().identity.call_name.is_empty());
-    assert!(load_preferences().unwrap().is_empty());
+    assert!(list_preferences().unwrap().is_empty());
     assert!(load_work_context().unwrap().is_empty());
     assert!(load_current_focus().unwrap().is_empty());
     assert!(load_recent_activity().unwrap().is_empty());
@@ -2358,7 +2358,7 @@ async fn organize_memory_merges_duplicates_and_deletes_stale_focus() {
 
     // After the merge only one preference remains, holding the merged content;
     // the stale focus entry is deleted.
-    let preferences = load_preferences().unwrap();
+    let preferences = list_preferences().unwrap();
     assert_eq!(preferences.len(), 1);
     assert!(preferences[0].text.contains("再给步骤"));
     assert!(load_current_focus().unwrap().is_empty());
@@ -2494,7 +2494,7 @@ async fn organize_update_ignores_model_topic_and_never_migrates_buckets() {
     let report = organize_memory_with_llm(&bridge, None).await.unwrap();
 
     assert_eq!(report.updated["preference"], 1);
-    let preferences = load_preferences().unwrap();
+    let preferences = list_preferences().unwrap();
     assert_eq!(
         preferences.len(),
         2,
@@ -2561,7 +2561,7 @@ async fn organize_merge_skips_source_deletion_when_keep_update_fails() {
     // The source entry survives, nothing is counted, but a "merge skipped"
     // warning is left behind.
     assert!(
-        load_preferences()
+        list_preferences()
             .unwrap()
             .iter()
             .any(|item| item.id == id_b),
@@ -2782,7 +2782,7 @@ async fn organize_memory_canceled_before_apply_applies_nothing() {
 
     assert!(error.to_string().contains("canceled"), "{error:#}");
     assert!(
-        load_preferences()
+        list_preferences()
             .unwrap()
             .iter()
             .any(|item| item.id == id_a),
@@ -3294,7 +3294,7 @@ async fn organize_skips_targets_edited_during_the_llm_call() {
     let report = organize_memory_with_llm(&bridge, None).await.unwrap();
 
     // Every edited value survives the stale action aimed at its id.
-    let preferences = load_preferences().unwrap();
+    let preferences = list_preferences().unwrap();
     let find_preference = |id: &str| {
         preferences
             .iter()

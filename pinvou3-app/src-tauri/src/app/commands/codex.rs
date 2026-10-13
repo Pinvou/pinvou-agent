@@ -18,7 +18,7 @@ use crate::features::codex_acp::workspace::{
 use crate::features::codex_acp::{
     AcpAgentDescriptor, AcpEventEnvelope, AcpPool, AgentBackend, CodexAcpPendingElicitation,
     CodexAcpPendingPermission, CodexAcpSessionInfo, CodexAcpStatus, CodexAcpWorkspaceInfo,
-    CodexWorkspaceKind, SessionAgentStore, validate_codex_project_workspace,
+    CodexWorkspaceKind, SessionAgentStore, on_blocking_labeled, validate_codex_project_workspace,
 };
 use crate::features::sessions::{SessionKind, SessionStore};
 
@@ -43,20 +43,6 @@ fn ensure_codex_workspace_root(
             .with_context(|| format!("创建 Codex 临时工作目录失败: {}", path.display()))?;
     }
     Ok(())
-}
-
-/// Round-49 review 的 join 脚手架（ACP 与原生会话创建共用）：session 索引
-/// 变更器会轮询跨进程段锁（至 SECTION_LOCK_TIMEOUT）并整体重写
-/// session-agents.json，因此放到 `spawn_blocking` 工作线程上执行，避免
-/// 异步运行时 worker（它们同时驱动 engine 会话泵）被挂死。join 失败与
-/// 任务本身失败统一为 anyhow 错误向上传播，由调用方按各自语境包装。
-async fn join_session_index_task<F>(body: F) -> anyhow::Result<()>
-where
-    F: FnOnce() -> anyhow::Result<()> + Send + 'static,
-{
-    tauri::async_runtime::spawn_blocking(body)
-        .await
-        .map_err(|error| anyhow::anyhow!("session store task join failed: {error}"))?
 }
 
 pub(crate) type WorkspaceBindingVerifier<'a> =
@@ -832,7 +818,7 @@ pub(crate) async fn create_codex_acp_session_with_workspace_binding(
     let agents = acp_pool.agents().clone();
     let bind_session_id = session.metadata.id.clone();
     let bind_workspace = project_workspace.clone();
-    if let Err(error) = join_session_index_task(move || {
+    if let Err(error) = on_blocking_labeled("session store task join failed", move || {
         agents.set_acp_workspace(&bind_session_id, backend, kind, bind_workspace)
     })
     .await
@@ -903,7 +889,7 @@ async fn create_code_native_session(
     let agents = acp_pool.agents().clone();
     let bind_session_id = session.metadata.id.clone();
     let bind_workspace = project_workspace.clone();
-    if let Err(error) = join_session_index_task(move || {
+    if let Err(error) = on_blocking_labeled("session store task join failed", move || {
         agents.bind_code_native_session(&bind_session_id, kind, bind_workspace)
     })
     .await

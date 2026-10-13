@@ -802,7 +802,7 @@ impl KnowledgeService {
                         |n| {
                             scan_state.lock().scanned = base + n;
                         },
-                        // Each heartbeat stands for RAW_HEARTBEAT enumerated
+                        // Each heartbeat stands for HEARTBEAT enumerated
                         // entries; counting ticks (not the per-root raw
                         // value, which restarts at 0 for every root) keeps
                         // the counter monotonic across roots with no
@@ -914,7 +914,7 @@ fn expand_import_roots(
     // `raw_heartbeat_ticks_on_a_pruned_heavy_tree` shape) enumerating for
     // minutes with nothing to count: the job row stayed frozen and the
     // CLI's stall bound interrupted a healthy walk on every attempt.
-    // `walk_pruned_with` invokes the callback on its own RAW_HEARTBEAT
+    // `walk_pruned_with` invokes the callback on its own HEARTBEAT
     // cadence over every enumerated entry, prune survivors or not; one
     // callback = one job-row touch.
     for root in roots {

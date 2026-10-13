@@ -1366,7 +1366,7 @@ pub fn confirmed_pending_memory_is_materialized(item: &PendingMemoryItem) -> boo
             .unwrap_or(false),
         "preference" => {
             let topic = normalize_preference_topic(&item.topic);
-            load_preferences()
+            list_preferences()
                 .map(|prefs| {
                     prefs.iter().any(|pref| {
                         normalize_preference_topic(&pref.topic) == topic
@@ -1771,11 +1771,11 @@ pub(super) fn delete_preference_unlocked(id: &str) -> io::Result<bool> {
     Ok(false)
 }
 
-/// The CLI-facing preference read: the same self-heal-on-read reconcile as
-/// the GUI command, without its `cleanup_warning` (the warning surfaces
-/// through [`list_preferences_with_cleanup`], which the CLI's list/doctor
-/// lanes use directly).
-pub fn load_preferences() -> io::Result<Vec<PreferenceFile>> {
+/// The shared preference read for both surfaces: the same self-heal-on-read
+/// reconcile as the GUI command, without its `cleanup_warning` (the warning
+/// surfaces through [`list_preferences_with_cleanup`], which the CLI's
+/// list/doctor lanes use directly).
+pub fn list_preferences() -> io::Result<Vec<PreferenceFile>> {
     list_preferences_with_cleanup().map(|result| result.value)
 }
 

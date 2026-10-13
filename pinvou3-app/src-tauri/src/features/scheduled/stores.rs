@@ -259,8 +259,6 @@ pub(crate) trait VersionedRegistry:
     const QUARANTINE: QuarantineStrategy;
     /// Human-readable label used in log/error messages for this store.
     const LABEL: &'static str;
-    /// Fallback file-name stem when the on-disk path has no file component.
-    const QUARANTINE_FALLBACK_NAME: &'static str;
     /// Store-specific suffix appended to quarantine / read-failure warnings.
     const WARN_SUFFIX: &'static str;
 }
@@ -860,7 +858,9 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                 let file_name = path
                     .file_name()
                     .and_then(|name| name.to_str())
-                    .unwrap_or(T::QUARANTINE_FALLBACK_NAME);
+                    // Every store path is built with a file component; the
+                    // literal only covers a degenerate custom path.
+                    .unwrap_or("registry.json");
                 let quarantine_path =
                     path.with_file_name(format!("{file_name}.invalid-{timestamp}"));
                 match std::fs::rename(path, &quarantine_path) {
@@ -990,7 +990,6 @@ impl VersionedRegistry for ScheduledTaskUiMetadataRegistry {
     const SUPPORTED_VERSION: u32 = SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION;
     const QUARANTINE: QuarantineStrategy = QuarantineStrategy::LogInPlace;
     const LABEL: &'static str = "scheduled task UI metadata";
-    const QUARANTINE_FALLBACK_NAME: &'static str = "scheduled-task-ui-metadata.json";
     const WARN_SUFFIX: &'static str = "";
 
     fn schema_version(&self) -> u32 {
@@ -1017,7 +1016,6 @@ impl VersionedRegistry for ScheduledHistoryArchiveRegistry {
     const SUPPORTED_VERSION: u32 = SCHEDULED_HISTORY_ARCHIVE_SCHEMA_VERSION;
     const QUARANTINE: QuarantineStrategy = QuarantineStrategy::Rename;
     const LABEL: &'static str = "scheduled history archive";
-    const QUARANTINE_FALLBACK_NAME: &'static str = "history-archive.json";
     const WARN_SUFFIX: &'static str = "; deleted-task run history may be unavailable";
 
     fn schema_version(&self) -> u32 {
@@ -1036,7 +1034,6 @@ impl VersionedRegistry for ScheduledTaskKindRegistry {
     const SUPPORTED_VERSION: u32 = SCHEDULED_TASK_KIND_SCHEMA_VERSION;
     const QUARANTINE: QuarantineStrategy = QuarantineStrategy::Rename;
     const LABEL: &'static str = "scheduled task kind";
-    const QUARANTINE_FALLBACK_NAME: &'static str = "task-kinds.json";
     const WARN_SUFFIX: &'static str = "; scheduled tasks will run as ordinary chat tasks";
 
     fn schema_version(&self) -> u32 {
@@ -1063,7 +1060,6 @@ impl VersionedRegistry for ScheduledTaskModelBindingRegistry {
     const SUPPORTED_VERSION: u32 = SCHEDULED_MODEL_BINDING_SCHEMA_VERSION;
     const QUARANTINE: QuarantineStrategy = QuarantineStrategy::Rename;
     const LABEL: &'static str = "scheduled model binding state";
-    const QUARANTINE_FALLBACK_NAME: &'static str = "model-bindings.json";
     const WARN_SUFFIX: &'static str = "; scheduled tasks will fall back to wire model names";
 
     fn schema_version(&self) -> u32 {
@@ -1082,7 +1078,6 @@ impl VersionedRegistry for ScheduledRunReadRegistry {
     const SUPPORTED_VERSION: u32 = SCHEDULED_RUN_READ_STATE_SCHEMA_VERSION;
     const QUARANTINE: QuarantineStrategy = QuarantineStrategy::Rename;
     const LABEL: &'static str = "scheduled run read state";
-    const QUARANTINE_FALLBACK_NAME: &'static str = "scheduled-run-read-state.json";
     const WARN_SUFFIX: &'static str = "; treating all runs as unread";
 
     fn schema_version(&self) -> u32 {

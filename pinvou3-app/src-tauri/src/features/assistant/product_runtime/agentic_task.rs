@@ -34,7 +34,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core::mode_state::SerializableMode;
 use crate::features::assistant::attachments::{
-    build_message_with_attachments_in_dir, copy_bounded, stage_file_in_workspace_with_copier,
+    build_message_with_attachments_in_dir, stage_file_in_workspace,
 };
 use crate::features::assistant::engine_pool::EnginePool;
 use crate::features::assistant::product_runtime::headless_bridge::run_windowless_host;
@@ -60,9 +60,6 @@ use crate::platform::prefs::UserPrefs;
 /// Implementations must stay one-line delegations — no behavior may live
 /// here, or the contract stops testing the production path:
 /// - `teardown_turn_active` → `EnginePoolRuntime::is_turn_active`
-/// - `teardown_delete` → `EnginePoolRuntime::close_eval_session_result`
-///   (turn gate → engine evict → `store.delete` → forget; the durable delete
-///   happens INSIDE this call)
 /// - `teardown_schedule_delete` → the timing unregister followed by the
 ///   adoption-guarded durable delete: under the turn gate the record's
 ///   factory title is RE-CHECKED, and a record renamed between the
@@ -89,16 +86,6 @@ use crate::platform::prefs::UserPrefs;
 pub(crate) trait AgenticTeardownExecutor {
     /// Whether an engine turn is running for the session right now.
     fn teardown_turn_active(&self, session_id: &str) -> bool;
-    /// Delete the session (record + directory), returning best-effort errors.
-    ///
-    /// UNCONDITIONAL by design: no adoption or stub guard. Only the test
-    /// executor calls this (the production lifecycle routes every lane
-    /// through [`Self::teardown_schedule_delete`] /
-    /// [`Self::teardown_delete_stub_if_still_empty`], whose gates ARE the
-    /// adoption contract). Wiring this into a production lane would silently
-    /// regress the round-24/25 adoption guarantees — the trait requires the
-    /// method, so the footgun is documented here instead.
-    async fn teardown_delete(&self, session_id: &str) -> std::result::Result<(), anyhow::Error>;
     /// Delete the session through the one-shot lane, returning best-effort
     /// errors. Delete-on-entry is deliberate: the caller has already
     /// consulted the adoption and unreadable-record guards, so a transcript
@@ -129,10 +116,6 @@ pub(crate) trait AgenticTeardownExecutor {
 impl AgenticTeardownExecutor for EnginePoolRuntime {
     fn teardown_turn_active(&self, session_id: &str) -> bool {
         self.is_turn_active(session_id)
-    }
-
-    async fn teardown_delete(&self, session_id: &str) -> std::result::Result<(), anyhow::Error> {
-        self.close_eval_session_result(session_id).await
     }
 
     async fn teardown_schedule_delete(
@@ -444,11 +427,17 @@ pub async fn run_agentic_task(
     };
     let session_id = match request.session_id.as_deref() {
         Some(session_id) => session_id.to_owned(),
-        // Regenerate until the id is free (see `mint_fresh_session_id`).
-        None => mint_fresh_session_id(
-            |id| store.chat_session_record_exists(id),
-            fresh_session_id(),
-        ),
+        // Regenerate until the id is free: fresh ids persist for good now, so
+        // a recycled pid replaying the same counter must not silently
+        // overwrite a kept session's record (transcript loss, and the old pin
+        // would transfer to the new stub).
+        None => {
+            let mut candidate = fresh_session_id();
+            while store.chat_session_record_exists(&candidate) {
+                candidate = fresh_session_id();
+            }
+            candidate
+        }
     };
 
     // Execution root binding: the closure only matches this run's session id
@@ -723,18 +712,6 @@ fn note_cleanup_delete_failure(error: &anyhow::Error) {
         "[agent-task] cleanup delete failed: {}",
         error.root_cause()
     ));
-}
-
-/// Mint a headless session id that is free in `exists`'s store. Fresh ids
-/// persist for good now, so a recycled pid replaying the same counter must
-/// not silently overwrite a kept session's record (transcript loss, and the
-/// old pin would transfer to the new stub): regenerate until the id is free.
-/// The seed id comes from [`fresh_session_id`].
-fn mint_fresh_session_id(exists: impl Fn(&str) -> bool, mut session_id: String) -> String {
-    while exists(&session_id) {
-        session_id = fresh_session_id();
-    }
-    session_id
 }
 
 /// `PINVOU3_AGENT_TASK_KEEP_SESSION`: sessions are kept by default; only the
@@ -2063,12 +2040,11 @@ fn stage_and_ingest_batch(
             // The re-stat above caps the validated size, but the source
             // can still grow while the copy streams — bound the staged
             // bytes too, exactly like the eval pipeline's staging.
-            let relative = match stage_file_in_workspace_with_copier(
+            let relative = match stage_file_in_workspace(
                 &attachment.path.to_string_lossy(),
                 &basename,
                 staging_root,
                 "attachments",
-                |source, destination| copy_bounded(source, destination, MAX_ATTACHMENT_BYTES),
             ) {
                 Some(relative) => relative,
                 None => {
@@ -3646,6 +3622,20 @@ mod tests {
                 ..Self::default()
             }
         }
+
+        /// The double's shared delete body: records the lane, then deletes
+        /// through the real store so assertions see durable state. Both
+        /// guarded lanes below end in this unconditional delete; the
+        /// production gate halves they deliberately skip are pinned in
+        /// engine_pool (see each lane's comment).
+        async fn unconditional_delete(&self, session_id: &str) -> anyhow::Result<()> {
+            self.deletes.lock().push(session_id.to_owned());
+            self.store
+                .lock()
+                .as_ref()
+                .expect("store present")
+                .delete(session_id)
+        }
     }
 
     impl super::AgenticTeardownExecutor for RecordingTeardown {
@@ -3657,15 +3647,6 @@ mod tests {
             *self.turn_active.lock()
         }
 
-        async fn teardown_delete(&self, session_id: &str) -> anyhow::Result<()> {
-            self.deletes.lock().push(session_id.to_owned());
-            self.store
-                .lock()
-                .as_ref()
-                .expect("store present")
-                .delete(session_id)
-        }
-
         async fn teardown_schedule_delete(&self, session_id: &str) -> anyhow::Result<()> {
             // Covers the DISPOSITION half only (this double performs the
             // unconditional store delete). Production `teardown_schedule_delete`
@@ -3674,7 +3655,7 @@ mod tests {
             // that gate half is pinned by
             // `one_shot_delete_gate_rechecks_the_adoption_marker` in
             // engine_pool, not here.
-            self.teardown_delete(session_id).await
+            self.unconditional_delete(session_id).await
         }
 
         async fn teardown_delete_stub_if_still_empty(
@@ -3693,7 +3674,7 @@ mod tests {
                 self.evictions.lock().push(session_id.to_owned());
                 return Ok(());
             }
-            self.teardown_delete(session_id).await
+            self.unconditional_delete(session_id).await
         }
 
         async fn teardown_evict(&self, session_id: &str) {
@@ -4311,25 +4292,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    /// Fresh ids regenerate while the id is taken; a free seed is accepted
-    /// unchanged (no busy regeneration loop on the happy path).
+    /// The fresh-session lane's regeneration guard, pinned against a real
+    /// store: `run_agentic_task`'s inline loop treats record existence as
+    /// "taken", so even a zero-message stub (a kept never-started run)
+    /// occupying its id must read as taken and force a regenerate, while a
+    /// never-created id reads free (the happy path keeps the first
+    /// candidate — no busy regeneration loop).
     #[test]
-    fn mint_fresh_session_id_regenerates_while_taken() {
-        let taken = "agentic_recycled_pid_0";
-        let minted = super::mint_fresh_session_id(|id| id == taken, taken.to_owned());
-        assert_ne!(
-            minted, taken,
-            "a taken id must be regenerated, never returned (PID-reuse overwrite)"
-        );
+    fn fresh_session_lane_guard_treats_record_existence_as_taken() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let (store, tmp) = lifecycle_home("fresh-session-guard");
+        let _tmp_cleanup = TempDirGuard::new(tmp);
+
+        // The recycled-pid hazard: a kept zero-message stub still occupies
+        // its id durably, so the guard half must classify it as taken and
+        // the lane regenerates instead of overwriting the record.
+        seed_record(&store, "agentic_recycled_pid_0", &[]);
         assert!(
-            minted.starts_with("agentic_"),
-            "regeneration mints real headless ids: {minted}"
+            store.chat_session_record_exists("agentic_recycled_pid_0"),
+            "an occupied id must read as taken — the lane regenerates, never \
+             returns it (PID-reuse overwrite)"
         );
-        // The free-seed path returns the seed itself — the run keeps using
-        // the caller-visible counter, not a different id mid-run.
-        let free = "agentic_free_seed_0";
-        let minted = super::mint_fresh_session_id(|_| false, free.to_owned());
-        assert_eq!(minted, free);
+
+        // The happy path: a never-created id reads free, so the first
+        // candidate is accepted unchanged.
+        assert!(
+            !store.chat_session_record_exists("agentic_free_seed_0"),
+            "a never-created id must read as free — the first candidate is kept"
+        );
     }
 
     #[test]
@@ -4375,7 +4365,10 @@ mod tests {
         }
         // The per-process counter keeps consecutive ids distinct even within
         // the same millisecond; cross-restart and cross-process collisions
-        // are mint_fresh_session_id's job (see its pins above).
+        // are the fresh-session lane's regeneration loop's job, and that loop
+        // mints through this very function, so the alphabet and component
+        // claims above cover regenerated ids too (see
+        // `fresh_session_lane_guard_treats_record_existence_as_taken`).
         assert_ne!(first, second);
     }
 

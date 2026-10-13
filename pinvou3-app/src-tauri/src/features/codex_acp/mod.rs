@@ -236,9 +236,23 @@ where
     T: Send + 'static,
     F: FnOnce() -> anyhow::Result<T> + Send + 'static,
 {
+    on_blocking_labeled("provider task join error", f).await
+}
+
+/// [`on_blocking`] with a caller-chosen join-error label. Holds the single
+/// `spawn_blocking` body so the clone → spawn → await → join-error chain
+/// stays written exactly once: a join failure maps onto
+/// `{join_error_label}: {error}`, keeping every caller's user-visible
+/// message byte-identical. `pub(crate)`: shared with the codex command
+/// surface, whose session-index joins carry their own label.
+pub(crate) async fn on_blocking_labeled<T, F>(join_error_label: &str, f: F) -> anyhow::Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> anyhow::Result<T> + Send + 'static,
+{
     tokio::task::spawn_blocking(f)
         .await
-        .map_err(|error| anyhow::anyhow!("provider task join error: {error}"))?
+        .map_err(|error| anyhow::anyhow!("{join_error_label}: {error}"))?
 }
 
 /// Managed-runtime directory schema retained for compatibility with installs

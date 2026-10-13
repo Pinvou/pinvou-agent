@@ -446,7 +446,7 @@ pub(crate) fn import_lock_for(id: &str) -> std::sync::Arc<std::sync::Mutex<()>> 
 /// → release_package 这条真实调用链）按持有深度 join，不再对新 fd 重复
 /// flock——flock 按 fd 排他，第二个 fd 会对自己的第一个 fd 阻塞。锁文件
 /// 不删除（崩溃不能楔住对端；进程死亡由内核释放锁），与 settings 部
-/// `SettingsFileLock` 同一纪律；0600 亦同（flock 只需读权限，世界可读的
+/// `lock_settings_file` 同一纪律；0600 亦同（flock 只需读权限，世界可读的
 /// 锁文件会让共享宿主上的第二个本地用户无限期楔住全部市场写者）。
 pub(crate) struct MarketplaceWriteLock {
     /// `Some`：本线程的最外层（真实）获取，持有进程内段锁与跨进程 fd。

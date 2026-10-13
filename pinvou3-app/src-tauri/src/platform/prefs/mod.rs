@@ -95,13 +95,15 @@ fn lock_user_prefs() -> MutexGuard<'static, ()> {
 /// 而不是 try+busy：设置写入是真正的事务、不能静默跳过，偶发排队比把
 /// 并发写报成失败更可用。无需显式 `unlock()`：OS 咨询锁绑定在文件描述符
 /// 上，句柄 drop（关闭）时由内核释放。
-struct SettingsFileLock {
-    file: std::fs::File,
+fn lock_settings_file() -> std::io::Result<std::fs::File> {
+    let file = open_settings_lock_file()?;
+    file.lock()?;
+    Ok(file)
 }
 
 /// The `settings.json.lock` sibling file, opened read+write, created but
 /// never truncated (the lock file itself is never deleted — see
-/// [`SettingsFileLock`]). Shared by both lock acquirers below.
+/// `lock_settings_file`). Shared by both lock acquirers below.
 ///
 /// 0600 posture (mirrors the CLI's `open_family_lock_file`): the lock file
 /// is never deleted, so a file created at the umask default (0644) stays
@@ -148,12 +150,6 @@ fn open_settings_lock_file() -> std::io::Result<std::fs::File> {
     Ok(file)
 }
 
-fn lock_settings_file() -> std::io::Result<SettingsFileLock> {
-    let file = open_settings_lock_file()?;
-    file.lock()?;
-    Ok(SettingsFileLock { file })
-}
-
 /// [`load()`](UserPrefs::load) 的时间上限版设置文件锁：规范化持久化是一个
 /// 幂等的优化写（下次 load 会重跑迁移），所以锁被占住时跳过持久化，而不是
 /// 像 [`update_transaction`](UserPrefs::update_transaction) 那样无限阻塞——
@@ -161,12 +157,12 @@ fn lock_settings_file() -> std::io::Result<SettingsFileLock> {
 /// （SIGSTOP/ wedged），此时静默跳过比整文档旧快照写回更安全。
 const NORMALIZATION_PERSIST_LOCK_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
-fn try_lock_settings_file_bounded() -> std::io::Result<Option<SettingsFileLock>> {
+fn try_lock_settings_file_bounded() -> std::io::Result<Option<std::fs::File>> {
     let file = open_settings_lock_file()?;
     let deadline = std::time::Instant::now() + NORMALIZATION_PERSIST_LOCK_WAIT;
     loop {
         match file.try_lock() {
-            Ok(()) => return Ok(Some(SettingsFileLock { file })),
+            Ok(()) => return Ok(Some(file)),
             Err(std::fs::TryLockError::WouldBlock) => {
                 if std::time::Instant::now() >= deadline {
                     return Ok(None);
@@ -1596,6 +1592,7 @@ mod tests {
     use super::*;
     use crate::platform::credential_store::MemoryCredentialStore;
     use crate::platform::paths::tests::ENV_LOCK;
+    use crate::platform::test_support::with_temp_home;
 
     /// Keyring stand-in shared by the fallback-miss pins below: `get` always
     /// misses and the keyring reports itself unreachable, so the refresh must
@@ -1644,44 +1641,41 @@ mod tests {
     fn settings_lock_file_tightens_a_preexisting_0644_file_to_0600() {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let _guard = ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _home = pinned_temp_prefs_home("prefs-settings-lock-mode", &[]);
+        with_temp_home("prefs-settings-lock-mode", || {
+            let lock_path =
+                crate::platform::paths::settings_path().with_file_name("settings.json.lock");
+            std::fs::write(&lock_path, b"").expect("seed a pre-existing lock file");
+            std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o644))
+                .expect("loosen the seeded lock file to 0644");
 
-        let lock_path =
-            crate::platform::paths::settings_path().with_file_name("settings.json.lock");
-        std::fs::write(&lock_path, b"").expect("seed a pre-existing lock file");
-        std::fs::set_permissions(&lock_path, std::fs::Permissions::from_mode(0o644))
-            .expect("loosen the seeded lock file to 0644");
+            {
+                let _lock = lock_settings_file().expect("acquire the settings file lock");
+                assert_eq!(
+                    std::fs::metadata(&lock_path)
+                        .expect("lock file metadata")
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o600,
+                    "the blocking acquirer must tighten a pre-existing 0644 lock file to 0600"
+                );
+            }
 
-        {
-            let _lock = lock_settings_file().expect("acquire the settings file lock");
-            assert_eq!(
-                std::fs::metadata(&lock_path)
-                    .expect("lock file metadata")
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600,
-                "the blocking acquirer must tighten a pre-existing 0644 lock file to 0600"
-            );
-        }
-
-        {
-            let _lock = try_lock_settings_file_bounded()
-                .expect("the bounded acquirer must not error")
-                .expect("an uncontended lock must be acquired within the bound");
-            assert_eq!(
-                std::fs::metadata(&lock_path)
-                    .expect("lock file metadata")
-                    .permissions()
-                    .mode()
-                    & 0o777,
-                0o600,
-                "the bounded acquirer must tighten a pre-existing 0644 lock file to 0600"
-            );
-        }
+            {
+                let _lock = try_lock_settings_file_bounded()
+                    .expect("the bounded acquirer must not error")
+                    .expect("an uncontended lock must be acquired within the bound");
+                assert_eq!(
+                    std::fs::metadata(&lock_path)
+                        .expect("lock file metadata")
+                        .permissions()
+                        .mode()
+                        & 0o777,
+                    0o600,
+                    "the bounded acquirer must tighten a pre-existing 0644 lock file to 0600"
+                );
+            }
+        });
     }
 
     #[test]
@@ -1824,46 +1818,41 @@ mod tests {
     /// unlocked load) instead of writing the stale document.
     #[test]
     fn load_skips_the_normalization_persist_while_the_settings_lock_is_held() {
-        let _guard = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        // ENV_LOCK is held above, so the helper's env writes are serialized;
-        // the guard restores PINVOU3_HOME and reclaims the directory on
-        // Drop, panic-safe.
-        let _prefs_home = pinned_temp_prefs_home("pinvou3-prefs-normalization-lock-skip", &[]);
+        with_temp_home("pinvou3-prefs-normalization-lock-skip", || {
+            // Same legacy-local-alias fixture as the persisting twin above: load()
+            // observes a normalization change and wants to persist it.
+            let prefs = legacy_local_alias_prefs();
+            let settings_path = super::super::paths::settings_path();
+            let legacy_bytes =
+                serde_json::to_string_pretty(&prefs).expect("serialize legacy prefs");
+            std::fs::write(&settings_path, &legacy_bytes).expect("write legacy prefs");
 
-        // Same legacy-local-alias fixture as the persisting twin above: load()
-        // observes a normalization change and wants to persist it.
-        let prefs = legacy_local_alias_prefs();
-        let settings_path = super::super::paths::settings_path();
-        let legacy_bytes = serde_json::to_string_pretty(&prefs).expect("serialize legacy prefs");
-        std::fs::write(&settings_path, &legacy_bytes).expect("write legacy prefs");
+            // Hold the settings.json.lock the way a concurrent `update_transaction`
+            // on the other surface would, for longer than the bounded persist's
+            // wait, and keep the guard across the load.
+            let lock_path = settings_path.with_file_name("settings.json.lock");
+            let held = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&lock_path)
+                .expect("open settings lock file");
+            held.lock().expect("hold the settings lock");
 
-        // Hold the settings.json.lock the way a concurrent `update_transaction`
-        // on the other surface would, for longer than the bounded persist's
-        // wait, and keep the guard across the load.
-        let lock_path = settings_path.with_file_name("settings.json.lock");
-        let held = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)
-            .expect("open settings lock file");
-        held.lock().expect("hold the settings lock");
+            let loaded = UserPrefs::load();
+            // The in-memory value is still normalized (the migration is local);
+            // what must NOT happen is the whole-document persist of the stale
+            // snapshot over the concurrent writer's head.
+            assert!(loaded.active_model().unwrap().alias.is_none());
+            let persisted = std::fs::read_to_string(&settings_path).expect("read legacy prefs");
+            assert_eq!(
+                persisted, legacy_bytes,
+                "the normalization persist must be skipped while the settings lock is held"
+            );
 
-        let loaded = UserPrefs::load();
-        // The in-memory value is still normalized (the migration is local);
-        // what must NOT happen is the whole-document persist of the stale
-        // snapshot over the concurrent writer's head.
-        assert!(loaded.active_model().unwrap().alias.is_none());
-        let persisted = std::fs::read_to_string(&settings_path).expect("read legacy prefs");
-        assert_eq!(
-            persisted, legacy_bytes,
-            "the normalization persist must be skipped while the settings lock is held"
-        );
-
-        drop(held);
+            drop(held);
+        });
     }
 
     /// Round-43 review: the normalization persist re-validates under the
@@ -1911,63 +1900,58 @@ mod tests {
     /// would silently revert the committed field with the stale snapshot.
     #[test]
     fn normalization_persist_skips_when_a_commit_lands_inside_the_read_to_lock_window() {
-        let _guard = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        // ENV_LOCK is held above, so the helper's env writes are serialized;
-        // the guard restores PINVOU3_HOME and reclaims the directory on
-        // Drop, panic-safe.
-        let _prefs_home = pinned_temp_prefs_home("pinvou3-prefs-window-commit-skip", &[]);
+        with_temp_home("pinvou3-prefs-window-commit-skip", || {
+            // Same legacy-local-alias fixture as the persisting twin: load()
+            // observes a normalization change and wants to persist it.
+            let prefs = legacy_local_alias_prefs();
+            let settings_path = super::super::paths::settings_path();
+            let legacy_bytes =
+                serde_json::to_string_pretty(&prefs).expect("serialize legacy prefs");
+            std::fs::write(&settings_path, &legacy_bytes).expect("write legacy prefs");
 
-        // Same legacy-local-alias fixture as the persisting twin: load()
-        // observes a normalization change and wants to persist it.
-        let prefs = legacy_local_alias_prefs();
-        let settings_path = super::super::paths::settings_path();
-        let legacy_bytes = serde_json::to_string_pretty(&prefs).expect("serialize legacy prefs");
-        std::fs::write(&settings_path, &legacy_bytes).expect("write legacy prefs");
+            // The concurrent writer takes the lock BEFORE the load starts,
+            // commits a renamed model while the load blocks on the lock, then
+            // releases. The load's initial read necessarily happened before the
+            // commit; only the under-lock re-read can tell the two snapshots
+            // apart and skip the stale-snapshot persist.
+            let committed_bytes = {
+                let mut value: serde_json::Value =
+                    serde_json::from_str(&legacy_bytes).expect("parse legacy prefs");
+                value["advanced"]["saved_models"][0]["name"] =
+                    serde_json::Value::String("Renamed by the concurrent writer".into());
+                serde_json::to_string_pretty(&value).expect("serialize committed prefs")
+            };
+            let lock_path = settings_path.with_file_name("settings.json.lock");
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
+            let writer = {
+                let settings_path = settings_path.clone();
+                let committed_bytes = committed_bytes.clone();
+                std::thread::spawn(move || {
+                    let held = std::fs::OpenOptions::new()
+                        .read(true)
+                        .write(true)
+                        .create(true)
+                        .truncate(false)
+                        .open(&lock_path)
+                        .expect("open settings lock file");
+                    held.lock().expect("hold the settings lock");
+                    ready_tx.send(()).expect("signal the lock is held");
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                    std::fs::write(&settings_path, &committed_bytes).expect("commit the field");
+                    drop(held);
+                })
+            };
+            ready_rx.recv().expect("the writer holds the lock");
+            UserPrefs::load();
+            writer.join().expect("the writer thread finishes");
 
-        // The concurrent writer takes the lock BEFORE the load starts,
-        // commits a renamed model while the load blocks on the lock, then
-        // releases. The load's initial read necessarily happened before the
-        // commit; only the under-lock re-read can tell the two snapshots
-        // apart and skip the stale-snapshot persist.
-        let committed_bytes = {
-            let mut value: serde_json::Value =
-                serde_json::from_str(&legacy_bytes).expect("parse legacy prefs");
-            value["advanced"]["saved_models"][0]["name"] =
-                serde_json::Value::String("Renamed by the concurrent writer".into());
-            serde_json::to_string_pretty(&value).expect("serialize committed prefs")
-        };
-        let lock_path = settings_path.with_file_name("settings.json.lock");
-        let (ready_tx, ready_rx) = std::sync::mpsc::channel::<()>();
-        let writer = {
-            let settings_path = settings_path.clone();
-            let committed_bytes = committed_bytes.clone();
-            std::thread::spawn(move || {
-                let held = std::fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .create(true)
-                    .truncate(false)
-                    .open(&lock_path)
-                    .expect("open settings lock file");
-                held.lock().expect("hold the settings lock");
-                ready_tx.send(()).expect("signal the lock is held");
-                std::thread::sleep(std::time::Duration::from_millis(300));
-                std::fs::write(&settings_path, &committed_bytes).expect("commit the field");
-                drop(held);
-            })
-        };
-        ready_rx.recv().expect("the writer holds the lock");
-        UserPrefs::load();
-        writer.join().expect("the writer thread finishes");
-
-        let persisted = std::fs::read_to_string(&settings_path).expect("read settings");
-        assert_eq!(
-            persisted, committed_bytes,
-            "the commit that landed inside the read→lock window must survive the \
-             normalization persist (the re-validation must skip on drift)"
-        );
+            let persisted = std::fs::read_to_string(&settings_path).expect("read settings");
+            assert_eq!(
+                persisted, committed_bytes,
+                "the commit that landed inside the read→lock window must survive the \
+                 normalization persist (the re-validation must skip on drift)"
+            );
+        });
     }
 
     /// Round-42 review (extends round-41 M1 to the read lane): the
@@ -1982,59 +1966,64 @@ mod tests {
     /// unrelated pending normalization.
     #[test]
     fn load_skips_the_normalization_persist_when_credential_migration_failed() {
-        let _guard = ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        // ENV_LOCK is held above, so the helper's env writes are serialized;
-        // the guard restores every pinned variable (including PINVOU3_HOME)
-        // and reclaims the directory on Drop, panic-safe.
-        let _restore = pinned_temp_prefs_home(
-            "pinvou3-prefs-migration-fail-skip",
-            &[
-                ("CODEWHALE_SECRET_BACKEND", Some("file")),
+        with_temp_home("pinvou3-prefs-migration-fail-skip", || {
+            let _restore = crate::platform::test_support::EnvRestore::capture(&[
+                "CODEWHALE_SECRET_BACKEND",
                 // A relative credential home makes the facade's file store
                 // refuse writes (same degradation the CLI write-lane contract
                 // test uses).
-                ("CODEWHALE_HOME", Some("relative-broken-home")),
-                ("HOME", Some("relative-broken-home")),
-                ("DEEPSEEK_API_KEY", None),
-            ],
-        );
+                "CODEWHALE_HOME",
+                "HOME",
+                "DEEPSEEK_API_KEY",
+            ]);
+            // SAFETY: with_temp_home holds ENV_LOCK; env writes are serialized
+            // in-process.
+            unsafe { std::env::set_var("CODEWHALE_SECRET_BACKEND", "file") };
+            // SAFETY: with_temp_home holds ENV_LOCK; env writes are serialized
+            // in-process.
+            unsafe { std::env::set_var("CODEWHALE_HOME", "relative-broken-home") };
+            // SAFETY: with_temp_home holds ENV_LOCK; env writes are serialized
+            // in-process.
+            unsafe { std::env::set_var("HOME", "relative-broken-home") };
+            // SAFETY: with_temp_home holds ENV_LOCK; env writes serialized in-process.
+            unsafe { std::env::remove_var("DEEPSEEK_API_KEY") };
 
-        // Same legacy-local-alias fixture as the persisting twins (a real
-        // normalization change independent of the keychain) plus a legacy
-        // plaintext model key with no stored reference: the migration arm
-        // attempts the keychain move and fails.
-        let prefs = legacy_local_alias_prefs();
-        let settings_path = super::super::paths::settings_path();
-        let legacy_bytes = serde_json::to_string_pretty(&prefs).expect("serialize legacy prefs");
-        // `SavedModel::api_key` is `skip_serializing`, so the legacy plaintext
-        // key must be injected as a value-level edit of the known-good
-        // document (same fixture technique as the CLI write-lane contract
-        // test) — that IS the legacy on-disk shape this migration scrubs.
-        let mut document: serde_json::Value =
-            serde_json::from_str(&legacy_bytes).expect("parse legacy prefs");
-        document["advanced"]["saved_models"][0]["api_key"] =
-            serde_json::Value::String("sk-legacy-plaintext-r42".to_owned());
-        let legacy_bytes =
-            serde_json::to_string_pretty(&document).expect("serialize legacy prefs with key");
-        std::fs::write(&settings_path, &legacy_bytes).expect("write legacy prefs");
+            // Same legacy-local-alias fixture as the persisting twins (a real
+            // normalization change independent of the keychain) plus a legacy
+            // plaintext model key with no stored reference: the migration arm
+            // attempts the keychain move and fails.
+            let prefs = legacy_local_alias_prefs();
+            let settings_path = super::super::paths::settings_path();
+            let legacy_bytes =
+                serde_json::to_string_pretty(&prefs).expect("serialize legacy prefs");
+            // `SavedModel::api_key` is `skip_serializing`, so the legacy plaintext
+            // key must be injected as a value-level edit of the known-good
+            // document (same fixture technique as the CLI write-lane contract
+            // test) — that IS the legacy on-disk shape this migration scrubs.
+            let mut document: serde_json::Value =
+                serde_json::from_str(&legacy_bytes).expect("parse legacy prefs");
+            document["advanced"]["saved_models"][0]["api_key"] =
+                serde_json::Value::String("sk-legacy-plaintext-r42".to_owned());
+            let legacy_bytes =
+                serde_json::to_string_pretty(&document).expect("serialize legacy prefs with key");
+            std::fs::write(&settings_path, &legacy_bytes).expect("write legacy prefs");
 
-        let loaded = UserPrefs::load();
-        // The in-memory record is still marked unavailable (the store said
-        // so); what must NOT happen is the whole-document persist that
-        // sanitizes the plaintext key out of its only durable copy.
-        let persisted = std::fs::read_to_string(&settings_path).expect("read legacy prefs");
-        assert!(
-            persisted.contains("sk-legacy-plaintext-r42"),
-            "a failed credential migration must keep the legacy plaintext key on disk: \
-             {persisted}"
-        );
-        assert!(
-            persisted.contains("Legacy local alias"),
-            "the whole normalization persist must be skipped on a failed migration: {persisted}"
-        );
-        assert!(loaded.active_model().unwrap().alias.is_none());
+            let loaded = UserPrefs::load();
+            // The in-memory record is still marked unavailable (the store said
+            // so); what must NOT happen is the whole-document persist that
+            // sanitizes the plaintext key out of its only durable copy.
+            let persisted = std::fs::read_to_string(&settings_path).expect("read legacy prefs");
+            assert!(
+                persisted.contains("sk-legacy-plaintext-r42"),
+                "a failed credential migration must keep the legacy plaintext key on disk: \
+                 {persisted}"
+            );
+            assert!(
+                persisted.contains("Legacy local alias"),
+                "the whole normalization persist must be skipped on a failed migration: {persisted}"
+            );
+            assert!(loaded.active_model().unwrap().alias.is_none());
+        });
     }
 
     /// LocalVllm no longer forces a 24K output (stays None when not
@@ -2455,176 +2444,103 @@ mod tests {
     /// is explicit input the migration must not touch.
     #[test]
     fn load_persists_legacy_local_output_sentinel_migration() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let _prefs_home = pinned_temp_prefs_home("pinvou3-prefs-local-output-sentinel", &[]);
+        with_temp_home("pinvou3-prefs-local-output-sentinel", || {
+            let mut prefs = UserPrefs::default();
+            prefs.advanced.saved_models.push(SavedModel {
+                id: "legacy-local".into(),
+                name: "Legacy Local".into(),
+                alias: None,
+                preset: ModelPreset::LocalVllm,
+                context_window_tokens: Some(262_144),
+                // The machine-written 24K from older normalize + settings page
+                // prefill: must be migrated away and persisted.
+                max_output_tokens: Some(24_576),
+                reasoning_effort: None,
+                model: "qwen36_35b_256k".into(),
+                base_url: "http://127.0.0.1:8000/v1".into(),
+                provider_kind: None,
+                vendor: None,
+                endpoint_mode: None,
+                image_capability_override: ImageCapabilityOverride::default(),
+                vision_model_id: None,
+                api_key: String::new(),
+                credential_ref: None,
+                credential_state: CredentialState::Missing,
+                has_secret: false,
+                credential_action: None,
+            });
+            prefs.advanced.saved_models.push(SavedModel {
+                id: "custom-explicit".into(),
+                name: "Custom Explicit".into(),
+                alias: None,
+                preset: ModelPreset::OpenaiCompatible,
+                context_window_tokens: None,
+                // 24576 on a custom endpoint is explicit input: must be kept
+                // verbatim.
+                max_output_tokens: Some(24_576),
+                reasoning_effort: None,
+                model: "custom-model".into(),
+                base_url: "https://gateway.example.com/v1".into(),
+                provider_kind: Some(MODEL_PROVIDER_KIND_CUSTOM.into()),
+                vendor: None,
+                endpoint_mode: None,
+                image_capability_override: ImageCapabilityOverride::default(),
+                vision_model_id: None,
+                api_key: String::new(),
+                credential_ref: None,
+                credential_state: CredentialState::Missing,
+                has_secret: false,
+                credential_action: None,
+            });
+            prefs.advanced.active_model_id = Some("legacy-local".into());
+            let path = super::super::paths::settings_path();
+            std::fs::write(
+                &path,
+                serde_json::to_string_pretty(&prefs).expect("serialize legacy prefs"),
+            )
+            .expect("write legacy prefs");
 
-        let mut prefs = UserPrefs::default();
-        prefs.advanced.saved_models.push(SavedModel {
-            id: "legacy-local".into(),
-            name: "Legacy Local".into(),
-            alias: None,
-            preset: ModelPreset::LocalVllm,
-            context_window_tokens: Some(262_144),
-            // The machine-written 24K from older normalize + settings page
-            // prefill: must be migrated away and persisted.
-            max_output_tokens: Some(24_576),
-            reasoning_effort: None,
-            model: "qwen36_35b_256k".into(),
-            base_url: "http://127.0.0.1:8000/v1".into(),
-            provider_kind: None,
-            vendor: None,
-            endpoint_mode: None,
-            image_capability_override: ImageCapabilityOverride::default(),
-            vision_model_id: None,
-            api_key: String::new(),
-            credential_ref: None,
-            credential_state: CredentialState::Missing,
-            has_secret: false,
-            credential_action: None,
-        });
-        prefs.advanced.saved_models.push(SavedModel {
-            id: "custom-explicit".into(),
-            name: "Custom Explicit".into(),
-            alias: None,
-            preset: ModelPreset::OpenaiCompatible,
-            context_window_tokens: None,
-            // 24576 on a custom endpoint is explicit input: must be kept
-            // verbatim.
-            max_output_tokens: Some(24_576),
-            reasoning_effort: None,
-            model: "custom-model".into(),
-            base_url: "https://gateway.example.com/v1".into(),
-            provider_kind: Some(MODEL_PROVIDER_KIND_CUSTOM.into()),
-            vendor: None,
-            endpoint_mode: None,
-            image_capability_override: ImageCapabilityOverride::default(),
-            vision_model_id: None,
-            api_key: String::new(),
-            credential_ref: None,
-            credential_state: CredentialState::Missing,
-            has_secret: false,
-            credential_action: None,
-        });
-        prefs.advanced.active_model_id = Some("legacy-local".into());
-        let path = super::super::paths::settings_path();
-        std::fs::write(
-            &path,
-            serde_json::to_string_pretty(&prefs).expect("serialize legacy prefs"),
-        )
-        .expect("write legacy prefs");
-
-        let loaded = UserPrefs::load();
-        let legacy_local = loaded
-            .model_by_id("legacy-local")
-            .expect("legacy local model");
-        assert_eq!(
-            legacy_local.max_output_tokens, None,
-            "the legacy in-memory 24K must already be normalized to unset"
-        );
-        let custom = loaded.model_by_id("custom-explicit").expect("custom model");
-        assert_eq!(
-            custom.max_output_tokens,
-            Some(24_576),
-            "the explicit 24576 on the custom endpoint must not be migrated"
-        );
-
-        // Key assertion: the normalization was written back to disk (not
-        // just changed in memory).
-        let persisted: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).expect("read migrated prefs"))
-                .expect("parse migrated prefs");
-        let models = persisted["advanced"]["saved_models"]
-            .as_array()
-            .expect("saved_models array");
-        let legacy_on_disk = models
-            .iter()
-            .find(|model| model["id"] == "legacy-local")
-            .expect("legacy local on disk");
-        assert!(
-            legacy_on_disk["max_output_tokens"].is_null(),
-            "the legacy on-disk 24K must be cleared, got {}",
-            legacy_on_disk["max_output_tokens"]
-        );
-        let custom_on_disk = models
-            .iter()
-            .find(|model| model["id"] == "custom-explicit")
-            .expect("custom on disk");
-        assert_eq!(custom_on_disk["max_output_tokens"], 24_576);
-        // PINVOU3_HOME restoration and temporary home reclamation are
-        // handled by the `pinned_temp_prefs_home` guard's Drop (also on
-        // assertion/panic paths); no hand-written restore block here.
-    }
-
-    /// Panic-safe `PINVOU3_HOME` pin for the prefs tests: `set` records the
-    /// previous env values, points `PINVOU3_HOME` at `home` and applies the
-    /// `extra` name→value pins on top (`None` removes the variable); Drop
-    /// reclaims the directory and restores every previous value — including
-    /// on assertion/panic paths (same recipe as the bridge tests'
-    /// TempDirGuard). Callers must hold `ENV_LOCK` (acquired on the test's
-    /// first line), so the env writes here are serialized in-process.
-    struct TempHomeGuard {
-        previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
-        home: std::path::PathBuf,
-    }
-
-    impl TempHomeGuard {
-        fn set(home: std::path::PathBuf, extra: &[(&'static str, Option<&str>)]) -> Self {
-            let mut previous = vec![("PINVOU3_HOME", std::env::var_os("PINVOU3_HOME"))];
-            previous.extend(
-                extra
-                    .iter()
-                    .map(|(name, _)| (*name, std::env::var_os(name))),
+            let loaded = UserPrefs::load();
+            let legacy_local = loaded
+                .model_by_id("legacy-local")
+                .expect("legacy local model");
+            assert_eq!(
+                legacy_local.max_output_tokens, None,
+                "the legacy in-memory 24K must already be normalized to unset"
             );
-            // SAFETY: callers hold ENV_LOCK (first line of the test); env
-            // writes in the test process are serialized.
-            unsafe { std::env::set_var("PINVOU3_HOME", &home) };
-            for (name, value) in extra {
-                match value {
-                    // SAFETY: holding ENV_LOCK (first line of the test); env
-                    // writes in the test process are serialized.
-                    Some(value) => unsafe { std::env::set_var(name, value) },
-                    // SAFETY: same as above; removal serialized under ENV_LOCK.
-                    None => unsafe { std::env::remove_var(name) },
-                }
-            }
-            Self { previous, home }
-        }
-    }
+            let custom = loaded.model_by_id("custom-explicit").expect("custom model");
+            assert_eq!(
+                custom.max_output_tokens,
+                Some(24_576),
+                "the explicit 24576 on the custom endpoint must not be migrated"
+            );
 
-    impl Drop for TempHomeGuard {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.home);
-            for (name, value) in self.previous.drain(..).rev() {
-                match value {
-                    // SAFETY: holding ENV_LOCK (first line of the test);
-                    // restore-side env writes serialized.
-                    Some(value) => unsafe { std::env::set_var(name, value) },
-                    // SAFETY: same as above; restore-side removal serialized
-                    // under ENV_LOCK.
-                    None => unsafe { std::env::remove_var(name) },
-                }
-            }
-        }
-    }
-
-    /// Pins `PINVOU3_HOME` (plus any `extra_pinned_env` name→value pairs on
-    /// top, `None` removing the variable) to a fresh temporary home whose
-    /// directory name stacks `name` + pid + an in-process atomic suffix, so
-    /// concurrent `cargo test` from two terminals does not collide. Returns
-    /// the guard: Drop reclaims the directory and restores every pinned
-    /// variable, panic-safe.
-    fn pinned_temp_prefs_home(
-        name: &str,
-        extra_pinned_env: &[(&'static str, Option<&str>)],
-    ) -> TempHomeGuard {
-        let home = std::env::temp_dir().join(format!(
-            "{name}-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&home);
-        std::fs::create_dir_all(&home).expect("create temporary prefs home");
-        TempHomeGuard::set(home, extra_pinned_env)
+            // Key assertion: the normalization was written back to disk (not
+            // just changed in memory).
+            let persisted: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("read migrated prefs"))
+                    .expect("parse migrated prefs");
+            let models = persisted["advanced"]["saved_models"]
+                .as_array()
+                .expect("saved_models array");
+            let legacy_on_disk = models
+                .iter()
+                .find(|model| model["id"] == "legacy-local")
+                .expect("legacy local on disk");
+            assert!(
+                legacy_on_disk["max_output_tokens"].is_null(),
+                "the legacy on-disk 24K must be cleared, got {}",
+                legacy_on_disk["max_output_tokens"]
+            );
+            let custom_on_disk = models
+                .iter()
+                .find(|model| model["id"] == "custom-explicit")
+                .expect("custom on disk");
+            assert_eq!(custom_on_disk["max_output_tokens"], 24_576);
+            // PINVOU3_HOME restoration and temporary home reclamation are
+            // handled by `with_temp_home`'s Drop (also on assertion/panic
+            // paths); no hand-written restore block here.
+        });
     }
 
     /// The legacy-local-alias fixture shared by the normalization-persist
@@ -2766,148 +2682,146 @@ mod tests {
     /// routes, official cloud presets).
     #[test]
     fn load_migrates_legacy_local_thinking_off() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let _prefs_home = pinned_temp_prefs_home("pinvou3-prefs-legacy-thinking-off", &[]);
+        with_temp_home("pinvou3-prefs-legacy-thinking-off", || {
+            let mut prefs = UserPrefs::default();
+            // Machine-written population: must be stripped.
+            prefs.advanced.saved_models.push(legacy_model_fixture(
+                "local-vllm",
+                ModelPreset::LocalVllm,
+                "http://127.0.0.1:8000/v1",
+                None,
+                Some("off"),
+            ));
+            prefs.advanced.saved_models.push(legacy_model_fixture(
+                "lan-endpoint",
+                ModelPreset::OpenaiCompatible,
+                "http://192.168.1.20:11434/v1",
+                None,
+                Some("off"),
+            ));
+            prefs.advanced.saved_models.push(legacy_model_fixture(
+                "docker-local",
+                ModelPreset::OpenaiCompatible,
+                "http://host.docker.internal:8080/v1",
+                None,
+                Some("off"),
+            ));
+            // Explicit populations: must be kept verbatim.
+            prefs.advanced.saved_models.push(legacy_model_fixture(
+                "public-custom",
+                ModelPreset::OpenaiCompatible,
+                "https://gateway.example.com/v1",
+                None,
+                Some("off"),
+            ));
+            prefs.advanced.saved_models.push(legacy_model_fixture(
+                "vendor-glm",
+                ModelPreset::OpenaiCompatible,
+                "https://api.z.ai/api/paas/v4",
+                Some("glm"),
+                Some("off"),
+            ));
+            prefs.advanced.saved_models.push(legacy_model_fixture(
+                "cloud-deepseek",
+                ModelPreset::Deepseek,
+                "https://api.deepseek.com",
+                None,
+                Some("off"),
+            ));
+            prefs.advanced.active_model_id = Some("local-vllm".into());
+            let path = super::super::paths::settings_path();
+            std::fs::write(
+                &path,
+                serde_json::to_string_pretty(&prefs).expect("serialize legacy prefs"),
+            )
+            .expect("write legacy prefs");
 
-        let mut prefs = UserPrefs::default();
-        // Machine-written population: must be stripped.
-        prefs.advanced.saved_models.push(legacy_model_fixture(
-            "local-vllm",
-            ModelPreset::LocalVllm,
-            "http://127.0.0.1:8000/v1",
-            None,
-            Some("off"),
-        ));
-        prefs.advanced.saved_models.push(legacy_model_fixture(
-            "lan-endpoint",
-            ModelPreset::OpenaiCompatible,
-            "http://192.168.1.20:11434/v1",
-            None,
-            Some("off"),
-        ));
-        prefs.advanced.saved_models.push(legacy_model_fixture(
-            "docker-local",
-            ModelPreset::OpenaiCompatible,
-            "http://host.docker.internal:8080/v1",
-            None,
-            Some("off"),
-        ));
-        // Explicit populations: must be kept verbatim.
-        prefs.advanced.saved_models.push(legacy_model_fixture(
-            "public-custom",
-            ModelPreset::OpenaiCompatible,
-            "https://gateway.example.com/v1",
-            None,
-            Some("off"),
-        ));
-        prefs.advanced.saved_models.push(legacy_model_fixture(
-            "vendor-glm",
-            ModelPreset::OpenaiCompatible,
-            "https://api.z.ai/api/paas/v4",
-            Some("glm"),
-            Some("off"),
-        ));
-        prefs.advanced.saved_models.push(legacy_model_fixture(
-            "cloud-deepseek",
-            ModelPreset::Deepseek,
-            "https://api.deepseek.com",
-            None,
-            Some("off"),
-        ));
-        prefs.advanced.active_model_id = Some("local-vllm".into());
-        let path = super::super::paths::settings_path();
-        std::fs::write(
-            &path,
-            serde_json::to_string_pretty(&prefs).expect("serialize legacy prefs"),
-        )
-        .expect("write legacy prefs");
+            let loaded = UserPrefs::load();
+            let effort_of = |id: &str| {
+                loaded
+                    .model_by_id(id)
+                    .unwrap_or_else(|| panic!("model {id}"))
+                    .reasoning_effort
+                    .clone()
+            };
+            assert_eq!(effort_of("local-vllm"), None, "machine-written local off");
+            assert_eq!(effort_of("lan-endpoint"), None, "LAN local off");
+            assert_eq!(effort_of("docker-local"), None, "docker-alias local off");
+            assert_eq!(
+                effort_of("public-custom"),
+                Some("off".into()),
+                "public custom endpoint could not receive tiers pre-#622: off is explicit"
+            );
+            assert_eq!(
+                effort_of("vendor-glm"),
+                Some("off".into()),
+                "vendor routes resolved to cloud providers with default high: off is explicit"
+            );
+            assert_eq!(
+                effort_of("cloud-deepseek"),
+                Some("off".into()),
+                "official cloud presets always defaulted high: off is explicit"
+            );
 
-        let loaded = UserPrefs::load();
-        let effort_of = |id: &str| {
-            loaded
-                .model_by_id(id)
-                .unwrap_or_else(|| panic!("model {id}"))
-                .reasoning_effort
-                .clone()
-        };
-        assert_eq!(effort_of("local-vllm"), None, "machine-written local off");
-        assert_eq!(effort_of("lan-endpoint"), None, "LAN local off");
-        assert_eq!(effort_of("docker-local"), None, "docker-alias local off");
-        assert_eq!(
-            effort_of("public-custom"),
-            Some("off".into()),
-            "public custom endpoint could not receive tiers pre-#622: off is explicit"
-        );
-        assert_eq!(
-            effort_of("vendor-glm"),
-            Some("off".into()),
-            "vendor routes resolved to cloud providers with default high: off is explicit"
-        );
-        assert_eq!(
-            effort_of("cloud-deepseek"),
-            Some("off".into()),
-            "official cloud presets always defaulted high: off is explicit"
-        );
-
-        // Key assertion: the migration (stripped values AND the marker) was
-        // written back to disk, not just changed in memory.
-        let persisted: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).expect("read migrated prefs"))
-                .expect("parse migrated prefs");
-        assert_eq!(
-            persisted["local_thinking_default_migrated"], true,
-            "the marker must land on disk at the migrating load"
-        );
-        let models = persisted["advanced"]["saved_models"]
-            .as_array()
-            .expect("saved_models array");
-        let local_on_disk = models
-            .iter()
-            .find(|model| model["id"] == "local-vllm")
-            .expect("local model on disk");
-        assert!(
-            local_on_disk["reasoning_effort"].is_null(),
-            "machine-written local off must be cleared on disk"
-        );
-        let vendor_on_disk = models
-            .iter()
-            .find(|model| model["id"] == "vendor-glm")
-            .expect("vendor model on disk");
-        assert_eq!(vendor_on_disk["reasoning_effort"], "off");
+            // Key assertion: the migration (stripped values AND the marker) was
+            // written back to disk, not just changed in memory.
+            let persisted: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("read migrated prefs"))
+                    .expect("parse migrated prefs");
+            assert_eq!(
+                persisted["local_thinking_default_migrated"], true,
+                "the marker must land on disk at the migrating load"
+            );
+            let models = persisted["advanced"]["saved_models"]
+                .as_array()
+                .expect("saved_models array");
+            let local_on_disk = models
+                .iter()
+                .find(|model| model["id"] == "local-vllm")
+                .expect("local model on disk");
+            assert!(
+                local_on_disk["reasoning_effort"].is_null(),
+                "machine-written local off must be cleared on disk"
+            );
+            let vendor_on_disk = models
+                .iter()
+                .find(|model| model["id"] == "vendor-glm")
+                .expect("vendor model on disk");
+            assert_eq!(vendor_on_disk["reasoning_effort"], "off");
+        });
     }
 
     /// Once the marker is set, a stored local `off` is an explicit
     /// post-upgrade choice: later loads must never strip it again.
     #[test]
     fn load_marker_blocks_second_thinking_off_migration() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let _prefs_home = pinned_temp_prefs_home("pinvou3-prefs-thinking-off-marker", &[]);
+        with_temp_home("pinvou3-prefs-thinking-off-marker", || {
+            let mut prefs = UserPrefs::default();
+            prefs.local_thinking_default_migrated = true;
+            prefs.advanced.saved_models.push(legacy_model_fixture(
+                "explicit-off",
+                ModelPreset::LocalVllm,
+                "http://127.0.0.1:8000/v1",
+                None,
+                Some("off"),
+            ));
+            let path = super::super::paths::settings_path();
+            std::fs::write(
+                &path,
+                serde_json::to_string_pretty(&prefs).expect("serialize marked prefs"),
+            )
+            .expect("write marked prefs");
 
-        let mut prefs = UserPrefs::default();
-        prefs.local_thinking_default_migrated = true;
-        prefs.advanced.saved_models.push(legacy_model_fixture(
-            "explicit-off",
-            ModelPreset::LocalVllm,
-            "http://127.0.0.1:8000/v1",
-            None,
-            Some("off"),
-        ));
-        let path = super::super::paths::settings_path();
-        std::fs::write(
-            &path,
-            serde_json::to_string_pretty(&prefs).expect("serialize marked prefs"),
-        )
-        .expect("write marked prefs");
-
-        let loaded = UserPrefs::load();
-        assert_eq!(
-            loaded
-                .model_by_id("explicit-off")
-                .expect("explicit off model")
-                .reasoning_effort,
-            Some("off".into()),
-            "an off saved after the migrating load is an explicit choice"
-        );
+            let loaded = UserPrefs::load();
+            assert_eq!(
+                loaded
+                    .model_by_id("explicit-off")
+                    .expect("explicit off model")
+                    .reasoning_effort,
+                Some("off".into()),
+                "an off saved after the migrating load is an explicit choice"
+            );
+        });
     }
 
     /// A settings file with no local models at all still gets its marker
@@ -2916,36 +2830,35 @@ mod tests {
     /// stripped by the next load.
     #[test]
     fn load_persists_thinking_marker_without_local_models() {
-        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let _prefs_home = pinned_temp_prefs_home("pinvou3-prefs-thinking-marker-cloud-only", &[]);
+        with_temp_home("pinvou3-prefs-thinking-marker-cloud-only", || {
+            let mut prefs = UserPrefs::default();
+            prefs.advanced.saved_models.push(legacy_model_fixture(
+                "cloud-only",
+                ModelPreset::Deepseek,
+                "https://api.deepseek.com",
+                None,
+                Some("high"),
+            ));
+            let path = super::super::paths::settings_path();
+            std::fs::write(
+                &path,
+                serde_json::to_string_pretty(&prefs).expect("serialize prefs"),
+            )
+            .expect("write prefs");
 
-        let mut prefs = UserPrefs::default();
-        prefs.advanced.saved_models.push(legacy_model_fixture(
-            "cloud-only",
-            ModelPreset::Deepseek,
-            "https://api.deepseek.com",
-            None,
-            Some("high"),
-        ));
-        let path = super::super::paths::settings_path();
-        std::fs::write(
-            &path,
-            serde_json::to_string_pretty(&prefs).expect("serialize prefs"),
-        )
-        .expect("write prefs");
-
-        let loaded = UserPrefs::load();
-        assert!(
-            loaded.local_thinking_default_migrated,
-            "marker set in memory even with nothing to migrate"
-        );
-        let persisted: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).expect("read prefs"))
-                .expect("parse prefs");
-        assert_eq!(
-            persisted["local_thinking_default_migrated"], true,
-            "marker-only change must still be persisted"
-        );
+            let loaded = UserPrefs::load();
+            assert!(
+                loaded.local_thinking_default_migrated,
+                "marker set in memory even with nothing to migrate"
+            );
+            let persisted: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).expect("read prefs"))
+                    .expect("parse prefs");
+            assert_eq!(
+                persisted["local_thinking_default_migrated"], true,
+                "marker-only change must still be persisted"
+            );
+        });
     }
 
     #[test]

@@ -1821,10 +1821,35 @@ mod tests {
         async fn close(&self, _session_id: &str) -> anyhow::Result<()> {
             Ok(())
         }
+
+        async fn run_with_policy(
+            &self,
+            _session_id: &str,
+            _prompt: &str,
+            _policy: ProductToolPolicy,
+        ) -> anyhow::Result<ProductTurnOutcome> {
+            // The trait default already fails closed without touching the
+            // counter; record the consult, then reproduce the same bail.
+            self.run_calls.fetch_add(1, Ordering::Relaxed);
+            anyhow::bail!("unsupported_tool_policy")
+        }
+
+        async fn run_with_staged_attachments_and_policy(
+            &self,
+            _session_id: &str,
+            _prompt: &str,
+            _staged_workspace: &std::path::Path,
+            _policy: ProductToolPolicy,
+        ) -> anyhow::Result<ProductTurnOutcome> {
+            // Same boundary consult for the staged-attachments lane: record
+            // the call, then fail closed with the trait default's error.
+            self.run_calls.fetch_add(1, Ordering::Relaxed);
+            anyhow::bail!("unsupported_tool_policy")
+        }
     }
 
     #[tokio::test]
-    async fn policy_defaults_fail_closed_without_calling_legacy_runtime() {
+    async fn policy_run_lanes_fail_closed_at_the_runtime_boundary() {
         let runtime = LegacyRuntime::default();
 
         let error = runtime
@@ -1836,7 +1861,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), "unsupported_tool_policy");
-        assert_eq!(runtime.run_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(runtime.run_calls.load(Ordering::Relaxed), 1);
 
         let workspace = tempfile::tempdir().unwrap();
         let error = runtime
@@ -1849,7 +1874,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), "unsupported_tool_policy");
-        assert_eq!(runtime.run_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(runtime.run_calls.load(Ordering::Relaxed), 2);
     }
 
     #[derive(Default)]

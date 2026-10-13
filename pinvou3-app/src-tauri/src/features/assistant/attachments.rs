@@ -220,8 +220,8 @@ pub fn stage_file_in_workspace(
 }
 
 /// The one bounded copier for staged attachments, shared by every staging call
-/// site (this module's `stage_file_in_workspace`, the eval pipeline and the
-/// agentic task's per-file cap): it caps the STAGED bytes even when a
+/// site (this module's `stage_file_in_workspace` — the agentic task's per-file
+/// cap included — and the eval pipeline): it caps the STAGED bytes even when a
 /// caller-owned source is swapped or grows while the copy streams — the
 /// pre-copy re-stat in the staging loop cannot close that window.
 /// `take(max + 1)` reads exactly one byte past the cap, which is what lets the
@@ -305,15 +305,45 @@ pub(crate) fn stage_text_in_workspace(
     attachment_dir: &str,
 ) -> Option<String> {
     use std::io::Write as _;
-    stage_text_in_workspace_with_writer(
-        basename,
-        ext,
-        workspace,
-        attachment_dir,
-        |destination, _path| destination.write_all(content.as_bytes()),
-    )
+    validate_staged_attachment_basename(basename).ok()?;
+    let (attachment_dir, canonical_workspace, directory) =
+        prepare_staging_directory(workspace, attachment_dir)?;
+    let stem = basename.rsplit_once('.').map_or(basename, |(s, _)| s);
+    let suffix = format!(".{ext}");
+    let (mut destination, path, candidate) =
+        reserve_unique_staged_file(&directory, format!("{stem}{suffix}"), stem, &suffix)?;
+    if !staged_target_is_safe(&destination, &path, &canonical_workspace) {
+        // The reservation created a zero-byte file; a rejected target must
+        // not leave it behind (the same litter rule the file lane's
+        // identical arm applies — round-37 review).
+        discard_staged_partial(destination, &path);
+        return None;
+    }
+    if destination.write_all(content.as_bytes()).is_err() {
+        // Deliberately leave the app-named orphan in place. Unlinking by path after a failed
+        // post-check would introduce another check-then-unlink race and could delete a replacement
+        // installed by a concurrent writer.
+        return None;
+    }
+    if !staged_target_is_safe(&destination, &path, &canonical_workspace) {
+        // The same litter rule as the arms above: a rejected target must
+        // not leave the staged file (here fully written) behind. Unlike
+        // the write-error arm, unlinking here is safe: the re-check passed
+        // through THIS handle's reservation, so the path still names a file
+        // this call owns (round-48 review: reconcile with the rationale
+        // above — that arm's orphan belongs to nobody anymore; this one is
+        // still ours).
+        discard_staged_partial(destination, &path);
+        return None;
+    }
+    Some(format!("{attachment_dir}/{candidate}"))
 }
 
+/// Test-only twin of [`stage_text_in_workspace`]: the same staging body with
+/// the writer injectable, so tests can fault the write or swap the reserved
+/// path and pin the litter rules directly. No production caller — the real
+/// lane writes inline.
+#[cfg(test)]
 pub(crate) fn stage_text_in_workspace_with_writer<F>(
     basename: &str,
     ext: &str,

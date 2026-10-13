@@ -665,7 +665,7 @@ async fn request_llm_memory_review(
         .map(|(block, _)| block)
         .unwrap_or_default();
     let existing_profile = io::load_profile().unwrap_or_default();
-    let existing_preferences = io::load_preferences().unwrap_or_default();
+    let existing_preferences = io::list_preferences().unwrap_or_default();
     let existing_work_context = io::load_work_context().unwrap_or_default();
     let focus_items = io::load_current_focus().unwrap_or_default();
     let active_current_focus = io::active_timed_memory(&focus_items, Utc::now())

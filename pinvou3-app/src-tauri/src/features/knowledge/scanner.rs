@@ -20,12 +20,15 @@ const BATCH: usize = 2000;
 /// 每写一批后让步，避免后台扫描抢占前台 I/O/CPU（治「扫描时设备卡顿」）。
 const THROTTLE_MS: u64 = 4;
 
-/// Raw entries enumerated between `on_raw` heartbeats. Deliberately counted
-/// pre-prune: a tree of millions of disallowed files yields almost nothing
-/// countable, and the headless `scan start` stall bound (300 s default)
-/// watches progress — without a raw tick a healthy walk over a pruned-heavy
-/// tree is indistinguishable from a wedged thread and gets killed mid-walk.
-const RAW_HEARTBEAT: u64 = 5000;
+/// Raw entries enumerated between `on_raw` heartbeats — and, at the same
+/// cadence, the walked-entry `on_progress` ticks in [`scan`], so the two
+/// heartbeats share one constant and cannot drift apart. Deliberately
+/// counted pre-prune: a tree of millions of disallowed files yields almost
+/// nothing countable, and the headless `scan start` stall bound (300 s
+/// default) watches progress — without a raw tick a healthy walk over a
+/// pruned-heavy tree is indistinguishable from a wedged thread and gets
+/// killed mid-walk.
+const HEARTBEAT: u64 = 5000;
 
 /// 共享的剪枝遍历：walkdir + [`Excluder::is_skipped`] 逐层剪枝，不跟随软链。
 /// `scan`（全盘扫描）与知识库导入的 `expand_import_roots`（mod.rs）共用，
@@ -44,7 +47,7 @@ pub(super) fn walk_pruned_with(
         .into_iter()
         .filter_entry(move |e| {
             raw += 1;
-            if raw.is_multiple_of(RAW_HEARTBEAT) {
+            if raw.is_multiple_of(HEARTBEAT) {
                 on_raw();
             }
             !skipped(ex, e)
@@ -83,7 +86,7 @@ pub fn scan(
         // 增量：mtime + size 都没变 → 跳过（省去 upsert 写入 + FTS 触发器开销）。
         if let Some(&(mt, sz)) = existing.get(&rec.path) {
             if mt == rec.mtime && sz == rec.size {
-                if walked.is_multiple_of(5000) {
+                if walked.is_multiple_of(HEARTBEAT) {
                     on_progress(walked);
                 }
                 continue;
@@ -95,7 +98,7 @@ pub fn scan(
             buf.clear();
             std::thread::sleep(Duration::from_millis(THROTTLE_MS));
         }
-        if walked.is_multiple_of(5000) {
+        if walked.is_multiple_of(HEARTBEAT) {
             on_progress(walked);
         }
     }
