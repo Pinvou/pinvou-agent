@@ -3644,6 +3644,50 @@ mod tests {
     }
 
     #[test]
+    fn remove_retries_durable_cleanup_after_a_failed_persist() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-remove-persist-retry-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        store
+            .bind_code_native_session("session-1", CodexWorkspaceKind::Temporary, None)
+            .unwrap();
+        store
+            .bind_code_native_session("session-2", CodexWorkspaceKind::Temporary, None)
+            .unwrap();
+
+        // Review #690 (discussion_r4258007878): a persist failure between
+        // the in-memory removal and the durable rewrite leaves exactly this
+        // residue — the map already dropped the entry while the index file
+        // and the sidecar still hold it. The failing write itself is not
+        // fault-injected here (the fault boundary lives below the store);
+        // the residue state it leaves is arranged directly. The next
+        // remove — the purge flow's retry — must not accept memory absence
+        // as durable success.
+        store.records.write().remove("session-1");
+        assert!(read_code_session_sidecar(store.path(), "session-1").is_some());
+        store.remove("session-1").unwrap();
+
+        // The retry performed the full durable cleanup: the reloaded index
+        // no longer holds the removed entry ...
+        let index: serde_json::Value =
+            serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+        assert!(index["sessions"].get("session-1").is_none());
+        assert!(read_code_session_sidecar(store.path(), "session-1").is_none());
+        // ... and the unaffected survivor is intact on disk and in memory.
+        assert!(index["sessions"].get("session-2").is_some());
+        assert!(store.is_code_session("session-2"));
+        assert!(read_code_session_sidecar(store.path(), "session-2").is_some());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn code_native_sidecar_rejects_malformed_kind_path_combination() {
         let root = std::env::temp_dir().join(format!(
             "pinvou3-code-native-sidecar-malformed-test-{}",
