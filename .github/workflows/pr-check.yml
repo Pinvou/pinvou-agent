@@ -194,6 +194,7 @@ jobs:
               - 'pinvou3-app/src-tauri/src/features/updater/download/cache/**'
               - 'pinvou3-app/src-tauri/src/features/updater/download/http/**'
               - 'pinvou3-app/src-tauri/src/features/updater/protocol/codec/**'
+              - 'pinvou3-app/src-tauri/src/features/updater/protocol/http/**'
               - 'specs/upgrade/v1/**'
               - '**/*.rs'
               - '**/Cargo.toml'
@@ -906,6 +907,14 @@ jobs:
           cargo fmt -- --check
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked
+
+      - name: Check independent upgrade control HTTP
+        working-directory: pinvou3-app/src-tauri/src/features/updater/protocol/http
+        run: |
+          cargo fmt -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+          python3 tests/https_e2e.py
 
       # clippy 需要 Tauri/WebKit 系统库；Draft 不安装，避免每次 push 消耗 ~70s。
       - name: 装 Tauri + pinvou3 Linux 系统依赖

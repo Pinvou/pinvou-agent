@@ -1,4 +1,17 @@
-//! Upgrade V1 byte decoding only. No network, trust, time or installation rights.
+//! Upgrade V1 contract decoding and fixed-origin control POST adaptation.
+//! Contract-valid transport bodies grant no signature/time/installation authority.
+
+/// Exactly one fixed-origin POST; a dropped/error response can have committed
+/// remotely. Owner-controlled retries and durable ACK/consume recovery remain separate.
+pub(crate) async fn send_client_request_once(
+    bytes: &[u8],
+    operation: pinvou_upgrade_codec::ClientRequestOperation,
+) -> Result<
+    pinvou_upgrade_control_http::ReceivedResponse,
+    pinvou_upgrade_control_http::ControlHttpError,
+> {
+    pinvou_upgrade_control_http::post_once(operation, bytes).await
+}
 
 pub(crate) fn decode_metadata(
     bytes: &[u8],
@@ -1776,6 +1789,28 @@ mod tests {
         assert!(matches!(
             derive_source_profile(&serde_json::to_vec(&facts).unwrap()),
             Err(pinvou_upgrade_codec::SourceProfileError::InvalidStableFacts)
+        ));
+    }
+
+    #[tokio::test]
+    async fn feature_facade_rejects_bad_control_requests_before_network() {
+        assert!(matches!(
+            send_client_request_once(
+                b"{}",
+                pinvou_upgrade_codec::ClientRequestOperation::ConsumeStatus
+            )
+            .await,
+            Err(pinvou_upgrade_control_http::ControlHttpError::RequestContract(_))
+        ));
+        assert!(matches!(
+            send_client_request_once(
+                br#"{"protocolVersion":1,"protocolVersion":1}"#,
+                pinvou_upgrade_codec::ClientRequestOperation::ConsumeStatus,
+            )
+            .await,
+            Err(pinvou_upgrade_control_http::ControlHttpError::RequestJson(
+                pinvou_upgrade_codec::Error::DuplicateKey
+            ))
         ));
     }
 

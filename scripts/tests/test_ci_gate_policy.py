@@ -97,6 +97,25 @@ class CiGatePolicyTests(unittest.TestCase):
         cls.pr_workflow = PR_WORKFLOW.read_text(encoding="utf-8")
         cls.release_workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
+    def test_upgrade_control_http_routes_fixtures_and_runs_real_wire_checks(self):
+        block = self.pr_workflow.split("            rust_code:", 1)[1].split(
+            "            rust_dependencies:", 1
+        )[0]
+        patterns = _extract_quoted_paths(block)
+        root = "pinvou3-app/src-tauri/src/features/updater/protocol/http/"
+        for path in ("src/lib.rs", "tests/wire-oracle.mjs", "tests/https_e2e.py",
+                     "tests/fixtures/tls-server.go", "Cargo.toml", "Cargo.lock"):
+            with self.subTest(path=path):
+                self.assertTrue(_matches_paths_filter(root + path, patterns))
+        job = self.pr_workflow.split("\n  rust-lint:", 1)[1].split("\n  rust-test:", 1)[0]
+        step = job.split("- name: Check independent upgrade control HTTP", 1)[1].split(
+            "\n      - name:", 1
+        )[0]
+        self.assertNotIn("if:", step)
+        for check in ("cargo fmt -- --check", "cargo clippy --locked --all-targets -- -D warnings",
+                      "cargo test --locked", "python3 tests/https_e2e.py"):
+            self.assertIn(check, step)
+
     def test_upgrade_codec_routes_oracle_only_and_reference_only_changes(self):
         block = self.pr_workflow.split("            rust_code:", 1)[1].split(
             "            rust_dependencies:", 1

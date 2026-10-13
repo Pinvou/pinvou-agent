@@ -1,0 +1,19 @@
+[package]
+name = "pinvou-upgrade-control-http"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+license = "MIT"
+
+[dependencies]
+pinvou-upgrade-codec = { path = "../codec" }
+reqwest = { version = "=0.13.4", default-features = false, features = ["rustls", "stream", "system-proxy"] }
+serde_json = "=1.0.151"
+
+[dev-dependencies]
+tokio = { version = "=1.53.1", features = ["net", "time", "rt", "macros"] }
+rustls = { version = "=0.23.45", default-features = false, features = ["aws-lc-rs"] }
+
+[lints.rust]
+unsafe_code = "forbid"

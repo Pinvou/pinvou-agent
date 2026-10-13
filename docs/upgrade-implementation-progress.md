@@ -4396,3 +4396,61 @@ VERSION/gitlinks changes. Details:
 [client requests](client-upgrade-request-contracts.md).
 Full T27/real transport/ownership remain unfinished. Downloads retain no
 total/cumulative duration or retry cap.
+
+## T27 thirty-seventh batch - actual fixed control POST (2026-10-14)
+
+Scope: actual26-route one-POST transport and App feature port, frozen OpenAPI
+routing, original complete request/HTTP-response contracts, actual canonical
+request and preserved full response wire bytes. Fixed production control origin/
+TLS minimum, no redirects/proxies/cookies/decompression/automatic retries,
+bounded streamed metadata response and fixed non-sensitive SDK error mapping.
+No signature/current time/read-set/owner/ACK/right or remote absence is inferred.
+Initial independent resolution selected52 external versions outside the parent;
+it was replaced with the actual parent lock before final validation, with zero
+external package-version drift. Parent App/CLI lock updates add only the local
+crate. Initial compile/default tests3 passed (4.10s after3m37s compilation;
+actual TLS test ignored until explicit harness). Parent-aligned default3 passed
+in3.94s after2m32s compilation. First actual TLS run failed (3 passed/1 failed
+in2.96s): peer and Rust had separately generated fresh signing fixtures, so
+correct received bytes differed from the separately generated expectation.
+Harness now passes one actual-original fixture snapshot to both sides;
+assertions avoid printing entire synthetic credentials.
+Independent static review found permissive charset quote stripping and
+first-only/non-digit Content-Length parsing. Root repaired both with exact
+unquoted/one-pair UTF-8, ASCII OWS and single ASCII-digit length; unit negative/
+restore and actual raw TLS malformed charset/duplicate/conflicting length/
+transfer framing/truncation controls were added. Root actual HTTPS4 passed
+in2.48s with67 wire requests over all26 routes after8.59s compilation.
+First final Clippy rejected two collapsible-if styles; equivalent MSRV-compatible
+let-chain guards fixed them. Final original Node22 default3 passed in12.45s
+(one actual TLS test ignored only in the default command) after10.62s compilation.
+Actual HTTPS4 passed in3.86s with70 observed requests/all26 routes, including
+one received-then-dropped connection submitted exactly once and a progressing
+response spanning multiple read-idle periods. Clippy alltargets8.37s/codec
+transport format/App facade format passed. Actual Windows updater App52 passed
+in0.91s after4m compilation, then final source App52 passed in0.34s after1m06s
+compilation. Architecture/version/diff passed; CI policy52 in0.131s (initial
+0.087s also passed). Root self-review confirms fixed route/domain/ordinary
+certificate identity, canonical original request, whole streamed wire-byte
+cap/EOF and unchanged response contract, ambiguous framing/charset refusal,
+fixed non-sensitive errors and test-only injection boundaries. Real proxy/
+redirect/cookie/canonical-body/no-retry/progress/cancellation controls support
+the scoped claims. This bounds accumulated payload, not SDK peak memory,
+does not retry or persist a business result and cannot grant current authority
+or prove remote absence. Parent/CLI external versions remain unchanged.
+Dependency independent scoped PASS: actual Node22 default3 in2.55s/1TLS ignored,
+isolated HTTPS4 in3.80s/70wire/all26routes, Clippy2.47s/HTTP+App facade
+format/diff passed. Compatibility independent scoped PASS: actual Node22
+default3 in2.73s/1TLS ignored, isolated HTTPS4 in4.11s/70wire/all26routes,
+Clippy2.37s/HTTP+App facade format/diff passed; CI52 in0.053s. Both found no
+remaining mandatory issue, independently confirmed the final header repairs,
+one-submit/progress/peer-seen cancellation proof and scoped lock/CI boundaries.
+All processes and isolated peers closed. Old codec146/31556 and full unrelated
+App were not repeated. Both independent final documentation reviews passed before commit. A draft progress write used an invalid newline
+argument and truncated this local file; root restored the exact committed
+history and appended only this batch before further review.
+Production deployment and prior undecided policies remain deferred; no Schema/
+OpenAPI/profile/vectors, crypto/trust policy, product VERSION or gitlinks change.
+Details: [actual control transport](client-upgrade-control-http.md).
+Full T27/real authority/protected persistence/workflows remain unfinished.
+Downloads retain no total/cumulative duration or retry cap.

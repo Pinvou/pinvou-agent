@@ -6648,12 +6648,21 @@ dependencies = [
 name = "pinvou-upgrade-codec"
 version = "0.0.0"
 dependencies = [
- "jsonschema",
  "base64 0.22.1",
+ "jsonschema",
  "serde",
  "serde_jcs",
  "serde_json",
  "sha2 0.11.0",
+]
+
+[[package]]
+name = "pinvou-upgrade-control-http"
+version = "0.0.0"
+dependencies = [
+ "pinvou-upgrade-codec",
+ "reqwest 0.13.4",
+ "serde_json",
 ]
 
 [[package]]
@@ -6722,6 +6731,7 @@ dependencies = [
  "pinvou-upgrade-byte-check",
  "pinvou-upgrade-cache-object",
  "pinvou-upgrade-codec",
+ "pinvou-upgrade-control-http",
  "pinvou-upgrade-file-http",
  "pinvou-upgrade-timing",
  "pinvou-upgrade-transfer",
