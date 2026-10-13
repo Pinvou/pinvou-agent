@@ -3859,3 +3859,63 @@ graphs/downloads. The App P2 is closed. Final scoped evidence/document reviews
 precede commit on unchanged production source. Details: [candidate relationship](client-upgrade-candidate-binding.md).
 Complete T27 authenticity/protected persistence/current selection stays unfinished.
 Downloads retain no total/cumulative duration or retry cap.
+
+
+## T27 twenty-third batch - supplied public graph (2026-10-14)
+
+The complete supplied-context/reference/reachability subset of original
+verifyPublicChain follows full Schema/canonical factories. B10 exact original
+six-field references are cached once per immutable member; B16 binds separate
+provided product/component plus each declared role/scope. Actual SHA uniqueness,
+Snapshot Map overwrite/cardinality, Target baseline/ordinary/bridge reachability,
+every concrete Release target Package relationship and no candidate extras all
+follow original acceptance. B21 gains only private target-specific helper
+extraction without algorithm change; first-key selection remains in B21, never
+replacing the public graph's per-target loop.
+
+Indexes and permitted/unique reachable Release sets use the necessary bound
+members<=Snapshot.entries<=4096, with no independent aggregate byte cap.
+Cached references avoid repeated whole raw hashing; unique immutable Release
+checks avoid duplicate path vector growth. Metadata semantics/crypto/Root/time/
+context authenticity/current eligibility/persistence/selection/execution/consume/
+erasure guarantees remain separate. No Trusted graph object is returned.
+
+Four groups include Schema-only duplicate target positive/second-target launcher
+negative and restore, repeated-reference Map positive with4096 entries, direct
+4097 parser refusal and actual complete Node export on strong fresh authorized
+signed graphs. Every exact Node input first passes real verifyEnvelope against
+actual fixture Root role/scope/time, then graph outcome compares Rust full Schema+
+B17 semantics+new pure graph in that explicit signed-fixture domain. No private
+keys are serialized/logged/committed and no fake verifier/general full-export
+equivalence is claimed. App validates full graph, missing member, wrong supplied
+component and excess count before member decoding.
+
+Initial four-group run passed three groups, including28 actual signed/
+preflighted Node cases, in3.85s, but the4097 negative fixture used the positive
+wire helper and unwrapped its correct MemberLimit refusal before the assertion.
+Root changed that test to assert direct bounded parser MemberLimit on original
+serde bytes. No production acceptance divergence was observed.
+Corrected allfour groups passed in3.90s, including28 actual signed and
+independently preflighted Node public graph cases.
+
+No dependency/lock/Schema/CI/version/gitlink changes. Final regression selects
+96 applicable tests, filtering only the unchanged B15 31556-case Schema mutation
+test; CI retains complete97. Root final96 passed with actual Node22 and both
+original optional oracle environments enabled. Clippy passed in25.32s; codec
+format and App facade format passed. Actual Windows App39 passed in0.20s after
+3m05s compilation. Architecture guard/version consistency passed; CI policy51
+passed in0.075s. Root self-review confirms complete reference/context/reachability,
+bounded ownership and every concrete target, with no new trust or download cap.
+Both independent scoped reviews found no mandatory issue. Dependency review's
+frozen96 passed (graph28 in3.81s, credential7287 in47.39s), Clippy2.27s/fmt/diff
+passed. Compatibility review's frozen96 passed (graph28 in4.50s,
+credential7287 in44.60s), CI51 in0.076s/diff passed. Its first format invocation
+briefly discovered a future B24 unformatted test draft, unrelated to B23 source.
+Root moved that draft outside test discovery; the reviewer reran format and
+Clippy on the unchanged B23 source, both passed (Clippy2.20s). No production
+behavior failure occurred. All test executables closed before source development
+resumed. Both independent final documentation reviews passed with no mandatory
+issue; the B23 source and evidence are approved for this scoped commit.
+Details: [public graph](client-upgrade-public-graph.md).
+Complete T27 authenticity/protected persistence/current selection stays unfinished.
+Downloads retain no total/cumulative duration or retry cap.

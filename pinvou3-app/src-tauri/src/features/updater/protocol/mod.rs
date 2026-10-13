@@ -12,6 +12,49 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+pub(crate) fn check_supplied_public_graph_bytes(
+    timestamp_bytes: &[u8],
+    snapshot_bytes: &[u8],
+    member_bytes: &[&[u8]],
+    context_bytes: &[u8],
+) -> Result<(), pinvou_upgrade_codec::PublicGraphError> {
+    fn decode(
+        bytes: &[u8],
+    ) -> Result<pinvou_upgrade_codec::SchemaCheckedEnvelope, pinvou_upgrade_codec::PublicGraphError>
+    {
+        pinvou_upgrade_codec::decode_canonical_envelope(
+            bytes,
+            pinvou_upgrade_codec::InputKind::Metadata,
+        )
+        .map_err(pinvou_upgrade_codec::PublicGraphError::Envelope)?
+        .check_full_schema()
+        .map_err(pinvou_upgrade_codec::PublicGraphError::Schema)
+    }
+    let timestamp = decode(timestamp_bytes)?;
+    let snapshot = decode(snapshot_bytes)?;
+    if timestamp.envelope().signed().value()["role"] != "timestamp"
+        || snapshot.envelope().signed().value()["role"] != "snapshot"
+    {
+        return Err(pinvou_upgrade_codec::PublicGraphError::InvalidRole);
+    }
+    let maximum = snapshot.envelope().signed().value()["entries"]
+        .as_array()
+        .ok_or(pinvou_upgrade_codec::PublicGraphError::InvalidFields)?
+        .len();
+    // Apply the same Snapshot-derived necessary count bound before allocating
+    // decoded member factories; there is no independent aggregate byte cap.
+    if member_bytes.len() > maximum {
+        return Err(pinvou_upgrade_codec::PublicGraphError::MemberUnreferenced);
+    }
+    let members = member_bytes
+        .iter()
+        .map(|bytes| decode(bytes))
+        .collect::<Result<Vec<_>, _>>()?;
+    let context =
+        decode_metadata(context_bytes).map_err(pinvou_upgrade_codec::PublicGraphError::Json)?;
+    pinvou_upgrade_codec::assert_supplied_public_graph(&timestamp, &snapshot, &members, &context)
+}
+
 pub(crate) fn check_supplied_candidate_bytes(
     target_bytes: &[u8],
     release_bytes: &[u8],
@@ -294,6 +337,54 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_checks_complete_public_graph_relationships_without_granting_trust() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/envelopes.json"
+        )))
+        .unwrap();
+        let original = |role: &str| {
+            let v = vectors["vectors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["name"] == role)
+                .unwrap();
+            URL_SAFE_NO_PAD
+                .decode(v["envelopeBase64Url"].as_str().unwrap())
+                .unwrap()
+        };
+        let timestamp = original("timestamp");
+        let snapshot = original("snapshot");
+        let members = [original("target"), original("release"), original("package")];
+        let borrowed: Vec<&[u8]> = members.iter().map(Vec::as_slice).collect();
+        let context = br#"{"product":"pinvou","component":"app"}"#;
+        assert!(
+            check_supplied_public_graph_bytes(&timestamp, &snapshot, &borrowed, context).is_ok()
+        );
+        assert_eq!(
+            check_supplied_public_graph_bytes(&timestamp, &snapshot, &borrowed[..2], context),
+            Err(pinvou_upgrade_codec::PublicGraphError::MemberMissing),
+        );
+        assert!(matches!(
+            check_supplied_public_graph_bytes(
+                &timestamp,
+                &snapshot,
+                &borrowed,
+                br#"{"product":"pinvou","component":"engine"}"#
+            ),
+            Err(pinvou_upgrade_codec::PublicGraphError::Context(_)),
+        ));
+        let mut extra = borrowed.clone();
+        extra.push(members[2].as_slice());
+        assert_eq!(
+            check_supplied_public_graph_bytes(&timestamp, &snapshot, &extra, context),
+            Err(pinvou_upgrade_codec::PublicGraphError::MemberUnreferenced),
+        );
+    }
 
     #[test]
     fn feature_facade_binds_candidate_raw_release_and_opening_without_selecting_it() {

@@ -62,6 +62,16 @@ pub fn assert_supplied_release_package_binding(
     .map_err(ReleasePackageError::Reference)?
     .assert_original_envelope(package.envelope().raw_bytes())
     .map_err(ReleasePackageError::Reference)?;
+    assert_target_binding(release, target, claims)
+}
+
+/// Parent-only reuse for the exact concrete target in public-graph iteration.
+/// Callers supply these borrowed subtrees from full-Schema envelope factories.
+pub(super) fn assert_target_binding(
+    release: &Value,
+    target: &Value,
+    claims: &Value,
+) -> Result<(), ReleasePackageError> {
     let package_modes = claims["activationModes"]
         .as_array()
         .ok_or(ReleasePackageError::BindingMismatch)?;
