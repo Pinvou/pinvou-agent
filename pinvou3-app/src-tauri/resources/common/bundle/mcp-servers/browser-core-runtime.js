@@ -205,13 +205,20 @@
     const wanted = Array.isArray(texts) ? texts.map(normalize).filter(Boolean) : [];
     if (!wanted.length) throw new Error('browser/wait-text-required');
     const deadline = Date.now() + Math.max(1, Number(timeout) || 10000);
+    let bodyText = '';
     while (Date.now() <= deadline) {
-      const bodyText = normalize(document.body?.innerText || document.documentElement?.innerText || '');
+      bodyText = normalize(document.body?.innerText || document.documentElement?.innerText || '');
       const match = wanted.find((text) => bodyText.includes(text));
       if (match) return { match };
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    throw new Error(`browser/wait-timeout: ${wanted.join(' | ')}`);
+    // Surface a bounded sample of the actual page text: the common timeout
+    // cause is a locale/wording mismatch between the searched text and the
+    // rendered page, and the agent can only recover if it sees both sides.
+    const sample = bodyText
+      ? `; visible page text starts: ${JSON.stringify(bodyText.slice(0, 160))}`
+      : '';
+    throw new Error(`browser/wait-timeout: ${wanted.join(' | ')}${sample}`);
   }
 
   Object.defineProperty(globalThis, GLOBAL_KEY, {

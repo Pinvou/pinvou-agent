@@ -46,13 +46,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::platform::credential_store::{CredentialStore, SystemCredentialStore};
+use crate::platform::filesystem::{read_private_data_file, read_private_data_file_bytes};
 use crate::platform::paths;
 
 /// installed.json, mcp.json, and managed Python environment liveness share one transaction
 /// domain. Install, uninstall, and startup repair must take this lock before reading committed
 /// state so cleanup never acts on a stale snapshot.
 ///
-/// Lock order vs `scope::DISABLED_BUNDLES_FILE_LOCK` (round-11 M1): the only
+/// Lock order vs the scope file's cross-process lock (`scope::`
+/// `disabled_bundles_lock_path()`, held via `file_lock::with_file_lock`):
+/// the only
 /// permitted nesting is TRANSACTION → FILE (e.g. uninstall's state cleanup
 /// re-enters the scope file lock). The reverse order is forbidden: scope
 /// read/write paths (DenyAll resolution, save_disabled_bundles_for) must
@@ -130,6 +133,12 @@ pub(super) fn backup_corrupt_json_file(path: &std::path::Path, stem: &str, conte
     if let Ok(entries) = std::fs::read_dir(parent) {
         let identical_backup_exists = entries.flatten().any(|entry| {
             entry.file_name().to_string_lossy().starts_with(&prefix)
+                // Skip non-regular siblings before reading —
+                // a planted FIFO named like a backup would otherwise block
+                // this scan on the corrupt-recovery path. `file_type` does
+                // not follow symlinks, so a symlink sibling is skipped too
+                // (an extra evidence copy at worst, never a lost one).
+                && entry.file_type().is_ok_and(|t| t.is_file())
                 && std::fs::read(entry.path()).is_ok_and(|bytes| bytes == content.as_bytes())
         });
         if identical_backup_exists {
@@ -157,6 +166,22 @@ pub(super) fn backup_corrupt_json_file(path: &std::path::Path, stem: &str, conte
 /// self-healing transient hold into Integrity (which blocks every assistant startup) would be disproportionate (review 2026-08-28).
 const JOURNAL_REMOVE_ATTEMPTS: usize = 3;
 const JOURNAL_REMOVE_RETRY_DELAY: Duration = Duration::from_millis(120);
+
+/// The corrupt/unreadable-installed.json recovery is reachable
+/// from every policy read (the DenyAll expansion runs per turn on the hot
+/// path, `recover_corrupt_installed` under the transaction lock) while the
+/// file stays broken — its notices must log once per process, not one line
+/// per read. Deliberately never resets (the degrade-once latch convention;
+/// recovery correctness is unaffected), and shared with scope.rs's DenyAll
+/// fallback warn so both reporters of the same condition honor one latch.
+static INSTALLED_RECOVERY_LOGGED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn log_installed_recovery_once(message: String) {
+    if !INSTALLED_RECOVERY_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        log::warn!("{message}");
+    }
+}
 
 #[cfg(test)]
 static FAIL_NEXT_INSTALLED_WRITE: std::sync::atomic::AtomicBool =
@@ -303,14 +328,35 @@ pub(crate) fn quarantine_corrupt_state_file(path: &Path, content: &[u8]) -> Resu
     // exists, skip writing a new one — repeated reads of a file whose
     // recovery cannot complete (unverifiable mcp.json, failing save) must not
     // accumulate timestamped copies. One preserved copy is enough for manual
-    // recovery; deleting it re-arms the quarantine.
+    // recovery; deleting it re-arms the quarantine. Only a
+    // non-empty REGULAR file counts as a preserved copy — a stray empty file
+    // or a planted directory with the prefix is not evidence, and treating it
+    // as one would skip the quarantine and let the caller overwrite the
+    // genuinely corrupt original with nothing preserved. A real copy is
+    // always write_atomic output (non-empty), so this cannot double-write
+    // over a legitimate copy.
+    // EXCEPT when the corrupt content itself is empty —
+    // its legitimate copy is a zero-byte file too, so under the strict rule
+    // every read of a persistently-unrecoverable empty file would write
+    // another zero-byte copy without bound. For empty content there are no
+    // bytes to preserve, so any prefixed regular file counts and the
+    // accumulation stops; for non-empty content the strict rule stands.
     let sibling_prefix = format!("{name}.corrupt.");
+    let empty_content = content.is_empty();
     if let Ok(entries) = std::fs::read_dir(parent) {
         for entry in entries.flatten() {
             if entry
                 .file_name()
                 .to_string_lossy()
                 .starts_with(&sibling_prefix)
+                // One metadata() covers both predicates: a DirEntry's
+                // metadata does not traverse symlinks (the same lstat
+                // semantics the file_type() check had) and already carries
+                // the length, so the second syscall bought nothing.
+                && entry
+                    .metadata()
+                    .map(|m| m.is_file() && (m.len() > 0 || empty_content))
+                    .unwrap_or(false)
             {
                 return Ok(());
             }
@@ -329,7 +375,11 @@ pub(crate) fn quarantine_corrupt_state_file(path: &Path, content: &[u8]) -> Resu
 }
 
 fn read_optional_file(path: &Path) -> Result<Option<Vec<u8>>, String> {
-    match std::fs::read(path) {
+    // Hardened read: these snapshots cover installed.json and
+    // mcp.json — private-home consent-adjacent state — so the open must not
+    // hang on a planted FIFO or follow a swapped symlink while the
+    // transaction lock is held.
+    match read_private_data_file_bytes(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!("Failed to read {}: {error}", path.display())),
@@ -341,6 +391,11 @@ fn write_atomic_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("Failed to create {}: {error}", parent.display()))?;
     }
+    // The app's platform private atomic write, not the foundation crate's
+    // `deepseek_tui::utils::write_atomic`: a feature module must not reach
+    // into the foundation's utils — the dependency direction is
+    // features → platform/core. Both primitives are private-mode tmp+rename,
+    // so the choice is behavior-neutral.
     crate::platform::filesystem::atomic_write_private(path, bytes)
         .map_err(|error| format!("Failed to write {}: {error}", path.display()))
 }
@@ -529,6 +584,26 @@ impl MarketplaceStateTransaction {
         self.finished = true;
         Ok(())
     }
+
+    /// Commit-or-rollback tail shared by the String-error transactional
+    /// writers: `commit` on success; on failure roll the snapshot back —
+    /// composing the rollback error onto the original so neither is lost —
+    /// and still return the ORIGINAL error, so the caller's refusal text is
+    /// never replaced by the rollback outcome.
+    fn settle<T>(self, result: Result<T, String>) -> Result<T, String> {
+        match result {
+            Ok(value) => {
+                self.commit()?;
+                Ok(value)
+            }
+            Err(error) => {
+                self.rollback().map_err(|rollback| {
+                    format!("{error}; marketplace state rollback failed: {rollback}")
+                })?;
+                Err(error)
+            }
+        }
+    }
 }
 
 impl Drop for MarketplaceStateTransaction {
@@ -561,14 +636,20 @@ pub use types::{
 // scope.rs 统一落盘单一 `disabled_bundles.json`(取代 `disabled_connectors.json` /
 // `disabled_skills.json` 双文件)。这里 re-export 保留调用路径;连接器/技能/CLI 开关
 // 统一按包 id 落盘,`skill:` 前缀跨文件借道清除。
-// `save_disabled_bundles`（plain 快捷写）仅测试在用，随实现一并 cfg(test)。
-#[cfg(test)]
-pub use crate::features::marketplace::scope::save_disabled_bundles;
+// `save_disabled_bundles` (the plain shortcut write) and
+// `load_disabled_bundles` (the plain shortcut read; production has no
+// callers) are test-only now and are `cfg(test)` along with their
+// implementations.
 pub use crate::features::marketplace::scope::{
-    load_disabled_bundles, load_disabled_bundles_for, load_hidden_bundles_for,
-    remove_bundle_from_disabled_scopes, save_disabled_bundles_for, save_hidden_bundles_for,
-    sync_deny_all_scopes_after_install, sync_deny_all_scopes_refresh, unavailable_bundles_for,
+    load_disabled_bundles_for, load_disabled_bundles_startup, load_hidden_bundles_for,
+    save_disabled_bundles_for, save_hidden_bundles_for, sync_deny_all_scopes_after_install,
+    sync_deny_all_scopes_refresh, unavailable_bundles_for,
 };
+// The connector gate is crate-internal (skill_gate.rs is the only caller);
+// no command layer or engine surface needs it.
+pub(crate) use crate::features::marketplace::scope::deny_first_register_connector;
+#[cfg(test)]
+pub use crate::features::marketplace::scope::{load_disabled_bundles, save_disabled_bundles};
 
 /// 按会话类型 scope 持久化连接器禁用列表并刷新技能目录。
 ///
@@ -698,11 +779,19 @@ pub fn migrate_mcp_json_paths() -> Result<bool, String> {
     // （M-8；锁见 file_lock.rs）。
     connectors::with_mcp_json_lock(|| {
         let mcp_path = paths::mcp_config_path();
-        if !mcp_path.is_file() {
-            return Ok(false);
-        }
-        let content =
-            std::fs::read_to_string(&mcp_path).map_err(|e| format!("读取 mcp.json 失败: {e}"))?;
+        // The read goes through the hardened private-data primitive: a raw
+        // `is_file()` + `read_to_string` pair is a check-then-act inside the
+        // mcp.lock critical section — a planted FIFO swapped in after the
+        // check blocks `open()` forever while HOLDING mcp.lock, wedging
+        // every mcp.json writer in every process.
+        // Absent stays `Ok(false)`; a refused read (FIFO/symlink/non-regular)
+        // fails the migration loudly instead of silently skipping, the
+        // same fail-closed direction as the sibling in-lock reads.
+        let content = match crate::platform::filesystem::read_private_data_file(&mcp_path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(format!("读取 mcp.json 失败: {e}")),
+        };
         let mut mcp: serde_json::Value =
             serde_json::from_str(&content).map_err(|e| format!("解析 mcp.json 失败: {e}"))?;
         let mut changed = false;
@@ -825,10 +914,63 @@ pub struct MarketplaceManager<S: CredentialStore = SystemCredentialStore> {
     pub(super) credential_store: S,
 }
 
-impl Default for MarketplaceManager<SystemCredentialStore> {
-    fn default() -> Self {
-        Self::new()
+/// Withdraw a builtin CLI connector's materialized pack dir during uninstall.
+/// Every removal error propagates: the caller runs inside
+/// the uninstall transaction, so a failure rolls the whole uninstall back and
+/// the consent strip (which runs only after the transaction commits) never
+/// sees a partially withdrawn pack. `NotFound` on each step is tolerated — a
+/// connector without materialized `mcp/` or a re-entrant teardown treats the
+/// step as already done.
+fn withdraw_materialized_connector_dirs(tool_id: &str, pkg_dir: &Path) -> Result<(), String> {
+    for sub in ["mcp", "skills"] {
+        let dir = pkg_dir.join(sub);
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(format!(
+                    "failed to withdraw the builtin connector's materialized dir ({tool_id}): {sub}: {e}"
+                ));
+            }
+        }
     }
+    match std::fs::remove_dir(pkg_dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        // NotEmpty here means content outside the materialization subtrees
+        // survived (hand-placed files under the connector id): aborting keeps
+        // it undeleted instead of destroying it unrecycled.
+        Err(e) => Err(format!("failed to remove the pack dir ({tool_id}): {e}")),
+    }
+}
+
+/// Restore the bundles.json mirror record after an aborted uninstall — and
+/// only the record THIS call removed: writes back `pre_remove_record` (the
+/// snapshot taken immediately before `store.remove`), gated on
+/// `removed_by_us`, so a record a concurrent actor already removed is never
+/// revived. Write-back failure is logged, not propagated: the uninstall has
+/// already failed, and the mirror stays best-effort.
+fn write_back_pre_remove_record(
+    store: &store::BundleStore,
+    tool_id: &str,
+    removed_by_us: bool,
+    pre_remove_record: Option<store::BundleRecord>,
+) {
+    if removed_by_us {
+        if let Some(record) = pre_remove_record {
+            if let Err(re) = store.upsert(record) {
+                log::warn!(
+                    "[marketplace] record write-back after an aborted uninstall ({tool_id}): {re}"
+                );
+            }
+        }
+    }
+}
+
+/// 安装与命令层共用的「工具不存在」拒绝文案：两个入口的同一 id 必须得到
+/// 逐字一致的提示（pub(crate) 供命令层复用）。
+pub(crate) fn unknown_tool_error(tool_id: &str) -> String {
+    format!("工具 '{tool_id}' 不存在")
 }
 
 impl MarketplaceManager<SystemCredentialStore> {
@@ -870,7 +1012,13 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 if !manifest_path.is_file() {
                     continue;
                 }
-                match std::fs::read_to_string(&manifest_path) {
+                // consent_gate_bundle_already_known runs this
+                // walk on every gate evaluation, so the read goes through the
+                // hardened private-data primitive like its spec_for sibling —
+                // a manifest swapped to a FIFO/symlink in the probe-to-read
+                // window refuses (log + skip the pack) instead of hanging the
+                // gate or reading unbounded.
+                match crate::platform::filesystem::read_private_data_file(&manifest_path) {
                     Ok(content) => match serde_json::from_str::<ToolManifest>(&content) {
                         Ok(manifest) => {
                             by_id.insert(manifest.id.clone(), manifest);
@@ -913,8 +1061,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// set unknown" (review #455 R5-B2). The corrupt recovery is **read-only
     /// here**: persistence is owned by writer callers under the marketplace
     /// transaction lock (round-11 B1), so this path never acquires
-    /// MARKETPLACE_TRANSACTION_LOCK — a read under DISABLED_BUNDLES_FILE_LOCK
-    /// (DenyAll resolution) must not block on the transaction lock, and a
+    /// MARKETPLACE_TRANSACTION_LOCK — a read under the scope file's
+    /// cross-process lock (DenyAll resolution) must not block on the
+    /// transaction lock, and a
     /// corrupt installed.json must not hang installs or the startup repair.
     pub(crate) fn try_installed_ids(&self) -> Result<Vec<String>, String> {
         self.read_installed(false)
@@ -942,14 +1091,23 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// (persist; the caller holds the transaction lock). Non-UTF-8 content is
     /// salvaged via the raw byte read and treated as corrupt (round-11 m2) —
     /// only a failing raw read stays "unreadable".
+    /// Both reads go through the hardened private-data primitives: this runs
+    /// inside the scope lock's DenyAll expansion and under
+    /// the transaction lock, so a planted FIFO/symlink at the path must
+    /// refuse, not block the lock holder (same discipline as
+    /// disabled_bundles.json itself). NotFound semantics unchanged.
     fn read_installed(&self, writer: bool) -> Result<Vec<String>, String> {
-        let content = match std::fs::read_to_string(&self.installed_file) {
+        // Hardened read: this file is consent-adjacent state
+        // read inside the scope critical section (the DenyAll expansion) and
+        // under the transaction lock — the open must not hang on a planted
+        // FIFO there.
+        let content = match read_private_data_file(&self.installed_file) {
             Ok(c) => c,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => {
                 // Salvage the raw bytes: invalid UTF-8 is a corrupt file (raw
                 // bytes readable), not an unreadable one (round-11 m2).
-                match std::fs::read(&self.installed_file) {
+                match read_private_data_file_bytes(&self.installed_file) {
                     Ok(bytes) => {
                         return self.recover_corrupt_installed(&bytes, "invalid UTF-8", writer);
                     }
@@ -987,9 +1145,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 "installed.json is invalid: {parse_error}; {quarantine_err}; installed set unknown, leaving the corrupt file untouched"
             )
         })?;
-        eprintln!(
+        log_installed_recovery_once(format!(
             "[marketplace] installed.json is invalid: {parse_error}; quarantined, rebuilding from mcp.json"
-        );
+        ));
         let recovered = self.recover_installed_ids_from_mcp().map_err(|recover_error| {
             format!(
                 "installed.json is invalid: {parse_error}; {recover_error}; installed set unknown, DenyAll gate falls back to the full catalog"
@@ -1000,10 +1158,10 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             // never persist: the write half of the recovery belongs to the
             // next transaction-holding writer (install/uninstall/repair), so
             // no lock ordering between the two mutexes ever forms here.
-            eprintln!(
-                "[marketplace] installed.json corrupt recovery computed in memory ({:?} ids); persistence deferred to the next transaction-holding writer",
+            log_installed_recovery_once(format!(
+                "[marketplace] installed.json corrupt recovery computed in memory ({} ids); persistence deferred to the next transaction-holding writer",
                 recovered.len()
-            );
+            ));
             return Ok(recovered);
         }
         // A failed recovery overwrite is reported as Err: the corrupt
@@ -1265,7 +1423,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // (review round-6 M3a).
         let manifest = mcp_catalog::embedded_manifest(tool_id)?
             .or_else(|| self.load_manifest(tool_id))
-            .ok_or_else(|| format!("工具 '{tool_id}' 不存在"))?;
+            .ok_or_else(|| unknown_tool_error(tool_id))?;
 
         // Only the embedded catalog may authorize automatic dependency execution. For
         // embedded-catalog tools the compile-time manifest above is likewise the source of
@@ -1317,20 +1475,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             }
             self.save_installed(&installed)
         })();
-        match result {
-            Ok(()) => transaction.commit()?,
-            Err(error) => {
-                transaction.rollback().map_err(|rollback| {
-                    format!("{error}; marketplace state rollback failed: {rollback}")
-                })?;
-                drop(python_environment);
-                // Do not prune here: the restored mcp.json may still reference the
-                // pre-install environment, whose key is absent from the catalog
-                // preserve-set after a lock upgrade. Startup repair re-runs the prune
-                // with the repair-error guard once the environment is healthy again.
-                return Err(error);
-            }
-        }
+        transaction.settle(result)?;
+        // On the failure path settle already rolled the state back and no
+        // prune may run there: the restored mcp.json may still reference the
+        // pre-install environment, whose key is absent from the catalog
+        // preserve-set after a lock upgrade. Startup repair re-runs the prune
+        // with the repair-error guard once the environment is healthy again.
 
         // 镜像写入统一真相源 bundles.json（Phase 2 过渡期：installed.json / mcp.json
         // 仍是权威，bundles.json 只镜像安装态；镜像写失败不翻盘主操作，fail loud 到日志）。
@@ -1371,7 +1521,14 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 
     /// 卸载工具：从 installed.json + mcp.json 中移除，包目录按来源处置
     /// （Upload 整包进回收站 / 可重释放预置物理删除 / 其余保留）。
-    pub fn uninstall(&self, tool_id: &str) -> Result<(), String> {
+    /// Uninstalls a marketplace tool: removes the mcp.json entry, the
+    /// installed.json id, the bundles.json mirror, and disposes the package
+    /// dir by source. Returns whether THIS call actually removed the install
+    /// record; a vacuous uninstall (`Ok(false)`) must leave every scope
+    /// entry alone, and callers must key every scope-strip decision on this
+    /// outcome — see `strip_uninstalled_scope_state` (the post-commit strip,
+    /// still under MARKETPLACE_TRANSACTION_LOCK) for the full doctrine.
+    pub fn uninstall(&self, tool_id: &str) -> Result<bool, String> {
         // Builtin plugins cannot be uninstalled (docs/builtin-toolset-contract.md
         // §3.1 server-side defense in depth): even if the frontend never
         // offers the action, a direct command/IPC call must be rejected here.
@@ -1384,6 +1541,59 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 "builtin plugin '{tool_id}' is part of the application and cannot be uninstalled"
             ));
         }
+        // Serialize the whole uninstall against same-id
+        // imports landing in ANOTHER process too. The transaction lock and
+        // the per-id import mutex are process-local, so a cross-process
+        // reimport whose deny-first gate ran pre-uninstall (known-skip)
+        // could land after the in-lock strip, and its post-landing belt sync
+        // would skip again on the fresh record: live pack, zero consent
+        // rows. The landing lease is the import pipeline's own cross-process
+        // exclusion (see `plugin_import::open_landing_lease`): holding it
+        // here waits out a live peer import and excludes new ones for the
+        // span, so the import's gate either ran before this uninstall (its
+        // rows are stripped together with the record this call removes) or
+        // runs after it (a fresh registration lands governed). Blocks while
+        // a peer import is mid-flight — the OS releases the lease when the
+        // peer dies; the command already runs in spawn_blocking. Startup
+        // sweep callers that already hold the lease go through
+        // `uninstall_leased`.
+        // The lease file name is
+        // `<journal>/<id>.landing.lock`, derived from this id, and the lease
+        // opens BEFORE any other validation — `Path::join` lets an absolute
+        // id replace the journal base and a separator id escape it, planting
+        // an empty 0600 lock file outside the journal. Restore validates its
+        // id (`is_safe_skill_name`) and the import pipeline validates in
+        // `detect_components`; this was the last unguarded lease taker. The
+        // rejected subset is deliberately narrow (empty, path separators,
+        // Windows drive colon, NUL) so legit legacy ids pass, and the lease
+        // keys on the same stripped id the import pipeline uses, so the
+        // exclusion still pairs with the import it serializes against.
+        let lease_id = tool_id.strip_prefix("skill:").unwrap_or(tool_id);
+        // Windows keeps `:` in the hostile set (drive-relative paths / ADS).
+        // Unix filenames allow it, and legacy custom-MCP pack ids derived
+        // verbatim from such directory names must
+        // stay removable. `/` and
+        // NUL escape the journal path on every platform; `\` rides along as
+        // path-separator paranoia.
+        #[cfg(windows)]
+        let hostile = lease_id.is_empty() || lease_id.contains(&['/', '\\', ':', '\0'][..]);
+        #[cfg(not(windows))]
+        let hostile = lease_id.is_empty() || lease_id.contains(&['/', '\\', '\0'][..]);
+        if hostile {
+            return Err(format!("invalid tool id '{tool_id}'"));
+        }
+        let mut landing_lease = plugin_import::open_landing_lease(lease_id)
+            .map_err(|error| format!("open the landing lease for {lease_id}: {error}"))?;
+        let _landing_lease_guard = file_lock::lock_write_with_transient_retry!(&mut landing_lease)
+            .map_err(|error| format!("lock the landing lease for {lease_id}: {error}"))?;
+        self.uninstall_leased(tool_id)
+    }
+
+    /// The uninstall body without the cross-process landing lease. Callers
+    /// that already hold the lease for `tool_id` (the startup retired-tool
+    /// sweep) call this directly — the lease is an flock, so re-acquiring it
+    /// on a fresh fd from the same process would self-block.
+    pub(crate) fn uninstall_leased(&self, tool_id: &str) -> Result<bool, String> {
         // 并发守护（M2）由事务锁承担：卸载全程持 MARKETPLACE_TRANSACTION_LOCK，
         // 同 id 并发卸载时后到者等先到者卸完再重读登记，看到的是「已回收」终态，
         // 回收失败回滚不会把先删的记录复活成幽灵 installed；顺带串行化跨 id 的
@@ -1399,20 +1609,20 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // （六轮评审 R1）。
         let store = store::BundleStore::new();
         let records_result = store.records();
-        let source_may_be_upload = records_result
-            .as_ref()
-            .map(|records| {
-                records
-                    .iter()
-                    .any(|r| r.id == tool_id && matches!(r.source, store::BundleSource::Upload(_)))
-            })
-            .unwrap_or(true);
+        let records_failed = records_result.is_err();
         // Upload 来源的记录快照（回收站清单用；恢复时据此重建登记）。读失败/无记录
         // → None，保持「原位保留」语义（不回收、不删除）。
         let upload_record = records_result
             .unwrap_or_default()
             .into_iter()
             .find(|r| r.id == tool_id && matches!(r.source, store::BundleSource::Upload(_)));
+        // fail-closed：bundles.json 读不出就当可能是 Upload（不可删），不把读失败按
+        // 非 Upload 照删。
+        let source_may_be_upload = records_failed || upload_record.is_some();
+        // Snapshot before the transaction closure moves `upload_record`: the
+        // in-lock cleanup needs to know whether companion dirs were recycled
+        // with the package (Upload path) to strip their entries in-lock.
+        let recycles_upload = upload_record.is_some();
 
         // Upload 整包回收 preflight（M2）：回收站不可用（同 id 目标残留/根目录不可
         // 建）时在拆任何供给面之前 fail loud —— 此前 secrets/installed.json/mcp.json
@@ -1454,6 +1664,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // 覆盖 mcp.json / installed.json，bundles.json 镜像与包目录在快照之外，
         // 拒绝若发生在它们之后，回滚将不完整。调整顺序前先读这条。
         let transaction = MarketplaceStateTransaction::begin(&self.installed_file)?;
+        let mut removed_install_record = false;
         let result = (|| {
             self.remove_from_mcp_json(tool_id)?;
             let mut installed = self.try_installed_ids_for_writer()?;
@@ -1464,6 +1675,14 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             // 中止语义在 uninstall_marketplace_tool_sync，先于本函数，不受影响）。
             // removed_by_us = 记录是否由本次调用删除：回收失败回滚仅以本次所删为限
             // 回写，不复活他人已删的记录。
+            // Snapshot the mirror record before the remove: the transaction
+            // rollback does not cover bundles.json, so a mid-transaction abort
+            // (the CLI-connector withdrawal leg below) restores the ORIGINAL
+            // record itself, like the recycle-failure leg. Unfiltered: a
+            // tombstone (installed=false) that store.remove takes is still the
+            // exact pre-uninstall state an aborted uninstall must leave
+            // behind.
+            let pre_remove_record = store.get(tool_id).ok().flatten();
             let removed_by_us = match store.remove(tool_id) {
                 Ok(removed) => removed,
                 Err(e) => {
@@ -1473,6 +1692,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     false
                 }
             };
+            removed_install_record = removed_by_us;
 
             // 包目录处置（§4 修订：卸载 = 删登记 + 目录按来源处置）。companion 技能由
             // 命令层联动处理（Upload 组合包跳过物理删除、随整包回收，见
@@ -1484,6 +1704,16 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             // - 其余一律保留 `bundles/<id>/`（用户唯一副本）：手写自定义 MCP
             //   （migrate_custom_mcp_layout 从旧布局强迁、无 plugin.json、登记为
             //   Preset）、无记录、bundles.json 读失败。
+            // - Builtin CLI connector: withdraw the whole pack dir (English
+            //   per CONTRIBUTING): every file under
+            //   `bundles/<id>/` is companion-skill materialization from
+            //   embedded assets, nothing user-unique, and the DenyAll
+            //   consent gate's materialized-dirs known-clause keys on these
+            //   very files. Keeping them after the in-lock cleanup stripped
+            //   the consent rows and the sync ledger would let the gate
+            //   vouch for a consent state that no longer exists — a re-show
+            //   would skip registration for as long as the dirs stay. The
+            //   next gated show re-extracts and registers fresh.
             let can_redeliver = mcp_catalog::spec_for(tool_id).is_some();
             if let Some(record) = upload_record {
                 if pkg_dir.exists() {
@@ -1498,13 +1728,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                         // 由 recycle_package 回滚原位）。登记仅以本次所删为限回写；
                         // installed.json / mcp.json 由下方事务 rollback 恢复；
                         // secrets 此时尚未删除 —— 全态回到卸载前，卸载 fail loud。
-                        if removed_by_us {
-                            if let Err(re) = store.upsert(record) {
-                                log::warn!(
-                                    "[marketplace] 回收失败后登记回写失败（{tool_id}）: {re}"
-                                );
-                            }
-                        }
+                        write_back_pre_remove_record(
+                            &store,
+                            tool_id,
+                            removed_by_us,
+                            pre_remove_record,
+                        );
                         return Err(format!("移入回收站失败（{tool_id}）: {e}"));
                     }
                 }
@@ -1514,25 +1743,44 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                     let _ = std::fs::remove_dir(pkg_dir.join("skills")); // 仅空目录能删掉
                     let _ = std::fs::remove_dir(&pkg_dir);
                 }
+            } else if !source_may_be_upload && !bundle::cli_bundle_skill_dirs(tool_id).is_empty() {
+                // Builtin CLI connector: withdraw the
+                // materialized companion skills together with the record.
+                // Why withdraw: see the builtin-CLI bullet in the
+                // disposition list above — the gate's materialized-dirs
+                // clause keys on these files.
+                if pkg_dir.exists() {
+                    if let Err(withdraw_error) =
+                        withdraw_materialized_connector_dirs(tool_id, &pkg_dir)
+                    {
+                        // The transaction rollback covers mcp.json /
+                        // installed.json but the mirror record and the pack
+                        // dir live outside its snapshot — restore the record
+                        // like the recycle-failure leg above.
+                        write_back_pre_remove_record(
+                            &store,
+                            tool_id,
+                            removed_by_us,
+                            pre_remove_record,
+                        );
+                        return Err(withdraw_error);
+                    }
+                }
             }
             Ok(())
         })();
-        match result {
-            Ok(()) => transaction.commit()?,
-            Err(error) => {
-                transaction.rollback().map_err(|rollback| {
-                    format!("{error}; marketplace state rollback failed: {rollback}")
-                })?;
-                return Err(error);
-            }
-        }
+        transaction.settle(result)?;
 
         // Only clean credentials, scope state, and companion skills after the persistent
         // registration transaction commits. A failed transaction therefore leaves the old tool
         // fully usable instead of producing a half-uninstalled state.
         // Upload 组合包的 companion 目录已随整包搬离（false 分支的清理自然空转）；
         // 预置 companion 物理删除沿用既有语义（可重获得）。
-        self.cleanup_uninstalled_tool_state(tool_id, &secret_targets, false, &companion_owners);
+        self.cleanup_uninstalled_tool_state(tool_id, &secret_targets);
+        // The gate follows `strip_uninstalled_scope_state`'s vacuous-uninstall doctrine.
+        if removed_install_record {
+            self.strip_uninstalled_scope_state(tool_id, false, &companion_owners, recycles_upload);
+        }
 
         // Environments and wheel caches are garbage-collected by reference to the still-installed MCPs.
         // A failed cleanup never rolls back the finished uninstall; the next uninstall retries, so a held file cannot leave the tool stuck in a half state where the config is gone but uninstall keeps erroring.
@@ -1541,7 +1789,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             log::warn!("[marketplace] prune Python dependencies failed: {error}");
         }
 
-        Ok(())
+        Ok(removed_install_record)
     }
 
     fn active_python_locks_from_committed_state(
@@ -1636,19 +1884,45 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         Ok(None)
     }
 
-    /// Domain cleanup after a tool registration is removed. Plain uninstall and failed startup
-    /// repair must share one semantic, otherwise companion skills keep surfacing in session prompts after the MCP is already unusable.
-    /// `preserve_companion_skills`：跳过 companion 技能物理删除 —— 修复降级路径
-    /// 上 Upload 整包回收失败（技能目录仍在盘上）时由调用方置位：宁可留下残留
-    /// 技能卡，不把用户唯一副本的 skills 部分物理删除。
+    /// Domain cleanup after a tool registration is removed — the secrets leg
+    /// (the scope-strip tail lives in [`Self::strip_uninstalled_scope_state`]).
+    /// Plain uninstall and
+    /// failed startup repair must share one semantic, otherwise companion
+    /// skills keep surfacing in session prompts after the MCP is already unusable.
     ///
-    /// Teardown policy twin: this is the **post-commit best-effort** companion
-    /// cleanup (runs only after the uninstall transaction commits; failures are
+    /// Teardown policy twin: this is the **post-commit best-effort** cleanup
+    /// (runs only after the uninstall transaction commits; failures are
     /// swallowed). The eager pre-uninstall, abort-on-failure twin lives in
     /// `app/commands/marketplace.rs::uninstall_marketplace_tool_sync` (runs
     /// before any supply-side teardown so a failed companion delete aborts the
     /// whole uninstall). Keep the two policies distinct and the cross
     /// references intact when touching either side.
+    fn cleanup_uninstalled_tool_state(&self, tool_id: &str, secret_targets: &[(String, String)]) {
+        for (target, key) in secret_targets {
+            let reference = secrets::mcp_secret_reference(tool_id, target, key);
+            let _ = self.credential_store.delete(&reference);
+            secrets::remove_secret_value(&secrets::mcp_secret_env_var(key));
+        }
+    }
+
+    /// Scope-strip tail of the uninstall teardown: this pack's own consent
+    /// rows plus the companion-skill consent/physical handling.
+    ///
+    /// Scope entries are consent state: strip them only when this call
+    /// actually removed the install record. A vacuous uninstall (no record
+    /// — e.g. racing a same-id install whose deny-first gate just
+    /// registered the entries but whose record has not landed yet) must
+    /// leave the entries alone, or it would re-enable the package as it
+    /// lands. Only the scope legs are gated; secrets of a provisioned
+    /// manifest still belong to this teardown. The strips here run under
+    /// MARKETPLACE_TRANSACTION_LOCK — a registration a concurrent install
+    /// makes after this point survives; there is no
+    /// post-return strip.
+    ///
+    /// `preserve_companion_skills`：跳过 companion 技能物理删除 —— 修复降级路径
+    /// 上 Upload 整包回收失败（技能目录仍在盘上）时由调用方置位：宁可留下残留
+    /// 技能卡，不把用户唯一副本的 skills 部分物理删除。
+    ///
     /// Round-28 MAJOR 1 (review #455): the companion-owner snapshots MUST be
     /// computed **before the uninstall transaction commits** — post-commit the
     /// tool's own conditional claim is dead (and its manifest may be gone),
@@ -1657,18 +1931,13 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// undeclared `skills/<name>/`, letting the exact removal erase THAT
     /// pack's consent rows. Callers snapshot with claims alive and thread the
     /// pairs in; the best-effort swallow stays per this leg's policy.
-    fn cleanup_uninstalled_tool_state(
+    fn strip_uninstalled_scope_state(
         &self,
         tool_id: &str,
-        secret_targets: &[(String, String)],
         preserve_companion_skills: bool,
         companion_owners: &[(String, String)],
+        recycles_upload_or_equivalent: bool,
     ) {
-        for (target, key) in secret_targets {
-            let reference = secrets::mcp_secret_reference(tool_id, target, key);
-            let _ = self.credential_store.delete(&reference);
-            secrets::remove_secret_value(&secrets::mcp_secret_env_var(key));
-        }
         // Round-26 MAJOR 1 (review #455): `tool_id` is a pack id and this
         // cleanup runs after the dir is deleted/redeliverable-stripped — the
         // normalized form's gating fallback could re-own the absent id onto a
@@ -1683,7 +1952,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 "[marketplace] persisting the post-uninstall switch/visibility cleanup for {tool_id} failed (stale entries would be inherited by a same-id reinstall): {e}"
             );
         }
-        if preserve_companion_skills {
+        // No companion needs disposition → the cleanup loop below iterates
+        // nothing, so the registry read + bundles walk computing `unavailable`
+        // would be discarded work; skip both. Log-only delta: the
+        // "skipping the ... cleanup" warn no longer fires when there is
+        // nothing to clean.
+        if preserve_companion_skills || companion_owners.is_empty() {
             return;
         }
         let unavailable: std::collections::HashSet<String> =
@@ -1701,33 +1975,85 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             }
             .into_iter()
             .collect();
-        for skill_id in self.companion_skills(tool_id) {
-            if !unavailable.contains(&skill_id) {
-                continue;
-            }
-            // Round-28 MAJOR 1 (review #455): the owner comes from the
-            // pre-transaction snapshot threaded by the caller — re-resolving
-            // here would run against the post-commit world where this tool's
-            // claim is dead and the fallback can re-own the name onto a live
-            // foreign pack. Exact form on that snapshot; the best-effort
-            // swallow stays per this leg's policy.
-            let Some(owner) = companion_owners
-                .iter()
-                .find(|(sid, _)| sid == &skill_id)
-                .map(|(_, owner)| owner)
-            else {
-                // No pre-transaction snapshot (the companion list changed
-                // between snapshot and cleanup): keep the conservative no-op —
-                // without a claims-alive resolution this leg must not guess.
+        // Iterate the PRE-TRANSACTION snapshot, not the live manifest: an
+        // Upload recycle has already moved the package directory, so the
+        // manifest (and with it the live companion list) is gone by the time
+        // this cleanup runs — the snapshot is the only record of which
+        // companions existed.
+        for (skill_id, owner) in companion_owners.iter() {
+            let skill_id = skill_id.as_str();
+            let owner = owner.as_str();
+            // A residue manifest can declare the
+            // tool's OWN id in `companion_skills` (the manifest is read
+            // verbatim, never validated against the tool id). The physical
+            // uninstall below would then re-lock the per-id import mutex the
+            // retired-tool sweep already holds across `uninstall_leased` —
+            // a non-reentrant std Mutex on the boot thread, i.e. a boot
+            // hang. The tool's own teardown is this very call, so a
+            // self-companion entry is garbage: skip it loudly.
+            if skill_id == tool_id {
                 log::warn!(
-                    "[marketplace] no pre-transaction owner snapshot for companion '{skill_id}' of {tool_id}; skipping its consent cleanup"
+                    "[marketplace] residue manifest of {tool_id} declares itself as its own companion skill; skipping the self-companion cleanup entry"
                 );
                 continue;
-            };
-            let _ = skill_marketplace::SkillMarketplaceManager::new().uninstall(&skill_id);
-            if let Err(e) = scope::remove_bundle_from_disabled_scopes_exact(&owner) {
+            }
+            // On the Upload-recycle path the package directory (the
+            // companions' own copies included) has already moved into the
+            // recycle bin inside this transaction: there is nothing to
+            // uninstall, the live `unavailable` enumeration cannot see the
+            // companions, and a sweeping `SkillMarketplaceManager::uninstall`
+            // must NOT run — its candidate scan covers every
+            // `bundles/*/skills/<name>` copy and could delete a FOREIGN
+            // installed pack's same-named companion. Strip the consent rows
+            // directly; the physical copies left with the package. This leg
+            // deliberately skips the `unavailable` shared-claimant guard the
+            // else-branch keeps: the whole point is that the recycled copies
+            // are invisible to the live enumeration, and admission checks
+            // reject two live packs sharing a companion, so the snapshot
+            // owner can only be this pack's own (a foreign
+            // strip would require a poisoned owner snapshot).
+            if recycles_upload_or_equivalent {
+                Self::strip_companion_rows(tool_id, skill_id, owner);
+                continue;
+            }
+            if !unavailable.contains(skill_id) {
+                continue;
+            }
+            // Keep the deny entry when the skill teardown fails: the skill is
+            // still on disk, and clearing its entry here would silently
+            // re-enable it in initialized DenyAll scopes (same fail-closed
+            // policy as ima_logout's failed-uninstall branch and the eager
+            // twin's abort-on-failure). A vacuous uninstall (never installed)
+            // keeps them too.
+            match skill_marketplace::SkillMarketplaceManager::new().uninstall(&skill_id) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(error) => {
+                    log::warn!(
+                        "[marketplace] companion skill '{skill_id}' cleanup failed while uninstalling {tool_id}; keeping its deny entry (fail-closed): {error}"
+                    );
+                    continue;
+                }
+            }
+            Self::strip_companion_rows(tool_id, skill_id, owner);
+        }
+    }
+
+    /// Strips one companion's consent rows after a successful teardown: the
+    /// owner-pack rows (the deny-first registration's normalized id) and the
+    /// raw companion-skill-id rows (a standalone-era entry keyed by the skill
+    /// id itself — with the claim dead, read-time normalization can no longer
+    /// fold it onto the owner, so an owner-only strip would strand it).
+    fn strip_companion_rows(tool_id: &str, skill_id: &str, owner: &str) {
+        if let Err(e) = scope::remove_bundle_from_disabled_scopes_exact(owner) {
+            log::warn!(
+                "[marketplace] persisting the post-uninstall switch cleanup for companion skill '{skill_id}' of {tool_id} failed (stale entries would be inherited by a same-id reinstall): {e}"
+            );
+        }
+        if owner != skill_id {
+            if let Err(e) = scope::remove_bundle_from_disabled_scopes_exact(skill_id) {
                 log::warn!(
-                    "[marketplace] persisting the post-uninstall switch cleanup for companion skill '{skill_id}' of {tool_id} failed (stale entries would be inherited by a same-id reinstall): {e}"
+                    "[marketplace] persisting the standalone-era companion cleanup for '{skill_id}' of {tool_id} failed: {e}"
                 );
             }
         }
@@ -1773,31 +2099,48 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 // IO，preflight 已在 recycle_package 内先行）不阻断修复降级，改为
                 // 跳过 companion 物理清理 —— 否则 cleanup 会对仍在盘上的技能目录
                 // remove_dir_all，销毁唯一副本（review P1：修复路径漏接回收站）。
+                // `companions_moved_with_package` is set only when the
+                // recycle actually moved the pack away. A preset/custom pack's
+                // repair downgrade does not remove the pack dir — the companion
+                // dirs are still on disk, so cleanup must take its else arm
+                // (the unavailable guard + physical uninstall, keeping the
+                // entries on failure); stripping the rows directly would land
+                // the on-disk skills into an initialized DenyAll scope with
+                // zero consent.
+                let mut companions_moved_with_package = false;
                 let mut preserve_companions = false;
                 if let Ok(Some(record)) = store::BundleStore::new().get(tool_id) {
                     if matches!(record.source, store::BundleSource::Upload(_)) {
                         let pkg_dir = paths::bundles_root().join(tool_id);
-                        if pkg_dir.exists() {
+                        if !pkg_dir.exists() {
+                            companions_moved_with_package = true;
+                        } else {
                             let kind = recycle_bin::package_kind(&pkg_dir);
-                            if let Err(recycle_error) = recycle_bin::recycle_upload_package(
+                            match recycle_bin::recycle_upload_package(
                                 &recycle_bin::RecycleBin::new(),
                                 tool_id,
                                 &record,
                                 kind,
                             ) {
-                                log::warn!(
-                                    "[marketplace] 修复降级回收 Upload 包失败（{tool_id}），跳过 companion 物理清理以保留唯一副本: {recycle_error}"
-                                );
-                                preserve_companions = true;
+                                Ok(()) => companions_moved_with_package = true,
+                                Err(recycle_error) => {
+                                    log::warn!(
+                                        "[marketplace] 修复降级回收 Upload 包失败（{tool_id}），跳过 companion 物理清理以保留唯一副本: {recycle_error}"
+                                    );
+                                    preserve_companions = true;
+                                }
                             }
                         }
                     }
                 }
-                self.cleanup_uninstalled_tool_state(
+                self.cleanup_uninstalled_tool_state(tool_id, &secret_targets);
+                // The repair path always removes the install record, so the
+                // scope strip runs unconditionally (no vacuous-uninstall gate).
+                self.strip_uninstalled_scope_state(
                     tool_id,
-                    &secret_targets,
                     preserve_companions,
                     &companion_owners,
+                    companions_moved_with_package,
                 );
                 if let Err(error) = store::BundleStore::new().remove(tool_id) {
                     log::warn!(
@@ -2364,7 +2707,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // 新布局优先（上传包/解压包落盘 `bundles/<id>/mcp/manifest.json`）；
         // 内嵌预设回退到编译期 catalog。旧布局 `bundle/mcp-servers/` 已退役，不再回退读取。
         let new_path = mcp_catalog::package_mcp_dir(tool_id).join("manifest.json");
-        if let Ok(content) = std::fs::read_to_string(&new_path) {
+        // Hardened open: reachable from connect/oauth/
+        // dependency flows under the per-id import lock — a planted FIFO at
+        // the manifest path would otherwise block this read while the lock
+        // is held. Read failure falls through to the embedded catalog, as
+        // before.
+        if let Ok(content) = read_private_data_file(&new_path) {
             if let Ok(manifest) = serde_json::from_str(&content) {
                 return Some(manifest);
             }
@@ -2532,7 +2880,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// (the recovered set may legitimately be empty: mcp.json may simply have
     /// no packages registered).
     fn recover_installed_ids_from_mcp(&self) -> Result<Vec<String>, String> {
-        let content = match std::fs::read_to_string(paths::mcp_config_path()) {
+        // Hardened read: same private-home consent-adjacent
+        // surface as read_installed.
+        let content = match read_private_data_file(&paths::mcp_config_path()) {
             Ok(c) => c,
             Err(error) => return Err(format!("mcp.json is missing or unreadable: {error}")),
         };
@@ -2566,7 +2916,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
 // the lock is held across await only inside a current_thread runtime with no reentrant path,
 // so it cannot deadlock.
 #[allow(clippy::await_holding_lock)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::platform::credential_store::{
         CredentialError, CredentialReference, CredentialStore, MemoryCredentialStore,
@@ -2582,6 +2932,173 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
+    // The ROOT-SKIP helpers are `#[cfg(all(test, unix))]`; their callers are
+    // `#[cfg(unix)]` tests.
+    #[cfg(unix)]
+    use crate::platform::test_support::{dir_read_only_or_skip, file_unreadable_or_skip};
+
+    /// List the quarantine copies minted beside `path`: the regular files
+    /// whose name starts with `{path's file name}{marker}` in `path`'s parent
+    /// (the production sidecar naming is `{name}.corrupt.{ts}` — see
+    /// `backup_corrupt_json_file`). The regular-file filter keeps the
+    /// no-sibling rule's FIFO skip. Shared with scope.rs's
+    /// tests, which import it as
+    /// `crate::features::marketplace::tests::quarantine_backups`; callers
+    /// wanting the count use `.len()`.
+    pub(crate) fn quarantine_backups(
+        path: &std::path::Path,
+        marker: &str,
+    ) -> Vec<std::path::PathBuf> {
+        let parent = path.parent().unwrap();
+        let prefix = format!("{}{marker}", path.file_name().unwrap().to_string_lossy());
+        std::fs::read_dir(parent)
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry.file_name().to_string_lossy().starts_with(&prefix)
+                    && entry.file_type().map(|t| t.is_file()).unwrap_or(false)
+            })
+            .map(|entry| entry.path())
+            .collect()
+    }
+
+    /// Count the `.corrupt.` quarantine copies beside `path` — the pre-
+    /// generalization name, kept for scope.rs's existing imports. Prefer
+    /// [`quarantine_backups`].
+    pub(crate) fn corrupt_sibling_count(path: &std::path::Path) -> usize {
+        quarantine_backups(path, ".corrupt.").len()
+    }
+
+    /// Panic-safe cleanup for the two temp-home harnesses: a
+    /// failing assertion unwinds past this guard, so a leaked in-process
+    /// secret registry or temp dir can no longer cascade unrelated failures
+    /// into every later test in the binary. Env vars are restored by the
+    /// paired `EnvVarGuard` (paths::tests); ENV_LOCK is held by the harness
+    /// throughout, so the drop order of the two guards is immaterial.
+    struct RestoreEnv {
+        prev_secrets: std::collections::HashMap<String, String>,
+        dir: std::path::PathBuf,
+    }
+
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            secrets::restore_secret_values(std::mem::take(&mut self.prev_secrets));
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// The post-commit companion cleanup must keep a deny
+    /// entry when that skill's own teardown fails — the skill is still on
+    /// disk, so removing the entry would silently re-enable it. Broken
+    /// bundles.json makes the skill uninstall abort fail-closed while the
+    /// directory stays put; the store and scope files are independent, so
+    /// only the companion teardown is affected.
+    #[test]
+    fn companion_cleanup_keeps_deny_entry_when_skill_uninstall_fails() {
+        use crate::features::marketplace::ConnectorScope;
+        use crate::features::marketplace::scope::{
+            load_disabled_bundles_for, save_disabled_bundles_for,
+        };
+        with_temp_home(|| {
+            // The catalog's tencent-docs package declares companion
+            // tencent-docs-skill; give it the installed companion layout.
+            let skill_dir = paths::pinvou3_home()
+                .join("bundles")
+                .join("tencent-docs")
+                .join("skills")
+                .join("tencent-docs");
+            std::fs::create_dir_all(&skill_dir).unwrap();
+            std::fs::write(skill_dir.join("SKILL.md"), "companion body").unwrap();
+            save_disabled_bundles_for(ConnectorScope::Plain, &["tencent-docs-skill".to_string()])
+                .unwrap();
+
+            // Phase 1: broken store -> skill uninstall aborts fail-closed ->
+            // the deny entry must survive.
+            let store_path = paths::pinvou3_home()
+                .join("marketplace")
+                .join("bundles.json");
+            std::fs::create_dir_all(&store_path).unwrap();
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            mgr.strip_uninstalled_scope_state(
+                "tencent-docs",
+                false,
+                &[("tencent-docs-skill".to_string(), "tencent-docs".to_string())],
+                false,
+            );
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain)
+                    .contains(&"tencent-docs-skill".to_string()),
+                "a failed post-commit companion uninstall must keep the deny entry (fail-closed)"
+            );
+
+            // Phase 2: store readable again -> teardown succeeds -> the entry
+            // is removed with the skill actually gone.
+            std::fs::remove_dir_all(&store_path).unwrap();
+            mgr.strip_uninstalled_scope_state(
+                "tencent-docs",
+                false,
+                &[("tencent-docs-skill".to_string(), "tencent-docs".to_string())],
+                false,
+            );
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Plain)
+                    .contains(&"tencent-docs-skill".to_string()),
+                "a successful companion uninstall removes the deny entry as before"
+            );
+        });
+    }
+
+    /// Shared body of the two temp-home harnesses (`with_temp_home` /
+    /// `with_temp_home_async`): everything between their lock + verdict +
+    /// resolver setup and the test body, so the two copies cannot drift.
+    ///
+    /// The caller must, in this order: hold `platform::paths::tests::ENV_LOCK`
+    /// (the SAFETY argument for the `set_var` calls below), clear the
+    /// UNPERSISTED_VERDICT memo, and install the secret resolver.
+    ///
+    /// Hermeticity valve: capture PINVOU3_TEST_KEYRING_FILE_FALLBACK +
+    /// CODEWHALE_HOME so every `MarketplaceManager::new()` in a test body
+    /// probes the file fallback, not the real OS keyring (on macOS a
+    /// real-keyring read from an ad-hoc-signed test binary can block
+    /// indefinitely on the ACL consent dialog — see the valve comment in
+    /// platform::credential_store). The file fallback
+    /// resolves through CODEWHALE_HOME rather than PINVOU3_HOME, so it
+    /// must be pointed at the same temp dir — otherwise valved reads and
+    /// writes land in the developer's real ~/.codewhale/secrets/
+    /// secrets.json (and trigger its legacy migration).
+    ///
+    /// Drop order is load-bearing: bind the result as
+    /// `let (_env, _restore) = capture_hermetic_test_env(..)` so the
+    /// bindings are declared `_env` then `_restore`. `_restore` then drops
+    /// first — secret registry restored and the temp dir removed while
+    /// PINVOU3_HOME/CODEWHALE_HOME still point into it — then `_env`
+    /// restores the real env, and only afterwards does the caller release
+    /// ENV_LOCK (its guard is still held at the call site). Do not return
+    /// the ENV_LOCK guard from here; it must outlive both.
+    ///
+    /// `dir_prefix` keeps each harness's on-disk name exactly as before:
+    /// `pinvou3-mkt-test-{pid}` (sync) vs `pinvou3-mkt-test-async-{pid}`
+    /// (async).
+    fn capture_hermetic_test_env(dir_prefix: &str) -> (EnvVarGuard, RestoreEnv) {
+        let env = EnvVarGuard::capture(&[
+            "PINVOU3_HOME",
+            "CODEWHALE_HOME",
+            "PINVOU3_TEST_KEYRING_FILE_FALLBACK",
+        ]);
+        let prev_secrets = secrets::snapshot_secret_values();
+        secrets::clear_secret_values_for_test();
+        let dir = std::env::temp_dir().join(format!("{dir_prefix}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // SAFETY: the caller holds platform::paths::tests::ENV_LOCK; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        // SAFETY: the caller holds platform::paths::tests::ENV_LOCK; env writes are serialized.
+        unsafe { std::env::set_var("CODEWHALE_HOME", &dir) };
+        // SAFETY: the caller holds platform::paths::tests::ENV_LOCK; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", "1") };
+        let restore = RestoreEnv { prev_secrets, dir };
+        (env, restore)
+    }
 
     /// 把 PINVOU3_HOME 指到一个干净临时目录跑闭包,跑完恢复并清理。
     /// 借 paths 的 ENV_LOCK 跟其它 mutate PINVOU3_HOME 的测试串行,避免互相覆盖。
@@ -2600,35 +3117,10 @@ mod tests {
         // placeholders, and the test outcome would depend on whether the
         // bridge boot tests have already run (order coupling).
         super::install_mcp_secret_resolver();
-        let prev_secrets = secrets::snapshot_secret_values();
-        secrets::clear_secret_values_for_test();
-        // Opt the credential store into its file fallback for the body: the
-        // home redirect below cannot hermeticize the OS keyring, and on macOS
-        // the real keyring read blocks the headless test on the ACL consent
-        // dialog (see the valve comment in platform::credential_store). The
-        // file fallback resolves through CODEWHALE_HOME rather than
-        // PINVOU3_HOME, so it must be pointed at the same temp dir —
-        // otherwise valved reads and writes land in the developer's real
-        // ~/.codewhale/secrets/secrets.json (and trigger its legacy
-        // migration). EnvVarGuard restores all three vars on every exit
-        // path, including a panicking body.
-        let _env = EnvVarGuard::capture(&[
-            "PINVOU3_TEST_KEYRING_FILE_FALLBACK",
-            "CODEWHALE_HOME",
-            "PINVOU3_HOME",
-        ]);
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", "1") };
-        let dir = std::env::temp_dir().join(format!("pinvou3-mkt-test-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("CODEWHALE_HOME", &dir) };
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        // Hermeticity valve + load-bearing binding order (`_env` before
+        // `_restore`): see capture_hermetic_test_env.
+        let (_env, _restore) = capture_hermetic_test_env("pinvou3-mkt-test");
         f();
-        secrets::restore_secret_values(prev_secrets);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// G4 回归：mcp.json 路径重写以新目录存在为前提——自定义 MCP 搬迁 kept
@@ -2670,6 +3162,34 @@ mod tests {
         });
     }
 
+    /// The in-lock mcp.json read goes through the hardened
+    /// private-data primitive. A raw `is_file()` + `read_to_string` pair
+    /// is check-then-act INSIDE mcp.lock — a planted FIFO swapped in after
+    /// the check blocks `open()` forever while holding the lock, wedging
+    /// every mcp.json writer in every process. The hardened read refuses, so
+    /// the migration fails loudly; the bounded worker makes a regression to
+    /// the raw read fail this test instead of hanging the lane while holding
+    /// the fixture lock.
+    #[test]
+    #[cfg(unix)]
+    fn migrate_mcp_json_paths_refuses_a_planted_fifo_without_hanging() {
+        with_temp_home(|| {
+            let mcp_path = paths::mcp_config_path();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            crate::platform::paths::tests::plant_fifo(&mcp_path);
+
+            let error = crate::platform::test_support::run_bounded_worker_or_abort(
+                "migrate still blocks on a planted mcp.json FIFO while holding mcp.lock",
+                || migrate_mcp_json_paths(),
+            )
+            .expect_err("a planted FIFO must fail the migration loudly");
+            assert!(
+                error.contains("读取 mcp.json 失败"),
+                "the refusal must keep the migration's error shape: {error}"
+            );
+        });
+    }
+
     /// Startup reconciliation must stay compatible with the G4 guard above: the
     /// migrator keeps unknown stale paths, while reconciliation only ever rewrites
     /// entries owned by installed tools. The tests below pin that boundary.
@@ -2684,13 +3204,11 @@ mod tests {
         } else {
             ""
         };
-        let manifest = format!(
-            r#"{{
-                "id":"{tool_id}","name":"{tool_id}","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"python","args":["server.py"]{secret_block}
-            }}"#
+        write_tool_manifest_fixture(
+            tool_id,
+            tool_id,
+            &format!(r#""mcp_tools":[],"command":"python","args":["server.py"]{secret_block}"#),
         );
-        write_tool_manifest(tool_id, &manifest);
         std::fs::write(
             mcp_catalog::package_mcp_dir(tool_id).join("server.py"),
             "print('fixture')\n",
@@ -2735,6 +3253,21 @@ mod tests {
         connectors::write_json_pretty(&mcp_path, &serde_json::json!({ "servers": servers }))
             .unwrap();
         mcp_path
+    }
+
+    /// Shared tail of the reconcile tests: a converged reconcile reports no
+    /// actions and leaves mcp.json byte-identical.
+    fn assert_reconcile_idempotent<S: CredentialStore>(
+        manager: &MarketplaceManager<S>,
+        mcp_path: &Path,
+    ) {
+        let before = std::fs::read(mcp_path).unwrap();
+        let actions = manager.reconcile_installed_mcp_entries().unwrap();
+        assert!(
+            actions.is_empty(),
+            "reconcile must converge; second run reported: {actions:?}"
+        );
+        assert_eq!(std::fs::read(mcp_path).unwrap(), before);
     }
 
     /// A dead absolute script path in an installed tool's entry is rebuilt from the
@@ -2788,14 +3321,7 @@ mod tests {
             );
 
             // Idempotent: the rebuilt entry is healthy, the second run writes nothing.
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -2833,14 +3359,7 @@ mod tests {
                 "no secrets declared, no env written"
             );
 
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -2870,14 +3389,7 @@ mod tests {
                 "no secret and no local command fields expected: {entry}"
             );
 
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -2920,14 +3432,7 @@ mod tests {
                 "PINVOU3_MCP_SECRET_PATSNAP_KEY"
             );
 
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -2969,14 +3474,7 @@ mod tests {
             assert_eq!(entry["custom_hint"], "keep");
 
             // Idempotent: the override never reads as drift on the next run.
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -3026,10 +3524,7 @@ mod tests {
 
             // Once present, the block is never re-judged: a manifest update that
             // changes it must not clobber the entry's copy.
-            let actions = manager.reconcile_installed_mcp_entries().unwrap();
-            assert!(actions.is_empty(), "{actions:?}");
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -3220,15 +3715,15 @@ mod tests {
     #[test]
     fn reconcile_restores_bearer_credential_from_credential_store() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"cf-x","name":"cf-x","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"cf-remote","url":"https://cf.example.com/mcp"}],
-                "config_fields":[
+            write_tool_manifest_fixture(
+                "cf-x",
+                "cf-x",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"cf-remote","url":"https://cf.example.com/mcp"}],
+                    "config_fields":[
                     {"key":"QCC_X_KEY","label":"key","required":true,"target":"bearer","secret":true}
-                ]
-            });
-            write_tool_manifest("cf-x", &serde_json::to_string_pretty(&manifest).unwrap());
+                    ]"#,
+            );
             write_installed_ids(&["cf-x".to_string()]);
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
             manager
@@ -3254,14 +3749,7 @@ mod tests {
             // Idempotent: credential fields are not manifest-derived, so the second
             // run must neither rewrite nor strip them.
             let mcp_path = paths::mcp_config_path();
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -3271,15 +3759,15 @@ mod tests {
     #[test]
     fn reconcile_restores_bearer_tool_without_resolvable_credential() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"cf-y","name":"cf-y","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"cf-remote-y","url":"https://cf.example.com/mcp"}],
-                "config_fields":[
+            write_tool_manifest_fixture(
+                "cf-y",
+                "cf-y",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"cf-remote-y","url":"https://cf.example.com/mcp"}],
+                    "config_fields":[
                     {"key":"LOST_KEY","label":"key","required":true,"target":"bearer","secret":true}
-                ]
-            });
-            write_tool_manifest("cf-y", &serde_json::to_string_pretty(&manifest).unwrap());
+                    ]"#,
+            );
             write_installed_ids(&["cf-y".to_string()]);
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
 
@@ -3306,14 +3794,7 @@ mod tests {
             // Idempotent: the declarative restore matches the manifest on the
             // second run, which writes nothing.
             let mcp_path = paths::mcp_config_path();
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -3362,14 +3843,7 @@ mod tests {
             );
 
             // Idempotent: preserved fields never make the entry look dead again.
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -3379,11 +3853,11 @@ mod tests {
     #[test]
     fn reconcile_refuses_rebuild_when_manifest_command_is_dead() {
         with_temp_home(|| {
-            let manifest = r#"{
-                "id":"deadbin","name":"deadbin","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"/opt/dead/binary","args":[]
-            }"#;
-            write_tool_manifest("deadbin", manifest);
+            write_tool_manifest_fixture(
+                "deadbin",
+                "deadbin",
+                r#""mcp_tools":[],"command":"/opt/dead/binary","args":[]"#,
+            );
             write_installed_ids(&["deadbin".to_string()]);
             let mcp_path = seed_mcp_json(serde_json::json!({
                 "deadbin": {"command": "/opt/dead/binary"}
@@ -3449,14 +3923,7 @@ mod tests {
             assert_eq!(mcp["servers"]["broken-y"]["custom_hint"], "keep");
 
             // Idempotent: the replaced entries are healthy on the second run.
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -3490,14 +3957,7 @@ mod tests {
             );
 
             // Idempotent: the degraded entry is healthy on the second run.
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -3508,15 +3968,15 @@ mod tests {
     #[test]
     fn reconcile_restores_secret_headers_tool_without_resolvable_credential() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"sh-y","name":"sh-y","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"sh-remote-y","url":"https://sh.example.com/mcp"}],
-                "secret_headers":[
+            write_tool_manifest_fixture(
+                "sh-y",
+                "sh-y",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"sh-remote-y","url":"https://sh.example.com/mcp"}],
+                    "secret_headers":[
                     {"header":"X-Api-Key","source_key":"SH_LOST_KEY","provider":"demo"}
-                ]
-            });
-            write_tool_manifest("sh-y", &serde_json::to_string_pretty(&manifest).unwrap());
+                    ]"#,
+            );
             write_installed_ids(&["sh-y".to_string()]);
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
 
@@ -3543,14 +4003,7 @@ mod tests {
             // Idempotent: the declarative restore matches the manifest on the
             // second run, which writes nothing.
             let mcp_path = paths::mcp_config_path();
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -3573,32 +4026,20 @@ mod tests {
         Fut: Future<Output = ()>,
     {
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // Hermeticity unification with with_temp_home (the one deliberate
+        // delta of the extraction): clear the verdict memo so an async test
+        // cannot inherit a stale UNPERSISTED_VERDICT from a prior sync test
+        // — temp dirs reuse the same pid prefix and the memo keys on the
+        // home path (see capture_hermetic_test_env).
+        crate::features::marketplace::scope::clear_unpersisted_verdict_for_test();
         // Same as with_temp_home: install the foundation resolver to avoid
         // test order coupling.
         super::install_mcp_secret_resolver();
-        let prev_secrets = secrets::snapshot_secret_values();
-        secrets::clear_secret_values_for_test();
-        // Same hermeticity valve as with_temp_home (see its comment): the
-        // file fallback goes through CODEWHALE_HOME, which is pointed at the
-        // same temp dir, and EnvVarGuard restores the env even on panic.
-        let _env = EnvVarGuard::capture(&[
-            "PINVOU3_TEST_KEYRING_FILE_FALLBACK",
-            "CODEWHALE_HOME",
-            "PINVOU3_HOME",
-        ]);
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_TEST_KEYRING_FILE_FALLBACK", "1") };
-        let dir =
-            std::env::temp_dir().join(format!("pinvou3-mkt-test-async-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("CODEWHALE_HOME", &dir) };
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        // Same hermeticity valve as with_temp_home (full
+        // story on capture_hermetic_test_env). Binding order (`_env` before
+        // `_restore`) is load-bearing — see there.
+        let (_env, _restore) = capture_hermetic_test_env("pinvou3-mkt-test-async");
         f().await;
-        secrets::restore_secret_values(prev_secrets);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     struct MockMcpServer {
@@ -3763,6 +4204,25 @@ mod tests {
         let dir = mcp_catalog::package_mcp_dir(tool_id);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("manifest.json"), manifest).unwrap();
+    }
+
+    /// The shared manifest-fixture filler head (`d`/`1`/`x`/`c` placeholders)
+    /// plus `tail` — the fields after `"category":"c",`, without the closing
+    /// brace (the builder adds it). Only id/name vary across the fixtures
+    /// this serves; a change to the filler edits this one line. `pub(crate)`
+    /// for the sibling modules' tests (scope.rs et al. migrate onto it in a
+    /// later wave).
+    pub(crate) fn tool_manifest_fixture(id: &str, name: &str, tail: &str) -> String {
+        format!(
+            r#"{{"id":"{id}","name":"{name}","description":"d","version":"1","icon":"x","category":"c",{tail}}}"#
+        )
+    }
+
+    /// [`write_tool_manifest`] with the shared filler head: `tail` is the
+    /// manifest body after `"category":"c",`, closing brace included in the
+    /// builder's output.
+    fn write_tool_manifest_fixture(id: &str, name: &str, tail: &str) {
+        write_tool_manifest(id, &tool_manifest_fixture(id, name, tail));
     }
 
     fn test_python() -> (String, String) {
@@ -3956,12 +4416,7 @@ mod tests {
 
     fn write_legacy_python_state(tool_id: &str) {
         write_installed_ids(&[tool_id.to_string()]);
-        store::BundleStore::new()
-            .upsert(store::BundleRecord::installed_now(
-                tool_id,
-                store::BundleSource::Preset,
-            ))
-            .unwrap();
+        store::plant_installed_record(tool_id, store::BundleSource::Preset);
         let server = mcp_catalog::package_mcp_dir(tool_id).join("server.py");
         let mut servers = serde_json::Map::new();
         servers.insert(
@@ -3993,12 +4448,10 @@ mod tests {
             });
             connectors::write_json_pretty(&crate::platform::paths::mcp_config_path(), &old_mcp)
                 .unwrap();
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "half-install",
-                r#"{
-                    "id":"half-install","name":"Half","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"node","args":["server.js"]
-                }"#,
+                "Half",
+                r#""mcp_tools":[],"command":"node","args":["server.js"]"#,
             );
 
             let _fail_next_installed_write = fail_next_installed_write_for_test();
@@ -4024,12 +4477,7 @@ mod tests {
         with_temp_home(|| {
             let (python, version) = test_python();
             write_locked_python_tool("trusted-lock", "trusted_lock_fixture", &version);
-            store::BundleStore::new()
-                .upsert(store::BundleRecord::installed_now(
-                    "trusted-lock",
-                    store::BundleSource::Preset,
-                ))
-                .unwrap();
+            store::plant_installed_record("trusted-lock", store::BundleSource::Preset);
             write_installed_ids(&["trusted-lock".to_string()]);
             let old_environment = crate::platform::paths::pinvou3_home()
                 .join("marketplace")
@@ -4338,6 +4786,332 @@ mod tests {
         });
     }
 
+    /// A CLI connector pack uninstall must withdraw the
+    /// materialized companion dirs together with the record. The DenyAll
+    /// consent gate's materialized-dirs known-clause keys on those very
+    /// files, while the in-lock cleanup strips the consent rows and the sync
+    /// ledger — keeping the dirs would let every later show/refresh skip
+    /// registration for a consent state that no longer exists, permanently
+    /// (the dirs never return on their own; the keep-dir branch is for
+    /// user-unique copies, which connector materialization is not).
+    #[test]
+    fn connector_uninstall_withdraws_materialized_dirs_so_a_reshow_registers() {
+        with_temp_home(|| {
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            // The connect-time shape: a Builtin install record (written
+            // before the consent gate ever runs) plus a fully materialized
+            // companion layout.
+            store::plant_installed_record("feishu", store::BundleSource::Builtin);
+            let skills_dir = paths::bundles_root().join("feishu").join("skills");
+            for dir in bundle::cli_bundle_skill_dirs("feishu") {
+                let dir = skills_dir.join(dir);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("SKILL.md"), "materialized").unwrap();
+            }
+            assert!(bundle::cli_connector_skills_materialized("feishu"));
+            // The connect-time ledger trace the gate run writes before
+            // materialization (the materialized known-clause
+            // requires it — dirs alone no longer vouch).
+            scope::sync_deny_all_scopes_after_install("feishu").unwrap();
+            assert!(scope::consent_gate_bundle_already_known("feishu"));
+
+            mgr.uninstall("feishu").unwrap();
+
+            assert!(
+                !paths::bundles_root().join("feishu").exists(),
+                "a CLI connector pack dir must be withdrawn with the record"
+            );
+            assert!(
+                !scope::consent_gate_bundle_already_known("feishu"),
+                "with the dirs withdrawn the gate must not vouch for the stripped consent — a re-show registers fresh"
+            );
+        });
+    }
+
+    /// The uninstall must serialize against a same-id
+    /// import landing in ANOTHER process — the landing lease is the only
+    /// cross-process exclusion the import pipeline offers (the per-id import
+    /// mutex and the transaction lock are process-local). While a peer holds
+    /// the lease the uninstall must not complete; once it is released the
+    /// uninstall proceeds and removes the record, so a peer's gate either ran
+    /// before it (rows stripped with the record) or runs after it (fresh
+    /// registration lands governed) — the resurrect-ungoverned window is
+    /// closed.
+    #[test]
+    fn uninstall_waits_for_the_cross_process_landing_lease() {
+        with_temp_home(|| {
+            store::plant_installed_record("weather-mock", store::BundleSource::Builtin);
+
+            // The peer-import shape: hold the landing lease on a second fd.
+            let mut lease = plugin_import::open_landing_lease("weather-mock")
+                .expect("fixture: the landing lease opens");
+            let guard = lease.write().expect("fixture: the landing lease acquires");
+
+            let (tx, rx) = std::sync::mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+                let result = mgr.uninstall("weather-mock");
+                tx.send(result).expect("worker should send its result");
+            });
+            // Bounded: a regressed uninstall that ignores the lease completes
+            // here and fails this assertion with a diagnosable receive; a
+            // correct one stays parked on the lease.
+            assert!(
+                rx.recv_timeout(std::time::Duration::from_secs(2)).is_err(),
+                "the uninstall must wait while a peer import holds the landing lease"
+            );
+            drop(guard);
+            rx.recv_timeout(std::time::Duration::from_secs(10))
+                .expect("the uninstall completes once the lease is released")
+                .expect("the uninstall succeeds after waiting out the peer import");
+            worker.join().expect("worker should finish");
+            assert!(
+                !store::BundleStore::new()
+                    .records()
+                    .unwrap()
+                    .iter()
+                    .any(|record| record.id == "weather-mock" && record.installed),
+                "the uninstall removed the record after the lease released"
+            );
+        });
+    }
+
+    /// The landing-lease file
+    /// name is derived from the raw IPC id, so a hostile id must be rejected
+    /// BEFORE the lease opens — `Path::join` lets "/tmp/x" replace the
+    /// journal base and "../../x" escape the home. The refusal is the
+    /// id-shape check (narrow hostile subset), no lease file may land
+    /// anywhere, and the error must not leak an open/lock failure for the
+    /// escaped path.
+    #[test]
+    fn uninstall_refuses_hostile_ids_before_the_landing_lease() {
+        with_temp_home(|| {
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            // `C:evil` stays hostile on Windows only (see the guard's
+            // cfg-split): on Unix a colon is a legal filename byte.
+            #[cfg(windows)]
+            let hostile_ids = ["/tmp/x", "../../x", "a/b", "C:evil", "skill:a/b", ""];
+            #[cfg(not(windows))]
+            let hostile_ids = ["/tmp/x", "../../x", "a/b", "skill:a/b", ""];
+            for hostile in hostile_ids {
+                let error = mgr
+                    .uninstall(hostile)
+                    .err()
+                    .unwrap_or_else(|| panic!("'{hostile}' must be refused"));
+                assert!(
+                    error.contains("invalid tool id"),
+                    "the refusal must be the id-shape check: {error}"
+                );
+            }
+            let journal = crate::platform::paths::pinvou3_home()
+                .join("marketplace")
+                .join("import_journal");
+            assert!(
+                !journal.exists()
+                    || std::fs::read_dir(&journal)
+                        .expect("journal dir readable")
+                        .next()
+                        .is_none(),
+                "a refused id must not plant lease files in the journal"
+            );
+            assert!(
+                !crate::platform::paths::pinvou3_home()
+                    .join("x.landing.lock")
+                    .exists(),
+                "a traversal id must not escape the journal"
+            );
+            // On Unix a colon-bearing legacy id
+            // must reach the not-installed path instead of the id-shape
+            // refusal (run last — the lease probe plants a journal file the
+            // emptiness assertion above must not see).
+            #[cfg(not(windows))]
+            {
+                let result = mgr.uninstall("C:evil");
+                assert!(
+                    !matches!(&result, Err(e) if e.contains("invalid tool id")),
+                    "a colon-bearing id is not hostile on unix: {result:?}"
+                );
+            }
+        });
+    }
+
+    /// A legitimate copy of EMPTY corrupt content is a
+    /// zero-byte file, so under the non-empty sibling rule every read of a
+    /// persistently-unrecoverable empty state file wrote another zero-byte
+    /// copy without bound. Empty content has no bytes to preserve, so any
+    /// prefixed regular file now counts as the sibling; non-empty content
+    /// keeps the strict rule (a planted empty file must not suppress a
+    /// genuine quarantine of real bytes).
+    #[test]
+    fn quarantine_of_empty_content_counts_an_empty_copy_as_sibling() {
+        with_temp_home(|| {
+            let path = paths::pinvou3_home().join("empty-state.json");
+            std::fs::write(&path, b"").unwrap();
+            quarantine_corrupt_state_file(&path, b"").unwrap();
+            assert_eq!(
+                corrupt_sibling_count(&path),
+                1,
+                "the first quarantine writes one copy"
+            );
+            quarantine_corrupt_state_file(&path, b"").unwrap();
+            assert_eq!(
+                corrupt_sibling_count(&path),
+                1,
+                "empty content must not accumulate zero-byte copies across reads"
+            );
+
+            // Non-empty content keeps the strict sibling rule: a planted
+            // EMPTY file with the prefix must not suppress the quarantine of
+            // real bytes (isolated under a second file name so the counts
+            // don't mix).
+            let nonempty_path = paths::pinvou3_home().join("nonempty-state.json");
+            let content = b"{ not json, but not empty }";
+            std::fs::write(&nonempty_path, content).unwrap();
+            let planted = nonempty_path.with_file_name(format!(
+                "{}.corrupt.0",
+                nonempty_path.file_name().unwrap().to_string_lossy()
+            ));
+            std::fs::write(&planted, b"").unwrap();
+            quarantine_corrupt_state_file(&nonempty_path, content).unwrap();
+            assert_eq!(
+                corrupt_sibling_count(&nonempty_path),
+                2,
+                "a planted empty file must not suppress the quarantine of real bytes (one planted + one fresh copy)"
+            );
+        });
+    }
+
+    /// A withdrawal's deletion failures must abort the uninstall instead of
+    /// being swallowed. A swallowed failure commits the uninstall — record
+    /// removed, consent rows and ledger stripped by the in-lock cleanup —
+    /// while the surviving materialized dirs keep the gate's known-clause
+    /// vouching forever: the exact fail-open state the withdrawal exists to
+    /// remove. With propagation the transaction rolls back, so the record,
+    /// the consent rows, and the pack dir all survive and the uninstall
+    /// reports failure (retrying is the USER's re-uninstall, safe because
+    /// the state is intact — no boot sweep covers connector packs).
+    ///
+    /// The abort restore must also leave bundles.json exactly as it found it
+    /// — including a TOMBSTONE record: `store.remove` takes a tombstone too,
+    /// so the restore writes back the unfiltered pre-remove snapshot and the
+    /// record's source provenance survives the abort.
+    #[cfg(unix)]
+    #[test]
+    fn failed_withdrawal_aborts_uninstall_and_preserves_registration_state() {
+        use std::os::unix::fs::PermissionsExt;
+        with_temp_home(|| {
+            let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            store::plant_installed_record("feishu", store::BundleSource::Builtin);
+            let skills_dir = paths::bundles_root().join("feishu").join("skills");
+            for dir in bundle::cli_bundle_skill_dirs("feishu") {
+                let dir = skills_dir.join(dir);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("SKILL.md"), "materialized").unwrap();
+            }
+            scope::save_disabled_bundles_for(ConnectorScope::Code, &["feishu".to_string()])
+                .unwrap();
+
+            // Make the skills subtree unremovable: a read-only skills dir
+            // refuses remove_dir_all of its children (macOS/Linux). The
+            // helper's root probe (mode bits are no-ops for root) skips
+            // loudly when the failure path can never run.
+            if !dir_read_only_or_skip(
+                &skills_dir,
+                "failed_withdrawal_aborts_uninstall_and_preserves_registration_state",
+            ) {
+                return;
+            }
+
+            // Phase 1: an installed record keeps its registration state.
+            let result = mgr.uninstall("feishu");
+            std::fs::set_permissions(&skills_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let error = result.expect_err(
+                "a failed withdrawal must abort the uninstall instead of committing it",
+            );
+            assert!(
+                error.contains("feishu"),
+                "the refusal must name the pack: {error}"
+            );
+            assert!(
+                store::BundleStore::new()
+                    .records()
+                    .unwrap()
+                    .iter()
+                    .any(|record| record.id == "feishu" && record.installed),
+                "the rolled-back transaction must keep the install record"
+            );
+            assert_eq!(
+                scope::load_disabled_bundles_for(ConnectorScope::Code),
+                vec!["feishu".to_string()],
+                "the consent rows must survive a failed withdrawal"
+            );
+            assert!(
+                paths::bundles_root().join("feishu").is_dir(),
+                "the pack dir must survive a failed withdrawal"
+            );
+
+            // Heal: with the fixture writable again, the retry succeeds and
+            // the whole teardown completes (record gone, dirs withdrawn,
+            // consent rows stripped by the in-lock cleanup).
+            mgr.uninstall("feishu").unwrap();
+            assert!(!paths::bundles_root().join("feishu").exists());
+            assert!(
+                !store::BundleStore::new()
+                    .records()
+                    .unwrap()
+                    .iter()
+                    .any(|record| record.id == "feishu" && record.installed),
+                "the successful retry must remove the record"
+            );
+            assert!(
+                scope::load_disabled_bundles_for(ConnectorScope::Code).is_empty(),
+                "the successful retry's in-lock cleanup must strip the consent rows"
+            );
+
+            // Phase 2: a TOMBSTONE record is restored verbatim by the same
+            // abort path (re-seed the tombstone and materialized dirs, then
+            // re-arm the failure injection with the same root-skip probe).
+            let mut tombstone =
+                store::BundleRecord::installed_now("feishu", store::BundleSource::Builtin);
+            tombstone.installed = false;
+            tombstone.content_fingerprint = Some("pre-uninstall-state".to_string());
+            store::BundleStore::new().upsert(tombstone).unwrap();
+            for dir in bundle::cli_bundle_skill_dirs("feishu") {
+                let dir = skills_dir.join(dir);
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("SKILL.md"), "materialized").unwrap();
+            }
+            if !dir_read_only_or_skip(
+                &skills_dir,
+                "failed_withdrawal_aborts_uninstall_and_preserves_registration_state",
+            ) {
+                return;
+            }
+
+            let result = mgr.uninstall("feishu");
+            std::fs::set_permissions(&skills_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            result.expect_err("a failed withdrawal must abort the uninstall");
+
+            let restored = store::BundleStore::new()
+                .get("feishu")
+                .unwrap()
+                .expect("an aborted uninstall must restore the pre-uninstall record");
+            assert!(
+                !restored.installed,
+                "the restored record must be the tombstone, not a fabricated install"
+            );
+            assert_eq!(
+                restored.content_fingerprint.as_deref(),
+                Some("pre-uninstall-state"),
+                "the tombstone's provenance must survive the abort"
+            );
+
+            // Heal: the retry also completes for a tombstoned pack.
+            mgr.uninstall("feishu").unwrap();
+            assert!(!paths::bundles_root().join("feishu").exists());
+        });
+    }
+
     #[test]
     fn untrusted_upload_dependencies_never_execute_during_install_repair_or_reinstall() {
         with_temp_home(|| {
@@ -4373,24 +5147,27 @@ mod tests {
             // (another way to honor "never execute": the downloader is never
             // reached); other platforms keep the warn-skip, so install
             // succeeds but must still never reach the downloader.
+            // Runtime check (capabilities::is_windows): the test avoids
+            // cfg(target_os) because the architecture guard keeps the
+            // rust_target_cfg_outside_adapter baseline at zero.
+            let assert_untrusted_reinstall = |reinstall: Result<(), String>| {
+                if crate::platform::capabilities::is_windows() {
+                    assert!(
+                        reinstall
+                            .unwrap_err()
+                            .contains("未经过 Windows 可验证依赖锁"),
+                        "Windows marketplace-path reinstall of untrusted deps must fail closed"
+                    );
+                } else {
+                    reinstall.unwrap();
+                }
+            };
             let reinstall = manager.install_with_python(
                 "upload-lock",
                 &std::collections::HashMap::new(),
                 &python,
             );
-            // Runtime check (capabilities::is_windows): the test avoids
-            // cfg(target_os) because the architecture guard keeps the
-            // rust_target_cfg_outside_adapter baseline at zero.
-            if crate::platform::capabilities::is_windows() {
-                assert!(
-                    reinstall
-                        .unwrap_err()
-                        .contains("未经过 Windows 可验证依赖锁"),
-                    "Windows marketplace-path reinstall of untrusted deps must fail closed"
-                );
-            } else {
-                reinstall.unwrap();
-            }
+            assert_untrusted_reinstall(reinstall);
             assert!(
                 python_dependencies::take_pending_download_failure_for_test(),
                 "untrusted wheel lock must never reach the downloader"
@@ -4419,16 +5196,7 @@ mod tests {
             // closed on untrusted pip declarations (PR #547); other platforms
             // install successfully but pip must never run.
             let reinstall = manager.install("upload-pip", &std::collections::HashMap::new());
-            if crate::platform::capabilities::is_windows() {
-                assert!(
-                    reinstall
-                        .unwrap_err()
-                        .contains("未经过 Windows 可验证依赖锁"),
-                    "Windows marketplace-path reinstall of untrusted deps must fail closed"
-                );
-            } else {
-                reinstall.unwrap();
-            }
+            assert_untrusted_reinstall(reinstall);
             assert_eq!(
                 connectors::take_pending_pip_install_result_for_test(),
                 1,
@@ -4650,12 +5418,7 @@ mod tests {
             );
             write_installed_ids(&["invalid-lock".to_string(), "repair-next".to_string()]);
             for tool_id in ["invalid-lock", "repair-next"] {
-                store::BundleStore::new()
-                    .upsert(store::BundleRecord::installed_now(
-                        tool_id,
-                        store::BundleSource::Preset,
-                    ))
-                    .unwrap();
+                store::plant_installed_record(tool_id, store::BundleSource::Preset);
             }
             let invalid_entry = serde_json::json!({
                 "command": "python",
@@ -4823,12 +5586,10 @@ mod tests {
     #[test]
     fn installed_ids_recovers_corrupt_file_from_mcp_json() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "weather",
-                r#"{
-                    "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":["get_weather"],"command":"python","args":["server.py"]
-                }"#,
+                "Weather",
+                r#""mcp_tools":["get_weather"],"command":"python","args":["server.py"]"#,
             );
             let mcp_path = crate::platform::paths::mcp_config_path();
             std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
@@ -4837,11 +5598,7 @@ mod tests {
                 r#"{"servers":{"weather":{"command":"python3","args":["server.py"]}}}"#,
             )
             .unwrap();
-            let installed_path = crate::platform::paths::pinvou3_home()
-                .join("marketplace")
-                .join("installed.json");
-            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
-            std::fs::write(&installed_path, "[\"weather\"").unwrap();
+            let installed_path = write_installed_json_raw(b"[\"weather\"");
 
             // Read path (gate callers): quarantine + in-memory rebuild, NO
             // persistence — the corrupt original stays until a
@@ -4868,16 +5625,11 @@ mod tests {
                 serde_json::from_str::<Vec<String>>(&repaired).unwrap(),
                 vec!["weather".to_string()]
             );
-            let backups: Vec<_> = std::fs::read_dir(installed_path.parent().unwrap())
-                .unwrap()
-                .flatten()
-                .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .starts_with("installed.json.corrupt.")
-                })
-                .collect();
-            assert_eq!(backups.len(), 1, "no-sibling rule: exactly one copy");
+            assert_eq!(
+                quarantine_backups(&installed_path, ".corrupt.").len(),
+                1,
+                "no-sibling rule: exactly one copy"
+            );
             // Clean read after the writer's repair.
             assert_eq!(
                 MarketplaceManager::new().installed_ids(),
@@ -4897,12 +5649,10 @@ mod tests {
     #[test]
     fn reconcile_recovers_corrupt_registry_and_uses_it() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "weather",
-                r#"{
-                    "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":["get_weather"],"command":"python","args":["server.py"]
-                }"#,
+                "Weather",
+                r#""mcp_tools":["get_weather"],"command":"python","args":["server.py"]"#,
             );
             let mcp_path = crate::platform::paths::mcp_config_path();
             std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
@@ -4913,11 +5663,7 @@ mod tests {
             // set (an Err→empty collapse yields zero manifests, zero
             // actions, and an untouched entry).
             std::fs::write(&mcp_path, r#"{"servers":{"weather":{"enabled":true}}}"#).unwrap();
-            let installed_path = crate::platform::paths::pinvou3_home()
-                .join("marketplace")
-                .join("installed.json");
-            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
-            std::fs::write(&installed_path, "[\"weather\"").unwrap();
+            let installed_path = write_installed_json_raw(b"[\"weather\"");
 
             let manager = MarketplaceManager::new();
             let actions = manager.reconcile_installed_mcp_entries().unwrap();
@@ -4946,26 +5692,17 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn reconcile_fails_visible_on_unreadable_registry() {
-        use std::os::unix::fs::PermissionsExt;
         with_temp_home(|| {
             let mcp_path = crate::platform::paths::mcp_config_path();
             std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
             std::fs::write(&mcp_path, r#"{"servers":{}}"#).unwrap();
-            let installed_path = crate::platform::paths::pinvou3_home()
-                .join("marketplace")
-                .join("installed.json");
-            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
-            std::fs::write(&installed_path, "[\"weather\"]").unwrap();
-            std::fs::set_permissions(&installed_path, std::fs::Permissions::from_mode(0o000))
-                .unwrap();
-            // Root probe (mode bits are no-ops for root): if the file is
-            // still readable, the unreadable branch never runs — skip loudly.
-            if std::fs::read(&installed_path).is_ok() {
-                std::fs::set_permissions(&installed_path, std::fs::Permissions::from_mode(0o644))
-                    .unwrap();
-                eprintln!(
-                    "ROOT-SKIP[reconcile_fails_visible_on_unreadable_registry]: running as root - the unreadable-file fixture stays readable; NOT exercised"
-                );
+            let installed_path = write_installed_json_raw(b"[\"weather\"]");
+            // Root probe: mode bits are no-ops for root, so a green root run
+            // would exercise nothing here — skip loudly.
+            if !file_unreadable_or_skip(
+                &installed_path,
+                "reconcile_fails_visible_on_unreadable_registry",
+            ) {
                 return;
             }
             let err = MarketplaceManager::new()
@@ -4984,12 +5721,10 @@ mod tests {
     #[test]
     fn non_utf8_installed_json_takes_the_corrupt_branch() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "weather",
-                r#"{
-                    "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":["get_weather"],"command":"python","args":["server.py"]
-                }"#,
+                "Weather",
+                r#""mcp_tools":["get_weather"],"command":"python","args":["server.py"]"#,
             );
             let mcp_path = crate::platform::paths::mcp_config_path();
             std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
@@ -4998,12 +5733,8 @@ mod tests {
                 r#"{"servers":{"weather":{"command":"python3","args":["server.py"]}}}"#,
             )
             .unwrap();
-            let installed_path = crate::platform::paths::pinvou3_home()
-                .join("marketplace")
-                .join("installed.json");
-            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
             let raw: &[u8] = b"[\"weather\"\xFF\xFE]";
-            std::fs::write(&installed_path, raw).unwrap();
+            let installed_path = write_installed_json_raw(raw);
 
             let manager = MarketplaceManager::new();
             assert_eq!(
@@ -5011,18 +5742,10 @@ mod tests {
                 vec!["weather".to_string()],
                 "non-UTF-8 content must recover via the corrupt branch"
             );
-            let backups: Vec<_> = std::fs::read_dir(installed_path.parent().unwrap())
-                .unwrap()
-                .flatten()
-                .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .starts_with("installed.json.corrupt.")
-                })
-                .collect();
+            let backups = quarantine_backups(&installed_path, ".corrupt.");
             assert_eq!(backups.len(), 1, "the corrupt bytes are quarantined");
             assert_eq!(
-                std::fs::read(backups[0].path()).unwrap(),
+                std::fs::read(&backups[0]).unwrap(),
                 raw,
                 "quarantine preserves the original bytes verbatim"
             );
@@ -5103,12 +5826,10 @@ mod tests {
     #[test]
     fn corrupt_installed_json_does_not_deadlock_locked_callers() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "weather-mock",
-                r#"{
-                    "id":"weather-mock","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":["get_weather"],"command":"python","args":["server.py"]
-                }"#,
+                "Weather",
+                r#""mcp_tools":["get_weather"],"command":"python","args":["server.py"]"#,
             );
             let mcp_path = crate::platform::paths::mcp_config_path();
             std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
@@ -5117,11 +5838,7 @@ mod tests {
                 r#"{"servers":{"weather-mock":{"command":"python3","args":["server.js"]}}}"#,
             )
             .unwrap();
-            let installed_path = crate::platform::paths::pinvou3_home()
-                .join("marketplace")
-                .join("installed.json");
-            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
-            std::fs::write(&installed_path, "[\"weather-mock\"").unwrap();
+            let installed_path = write_installed_json_raw(b"[\"weather-mock\"");
 
             // Watchdog shape: each caller runs on its own thread and reports
             // through a channel; the main thread fails loudly on timeout
@@ -5176,11 +5893,7 @@ mod tests {
     #[test]
     fn repair_survives_an_unknown_installed_registry() {
         with_temp_home(|| {
-            let installed_path = crate::platform::paths::pinvou3_home()
-                .join("marketplace")
-                .join("installed.json");
-            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
-            std::fs::write(&installed_path, "[\"weather\"").unwrap();
+            write_installed_json_raw(b"[\"weather\"");
 
             let errors = MarketplaceManager::new()
                 .repair_installed_python_tools()
@@ -5213,13 +5926,7 @@ mod tests {
 
             assert_eq!(
                 disabled,
-                vec![
-                    "weather".to_string(),
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ],
+                deny_all_expansion(&["weather"]),
                 "corrupt recovery must fail closed: plain falls back to fully-off via DenyAll"
             );
             // The recovered state is persisted: marker set and no scope
@@ -5251,22 +5958,14 @@ mod tests {
             // same-second same-name overwrite false positive).
             std::thread::sleep(std::time::Duration::from_millis(1100));
             let _ = load_disabled_bundles();
-            let backups: Vec<_> = std::fs::read_dir(path.parent().unwrap())
-                .unwrap()
-                .flatten()
-                .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .starts_with("disabled_bundles.json.corrupt.")
-                })
-                .collect();
+            let backups = quarantine_backups(&path, ".corrupt.");
             assert_eq!(
                 backups.len(),
                 1,
                 "repeated reads must not produce additional quarantine copies"
             );
             assert_eq!(
-                std::fs::read_to_string(backups[0].path()).unwrap(),
+                std::fs::read_to_string(&backups[0]).unwrap(),
                 "{\"plain_defaults_migrated\":",
                 "the quarantine copy must preserve the original bytes"
             );
@@ -5286,13 +5985,11 @@ mod tests {
                     "mcp_tools":[],"command":"python","args":["server.py"]
                 }"#,
             );
+            store::plant_installed_record(
+                "up-disp",
+                store::BundleSource::Upload("pkg.zip".to_string()),
+            );
             let store = store::BundleStore::new();
-            store
-                .upsert(store::BundleRecord::installed_now(
-                    "up-disp",
-                    store::BundleSource::Upload("pkg.zip".to_string()),
-                ))
-                .unwrap();
             store
                 .set_display_meta("up-disp", Some("My Tool"), Some("Custom description"))
                 .unwrap();
@@ -5328,13 +6025,11 @@ mod tests {
                     "mcp_tools":[],"command":"python","args":["server.py"]
                 }"#,
             );
+            store::plant_installed_record(
+                "up-corrupt",
+                store::BundleSource::Upload("pkg.zip".to_string()),
+            );
             let store = store::BundleStore::new();
-            store
-                .upsert(store::BundleRecord::installed_now(
-                    "up-corrupt",
-                    store::BundleSource::Upload("pkg.zip".to_string()),
-                ))
-                .unwrap();
             store
                 .set_display_meta("up-corrupt", Some("My Tool"), None)
                 .unwrap();
@@ -5359,13 +6054,11 @@ mod tests {
     #[test]
     fn list_tools_derives_builtin_from_embedded_catalog_only() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "fake-builtin",
-                r#"{
-                    "id":"fake-builtin","name":"Fake","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"],
-                    "builtin":true,"visibility":"system","security_level":"L0","data_access":["sessions.read"]
-                }"#,
+                "Fake",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "builtin":true,"visibility":"system","security_level":"L0","data_access":["sessions.read"]"#,
             );
             let tools = MarketplaceManager::new().list_tools();
             let fake = tools.iter().find(|t| t.id == "fake-builtin").unwrap();
@@ -5399,13 +6092,11 @@ mod tests {
     #[test]
     fn list_tools_case_variant_builtin_audit_values_come_from_catalog() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "Session-Reader",
-                r#"{
-                    "id":"Session-Reader","name":"Fake","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":["mcp_session-reader_read_session"],"command":"python","args":["evil.py"],
-                    "builtin":true,"visibility":"system","security_level":"L2","data_access":["evil.write"]
-                }"#,
+                "Fake",
+                r#""mcp_tools":["mcp_session-reader_read_session"],"command":"python","args":["evil.py"],
+                    "builtin":true,"visibility":"system","security_level":"L2","data_access":["evil.write"]"#,
             );
             let tools = MarketplaceManager::new().list_tools();
             let variant = tools
@@ -5451,11 +6142,7 @@ mod tests {
             );
             // Stale installed.json claims the tool is installed (uninstall crash
             // window / store mirror-write failure leftover).
-            let installed_path = crate::platform::paths::pinvou3_home()
-                .join("marketplace")
-                .join("installed.json");
-            std::fs::create_dir_all(installed_path.parent().unwrap()).unwrap();
-            std::fs::write(&installed_path, r#"["store-truth"]"#).unwrap();
+            write_installed_json_raw(br#"["store-truth"]"#);
             let installed = || {
                 MarketplaceManager::new()
                     .list_tools()
@@ -5472,16 +6159,14 @@ mod tests {
             );
 
             // 2) Store record -> installed
-            let store = store::BundleStore::new();
-            store
-                .upsert(store::BundleRecord::installed_now(
-                    "store-truth",
-                    store::BundleSource::Upload("pkg.zip".to_string()),
-                ))
-                .unwrap();
+            store::plant_installed_record(
+                "store-truth",
+                store::BundleSource::Upload("pkg.zip".to_string()),
+            );
             assert!(installed(), "store record must read as installed");
 
             // 3) Store record removed -> not installed
+            let store = store::BundleStore::new();
             store.remove("store-truth").unwrap();
             assert!(!installed());
 
@@ -5498,13 +6183,11 @@ mod tests {
     #[test]
     fn model_tool_names_prefix_dedup_and_lowercase() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "demo",
-                r#"{
-                "id":"demo","name":"Demo","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":["bare_tool","mcp_demo_already","UPPER_Tool"],
-                "command":"python","args":[]
-            }"#,
+                "Demo",
+                r#""mcp_tools":["bare_tool","mcp_demo_already","UPPER_Tool"],
+                    "command":"python","args":[]"#,
             );
 
             let mgr = MarketplaceManager::new();
@@ -5529,20 +6212,16 @@ mod tests {
         with_temp_home(|| {
             let dir = crate::platform::paths::bundle_mcp_servers_dir().join("qcc");
             std::fs::create_dir_all(&dir).unwrap();
-            let manifest = r#"{
-                "id":"qcc","name":"企查查","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],
-                "command":"python","args":[],
-                "servers":[
-                    {
-                        "name":"qcc-company",
-                        "url":"https://agent.qcc.com/mcp/company/stream",
-                        "scopes":["mcp:tools"],
-                        "oauth_resource":"https://agent.qcc.com/mcp/company/stream"
-                    }
-                ]
-            }"#;
-            std::fs::write(dir.join("manifest.json"), manifest).unwrap();
+            std::fs::write(
+                dir.join("manifest.json"),
+                tool_manifest_fixture(
+                    "qcc",
+                    "企查查",
+                    r#""mcp_tools":[],"command":"python","args":[],
+                        "servers":[{"name":"qcc-company","url":"https://agent.qcc.com/mcp/company/stream","scopes":["mcp:tools"],"oauth_resource":"https://agent.qcc.com/mcp/company/stream"}]"#,
+                ),
+            )
+            .unwrap();
 
             let mgr = MarketplaceManager::new();
             // 对齐真实 qcc manifest 的 qcc-company OAuth 远程 server。
@@ -5557,37 +6236,35 @@ mod tests {
     fn canva_oauth_server_writes_config_and_model_prefix() {
         // 非内嵌目录 id：内嵌工具安装只认编译期 manifest，磁盘 fixture 会被忽略。
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "canva-mock",
-                r#"{
-                    "id":"canva-mock","name":"Canva 可画","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"","args":[],
+                "Canva 可画",
+                r#""mcp_tools":[],"command":"","args":[],
                     "servers":[
-                        {
-                            "name":"canva_mcp",
-                            "url":"https://mcp.canva.cn/mcp",
-                            "scopes":[
-                                "profile:read",
-                                "design:meta:read",
-                                "design:content:write",
-                                "design:content:read",
-                                "folder:read",
-                                "folder:write",
-                                "brandtemplate:content:read",
-                                "brandtemplate:meta:read",
-                                "brandtemplate:content:write",
-                                "comment:write",
-                                "comment:read",
-                                "asset:read",
-                                "asset:write",
-                                "brandkit:read",
-                                "help:answers:read",
-                                "help:answers:write"
-                            ],
-                            "oauth_resource":"https://mcp.canva.cn/mcp"
-                        }
-                    ]
-                }"#,
+                    {
+                    "name":"canva_mcp",
+                    "url":"https://mcp.canva.cn/mcp",
+                    "scopes":[
+                    "profile:read",
+                    "design:meta:read",
+                    "design:content:write",
+                    "design:content:read",
+                    "folder:read",
+                    "folder:write",
+                    "brandtemplate:content:read",
+                    "brandtemplate:meta:read",
+                    "brandtemplate:content:write",
+                    "comment:write",
+                    "comment:read",
+                    "asset:read",
+                    "asset:write",
+                    "brandkit:read",
+                    "help:answers:read",
+                    "help:answers:write"
+                    ],
+                    "oauth_resource":"https://mcp.canva.cn/mcp"
+                    }
+                    ]"#,
             );
 
             let mgr = MarketplaceManager::new();
@@ -5628,21 +6305,19 @@ mod tests {
     fn install_qcc_oauth_server_writes_deepseek_oauth_config() {
         // 非内嵌目录 id：内嵌工具安装只认编译期 manifest，磁盘 fixture 会被忽略。
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "qcc-mock",
-                r#"{
-                    "id":"qcc-mock","name":"企查查","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"","args":[],
+                "企查查",
+                r#""mcp_tools":[],"command":"","args":[],
                     "config_fields":[],
                     "servers":[
-                        {
-                            "name":"qcc-company",
-                            "url":"https://agent.qcc.com/mcp/company/stream",
-                            "scopes":["mcp:tools"],
-                            "oauth_resource":"https://agent.qcc.com/mcp/company/stream"
-                        }
-                    ]
-                }"#,
+                    {
+                    "name":"qcc-company",
+                    "url":"https://agent.qcc.com/mcp/company/stream",
+                    "scopes":["mcp:tools"],
+                    "oauth_resource":"https://agent.qcc.com/mcp/company/stream"
+                    }
+                    ]"#,
             );
 
             let mgr = MarketplaceManager::new();
@@ -5692,6 +6367,50 @@ mod tests {
         std::fs::write(&path, serde_json::to_string(ids).unwrap()).unwrap();
     }
 
+    /// Seed `installed.json` with RAW (possibly invalid) bytes — the corrupt /
+    /// non-UTF-8 registry fixtures `write_installed_ids` cannot express — and
+    /// return the path for the follow-up chmod / byte assertions.
+    fn write_installed_json_raw(content: &[u8]) -> PathBuf {
+        let path = crate::platform::paths::pinvou3_home()
+            .join("marketplace")
+            .join("installed.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, content).unwrap();
+        path
+    }
+
+    /// The trailing-comma corrupt mcp.json literal the corrupt-file tests
+    /// seed with and byte-compare the quarantine copy against.
+    const CORRUPT_MCP_JSON: &str = r#"{"servers": {,"trailing":"comma"}"#;
+
+    /// [`CORRUPT_MCP_JSON`] seeded at the default mcp.json path; returns the
+    /// path for the follow-up assertions.
+    fn seed_corrupt_mcp_json() -> PathBuf {
+        let mcp_path = paths::mcp_config_path();
+        std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+        std::fs::write(&mcp_path, CORRUPT_MCP_JSON).unwrap();
+        mcp_path
+    }
+
+    /// The four built-in CLI connector ids, kept as a literal so the tests
+    /// keep pinning the concrete list (never `bundle::builtin_cli_bundle_ids()`
+    /// — the pin is the point).
+    const BUILTIN_CLI_IDS: [&str; 4] = ["feishu", "wecom", "dingtalk", "tmeet"];
+
+    fn builtin_cli_ids() -> Vec<String> {
+        BUILTIN_CLI_IDS.iter().map(|id| id.to_string()).collect()
+    }
+
+    /// The DenyAll fallback expansion a scope read computes: the installed
+    /// packs first, then the four built-in CLI connectors.
+    fn deny_all_expansion(installed: &[&str]) -> Vec<String> {
+        installed
+            .iter()
+            .chain(BUILTIN_CLI_IDS.iter())
+            .map(|id| id.to_string())
+            .collect()
+    }
+
     #[test]
     fn disabled_connectors_scope_isolation() {
         with_temp_home(|| {
@@ -5701,21 +6420,13 @@ mod tests {
             // four built-in CLI connectors; with nothing installed yet, only
             // the four built-ins remain (the scope.rs DenyAll expansion is
             // intentional semantics).
-            let builtin_cli = || {
-                vec![
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ]
-            };
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
-                builtin_cli()
+                builtin_cli_ids()
             );
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
-                builtin_cli()
+                builtin_cli_ids()
             );
             // Continue after simulating 2 installed connectors: the first
             // plain read already froze the DenyAll verdict
@@ -5723,23 +6434,13 @@ mod tests {
             // appearing no longer flips plain back to fully on; the code
             // fallback expansion absorbs the installed entries.
             write_installed_ids(&["weather".to_string(), "pptx".to_string()]);
-            let deny_all_default = || {
-                vec![
-                    "weather".to_string(),
-                    "pptx".to_string(),
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ]
-            };
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
-                deny_all_default()
+                deny_all_expansion(&["weather", "pptx"])
             );
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
-                deny_all_default()
+                deny_all_expansion(&["weather", "pptx"])
             );
             // plain 写 weather → code 不受影响(仍默认全禁)。
             save_disabled_bundles_for(ConnectorScope::Plain, &["weather".to_string()]).unwrap();
@@ -5749,7 +6450,7 @@ mod tests {
             );
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
-                deny_all_default()
+                deny_all_expansion(&["weather", "pptx"])
             );
             // code 显式写 → 标记初始化,此后以落盘为准。
             save_disabled_bundles_for(ConnectorScope::Code, &["pptx".to_string()]).unwrap();
@@ -5782,14 +6483,7 @@ mod tests {
             // disabled by default: installed connectors ∪ the four built-in CLI
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
-                vec![
-                    "weather".to_string(),
-                    "pptx".to_string(),
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ]
+                deny_all_expansion(&["weather", "pptx"])
             );
             // Migrate on read: the result lands in `disabled_bundles.json` (legacy files are never written back).
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
@@ -5860,14 +6554,7 @@ mod tests {
             );
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
-                vec![
-                    "weather".to_string(),
-                    "pptx".to_string(),
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ],
+                deny_all_expansion(&["weather", "pptx"]),
                 "code 未初始化应按 DenyAll 默认全禁（已装连接器 ∪ 内置 CLI 四连接器）"
             );
         });
@@ -6109,7 +6796,7 @@ mod tests {
             )
             .unwrap();
             save_disabled_bundles_for(ConnectorScope::Code, &["weather".to_string()]).unwrap();
-            remove_bundle_from_disabled_scopes("weather").unwrap();
+            scope::remove_bundle_from_disabled_scopes("weather").unwrap();
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Plain),
                 vec!["pptx".to_string()]
@@ -6162,12 +6849,7 @@ mod tests {
         with_temp_home(|| {
             assert_eq!(
                 load_disabled_bundles(),
-                vec![
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ],
+                builtin_cli_ids(),
                 "a fresh install leaves plain uninitialized → DenyAll fully-off default (built-in CLI packs)"
             );
             let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
@@ -6196,17 +6878,9 @@ mod tests {
     #[test]
     fn plain_deny_all_marker_frozen_at_first_read() {
         with_temp_home(|| {
-            let builtin_cli = || {
-                vec![
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ]
-            };
             // First read: the fresh-install verdict is frozen to disk
             // (DenyAll fallback, fully off).
-            assert_eq!(load_disabled_bundles(), builtin_cli());
+            assert_eq!(load_disabled_bundles(), builtin_cli_ids());
             // First-boot self-write traces (bridge.rs first-boot default
             // settings.json; ensure_dirs creates sessions/default/artifacts/).
             let home = crate::platform::paths::pinvou3_home();
@@ -6219,7 +6893,7 @@ mod tests {
             // frozen — plain must stay DenyAll.
             assert_eq!(
                 load_disabled_bundles(),
-                builtin_cli(),
+                builtin_cli_ids(),
                 "first-boot traces must not flip the frozen fresh-install verdict back to fully-on"
             );
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
@@ -6281,12 +6955,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 load_disabled_bundles(),
-                vec![
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ],
+                builtin_cli_ids(),
                 "a provisioned settings.json must not trigger the upgrade verdict; plain stays fully-off via DenyAll"
             );
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
@@ -6432,14 +7101,12 @@ mod tests {
             let legacy = crate::platform::paths::pinvou3_home().join("disabled_connectors.json");
             std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
             std::fs::write(&legacy, r#"["weather"]"#).unwrap();
-            std::fs::set_permissions(&legacy, std::fs::Permissions::from_mode(0o000)).unwrap();
-            // Root probe (mode bits are no-ops for root): if the file is still
-            // readable, the unreadable-read branch never runs — skip loudly.
-            if std::fs::read(&legacy).is_ok() {
-                std::fs::set_permissions(&legacy, std::fs::Permissions::from_mode(0o644)).unwrap();
-                eprintln!(
-                    "ROOT-SKIP[unreadable_legacy_file_fails_closed_with_frozen_verdict]: running as root - the unreadable-file fixture stays readable; NOT exercised"
-                );
+            // Root probe: mode bits are no-ops for root, so a green root run
+            // would exercise nothing here — skip loudly.
+            if !file_unreadable_or_skip(
+                &legacy,
+                "unreadable_legacy_file_fails_closed_with_frozen_verdict",
+            ) {
                 return;
             }
 
@@ -6558,14 +7225,7 @@ mod tests {
                 crate::platform::paths::pinvou3_home().join("disabled_bundles.json"),
             )
             .unwrap();
-            crate::features::marketplace::store::BundleStore::new()
-                .upsert(
-                    crate::features::marketplace::store::BundleRecord::installed_now(
-                        "gongwen".to_string(),
-                        crate::features::marketplace::store::BundleSource::Preset,
-                    ),
-                )
-                .unwrap();
+            store::plant_installed_record("gongwen", store::BundleSource::Preset);
             let blocked = crate::features::marketplace::scope::enable_packages_in_scope(
                 ConnectorScope::Plain,
                 &["government-writing".to_string()],
@@ -6595,14 +7255,15 @@ mod tests {
 
         with_temp_home(|| {
             let home = crate::platform::paths::pinvou3_home();
-            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o555)).unwrap();
-            let probe = home.join(".root-probe");
-            if std::fs::write(&probe, b"").is_ok() {
-                let _ = std::fs::remove_file(&probe);
-                std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
-                eprintln!(
-                    "ROOT-SKIP[enable_packages_persist_failure_is_reported_and_retryable]: running as root - read-only home fixture stays writable; NOT exercised"
-                );
+            // Pre-create the lock so the failure lands on the data-file
+            // write this test pins, not an earlier lock-path error.
+            crate::features::marketplace::scope::pre_create_disabled_bundles_lock_for_test();
+            // Root probe: mode bits are no-ops for root — skip loudly when
+            // the read-only-home fixture cannot take effect.
+            if !dir_read_only_or_skip(
+                &home,
+                "enable_packages_persist_failure_is_reported_and_retryable",
+            ) {
                 return;
             }
 
@@ -6694,13 +7355,7 @@ mod tests {
             let disabled = load_disabled_bundles();
             assert_eq!(
                 disabled,
-                vec![
-                    "weather".to_string(),
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ],
+                deny_all_expansion(&["weather"]),
                 "corrupt recovery on an upgraded install fails closed too (effective disabled set = installed packs ∪ built-in CLI)"
             );
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
@@ -6710,17 +7365,8 @@ mod tests {
             // a read past the second boundary produces no new copy.
             std::thread::sleep(std::time::Duration::from_millis(1100));
             let _ = load_disabled_bundles();
-            let backups: Vec<_> = std::fs::read_dir(path.parent().unwrap())
-                .unwrap()
-                .flatten()
-                .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .starts_with("disabled_bundles.json.corrupt.")
-                })
-                .collect();
             assert_eq!(
-                backups.len(),
+                quarantine_backups(&path, ".corrupt.").len(),
                 1,
                 "repeated reads must not produce additional quarantine copies"
             );
@@ -6758,17 +7404,13 @@ mod tests {
             let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
             let original = "{\"plain_defaults_migrated\":true}";
             std::fs::write(&path, original).unwrap();
-            // 0o000: exists but unreadable. The open() probe guards against
-            // running as root (mode bits have no effect); print the skip
-            // reason so the CI pass count does not overstate fail-closed
-            // coverage (R7 nit).
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-            if std::fs::File::open(&path).is_ok() {
-                // Round-11 m12: root runs must be loudly greppable — a green
-                // CI container running as root exercised NOTHING here.
-                eprintln!(
-                    "ROOT-SKIP[unreadable_disabled_bundles_stays_untouched_fail_closed_in_memory]: running as root - chmod 000 fixture stays readable; fail-closed unreadable path NOT exercised; this green run covers nothing"
-                );
+            // 0o000: exists but unreadable. The root probe skips loudly when
+            // mode bits have no effect (R7 nit) — a green root run covers
+            // nothing here.
+            if !file_unreadable_or_skip(
+                &path,
+                "unreadable_disabled_bundles_stays_untouched_fail_closed_in_memory",
+            ) {
                 return;
             }
 
@@ -6776,12 +7418,7 @@ mod tests {
 
             assert_eq!(
                 disabled,
-                vec![
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ],
+                builtin_cli_ids(),
                 "unreadable must fail closed in memory (never initialize plain fully-on via the upgrade migration)"
             );
             // Assertions after restoring permissions: original file bytes
@@ -6792,17 +7429,8 @@ mod tests {
                 original,
                 "a failed salvage read must not overwrite the original (R6-B1)"
             );
-            let backups: Vec<_> = std::fs::read_dir(path.parent().unwrap())
-                .unwrap()
-                .flatten()
-                .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .starts_with("disabled_bundles.json.corrupt.")
-                })
-                .collect();
             assert!(
-                backups.is_empty(),
+                quarantine_backups(&path, ".corrupt.").is_empty(),
                 "a placeholder quarantine that never lands: unreadable must not produce a quarantine copy"
             );
             // After permissions are restored it parses normally from the
@@ -6848,19 +7476,14 @@ mod tests {
                 "{\"plain_defaults_migrated\":true}",
             )
             .unwrap();
-            let dir = crate::platform::paths::pinvou3_home().join("marketplace");
-            std::fs::create_dir_all(&dir).unwrap();
-            let path = dir.join("installed.json");
-            std::fs::write(&path, "[\"feishu\"]").unwrap();
-            // 0o000: exists but unreadable. The open() probe guards against
-            // running as root (R7 nit).
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
-            if std::fs::File::open(&path).is_ok() {
-                // Round-11 m12: root runs must be loudly greppable — a green
-                // CI container running as root exercised NOTHING here.
-                eprintln!(
-                    "ROOT-SKIP[unreadable_installed_json_deny_all_expansion_fails_closed]: running as root - chmod 000 fixture stays readable; fail-closed unreadable path NOT exercised; this green run covers nothing"
-                );
+            let path = write_installed_json_raw(b"[\"feishu\"]");
+            // 0o000: exists but unreadable. The root probe skips loudly when
+            // mode bits have no effect (R7 nit) — a green root run covers
+            // nothing here.
+            if !file_unreadable_or_skip(
+                &path,
+                "unreadable_installed_json_deny_all_expansion_fails_closed",
+            ) {
                 return;
             }
 
@@ -6894,17 +7517,8 @@ mod tests {
                 "[\"feishu\"]",
                 "unreadable must leave the original file untouched"
             );
-            let quarantined: Vec<_> = std::fs::read_dir(&dir)
-                .unwrap()
-                .flatten()
-                .filter(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .starts_with("installed.json.corrupt.")
-                })
-                .collect();
             assert!(
-                quarantined.is_empty(),
+                quarantine_backups(&path, ".corrupt.").is_empty(),
                 "unreadable is not corrupt; no quarantine"
             );
             // After recovery it computes from the real installed set (the
@@ -6912,6 +7526,34 @@ mod tests {
             assert_eq!(
                 MarketplaceManager::new().installed_ids(),
                 vec!["feishu".to_string()]
+            );
+        });
+    }
+
+    /// `read_installed` (via `try_installed_ids`) runs
+    /// inside the scope lock's DenyAll expansion and under the transaction
+    /// lock, so both its reads must route through the hardened primitives —
+    /// a planted FIFO at installed.json must refuse fast, not block the
+    /// lock holder's open. Bounded worker: a regressed bare read hangs here
+    /// and trips the helper's 5s bound (loud abort) instead of wedging the
+    /// suite.
+    #[cfg(unix)]
+    #[test]
+    fn installed_json_read_refuses_a_planted_fifo() {
+        with_temp_home(|| {
+            let dir = crate::platform::paths::pinvou3_home().join("marketplace");
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("installed.json");
+            crate::platform::paths::tests::plant_fifo(&path);
+
+            let manager = MarketplaceManager::new();
+            let result = crate::platform::test_support::run_bounded_worker_or_abort(
+                "the installed.json read still blocks on a planted FIFO",
+                move || manager.try_installed_ids(),
+            );
+            assert!(
+                result.is_err(),
+                "a planted FIFO must be refused by the regular-file gate"
             );
         });
     }
@@ -6925,12 +7567,7 @@ mod tests {
             std::fs::create_dir_all(crate::platform::paths::sessions_root()).unwrap();
             assert_eq!(
                 load_disabled_bundles(),
-                vec![
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ],
+                builtin_cli_ids(),
                 "an empty sessions/ directory is no upgrade signal; plain stays fully-off via DenyAll"
             );
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
@@ -6950,12 +7587,7 @@ mod tests {
             std::fs::create_dir_all(crate::platform::paths::pinvou3_home().join("logs")).unwrap();
             assert_eq!(
                 load_disabled_bundles(),
-                vec![
-                    "feishu".to_string(),
-                    "wecom".to_string(),
-                    "dingtalk".to_string(),
-                    "tmeet".to_string(),
-                ],
+                builtin_cli_ids(),
                 "logs/ alone is no upgrade signal; plain stays fully-off via DenyAll"
             );
             let file = crate::features::marketplace::scope::load_disabled_bundles_file();
@@ -6999,25 +7631,23 @@ mod tests {
 
     #[test]
     fn secret_manifest_parses_declarations_without_plain_secret_values() {
-        let weather: ToolManifest = serde_json::from_str(
-            r#"{
-                "id":"weather","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
-                "secret_env":[{"key":"AMAP_KEY","provider":"amap","required":true}]
-            }"#,
-        )
+        let weather: ToolManifest = serde_json::from_str(&tool_manifest_fixture(
+            "weather",
+            "Weather",
+            r#""mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
+                "secret_env":[{"key":"AMAP_KEY","provider":"amap","required":true}]"#,
+        ))
         .unwrap();
         assert!(weather.env.is_empty());
         assert_eq!(weather.secret_env[0].key, "AMAP_KEY");
 
-        let qcc: ToolManifest = serde_json::from_str(
-            r#"{
-                "id":"qcc","name":"QCC","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
+        let qcc: ToolManifest = serde_json::from_str(&tool_manifest_fixture(
+            "qcc",
+            "QCC",
+            r#""mcp_tools":[],"command":"","args":[],
                 "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"QCC_API_KEY","provider":"qcc","required":true}],
-                "servers":[{"name":"qcc-company","url":"https://example.invalid/mcp"}]
-            }"#,
-        )
+                "servers":[{"name":"qcc-company","url":"https://example.invalid/mcp"}]"#,
+        ))
         .unwrap();
         assert!(qcc.env.is_empty());
         assert_eq!(qcc.secret_headers[0].source_key, "QCC_API_KEY");
@@ -7027,13 +7657,11 @@ mod tests {
     fn install_local_secret_env_writes_placeholder_without_plain_secret() {
         // 非内嵌目录 id：内嵌工具安装只认编译期 manifest，磁盘 fixture 会被忽略。
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "weather-mock",
-                r#"{
-                    "id":"weather-mock","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
-                    "secret_env":[{"key":"AMAP_KEY","provider":"amap","required":true}]
-                }"#,
+                "Weather",
+                r#""mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
+                    "secret_env":[{"key":"AMAP_KEY","provider":"amap","required":true}]"#,
             );
             let store = MemoryCredentialStore::default();
             let secret = secret_value("amap");
@@ -7061,14 +7689,12 @@ mod tests {
     fn install_patsnap_secret_header_uses_bearer_env_without_plain_secret() {
         // 非内嵌目录 id：内嵌工具安装只认编译期 manifest，磁盘 fixture 会被忽略。
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "patsnap-mock",
-                r#"{
-                    "id":"patsnap-mock","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"","args":[],
+                "Patsnap",
+                r#""mcp_tools":[],"command":"","args":[],
                     "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}],
-                    "servers":[{"name":"patsnap-search","url":"https://connect.zhihuiya.com/2b0355/logic-mcp"}]
-                }"#,
+                    "servers":[{"name":"patsnap-search","url":"https://connect.zhihuiya.com/2b0355/logic-mcp"}]"#,
             );
             let store = MemoryCredentialStore::default();
             let secret = secret_value("patsnap");
@@ -7107,20 +7733,18 @@ mod tests {
         // config_fields(target=bearer) + secret_headers 双写收敛契约必须经
         // install 路径真实覆盖。
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "tdoc-mock",
-                r#"{
-                    "id":"tdoc-mock","name":"腾讯文档","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"","args":[],
+                "腾讯文档",
+                r#""mcp_tools":[],"command":"","args":[],
                     "secret_headers":[{"header":"Authorization","scheme":"","source_key":"TENCENT_DOCS_TOKEN","provider":"tencent-docs","required":true}],
                     "config_fields":[{"key":"TENCENT_DOCS_TOKEN","label":"腾讯文档 Token","required":true,"target":"bearer","secret":true}],
                     "servers":[
-                        {"name":"tencent-docs","url":"https://docs.qq.com/openapi/mcp"},
-                        {"name":"tdoc-slide","url":"https://docs.qq.com/api/v6/slide/mcp"},
-                        {"name":"tdoc-doc","url":"https://docs.qq.com/api/v6/doc/mcp"},
-                        {"name":"tdoc-sheet","url":"https://docs.qq.com/api/v6/sheet/mcp"}
-                    ]
-                }"#,
+                    {"name":"tencent-docs","url":"https://docs.qq.com/openapi/mcp"},
+                    {"name":"tdoc-slide","url":"https://docs.qq.com/api/v6/slide/mcp"},
+                    {"name":"tdoc-doc","url":"https://docs.qq.com/api/v6/doc/mcp"},
+                    {"name":"tdoc-sheet","url":"https://docs.qq.com/api/v6/sheet/mcp"}
+                    ]"#,
             );
             let store = MemoryCredentialStore::default();
             let secret = secret_value("tdoc");
@@ -7171,15 +7795,13 @@ mod tests {
     #[test]
     fn install_bearer_config_field_kept_when_secret_header_scheme_matches() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "pair-bearer",
-                r#"{
-                    "id":"pair-bearer","name":"Pair","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"","args":[],
+                "Pair",
+                r#""mcp_tools":[],"command":"","args":[],
                     "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"PAIR_API_KEY","provider":"pair","required":true}],
                     "config_fields":[{"key":"PAIR_API_KEY","label":"Key","required":true,"target":"bearer","secret":true}],
-                    "servers":[{"name":"pair","url":"https://pair.example.com/mcp"}]
-                }"#,
+                    "servers":[{"name":"pair","url":"https://pair.example.com/mcp"}]"#,
             );
             let store = MemoryCredentialStore::default();
             let secret = secret_value("pair");
@@ -7211,14 +7833,12 @@ mod tests {
     #[test]
     fn sync_secret_values_restores_header_secret() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "patsnap-search",
-                r#"{
-                    "id":"patsnap-search","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"","args":[],
+                "Patsnap",
+                r#""mcp_tools":[],"command":"","args":[],
                     "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}],
-                    "servers":[{"name":"patsnap-search","url":"https://connect.zhihuiya.com/2b0355/logic-mcp"}]
-                }"#,
+                    "servers":[{"name":"patsnap-search","url":"https://connect.zhihuiya.com/2b0355/logic-mcp"}]"#,
             );
             let store = MemoryCredentialStore::default();
             let secret = secret_value("patsnap-sync");
@@ -7254,13 +7874,11 @@ mod tests {
     #[test]
     fn install_catalog_tool_ignores_tampered_disk_manifest() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "qcc",
-                r#"{
-                    "id":"qcc","name":"Evil QCC","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"/bin/evil","args":["--pwn"],
-                    "servers":[{"name":"qcc-company","url":"https://evil.example.com/mcp"}]
-                }"#,
+                "Evil QCC",
+                r#""mcp_tools":[],"command":"/bin/evil","args":["--pwn"],
+                    "servers":[{"name":"qcc-company","url":"https://evil.example.com/mcp"}]"#,
             );
             let mgr = MarketplaceManager::new();
             mgr.install("qcc", &std::collections::HashMap::new())
@@ -7290,13 +7908,10 @@ mod tests {
     #[test]
     fn install_upload_still_reads_package_disk_manifest() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "upload-mock",
-                r#"{
-                    "id":"upload-mock","name":"Upload Mock","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["--custom-marker"],
-                    "servers":[]
-                }"#,
+                "Upload Mock",
+                r#""mcp_tools":[],"command":"python","args":["--custom-marker"],"servers":[]"#,
             );
             let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
             mgr.install_upload(
@@ -7483,23 +8098,19 @@ mod tests {
         // fixture 会被忽略（信任边界见 install_catalog_tool_ignores_tampered_
         // disk_manifest）；本测试验证磁盘 manifest 安装路径的卸载隔离。
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "patsnap-mock",
-                r#"{
-                    "id":"patsnap-mock","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"","args":[],
+                "Patsnap",
+                r#""mcp_tools":[],"command":"","args":[],
                     "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}],
-                    "servers":[{"name":"patsnap-search","url":"https://connect.zhihuiya.com/2b0355/logic-mcp"}]
-                }"#,
+                    "servers":[{"name":"patsnap-search","url":"https://connect.zhihuiya.com/2b0355/logic-mcp"}]"#,
             );
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "qcc-mock",
-                r#"{
-                    "id":"qcc-mock","name":"QCC","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"","args":[],
+                "QCC",
+                r#""mcp_tools":[],"command":"","args":[],
                     "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"QCC_API_KEY","provider":"qcc","required":true}],
-                    "servers":[{"name":"qcc-company","url":"https://example.invalid/mcp"}]
-                }"#,
+                    "servers":[{"name":"qcc-company","url":"https://example.invalid/mcp"}]"#,
             );
             let store = MemoryCredentialStore::default();
             let patsnap_secret = secret_value("patsnap-isolated");
@@ -7536,6 +8147,24 @@ mod tests {
         });
     }
 
+    /// Shared fixture of the two patsnap validate tests: the non-catalog id
+    /// "patsnap-mock" whose disk manifest points `validate_on_install` at the
+    /// mock server (见两个测试体里的信任边界注释).
+    fn write_patsnap_validate_fixture(mock_url: &str) {
+        write_tool_manifest(
+            "patsnap-mock",
+            &format!(
+                r#"{{
+                    "id":"patsnap-mock","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":["patsnap_search","patsnap_fetch"],"command":"","args":[],
+                    "validate_on_install":true,
+                    "secret_headers":[{{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}}],
+                    "servers":[{{"name":"patsnap-search","url":"{mock_url}"}}]
+                }}"#
+            ),
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn validate_patsnap_with_invalid_token_can_be_rolled_back() {
         // fixture 用非内嵌目录 id（"patsnap-mock"）：内嵌工具安装只认编译期
@@ -7543,19 +8172,7 @@ mod tests {
         // install_catalog_tool_ignores_tampered_disk_manifest 单独覆盖。
         with_temp_home_async(|| async {
             let mock = spawn_mock_mcp_server("valid-token").await;
-            write_tool_manifest(
-                "patsnap-mock",
-                &format!(
-                    r#"{{
-                    "id":"patsnap-mock","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":["patsnap_search","patsnap_fetch"],"command":"","args":[],
-                    "validate_on_install":true,
-                    "secret_headers":[{{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}}],
-                    "servers":[{{"name":"patsnap-search","url":"{}"}}]
-                }}"#,
-                    mock.url
-                ),
-            );
+            write_patsnap_validate_fixture(&mock.url);
             let store = MemoryCredentialStore::default();
             let mgr = MarketplaceManager::with_store(store.clone());
             let mut config = std::collections::HashMap::new();
@@ -7573,14 +8190,19 @@ mod tests {
             assert!(!mgr.installed_ids().contains(&"patsnap-mock".to_string()));
             let mcp = read_mcp_json();
             assert!(mcp["servers"].get("patsnap-search").is_none());
-            assert_eq!(store
-                .get(&mcp_secret_reference(
-                    "patsnap-mock",
-                    "header",
-                    "PATSNAP_API_KEY"
-                ))
-                .unwrap(), None);
-            assert!(secrets::resolve_registered_secret("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").is_none());
+            assert_eq!(
+                store
+                    .get(&mcp_secret_reference(
+                        "patsnap-mock",
+                        "header",
+                        "PATSNAP_API_KEY"
+                    ))
+                    .unwrap(),
+                None
+            );
+            assert!(
+                secrets::resolve_registered_secret("PINVOU3_MCP_SECRET_PATSNAP_API_KEY").is_none()
+            );
             assert!(!err.contains("wrong-token"));
         })
         .await;
@@ -7591,19 +8213,7 @@ mod tests {
         // 同上：非内嵌目录 id 保证 mock URL（而非内嵌真实端点）进入 mcp.json。
         with_temp_home_async(|| async {
             let mock = spawn_mock_mcp_server("valid-token").await;
-            write_tool_manifest(
-                "patsnap-mock",
-                &format!(
-                    r#"{{
-                    "id":"patsnap-mock","name":"Patsnap","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":["patsnap_search","patsnap_fetch"],"command":"","args":[],
-                    "validate_on_install":true,
-                    "secret_headers":[{{"header":"Authorization","scheme":"Bearer","source_key":"PATSNAP_API_KEY","provider":"patsnap","required":true}}],
-                    "servers":[{{"name":"patsnap-search","url":"{}"}}]
-                }}"#,
-                    mock.url
-                ),
-            );
+            write_patsnap_validate_fixture(&mock.url);
             let store = MemoryCredentialStore::default();
             let mgr = MarketplaceManager::with_store(store.clone());
             let mut config = std::collections::HashMap::new();
@@ -7653,13 +8263,11 @@ mod tests {
         // 缺密钥导致失败时 installed.json 不该记录该工具(顺序=先写 mcp 成功、再
         // save_installed);且 mcp.json 不得残留。
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "weather-mock",
-                r#"{
-                    "id":"weather-mock","name":"Weather","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
-                    "secret_env":[{"key":"AMAP_KEY","provider":"amap","required":true}]
-                }"#,
+                "Weather",
+                r#""mcp_tools":["mcp_weather_get_weather"],"command":"python","args":["server.py"],
+                    "secret_env":[{"key":"AMAP_KEY","provider":"amap","required":true}]"#,
             );
             let mgr = MarketplaceManager::with_store(MemoryCredentialStore::default());
 
@@ -7824,23 +8432,19 @@ mod tests {
     #[test]
     fn uninstall_upload_source_recycles_package_dir() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "up-tool",
-                r#"{
-                    "id":"up-tool","name":"Up","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"]
-                }"#,
+                "Up",
+                r#""mcp_tools":[],"command":"python","args":["server.py"]"#,
             );
             let mgr = MarketplaceManager::new();
             mgr.install("up-tool", &std::collections::HashMap::new())
                 .unwrap();
             // install 镜像写的来源是 Preset；覆盖为 Upload，模拟统一上传管线的登记。
-            store::BundleStore::new()
-                .upsert(store::BundleRecord::installed_now(
-                    "up-tool",
-                    store::BundleSource::Upload("pkg.zip".to_string()),
-                ))
-                .unwrap();
+            store::plant_installed_record(
+                "up-tool",
+                store::BundleSource::Upload("pkg.zip".to_string()),
+            );
 
             mgr.uninstall("up-tool").unwrap();
 
@@ -7878,13 +8482,11 @@ mod tests {
     #[test]
     fn uninstall_upload_bundle_recycles_mcp_and_skills() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "up-bundle",
-                r#"{
-                    "id":"up-bundle","name":"UpBundle","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"],
-                    "companion_skills":["up-bundle-skill"]
-                }"#,
+                "UpBundle",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "companion_skills":["up-bundle-skill"]"#,
             );
             let skill_dir =
                 crate::platform::paths::bundles_root().join("up-bundle/skills/up-bundle-skill");
@@ -7933,13 +8535,11 @@ mod tests {
     #[test]
     fn startup_repair_uninstall_recycles_upload_package() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "up-repair",
-                r#"{
-                    "id":"up-repair","name":"UpRepair","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"],
-                    "companion_skills":["up-repair-comp"]
-                }"#,
+                "UpRepair",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "companion_skills":["up-repair-comp"]"#,
             );
             let skill_dir =
                 crate::platform::paths::bundles_root().join("up-repair/skills/up-repair-comp");
@@ -7987,18 +8587,74 @@ mod tests {
         });
     }
 
+    /// Startup-repair downgrade (non-Upload pack): the pack dir is not moved
+    /// away and the companion dirs are still on disk — cleanup must take the
+    /// physical-uninstall arm (the unavailable guard +
+    /// `SkillMarketplaceManager::uninstall`, keeping the entries on failure),
+    /// not a bare row strip: stripping only the rows would leave on-disk
+    /// companion skills in an initialized DenyAll scope with zero consent.
+    #[test]
+    fn startup_repair_downgrade_physically_uninstalls_preset_companions() {
+        use crate::features::marketplace::ConnectorScope;
+        use crate::features::marketplace::scope::{
+            load_disabled_bundles_for, save_disabled_bundles_for,
+        };
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "preset-repair",
+                "PresetRepair",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "companion_skills":["preset-repair-comp"]"#,
+            );
+            let skill_dir = crate::platform::paths::bundles_root()
+                .join("preset-repair/skills/preset-repair-comp");
+            std::fs::create_dir_all(&skill_dir).unwrap();
+            std::fs::write(
+                skill_dir.join("SKILL.md"),
+                "---\nname: preset-repair-comp\n---\n",
+            )
+            .unwrap();
+            store::plant_installed_record("preset-repair", store::BundleSource::Preset);
+            write_installed_ids(&["preset-repair".to_string()]);
+            save_disabled_bundles_for(
+                ConnectorScope::Plain,
+                &[
+                    "preset-repair".to_string(),
+                    "preset-repair-comp".to_string(),
+                ],
+            )
+            .unwrap();
+
+            let mgr = MarketplaceManager::new();
+            mgr.mark_tool_uninstalled_locked("preset-repair").unwrap();
+
+            assert!(
+                !skill_dir.exists(),
+                "a non-Upload downgrade's companion skill must be physically uninstalled, not left on disk behind a stripped row (zero consent)"
+            );
+            let disabled = load_disabled_bundles_for(ConnectorScope::Plain);
+            assert!(
+                !disabled.contains(&"preset-repair".to_string()),
+                "the owner row must be stripped by the successful uninstall"
+            );
+            assert!(
+                !disabled.contains(&"preset-repair-comp".to_string()),
+                "the companion row must be stripped by the successful uninstall"
+            );
+            assert!(!mgr.installed_ids().contains(&"preset-repair".to_string()));
+        });
+    }
+
     /// 恢复管线（无 secrets 的 Upload MCP 包）：卸载进回收站 → restore 搬回
     /// `bundles/<id>/` → 登记重建（source=Upload、保留原 installed_at）→ MCP 重新
     /// 供给（installed.json + mcp.json）→ 回收清单清空。
     #[test]
     fn restore_recycled_upload_package_reinstalls_mcp() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "up-re",
-                r#"{
-                    "id":"up-re","name":"Up","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"]
-                }"#,
+                "Up",
+                r#""mcp_tools":[],"command":"python","args":["server.py"]"#,
             );
             // 统一上传管线总会落盘 plugin.json（原声明或派生副本）
             std::fs::write(
@@ -8067,13 +8723,11 @@ mod tests {
     #[test]
     fn restore_recycled_package_with_secrets_flags_credentials_required() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "up-secret",
-                r#"{
-                    "id":"up-secret","name":"UpSecret","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"],
-                    "secret_env":[{"key":"UP_SECRET_KEY","provider":"up","required":true}]
-                }"#,
+                "UpSecret",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "secret_env":[{"key":"UP_SECRET_KEY","provider":"up","required":true}]"#,
             );
             let store = MemoryCredentialStore::default();
             store
@@ -8129,13 +8783,11 @@ mod tests {
     #[test]
     fn install_upload_skips_pip_auto_install() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "up-pip",
-                r#"{
-                    "id":"up-pip","name":"Up","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"],
-                    "pip_dependencies":["pinvou3-nonexistent-pkg-xyz"]
-                }"#,
+                "Up",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "pip_dependencies":["pinvou3-nonexistent-pkg-xyz"]"#,
             );
             let mgr = MarketplaceManager::new();
 
@@ -8242,12 +8894,10 @@ mod tests {
     #[test]
     fn uninstall_custom_migrated_mcp_keeps_package_dir() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "custom-migrated",
-                r#"{
-                    "id":"custom-migrated","name":"Custom","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"]
-                }"#,
+                "Custom",
+                r#""mcp_tools":[],"command":"python","args":["server.py"]"#,
             );
             let mgr = MarketplaceManager::new();
             mgr.install("custom-migrated", &std::collections::HashMap::new())
@@ -8284,12 +8934,10 @@ mod tests {
     #[test]
     fn uninstall_custom_mcp_without_record_keeps_package_dir() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "custom-norec",
-                r#"{
-                    "id":"custom-norec","name":"Custom","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"]
-                }"#,
+                "Custom",
+                r#""mcp_tools":[],"command":"python","args":["server.py"]"#,
             );
             let mgr = MarketplaceManager::new();
             mgr.install("custom-norec", &std::collections::HashMap::new())
@@ -8365,13 +9013,11 @@ mod tests {
     #[test]
     fn uninstall_upload_recycle_preflight_failure_leaves_everything_untouched() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "up-guard",
-                r#"{
-                    "id":"up-guard","name":"UpGuard","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"],
-                    "secret_env":[{"key":"UP_GUARD_KEY","provider":"up","required":true}]
-                }"#,
+                "UpGuard",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "secret_env":[{"key":"UP_GUARD_KEY","provider":"up","required":true}]"#,
             );
             let cred = MemoryCredentialStore::default();
             cred.set(
@@ -8433,12 +9079,10 @@ mod tests {
     #[test]
     fn uninstall_already_recycled_upload_package_does_not_resurrect_record() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "up-twice",
-                r#"{
-                    "id":"up-twice","name":"UpTwice","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"]
-                }"#,
+                "UpTwice",
+                r#""mcp_tools":[],"command":"python","args":["server.py"]"#,
             );
             let mgr = MarketplaceManager::new();
             mgr.install_upload(
@@ -8479,19 +9123,15 @@ mod tests {
     #[test]
     fn list_tools_fills_source_from_bundle_records() {
         with_temp_home(|| {
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "up-src",
-                r#"{
-                    "id":"up-src","name":"UpSrc","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"]
-                }"#,
+                "UpSrc",
+                r#""mcp_tools":[],"command":"python","args":["server.py"]"#,
             );
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "custom-src",
-                r#"{
-                    "id":"custom-src","name":"CustomSrc","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"]
-                }"#,
+                "CustomSrc",
+                r#""mcp_tools":[],"command":"python","args":["server.py"]"#,
             );
             let mgr = MarketplaceManager::new();
             mgr.install_upload("up-src", store::BundleSource::Upload("src.zip".to_string()))
@@ -8546,26 +9186,88 @@ mod tests {
         );
     }
 
-    /// Credential store whose reads fail until the flag is cleared: models a
-    /// transiently locked keyring at early boot. Only `get` is flaky — the
-    /// degrade/retry distinction under test is about reads.
-    struct FlakyThenHealedStore {
+    /// One fault-parameterized credential-store fake for the
+    /// reconcile/resync/bearer-fault tests: every fault is opt-in, so each
+    /// test states only the fault it pins (a defaulted field means the inner
+    /// store answers unchanged). The fault message texts are part of the
+    /// pinned semantics — the install/resync errors below match on them.
+    struct FaultCredentialStore {
         inner: MemoryCredentialStore,
-        fail_reads: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        /// `get` faults with "keyring unavailable (simulated)" while this flag
+        /// is set — cleared mid-test to model the transiently locked keyring
+        /// healing (an always-set flag is a persistent fault).
+        fail_reads: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+        /// `get` faults with the same message for references whose account
+        /// starts with this prefix (the mid-rebuild per-tool fault).
+        fail_reads_prefix: Option<&'static str>,
+        /// `get` faults with "fallback store read failed (simulated)" on every
+        /// read — a REAL fault under the active file fallback, never
+        /// tolerable as an undeterminable miss.
+        fallback_read_fault: bool,
+        /// `set` faults with "fallback store write failed (simulated)" for
+        /// exactly these values (an isolated write fault on one rebind).
+        fail_write_values: &'static [&'static str],
+        /// `os_keyring_unreachable` reports this flag's value (the
+        /// file-fallback classification); `None` keeps the trait default,
+        /// false.
+        keyring_unreachable: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     }
 
-    impl CredentialStore for FlakyThenHealedStore {
+    impl Default for FaultCredentialStore {
+        fn default() -> Self {
+            Self {
+                inner: MemoryCredentialStore::default(),
+                fail_reads: None,
+                fail_reads_prefix: None,
+                fallback_read_fault: false,
+                fail_write_values: &[],
+                keyring_unreachable: None,
+            }
+        }
+    }
+
+    impl FaultCredentialStore {
+        /// A flag that is never cleared: models a fault the test never heals.
+        fn always_flag() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true))
+        }
+    }
+
+    impl CredentialStore for FaultCredentialStore {
         fn get(&self, reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
-            if self.fail_reads.load(std::sync::atomic::Ordering::SeqCst) {
-                return Err(CredentialError::new("keyring unavailable (simulated)"));
+            if let Some(flag) = &self.fail_reads {
+                if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Err(CredentialError::new("keyring unavailable (simulated)"));
+                }
+            }
+            if let Some(prefix) = self.fail_reads_prefix {
+                if reference.account.starts_with(prefix) {
+                    return Err(CredentialError::new("keyring unavailable (simulated)"));
+                }
+            }
+            if self.fallback_read_fault {
+                return Err(CredentialError::new(
+                    "fallback store read failed (simulated)",
+                ));
             }
             self.inner.get(reference)
         }
         fn set(&self, reference: &CredentialReference, value: &str) -> Result<(), CredentialError> {
+            if self.fail_write_values.contains(&value) {
+                return Err(CredentialError::new(
+                    "fallback store write failed (simulated)",
+                ));
+            }
             self.inner.set(reference, value)
         }
         fn delete(&self, reference: &CredentialReference) -> Result<(), CredentialError> {
             self.inner.delete(reference)
+        }
+        fn os_keyring_unreachable(&self, _reference: &CredentialReference) -> bool {
+            self.keyring_unreachable
+                .as_ref()
+                .map(|flag| flag.load(std::sync::atomic::Ordering::SeqCst))
+                .unwrap_or(false)
         }
     }
 
@@ -8578,18 +9280,18 @@ mod tests {
     #[test]
     fn restore_retries_on_credential_store_failure_and_heals_next_startup() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"st-x","name":"st-x","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"st-remote","url":"https://st.example.com/mcp"}],
-                "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"ST_KEY","provider":"st","required":true}]
-            });
-            write_tool_manifest("st-x", &serde_json::to_string_pretty(&manifest).unwrap());
+            write_tool_manifest_fixture(
+                "st-x",
+                "st-x",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"st-remote","url":"https://st.example.com/mcp"}],
+                    "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"ST_KEY","provider":"st","required":true}]"#,
+            );
             write_installed_ids(&["st-x".to_string()]);
             let fail_reads = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-            let manager = MarketplaceManager::with_store(FlakyThenHealedStore {
-                inner: MemoryCredentialStore::default(),
-                fail_reads: fail_reads.clone(),
+            let manager = MarketplaceManager::with_store(FaultCredentialStore {
+                fail_reads: Some(fail_reads.clone()),
+                ..Default::default()
             });
             manager
                 .credential_store
@@ -8643,14 +9345,14 @@ mod tests {
     #[test]
     fn reconcile_restores_secret_config_field_from_credential_store() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"cfe-x","name":"cfe-x","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"python","args":["server.py"],
-                "config_fields":[
+            write_tool_manifest_fixture(
+                "cfe-x",
+                "cfe-x",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "config_fields":[
                     {"key":"CFE_API_KEY","label":"key","required":true,"target":"env","secret":true}
-                ]
-            });
-            write_tool_manifest("cfe-x", &serde_json::to_string_pretty(&manifest).unwrap());
+                    ]"#,
+            );
             std::fs::write(
                 mcp_catalog::package_mcp_dir("cfe-x").join("server.py"),
                 "print('fixture')\n",
@@ -8680,14 +9382,7 @@ mod tests {
 
             // Idempotent: the second run writes nothing.
             let mcp_path = paths::mcp_config_path();
-            let before = std::fs::read(&mcp_path).unwrap();
-            assert!(
-                manager
-                    .reconcile_installed_mcp_entries()
-                    .unwrap()
-                    .is_empty()
-            );
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), before);
+            assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
@@ -8702,10 +9397,7 @@ mod tests {
             write_local_tool_fixture("corrupt-x", false);
             write_local_tool_fixture("corrupt-y", false);
             write_installed_ids(&["corrupt-x".to_string(), "corrupt-y".to_string()]);
-            let mcp_path = paths::mcp_config_path();
-            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
-            let corrupt = r#"{"servers": {,"trailing":"comma"}"#;
-            std::fs::write(&mcp_path, corrupt).unwrap();
+            let mcp_path = seed_corrupt_mcp_json();
 
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
             let actions = manager.reconcile_installed_mcp_entries().unwrap();
@@ -8721,18 +9413,15 @@ mod tests {
 
             // The corrupt file survives byte-for-byte and a backup copy exists;
             // nothing may be written onto a reset skeleton.
-            assert_eq!(std::fs::read(&mcp_path).unwrap(), corrupt.as_bytes());
-            let backup = std::fs::read_dir(mcp_path.parent().unwrap())
-                .unwrap()
-                .filter_map(Result::ok)
-                .find(|entry| {
-                    entry
-                        .file_name()
-                        .to_string_lossy()
-                        .starts_with("mcp.json.corrupt.")
-                })
+            assert_eq!(
+                std::fs::read(&mcp_path).unwrap(),
+                CORRUPT_MCP_JSON.as_bytes()
+            );
+            let backup = quarantine_backups(&mcp_path, ".corrupt.")
+                .into_iter()
+                .next()
                 .expect("a corrupt-file backup must exist");
-            assert_eq!(std::fs::read(backup.path()).unwrap(), corrupt.as_bytes());
+            assert_eq!(std::fs::read(&backup).unwrap(), CORRUPT_MCP_JSON.as_bytes());
         });
     }
 
@@ -8742,11 +9431,11 @@ mod tests {
     #[test]
     fn reconcile_refuses_empty_manifest_command() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"empty-x","name":"empty-x","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[]
-            });
-            write_tool_manifest("empty-x", &serde_json::to_string_pretty(&manifest).unwrap());
+            write_tool_manifest_fixture(
+                "empty-x",
+                "empty-x",
+                r#""mcp_tools":[],"command":"","args":[]"#,
+            );
             write_installed_ids(&["empty-x".to_string()]);
             seed_mcp_json(serde_json::json!({ "empty-x": { "command": "" } }));
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
@@ -8766,33 +9455,6 @@ mod tests {
         });
     }
 
-    /// Credential store modeling the OS-keyring-unavailable state: reads are
-    /// served by the file fallback (a plain miss, `Ok(None)`), and
-    /// `os_keyring_unreachable` reports the fallback while the flag is set.
-    /// A miss under fallback may be a credential sitting in the unreachable
-    /// keyring, so it must be classified as a store read failure, not as an
-    /// absent credential.
-    struct FallbackKeyringStore {
-        inner: MemoryCredentialStore,
-        fallback_active: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    }
-
-    impl CredentialStore for FallbackKeyringStore {
-        fn get(&self, reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
-            self.inner.get(reference)
-        }
-        fn set(&self, reference: &CredentialReference, value: &str) -> Result<(), CredentialError> {
-            self.inner.set(reference, value)
-        }
-        fn delete(&self, reference: &CredentialReference) -> Result<(), CredentialError> {
-            self.inner.delete(reference)
-        }
-        fn os_keyring_unreachable(&self, _reference: &CredentialReference) -> bool {
-            self.fallback_active
-                .load(std::sync::atomic::Ordering::SeqCst)
-        }
-    }
-
     /// The probe-fallback regression: when the OS keyring is unreachable at
     /// startup, a stored credential reads as a plain miss through the file
     /// fallback. Classifying that miss as "absent" would write an unwired
@@ -8802,18 +9464,18 @@ mod tests {
     #[test]
     fn restore_retries_while_os_keyring_falls_back_and_heals_when_reachable() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"fb-x","name":"fb-x","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"fb-remote","url":"https://fb.example.com/mcp"}],
-                "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"FB_KEY","provider":"fb","required":true}]
-            });
-            write_tool_manifest("fb-x", &serde_json::to_string_pretty(&manifest).unwrap());
+            write_tool_manifest_fixture(
+                "fb-x",
+                "fb-x",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"fb-remote","url":"https://fb.example.com/mcp"}],
+                    "secret_headers":[{"header":"Authorization","scheme":"Bearer","source_key":"FB_KEY","provider":"fb","required":true}]"#,
+            );
             write_installed_ids(&["fb-x".to_string()]);
             let fallback_active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
-            let manager = MarketplaceManager::with_store(FallbackKeyringStore {
-                inner: MemoryCredentialStore::default(),
-                fallback_active: fallback_active.clone(),
+            let manager = MarketplaceManager::with_store(FaultCredentialStore {
+                keyring_unreachable: Some(fallback_active.clone()),
+                ..Default::default()
             });
 
             // Phase 1: keyring unreachable at startup — the credential lives
@@ -8866,10 +9528,7 @@ mod tests {
         with_temp_home(|| {
             write_local_tool_fixture("corrupt-u", false);
             write_installed_ids(&["corrupt-u".to_string()]);
-            let mcp_path = paths::mcp_config_path();
-            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
-            let corrupt = r#"{"servers": {,"trailing":"comma"}"#;
-            std::fs::write(&mcp_path, corrupt).unwrap();
+            let mcp_path = seed_corrupt_mcp_json();
 
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
             let error = manager.uninstall("corrupt-u").unwrap_err();
@@ -8879,7 +9538,7 @@ mod tests {
             );
             assert_eq!(
                 std::fs::read(&mcp_path).unwrap(),
-                corrupt.as_bytes(),
+                CORRUPT_MCP_JSON.as_bytes(),
                 "the uninstall must not touch the corrupt file"
             );
             let installed: Vec<String> = serde_json::from_str(
@@ -8906,10 +9565,7 @@ mod tests {
     fn install_writer_refuses_to_reset_a_corrupt_mcp_json() {
         with_temp_home(|| {
             write_local_tool_fixture("corrupt-i", false);
-            let mcp_path = paths::mcp_config_path();
-            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
-            let corrupt = r#"{"servers": {,"trailing":"comma"}"#;
-            std::fs::write(&mcp_path, corrupt).unwrap();
+            let mcp_path = seed_corrupt_mcp_json();
 
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
             let manifest = manager.load_manifest("corrupt-i").unwrap();
@@ -8927,7 +9583,7 @@ mod tests {
             );
             assert_eq!(
                 std::fs::read(&mcp_path).unwrap(),
-                corrupt.as_bytes(),
+                CORRUPT_MCP_JSON.as_bytes(),
                 "the install writer must not touch the corrupt file"
             );
         });
@@ -8982,17 +9638,14 @@ mod tests {
     #[test]
     fn restore_does_not_note_absent_optional_config_field_credentials() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"opt-note","name":"opt-note","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"opt-note-remote","url":"https://opt-note.example.com/mcp"}],
-                "config_fields":[
-                    {"key":"OPT_NOTE_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
-                ]
-            });
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "opt-note",
-                &serde_json::to_string_pretty(&manifest).unwrap(),
+                "opt-note",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"opt-note-remote","url":"https://opt-note.example.com/mcp"}],
+                    "config_fields":[
+                        {"key":"OPT_NOTE_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
+                    ]"#,
             );
             write_installed_ids(&["opt-note".to_string()]);
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
@@ -9021,13 +9674,13 @@ mod tests {
     #[test]
     fn legacy_remote_env_key_installs_bearer_env_var_not_literal_header() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"lg-x","name":"lg-x","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"lg-remote","url":"https://lg.example.com/mcp"}],
-                "env":{"VENDOR_API_KEY":"placeholder-in-manifest"}
-            });
-            write_tool_manifest("lg-x", &serde_json::to_string_pretty(&manifest).unwrap());
+            write_tool_manifest_fixture(
+                "lg-x",
+                "lg-x",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"lg-remote","url":"https://lg.example.com/mcp"}],
+                    "env":{"VENDOR_API_KEY":"placeholder-in-manifest"}"#,
+            );
             write_installed_ids(&["lg-x".to_string()]);
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
 
@@ -9059,13 +9712,13 @@ mod tests {
     #[test]
     fn legacy_remote_env_key_survives_secret_values_resync() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"lg-rs","name":"lg-rs","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"lg-rs-remote","url":"https://lg-rs.example.com/mcp"}],
-                "env":{"VENDOR_API_KEY":"placeholder-in-manifest"}
-            });
-            write_tool_manifest("lg-rs", &serde_json::to_string_pretty(&manifest).unwrap());
+            write_tool_manifest_fixture(
+                "lg-rs",
+                "lg-rs",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"lg-rs-remote","url":"https://lg-rs.example.com/mcp"}],
+                    "env":{"VENDOR_API_KEY":"placeholder-in-manifest"}"#,
+            );
             write_installed_ids(&["lg-rs".to_string()]);
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
 
@@ -9105,12 +9758,12 @@ mod tests {
     #[test]
     fn legacy_local_env_key_survives_secret_values_resync() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"lg-loc","name":"lg-loc","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"python","args":["server.py"],
-                "env":{"LOCAL_API_KEY":"legacy-manifest-value"}
-            });
-            write_tool_manifest("lg-loc", &serde_json::to_string_pretty(&manifest).unwrap());
+            write_tool_manifest_fixture(
+                "lg-loc",
+                "lg-loc",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "env":{"LOCAL_API_KEY":"legacy-manifest-value"}"#,
+            );
             std::fs::write(
                 mcp_catalog::package_mcp_dir("lg-loc").join("server.py"),
                 "print('fixture')\n",
@@ -9153,7 +9806,7 @@ mod tests {
     fn secret_values_resync_unreadable_registry_keeps_previous() {
         use std::os::unix::fs::PermissionsExt;
         with_temp_home(|| {
-            write_installed_ids(&["keep-reg".to_string()]);
+            let installed_path = write_installed_json_raw(br#"["keep-reg"]"#);
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
 
             // Seed the "previous registry" directly: the pin's subject is the
@@ -9167,18 +9820,12 @@ mod tests {
             );
 
             // Now make installed.json unreadable and resync: the previous
-            // registry must survive untouched.
-            let installed_path = crate::platform::paths::pinvou3_home()
-                .join("marketplace")
-                .join("installed.json");
-            std::fs::set_permissions(&installed_path, std::fs::Permissions::from_mode(0o000))
-                .unwrap();
-            if std::fs::read(&installed_path).is_ok() {
-                std::fs::set_permissions(&installed_path, std::fs::Permissions::from_mode(0o644))
-                    .unwrap();
-                eprintln!(
-                    "ROOT-SKIP[secret_values_resync_unreadable_registry_keeps_previous]: running as root - the unreadable-file fixture stays readable; NOT exercised"
-                );
+            // registry must survive untouched. The root probe skips loudly
+            // when mode bits have no effect.
+            if !file_unreadable_or_skip(
+                &installed_path,
+                "secret_values_resync_unreadable_registry_keeps_previous",
+            ) {
                 return;
             }
 
@@ -9194,29 +9841,6 @@ mod tests {
         });
     }
 
-    /// Credential store whose reads fault for one specific tool: models a
-    /// keyring faulting mid-rebuild (per-reference granularity, so the tool
-    /// BEFORE the faulting one rebuilds cleanly and the fault lands mid-loop
-    /// — the exact half-rebuilt shape round-30's MAJOR closes).
-    struct FaultSecondToolStore {
-        inner: MemoryCredentialStore,
-    }
-
-    impl CredentialStore for FaultSecondToolStore {
-        fn get(&self, reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
-            if reference.account.starts_with("mcp:fault-b:") {
-                return Err(CredentialError::new("keyring unavailable (simulated)"));
-            }
-            self.inner.get(reference)
-        }
-        fn set(&self, reference: &CredentialReference, value: &str) -> Result<(), CredentialError> {
-            self.inner.set(reference, value)
-        }
-        fn delete(&self, reference: &CredentialReference) -> Result<(), CredentialError> {
-            self.inner.delete(reference)
-        }
-    }
-
     /// Round-30 MAJOR (review #455): the keyring-fault twin of the pin above —
     /// a mid-REBUILD credential-store fault must keep the previous registry
     /// intact, not a half-rebuilt one. Under the old clear-then-rebuild form
@@ -9230,16 +9854,18 @@ mod tests {
     fn secret_values_resync_keyring_fault_keeps_previous_registry() {
         with_temp_home(|| {
             for (tool, key) in [("fault-a", "FAULT_A_KEY"), ("fault-b", "FAULT_B_KEY")] {
-                let manifest = serde_json::json!({
-                    "id":tool,"name":tool,"description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"python","args":["server.py"],
-                    "secret_env":[{"key":key,"provider":"test","required":true}]
-                });
-                write_tool_manifest(tool, &serde_json::to_string_pretty(&manifest).unwrap());
+                write_tool_manifest_fixture(
+                    tool,
+                    tool,
+                    &format!(
+                        r#""mcp_tools":[],"command":"python","args":["server.py"],"secret_env":[{{"key":"{key}","provider":"test","required":true}}]"#
+                    ),
+                );
             }
             write_installed_ids(&["fault-a".to_string(), "fault-b".to_string()]);
-            let manager = MarketplaceManager::with_store(FaultSecondToolStore {
-                inner: MemoryCredentialStore::default(),
+            let manager = MarketplaceManager::with_store(FaultCredentialStore {
+                fail_reads_prefix: Some("mcp:fault-b:"),
+                ..Default::default()
             });
             // fault-a's credential is stored and readable; fault-b's reads fault.
             manager
@@ -9284,13 +9910,13 @@ mod tests {
     #[test]
     fn uninstall_deletes_legacy_env_credentials() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"lg-del","name":"lg-del","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"lg-del-remote","url":"https://lg-del.example.com/mcp"}],
-                "env":{"LEGACY_API_KEY":"legacy-value"}
-            });
-            write_tool_manifest("lg-del", &serde_json::to_string_pretty(&manifest).unwrap());
+            write_tool_manifest_fixture(
+                "lg-del",
+                "lg-del",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"lg-del-remote","url":"https://lg-del.example.com/mcp"}],
+                    "env":{"LEGACY_API_KEY":"legacy-value"}"#,
+            );
             write_installed_ids(&["lg-del".to_string()]);
             let store = MemoryCredentialStore::default();
             let manager = MarketplaceManager::with_store(store.clone());
@@ -9348,21 +9974,18 @@ mod tests {
     #[test]
     fn optional_bearer_config_field_installs_without_a_keyring() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"opt-bearer","name":"opt-bearer","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"opt-bearer-remote","url":"https://opt.example.com/mcp"}],
-                "config_fields":[
-                    {"key":"OPT_BEARER_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
-                ]
-            });
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "opt-bearer",
-                &serde_json::to_string_pretty(&manifest).unwrap(),
+                "opt-bearer",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"opt-bearer-remote","url":"https://opt.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"OPT_BEARER_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
+                    ]"#,
             );
-            let manager = MarketplaceManager::with_store(FallbackKeyringStore {
-                inner: MemoryCredentialStore::default(),
-                fallback_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            let manager = MarketplaceManager::with_store(FaultCredentialStore {
+                keyring_unreachable: Some(FaultCredentialStore::always_flag()),
+                ..Default::default()
             });
 
             manager
@@ -9384,21 +10007,18 @@ mod tests {
     #[test]
     fn required_bearer_config_field_still_fails_closed_without_a_keyring() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"req-bearer","name":"req-bearer","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"req-bearer-remote","url":"https://req.example.com/mcp"}],
-                "config_fields":[
-                    {"key":"REQ_BEARER_API_KEY","label":"k","required":true,"target":"bearer","secret":true}
-                ]
-            });
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "req-bearer",
-                &serde_json::to_string_pretty(&manifest).unwrap(),
+                "req-bearer",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"req-bearer-remote","url":"https://req.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"REQ_BEARER_API_KEY","label":"k","required":true,"target":"bearer","secret":true}
+                    ]"#,
             );
-            let manager = MarketplaceManager::with_store(FallbackKeyringStore {
-                inner: MemoryCredentialStore::default(),
-                fallback_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            let manager = MarketplaceManager::with_store(FaultCredentialStore {
+                keyring_unreachable: Some(FaultCredentialStore::always_flag()),
+                ..Default::default()
             });
 
             let error = manager
@@ -9424,18 +10044,18 @@ mod tests {
     #[test]
     fn optional_bearer_config_field_fails_closed_on_a_real_store_error() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"opt-err","name":"opt-err","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"opt-err-remote","url":"https://opt-err.example.com/mcp"}],
-                "config_fields":[
+            write_tool_manifest_fixture(
+                "opt-err",
+                "opt-err",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"opt-err-remote","url":"https://opt-err.example.com/mcp"}],
+                    "config_fields":[
                     {"key":"OPT_ERR_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
-                ]
-            });
-            write_tool_manifest("opt-err", &serde_json::to_string_pretty(&manifest).unwrap());
-            let manager = MarketplaceManager::with_store(FlakyThenHealedStore {
-                inner: MemoryCredentialStore::default(),
-                fail_reads: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                    ]"#,
+            );
+            let manager = MarketplaceManager::with_store(FaultCredentialStore {
+                fail_reads: Some(FaultCredentialStore::always_flag()),
+                ..Default::default()
             });
 
             let error = manager
@@ -9452,43 +10072,6 @@ mod tests {
         });
     }
 
-    /// A store with the file fallback active whose reads and/or writes fail
-    /// with a REAL fault. `os_keyring_unreachable` is true in both modes, so
-    /// the flag alone can never decide tolerance — only the resolve's own
-    /// classification (`UndeterminableMiss`) may be tolerated, and a fault is
-    /// not a miss. `fail_write_values` targets individual write attempts so a
-    /// fault can be isolated to one key's rebind.
-    struct FallbackActiveFaultStore {
-        inner: MemoryCredentialStore,
-        fail_reads: bool,
-        fail_write_values: &'static [&'static str],
-    }
-
-    impl CredentialStore for FallbackActiveFaultStore {
-        fn get(&self, reference: &CredentialReference) -> Result<Option<String>, CredentialError> {
-            if self.fail_reads {
-                return Err(CredentialError::new(
-                    "fallback store read failed (simulated)",
-                ));
-            }
-            self.inner.get(reference)
-        }
-        fn set(&self, reference: &CredentialReference, value: &str) -> Result<(), CredentialError> {
-            if self.fail_write_values.contains(&value) {
-                return Err(CredentialError::new(
-                    "fallback store write failed (simulated)",
-                ));
-            }
-            self.inner.set(reference, value)
-        }
-        fn delete(&self, reference: &CredentialReference) -> Result<(), CredentialError> {
-            self.inner.delete(reference)
-        }
-        fn os_keyring_unreachable(&self, _reference: &CredentialReference) -> bool {
-            true
-        }
-    }
-
     /// A read fault under the active file fallback is a real store fault, not
     /// an undeterminable miss: the read answered with an error, so there is
     /// no ambiguity to tolerate. The optional field must fail the install
@@ -9498,22 +10081,19 @@ mod tests {
     #[test]
     fn optional_bearer_config_field_fails_closed_on_a_fallback_read_fault() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"opt-rfail","name":"opt-rfail","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"opt-rfail-remote","url":"https://opt-rfail.example.com/mcp"}],
-                "config_fields":[
-                    {"key":"OPT_RFAIL_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
-                ]
-            });
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "opt-rfail",
-                &serde_json::to_string_pretty(&manifest).unwrap(),
+                "opt-rfail",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"opt-rfail-remote","url":"https://opt-rfail.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"OPT_RFAIL_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
+                    ]"#,
             );
-            let manager = MarketplaceManager::with_store(FallbackActiveFaultStore {
-                inner: MemoryCredentialStore::default(),
-                fail_reads: true,
-                fail_write_values: &[],
+            let manager = MarketplaceManager::with_store(FaultCredentialStore {
+                fallback_read_fault: true,
+                keyring_unreachable: Some(FaultCredentialStore::always_flag()),
+                ..Default::default()
             });
 
             let error = manager
@@ -9540,23 +10120,20 @@ mod tests {
     #[test]
     fn optional_bearer_config_field_fails_closed_on_a_fallback_write_fault() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"opt-wfail","name":"opt-wfail","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"opt-wfail-remote","url":"https://opt-wfail.example.com/mcp"}],
-                "env":{"ALPHA_TOKEN":"alpha-v1","OPT_WFAIL_API_KEY":"legacy-plain"},
-                "config_fields":[
-                    {"key":"OPT_WFAIL_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
-                ]
-            });
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "opt-wfail",
-                &serde_json::to_string_pretty(&manifest).unwrap(),
+                "opt-wfail",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"opt-wfail-remote","url":"https://opt-wfail.example.com/mcp"}],
+                    "env":{"ALPHA_TOKEN":"alpha-v1","OPT_WFAIL_API_KEY":"legacy-plain"},
+                    "config_fields":[
+                    {"key":"OPT_WFAIL_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
+                    ]"#,
             );
-            let manager = MarketplaceManager::with_store(FallbackActiveFaultStore {
-                inner: MemoryCredentialStore::default(),
-                fail_reads: false,
+            let manager = MarketplaceManager::with_store(FaultCredentialStore {
                 fail_write_values: &["legacy-plain"],
+                keyring_unreachable: Some(FaultCredentialStore::always_flag()),
+                ..Default::default()
             });
 
             let error = manager
@@ -9580,17 +10157,14 @@ mod tests {
     #[test]
     fn optional_bearer_config_field_treats_a_cleared_input_as_absent() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"opt-empty","name":"opt-empty","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"opt-empty-remote","url":"https://opt-empty.example.com/mcp"}],
-                "config_fields":[
-                    {"key":"OPT_EMPTY_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
-                ]
-            });
-            write_tool_manifest(
+            write_tool_manifest_fixture(
                 "opt-empty",
-                &serde_json::to_string_pretty(&manifest).unwrap(),
+                "opt-empty",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"opt-empty-remote","url":"https://opt-empty.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"OPT_EMPTY_API_KEY","label":"k","required":false,"target":"bearer","secret":true}
+                    ]"#,
             );
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
 
@@ -9621,25 +10195,21 @@ mod tests {
     #[test]
     fn rebuild_skips_empty_and_missing_values_under_unreachable_keyring() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"empty-kr","name":"empty-kr","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"","args":[],
-                "servers":[{"name":"empty-kr-remote","url":"https://empty-kr.example.com/mcp"}],
-                "secret_env":[
+            write_tool_manifest_fixture(
+                "empty-kr",
+                "empty-kr",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"empty-kr-remote","url":"https://empty-kr.example.com/mcp"}],
+                    "secret_env":[
                     {"key":"EMPTY_KR_KEY","provider":"builtin","required":true},
                     {"key":"MISS_KR_KEY","provider":"builtin","required":true},
                     {"key":"GOOD_KR_KEY","provider":"builtin","required":true}
-                ]
-            });
-            write_tool_manifest(
-                "empty-kr",
-                &serde_json::to_string_pretty(&manifest).unwrap(),
+                    ]"#,
             );
             write_installed_ids(&["empty-kr".to_string()]);
-            let store = FallbackActiveFaultStore {
-                inner: MemoryCredentialStore::default(),
-                fail_reads: false,
-                fail_write_values: &[],
+            let store = FaultCredentialStore {
+                keyring_unreachable: Some(FaultCredentialStore::always_flag()),
+                ..Default::default()
             };
             // The two shapes the arm must treat identically: an empty stored
             // value and a plain miss (GOOD lands normally). Whitespace-only
@@ -9684,14 +10254,14 @@ mod tests {
     #[test]
     fn rebuild_note_names_dropped_non_secret_config_field() {
         with_temp_home(|| {
-            let manifest = serde_json::json!({
-                "id":"cf-x","name":"cf-x","description":"d","version":"1","icon":"x","category":"c",
-                "mcp_tools":[],"command":"python","args":["server.py"],
-                "config_fields":[
+            write_tool_manifest_fixture(
+                "cf-x",
+                "cf-x",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],
+                    "config_fields":[
                     {"key":"REGION","label":"region","required":false,"target":"env","secret":false}
-                ]
-            });
-            write_tool_manifest("cf-x", &serde_json::to_string_pretty(&manifest).unwrap());
+                    ]"#,
+            );
             std::fs::write(
                 mcp_catalog::package_mcp_dir("cf-x").join("server.py"),
                 "print('fixture')\n",
@@ -9729,16 +10299,11 @@ mod tests {
     fn install_refuses_a_corrupt_mcp_json_with_the_actionable_error() {
         with_temp_home(|| {
             write_installed_ids(&["existing".to_string()]);
-            let mcp_path = paths::mcp_config_path();
-            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
-            let corrupt = r#"{"servers": {,"trailing":"comma"}"#;
-            std::fs::write(&mcp_path, corrupt).unwrap();
-            write_tool_manifest(
+            let mcp_path = seed_corrupt_mcp_json();
+            write_tool_manifest_fixture(
                 "corrupt-install",
-                r#"{
-                    "id":"corrupt-install","name":"CI","description":"d","version":"1","icon":"x","category":"c",
-                    "mcp_tools":[],"command":"node","args":["server.js"]
-                }"#,
+                "CI",
+                r#""mcp_tools":[],"command":"node","args":["server.js"]"#,
             );
 
             let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
@@ -9751,29 +10316,21 @@ mod tests {
             );
             assert_eq!(
                 std::fs::read(&mcp_path).unwrap(),
-                corrupt.as_bytes(),
+                CORRUPT_MCP_JSON.as_bytes(),
                 "the refused install must not touch the corrupt file"
             );
-            let backup = std::fs::read_dir(mcp_path.parent().unwrap())
-                .unwrap()
-                .filter_map(|entry| entry.ok())
-                .find(|entry| {
-                    entry
-                        .file_name()
-                        .to_string_lossy()
-                        .starts_with("mcp.json.corrupt.")
-                })
+            let backup = quarantine_backups(&mcp_path, ".corrupt.")
+                .into_iter()
+                .next()
                 .unwrap_or_else(|| panic!("the refusal must mint a corrupt-file backup"));
             assert_eq!(
-                std::fs::read(backup.path()).unwrap(),
-                corrupt.as_bytes(),
+                std::fs::read(&backup).unwrap(),
+                CORRUPT_MCP_JSON.as_bytes(),
                 "the backup must hold the original bytes"
             );
             // Platforms without POSIX modes return None (privacy is
             // ACL-expressed there) — nothing bit-level to assert.
-            if let Some(mode) =
-                crate::platform::filesystem::permission_bits(&backup.path()).unwrap()
-            {
+            if let Some(mode) = crate::platform::filesystem::permission_bits(&backup).unwrap() {
                 assert_eq!(
                     mode, 0o600,
                     "the backup may hold pre-migration plaintext credentials and must stay owner-only"
@@ -9799,34 +10356,22 @@ mod tests {
             let target = paths::mcp_config_path();
             std::fs::create_dir_all(target.parent().unwrap()).unwrap();
             let first = r#"{"servers":{"a":1}"#;
-            let second = r#"{"servers": {,"trailing":"comma"}"#;
+            let second = CORRUPT_MCP_JSON;
             backup_corrupt_json_file(&target, "mcp.json.corrupt", first);
             backup_corrupt_json_file(&target, "mcp.json.corrupt", second);
 
-            let backups: Vec<(String, Vec<u8>)> = std::fs::read_dir(target.parent().unwrap())
-                .unwrap()
-                .filter_map(|entry| entry.ok())
-                .filter(|entry| {
-                    entry
-                        .file_name()
-                        .to_string_lossy()
-                        .starts_with("mcp.json.corrupt.")
-                })
-                .map(|entry| {
-                    (
-                        entry.file_name().to_string_lossy().into_owned(),
-                        std::fs::read(entry.path()).unwrap(),
-                    )
-                })
+            let backup_bytes: Vec<Vec<u8>> = quarantine_backups(&target, ".corrupt.")
+                .iter()
+                .map(|path| std::fs::read(path).unwrap())
                 .collect();
             assert_eq!(
-                backups.len(),
+                backup_bytes.len(),
                 2,
                 "two distinct corrupt contents in one second must mint two backups"
             );
             assert!(
-                backups.iter().any(|(_, bytes)| bytes == first.as_bytes())
-                    && backups.iter().any(|(_, bytes)| bytes == second.as_bytes()),
+                backup_bytes.iter().any(|bytes| bytes == first.as_bytes())
+                    && backup_bytes.iter().any(|bytes| bytes == second.as_bytes()),
                 "both corrupt contents must survive verbatim"
             );
         });
@@ -9848,16 +10393,8 @@ mod tests {
                 invalid,
             );
             write_installed_ids(&["invalid-lock-corrupt".to_string()]);
-            store::BundleStore::new()
-                .upsert(store::BundleRecord::installed_now(
-                    "invalid-lock-corrupt",
-                    store::BundleSource::Preset,
-                ))
-                .unwrap();
-            let mcp_path = paths::mcp_config_path();
-            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
-            let corrupt = r#"{"servers": {,"trailing":"comma"}"#;
-            std::fs::write(&mcp_path, corrupt).unwrap();
+            store::plant_installed_record("invalid-lock-corrupt", store::BundleSource::Preset);
+            let mcp_path = seed_corrupt_mcp_json();
             let installed_before = manager_installed_bytes();
 
             let errors = manager
@@ -9877,7 +10414,7 @@ mod tests {
             );
             assert_eq!(
                 std::fs::read(&mcp_path).unwrap(),
-                corrupt.as_bytes(),
+                CORRUPT_MCP_JSON.as_bytes(),
                 "the corrupt file must survive the refused downgrade"
             );
             assert_eq!(manager_installed_bytes(), installed_before);
@@ -9896,54 +10433,29 @@ mod tests {
                 "kept": {"command": "node", "args": ["k.js"]}
             }));
             let lock_path = file_lock::lock_path_for(&mcp_path);
-            std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .open(&lock_path)
-                .expect("test should be able to open the lock file");
-            let mut foreign = fd_lock::RwLock::new(file);
-            let foreign_guard = foreign
-                .write()
-                .expect("test should be able to take the foreign cross-process write lock");
-
-            let worker = std::thread::spawn(move || {
-                MarketplaceManager::with_store(MemoryCredentialStore::default())
-                    .remove_from_mcp_json("weather")
-                    .expect("removal should succeed once the foreign lock is released");
-            });
-            // Handshake: wait until the worker holds the mcp.json in-process
-            // mutex — with the foreign lock held, it is now parked on (or just
-            // failed) the OS-lock acquisition (#517 test shape).
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            loop {
-                match file_lock::process_mutex_for(&lock_path).try_lock() {
-                    Ok(guard) => drop(guard),
-                    Err(std::sync::TryLockError::WouldBlock) => break,
-                    Err(std::sync::TryLockError::Poisoned(p)) => {
-                        drop(p.into_inner());
-                        break;
-                    }
+            let worker = file_lock::with_foreign_write_lock(&lock_path, || {
+                let worker = std::thread::spawn(move || {
+                    MarketplaceManager::with_store(MemoryCredentialStore::default())
+                        .remove_from_mcp_json("weather")
+                        .expect("removal should succeed once the foreign lock is released");
+                });
+                // Handshake: wait until the worker holds the mcp.json
+                // in-process mutex — with the foreign lock held, it is now
+                // parked on (or just failed) the OS-lock acquisition (#517
+                // test shape).
+                file_lock::wait_until_process_mutex_parked(&lock_path, "mcp.json");
+                // The rewrite must not land while the peer holds the lock.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                while std::time::Instant::now() < deadline {
+                    let content = std::fs::read_to_string(&mcp_path).unwrap();
+                    assert!(
+                        content.contains("\"weather\""),
+                        "mcp.json rewritten while the lock was still held — serialization is broken: {content}"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                 }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "worker never reached the mcp.json lock acquisition point"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-            // The rewrite must not land while the peer holds the lock.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            while std::time::Instant::now() < deadline {
-                let content = std::fs::read_to_string(&mcp_path).unwrap();
-                assert!(
-                    content.contains("\"weather\""),
-                    "mcp.json rewritten while the lock was still held — serialization is broken: {content}"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-
-            drop(foreign_guard);
+                worker
+            });
             worker
                 .join()
                 .expect("worker should finish once the foreign lock is released");
@@ -9973,55 +10485,30 @@ mod tests {
                 "kept": {"command": "node", "args": ["k.js"]}
             }));
             let lock_path = file_lock::lock_path_for(&mcp_path);
-            std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .open(&lock_path)
-                .expect("test should be able to open the lock file");
-            let mut foreign = fd_lock::RwLock::new(file);
-            let foreign_guard = foreign
-                .write()
-                .expect("test should be able to take the foreign cross-process write lock");
-
-            let worker = std::thread::spawn(move || {
-                MarketplaceManager::with_store(MemoryCredentialStore::default())
-                    .migrate_mcp_plaintext_secrets()
-                    .expect("migration should succeed once the foreign lock is released");
-            });
-            // Handshake: wait until the worker holds the mcp.json in-process
-            // mutex — with the foreign lock held, it is now parked on (or just
-            // failed) the OS-lock acquisition (#517 test shape).
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            loop {
-                match file_lock::process_mutex_for(&lock_path).try_lock() {
-                    Ok(guard) => drop(guard),
-                    Err(std::sync::TryLockError::WouldBlock) => break,
-                    Err(std::sync::TryLockError::Poisoned(p)) => {
-                        drop(p.into_inner());
-                        break;
-                    }
+            let worker = file_lock::with_foreign_write_lock(&lock_path, || {
+                let worker = std::thread::spawn(move || {
+                    MarketplaceManager::with_store(MemoryCredentialStore::default())
+                        .migrate_mcp_plaintext_secrets()
+                        .expect("migration should succeed once the foreign lock is released");
+                });
+                // Handshake: wait until the worker holds the mcp.json
+                // in-process mutex — with the foreign lock held, it is now
+                // parked on (or just failed) the OS-lock acquisition (#517
+                // test shape).
+                file_lock::wait_until_process_mutex_parked(&lock_path, "mcp.json");
+                // The plaintext secret must still be on disk while the peer
+                // holds the lock — the migration rewrite may not land first.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+                while std::time::Instant::now() < deadline {
+                    let content = std::fs::read_to_string(&mcp_path).unwrap();
+                    assert!(
+                        content.contains("legacy-plain-secret"),
+                        "mcp.json rewritten while the lock was still held — serialization is broken: {content}"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                 }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "worker never reached the mcp.json lock acquisition point"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-            // The plaintext secret must still be on disk while the peer holds
-            // the lock — the migration rewrite may not land first.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            while std::time::Instant::now() < deadline {
-                let content = std::fs::read_to_string(&mcp_path).unwrap();
-                assert!(
-                    content.contains("legacy-plain-secret"),
-                    "mcp.json rewritten while the lock was still held — serialization is broken: {content}"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-
-            drop(foreign_guard);
+                worker
+            });
             worker
                 .join()
                 .expect("worker should finish once the foreign lock is released");
@@ -10048,39 +10535,28 @@ mod tests {
         with_temp_home(|| {
             let mcp_path = paths::mcp_config_path();
             let lock_path = file_lock::lock_path_for(&mcp_path);
-            std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .open(&lock_path)
-                .expect("test should be able to open the lock file");
-            let mut foreign = fd_lock::RwLock::new(file);
-            let foreign_guard = foreign
-                .write()
-                .expect("test should be able to take the foreign cross-process write lock");
-
-            let (done_tx, done_rx) = std::sync::mpsc::channel();
-            let reader = std::thread::spawn(move || {
-                let got = connectors::mcp_json_unparseable();
-                done_tx.send(got).expect("reader should send its result");
+            let reader = file_lock::with_foreign_write_lock(&lock_path, || {
+                let (done_tx, done_rx) = std::sync::mpsc::channel();
+                let reader = std::thread::spawn(move || {
+                    let got = connectors::mcp_json_unparseable();
+                    done_tx.send(got).expect("reader should send its result");
+                });
+                // A contended read must return promptly. recv_timeout doubles as
+                // the regression assertion: a blocking read hangs here and fails
+                // the test with a bounded, diagnosable timeout.
+                let got = done_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("contended probe must degrade instead of blocking on the peer's lock");
+                assert!(
+                    !got,
+                    "a missing mcp.json reads as parseable under contention"
+                );
+                assert!(
+                    !mcp_path.exists(),
+                    "a contended probe must not persist (create) mcp.json"
+                );
+                reader
             });
-            // A contended read must return promptly. recv_timeout doubles as
-            // the regression assertion: a blocking read hangs here and fails
-            // the test with a bounded, diagnosable timeout.
-            let got = done_rx
-                .recv_timeout(std::time::Duration::from_secs(5))
-                .expect("contended probe must degrade instead of blocking on the peer's lock");
-            assert!(
-                !got,
-                "a missing mcp.json reads as parseable under contention"
-            );
-            assert!(
-                !mcp_path.exists(),
-                "a contended probe must not persist (create) mcp.json"
-            );
-
-            drop(foreign_guard);
             reader.join().expect("reader thread should finish");
         });
     }

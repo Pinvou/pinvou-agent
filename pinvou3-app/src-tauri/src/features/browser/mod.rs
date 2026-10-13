@@ -1291,9 +1291,7 @@ impl BrowserManager {
                     .as_deref()
                     .ok_or_else(|| "create-tab request is missing tab_token".to_string())?;
                 let requested_url = request.url.as_deref().unwrap_or("about:blank");
-                if !is_allowed_url(requested_url) {
-                    return Err("only http, https, and about:blank URLs are supported".to_string());
-                }
+                ensure_allowed_url(requested_url)?;
                 let authorization = native_mutation_lease_from_request(request)?;
                 // First create a WebView2 target with a unique marker. After the host
                 // discovers and binds it, navigate the hidden surface to requested_url,
@@ -1642,9 +1640,7 @@ impl BrowserManager {
                 .get("url")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "browser/missing-argument: url".to_string())?;
-            if !is_allowed_url(requested_url) {
-                return Err("browser/url-not-allowed".to_string());
-            }
+            ensure_allowed_url(requested_url)?;
             let background = arguments
                 .get("background")
                 .and_then(Value::as_bool)
@@ -1856,6 +1852,7 @@ impl BrowserManager {
                 "browser:tabs-changed",
                 json!({ "sessionId": request.session_id, "tab": tab_token }),
             );
+            self.persist_native_restore_best_effort(&request.session_id);
             return Ok(HostedBrowserOutcome::new(core::tool_text(
                 "Selected page".to_string(),
                 None,
@@ -1951,9 +1948,7 @@ impl BrowserManager {
                             .get("url")
                             .and_then(Value::as_str)
                             .ok_or_else(|| "browser/missing-argument: url".to_string())?;
-                        if !is_allowed_url(url) {
-                            return Err("browser/url-not-allowed".to_string());
-                        }
+                        ensure_allowed_url(url)?;
                         ensure_hosted_caller_live(request)?;
                         self.native_surface
                             .lock()
@@ -4496,9 +4491,7 @@ impl BrowserManager {
         if let Some(retained) = authorization {
             let result = async {
                 self.ensure_accepting_browser_work()?;
-                if !is_allowed_url(&url) {
-                    return Err("Only http, https, and about:blank URLs are supported".to_string());
-                }
+                ensure_allowed_url(&url)?;
                 let app = self
                     .app
                     .lock()
@@ -4517,9 +4510,7 @@ impl BrowserManager {
             return result;
         }
         self.ensure_accepting_browser_work()?;
-        if !is_allowed_url(&url) {
-            return Err("Only http, https, and about:blank URLs are supported".to_string());
-        }
+        ensure_allowed_url(&url)?;
         let app = self
             .app
             .lock()
@@ -4746,9 +4737,7 @@ impl BrowserManager {
         self.ensure_accepting_browser_work()?;
         // Use the same scheme allowlist as navigate to prevent injection of local
         // or script schemes such as file:// and javascript:.
-        if !is_allowed_url(&url) {
-            return Err("Only http, https, and about:blank URLs are supported".to_string());
-        }
+        ensure_allowed_url(&url)?;
         let app = self
             .app
             .lock()
@@ -4824,9 +4813,7 @@ impl BrowserManager {
         url: String,
         request_id: &str,
     ) -> Result<(), String> {
-        if !is_allowed_url(&url) {
-            return Err("Only http, https, and about:blank URLs are supported".to_string());
-        }
+        ensure_allowed_url(&url)?;
         let app = self.app.lock().clone();
         if self.native_surface.lock().navigate(
             app.as_ref(),
@@ -5288,6 +5275,16 @@ fn is_allowed_url(url: &str) -> bool {
     }
 }
 
+/// Single guard over `is_allowed_url` for every navigation and new-tab entry
+/// point, so hosted and core paths return one canonical user-facing message.
+fn ensure_allowed_url(url: &str) -> Result<(), String> {
+    if is_allowed_url(url) {
+        Ok(())
+    } else {
+        Err("Only http, https, and about:blank URLs are supported".to_string())
+    }
+}
+
 /// Attach a page target and reuse its cached flattened session. CDP creates an
 /// independent session for every attach to the same target and does not release
 /// it automatically. Without caching, high-frequency enumeration on every
@@ -5578,10 +5575,6 @@ pub(crate) fn is_fixed_len_lowercase_hex(value: &str, len: usize) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
-fn valid_host_token(value: &str) -> bool {
-    value.len() == 16 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
 fn valid_host_request_id(value: &str) -> bool {
     (1..=160).contains(&value.len())
         && value
@@ -5624,7 +5617,10 @@ fn validate_hosted_identity(
         return Err("Browser host protocol version is unsupported".to_string());
     }
     if !valid_browser_session_id(session_id)
-        || !valid_host_token(session_token)
+        // Same lowercase-strict 16-hex shape as the wrapper TAB_TOKEN_PATTERN
+        // and the prepare quarantine token; `browser_session_token` only ever
+        // produces lowercase hex.
+        || !is_fixed_len_lowercase_hex(session_token, 16)
         || paths::browser_session_token(session_id) != session_token
     {
         return Err("Browser host request session identity validation failed".to_string());

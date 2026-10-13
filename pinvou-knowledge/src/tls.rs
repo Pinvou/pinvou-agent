@@ -69,8 +69,8 @@ fn generate_ca(certificate_path: &Path, key_path: &Path) -> Result<(), String> {
     let certificate = params
         .self_signed(&key)
         .map_err(|error| error.to_string())?;
-    write_private_file(key_path, key.serialize_pem().as_bytes())?;
-    write_private_file(certificate_path, certificate.pem().as_bytes())
+    write_private_file(key_path, key.serialize_pem().as_bytes(), true)?;
+    write_private_file(certificate_path, certificate.pem().as_bytes(), true)
 }
 
 fn generate_server_certificate(
@@ -110,15 +110,20 @@ fn generate_server_certificate(
     let certificate = params
         .signed_by(&key, &issuer)
         .map_err(|error| format!("无法签发共享知识库服务证书：{error}"))?;
-    write_private_file(key_path, key.serialize_pem().as_bytes())?;
-    write_private_file(certificate_path, certificate.pem().as_bytes())
+    write_private_file(key_path, key.serialize_pem().as_bytes(), true)?;
+    write_private_file(certificate_path, certificate.pem().as_bytes(), true)
 }
 
 fn acceptable_certificate_address(address: IpAddr) -> bool {
     !address.is_unspecified() && !address.is_multicast()
 }
 
-fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+/// Atomically write a private file with 0600 (Unix) permissions: write a
+/// temp file, sync, then rename it into place. `replace_existing` controls
+/// whether the old target is removed before the swap — TLS identity refresh
+/// keeps the delete-then-swap semantics; the host owner claim (bare-binary
+/// main) is a first-write file and does not pre-delete the old target.
+pub fn write_private_file(path: &Path, bytes: &[u8], replace_existing: bool) -> Result<(), String> {
     let temporary = path.with_extension("tmp");
     let _ = fs::remove_file(&temporary);
     let mut options = OpenOptions::new();
@@ -130,10 +135,10 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     }
     let mut file = options
         .open(&temporary)
-        .map_err(|error| format!("无法写入共享知识库加密身份：{error}"))?;
+        .map_err(|error| format!("无法写入私有文件({}): {error}", path.display()))?;
     file.write_all(bytes).map_err(|error| error.to_string())?;
     file.sync_all().map_err(|error| error.to_string())?;
-    if path.exists() {
+    if replace_existing && path.exists() {
         fs::remove_file(path).map_err(|error| error.to_string())?;
     }
     fs::rename(&temporary, path).map_err(|error| error.to_string())

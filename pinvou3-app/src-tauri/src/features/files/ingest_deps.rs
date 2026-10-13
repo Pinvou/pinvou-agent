@@ -142,6 +142,28 @@ pub(super) fn pdf_tool_command(command: &str) -> Command {
     crate::platform::process::HiddenCommand::new(crate::platform::os::pdf_tool_path(command))
 }
 
+/// `pdftotext -layout <pdf> -` → stdout text, shared by pdf-body extraction
+/// and presentation-to-PDF extraction. Kill-backed timeout (60s): corrupt or
+/// oddly wrapped input can hang the demuxer. Failure wording keeps the two
+/// call sites' historical strings (spawn failure → 「pdftotext 调用失败」,
+/// non-zero exit → 「pdftotext 失败」); the kind/warning IngestResult wrapping
+/// stays with the caller.
+pub(super) fn pdftotext_extract(pdf: &Path) -> Result<String, String> {
+    let mut command = pdf_tool_command("pdftotext");
+    command.arg("-layout").arg(pdf).arg("-");
+    match crate::platform::process::output_with_timeout_and_kill_tree(
+        command,
+        std::time::Duration::from_secs(60),
+    ) {
+        Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).into_owned()),
+        Ok(o) => Err(format!(
+            "pdftotext 失败: {}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        )),
+        Err(e) => Err(format!("pdftotext 调用失败: {e}")),
+    }
+}
+
 pub(super) fn pandoc_tool_command() -> Command {
     crate::platform::process::HiddenCommand::new(crate::platform::os::pandoc_tool_path())
 }

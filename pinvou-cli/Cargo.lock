@@ -29,6 +29,7 @@ name = "adapter-smoke"
 version = "0.1.0"
 dependencies = [
  "agent-backend-api",
+ "async-trait",
  "benchmark-core",
  "serde",
  "serde_json",
@@ -6844,7 +6845,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pinvou-cli"
-version = "0.10.8"
+version = "0.10.9"
 dependencies = [
  "adapter-gaia",
  "adapter-smoke",
@@ -6858,7 +6859,7 @@ dependencies = [
 
 [[package]]
 name = "pinvou-knowledge"
-version = "0.10.8"
+version = "0.10.9"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -6893,7 +6894,7 @@ dependencies = [
 
 [[package]]
 name = "pinvou3-tauri"
-version = "0.10.8"
+version = "0.10.9"
 dependencies = [
  "age",
  "agent-backend-api",
@@ -6958,11 +6959,13 @@ dependencies = [
  "tokio-util",
  "toml 1.1.4+spec-1.1.0",
  "uiautomation",
+ "unicode-normalization",
  "uuid",
  "wait-timeout",
  "walkdir",
  "webkit2gtk",
  "webview2-com",
+ "windows 0.62.2",
  "windows-core 0.61.2",
  "windows-sys 0.61.2",
  "x11",

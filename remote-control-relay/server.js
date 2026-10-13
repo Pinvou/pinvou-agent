@@ -276,26 +276,6 @@ function consumeRateLimit(buckets, ip, limit, windowMs, now = Date.now()) {
   return true;
 }
 
-function consumeEndpointCreation(ip, now = Date.now()) {
-  return consumeRateLimit(
-    endpointCreationBuckets,
-    ip,
-    ENDPOINT_CREATE_LIMIT,
-    ENDPOINT_CREATE_WINDOW_MS,
-    now,
-  );
-}
-
-function consumeWsConnection(ip, now = Date.now()) {
-  return consumeRateLimit(
-    wsConnectionBuckets,
-    ip,
-    WS_CONNECT_LIMIT,
-    WS_CONNECT_WINDOW_MS,
-    now,
-  );
-}
-
 function rawMessageBytes(raw) {
   if (typeof raw === "string") return Buffer.byteLength(raw);
   if (raw && Number.isSafeInteger(raw.byteLength)) return raw.byteLength;
@@ -366,13 +346,6 @@ function stripPublicBasePath(pathname) {
     return pathname.slice(PUBLIC_BASE_PATH.length) || "/";
   }
   return pathname;
-}
-
-function audit(endpoint, event, patch = {}) {
-  endpoint.audit.event_count += 1;
-  endpoint.audit.last_event = event;
-  endpoint.audit.last_at = new Date().toISOString();
-  Object.assign(endpoint.audit, patch);
 }
 
 function tokenHash(token) {
@@ -534,15 +507,6 @@ function socketOpen(ws) {
   return Boolean(ws && ws.readyState === ws.OPEN);
 }
 
-function makeAudit() {
-  return {
-    created_at: new Date().toISOString(),
-    connected_at: null,
-    disconnected_at: null,
-    event_count: 0,
-  };
-}
-
 function desktopStatus(endpoint, status) {
   send(endpoint.web, {
     v: 2,
@@ -565,16 +529,17 @@ function notifyDesktopOfWeb(endpoint) {
   });
 }
 
-function revokeEndpoint(endpoint, reason = "revoked", requester = null) {
+function teardownEndpoint(endpoint, reason, closeReason, requester = null) {
   if (!endpoint || endpoints.get(endpoint.endpoint_id) !== endpoint) return;
   endpoints.delete(endpoint.endpoint_id);
-  audit(endpoint, "endpoint_revoked", { reason });
-  send(requester, {
-    v: 2,
-    type: "desktop_endpoint_revoked",
-    endpoint_id: endpoint.endpoint_id,
-    reason,
-  });
+  if (requester) {
+    send(requester, {
+      v: 2,
+      type: "desktop_endpoint_revoked",
+      endpoint_id: endpoint.endpoint_id,
+      reason,
+    });
+  }
   send(endpoint.web, {
     v: 2,
     type: "endpoint_revoked",
@@ -589,34 +554,20 @@ function revokeEndpoint(endpoint, reason = "revoked", requester = null) {
       reason,
     });
   }
-  closeSocket(endpoint.web, 4003, "endpoint revoked");
-  if (endpoint.desktop !== requester) closeSocket(endpoint.desktop, 4003, "endpoint revoked");
+  closeSocket(endpoint.web, 4003, closeReason);
+  if (endpoint.desktop !== requester) closeSocket(endpoint.desktop, 4003, closeReason);
   endpoint.web = null;
   endpoint.desktop = null;
   endpoint.lease_id = null;
 }
 
-function expireEndpoint(endpoint, reason = "desktop_offline_ttl_expired") {
-  if (!endpoint || endpoint.revoking || endpoints.get(endpoint.endpoint_id) !== endpoint) return;
-  endpoints.delete(endpoint.endpoint_id);
-  audit(endpoint, "endpoint_expired", { reason });
-  send(endpoint.web, {
-    v: 2,
-    type: "endpoint_revoked",
-    endpoint_id: endpoint.endpoint_id,
-    reason,
-  });
-  send(endpoint.desktop, {
-    v: 2,
-    type: "desktop_endpoint_revoked",
-    endpoint_id: endpoint.endpoint_id,
-    reason,
-  });
-  closeSocket(endpoint.web, 4003, "endpoint expired");
-  closeSocket(endpoint.desktop, 4003, "endpoint expired");
-  endpoint.web = null;
-  endpoint.desktop = null;
-  endpoint.lease_id = null;
+function revokeEndpoint(endpoint, reason = "revoked", requester = null) {
+  teardownEndpoint(endpoint, reason, "endpoint revoked", requester);
+}
+
+function expireEndpoint(endpoint) {
+  if (!endpoint || endpoint.revoking) return;
+  teardownEndpoint(endpoint, "desktop_offline_ttl_expired", "endpoint expired");
 }
 
 function pruneExpiredEndpoints(now = Date.now()) {
@@ -759,7 +710,12 @@ server.on("upgrade", (req, socket, head) => {
     rejectUpgrade(socket, "503 Service Unavailable", "websocket capacity reached");
     return;
   }
-  if (!consumeWsConnection(clientIp(req))) {
+  if (!consumeRateLimit(
+    wsConnectionBuckets,
+    clientIp(req),
+    WS_CONNECT_LIMIT,
+    WS_CONNECT_WINDOW_MS,
+  )) {
     rejectUpgrade(socket, "429 Too Many Requests", "websocket connection rate limited");
     return;
   }
@@ -790,7 +746,12 @@ function registerDesktop(ws, msg) {
       rejectSocket(ws, "endpoint_capacity_reached", "endpoint capacity reached");
       return;
     }
-    if (!consumeEndpointCreation(ws.clientIp)) {
+    if (!consumeRateLimit(
+      endpointCreationBuckets,
+      ws.clientIp,
+      ENDPOINT_CREATE_LIMIT,
+      ENDPOINT_CREATE_WINDOW_MS,
+    )) {
       rejectSocket(ws, "endpoint_creation_rate_limited", "endpoint creation rate limited");
       return;
     }
@@ -803,17 +764,14 @@ function registerDesktop(ws, msg) {
       lease_id: null,
       desktop_offline_since: null,
       revoking: false,
-      audit: makeAudit(),
     };
     endpoints.set(endpointId, endpoint);
   } else {
     if (!tokenHashMatches(desktopSecret, endpoint.desktop_secret_hash)) {
-      audit(endpoint, "desktop_register_rejected", { reason: "invalid_desktop_secret" });
       rejectSocket(ws, "invalid_desktop_secret", "invalid desktop secret");
       return;
     }
     if (!tokenHashMatches(accessToken, endpoint.access_token_hash)) {
-      audit(endpoint, "desktop_register_rejected", { reason: "invalid_access_token" });
       rejectSocket(ws, "invalid_access_token", "invalid access token");
       return;
     }
@@ -830,7 +788,6 @@ function registerDesktop(ws, msg) {
   endpoint.desktop = ws;
   endpoint.desktop_offline_since = null;
   authenticateSocket(ws, "desktop", endpointId);
-  audit(endpoint, "desktop_endpoint_registered", { connected_at: new Date().toISOString() });
   send(ws, {
     v: 2,
     type: "desktop_endpoint_registered",
@@ -858,7 +815,6 @@ function joinWebClient(ws, msg) {
     return;
   }
   if (!tokenHashMatches(accessToken, endpoint.access_token_hash)) {
-    audit(endpoint, "web_join_rejected", { reason: "invalid_token" });
     rejectSocket(ws, "invalid_token", "invalid token");
     return;
   }
@@ -879,7 +835,6 @@ function joinWebClient(ws, msg) {
   endpoint.web = ws;
   endpoint.lease_id = leaseId;
   authenticateSocket(ws, "web", endpointId, leaseId);
-  audit(endpoint, "web_client_joined", { connected_at: new Date().toISOString() });
   send(ws, {
     v: 2,
     type: "web_client_joined",
@@ -960,7 +915,6 @@ function forwardAuthenticatedMessage(ws, msg) {
       });
       return;
     }
-    audit(endpoint, `web:${msg.type}`);
     send(endpoint.desktop, {
       ...withoutCredentials(msg),
       v: 2,
@@ -986,10 +940,8 @@ function forwardAuthenticatedMessage(ws, msg) {
     }
     if (!socketOpen(endpoint.web)) return;
     if (msg.lease_id && msg.lease_id !== endpoint.lease_id) {
-      audit(endpoint, `desktop:${msg.type}:stale_lease`);
       return;
     }
-    audit(endpoint, `desktop:${msg.type}`);
     send(endpoint.web, {
       ...withoutCredentials(msg),
       v: 2,
@@ -1085,7 +1037,6 @@ wss.on("connection", (ws, req) => {
       const leaseId = endpoint.lease_id;
       endpoint.web = null;
       endpoint.lease_id = null;
-      audit(endpoint, "web_client_disconnected", { disconnected_at: new Date().toISOString() });
       send(endpoint.desktop, {
         v: 2,
         type: "web_client_disconnected",
@@ -1096,7 +1047,6 @@ wss.on("connection", (ws, req) => {
     if (ws.role === "desktop" && endpoint.desktop === ws) {
       endpoint.desktop = null;
       endpoint.desktop_offline_since = Date.now();
-      audit(endpoint, "desktop_disconnected", { disconnected_at: new Date().toISOString() });
       desktopStatus(endpoint, "offline");
     }
   });

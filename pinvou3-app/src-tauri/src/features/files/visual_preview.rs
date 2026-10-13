@@ -18,19 +18,14 @@ use super::ingest_deps::{
 
 // ============== 产物可视化预览助手（commands::render_artifact_visual 复用）==============
 
-/// Image extension → MIME. Used for data URI prefixes; the mapping itself is
-/// shared with codex_acp::attachments; extensions outside the table fall back to application/octet-stream.
-fn image_mime(ext: &str) -> &'static str {
-    crate::platform::filesystem::image_mime_type_for_ext(ext).unwrap_or("application/octet-stream")
-}
-
 /// 单个图片文件 → `data:image/...;base64,...`。
 pub fn image_file_to_data_uri(path: &Path) -> Result<String, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("读图失败: {e}"))?;
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let mime =
+        crate::platform::filesystem::image_mime_type(path).unwrap_or("application/octet-stream");
     Ok(format!(
         "data:{};base64,{}",
-        image_mime(ext),
+        mime,
         base64::engine::general_purpose::STANDARD.encode(bytes)
     ))
 }

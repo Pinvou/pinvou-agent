@@ -21,7 +21,7 @@ import {
   buildAssistantResponseExport,
 } from './assistant-response-export.js';
 import { copyClipboardText } from '../../shared/clipboard.js';
-import { normalizeAssistantMessageText } from './message-clipboard.js';
+import { normalizeAssistantMessageText } from './structured-assistant-content.js';
 
 const SHARE_TARGETS = Object.freeze(['wechat', 'wecom', 'feishu', 'dingtalk', 'qq']);
 

@@ -2088,19 +2088,29 @@ fn webdriver_error(value: &Value, status: u16) -> String {
     format!("WebKitWebDriver HTTP {status}: {detail}")
 }
 
-fn key_value(value: &str) -> &str {
-    match value {
-        "Enter" => "\u{E007}",
-        "Escape" | "Esc" => "\u{E00C}",
-        "Backspace" => "\u{E003}",
-        "Delete" => "\u{E017}",
-        "Tab" => "\u{E004}",
-        "ArrowUp" => "\u{E013}",
-        "ArrowDown" => "\u{E015}",
-        "ArrowLeft" => "\u{E012}",
-        "ArrowRight" => "\u{E014}",
-        "Space" => " ",
-        other => other,
+/// Named-key lookup for the WebDriver key-dispatch path. Matching is
+/// case-insensitive and the vocabulary mirrors the macOS adapter's
+/// `named_key` exactly (same names and aliases: `enter|return`, `esc|escape`,
+/// arrows, `home`, `end`, `pageup`, `pagedown`, ...). Unknown names return
+/// `None` so callers fail closed instead of typing the raw word into the page
+/// as literal text.
+fn named_key_value(value: &str) -> Option<&'static str> {
+    match value.to_ascii_lowercase().as_str() {
+        "enter" | "return" => Some("\u{E007}"),
+        "esc" | "escape" => Some("\u{E00C}"),
+        "backspace" => Some("\u{E003}"),
+        "delete" => Some("\u{E017}"),
+        "tab" => Some("\u{E004}"),
+        "up" | "arrowup" => Some("\u{E013}"),
+        "down" | "arrowdown" => Some("\u{E015}"),
+        "left" | "arrowleft" => Some("\u{E012}"),
+        "right" | "arrowright" => Some("\u{E014}"),
+        "pageup" => Some("\u{E00E}"),
+        "pagedown" => Some("\u{E00F}"),
+        "home" => Some("\u{E011}"),
+        "end" => Some("\u{E010}"),
+        "space" => Some(" "),
+        _ => None,
     }
 }
 
@@ -2112,8 +2122,19 @@ fn webdriver_key_sequence(sequence: &str) -> Result<String, String> {
             "control" | "ctrl" => modifiers.push('\u{E009}'),
             "shift" => modifiers.push('\u{E008}'),
             "alt" => modifiers.push('\u{E00A}'),
-            "meta" | "super" => modifiers.push('\u{E03D}'),
-            _ if key.is_none() => key = Some(key_value(part)),
+            "cmd" | "command" | "meta" | "super" => modifiers.push('\u{E03D}'),
+            _ if key.is_none() => {
+                // Named keys must fail closed on unknown names: silently
+                // typing the raw word would be an unrequested page mutation.
+                // Single characters keep the literal pass-through.
+                if let Some(named) = named_key_value(part) {
+                    key = Some(named);
+                } else if part.chars().count() == 1 {
+                    key = Some(part);
+                } else {
+                    return Err(format!("browser/unsupported-key: {part}"));
+                }
+            }
             _ => return Err(format!("browser/unsupported-key-sequence: {sequence}")),
         }
     }
@@ -2235,6 +2256,79 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn webdriver_named_keys_match_case_insensitively_and_accept_aliases() {
+        assert_eq!(webdriver_key_sequence("Enter").unwrap(), "\u{E007}");
+        assert_eq!(webdriver_key_sequence("return").unwrap(), "\u{E007}");
+        assert_eq!(webdriver_key_sequence("RETURN").unwrap(), "\u{E007}");
+        assert_eq!(webdriver_key_sequence("esc").unwrap(), "\u{E00C}");
+        assert_eq!(webdriver_key_sequence("EsCaPe").unwrap(), "\u{E00C}");
+        assert_eq!(webdriver_key_sequence("left").unwrap(), "\u{E012}");
+        assert_eq!(webdriver_key_sequence("ArrowLeft").unwrap(), "\u{E012}");
+        assert_eq!(webdriver_key_sequence("up").unwrap(), "\u{E013}");
+        assert_eq!(webdriver_key_sequence("ARROWUP").unwrap(), "\u{E013}");
+        assert_eq!(webdriver_key_sequence("down").unwrap(), "\u{E015}");
+        assert_eq!(webdriver_key_sequence("ArrowDown").unwrap(), "\u{E015}");
+        assert_eq!(webdriver_key_sequence("right").unwrap(), "\u{E014}");
+        assert_eq!(webdriver_key_sequence("ArrowRight").unwrap(), "\u{E014}");
+        assert_eq!(webdriver_key_sequence("Home").unwrap(), "\u{E011}");
+        assert_eq!(webdriver_key_sequence("END").unwrap(), "\u{E010}");
+        assert_eq!(webdriver_key_sequence("PageUp").unwrap(), "\u{E00E}");
+        assert_eq!(webdriver_key_sequence("pagedown").unwrap(), "\u{E00F}");
+        assert_eq!(webdriver_key_sequence("Space").unwrap(), " ");
+        assert_eq!(webdriver_key_sequence("space").unwrap(), " ");
+        assert_eq!(webdriver_key_sequence("Tab").unwrap(), "\u{E004}");
+        assert_eq!(webdriver_key_sequence("Backspace").unwrap(), "\u{E003}");
+        assert_eq!(webdriver_key_sequence("Delete").unwrap(), "\u{E017}");
+        assert_eq!(
+            webdriver_key_sequence("ctrl+return").unwrap(),
+            "\u{E009}\u{E007}\u{E000}"
+        );
+    }
+
+    #[test]
+    fn webdriver_meta_modifier_accepts_the_shared_alias_set() {
+        assert_eq!(
+            webdriver_key_sequence("cmd+a").unwrap(),
+            "\u{E03D}a\u{E000}"
+        );
+        assert_eq!(
+            webdriver_key_sequence("command+a").unwrap(),
+            "\u{E03D}a\u{E000}"
+        );
+        assert_eq!(
+            webdriver_key_sequence("meta+a").unwrap(),
+            "\u{E03D}a\u{E000}"
+        );
+        assert_eq!(
+            webdriver_key_sequence("super+a").unwrap(),
+            "\u{E03D}a\u{E000}"
+        );
+    }
+
+    #[test]
+    fn webdriver_unknown_named_keys_fail_closed_instead_of_typing_text() {
+        // Everything outside the macOS-mirroring vocabulary fails closed,
+        // including words that look like keys ("hometry") and names the
+        // computer-use parser accepts but the browser adapter does not
+        // ("pgup" has no macOS browser counterpart to mirror).
+        assert_eq!(
+            webdriver_key_sequence("hometry").unwrap_err(),
+            "browser/unsupported-key: hometry"
+        );
+        assert_eq!(
+            webdriver_key_sequence("pgup").unwrap_err(),
+            "browser/unsupported-key: pgup"
+        );
+        assert_eq!(
+            webdriver_key_sequence("ctrl+hometry").unwrap_err(),
+            "browser/unsupported-key: hometry"
+        );
+        // Single characters keep the literal pass-through.
+        assert_eq!(webdriver_key_sequence("a").unwrap(), "a");
+        assert_eq!(webdriver_key_sequence("A").unwrap(), "A");
     }
 
     fn spawn_one_shot_webdriver_with_responder<F>(

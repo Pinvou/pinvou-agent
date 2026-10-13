@@ -53,7 +53,6 @@ pub const PENDING_MEMORY_ACTIVE_MAX_STORED: usize = 20;
 pub const PENDING_MEMORY_RESOLVED_MAX_STORED: usize = 80;
 pub const NEVER_MEMORY_MAX_STORED: usize = 200;
 pub const MEMORY_REVIEW_LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
-pub const PENDING_STATUS_OBSERVED: &str = "observed";
 pub const PENDING_STATUS_PENDING: &str = "pending_confirm";
 pub const PENDING_STATUS_CONFIRMED: &str = "confirmed";
 pub const PENDING_STATUS_IGNORED: &str = "ignored";

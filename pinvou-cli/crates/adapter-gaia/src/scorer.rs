@@ -4,8 +4,6 @@ use benchmark_core::{CompletedRun, OfficialScoreReport, PrivatePredictionContent
 
 use crate::{GAIA_DURABLE_PREDICTION_TYPE, GAIA_LEVEL, GAIA_SPLIT, GaiaDataset};
 
-pub const GAIA_SCORER_RUNTIME_PROFILE: &str = "hf-spaces-python-3.10-unicode-13.0";
-
 const ASCII_PUNCTUATION: &str = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~";
 // Zero code points for every Unicode 13.0 `Nd` block used by the pinned
 // Hugging Face Spaces default Python 3.10 runtime profile. Each block contains

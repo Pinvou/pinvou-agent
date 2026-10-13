@@ -25,17 +25,21 @@ impl Embedder {
         let read = |file: &str| -> Result<Vec<u8>, String> {
             std::fs::read(dir.join(file)).map_err(|error| format!("{file}: {error}"))
         };
-        let onnx = std::fs::read(dir.join("model.onnx"))
-            .or_else(|_| std::fs::read(dir.join("onnx").join("model_int8.onnx")))
-            .or_else(|_| std::fs::read(dir.join("onnx").join("model.onnx")))
-            .map_err(|error| {
-                format!("单文件 ONNX 未找到(model.onnx 或 onnx/model_int8.onnx): {error}")
-            })?;
+        // The directory layout (ONNX candidates and tokenizer files) follows
+        // the download manifest's model_layout, so the load path, the
+        // download, and the completeness probe share one description.
+        let onnx = crate::model_layout::read_first_onnx(dir)?;
+        let [
+            tokenizer_file,
+            config_file,
+            special_tokens_map_file,
+            tokenizer_config_file,
+        ] = crate::model_layout::MODEL_TOKENIZER_FILES;
         let tokenizer_files = TokenizerFiles {
-            tokenizer_file: read("tokenizer.json")?,
-            config_file: read("config.json")?,
-            special_tokens_map_file: read("special_tokens_map.json")?,
-            tokenizer_config_file: read("tokenizer_config.json")?,
+            tokenizer_file: read(tokenizer_file)?,
+            config_file: read(config_file)?,
+            special_tokens_map_file: read(special_tokens_map_file)?,
+            tokenizer_config_file: read(tokenizer_config_file)?,
         };
         let model =
             UserDefinedEmbeddingModel::new(onnx, tokenizer_files).with_pooling(Pooling::Cls);

@@ -6,6 +6,8 @@ mod fs_guard;
 mod private_inputs;
 mod scorer;
 mod submission;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_fixtures;
 
 use std::collections::HashSet;
 use std::fmt;
@@ -28,7 +30,7 @@ pub use fetch::{
     SnapshotFileMetadata, SnapshotPreflightRequest,
 };
 pub use private_inputs::GaiaPrivateInputs;
-pub use scorer::{GAIA_SCORER_RUNTIME_PROFILE, question_scorer};
+pub use scorer::question_scorer;
 
 pub const GAIA_DATASET_REVISION: &str = "682dd723ee1e1697e00360edccf2366dc8418dd9";
 pub const GAIA_SCORER_REVISION: &str = "1349a17979f0aca0ee9c46cd7ec26eb2fb41102e";
@@ -36,6 +38,9 @@ pub const GAIA_ADAPTER_VERSION: &str = "pinvou-gaia-adapter/v1";
 pub const GAIA_SPLIT: &str = "validation";
 pub const GAIA_LEVEL: u8 = 1;
 pub const GAIA_PARQUET_SIZE: u64 = 39_524;
+/// Snapshot-relative path of the pinned validation parquet, declared once so
+/// the dataset verifier and the fetch layer cannot drift apart.
+pub(crate) const GAIA_PARQUET_PATH: &str = "2023/validation/metadata.level1.parquet";
 pub const GAIA_PARQUET_SHA256: &str =
     "5e574b0faeb4603b816e426cf7c7aefb1fe398d32f9c4861e1a4e3304f2b1281";
 /// Byte form of [`GAIA_PARQUET_SHA256`], parsed at compile time so the hex

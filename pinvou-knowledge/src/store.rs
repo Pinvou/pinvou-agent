@@ -386,22 +386,6 @@ impl Store {
         })
     }
 
-    pub fn update_collection(
-        &self,
-        id: i64,
-        name: &str,
-        description: Option<&str>,
-    ) -> rusqlite::Result<()> {
-        let changed = self.conn.lock().execute(
-            "UPDATE collections SET name=?2,description=?3,updated_at=?4 WHERE id=?1 AND deleted_at IS NULL",
-            params![id, name, description, now()],
-        )?;
-        if changed == 0 {
-            return Err(rusqlite::Error::QueryReturnedNoRows);
-        }
-        Ok(())
-    }
-
     pub fn trash_collection(&self, id: i64) -> rusqlite::Result<()> {
         let mut connection = self.conn.lock();
         let transaction = connection.transaction()?;
