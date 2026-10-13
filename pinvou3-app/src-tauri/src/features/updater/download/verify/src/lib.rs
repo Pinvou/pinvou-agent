@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
 mod readonly;
-pub use readonly::check_read_only_cache;
+pub use readonly::{check_read_only_cache, copy_read_only_cache};
 
 mod segment;
 pub use segment::{CacheWritePermission, FileSegmentWriter, SegmentWriteError};

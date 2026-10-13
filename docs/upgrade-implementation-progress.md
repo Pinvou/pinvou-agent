@@ -2990,3 +2990,42 @@ Details: [read-only byte scan](client-upgrade-read-only-byte-scan.md). Full T29,
 protected staging/sealing, actual native identity/qualification and original clock/
 budget integration remain unfinished. Downloads retain no total/cumulative
 duration or retry cap.
+
+
+## T29 fifteenth batch - actual read-only cache copy (2026-10-13)
+
+A narrow typed adapter privately clones the current ReadOnlyCacheHandle and runs
+B4 on a supplied fresh ExclusiveCacheFile with unchanged original Artifact and
+cancellation callback. Cancellation precedes clone and follows final destination
+SHA; every exit closes the internal clone. No path/old match is accepted. B4
+retains preseek nonempty/regular rejection, real source EOF/size/SHA, sync and same
+actual destination EOF/size/SHA rescan. Result is ByteMatch only, never sealed
+staging/namespace protection/current qualification/VMO. Trusted alias/borrower
+and original clock/budget preservation remain owner duties.
+
+Three new real Windows groups cover10-byte/65,537-byte copies, wrong size/SHA,
+nonempty/same-object refusal, source/destination cursor preservation, all13
+single-chunk cancellation points and both-path RW/rename release controls.
+Short/hash failure may leave full untrusted destination bytes; tests inspect
+these rather than claiming zero writes, and no automatic truncate/delete occurs.
+Unsupported factories explicitly report no physical controls executed without
+ordinary File fallback. No dependency/lock/CI/Schema/version/gitlink changes.
+
+Root first Verify32 passed8.69s; after adding nonempty cursor and two-path rename
+controls, final Verify32 passed7.56s with Clippy1.88s/fmt. CI51 passed0.068s,
+architecture/version/diff passed. Final actual Windows App passed all23 updater
+tests in0.12s after1m30s build, including same-target actual destination copy and
+nonempty retry refusal. No App-wide or other-platform physical pass is claimed.
+The existing privileged symlink scenario remains ignored/unverified.
+
+Dependency independent frozen-source scoped PASS: Verify32 in3.94s/Clippy1.49s,
+Cache8 in0.02s/one privilege ignore/Clippy0.86s, fmt/diff. Compatibility final
+scoped PASS: Verify32 in7.57s/Clippy1.29s/fmt, Cache8 in0.04s/one privilege ignore,
+CI51 in0.073s/diff and independent65,537-byte SHA confirmation. Both returned
+final documentation/evidence scoped PASS on frozen source. No unchanged HTTP/archive
+rerun is required; they were verified in B14 and their dependency graphs did not
+change. Root self-review found no remaining in-scope gap.
+
+Details: [read-only cache copy](client-upgrade-read-only-cache-copy.md). Full T29,
+protected staging/sealing and actual native identity/qualification remain open.
+Downloads retain no total/cumulative duration or retry cap.

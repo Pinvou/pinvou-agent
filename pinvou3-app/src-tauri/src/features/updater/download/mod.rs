@@ -27,6 +27,15 @@ pub(crate) fn check_read_only_cache_bytes<'a>(
     pinvou_upgrade_byte_check::check_read_only_cache(view, target, cancelled)
 }
 
+pub(crate) fn copy_read_only_cache_bytes<'a>(
+    view: &pinvou_upgrade_cache_object::ReadOnlyCacheHandle,
+    destination: &mut pinvou_upgrade_cache_object::ExclusiveCacheFile,
+    target: pinvou_upgrade_transfer::Artifact<'a>,
+    cancelled: impl FnMut() -> bool,
+) -> Result<pinvou_upgrade_byte_check::ByteMatch<'a>, pinvou_upgrade_byte_check::ByteCheckError> {
+    pinvou_upgrade_byte_check::copy_read_only_cache(view, destination, target, cancelled)
+}
+
 pub(crate) async fn fetch_file<'a>(
     url: &str,
     request: pinvou_upgrade_transfer::RequestPlan<'a>,
@@ -169,6 +178,55 @@ mod tests {
         Artifact, PrefixState, ResponseDecision, SourceContinuity, StrongEtag, TransferError,
         WriteMode, plan_request,
     };
+
+    #[test]
+    fn application_read_only_copy_checks_new_exclusive_target_and_refuses_nonempty_retry() {
+        use std::io::Write;
+        let root = std::env::temp_dir();
+        let input = root.join(format!(
+            "pinvou-app-readonly-copy-input-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let output = root.join(format!(
+            "pinvou-app-readonly-copy-output-{}",
+            uuid::Uuid::new_v4()
+        ));
+        match create_exclusive_cache(&input) {
+            Err(pinvou_upgrade_cache_object::CacheObjectError::Unsupported) => {
+                assert!(!input.exists());
+                assert!(!output.exists());
+            }
+            Ok(mut source) => {
+                source.file_mut().write_all(b"0123456789").unwrap();
+                let view = duplicate_cache_read_handle(&source).unwrap();
+                drop(source);
+                let mut destination = create_exclusive_cache(&output).unwrap();
+                let original = Artifact::new(
+                    "app-cache-1",
+                    10,
+                    "84d89877f0d4041efb6bf91a16f0248f2fd573e6af05c19f96bedb9f882f7882",
+                )
+                .unwrap();
+                assert!(
+                    copy_read_only_cache_bytes(&view, &mut destination, original, || false)
+                        .unwrap()
+                        .target()
+                        == original
+                );
+                assert!(matches!(
+                    copy_read_only_cache_bytes(&view, &mut destination, original, || false),
+                    Err(pinvou_upgrade_byte_check::ByteCheckError::DestinationNotEmpty)
+                ));
+                drop(destination);
+                drop(view);
+                assert_eq!(std::fs::read(&output).unwrap(), b"0123456789");
+                assert_eq!(std::fs::read(&input).unwrap(), b"0123456789");
+                std::fs::remove_file(input).unwrap();
+                std::fs::remove_file(output).unwrap();
+            }
+            Err(_) => panic!("cache object creation unavailable on this test host"),
+        }
+    }
 
     #[test]
     fn application_read_only_cache_scan_matches_actual_bytes_and_rejects_original_hash_mismatch() {
