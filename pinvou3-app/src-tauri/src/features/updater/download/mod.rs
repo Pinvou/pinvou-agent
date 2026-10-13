@@ -10,6 +10,14 @@ pub(crate) async fn fetch_file<'a>(
     pinvou_upgrade_file_http::fetch(url, request, policy, resolver).await
 }
 
+pub(crate) fn check_file_bytes<'a>(
+    file: &mut std::fs::File,
+    target: pinvou_upgrade_transfer::Artifact<'a>,
+    cancelled: impl FnMut() -> bool,
+) -> Result<pinvou_upgrade_byte_check::ByteMatch<'a>, pinvou_upgrade_byte_check::ByteCheckError> {
+    pinvou_upgrade_byte_check::check_file(file, target, cancelled)
+}
+
 pub(crate) fn plan_file_response<'target, 'headers>(
     request: pinvou_upgrade_transfer::RequestPlan<'target>,
     status: u16,
@@ -32,6 +40,41 @@ mod tests {
         Artifact, PrefixState, ResponseDecision, SourceContinuity, StrongEtag, TransferError,
         WriteMode, plan_request,
     };
+
+    #[test]
+    fn application_byte_check_graph_reads_actual_bytes_from_the_original_handle() {
+        use std::io::{Seek, SeekFrom, Write};
+        let path =
+            std::env::temp_dir().join(format!("pinvou-app-byte-check-{}", uuid::Uuid::new_v4()));
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(b"abc").unwrap();
+        file.seek(SeekFrom::Start(2)).unwrap();
+        let target = Artifact::new(
+            "package-1",
+            3,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        )
+        .unwrap();
+        assert!(
+            check_file_bytes(&mut file, target, || false)
+                .unwrap()
+                .target()
+                == target
+        );
+        file.seek(SeekFrom::Start(1)).unwrap();
+        file.write_all(b"x").unwrap();
+        assert!(matches!(
+            check_file_bytes(&mut file, target, || false),
+            Err(pinvou_upgrade_byte_check::ByteCheckError::HashMismatch)
+        ));
+        drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[tokio::test]
     async fn application_http_graph_refuses_credential_bearing_file_urls() {

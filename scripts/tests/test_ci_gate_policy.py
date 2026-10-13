@@ -191,6 +191,19 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("python3 tests/https_e2e.py", step)
         self.assertLess(job.index("Set up Go for isolated upgrade HTTPS peer"), job.index("Check independent upgrade HTTPS transport"))
 
+    def test_upgrade_complete_byte_checks_run_the_standalone_gate(self):
+        block = self.pr_workflow.split("            rust_code:", 1)[1].split("            rust_dependencies:", 1)[0]
+        patterns = _extract_quoted_paths(block)
+        root = "pinvou3-app/src-tauri/src/features/updater/download/verify/"
+        for path in ("src/lib.rs", "src/tests.rs", "Cargo.toml", "Cargo.lock"):
+            self.assertTrue(_matches_paths_filter(root + path, patterns))
+        job = self.pr_workflow.split("\n  rust-lint:", 1)[1].split("\n  rust-test:", 1)[0]
+        step = job.split("- name: Check independent upgrade complete-byte verification", 1)[1].split("\n      - name:", 1)[0]
+        self.assertNotIn("if:", step)
+        self.assertNotIn("continue-on-error:", step)
+        for command in ("cargo fmt -- --check", "cargo clippy --locked --all-targets -- -D warnings", "cargo test --locked"):
+            self.assertIn(command, step)
+
     def test_full_release_only_runs_for_version_or_manual_trigger(self):
         trigger = self.release_workflow.split("\non:", maxsplit=1)[1].split(
             "\npermissions:", maxsplit=1

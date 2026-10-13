@@ -2254,3 +2254,37 @@ no total/cumulative download deadline or retry cap. Full T29 and deployment rema
 unfinished. Details: [restricted HTTPS transport](client-upgrade-file-http.md).
 Both independent roles gave final B2 scoped PASS after the final App/B1 evidence
 and documentation review; no mandatory finding remains.
+
+### T29 third batch: complete observed file-byte comparison (2026-10-13)
+
+The private scanner seeks the same already open File handle to zero, reads through
+actual EOF with a fixed 64 KiB buffer and compares the complete length/SHA-256 to
+the original structural Artifact. Excess fails before hashing that chunk; EOF and
+hash are required after exact count. Cancellation is checked before seek/reads,
+every Interrupted retry and after EOF. IO failures retain no underlying path/source.
+ByteMatch's private constructor proves only the observed byte string matched;
+it supplies no durable cache trust, physical object protection or execution right.
+
+Final eight groups passed (1.89s), including real 33 MiB/buffer-boundary files,
+nonzero initial cursor, pre-scan truncate/append, same-length first/middle/tail
+pollution, actual write-only read failure and three cancellation positions.
+Crate-private Seek/Read fault controls are separately identified as unit tests.
+Five independent Python hash constants matched. Standalone fmt/Clippy, 48 CI
+policies, architecture, version, diff, YAML and both complete locked App/CLI
+graphs passed. Final actual Windows App integration passed all eleven updater
+tests (0.01s after a 3m33s build). No App-wide pass is claimed. Each parent lock
+adds nine lines for the local package and App edge without external version changes.
+Self-review corrected an isolated lock seeded from an earlier codec graph;
+all 12 final isolated packages match App versions/sources/checksums and eight
+groups/Clippy passed again after correction.
+
+The owner must connect the original T26 validation budget and unknown/fault
+safe-stop rules to cancellation; a running OS seek/read cannot be interrupted
+by this predicate. Qualification, protected cache/staging, safe unpacking,
+installer/platform authenticity and current execution rights remain subsequent
+work. Full T29 and deployment remain unfinished, with no download elapsed cap.
+Details: [complete byte check](client-upgrade-complete-byte-check.md).
+Both independent roles gave final B3 scoped PASS after reviewing the final
+App/locked-graph evidence and documentation. No mandatory finding remains.
+Their independent eight-group runs preceded the lock correction; the final
+lock was independently checked and the primary role reran its tests/Clippy.

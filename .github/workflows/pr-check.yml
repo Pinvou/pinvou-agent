@@ -857,6 +857,13 @@ jobs:
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked
 
+      - name: Check independent upgrade complete-byte verification
+        working-directory: pinvou3-app/src-tauri/src/features/updater/download/verify
+        run: |
+          cargo fmt -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+
       - name: Set up Go for isolated upgrade HTTPS peer
         uses: actions/setup-go@v6
         with:
