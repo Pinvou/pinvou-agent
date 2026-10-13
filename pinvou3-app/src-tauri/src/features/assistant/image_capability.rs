@@ -434,9 +434,10 @@ mod tests {
             // MiMo (2026-09-11): multimodal is mimo-v2.5; the text-only
             // mimo-v2.5-pro must not be caught by accident, hence the exact
             // equality table (see EXACT_VERIFIED_IMAGE_CAPABLE_MODELS).
-            // Note: the live MiMo model list now shows a Full-modal
-            // Understanding cell for v2.5-pro, conflicting with the
-            // deprecation page's text-only wording — the conservative
+            // Note: one en-US MiMo model-list rendering shows a
+            // Full-modal Understanding cell for v2.5-pro that the zh-CN
+            // primary list lacks, against the deprecation page's text-only
+            // wording — the conservative
             // annotation stays until the rows retire 2026-10-21 (see the
             // frontend mimo group comment).
             (ModelPreset::Mimo, "mimo-v2.5"),

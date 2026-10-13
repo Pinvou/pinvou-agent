@@ -310,7 +310,8 @@ test('2026-09-28 catalog refresh lands in their provider groups (preset recognit
 
 test('2026-10-13 catalog refresh lands in their provider groups (preset recognition)', () => {
   const mkCloud = (preset, vendor, base, model) => mk({ preset, provider_kind: 'official_api', vendor, base_url: base, model });
-  // OpenAI: gpt-6.1-sol (2026-09-29, announced 2026-10-07) joins as the new
+  // OpenAI: gpt-6.1-sol (2026-09-29 model data, announced at DevDay the
+  // same day) joins as the new
   // default; gpt-6-sol / gpt-6-luna stay listed and keep the Responses
   // ladder.
   assert.strictEqual(isPresetModel(mkCloud('openai', 'openai', 'https://api.openai.com/v1', 'gpt-6.1-sol')), true);

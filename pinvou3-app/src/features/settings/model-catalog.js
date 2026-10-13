@@ -26,9 +26,9 @@ import xaiIcon from '../../brand-icons/xai.svg';
 // previous full re-check 2026-09-28):
 // - deepseek: V4.1-Flash (deepseek-flash) is still the mainline and
 //   deepseek-v4-pro keeps serving with unchanged billing (api-docs.deepseek.com
-//   updates/pricing re-verified 2026-10-13; the newest model entry is still
-//   2026-09-10 — the 2026-10-01 changelog entry is the DeepSeek Harness
-//   developer preview, not a model change).
+//   updates/pricing re-verified 2026-10-13; the newest updates entry is still
+//   2026-09-10 with no model change since — the separate DeepSeek Harness
+//   developer preview is a tooling preview, not a model change).
 // - glm: GLM-5.3 launched on 2026-08-19 (China) / 2026-08-18 (z.ai), and is
 //   still the API enum default on both sites (docs.bigmodel.cn / docs.z.ai,
 //   re-verified 2026-10-13; no GLM retirement announced).
@@ -42,10 +42,11 @@ import xaiIcon from '../../brand-icons/xai.svg';
 // - openai: gpt-6.1-sol takes the default (2026-10-13): OpenAI's own
 //   latest-model reference ranks gpt-6-astra for the most demanding work and
 //   gpt-6.1-sol as "Near-Astra performance for complex work at a lower cost"
-//   (model data 2026-09-29; OpenAI's "Introducing GPT-6.1 Sol" post
-//   2026-10-05: "An upgrade to GPT-6 Sol that nearly matches GPT-6 Astra's
-//   intelligence ... at one-fifth of Astra's standard input and output token
-//   prices"), so the balanced-flagship slot moves up from gpt-6-sol. The
+//   (model data 2026-09-29, announced in OpenAI's "Introducing GPT-6.1 Sol"
+//   DevDay post the same day: "An upgrade to GPT-6 Sol that nearly matches
+//   GPT-6 Astra's intelligence ... at one-fifth of Astra's standard input and
+//   output token prices"), so the balanced-flagship slot moves up from
+//   gpt-6-sol. The
 //   Azure Foundry capability table pins the wire facts (page updated
 //   2026-10-08): gpt-6.1-sol (2026-09-29) lists the Responses API with
 //   "Functions, tools, and parallel tool calling (Responses API only)",
@@ -247,8 +248,9 @@ const MODEL_CATALOG = {
     // The two Tencent Cloud subscription tiers are modeled separately per the
     // official docs (TokenHub product 1823):
     // - Coding Plan: https://cloud.tencent.com/document/product/1823/130092
-    //   (checked 2026-09-11) OpenAI-compatible base URL /coding/v3; the catalog
-    //   lists all of its model rows (Auto + GLM-5). GLM-5 retires 2026-10-09
+    //   (checked 2026-09-11) OpenAI-compatible base URL /coding/v3; the
+    //   catalog then listed Auto + GLM-5 (glm-5 has since been removed per
+    //   announce 2469 — see the group below). GLM-5 retired 2026-10-09
     //   (130092 / 130060). The same page also offers an Anthropic-compatible
     //   /coding/anthropic endpoint for Claude Code-style tools; this repo's
     //   OpenAI route does not use it. Per 130092, Coding Plan models do not
@@ -311,10 +313,16 @@ const MODEL_CATALOG = {
       // custom listing. Two rows the live table added are mirrored:
       // deepseek/deepseek-flash (DeepSeek-V4.1-Flash 原厂直供) and
       // mimo-v2.6-flash, both left unannotated like the other gateway
-      // DeepSeek rows — the Rust image table still resolves them Supported
-      // via the "deepseek-flash" / "mimo-v2.6" substrings (first-party
-      // multimodal facts); only the FE form annotation stays off per the
-      // gateway policy. minimax-m2.7 stays listed (no Tencent-side retirement
+      // DeepSeek rows (gateway deployments are not verified one by one).
+      // Both still resolve image-capable from first-party facts: the Rust
+      // image table matches them via the "deepseek-flash" / "mimo-v2.6"
+      // substrings, and on the FE form the global annotation scan (bare
+      // model id, cross-group) returns true for mimo-v2.6-flash through the
+      // mimo group's annotated row — agreeing with the Rust table — while
+      // deepseek/deepseek-flash matches no annotated row (exact-id match
+      // only, the official row spells the id without the vendor prefix) and
+      // stays unannotated there. minimax-m2.7 stays listed (no Tencent-side
+      // retirement
       // notice as of 2026-10-13; MiniMax's platform-level M2.5/M2.7
       // retirement — new-user cutoff 2026-10-19, offline 2026-11-18 — is a
       // watch item for this gateway). The old "high-load" flag on
@@ -504,18 +512,21 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'minimax',
       // Official figures re-checked 2026-10-13 (platform.minimax.cn model
-      // intro + chat API reference; the old platform.minimaxi.com docs URLs
-      // 302 there): M3 stays the PAYG flagship (1M context, native
-      // multimodal); MiniMax-M3.1-Flash-Preview is the newer multimodal tier
-      // with real reasoning_effort tuning, but it is served only via the
-      // M Plan and MiniMax Code subscriptions (the official note lists no
-      // Token Plan direct channel — Token Plan users reach it from 10-19
-      // through M2.x auto-routing instead) — a plain
-      // pay-as-you-go key may not invoke it. The model-intro page posts an
-      // M2.5/M2.7 retirement notice (verified verbatim 2026-10-13): new-user
-      // access ends 2026-10-19, the series goes offline 2026-11-18, and from
-      // 10-19 requests auto-route to M3.1 Flash Preview with the old names
-      // kept as compatibility entries — the M2.x rows below carry the date.
+      // intro + chat API reference + the M Plan/Token Plan notice; the old
+      // platform.minimaxi.com docs URLs 302 there): M3 stays the PAYG
+      // flagship (1M context, native multimodal); MiniMax-M3.1-Flash-Preview
+      // is the newer multimodal tier with real reasoning_effort tuning, but
+      // it is subscription-only — the model-intro note lists M Plan + MiniMax
+      // Code, and the Token Plan notice keeps existing Token Plan subscribers
+      // direct M3.1 access (M Plan absorbed Token Plan; new Token Plan sales
+      // stopped) — a plain pay-as-you-go key may not invoke it. The
+      // model-intro page posts an M2.5/M2.7 retirement notice (verified
+      // verbatim 2026-10-13): new-user access ends 2026-10-19, the series
+      // goes offline 2026-11-18; from 10-19 M Plan + Token Plan users'
+      // M2.x requests auto-route to M3.1 Flash Preview with the old names
+      // kept as compatibility entries, while PAYG users keep direct M2.x
+      // access until 11-18 (no routing afterwards) — the M2.x rows below
+      // carry the date.
       // The whole M2.x family is text-only with thinking always on (M3
       // accepts thinking.type=disabled; effort tuning is M3.1-only). The
       // official China docs' primary endpoint is api.minimax.cn;
@@ -573,11 +584,13 @@ const MODEL_CATALOG = {
       // Official figures re-checked 2026-10-13 (mimo.mi.com model list +
       // deprecation page): the MiMo-V2.6 series launched 2026-09-22 and all
       // three tiers are omni-modal (text/image/audio/video input) with 1M
-      // context; the deprecation page still calls mimo-v2.5-pro text-only
-      // and mimo-v2.5 multimodal (note: the live model list now shows a
-      // "Full-modal Understanding" capability cell for v2.5-pro — the two
-      // official pages conflict, so the conservative text-only annotation
-      // stays until the rows retire 2026-10-21). The
+      // context; the deprecation page calls mimo-v2.5-pro text-only (and is
+      // silent on v2.5's own modality — the omni-modal statement is the
+      // update log's 2026-04-23 entry). One en-US model-list rendering
+      // showed a "Full-modal Understanding" capability cell for v2.5-pro
+      // that the zh-CN primary list lacks — ambiguous across surfaces, so
+      // the conservative text-only annotation stays until the rows
+      // retire 2026-10-21. The
       // deprecation page (updated 2026-10-09) supersedes the earlier
       // "hard-retire with no replacement" reading: from 2026-10-14 18:00
       // (UTC+8) v2.5 requests auto-route to their v2.6 successors
@@ -707,13 +720,15 @@ const MODEL_CATALOG = {
       // tier closed to new purchases 2026-03-20) separate from the Token
       // Plan, usable only inside AI coding tools. Keys are also sk-sp-
       // prefixed. The endpoint serves exact-version ids only; the rows
-      // mirror the current page — recommended qwen3.7-plus / qwen3.6-plus /
-      // glm-5 / MiniMax-M2.5, "more models" qwen3.5-plus. qwen3-coder-plus
+      // mirror the mirrored entries of the current page — the page
+      // recommends qwen3.7-plus / qwen3.6-plus / kimi-k2.5 / glm-5 /
+      // MiniMax-M2.5 and lists qwen3.5-plus under "more models";
+      // kimi-k2.5 stays unmirrored because Moonshot retired it
+      // platform-wide on 2026-08-31, so the catalog carries the
+      // other four plus qwen3.5-plus. qwen3-coder-plus
       // / qwen3-coder-next / glm-4.7 are no longer listed and their rows
       // are removed (old configs keep the endpoint classification via URL
-      // and fall to the custom listing). kimi-k2.5 is still listed on the
-      // page but stays unmirrored: Moonshot retired it platform-wide on
-      // 2026-08-31. MiniMax-M2.5 is kept per the live page; MiniMax's
+      // and fall to the custom listing). MiniMax-M2.5 is kept per the live page; MiniMax's
       // platform-level M2.5/M2.7 retirement (new-user cutoff 2026-10-19,
       // offline 2026-11-18) is a watch item for this gateway.
       // Gateway deployments are not verified one by one, so rows stay
@@ -813,7 +828,8 @@ const MODEL_CATALOG = {
       // Official figures re-checked 2026-10-13 (Azure Foundry capability
       // table, page updated 2026-10-08, plus OpenAI's latest-model reference
       // shipped in the openai/codex repo): gpt-6.1-sol (model data
-      // 2026-09-29; "Introducing GPT-6.1 Sol" post 2026-10-05) takes the
+      // 2026-09-29, announced in the "Introducing GPT-6.1 Sol" DevDay post
+      // the same day) takes the
       // default — "Near-Astra performance
       // for complex work at a lower cost" moves the balanced-flagship slot
       // up from gpt-6-sol. Its Azure row lists the Responses API with
@@ -872,8 +888,10 @@ const MODEL_CATALOG = {
       // officially 1M context / 128K max output — the whole 5.5 generation
       // per the models-overview comparison table (checked 2026-10-13),
       // anchored in core::model_context. Microsoft Foundry's (Azure)
-      // retirement schedule lists claude-haiku-4-5 at 2026-11-15 — it moved
-      // the date up from the previous 2026-10-15 — while Anthropic's own
+      // retirement schedule lists claude-haiku-4-5 at 2026-11-15 — it pushed
+      // the date back from the previous 2026-10-19 (per Azure's public doc
+      // history; 2026-10-15 is Anthropic's own tentative floor below) —
+      // while Anthropic's own
       // deprecations table still lists the id Active with no scheduled date
       // (tentative floor "not sooner than 2026-10-15"), so the row scopes
       // the date to Azure. Image input: the Sonnet
@@ -908,7 +926,7 @@ const MODEL_CATALOG = {
       vendor: 'gemini',
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
       // Official figures re-checked 2026-10-13 (ai.google.dev changelog /
-      // deprecations pages, both updated 2026-10-09): gemini-3.8-flash
+      // deprecations pages): gemini-3.8-flash
       // (2026-09-02) is still the latest Flash. The Oct 8 changelog entry
       // deprecated gemini-3.7-flash ("deprecated and has been replaced by
       // gemini-3.8-flash. All requests to gemini-3.7-flash are
@@ -917,7 +935,10 @@ const MODEL_CATALOG = {
       // to gemini-3.5-flash are automatically routed to gemini-3.6-flash"),
       // neither with a shutdown date —
       // both rows stay with the auto-route note. gemini-3.6-flash and
-      // gemini-3.5-flash-lite are Stable; gemini-3.1-pro-preview remains
+      // gemini-3.5-flash-lite are Stable on the Gemini API (watch item:
+      // Vertex-side docs list a 2026-11-19 retirement for gemini-3.6-flash
+      // with 3.8-flash as successor — the Gemini API deprecations page
+      // announces no shutdown date); gemini-3.1-pro-preview remains
       // the flagship Pro with a non-GA id (gemini-3-pro-preview was
       // retired on 2026-03-09). Thinking cannot be turned off for the
       // Gemini 3 family on the OpenAI-compatible layer.
@@ -1174,8 +1195,8 @@ function catalogItemMatchesModel(item, model) {
 // coding-specialized preview), glm-5.3-flash and
 // mimo-v2.5 are officially multimodal; qwen3.7-max, glm-5.2/5.3,
 // deepseek-v4-pro, MiniMax-M2.x and mimo-v2.5-pro are officially text-only
-// (mimo-v2.5-pro: the live MiMo model list now shows a Full-modal
-// Understanding cell, conflicting with the deprecation page — see the mimo
+// (mimo-v2.5-pro: one en-US model-list rendering showed a Full-modal
+// Understanding cell that the zh-CN primary list lacks — see the mimo
 // group comment),
 // annotated false. 2026-10-13 addition: claude-sonnet-5-5 (screenshot-driven
 // benchmark play on its announcement page) and claude-haiku-5-5 (Visual

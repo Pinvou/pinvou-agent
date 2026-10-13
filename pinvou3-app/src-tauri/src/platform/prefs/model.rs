@@ -228,8 +228,9 @@ impl ModelPreset {
             // the old ids hard-fail from 2026-10-21 10:00 (UTC+8)
             // (mimo.mi.com deprecation page, re-checked 2026-10-13).
             ModelPreset::Mimo => "mimo-v2.6-pro",
-            // gpt-6.1-sol is the default (model data 2026-09-29; OpenAI's
-            // "Introducing GPT-6.1 Sol" post 2026-10-05): the whole
+            // gpt-6.1-sol is the default (model data 2026-09-29, announced
+            // in OpenAI's "Introducing GPT-6.1 Sol" DevDay post the same
+            // day): the whole
             // preset still rides the OpenAI Responses wire (see bridge
             // `engine_route_provider`), and the id keeps the existing
             // `gpt-6` prefix of `openai_responses_wire_model`. Per the Azure

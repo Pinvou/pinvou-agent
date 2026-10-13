@@ -1722,6 +1722,18 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             (ModelPreset::Qwen, "auto", 131_072),
             (ModelPreset::Qwen, "deepseek-v4-pro-0813", 1_000_000),
             (ModelPreset::Qwen, "deepseek-v4.1-flash", 1_000_000),
+            // The 2026-10-13 Token Plan additions: the current primary
+            // deepseek spellings ride the same base v4 heuristic (the -0813
+            // alias above stays pinned), the vendor-prefixed
+            // deepseek/deepseek-flash is anchored in core::model_context
+            // (no "v4" substring, no vendor-prefix tolerance), and
+            // mimo-v2.6-flash rides the core::model_context supplemental
+            // table — pinned here so the settings-page rows stay covered by
+            // this charter.
+            (ModelPreset::Qwen, "deepseek-v4-pro-202606", 1_000_000),
+            (ModelPreset::Qwen, "deepseek-v4-flash-202605", 1_000_000),
+            (ModelPreset::Qwen, "deepseek/deepseek-flash", 1_000_000),
+            (ModelPreset::Qwen, "mimo-v2.6-flash", 1_000_000),
             (ModelPreset::Qwen, "qwen3.6-plus", 131_072),
             (ModelPreset::Qwen, "qwen3-coder-plus", 131_072),
             (ModelPreset::Qwen, "qwen3-coder-next", 131_072),

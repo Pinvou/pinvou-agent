@@ -28,10 +28,12 @@
 export const ACP_PROVIDER_PRESETS = [
   // claude-opus-5-5 (2026-09-22) prepended as the official default
   // recommendation ("start with Claude Opus 5.5 for most workloads");
-  // append-only below it. sonnet-5-5 (2026-09-28) / haiku-5-5 (2026-10-07)
-  // follow as the newest tiers.
+  // no entry below is ever removed (the contract test pins membership).
+  // sonnet-5-5 (2026-09-28) / haiku-5-5 (2026-10-07) were inserted as the
+  // newest tiers.
   { key: 'anthropic', nameKey: 'presetAnthropic', name: 'Anthropic 官方', baseUrl: 'https://api.anthropic.com', baseUrlAnthropic: 'https://api.anthropic.com', wireApi: 'anthropic', models: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-fable-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'] },
-  // gpt-6.1-sol (2026-09-29, announced 2026-10-07) prepended as the new
+  // gpt-6.1-sol (2026-09-29 model data, announced at DevDay the same day)
+  // prepended as the new
   // near-Astra flagship; gpt-6-sol / gpt-6-luna (GPT-6 family expansion,
   // September 2026) stay; gpt-5.3-codex stays valid for Responses-only ACP
   // hosts.

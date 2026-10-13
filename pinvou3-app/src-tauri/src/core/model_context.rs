@@ -77,11 +77,13 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // claude-fable-5-1 hit; model_name_matches also tolerates future
     // -date/snapshot suffixes.
     ("claude-sonnet-5-5", 1_000_000),
-    // claude-haiku-5-5 (same refresh) also rides the wildcard to 200K, but
-    // the wildcard's "haiku = 200K" premise holds only for the 4.x
-    // generation: the Haiku 5.5 model page states "a 1M token context
+    // claude-haiku-5-5 (same refresh) also rides the engine wildcard to
+    // 200K (that wildcard pins every unknown claude name at 200K), and the
+    // prefs Anthropic fallback would likewise meter it by its haiku
+    // substring — a 200K premise that holds only for the 4.x generation:
+    // the Haiku 5.5 model page states "a 1M token context
     // window, and up to 128k output tokens" (platform.claude.com, checked
-    // 2026-10-13). Anchor the official 1M so the wildcard cannot state a
+    // 2026-10-13). Anchor the official 1M so neither layer can state a
     // 5×-understated window (claude-opus-5 explicit-anchor precedent).
     ("claude-haiku-5-5", 1_000_000),
     // No gpt-6-family row exists anywhere in the base chain (bundled catalog /
@@ -504,10 +506,12 @@ mod tests {
         assert_eq!(resolved_context_window("claude-opus-5-5"), Some(1_000_000));
         // The 2026-10-13 catalog additions: sonnet-5-5 has no exact base row
         // and would hit the unknown-claude wildcard 200K without its anchor;
-        // haiku-5-5 rides the same wildcard, whose "haiku = 200K" premise
-        // holds only for the 4.x generation — the Haiku 5.5 page documents
-        // 1M context / 128K output, so both anchors carry the official 1M
-        // (whole 5.5 generation per the models-overview comparison table).
+        // haiku-5-5 rides the same wildcard (every unknown claude name →
+        // 200K; the prefs fallback likewise meters haiku at 200K), a premise
+        // that holds only for the 4.x generation — the Haiku 5.5 page
+        // documents 1M context / 128K output, so both anchors carry the
+        // official 1M (whole 5.5 generation per the models-overview
+        // comparison table).
         assert_eq!(
             resolved_context_window("claude-sonnet-5-5"),
             Some(1_000_000)
