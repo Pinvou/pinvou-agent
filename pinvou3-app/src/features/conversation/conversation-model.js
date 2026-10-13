@@ -58,6 +58,13 @@ export function expertDelegationText(args) {
 }
 
 const OPERATION_ITEM_TYPES = new Set(['command_execution', 'file_change', 'tool']);
+
+/// Single source for the operation-item membership so every lane filters with
+/// the same list (exported for the codex/ACP lane and the shared timeline).
+export function isOperationItemType(type) {
+  return OPERATION_ITEM_TYPES.has(type);
+}
+
 const SEARCH_TOOL_NAMES = new Set([
   'web_search',
   'mcp_iwencai_news_search',

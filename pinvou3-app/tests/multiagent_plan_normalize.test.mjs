@@ -1010,7 +1010,7 @@ test('多级代理树：默认只列直属根，按父节点逐级展开并保�
 test('agent 工具调用渲染成行内专家卡，点击打开只读面板', () => {
   assert.match(
     timelineSource,
-    /if \((?:item\.type === 'tool' \|\| item\.type === 'command_execution' \|\| item\.type === 'file_change'|\['tool', 'command_execution', 'file_change'\]\.includes\(item\.type\))\)/,
+    /if \(isOperationItemType\(item\.type\)\)/,
     '独立 agent 工具项不得被共享时间线丢弃',
   );
   assert.match(

@@ -14,16 +14,24 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.join(here, '..');
 const source = path.join(root, 'src', 'features', 'codex', 'acp-state.js');
 const temp = mkdtempSync(path.join(tmpdir(), 'pinvou3-codex-acp-'));
-const moduleDir = path.join(temp, 'codex');
-const conversationDir = path.join(temp, 'conversation');
+const moduleDir = path.join(temp, 'features', 'codex');
+const conversationDir = path.join(temp, 'features', 'conversation');
+const sharedDir = path.join(temp, 'shared');
 mkdirSync(moduleDir, { recursive: true });
 mkdirSync(conversationDir, { recursive: true });
+mkdirSync(sharedDir, { recursive: true });
 writeFileSync(path.join(temp, 'package.json'), '{"type":"module"}\n');
 const modulePath = path.join(moduleDir, 'acp-state.js');
 copyFileSync(source, modulePath);
+for (const file of ['conversation-model.js', 'deepseek-conversation.js']) {
+  copyFileSync(
+    path.join(root, 'src', 'features', 'conversation', file),
+    path.join(conversationDir, file),
+  );
+}
 copyFileSync(
-  path.join(root, 'src', 'features', 'conversation', 'conversation-model.js'),
-  path.join(conversationDir, 'conversation-model.js'),
+  path.join(root, 'src', 'shared', 'shell-tools.mjs'),
+  path.join(sharedDir, 'shell-tools.mjs'),
 );
 
 const event = (seq, type, data, turnId = 'turn-1') => ({
