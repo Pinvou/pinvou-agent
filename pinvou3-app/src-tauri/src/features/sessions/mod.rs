@@ -130,7 +130,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
-pub use crate::core::mode_state::{ModeLane, SerializableMode};
+pub use crate::core::mode_state::SerializableMode;
 use crate::platform::paths;
 use crate::platform::prefs::{CodePermissionPrefs, ModeDefaultPrefs};
 use parking_lot::{Mutex, RwLock};

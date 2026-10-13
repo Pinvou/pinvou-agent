@@ -7,6 +7,7 @@
 // architecture-guard: allow-target-cfg -- the legacy-table sync-failure regression needs POSIX permission modes to make the atomic rewrite fail deterministically, and the symlink-alias regression needs a real directory symlink to emulate macOS /var → /private/var ancestor resolution; PermissionsExt/from_mode and std::os::unix::fs::symlink do not exist on Windows, so those tests are cfg(unix)-gated and no platform behavior leaks into shared code.
 
 use super::*;
+use crate::core::mode_state::ModeLane;
 use crate::platform::paths;
 use crate::platform::paths::tests::ENV_LOCK;
 use crate::platform::prefs::UserPrefs;
