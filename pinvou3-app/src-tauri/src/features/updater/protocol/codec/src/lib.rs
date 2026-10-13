@@ -14,6 +14,8 @@ mod shape;
 pub use rollout::{RolloutCommitment, RolloutCommitmentError};
 mod status;
 pub use status::{RecoveryHandleHash, StatusBinding, StatusBindingError, recovery_handle_hash};
+mod version;
+pub use version::{CanonicalAppVersion, VersionError, compare_app_versions};
 mod source;
 pub use source::{SourceProfile, SourceProfileError};
 

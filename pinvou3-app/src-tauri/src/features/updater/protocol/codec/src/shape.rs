@@ -62,3 +62,24 @@ pub(super) fn native_identity(value: &Value) -> bool {
             &["nsis", "deb", "dmg", "helper", "launcher"],
         )
 }
+
+pub(super) fn canonical_version(value: &Value) -> bool {
+    let Some(text) = value.as_str() else {
+        return false;
+    };
+    let mut parts = text.split('.');
+    for _ in 0..3 {
+        let Some(part) = parts.next() else {
+            return false;
+        };
+        // Schema has no integer magnitude bound for version components. A long
+        // valid component must not fail through integer parsing/overflow.
+        if part.is_empty()
+            || !part.bytes().all(|b| b.is_ascii_digit())
+            || (part.starts_with('0') && part != "0")
+        {
+            return false;
+        }
+    }
+    parts.next().is_none()
+}

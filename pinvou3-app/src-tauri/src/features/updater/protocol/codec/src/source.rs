@@ -1,5 +1,5 @@
 //! Closed stable-fact projection of supplied JSON, not actual source detection.
-use crate::shape::{TARGETS, closed, identifier, native_identity, one_of};
+use crate::shape::{TARGETS, canonical_version, closed, identifier, native_identity, one_of};
 use crate::{Document, Error};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -65,7 +65,7 @@ impl Document {
         let valid = identifier(&facts["product"])
             && identifier(&facts["component"])
             && one_of(&facts["targetKey"], &TARGETS)
-            && version(&facts["canonicalAppVersion"])
+            && canonical_version(&facts["canonicalAppVersion"])
             && ["application", "helper", "launcher"]
                 .iter()
                 .all(|name| native_identity(&facts[*name]))
@@ -89,26 +89,6 @@ impl Document {
         let id = digest.iter().map(|byte| format!("{byte:02x}")).collect();
         Ok(SourceProfile { canonical, id })
     }
-}
-fn version(value: &Value) -> bool {
-    let Some(text) = value.as_str() else {
-        return false;
-    };
-    let mut parts = text.split('.');
-    for _ in 0..3 {
-        let Some(part) = parts.next() else {
-            return false;
-        };
-        // Schema has no integer magnitude bound for version components. A long
-        // valid component must not fail through integer parsing/overflow.
-        if part.is_empty()
-            || !part.bytes().all(|b| b.is_ascii_digit())
-            || (part.starts_with('0') && part != "0")
-        {
-            return false;
-        }
-    }
-    parts.next().is_none()
 }
 fn installation(value: &Value) -> bool {
     let Some(facts) = closed(value, &["format", "installScope", "ownershipProtocol"]) else {

@@ -3076,3 +3076,45 @@ no remaining in-scope gap.
 Details: [Root policy shape](client-upgrade-root-policy-shape.md). Full T27
 Root authenticity/chain/high-watermark/native-fact integration remains open.
 Downloads retain no total/cumulative duration or retry cap.
+
+
+## T27 ninth batch - canonical decimal version ordering (2026-10-13)
+
+Private CanonicalAppVersion accepts only an original bounded decoded JSON string
+with exactly three canonical ASCII decimal components. Source's existing version
+predicate moves unchanged into the shared private shape helper. Numeric ordering
+uses component length then ASCII lexicographic order, stopping at the first
+difference, exactly equivalent to frozen three-BigInt comparison. No u64/f64
+conversion, new magnitude/component-length cap, trim or semver extension occurs.
+Only supplied-value ordering follows, not actual source/currentness/eligibility.
+
+Four groups cover each component,9/10/99/100, beyondSAFE/u64 magnitudes, equality/
+reverse/transitivity, escaped semantic digits, invalid grammar/types/UTF8,
+escaped duplicate properties before shape, major precedence over giant later
+components and decoded64KiB exact/+1 in all three components. Metadata and
+Credential wire limits remain distinct and unchanged. Final348 actual original
+Node BigInt operand pairs match; Source218 original cases remain unchanged.
+
+Root final all42 codec tests with actual Node22 and both old oracle flags passed:
+signing6 in5.25s, bytes7 in6.07s, consume4 in2.70s, native3 in7.87s, rollout4
+in0.89s, Root4 in6.05s (639 cases), Source5 in0.87s (218), status5 in0.78s and
+version4 in1.09s (348). Clippy2.02s/fmt passed; CI51 in0.089s, architecture/
+version/diff passed. First336-pair test tree does not substitute for final348
+evidence. No dependency/lock/Schema/CI/product version/gitlink changes.
+Final actual Windows App passed all25 updater tests in0.07s after2m31s build,
+including component precedence, above-u64 values, escaped equality and leading-
+zero refusal. No App-wide pass is claimed.
+
+Both independent frozen-source and final documentation reviews returned scoped
+PASS. Dependency all42 actual Node22 tests passed with both old oracle flags:
+signing6 in3.57s, bytes7 in0.36s, consume4 in1.53s, native3 in0.62s, rollout4
+in0.59s, Root4 in4.53s (639), Source5 in0.87s (218), status5 in0.74s and version4
+in1.22s (348); Clippy1.53s/fmt/diff passed. Compatibility all42 actual Node22
+tests passed with both flags: signing6 in4.78s, bytes7 in0.61s, consume4 in1.99s,
+native3 in0.99s, rollout4 in0.86s, Root4 in4.90s (639), Source5 in0.86s (218),
+status5 in0.67s and version4 in0.88s (348); Clippy0.09s/fmt, CI51 in0.058s/diff
+passed. Frozen source remained unchanged; root self-review found no remaining
+in-scope gap.
+
+Details: [version ordering](client-upgrade-version-ordering.md). Full T27 remains
+unfinished. Downloads retain no total/cumulative duration or retry cap.

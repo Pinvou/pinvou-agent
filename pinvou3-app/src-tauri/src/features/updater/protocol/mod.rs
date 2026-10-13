@@ -12,6 +12,19 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+pub(crate) fn compare_app_version_bytes(
+    left: &[u8],
+    right: &[u8],
+) -> Result<std::cmp::Ordering, pinvou_upgrade_codec::VersionError> {
+    let left = decode_metadata(left)
+        .map_err(pinvou_upgrade_codec::VersionError::Json)?
+        .app_version_shape()?;
+    let right = decode_metadata(right)
+        .map_err(pinvou_upgrade_codec::VersionError::Json)?
+        .app_version_shape()?;
+    Ok(pinvou_upgrade_codec::compare_app_versions(&left, &right))
+}
+
 pub(crate) fn decode_root_policy_shape(
     bytes: &[u8],
 ) -> Result<pinvou_upgrade_codec::RootPolicyShape, pinvou_upgrade_codec::RootPolicyError> {
@@ -63,6 +76,30 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_compares_decimal_components_without_integer_overflow_or_normalization() {
+        use std::cmp::Ordering;
+        assert_eq!(
+            compare_app_version_bytes(br#""9.999.999""#, br#""10.0.0""#),
+            Ok(Ordering::Less)
+        );
+        assert_eq!(
+            compare_app_version_bytes(
+                br#""18446744073709551616.0.0""#,
+                br#""18446744073709551615.0.0""#
+            ),
+            Ok(Ordering::Greater)
+        );
+        assert_eq!(
+            compare_app_version_bytes(br#""\u0031.2.3""#, br#""1.2.3""#),
+            Ok(Ordering::Equal)
+        );
+        assert_eq!(
+            compare_app_version_bytes(br#""01.2.3""#, br#""1.2.3""#),
+            Err(pinvou_upgrade_codec::VersionError::InvalidVersion)
+        );
+    }
 
     #[test]
     fn feature_facade_checks_root_policy_structure_without_anchor_or_point_trust() {
