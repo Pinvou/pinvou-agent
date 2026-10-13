@@ -309,7 +309,6 @@ export function fetchToolDetails(tool) {
     || '');
   return {
     url,
-    hostname,
     target: target || hostname || '网页',
     status: Number.isFinite(status) ? status : null,
     contentType,
