@@ -4249,6 +4249,41 @@ fn retention_purge_notifies_session_purged_hooks() {
     );
 }
 
+/// The composition root's purge hook also removes the session's entry from
+/// the codex_acp agents index — durable, id-scoped IO performed WHILE the
+/// purge runs. The store.rs contract promises every store-side lock is
+/// released before hooks fire (a hook touching a sidecar writer would
+/// otherwise self-deadlock on the non-reentrant io mutexes), and the hook
+/// must receive exactly the evicted id. Pinned with a file stand-in for the
+/// index: sessions must not depend on codex_acp here, the real wiring is
+/// unit-tested at the composition root (lib.rs).
+#[test]
+fn retention_purge_runs_hooks_that_remove_durable_state_for_the_id() {
+    let (store, _guard) = isolated_store();
+    let chat = store
+        .create_new("m".into(), None, std::env::temp_dir())
+        .expect("create chat");
+    let id = chat.metadata.id.clone();
+
+    // Underscore-prefixed like the other scan-invisible sidecar files.
+    let entry = paths::sessions_root().join(format!("_{id}.purge-hook-stub"));
+    std::fs::write(&entry, b"index entry stand-in").expect("seed stub");
+    store.register_session_purged_hook(std::sync::Arc::new(move |sid: &str| {
+        // Stand-in for the agents-index removal: the file is keyed by the id
+        // the hook actually receives, so a wrong id keeps the stub and fails
+        // the assertion below.
+        let _ =
+            std::fs::remove_file(paths::sessions_root().join(format!("_{sid}.purge-hook-stub")));
+    }));
+
+    store.purge_session_side_maps(std::slice::from_ref(&id));
+
+    assert!(
+        !entry.exists(),
+        "the purge must run hooks that remove durable state for the evicted id"
+    );
+}
+
 // ===================== code session permission mode (two-layer persistence + default resolution) =====================
 
 /// Inject a simple code-session predicate: ids in the list count as
@@ -8020,6 +8055,89 @@ fn boot_migration_partial_failure_retains_and_extends() {
 
     let _ = std::fs::remove_dir_all(&target);
     let _ = std::fs::remove_dir_all(&stuck_path);
+}
+
+/// Ghost entries in the legacy table (their `<id>.json` was already deleted —
+/// out-of-process removals, retention evictions; #464/#567) must be dropped
+/// WITHOUT migration: no `sessions/<id>/` directory may be created for them
+/// and none may enter the in-memory table, while live entries migrate
+/// normally and a fully-migrated table is retired. Without the ghost-skip the
+/// boot migration would resurrect eviction leftovers as binding-only ghost
+/// directories (the exact failure mode the codex_acp sidecar backfill gate
+/// guards against on its side).
+#[test]
+fn boot_migration_drops_ghost_entries_without_creating_dirs() {
+    let (store, _g) = isolated_store();
+    let live = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create live");
+    let dead = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create dead");
+    let dead_id = dead.metadata.id.clone();
+    store.delete(&dead_id).expect("evict dead");
+    assert!(
+        !store
+            .manager
+            .sessions_dir()
+            .join(format!("{dead_id}.json"))
+            .exists(),
+        "fixture: the dead session's durable record is gone",
+    );
+
+    let target = unique_temp_dir("legacy-ghost-target");
+    std::fs::create_dir_all(&target).expect("create target");
+    let legacy = store
+        .manager
+        .sessions_dir()
+        .join("_session_workspaces.json");
+    std::fs::write(
+        &legacy,
+        serde_json::to_vec(&serde_json::json!({
+            live.metadata.id.clone(): target.display().to_string(),
+            dead_id.clone(): target.display().to_string(),
+        }))
+        .expect("serialize legacy table"),
+    )
+    .expect("seed legacy file");
+
+    store.migrate_legacy_session_workspaces();
+
+    assert!(
+        !legacy.exists(),
+        "the live entry migrates, so the fully-migrated table must be retired",
+    );
+    assert!(
+        !store.manager.sessions_dir().join(&dead_id).exists(),
+        "the ghost entry must not create a sessions/<id>/ directory",
+    );
+    assert!(
+        !store.session_workspaces.read().contains_key(&dead_id),
+        "the ghost entry must not enter the in-memory table",
+    );
+    assert_eq!(
+        store.session_workspace_binding(&dead_id).as_deref(),
+        None,
+        "the ghost entry's binding must not resolve",
+    );
+    let sidecar = store
+        .manager
+        .sessions_dir()
+        .join(&live.metadata.id)
+        .join("workspace-binding.json");
+    assert!(
+        sidecar.is_file(),
+        "the live entry's binding sidecar must be written",
+    );
+    assert_eq!(
+        store
+            .session_workspace_binding(&live.metadata.id)
+            .as_deref(),
+        Some(target.as_path()),
+        "the live entry's binding resolves to its table path",
+    );
+
+    let _ = std::fs::remove_dir_all(&target);
 }
 
 /// Round-10 minor 1 / round-12 B1: the load-bearing invariant of the absorbed
