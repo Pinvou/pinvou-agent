@@ -4712,3 +4712,41 @@ the final installer, authenticate a fake JSF structure, validate provenance/
 pipeline or scan risks, or grant Artifact admission/storage/deployment. No SQL,
 protocol, external dependency or application version changes. Full T09 remains
 unfinished; downloads retain no total/cumulative elapsed deadline or retry budget.
+
+
+## T09 seventh batch - Manifest-bound SBOM Schema composition (2026-10-14)
+
+The separate service's additional SBOM Schema inspection entry joins the same
+current signed Manifest/Root/deny and exact paired evidence inspection to its
+supported offline Schema adapter. Schema version comes only from the validated
+original Manifest, actual specVersion must match the supported declaration and
+the Schema result must retain the exact original signed SBOM size/hash.
+Explicit evidence and JSON capacities remain separate; unknown version/Schema/
+format/capacity/cancel/deny failures return no earlier Facts or paired bytes.
+Old verification APIs are unchanged; the private decoder additionally retains
+the Manifest's SBOM schemaVersion.
+
+Root signed pretty raw CycloneDX1.6 with prefixed logical filename/current reads,
+byte-only stage positive before each precise unsupported/mismatched-version/
+schema/format negative and restored positives, explicit JSON capacity, current
+deny/restore, independent target, cancellation and caller-buffer original-identity
+controls passed. The final full default Go suite passed (verification11=12.703s/
+Schema4=6.073s/core3=5.893s/defaultSBOMCLI1=4.042s) plus all existing regressions;
+full vet/modverify/server+CLI builds/pinned contracts/format/diff passed.
+Actual rebuilt SBOMCLI2 including positive/wrong-version child E2E passed in
+3.015s. Dependency independently passed actual Windows Go1.27.2
+verification11=10.893s/Schema4=2.845s/actualSBOMCLI2+childE2E3.686s and affected
+vet/format/diff; frozen code/test review found no mandatory issue.
+Independent compatibility actual Windows Go1.27.2 passed verification11=6.483s/
+Schema4=1.563s/actualSBOMCLI2+childE2E2.379s and affected vet/format/diff.
+Both frozen independent code/test reviews passed without mandatory findings;
+all processes are closed. Client architecture/version/diff passed.
+Both independent final documentation reviews passed before commit.
+
+This is structural observation, not accepted-version policy, final-installer SBOM
+binding, provenance signatures/source/pipeline, vulnerability/scan, native
+authentication, durable storage or Artifact admission. Final admission rereads
+current time/trust/deny/immutable identities. No SQL/provider/protocol/dependency/
+application version changes; unchanged DB/provider/browser/deployment opt-ins
+are not claimed. Full T09 remains incomplete and downloads retain no cumulative
+elapsed deadline or retry budget.
