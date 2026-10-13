@@ -3326,3 +3326,57 @@ No remaining in-scope issue was found in root self-review.
 Details: [canonical envelope shape](client-upgrade-canonical-envelope.md).
 No dependency/lock/Schema/CI/version/gitlink changes. Full T27 trust integration
 remains unfinished. Downloads retain no total/cumulative duration or retry cap.
+
+
+## T27 fourteenth batch - supplied high-water comparison (2026-10-13)
+
+One required supplied bounded record is compared with the original canonical
+envelope shape; no alternate bytes/hash parameter or absent-record success exists.
+Five versioned metadata roles are supported, with positive SAFE current version
+and Release revision only. Package/credential roles refuse. Complete four-field
+context JCS must match, including all scope fields/extra context keys; positive
+SAFE record.version then rejects rollback or same-version original full-envelope
+SHA equivocation. The higher-version branch intentionally ignores the old hash,
+including missing/null/number/wrong/uppercase variants, as the original helper
+does. Whole raw resources/duplicates still cover ignored record fields. Borrowed
+context fields avoid a large clone; fixed errors include facade encoding errors.
+No record trust, authenticated acceptance, persistence, advancement, default after
+loss, Root lineage or current execution rights is granted. This is the stated
+role/version precondition subset, not arbitrary malformed-body equivalence.
+
+Four groups cover five supported/all15 unsupported roles, full context/scope,
+Release no-fallback, positive current versions, required records, original full
+signature-byte binding, ignored-extra resources/duplicates/UTF8 and1935 actual
+Node assertHighWater comparisons including all version/hash branches and SAFE
+bounds. Initial compilation failed because this isolated Serde graph has no
+derive macro; explicit existing Serialize implementation fixed it with no new
+dependency. Initial tests incorrectly selected fixtures by position (Package is
+second); explicit role filtering corrected coverage. The subsequent four groups
+passed2.42s before the fixed facade-envelope-error variant was added. No frozen
+reference change occurred.
+
+Root final all62 codec tests passed with actualNode22 and both old oracle flags:
+signing6 in3.99s, bytes7 in0.44s, consume4 in2.42s, envelope4 in7.45s (2080),
+high-water4 in2.83s (1935), native3 in0.68s, opening4 in0.99s (152), policy4
+in4.37s (966), reference4 in0.91s (730), rollout4 in0.67s, Root4 in4.66s (639),
+Source5 in0.91s (218), status5 in0.66s and version4 in0.95s (348).
+Clippy12.00s/fmt passed; CI51 passed0.131s, architecture/version/diff passed.
+Root self-review found no remaining in-scope gap. Final actual Windows App passed all30 updater tests in0.07s after2m46s build,
+including Release original-envelope match, equal-version hash mismatch and
+rollback refusal. No App-wide pass is claimed.
+Both independent frozen-source scoped reviews returned PASS without mandatory.
+Dependency actualNode22+both old flags all62 PASS: signing6 in3.32s, bytes7
+in0.40s, consume4 in1.70s, envelope4 in20.41s (2080), high-water4 in2.66s
+(1935), native3 in0.71s, opening4 in0.96s (152), policy4 in4.16s (966),
+reference4 in6.05s (730), rollout4 in0.59s, Root4 in3.96s (639), Source5
+in0.78s (218), status5 in0.62s and version4 in0.92s (348); Clippy0.13s/fmt/
+diff passed. Compatibility actualNode22+both flags all62 PASS: signing6 in3.00s,
+bytes7 in0.34s, consume4 in1.35s, envelope4 in6.78s (2080), high-water4 in2.51s
+(1935), native3 in0.66s, opening4 in0.91s (152), policy4 in4.65s (966),
+reference4 in0.87s (730), rollout4 in0.66s, Root4 in3.92s (639), Source5 in0.80s
+(218), status5 in0.66s and version4 in6.51s (348); Clippy1.04s/fmt, CI51 in0.049s/
+diff passed. Frozen code is unchanged. Both final documentation/evidence scoped reviews returned PASS on unchanged source.
+Details: [supplied high-water](client-upgrade-supplied-high-water.md).
+No dependency/lock/Schema/CI/version/gitlink changes. Full T27 trust/persistence
+integration remains unfinished. Downloads retain no total/cumulative duration or
+retry cap.

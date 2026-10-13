@@ -12,6 +12,22 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+pub(crate) fn check_supplied_high_water_bytes(
+    original_envelope: &[u8],
+    supplied_record: &[u8],
+) -> Result<(), pinvou_upgrade_codec::HighWaterError> {
+    // Encoding shape must be checked on these same original bytes.
+    // The caller still supplies authenticated/protected acceptance separately.
+    let envelope = pinvou_upgrade_codec::decode_canonical_envelope(
+        original_envelope,
+        pinvou_upgrade_codec::InputKind::Metadata,
+    )
+    .map_err(pinvou_upgrade_codec::HighWaterError::Envelope)?;
+    let record =
+        decode_metadata(supplied_record).map_err(pinvou_upgrade_codec::HighWaterError::Json)?;
+    pinvou_upgrade_codec::assert_supplied_high_water(&envelope, &record)
+}
+
 pub(crate) fn decode_canonical_envelope_shape(
     bytes: &[u8],
     kind: pinvou_upgrade_codec::InputKind,
@@ -120,6 +136,47 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_compares_supplied_high_water_with_original_full_envelope() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/envelopes.json"
+        )))
+        .unwrap();
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        use sha2::{Digest, Sha256};
+        let vector = vectors["vectors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["name"] == "release")
+            .unwrap();
+        let raw = URL_SAFE_NO_PAD
+            .decode(vector["envelopeBase64Url"].as_str().unwrap())
+            .unwrap();
+        let envelope: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        let signed = &envelope["signed"];
+        let hash: String = Sha256::digest(&raw)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let mut record = serde_json::json!({"scope":vector["expectedContext"],
+            "version":signed["revision"], "envelopeSha256":hash});
+        assert!(
+            check_supplied_high_water_bytes(&raw, &serde_json::to_vec(&record).unwrap()).is_ok()
+        );
+        record["envelopeSha256"] = serde_json::json!("0".repeat(64));
+        assert_eq!(
+            check_supplied_high_water_bytes(&raw, &serde_json::to_vec(&record).unwrap()),
+            Err(pinvou_upgrade_codec::HighWaterError::Equivocation)
+        );
+        record["version"] = serde_json::json!(signed["revision"].as_u64().unwrap() + 1);
+        assert_eq!(
+            check_supplied_high_water_bytes(&raw, &serde_json::to_vec(&record).unwrap()),
+            Err(pinvou_upgrade_codec::HighWaterError::Rollback)
+        );
+    }
 
     #[test]
     fn feature_facade_checks_original_envelope_encoding_and_role_profile() {
