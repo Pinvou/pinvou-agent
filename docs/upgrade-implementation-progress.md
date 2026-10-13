@@ -2322,3 +2322,44 @@ deployment remain unfinished, and downloads retain no elapsed cap. Details:
 Both independent roles gave final B4 scoped PASS after reviewing the frozen
 implementation, final App evidence and documentation. Each independently passed
 all fifteen groups (3.47s and 3.52s), plus fmt/Clippy. No mandatory finding remains.
+
+### T29 fifth batch: read-only ZIP32 byte inventory (2026-10-13)
+
+The private inspector validates the original package bytes on the same File before
+and after scanning raw central/local records and actual expanded members. Unique
+EOCD/physical layout, header/descriptor bindings, portable paths/types, explicit
+metadata/path-state/expansion/count/ratio capacities, actual CRC/size/hash and exact
+Deflate input consumption are checked. Raw reads and bounded 64 KiB codec steps
+check cancellation. No partial inventory escapes a later failure. Internal ZIPs
+remain opaque data; the module never writes or promotes extraction paths.
+
+The Manifest has no complete member-name allowlist, so none is invented. Safe
+extra members are covered by the complete signed-container identity; native claim
+membership, OTA interpretation and FullPack selection remain later owner duties.
+ZIP64/split/prefix and unsupported extra/encoding/type formats fail explicitly.
+The 4,096-entry and separate 8 MiB metadata/path-state parser ceilings do not cap
+artifact size at 32 MiB or certify production resource budgets.
+
+Final three groups covering 48 independent Python wire vectors passed (7.28s),
+including real 33 MiB Store and Deflate archives, exact compressed tail refusal,
+late corrupt entry and Store/Deflate cancellation boundaries. Python checked all
+outer hashes and every positive inventory with its standard ZIP SDK. Fmt/Clippy,
+49 CI policies, architecture, version, diff/YAML and complete locked App/CLI graphs
+passed. Each parent lock adds twelve lines for the local package/App edge without
+external version change; all 30 isolated packages match parent versions/sources/
+checksums. Final actual Windows App integration passed all twelve updater tests
+(0.02s after a 2m10s incremental build), including Store/Deflate success and
+CompressedTail refusal; no App-wide pass is claimed.
+
+Independent review found that initial standalone miniz checks did not exercise
+the App's existing zlib-rs decoder. The primary role aligned that backend, repaired
+the verification gap and added actual App Deflate controls. Both independent
+roles passed the repaired backend's three groups (8.10s and 12.40s); earlier miniz
+runs are not treated as App backend evidence. Baseline dependency graphs for
+Windows, Linux x86_64/arm64 and macOS arm64 already selected zlib-rs; graph checks
+are not native certification. Physical source protection, safe extraction,
+installer authenticity, current rights and full T29 remain unfinished. The same
+original validation budget spans all scans, without a new download duration cap.
+Details: [ZIP inventory](client-upgrade-zip-inventory.md).
+Both independent roles gave final B5 scoped PASS after reviewing the repaired
+backend, actual App evidence and final documentation. No mandatory finding remains.

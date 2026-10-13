@@ -1,0 +1,21 @@
+[package]
+name = "pinvou-upgrade-archive"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+license = "MIT"
+
+[dependencies]
+pinvou-upgrade-transfer = { path = "../transfer" }
+pinvou-upgrade-byte-check = { path = "../verify" }
+sha2 = "=0.11.0"
+crc32fast = "=1.5.0"
+# Match the backend already selected by the App's ZIP/dependency graph.
+flate2 = { version = "=1.1.9", features = ["zlib-rs"] }
+
+[dev-dependencies]
+serde_json = "=1.0.151"
+
+[lints.rust]
+unsafe_code = "forbid"

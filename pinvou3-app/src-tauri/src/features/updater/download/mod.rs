@@ -27,6 +27,15 @@ pub(crate) fn copy_checked_file_bytes<'a>(
     pinvou_upgrade_byte_check::copy_and_check(source, destination, target, cancelled)
 }
 
+pub(crate) fn inspect_package_bytes<'a>(
+    file: &mut std::fs::File,
+    target: pinvou_upgrade_transfer::Artifact<'a>,
+    limits: pinvou_upgrade_archive::ArchiveLimits,
+    cancelled: impl FnMut() -> bool,
+) -> Result<pinvou_upgrade_archive::PackageInventory<'a>, pinvou_upgrade_archive::ArchiveError> {
+    pinvou_upgrade_archive::inspect_file(file, target, limits, cancelled)
+}
+
 pub(crate) fn plan_file_response<'target, 'headers>(
     request: pinvou_upgrade_transfer::RequestPlan<'target>,
     status: u16,
@@ -49,6 +58,67 @@ mod tests {
         Artifact, PrefixState, ResponseDecision, SourceContinuity, StrongEtag, TransferError,
         WriteMode, plan_request,
     };
+
+    #[test]
+    fn application_archive_graph_checks_real_store_deflate_and_tail() {
+        use std::io::Write;
+        let vectors: serde_json::Value =
+            serde_json::from_str(include_str!("archive/tests/fixtures/zip-vectors.json")).unwrap();
+        for case in ["store", "deflate", "compressed-tail"] {
+            let value = vectors
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["case"] == case)
+                .unwrap();
+            let hex = value["hex"].as_str().unwrap();
+            let bytes: Vec<u8> = hex
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                .collect();
+            let path =
+                std::env::temp_dir().join(format!("pinvou-app-zip-check-{}", uuid::Uuid::new_v4()));
+            let mut file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .unwrap();
+            file.write_all(&bytes).unwrap();
+            let target = Artifact::new(
+                "package-1",
+                bytes.len() as u64,
+                value["sha256"].as_str().unwrap(),
+            )
+            .unwrap();
+            let limits = pinvou_upgrade_archive::ArchiveLimits::new(
+                100000, 100000, 10, 10000, 10000, 1000000,
+            )
+            .unwrap();
+            let result = inspect_package_bytes(&mut file, target, limits, || false);
+            if case == "compressed-tail" {
+                assert!(matches!(
+                    result,
+                    Err(pinvou_upgrade_archive::ArchiveError::CompressedTail)
+                ));
+            } else {
+                let inventory = result.unwrap();
+                assert!(inventory.target() == target);
+                assert_eq!(inventory.members().len(), 1);
+                assert_eq!(
+                    inventory.members()[0].name(),
+                    value["members"][0]["name"].as_str().unwrap()
+                );
+                assert_eq!(
+                    inventory.members()[0].size(),
+                    value["members"][0]["size"].as_u64().unwrap()
+                );
+            }
+            drop(file);
+            std::fs::remove_file(path).unwrap();
+        }
+    }
 
     #[test]
     fn application_byte_check_graph_scans_and_copies_original_handles() {

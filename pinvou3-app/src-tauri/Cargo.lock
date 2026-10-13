@@ -6618,6 +6618,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "pinvou-upgrade-archive"
+version = "0.0.0"
+dependencies = [
+ "crc32fast",
+ "flate2",
+ "pinvou-upgrade-byte-check",
+ "pinvou-upgrade-transfer",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "pinvou-upgrade-byte-check"
 version = "0.0.0"
 dependencies = [
@@ -6697,6 +6708,7 @@ dependencies = [
  "objc2-web-kit",
  "parking_lot",
  "pinvou-knowledge",
+ "pinvou-upgrade-archive",
  "pinvou-upgrade-byte-check",
  "pinvou-upgrade-codec",
  "pinvou-upgrade-file-http",

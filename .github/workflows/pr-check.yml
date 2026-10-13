@@ -190,6 +190,7 @@ jobs:
           predicate-quantifier: some-with-excludes
           filters: |
             rust_code:
+              - 'pinvou3-app/src-tauri/src/features/updater/download/archive/**'
               - 'pinvou3-app/src-tauri/src/features/updater/download/http/**'
               - 'pinvou3-app/src-tauri/src/features/updater/protocol/codec/**'
               - 'specs/upgrade/v1/**'
@@ -860,6 +861,14 @@ jobs:
       - name: Check independent upgrade complete-byte verification
         working-directory: pinvou3-app/src-tauri/src/features/updater/download/verify
         run: |
+          cargo fmt -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+
+      - name: Check independent upgrade ZIP inventory
+        working-directory: pinvou3-app/src-tauri/src/features/updater/download/archive
+        run: |
+          python3 tests/generate_vectors.py --check
           cargo fmt -- --check
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked
