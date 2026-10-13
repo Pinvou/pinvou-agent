@@ -12,6 +12,18 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+pub(crate) fn declared_role_policy_bytes(
+    root: &pinvou_upgrade_codec::RootPolicyShape,
+    signed_body: &[u8],
+) -> Result<Vec<u8>, pinvou_upgrade_codec::PolicyLookupError> {
+    let context = decode_metadata(signed_body)
+        .map_err(pinvou_upgrade_codec::PolicyLookupError::Json)?
+        .role_context_shape()?;
+    root.declared_policy_for(&context)?
+        .canonical_bytes()
+        .map_err(pinvou_upgrade_codec::PolicyLookupError::Json)
+}
+
 pub(crate) fn assert_rollout_opening_bytes(
     target: &[u8],
     release_hash: &[u8],
@@ -100,6 +112,34 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_looks_up_only_exact_declared_role_scope_without_product_fallback() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/envelopes.json"
+        )))
+        .unwrap();
+        let root =
+            decode_root_policy_shape(&serde_json::to_vec(&vector["trustedRoot"]).unwrap()).unwrap();
+        let mut context = serde_json::json!({"role":"target","product":"pinvou","component":"app","scope":{"channel":"stable","targetKey":"linux-x86_64-deb-perMachine"}});
+        let selected =
+            declared_role_policy_bytes(&root, &serde_json::to_vec(&context).unwrap()).unwrap();
+        let selected: serde_json::Value = serde_json::from_slice(&selected).unwrap();
+        assert_eq!(selected["role"], serde_json::json!("target"));
+        assert_eq!(selected["threshold"], serde_json::json!(1));
+        context["product"] = serde_json::json!("other-product");
+        assert_eq!(
+            declared_role_policy_bytes(&root, &serde_json::to_vec(&context).unwrap()),
+            Err(pinvou_upgrade_codec::PolicyLookupError::ProductMismatch)
+        );
+        context["product"] = serde_json::json!("pinvou");
+        context["scope"]["channel"] = serde_json::json!("beta");
+        assert_eq!(
+            declared_role_policy_bytes(&root, &serde_json::to_vec(&context).unwrap()),
+            Err(pinvou_upgrade_codec::PolicyLookupError::NotDeclared)
+        );
+    }
 
     #[test]
     fn feature_facade_binds_supplied_target_hash_opening_and_rejects_null_or_wrong_hash() {

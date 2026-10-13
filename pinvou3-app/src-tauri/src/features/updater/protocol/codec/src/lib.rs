@@ -7,6 +7,8 @@ pub use consume::{ConsumeDigestError, ConsumeRequestDigest};
 mod native;
 mod parse;
 pub use native::{NativeIdentityError, NativeIdentityShape, assert_native_identity};
+mod policy;
+pub use policy::{DeclaredRolePolicy, PolicyLookupError, RoleContextShape};
 mod opening;
 pub use opening::{OpeningBindingError, assert_rollout_opening};
 mod reference;

@@ -1,4 +1,7 @@
 //! Root descriptor/policy consistency only, never bootstrap trust or signatures.
+use crate::policy::{
+    DeclaredRolePolicy, PolicyLookupError, RoleContextShape, RolePolicyData, select_declared_policy,
+};
 use crate::shape::{TARGETS, closed, identifier, one_of, positive_safe_integer, sha256_hex};
 use crate::{Document, Error, key_descriptor};
 use serde_json::Value;
@@ -49,10 +52,20 @@ impl std::error::Error for RootPolicyError {}
 /// points, signature thresholds, Root authenticity, time validity or currentness.
 pub struct RootPolicyShape {
     canonical: Vec<u8>,
+    product: String,
+    policies: Vec<RolePolicyData>,
 }
 impl RootPolicyShape {
     pub fn canonical_bytes(&self) -> &[u8] {
         &self.canonical
+    }
+    /// Lookup only the exact declared product/role/component/channel/target tuple.
+    /// This Root shape is not an authenticated Root or signature/key authority.
+    pub fn declared_policy_for(
+        &self,
+        context: &RoleContextShape,
+    ) -> Result<DeclaredRolePolicy<'_>, PolicyLookupError> {
+        select_declared_policy(&self.product, &self.policies, context)
     }
 }
 impl Document {
@@ -113,6 +126,7 @@ impl Document {
             .ok_or(RootPolicyError::InvalidPolicy)?;
         let mut policies = BTreeSet::new();
         let mut root_count = 0;
+        let mut declared = Vec::with_capacity(roles.len());
         for value in roles {
             let policy = closed(
                 value,
@@ -158,11 +172,13 @@ impl Document {
                 return Err(RootPolicyError::InvalidPolicy);
             }
             let mut unique = BTreeSet::new();
+            let mut member_ids = Vec::with_capacity(members.len());
             for member in members {
                 let id = member.as_str().ok_or(RootPolicyError::InvalidPolicy)?;
                 if !sha256_hex(member) || !key_ids.contains(id) || !unique.insert(id) {
                     return Err(RootPolicyError::InvalidPolicy);
                 }
+                member_ids.push(id.to_owned());
             }
             if role == "root" {
                 root_count += 1;
@@ -177,12 +193,32 @@ impl Document {
             } else if identity.1.is_none() {
                 return Err(RootPolicyError::InvalidPolicy);
             }
+            // Already positive integral binary64 <= actual members <=4096.
+            // The bounded cast is exact; the u16 conversion is also checked.
+            let threshold =
+                u16::try_from(threshold as u64).map_err(|_| RootPolicyError::InvalidPolicy)?;
+            declared.push(RolePolicyData {
+                role: role.to_owned(),
+                component: identity.1.map(str::to_owned),
+                channel: identity.2.map(str::to_owned),
+                target_key: identity.3.map(str::to_owned),
+                threshold,
+                key_ids: member_ids,
+            });
         }
         if root_count != 1 {
             return Err(RootPolicyError::InvalidPolicy);
         }
         let canonical = self.canonical_bytes().map_err(RootPolicyError::Json)?;
-        Ok(RootPolicyShape { canonical })
+        let product = root["product"]
+            .as_str()
+            .ok_or(RootPolicyError::InvalidClaims)?
+            .to_owned();
+        Ok(RootPolicyShape {
+            canonical,
+            product,
+            policies: declared,
+        })
     }
 }
 fn nonnegative_safe_integer(value: &Value) -> bool {

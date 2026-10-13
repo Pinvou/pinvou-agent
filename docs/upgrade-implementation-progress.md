@@ -3218,3 +3218,60 @@ in-scope gap.
 Details: [opening binding](client-upgrade-opening-binding.md). Full T27 trust/
 selection/high-watermark integration remains unfinished. Downloads retain no
 total/cumulative duration or retry cap.
+
+
+## T27 twelfth batch - exact declared role-policy lookup (2026-10-13)
+
+RootPolicyShape now owns a private immutable typed product/policy cache built in
+the same previously validated pass. Original Root canonical bytes and member
+order remain unchanged; positive integral threshold<=members<=4096 precedes
+bounded and checked u16 conversion. No whole Root JSON clone occurs. Private
+RoleContextShape requires string role/product, explicitly present null-or-string
+component and object scope. Only missing/null channel/targetKey become None;
+other strings remain exact. Scope/body extras still undergo complete raw bounds/
+duplicates. Object scope is the stated existing V1 claims precondition; invalid
+primitive scope outside that domain is not claimed equivalent to the private
+helper. No complete claims Schema is asserted.
+
+Lookup first checks exact product then exact role/component/channel/targetKey,
+with no wildcard, fallback, union or default. Root validation already proves
+unique tuples. The returned private DeclaredRolePolicy borrows the originating
+Root and exposes only threshold, original member IDs and bounded canonical policy.
+It grants no Root/key trust, signature satisfaction, role authorization/currentness
+or execution authority. No dependency/lock/Schema/CI/version/gitlink changes.
+
+Four new groups cover20 roles, same-role multi-scope/component, required versus
+nullable fields, independent mismatches,4096-policy last-item lookup,4096 reverse-
+order members and threshold4096, complete ignored-extra bounds/escaped duplicates
+and exact/+1 context wire limits. Final966 actual Node cases execute the original
+private policyFor body extracted unchanged from frozen signatures.mjs using
+vm.compileFunction and the original requireCondition helper. Original
+validateTrustedRoot and the explicitly stated context subset precede the call.
+Extraction failure has no alternate algorithm or fallback; reference files remain
+unchanged. All639 old Root shape/JCS cases remain regressions.
+
+Root all54 codec tests passed with actual Node22 and both old oracle flags:
+signing6 in7.93s, bytes7 in0.88s, consume4 in1.50s, native3 in0.87s, opening4
+in1.19s (152), policy4 in5.37s (966), reference4 in0.97s (730), rollout4 in0.63s,
+Root4 in6.80s (639), Source5 in1.60s (218), status5 in0.70s and version4 in0.97s
+(348); Clippy4.99s/fmt passed. CI51 passed0.117s, architecture/version/diff passed.
+Final actual Windows App passed all28 updater tests in0.11s after3m13s build,
+including exact declared selection and changed-product/undeclared-channel refusal.
+No App-wide pass is claimed. Both final documentation/evidence reviews returned
+scoped PASS on unchanged frozen source without rebuilding; root self-review found
+no remaining in-scope gap.
+
+Both independent frozen-source scoped reviews returned PASS without mandatory.
+Dependency actual Node22 and both old flags all54 PASS: signing6 in6.30s, bytes7
+in0.69s, consume4 in2.88s, native3 in1.02s, opening4 in1.48s (152), policy4
+in5.55s (966), reference4 in2.94s (730), rollout4 in0.74s, Root4 in4.57s (639),
+Source5 in0.86s (218), status5 in0.77s and version4 in1.02s (348); Clippy0.17s/
+fmt/diff passed. Compatibility actual Node22 and both flags all54 PASS: signing6
+in3.70s, bytes7 in0.39s, consume4 in1.71s, native3 in0.75s, opening4 in1.09s
+(152), policy4 in4.92s (966), reference4 in1.03s (730), rollout4 in0.70s,
+Root4 in4.96s (639), Source5 in0.91s (218), status5 in1.48s and version4 in1.17s
+(348); Clippy2.19s/fmt, CI51 in0.063s/diff passed. Frozen source remains unchanged.
+
+Details: [declared role policy](client-upgrade-declared-role-policy.md). Complete
+T27 signature/trust/lineage/high-watermark integration remains unfinished.
+Downloads retain no total/cumulative duration or retry cap.
