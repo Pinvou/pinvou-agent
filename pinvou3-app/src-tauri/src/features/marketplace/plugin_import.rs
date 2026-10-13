@@ -1659,6 +1659,7 @@ pub fn import_plugin_package_gated(
     // Nothing has landed at this point, so the refusal aborts with the home
     // untouched (the gate's earlier registration is an over-denial row on an
     // installed claimant — fail-closed).
+    ensure_package_id_self_mapping(&id)?;
     // 上传包 id 冲突：目标包目录已存在且内容不同 → 拒绝（提示改名重试），避免
     // 不同包静默互覆盖（二轮评审：冲突检查需覆盖上传包）。内容一致视为同包
     // 重导/升级，允许走原子替换。比对为全内容口径（五轮评审，详见
@@ -3848,6 +3849,92 @@ mod tests {
             assert!(
                 err.contains("内容不同"),
                 "SKILL.md 正文变更应报冲突，实际: {err}"
+            );
+        });
+    }
+
+    /// Owner-claim divergence must also be refused from the UNDER-LOCK
+    /// re-check, not only the pre-gate check: a claimant install (preset
+    /// skill install, CLI companion, ima connect) completing while this
+    /// import waits on the landing lease / import lock / market lock folds
+    /// the pending id onto the claimant — the pack would land keyed by its
+    /// own id, ungoverned in initialized DenyAll scopes. Round-54 audit A1:
+    /// commit 1656d739c deleted the re-check call while this site's comment
+    /// kept describing it. The pre-land gate hook is the hermetic seam that
+    /// completes a claimant install inside exactly that window (after the
+    /// pre-gate check, before the landing), so this pin is deterministic.
+    #[test]
+    fn claimant_completing_inside_the_import_window_is_refused_at_recheck() {
+        crate::platform::test_support::with_temp_home("pinvou-recheck-fold", || {
+            let claimant_zip = write_test_zip(
+                "pinvou-recheck-fold",
+                &[
+                    (
+                        "plugin.json",
+                        r#"{"manifest_version":1,"id":"local-claimant","name":"claimant","components":{"mcp_servers":[{"id":"local-claimant","dir":"mcp"}]}}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                    (
+                        "mcp/manifest.json",
+                        r#"{"id":"local-claimant","name":"claimant","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"],"companion_skills":["local-victim"]}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                    ("mcp/server.py", b"print('c')".to_vec()),
+                ],
+            );
+            let victim_zip = write_test_zip(
+                "pinvou-recheck-fold",
+                &[
+                    (
+                        "plugin.json",
+                        r#"{"manifest_version":1,"id":"local-victim","name":"victim","components":{"mcp_servers":[{"id":"local-victim","dir":"mcp"}]}}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                    (
+                        "mcp/manifest.json",
+                        r#"{"id":"local-victim","name":"victim","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                    ("mcp/server.py", b"print('v')".to_vec()),
+                ],
+            );
+
+            // The victim's pre-land hook installs the claimant for real
+            // (full pipeline): by the time the under-lock re-check runs, the
+            // claimant's companion vocabulary folds "local-victim" onto
+            // "local-claimant". The pre-gate check ran BEFORE the hook, so
+            // only the re-check can produce this refusal.
+            let pre_land = |id: &str, _skills: &[String]| {
+                if id == "local-victim" {
+                    import_plugin_package(&claimant_zip.to_string_lossy(), "claimant.zip")
+                        .unwrap_or_else(|e| {
+                            panic!("claimant install inside the window failed: {e}")
+                        });
+                }
+                Ok(())
+            };
+            let error = import_plugin_package_gated(
+                &victim_zip.to_string_lossy(),
+                "victim.zip",
+                &pre_land,
+            )
+            .expect_err(
+                "a claimant completing inside the import window must fold the id and refuse the import",
+            );
+            assert!(
+                error.contains("配套技能占用"),
+                "expected the fold-divergence refusal, got: {error}"
+            );
+            // The refusal aborts with the home untouched: no victim pack.
+            assert!(
+                !crate::platform::paths::bundles_root()
+                    .join("local-victim")
+                    .exists(),
+                "the refused import must not leave the victim pack on disk"
             );
         });
     }
