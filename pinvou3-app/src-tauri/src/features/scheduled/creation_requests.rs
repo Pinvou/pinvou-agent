@@ -954,9 +954,23 @@ fn write_done_marker(path: &Path, payload: &serde_json::Value) -> Result<()> {
     }
     // Atomic tmp+rename: the server polls this file, so it must never
     // observe a torn write.
+    // Round-17 MAJOR-1: the tmp open is a path open on a user-writable
+    // trust boundary — a planted FIFO at the tmp path blocked the sync
+    // drain open forever (write-side sibling of R11-M3), and no panic
+    // means catch_unwind never fires. The gated lock-file open
+    // (O_NOFOLLOW|O_NONBLOCK, 0600) refuses non-regular entries instead
+    // of opening them; the refused write flows into the caller's existing
+    // retry/quarantine/park machinery, so the bound is the budget.
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, payload.to_string())
-        .with_context(|| format!("write result marker {}", tmp.display()))?;
+    let mut writer = crate::platform::filesystem::open_private_lock_file(&tmp)
+        .with_context(|| format!("open result marker {}", tmp.display()))?;
+    {
+        use std::io::Write as _;
+        writer
+            .write_all(payload.to_string().as_bytes())
+            .with_context(|| format!("write result marker {}", tmp.display()))?;
+    }
+    drop(writer);
     std::fs::rename(&tmp, path).with_context(|| format!("publish result marker {}", path.display()))
 }
 
@@ -1975,6 +1989,154 @@ mod tests {
         assert!(
             spool.join("stuck.json").exists(),
             "the parked record stays put"
+        );
+    }
+
+    // Round-17 MAJOR-4: the Done arm's half of the budget invariant — the
+    // budget stays PUT when the post-apply unlink fails — ships without a
+    // pin: re-adding `retries.attempts.remove(&name)` before the unlink
+    // kept the whole suite green. The removal is blocked with a read-only
+    // spool directory (POSIX semantics; the marker lives in `.done/`,
+    // which stays writable), so the failure is deterministic.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn done_arm_keeps_the_budget_when_removal_fails() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::create_dir_all(done_dir()).unwrap();
+        std::fs::write(spool.join("stuck.json"), spool_record_json(&[])).unwrap();
+        let mut retries = RetryState::default();
+        // Poll 1: a transient apply failure — the budget entry exists.
+        process_pending_spool(
+            &FailingCreator,
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert_eq!(retries.attempts.get("stuck.json").copied(), Some(1));
+        // Block the unlink: the spool directory goes read-only.
+        let mut perms = std::fs::metadata(&spool).unwrap().permissions();
+        use std::os::unix::fs::PermissionsExt as _;
+        perms.set_mode(0o555);
+        std::fs::set_permissions(&spool, perms).unwrap();
+        // Poll 2: the apply succeeds, the marker lands in `.done/`, and
+        // the unlink fails.
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            done_dir().join("stuck.json").exists(),
+            "the marker lands despite the blocked unlink"
+        );
+        assert!(
+            spool.join("stuck.json").exists(),
+            "the removal failure leaves the record queued"
+        );
+        assert_eq!(
+            retries.attempts.get("stuck.json").copied(),
+            Some(1),
+            "the budget stays PUT on a persisted removal failure"
+        );
+        // Restore the directory so the marker suppresses the next poll:
+        // no re-creation, and the parked-in-place record is deduped.
+        let mut perms = std::fs::metadata(&spool).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&spool, perms).unwrap();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert_eq!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .unwrap()
+                .len(),
+            1,
+            "the marker suppresses re-creation while the removal retries"
+        );
+        // The restored poll completes the lifecycle: the queued record is
+        // consumed and the budget clears — the PUT only ever bounded the
+        // removal-failure window.
+        assert!(!spool.join("stuck.json").exists(), "the record is consumed");
+        assert_eq!(
+            retries.attempts.get("stuck.json").copied(),
+            None,
+            "a successful removal clears the budget"
+        );
+    }
+
+    // Round-17 MAJOR-4: the Poison arm's half — the budget clears only on
+    // quarantine success. An entry driven via one retry, then the record
+    // swapped to poison while `failed/` is blocked: the budget stays PUT
+    // and the name parks. Clearing before the rename (the round-15 shape)
+    // re-poisoned on a fresh budget every poll.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn poison_arm_keeps_the_budget_when_quarantine_fails() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("failed"), b"blocked\n").unwrap();
+        std::fs::write(spool.join("swap.json"), spool_record_json(&[])).unwrap();
+        let mut retries = RetryState::default();
+        // Poll 1: a transient apply failure — the budget entry exists.
+        process_pending_spool(
+            &FailingCreator,
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert_eq!(retries.attempts.get("swap.json").copied(), Some(1));
+        // Swap the record to poison (schema drift: CRON smuggled past the
+        // server — the watcher's mirror validation rejects it).
+        std::fs::write(
+            spool.join("swap.json"),
+            r#"{"schema_version":1,"id":"swap","kind":"create","name":"x","prompt":"p","rrule":"FREQ=CRON;EXPR=* * * * *"}"#,
+        )
+        .unwrap();
+        // Poll 2: poison → quarantine fails (failed/ blocked).
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            retries.parked.contains("swap.json"),
+            "a failed poison quarantine parks the name"
+        );
+        assert_eq!(
+            retries.attempts.get("swap.json").copied(),
+            Some(1),
+            "the Poison arm clears only on quarantine success"
+        );
+        assert!(spool.join("swap.json").exists(), "the record stays queued");
+        assert_eq!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .unwrap()
+                .len(),
+            0,
+            "a poisoned record never applies"
         );
     }
 

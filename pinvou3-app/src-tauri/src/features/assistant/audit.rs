@@ -21,11 +21,16 @@ pub fn append(ws: &Path, kind: &str, role: &str, detail: serde_json::Value) {
     // 另一个写者可插在 JSON 体和换行之间,撕裂行边界。
     let mut buf = line.to_string();
     buf.push('\n');
-    let r = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .and_then(|mut f| f.write_all(buf.as_bytes()));
+    // Round-17 MAJOR-2: the append open is a path open on a user-writable
+    // trust boundary — a planted FIFO at the jsonl path blocked the
+    // caller's open forever (the watcher's single drain task on the
+    // scheduled-creation paths). The platform gated open refuses
+    // non-regular entries (O_NOFOLLOW|O_NONBLOCK, 0600) and the portable
+    // fstat below refuses anything non-regular that still made it
+    // through. The write-failure contract (eprintln, never panic) is
+    // unchanged.
+    let r = crate::platform::filesystem::open_private_append_file(&path)
+        .and_then(|mut file| file.write_all(buf.as_bytes()));
     if let Err(e) = r {
         eprintln!("[audit] append failed ({}): {e}", path.display());
     }
