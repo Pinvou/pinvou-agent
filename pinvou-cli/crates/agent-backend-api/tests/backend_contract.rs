@@ -446,8 +446,13 @@ fn observer_panic_is_contained() {
 
 #[test]
 fn safe_events_expose_lifecycle_metadata_only() {
-    let event =
-        SafeAgentEvent::tool_finished("task-1", "web_search", true, Duration::from_millis(12));
+    let event = SafeAgentEvent::tool_finished_with_code(
+        "task-1",
+        "web_search",
+        true,
+        Duration::from_millis(12),
+        None::<String>,
+    );
 
     assert_eq!(event.task_id(), "task-1");
     assert_eq!(event.tool_name(), Some("web_search"));

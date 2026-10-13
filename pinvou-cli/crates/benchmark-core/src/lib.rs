@@ -3,8 +3,6 @@ mod contracts;
 mod error;
 mod event;
 mod manifest;
-// C1 freezes the private store; C2 wires it into runner/service.
-#[allow(dead_code)]
 mod private_prediction;
 mod report;
 mod runner;
