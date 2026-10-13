@@ -2537,7 +2537,6 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       ensure: auxChatFeature.ensure,
       send: auxChatFeature.send,
       snapshot: auxChatFeature.snapshot,
-      discard: auxChatFeature.discard,
       reset: auxChatFeature.reset,
     },
     voice: {
@@ -2679,7 +2678,6 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       startRemoteControl,
       stopRemoteControl,
       refreshRemoteControlQr,
-      getWebRelaySettings: remoteControlFeature.getWebRelaySettings,
     },
     artifacts: {
       artifactInfo,
@@ -2712,7 +2710,6 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       readSubagentTranscript: readMultiAgentSubagent,
     },
     computerUse: {
-      getStatus: computerUseFeature.getStatus,
       refreshStatus: computerUseFeature.refreshStatus,
       grant: computerUseFeature.grant,
       revoke: computerUseFeature.revoke,

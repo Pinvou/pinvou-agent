@@ -342,14 +342,13 @@ assert.equal(allowed.has('list_sessions'), false,
 assert.equal(allowed.has('list_archived_sessions'), false,
   'Web must not call the native archived list that exposes host workspace metadata');
 
-// Aux chat domain: platform/web/bridge.js's auxChatEnsure/auxChatDiscard/
+// Aux chat domain: platform/web/bridge.js's auxChatEnsure/
 // auxChatReset invoke these commands directly; sending goes through the
 // existing web_access_chat (an aux session can be store.load'ed by id and is
 // not affected by the list_sessions filter). Missing any entry would make
 // the Web aux chat fail silently.
 for (const command of [
   'get_or_create_aux_session',
-  'discard_aux_session',
   'reset_aux_session',
 ]) {
   assert.equal(allowed.has(command), true, `${command} must be allowed on Web (aux chat)`);
@@ -704,7 +703,7 @@ assert.match(webBridge, /composerDraft: ""/,
   'WebUI must keep a per-session in-memory composer draft');
 assert.match(webDomainAdapter, /chat: domain\(\["sendMessage", "sendMessageToSession", "getComposerDraft", "setComposerDraft"/,
   'WebUI domain facade must expose the same composer draft API as desktop');
-assert.match(webDomainAdapter, /auxChat: domain\(\[\], \{\s*ensure: "auxChatEnsure",\s*send: "auxChatSend",\s*snapshot: "auxChatSnapshot",\s*discard: "auxChatDiscard",\s*reset: "auxChatReset"/,
+assert.match(webDomainAdapter, /auxChat: domain\(\[\], \{\s*ensure: "auxChatEnsure",\s*send: "auxChatSend",\s*snapshot: "auxChatSnapshot",\s*reset: "auxChatReset"/,
   'WebUI domain facade must expose the same auxChat domain as desktop');
 // M7: the auxChat domain bodies live in the shared lane (cluster "auxChat");
 // both lanes consume it and keep only their send dispatch. Renaming an
@@ -720,7 +719,6 @@ assert.match(sharedBridgeHelpers, /invoke\("get_or_create_aux_session", \{ sessi
   'aux chat must create-or-fetch the aux session by task id');
 assert.match(webBridge, /invoke\("web_access_chat", \{ message, attachmentHandles: \[\], sessionId: sid, restrictTools: true \}\)/,
   'WebUI aux chat sends must ride the bounded web chat command with tools restricted');
-assert.match(sharedBridgeHelpers, /invoke\("discard_aux_session", \{ sessionId: task \}\)/);
 assert.match(sharedBridgeHelpers, /async function auxChatReset\(taskId\)/);
 assert.match(sharedBridgeHelpers, /invoke\("reset_aux_session", \{ sessionId: task \}\)/,
   'aux chat restart must ride the atomic reset command (M6)');
@@ -731,8 +729,6 @@ assert.doesNotMatch(webBridge, /auxIdByTask/,
   'the WebUI aux id must be derived, not stored in an unbounded per-task map (M5)');
 assert.doesNotMatch(desktopAuxChatBridge, /auxIdByTask/,
   'the desktop aux id must be derived, not stored in an unbounded per-task map (M5)');
-assert.match(sharedBridgeHelpers, /purgeSessionBuffer\(`aux-\$\{task\}`\)/,
-  'aux discard must purge the derived aux buffer id');
 assert.match(bridge, /registry\.auxChat = function \(context\)/,
   'the desktop bridge must register the auxChat feature module');
 assert.match(desktopAuxChatBridge, /invoke\("chat", \{ message, attachments: \[\], sessionId: sid, restrictTools: true \}\)/,
