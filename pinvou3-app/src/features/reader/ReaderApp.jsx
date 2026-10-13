@@ -3,12 +3,13 @@ import {
   Check, Copy, ExternalLink, FolderOpen, Link, X,
 } from '../../components/icons.jsx';
 import { useCopyFlash } from '../../hooks/useCopyFlash.js';
+import { useFollowMainWindowLanguage } from '../../hooks/useFollowMainWindowLanguage.js';
 import { pathBasename } from '../../shared/path-utils.js';
 import { FileColoredIcon } from '../../components/files/FileColoredIcon.jsx';
-import { invokeTauri, listenTauri, tauriEvents } from '../../platform/tauri/client.js';
+import { invokeTauri, listenTauri } from '../../platform/tauri/client.js';
 import { useSystemDarkMode } from '../../hooks/useSystemDarkMode.js';
 import { normalizeColorScheme, resolveTheme } from '../../shared/color-scheme.js';
-import { dict, ensureLanguage, initialSystemLanguage, TAG_TO_LANG } from '../../shared/i18n.js';
+import { dict } from '../../shared/i18n.js';
 import {
   CODE_VIEWER_ICON_BUTTON,
   CodeViewerContent,
@@ -46,7 +47,15 @@ function ReaderTabContent({ tab, state, fontSize, copy }) {
 }
 
 export function ReaderApp() {
-  const [language, setLanguage] = useState(initialSystemLanguage);
+  // Appearance follows the app preference; while it is `system` the reader must
+  // track OS theme flips live, same as the main and detached windows.
+  const systemDark = useSystemDarkMode();
+  const [colorScheme, setColorScheme] = useState('system');
+  const onMainWindowSettings = useCallback(
+    (settings) => setColorScheme(normalizeColorScheme(settings?.color_scheme)),
+    [],
+  );
+  const language = useFollowMainWindowLanguage({ onSettings: onMainWindowSettings });
   const copy = (dict[language] || dict.zh).uiCodexWorkspace;
   const [tabs, setTabs] = useState([]);
   const [activeKey, setActiveKey] = useState('');
@@ -55,33 +64,6 @@ export function ReaderApp() {
   const [copied, copyText] = useCopyFlash();
   const fontBounds = viewerFontSizeBounds();
   const loadedKeysRef = useRef(new Set());
-  // Appearance follows the app preference; while it is `system` the reader must
-  // track OS theme flips live, same as the main and detached windows.
-  const systemDark = useSystemDarkMode();
-  const [colorScheme, setColorScheme] = useState('system');
-
-  // Language follows the main settings (same listener pattern as the pet window).
-  useEffect(() => {
-    let disposed = false;
-    let unlisten = null;
-    invokeTauri('get_settings').then((settings) => {
-      if (disposed) return;
-      const lang = TAG_TO_LANG[settings?.language] || initialSystemLanguage();
-      ensureLanguage(lang).then((ok) => { if (ok) setLanguage(lang); }).catch(() => {});
-      setColorScheme(normalizeColorScheme(settings?.color_scheme));
-    }).catch(() => {});
-    tauriEvents.listen('ui:language_changed', (event) => {
-      const next = event.payload?.language;
-      if (!disposed) ensureLanguage(next).then((ok) => { if (ok) setLanguage(next); }).catch(() => {});
-    }).then((fn) => {
-      if (disposed) fn();
-      else unlisten = fn;
-    }).catch(() => {});
-    return () => {
-      disposed = true;
-      if (unlisten) unlisten();
-    };
-  }, []);
 
   // Re-apply when the preference resolves and on every system flip while `system`;
   // explicit light/dark ignore systemDark.
