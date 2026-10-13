@@ -12,6 +12,15 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+/// Supplied helper-cleanup response contract, never protected-object deletion rights.
+pub(crate) fn check_supplied_helper_cleanup_response_bytes(
+    bytes: &[u8],
+) -> Result<(), pinvou_upgrade_codec::HelperCleanupResponseError> {
+    decode_metadata(bytes)
+        .map_err(pinvou_upgrade_codec::HelperCleanupResponseError::Json)?
+        .assert_supplied_helper_cleanup_response_contract()
+}
+
 /// Supplied receipt contract; never proof of event commitment or task completion.
 pub(crate) fn check_supplied_receipt_response_bytes(
     bytes: &[u8],
@@ -396,6 +405,39 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_checks_cleanup_response_without_authorizing_protected_object_deletion() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        use pinvou_upgrade_codec::HelperCleanupResponseError as ContractError;
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/envelopes.json"
+        )))
+        .unwrap();
+        let v = vectors["vectors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["name"] == "helper-cleanup")
+            .unwrap();
+        let envelope: serde_json::Value = serde_json::from_slice(
+            &URL_SAFE_NO_PAD
+                .decode(v["envelopeBase64Url"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        let mut response =
+            serde_json::json!({"protocolVersion":1,"requestId":"request-1","credential":envelope});
+        let check = |v: &serde_json::Value| {
+            check_supplied_helper_cleanup_response_bytes(&serde_json::to_vec(v).unwrap())
+        };
+        assert_eq!(check(&response), Ok(()));
+        response["credential"]["signed"]["role"] = serde_json::json!("download");
+        assert_eq!(check(&response), Err(ContractError::InvalidContract));
+        response["credential"]["signed"]["role"] = serde_json::json!("helper-cleanup");
+        assert_eq!(check(&response), Ok(()));
+    }
 
     #[test]
     fn feature_facade_checks_receipts_without_committing_events_or_releasing_protection() {

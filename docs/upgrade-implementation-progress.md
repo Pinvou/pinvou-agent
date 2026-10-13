@@ -4182,3 +4182,34 @@ dependencies/locks/CI/crypto/trust/limits/VERSION/gitlinks changes. Details:
 [receipts](client-upgrade-receipt-responses.md).
 Complete T27/T20/T22/T32 remain unfinished. Downloads retain no total/cumulative
 duration or retry cap.
+
+## T27 thirty-first batch - supplied helper-cleanup response (2026-10-14)
+
+Scope: complete original helper-cleanup response API contract. Fixed frozen
+closed Schema/exact two common+helper-cleanup resources; whole bounded canonical
+reparse and independent credential64KiB/unchanged supplied semantics max(iat,nbf).
+Original response has no additional binding guards. Unit success never grants
+protected-object identity/current eligibility/deletion rights or executor revival.
+Outside-repository actual original complete Node generated288 required/scalar/
+boundary cases with all named intended outcomes checked. Root task-scoped5
+passed: integration4/actual original288 in2.61s, resourceunit1 in0.03s (seven
+unrelated units filtered); Clippy alltargets22.79s/codec+App facade format passed.
+Architecture/version/diff passed; CI policy51 in0.096s. Root self-review confirms
+fixed closed response/resource closure, unchanged original semantic gate and
+caps, meaningful negatives/restores, no request-correlation invention or
+protected-object/deletion authority upgrade. No existing helper changed and
+unchanged full116/31556 were not repeated. Both independent static reviews
+found no mandatory issue. Actual Windows updater App46 passed in0.27s after
+2m47s compilation. Dependency independent5 passed (integration4/actual original
+288 in2.97s, resourceunit1 in0.02s/seven unrelated units filtered, Clippy2.19s/
+codec+App facade format/diff passed). Actual Node22/both legacy environments;
+no old116/31556/App repeat. Compatibility independent5 passed (integration4/
+actual original288 in3.73s, resourceunit1 in0.04s/seven unrelated units filtered,
+Clippy1.88s/codec+App facade format/diff passed; CI policy51 in0.057s).
+Actual Node22/both legacy environments, no old116/31556/App repeat. Both scoped
+reviews passed without mandatory finding and all processes closed. Both
+independent final documentation reviews passed before commit. No Schema/OpenAPI/profile/
+vectors/dependencies/locks/CI/crypto/trust/limits/VERSION/gitlinks changes. Details:
+[helper-cleanup response](client-upgrade-helper-cleanup-response.md).
+Complete T27/T28/T31/T32 remain unfinished. Downloads retain no total/cumulative
+duration or retry cap.
