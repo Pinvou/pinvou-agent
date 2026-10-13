@@ -199,13 +199,6 @@ pub struct EffectiveModelConfig {
     pub env_overrides: Vec<String>,
 }
 
-fn session_model_from_prefs(
-    prefs: &UserPrefs,
-    session_model_id: Option<&str>,
-) -> Option<SavedModel> {
-    session_model_id.and_then(|id| prefs.model_by_id(id).cloned())
-}
-
 #[tauri::command]
 pub async fn get_effective_model_config(
     session_id: Option<String>,
@@ -218,7 +211,9 @@ pub async fn get_effective_model_config(
     let session_model_id = session_id
         .as_deref()
         .and_then(|id| store.session_model_id(id));
-    bridge.session_model = session_model_from_prefs(&bridge.prefs, session_model_id.as_deref());
+    bridge.session_model = session_model_id
+        .as_deref()
+        .and_then(|id| bridge.prefs.model_by_id(id).cloned());
     let mut env_overrides = Vec::new();
     if std::env::var("DEEPSEEK_MODEL").is_ok() {
         env_overrides.push("model".to_string());
@@ -1222,14 +1217,6 @@ fn image_capability_transport_error(err: &reqwest::Error) -> ImageCapabilityTest
     image_capability_result("error", false, summary, None)
 }
 
-/// 识图探测的 URL 基准:剥掉用户 base_url 末尾的 `/chat/completions` 后缀,
-/// 后续拼接(OpenAI chat/completions、Anthropic /v1/messages)共用同一基准
-/// ——否则含后缀的 base_url 在 Anthropic 分支会拼出
-/// `.../chat/completions/v1/messages` 这类 404 路径。
-fn image_probe_base_url(base_url: &str) -> String {
-    crate::platform::prefs::model::strip_chat_completions_suffix(base_url)
-}
-
 /// 识图探测核心(设计 §7.3):POST {base_url}/chat/completions 携带内置纯色 PNG,
 /// 返回 `ImageCapabilityTestResult`(不发 Result 错误——连接失败等也收敛为结果)。
 /// 入参与凭据解析和 test_model_connection 一致:表单新填 key 优先,否则读已保存凭据。
@@ -1253,7 +1240,7 @@ pub async fn run_image_capability_probe(
     // 不再拼出重复路径(prefs/model.rs 同一口径)。strip 后的基准同时用于
     // 协议判定与 Anthropic Messages URL 拼接(原始 base_url 若保留
     // /chat/completions 后缀,anthropic_messages_url 会拼出 404 路径)。
-    let base_url_stripped = image_probe_base_url(base_url);
+    let base_url_stripped = crate::platform::prefs::model::strip_chat_completions_suffix(base_url);
     let url = format!("{base_url_stripped}/chat/completions");
     let parsed_url = match reqwest::Url::parse(&url) {
         Ok(url) => url,
@@ -1635,14 +1622,18 @@ mod tests {
     fn image_probe_base_url_feeds_anthropic_messages_url_without_suffix() {
         // 含 /chat/completions 后缀的 Anthropic base_url:协议判定与 Messages
         // URL 拼接都必须基于 strip 后的基准,否则拼出 404 路径误判 error。
-        let stripped = image_probe_base_url("https://api.anthropic.com/v1/chat/completions");
+        let stripped = crate::platform::prefs::model::strip_chat_completions_suffix(
+            "https://api.anthropic.com/v1/chat/completions",
+        );
         assert_eq!(stripped, "https://api.anthropic.com/v1");
         assert_eq!(
             crate::core::model_endpoint::anthropic_messages_url(&stripped),
             "https://api.anthropic.com/v1/messages"
         );
         // 官方 preset 形态(无后缀)不受影响。
-        let plain = image_probe_base_url("https://api.anthropic.com/v1");
+        let plain = crate::platform::prefs::model::strip_chat_completions_suffix(
+            "https://api.anthropic.com/v1",
+        );
         assert_eq!(
             crate::core::model_endpoint::anthropic_messages_url(&plain),
             "https://api.anthropic.com/v1/messages"
