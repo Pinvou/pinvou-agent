@@ -89,7 +89,7 @@ pub fn emit_report<W: std::io::Write>(mut out: W, outcome: &CliOutcome) -> i32 {
     }
 }
 
-pub const TOP_LEVEL_USAGE: &str = "usage: pinvou benchmark <command> | pinvou agent run | \
+pub(crate) const TOP_LEVEL_USAGE: &str = "usage: pinvou benchmark <command> | pinvou agent run | \
      pinvou sessions|models|settings|memory|knowledge|scheduled|plugins|connectors|personas|\
 projects|code|files|voice|deps|feedback|monitor|artifacts <command> | pinvou --help|--version|version";
 
@@ -317,7 +317,7 @@ pub(crate) fn family_lock(
 /// docs/pinvou-cli.md tells scripts to match the documented per-command
 /// exit codes, not message text (round-37 named the mix; round-45
 /// reworded this comment to describe it).
-pub fn read_text_file_capped(
+pub(crate) fn read_text_file_capped(
     path: &Path,
     max_bytes: usize,
     action: &str,
@@ -336,7 +336,7 @@ pub fn read_text_file_capped(
 /// credentials, mcp.json). A file this size is pathological; over-cap
 /// degrades exactly like a parse failure on the readiness lanes and refuses
 /// on the mcp.json lane, instead of being slurped whole.
-pub const VENDOR_CONFIG_READ_CAP_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const VENDOR_CONFIG_READ_CAP_BYTES: usize = 16 * 1024 * 1024;
 
 /// The byte twin of [`read_text_file_capped`] — same regular-file gate and
 /// `take`-bounded read for payloads the CLI only verifies or re-emits
@@ -345,7 +345,11 @@ pub const VENDOR_CONFIG_READ_CAP_BYTES: usize = 16 * 1024 * 1024;
 /// The cap is self-defense against a store file some other build or process
 /// has grown, not a format limit, so callers pass their existing failure
 /// code as `action` and keep their contract stable.
-pub fn read_bytes_capped(path: &Path, max_bytes: usize, action: &str) -> Result<Vec<u8>, CliError> {
+pub(crate) fn read_bytes_capped(
+    path: &Path,
+    max_bytes: usize,
+    action: &str,
+) -> Result<Vec<u8>, CliError> {
     // Regular files only, checked through metadata BEFORE the open: a FIFO's
     // open blocks until a writer appears and its read blocks until bytes
     // arrive, so neither the cap nor any downstream deadline could act. The
@@ -458,7 +462,7 @@ pub(crate) fn gate_canonical_path(
 ///
 /// Shared by the families' human rows (`sessions`, `projects`, `code`, …)
 /// so the hygiene is uniform; see `is_row_unsafe_char` for the exact set.
-pub fn collapse_control_characters(value: &str) -> String {
+pub(crate) fn collapse_control_characters(value: &str) -> String {
     value
         .chars()
         .map(|ch| if is_row_unsafe_char(ch) { ' ' } else { ch })
@@ -495,7 +499,7 @@ pub fn collapse_control_characters(value: &str) -> String {
 /// JSON mode needs no equivalent — `serde_json` escapes everything below
 /// 0x20 — so this stays strictly a human-rendering choice and the stored
 /// file and the JSON payload keep the verbatim bytes.
-pub fn collapse_block_control_characters(value: &str) -> String {
+pub(crate) fn collapse_block_control_characters(value: &str) -> String {
     value
         .chars()
         .map(|ch| match ch {
@@ -571,12 +575,12 @@ fn is_row_unsafe_char(ch: char) -> bool {
 /// session id so the usage-error contract is uniform. Delegates to the app's
 /// own validator (widened `pub` by this PR) instead of keeping a
 /// second alphabet copy that could drift from it.
-pub fn valid_session_id(id: &str) -> bool {
+pub(crate) fn valid_session_id(id: &str) -> bool {
     pinvou3_lib::features::sessions::validate_session_id(id).is_ok()
 }
 
 /// Usage error for an id outside the [`valid_session_id`] alphabet.
-pub fn require_valid_session_id(id: &str, action: &str) -> Result<(), CliError> {
+pub(crate) fn require_valid_session_id(id: &str, action: &str) -> Result<(), CliError> {
     if valid_session_id(id) {
         Ok(())
     } else {
@@ -679,7 +683,7 @@ pub(crate) type ParsedFamilyArgs<'a> =
 /// error. Returns `(value-flag pairs in argv order, boolean flags seen)` —
 /// the second element is the boolean-flag list, not positionals. `family`
 /// names the family in error messages.
-pub fn parse_family_flags<'a>(
+pub(crate) fn parse_family_flags<'a>(
     values: &'a [String],
     value_flags: &[&str],
     boolean_flags: &[&str],
@@ -717,7 +721,7 @@ pub fn parse_family_flags<'a>(
 /// the code family's hand-rolled loop pinned; see
 /// [`parse_family_flags_core`] for both orders.
 #[allow(clippy::too_many_arguments)]
-pub fn parse_family_flags_extended<'a>(
+pub(crate) fn parse_family_flags_extended<'a>(
     values: &'a [String],
     value_flags: &[&str],
     boolean_flags: &[&str],
@@ -856,7 +860,7 @@ fn parse_family_flags_core<'a>(
 }
 
 /// First value filed under `name` in a [`parse_family_flags`] option list.
-pub fn family_option<'a>(options: &'a [(&'a str, &'a str)], name: &str) -> Option<&'a str> {
+pub(crate) fn family_option<'a>(options: &'a [(&'a str, &'a str)], name: &str) -> Option<&'a str> {
     options
         .iter()
         .find_map(|(candidate, value)| (*candidate == name).then_some(*value))
@@ -882,7 +886,7 @@ pub(crate) fn family_options<'a>(options: &[(&'a str, &'a str)], name: &str) -> 
 /// instantiating `T` with a float would accept `0.5` for an option this error
 /// message calls a positive *integer*. The bound is deliberately not
 /// tightened, because it is part of a signature six families depend on.
-pub fn parse_family_positive<T>(
+pub(crate) fn parse_family_positive<T>(
     options: &[(&str, &str)],
     name: &str,
     family: &str,
@@ -903,7 +907,7 @@ where
 
 /// Destructive subcommands must opt in explicitly, mirroring the GUI's
 /// confirmation dialogs.
-pub fn require_yes(confirmed: bool) -> Result<(), CliError> {
+pub(crate) fn require_yes(confirmed: bool) -> Result<(), CliError> {
     if confirmed {
         Ok(())
     } else {
@@ -935,7 +939,7 @@ pub fn require_yes(confirmed: bool) -> Result<(), CliError> {
 /// digits, underscore, not starting with a digit; bytes outside that set
 /// cannot be exported by any POSIX shell without printf tricks, so the
 /// refusal is fail-fast, not a capability loss. The value is never echoed.
-pub fn ensure_env_var_name(flag: &str, value: &str) -> Result<(), CliError> {
+pub(crate) fn ensure_env_var_name(flag: &str, value: &str) -> Result<(), CliError> {
     let name_is_sound = value.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
         && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
     if !name_is_sound {
@@ -1061,7 +1065,7 @@ pub(crate) fn install_progress(
     }
 }
 
-pub fn success(stdout: String) -> crate::CliOutcome {
+pub(crate) fn success(stdout: String) -> crate::CliOutcome {
     crate::CliOutcome {
         exit_code: ExitCode::Success,
         stdout,
@@ -1080,7 +1084,7 @@ pub fn product_backend_not_enabled() -> CliError {
 /// Platform binary-name candidates for a bare CLI name: Windows installs are
 /// `.exe` real binaries or npm `.cmd` shims, and PATH scanning must try both
 /// because bare names never match there.
-pub fn binary_candidates(name: &str) -> Vec<String> {
+pub(crate) fn binary_candidates(name: &str) -> Vec<String> {
     #[cfg(target_os = "windows")]
     {
         vec![
@@ -1107,7 +1111,7 @@ pub fn binary_candidates(name: &str) -> Vec<String> {
 /// app-side `platform::process` helper still carries the manual wrap shape;
 /// converging both on the std-native path upstream is recorded as
 /// follow-up work.
-pub fn build_command(executable: &std::path::Path, args: &[&str]) -> std::process::Command {
+pub(crate) fn build_command(executable: &std::path::Path, args: &[&str]) -> std::process::Command {
     let mut command = std::process::Command::new(executable);
     command.args(args);
     command
@@ -1145,7 +1149,7 @@ pub fn set_process_group(command: &mut std::process::Command) {
 /// Kills a timed-out vendor CLI child **and its descendants**: unix takes the
 /// whole process group (the child was spawned with [`set_process_group`]);
 /// Windows uses `taskkill /T`, mirroring the app's `kill_pid_tree`.
-pub fn kill_process_tree(child: &mut std::process::Child) {
+pub(crate) fn kill_process_tree(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
         // The two guards below are NOT defensive padding; they are the
@@ -1239,7 +1243,7 @@ pub fn kill_process_tree(child: &mut std::process::Child) {
 /// are byte-for-byte the code.rs original; the `Option`-tolerant pipe is
 /// the defensive piece reconciled in from voice.rs's local copy. voice.rs
 /// and code.rs call this; connectors.rs keeps its own exact-cap variant.
-pub fn drain_capped_to_eof<R: std::io::Read>(pipe: Option<R>, cap: u64) -> (Vec<u8>, u64) {
+pub(crate) fn drain_capped_to_eof<R: std::io::Read>(pipe: Option<R>, cap: u64) -> (Vec<u8>, u64) {
     let mut pipe = match pipe {
         Some(pipe) => pipe,
         None => return (Vec::new(), 0),
@@ -1283,7 +1287,11 @@ pub fn drain_capped_to_eof<R: std::io::Read>(pipe: Option<R>, cap: u64) -> (Vec<
 
 /// Serializes `value` for `--output json` (single line) and renders `human`
 /// verbatim otherwise.
-pub fn render(output: crate::OutputMode, human: String, value: &serde_json::Value) -> String {
+pub(crate) fn render(
+    output: crate::OutputMode,
+    human: String,
+    value: &serde_json::Value,
+) -> String {
     match output {
         crate::OutputMode::Human => human,
         crate::OutputMode::Json => serde_json::to_string(value).unwrap_or_else(json_render_failure),
