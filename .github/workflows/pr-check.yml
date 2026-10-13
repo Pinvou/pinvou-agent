@@ -190,6 +190,10 @@ jobs:
           predicate-quantifier: some-with-excludes
           filters: |
             rust_code:
+              - 'pinvou3-app/src-tauri/src/features/updater/protocol/codec/**'
+              - 'specs/upgrade/v1/reference/canonical-json.mjs'
+              - 'specs/upgrade/v1/reference/errors.mjs'
+              - 'specs/upgrade/v1/vectors/crypto/envelopes.json'
               - '**/*.rs'
               - '**/Cargo.toml'
               - '**/Cargo.lock'
@@ -834,6 +838,20 @@ jobs:
       - name: cargo fmt --check (硬门禁)
         working-directory: pinvou3-app/src-tauri
         run: cargo fmt -- --check
+
+      - name: Set up Node for original upgrade byte oracle
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Check independent upgrade byte codec
+        working-directory: pinvou3-app/src-tauri/src/features/updater/protocol/codec
+        env:
+          PINVOU_UPGRADE_NODE_REFERENCE: ${{ github.workspace }}/specs/upgrade/v1/reference/canonical-json.mjs
+        run: |
+          cargo fmt -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
 
       # clippy 需要 Tauri/WebKit 系统库；Draft 不安装，避免每次 push 消耗 ~70s。
       - name: 装 Tauri + pinvou3 Linux 系统依赖

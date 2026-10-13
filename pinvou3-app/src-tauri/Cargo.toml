@@ -62,6 +62,7 @@ tokio = { version = "1.49", features = ["test-util"] }
 filetime = "0.2.29"
 
 [dependencies]
+pinvou-upgrade-codec = { path = "src/features/updater/protocol/codec" }
 pinvou-knowledge = { path = "../../pinvou-knowledge", default-features = false, features = ["client", "discovery"] }
 # workflow 整目录内嵌(含二进制),include_str 撑不住
 include_dir = "0.7"

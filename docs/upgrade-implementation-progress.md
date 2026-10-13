@@ -2056,3 +2056,41 @@ changing approved key semantics is an unresolved decision, skipped while this
 independent prefix primitive proceeds. The normative HMAC/weekly isolation,
 deferred deployment and no-hard-duration download rule remain unchanged.
 Service protected edge prefix commit: `f2af566`.
+
+### T27 first batch: bounded client JSON byte codec (2026-10-13)
+
+The updater feature consumes a private standalone Rust byte codec. Fixed metadata
+and credential wire limits, strict duplicate-key parsing, depth/string/member
+bounds, finite binary64 semantics, UTF-16 key order and bounded RFC 8785 output
+match the frozen reference. Canonicalization does not prove canonical incoming
+wire, closed schema, signature/Root trust, expiry, high-water acceptance or current
+execution rights. No endpoint or startup update behavior is enabled. Application
+VERSION remains 0.10.8; the unpublished codec's 0.0.0 is not a product version.
+
+Seven focused groups passed with the actual original Node reference and final
+App-matching JSON features (6.85s); independent reruns passed (6.79s and 7.20s).
+The seven groups also passed with actual Node 22.23.3 (6.42s), matching CI.
+All 20 original envelope hashes/signing-input bytes and 19 actual Node differential
+cases passed. Independent review repaired oracle/reference-only CI routing and an
+unrelated Cargo-selected dependency edge. App/CLI locks add only three required
+packages and their App edge; both locked complete metadata graphs resolve. All
+44 CI policy tests, standalone fmt/Clippy, architecture and version checks passed.
+
+Actual Windows App integration passed four updater tests, including both new
+facade controls (0.00s, after a 47m08s cold build using the project's existing
+compiler stack wrapper). The full App library run completed with 2967 passed,
+11 failed and 10 ignored (1659.42s); it did not pass. Five existing source-text
+pins failed on CRLF checkout. Three unchanged source files were locally restored
+to exact HEAD LF bytes; recompilation passed all five pins (0.01s, 1m22s rebuild)
+without logic/assertion changes or a committed diff. Independent roles traced the
+six remaining failures to four Unix-rooted path fixtures on Windows, one fixed
+slash-separator assertion and one missing bundled Python before the intended
+rollback failpoint. No float_roundtrip link was found in their string/boolean/
+ordinary-integer/path branches; that rollback path remains unverified by the
+failed case. These existing limitations remain disclosed, with no all-App pass or
+out-of-scope marketplace repair claimed. Both independent roles gave final B1
+scoped PASS; no mandatory byte-codec finding remains.
+
+No physical platform, trusted time, signature/provider or service E2E is claimed.
+Full T27 remains unfinished, deployment remains deferred, and downloads retain no
+hard total/cumulative duration limit.

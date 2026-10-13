@@ -97,6 +97,27 @@ class CiGatePolicyTests(unittest.TestCase):
         cls.pr_workflow = PR_WORKFLOW.read_text(encoding="utf-8")
         cls.release_workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
+    def test_upgrade_codec_routes_oracle_only_and_reference_only_changes(self):
+        block = self.pr_workflow.split("            rust_code:", 1)[1].split(
+            "            rust_dependencies:", 1
+        )[0]
+        patterns = _extract_quoted_paths(block)
+        for path in (
+            "pinvou3-app/src-tauri/src/features/updater/protocol/codec/tests/node-oracle.mjs",
+            "specs/upgrade/v1/reference/canonical-json.mjs",
+            "specs/upgrade/v1/reference/errors.mjs",
+            "specs/upgrade/v1/vectors/crypto/envelopes.json",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(_matches_paths_filter(path, patterns))
+        self.assertFalse(_matches_paths_filter("docs/unrelated.md", patterns))
+        job = self.pr_workflow.split("\n  rust-lint:", 1)[1].split("\n  rust-test:", 1)[0]
+        self.assertIn("needs.changes.outputs.rust_code == 'true'", job)
+        step = job.split("- name: Check independent upgrade byte codec", 1)[1].split("\n      - name:", 1)[0]
+        self.assertNotIn("if:", step)
+        self.assertIn("PINVOU_UPGRADE_NODE_REFERENCE:", step)
+        self.assertIn("cargo test --locked", step)
+
     def test_full_release_only_runs_for_version_or_manual_trigger(self):
         trigger = self.release_workflow.split("\non:", maxsplit=1)[1].split(
             "\npermissions:", maxsplit=1
