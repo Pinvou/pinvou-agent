@@ -3843,21 +3843,24 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                   copy={t.uiAuxChat}
                   onQuote={openAuxChatPanel}
                 />
-                {isRewindLane && rewindUndoAvailable(rewindUndoState) && (
-                  // 「撤销回退」入口：渲染在时间线末尾（回退成功的内联提示其后），
-                  // 与 RewindChip 同门控（工作模式车道）；undoState 为 null 即消失。
-                  <RewindUndoChip
-                    state={rewindUndoState}
-                    disabled={busy || rewinding || rewindUndoing}
-                    copy={t.uiCodex}
-                    onOpen={openRewindUndoDialog}
-                  />
-                )}
                 {/* 实体占位必须覆盖输入框和其上方渐变区，保证滚到底时最后一张卡
                     完整停在渐变之外，而不是虽然能滚到却被遮罩淡化。 */}
                 <div data-testid="chat-bottom-spacer" aria-hidden="true" className="w-full shrink-0"
                   style={{ height: (composerH ? composerH + 64 : 176) + 'px' }} />
               </div>
+            )}
+
+            {/* 「撤销回退」入口（评审 r7 M1）：必须挂在 hasMessages 块之外——
+                keepTurns=0 的回退 + durable 重载后时间线为空、仅存的内存态「已回退」
+                pill 不持久化，块内渲染会让唯一的自救入口恰在最需要时消失。空时间线
+                下它与空态问候共存的形态对齐 code 车道（CodexAcpView 无此门）。 */}
+            {isRewindLane && rewindUndoAvailable(rewindUndoState) && (
+              <RewindUndoChip
+                state={rewindUndoState}
+                disabled={busy || rewinding || rewindUndoing}
+                copy={t.uiCodex}
+                onOpen={openRewindUndoDialog}
+              />
             )}
 
           </div>

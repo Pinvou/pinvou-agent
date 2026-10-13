@@ -212,6 +212,21 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
   assert.equal(rewindEntriesByTurnId(turnsWithEcho, checkpoints, 4).size, 0, '回显未剔除（计数 4 ≠ 3）→ 拒绝（调和门兜底）');
 }
 
+// busy 容忍（评审 r7 minor 9/M3b）：发送在途时前端已含乐观气泡、后端计数
+// 未 +1——恰差 1 属期望状态不触发拒绝（busy→false 边沿收紧为精确比对）；
+// 差 2 或非 busy 差 1 仍拒绝。
+{
+  const turns = [userTurn('t1'), userTurn('t2'), userTurn('t3')];
+  const checkpoints = [
+    { id: 'c1', turn: 1, kind: 'turn' },
+    { id: 'c2', turn: 2, kind: 'turn' },
+    { id: 'c3', turn: 3, kind: 'turn' },
+  ];
+  assert.equal(rewindEntriesByTurnId(turns, checkpoints, 2, { busy: true }).size, 3, 'busy 且恰差 1（在途轮次）→ 照常渲染');
+  assert.equal(rewindEntriesByTurnId(turns, checkpoints, 2).size, 0, '非 busy 差 1 → 拒绝');
+  assert.equal(rewindEntriesByTurnId(turns, checkpoints, 1, { busy: true }).size, 0, 'busy 但差 2（压缩）→ 仍拒绝');
+}
+
 // checkpoint 列表为空（系统无 git/快照全部失败）→ 整个会话无入口（设计 §5）。
 {
   const turns = [userTurn('t1'), userTurn('t2')];
