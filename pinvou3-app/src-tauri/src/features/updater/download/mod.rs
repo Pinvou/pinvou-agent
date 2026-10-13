@@ -1,6 +1,15 @@
 //! Byte-transfer facade. The restricted GET adapter and structural planner do
 //! not own protected cache writes, qualification or installation rights.
 
+pub(crate) fn create_exclusive_cache(
+    path: &std::path::Path,
+) -> Result<
+    pinvou_upgrade_cache_object::ExclusiveCacheFile,
+    pinvou_upgrade_cache_object::CacheObjectError,
+> {
+    pinvou_upgrade_cache_object::create_exclusive_cache(path)
+}
+
 pub(crate) async fn fetch_file<'a>(
     url: &str,
     request: pinvou_upgrade_transfer::RequestPlan<'a>,
@@ -143,6 +152,27 @@ mod tests {
         Artifact, PrefixState, ResponseDecision, SourceContinuity, StrongEtag, TransferError,
         WriteMode, plan_request,
     };
+
+    #[test]
+    fn application_cache_object_facade_preserves_exclusive_handle_or_reports_unsupported() {
+        use std::io::Write;
+        let path =
+            std::env::temp_dir().join(format!("pinvou-app-cache-object-{}", uuid::Uuid::new_v4()));
+        match create_exclusive_cache(&path) {
+            Err(pinvou_upgrade_cache_object::CacheObjectError::Unsupported) => {
+                assert!(!path.exists())
+            }
+            Ok(mut cache) => {
+                cache.file_mut().write_all(b"owned cache bytes").unwrap();
+                assert!(std::fs::OpenOptions::new().read(true).open(&path).is_err());
+                assert!(std::fs::remove_file(&path).is_err());
+                drop(cache);
+                assert_eq!(std::fs::read(&path).unwrap(), b"owned cache bytes");
+                std::fs::remove_file(&path).unwrap();
+            }
+            Err(_) => panic!("cache object creation unavailable on this test host"),
+        }
+    }
 
     #[test]
     fn application_checked_cache_uses_actual_file_even_after_complete_length_projection() {

@@ -2838,3 +2838,67 @@ failure, and no repository file changed. Both reviewers returned latest-source
 scoped PASS with no remaining mandatory. Both reviewers returned final scoped
 PASS after final doc/evidence review without rebuilding. Root self-review found
 no remaining in-scope gap.
+
+## T29 twelfth batch - Windows fresh exclusive cache object (2026-10-13)
+
+A separate private cache-object package owns physical fresh-file opening, distinct
+from byte comparison/network streaming. The Windows adapter atomically create_new
+opens read/write with share0 and OPEN_REPARSE_POINT, then observes only that live
+handle's attributes/link count/empty size through a narrow initialized-struct FFI.
+Directory/reparse/nonempty/multiple-link observations fail without a minted object.
+Existing entries are never truncated/deleted; post-create failure closes its handle
+but may leave an untrusted entry for owner cleanup. Other OS adapters explicitly
+return Unsupported. ExclusiveCacheFile has private File/no Debug/Serialize/Clone
+and no ordinary-File constructor; trusted borrowers may explicitly duplicate it.
+All duplicated handles must close for sharing restrictions to release. This is
+no ACL/metadata-access/admin/parent-namespace/forever-single-link protection, read-
+only seal, native identity, VMO or rights. Owners retain those responsibilities.
+
+Initial actual Windows default tests passed4 (0.05s),1 explicit privilege-dependent
+symlink test ignored; Clippy6.06s/fmt passed. Tests exercise actual second read/write
+opens, delete/rename denial with same-operation success after closure; retained
+sharing from an explicit duplicate; unchanged existing regular/hardlink/directory
+paths; direct same-handle observation of multiple-link empty/nonempty/directory
+negative controls. Public create_new refusal is not misreported as a link checker
+branch. The opt-in physical symlink case was explicitly attempted: fixture creation
+failed OS1314 before production calls because this host lacks symlink privilege.
+No symlink behavior pass or certification is claimed, and no elevation/deployment
+was requested. The case stays an explicit eligible-host certification dependency.
+An initial internal visibility compilation error was fixed before these results.
+
+The isolated exact three-package graph pins existing windows-sys0.61.2 and windows-
+link0.2.1 and is an exact parent graph subset. Offline parent/CLI resolution added
+only the private cache-object package and its local edge (8 lines each lock),
+retaining every prior version/source/checksum. App manifest adds one private path
+dependency. CI routes all cache sources/manifests/lock to Rust gates and runs Linux
+unsupported-adapter checks plus native Windows default tests during regression;
+privilege-dependent ignored tests are not silently counted. CI policies passed50
+(0.081s), architecture/version/diff passed. No Schema, product version or gitlink
+changes. Independent review found that NTFS create_new can create an ADS on an
+existing physical file. Root added an actual existing:cache negative control that
+failed before repair, then rejects colons in every path component except parsed
+disk/verbatim-disk prefixes before any OS call. A new fixed InvalidPath error
+retains no path; normal/relative/verbatim drives and UNC paths remain accepted,
+while named/type streams, nested stream components and ambiguous verbatim/device
+prefixes fail. Final actual6 tests passed0.04s with the privileged symlink case
+still ignored; base bytes remain unchanged and no stream exists after refusal.
+The earlier4-pass/tree App pass is not substituted for final-tree evidence.
+Final Clippy passed16.61s. Actual final Windows App passed all20 updater tests
+(0.06s after1m42s build), including new-facade sharing denial and same-path access
+release. The earlier pre-ADS App pass does not substitute for this final build;
+no App-wide pass is claimed. Trusted mutable File borrowers must preserve the
+original handle and account for duplication/replacement; the wrapper is not an
+unforgeable certificate for caller misuse.
+
+Both independent reviewers closed ADS and returned latest-source scoped PASS.
+Dependency actual6 Windows tests passed0.01s with1 privilege test ignored, Clippy
+7.34s/fmt, CI50 0.080s/diff. Compatibility actual6 passed0.11s with1 ignored,
+Clippy0.06s/fmt, CI50 0.082s/diff. Both independently checked exact lock compatibility
+and source/CI/App-facade/document boundaries. Both returned final scoped PASS
+on frozen source and final documentation/evidence without rebuilding. Root self-
+review found no remaining in-scope gap. The symlink privilege/physical certification
+dependency stays disclosed and deferred under the instruction to continue other work.
+
+Details: [exclusive cache object](client-upgrade-exclusive-cache-object.md). Full
+T29, namespace/ACL/staging/readonly handoff and physical platform certification
+remain unfinished. Downloads retain no total/cumulative duration or retry cap.

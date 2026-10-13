@@ -6912,6 +6912,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "pinvou-upgrade-cache-object"
+version = "0.0.0"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "pinvou-upgrade-codec"
 version = "0.0.0"
 dependencies = [
@@ -6985,6 +6992,7 @@ dependencies = [
  "pinvou-knowledge",
  "pinvou-upgrade-archive",
  "pinvou-upgrade-byte-check",
+ "pinvou-upgrade-cache-object",
  "pinvou-upgrade-codec",
  "pinvou-upgrade-file-http",
  "pinvou-upgrade-timing",

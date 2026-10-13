@@ -191,6 +191,7 @@ jobs:
           filters: |
             rust_code:
               - 'pinvou3-app/src-tauri/src/features/updater/download/archive/**'
+              - 'pinvou3-app/src-tauri/src/features/updater/download/cache/**'
               - 'pinvou3-app/src-tauri/src/features/updater/download/http/**'
               - 'pinvou3-app/src-tauri/src/features/updater/protocol/codec/**'
               - 'specs/upgrade/v1/**'
@@ -860,6 +861,13 @@ jobs:
 
       - name: Check independent upgrade complete-byte verification
         working-directory: pinvou3-app/src-tauri/src/features/updater/download/verify
+        run: |
+          cargo fmt -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+
+      - name: Check independent upgrade cache object adaptation
+        working-directory: pinvou3-app/src-tauri/src/features/updater/download/cache
         run: |
           cargo fmt -- --check
           cargo clippy --locked --all-targets -- -D warnings
@@ -1656,6 +1664,14 @@ jobs:
           # historical 90-minute-timeout scenario).
           cache-on-failure: true
           save-if: ${{ matrix.phase == 'regression' && github.ref == 'refs/heads/main' }}
+
+      - name: Check native Windows upgrade cache objects
+        if: ${{ matrix.phase == 'regression' }}
+        working-directory: pinvou3-app/src-tauri/src/features/updater/download/cache
+        run: |
+          cargo fmt -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked -- --test-threads=1
 
       # Non-sensitive cache baseline: target presence plus fingerprint and
       # direct dependency-artifact counts, without a recursive scan.

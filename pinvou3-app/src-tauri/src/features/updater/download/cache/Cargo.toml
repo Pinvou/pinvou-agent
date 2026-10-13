@@ -1,0 +1,13 @@
+[package]
+name = "pinvou-upgrade-cache-object"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+license = "MIT"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[lints.rust]
+unsafe_code = "deny"
