@@ -217,19 +217,18 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
       const isDark = theme === 'dark';
       const fmt = bs && bs.monitor && bs.monitor._fmt;
       const monitorError = bs && bs.monitorError;
-      const monitorBridgeReady = !!(window.TauriBridge?.monitor && typeof window.TauriBridge.monitor.startMonitorPolling === 'function');
+      const monitorBridgeReady = !!(bridge.monitor && typeof bridge.monitor.startMonitorPolling === 'function');
       const loadingValue = monitorBridgeReady ? (monitorError ? t.uiMonitor.readFailed : t.uiMonitor.reading) : t.uiMonitor.bridgeNotReady;
 
       // Start/stop polling when view mounts/unmounts
       useEffect(() => {
-        const liveBridge = window.TauriBridge || bridge;
-        if (liveBridge?.monitor && typeof liveBridge.monitor.startMonitorPolling === 'function') {
-          liveBridge.monitor.startMonitorPolling();
+        if (bridge.monitor && typeof bridge.monitor.startMonitorPolling === 'function') {
+          bridge.monitor.startMonitorPolling();
         } else {
           console.warn('[monitor] TauriBridge polling API unavailable');
         }
         return () => {
-          if (liveBridge?.monitor && typeof liveBridge.monitor.stopMonitorPolling === 'function') liveBridge.monitor.stopMonitorPolling();
+          if (bridge.monitor && typeof bridge.monitor.stopMonitorPolling === 'function') bridge.monitor.stopMonitorPolling();
         };
       }, []);
 

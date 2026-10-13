@@ -289,9 +289,6 @@ export function resolveSubagentIdentity(role, personas, agentId, agentType) {
   // 哈希 50 张本地头像），同角色派多个实例各有面孔——四个同貌"调研专家"
   // 无法区分（真机截图点名）。专家池成员是具体人设，头像保持人设卡不变。
   const instanceKey = (roleKey) => (agentId ? String(agentId) : roleKey);
-  if (!roleId) {
-    return { kind: 'builtin', roleKey: 'general', avatarKey: instanceKey('wf-role-general') };
-  }
   if (builtin.includes(roleId)) {
     return { kind: 'builtin', roleKey: roleId, avatarKey: instanceKey(`wf-role-${roleId}`) };
   }
