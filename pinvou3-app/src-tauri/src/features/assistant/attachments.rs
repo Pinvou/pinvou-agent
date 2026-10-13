@@ -305,9 +305,13 @@ pub(crate) fn stage_text_in_workspace(
     attachment_dir: &str,
 ) -> Option<String> {
     use std::io::Write as _;
-    stage_text_in_workspace_inner(basename, ext, workspace, attachment_dir, |destination, _| {
-        destination.write_all(content.as_bytes())
-    })
+    stage_text_in_workspace_inner(
+        basename,
+        ext,
+        workspace,
+        attachment_dir,
+        |destination, _| destination.write_all(content.as_bytes()),
+    )
 }
 
 /// Single body of the text staging lane — the same injection idiom the file
