@@ -954,15 +954,17 @@ fn write_done_marker(path: &Path, payload: &serde_json::Value) -> Result<()> {
     }
     // Atomic tmp+rename: the server polls this file, so it must never
     // observe a torn write.
-    // Round-17 MAJOR-1: the tmp open is a path open on a user-writable
-    // trust boundary — a planted FIFO at the tmp path blocked the sync
-    // drain open forever (write-side sibling of R11-M3), and no panic
-    // means catch_unwind never fires. The gated lock-file open
-    // (O_NOFOLLOW|O_NONBLOCK, 0600) refuses non-regular entries instead
-    // of opening them; the refused write flows into the caller's existing
-    // retry/quarantine/park machinery, so the bound is the budget.
+    // Round-18 MAJOR-1 (correcting round-17 MAJOR-1's mechanism): the tmp
+    // open is a path open on a user-writable trust boundary, and the
+    // gated tmp open REFUSES non-regular entries (a planted FIFO fails
+    // the open instead of silently swallowing the payload or blocking) —
+    // O_RDWR|O_NONBLOCK alone succeeds on a FIFO, which is why the
+    // lock-file primitive was the wrong shape for a data write. The open
+    // also truncates, so a leftover longer tmp cannot tear the marker.
+    // The refused write flows into the caller's retry/quarantine/park
+    // machinery, so the bound is the budget.
     let tmp = path.with_extension("json.tmp");
-    let mut writer = crate::platform::filesystem::open_private_lock_file(&tmp)
+    let mut writer = crate::platform::filesystem::open_private_tmp_write_file(&tmp)
         .with_context(|| format!("open result marker {}", tmp.display()))?;
     {
         use std::io::Write as _;
@@ -2974,6 +2976,58 @@ mod tests {
         assert!(
             !spool.join("nosender.json").exists(),
             "the request itself was applied and consumed"
+        );
+    }
+
+    // Round-18 MAJOR-1: a planted FIFO at the marker tmp path must be
+    // REFUSED, not written. O_RDWR|O_NONBLOCK alone succeeds on a FIFO
+    // (it supplies its own reader) — the round-17 shape — so the payload
+    // vanished into the pipe buffer and the publish rename installed the
+    // FIFO as the marker: silent receipt loss plus a duplicate-apply
+    // window. The gated tmp open fails the open instead; the rename never
+    // runs and the FIFO is left untouched for a deterministic re-refusal.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn planted_fifo_at_the_marker_tmp_path_is_refused() {
+        let _home = TempHome::new();
+        std::fs::create_dir_all(done_dir()).unwrap();
+        let marker = done_dir().join("victim.json");
+        let tmp = marker.with_extension("json.tmp");
+        let fifo_path = std::ffi::CString::new(tmp.as_os_str().to_str().unwrap()).unwrap();
+        assert_eq!(
+            unsafe { libc::mkfifo(fifo_path.as_ptr(), libc::S_IFIFO | 0o644) },
+            0,
+            "fixture: the FIFO must be created"
+        );
+        let result = write_done_marker(&marker, &serde_json::json!({"ok": true, "task_id": "t-1"}));
+        assert!(result.is_err(), "the planted FIFO must be refused");
+        assert!(!marker.exists(), "the rename must not publish the FIFO");
+        // Still a FIFO (not truncated into a regular file, not consumed):
+        // the re-poll refuses again deterministically.
+        let meta = std::fs::metadata(&tmp).unwrap();
+        use std::os::unix::fs::FileTypeExt as _;
+        assert!(meta.file_type().is_fifo(), "the FIFO must be untouched");
+    }
+
+    // Round-18 MAJOR-1 (truncation half): the gated tmp open truncates —
+    // a leftover LONGER tmp (crash between write and rename, publish
+    // failure, prune-window stray) plus a shorter payload must not
+    // publish `payload + stale tail` (an unparseable torn marker that
+    // degrades every replay to pending).
+    #[tokio::test]
+    async fn marker_tmp_write_truncates_a_leftover_longer_tmp() {
+        let _home = TempHome::new();
+        std::fs::create_dir_all(done_dir()).unwrap();
+        let marker = done_dir().join("victim.json");
+        let tmp = marker.with_extension("json.tmp");
+        std::fs::write(&tmp, "x".repeat(4096)).unwrap();
+        let payload = serde_json::json!({"ok": true, "task_id": "t-1"});
+        write_done_marker(&marker, &payload).expect("the publish must succeed");
+        let published = std::fs::read_to_string(&marker).unwrap();
+        assert_eq!(
+            published,
+            payload.to_string(),
+            "the marker must be exactly the payload (no stale tail)"
         );
     }
 }
