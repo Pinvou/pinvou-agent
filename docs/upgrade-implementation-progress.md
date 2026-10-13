@@ -4390,7 +4390,7 @@ scope5 passed: integration4/actual7313 in32.64s, registryunit1 in0.38s/11 filter
 Clippy1.69s/codec+App facade format/diff passed; CI51 in0.044s. Both actual
 Node22/two legacy environments, no old146/31556/App repeat. Both scoped reviews
 passed with no remaining mandatory findings and all processes closed.
-Final documentation closure pending.
+Both independent final documentation reviews passed before commit.
 No Schema/OpenAPI/profile/vectors/dependencies/locks/CI/crypto/trust/limits/
 VERSION/gitlinks changes. Details:
 [client requests](client-upgrade-request-contracts.md).
