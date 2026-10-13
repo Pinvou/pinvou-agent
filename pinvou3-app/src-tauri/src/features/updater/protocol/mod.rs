@@ -12,6 +12,16 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+pub(crate) fn match_metadata_reference_bytes(
+    declared: &[u8],
+    original_envelope: &[u8],
+) -> Result<(), pinvou_upgrade_codec::MetadataReferenceError> {
+    decode_metadata(declared)
+        .map_err(pinvou_upgrade_codec::MetadataReferenceError::Json)?
+        .metadata_reference_shape()?
+        .assert_original_envelope(original_envelope)
+}
+
 pub(crate) fn compare_app_version_bytes(
     left: &[u8],
     right: &[u8],
@@ -76,6 +86,26 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_matches_complete_metadata_reference_to_original_wire_bytes() {
+        let bytes = br#"{"signed":{"role":"root","scope":{},"version":1,"expiresAt":0}}"#;
+        let declared = pinvou_upgrade_codec::derive_metadata_reference(bytes).unwrap();
+        assert!(match_metadata_reference_bytes(declared.canonical_bytes(), bytes).is_ok());
+        let mut changed = bytes.to_vec();
+        changed.push(b' ');
+        assert_eq!(
+            match_metadata_reference_bytes(declared.canonical_bytes(), &changed),
+            Err(pinvou_upgrade_codec::MetadataReferenceError::Mismatch)
+        );
+        let mut reference: serde_json::Value =
+            serde_json::from_slice(declared.canonical_bytes()).unwrap();
+        reference["version"] = serde_json::json!(2);
+        assert_eq!(
+            match_metadata_reference_bytes(&serde_json::to_vec(&reference).unwrap(), bytes),
+            Err(pinvou_upgrade_codec::MetadataReferenceError::Mismatch)
+        );
+    }
 
     #[test]
     fn feature_facade_compares_decimal_components_without_integer_overflow_or_normalization() {

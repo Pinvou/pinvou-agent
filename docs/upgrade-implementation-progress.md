@@ -3118,3 +3118,52 @@ in-scope gap.
 
 Details: [version ordering](client-upgrade-version-ordering.md). Full T27 remains
 unfinished. Downloads retain no total/cumulative duration or retry cap.
+
+
+## T27 tenth batch - exact original metadata reference (2026-10-13)
+
+Private MetadataReferenceShape validates frozen closed six-field reference rules
+and role-specific scope keys, preserving generic identifier values rather than
+adding channel/target enums. Package version/expiry must be null; other metadata
+uses positive safe version and nonnegative safe nonnull expiry. Size is1..1MiB.
+Raw derivation first applies full original Document bounds/duplicates, then
+projects role/scope, Release revision only, other version or Package null and
+the original expiresAt missing/null behavior. Nonnull Package expiry is refused,
+never erased. Length and SHA bind the current original wire bytes without JCS
+reserialization; matching compares all six reference fields.
+
+This is byte/reference association only. Minimal unsigned claims and unselected
+extras/signature shapes can derive a positive reference, while all raw bytes
+remain hash-bound and resource/duplicate checked. Ignored extras are not treated
+as nested metadata references. No full Envelope Schema/signature/expected product
+or component/time/current trust/qualification/high-watermark proof follows.
+No dependency/lock/Schema/CI/product version/gitlink changes.
+
+Root all46 codec regressions passed with actual Node22 and both old oracle flags:
+signing6 in7.24s, bytes7 in0.65s, consume4 in1.75s, native3 in0.76s, reference4
+in0.88s (initial721 cases), rollout4 in0.62s, Root4 in6.36s (639), Source5
+in0.80s (218), status5 in0.69s and version4 in2.25s (348); Clippy4.91s passed.
+After adding only standalone same-length raw-order/opaque/signature-field controls,
+latest reference4 passed0.98s with730 actual original Node/AJV cases and final
+Clippy2.86s/fmt passed. Initial721 evidence does not substitute for final730;
+the other42 tests and source remained unchanged. Common reference Schema is
+exercised through original Timestamp.snapshot plus checkReferenceRoles, followed
+by original envelopeReference/assertReference, without unrelated time semantics.
+
+CI51 passed0.064s, architecture/version/diff passed. Final actual Windows App
+passed all26 updater tests in0.13s after2m22s build, including matching original
+bytes and rejecting raw whitespace or declared-version changes. No App-wide pass
+is claimed. Dependency final frozen-source/tests/docs scoped PASS: all46 actual
+Node22 tests with both old oracle flags passed, signing6 in3.94s, bytes7 in1.17s,
+consume4 in3.33s, native3 in0.67s, reference4 in1.08s (730), rollout4 in0.66s,
+Root4 in4.16s (639), Source5 in0.74s (218), status5 in0.60s and version4 in0.93s
+(348); Clippy1.60s/fmt/diff passed. Compatibility final source/tests/docs scoped
+PASS: all46 actual Node22 tests with both flags passed, signing6 in3.16s, bytes7
+in0.32s, consume4 in1.42s, native3 in0.64s, reference4 in0.95s (730), rollout4
+in0.60s, Root4 in3.74s (639), Source5 in0.75s (218), status5 in0.63s and version4
+in0.87s (348); Clippy1.18s/fmt, CI51 in0.046s and diff passed. Both final reviews
+used unchanged frozen source; root self-review found no remaining in-scope gap.
+
+Details: [metadata reference](client-upgrade-metadata-reference.md). Complete T27
+trust/chain/high-watermark integration remains unfinished. Downloads retain no
+total/cumulative duration or retry cap.
