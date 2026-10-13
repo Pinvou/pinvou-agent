@@ -2094,3 +2094,36 @@ scoped PASS; no mandatory byte-codec finding remains.
 No physical platform, trusted time, signature/provider or service E2E is claimed.
 Full T27 remains unfinished, deployment remains deferred, and downloads retain no
 hard total/cumulative duration limit.
+Client bounded byte codec commit: `dc6dbdeb2`.
+
+### T27 second batch: fixed signing bytes and descriptor identities (2026-10-13)
+
+The private codec constructs the complete normative signed wrapper from the
+original five required properties and the entire signed object, preserves explicit
+null, refuses missing fields and rechecks the extra wrapper level/resource bounds.
+Direct bounded JCS avoids false refusal from an oversized noncanonical intermediate.
+The 1 MiB limit applies to the wrapper payload; fixed domain plus one NUL adds
+25 bytes. Canonical 32-byte public-key encoding produces the fixed two-field
+descriptor and lowercase SHA-256 keyId. These bytes establish no point validity,
+signature validity, authorized key, trusted Root or installation eligibility.
+
+The final repository run passed six new groups and seven existing groups with
+actual Node 22.23.3 (5.65s/0.36s), including all 20 original inputs, four descriptor
+IDs and 44 actual signing/descriptor oracle cases. The isolated draft also passed
+Node 26/22 and independent runs. Initial compile issues were repaired; an initial
+oracle failure came from duplicating a public fixture Root keyId and was corrected
+without changing production binding behavior. Base64, depth, complete-field and
+exact 1 MiB/+1 boundaries are covered. Standalone Clippy, App formatting, locked
+App/CLI metadata and 44 CI routing tests passed. Only two existing codec dependency
+edges change in the App/CLI locks; versions and JSON features remain unchanged.
+
+Actual Windows App integration passed all five updater tests, including the new
+binding/descriptor facade control (0.00s, 4m02s build). Independent actual-repo
+reruns passed six new groups (17.25s), seven original groups (15.77s) and 44 CI
+policy tests (0.277s); the second role passed six/seven groups (6.74s/0.49s) and
+44 policy tests (0.079s). Architecture/version checks passed. Both independent
+roles gave final B2 scoped PASS, with no mandatory binding/descriptor finding.
+Strict Ed25519 point/
+signature policy remains an explicit pending protocol decision; this batch has no
+verifier or bootstrap path. Full T27, time/platform/provider certification and
+deployment remain unfinished. Downloads retain no hard elapsed-duration cap.

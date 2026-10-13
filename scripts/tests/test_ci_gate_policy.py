@@ -107,6 +107,13 @@ class CiGatePolicyTests(unittest.TestCase):
             "specs/upgrade/v1/reference/canonical-json.mjs",
             "specs/upgrade/v1/reference/errors.mjs",
             "specs/upgrade/v1/vectors/crypto/envelopes.json",
+            "specs/upgrade/v1/reference/signatures.mjs",
+            "specs/upgrade/v1/reference/digests.mjs",
+            "specs/upgrade/v1/reference/schema-registry.mjs",
+            "specs/upgrade/v1/reference/semantics.mjs",
+            "specs/upgrade/v1/schemas/metadata/root.json",
+            "specs/upgrade/v1/schemas/common.json",
+            "specs/upgrade/v1/package-lock.json",
         ):
             with self.subTest(path=path):
                 self.assertTrue(_matches_paths_filter(path, patterns))
@@ -116,7 +123,11 @@ class CiGatePolicyTests(unittest.TestCase):
         step = job.split("- name: Check independent upgrade byte codec", 1)[1].split("\n      - name:", 1)[0]
         self.assertNotIn("if:", step)
         self.assertIn("PINVOU_UPGRADE_NODE_REFERENCE:", step)
+        self.assertIn("PINVOU_UPGRADE_SIGNATURE_REFERENCE:", step)
         self.assertIn("cargo test --locked", step)
+        self.assertIn("npm --prefix specs/upgrade/v1 ci --ignore-scripts", job)
+        self.assertLess(job.index("Install frozen upgrade reference dependencies"),
+                        job.index("Check independent upgrade byte codec"))
 
     def test_full_release_only_runs_for_version_or_manual_trigger(self):
         trigger = self.release_workflow.split("\non:", maxsplit=1)[1].split(

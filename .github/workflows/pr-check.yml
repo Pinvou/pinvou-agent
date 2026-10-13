@@ -191,9 +191,7 @@ jobs:
           filters: |
             rust_code:
               - 'pinvou3-app/src-tauri/src/features/updater/protocol/codec/**'
-              - 'specs/upgrade/v1/reference/canonical-json.mjs'
-              - 'specs/upgrade/v1/reference/errors.mjs'
-              - 'specs/upgrade/v1/vectors/crypto/envelopes.json'
+              - 'specs/upgrade/v1/**'
               - '**/*.rs'
               - '**/Cargo.toml'
               - '**/Cargo.lock'
@@ -844,10 +842,14 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Install frozen upgrade reference dependencies
+        run: npm --prefix specs/upgrade/v1 ci --ignore-scripts --no-audit --no-fund
+
       - name: Check independent upgrade byte codec
         working-directory: pinvou3-app/src-tauri/src/features/updater/protocol/codec
         env:
           PINVOU_UPGRADE_NODE_REFERENCE: ${{ github.workspace }}/specs/upgrade/v1/reference/canonical-json.mjs
+          PINVOU_UPGRADE_SIGNATURE_REFERENCE: ${{ github.workspace }}/specs/upgrade/v1/reference/signatures.mjs
         run: |
           cargo fmt -- --check
           cargo clippy --locked --all-targets -- -D warnings

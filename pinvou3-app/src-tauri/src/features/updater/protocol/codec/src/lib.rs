@@ -1,7 +1,10 @@
 //! Bounded Upgrade V1 JSON and canonical bytes. Successful decoding is not
 //! signature verification, established Root trust, current eligibility or ACK.
 
+mod bindings;
 mod parse;
+
+pub use bindings::{BindingError, KeyDescriptor, SigningInput, key_descriptor};
 
 use std::{fmt, io};
 

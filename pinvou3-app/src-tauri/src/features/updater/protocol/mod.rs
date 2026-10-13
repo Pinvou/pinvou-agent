@@ -39,4 +39,23 @@ mod tests {
             "{\"😀\":0,\"\u{e000}\":9007199254740992}".as_bytes()
         );
     }
+
+    #[test]
+    fn feature_facade_binds_signed_bytes_and_public_descriptor_without_granting_trust() {
+        let signed = decode_metadata(
+            br#"{"protocolVersion":1,"role":"root","product":"pinvou","component":null,"scope":{}}"#,
+        ).unwrap();
+        let input = signed.signing_input().unwrap();
+        assert_eq!(&input.as_bytes()[..25], b"pinvou-upgrade-signed-v1\0");
+        let expected = br#"{"component":null,"product":"pinvou","protocolVersion":1,"role":"root","scope":{},"signed":{"component":null,"product":"pinvou","protocolVersion":1,"role":"root","scope":{}}}"#;
+        assert_eq!(&input.as_bytes()[25..], expected);
+        // Original public verification fixture; private signing material was discarded.
+        let descriptor =
+            pinvou_upgrade_codec::key_descriptor("_CJCOu9X5MQEeieRvPJYzMz_B7R5Ir1SBNpPoE9drIU")
+                .unwrap();
+        assert_eq!(
+            descriptor.key_id(),
+            "a2c128c7b29c794def8df2dc4dc1279073ebe6896f6aff073d862bb97537453c"
+        );
+    }
 }
