@@ -13,6 +13,12 @@ pub use attempt::{
     fetch_cache_once_with_observer_on_worker,
 };
 
+mod complete;
+pub use complete::{
+    CacheCheckError, CacheValidationOwner, CheckedCacheOutcome, ValidationDecision, ValidationStop,
+    fetch_and_check_cache_once_on_worker, fetch_and_check_cache_once_with_observer_on_worker,
+};
+
 mod cache;
 pub use cache::{
     CacheReceiveError, receive_cache_body_on_worker, receive_cache_body_with_observer_on_worker,

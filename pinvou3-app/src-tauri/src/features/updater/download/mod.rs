@@ -10,6 +10,21 @@ pub(crate) async fn fetch_file<'a>(
     pinvou_upgrade_file_http::fetch(url, request, policy, resolver).await
 }
 
+pub(crate) fn fetch_and_check_cache_once_on_worker<'a>(
+    runtime: &tokio::runtime::Handle,
+    request: pinvou_upgrade_file_http::CacheFetchRequest<'_, 'a>,
+    file: &mut std::fs::File,
+    cancelled: impl FnMut() -> bool,
+    validation: &mut dyn pinvou_upgrade_file_http::CacheValidationOwner,
+) -> Result<
+    pinvou_upgrade_file_http::CheckedCacheOutcome<'a>,
+    pinvou_upgrade_file_http::CacheCheckError,
+> {
+    pinvou_upgrade_file_http::fetch_and_check_cache_once_on_worker(
+        runtime, request, file, cancelled, validation,
+    )
+}
+
 pub(crate) fn fetch_cache_once_with_observer_on_worker<'a>(
     runtime: &tokio::runtime::Handle,
     request: pinvou_upgrade_file_http::CacheFetchRequest<'_, 'a>,
@@ -128,6 +143,112 @@ mod tests {
         Artifact, PrefixState, ResponseDecision, SourceContinuity, StrongEtag, TransferError,
         WriteMode, plan_request,
     };
+
+    #[test]
+    fn application_checked_cache_uses_actual_file_even_after_complete_length_projection() {
+        use pinvou_upgrade_file_http::{
+            CacheCheckError, CacheFetchRequest, CacheValidationOwner, CheckedCacheOutcome,
+            DestinationPolicy, FileOrigin, ReplacementPermission, SystemResolver,
+            ValidationDecision,
+        };
+        use std::io::Write;
+        struct Deny;
+        impl DestinationPolicy for Deny {
+            fn permits_origin(&self, _: &FileOrigin) -> bool {
+                false
+            }
+            fn permits_address(&self, _: &FileOrigin, _: std::net::SocketAddr) -> bool {
+                false
+            }
+        }
+        struct Owner {
+            begun: usize,
+        }
+        impl CacheValidationOwner for Owner {
+            fn begin_or_resume(&mut self, target: Artifact<'_>) -> ValidationDecision {
+                assert_eq!(target.package_id(), "app-cache-1");
+                self.begun += 1;
+                ValidationDecision::Continue // Scripted owner, not real time certification.
+            }
+            fn poll(&mut self, _: Artifact<'_>) -> ValidationDecision {
+                ValidationDecision::Continue
+            }
+        }
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let handle = runtime.handle().clone();
+        runtime.block_on(async move {
+            tokio::task::spawn_blocking(move || {
+                let path = std::env::temp_dir()
+                    .join(format!("pinvou-app-checked-cache-{}", uuid::Uuid::new_v4()));
+                let mut file = std::fs::OpenOptions::new()
+                    .create_new(true)
+                    .read(true)
+                    .write(true)
+                    .open(&path)
+                    .unwrap();
+                file.write_all(b"0123456789").unwrap();
+                let target = Artifact::new(
+                    "app-cache-1",
+                    10,
+                    "84d89877f0d4041efb6bf91a16f0248f2fd573e6af05c19f96bedb9f882f7882",
+                )
+                .unwrap();
+                let plan = plan_request(
+                    target,
+                    Some(PrefixState::new(None, 10, None).unwrap()),
+                    SourceContinuity::Unproven,
+                );
+                let mut owner = Owner { begun: 0 };
+                let request = CacheFetchRequest::new(
+                    "invalid unused URL",
+                    plan,
+                    &Deny,
+                    &SystemResolver,
+                    ReplacementPermission::Refuse,
+                );
+                let result = fetch_and_check_cache_once_on_worker(
+                    &handle,
+                    request,
+                    &mut file,
+                    || false,
+                    &mut owner,
+                )
+                .unwrap();
+                let CheckedCacheOutcome::Complete(matched) = result else {
+                    panic!("expected actual file match");
+                };
+                assert!(matched.target() == target);
+                file.set_len(9).unwrap();
+                let request = CacheFetchRequest::new(
+                    "invalid unused URL",
+                    plan,
+                    &Deny,
+                    &SystemResolver,
+                    ReplacementPermission::Refuse,
+                );
+                assert!(matches!(
+                    fetch_and_check_cache_once_on_worker(
+                        &handle,
+                        request,
+                        &mut file,
+                        || false,
+                        &mut owner
+                    ),
+                    Err(CacheCheckError::Check(
+                        pinvou_upgrade_byte_check::ByteCheckError::TooShort
+                    ))
+                ));
+                assert_eq!(owner.begun, 2);
+                drop(file);
+                std::fs::remove_file(path).unwrap();
+            })
+            .await
+            .unwrap();
+        });
+    }
 
     #[test]
     fn application_cache_writer_graph_replaces_and_verifies_actual_file() {

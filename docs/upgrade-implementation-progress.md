@@ -2772,3 +2772,69 @@ Details: [native identity shape](client-upgrade-native-identity-shape.md). Full
 T27/T29 and actual native probes/authoritative identity checks remain unfinished.
 Unresolved Ed25519 policy is not bypassed. Downloads retain no total/cumulative
 duration or retry cap.
+
+## T29 eleventh batch - single attempt plus whole-file scan (2026-10-13)
+
+This continued task reuses the warm worktree on a scoped branch from the reviewed
+T27 commit; it does not resync main merely for the next continued task batch. The
+actual B9/B10 GET/cache attempt now composes with B3's same-File whole-byte scan.
+Partial Segment/Restart starts no validation and returns no match. Only original
+complete count or local VerifyExisting enters a fresh real-EOF/size/SHA scan on the
+same supplied File. Original target comes only from the actual attempt outcome.
+There is no path reopen, alternate target, retry, URL renewal or promotion.
+
+Mandatory CacheValidationOwner begins/resumes the original workflow/transaction/
+target record and polls under its original T26 budget. It supplies no actual clock/
+protected storage proof; its trusted integration contract must preserve original
+deadlines and stop Expired/Unproven/TimeFault/OwnerStopped. Begin refusal precedes
+seek/read, scan stops latch the first reason, and final owner/cancel checks gate
+returning B3 ByteMatch. Validation is separate from downloading. ByteMatch attests
+observed bytes only, not native identity/protection/current trust/VMO/rights.
+
+Both independent reviewers found a final owner callback cancellation gap: owner
+poll could return Continue while publishing cancellation. Root added cancellation
+recheck after that callback and expanded related scan controls to all five owner
+poll positions, including no seek when the first callback cancels. Each scan owner
+Continue also rechecks cancellation before proceeding. Fixed stop reasons remain
+prioritized and never revive. Initial/transition 27-test/79-request passes are not
+used as final-tree evidence. A latest-tree link attempt hit Windows LNK1104 while
+an earlier independent test executable was active; participants then stopped
+overlapping runs and final root verification ran serially. No process was killed
+or unrelated output removed. Final frozen-tree root harness passed all27 actual
+HTTPS tests (9.68s) and79 wire assertions; Clippy2.45s/fmt/diff passed. Five new
+groups exercise actual200/206 complete scans, short/restart no-validation paths,
+wrong original hash/equal-length pollution, network/truncation/observer Stop and
+complete local cache with actual size/hash mismatch and zero DNS. Scripted begin
+and each of five poll stops/cancellations preserve the original deadline; before-
+seek callback cancellation preserves cursor7. This is no physical clock evidence.
+
+Dependency reviewer independently compiled/ran this final1..5 frozen tree: all27
+actual HTTPS tests passed11.03s with79 wire assertions; Clippy6.87s/fmt passed.
+The original final-callback finding and related scan callback cases are closed.
+Compatibility's first corrected4/5 tree independently passed27/79 in9.70s,
+Clippy3.87s/CI49 0.064s/fmt/diff, then reviewed latest1..5 delta separately. Its
+latest targeted actual-file controls and final doc review are recorded below.
+
+Actual final Windows App passed all19 updater tests (0.04s after1m39s build),
+including local complete projection -> actual File match and actual truncation
+refusal through the new facade. The earlier pre-fix App pass is not substituted
+for this final-tree build. No App-wide pass is claimed. Real HTTPS execution is
+provided by the isolated actual-peer harness, not by this App-local facade test.
+
+Existing checks passed CI49 0.056s, architecture, version and formatting/diff.
+No dependency, lock, Schema, CI, product version or gitlink changes. Full T29 and
+protected cache/staging/native authenticity/current qualification/URL renewal,
+durable resume and actual original-budget/clock integration remain unfinished.
+Downloads retain no total/cumulative duration or retry cap. Details:
+[single attempt plus complete scan](client-upgrade-checked-cache-attempt.md).
+
+Compatibility independently ran the exact latest actual-file local test:1 PASS
+0.04s,26 filtered, with zero HTTPS/proxy/redirect requests. It covers all1..5
+callback cancellations and first-callback cursor preservation. Its first target
+run also passed0.04s, but the temporary read-only adapter incorrectly rejected
+Go's zero Requests slice JSON null instead of allowing null/[]; the adapter was
+corrected and rerun exit0. This was a verification-script issue, not a production
+failure, and no repository file changed. Both reviewers returned latest-source
+scoped PASS with no remaining mandatory. Both reviewers returned final scoped
+PASS after final doc/evidence review without rebuilding. Root self-review found
+no remaining in-scope gap.
