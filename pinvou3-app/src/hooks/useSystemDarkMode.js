@@ -1,5 +1,4 @@
-import { useEffect, useState } from 'react';
-import { systemPrefersDark } from '../shared/color-scheme.js';
+import { useMediaQuery } from './useMediaQuery.js';
 
 /**
  * Track the OS light/dark preference, including runtime changes (not just a
@@ -9,15 +8,5 @@ import { systemPrefersDark } from '../shared/color-scheme.js';
  * shared/color-scheme.js.
  */
 export function useSystemDarkMode() {
-  const [dark, setDark] = useState(systemPrefersDark);
-
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return;
-    const media = window.matchMedia('(prefers-color-scheme: dark)');
-    const onChange = () => setDark(media.matches);
-    media.addEventListener?.('change', onChange);
-    return () => media.removeEventListener?.('change', onChange);
-  }, []);
-
-  return dark;
+  return useMediaQuery('(prefers-color-scheme: dark)');
 }
