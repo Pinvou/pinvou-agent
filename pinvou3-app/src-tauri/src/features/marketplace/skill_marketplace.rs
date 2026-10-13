@@ -556,26 +556,18 @@ impl SkillMarketplaceManager {
                 dest.display()
             ));
         };
-        // The whole landing (staged extract → delete-then-rename → duplicate
-        // sweep → record upsert) holds the same per-id import lock the
-        // uninstall lanes hold (`uninstall_locked` /
-        // `uninstall_and_strip_scope`), so a same-id preset install can no
-        // longer interleave with a consent-strip teardown. Lock order
-        // matches the rest of the lane (import_lock → store file_lock); the
-        // deny-first gates run BEFORE install in every caller and take no
-        // import lock, so no new nesting is introduced.
-        // Disclosed residual: this mutex is process-local. A same-id UNIFIED
-        // IMPORT landing in ANOTHER process holds the cross-process landing
-        // lease; this lane does not take that lease (closing it needs a
-        // held-lease variant so the nested MCP companion cleanup cannot
-        // self-deadlock — see the pipeline comment in plugin_import), so a
-        // cross-process skill-install-vs-import of the same id can still
-        // interleave, and it does NOT self-heal: the landed record+content
-        // satisfy the known-check, so the next gate run SKIPS and the pack
-        // sits with zero consent rows until its next teardown; §3.2
-        // registers the window with the exact direction.
-        let import_lock = super::plugin_import::import_lock_for(skill_id);
+        // Round-51 review: install was the one preset-skill lane that held no
+        // `import_lock_for` at all — its fixed `{}.tmp` staging and the
+        // remove-dest → rename tail could interleave with a concurrent
+        // uninstall / display-meta edit in-process, and with ANY second
+        // process (the CLI's `plugins skills install`) cross-process. Hold
+        // the same id lock as uninstall/import_legacy/display-meta, keyed on
+        // the destination name, plus the cross-process market file lock, in
+        // the shared order (import_lock → market file lock → store file
+        // lock) through the end of the function.
+        let import_lock = super::plugin_import::import_lock_for(m.skill_name);
         let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
+        let _market_lock = super::plugin_import::MarketplaceWriteLock::acquire_map_err()?;
         std::fs::create_dir_all(parent).map_err(|e| format!("创建包 skills 目录: {e}"))?;
         let staged = parent.join(format!("{}.tmp", m.skill_name));
         let _ = std::fs::remove_dir_all(&staged);
@@ -734,6 +726,21 @@ impl SkillMarketplaceManager {
     /// rehome/orphan/stale-record heuristics must never touch package-owned
     /// content, otherwise user uploads are destroyed within two launches.
     pub fn self_heal_skills(&self, builtin_released: &[&str]) -> SkillSelfHealReport {
+        // 锁序：认领归位/去重、孤儿与退役目录删除、瘫记录清理动的是 bundles/
+        // 下的市场目录与登记，与市场写者同持跨进程市场写锁（boot 从 extraction
+        // 进入时未持其他市场锁，这里是真实获取；flock 之上有事务锁的调用方按
+        // 持有深度 join），store file_lock 在其后取。本函数返回报告而非
+        // Result：获取失败只能警告并按空报告跳过本轮——自愈每个启动周期重跑，
+        // 锁只在写者秒级暂存窗口内被占用，缺一轮安全，不得因此中断启动。
+        let _market_write_lock = match super::plugin_import::MarketplaceWriteLock::acquire() {
+            Ok(lock) => lock,
+            Err(e) => {
+                log::warn!(
+                    "[skill-marketplace] 创建市场写入锁失败，本轮自愈对账跳过（下个启动周期重试）: {e}"
+                );
+                return SkillSelfHealReport::default();
+            }
+        };
         let mut report = SkillSelfHealReport::default();
         // Fail-closed when the store is unreadable OR missing: a missing
         // bundles.json yields an empty record set that is indistinguishable
@@ -973,7 +980,13 @@ impl SkillMarketplaceManager {
     /// Caller MUST hold the per-id `import_lock_for(skill_id)`; split out of
     /// `uninstall` so `uninstall_and_strip_scope` can hold ONE guard across
     /// this teardown and its scope strip.
+
     fn uninstall_locked(&self, skill_id: &str, dir_name: &str) -> Result<bool, String> {
+        // Round-51 review: the in-process mutex held by the caller cannot see
+        // the CLI's second process — hold the same cross-process market lock
+        // every market mutator holds (order: import_lock → market file lock →
+        // store file lock).
+        let _market_lock = super::plugin_import::MarketplaceWriteLock::acquire_map_err()?;
         let legacy = self.legacy_skills_dir.join(dir_name);
 
         // Upload 独立技能包回收（必须先于一切物理删除；fail-closed 与 MCP 卸载
@@ -1063,6 +1076,23 @@ impl SkillMarketplaceManager {
         }
         Ok(record_present || deleted_any)
     }
+
+    /// Uninstall plus the caller-side scope strip, with the per-id import
+    /// lock held across BOTH: the teardown and the strip share one critical
+    /// section, so a deny-first registration a concurrent same-id install
+    /// makes after this function returns survives, and the strip can never
+    /// delete a just-registered fresh entry. The residual is the same
+    /// in-section window the MCP tool lane has: a gate that reads the store
+    /// in the instant between the record removal and the strip still
+    /// registers and is then stripped (microsecond scale, fail-open,
+    /// disclosed in capability-governance §3.2). A vacuous `Ok(false)`
+    /// strips nothing; a refused strip only logs (the leftover entry fails
+    /// closed). The strip targets the pre-teardown owner snapshot via the
+    /// exact form. Only for teardown paths with no outer transaction lock
+    /// (ima logout); the skill command lane keeps its own post-return strip
+    /// with a pre-teardown owner snapshot (its callers are the ones that
+    /// know the owner), and the tool uninstall's companion legs strip inside
+    /// `cleanup_uninstalled_tool_state` instead.
 
     /// Uninstall plus the caller-side scope strip, with the per-id import
     /// lock held across BOTH: the teardown and the strip share one critical
@@ -1223,6 +1253,10 @@ impl SkillMarketplaceManager {
         // plugin_import 统一路径的 M-4 口径对齐。
         let import_lock = super::plugin_import::import_lock_for(&name);
         let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
+        // Round-51 review: cross-process market lock (same order as every
+        // market mutator; the CLI's `plugins skills` lanes are a second
+        // process against the same staged paths).
+        let _market_lock = super::plugin_import::MarketplaceWriteLock::acquire_map_err()?;
         // pass2:写出 skill_root 子树到 staged（上传技能独立成包：bundles/<name>/skills/）
         let dest = self.packages_root.join(&name).join("skills").join(&name);
         // Same as above: joined from the root, so a parent always exists;
@@ -1349,6 +1383,10 @@ impl SkillMarketplaceManager {
         // 取，避免「门禁读到的旧记录在同步段被重导入整体替换」的插队。
         let import_lock = super::plugin_import::import_lock_for(bundle_id);
         let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
+        // Round-51 review: cross-process market lock (same order as every
+        // market mutator; the CLI's `plugins` lanes are a second process
+        // against the same directories).
+        let _market_lock = super::plugin_import::MarketplaceWriteLock::acquire_map_err()?;
         // 门禁必须在回写之前：先挡住预置/内置包与未登记 id，避免改写非上传包
         // 的技能内容；set_display_meta 内同口径兜底（防 TOCTOU）。
         let record = self
@@ -1495,6 +1533,22 @@ impl SkillMarketplaceManager {
     /// - 目标已存在或 rename 失败 → 保留旧位置并 warn（读路径 `find_skill_dir`
     ///   对旧位置有回退，迁移下个启动周期自愈）。
     pub fn migrate_flat_skills_layout(&self) -> SkillsMigrationReport {
+        // 锁序：旧扁平目录搬移与退役/断连残留删除动的是 bundles/ 下的市场
+        // 目录，与市场写者同持跨进程市场写锁（boot 从 extraction 进入时未持
+        // 其他市场锁，这里是真实获取；flock 之上有事务锁的调用方按持有深度
+        // join），迁移补写指纹的 store file_lock 在其后取。本函数返回报告而
+        // 非 Result：获取失败只能警告并按空报告跳过本轮——迁移幂等、每个
+        // 启动周期重跑，锁只在写者秒级暂存窗口内被占用，缺一轮安全，不得
+        // 因此中断启动。
+        let _market_write_lock = match super::plugin_import::MarketplaceWriteLock::acquire() {
+            Ok(lock) => lock,
+            Err(e) => {
+                log::warn!(
+                    "[skill-marketplace] 创建市场写入锁失败，本轮技能布局迁移跳过（下个启动周期重试）: {e}"
+                );
+                return SkillsMigrationReport::default();
+            }
+        };
         let mut report = SkillsMigrationReport::default();
         let Ok(rd) = std::fs::read_dir(&self.legacy_skills_dir) else {
             return report;
@@ -1984,7 +2038,10 @@ fn read_skill_name(md_path: &Path) -> Option<String> {
 
 /// 解析 SKILL.md frontmatter 的 `name:`(前两个 `---` 之间的第一个顶层 name 行)。
 /// `pub(crate)`：统一插件导入（plugin_import）的裸技能回退复用同一解析口径。
-pub(crate) fn read_skill_name_from_str(content: &str) -> Option<String> {
+/// `pub` (round-41 review): the CLI's `plugins skills install/import` uses
+/// the very frontmatter reader the GUI pipeline runs, so a fallback-name
+/// decision cannot drift between surfaces.
+pub fn read_skill_name_from_str(content: &str) -> Option<String> {
     let mut lines = content.lines();
     if lines.next()?.trim() != "---" {
         return None;
@@ -2748,7 +2805,9 @@ pub(crate) fn ensure_skill_restorable(restoring_pkg: &str, skill_name: &str) -> 
 /// 把任意字符串（文件名 stem 等）净化为合法技能名：非 `[a-zA-Z0-9_-]` 字符 → `-`，
 /// 掐头去尾的 `-` 去掉、截 64；空结果兜底 "skill"。`pub(crate)`：单 .md 导入的
 /// 文件名兜底命名用。
-pub(crate) fn sanitize_skill_name(name: &str) -> String {
+/// `pub` (round-41 review): the CLI import fallback names skills through
+/// the same sanitizer the GUI stores, byte-for-byte.
+pub fn sanitize_skill_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| {

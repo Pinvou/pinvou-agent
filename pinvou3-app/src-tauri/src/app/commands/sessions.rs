@@ -830,7 +830,7 @@ pub async fn load_session(
 /// which would leave a still-running aux engine as a handle-less orphan; and
 /// deleting the main session first would strip the aux teardown of its
 /// session context.
-async fn delete_chat_session_cascade<Ev, EvFut, De, DeFut, F, Em, R>(
+async fn delete_chat_session_cascade<Ev, EvFut, De, DeFut, F, Em, R, RFut>(
     store: &SessionStore,
     session_id: &str,
     mut evict_acp: Ev,
@@ -846,7 +846,12 @@ where
     DeFut: Future<Output = anyhow::Result<()>>,
     F: FnMut(&str),
     Em: FnMut(&str),
-    R: FnMut(&str) -> Result<(), String>,
+    // Round-51 review: future-returning like its sibling closures —
+    // `SessionAgentStore::remove` polls the cross-process section lock (up
+    // to SECTION_LOCK_TIMEOUT), so the command layer joins it on a blocking
+    // worker instead of parking this runtime worker mid-cascade.
+    R: FnMut(&str) -> RFut,
+    RFut: Future<Output = Result<(), String>>,
 {
     evict_acp(session_id).await;
     // The aux session cascade must go through the gated delete first (turn
@@ -872,7 +877,7 @@ where
         .await
         .map_err(|error| format!("delete_session({session_id}): {error:#}"));
     if result.is_ok() {
-        remove_acp_agent(session_id)?;
+        remove_acp_agent(session_id).await?;
     }
     result
 }
@@ -917,9 +922,22 @@ pub async fn delete_session(
                 |session_id| pool.forget_session(session_id),
                 emit_deleted,
                 |session_id| {
-                    acp_pool.agents().remove(session_id).map_err(|error| {
-                        format!("failed to clean up the Agent session mapping: {error:#}")
-                    })
+                    // Round-51 review: `SessionAgentStore::remove` polls the
+                    // cross-process section lock (up to SECTION_LOCK_TIMEOUT)
+                    // — join it on a blocking worker instead of parking this
+                    // runtime worker (the same rationale as round-50's codex
+                    // rollback conversion; the store handle is a cheap
+                    // Arc-field clone).
+                    let agents = acp_pool.agents().clone();
+                    let session_id = session_id.to_string();
+                    async move {
+                        super::settings::join_blocking("Agent session mapping cleanup", move || {
+                            agents.remove(&session_id).map_err(|error| {
+                                format!("failed to clean up the Agent session mapping: {error:#}")
+                            })
+                        })
+                        .await
+                    }
                 },
             )
             .await
@@ -1052,7 +1070,7 @@ mod delete_session_cascade_tests {
                     .lock()
                     .unwrap()
                     .push(format!("remove-agent:{session_id}"));
-                Ok(())
+                async { Ok(()) }
             },
         )
         .await
@@ -1119,7 +1137,7 @@ mod delete_session_cascade_tests {
                     .lock()
                     .unwrap()
                     .push(format!("remove-agent:{session_id}"));
-                Ok(())
+                async { Ok(()) }
             },
         )
         .await

@@ -34,6 +34,7 @@ const CREDENTIALS = fs.readFileSync(
   'utf8'
 );
 const STORE = fs.readFileSync(path.join(TAU, 'features', 'codex_acp', 'store.rs'), 'utf8');
+const FILESYSTEM = fs.readFileSync(path.join(TAU, 'platform', 'filesystem.rs'), 'utf8');
 
 // ---------------------------------------------------------------- 1. 命令注册
 
@@ -103,19 +104,56 @@ for (const file of [CLAUDE, CODEX, KIMI, PROVIDERS_MOD]) {
   );
 }
 
-// 原子写（公共助手在 providers/mod.rs）+ 一次性备份 + 拒绝覆盖不可解析文件
+// 一次性备份 + 拒绝覆盖不可解析文件。
+// round-49 review: `persist_locked` 的正式写入路径是共享
+// `platform::filesystem::atomic_write`（唯一 pid+nanos staging + fsync）；
+// 旧的 `json.{}.tmp` 拼写只存在于已被替换的空转测试里，本 pin 改锚真实
+// 生产调用；唯一的 pid+nanos staging 名改锚共享实现（platform/filesystem.rs）。
 assert.ok(
-  PROVIDERS_MOD.includes('with_extension("tmp")') &&
-    PROVIDERS_MOD.includes('fs::rename'),
-  '公共写入助手必须 .tmp + fs::rename 原子替换'
+  PROVIDERS_MOD.includes('crate::platform::filesystem::atomic_write'),
+  'persist_locked 必须走共享 atomic_write（唯一 pid+nanos staging + fsync）'
+);
+// round-52 fix wave: the CLI-config `atomic_write` helper in this module
+// moved off its hand-rolled `tmp.{pid}` + rename staging onto the shared
+// `filesystem::atomic_write_private` (the hand-rolled pair carried no
+// fsync, so a power cut could land a truncated CLI config, and its fixed
+// staging name let two surfaces trample each other). The pin re-anchors
+// on the shared helper — which carries the unique per-writer staging, the
+// fsync-before-rename, and the two-arm tmp cleanup — and now also rejects
+// a bare hand-rolled `fs::rename(` persist sneaking back into the module
+// outside the helper.
+assert.ok(
+  PROVIDERS_MOD.includes('crate::platform::filesystem::atomic_write_private'),
+  'CLI 配置写入必须走共享 atomic_write_private（唯一 staging + fsync + 0600 临时文件）'
+);
+assert.ok(
+  !/^\s*fs::rename\(/m.test(PROVIDERS_MOD),
+  'providers 不得再留手写 fs::rename 暂存（统一走 atomic_write_private）'
 );
 assert.ok(
   PROVIDERS_MOD.includes('pinvou3-bak'),
   '首次受管写入必须备份 .pinvou3-bak'
 );
 assert.ok(
-  STORE.includes('json.tmp') && STORE.includes('fs::rename'),
-  'store 必须 .tmp + fs::rename 原子写'
+  FILESYSTEM.includes('std::process::id()') &&
+    FILESYSTEM.includes('.{file_name}.tmp-{token}'),
+  '共享 atomic_write 实现必须保留 pid+nanos 唯一 staging 名'
+);
+// round-52 fix wave: AcpConfigDefaultsStore::persist moved off its local
+// hand-rolled `json.tmp.{pid}` + rename staging onto the shared
+// `filesystem::atomic_write` (the hand-rolled pair carried no fsync, so a
+// power cut could land a truncated acp-agent-defaults.json). The pin
+// re-anchors on the shared helper — which carries the unique per-writer
+// staging, the fsync-before-rename, and the two-arm tmp cleanup — and now
+// also rejects a bare hand-rolled `fs::rename(` persist sneaking back into
+// the module outside the helper.
+assert.ok(
+  STORE.includes('crate::platform::filesystem::atomic_write'),
+  'store persist 必须走共享 atomic_write（唯一 staging + fsync + rename）'
+);
+assert.ok(
+  !/^\s*fs::rename\(/m.test(STORE),
+  'store 不得再留手写 fs::rename 暂存（统一走 atomic_write）'
 );
 for (const file of [CLAUDE, CODEX, KIMI]) {
   assert.ok(file.includes('atomic_write'), `${file} 必须经原子写助手落盘`);
@@ -507,8 +545,11 @@ assert.ok(
 // ---------------------------------------------------------------- 9. Claude 细化模型槽位 + env 生效值（改动 5）
 
 // 槽位定义：mod.rs 提供 CLAUDE_MODEL_SLOTS（opus/sonnet/haiku/fable/subagent → env 键）
+// 槽位表现为 `pub const`：1a32c6e93 为 CLI 走 facade 引用把它从 pub(crate)
+// 放宽为 pub（值仍只为同仓消费者使用）。匹配两种拼法以防可见性再次调整时
+// 契约悄悄失配。
 assert.ok(
-  PROVIDERS_MOD.includes('pub(crate) const CLAUDE_MODEL_SLOTS'),
+  /pub(?:\(crate\))? const CLAUDE_MODEL_SLOTS/.test(PROVIDERS_MOD),
   'mod.rs 必须定义 CLAUDE_MODEL_SLOTS 槽位表'
 );
 for (const envName of [
@@ -681,8 +722,8 @@ assert.match(
 );
 assert.match(
   MOD,
-  /probe_agent_model_options[\s\S]*?self\.agents\.remove\(&probe_id\)/,
-  '模型探针必须删除 store 记录（防残留）'
+  /probe_agent_model_options[\s\S]*?let probe_owned = probe_id\.clone\(\);[\s\S]*?agents\.remove\(&probe_owned\)/,
+  '模型探针必须删除 store 记录（防残留；round-49 起删除在 blocking worker 上执行，钉住 id 的所有权转移链）'
 );
 assert.match(
   CODEX_VIEW,

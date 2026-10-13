@@ -265,7 +265,7 @@ pub(crate) fn recover_interrupted_replace(
 /// "切换成功但重启后丢失"。tmp + rename 保证目标要么是旧完整内容、
 /// 要么是新完整内容，永无中间态。失败清理按替换终态区分（对齐
 /// artifacts 版）：不得把装着旧完整内容的恢复候选一并删掉。
-pub(crate) fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
+pub fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
     atomic_write_impl(path, content, false)
 }
 
@@ -273,7 +273,7 @@ pub(crate) fn atomic_write(path: &Path, content: &[u8]) -> io::Result<()> {
 /// with private permissions immediately. Use it for configurations containing secrets or
 /// unauthenticated local-port data to avoid a pre-rename default-umask window on Unix.
 /// Windows continues to rely on the user-directory ACL.
-pub(crate) fn atomic_write_private(path: &Path, content: &[u8]) -> io::Result<()> {
+pub fn atomic_write_private(path: &Path, content: &[u8]) -> io::Result<()> {
     atomic_write_impl(path, content, true)
 }
 
@@ -385,6 +385,37 @@ pub(crate) fn permission_bits(path: &Path) -> io::Result<Option<u32>> {
     {
         let _ = path;
         Ok(None)
+    }
+}
+
+/// A file's stable identity (device/inode); `None` on platforms without a
+/// portable equivalent, where callers must fall back to the weaker change
+/// signal (length + mtime). An atomic rename always changes the inode, so
+/// identity can distinguish "a different write of identical length at the
+/// same instant". Same reasoning as [`permission_bits`]: the `cfg(unix)`
+/// stays in this layer and the feature layer stays unconditionally compiled
+/// (architecture-guard: rust_target_cfg_outside_adapter).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FileIdentity {
+    pub(crate) device: u64,
+    pub(crate) inode: u64,
+}
+
+/// Extract the identity from already-fetched metadata (reuses the same
+/// stat; adds no extra syscall).
+pub(crate) fn metadata_file_identity(metadata: &std::fs::Metadata) -> Option<FileIdentity> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt as _;
+        Some(FileIdentity {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
     }
 }
 
@@ -661,6 +692,66 @@ pub(crate) fn write_private_data_file(path: &Path, bytes: &[u8]) -> io::Result<(
     }
     use std::io::Write as _;
     file.write_all(bytes)
+}
+
+/// The plain shared open scaffold for cross-process lock files:
+/// `create_dir_all(parent)` + open read+write, created but never truncated
+/// (`truncate(false)` — the lock files hold no data and are never deleted;
+/// a leftover empty file must not block the next acquirer). Callers apply
+/// their own acquire policy on the returned handle (blocking `lock`,
+/// `try_lock`, bounded retry) and their own error contexts.
+///
+/// 0600 posture (mirrors the settings-lock copies:
+/// `prefs::open_settings_lock_file` and the CLI's `open_family_lock_file`):
+/// these lock files are never deleted, so a file created at the umask
+/// default (0644) stays world-readable forever, and flock needs only READ
+/// permission — on a shared/group home any low-privilege account could then
+/// hold the lock and wedge every writer behind it. A FRESH create is
+/// therefore private from the first instant (`.mode(0o600)`; the umask can
+/// only strip bits owner-only mode does not have), and every open
+/// best-effort re-tightens to 0600 so a pre-existing 0644 file from an
+/// older build heals the next time a lock is taken. The tighten is
+/// best-effort (not [`open_private_lock_file`]'s fail-closed one) for the
+/// same reason the settings-lock copies give: the lock stays usable either
+/// way (flock needs no write permission), so a failing chmod must not fail
+/// the consumer's lock acquisition.
+///
+/// Still deliberately NOT [`open_private_lock_file`]: what remains
+/// unshared is that function's open hardening (O_NOFOLLOW/O_NONBLOCK and
+/// the fail-closed tighten) — it guards opens on paths a third party could
+/// plant or swap, while these consumers open a lock file inside a directory
+/// this scaffold itself just created. Only the permission posture is shared;
+/// switching the open semantics wholesale would still be a behavior change
+/// for the existing consumers, not a refactor.
+pub(crate) fn open_lock_file_with_dirs(path: &Path) -> io::Result<std::fs::File> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    #[cfg(unix)]
+    let opened = {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(path)
+    };
+    #[cfg(not(unix))]
+    let opened = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path);
+    let file = opened?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(file)
 }
 
 #[derive(Clone)]

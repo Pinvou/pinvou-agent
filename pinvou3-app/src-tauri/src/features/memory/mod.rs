@@ -31,6 +31,10 @@ pub use self::types::{
     ProfileConventions, ProfileIdentity, ProfilePatch, RecentWorkItem, RuntimeMemorySnapshot,
     TimedMemoryItem, TopicMutation, TopicRead, TurnMemoryCapture, WorkContextFile,
 };
+// Round-40 review: the CLI's `memory profile set` refuses a label the
+// profile normalization would silently empty, by value — a replicated rule
+// copy would drift from the store's own normalizer.
+pub use self::types::profile_label_would_be_wiped;
 
 // ---- 路径访问器（io）----
 // E2E 集成测试（src-tauri/tests/memory_e2e.rs）经 crate 根使用其中一部分，
@@ -46,12 +50,52 @@ pub use self::io::{
 pub use self::io::{
     PendingIgnoreOutcome, append_turn_assistant, archive_recent_work, confirm_pending_memory,
     delete_preference, delete_timed_memory, delete_work_context, discard_turn_capture,
-    enqueue_memory_candidate, ignore_pending_memory, list_preferences_with_cleanup,
-    load_current_focus, load_never_memory, load_pending_memory, load_profile, load_recent_activity,
-    load_recent_work, load_work_context, load_work_context_with_cleanup, memory_enabled,
-    never_pending_memory, record_turn_tool_complete, record_turn_tool_start, record_turn_user,
-    take_turn_capture, update_preference, update_profile, update_timed_memory, update_work_context,
+    enqueue_memory_candidate, ignore_pending_memory, list_preferences,
+    list_preferences_with_cleanup, load_current_focus, load_never_memory, load_pending_memory,
+    load_profile, load_recent_activity, load_recent_work, load_work_context,
+    load_work_context_with_cleanup, memory_enabled, never_pending_memory,
+    record_turn_tool_complete, record_turn_tool_start, record_turn_user, take_turn_capture,
+    update_preference, update_profile, update_timed_memory, update_work_context,
 };
+
+// ---- cross-process organize busy marker (io) ----
+// The CLI maps this marker BY VALUE to `memory_organize_busy`; a local copy
+// would let the two surfaces' busy codes drift apart.
+pub use self::io::ORGANIZE_LOCK_BUSY;
+
+// ---- Stored text length cap (io) ----
+// The CLI's `memory add` validation must use the same cap constant as the
+// write side; a local copy would reintroduce a spurious
+// `memory_add_not_materialized` failure whenever the cap changes.
+pub use self::io::WORK_CONTEXT_TEXT_MAX_CHARS;
+
+// ---- stored-text normalization (util) ----
+// The CLI predicts the text `memory add` stores for work context and the text
+// `memory update` stores in every editable store; those writers normalize it
+// with this function, so a local copy would drift into false
+// "not materialized" failures.
+pub use self::util::clean_candidate_sentence;
+// The CLI `memory add` predicts the enqueue normalization (and `update`
+// predicts the per-store writer caps) from the original input — the store-
+// authoritative contract tests read the store back as the authority, and
+// these re-exports keep the CLI from hand-mirroring the values (round-41
+// review).
+pub use self::io::{PREFERENCE_TEXT_MAX_CHARS, TIMED_TEXT_MAX_CHARS};
+pub use self::util::clean_text;
+// Round-45 review: the CLI's content-entry lanes that can render into the
+// model-visible block (`memory add`, `update`) refuse text carrying a
+// memory-block marker — the same boundary the organize validator and review
+// sanitizer enforce — instead of storing it into the block verbatim.
+// Deliberately NOT gated: `pending never --reason` — a "never store" reason
+// never renders into the block (render.rs reads only the six rendered
+// sources). Round-46 review fixed this comment, which used to name the
+// never lane and invited "fixing" the CLI to match.
+pub use self::util::contains_memory_block_marker;
+// The CLI `memory add` rejects profile-shaped preference text before
+// enqueueing (the confirm path marks it confirmed but writes nothing), and
+// `memory pending confirm` reports that no-op instead of printing success.
+pub use self::io::confirmed_pending_memory_is_materialized;
+pub use self::types::looks_like_profile_preference_text;
 
 // ---- LLM 后台复盘（llm_review）----
 pub use self::llm_review::review_turn_candidates_with_llm;

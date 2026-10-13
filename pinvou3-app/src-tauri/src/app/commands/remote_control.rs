@@ -1533,7 +1533,13 @@ pub fn web_access_read_artifact_chunk(
 pub async fn web_access_update_settings(
     patch: super::settings::WebSettingsPatch,
 ) -> Result<UserPrefs, String> {
-    super::settings::persist_web_settings(patch)
+    // Round-51 review: the settings transaction holds the cross-process
+    // settings.json.lock across keychain I/O — join the blocking body on a
+    // spawn_blocking worker like the desktop settings commands.
+    super::settings::join_blocking("web_access_update_settings", move || {
+        super::settings::persist_web_settings(patch)
+    })
+    .await
 }
 
 fn scoped_artifact_path(

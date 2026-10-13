@@ -17,12 +17,48 @@ PUBLIC_SUBMODULE_VERIFIER = ROOT / "scripts/verify-public-submodule.sh"
 
 
 def _extract_quoted_paths(block):
-    """提取 YAML 块中 `- 'path'` 形式的路径条目(保持文本序)。"""
+    """提取 YAML 块中 `- 'path'` / `- "path"` 形式的路径条目(保持文本序)。
+
+    Round-40 review M4: 单引号形式之外还要认双引号形式——一条
+    `- "pinvou-cli/**"` 若对提取器不可见,下面所有基于提取结果的 pin
+    (存在性、死条目、成员、workflow 排除)都会被同一条目绕过。
+
+    Round-41 review M8: 条目行尾的同列注释不再制造盲区——
+    `- '!pinvou-cli/**' # trim scope` 对 dorny 是一条排除项,旧提取器
+    (要求行以引号收尾)却看不见它。引号内出现的 `#` 属于路径本身
+    (YAML 规范:注释以引号后的 `#` 开始),因此先取引号闭包、再剥其后的
+    注释。闭包按引号配对(`[^']*` / `[^"]*`):贪婪闭包 `(.*)` 会把行尾
+    注释里的引号一并吞进路径(`# was 'old/path'` 解析出一条 dorny 根本
+    看不见的垃圾条目)。凡是引用形式的条目行(`- '…'` / `- "…"` 开头)
+    却匹配不上引号闭包正则的,一律视为未识别形状直接让断言红掉——那
+    正是"提取器看不见 → 下方全部 pin 可被同一条目绕过"的形状。
+
+    Round-51 review: fail-closed 覆盖所有列表条目形状的行(可选空格 +
+    `- ` 开头)。折叠标量(`- >-` + 缩进文本)与裸词条目(`- pinvou-cli/**`)
+    对 dorny 都是真实的过滤条目(dorny 会把块重新按 YAML 解析),旧提取器
+    却静默忽略——一条隐藏的 `!pinvou-cli/**` 排除即可静默跳过全部 CLI 腿。
+    这类行一律让断言红掉。曾经的 `tight=False` 逃生门没有生产调用方,
+    已删除:调用方必须先把 `- name:`、`- uses:` 等作业步骤行排除在切片
+    之外,而不是让提取器吞掉未识别的条目行。
+    """
     paths = []
+    unrecognized = []
     for line in block.splitlines():
         stripped = line.strip()
-        if stripped.startswith("- '") and stripped.endswith("'"):
-            paths.append(stripped[3:-1])
+        if not stripped or stripped.startswith("#"):
+            continue
+        match = re.match(r"""^- ('([^']*)'|"([^"]*)")(?:\s+#.*)?$""", stripped)
+        if match:
+            paths.append(match.group(2) if match.group(2) is not None else match.group(3))
+        elif stripped.startswith("- "):
+            unrecognized.append(stripped)
+    if unrecognized:
+        raise AssertionError(
+            "unrecognized path-filter entry(ies); the extractor cannot "
+            "parse them, so every extractor-based pin below would be bypassable "
+            "by the same entry — fix the quoting or move prose to a comment "
+            "line: " + "; ".join(unrecognized)
+        )
     return paths
 
 
@@ -136,6 +172,265 @@ def _matches_paths_filter(path, patterns):
     return included and not excluded
 
 
+def _changes_block(text):
+    """changes job 的完整块(含注释);按路径路由的 pin 在其上继续切片。"""
+    return _extract_job_block(text, "changes")
+
+
+def _frontend_filter_paths(changes):
+    """frontend filter 组的条目切片(frontend: 键到 relay: 键之间)。"""
+    return changes.split("            frontend:", maxsplit=1)[1].split(
+        "            relay:", maxsplit=1
+    )[0]
+
+
+def _dorny_filter_group(changes, group):
+    """按 12 空格缩进锚定 dorny filter 组,只取该组的条目行。"""
+    return re.search(
+        rf"\n            {group}:\n((?:              .*(?:\n|$))+)", changes
+    ).group(1)
+
+
+JOB_HEADER = re.compile(r"^  (\S.*):\s*$")
+
+
+def _extract_job_block(text, job):
+    """提取单个 job 的完整 YAML 块:从它的 2 空格缩进键到下一个 job 键。
+
+    本文件里 job 键只出现在 2 空格缩进,且每个 job 名只允许定义一次。
+    """
+    lines = text.splitlines()
+    starts = [
+        number
+        for number, line in enumerate(lines)
+        if JOB_HEADER.match(line) and JOB_HEADER.match(line).group(1) == job
+    ]
+    if len(starts) != 1:
+        raise AssertionError(
+            f"expected exactly one {job} job definition, found {len(starts)}"
+        )
+    start = starts[0]
+    end = next(
+        (
+            number
+            for number in range(start + 1, len(lines))
+            if JOB_HEADER.match(lines[number])
+        ),
+        len(lines),
+    )
+    return "\n".join(lines[start:end]) + "\n"
+
+
+def _extract_job_level_if(job_block):
+    """提取 job 级 `if:` 的值并按行 strip 归一化:单行 `${{ }}` 或折叠 `>-` 块。
+
+    只认 4 空格缩进的 `    if:`——job 级键;步骤级 `if:` 在 8 空格缩进,
+    不会命中。折叠块取其后所有缩进 >= 5 空格的行,遇到空行或下一个 job 级
+    键(缩进 <= 4)即止:截断会让调用方的全文比对红掉(fail closed),
+    而不是把残缺的值当作完整 pin 静默通过。
+    """
+    lines = job_block.splitlines()
+    starts = [number for number, line in enumerate(lines) if re.match(r"^    if:", line)]
+    if len(starts) != 1:
+        raise AssertionError(
+            "expected exactly one job-level `if:` in the job block, "
+            f"found {len(starts)}"
+        )
+    start = starts[0]
+    value = lines[start][len("    if:"):].strip()
+    if value != ">-":
+        return value
+    folded = []
+    for line in lines[start + 1:]:
+        stripped = line.strip()
+        if not stripped:
+            break
+        if len(line) - len(line.lstrip(" ")) <= 4:
+            break
+        folded.append(stripped)
+    return "\n".join(folded)
+
+
+# Round-52 review: 每个 required-gate 消费其结果的 job 的 job 级 `if:` 全文。
+# 折叠块(cli-test/cli-lint 等)的 `${{ }}` 末行(或单行形式的行尾)被追加
+# `&& false` 时,该腿静默 skip 而 required-gate 的 success|skipped 循环照单
+# 全收——下方 assertIn 级别的路由片段 pin 全绿。这里逐 job 断言提取出的
+# `if:` 值与钉死文本完全相等:任何追加、删支、改写都红。(commit-message/
+# version-consistency/changes 不在表内:它们的 skip 走的是 required-gate 的
+# `!= success` 基础检查,skip 即红,不属于本 bypass 类。)
+_CLI_LEG_JOB_IF = (
+    "${{\n"
+    "!cancelled() &&\n"
+    "github.event.action != 'closed' &&\n"
+    "(\n"
+    "github.event_name == 'push' ||\n"
+    "(\n"
+    "github.event_name == 'merge_group' &&\n"
+    "(\n"
+    "needs.changes.outputs.cli_rust == 'true' ||\n"
+    "needs.changes.outputs.rust_full == 'true'\n"
+    ")\n"
+    ") ||\n"
+    "(\n"
+    "github.event_name == 'pull_request' &&\n"
+    "github.event.pull_request.draft == false &&\n"
+    "(\n"
+    "needs.changes.outputs.cli_rust == 'true' ||\n"
+    "needs.changes.outputs.rust_full == 'true'\n"
+    ")\n"
+    ")\n"
+    ")\n"
+    "}}"
+)
+_RUST_FULL_JOB_IF = (
+    "${{\n"
+    "!cancelled() &&\n"
+    "(\n"
+    "github.event_name == 'push' ||\n"
+    "(\n"
+    "github.event_name == 'pull_request' &&\n"
+    "github.event.pull_request.draft == false &&\n"
+    "(\n"
+    "needs.changes.outputs.rust_full == 'true' ||\n"
+    "needs.changes.outputs.cli_rust == 'true' ||\n"
+    "(\n"
+    "needs.changes.outputs.rust_code == 'true' &&\n"
+    "contains(github.event.pull_request.labels.*.name, 'ci:full-rust')\n"
+    ")\n"
+    ")\n"
+    ")\n"
+    ")\n"
+    "}}"
+)
+GATE_JOB_LEVEL_IFS = {
+    "fast-gate": (
+        "${{ (github.event_name == 'pull_request' && "
+        "github.event.action != 'closed') || "
+        "github.event_name == 'merge_group' }}"
+    ),
+    "frontend-test": (
+        "${{ !cancelled() && github.event.action != 'closed' && "
+        "(github.event_name == 'pull_request' || "
+        "github.event_name == 'merge_group') && "
+        "(needs.changes.outputs.frontend == 'true' || "
+        "needs.changes.outputs.pet == 'true') }}"
+    ),
+    "relay-test": (
+        "${{ !cancelled() && needs.changes.outputs.relay == 'true' && "
+        "(github.event_name == 'merge_group' || (github.event_name == "
+        "'pull_request' && github.event.pull_request.draft == false)) }}"
+    ),
+    "release-contract-test": (
+        "${{ !cancelled() && github.event.action != 'closed' && "
+        "needs.changes.outputs.release_contract == 'true' && "
+        "(github.event_name != 'pull_request' || "
+        "github.event.pull_request.draft == false) }}"
+    ),
+    "knowledge-rust": (
+        "${{ !cancelled() && github.event.action != 'closed' && "
+        "(needs.changes.outputs.knowledge_rust == 'true' || "
+        "needs.changes.outputs.knowledge_dependencies == 'true') }}"
+    ),
+    "rust-lint": (
+        "${{ !cancelled() && github.event.action != 'closed' && "
+        "(needs.changes.outputs.rust_code == 'true' || "
+        "needs.changes.outputs.rust_dependencies == 'true') }}"
+    ),
+    "rust-test": (
+        "${{\n"
+        "!cancelled() &&\n"
+        "github.event.action != 'closed' &&\n"
+        "(\n"
+        "github.event_name == 'push' ||\n"
+        "(\n"
+        "github.event_name == 'merge_group' &&\n"
+        "needs.changes.outputs.rust_full == 'true'\n"
+        ") ||\n"
+        "(\n"
+        "github.event_name == 'pull_request' &&\n"
+        "github.event.pull_request.draft == false &&\n"
+        "(\n"
+        "needs.changes.outputs.rust_full == 'true' ||\n"
+        "(\n"
+        "needs.changes.outputs.rust_code == 'true' &&\n"
+        "contains(github.event.pull_request.labels.*.name, 'ci:full-rust')\n"
+        ")\n"
+        ")\n"
+        ")\n"
+        ")\n"
+        "}}"
+    ),
+    "cli-test": _CLI_LEG_JOB_IF,
+    "cli-lint": _CLI_LEG_JOB_IF,
+    "windows-rust-test": _RUST_FULL_JOB_IF,
+    "macos-rust-check": _RUST_FULL_JOB_IF,
+    "macos-codex-runtime-test": (
+        "${{ !cancelled() && github.event.action != 'closed' && "
+        "needs.changes.outputs.acp_runtime == 'true' && "
+        "(github.event_name != 'pull_request' || "
+        "github.event.pull_request.draft == false) }}"
+    ),
+    "macos-cli-check": _CLI_LEG_JOB_IF,
+    "windows-codex-runtime-test": (
+        "${{ !cancelled() && github.event.action != 'closed' && "
+        "(needs.changes.outputs.windows_codex == 'true' || "
+        "needs.changes.outputs.acp_runtime == 'true') && "
+        "(github.event_name != 'pull_request' || "
+        "github.event.pull_request.draft == false) }}"
+    ),
+    "windows-rustup-repair-test": (
+        "${{ !cancelled() && github.event.action != 'closed' && "
+        "needs.changes.outputs.windows_rustup_repair == 'true' && "
+        "(github.event_name != 'pull_request' || "
+        "github.event.pull_request.draft == false) }}"
+    ),
+}
+
+# Round-52 review: 套件以 name+`if` assertIn 或 split 首个匹配钉住这些步骤,
+# 同名的诱饵副本会满足 pin 而真步骤的路由被关掉(经变异验证的 bypass 类)。
+# 每个被钉的步骤名必须在其 job 块内恰好出现一次。
+# windows-rust-test 不在表内:它的步骤名唯一性已由
+# test_windows_rust_test_parallel_phases_preserve_routing_and_coverage 的
+# round-45 duplicate-step 断言覆盖。
+PINNED_GATE_STEP_NAMES = {
+    "fast-gate": (
+        "Checkout (含 submodule,fork 为 public 直接拉)",
+        "workflow lint (actionlint)",
+    ),
+    "cli-test": (
+        "Install Tauri Linux system dependencies",
+        "Set up zram and swap",
+        "cargo test (all targets, no-fail-fast)",
+        "cargo compile check (push)",
+        "cargo test (adapter-gaia test-support)",
+        "cargo compile check (push, adapter-gaia test-support)",
+    ),
+    "cli-lint": (
+        "Install Tauri Linux system dependencies",
+    ),
+    "rust-test": (
+        "cargo test --lib --no-run（编译链接测试二进制）",
+        "cargo test --lib（含 strict_mode 回归；真 bge-m3/vLLM 测试已 #[ignore]）",
+        "cargo test --lib --no-run (push main 仅编译暖 cache)",
+    ),
+    "knowledge-rust": (
+        "cargo clippy (hard gate, lib/bins/tests + server)",
+    ),
+    "macos-rust-check": (
+        "macOS Rust all-targets check",
+        "macOS computer_use unit tests",
+        "macOS full lib tests (native regression, push only)",
+        "Install both targets (universal bundle smoke, push only)",
+        "Node.js (universal bundle smoke, push only)",
+        "Install frontend deps (universal bundle smoke, push only)",
+        "Cargo build (release-fast smoke, push only)",
+        "Tauri bundle smoke (verify dmg/app packaging, bundle-chain changes only)",
+        "Verify script (plist/usage-key/bundle targets checks, push only)",
+        "Probe and export the macOS lld link flags",
+    ),
+}
+
+
 class CiGatePolicyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -172,9 +467,7 @@ class CiGatePolicyTests(unittest.TestCase):
             "needs.changes.outputs.release_contract == 'true'",
             self.pr_workflow,
         )
-        required_gate = self.pr_workflow.split(
-            "\n  required-gate:", maxsplit=1
-        )[1]
+        required_gate = self._required_gate()
         self.assertIn("- release-contract-test", required_gate)
         self.assertIn(
             '"release-contract-test:$RELEASE_CONTRACT_RESULT"',
@@ -229,7 +522,8 @@ class CiGatePolicyTests(unittest.TestCase):
         # only run inside frontend-test, so their config files must be in the
         # frontend path filter; otherwise a config-only PR skips every gate
         # that consumes the file it changed.
-        frontend_entries = _frontend_filter_entries(self.pr_workflow)
+        changes = _without_yaml_comments(_changes_block(self.pr_workflow))
+        frontend_paths = _frontend_filter_paths(changes)
         for path in (
             "pinvou3-app/.oxlintrc.json",
             "pinvou3-app/biome.jsonc",
@@ -240,7 +534,7 @@ class CiGatePolicyTests(unittest.TestCase):
         ):
             self.assertIn(
                 path,
-                frontend_entries,
+                frontend_paths,
                 f"静态门禁配置 {path} 不在 frontend filter 中,config-only PR 会静默跳过 frontend-test",
             )
 
@@ -251,7 +545,8 @@ class CiGatePolicyTests(unittest.TestCase):
         # the frontend path filter, a Rust-only PR silently skips that node
         # gate — the same structural blind spot the static-analysis configs
         # above guard against.
-        frontend_entries = _frontend_filter_entries(self.pr_workflow)
+        changes = _without_yaml_comments(_changes_block(self.pr_workflow))
+        frontend_paths = _frontend_filter_paths(changes)
         for path in (
             "pinvou3-app/src-tauri/src/features/assistant/**",
             "pinvou3-app/src-tauri/src/features/multiagent/transcripts.rs",
@@ -269,7 +564,7 @@ class CiGatePolicyTests(unittest.TestCase):
         ):
             self.assertIn(
                 path,
-                frontend_entries,
+                frontend_paths,
                 f"跨语言契约测试读取的 Rust 源 {path} 不在 frontend filter 中,Rust-only PR 会静默跳过该 node 门禁",
             )
 
@@ -280,7 +575,8 @@ class CiGatePolicyTests(unittest.TestCase):
         # 均归一化匹配),逐一断言 frontend filter 覆盖。给契约测试新增
         # Rust read 而不路由、或把已路由文件挪走,都会在这里失败(本套件
         # 在 fast-gate 每个 PR 必跑)。
-        frontend_entries = _frontend_filter_entries(self.pr_workflow)
+        changes = _without_yaml_comments(_changes_block(self.pr_workflow))
+        frontend_paths = _extract_quoted_paths(_frontend_filter_paths(changes))
         contract_test = (
             ROOT / "pinvou3-app/tests/multiagent_plan_normalize.test.mjs"
         ).read_text(encoding="utf-8")
@@ -293,7 +589,7 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         for target in targets:
             self.assertTrue(
-                _is_covered_by_trigger(target, frontend_entries),
+                _is_covered_by_trigger(target, frontend_paths),
                 f"跨语言契约测试读取的 {target} 未被 frontend filter 覆盖,"
                 "Rust-only 改动会静默跳过该 node 门禁",
             )
@@ -306,7 +602,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # .rs 读取目标逐一断言 frontend filter 覆盖;新增读取而未路由、
         # 或已路由文件被挪走,都会在这里失败(本套件在 fast-gate 每个 PR
         # 必跑)。
-        frontend_entries = _frontend_filter_entries(self.pr_workflow)
+        frontend_paths = _frontend_filter_entries(self.pr_workflow)
         consent_test = (
             ROOT / "pinvou3-app/tests/consent_marker_frontend.test.mjs"
         ).read_text(encoding="utf-8")
@@ -325,7 +621,7 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         for target in targets:
             self.assertTrue(
-                _is_covered_by_trigger(target, frontend_entries),
+                _is_covered_by_trigger(target, frontend_paths),
                 f"consent marker 契约测试读取的 {target} 未被 frontend filter 覆盖,"
                 "Rust-only 改动会静默跳过该 node 门禁",
             )
@@ -359,6 +655,79 @@ class CiGatePolicyTests(unittest.TestCase):
                 _is_covered_by_trigger(target, unrouted_filter),
                 f"未路由的双引号读取 {target} 不应被无关 filter 覆盖",
             )
+
+    def test_path_extractor_sees_trailing_comment_entries(self):
+        # Round-41 review M8 回归锁:行尾同列注释曾让整条条目对提取器
+        # 不可见——`- '!pinvou-cli/**' # trim scope` 对 dorny 是一条真实
+        # 排除项,而旧提取器要求行以引号收尾,于是 cli_rust 的可达性、
+        # 必需成员与 workflow 排除 pin 全部被同一条目绕过(经变异验证,
+        # 43 个测试全绿)。引号闭包正则必须把带注释的条目原样解析出来,
+        # 且引用形式却无法解析的形状必须让断言红掉而不是被静默忽略。
+        block = (
+            "          paths:\n"
+            "            - 'pinvou-cli/**'\n"
+            "            - '!pinvou-cli/docs/**' # trim the docs subtree\n"
+            '            - "pinvou-cli/Cargo.lock"  # lock pin\n'
+            "            - 'pinvou-cli/a#b/**' # hash inside the quotes is literal\n"
+            # 行尾注释以撇号收尾:贪婪引号闭包曾把注释里的引号一并吞进
+            # 路径,解析出一条 dorny 根本看不见的垃圾条目。
+            "            - 'pinvou-cli/rename/**' # was 'pinvou-cli/old/**'\n"
+        )
+        entries = _extract_quoted_paths(block)
+        self.assertEqual(
+            entries,
+            [
+                "pinvou-cli/**",
+                "!pinvou-cli/docs/**",
+                "pinvou-cli/Cargo.lock",
+                "pinvou-cli/a#b/**",
+                "pinvou-cli/rename/**",
+            ],
+            "带行尾注释的条目必须被完整解析(dorny 看得见,提取器也必须看得见)",
+        )
+        with self.assertRaises(AssertionError):
+            # 引用形式但引号在本行不闭合:该行对 YAML 是坏的,对旧提取器
+            # 是"静默忽略",对现在必须红。
+            _extract_quoted_paths("            - 'pinvou-cli/unclosed\n")
+
+    def test_path_extractor_fails_closed_on_folded_scalar_and_bare_entries(self):
+        # Round-51 review 回归锁:折叠标量(`- >-` + 缩进文本)与裸词条目
+        # (`- pinvou-cli/**`)对 dorny 都是真实的过滤条目(dorny 把 filters 块
+        # 重新按 YAML 解析),旧提取器却对"不是引用形式"的列表行静默忽略——
+        # 一条折叠标量的 `!pinvou-cli/**` 排除即可让全部 CLI 腿静默跳过,
+        # 而下方所有基于提取结果的 pin 全绿(经变异验证)。tight 模式(默认)
+        # 下这类行必须让断言红掉,而不是被吞掉。
+        folded = (
+            "          paths:\n"
+            "            - 'pinvou-cli/**'\n"
+            "            - >-\n"
+            "              !pinvou-cli/**\n"
+        )
+        with self.assertRaises(AssertionError):
+            _extract_quoted_paths(folded)
+        bare = (
+            "          paths:\n"
+            "            - 'pinvou-cli/**'\n"
+            "            - !pinvou3-app/src-tauri/**\n"
+        )
+        with self.assertRaises(AssertionError):
+            _extract_quoted_paths(bare)
+        # 逃生门(tight=False)已删除:它是零生产调用方的死参数,却给
+        # "提取器看不见 → 下方全部 pin 可绕过"留了一扇门。作业步骤行
+        # (`- name:`、`- uses:`)等非引号条目形状一律 fail-closed;覆盖
+        # 整个 job/文件的调用方必须先把这些行排除在切片之外。
+        whole_job = (
+            "    needs: changes\n"
+            "    steps:\n"
+            "      - name: Cargo cache\n"
+            "        uses: Swatinem/rust-cache@v2\n"
+        )
+        with self.assertRaises(AssertionError):
+            _extract_quoted_paths(whole_job)
+        # 条目行缩进不限:更深缩进的折叠标量排除同样必须红。
+        deep_folded = "            - >-\n                !pinvou-cli/docs/**\n"
+        with self.assertRaises(AssertionError):
+            _extract_quoted_paths(deep_folded)
 
     def test_trigger_coverage_respects_exclusions(self):
         # dorny/paths-filter(some-with-excludes)的语义是"至少一条正向
@@ -408,9 +777,7 @@ class CiGatePolicyTests(unittest.TestCase):
         )
 
     def test_merge_queue_uses_real_path_filtering_and_product_gates(self):
-        changes = self.pr_workflow.split(
-            "\n  changes:", maxsplit=1
-        )[1].split("\n  fast-gate:", maxsplit=1)[0]
+        changes = _changes_block(self.pr_workflow)
         self.assertIn("uses: dorny/paths-filter@v4", changes)
         self.assertIn(
             "github.event_name == 'merge_group'",
@@ -441,14 +808,12 @@ class CiGatePolicyTests(unittest.TestCase):
             "开发启动入口变化必须触发 ACP Runtime 契约检查",
         )
 
-        required_gate = self.pr_workflow.split(
-            "\n  required-gate:", maxsplit=1
-        )[1]
+        required_gate = self._required_gate()
         self.assertNotIn("完整门禁已在 PR 入队前验证", required_gate)
         self.assertIn("Merge Queue 基础检查失败", required_gate)
 
     def test_standalone_knowledge_crate_has_its_own_required_gate(self):
-        changes = _changes_block(self.pr_workflow)
+        changes = _without_yaml_comments(_changes_block(self.pr_workflow))
         self.assertIn("knowledge_rust:", changes)
         self.assertIn("knowledge_dependencies:", changes)
         knowledge_paths = changes.split(
@@ -456,11 +821,19 @@ class CiGatePolicyTests(unittest.TestCase):
         )[1].split("            knowledge_dependencies:", maxsplit=1)[0]
         self.assertIn("- 'pinvou-knowledge/**/*.rs'", knowledge_paths)
         self.assertIn("- 'pinvou-knowledge/deploy/**'", knowledge_paths)
+        # Round-51 review: the knowledge-rust alignment step declares
+        # pinvou-knowledge/rust-toolchain.toml the single source of truth for
+        # the toolchain it resolves, yet the file was routed by no filter
+        # group (rust_full routes only the app twin under src-tauri), so a
+        # version-bump-only PR skipped the job that aligns to it. Membership
+        # is pinned in the same style as the entries above.
+        self.assertIn(
+            "- 'pinvou-knowledge/rust-toolchain.toml'",
+            knowledge_paths,
+        )
 
         knowledge = _without_yaml_comments(
-            self.pr_workflow.split("\n  knowledge-rust:", maxsplit=1)[1].split(
-                "\n  rust-lint:", maxsplit=1
-            )[0]
+            _extract_job_block(self.pr_workflow, "knowledge-rust")
         )
         self.assertIn("needs.changes.outputs.knowledge_rust == 'true'", knowledge)
         self.assertIn(
@@ -477,6 +850,20 @@ class CiGatePolicyTests(unittest.TestCase):
             "cargo clippy --manifest-path pinvou-knowledge/Cargo.toml --lib --bins --no-deps --features server --locked -- -D warnings",
             knowledge,
         )
+        # Round-52 review: that step's `if` was unpinned — flipping it to a
+        # draft-gated (or constant-false) expression silently skips the
+        # -D-warnings clippy on PRs while the command pin above stays
+        # green. Pin the name+`if` pair end-anchored (trailing newline),
+        # the same pattern as the cli-test step pins.
+        self.assertIn(
+            "- name: cargo clippy (hard gate, lib/bins/tests + server)\n"
+            "        if: ${{ github.event_name != 'pull_request' || "
+            "github.event.pull_request.draft == false }}\n",
+            knowledge,
+            "the -D-warnings hard-gate step's routing drifted; an `if` "
+            "rewritten to never fire skips the clippy hard gate on PRs "
+            "while the run-command pins stay green",
+        )
         self.assertNotIn("cargo clippy pinvou-knowledge", self.pr_workflow)
         self.assertIn(
             "cargo test --manifest-path pinvou-knowledge/Cargo.toml --all-features",
@@ -489,9 +876,7 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         self.assertIn("--manifest-path pinvou-knowledge/Cargo.toml", knowledge)
 
-        required_gate = self.pr_workflow.split(
-            "\n  required-gate:", maxsplit=1
-        )[1]
+        required_gate = self._required_gate()
         self.assertIn("- knowledge-rust", required_gate)
         self.assertIn('"knowledge-rust:$KNOWLEDGE_RUST_RESULT"', required_gate)
 
@@ -516,30 +901,351 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         self.assertIn("| sha256sum --check -", step)
         self.assertNotIn("download-actionlint.bash", step)
+
+    def test_fast_gate_runner_line_is_pinned(self):
+        # Round-47 review: this one line is the ONLY place the gate-policy
+        # suite itself executes in CI. Deleting it (or narrowing the `-p`
+        # pattern) disarms every pin in this file while each test stays
+        # green wherever it still happens to run — so the runner is pinned
+        # by its exact command here, making the rest of the suite
+        # load-bearing instead of decorative.
+        fast_gate = self.pr_workflow.split("\n  fast-gate:", maxsplit=1)[1].split(
+            "\n  frontend-test:", maxsplit=1
+        )[0]
+        self.assertIn(
+            "python3 -m unittest discover -s scripts/tests -p 'test_*.py'",
+            fast_gate,
+            "the gate-policy suite's only CI runner must not be deletable in "
+            "silence",
+        )
+
+    def assert_run_filtered_filter(self, steps, package, filter, msg=None):
+        """Round-50 review: pin a run_filtered invocation's filter token
+        EXACTLY. The old substring assertIn stayed green under a renamed
+        filter (the old text remained a substring of the mutated line);
+        this asserts a run_filtered line naming `-p <package>` exists AND
+        ends with `--locked <filter>` as its final token, so a rename —
+        or a deletion — fails the policy suite."""
+        lines = [
+            line.strip()
+            for line in steps.splitlines()
+            if line.strip().startswith("run_filtered test") and f"-p {package} " in line
+        ]
+        matches = [line for line in lines if line.endswith(f"--locked {filter}")]
+        # The selection above is itself the exact-token check: a line only
+        # lands in `matches` when `--locked <filter>` is its FINAL text, so a
+        # renamed (or deleted) filter fails the assertTrue — no separate
+        # re-assertion of the same property is needed.
+        self.assertTrue(
+            matches,
+            msg or f"no run_filtered line pins -p {package} --locked {filter}",
+        )
+
+    def _required_gate(self, text=None):
+        # Split off everything from the required-gate job onward. Required-
+        # gate's display `name:` is the branch-protection check name; the
+        # suite locates the job only by its YAML key, so a display-name
+        # rename would silently orphan the required check. Pin it in every
+        # test that asserts on this block. `text` lets the comment-stripped
+        # body variants reuse the same split and the same name pin.
+        required_gate = (self.pr_workflow if text is None else text).split(
+            "\n  required-gate:", maxsplit=1
+        )[1]
+        self.assertIn("name: required-gate", required_gate)
+        return required_gate
+
+    def assert_required_gate_wiring(self, job, result_env):
+        """断言 required-gate 对单个 leg 的三重接线:needs 条目、`<JOB>_RESULT:`
+        env 回填、汇总循环条目。评论剥离后断言:只活在注释里的同名行不满足接线。
+        """
+        required_gate = self._required_gate(_without_yaml_comments(self.pr_workflow))
+        self.assertIn(
+            f"- {job}",
+            required_gate,
+            f"{job} must stay in required-gate's needs list: without "
+            "the wire the gate cannot consume the leg at all",
+        )
+        self.assertIn(
+            f"{result_env}: ${{{{ needs.{job}.result }}}}",
+            required_gate,
+            f"{job}'s result must be backfilled into required-gate's "
+            "summary env; a dropped line orphans the loop entry",
+        )
+        self.assertIn(
+            f'"{job}:${result_env}"',
+            required_gate,
+            f"{job} must enter the failure loop "
+            "(success|skipped accepted so path-filtered skips do "
+            "not false-fail)",
+        )
+
     def test_cli_crate_has_its_own_required_gate(self):
-        changes = _changes_block(self.pr_workflow)
+        changes = _without_yaml_comments(_changes_block(self.pr_workflow))
         self.assertIn("cli_rust:", changes)
         cli_paths = changes.split("            cli_rust:", maxsplit=1)[1].split(
             "            knowledge_rust:", maxsplit=1
         )[0]
-        self.assertIn(
-            "- 'pinvou-cli/**/*.rs'",
-            cli_paths,
+        # Round-42 review: membership pins assert against the EXTRACTOR's
+        # parsed entries, not the raw slice — a trailing comment quoting the
+        # same path (`# was '- 'pinvou-cli/**/Cargo.lock''`) satisfied the
+        # raw assertIn while the extractor (and dorny) saw no entry, so a
+        # deleted entry kept every pin green. The extractor also fails
+        # closed on unrecognized quoting shapes.
+        cli_rust_entries_probe = _extract_quoted_paths(cli_paths)
+
+        def assert_extracted_entry(entry: str, message: str) -> None:
+            self.assertIn(entry, cli_rust_entries_probe, message)
+
+        assert_extracted_entry(
+            "pinvou-cli/**/*.rs",
             "cli_rust must match the real crate directory (pinvou-cli)",
         )
-        self.assertIn("- 'pinvou-cli/**/Cargo.toml'", cli_paths)
-        self.assertIn("- 'CodeWhale'", cli_paths)
+        assert_extracted_entry("pinvou-cli/**/Cargo.toml", "cli_rust must route the Cargo.toml set")
+        assert_extracted_entry(
+            "pinvou-cli/**/Cargo.lock",
+            "every CLI leg builds --locked, so a lockfile-only change (a "
+            "dependency bump, a resolver rewrite) changes exactly what they "
+            "compile; without this entry such a PR skips cli-test, "
+            "windows-rust-test AND macos-cli-check and required-gate passes "
+            "on 'skipped'",
+        )
+        # Round-28: the CLI's remaining build inputs are routed like its
+        # sources. .cargo/config.toml feeds EVERY CLI build (a resolver,
+        # target, or rustflags change compiles differently everywhere), and
+        # build.rs embeds the exe manifest into the Windows binary.
+        assert_extracted_entry(
+            "pinvou-cli/.cargo/**",
+            "cli_rust must route pinvou-cli/.cargo: config.toml changes what "
+            "every CLI leg compiles; without this entry such a PR skips "
+            "cli-test, cli-lint, windows-rust-test AND macos-cli-check on "
+            "'skipped'",
+        )
+        assert_extracted_entry(
+            "pinvou-cli/**/*.manifest",
+            "cli_rust must route the exe manifest: build.rs embeds it into "
+            "the Windows binary, and without this entry a manifest-only PR "
+            "runs no CLI leg at all",
+        )
+        # Round-47 review: cli-test and cli-lint (the Linux CLI legs)
+        # execute this setup script; routed only via rust_code, a
+        # script-only PR reached the post-merge push before any CLI leg
+        # could catch a break.
+        assert_extracted_entry(
+            "scripts/ci-libpipewire-build.sh",
+            "the PipeWire prefix build is a setup step of the Linux CLI "
+            "legs; a script-only PR must trigger them",
+        )
+        assert_extracted_entry("CodeWhale", "cli_rust must route the foundation gitlink")
+        # Round-38: every literal cli_rust filter entry must name a path that
+        # EXISTS in the repository. The round-37 mcp-servers entry shipped as
+        # `pinvoy3-app/...` (a typo), which no glob ever matches — the entry
+        # was dead, the gap it claims to close stayed open, and this suite
+        # pinned the dead spelling as if it were coverage. The reachability
+        # sweep below (assert_group_paths_reachable, applied to cli_rust by
+        # the group_bounds loop) keeps the pin from outliving the path again.
+        self.assertTrue(cli_rust_entries_probe, "cli_rust paths 解析为空")
+        # Round-40 review M4: cli_rust must route on POSITIVE entries only.
+        # The filter runs with dorny's `predicate-quantifier: some-with-excludes`,
+        # where one negated entry (`- '!pinvou-cli/**'`) makes cli_rust false
+        # for every matching change — and rust_full does not cover CLI `.rs`
+        # files, so a single added line would skip cli-test, cli-lint,
+        # windows-rust-test and macos-cli-check for all CLI-only PRs while
+        # required-gate passes on `skipped`. The extractor above now also
+        # sees double-quoted entries, so the quote style cannot hide a
+        # negation from this pin either. Exclusions belong in rust_full,
+        # which owns them today (feedback/personas/pet).
+        for entry in cli_rust_entries_probe:
+            self.assertFalse(
+                entry.startswith("!"),
+                f"cli_rust must not carry negation entries (one '!...' line "
+                f"silently disables every CLI gate): {entry}",
+            )
+        # Submodule gitlinks are not checked out everywhere this suite runs
+        # (fast-gate needs no CodeWhale tree), so their existence is pinned
+        # by .gitmodules instead of the working tree.
+        submodule_paths = set()
+        gitmodules = ROOT / ".gitmodules"
+        if gitmodules.exists():
+            for line in gitmodules.read_text(encoding="utf-8").splitlines():
+                stripped = line.strip()
+                if stripped.startswith("path = "):
+                    submodule_paths.add(stripped[len("path = "):].strip())
+        # The connector lock tables are compiled into the CLI with include_str!
+        # from src-tauri/src/platform/connector_lock.rs, so editing or
+        # deleting one is a CLI source change in all but name — and
+        # macos-cli-check, the leg whose reason for existing is exactly those
+        # per-target files, is the first thing skipped without this entry.
+        # Round-43 review: these pins join the round-42 extractor discipline —
+        # a raw `assertIn("- 'path'", slice)` is satisfied by a trailing
+        # comment quoting the same path while dorny sees no entry, so the
+        # deleted entry kept every pin green.
+        assert_extracted_entry(
+            "pinvou3-app/src-tauri/resources/platforms/**",
+            "the connector lock tables are include_str!'d into the CLI; "
+            "without this entry a lock-table PR runs no CLI leg at all",
+        )
+        # The wider include_str!/build.rs input class: build.rs reads four
+        # bundle instruction files + deny_sensitive_paths.sh unconditionally
+        # (panicking when absent) and native_installer.rs include_str!s the
+        # dws LICENSE — a bundle-resource-only rename must not skip the CLI
+        # legs any more than a lock-table edit does.
+        assert_extracted_entry(
+            "pinvou3-app/src-tauri/resources/common/bundle/**",
+            "the bundle resources are build.rs/include_str! inputs of every "
+            "pinvou3-tauri compile; without this entry a bundle-resource PR "
+            "runs no CLI leg at all",
+        )
+        # Round-37 review: the remaining include_str! inputs of every CLI-leg
+        # compile — mcp_catalog.rs embeds the APP-LEVEL mcp-servers tree (not
+        # src-tauri/resources) and marketplace.rs embeds the plugin package
+        # spec doc. `pub mod marketplace;` is unconditional, so a rename in
+        # either must not skip every compile leg while required-gate passes
+        # on skipped.
+        assert_extracted_entry(
+            "pinvou3-app/resources/mcp-servers/**",
+            "mcp_catalog.rs include_str!s the app-level mcp-servers tree; "
+            "without this entry an mcp-servers PR runs no CLI leg at all",
+        )
+        assert_extracted_entry(
+            "docs/plugin-package-spec.md",
+            "marketplace.rs include_str!s the plugin package spec; without "
+            "this entry a spec-doc PR runs no CLI leg at all",
+        )
+        # Round-49 review: cli_contract.rs include_str!s the gaia benchmark
+        # doc and asserts its level table, so a doc-only edit must run a CLI
+        # leg. The routing entry alone cannot protect itself — this pin is
+        # what makes deleting the entry fail the suite instead of silently
+        # re-opening the skipped-legs hole the round-48 entry closed.
+        assert_extracted_entry(
+            "docs/gaia-benchmark.md",
+            "cli_contract.rs include_str!s the gaia benchmark doc; without "
+            "this entry a doc-only edit runs no CLI leg at all",
+        )
         # The CLI path-depends on the app crate, so the leaf features that
         # rust_full exempts still gate through the CLI suite (a change confined
         # to features/feedback or features/personas would otherwise run NO rust
         # gate at all).
-        self.assertIn("- 'pinvou3-app/src-tauri/src/features/feedback/**'", cli_paths)
-        self.assertIn("- 'pinvou3-app/src-tauri/src/features/personas/**'", cli_paths)
+        assert_extracted_entry(
+            "pinvou3-app/src-tauri/src/features/feedback/**",
+            "feedback changes must gate through the CLI suite",
+        )
+        assert_extracted_entry(
+            "pinvou3-app/src-tauri/src/features/personas/**",
+            "personas changes must gate through the CLI suite",
+        )
+        assert_extracted_entry(
+            "pinvou3-app/src-tauri/src/features/pet/**",
+            "pet is exempted from rust_full like feedback/personas, so pet Rust "
+            "changes must gate through the CLI suite too",
+        )
+        # Policy: the workflow file itself is deliberately excluded from
+        # cli_rust — workflow edits must not link the full-app test suites
+        # (this test enforces that). cli-test changes are instead validated
+        # by the next cli_rust PR / the merge queue. Extractor-based so a
+        # trailing-comment-disguised ENTRY fails this pin (fail closed) the
+        # same way a deleted one does.
+        self.assertNotIn(
+            ".github/workflows/pr-check.yml",
+            cli_rust_entries_probe,
+            "cli_rust must not include the workflow file: workflow edits must "
+            "not link the full-app test suites",
+        )
+
+        # Round-40 review: the dir/**-rot class the cli_rust reachability
+        # sweep closes is not cli_rust-specific. The same dead-spelling
+        # shape in knowledge_rust or windows_codex silently skips the
+        # knowledge and Windows codex legs for a change-set they own. The
+        # same sweep runs over both groups (existence + dir/** prefix):
+        # knowledge_rust gets an explicit call below because the
+        # group_bounds pairs bound its neighbors (cli_rust,
+        # knowledge_dependencies) instead of knowledge_rust itself, and
+        # windows_codex rides the group_bounds list (round-51: its
+        # standalone slice was folded into that sweep — same helper, and
+        # its `private-runtimes/windows` gitlink resolves through the same
+        # .gitmodules exemption the sweep applies).
+        def assert_group_paths_reachable(group_block: str, group_name: str) -> None:
+            entries = _extract_quoted_paths(group_block)
+            self.assertTrue(entries, f"{group_name} paths 解析为空")
+            for entry in entries:
+                candidate = entry[1:] if entry.startswith("!") else entry
+                if candidate.endswith("/**"):
+                    # Round-39 review: the round-37 dead entry was exactly this
+                    # shape (`pinvoy3-app/resources/mcp-servers/**` — a typo'd
+                    # directory prefix), so the dir/** form must be reachability-
+                    # checked too: the prefix directory must exist. The glob tail
+                    # itself stays the paths-filter's business.
+                    prefix = candidate[: -len("/**")]
+                    self.assertTrue(
+                        (ROOT / prefix).is_dir(),
+                        f"{group_name} 过滤条目的目录前缀在仓库中不存在(死条目): {entry}",
+                    )
+                    continue
+                if "*" in candidate:
+                    # Glob metachars beyond the dir/** form are resolved by the
+                    # paths-filter itself; only literal and dir/** entries can
+                    # rot in a checkable way.
+                    continue
+                if candidate in submodule_paths:
+                    continue
+                self.assertTrue(
+                    (ROOT / candidate).exists(),
+                    f"{group_name} 过滤路径在仓库中不存在(死条目): {entry}",
+                )
+
+        knowledge_rust_paths = changes.split(
+            "            knowledge_rust:", maxsplit=1
+        )[1].split("            knowledge_dependencies:", maxsplit=1)[0]
+        assert_group_paths_reachable(knowledge_rust_paths, "knowledge_rust")
+        # Round-49 review: bundle_chain — the changes block's terminal group —
+        # gets its own explicit sweep. The standalone windows_codex slice used
+        # to split at `pet:` — a job declared BEFORE it — so the slice ran to
+        # EOF and bundle_chain's coverage was an accident of that unbounded
+        # sweep. Round-51 review: this explicit sweep is bounded at the next
+        # job header (fast-gate) instead of running to EOF of the whole file,
+        # so the slice stays a pure filter-entry list and the extractor's
+        # fail-closed entry-shape check applies to it; a whole-file slice
+        # would need the lenient extractor and could hide a folded-scalar
+        # exclusion from this sweep.
+        bundle_chain_paths = self.pr_workflow.split(
+            "            bundle_chain:", maxsplit=1
+        )[1].split("\n  fast-gate:", maxsplit=1)[0]
+        assert_group_paths_reachable(bundle_chain_paths, "bundle_chain")
+
+        # Round-42 review: the sweep now covers EVERY filter group in the
+        # changes block, not just the three that originally motivated it —
+        # a dead dir/** spelling in rust_code, release_contract, pet,
+        # frontend, relay, acp_runtime, rust_full or the dependency groups
+        # silently skipped the legs that group owns, exactly like the
+        # round-37 pinvoy3-app class. Groups are split sequentially in
+        # declaration order, so a NEW group appended without updating this
+        # list still gets covered as long as it sits between two known
+        # neighbors. Round-49 review: the terminal group's own entries are
+        # swept explicitly to EOF (see bundle_chain above) instead of riding
+        # the old unbounded windows_codex slice; a group appended after
+        # bundle_chain is likewise inside that terminal sweep, but add its
+        # pair here anyway so the reachability message names the right
+        # group. The pairs mirror the workflow's order.
+        group_bounds = [
+            ("rust_code", "rust_dependencies"),
+            ("rust_dependencies", "rust_full"),
+            ("rust_full", "cli_rust"),
+            ("cli_rust", "knowledge_rust"),
+            ("knowledge_dependencies", "release_contract"),
+            ("release_contract", "pet"),
+            ("pet", "frontend"),
+            ("frontend", "relay"),
+            ("relay", "acp_runtime"),
+            ("acp_runtime", "windows_codex"),
+            ("windows_codex", "bundle_chain"),
+        ]
+        for group, next_group in group_bounds:
+            block = changes.split(f"            {group}:", maxsplit=1)[1].split(
+                f"            {next_group}:", maxsplit=1
+            )[0]
+            assert_group_paths_reachable(block, group)
 
         cli_test = _without_yaml_comments(
-            self.pr_workflow.split("\n  cli-test:", maxsplit=1)[1].split(
-                "\n  windows-rust-test:", maxsplit=1
-            )[0]
+            _extract_job_block(self.pr_workflow, "cli-test")
         )
         self.assertIn("needs.changes.outputs.cli_rust == 'true'", cli_test)
         self.assertIn(
@@ -565,27 +1271,819 @@ class CiGatePolicyTests(unittest.TestCase):
             "dataset_contract is required-features-gated and silently skipped by "
             "the workspace run; the gaia timeout pins live there",
         )
+        # Round-47 review: the EXECUTION steps' `if` conditions are pinned as
+        # name+`if` pairs. The run-command substrings above stay green if a
+        # step's `if` flips or dies (e.g. `!= 'push'` → `false`), which would
+        # make cli-test report success while running NO tests on PRs or in
+        # the Merge Queue — the exact silent-skip class the windows phase
+        # map's end-anchored pins close for the Windows leg.
+        # Round-51 review: the pairs are END-ANCHORED — each pinned string
+        # includes the line's trailing "\n" (the windows phase map uses the
+        # regex `(?:\n|$)` for the same guarantee). A bare substring stayed
+        # green when `&& false` (or a trailing comment) was appended to the
+        # `if:` value, so a leg could skip its tests while the map/pin
+        # reported it routed; the trailing newline makes any suffix mutation
+        # fail the pin.
+        self.assertIn(
+            "- name: cargo test (all targets, no-fail-fast)\n"
+            "        if: github.event_name != 'push'\n",
+            cli_test,
+        )
+        self.assertIn(
+            "- name: cargo compile check (push)\n"
+            "        if: github.event_name == 'push'\n",
+            cli_test,
+        )
+        self.assertIn(
+            "- name: cargo test (adapter-gaia test-support)\n"
+            "        if: github.event_name != 'push'\n",
+            cli_test,
+        )
+        self.assertIn(
+            "- name: cargo compile check (push, adapter-gaia test-support)\n"
+            "        if: github.event_name == 'push'\n",
+            cli_test,
+        )
         self.assertIn("cache-targets: false", cli_test)
 
-        required_gate = self.pr_workflow.split(
-            "\n  required-gate:", maxsplit=1
-        )[1]
+        # The Windows leg also compile-checks the pinvou-cli workspace: the
+        # CLI's cfg(target_os = "windows") branches (exe/cmd shims, taskkill,
+        # CREATE_NO_WINDOW) only type-check on a Windows runner, and cli_rust
+        # must trigger that leg exactly like it triggers cli-test.
+        windows_rust_test = _extract_job_block(
+            self.pr_workflow, "windows-rust-test"
+        )
+        self.assertIn(
+            "needs.changes.outputs.cli_rust == 'true'",
+            windows_rust_test,
+            "windows-rust-test must be triggered by cli_rust: its pinvou-cli "
+            "compile check is the only Windows leg for CLI code",
+        )
+        windows_rust_steps = _without_yaml_comments(windows_rust_test)
+        self.assertIn(
+            "- name: pinvou-cli Windows compile check",
+            windows_rust_steps,
+        )
+        self.assertIn(
+            "cargo check --manifest-path pinvou-cli/Cargo.toml",
+            windows_rust_steps,
+        )
+        self.assertIn("--workspace --all-targets --locked", windows_rust_steps)
+        # The adapter-gaia test-support target compiles on the Windows leg:
+        # required-features hide it from the workspace-wide steps above, and
+        # deleting this step must fail the policy suite.
+        self.assertIn(
+            "-p adapter-gaia --features test-support --all-targets --locked",
+            windows_rust_steps,
+        )
+        # Round-42 review: the pinvou-cli workspace's own cfg(windows) unit
+        # tests EXECUTE here, filtered. Round-43 review: pin the STEP and all
+        # three filters — deleting the step (or one filter) must fail the
+        # policy suite instead of silently orphaning the Windows pins again
+        # (the ACL filter's absence is exactly how a third cfg(windows) test
+        # ended up running on no leg at all).
+        self.assertIn(
+            "- name: pinvou-cli Windows-gated unit tests",
+            windows_rust_steps,
+        )
+        # Round-50 review: the filter pins below assert the run_filtered
+        # line's FILTER TOKEN exactly (line-anchored, not substring): the
+        # old bare assertIn stayed green when the yml-side filter was
+        # RENAMED (the old text remained a substring of the mutated line),
+        # so a renamed test orphaned the pin silently. The workflow's
+        # runtime zero-match guard is the tripwire that fails the leg; this
+        # pin holds the line itself.
+        self.assert_run_filtered_filter(windows_rust_steps, "pinvou-cli", "windows_batch_tests")
+        self.assert_run_filtered_filter(
+            windows_rust_steps,
+            "adapter-gaia",
+            "dataset_windows",
+            "the dataset Windows symlink/reparse rejections must stay gated "
+            "to this leg",
+        )
+        self.assert_run_filtered_filter(
+            windows_rust_steps,
+            "adapter-gaia",
+            "fetch_windows_acl",
+            "the Windows ACL privacy round-trip test must stay gated to this "
+            "leg — it is the crate's only cfg(windows) ACL pin and ran on no "
+            "leg before this filter existed",
+        )
+        # Round-47 review: the round-46 rebind case-fold filter is the one
+        # run_filtered line the suite did NOT pin (all five siblings above
+        # were pinned) — deleting the whole line passed the policy suite,
+        # the exact silent-orphan failure mode this suite exists to catch.
+        self.assert_run_filtered_filter(
+            windows_rust_steps,
+            "pinvou-cli",
+            "rebind_nesting_rejection_folds_case_where_the_os_folds",
+            "the rebind case-fold half executes only on this leg; deleting "
+            "the filter must fail the suite like its siblings' pins",
+        )
+        # Round-53 review: the rebind no-op fold's Windows alias half is the
+        # same orphan class — pin its run_filtered line so deleting the
+        # filter cannot silently strand the cfg(windows) control on no leg.
+        self.assert_run_filtered_filter(
+            windows_rust_steps,
+            "pinvou-cli",
+            "rebind_noop_fold_still_collapses_windows_alias_spellings",
+            "the rebind no-op fold's Windows alias half executes only on "
+            "this leg; deleting the filter must fail the suite like its "
+            "siblings' pins",
+        )
+        # Round-44 review: benchmark-core's cfg(windows) security pins (the
+        # DPAPI fail-closed blob tests and the Windows ACL parse pin) ran on
+        # NO leg either — `-p benchmark-core` appeared in no workflow, the
+        # same orphan class the ACL filter's absence created. Pin both
+        # module filters: deleting the step or one filter must fail the
+        # policy suite instead of silently orphaning the pins again.
+        self.assert_run_filtered_filter(
+            windows_rust_steps,
+            "benchmark-core",
+            "private_prediction::tests::windows_",
+        )
+        self.assert_run_filtered_filter(
+            windows_rust_steps,
+            "benchmark-core",
+            "windows_private_acl::tests::",
+        )
+        # The zero-match guard bodies are load-bearing — a renamed test must
+        # FAIL the step, not pass silently — so pin them alongside the
+        # filters they protect (round-44 review).
+        self.assertIn("grep -qE 'running [1-9][0-9]* tests?'", windows_rust_steps)
+        self.assertIn('grep -q "^test result: ok"', windows_rust_steps)
+        self.assertIn(
+            "a renamed test must not become a silent pass", windows_rust_steps
+        )
+        # Round-53 review (T-ci-2): the job-level routing is pinned verbatim
+        # by GATE_JOB_LEVEL_IFS, but that pin cannot see a NEW step added
+        # INSIDE the job. The Windows regression leg never runs on
+        # merge_group (Merge Queue does not repeat it; Linux validates the
+        # combined tree), so a step conditioned on that event would be dead
+        # code that still shows green here — assert no step-level `if:`
+        # references the event. The job-header chunk (job-level `if:`) is
+        # excluded; folded `if: >-` continuations are folded in so the token
+        # cannot hide past the `if:` line.
+        for step in windows_rust_steps.split("\n      - name:")[1:]:
+            step_lines = step.splitlines()
+            ifs = [
+                number
+                for number, line in enumerate(step_lines)
+                if re.match(r"^\s+if:", line)
+            ]
+            for start in ifs:
+                condition = [step_lines[start]]
+                if step_lines[start].strip().endswith(">-"):
+                    for line in step_lines[start + 1:]:
+                        if not line.strip() or len(line) - len(line.lstrip(" ")) <= 6:
+                            break
+                        condition.append(line.strip())
+                self.assertNotIn(
+                    "merge_group",
+                    "\n".join(condition),
+                    "windows-rust-test steps must not be conditioned on "
+                    "merge_group: the Windows regression leg never runs on "
+                    "that event (Linux validates the combined tree), so the "
+                    "step would be silently dead on every run",
+                )
+
+        # macOS-gated CLI code must type-check somewhere: cli-test is
+        # ubuntu-only, so the dedicated macos-cli-check leg mirrors the
+        # Windows compile check and gates through required-gate. It runs for
+        # ready cli_rust/rust_full PRs, the matching Merge Queue combined tree
+        # (green-alone PRs can still combine into a macOS-only compile break),
+        # and main push (cumulative); see
+        # test_gate_job_level_ifs_are_pinned_verbatim.
+        macos_cli = _extract_job_block(self.pr_workflow, "macos-cli-check")
+        # Round-46 review: the needs wire stays pinned here too, so a
+        # bypass of the wiring test cannot silently drop it.
+        self.assertIn("needs: changes", macos_cli)
+        self.assertIn("runs-on: macos-15", macos_cli)
+        self.assertIn(
+            "needs.changes.outputs.cli_rust == 'true'",
+            macos_cli,
+            "macos-cli-check must use the same cli_rust trigger as cli-test",
+        )
+        self.assertIn(
+            "needs.changes.outputs.rust_full == 'true'",
+            macos_cli,
+            "macos-cli-check must cover rust_full like cli-test does",
+        )
+        self.assertIn(
+            "github.event.pull_request.draft == false",
+            macos_cli,
+            "draft PRs must skip the macOS compile leg like the other rust jobs",
+        )
+        macos_cli_steps = _without_yaml_comments(macos_cli)
+        self.assertIn(
+            "- name: pinvou-cli macOS compile check",
+            macos_cli_steps,
+        )
+        self.assertIn(
+            "cargo check --manifest-path pinvou-cli/Cargo.toml",
+            macos_cli_steps,
+        )
+        self.assertIn("--workspace --all-targets --locked", macos_cli_steps)
+        # Mirror of the Windows pin: the adapter-gaia test-support target is
+        # invisible to required-features-filtered workspace steps, so the
+        # dedicated compile step must stay pinned.
+        self.assertIn(
+            "-p adapter-gaia --features test-support --all-targets --locked",
+            macos_cli_steps,
+        )
+        self.assertIn(
+            "rustup show active-toolchain",
+            macos_cli_steps,
+            "the macOS leg must run the toolchain pinned by rust-toolchain.toml",
+        )
+
+        required_gate = self._required_gate()
         self.assertIn("- cli-test", required_gate)
         self.assertIn('"cli-test:$CLI_TEST_RESULT"', required_gate)
+        self.assert_required_gate_wiring("macos-cli-check", "MACOS_CLI_RESULT")
+
+    def test_cli_lint_tauri_deps_stay_identical_with_cli_test(self):
+        # Round-45 review: cli-test and cli-lint carry the same "Install Tauri
+        # Linux system dependencies" setup (the workspaces are identical: the
+        # CLI compiles pinvou3-tauri as a path dependency, so both legs need
+        # the same system libraries). A package fixed or added in one leg only
+        # hides which entries are load-bearing. The blocks are deliberately
+        # NOT deduplicated into a composite action — the structural pins above
+        # read this workflow's literal text — so this pin holds the copies
+        # equal instead. Prose comments may differ between the jobs; the
+        # executable lines may not.
+        marker = "- name: Install Tauri Linux system dependencies"
+
+        def tauri_dep_stanza(job):
+            job_text = self.pr_workflow.split(f"\n  {job}:", maxsplit=1)[1]
+            _, _, rest = job_text.partition(marker)
+            if not rest:
+                raise AssertionError(
+                    f"{job} no longer carries the {marker!r} step the "
+                    "cli-test/cli-lint parity pin needs"
+                )
+            return _without_yaml_comments(
+                marker + rest.split("- name: Build PipeWire", maxsplit=1)[0]
+            )
+
+        self.assertEqual(
+            tauri_dep_stanza("cli-test"),
+            tauri_dep_stanza("cli-lint"),
+            "the Tauri Linux system-dependency setup must stay identical "
+            "between cli-test and cli-lint: an entry that drifts in one leg "
+            "silently hides which packages are load-bearing",
+        )
+
+    def test_macos_cli_check_configures_the_sibling_restorable_cache(self):
+        # Round-17 close-out, fixed in round 18: the job header claimed "no
+        # macOS cache exists in this workflow that a refs/pull/N/merge run
+        # could restore", which was false — macos-rust-check configures
+        # exactly one, saved only on main, restorable by every PR through
+        # rust-cache's prefix fallback (the workflow header's own documented
+        # warm-cache design). This leg must keep that restorable treatment:
+        # it is the long pole of the serialized macOS runner queue and every
+        # uncached run pays a cold compile of the whole workspace.
+        macos_cli = _extract_job_block(self.pr_workflow, "macos-cli-check")
+        self.assertIn("runs-on: macos-15", macos_cli)
+        cache_step = _without_yaml_comments(macos_cli).split(
+            "- name: Cargo cache", maxsplit=1
+        )[1].split("- name: pinvou-cli macOS compile check", maxsplit=1)[0]
+        self.assertIn("uses: Swatinem/rust-cache@v2", cache_step)
+        self.assertIn("workspaces: pinvou-cli", cache_step)
+        self.assertIn("shared-key: macos-cli-check", cache_step)
+        self.assertIn(
+            "save-if: ${{ github.ref == 'refs/heads/main' }}",
+            cache_step,
+            "PR-side runs must stay read-only on the 10GB quota; main is the "
+            "sole writer of every warm cache in this workflow (same policy as "
+            "macos-rust-check and cli-test)",
+        )
+        # The sibling-policy half of the round-18 decision, pinned so a future
+        # "consolidation" cannot silently alias the keys: macOS artifacts are
+        # not interchangeable with the Linux legs' (cli-test compiles the same
+        # workspace but its cache is ~/.cargo-only under the standing incident
+        # directive, and clippy artifacts differ from rustc ones anyway).
+        self.assertNotIn("shared-key: macos-rust-check", cache_step)
+        self.assertNotIn("shared-key: cli-test", cache_step)
+        # Unlike the Linux legs this cache keeps the target directory: the
+        # cache-targets: false directive exists because RESTORED target/
+        # entries that needed linking took runners down, and a check-only leg
+        # links nothing (rmeta-size artifacts). Regressing to false would
+        # silently re-introduce the cold compile this round removed.
+        self.assertNotIn("cache-targets:", cache_step)
+
+    def test_cli_lint_job_is_wired_into_required_gate(self):
+        # Round-18 review §3: "The CI leg doesn't lint the CLI" — no clippy on
+        # any lane for ~50k lines while the src-tauri [lints] bans do not
+        # apply to the pinvou-cli workspace. The new lint leg must satisfy the
+        # same three-wiring rule as every other gate job (needs entry, env
+        # backfill, summary-loop entry); removing the job or unwiring it from
+        # required-gate must turn this suite red.
+        body = _without_yaml_comments(self.pr_workflow)
+        cli_lint = _extract_job_block(body, "cli-lint")
+        self.assertIn("needs: changes", cli_lint)
+        self.assertIn("runs-on: ubuntu-22.04", cli_lint)
+        # The trigger set must mirror cli-test exactly: main push (cumulative,
+        # paths-filter independent), the Merge Queue combined tree gated by
+        # cli_rust/rust_full, and ready non-draft PRs (drafts skip the heavy
+        # leg). That routing lives entirely in the job-level `if:`, which is
+        # pinned verbatim by GATE_JOB_LEVEL_IFS["cli-lint"] — any appended
+        # `&& false`, deleted branch, or flipped draft gate fails there, so
+        # this test keeps only the non-if wiring and command pins.
+        # Fail-closed on compile errors and nothing else may soften it: the
+        # warn-visible clippy policy (debt cleanup pending the [lints] table,
+        # see the job comment) must never grow a bypass here.
+        self.assertNotIn("continue-on-error", cli_lint)
+        self.assertIn("components: clippy", cli_lint)
+        self.assertIn(
+            "cargo clippy --manifest-path pinvou-cli/Cargo.toml",
+            cli_lint,
+            "the CLI lint leg must run clippy via the same --manifest-path "
+            "convention as every other CLI leg",
+        )
+        # --all-targets: tests are linted too; --no-deps: dependencies and the
+        # CodeWhale submodule are never linted; --locked like every CLI build.
+        self.assertIn("--workspace --all-targets --no-deps --locked", cli_lint)
+        # Round-27 review: the warn-visible clippy policy can be defeated by
+        # APPENDING lint suppressions after the pinned prefix (`-- -A
+        # clippy::all`, `--cap-lints`, a RUSTFLAGS export in the same step).
+        # Substring asserts above cannot see an appended tail, so pin the
+        # absence of the known bypasses explicitly.
+        self.assertNotIn("-A clippy", cli_lint)
+        self.assertNotIn("-Aclippy", cli_lint)
+        self.assertNotIn("--allow clippy", cli_lint)
+        self.assertNotIn("--cap-lints", cli_lint)
+        self.assertNotIn("RUSTFLAGS", cli_lint)
+        # The featureless build (product-backend off) is exercised nowhere
+        # else — cargo test always runs default features — so without this
+        # check step the `#[cfg(not(feature = "product-backend"))]` refusal
+        # arms in the cli crate could rot silently.
+        self.assertIn(
+            "cargo check --manifest-path pinvou-cli/Cargo.toml",
+            cli_lint,
+        )
+        self.assertIn(
+            "--workspace --all-targets --no-default-features --locked",
+            cli_lint,
+            "cli-lint must keep compiling the featureless build — lib, bins, "
+            "and test targets alike — so the product-backend-off cfg arms "
+            "cannot rot silently",
+        )
+        # Round-42 review: the substring pin above is satisfied by an
+        # APPENDED feature toggle — `--no-default-features --features
+        # product-backend` keeps the pinned text while compiling the
+        # feature-on config, silently un-guarding the refusal arms. Pin the
+        # absence of the re-enable on the featureless step.
+        # Round-48 review: the steps are folded (`>-`) multi-line run blocks,
+        # and the per-LINE check below let the toggle hide on a DIFFERENT
+        # line of the same command (cargo accepts `--features` alongside
+        # `--no-default-features`), satisfying every assertion while
+        # compiling the feature-on config. Fold each run block into one
+        # string first; the message keeps the whole block for diagnosis.
+        # Round-49 review: the original fold pattern hard-coded a 12-space
+        # continuation indent and matched ZERO blocks in this workflow,
+        # silently degrading every run to the per-line fallback. The pattern
+        # now captures the first continuation line's indent and requires the
+        # block's remaining lines to share it, and the fold shape itself is
+        # mandatory: a differently-shaped step must fail loudly here instead
+        # of reviving the per-line blind spot.
+        featureless_steps = [
+            " ".join(block.split("\n"))
+            for block, _indent in re.findall(
+                r"run: >-\n(( +)[^\n]*\n?(?:\2[^\n]*\n?)*)", cli_lint
+            )
+            if "--no-default-features" in block
+        ]
+        self.assertTrue(
+            featureless_steps,
+            "the featureless check step must exist as a folded (>-) run "
+            "block; update this pin if the step's YAML shape changes, the "
+            "fold is what keeps a sibling-line `--features` toggle visible",
+        )
+        for block in featureless_steps:
+            self.assertNotIn(
+                "--features",
+                block,
+                # Round-43 review: this message interpolates the offending
+                # text — without the f-prefix a real failure printed a
+                # literal "{block}" instead of the step.
+                "the featureless check must not re-enable features on the "
+                "same invocation (on any line of the folded run block): "
+                "`--no-default-features --features "
+                "product-backend` satisfies the substring pin while "
+                f"compiling the feature-on config: {block}",
+            )
+            # Round-51 review: cargo's short spelling of --features slipped
+            # past the pin above — `-F product-backend` appended after
+            # --locked compiled the feature-on config with every assertion
+            # green (mutation-verified bypass). The featureless invocation
+            # never legitimately contains `-F`, so one literal covers both
+            # the space form and the adjacent `-F<feature>` spelling.
+            self.assertNotIn(
+                "-F",
+                block,
+                "the featureless check must not re-enable features via "
+                "cargo's short flag (`-F<feature>`, space or adjacent "
+                "form, on any line of the folded run block): "
+                "`--no-default-features --locked -F product-backend` "
+                "satisfies the --features pin while compiling the "
+                f"feature-on config: {block}",
+            )
+        # Secondary net over any unfolded single-line invocation of the same
+        # check (defense in depth; the folded assertion above is the
+        # load-bearing one).
+        for line in cli_lint.splitlines():
+            if "--no-default-features" in line:
+                self.assertNotIn(
+                    "--features",
+                    line,
+                    "the featureless check must not re-enable features on "
+                    f"the same line: {line}",
+                )
+        # Independent cache keyed to the compiler mode (clippy-driver
+        # artifacts are not reusable by the rustc test compilers — same
+        # parallel-job split as rust-lint vs rust-test).
+        self.assertIn("shared-key: cli-lint", cli_lint)
+        self.assertIn(
+            "save-if: ${{ github.ref == 'refs/heads/main' }}",
+            cli_lint,
+        )
+
+        self.assert_required_gate_wiring("cli-lint", "CLI_LINT_RESULT")
+
+    def test_required_gate_accepts_only_success_or_skipped(self):
+        # Round-28: the `case "$result" in success|skipped) ;;` line is the
+        # ONE predicate deciding whether a failed leg blocks the gate — the
+        # membership assertions above only pin loop ENTRIES. Widening the
+        # pattern to a catch-all (`*) ;;` without failed=1, or adding
+        # `failure` to the accepted set) would accept every failed gate
+        # while every other test here stays green, so pin the exact
+        # accepted set and forbid a bare catch-all accept.
+        required_gate = self._required_gate(_without_yaml_comments(self.pr_workflow))
+        self.assertIn(
+            "success|skipped) ;;",
+            required_gate,
+            "the accepted set must stay exactly success|skipped",
+        )
+        self.assertNotIn(
+            "*) ;;",
+            required_gate,
+            "a catch-all case arm would accept every failed gate result",
+        )
+        for soft in ("failure) ;;", "cancelled) ;;"):
+            self.assertNotIn(
+                soft,
+                required_gate,
+                f"{soft} in the accepted set would let a failed leg pass",
+            )
+        # The verdict line itself is the last thing that can be disarmed
+        # (mutation-checked: `[[ "$failed" -eq 0 ]] || true` passed this
+        # whole suite before this pin existed). The bare `[[ ]]` must stay
+        # bare so a nonzero count fails the step.
+        self.assertTrue(
+            required_gate.rstrip().endswith('[[ "$failed" -eq 0 ]]'),
+            "required-gate must end in the bare failed-count verdict",
+        )
+        for suffix in (
+            "[[ \"$failed\" -eq 0 ]] || true",
+            "[[ \"$failed\" -eq 0 ]] || :",
+            "[[ \"$failed\" -eq 0 ]] || exit 0",
+        ):
+            self.assertNotIn(
+                suffix,
+                required_gate,
+                "a swallowed verdict would accept every failed gate while "
+                "every other test here stays green",
+            )
+
+    def test_no_job_level_continue_on_error_disarms_a_gate_job(self):
+        # The workflow header states this policy in prose (no gate job
+        # carries a job-level continue-on-error) with nothing enforcing it,
+        # and it is the cheapest
+        # fail-open vector in the file: a job-level `continue-on-error: true`
+        # makes the job's own failure non-blocking AND makes
+        # `needs.<job>.result` report `success`, so required-gate's
+        # `success|skipped` loop accepts it. One line would silently disarm
+        # cli-test, windows-rust-test, macos-cli-check or rust-test while the
+        # required check stays green.
+        #
+        # Indentation is the discriminator: job keys sit at 4 spaces
+        # (`  <job>:` + `    runs-on:`), step keys at 8 (`      - name:` +
+        # `        continue-on-error:`). Comments are stripped first so the
+        # header's prose and the "no continue-on-error" annotations on the
+        # clippy gate do not count as settings.
+        body = _without_yaml_comments(self.pr_workflow)
+        job_level = []
+        step_level = []
+        for number, line in enumerate(body.splitlines(), start=1):
+            if not line.strip().startswith("continue-on-error"):
+                continue
+            indent = len(line) - len(line.lstrip(" "))
+            (job_level if indent <= 4 else step_level).append((number, line.strip()))
+        self.assertEqual(
+            job_level,
+            [],
+            "a job-level continue-on-error makes needs.<job>.result report "
+            "'success' to required-gate, so the whole compile/test leg becomes "
+            "advisory while the required check stays green",
+        )
+        # Exactly one legitimate use, and it is a STEP whose entire purpose is
+        # to print an analysis it must not be able to fail the job with.
+        self.assertEqual(
+            len(step_level),
+            1,
+            "only the Windows PE import diagnostic may opt out of blocking; "
+            f"found {len(step_level)} continue-on-error settings: {step_level}",
+        )
+        diagnostic_step = body.split(
+            "- name: Windows 测试二进制导入诊断", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        self.assertIn(
+            "continue-on-error: true",
+            diagnostic_step,
+            "the single permitted continue-on-error must be the Windows PE "
+            "import diagnostic step, not some other step that moved under it",
+        )
+
+    def test_gate_jobs_do_not_swallow_their_exit_status(self):
+        # The companion fail-open vector to continue-on-error: appending
+        # `|| true` (or `|| :`) to a gate command leaves the step, the job and
+        # required-gate all green while the compiler or the test binary
+        # actually failed. The workflow uses `|| echo "::warning::..."` for its
+        # one genuinely best-effort step (ci-memory-setup), which is a
+        # different and deliberate shape, so scanning the gate jobs for the
+        # unconditional-success idioms has no false positives today.
+        gate_jobs = (
+            # Round-51 review: fast-gate RUNS this very suite, so an `|| true`
+            # on its runner line (`python3 -m unittest discover ...`) disarms
+            # every pin in this file while required-gate still requires
+            # fast-gate — it must be scanned like any other gate job. Its one
+            # ci-memory-setup line is covered by the same per-job `|| echo`
+            # exemption as the other legs (verified: exactly one such line).
+            "fast-gate",
+            "rust-test",
+            "rust-lint",
+            "cli-test",
+            "cli-lint",
+            "windows-rust-test",
+            "macos-rust-check",
+            "macos-cli-check",
+            "knowledge-rust",
+        )
+        for name in gate_jobs:
+            block = _without_yaml_comments(_extract_job_block(self.pr_workflow, name))
+            # main's #642 lld probe prints its probe errors with
+            # `cat ... >&2 || true` inside the branch that then exits 1, so
+            # the idiom there cannot mask a gate command's status. Excise
+            # exactly that diagnostic line before the scan; every other
+            # occurrence of the idioms below still fails the pin.
+            block = "\n".join(
+                line
+                for line in block.splitlines()
+                if 'cat "$probe/a.err" "$probe/b.err" >&2 || true' not in line
+            )
+            # Round-42 review: the `|| echo` scan exempts exactly ONE
+            # documented best-effort step per job — the ci-memory-setup
+            # (zram) invocation, whose failure legitimately warns instead of
+            # failing the leg. The exemption is BY NAME: the excised line
+            # must invoke the setup script, so a new `|| echo` on any other
+            # line still fails the pin, and if the setup step is renamed the
+            # exemption stops matching and its `|| echo` becomes a failure
+            # that must be re-adjudicated.
+            setup_lines = [
+                line
+                for line in block.splitlines()
+                if "|| echo" in line and "ci-memory-" in line
+            ]
+            self.assertLessEqual(
+                len(setup_lines),
+                1,
+                f"{name}: at most one ci-memory-setup line may carry `|| echo`",
+            )
+            block = "\n".join(
+                line for line in block.splitlines() if line not in setup_lines
+            )
+            # Round-42 review: the workflow's own best-effort idiom
+            # (`|| echo "::warning::…"`) belongs in this scan too — appended
+            # to a gate command it turns any failure into a warning line and
+            # a green step, exactly like `|| true`. Each gate command line
+            # must not carry ANY `||` redirect of its exit status; the two
+            # documented exceptions stay pinned to their own lines (the
+            # lld-probe diagnostic above and the ci-memory-setup step, whose
+            # name is asserted on main). Round-51 review: the statement-
+            # separator coat of the same swallow (`cmd; true` reports the
+            # last command's status) is scanned identically — audited
+            # zero-for-zero against every gate job's real steps before being
+            # added.
+            for idiom in (
+                "|| true",
+                "|| :",
+                "|| exit 0",
+                "|| echo",
+                "; true",
+                "; :",
+                "; exit 0",
+            ):
+                self.assertNotIn(
+                    idiom,
+                    block,
+                    f"{name} must not swallow a command's exit status with "
+                    f"'{idiom}': the leg would report success on a real "
+                    "compile or test failure and required-gate would accept it",
+                )
+            # Round-52 review: the spaced scan above only matches the spaced
+            # spellings, so the no-space swallow variants (`cmd||true`,
+            # `cmd||:`, `cmd;true`, `cmd&&true` — same last-command-status
+            # semantics, zero matches in every gate job today) slipped past
+            # it. Scan them as regexes with no required space.
+            for pattern in (r"\|\|true", r"\|\|:", r";true", r"&&true"):
+                self.assertNotRegex(
+                    block,
+                    pattern,
+                    f"{name} must not swallow a command's exit status with "
+                    f"the no-space idiom /{pattern}/: the leg would report "
+                    "success on a real compile or test failure and "
+                    "required-gate would accept it",
+                )
+            # Round-53 review (T-ci-3): both scans above assume the idiom
+            # sits on ONE line, but a folded `run: >-` block can split it
+            # across the fold — `cargo ... --locked ||\n  true` folds back
+            # to `|| true` at runtime while matching neither scan. Catch the
+            # line-split coat too: a line ending in `||` (or `;`) whose next
+            # line is exactly the swallow token, indented like any folded
+            # continuation. Runs on the same excised block, so the
+            # documented exemptions above extend to it unchanged; audited
+            # zero-for-zero against every gate job's real steps before
+            # being added.
+            for pattern in (
+                r"(?m)\|\|[ \t]*\n[ \t]+(?:true|:|exit 0)[ \t]*$",
+                r"(?m);[ \t]*\n[ \t]+(?:true|:|exit 0)[ \t]*$",
+            ):
+                self.assertNotRegex(
+                    block,
+                    pattern,
+                    f"{name} must not swallow a command's exit status with "
+                    f"the line-split idiom /{pattern}/: a folded `run: >-` "
+                    "block re-joins it at runtime, the leg would report "
+                    "success on a real compile or test failure and "
+                    "required-gate would accept it",
+                )
+            # A `set +e` scan was considered here and deliberately NOT
+            # added: the three current sites (windows-rust-test's submodule
+            # init timing probe and its two cargo-check timing steps) all
+            # capture `$?` explicitly, restore `set -e` immediately, and
+            # re-raise via `exit "$status"`, so a blanket ban would need
+            # per-site exemptions that rot. Revisit only if a `set +e`
+            # appears WITHOUT its paired restore-plus-explicit-status
+            # handling.
+
+    def test_gate_job_level_ifs_are_pinned_verbatim(self):
+        # Round-52 review: a job-level `if: >-` folded block can get
+        # `&& false` appended inside its `${{ }}` block (or after `}}` on
+        # the single-line form). The leg then skips while required-gate's
+        # success|skipped loop accepts it, and every routing pin above —
+        # which asserts SUBSTRINGS of the condition — stays green. Pin the
+        # exact full text of every gate job's job-level `if:` (extracted
+        # line-normalized, so pure re-indentation still matches but any
+        # content change does not): an appended `&& false`, a deleted
+        # routing branch, or a flipped draft gate fails here.
+        for job, expected in GATE_JOB_LEVEL_IFS.items():
+            with self.subTest(job=job):
+                actual = _extract_job_level_if(
+                    _extract_job_block(self.pr_workflow, job)
+                )
+                self.assertEqual(
+                    actual,
+                    expected,
+                    f"{job}'s job-level `if:` drifted from the pinned text; "
+                    "an appended `&& false` (or a deleted routing branch) "
+                    "silently skips the leg while required-gate accepts "
+                    "'skipped'",
+                )
+
+    def test_pinned_gate_step_names_are_unique_within_their_job(self):
+        # Round-52 review: the name+`if` step pins are assertIn — a decoy
+        # duplicate step carrying the pinned name (and the pinned `if`)
+        # satisfies them while the REAL step's `if` is flipped or its run
+        # body disabled; the job reports success without executing the
+        # pinned command (mutation-verified bypass on cli-test). Every
+        # step name this suite pins inside a gate job must occur EXACTLY
+        # ONCE in that job's block.
+        for job, names in PINNED_GATE_STEP_NAMES.items():
+            block = _without_yaml_comments(_extract_job_block(self.pr_workflow, job))
+            for name in names:
+                with self.subTest(job=job, step=name):
+                    occurrences = [
+                        line
+                        for line in block.splitlines()
+                        if line.strip() == f"- name: {name}"
+                    ]
+                    self.assertEqual(
+                        len(occurrences),
+                        1,
+                        f"{job}: pinned step name '{name}' must occur exactly "
+                        "once; a decoy duplicate satisfies the name+`if` "
+                        "assertIn pins while the real step is disabled",
+                    )
+
+    def test_required_gate_membership_triples_pin_the_unpinned_legs(self):
+        # Round-52 review: rust-test, frontend-test, relay-test, rust-lint
+        # and macos-codex-runtime-test had NO membership pins — unlike
+        # cli-test/cli-lint/knowledge-rust above. Unwiring one of them from
+        # required-gate (dropping the needs entry, the env backfill or the
+        # summary-loop entry) kept the whole suite green while the gate
+        # silently stopped consuming that leg. Pin the same triple for
+        # each: needs entry, `<JOB>_RESULT:` backfill, loop entry.
+        for job, result_env in (
+            ("rust-test", "RUST_RESULT"),
+            ("frontend-test", "FRONTEND_RESULT"),
+            ("relay-test", "RELAY_RESULT"),
+            ("rust-lint", "RUST_LINT_RESULT"),
+            ("macos-codex-runtime-test", "MACOS_CODEX_RESULT"),
+        ):
+            with self.subTest(job=job):
+                self.assert_required_gate_wiring(job, result_env)
+
+    def test_fast_gate_checkout_has_no_ref_indirection(self):
+        # Round-52 review: fast-gate RUNS this suite (the runner line is
+        # pinned above), so a `ref:` under its actions/checkout makes the
+        # whole gate — and every pin in this file — validate another
+        # commit (e.g. refs/heads/main) instead of the PR head, while
+        # required-gate stays green. Pin the checkout step's exact text
+        # (end-anchored by full equality, so an inserted `ref:` line or
+        # any other `with:` drift fails) plus an explicit `ref:` ban.
+        fast_gate = _extract_job_block(self.pr_workflow, "fast-gate")
+        self.assertEqual(
+            fast_gate.count("uses: actions/checkout"),
+            1,
+            "fast-gate must keep exactly one checkout step; a second one "
+            "could shadow the pinned head checkout",
+        )
+        checkout = fast_gate.split(
+            "- name: Checkout (含 submodule,fork 为 public 直接拉)",
+            maxsplit=1,
+        )[1].split("\n      - name:", maxsplit=1)[0].strip()
+        self.assertEqual(
+            checkout,
+            "uses: actions/checkout@v7\n"
+            "        with:\n"
+            "          submodules: false\n"
+            "          fetch-depth: 0",
+            "fast-gate's checkout arguments drifted from the pinned block: "
+            "a `ref:` here runs this whole gate suite against another "
+            "commit instead of the PR head",
+        )
+        self.assertNotIn(
+            "ref:",
+            checkout,
+            "fast-gate's checkout must not pin a `ref:` — the suite must "
+            "validate the commit under test, not a mutable branch",
+        )
+
+    def test_run_heavy_rust_checks_value_is_pinned(self):
+        # Round-52 review: the heavy-check switch was pinned by NAME
+        # presence only (assertIn in
+        # test_rust_modes_run_combined_full_regression_only_for_high_risk),
+        # so rewriting the value to a draft-gated (or constant-false)
+        # expression silently disabled the clippy/doc hard gates for
+        # draft PRs while every consumer pin (`env.RUN_HEAVY_RUST_CHECKS
+        # == 'true'`) stayed green. Pin the full value line, end-anchored
+        # by its trailing newline so an appended tail fails too, and keep
+        # the definition unique.
+        self.assertEqual(
+            len(
+                re.findall(
+                    r"^\s*RUN_HEAVY_RUST_CHECKS:",
+                    self.pr_workflow,
+                    flags=re.MULTILINE,
+                )
+            ),
+            1,
+            "RUN_HEAVY_RUST_CHECKS must be defined exactly once (rust-lint's "
+            "job env); a second definition could shadow the pinned value",
+        )
+        rust_lint = _extract_job_block(self.pr_workflow, "rust-lint")
+        self.assertIn(
+            "      RUN_HEAVY_RUST_CHECKS: "
+            "${{ github.event_name != 'pull_request' || "
+            "github.event.pull_request.draft == false }}\n",
+            rust_lint,
+            "RUN_HEAVY_RUST_CHECKS's value drifted: a draft-gated or "
+            "constant-false rewrite silently disables the clippy/doc hard "
+            "gates while the step pins still name the switch",
+        )
 
     def test_benchmark_jobs_stay_out_of_product_pr_workflow(self):
         self.assertNotIn("\n  benchmark-contract:", self.pr_workflow)
         self.assertNotIn("\n  benchmark-test:", self.pr_workflow)
-        changes = self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
-            "\n  fast-gate:", maxsplit=1
-        )[0]
+        changes = _changes_block(self.pr_workflow)
         self.assertNotIn("benchmark:", changes)
         self.assertNotIn("benchmark_cli:", changes)
         self.assertNotIn("benchmark_headless:", changes)
         self.assertNotIn("benchmark_codewhale:", changes)
 
     def test_full_rust_filter_fails_closed_with_stable_module_boundaries(self):
-        changes = _changes_block(self.pr_workflow)
+        changes = _without_yaml_comments(_changes_block(self.pr_workflow))
         rust_full = changes.split("            rust_full:", maxsplit=1)[1].split(
             "            knowledge_rust:", maxsplit=1
         )[0]
@@ -655,42 +2153,18 @@ class CiGatePolicyTests(unittest.TestCase):
     def test_rust_modes_run_combined_full_regression_only_for_high_risk(self):
         self.assertIn("merge_group:", self.pr_workflow)
         self.assertIn("ci:full-rust", self.pr_workflow)
-        rust_lint = self.pr_workflow.split(
-            "\n  rust-lint:", maxsplit=1
-        )[1].split("\n  rust-test:", maxsplit=1)[0]
+        rust_lint = _extract_job_block(self.pr_workflow, "rust-lint")
         self.assertIn("timeout-minutes: 60", rust_lint)
         self.assertIn("RUN_HEAVY_RUST_CHECKS", rust_lint)
         self.assertIn("github.event.pull_request.draft == false", rust_lint)
         self.assertIn("needs.changes.outputs.rust_dependencies == 'true'", rust_lint)
         self.assertNotIn("headless_bridge_contract_tests", rust_lint)
 
-        rust_test = self.pr_workflow.split("\n  rust-test:", maxsplit=1)[1].split(
-            "\n  windows-rust-test:", maxsplit=1
-        )[0]
-        self.assertRegex(
-            rust_test,
-            r"github\.event_name == 'merge_group'\s*&&\s*"
-            r"needs\.changes\.outputs\.rust_full == 'true'",
-        )
-        self.assertIn(
-            "needs.changes.outputs.rust_full == 'true'",
-            rust_test,
-        )
-        self.assertIn(
-            "needs.changes.outputs.rust_code == 'true'",
-            rust_test,
-        )
-        self.assertIn("github.event.pull_request.draft == false", rust_test)
-        self.assertIn(
-            "contains(github.event.pull_request.labels.*.name, 'ci:full-rust')",
-            rust_test,
-        )
-        # Main is a cumulative compile verification and must not depend on
-        # adjacent diff paths.
-        self.assertIn(
-            "github.event_name == 'push' ||",
-            rust_test,
-        )
+        rust_test = _extract_job_block(self.pr_workflow, "rust-test")
+        # rust-test's job-level routing (push, merge_group+rust_full, ready
+        # non-draft PRs, rust_full/rust_code+ci:full-rust) is pinned verbatim
+        # by GATE_JOB_LEVEL_IFS["rust-test"]; the asserts below keep the
+        # step-level pins that `if:` cannot cover.
         self.assertIn(
             "cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib "
             "--features benchmark-hooks --locked -- --test-threads=1",
@@ -703,14 +2177,19 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         # push(main) 只编译暖 cache,不执行测试:MQ 已对同一组合树跑过全量测试;
         # push 恢复暖 cache 后跑全量测试曾连续触发 hosted runner 失联(见 workflow 注释)。
+        # Round-53 review: these name+`if` pairs are END-ANCHORED like the
+        # round-51 cli-test pins — each pinned string ends with the `if:`
+        # line's trailing "\n", so a suffix mutation (`&& false`, a trailing
+        # comment) fails the pin instead of silently skipping the leg's
+        # tests while required-gate accepts 'skipped'.
         self.assertIn(
             "- name: cargo test --lib（含 strict_mode 回归；真 bge-m3/vLLM 测试已 #[ignore]）\n"
-            "        if: ${{ github.event_name != 'push' }}",
+            "        if: ${{ github.event_name != 'push' }}\n",
             rust_test,
         )
         self.assertIn(
             "- name: cargo test --lib --no-run (push main 仅编译暖 cache)\n"
-            "        if: ${{ github.event_name == 'push' }}",
+            "        if: ${{ github.event_name == 'push' }}\n",
             rust_test,
         )
         # 16GB runner 失联防护:编译与执行拆成独立 step(失联后日志全丢,按 step
@@ -719,7 +2198,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # 看门狗已删除,不再抢先杀编译进程。
         self.assertIn(
             "- name: cargo test --lib --no-run（编译链接测试二进制）\n"
-            "        if: ${{ github.event_name != 'push' }}",
+            "        if: ${{ github.event_name != 'push' }}\n",
             rust_test,
         )
         self.assertIn(
@@ -893,9 +2372,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # turn either leg into an optional check, add a cache writer, or drop
         # a step from its leg.
         windows_rust_test = _without_yaml_comments(
-            self.pr_workflow.split("\n  windows-rust-test:", maxsplit=1)[1].split(
-                "\n  macos-rust-check:", maxsplit=1
-            )[0]
+            _extract_job_block(self.pr_workflow, "windows-rust-test")
         )
         self.assertIn("name: windows-rust-test (${{ matrix.phase }})", windows_rust_test)
         self.assertIn("fail-fast: false", windows_rust_test)
@@ -909,16 +2386,30 @@ class CiGatePolicyTests(unittest.TestCase):
         phase_of = {}
         for step in steps:
             name = step.split("\n", 1)[0].strip()
-            match = re.search(r"\n        if: \$\{\{ matrix\.phase == '([a-z-]+)' \}\}", step)
+            # Round-46 review: end-anchored, so the exact silent-skip
+            # mutation this map advertises against — appending `&& false`
+            # AFTER the closing braces — no longer still extracts the phase
+            # name and passes. (`}} && false` suffix = the step skips while
+            # the map reports it routed.)
+            match = re.search(
+                r"\n        if: \$\{\{ matrix\.phase == '([a-z-]+)' \}\}[ \t]*(?:\n|$)",
+                step,
+            )
             phase_of[name] = match.group(1) if match else None
         expected = {
             "Windows Rust 全目标检查": "all-targets-check",
             "pinvou-cli Windows compile check": "all-targets-check",
+            "pinvou-cli Windows compile check (adapter-gaia test-support)": "all-targets-check",
             "Windows Rust 单元测试链接检查": "regression",
             "Windows 测试 exe 嵌入 Common-Controls v6 清单": "regression",
             "Windows 测试二进制导入诊断": "regression",
             "CodeWhale Windows PowerShell regressions": "regression",
             "Windows 原子替换状态机回归": "regression",
+            # Round-44 review: the step carries all the CLI workspace's
+            # Windows-gated pins, so its routing condition is load-bearing —
+            # an `if: false` (or an unmatchable condition) would silently
+            # skip it while every text pin below stays green.
+            "pinvou-cli Windows-gated unit tests": "regression",
             # Shared setup runs on both legs.
             "初始化公共底座 submodule": None,
             "Cargo cache": None,
@@ -928,8 +2419,30 @@ class CiGatePolicyTests(unittest.TestCase):
             with self.subTest(step=name):
                 self.assertIn(name, phase_of)
                 self.assertEqual(phase_of[name], phase)
+        # Round-45 review: `phase_of` is a dict keyed by step name, so a
+        # second step with the same name would shadow the pinned one and
+        # keep every assertion above green while the real step's routing
+        # `if` is flipped (the silent-skip bypass). Each pinned name must
+        # appear exactly once.
+        step_names = [
+            step.split("\n", 1)[0].strip()
+            for step in re.split(r"\n      - name: ", windows_rust_test)[1:]
+        ]
+        duplicated = {
+            name for name in step_names if step_names.count(name) > 1
+        }
+        self.assertEqual(
+            duplicated,
+            set(),
+            "duplicate step names shadow the phase map; the routing pins "
+            f"cannot hold: {sorted(duplicated)}",
+        )
         self.assertIn("--all-targets --features dev-tools", windows_rust_test)
-        self.assertIn("--lib --no-run --locked --message-format=json", windows_rust_test)
+        self.assertIn("--lib --no-run --locked --features benchmark-hooks --message-format=json",
+                      windows_rust_test,
+                      "round-45 review: the regression link check must compile the "
+                      "benchmark-hooks contract module, or the round-44 filter for "
+                      "windows_attachment_runtime_stays_security_gated matches 0 tests")
 
         # Both legs restore one established namespace; only regression on
         # main may save, so there is no second writer or new key.
@@ -943,6 +2456,37 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("WINDOWS_RUST_CACHE", windows_rust_test)
         self.assertIn("WINDOWS_RUST_TIMING", windows_rust_test)
         self.assertNotIn("actions/setup-node", windows_rust_test)
+
+    def test_windows_regression_loop_pins_the_round43_and_round44_app_filters(self):
+        # Round-44 review: six app-side cfg(windows) tests ran on no leg —
+        # three in the dependencies platform module, two in codex_acp's
+        # platform module, and the headless-bridge attachment security gate
+        # (whose cfg(not(windows)) sibling DOES run on Linux rust-test). The
+        # round-43 additions to this loop were themselves never pinned by
+        # the policy suite, so a filter deletion would have gone unpunished.
+        # Pin the loop's round-43/44 additions and its zero-match guard;
+        # deleting one must fail the suite instead of silently orphaning the
+        # pins again.
+        windows_rust_test = _without_yaml_comments(
+            _extract_job_block(self.pr_workflow, "windows-rust-test")
+        )
+        for needle in [
+            "'failed_probe_never_deletes_an_existing_store_windows' \\",
+            "'features::voice_shortcut::platform::tests::' \\",
+            "'app::commands::dependencies::platform::windows::tests::' \\",
+            "'features::codex_acp::platform::windows::tests::' \\",
+            # Round-47 review: the 22 cfg(windows)-only tests under
+            # platform::os::windows (windows_path 18 + windows_system 4)
+            # executed on NO leg — the orphan class rounds 42-44 claimed
+            # eliminated. The module filter runs them here; deleting it
+            # re-orphans them, so it is pinned like its siblings.
+            "'platform::os::windows::' \\",
+            "'windows_attachment_runtime_stays_security_gated'; do",
+            # The loop's zero-match guard is load-bearing (a renamed test
+            # must fail the step, not pass silently).
+            "回归过滤器 '$filter' 匹配 0 个测试",
+        ]:
+            self.assertIn(needle, windows_rust_test)
 
     def test_memory_setup_disk_swap_is_mandatory(self):
         # Disk swap is mandatory (2026-09-19): with the zram pool capped at
@@ -1005,24 +2549,13 @@ class CiGatePolicyTests(unittest.TestCase):
 
     def test_windows_rust_test_cumulative_main_push_is_path_independent(self):
         # Main's Windows regression must remain independent of adjacent diff paths.
-        windows_rust_test = self.pr_workflow.split(
-            "\n  windows-rust-test:", maxsplit=1
-        )[1].split("\n  windows-codex-runtime-test:", maxsplit=1)[0]
-        self.assertIn(
-            "github.event_name == 'push' ||", windows_rust_test
+        windows_rust_test = _extract_job_block(
+            self.pr_workflow, "windows-rust-test"
         )
-        self.assertIn(
-            "needs.changes.outputs.rust_full == 'true'",
-            windows_rust_test,
-        )
-        self.assertNotIn("github.event_name == 'merge_group'", windows_rust_test)
-        self.assertIn(
-            "contains(github.event.pull_request.labels.*.name, 'ci:full-rust')",
-            windows_rust_test,
-        )
-        self.assertIn(
-            "github.event.pull_request.draft == false", windows_rust_test
-        )
+        # The job-level routing (unconditional push, rust_full/cli_rust PR
+        # legs, draft gate, label fallback, and the absence of merge_group)
+        # is pinned verbatim by GATE_JOB_LEVEL_IFS["windows-rust-test"]; the
+        # asserts below keep the non-if pins.
         # Cold Windows compile plus the lib link check recently died at the
         # 90-minute cap while passing runs already took 85-87 minutes; the
         # 2026-10-01 stable rollover to 1.99.0 invalidated the rust-cache key
@@ -1031,9 +2564,7 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("timeout-minutes: 240", windows_rust_test)
 
         windows_rust_test = _without_yaml_comments(
-            self.pr_workflow.split("\n  windows-rust-test:", maxsplit=1)[1].split(
-                "\n  windows-codex-runtime-test:", maxsplit=1
-            )[0]
+            _extract_job_block(self.pr_workflow, "windows-rust-test")
         )
         self.assertIn(
             "defaults:\n      run:\n        shell: bash",
@@ -1068,13 +2599,6 @@ class CiGatePolicyTests(unittest.TestCase):
         regression = windows_rust_test.split(
             "- name: Windows 原子替换状态机回归", maxsplit=1
         )[1]
-        # Cut at the next job boundary: the round-17 macos-rust-check leg
-        # legitimately runs `cargo test` (computer_use unit tests) and sits
-        # between the regression step and the previous extraction boundary —
-        # this assertion only guards the Windows regression against
-        # re-invoking cargo, which would re-link the exe and lose the
-        # embedded Common-Controls manifest.
-        regression = regression.split("\n  macos-rust-check:", maxsplit=1)[0]
         self.assertIn('"$test_exe" "$filter" --test-threads=1', regression)
         self.assertNotIn("cargo test", regression)
         self.assertIn(
@@ -1083,12 +2607,7 @@ class CiGatePolicyTests(unittest.TestCase):
             "Windows must execute the PowerShell connector-introspection hook regression",
         )
 
-        required_gate = self.pr_workflow.split(
-            "\n  required-gate:", maxsplit=1
-        )[1]
-        self.assertIn("- windows-rust-test", required_gate)
-        self.assertIn("WINDOWS_RUST_RESULT", required_gate)
-        self.assertIn('"windows-rust-test:$WINDOWS_RUST_RESULT"', required_gate)
+        self.assert_required_gate_wiring("windows-rust-test", "WINDOWS_RUST_RESULT")
 
     def test_macos_rust_check_is_wired_into_required_gate(self):
         # Review finding: the new native macOS leg must satisfy the same
@@ -1099,17 +2618,13 @@ class CiGatePolicyTests(unittest.TestCase):
         job = re.split(r"\n  [a-zA-Z]", job_body, maxsplit=1)[0]
         self.assertIn("needs: changes", job)
         self.assertIn("MACOS_RUST_CHECK_RESULT", self.pr_workflow)
-        required_gate = self.pr_workflow.split(
-            "\n  required-gate:", maxsplit=1
-        )[1]
+        required_gate = self._required_gate()
         self.assertIn("- macos-rust-check", required_gate)
         self.assertIn("MACOS_RUST_CHECK_RESULT", required_gate)
         self.assertIn('"macos-rust-check:$MACOS_RUST_CHECK_RESULT"', required_gate)
 
     def test_windows_browser_wrapper_lifecycle_runs_in_required_native_job(self):
-        changes = self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
-            "\n  fast-gate:", maxsplit=1
-        )[0]
+        changes = _changes_block(self.pr_workflow)
         windows_codex_filter = changes.split("windows_codex:", maxsplit=1)[1]
         self.assertIn(
             "resources/common/bundle/mcp-servers/browser-*",
@@ -1137,23 +2652,16 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         self.assertIn('PINVOU3_TEST_BROWSER_NO_HOST: "1"', windows_job)
 
-        required_gate = self.pr_workflow.split(
-            "\n  required-gate:", maxsplit=1
-        )[1]
+        required_gate = self._required_gate()
         self.assertIn("- windows-codex-runtime-test", required_gate)
         self.assertIn("WINDOWS_CODEX_RESULT", required_gate)
 
     def test_windows_python_dependency_contract_runs_in_required_native_job(self):
-        changes = self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
-            "\n  fast-gate:", maxsplit=1
-        )[0]
+        changes = _changes_block(self.pr_workflow)
         # Anchor on the 12-space-indented dorny filter key (not the 8-space outputs
         # mapping) and capture only the entry lines of that one filter group, so
         # moving the ps1 route into another filter fails this assertion.
-        windows_codex_filter = re.search(
-            r"\n            windows_codex:\n((?:              .*(?:\n|$))+)",
-            changes,
-        ).group(1)
+        windows_codex_filter = _dorny_filter_group(changes, "windows_codex")
         self.assertIn(
             "windows_python_dependency_contract.ps1",
             windows_codex_filter,
@@ -1174,23 +2682,16 @@ class CiGatePolicyTests(unittest.TestCase):
             windows_job,
         )
 
-        required_gate = self.pr_workflow.split(
-            "\n  required-gate:", maxsplit=1
-        )[1]
+        required_gate = self._required_gate()
         self.assertIn("- windows-codex-runtime-test", required_gate)
 
     def test_windows_rustup_repair_runs_in_required_native_job(self):
-        changes = self.pr_workflow.split("\n  changes:", maxsplit=1)[1].split(
-            "\n  fast-gate:", maxsplit=1
-        )[0]
+        changes = _changes_block(self.pr_workflow)
         self.assertIn(
             "windows_rustup_repair: ${{ steps.filter.outputs.windows_rustup_repair }}",
             changes,
         )
-        repair_filter = re.search(
-            r"\n            windows_rustup_repair:\n((?:              .*(?:\n|$))+)",
-            changes,
-        ).group(1)
+        repair_filter = _dorny_filter_group(changes, "windows_rustup_repair")
         for trigger in (
             ".github/workflows/pr-check.yml",
             "pinvou3-app/scripts/ci/**",
@@ -1228,22 +2729,12 @@ class CiGatePolicyTests(unittest.TestCase):
 
         # Same three-wiring rule as the other native legs: needs entry, env
         # backfill, and summary-loop entry.
-        required_gate = self.pr_workflow.split(
-            "\n  required-gate:", maxsplit=1
-        )[1]
-        self.assertIn("- windows-rustup-repair-test", required_gate)
-        self.assertIn(
-            "WINDOWS_RUSTUP_REPAIR_RESULT: "
-            "${{ needs.windows-rustup-repair-test.result }}",
-            required_gate,
-        )
-        self.assertIn(
-            '"windows-rustup-repair-test:$WINDOWS_RUSTUP_REPAIR_RESULT"',
-            required_gate,
+        self.assert_required_gate_wiring(
+            "windows-rustup-repair-test", "WINDOWS_RUSTUP_REPAIR_RESULT"
         )
 
     def test_release_contract_runs_for_ready_pr_queue_and_main(self):
-        changes = _changes_block(self.pr_workflow)
+        changes = _without_yaml_comments(_changes_block(self.pr_workflow))
         release_contract_paths = changes.split(
             "            release_contract:", maxsplit=1
         )[1].split("            pet:", maxsplit=1)[0]
@@ -1265,9 +2756,7 @@ class CiGatePolicyTests(unittest.TestCase):
         )
 
         release_contract = _without_yaml_comments(
-            self.pr_workflow.split("\n  release-contract-test:", maxsplit=1)[1].split(
-                "\n  knowledge-rust:", maxsplit=1
-            )[0]
+            _extract_job_block(self.pr_workflow, "release-contract-test")
         )
         self.assertIn(
             "needs.changes.outputs.release_contract == 'true'",
@@ -1372,7 +2861,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # release-packages). VERSION is deliberately absent from the filter:
         # a real version-sync commit always touches
         # tauri.conf.json/package.json, entering bundle_chain through them.
-        changes = _changes_block(self.pr_workflow)
+        changes = _without_yaml_comments(_changes_block(self.pr_workflow))
         self.assertIn("bundle_chain:", changes)
         bundle_chain_paths = _extract_quoted_paths(
             changes.split("            bundle_chain:", maxsplit=1)[1]
@@ -1395,7 +2884,7 @@ class CiGatePolicyTests(unittest.TestCase):
                 f"changing would silently skip the bundle smoke: {entry}",
             )
 
-        macos_job = _macos_job(self.pr_workflow)
+        macos_job = _extract_job_block(self.pr_workflow, "macos-rust-check")
         smoke_step = _without_yaml_comments(
             macos_job.split(
                 "- name: Tauri bundle smoke", maxsplit=1
@@ -1418,45 +2907,19 @@ class CiGatePolicyTests(unittest.TestCase):
         )
 
     def test_macos_rust_check_routes_by_rust_filters_not_frontend_paths(self):
-        # PR/MQ-side routing: the macos job's if must not consume the
-        # frontend/pet outputs (it is a rust gate; frontend changes are
-        # validated by frontend-test). On main push the folded mac legs run
-        # path-independently (the cumulative main-push contract,
-        # frontend-only pushes included), so this pin is about PR routing,
-        # not push. The bundle_chain filter must also not treat
-        # pure-frontend src/** as a packaging-chain change — but
-        # package.json/package-lock.json must stay bundle_chain triggers (the
-        # lockfile affects the build). Formerly pinned the standalone
-        # mac-build.yml trigger; the workflow was folded into pr-check's
-        # macos-rust-check in 2026-10.
-        macos_job = _macos_job(self.pr_workflow)
-        job_if = macos_job.split("\n    if: >-", maxsplit=1)[1].split(
-            "\n    runs-on:", maxsplit=1
-        )[0]
-        for output in ("frontend", "pet"):
-            self.assertNotIn(
-                f"needs.changes.outputs.{output}",
-                job_if,
-                f"macos-rust-check is a rust gate; {output} changes must not trigger it",
-            )
-        # Positive shape: push must stay unconditional and the PR branch must
-        # keep the rust-filter routing. Without this, collapsing the whole if
-        # to a bare push check deletes PR-side macOS coverage (the only leg
-        # that runs macOS-only unit tests on PRs) while every negative pin
-        # and step-level pin stays green.
-        self.assertIn(
-            "github.event_name == 'push' ||",
-            job_if,
-            "a main push must enter this job unconditionally "
-            "(the path-independent cumulative coverage contract)",
-        )
-        self.assertIn(
-            "needs.changes.outputs.rust_full == 'true'",
-            job_if,
-            "the PR side must keep the rust-filter routing (high-risk draft/ready paths)",
-        )
-
-        changes = _changes_block(self.pr_workflow)
+        # PR/MQ-side routing is pinned verbatim by
+        # GATE_JOB_LEVEL_IFS["macos-rust-check"]: the job's `if:` must not
+        # consume the frontend/pet outputs (it is a rust gate; frontend
+        # changes are validated by frontend-test), main push stays
+        # unconditional (the cumulative main-push contract, frontend-only
+        # pushes included), and the PR branch keeps the rust_full/cli_rust
+        # routing. This test keeps what the job-level `if:` cannot cover:
+        # the bundle_chain filter must not treat pure-frontend src/** as a
+        # packaging-chain change — but package.json/package-lock.json must
+        # stay bundle_chain triggers (the lockfile affects the build).
+        # Formerly pinned the standalone mac-build.yml trigger; the workflow
+        # was folded into pr-check's macos-rust-check in 2026-10.
+        changes = _without_yaml_comments(_changes_block(self.pr_workflow))
         bundle_tail = changes.split("            bundle_chain:", maxsplit=1)[1]
         # bundle_chain is the last filter group and the extraction below has
         # no lower bound: a group appended after it would leak into the
@@ -1485,7 +2948,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # folded into macos-rust-check. Its old failure mode was silent: the
         # workflow kept "running" (cancel-failing) for weeks with zero
         # coverage. Pin each folded leg so removing one cannot go unnoticed.
-        macos_job = _macos_job(self.pr_workflow)
+        macos_job = _extract_job_block(self.pr_workflow, "macos-rust-check")
         # mac-build died inside its own 50-minute cap; the fold replaces it
         # with 180. Reverting to the default (360) or deleting the cap burns
         # a hung runner for hours — the exact waste this PR removes.
@@ -1513,13 +2976,13 @@ class CiGatePolicyTests(unittest.TestCase):
         # The universal build needs both darwin targets installed; dropping
         # this step resurfaces as MODULE/target errors on the first
         # bundle_chain push, weeks after the fold (same class as the npm
-        # provisioning miss the review caught).
-        targets_step = _without_yaml_comments(
-            macos_job.split(
-                "- name: Install both targets (universal bundle smoke, push only)",
-                maxsplit=1,
-            )[1].split("\n      - name:", maxsplit=1)[0]
-        )
+        # provisioning miss the review caught). The raw slice is computed
+        # once here; the bundle_chain gate pin further down reuses it.
+        dual_target_step = macos_job.split(
+            "- name: Install both targets (universal bundle smoke, push only)",
+            maxsplit=1,
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        targets_step = _without_yaml_comments(dual_target_step)
         self.assertIn("github.event_name == 'push'", targets_step)
         self.assertIn(
             "rustup target add aarch64-apple-darwin x86_64-apple-darwin",
@@ -1589,11 +3052,8 @@ class CiGatePolicyTests(unittest.TestCase):
         # The dual rustup targets feed the same universal build (lipo needs
         # both arches); they are smoke-only provisioning too, so they carry
         # the identical gate — otherwise unrelated pushes pay rustup while
-        # node/npm skip.
-        dual_target_step = macos_job.split(
-            "- name: Install both targets (universal bundle smoke, push only)",
-            maxsplit=1,
-        )[1].split("\n      - name:", maxsplit=1)[0]
+        # node/npm skip. `dual_target_step` is the same step's raw slice,
+        # already extracted above for the darwin-targets pin.
         self.assertIn(
             "github.event_name == 'push' && needs.changes.outputs.bundle_chain == 'true'",
             dual_target_step,
@@ -1632,7 +3092,7 @@ class CiGatePolicyTests(unittest.TestCase):
         #   a usable lld fails in seconds ahead of any cache restore or
         #   build work (cargo fingerprints inside target/, not the cache
         #   key, keep the lld-built artifacts consistent).
-        macos_job = _macos_job(self.pr_workflow)
+        macos_job = _extract_job_block(self.pr_workflow, "macos-rust-check")
 
         # No linker env at job level (comments excluded: they document
         # the scoping and legitimately name the variables).
@@ -1710,6 +3170,14 @@ class CiGatePolicyTests(unittest.TestCase):
             ("rust-test", "\n  cli-test:"),
             ("windows-rust-test", "\n  macos-rust-check:"),
             ("macos-rust-check", "\n  windows-codex-runtime-test:"),
+            # Round-49 review: macos-cli-check joined the flag in round-48
+            # (same main-only namespace death-loop exposure) but not this
+            # pin — the flag could be dropped with the suite green.
+            ("macos-cli-check", "\n  required-gate:"),
+            # Round-51 review: cli-lint joined the flag for the same
+            # "one failed main push drops the namespace fully cold" reason
+            # as its siblings; pin it so it cannot rot the same way.
+            ("cli-lint", "\n  windows-rust-test:"),
         ):
             job = self.pr_workflow.split(
                 f"\n  {job_name}:", maxsplit=1
@@ -1749,9 +3217,7 @@ class CiGatePolicyTests(unittest.TestCase):
         #   regenerated a lockfile instead of honoring it (--locked parity).
         self.assertIn('CARGO_INCREMENTAL: "0"', self.pr_workflow)
 
-        knowledge_job = self.pr_workflow.split(
-            "\n  knowledge-rust:", maxsplit=1
-        )[1].split("\n  rust-lint:", maxsplit=1)[0]
+        knowledge_job = _extract_job_block(self.pr_workflow, "knowledge-rust")
         knowledge_cache = _without_yaml_comments(
             knowledge_job.split(
                 "uses: Swatinem/rust-cache@v2", maxsplit=1
@@ -1759,9 +3225,9 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         self.assertIn("cache-targets: false", knowledge_cache)
 
-        windows_rust_job = self.pr_workflow.split(
-            "\n  windows-rust-test:", maxsplit=1
-        )[1].split("\n  macos-rust-check:", maxsplit=1)[0]
+        windows_rust_job = _extract_job_block(
+            self.pr_workflow, "windows-rust-test"
+        )
         self.assertIn(
             "RUSTUP_TOOLCHAIN: ${{ steps.pinned_toolchain.outputs.version }}",
             _without_yaml_comments(windows_rust_job),

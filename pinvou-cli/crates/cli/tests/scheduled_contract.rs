@@ -1,0 +1,3289 @@
+//! Contract tests for the `scheduled` family (`crates/cli/src/scheduled.rs`).
+//!
+//! Parse-level invalid-usage coverage (exit-code 2 errors for bad rrules incl.
+//! minute-level recurrences, bad kind/mode, missing `--prompt-file`,
+//! `delete` without `--yes`) lives here; the typed parse assertions live in
+//! the module's own `#[cfg(test)]` block (the command enum is not re-exported
+//! at the crate root). Execute-level tests run against a temp `PINVOU3_HOME`
+//! (the shared `common` harness's `env_lock`) and assert
+//! through the same store files and `pinvou3_lib` types the GUI uses; they
+//! never touch the network, a model, or a display (AGENTS.md rule).
+//!
+//! `scheduled run` is the only host path (windowless product host: display +
+//! active model). The chat-kind refusal is tested hermetically; the
+//! memory-organize execution is covered by an `#[ignore]`d opt-in test.
+
+mod common;
+
+use pinvou_cli::{CliCommand, parse_args};
+use std::path::{Path, PathBuf};
+
+use common::{
+    HomeGuard, Isolation, assert_usage, env_lock, expect_failed, run_child, run_json, run_ok,
+    scratch_dir, usage_error,
+};
+
+/// The `AutomationManager::open(<home>/automations)` layout the GUI uses:
+/// definitions under `automations/automations`, runs under
+/// `automations/runs/<task_id>`.
+impl HomeGuard {
+    fn def_path(&self, task_id: &str) -> PathBuf {
+        self.path()
+            .join("automations")
+            .join("automations")
+            .join(format!("{task_id}.json"))
+    }
+
+    fn runs_dir(&self, task_id: &str) -> PathBuf {
+        self.path().join("automations").join("runs").join(task_id)
+    }
+
+    /// `automations/history-archive.json` — the deleted-task run feed.
+    fn archive_path(&self) -> PathBuf {
+        self.path().join("automations").join("history-archive.json")
+    }
+
+    /// `automations/model-bindings.json` — the `--model-id` pin sidecar.
+    fn bindings_path(&self) -> PathBuf {
+        self.path().join("automations").join("model-bindings.json")
+    }
+
+    /// `automations/task-kinds.json` — the present-kind registry.
+    fn kinds_path(&self) -> PathBuf {
+        self.path().join("automations").join("task-kinds.json")
+    }
+
+    /// `scheduled-runs/read-state.json` — the viewed-runs registry.
+    fn read_state_path(&self) -> PathBuf {
+        self.path().join("scheduled-runs").join("read-state.json")
+    }
+}
+
+/// The documented busy fast-fail: a mutating command refuses with
+/// `scheduled_store_busy` while another holder owns the store write lock
+/// (the minutes-long `run` hold is the reason every other mutation must
+/// not block behind it).
+#[test]
+fn a_held_store_lock_fails_mutating_commands_fast_with_store_busy() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "store-busy", Isolation::ProductHome);
+    let locks_dir = home.path().join("locks");
+    std::fs::create_dir_all(&locks_dir).unwrap();
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(locks_dir.join("scheduled-store.lock"))
+        .expect("open the store lock file");
+    let mut lock = fd_lock::RwLock::new(lock_file);
+    let guard = lock.write().expect("hold the store write lock");
+
+    let prompt = write_prompt_file(&home, "busy.md", "Summarize the reports.");
+    let mut argv = create_argv("Busy", prompt.to_str().unwrap(), VALID_RRULE, &[]);
+    argv.insert(0, "pinvou");
+    let message = expect_failed(&argv).to_string();
+    assert!(
+        message.contains("scheduled_store_busy"),
+        "the busy refusal must carry the documented error code: {message}"
+    );
+
+    // Releasing the lock lets the same mutation through end to end.
+    drop(guard);
+    let created = create_task(&home, "AfterRelease");
+    assert_eq!(created["name"], serde_json::json!("AfterRelease"));
+}
+
+/// The one lane `common` does not ship: FULL argv in — the same convention
+/// as the shared harness, so every call site carries the leading `pinvou`
+/// token itself — and `--output human` appended at the end.
+fn run_human(arguments: &[&str]) -> String {
+    let mut owned = arguments.to_vec();
+    owned.extend(["--output", "human"]);
+    run_ok(&owned)
+}
+
+fn write_prompt_file(home: &HomeGuard, name: &str, prompt: &str) -> PathBuf {
+    let path = home.path().join(name);
+    std::fs::write(&path, prompt).unwrap();
+    path
+}
+
+/// `scheduled create` argv in the CHILD shape — no leading `pinvou` token,
+/// the same after-binary-name convention `run_child` documents — so its one
+/// child caller passes it straight through. Standard name/prompt/rrule core
+/// plus extras; in-process callers prepend the binary token themselves
+/// (`argv.insert(0, "pinvou")`) because the shared `run*` helpers take the
+/// full argv.
+fn create_argv<'a>(
+    name: &'a str,
+    prompt: &'a str,
+    rrule: &'a str,
+    extra: &[&'a str],
+) -> Vec<&'a str> {
+    let mut argv = vec![
+        "scheduled",
+        "create",
+        "--name",
+        name,
+        "--prompt-file",
+        prompt,
+        "--rrule",
+        rrule,
+    ];
+    argv.extend_from_slice(extra);
+    argv
+}
+
+/// Reads a JSON store/fixture file from the sandbox home (every call site
+/// asserts both the read and the parse succeed).
+fn read_json(path: &Path) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+}
+
+/// Writes a JSON value, creating the parent directory (the raw
+/// `std::fs::write` fixture sites previously paired the write with their own
+/// `create_dir_all`).
+fn write_json(path: &Path, value: &serde_json::Value) {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(path, value.to_string()).unwrap();
+}
+
+/// Writes a newer-schema registry fixture and returns the exact bytes that
+/// reached disk (compact serde serialization): the untouched asserts compare
+/// the post-command file against what the fixture write produced, not the
+/// literal in the test.
+fn write_newer_schema_registry(path: &Path, body: &str) -> String {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    let value: serde_json::Value = serde_json::from_str(body).unwrap();
+    let bytes = value.to_string();
+    std::fs::write(path, &bytes).unwrap();
+    bytes
+}
+
+const VALID_RRULE: &str = "FREQ=WEEKLY;BYDAY=MO,FR;BYHOUR=9;BYMINUTE=30";
+
+// Bounded read: an over-cap prompt file must fail cleanly (the reason
+// `--prompt-file /dev/zero` cannot hang the CLI).
+#[test]
+fn create_refuses_an_oversized_prompt_file() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "prompt-cap", Isolation::ProductHome);
+    let prompt = write_prompt_file(&home, "big.md", &"x".repeat(4 * 1024 * 1024 + 1));
+    let mut argv = create_argv("cap", prompt.to_str().unwrap(), VALID_RRULE, &[]);
+    argv.insert(0, "pinvou");
+    let message = expect_failed(&argv).to_string();
+    assert!(
+        message.contains("exceeds the 4194304-byte read limit"),
+        "{message}"
+    );
+}
+
+fn create_task(home: &HomeGuard, name: &str) -> serde_json::Value {
+    // The prompt FILE name stays derived from a sanitized label: a hostile
+    // name carries \n/\t/ESC, which cannot form a file name on NTFS/Windows,
+    // so the suite could never run green there (the sibling DST test gates
+    // itself #[cfg(unix)] for the same reason — round-37 review). The
+    // hostile string still reaches the store through `--name`.
+    let label: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let prompt = write_prompt_file(home, &format!("{label}.md"), "Summarize the reports.");
+    run_json(&[
+        "pinvou",
+        "scheduled",
+        "create",
+        "--name",
+        name,
+        "--prompt-file",
+        prompt.to_str().unwrap(),
+        "--rrule",
+        VALID_RRULE,
+    ])
+}
+
+/// Creates one task through the json lane and returns only its id (the
+/// common case: most call sites never read the rest of the created record).
+fn create_task_id(home: &HomeGuard, name: &str) -> String {
+    create_task(home, name)["id"].as_str().unwrap().to_owned()
+}
+
+/// The memory-organize fixture the run-path tests share: memory is enabled
+/// through the same prefs the create-guard reads (the GUI refuses the kind
+/// while memory is disabled), the prompt file is written, and the task is
+/// created through the json lane. The language is pinned to zh-Hans because
+/// the memory gate is locale-gated: a settings file without a language
+/// defaults to a non-memory locale, which silently turns the fixture's
+/// `memory_enabled` off and fails the run before it ever renders a report.
+/// Returns the created task's id.
+fn create_memory_organize_task(home: &HomeGuard) -> String {
+    std::fs::write(
+        home.path().join("settings.json"),
+        serde_json::json!({ "language": "zh-Hans", "memory_enabled": true }).to_string(),
+    )
+    .unwrap();
+    let prompt = write_prompt_file(home, "prompt.md", "Organize the memory stores.");
+    let mut argv = create_argv(
+        "Nightly organize",
+        prompt.to_str().unwrap(),
+        "FREQ=HOURLY;INTERVAL=12",
+        &["--kind", "memory-organize"],
+    );
+    argv.insert(0, "pinvou");
+    let created = run_json(&argv);
+    created["id"].as_str().unwrap().to_owned()
+}
+
+/// A completed scheduled run with its own conversation, the way the GUI
+/// executor leaves the stores after a chat run: the session comes from
+/// `SessionStore::boot` (`create_scheduled_run` writes the same profile the
+/// executor does) and the run record carries the full terminal shape (start/
+/// end stamps, the foundation task id, the thread link), so the run is
+/// actually viewable and `mark-viewed` reaches the registry write. Returns
+/// the session id the record links to.
+fn seed_completed_run(home: &HomeGuard, task_id: &str, run_id: &str) -> String {
+    let store = pinvou3_lib::features::sessions::SessionStore::boot().unwrap();
+    let session = store
+        .create_scheduled_run(pinvou3_lib::features::sessions::ScheduledRunProfile {
+            task_id: task_id.to_owned(),
+            model: "default-model".to_owned(),
+            model_id: None,
+            workspace: home
+                .path()
+                .join("scheduled")
+                .join(task_id)
+                .join("workspace"),
+            mode: pinvou3_lib::features::sessions::ScheduledRunMode::Agent,
+            allow_shell: false,
+            trust_mode: true,
+            auto_approve: true,
+        })
+        .unwrap();
+    let session_id = session.metadata.id.clone();
+    write_run_file(
+        home,
+        task_id,
+        &format!("{run_id}.json"),
+        run_id,
+        "completed",
+        "2026-09-10T08:00:00.000Z",
+        Some("foundation-task-1"),
+        &[
+            ("started_at", serde_json::json!("2026-09-10T08:00:01.000Z")),
+            ("ended_at", serde_json::json!("2026-09-10T08:05:00.000Z")),
+            ("thread_id", serde_json::json!(session_id)),
+            ("turn_id", serde_json::json!("turn-1")),
+            ("error", serde_json::Value::Null),
+        ],
+    );
+    session_id
+}
+
+/// Seeds a saved model the way the tests do it from the outside — a
+/// child-process `models add` against the fixture home (the child owns the
+/// models store bootstrap; `models add` prints the id on stdout) — and
+/// returns that id.
+fn add_saved_model(home: &HomeGuard, name: &str, wire: &str) -> String {
+    let added = run_child(
+        home.path(),
+        &[
+            "models",
+            "add",
+            "--preset",
+            "deepseek",
+            "--name",
+            name,
+            "--model",
+            wire,
+            "--base-url",
+            "https://api.deepseek.com",
+        ],
+        &[],
+    );
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    String::from_utf8_lossy(&added.stdout)
+        .trim()
+        .strip_prefix("id: ")
+        .expect("models add prints the id")
+        .trim()
+        .to_owned()
+}
+
+/// Writes one well-formed run record under `automations/runs/<task_id>/` in
+/// the foundation's field shape (`schema_version`, the record id, the owning
+/// automation, the status, and `scheduled_for` — these fixtures always keep
+/// `created_at` at the same instant). `foundation_task` seeds the record's
+/// `task_id` link (`Some(id)` marks a run a runtime owns — its presence is
+/// what blocks a delete; `None` leaves the field out entirely, and a
+/// deliberate `null` link rides in `extras`). The other rare fields (a
+/// custom `schema_version` for newer-schema fixtures, a terminal `error`
+/// message) ride in `extras` too. Malformed records stay hand-written at
+/// their test sites: their broken shape is the pin.
+#[allow(clippy::too_many_arguments)]
+fn write_run_file(
+    home: &HomeGuard,
+    task_id: &str,
+    file_name: &str,
+    run_id: &str,
+    status: &str,
+    scheduled_for: &str,
+    foundation_task: Option<&str>,
+    extras: &[(&str, serde_json::Value)],
+) {
+    let mut record = serde_json::json!({
+        "schema_version": 1,
+        "id": run_id,
+        "automation_id": task_id,
+        "scheduled_for": scheduled_for,
+        "status": status,
+        "created_at": scheduled_for,
+    });
+    if let Some(foundation_task) = foundation_task {
+        record["task_id"] = serde_json::json!(foundation_task);
+    }
+    for (key, value) in extras {
+        record[key] = value.clone();
+    }
+    let runs = home.runs_dir(task_id);
+    std::fs::create_dir_all(&runs).unwrap();
+    std::fs::write(runs.join(file_name), record.to_string()).unwrap();
+}
+
+/// The quarantine renames a refused payload aside as `<stem>.invalid-<stamp>`
+/// next to the original; collect whatever copies of `stem` exist in `dir`
+/// (their contents — the collect sites compare payloads, the emptiness of
+/// the vector is the `any`-shaped existence check).
+fn quarantine_copies(dir: &Path, stem: &str) -> Vec<String> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(&format!("{stem}.invalid-"))
+        })
+        .map(|entry| std::fs::read_to_string(entry.path()).unwrap())
+        .collect()
+}
+
+/// Writes the saved-model store `UserPrefs::load` reads: a default (active)
+/// local-vllm record and a second DeepSeek record, mirroring the shape the
+/// GUI's model list persists (`migrate_models`/`normalize` run on load, so a
+/// raw settings.json fixture is the same store the app sees).
+fn write_saved_models(home: &HomeGuard) {
+    std::fs::write(
+        home.path().join("settings.json"),
+        serde_json::json!({
+            "memory_enabled": true,
+            "advanced": {
+                "saved_models": [
+                    {
+                        "id": "default",
+                        "name": "Local Qwen",
+                        "preset": "local_vllm",
+                        "model": "qwen36_35b_256k",
+                        "base_url": "http://127.0.0.1:8000/v1"
+                    },
+                    {
+                        "id": "sel-1",
+                        "name": "DeepSeek Flash",
+                        "preset": "deepseek",
+                        "model": "deepseek-flash",
+                        "base_url": "https://api.deepseek.com"
+                    }
+                ],
+                "active_model_id": "default"
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
+// ---- parse level: invalid shapes are exit-code 2 usage errors ----
+
+#[test]
+fn rejects_invalid_usage_with_exit_code_two() {
+    let _env_guard = env_lock();
+    let invalid = [
+        vec!["pinvou", "scheduled"],
+        vec!["pinvou", "scheduled", "bogus"],
+        vec!["pinvou", "scheduled", "list", "--extra"],
+        vec!["pinvou", "scheduled", "show"],
+        vec!["pinvou", "scheduled", "show", "t-1", "--full"],
+        // create: required flags
+        vec!["pinvou", "scheduled", "create"],
+        vec!["pinvou", "scheduled", "create", "--name", "N"],
+        vec![
+            "pinvou",
+            "scheduled",
+            "create",
+            "--name",
+            "N",
+            "--rrule",
+            VALID_RRULE,
+        ],
+        vec![
+            "pinvou",
+            "scheduled",
+            "create",
+            "--name",
+            "N",
+            "--prompt-file",
+            "prompt.md",
+        ],
+        // create: bad rrules, including the minute-level recurrence the GUI
+        // rejects (no FREQ=MINUTELY / DAILY grammar).
+        vec![
+            "pinvou",
+            "scheduled",
+            "create",
+            "--name",
+            "N",
+            "--prompt-file",
+            "prompt.md",
+            "--rrule",
+            "FREQ=MINUTELY;INTERVAL=5",
+        ],
+        vec![
+            "pinvou",
+            "scheduled",
+            "create",
+            "--name",
+            "N",
+            "--prompt-file",
+            "prompt.md",
+            "--rrule",
+            "FREQ=DAILY;BYHOUR=9;BYMINUTE=30",
+        ],
+        vec![
+            "pinvou",
+            "scheduled",
+            "create",
+            "--name",
+            "N",
+            "--prompt-file",
+            "prompt.md",
+            "--rrule",
+            "FREQ=WEEKLY;BYDAY=XX;BYHOUR=9;BYMINUTE=30",
+        ],
+        vec![
+            "pinvou",
+            "scheduled",
+            "create",
+            "--name",
+            "N",
+            "--prompt-file",
+            "prompt.md",
+            "--rrule",
+            "FREQ=HOURLY;INTERVAL=0",
+        ],
+        vec![
+            "pinvou",
+            "scheduled",
+            "create",
+            "--name",
+            "N",
+            "--prompt-file",
+            "prompt.md",
+            "--rrule",
+            "FREQ=WEEKLY;BYDAY=MO;BYHOUR=24;BYMINUTE=30",
+        ],
+        vec![
+            "pinvou",
+            "scheduled",
+            "create",
+            "--name",
+            "N",
+            "--prompt-file",
+            "prompt.md",
+            "--rrule",
+            "FREQ=ONCE",
+        ],
+        vec![
+            "pinvou",
+            "scheduled",
+            "create",
+            "--name",
+            "N",
+            "--prompt-file",
+            "prompt.md",
+            "--rrule",
+            "FREQ=ONCE;AT=not-a-date",
+        ],
+        vec![
+            "pinvou",
+            "scheduled",
+            "create",
+            "--name",
+            "N",
+            "--prompt-file",
+            "prompt.md",
+            "--rrule",
+            "FREQ=CRON;EXPR=61 * * * *",
+        ],
+        vec![
+            "pinvou",
+            "scheduled",
+            "create",
+            "--name",
+            "N",
+            "--prompt-file",
+            "prompt.md",
+            "--rrule",
+            "FREQ=CRON;EXPR=* * * *",
+        ],
+        vec![
+            "pinvou",
+            "scheduled",
+            "create",
+            "--name",
+            "N",
+            "--prompt-file",
+            "prompt.md",
+            "--rrule",
+            "FREQ=WEEKLY;WEEKDAY=MO;BYHOUR=9;BYMINUTE=30",
+        ],
+        // create: bad kind / mode / duplicates
+        vec![
+            "pinvou",
+            "scheduled",
+            "create",
+            "--name",
+            "N",
+            "--prompt-file",
+            "prompt.md",
+            "--rrule",
+            VALID_RRULE,
+            "--kind",
+            "backup",
+        ],
+        vec![
+            "pinvou",
+            "scheduled",
+            "create",
+            "--name",
+            "N",
+            "--prompt-file",
+            "prompt.md",
+            "--rrule",
+            VALID_RRULE,
+            "--mode",
+            "bogus",
+        ],
+        // `agent`/`plan` are refused like any other non-yolo value: the mode
+        // is forced to yolo downstream, so accepting them would discard the
+        // caller's choice. `scheduled update` already classifies the same
+        // refusal as a usage error.
+        vec![
+            "pinvou",
+            "scheduled",
+            "create",
+            "--name",
+            "N",
+            "--prompt-file",
+            "prompt.md",
+            "--rrule",
+            VALID_RRULE,
+            "--mode",
+            "agent",
+        ],
+        vec![
+            "pinvou",
+            "scheduled",
+            "create",
+            "--name",
+            "N",
+            "--prompt-file",
+            "prompt.md",
+            "--rrule",
+            VALID_RRULE,
+            "--mode",
+            "plan",
+        ],
+        vec![
+            "pinvou",
+            "scheduled",
+            "create",
+            "--name",
+            "N",
+            "--name",
+            "M",
+            "--prompt-file",
+            "prompt.md",
+            "--rrule",
+            VALID_RRULE,
+        ],
+        // update: no-op and bad flags
+        vec!["pinvou", "scheduled", "update", "t-1"],
+        vec!["pinvou", "scheduled", "update", "t-1", "--kind", "chat"],
+        vec![
+            "pinvou",
+            "scheduled",
+            "update",
+            "t-1",
+            "--rrule",
+            "FREQ=MINUTELY;INTERVAL=1",
+        ],
+        // delete/runs/mark-viewed shapes
+        vec!["pinvou", "scheduled", "delete"],
+        vec!["pinvou", "scheduled", "delete", "t-1", "--yes", "--nope"],
+        vec!["pinvou", "scheduled", "pause"],
+        vec!["pinvou", "scheduled", "runs"],
+        vec!["pinvou", "scheduled", "runs", "t-1", "--limit", "0"],
+        vec!["pinvou", "scheduled", "runs", "t-1", "--limit", "x"],
+        vec!["pinvou", "scheduled", "runs-all", "--limit"],
+        vec!["pinvou", "scheduled", "mark-viewed", "t-1"],
+        vec![
+            "pinvou",
+            "scheduled",
+            "mark-viewed",
+            "t-1",
+            "r-1",
+            "--force",
+        ],
+        // Round-52 review: a flag-shaped token in the RUN-ID slot gets the
+        // same guard as the task-id slot — it used to skip the guard at
+        // parse and die at execute as an exit-1 not-found lookup against a
+        // record named after the flag.
+        vec!["pinvou", "scheduled", "mark-viewed", "t-1", "--foo"],
+        vec!["pinvou", "scheduled", "chat-prompt", "--extra"],
+    ];
+    for arguments in &invalid {
+        assert_usage(arguments);
+    }
+}
+
+#[test]
+fn every_subcommand_shape_parses() {
+    let _env_guard = env_lock();
+    for arguments in [
+        vec!["pinvou", "scheduled", "list"],
+        vec!["pinvou", "scheduled", "show", "t-1"],
+        vec![
+            "pinvou",
+            "scheduled",
+            "create",
+            "--name",
+            "N",
+            "--prompt-file",
+            "prompt.md",
+            "--rrule",
+            VALID_RRULE,
+        ],
+        vec![
+            "pinvou",
+            "scheduled",
+            "create",
+            "--name",
+            "N",
+            "--prompt-file",
+            "prompt.md",
+            "--rrule",
+            "FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30",
+            "--kind",
+            "memory-organize",
+            "--model-id",
+            "m-1",
+            // `yolo` is the only mode a scheduled task can have; `agent`/
+            // `plan` are refused (see create_refuses_non_yolo_modes).
+            "--mode",
+            "yolo",
+            "--paused",
+        ],
+        vec!["pinvou", "scheduled", "update", "t-1", "--name", "New"],
+        vec!["pinvou", "scheduled", "pause", "t-1"],
+        vec!["pinvou", "scheduled", "resume", "t-1"],
+        vec!["pinvou", "scheduled", "pin", "t-1"],
+        vec!["pinvou", "scheduled", "unpin", "t-1"],
+        vec!["pinvou", "scheduled", "delete", "t-1"],
+        vec!["pinvou", "scheduled", "delete", "t-1", "--yes"],
+        vec!["pinvou", "scheduled", "run", "t-1"],
+        vec!["pinvou", "scheduled", "runs", "t-1", "--limit", "5"],
+        vec!["pinvou", "scheduled", "runs-all"],
+        vec!["pinvou", "scheduled", "runs-all", "--limit", "3"],
+        vec!["pinvou", "scheduled", "mark-viewed", "t-1", "r-1"],
+        vec!["pinvou", "scheduled", "chat-prompt"],
+    ] {
+        let parsed = parse_args(&arguments).expect("valid scheduled command");
+        assert!(
+            matches!(parsed.command(), CliCommand::Scheduled(_)),
+            "{arguments:?}"
+        );
+    }
+}
+
+// ---- execute level (temp PINVOU3_HOME, no engine/network) ----
+
+#[test]
+fn empty_home_lists_nothing_and_chat_prompt_is_available() {
+    let _env_guard = env_lock();
+    let _home = HomeGuard::new("scheduled", "empty", Isolation::ProductHome);
+    let value = run_json(&["pinvou", "scheduled", "list"]);
+    assert_eq!(value["tasks"].as_array().map(Vec::len), Some(0));
+    assert!(run_human(&["pinvou", "scheduled", "list"]).contains("No scheduled tasks."));
+    let runs = run_json(&["pinvou", "scheduled", "runs-all"]);
+    assert_eq!(runs["runs"].as_array().map(Vec::len), Some(0));
+    // chat-prompt mirrors the fixed GUI AI task-creation prompt.
+    let prompt = run_json(&["pinvou", "scheduled", "chat-prompt"]);
+    assert!(
+        prompt["prompt"]
+            .as_str()
+            .unwrap()
+            .contains("scheduled-task-draft"),
+        "chat prompt must carry the GUI draft-block instructions"
+    );
+}
+
+#[test]
+fn chat_prompt_mirrors_the_gui_once_scheduling_guidance() {
+    // The served prompt is a verbatim copy of the GUI's
+    // `SCHEDULED_TASK_CHAT_PROMPT` (`features::scheduled::tasks` is
+    // `pub(crate)` to `pinvou3_lib`, so the const cannot be referenced from
+    // the CLI); these pins make copy drift a CI failure instead of a silent
+    // divergence from the GUI's ONCE guidance.
+    let _env_guard = env_lock();
+    let _home = HomeGuard::new("scheduled", "chat-prompt-once", Isolation::ProductHome);
+    let prompt = run_json(&["pinvou", "scheduled", "chat-prompt"]);
+    let prompt = prompt["prompt"].as_str().unwrap();
+    assert!(
+        prompt.contains("FREQ=ONCE;AT="),
+        "the chat prompt must embed the ONCE rule"
+    );
+    assert!(
+        prompt.contains("一次性定时的 AT 只用本地时刻 YYYY-MM-DDTHH:MM"),
+        "the chat prompt must keep the ONCE AT guidance line"
+    );
+}
+
+/// Every command taking a task id answers an unknown id with the family's
+/// stable `scheduled_task_not_found` (single-sourced through `read_def` in
+/// the CLI — show/runs/mark-viewed/delete like pause/resume/pin/update/run),
+/// not the foundation's raw `scheduled_update_failed: … Failed to read
+/// automation …` read error.
+#[test]
+fn every_command_rejects_unknown_task_ids_with_the_stable_not_found() {
+    let _env_guard = env_lock();
+    let _home = HomeGuard::new("scheduled", "unknown-id", Isolation::ProductHome);
+    for arguments in [
+        vec!["pinvou", "scheduled", "show", "does-not-exist"],
+        vec!["pinvou", "scheduled", "runs", "does-not-exist"],
+        vec![
+            "pinvou",
+            "scheduled",
+            "mark-viewed",
+            "does-not-exist",
+            "run-1",
+        ],
+        vec!["pinvou", "scheduled", "delete", "does-not-exist", "--yes"],
+        vec!["pinvou", "scheduled", "pause", "does-not-exist"],
+        vec!["pinvou", "scheduled", "resume", "does-not-exist"],
+    ] {
+        let error = expect_failed(&arguments).to_string();
+        assert!(
+            error.starts_with("scheduled_task_not_found"),
+            "{arguments:?}: {error}"
+        );
+    }
+}
+
+/// Human rows must not be forgeable: the name is the one fully
+/// user-controlled cell (the row/column contract must not depend on it),
+/// the same rule models/sessions/memory pin for their families.
+#[test]
+fn scheduled_list_and_show_collapse_control_characters_in_human_rows() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "collapse-hostile-name", Isolation::ProductHome);
+
+    let hostile = "ok\n*m_fake\tEvil\u{1b}[2JEsc";
+    let created = create_task(&home, hostile);
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    // The store keeps the original bytes — only the human rendering
+    // sanitizes (the JSON consumer gets the verbatim name back).
+    assert_eq!(created["name"].as_str(), Some(hostile));
+
+    // One task, one row: a raw newline in the name must not forge an extra
+    // row, a raw tab must not forge a column, and ESC must not reach the
+    // terminal.
+    let listed = run_human(&["pinvou", "scheduled", "list"]);
+    assert_eq!(
+        listed.lines().count(),
+        1,
+        "the hostile name must not forge extra rows: {listed:?}"
+    );
+    assert!(
+        listed.contains("ok *m_fake Evil [2JEsc"),
+        "the collapsed name must render on one row: {listed:?}"
+    );
+    assert!(
+        !listed.contains('\u{1b}'),
+        "ESC must not reach the terminal: {listed:?}"
+    );
+
+    let shown = run_human(&["pinvou", "scheduled", "show", &task_id]);
+    assert!(
+        shown.contains("name: ok *m_fake Evil [2JEsc"),
+        "show must render the collapsed name: {shown:?}"
+    );
+    assert!(
+        !shown.contains('\u{1b}'),
+        "ESC must not reach the terminal: {shown:?}"
+    );
+}
+
+#[test]
+fn create_list_show_update_pause_resume_pin_round_trip_and_delete() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "round-trip", Isolation::ProductHome);
+
+    // create: mirrors the persisted GUI shape (mode forced to yolo, trust and
+    // auto-approve on, workspace-owned cwds kept out of the DTO).
+    let created = create_task(&home, "Report");
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    assert_eq!(created["name"].as_str(), Some("Report"));
+    assert_eq!(
+        created["rrule"].as_str(),
+        Some("FREQ=WEEKLY;BYDAY=MO,FR;BYHOUR=9;BYMINUTE=30")
+    );
+    assert_eq!(created["status"].as_str(), Some("active"));
+    assert_eq!(created["mode"].as_str(), Some("yolo"));
+    assert_eq!(created["trustMode"].as_bool(), Some(true));
+    assert_eq!(created["autoApprove"].as_bool(), Some(true));
+    // Model mirrors current_automation_model: the active saved model's wire
+    // name (a fresh home migrates in the builtin default saved model).
+    let expected_model = pinvou3_lib::platform::prefs::UserPrefs::load()
+        .active_model()
+        .map(|model| model.model.clone())
+        .unwrap_or_else(|| "default-model".to_owned());
+    assert_eq!(created["model"].as_str(), Some(expected_model.as_str()));
+    assert_eq!(created["kind"], serde_json::Value::Null);
+    assert_eq!(created["cwds"].as_array().map(Vec::len), Some(0));
+    // The foundation create resolves the next slot EAGERLY for an active
+    // record (create_automation: next_after_with_anchor(now, now)) — the
+    // old CLI deferred it to the app's sweep, which PAUSED a one-shot whose
+    // AT had passed instead of running it late. The slot must be a real
+    // RFC3339 stamp now.
+    assert!(
+        created["nextRunAt"]
+            .as_str()
+            .is_some_and(|stamp| stamp.ends_with('Z') || stamp.contains('+')),
+        "active create must resolve a concrete next_run_at, got {}",
+        created["nextRunAt"]
+    );
+    // The definition file lives where the GUI's AutomationManager reads it.
+    let def = read_json(&home.def_path(&task_id));
+    assert_eq!(def["schema_version"].as_u64(), Some(2));
+    assert_eq!(def["status"].as_str(), Some("active"));
+    assert_eq!(def["cwds"].as_array().unwrap().len(), 1);
+
+    // list
+    let listed = run_json(&["pinvou", "scheduled", "list"]);
+    let tasks = listed["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0]["id"].as_str(), Some(task_id.as_str()));
+
+    // show: task detail plus its (empty) recent runs
+    let shown = run_json(&["pinvou", "scheduled", "show", &task_id]);
+    assert_eq!(shown["id"].as_str(), Some(task_id.as_str()));
+    assert_eq!(shown["runs"].as_array().map(Vec::len), Some(0));
+
+    // update: name + rrule (uppercased like the GUI), next slot deferred
+    let updated = run_json(&[
+        "pinvou",
+        "scheduled",
+        "update",
+        &task_id,
+        "--name",
+        "Weekly report",
+        "--rrule",
+        "FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30",
+    ]);
+    assert_eq!(updated["name"].as_str(), Some("Weekly report"));
+    assert_eq!(
+        updated["rrule"].as_str(),
+        Some("FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30")
+    );
+    let def = read_json(&home.def_path(&task_id));
+    // rrule updates recompute the slot through the foundation update, so
+    // the persisted def carries a resolved next_run_at (never null).
+    assert!(def["next_run_at"].is_string(), "{}", def["next_run_at"]);
+
+    // pause / resume flip the status like the GUI pause/resume commands;
+    // pause clears the slot, resume re-resolves it eagerly.
+    let paused = run_json(&["pinvou", "scheduled", "pause", &task_id]);
+    assert_eq!(paused["status"].as_str(), Some("paused"));
+    let def = read_json(&home.def_path(&task_id));
+    assert!(def["next_run_at"].is_null(), "{}", def["next_run_at"]);
+    let resumed = run_json(&["pinvou", "scheduled", "resume", &task_id]);
+    assert_eq!(resumed["status"].as_str(), Some("active"));
+    let def = read_json(&home.def_path(&task_id));
+    assert!(def["next_run_at"].is_string(), "{}", def["next_run_at"]);
+    // pin / unpin write the UI-metadata sidecar the GUI reads back
+    let pinned = run_json(&["pinvou", "scheduled", "pin", &task_id]);
+    assert_eq!(pinned["action"].as_str(), Some("pinned"));
+    let listed = run_json(&["pinvou", "scheduled", "list"]);
+    assert_eq!(
+        listed["tasks"][0]["pinned"].as_bool(),
+        Some(true),
+        "list must report the pinned task"
+    );
+    let shown = run_json(&["pinvou", "scheduled", "show", &task_id]);
+    assert_eq!(shown["pinned"].as_bool(), Some(true));
+    run_json(&["pinvou", "scheduled", "unpin", &task_id]);
+    let listed = run_json(&["pinvou", "scheduled", "list"]);
+    assert_eq!(listed["tasks"][0]["pinned"].as_bool(), Some(false));
+
+    // runs on a task without runs
+    let runs = run_json(&["pinvou", "scheduled", "runs", &task_id]);
+    assert_eq!(runs["runs"].as_array().map(Vec::len), Some(0));
+
+    // delete requires --yes at execute time, then archives the history the
+    // way the GUI delete does (runs survive in history-archive.json).
+    assert_usage(&["pinvou", "scheduled", "delete", &task_id]);
+    let deleted = run_json(&["pinvou", "scheduled", "delete", &task_id, "--yes"]);
+    assert_eq!(deleted["id"].as_str(), Some(task_id.as_str()));
+    // Round-50 review: the receipt no longer carries a fabricated
+    // `deletedSessionIds: []` — nothing on either surface populates or
+    // consumes it, and a fact-shaped key asserting an event nobody
+    // performed invited scripts to branch on it.
+    assert!(
+        deleted.get("deletedSessionIds").is_none(),
+        "the fabricated field must stay absent: {deleted}"
+    );
+    assert!(!home.def_path(&task_id).exists());
+    let listed = run_json(&["pinvou", "scheduled", "list"]);
+    assert_eq!(listed["tasks"].as_array().map(Vec::len), Some(0));
+    // The archived history keeps the run feed complete after deletion.
+    let archive = read_json(&home.archive_path());
+    assert_eq!(
+        archive["tasks"][&task_id]["task"]["id"].as_str(),
+        Some(task_id.as_str())
+    );
+}
+
+#[test]
+fn create_rejects_memory_organize_kind_while_memory_is_disabled() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "memory-gate", Isolation::ProductHome);
+    // Fresh home: memory is disabled by default, exactly like the GUI create
+    // dialog's refusal for memory-organize tasks.
+    let prompt = write_prompt_file(&home, "prompt.md", "Organize the memory stores.");
+    let mut arguments = create_argv(
+        "Nightly organize",
+        prompt.to_str().unwrap(),
+        "FREQ=HOURLY;INTERVAL=12",
+        &["--kind", "memory-organize"],
+    );
+    arguments.insert(0, "pinvou");
+    let error = expect_failed(&arguments).to_string();
+    assert!(
+        error.starts_with("scheduled_memory_organize_disabled"),
+        "{error}"
+    );
+}
+
+#[test]
+fn create_refuses_non_yolo_modes_like_the_app() {
+    // `build_create_request` runs every scheduled task through
+    // `canonical_scheduled_mode`, which refuses anything but `yolo` because
+    // the request overwrites `mode` downstream regardless: an accepted
+    // `agent`/`plan` becomes a full-YOLO task (`trust_mode` and
+    // `auto_approve` on) with the caller's choice discarded in silence. The
+    // CLI used to accept both and throw them away, so pin the refusal, its
+    // exit-code class, and the absence of a persisted task.
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "mode-refusal", Isolation::ProductHome);
+    let prompt = write_prompt_file(&home, "mode.md", "Summarize the reports.");
+    for refused in ["agent", "plan"] {
+        let mut argv = create_argv(
+            "Moded",
+            prompt.to_str().unwrap(),
+            VALID_RRULE,
+            &["--mode", refused],
+        );
+        argv.insert(0, "pinvou");
+        let error = assert_usage(&argv);
+        assert!(error.contains(refused), "{refused}: {error}");
+        assert!(error.contains("yolo"), "{refused}: {error}");
+        let listed = run_json(&["pinvou", "scheduled", "list"]);
+        assert_eq!(
+            listed["tasks"].as_array().map(Vec::len),
+            Some(0),
+            "{refused}: a refused mode must not persist a task"
+        );
+    }
+
+    // The one accepted value still creates, and persists the yolo shape.
+    let mut argv = create_argv(
+        "Yolo task",
+        prompt.to_str().unwrap(),
+        VALID_RRULE,
+        &["--mode", "yolo"],
+    );
+    argv.insert(0, "pinvou");
+    let created = run_json(&argv);
+    assert_eq!(created["mode"].as_str(), Some("yolo"));
+    assert_eq!(created["trustMode"].as_bool(), Some(true));
+    assert_eq!(created["autoApprove"].as_bool(), Some(true));
+}
+
+/// A run record that is valid JSON but wrong-shaped (a required field
+/// missing, typed wrong, or carrying a value the foundation's typed fields
+/// cannot decode) must fail the listing with the malformed-record error
+/// instead of rendering a phantom run — the gate implemented by
+/// `require_object_run_record`.
+#[test]
+fn runs_listing_refuses_wrong_typed_run_records_as_malformed() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "run-record-type", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Typechecked task");
+
+    // One probe file at a time: written, refused by the listing, removed —
+    // the file name never matters because no other run record exists.
+    let runs = home.runs_dir(&task_id);
+    std::fs::create_dir_all(&runs).unwrap();
+    let refused_probe = |name: &str, payload: &str, label: &str| {
+        let path = runs.join(name);
+        std::fs::write(&path, payload).unwrap();
+        let error = expect_failed(&["pinvou", "scheduled", "runs", &task_id]).to_string();
+        assert!(
+            error.contains("cannot list runs"),
+            "{label}: the typed read must refuse the malformed record: {error}"
+        );
+        std::fs::remove_file(&path).unwrap();
+    };
+
+    // Missing `status` entirely.
+    refused_probe(
+        "20260923T000000-1.json",
+        r#"{"id":"run-1","automation_id":"t","scheduled_for":"2026-09-23T00:00:00Z","created_at":"2026-09-23T00:00:00Z"}"#,
+        "missing status",
+    );
+
+    // Wrong-typed `status` (number instead of string) is refused too.
+    refused_probe(
+        "20260923T000000-2.json",
+        r#"{"id":"run-2","automation_id":"t","scheduled_for":"x","status":3,"created_at":"y"}"#,
+        "wrong-typed status",
+    );
+
+    // A *string* status that is not an `AutomationRunStatus` variant, and a
+    // string timestamp that is not an RFC3339 instant, both used to pass the
+    // string-only gate and render as a run with a garbage status, sorted last
+    // by `record_time`'s epoch-floor fallback. They are the records that
+    // hard-stop the GUI: `read_run_file` cannot deserialize them and
+    // `collect_due_runs` aborts the sweep for every automation.
+    for (label, payload) in [
+        (
+            "bogus status",
+            r#"{"id":"run-3","automation_id":"t","scheduled_for":"2026-09-23T00:00:00Z","status":"bogus","created_at":"2026-09-23T00:00:00Z"}"#,
+        ),
+        (
+            "unparseable scheduled_for",
+            r#"{"id":"run-3","automation_id":"t","scheduled_for":"x","status":"completed","created_at":"2026-09-23T00:00:00Z"}"#,
+        ),
+        (
+            "unparseable created_at",
+            r#"{"id":"run-3","automation_id":"t","scheduled_for":"2026-09-23T00:00:00Z","status":"completed","created_at":"y"}"#,
+        ),
+        (
+            // Offset-less: chrono's `DateTime<Utc>` deserializer requires one,
+            // so this is undecodable for the GUI exactly like the above.
+            "offset-less created_at",
+            r#"{"id":"run-3","automation_id":"t","scheduled_for":"2026-09-23T00:00:00Z","status":"completed","created_at":"2026-09-23T00:00:00"}"#,
+        ),
+    ] {
+        refused_probe("20260923T000000-3.json", payload, label);
+    }
+
+    // The same record with every field decodable lists cleanly, so the gate
+    // rejects on the value and not merely on the shape.
+    std::fs::write(
+        runs.join("20260923T000000-4.json"),
+        r#"{"id":"run-4","automation_id":"t","scheduled_for":"2026-09-23T00:00:00Z","status":"completed","created_at":"2026-09-23T00:00:00Z"}"#,
+    )
+    .unwrap();
+    let listed = run_json(&["pinvou", "scheduled", "runs", &task_id]);
+    assert_eq!(listed["runs"][0]["id"].as_str(), Some("run-4"));
+}
+
+/// Round-41 review: `runs`/`runs-all` default their fan-out and disclose it.
+/// With `--limit` the `truncated` marker is exact (a one-record probe is read
+/// past the cap); without it the newest `DEFAULT_RUNS_DISPLAY_LIMIT` records
+/// bound the read, and both output channels name the truncation.
+#[test]
+fn runs_display_lanes_disclose_truncation_and_default_their_fan_out() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "runs-truncation", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Truncated task");
+    for index in 0..3 {
+        write_run_file(
+            &home,
+            &task_id,
+            &format!("20260923T00000{index}.json"),
+            &format!("run-{index}"),
+            "completed",
+            &format!("2026-09-23T00:0{index}:00Z"),
+            None,
+            &[],
+        );
+    }
+
+    // Explicit --limit: the marker is exact (2 shown, a third exists).
+    let listed = run_json(&["pinvou", "scheduled", "runs", &task_id, "--limit", "2"]);
+    assert_eq!(listed["runs"].as_array().map(Vec::len), Some(2));
+    assert_eq!(listed["truncated"].as_bool(), Some(true));
+
+    // Everything fits: false, and the human output carries no truncation note.
+    let listed = run_json(&["pinvou", "scheduled", "runs", &task_id, "--limit", "3"]);
+    assert_eq!(listed["runs"].as_array().map(Vec::len), Some(3));
+    assert_eq!(listed["truncated"].as_bool(), Some(false));
+
+    // No --limit: the default cap applies (3 records < the default cap), the
+    // marker is present either way so scripts can rely on the field.
+    let listed = run_json(&["pinvou", "scheduled", "runs", &task_id]);
+    assert_eq!(listed["truncated"].as_bool(), Some(false));
+
+    // runs-all carries the same marker with the same exactness.
+    let all = run_json(&["pinvou", "scheduled", "runs-all", "--limit", "1"]);
+    assert_eq!(all["runs"].as_array().map(Vec::len), Some(1));
+    assert_eq!(all["truncated"].as_bool(), Some(true));
+    let all = run_json(&["pinvou", "scheduled", "runs-all"]);
+    assert_eq!(all["truncated"].as_bool(), Some(false));
+
+    // Round-42 review: the +1 truncation probe must not overflow —
+    // usize::MAX is a usage error (debug builds used to panic with exit 101,
+    // release builds silently read zero runs with `truncated: false`).
+    // Round-49 review: the refusal now fires at parse — `runs`/`runs-all`
+    // cap the accepted limit at 100000 (each unit costs one run-record read,
+    // runs-all across every task), and the message keeps the overflow
+    // probes' "too large" shape.
+    let message = assert_usage(&[
+        "pinvou",
+        "scheduled",
+        "runs-all",
+        "--limit",
+        "18446744073709551615",
+    ]);
+    assert!(
+        message.contains("too large") && message.contains("the maximum is 100000"),
+        "the refusal names the bound: {message}"
+    );
+    let message = assert_usage(&[
+        "pinvou",
+        "scheduled",
+        "runs",
+        &task_id,
+        "--limit",
+        "18446744073709551615",
+    ]);
+    assert!(message.contains("too large"), "{message}");
+
+    // One past the clamp is a parse refusal; the clamp itself is accepted
+    // and the command runs end to end (the store here holds 3 runs, so the
+    // marker is exact false).
+    let message = assert_usage(&["pinvou", "scheduled", "runs-all", "--limit", "100001"]);
+    assert!(message.contains("the maximum is 100000"), "{message}");
+    let accepted = run_json(&["pinvou", "scheduled", "runs-all", "--limit", "100000"]);
+    assert_eq!(accepted["truncated"].as_bool(), Some(false));
+}
+
+/// Round-49 review: `show` caps only the RENDERED run list (the summary
+/// facts stay computed over the full list) and was the one display lane
+/// whose cap had no contract test. Exactly DEFAULT_RUNS_DISPLAY_LIMIT (200)
+/// runs render with an exact `truncated` marker and a human note naming both
+/// numbers; `--limit` overrides in both directions.
+#[test]
+fn show_caps_the_rendered_runs_and_limit_overrides_the_default() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "show-render-cap", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Show cap task");
+    let total = 205;
+    for index in 0..total {
+        let stamp = format!("2026-09-23T{:02}:{:02}:00Z", index / 60, index % 60);
+        write_run_file(
+            &home,
+            &task_id,
+            &format!("20260923T{:06}.json", index),
+            &format!("run-{index}"),
+            "completed",
+            &stamp,
+            None,
+            &[],
+        );
+    }
+
+    // Default cap: 200 of 205 rendered, marker exact, and the human channel
+    // carries both the rendered-count line and the truncation note.
+    let shown = run_json(&["pinvou", "scheduled", "show", &task_id]);
+    assert_eq!(shown["runs"].as_array().map(Vec::len), Some(200));
+    assert_eq!(shown["truncated"].as_bool(), Some(true));
+    let human = run_human(&["pinvou", "scheduled", "show", &task_id]);
+    assert!(human.contains("runs: 200"), "{human}");
+    assert!(
+        human.contains("… showing the newest 200 runs of 205 total (pass a larger --limit)"),
+        "{human}"
+    );
+
+    // --limit overrides downward…
+    let shown = run_json(&["pinvou", "scheduled", "show", &task_id, "--limit", "3"]);
+    assert_eq!(shown["runs"].as_array().map(Vec::len), Some(3));
+    assert_eq!(shown["truncated"].as_bool(), Some(true));
+
+    // …and upward: at exactly the total the marker flips false.
+    let shown = run_json(&["pinvou", "scheduled", "show", &task_id, "--limit", "205"]);
+    assert_eq!(shown["runs"].as_array().map(Vec::len), Some(205));
+    assert_eq!(shown["truncated"].as_bool(), Some(false));
+}
+
+/// Round-49 review: the runs-all archive prune (per-task push-down of the
+/// probe limit through the precomputed `(scheduled_for, index)` sort key)
+/// had no test exercising WHICH runs survive. Seed five archived runs whose
+/// array order deliberately disagrees with their stamp order and two of
+/// which share a timestamp: with `--limit 2` the newest-2 by (time,
+/// index-desc) must survive — the equal-stamp tie goes to the later array
+/// index — and `truncated` stays exact (three read past the cap, two shown).
+#[test]
+fn runs_all_archived_prune_selects_the_newest_by_time_then_index() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "runs-all-prune", Isolation::ProductHome);
+    // A live task with no runs keeps the lane's active half exercised.
+    create_task(&home, "Prune feed task");
+
+    let archived_task_id = "archived-prune-task";
+    let archived_run = |id: &str, stamp: &str| {
+        serde_json::json!({
+            "schema_version": 1,
+            "id": id,
+            "automation_id": archived_task_id,
+            "scheduled_for": stamp,
+            "status": "completed",
+            "created_at": stamp
+        })
+    };
+    // Array order disagrees with stamp order ON PURPOSE: an array-order
+    // selection would keep a different pair than the (time, index) sort the
+    // prune is pinned to, and the equal-stamp pair decides the tiebreak
+    // direction.
+    let runs = vec![
+        archived_run("tie-older-index", "2026-09-03T08:00:00Z"), // index 0: loses the tie
+        archived_run("tie-newer-index", "2026-09-03T08:00:00Z"), // index 1: wins the tie
+        archived_run("oldest", "2026-09-01T08:00:00Z"),          // index 2: pruned either way
+        archived_run("newest", "2026-09-05T08:00:00Z"),          // index 3: rank 1
+        archived_run("middle", "2026-09-02T08:00:00Z"),          // index 4: pruned either way
+    ];
+    write_json(
+        &home.archive_path(),
+        &serde_json::json!({
+            "schema_version": 2,
+            "tasks": {
+                archived_task_id: {
+                    "task": { "id": archived_task_id, "name": "Pruned task" },
+                    "runs": runs,
+                    "deleted_at": "2026-09-06T08:00:00.000Z"
+                }
+            }
+        }),
+    );
+
+    let all = run_json(&["pinvou", "scheduled", "runs-all", "--limit", "2"]);
+    let shown = all["runs"].as_array().unwrap();
+    assert_eq!(shown.len(), 2);
+    let ids: Vec<&str> = shown
+        .iter()
+        .map(|run| run["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        ["newest", "tie-newer-index"],
+        "the newest-2 by (time, index-desc) survive; the equal-stamp tie goes to the later \
+         array index"
+    );
+    assert_eq!(all["truncated"].as_bool(), Some(true));
+
+    // Without a cap every archived run survives and the marker is false.
+    let all = run_json(&["pinvou", "scheduled", "runs-all"]);
+    assert_eq!(all["runs"].as_array().unwrap().len(), 5);
+    assert_eq!(all["truncated"].as_bool(), Some(false));
+}
+
+/// Round-49 review: the workspace arm of create's rollback had no test. A
+/// read-only `scheduled/` root makes `create_dir_all(workspace)` fail AFTER
+/// `create_automation` committed an ACTIVE record with an eagerly resolved
+/// `next_run_at`; the command must roll the definition back and exit 1
+/// instead of leaving a schedulable task behind. Unix-only: the seam is a
+/// chmod on the workspace parent. The permission restore runs in a drop
+/// guard so a failing assertion cannot strand a read-only temp home.
+#[cfg(unix)]
+#[test]
+fn create_rolls_the_task_back_when_the_workspace_cannot_be_created() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    struct RestorePerms(PathBuf);
+    impl Drop for RestorePerms {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "create-workspace-rollback",
+        Isolation::ProductHome,
+    );
+    let scheduled_root = home.path().join("scheduled");
+    std::fs::create_dir_all(&scheduled_root).unwrap();
+    std::fs::set_permissions(&scheduled_root, std::fs::Permissions::from_mode(0o500)).unwrap();
+    // Round-50 review: the same skip guard its siblings in code_contract.rs
+    // and knowledge_contract.rs carry — running as root (or on a filesystem
+    // ignoring mode bits) defeats the 0o500 refusal, and the test would
+    // fail spuriously instead of skipping.
+    let writable_as_root = std::fs::write(scheduled_root.join(".probe"), b"").is_ok();
+    if writable_as_root {
+        eprintln!("skipping: the process can write a 0o500 directory (running as root?)");
+        return;
+    }
+    let _restore = RestorePerms(scheduled_root);
+
+    let prompt = write_prompt_file(&home, "rollback.md", "Summarize the reports.");
+    let mut argv = create_argv("Rollback", prompt.to_str().unwrap(), VALID_RRULE, &[]);
+    argv.insert(0, "pinvou");
+    let message = expect_failed(&argv).to_string();
+    assert!(
+        message.contains("scheduled_workspace_unavailable"),
+        "{message}"
+    );
+
+    // The committed definition was rolled back: nothing lists and nothing
+    // remains on disk to schedule.
+    let listed = run_human(&["pinvou", "scheduled", "list"]);
+    assert!(listed.contains("No scheduled tasks."), "{listed}");
+    let defs = std::fs::read_dir(home.path().join("automations/automations")).unwrap();
+    assert_eq!(
+        defs.count(),
+        0,
+        "the rolled-back task definition must not remain on disk"
+    );
+}
+
+/// The definition twin of the run-record gate: `status` is an
+/// `AutomationStatus` enum and the two stamps are `DateTime<Utc>`, so a
+/// hand-edited def carrying a well-typed but undecodable value must be
+/// refused as malformed rather than listed with a status the GUI will never
+/// agree with.
+#[test]
+fn read_commands_refuse_undecodable_definition_values_as_malformed() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "def-undecodable-values",
+        Isolation::ProductHome,
+    );
+    let task_id = create_task_id(&home, "Decodable task");
+    let pristine = read_json(&home.def_path(&task_id));
+
+    for (label, field, value) in [
+        ("bogus status", "status", serde_json::json!("archived")),
+        ("empty status", "status", serde_json::json!("")),
+        (
+            "unparseable created_at",
+            "created_at",
+            serde_json::json!("not-a-date"),
+        ),
+        (
+            "offset-less updated_at",
+            "updated_at",
+            serde_json::json!("2026-09-23T00:00:00"),
+        ),
+    ] {
+        let mut def = pristine.clone();
+        def[field] = value;
+        write_json(&home.def_path(&task_id), &def);
+        let shown = expect_failed(&["pinvou", "scheduled", "show", &task_id]).to_string();
+        assert!(shown.contains("Failed to parse"), "{label}: {shown}");
+        let listed = expect_failed(&["pinvou", "scheduled", "list"]).to_string();
+        assert!(listed.contains("Failed to parse"), "{label}: {listed}");
+    }
+
+    // The untouched definition still reads, so the gate is value-specific.
+    write_json(&home.def_path(&task_id), &pristine);
+    let shown = run_json(&["pinvou", "scheduled", "show", &task_id]);
+    assert_eq!(shown["id"].as_str(), Some(task_id.as_str()));
+}
+
+#[test]
+fn chat_kind_run_refuses_headless_execution_with_stable_error() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "chat-run", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Chat task");
+    let error = expect_failed(&["pinvou", "scheduled", "run", &task_id]).to_string();
+    assert!(
+        error.starts_with("scheduled_chat_run_requires_product_host"),
+        "{error}"
+    );
+    // No run record may be fabricated for the refused chat run.
+    assert!(!home.runs_dir(&task_id).exists());
+}
+
+/// Round-44 review pin: the round-43 split gives a PRESENT-but-unsupported
+/// kind value its own stable code and remedy (mirroring the app executor's),
+/// distinct from the kindless chat default — but the arm had zero tests, so
+/// a regression merging it back into the product-host remedy (which points
+/// the user at a run that would also fail) stayed green.
+#[test]
+fn run_refuses_a_present_but_unsupported_kind_with_the_app_remedy() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "run-unsupported-kind", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Bogus kind task");
+    // Hand-write a present-but-unsupported kind entry (the shape a
+    // hand-edited sidecar or a different app version leaves behind).
+    let kinds_path = home.kinds_path();
+    write_json(
+        &kinds_path,
+        &serde_json::json!({
+            "schema_version": 1,
+            "tasks": { task_id.clone(): { "kind": "bogus_kind" } }
+        }),
+    );
+
+    let error = expect_failed(&["pinvou", "scheduled", "run", &task_id]).to_string();
+    assert!(
+        error.starts_with("scheduled_run_unsupported_kind"),
+        "{error}"
+    );
+    assert!(error.contains("bogus_kind"), "{error}");
+    assert!(
+        error.contains("update the app or recreate the task"),
+        "the remedy must mirror the app executor's, not point at a run that also fails: {error}"
+    );
+    // No run record may be fabricated for the refused run.
+    assert!(!home.runs_dir(&task_id).exists());
+}
+
+#[test]
+fn delete_refuses_while_a_run_is_active() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "delete-active", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Busy task");
+    // A queued/running run left by the GUI-owned runtime (it carries the
+    // foundation task id) blocks deletion, matching the GUI's
+    // cancel-then-delete contract: headless, there is nothing to cancel with.
+    write_run_file(
+        &home,
+        &task_id,
+        "active-run.json",
+        "active-run",
+        "running",
+        "2026-09-10T08:00:00.000Z",
+        Some("foundation-task-1"),
+        &[],
+    );
+    let error = expect_failed(&["pinvou", "scheduled", "delete", &task_id, "--yes"]).to_string();
+    assert!(error.starts_with("scheduled_delete_blocked"), "{error}");
+    assert!(home.def_path(&task_id).exists());
+
+    // A queued record with no task id is CLI bookkeeping (a CLI process
+    // killed mid-run) that no runtime can cancel; it must not wedge the task
+    // forever, so delete proceeds past it.
+    write_run_file(
+        &home,
+        &task_id,
+        "stranded-run.json",
+        "stranded-run",
+        "queued",
+        "2026-09-10T08:00:00.000Z",
+        None,
+        &[("task_id", serde_json::Value::Null)],
+    );
+    std::fs::remove_file(home.runs_dir(&task_id).join("active-run.json")).unwrap();
+    let value = run_json(&["pinvou", "scheduled", "delete", &task_id, "--yes"]);
+    assert_eq!(value["id"], task_id.as_str());
+    assert!(!home.def_path(&task_id).exists());
+}
+
+#[test]
+fn run_reconciles_a_stranded_queued_record_before_running() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "run-reconcile", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Reconciled task");
+
+    // A CLI process killed mid-run leaves a queued record with no task id.
+    write_run_file(
+        &home,
+        &task_id,
+        "20260910T080000000Z-stranded.json",
+        "stranded",
+        "queued",
+        "2026-09-10T08:00:00.000Z",
+        None,
+        &[("task_id", serde_json::Value::Null)],
+    );
+
+    // The next run reconciles it to a terminal failed record instead of
+    // accumulating undeletable state (this environment has no display/model,
+    // so the new run itself then fails honestly; the runs list still shows
+    // the reconciled record).
+    let _ = expect_failed(&["pinvou", "scheduled", "run", &task_id]).to_string();
+    let reconciled = std::fs::read_to_string(
+        home.runs_dir(&task_id)
+            .join("20260910T080000000Z-stranded.json"),
+    )
+    .unwrap();
+    assert!(
+        reconciled.contains("\"failed\""),
+        "stranded record must become terminal: {reconciled}"
+    );
+}
+
+#[test]
+fn once_at_rejects_calendar_overflow_like_the_foundation() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "once-at-calendar", Isolation::ProductHome);
+    let prompt = write_prompt_file(&home, "once.md", "Summarize the reports.");
+    // The foundation parser (chrono) rejects these on the naive and the
+    // RFC3339 channel alike, and one unparseable record would stall the GUI
+    // scheduler's whole sweep. Grammar rejection happens at parse time
+    // through the foundation grammar, so the rejection is a usage error
+    // (exit 2).
+    for (label, stamp, channel) in [
+        ("naive 2026-02-30", "FREQ=ONCE;AT=2026-02-30T08:30", "naive"),
+        ("naive 2025-02-29", "FREQ=ONCE;AT=2025-02-29T08:30", "naive"),
+        (
+            "RFC3339 2026-02-30Z",
+            "FREQ=ONCE;AT=2026-02-30T08:30:00Z",
+            "RFC3339",
+        ),
+        (
+            "RFC3339 2025-02-29Z",
+            "FREQ=ONCE;AT=2025-02-29T08:30:00Z",
+            "RFC3339",
+        ),
+        (
+            "RFC3339 +08:00 2026-04-31",
+            "FREQ=ONCE;AT=2026-04-31T08:30:00+08:00",
+            "RFC3339",
+        ),
+    ] {
+        let mut argv = create_argv("Overflow", prompt.to_str().unwrap(), stamp, &[]);
+        argv.insert(0, "pinvou");
+        let message = assert_usage(&argv);
+        assert!(
+            message.contains("invalid rrule"),
+            "the refusal must come from the foundation grammar: {channel} {label}: {message}"
+        );
+    }
+    // A real RFC3339 stamp on the same channels is still accepted (it must
+    // also be in the future — see once_at_rejects_past_times_like_the_gui).
+    let mut argv = create_argv(
+        "Real date",
+        prompt.to_str().unwrap(),
+        "FREQ=ONCE;AT=2030-02-28T08:30:00Z",
+        &[],
+    );
+    argv.insert(0, "pinvou");
+    let value = run_json(&argv);
+    assert_eq!(value["name"], "Real date");
+}
+
+#[test]
+fn mark_viewed_round_trip_over_completed_run() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "mark-viewed", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Watched task");
+
+    // A completed scheduled run with its own conversation, the way the GUI
+    // executor leaves the stores after a chat run.
+    let run_id = "completed-run-1";
+    let session_id = seed_completed_run(&home, &task_id, run_id);
+
+    // The run is unread until viewed.
+    let listed = run_json(&["pinvou", "scheduled", "list"]);
+    assert_eq!(listed["tasks"][0]["hasUnreadRuns"].as_bool(), Some(true));
+    let runs = run_json(&["pinvou", "scheduled", "runs", &task_id]);
+    let run = &runs["runs"].as_array().unwrap()[0];
+    assert_eq!(run["id"].as_str(), Some(run_id));
+    assert_eq!(run["sessionId"].as_str(), Some(session_id.as_str()));
+    assert_eq!(run["unread"].as_bool(), Some(true));
+
+    // Wrong-run and not-completed lookups fail without touching the state.
+    expect_failed(&["pinvou", "scheduled", "mark-viewed", &task_id, "other-run"]);
+    write_run_file(
+        &home,
+        &task_id,
+        "queued-run.json",
+        "queued-run",
+        "queued",
+        "2026-09-10T09:00:00.000Z",
+        None,
+        &[],
+    );
+    let error =
+        expect_failed(&["pinvou", "scheduled", "mark-viewed", &task_id, "queued-run"]).to_string();
+    assert!(error.starts_with("scheduled_run_not_completed"), "{error}");
+
+    // mark-viewed persists the read state the GUI shares and clears unread.
+    let marked = run_json(&["pinvou", "scheduled", "mark-viewed", &task_id, run_id]);
+    assert_eq!(marked["automationId"].as_str(), Some(task_id.as_str()));
+    assert_eq!(marked["runId"].as_str(), Some(run_id));
+    assert_eq!(marked["hasUnreadRuns"].as_bool(), Some(false));
+    let read_state = read_json(&home.read_state_path());
+    assert_eq!(
+        read_state["viewed_runs"][&task_id][0].as_str(),
+        Some(run_id)
+    );
+    let listed = run_json(&["pinvou", "scheduled", "list"]);
+    assert_eq!(listed["tasks"][0]["hasUnreadRuns"].as_bool(), Some(false));
+    let runs = run_json(&["pinvou", "scheduled", "runs", &task_id]);
+    assert_eq!(runs["runs"][0]["unread"].as_bool(), Some(false));
+    // Marking again is idempotent.
+    run_json(&["pinvou", "scheduled", "mark-viewed", &task_id, run_id]);
+}
+
+#[test]
+fn runs_all_merges_active_and_archived_runs_with_limit() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "runs-all", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Feed task");
+    for (index, status) in ["completed", "failed"].iter().enumerate() {
+        write_run_file(
+            &home,
+            &task_id,
+            &format!("run-{index}.json"),
+            &format!("run-{index}"),
+            status,
+            &format!("2026-09-1{index}T08:00:00.000Z"),
+            None,
+            &[(
+                "error",
+                if *status == "failed" {
+                    serde_json::json!("memory organize: boom")
+                } else {
+                    serde_json::Value::Null
+                },
+            )],
+        );
+    }
+    // Deleted tasks keep their runs visible through the history archive.
+    let archived_task_id = "archived-task";
+    write_json(
+        &home.archive_path(),
+        &serde_json::json!({
+            "schema_version": 2,
+            "tasks": {
+                archived_task_id: {
+                    "task": { "id": archived_task_id, "name": "Old task" },
+                    "runs": [{
+                        "schema_version": 1,
+                        "id": "archived-run",
+                        "automation_id": archived_task_id,
+                        "scheduled_for": "2026-09-05T08:00:00.000Z",
+                        "status": "completed",
+                        "created_at": "2026-09-05T08:00:00.000Z"
+                    }],
+                    "deleted_at": "2026-09-06T08:00:00.000Z"
+                }
+            }
+        }),
+    );
+
+    let all = run_json(&["pinvou", "scheduled", "runs-all"]);
+    let runs = all["runs"].as_array().unwrap();
+    assert_eq!(
+        runs.len(),
+        3,
+        "runs-all should contain the three seeded runs"
+    );
+    assert_eq!(runs[0]["id"].as_str(), Some("run-1"));
+    assert_eq!(runs[0]["taskName"].as_str(), Some("Feed task"));
+    assert_eq!(runs[1]["id"].as_str(), Some("run-0"));
+    assert_eq!(runs[2]["id"].as_str(), Some("archived-run"));
+    assert_eq!(runs[2]["taskName"].as_str(), Some("Old task"));
+
+    let limited = run_json(&["pinvou", "scheduled", "runs-all", "--limit", "1"]);
+    assert_eq!(limited["runs"].as_array().unwrap().len(), 1);
+
+    let per_task = run_json(&["pinvou", "scheduled", "runs", &task_id]);
+    let runs = per_task["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0]["error"].as_str(), Some("memory organize: boom"));
+}
+
+// ---- host paths (opt-in) ----
+
+/// Opt-in smoke for the only engine-backed subcommand: `scheduled run` on a
+/// memory-organize task boots the windowless product host and records a
+/// terminal run. Requires a display (xvfb on headless Linux), an active,
+/// configured model, memory enabled, and a reachable endpoint:
+///   pinvou settings set memory_enabled true   # plus a configured model
+///   pinvou scheduled create --name Organize --prompt-file p.md \
+///     --rrule 'FREQ=HOURLY;INTERVAL=12' --kind memory-organize
+///   pinvou scheduled run <task-id>
+#[test]
+#[ignore = "boots the windowless product host: needs a display/xvfb, an active model, and \
+memory enabled; opt in by creating a memory-organize task and running pinvou scheduled run"]
+fn run_executes_a_memory_organize_task_through_the_product_host() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "run-organize", Isolation::ProductHome);
+    let task_id = create_memory_organize_task(&home);
+    let value = run_json(&["pinvou", "scheduled", "run", &task_id]);
+    let run_id = value["id"].as_str().unwrap().to_owned();
+    // Memory organize runs own no conversation session.
+    assert_eq!(value["sessionId"], serde_json::Value::Null);
+    // Round-37 review: `run_json` asserts ExitCode::Success before this
+    // point, so a `"failed"` arm here is unreachable — a failed run exits 1
+    // and the helper panics first. Expect completed outright.
+    assert_eq!(value["status"], serde_json::json!("completed"), "{}", value);
+    let runs = run_json(&["pinvou", "scheduled", "runs", &task_id]);
+    let runs = runs["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["id"].as_str(), Some(run_id.as_str()));
+    let def = read_json(&home.def_path(&task_id));
+    assert!(
+        def["last_run_at"].is_string(),
+        "the run must stamp last_run_at on the task definition"
+    );
+}
+
+/// A wrong-shaped read-state payload that a mutation would rewrite whole is
+/// a REFUSAL since round-28, not an in-memory normalize: the
+/// normalize-and-persist path was exactly the default-based rewrite that
+/// drops every sibling task's viewed-run state. The malformed payload is
+/// quarantined (`.invalid-<timestamp>` beside the original) and the
+/// mutation fails with `scheduled_store_unreadable`; a shape-valid payload
+/// with a per-task wrong-typed entry still normalizes per-key (the second
+/// case below), because the whole-file rewrite then cannot destroy other
+/// tasks' entries.
+#[test]
+fn mark_viewed_refuses_a_wrong_shaped_registry_and_preserves_it() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "mark-viewed-bad-shape", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Bad shape task");
+    // A completed run bound to a real scheduled-run session, so the run is
+    // actually viewable and the command reaches the registry write.
+    seed_completed_run(&home, &task_id, "done-1");
+
+    // `viewed_runs` as an array: a whole-file rewrite here would drop every
+    // OTHER task's viewed-run state, so the mutation refuses and quarantines
+    // instead of normalizing and persisting (round-28).
+    let read_state = home.read_state_path();
+    write_json(
+        &read_state,
+        &serde_json::json!({ "schema_version": 2, "viewed_runs": [] }),
+    );
+    let message =
+        expect_failed(&["pinvou", "scheduled", "mark-viewed", &task_id, "done-1"]).to_string();
+    assert!(
+        message.contains("scheduled_store_unreadable"),
+        "the refusal must carry the documented error code: {message}"
+    );
+    assert!(
+        !quarantine_copies(read_state.parent().unwrap(), "read-state.json").is_empty(),
+        "the malformed payload must be preserved"
+    );
+    assert!(!read_state.exists(), "no default-based rewrite may land");
+
+    // A shape-valid payload with a per-task wrong-typed entry still
+    // normalizes per-key: the whole-file rewrite cannot destroy other
+    // tasks' entries here, and the command must not panic with an exit
+    // code outside the 0/1/2 contract.
+    write_json(
+        &read_state,
+        &serde_json::json!({ "schema_version": 2, "viewed_runs": { &task_id: "bogus" } }),
+    );
+    let outcome = run_json(&["pinvou", "scheduled", "mark-viewed", &task_id, "done-1"]);
+    assert_eq!(outcome["runId"].as_str(), Some("done-1"));
+}
+
+/// Round-45 review: legacy files carry no version and every CLI writer adds
+/// one (`ensure_sidecar_schema` documents the rule), so a version-less
+/// read-state file mutated by mark-viewed must land on disk WITH the
+/// app-side serde default (schema 2) — the GUI's typed deserializer relies
+/// on it for future-version refusals.
+#[test]
+fn mark_viewed_adds_schema_version_to_a_versionless_read_state() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "mark-viewed-versionless",
+        Isolation::ProductHome,
+    );
+    let task_id = create_task_id(&home, "Versioned read-state task");
+    // A completed run bound to a real scheduled-run session, so the run is
+    // actually viewable and the command reaches the registry write.
+    seed_completed_run(&home, &task_id, "done-1");
+
+    // A legacy version-less read-state file (pre-versioning app build).
+    let read_state = home.read_state_path();
+    write_json(&read_state, &serde_json::json!({ "viewed_runs": {} }));
+
+    run_json(&["pinvou", "scheduled", "mark-viewed", &task_id, "done-1"]);
+    let rewritten = read_json(&read_state);
+    assert_eq!(
+        rewritten["schema_version"].as_u64(),
+        Some(2),
+        "the rewrite must stamp the app-side current schema version: {rewritten}"
+    );
+    assert_eq!(
+        rewritten["viewed_runs"][&task_id][0].as_str(),
+        Some("done-1")
+    );
+}
+
+/// Round-45 review: delete's sidecar-cleanup rewrite is a raw registry
+/// write-back, so a version-less registry it rewrites must gain the
+/// app-side current schema version (1 for bindings/kinds/ui-metadata) the
+/// same way every other CLI writer stamps one.
+#[test]
+fn delete_cleanup_rewrite_adds_schema_version_to_a_versionless_registry() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "delete-versionless-registry",
+        Isolation::ProductHome,
+    );
+    let task_id = create_task_id(&home, "Versioned cleanup task");
+    // A legacy version-less kind registry holding this task's entry, so the
+    // cleanup actually removes something and rewrites the file.
+    let kinds_path = home.kinds_path();
+    write_json(
+        &kinds_path,
+        &serde_json::json!({ "tasks": { task_id.clone(): { "kind": "chat" } } }),
+    );
+
+    run_json(&["pinvou", "scheduled", "delete", &task_id, "--yes"]);
+    let rewritten = read_json(&kinds_path);
+    assert_eq!(
+        rewritten["schema_version"].as_u64(),
+        Some(1),
+        "the cleanup rewrite must stamp the app-side current schema version: {rewritten}"
+    );
+    assert!(
+        rewritten["tasks"].get(&task_id).is_none(),
+        "the stale entry must be gone: {rewritten}"
+    );
+}
+
+/// A history archive that is a valid object but lacks the `tasks` key must
+/// still receive the deleted task's run snapshot instead of silently
+/// dropping the history.
+#[test]
+fn delete_archives_run_history_when_archive_tasks_key_is_missing() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "delete-archive-missing-tasks",
+        Isolation::ProductHome,
+    );
+    let task_id = create_task_id(&home, "Archive task");
+    write_run_file(
+        &home,
+        &task_id,
+        "old-run.json",
+        "old-run",
+        "completed",
+        "2026-09-10T08:00:00.000Z",
+        None,
+        &[],
+    );
+    // Valid JSON object, but no `tasks` key.
+    write_json(
+        &home.archive_path(),
+        &serde_json::json!({ "schema_version": 2 }),
+    );
+
+    run_json(&["pinvou", "scheduled", "delete", &task_id, "--yes"]);
+
+    let archive = read_json(&home.archive_path());
+    let snapshot = &archive["tasks"][&task_id];
+    assert!(snapshot.is_object(), "deleted task must be archived");
+    assert_eq!(snapshot["runs"].as_array().unwrap().len(), 1);
+    assert!(!home.def_path(&task_id).exists());
+}
+
+/// Round-36 review minor: the archive snapshot is keyed by the argv id and
+/// the GUI's validator drops any archived entry whose inner `task.id`
+/// diverges from its key, so deleting under a hand-mismatched definition
+/// used to report success while the run history silently vanished from the
+/// GUI's deleted-task feed. The mismatch must be refused before any
+/// mutation.
+#[test]
+fn delete_refuses_a_definition_whose_id_diverges_from_its_file() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "delete-id-mismatch", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Mismatched task");
+    write_run_file(
+        &home,
+        &task_id,
+        "old-run.json",
+        "old-run",
+        "completed",
+        "2026-09-10T08:00:00.000Z",
+        None,
+        &[],
+    );
+
+    // Hand-corrupt the definition: the inner id stops matching the file.
+    let def_path = home.def_path(&task_id);
+    let mut def = read_json(&def_path);
+    def["id"] = serde_json::json!("hand-renamed-id");
+    write_json(&def_path, &def);
+
+    let message = expect_failed(&["pinvou", "scheduled", "delete", &task_id, "--yes"]).to_string();
+    assert!(
+        message.contains("scheduled_id_mismatch"),
+        "the refusal must carry the documented error code: {message}"
+    );
+    // Nothing was mutated: the definition survives and no archive snapshot
+    // swallowed the history.
+    assert!(def_path.exists(), "the definition must stay untouched");
+    if let Ok(raw) = std::fs::read_to_string(home.archive_path()) {
+        let archive: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert!(
+            archive["tasks"].get(&task_id).is_none(),
+            "the mismatched task must not be archived: {archive}"
+        );
+    }
+}
+
+// ---- round-3 fixes: RFC3339 ONCE AT calendar truth, delete pause semantics ----
+
+#[test]
+fn leap_day_schedules_are_accepted_on_every_channel() {
+    // Feb 29 exists in leap years: the naive ONCE channel, the RFC3339 ONCE
+    // channel, and a cron February-29 expression (kept realizable by the
+    // foundation's leap-year date-space probe) must all be accepted — only
+    // the rejections are pinned elsewhere.
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "leap-day", Isolation::ProductHome);
+    let prompt = write_prompt_file(&home, "leap.md", "Summarize the reports.");
+    for rrule in [
+        "FREQ=ONCE;AT=2028-02-29T08:30",
+        "FREQ=ONCE;AT=2028-02-29T08:30:00Z",
+        "FREQ=CRON;EXPR=0 0 29 2 *",
+    ] {
+        let mut argv = create_argv("Leap day", prompt.to_str().unwrap(), rrule, &[]);
+        argv.insert(0, "pinvou");
+        let created = run_json(&argv);
+        assert_eq!(created["rrule"].as_str(), Some(rrule), "{rrule}");
+    }
+}
+
+#[test]
+fn once_at_rejects_past_times_like_the_gui() {
+    // The GUI's create/update resolves ONCE through
+    // `next_after_with_anchor(now, now)` and fails with "no future run" for
+    // a past stamp; the CLI used to accept it and let the first sweep tick
+    // pause the task instead. Both channels must refuse up front.
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "once-at-past", Isolation::ProductHome);
+    let prompt = write_prompt_file(&home, "past.md", "Summarize the reports.");
+    // An old absolute stamp (RFC3339 with offset) and a naive local stamp
+    // that is unambiguously over (the test env's clock is well past 2030
+    // only in the offset channel; the naive channel uses yesterday's date).
+    let yesterday = chrono::Local::now().date_naive() - chrono::Duration::days(1);
+    let naive_stamp = format!("FREQ=ONCE;AT={yesterday}T08:30");
+    for bad in ["FREQ=ONCE;AT=2020-01-01T00:00:00Z", naive_stamp.as_str()] {
+        // The refusal moved from the CLI's parse-time mirror to the
+        // foundation's own eager create resolution (`create_automation`:
+        // `next_after_with_anchor(now, now)`), which is where the GUI
+        // rejects the same record — a state-dependent failure (exit 1),
+        // like the GUI command's Err. A past one-shot must never be
+        // persisted as a live task.
+        let mut argv = create_argv("past once", prompt.to_str().unwrap(), bad, &[]);
+        argv.insert(0, "pinvou");
+        let error = expect_failed(&argv).to_string();
+        assert!(error.contains("no future run"), "{bad}: {error}");
+        let listed = run_json(&["pinvou", "scheduled", "list"]);
+        assert_eq!(
+            listed["tasks"].as_array().map(Vec::len),
+            Some(0),
+            "{bad}: a refused one-shot must not persist a task"
+        );
+    }
+}
+
+#[test]
+fn paused_create_accepts_a_past_once_stamp_like_the_gui() {
+    // The refusal pinned by `once_at_rejects_past_times_like_the_gui` is the
+    // *active* rule only. The foundation resolves the
+    // schedule solely for an active record (`create_automation` calls
+    // `next_after_with_anchor` inside `if matches!(status, Active)`), so the
+    // GUI creates a paused one-shot with an elapsed AT without complaint — a
+    // drafted task the user edits and resumes later. `--paused` must not be
+    // stricter in the CLI than on the surface it mirrors.
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "paused-past-once", Isolation::ProductHome);
+    let prompt = write_prompt_file(&home, "paused-past.md", "Summarize the reports.");
+    let yesterday = chrono::Local::now().date_naive() - chrono::Duration::days(1);
+    let naive_stamp = format!("FREQ=ONCE;AT={yesterday}T08:30");
+    for past in ["FREQ=ONCE;AT=2020-01-01T00:00:00Z", naive_stamp.as_str()] {
+        let mut argv = create_argv("paused once", prompt.to_str().unwrap(), past, &["--paused"]);
+        argv.insert(0, "pinvou");
+        let created = run_json(&argv);
+        assert_eq!(created["status"].as_str(), Some("paused"), "{past}");
+        assert_eq!(created["rrule"].as_str(), Some(past), "{past}");
+        // Persisted the same way, so the GUI reads back a paused record with
+        // no next_run_at — exactly what its own paused create writes.
+        let def = read_json(&home.def_path(created["id"].as_str().unwrap()));
+        assert_eq!(def["status"].as_str(), Some("paused"), "{past}");
+        assert!(def["next_run_at"].is_null(), "{past}");
+    }
+}
+
+/// A grammar-invalid rrule must be a usage error (exit 2) on `create
+/// --paused` too: `--paused` defers only the foundation's past-ONCE/next-slot
+/// calendar resolution (a state-dependent failure, exit 1), never the argv
+/// grammar — and the MAX_HOURLY_INTERVAL scheduler guard must not be
+/// bypassed by pausing the create.
+#[test]
+fn paused_create_still_validates_the_rrule_grammar() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "paused-grammar", Isolation::ProductHome);
+    let prompt = write_prompt_file(&home, "paused-grammar.md", "Summarize the reports.");
+    for bad in ["FREQ=BOGUS", "FREQ=ONCE", "FREQ=HOURLY;INTERVAL=4000000000"] {
+        let mut argv = create_argv(
+            "Paused grammar",
+            prompt.to_str().unwrap(),
+            bad,
+            &["--paused"],
+        );
+        argv.insert(0, "pinvou");
+        assert_usage(&argv);
+        let listed = run_json(&["pinvou", "scheduled", "list"]);
+        assert_eq!(
+            listed["tasks"].as_array().map(Vec::len),
+            Some(0),
+            "{bad}: a usage-refused create must not persist a task"
+        );
+    }
+}
+
+#[test]
+fn newer_schema_sidecars_are_refused_not_merged_and_written_back() {
+    // The GUI's VersionedJsonStore quarantines a registry whose
+    // schema_version is newer than supported; the CLI must refuse to
+    // read-modify-write it instead of silently writing a hybrid format the
+    // GUI would misread.
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "sidecar-newer-schema", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Pinned task");
+
+    let ui_metadata = home
+        .path()
+        .join("automations")
+        .join("task-ui-metadata.json");
+    let future_format = write_newer_schema_registry(
+        &ui_metadata,
+        r#"{"schema_version": 99, "tasks": {"future": {}}}"#,
+    );
+
+    let error = expect_failed(&["pinvou", "scheduled", "pin", &task_id]).to_string();
+    assert!(error.contains("scheduled_storage_unavailable"), "{error}");
+    assert!(error.contains("newer than supported"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(&ui_metadata).unwrap(),
+        future_format,
+        "the refused write must leave the future-format file untouched"
+    );
+}
+
+#[test]
+fn hourly_interval_beyond_scheduler_range_is_refused() {
+    // The foundation sweep computes the first slot lazily for CLI-created
+    // records (`next_run_at: null`) and its unanchored branch does an
+    // unchecked `DateTime + Duration::hours(interval)` — an absurd INTERVAL
+    // overflows chrono's range and panics the scheduler task, stalling every
+    // GUI automation. The CLI must refuse the value up front.
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "hourly-interval-bound", Isolation::ProductHome);
+    let prompt = write_prompt_file(&home, "interval.md", "Summarize the reports.");
+    let mut argv = create_argv(
+        "huge interval",
+        prompt.to_str().unwrap(),
+        "FREQ=HOURLY;INTERVAL=4000000000",
+        &[],
+    );
+    argv.insert(0, "pinvou");
+    let error = assert_usage(&argv);
+    assert!(error.contains("INTERVAL must be <="), "{error}");
+
+    // Just past the bound is refused, the bound itself is accepted.
+    let mut argv = create_argv(
+        "past bound",
+        prompt.to_str().unwrap(),
+        "FREQ=HOURLY;INTERVAL=1000001",
+        &[],
+    );
+    argv.insert(0, "pinvou");
+    let error = assert_usage(&argv);
+    assert!(error.contains("INTERVAL must be <="), "{error}");
+    let mut argv = create_argv(
+        "at bound",
+        prompt.to_str().unwrap(),
+        "FREQ=HOURLY;INTERVAL=1000000",
+        &[],
+    );
+    argv.insert(0, "pinvou");
+    let created = run_json(&argv);
+    assert_eq!(created["rrule"], "FREQ=HOURLY;INTERVAL=1000000");
+}
+
+#[test]
+fn rfc3339_once_accepts_lowercase_separator_like_the_foundation() {
+    // RFC3339 §5.6 NOTE allows the lowercase date/time separator and the
+    // foundation parses through chrono, which accepts it; the CLI must not
+    // reject a stamp the GUI can create.
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "once-lowercase-t", Isolation::ProductHome);
+    let prompt = write_prompt_file(&home, "lower.md", "Summarize the reports.");
+    let mut argv = create_argv(
+        "lowercase separator",
+        prompt.to_str().unwrap(),
+        "FREQ=ONCE;AT=2030-02-28t08:30:00z",
+        &[],
+    );
+    argv.insert(0, "pinvou");
+    let created = run_json(&argv);
+    assert_eq!(created["id"].as_str().map(str::len), Some(36));
+}
+
+#[test]
+fn malformed_schema_version_is_refused_not_treated_as_legacy() {
+    // A wrong-typed schema_version used to pass the gate as 0 while the
+    // GUI's typed deserialization kept failing on the file: the CLI must
+    // refuse to operate on a record the app cannot read instead of
+    // reporting success.
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "schema-malformed", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Stringy schema");
+    let def_path = home.def_path(&task_id);
+    let mut def = read_json(&def_path);
+    def["schema_version"] = serde_json::json!("2");
+    write_json(&def_path, &def);
+
+    let error = expect_failed(&["pinvou", "scheduled", "pause", &task_id]).to_string();
+    assert!(error.contains("Failed to parse"), "{error}");
+}
+
+#[test]
+fn newer_schema_read_state_is_refused_not_merged_and_written_back() {
+    // The read-state registry carries the viewed history; a newer app's
+    // format must never be merged and written back (the GUI's
+    // VersionedJsonStore quarantines the same situation).
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "read-state-newer-schema",
+        Isolation::ProductHome,
+    );
+    let task_id = create_task_id(&home, "Watched task");
+    let run_id = "completed-run-1";
+    seed_completed_run(&home, &task_id, run_id);
+
+    let read_state = home.read_state_path();
+    let future_format = write_newer_schema_registry(
+        &read_state,
+        r#"{"schema_version": 99, "viewed_runs": {"other": ["r1"]}}"#,
+    );
+
+    let error =
+        expect_failed(&["pinvou", "scheduled", "mark-viewed", &task_id, run_id]).to_string();
+    assert!(error.contains("newer than supported"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(&read_state).unwrap(),
+        future_format,
+        "the refused write must leave the future-format file untouched"
+    );
+}
+
+#[test]
+fn newer_schema_history_archive_blocks_delete_and_restores_the_task() {
+    // The archive gate must both refuse the write-back AND restore the
+    // provisional pause, like every other blocked delete path — a caller
+    // retrying after upgrading must not find the task paused.
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "archive-newer-schema", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Archived task");
+
+    let archive = home.archive_path();
+    let future_format =
+        write_newer_schema_registry(&archive, r#"{"schema_version": 99, "tasks": {}}"#);
+
+    let error = expect_failed(&["pinvou", "scheduled", "delete", &task_id, "--yes"]).to_string();
+    assert!(error.contains("newer than supported"), "{error}");
+    assert_eq!(
+        std::fs::read_to_string(&archive).unwrap(),
+        future_format,
+        "the refused write must leave the future-format file untouched"
+    );
+    let def = read_json(&home.def_path(&task_id));
+    assert_eq!(def["status"], "active", "the provisional pause is restored");
+}
+
+#[test]
+fn delete_blocked_restores_the_previous_status() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "delete-restore", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Restore task");
+    write_run_file(
+        &home,
+        &task_id,
+        "active-run.json",
+        "active-run",
+        "queued",
+        "2026-09-10T08:00:00.000Z",
+        Some("foundation-task-1"),
+        &[],
+    );
+    let error = expect_failed(&["pinvou", "scheduled", "delete", &task_id, "--yes"]).to_string();
+    assert!(error.starts_with("scheduled_delete_blocked"), "{error}");
+    // The pause applied for the deletion check is rolled back: the sweep
+    // field (`status`) is back to its previous value and no stray `paused`
+    // bool is left behind.
+    let def = read_json(&home.def_path(&task_id));
+    assert_eq!(def["status"], "active");
+    assert!(def.get("paused").is_none());
+}
+
+#[test]
+fn read_commands_refuse_non_object_definitions_uniformly() {
+    // `read_def`/`list_defs` apply the object check, so the read-only
+    // commands refuse a hand-edited non-object definition with the same
+    // malformed message as the mutating commands (show used to render a
+    // phantom empty task with exit 0 while list died on a confusing
+    // safe_storage_id error).
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "non-object-read", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Malformed task");
+    std::fs::write(home.def_path(&task_id), "5").unwrap();
+    let shown = expect_failed(&["pinvou", "scheduled", "show", &task_id]).to_string();
+    assert!(
+        shown.contains("Failed to parse"),
+        "show must refuse a malformed definition"
+    );
+    let listed = expect_failed(&["pinvou", "scheduled", "list"]).to_string();
+    assert!(
+        listed.contains("Failed to parse"),
+        "list must refuse a malformed definition"
+    );
+}
+
+#[test]
+fn read_commands_refuse_definitions_missing_required_fields() {
+    // A def the GUI's typed `AutomationRecord` cannot deserialize (required
+    // field missing) must refuse like a non-object one instead of rendering
+    // a phantom task with exit 0.
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "def-missing-fields", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Incomplete task");
+    write_json(
+        &home.def_path(&task_id),
+        &serde_json::json!({ "schema_version": 2, "id": task_id }),
+    );
+    let shown = expect_failed(&["pinvou", "scheduled", "show", &task_id]).to_string();
+    assert!(
+        shown.contains("Failed to parse"),
+        "show must refuse a malformed definition"
+    );
+    let listed = expect_failed(&["pinvou", "scheduled", "list"]).to_string();
+    assert!(
+        listed.contains("Failed to parse"),
+        "list must refuse a malformed definition"
+    );
+}
+
+/// TZ-driven: chrono only reads the `TZ` variable on Unix.
+#[cfg(unix)]
+#[test]
+fn once_at_rejects_dst_gap_times_like_the_foundation() {
+    // The foundation resolves naive stamps through the system timezone and a
+    // nonexistent local time fails its sweep every tick, so the CLI must
+    // reject one at creation. chrono caches the local zone at first use, so
+    // a runtime TZ switch inside this test process is unreliable — drive the
+    // real binary with a pinned timezone instead (UTC runners have no gap,
+    // so the zone must be pinned regardless).
+    let root = scratch_dir("pinvou-cli-scheduled-once-at-dst");
+    let prompt = root.join("dst.md");
+    std::fs::write(&prompt, "Summarize the reports.").unwrap();
+    let run = |rrule: &str| {
+        run_child(
+            &root,
+            &create_argv("DST task", prompt.to_str().unwrap(), rrule, &[]),
+            &[("TZ", std::ffi::OsStr::new("America/New_York"))],
+        )
+    };
+    // 2027-03-14 02:30 does not exist in America/New_York (clocks jump
+    // 02:00 -> 03:00); the foundation's `resolve_local_datetime` returns
+    // None for it. Both foundation naive shapes — `HH:MM` and `HH:MM:SS` —
+    // must take that channel; an offset-less `HH:MM:SS` stamp used to fall
+    // into the offset-free parse and skip the gap check entirely.
+    for gap_stamp in ["2027-03-14T02:30", "2027-03-14T02:30:00"] {
+        let gap = run(&format!("FREQ=ONCE;AT={gap_stamp}"));
+        assert!(!gap.status.success(), "{gap_stamp} must be rejected");
+        assert!(
+            String::from_utf8_lossy(&gap.stderr).contains("does not exist"),
+            "gap rejection must name the missing task"
+        );
+    }
+    // Ordinary and ambiguous (fall-back) times still resolve — the
+    // foundation picks the earliest occurrence for ambiguous stamps.
+    for good in [
+        "FREQ=ONCE;AT=2027-01-15T02:30",
+        "FREQ=ONCE;AT=2027-11-07T01:30",
+        "FREQ=ONCE;AT=2027-01-15T02:30:00",
+    ] {
+        let output = run(good);
+        assert!(output.status.success(), "{good} must be accepted");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn mutations_fail_honestly_on_non_object_definitions() {
+    let _env_guard = env_lock();
+    for label in ["update", "pause", "resume", "delete"] {
+        let home = HomeGuard::new(
+            "scheduled",
+            &format!("non-object-{label}"),
+            Isolation::ProductHome,
+        );
+        let task_id = create_task_id(&home, "Malformed task");
+        std::fs::write(home.def_path(&task_id), "[]").unwrap();
+        let arguments: Vec<&str> = match label {
+            "update" => vec![
+                "pinvou",
+                "scheduled",
+                "update",
+                &task_id,
+                "--name",
+                "Renamed",
+            ],
+            "pause" => vec!["pinvou", "scheduled", "pause", &task_id],
+            "delete" => vec!["pinvou", "scheduled", "delete", &task_id, "--yes"],
+            _ => vec!["pinvou", "scheduled", "resume", &task_id],
+        };
+        let error = expect_failed(&arguments).to_string();
+        assert!(error.contains("Failed to parse"), "{label}: {error}");
+    }
+}
+
+#[test]
+fn run_writes_only_terminal_records() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "run-terminal-only", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Terminal task");
+    // No display/model here, so the run fails honestly — but it must never
+    // leave a persisted `queued` record behind: the GUI cannot cancel,
+    // complete, reconcile or delete around a queued record with no task id.
+    let _ = expect_failed(&["pinvou", "scheduled", "run", &task_id]).to_string();
+    let mut queued = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(home.runs_dir(&task_id)) {
+        for entry in entries.flatten() {
+            let raw = std::fs::read_to_string(entry.path()).unwrap();
+            if raw.contains("\"queued\"") {
+                queued.push(entry.path());
+            }
+        }
+    }
+    assert!(
+        queued.is_empty(),
+        "no run record may persist in queued state: {queued:?}"
+    );
+}
+
+#[test]
+fn failed_delete_restores_the_previous_status() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "delete-restore", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Blocked task");
+    // Make the archive commit fail: a directory at the archive path makes
+    // every write fail. Delete must restore the pre-delete status instead of
+    // leaving the task paused.
+    let archive = home.archive_path();
+    std::fs::create_dir_all(&archive).unwrap();
+    let _ = expect_failed(&["pinvou", "scheduled", "delete", &task_id, "--yes"]).to_string();
+    let def = read_json(&home.def_path(&task_id));
+    assert_eq!(
+        def["status"], "active",
+        "a failed delete must leave the task as it was"
+    );
+}
+
+#[test]
+fn delete_with_an_unreadable_run_record_restores_the_paused_task() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "delete-run-record-restore",
+        Isolation::ProductHome,
+    );
+    let task_id = create_task_id(&home, "Run-record task");
+    // A run record the store refuses (newer schema) makes list_runs fail
+    // after the provisional pause was already committed: that failure is a
+    // blocked delete like any other, so the pre-delete status must be
+    // restored instead of leaving the task paused with no next run.
+    write_run_file(
+        &home,
+        &task_id,
+        "future-run.json",
+        "future-run",
+        "done",
+        "2026-09-10T08:00:00.000Z",
+        None,
+        &[("schema_version", serde_json::json!(99))],
+    );
+    expect_failed(&["pinvou", "scheduled", "delete", &task_id, "--yes"]);
+    let def = read_json(&home.def_path(&task_id));
+    assert_eq!(
+        def["status"], "active",
+        "a delete blocked by an unreadable run record must not leave the task paused"
+    );
+    assert!(home.def_path(&task_id).exists());
+}
+
+#[test]
+fn unreadable_registries_are_quarantined_before_the_default_is_used() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "registry-quarantine", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Quarantine task");
+    let bindings = home.bindings_path();
+    std::fs::write(&bindings, "{not json").unwrap();
+    // A command reading the registry must not silently destroy the
+    // malformed file on the next write: it is quarantined next to the
+    // original first. (`show` degrades to the default and succeeds.)
+    let _ = run_human(&["pinvou", "scheduled", "show", &task_id]);
+    assert!(
+        !quarantine_copies(bindings.parent().unwrap(), "model-bindings.json").is_empty(),
+        "the malformed registry must be quarantined"
+    );
+}
+
+#[test]
+fn wrong_shaped_registries_are_quarantined_not_silently_overwritten() {
+    // The GUI's VersionedJsonStore::open quarantines any payload its typed
+    // deserialization rejects — valid JSON of the wrong shape included; the
+    // CLI's read_registry must do the same instead of normalizing the value
+    // in memory and letting the next write destroy the only on-disk copy.
+    let _env_guard = env_lock();
+    for (label, payload) in [
+        ("non-object", "[]"),
+        ("wrong-typed-tasks", r#"{"tasks": []}"#),
+    ] {
+        let home = HomeGuard::new(
+            "scheduled",
+            &format!("registry-shape-quarantine-{label}"),
+            Isolation::ProductHome,
+        );
+        let task_id = create_task_id(&home, "Shape task");
+        // Seed a real saved model: `--model-id` is validated against
+        // saved_models (round-18 blocker 2), so the binding write needs an
+        // id the executor could actually resolve.
+        let model_id = add_saved_model(&home, "Shape model", "shape-wire-name");
+        let bindings = home.bindings_path();
+        std::fs::write(&bindings, payload).unwrap();
+        // A mutating command reading the registry must quarantine the
+        // wrong-shaped file next to the original before degrading to the
+        // default, so the only on-disk copy survives the write-back.
+        let message = expect_failed(&[
+            "pinvou",
+            "scheduled",
+            "update",
+            &task_id,
+            "--model-id",
+            &model_id,
+        ])
+        .to_string();
+        assert!(
+            message.contains("scheduled_store_unreadable"),
+            "the refusal must carry the documented error code: {message}"
+        );
+        let quarantine_copies =
+            quarantine_copies(bindings.parent().unwrap(), "model-bindings.json");
+        assert_eq!(
+            quarantine_copies,
+            vec![payload.to_owned()],
+            "{label}: exactly one quarantine copy of the original payload"
+        );
+        // The default-based rewrite must NOT have landed: the canonical path
+        // stays absent (the quarantine renamed the payload aside), so the
+        // desktop app's next persist can heal it instead of being overwritten
+        // by a default-based registry that would reset its in-memory entries.
+        assert!(
+            !bindings.exists(),
+            "{label}: the mutation must not write a default-based registry after a quarantine"
+        );
+    }
+}
+
+#[test]
+fn mutations_stay_refused_until_the_quarantined_registry_is_healed() {
+    // The refusal must survive across commands: after the quarantine renamed
+    // the malformed file away, the canonical path is ABSENT, and an
+    // absent-with-quarantine-copies registry is exactly the state where the
+    // desktop app may hold the only healthy copy in memory — a fresh
+    // bootstrap write here would be installed over it on the app's next
+    // persist. A healthy write (the app's heal, or a manual repair) re-enables
+    // mutations.
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "registry-quarantine-heal",
+        Isolation::ProductHome,
+    );
+    let task_id = create_task_id(&home, "Heal task");
+    let model_id = add_saved_model(&home, "Heal model", "heal-wire-name");
+    let bindings = home.bindings_path();
+    std::fs::write(&bindings, "{not json").unwrap();
+
+    // First command: quarantines and refuses.
+    let message = expect_failed(&[
+        "pinvou",
+        "scheduled",
+        "update",
+        &task_id,
+        "--model-id",
+        &model_id,
+    ])
+    .to_string();
+    assert!(message.contains("scheduled_store_unreadable"));
+
+    // Second command, fresh process state: the bindings path is absent now,
+    // but its quarantine copies exist — still refused (no silent bootstrap).
+    // The SAME registry must be touched again, so this is another
+    // `update --model-id`, not a different sidecar's mutation.
+    let message = expect_failed(&[
+        "pinvou",
+        "scheduled",
+        "update",
+        &task_id,
+        "--model-id",
+        &model_id,
+    ])
+    .to_string();
+    assert!(
+        message.contains("scheduled_store_unreadable"),
+        "the bootstrap guard must carry the same error code: {message}"
+    );
+    assert!(!bindings.exists(), "still no default-based rewrite");
+
+    // Heal (what the desktop app's next persist does): a healthy registry at
+    // the canonical path re-enables mutations.
+    write_json(
+        &bindings,
+        &serde_json::json!({ "schema_version": 1, "tasks": {} }),
+    );
+    run_json(&[
+        "pinvou",
+        "scheduled",
+        "update",
+        &task_id,
+        "--model-id",
+        &model_id,
+    ]);
+    let written = read_json(&bindings);
+    assert_eq!(
+        written["tasks"][&task_id]["model_id"], model_id,
+        "the healed registry accepts the mutation's write"
+    );
+}
+
+#[test]
+fn update_binding_rollback_re_resolves_the_schedule_through_the_foundation() {
+    // The delete rollback's round-27 rationale applies to `update` too:
+    // restoring the captured pre-update definition puts the pre-update
+    // `next_run_at` back verbatim, and a binding failure landing after that
+    // slot passed would reinstate a past-due slot the sweep fires late. The
+    // rollback must re-resolve through the foundation (resume recomputes a
+    // future slot) instead of trusting the raw value.
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "update-rollback-reresolve",
+        Isolation::ProductHome,
+    );
+    let task_id = create_task_id(&home, "Rollback task");
+    let model_id = add_saved_model(&home, "Rollback model", "rollback-wire-name");
+
+    // Simulate the slot passing while the command runs: hand the active task
+    // a past-due next_run_at (well-formed otherwise), and poison the binding
+    // registry with a newer schema so the post-commit binding write fails and
+    // drives the rollback.
+    let def_path = home.def_path(&task_id);
+    let mut def = read_json(&def_path);
+    let past_slot = "2020-01-01T00:00:00Z";
+    def["next_run_at"] = serde_json::json!(past_slot);
+    def["status"] = serde_json::json!("active");
+    write_json(&def_path, &def);
+    let bindings = home.bindings_path();
+    let future_format =
+        write_newer_schema_registry(&bindings, r#"{"schema_version": 99, "tasks": {}}"#);
+
+    let message = expect_failed(&[
+        "pinvou",
+        "scheduled",
+        "update",
+        &task_id,
+        "--model-id",
+        &model_id,
+    ])
+    .to_string();
+    assert!(
+        message.contains("newer than supported"),
+        "the binding write must fail on the newer schema: {message}"
+    );
+    assert_eq!(std::fs::read_to_string(&bindings).unwrap(), future_format);
+
+    // The rolled-back definition must NOT carry the raw past-due slot: the
+    // foundation resume re-resolved a future slot for the still-active task.
+    let rolled_back = read_json(&def_path);
+    assert_eq!(rolled_back["status"], serde_json::json!("active"));
+    let next_run_at = rolled_back["next_run_at"].as_str().unwrap_or("");
+    assert_ne!(
+        next_run_at, past_slot,
+        "the rollback must not reinstate the past-due slot verbatim"
+    );
+    assert!(
+        !next_run_at.is_empty(),
+        "the rollback must leave a re-resolved future slot for an active task"
+    );
+}
+
+#[test]
+fn read_state_with_a_stray_tasks_key_stays_readable() {
+    // The per-registry shape gate (079bf9d43) checks only the keys the
+    // caller's registry owns: the GUI's serde ignores unknown members, so a
+    // read-state file carrying a stray `tasks` key must stay readable and
+    // must NOT be quarantined (that would reset the user's viewed-run
+    // state — the exact regression the per-type key split fixed).
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "read-state-stray-key", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Stray key task");
+    let read_state = home.read_state_path();
+    write_json(
+        &read_state,
+        &serde_json::json!({ "viewed_runs": {}, "tasks": [] }),
+    );
+    let listed = run_human(&["pinvou", "scheduled", "runs", &task_id]);
+    assert!(!listed.is_empty(), "runs must stay readable");
+    assert!(
+        quarantine_copies(read_state.parent().unwrap(), "read-state.json").is_empty(),
+        "the stray-key read state must not be quarantined"
+    );
+}
+
+#[test]
+fn read_commands_refuse_wrong_typed_required_fields_as_malformed() {
+    // The required-field gate type-checks, not just presence-checks: a
+    // hand-edited def with a numeric `name` or a numeric timestamp must be
+    // refused as malformed (the GUI's typed serde rejects the whole record),
+    // not rendered as a phantom task with empty strings.
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "wrong-typed-def", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Type check task");
+
+    let mut def = read_json(&home.def_path(&task_id));
+    def["name"] = serde_json::json!(42);
+    write_json(&home.def_path(&task_id), &def);
+    let shown = expect_failed(&["pinvou", "scheduled", "show", &task_id]).to_string();
+    assert!(shown.contains("Failed to parse"), "{shown}");
+
+    let mut def = read_json(&home.def_path(&task_id));
+    def["name"] = serde_json::json!("Back to a string");
+    def["created_at"] = serde_json::json!(1726000000);
+    write_json(&home.def_path(&task_id), &def);
+    let listed = expect_failed(&["pinvou", "scheduled", "list"]).to_string();
+    assert!(listed.contains("Failed to parse"), "{listed}");
+}
+
+// ---- round-18: model-id pairing, eager one-shot slots, run exit contract ----
+
+/// `update --model-id` re-binds the pair on the same rule (the GUI applies
+/// input.model + modelId together; the old CLI only re-bound the pin and
+/// left the definition's wire name alone, which the executor rejects).
+#[test]
+fn update_with_model_id_moves_both_the_definition_and_the_pin() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "model-id-update", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Rebind task");
+
+    let model_id = add_saved_model(&home, "Other model", "other-wire-name");
+
+    let updated = run_json(&[
+        "pinvou",
+        "scheduled",
+        "update",
+        &task_id,
+        "--model-id",
+        &model_id,
+    ]);
+    assert_eq!(updated["modelId"].as_str(), Some(model_id.as_str()));
+    assert_eq!(updated["model"].as_str(), Some("other-wire-name"));
+    let def = read_json(&home.def_path(&task_id));
+    assert_eq!(def["model"].as_str(), Some("other-wire-name"));
+}
+
+/// A failed binding write must not leave the definition and the pin
+/// inconsistent: `update` commits the definition's new model wire name first,
+/// so a binding-write failure has to restore the captured pre-update
+/// definition (mirroring create's rollback) instead of leaving the executor's
+/// pair split between old and new values. The seam that forces the binding
+/// write to fail is a newer-schema model-bindings.json: the registry read
+/// keeps it (valid shape) and the write refuses it with
+/// `scheduled_storage_unavailable`.
+#[test]
+fn update_with_model_id_restores_the_definition_when_the_binding_write_fails() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "model-id-update-binding-failure",
+        Isolation::ProductHome,
+    );
+    let task_id = create_task_id(&home, "Rollback task");
+    let def_before = read_json(&home.def_path(&task_id));
+
+    let model_id = add_saved_model(&home, "Rollback model", "rollback-wire-name");
+
+    let bindings = home.bindings_path();
+    let future_format =
+        write_newer_schema_registry(&bindings, r#"{"schema_version": 99, "tasks": {}}"#);
+
+    let error = expect_failed(&[
+        "pinvou",
+        "scheduled",
+        "update",
+        &task_id,
+        "--model-id",
+        &model_id,
+    ])
+    .to_string();
+    assert!(error.contains("scheduled_storage_unavailable"), "{error}");
+    assert!(
+        error.contains("newer than supported"),
+        "the binding write must fail on the newer-schema registry: {error}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&bindings).unwrap(),
+        future_format,
+        "the refused binding write must leave the future-format file untouched"
+    );
+    let def_after = read_json(&home.def_path(&task_id));
+    // The rollback restores the pre-update definition; `updated_at` is the
+    // one field that legitimately differs — the round-28 rollback re-resolves
+    // the schedule through the foundation (resume_automation), and the
+    // foundation's own re-persist re-stamps it (the recomputed slot itself
+    // matches here: the pre-update slot is still in the future).
+    let strip_updated_at = |mut value: serde_json::Value| {
+        value
+            .as_object_mut()
+            .expect("definition is an object")
+            .remove("updated_at");
+        value
+    };
+    assert_eq!(
+        strip_updated_at(def_after),
+        strip_updated_at(def_before),
+        "the failed binding write must restore the pre-update definition"
+    );
+}
+
+/// `update`/`resume` must PERSIST the workspace repair: the GUI's
+/// `ensure_automation_workspace` writes a repaired `cwds` back through
+/// `update_automation(cwds: …)`, so a definition whose stored `cwds` is empty
+/// must not be repaired in memory only — the executor would run with a
+/// different cwd than the command reported. A definition that already pins
+/// the workspace stays untouched (the repair is idempotent).
+#[test]
+fn update_and_resume_persist_a_repaired_workspace_cwd() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "workspace-repair", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Repaired task");
+    let expected = pinvou3_lib::platform::paths::scheduled_task_workspace_dir(&task_id);
+    let persisted_cwds = || -> Vec<String> {
+        let def = read_json(&home.def_path(&task_id));
+        def["cwds"]
+            .as_array()
+            .map(|values| {
+                values
+                    .iter()
+                    .map(|value| value.as_str().unwrap_or_default().to_owned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    // Strip the persisted cwd the way a definition predating the workspace
+    // pin (or a hand-edit) looks.
+    let strip_cwds = || {
+        let mut def = read_json(&home.def_path(&task_id));
+        def["cwds"] = serde_json::json!([]);
+        write_json(&home.def_path(&task_id), &def);
+    };
+
+    // update repairs the definition on disk, not only in memory.
+    strip_cwds();
+    run_json(&[
+        "pinvou",
+        "scheduled",
+        "update",
+        &task_id,
+        "--name",
+        "Repaired",
+    ]);
+    assert_eq!(
+        persisted_cwds(),
+        vec![expected.display().to_string()],
+        "update must persist the repaired cwd"
+    );
+
+    // resume performs the same repair.
+    run_json(&["pinvou", "scheduled", "pause", &task_id]);
+    strip_cwds();
+    run_json(&["pinvou", "scheduled", "resume", &task_id]);
+    assert_eq!(
+        persisted_cwds(),
+        vec![expected.display().to_string()],
+        "resume must persist the repaired cwd too"
+    );
+
+    // The repair is idempotent: a definition already pinning the workspace is
+    // left with exactly one entry (never rewritten or duplicated).
+    run_json(&[
+        "pinvou",
+        "scheduled",
+        "update",
+        &task_id,
+        "--name",
+        "Repaired again",
+    ]);
+    assert_eq!(
+        persisted_cwds(),
+        vec![expected.display().to_string()],
+        "an already-pinned workspace must not be rewritten or duplicated"
+    );
+}
+
+/// BLOCKER 3 (round-18 review): a CLI one-shot used to persist
+/// `next_run_at: null` and rely on the app's sweep; a one-shot whose AT had
+/// already passed was silently PAUSED by the sweep's "no future run" and
+/// never ran. The foundation's create/resume resolve the slot eagerly — the
+/// CLI routes through them, so an active one-shot (here: a near-future
+/// stamp the sweep would fire late) carries a concrete next_run_at from the
+/// moment it is created, and a resumed one-shot is re-resolved (the
+/// past-AT refusal at resume time is pinned separately by
+/// `once_tasks_with_a_past_anchor_are_refused_at_resume`).
+#[test]
+fn one_shot_tasks_get_an_eager_next_run_slot_on_create_pause_and_resume() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "once-eager", Isolation::ProductHome);
+    let prompt = write_prompt_file(&home, "once-eager.md", "Summarize the reports.");
+    let at = chrono::Local::now() + chrono::Duration::hours(26);
+    let rrule = format!("FREQ=ONCE;AT={}", at.format("%Y-%m-%dT%H:%M"));
+
+    let mut argv = create_argv("Eager once", prompt.to_str().unwrap(), &rrule, &[]);
+    argv.insert(0, "pinvou");
+    let created = run_json(&argv);
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    assert!(
+        created["nextRunAt"].as_str().is_some(),
+        "an active one-shot must carry its slot eagerly: {}",
+        created["nextRunAt"]
+    );
+    // …and the persisted record agrees with the DTO.
+    let def = read_json(&home.def_path(&task_id));
+    assert!(def["next_run_at"].is_string(), "{}", def["next_run_at"]);
+
+    // Pause clears it (nothing fires while paused), resume re-resolves it.
+    run_json(&["pinvou", "scheduled", "pause", &task_id]);
+    let def = read_json(&home.def_path(&task_id));
+    assert!(def["next_run_at"].is_null());
+    let resumed = run_json(&["pinvou", "scheduled", "resume", &task_id]);
+    assert!(
+        resumed["nextRunAt"].as_str().is_some(),
+        "resume must re-resolve the one-shot slot eagerly: {}",
+        resumed["nextRunAt"]
+    );
+}
+
+/// S8 (round-18 review): `scheduled run` exited 0 when the memory-organize
+/// pass failed (`status:"failed"` inside a success outcome). The exit code
+/// is the verdict for scripts; a failed run must fail the command (exit 1)
+/// while its record stays durable. This environment has no display/model,
+/// so the run fails for real — the exact lane the old contract misreported.
+#[test]
+fn run_reports_a_failed_memory_organize_pass_as_a_failed_command() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "run-exit-contract", Isolation::ProductHome);
+    let task_id = create_memory_organize_task(&home);
+    let error = expect_failed(&["pinvou", "scheduled", "run", &task_id]).to_string();
+    assert!(
+        error.starts_with("scheduled_run_failed"),
+        "a failed organize pass must fail the command: {error}"
+    );
+    // The durable record still exists and is terminal (`failed`).
+    let runs = run_json(&["pinvou", "scheduled", "runs", &task_id]);
+    let runs = runs["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["status"].as_str(), Some("failed"));
+}
+
+/// `runs --limit N` routes through the foundation's bounded `list_runs`:
+/// sortable run files are truncated to the newest N before reading. With N
+/// legacy-named files the legacy lane still reads everything (ordering
+/// requires created_at), exactly like the GUI.
+#[test]
+fn runs_limit_returns_the_newest_records_in_order() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "runs-limit", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Limited task");
+    for index in 0..10 {
+        // 19-char sortable stamp: YYYYMMDDTHHMMSSmmmZ (created_at's millis
+        // mirrored into the name, foundation run_file_stamp shape). The
+        // created_at/scheduled_for stamps are real RFC3339 instants the
+        // foundation's chrono decode accepts — seconds 00..09, matching the
+        // file name's ordering.
+        let stamp = format!("20260910T08000{index}000Z");
+        assert_eq!(stamp.len(), 19, "{stamp}");
+        let instant = format!("2026-09-10T08:00:{index:02}.000Z");
+        write_run_file(
+            &home,
+            &task_id,
+            &format!("{stamp}-run-{index}.json"),
+            &format!("run-{index}"),
+            "completed",
+            &instant,
+            None,
+            &[],
+        );
+    }
+    let limited = run_json(&["pinvou", "scheduled", "runs", &task_id, "--limit", "3"]);
+    let values = limited["runs"].as_array().unwrap();
+    assert_eq!(values.len(), 3);
+    assert_eq!(values[0]["id"].as_str(), Some("run-9"));
+    assert_eq!(values[1]["id"].as_str(), Some("run-8"));
+    assert_eq!(values[2]["id"].as_str(), Some("run-7"));
+}
+
+#[test]
+fn read_commands_refuse_a_path_shaped_file_supplied_id_as_malformed() {
+    // The id doubles as the on-disk workspace directory name, so a def file
+    // whose id is not a single path component is malformed (the store is
+    // broken), not a usage error and never a directory join.
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "path-shaped-id", Isolation::ProductHome);
+    let task_id = create_task_id(&home, "Escaped id task");
+    let mut def = read_json(&home.def_path(&task_id));
+    def["id"] = serde_json::json!("../escape");
+    write_json(&home.def_path(&task_id), &def);
+
+    let shown = expect_failed(&["pinvou", "scheduled", "show", &task_id]).to_string();
+    assert!(shown.contains("Failed to parse"), "{shown}");
+    assert!(
+        !home.path().join("escape").exists(),
+        "the workspace join must never escape the scheduled root"
+    );
+}
+
+// ---- model binding pairing ("--model-id" resolves the selected record) ----
+
+#[test]
+fn create_model_id_round_trips_the_selected_records_wire_name() {
+    // The pair the executor's `resolve_scheduled_model` later checks is
+    // (`selected.model`, `selected.id`) — the binding must carry the
+    // selected record's own wire name for the modelId, not the active
+    // model's, and `update --model-id` must resolve the same lookup so a
+    // dangling id cannot be persisted. The GUI's create sends
+    // `model: selected.model, modelId: selected.id`; pre-fix, the CLI wrote
+    // the active model's wire name against sel-1's id, and the task failed
+    // on every run at the model-resolution check.
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "model-id-round-trip", Isolation::ProductHome);
+    write_saved_models(&home);
+    let prompt = write_prompt_file(&home, "model-id.md", "Summarize the reports.");
+    let mut argv = create_argv(
+        "Bound task",
+        prompt.to_str().unwrap(),
+        VALID_RRULE,
+        &["--model-id", "sel-1"],
+    );
+    argv.insert(0, "pinvou");
+    let created = run_json(&argv);
+    assert_eq!(created["modelId"].as_str(), Some("sel-1"));
+    assert_eq!(created["model"].as_str(), Some("deepseek-flash"));
+    // On-disk definition: the selected record's wire name in the `model`
+    // field, and the anchor the sweep would otherwise have to guess.
+    let def = read_json(&home.def_path(created["id"].as_str().unwrap()));
+    assert_eq!(def["model"].as_str(), Some("deepseek-flash"));
+    assert_ne!(
+        def["model"].as_str(),
+        Some("qwen36_35b_256k"),
+        "with --model-id the definition's model must be the selected record's wire name, \
+         never the active model's"
+    );
+    // The binding sidecar persists exactly that pair and nothing else.
+    let bindings = read_json(&home.bindings_path());
+    let binding = &bindings["tasks"][created["id"].as_str().unwrap()];
+    assert_eq!(binding["model_id"].as_str(), Some("sel-1"));
+    assert_eq!(binding["model"].as_str(), Some("deepseek-flash"));
+}
+
+#[test]
+fn create_model_id_unknown_id_is_a_state_error() {
+    // An unknown id must be refused before anything is persisted; the id is
+    // only decidable against `saved_models` (disk state), so the refusal is
+    // exit 1 Failed like every other state-dependent gap on the family — not
+    // Usage, which argv alone must decide (the family's exit-code rule).
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "model-id-unknown", Isolation::ProductHome);
+    write_saved_models(&home);
+    let prompt = write_prompt_file(&home, "model-id.md", "Summarize the reports.");
+    let mut argv = create_argv(
+        "Dangling task",
+        prompt.to_str().unwrap(),
+        VALID_RRULE,
+        &["--model-id", "missing-1"],
+    );
+    argv.insert(0, "pinvou");
+    let error = expect_failed(&argv).to_string();
+    assert!(
+        error.contains("model not found") && error.contains("missing-1"),
+        "{error}"
+    );
+    // Nothing was persisted — no task, no binding.
+    let listed = run_json(&["pinvou", "scheduled", "list"]);
+    assert_eq!(listed["tasks"].as_array().map(Vec::len), Some(0));
+    assert!(
+        !home.bindings_path().exists(),
+        "a refused create must not write a binding sidecar"
+    );
+}
+
+// ---- one-shot anchors (create/resume persist next_run_at = AT) ----
+
+#[test]
+fn once_tasks_persist_their_anchor_on_create_and_resume() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "once-anchor", Isolation::ProductHome);
+    let prompt = write_prompt_file(&home, "once.md", "Summarize the reports.");
+    let at = "2027-06-01T09:30";
+    let rrule = format!("FREQ=ONCE;AT={at}");
+    let mut argv = create_argv("Once reminder", prompt.to_str().unwrap(), &rrule, &[]);
+    argv.insert(0, "pinvou");
+    let created = run_json(&argv);
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    // The anchor landed on disk as the GUI would persist it (RFC3339 UTC
+    // millis): the sweep never needs to initialize it, so a first tick that
+    // finds the AT elapsed fires the run late instead of failing with
+    // "no future run" and silently pausing the task. The exact stamp is
+    // computed in-test (not hardcoded) so the test stays correct in any
+    // local timezone the runner provides.
+    let def = read_json(&home.def_path(&task_id));
+    let expected_anchor = {
+        use chrono::TimeZone as _;
+        let resolved = chrono::Local
+            .from_local_datetime(
+                &chrono::NaiveDate::from_ymd_opt(2027, 6, 1)
+                    .unwrap()
+                    .and_hms_opt(9, 30, 0)
+                    .unwrap(),
+            )
+            .earliest()
+            .unwrap();
+        // Parsed as an instant, not compared as a string: the foundation
+        // renders the anchor at its own sub-second precision, and the
+        // contract that matters is the right instant, not the right string.
+        resolved.with_timezone(&chrono::Utc)
+    };
+    assert!(
+        def["next_run_at"].is_string(),
+        "a one-shot must carry its AT anchor: {}",
+        def["next_run_at"]
+    );
+    let written =
+        chrono::DateTime::parse_from_rfc3339(def["next_run_at"].as_str().expect("anchor"))
+            .expect("anchor parses as RFC3339");
+    assert_eq!(
+        written.with_timezone(&chrono::Utc),
+        expected_anchor,
+        "the anchor must be the once AT (local 09:30 resolved in the local zone, rendered UTC): {}",
+        def["next_run_at"]
+    );
+
+    // Pause then resume: resume must recompute the anchor, not leave null.
+    run_json(&["pinvou", "scheduled", "pause", &task_id]);
+    let paused_def = read_json(&home.def_path(&task_id));
+    assert!(paused_def["next_run_at"].is_null());
+    run_json(&["pinvou", "scheduled", "resume", &task_id]);
+    let resumed_def = read_json(&home.def_path(&task_id));
+    assert_eq!(
+        resumed_def["next_run_at"], def["next_run_at"],
+        "resuming a once task must restore its anchor, not leave it null"
+    );
+}
+
+#[test]
+fn once_tasks_with_a_past_anchor_are_refused_at_resume() {
+    // The `resume` gap: a paused one-shot whose AT already elapsed used to be
+    // restored with the sweep later silently pausing it ("no future run").
+    // The foundation's resume refuses the past anchor up front instead — the
+    // same refusal `create` applies to a past AT on an active task — so the
+    // user sees the honest error rather than a task that never fires.
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "once-past-resume", Isolation::ProductHome);
+    let prompt = write_prompt_file(&home, "once-past.md", "Summarize the reports.");
+    let yesterday = chrono::Local::now().date_naive() - chrono::Duration::days(1);
+    let rrule = format!("FREQ=ONCE;AT={yesterday}T08:30");
+    let mut argv = create_argv("Past once", prompt.to_str().unwrap(), &rrule, &["--paused"]);
+    argv.insert(0, "pinvou");
+    let created = run_json(&argv);
+    let task_id = created["id"].as_str().unwrap().to_owned();
+    let paused_def = read_json(&home.def_path(&task_id));
+    assert_eq!(paused_def["status"].as_str(), Some("paused"));
+    assert!(paused_def["next_run_at"].is_null());
+    // Resume of an elapsed one-shot: the foundation refuses the past anchor
+    // ("no future run") instead of restoring it and letting the sweep pause
+    // the task silently. The task stays paused and untouched.
+    let error = expect_failed(&["pinvou", "scheduled", "resume", &task_id]).to_string();
+    assert!(
+        error.contains("no future run"),
+        "a past one-shot must be refused at resume, not silently paused: {error}"
+    );
+    let resumed_def = read_json(&home.def_path(&task_id));
+    assert_eq!(
+        resumed_def["status"].as_str(),
+        Some("paused"),
+        "the refused resume must leave the task paused: {}",
+        resumed_def["status"]
+    );
+    assert!(
+        resumed_def["next_run_at"].is_null(),
+        "nothing fires without a future run: {}",
+        resumed_def["next_run_at"]
+    );
+}
+
+// ---- run exit contract ----
+
+#[test]
+fn run_reports_a_failed_run_through_a_nonzero_exit() {
+    // A completed command reporting a failed result exits 1 instead of 0,
+    // following the family's completed-command-failed-result convention —
+    // pre-fix the success line printed unconditionally, so a failed run
+    // looked like a success to scripts.
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("scheduled", "run-failed-exit", Isolation::ProductHome);
+    let task_id = create_memory_organize_task(&home);
+    // Deterministic failed run: a corrupted pending store makes the organize
+    // pass fail inside the host (the snapshot load checks every jsonl line;
+    // `_pending.jsonl` with junk lines has no valid `.bak`/`.tmp-` recovery
+    // candidate, so the read surfaces InvalidData). The failure happens
+    // before any LLM call, so no display, model endpoint, or network is
+    // involved — the same class of failure a real broken store produces.
+    // The real binary runs as a child so the event loop owns a true main
+    // thread and the assertion checks the process exit code users observe.
+    let memory_dir = home.path().join("user").join("memory");
+    std::fs::create_dir_all(&memory_dir).unwrap();
+    std::fs::write(memory_dir.join("_pending.jsonl"), "{not json\n").unwrap();
+
+    let output = run_child(
+        home.path(),
+        &["scheduled", "run", &task_id, "--output", "json"],
+        &[],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a failed run must exit 1, not 0; stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    // Exit-1 verdicts never carry a JSON body on stdout: the family's
+    // convention (and the CLI-wide contract in main.rs) renders verdicts on
+    // stdout only for successful outcomes and puts failures on stderr as
+    // plain text. Keep pinned both halves: the child names the failure on
+    // stderr, and its durable run record reads back terminal `failed`.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("scheduled_run_failed"),
+        "the failed run must name its verdict on stderr: {stderr}"
+    );
+    // The record half also runs as a child: this test owns a real tao main
+    // thread for the windowless host, so any in-process invocation in the
+    // same test would hit `EventLoop must be created on the main thread` /
+    // `runtime already initialized` and fail the suite spuriously.
+    let runs_output = run_child(
+        home.path(),
+        &["scheduled", "runs", &task_id, "--output", "json"],
+        &[],
+    );
+    assert_eq!(runs_output.status.code(), Some(0));
+    let runs: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&runs_output.stdout))
+            .expect("single-line JSON runs listing from the child");
+    let runs = runs["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0]["status"].as_str(), Some("failed"));
+    assert!(
+        runs[0]["error"].as_str().is_some(),
+        "the durable run record carries its error: {runs:?}"
+    );
+}
+
+/// Round-36 review minor: a flag-shaped token in the task-id slot (a
+/// truncated `scheduled show --limit <id>`) passed the id guard and became
+/// an exit-1 store lookup for a task named after the flag; it must be
+/// refused as usage, naming the real mistake.
+#[test]
+fn flag_shaped_token_in_the_id_slot_is_a_usage_error() {
+    for arguments in [
+        ["pinvou", "scheduled", "show", "--limit"],
+        ["pinvou", "scheduled", "delete", "--yes"],
+    ] {
+        let message = usage_error(&arguments);
+        assert!(
+            message.contains("flag-shaped"),
+            "the refusal must name the flag-shaped token: {message}"
+        );
+    }
+}
+
+/// Round-51 review: `--prompt-file` is model context (it becomes the
+/// unattended run's turn with auto-approve forced), so it joins the
+/// credential-path gate every sibling lane applies — a credential-shaped
+/// path must be refused before anything is persisted.
+#[test]
+fn create_refuses_a_credential_path_prompt_file() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "scheduled",
+        "create-credential-prompt",
+        Isolation::ProductHome,
+    );
+    let ssh = home.path().join(".ssh");
+    std::fs::create_dir_all(&ssh).unwrap();
+    let key = ssh.join("id_rsa");
+    std::fs::write(&key, "PRIVATE KEY").unwrap();
+
+    let mut argv = create_argv("credential-gate", key.to_str().unwrap(), VALID_RRULE, &[]);
+    argv.insert(0, "pinvou");
+    let message = expect_failed(&argv).to_string();
+    assert!(
+        message.contains("refusing prompt file"),
+        "the credential-path gate must name the refusal: {message}"
+    );
+
+    // Nothing may have been persisted by the refusal.
+    let list = run_json(&["pinvou", "scheduled", "list"]);
+    assert_eq!(
+        list["tasks"].as_array().map(Vec::len),
+        Some(0),
+        "the refusal must not have created a task: {list}"
+    );
+}

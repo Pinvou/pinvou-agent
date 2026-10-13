@@ -33,8 +33,58 @@ use super::validators::validate_session_id;
 /// store.rs); this lock is acyclic relative to it and points the same
 /// direction, kept as belt-and-braces — it also covers the boot-time
 /// `purge_all_scheduled_side_maps` caller that runs without
-/// `scheduled_mutation`. Leaf lock: no other lock is taken while held.
+/// `scheduled_mutation`. Leaf lock: only the cross-process file lock below
+/// is taken while it is held.
 static REWIND_BACKUP_LOCK: Mutex<()> = Mutex::new(());
+
+/// Cross-process exclusion for `_rewound_turns.json` (round-41 review M2).
+/// `REWIND_BACKUP_LOCK` is process-local, but the product CLI
+/// (`pinvou code checkpoints rewind/undo`) is a second writer process on
+/// the same whole-map sidecar: two interleaved load→mutate→persist runs
+/// each commit their own snapshot and silently drop the peer's record —
+/// and that record is the sole retention of the truncated turns
+/// (「备份是被截对话唯一的留存，不能裸截」). The blocking flock on the
+/// sibling `.json.lock` file serializes the RMW across processes and is
+/// kernel-released when a holder dies — the same discipline as the
+/// settings transaction lock. Acquired only while `REWIND_BACKUP_LOCK` is
+/// already held, so it stays a leaf lock; the whole-map RMW is a
+/// millisecond-scale disk round trip, so an uncontended blocking wait is
+/// imperceptible.
+fn lock_rewound_turns_file() -> Result<std::fs::File> {
+    let path = rewound_turns_path().with_extension("json.lock");
+    let file =
+        open_lock_file().with_context(|| format!("打开回退备份锁失败: {}", path.display()))?;
+    file.lock()
+        .with_context(|| format!("锁定回退备份失败: {}", path.display()))?;
+    Ok(file)
+}
+
+/// Path-compute → create_dir_all → open scaffold shared by the two lock
+/// twins above and below (they differ only in blocking vs `try_lock`): the
+/// create_dir_all + open half now comes from the shared platform helper
+/// [`crate::platform::filesystem::open_lock_file_with_dirs`]. The blocking
+/// twin wraps any failure — including the `create_dir_all` step — in its
+/// `打开回退备份锁失败` context; the try twin degrades to `None`.
+fn open_lock_file() -> std::io::Result<std::fs::File> {
+    crate::platform::filesystem::open_lock_file_with_dirs(
+        &rewound_turns_path().with_extension("json.lock"),
+    )
+}
+
+/// Non-blocking twin of [`lock_rewound_turns_file`] for callers that must
+/// degrade instead of wait: `None` means the lock is held (or the lock file
+/// could not be opened) and the caller skips with a note. Round-42 review:
+/// the purge path promised exactly this best-effort semantics but used the
+/// blocking acquire — a peer wedged while holding the flock would hang the
+/// delete/retention caller forever instead of skipping.
+fn try_lock_rewound_turns_file() -> Option<std::fs::File> {
+    let file = open_lock_file().ok()?;
+    match file.try_lock() {
+        Ok(()) => Some(file),
+        Err(std::fs::TryLockError::WouldBlock) => None,
+        Err(std::fs::TryLockError::Error(_)) => None,
+    }
+}
 
 /// sidecar 文件名（与 `_session_models.json` 等并列在 sessions 根下）。
 const REWOUND_TURNS_FILE: &str = "_rewound_turns.json";
@@ -94,7 +144,38 @@ fn rewound_turns_path() -> PathBuf {
     crate::platform::paths::sessions_root().join(REWOUND_TURNS_FILE)
 }
 
+/// Who is responsible for the cross-process flock when a corrupt sidecar
+/// needs quarantining. Round-42 review: the unlocked READ paths
+/// (`latest_rewound_turns_record`/`rewound_turns_records`) used to rename
+/// without the lock, so a rename racing a lock-holding writer could move
+/// the writer's freshly rebuilt map (the reader had parsed stale corrupt
+/// bytes) into `corrupt-*` — hiding the newest undo records and resetting
+/// the next RMW to empty.
+#[derive(Clone, Copy)]
+enum RewindLoadMode {
+    /// The caller already holds `lock_rewound_turns_file()` (truncate /
+    /// restore / purge): the rename cannot race a peer, quarantine directly.
+    CallerHoldsLock,
+    /// Unlocked read path: take the lock only for the quarantine, and
+    /// re-read under it first — a writer that rebuilt the file since our
+    /// read wins, and the reader returns the FRESH map instead of
+    /// quarantining the peer's good bytes. A held lock means a writer is
+    /// mid-RMW: leave the file alone entirely (the writer owns its fate).
+    TryLockAndRecheck,
+}
+
 fn load_rewound_turns_map() -> Result<HashMap<String, Vec<RewoundTurnsRecord>>> {
+    load_rewound_turns_map_with(RewindLoadMode::CallerHoldsLock)
+}
+
+/// The unlocked-read variant: see [`RewindLoadMode::TryLockAndRecheck`].
+fn load_rewound_turns_map_for_read() -> Result<HashMap<String, Vec<RewoundTurnsRecord>>> {
+    load_rewound_turns_map_with(RewindLoadMode::TryLockAndRecheck)
+}
+
+fn load_rewound_turns_map_with(
+    mode: RewindLoadMode,
+) -> Result<HashMap<String, Vec<RewoundTurnsRecord>>> {
     let path = rewound_turns_path();
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
@@ -111,16 +192,74 @@ fn load_rewound_turns_map() -> Result<HashMap<String, Vec<RewoundTurnsRecord>>> 
             // 入口消失），胜过整个功能报错卡死。
             let quarantine =
                 path.with_extension(format!("corrupt-{}", Utc::now().format("%Y%m%d%H%M%S")));
-            eprintln!(
-                "[sessions] 回退备份损坏，隔离为 {} 后按空继续: {parse_error:#}",
-                quarantine.display()
-            );
-            if let Err(error) = std::fs::rename(&path, &quarantine) {
-                eprintln!("[sessions] 隔离损坏的回退备份失败: {error:#}");
+            match mode {
+                RewindLoadMode::CallerHoldsLock => {
+                    quarantine_and_continue(&path, &quarantine, parse_error)
+                }
+                RewindLoadMode::TryLockAndRecheck => {
+                    match try_lock_rewound_turns_file() {
+                        Some(_lock) => {
+                            // Re-read under the lock: our corrupt bytes may be
+                            // stale — a peer writer may have already rebuilt the
+                            // file between our read and this quarantine.
+                            match std::fs::read(&path).map_err(anyhow::Error::new).and_then(
+                                |fresh| {
+                                    serde_json::from_slice::<
+                                        HashMap<String, Vec<RewoundTurnsRecord>>,
+                                    >(&fresh)
+                                    .map_err(anyhow::Error::new)
+                                },
+                            ) {
+                                Ok(fresh_map) => {
+                                    eprintln!(
+                                        "[sessions] 回退备份曾在读取后被并发写方重建，按新内容继续"
+                                    );
+                                    Ok(fresh_map)
+                                }
+                                Err(_still_corrupt) => {
+                                    quarantine_and_continue(&path, &quarantine, parse_error)
+                                }
+                            }
+                        }
+                        None => {
+                            // Round-48 review: `try_lock_rewound_turns_file`
+                            // answers None both for "a writer holds the lock"
+                            // and for "the lock file itself cannot be opened
+                            // here" (read-only sessions dir) — say so instead
+                            // of asserting a writer exists. Either way the
+                            // degrade is the same: leave the file alone,
+                            // answer empty for this read.
+                            eprintln!(
+                                "[sessions] 回退备份损坏，但跨进程锁不可用（写方持有或本进程无法打开锁文件）——不动文件，按空继续（写方负责隔离或重建）: {parse_error:#}"
+                            );
+                            Ok(HashMap::new())
+                        }
+                    }
+                }
             }
-            Ok(HashMap::new())
         }
     }
+}
+
+/// Shared tail of both load modes ([`RewindLoadMode::CallerHoldsLock`] and
+/// the re-read-under-lock `TryLockAndRecheck` arm, which were byte-identical):
+/// isolate the corrupt sidecar under `corrupt-*`（保留现场供人工恢复）and
+/// answer an empty map. Both messages are part of the observable behavior
+/// and are pinned verbatim here; see the mode enum for who holds the
+/// cross-process flock during the rename.
+fn quarantine_and_continue(
+    path: &std::path::Path,
+    quarantine: &std::path::Path,
+    parse_error: serde_json::Error,
+) -> Result<HashMap<String, Vec<RewoundTurnsRecord>>> {
+    eprintln!(
+        "[sessions] 回退备份损坏，隔离为 {} 后按空继续: {parse_error:#}",
+        quarantine.display()
+    );
+    if let Err(error) = std::fs::rename(path, quarantine) {
+        eprintln!("[sessions] 隔离损坏的回退备份失败: {error:#}");
+    }
+    Ok(HashMap::new())
 }
 
 fn persist_rewound_turns_map(map: &HashMap<String, Vec<RewoundTurnsRecord>>) -> Result<()> {
@@ -198,6 +337,7 @@ impl SessionStore {
         };
         {
             let _backup_guard = REWIND_BACKUP_LOCK.lock();
+            let _cross_process = lock_rewound_turns_file()?;
             let mut backups = load_rewound_turns_map()?;
             let records = backups.entry(id.to_string()).or_default();
             records.push(record);
@@ -224,7 +364,7 @@ impl SessionStore {
     /// 最新一条回退备份记录（`undo_last_rewind` 的可反悔判定与恢复数据源）。
     pub fn latest_rewound_turns_record(&self, id: &str) -> Result<Option<RewoundTurnsRecord>> {
         validate_session_id(id)?;
-        Ok(load_rewound_turns_map()?
+        Ok(load_rewound_turns_map_for_read()?
             .get(id)
             .and_then(|records| records.last().cloned()))
     }
@@ -234,7 +374,7 @@ impl SessionStore {
     /// 落盘，记录存在即截断已生效）。
     pub fn rewound_turns_records(&self, id: &str) -> Result<Vec<RewoundTurnsRecord>> {
         validate_session_id(id)?;
-        Ok(load_rewound_turns_map()?
+        Ok(load_rewound_turns_map_for_read()?
             .get(id)
             .cloned()
             .unwrap_or_default())
@@ -261,6 +401,7 @@ impl SessionStore {
         }
         validate_session_id(id)?;
         let _backup_guard = REWIND_BACKUP_LOCK.lock();
+        let _cross_process = lock_rewound_turns_file()?;
         let mut backups = load_rewound_turns_map()?;
         let record = backups
             .get(id)
@@ -318,6 +459,21 @@ impl SessionStore {
             return;
         }
         let _backup_guard = REWIND_BACKUP_LOCK.lock();
+        // The purge only rewrites when something changes, but the map load
+        // itself must not race a concurrent whole-map persist, so the file
+        // lock spans the read here too. Purge stays best-effort: with the
+        // lock unavailable it skips with a note instead of failing the
+        // delete/retention caller (a skipped purge only leaves orphaned
+        // records, its documented worst case).
+        let _cross_process = match try_lock_rewound_turns_file() {
+            Some(guard) => guard,
+            None => {
+                eprintln!(
+                    "[sessions] rewind backup lock held by another writer, purge skipped (orphaned records are the documented worst case)"
+                );
+                return;
+            }
+        };
         let result = load_rewound_turns_map().and_then(|mut map| {
             let mut changed = false;
             for id in ids {
@@ -331,5 +487,52 @@ impl SessionStore {
         if let Err(error) = result {
             eprintln!("[sessions] purge rewound-turns backups failed: {error:#}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Round-41 review M2: the cross-process rewind lock is a real exclusive
+    /// flock at the documented sibling path. `flock(2)` conflicts between two
+    /// open file descriptions even within one process, so while the guard is
+    /// held a second opener's `try_lock` must fail with `WouldBlock` —
+    /// exactly what a second process's blocking acquire would meet — and
+    /// dropping the guard must let the peer in.
+    #[test]
+    fn rewound_turns_lock_is_an_exclusive_cross_process_flock() {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-rewind-lock-test-{}",
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: locked_env holds the test ENV_LOCK; writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let guard = lock_rewound_turns_file().expect("first acquire");
+        let lock_path = rewound_turns_path().with_extension("json.lock");
+        assert!(
+            lock_path.exists(),
+            "the flock's sibling file is created: {}",
+            lock_path.display()
+        );
+
+        let second = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&lock_path)
+            .expect("second opener");
+        match second.try_lock() {
+            // `WouldBlock` is exactly the flock conflict the held guard
+            // must produce.
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(std::fs::TryLockError::Error(error)) => {
+                panic!("unexpected lock error: {error}")
+            }
+            Ok(()) => panic!("the first guard must hold an exclusive flock"),
+        }
+        drop(guard);
+        second.try_lock().expect("released guard lets the peer in");
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

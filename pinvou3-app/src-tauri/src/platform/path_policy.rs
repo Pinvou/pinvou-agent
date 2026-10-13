@@ -16,7 +16,11 @@ pub(crate) fn resolve_artifact_path_in_workspace(raw: &str, workspace: &Path) ->
 /// **目录**（.ssh/.gnupg/.aws/.docker/.kube），挡不住 `~/keys/id_rsa`、
 /// `~/config/.env`、`~/config/credentials.json` 等非目录凭据文件。此黑名单
 /// 与 `validate_user_path` 共享同一份，确保所有用户路径入口校验一致。
-pub(crate) const BLOCKED_COMPONENTS: &[&str] = &[
+/// `pub` for the pinvou-cli `check_sensitive_path` mirror (artifacts.rs): the
+/// CLI imports these lists instead of a hand copy, so an upstream credential
+/// addition can never silently reopen the CLI surface — the drift the copy's
+/// own doc warned about.
+pub const BLOCKED_COMPONENTS: &[&str] = &[
     ".ssh",
     ".gnupg",
     ".aws",
@@ -32,7 +36,7 @@ pub(crate) const BLOCKED_COMPONENTS: &[&str] = &[
 ];
 
 /// 系统敏感前缀黑名单——Unix 系统文件/虚拟文件系统路径。
-pub(crate) const BLOCKED_PREFIXES: &[&str] = &[
+pub const BLOCKED_PREFIXES: &[&str] = &[
     "/etc/shadow",
     "/etc/gshadow",
     "/etc/sudoers",

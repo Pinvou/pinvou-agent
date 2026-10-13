@@ -1340,17 +1340,53 @@ pub async fn purge_recycled_plugin(id: String) -> Result<(), String> {
     .map_err(|e| format!("任务执行失败: {e}"))?
 }
 
-/// Shared save-dialog + off-executor tail for the two plugin-zip export
-/// commands. Default name `<id>.zip`: the id is already [a-z0-9-_]; do not
-/// use display_name (a bare-.md upload's display_name is "SKILL.md", which
-/// would export a meaningless "SKILL.md.zip").
-async fn export_plugin_zip_via_dialog(
-    id: &str,
+/// 导出回收站包为 zip 插件包（变更操作；Web 只读不放行）：弹原生保存对话框，
+/// zip 内容对齐插件包规范（可经统一导入管线重新导入）。
+/// 返回 Some(保存路径)；用户取消 → None；失败 Err。
+#[tauri::command]
+pub async fn export_recycled_plugin(
+    id: String,
+    app: tauri::AppHandle,
+) -> Result<Option<String>, String> {
+    let default_name = recycle_export_default_name(&id);
+    let export_id = id.clone();
+    run_plugin_export(&app, default_name, move |dest| {
+        crate::features::marketplace::recycle_bin::RecycleBin::new()
+            .export_package(&export_id, &dest)
+    })
+    .await
+}
+
+/// 导出默认文件名：`<包id>.zip`（id 已是安全字符集，直接使用）。
+fn recycle_export_default_name(id: &str) -> String {
+    format!("{id}.zip")
+}
+
+/// 导出已安装包为标准插件包 zip（变更操作；Web 只读不放行）：弹原生保存
+/// 对话框，zip 内容对齐插件包规范（可经统一导入管线重新导入；manifest args
+/// 的包内绝对路径导出时还原为相对形式）。
+/// 返回 Some(保存路径)；用户取消 → None；失败 Err。
+#[tauri::command]
+pub async fn export_installed_plugin(
+    id: String,
+    app: tauri::AppHandle,
+) -> Result<Option<String>, String> {
+    let default_name = recycle_export_default_name(&id);
+    let export_id = id.clone();
+    run_plugin_export(&app, default_name, move |dest| {
+        crate::features::marketplace::package_export::export_installed_plugin(&export_id, &dest)
+    })
+    .await
+}
+
+/// 插件包导出共用的保存对话框 + 后台导出管线：`export` 在 `spawn_blocking`
+/// 工作线程上执行，收到目标路径（Move 语义，成功路径即用户选定的保存位置）。
+async fn run_plugin_export(
     app: &tauri::AppHandle,
-    export: impl FnOnce(&str, &std::path::Path) -> Result<(), String> + Send + 'static,
+    default_name: String,
+    export: impl FnOnce(std::path::PathBuf) -> Result<(), String> + Send + 'static,
 ) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
-    let default_name = format!("{id}.zip");
     let Some(picked) = app
         .dialog()
         .file()
@@ -1363,41 +1399,11 @@ async fn export_plugin_zip_via_dialog(
     let path = picked
         .into_path()
         .map_err(|e| format!("解析文件路径: {e}"))?;
-    let dest = path.to_string_lossy().into_owned();
-    let export_id = id.to_string();
-    tokio::task::spawn_blocking(move || export(&export_id, std::path::Path::new(&dest)))
+    let task_path = path.clone();
+    tokio::task::spawn_blocking(move || export(task_path))
         .await
         .map_err(|e| format!("任务执行失败: {e}"))??;
     Ok(Some(path.to_string_lossy().into_owned()))
-}
-
-/// 导出回收站包为 zip 插件包（变更操作；Web 只读不放行）：弹原生保存对话框，
-/// zip 内容对齐插件包规范（可经统一导入管线重新导入）。
-/// 返回 Some(保存路径)；用户取消 → None；失败 Err。
-#[tauri::command]
-pub async fn export_recycled_plugin(
-    id: String,
-    app: tauri::AppHandle,
-) -> Result<Option<String>, String> {
-    export_plugin_zip_via_dialog(&id, &app, |id, dest| {
-        crate::features::marketplace::recycle_bin::RecycleBin::new().export_package(id, dest)
-    })
-    .await
-}
-
-/// 导出已安装包为标准插件包 zip（变更操作；Web 只读不放行）：弹原生保存
-/// 对话框，zip 内容对齐插件包规范（可经统一导入管线重新导入；manifest args
-/// 的包内绝对路径导出时还原为相对形式）。
-/// 返回 Some(保存路径)；用户取消 → None；失败 Err。
-#[tauri::command]
-pub async fn export_installed_plugin(
-    id: String,
-    app: tauri::AppHandle,
-) -> Result<Option<String>, String> {
-    export_plugin_zip_via_dialog(&id, &app, |id, dest| {
-        crate::features::marketplace::package_export::export_installed_plugin(id, dest)
-    })
-    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -1450,8 +1456,9 @@ where
     let Some(bundle) = reg.bundle(&bundle_id) else {
         return Err(format!("未知能力包 '{bundle_id}'"));
     };
-    // CLI/ima 包的 installed 在注册表是保守占位（恒 false），此处用连接器 status
-    // 的真实字段覆盖，避免对消费方产出 (installed=false, ready=true) 的矛盾组合。
+    // CLI 包的 installed/degraded 以 BundleStore 记录为准（registry 真值，非占位），
+    // 此处再用连接器 status 的实时字段覆盖，保证桌面卡片反映当下授权态；headless
+    // 侧（bundle.rs readiness_for 的回退）则直接消费这份 store 值。
     let (installed, ready, reason) = match bundle.kind {
         BundleKind::Cli => {
             let status = match bundle_id.as_str() {
@@ -2461,6 +2468,35 @@ mod tests {
             let _ = std::fs::remove_file(&v1);
             let _ = std::fs::remove_file(&v2);
         });
+    }
+
+    /// The removed `unreachable!()` in `bundle.rs::readiness_for` used to
+    /// fail loudly if a Cli-kind bundle ever reached the headless fallback;
+    /// its replacement is a conservative verdict, so the invariant now lives
+    /// here: the command layer's `BundleKind::Cli` dispatch must enumerate
+    /// EVERY CLI-kind bundle the registry declares. A new CLI bundle without
+    /// a dispatch arm would otherwise answer the desktop card with a runtime
+    /// "未知 CLI 包" error (and the headless card with the conservative
+    /// fallback) instead of failing at review time.
+    #[test]
+    fn every_cli_kind_bundle_has_a_live_dispatch_arm() {
+        let registry = crate::features::marketplace::bundle::BundleRegistry::new();
+        let cli_ids: Vec<String> = registry
+            .list_bundles()
+            .into_iter()
+            .filter(|bundle| bundle.kind == crate::features::marketplace::bundle::BundleKind::Cli)
+            .map(|bundle| bundle.id)
+            .collect();
+        assert!(
+            !cli_ids.is_empty(),
+            "the registry declares no CLI bundles; if the kind was retired, retire the dispatch arm with it"
+        );
+        for id in &cli_ids {
+            assert!(
+                matches!(id.as_str(), "feishu" | "wecom" | "dingtalk" | "tmeet"),
+                "CLI bundle '{id}' has no arm in bundle_readiness_with_store's status dispatch; add one (or update this pin) — otherwise the readiness card falls to the conservative fallback"
+            );
+        }
     }
 
     /// 第九刀：bundle_readiness 响应携带完整 BundleInfo（前端功能事实数据源）。

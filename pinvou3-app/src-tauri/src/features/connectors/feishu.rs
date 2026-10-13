@@ -45,7 +45,10 @@ fn lark(args: &[&str]) -> Command {
 /// so they count as not installed and trigger the locked-version replacement —
 /// same policy as wecom/tmeet, which carry per-connector minimums and lark
 /// historically did not (installed 1.0.65 silently degraded to generic help).
-const LARK_MIN_VERSION: (u64, u64, u64) = (1, 0, 95);
+/// `pub` + the facade re-export: the CLI's connectors family consumes this
+/// floor instead of a drifting copy (round-51 review — a GUI-side raise to
+/// the lock baseline must move the CLI's `upgrade_required` gate with it).
+pub const LARK_MIN_VERSION: (u64, u64, u64) = (1, 0, 95);
 
 /// 解析 `lark-cli --version` 输出为三段语义版本。输出形如
 /// `lark-cli version 1.0.65`(程序名与版本之间夹着字面量 `version`),故锚定
@@ -91,16 +94,21 @@ fn lark_cli_probe() -> Result<bool, cc::ProbeError> {
     cc::run_probe(lark(&["--version"])).map(|(ok, _, _)| ok)
 }
 
+/// `auth status` JSON 里用户身份是否 ready(已授权)。`is_user_ready` 与
+/// `feishu_status` 的 connected 判定共用同一提取,避免两处口径漂移。
+fn auth_status_user_ready(parsed: &Value) -> bool {
+    parsed
+        .pointer("/identities/user/status")
+        .and_then(|v| v.as_str())
+        .map(|s| s == "ready")
+        .unwrap_or(false)
+}
+
 /// `auth status` 里用户身份是否 ready(已授权)。
 pub(crate) fn is_user_ready() -> bool {
     if let Ok((_, so, se)) = cc::run(lark(&["auth", "status", "--json"])) {
         let p = cc::parse_json(&so).or_else(|| cc::parse_json(&se));
-        return p
-            .as_ref()
-            .and_then(|v| v.pointer("/identities/user/status"))
-            .and_then(|v| v.as_str())
-            .map(|s| s == "ready")
-            .unwrap_or(false);
+        return p.as_ref().map(auth_status_user_ready).unwrap_or(false);
     }
     false
 }
@@ -139,12 +147,7 @@ pub async fn feishu_status() -> Result<Value, String> {
         }
         let (ok, so, se) = cc::run(lark(&["auth", "status", "--json"]))?;
         let parsed = cc::parse_json(&so).or_else(|| cc::parse_json(&se));
-        let connected = parsed
-            .as_ref()
-            .and_then(|v| v.pointer("/identities/user/status"))
-            .and_then(|v| v.as_str())
-            .map(|s| s == "ready")
-            .unwrap_or(false);
+        let connected = parsed.as_ref().map(auth_status_user_ready).unwrap_or(false);
         // 是否已配过 app:看 auth status 里有没有非空 appId。
         let configured = parsed
             .as_ref()
@@ -422,7 +425,10 @@ pub async fn feishu_cancel(app: AppHandle) -> Result<Value, String> {
 
 /// Disconnect Feishu: `lark-cli auth logout` (clears tokens). The probe verdict is
 /// unified with DingTalk/tmeet via [`cc::logout_probe_verdict`]: a genuinely not-installed
-/// CLI degrades to `installed:false` and clears the bundle store; when the credential
+/// CLI degrades to `installed:false` and marks the bundle-store record degraded —
+/// the record is kept, including its `installed` fact ([`cc::bundle_store_on_disconnected`]),
+/// and CLI consumers resolve readiness to `cli_disconnected` off that degraded record.
+/// When the credential
 /// state is unconfirmed the error is propagated as-is — never falsely report
 /// "disconnected".
 pub async fn feishu_logout() -> Result<Value, String> {
