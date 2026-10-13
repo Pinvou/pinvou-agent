@@ -5,12 +5,12 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
-struct OwnedFile {
-    path: PathBuf,
+pub(super) struct OwnedFile {
+    pub(super) path: PathBuf,
     file: Option<File>,
 }
 impl OwnedFile {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -31,7 +31,7 @@ impl OwnedFile {
             file: Some(file),
         }
     }
-    fn file(&mut self) -> &mut File {
+    pub(super) fn file(&mut self) -> &mut File {
         self.file.as_mut().unwrap()
     }
 }
@@ -41,16 +41,16 @@ impl Drop for OwnedFile {
         let _ = std::fs::remove_file(&self.path);
     }
 }
-fn hex(raw: &str) -> Vec<u8> {
+pub(super) fn hex(raw: &str) -> Vec<u8> {
     raw.as_bytes()
         .chunks_exact(2)
         .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
         .collect()
 }
-fn vectors() -> Vec<Value> {
+pub(super) fn vectors() -> Vec<Value> {
     serde_json::from_str(include_str!("../tests/fixtures/zip-vectors.json")).unwrap()
 }
-fn limits() -> ArchiveLimits {
+pub(super) fn limits() -> ArchiveLimits {
     ArchiveLimits::new(
         64 * 1024 * 1024,
         128 * 1024 * 1024,
@@ -61,7 +61,7 @@ fn limits() -> ArchiveLimits {
     )
     .unwrap()
 }
-fn fixture(value: &Value) -> OwnedFile {
+pub(super) fn fixture(value: &Value) -> OwnedFile {
     let mut owned = OwnedFile::new();
     if let Some(raw) = value["hex"].as_str() {
         owned.file().write_all(&hex(raw)).unwrap();
@@ -84,7 +84,7 @@ fn fixture(value: &Value) -> OwnedFile {
     }
     owned
 }
-fn target(file: &mut File, value: &Value) -> Artifact<'static> {
+pub(super) fn target(file: &mut File, value: &Value) -> Artifact<'static> {
     Artifact::new(
         "package-1",
         file.metadata().unwrap().len(),

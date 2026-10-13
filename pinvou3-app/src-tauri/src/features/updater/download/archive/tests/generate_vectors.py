@@ -78,6 +78,7 @@ def main():
                            "extra": struct.pack("<HHBI", 0x5455, 5, 1, 0)}])
     add("directory-after-child", [{"name": "bin/a.exe"}, {"name": "bin/", "data": b"", "attributes": 0o40755 << 16 | 0x10}], reverse=True)
     add("opaque-inner-zip", [{"name": "resource.zip", "data": b"opaque archive data"}])
+    add("empty-file", [{"name": "empty.bin", "data": b""}])
     add("central-order", [{"name": "a.bin"}, {"name": "b.bin", "data": b"xyz"}], reverse=True)
     for path in ("../a", "/a", "a//b", "a\\b", "AUX.txt", "a.", "a/CON", "a/./b", "a/../b", "a:"):
         add("path-" + path, [{"name": path}], "ARCHIVE_PATH_REFUSED")

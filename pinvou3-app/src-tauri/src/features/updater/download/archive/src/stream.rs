@@ -8,15 +8,24 @@ pub(crate) fn member(
     entry: &Entry,
     cancelled: &mut impl FnMut() -> bool,
 ) -> Result<MemberBytes, Error> {
+    member_with_visit(file, entry, cancelled, &mut |_, _| Ok(()))
+}
+
+pub(crate) fn member_with_visit<F: FnMut() -> bool>(
+    file: &mut File,
+    entry: &Entry,
+    cancelled: &mut F,
+    visit: &mut impl FnMut(&[u8], &mut F) -> Result<(), Error>,
+) -> Result<MemberBytes, Error> {
     poll(cancelled)?;
     file.seek(SeekFrom::Start(entry.data_offset))
         .map_err(|_| Error::IoUnavailable)?;
     let input = file.take(entry.compressed);
     let digest = if entry.method == 8 {
-        deflated(input, entry, cancelled)?
+        deflated(input, entry, cancelled, visit)?
     } else {
         let mut input = input;
-        let digest = hash(&mut input, entry, cancelled)?;
+        let digest = hash(&mut input, entry, cancelled, visit)?;
         if input.limit() != 0 {
             return Err(Error::InvalidEntryBytes);
         }
@@ -29,10 +38,11 @@ pub(crate) fn member(
     })
 }
 
-fn deflated(
+fn deflated<F: FnMut() -> bool>(
     mut input: std::io::Take<impl Read>,
     entry: &Entry,
-    cancelled: &mut impl FnMut() -> bool,
+    cancelled: &mut F,
+    visit: &mut impl FnMut(&[u8], &mut F) -> Result<(), Error>,
 ) -> Result<[u8; 32], Error> {
     use flate2::{Decompress, FlushDecompress, Status};
     let mut decoder = Decompress::new(false);
@@ -75,6 +85,9 @@ fn deflated(
             .checked_add(produced as u64)
             .filter(|n| *n <= entry.expanded)
             .ok_or(Error::InvalidEntryBytes)?;
+        if produced != 0 {
+            visit(&expanded[..produced], cancelled)?;
+        }
         hash.update(&expanded[..produced]);
         crc.update(&expanded[..produced]);
         if status == Status::StreamEnd {
@@ -93,10 +106,11 @@ fn deflated(
     }
 }
 
-fn hash(
+pub(crate) fn hash<F: FnMut() -> bool>(
     reader: &mut impl Read,
     entry: &Entry,
-    cancelled: &mut impl FnMut() -> bool,
+    cancelled: &mut F,
+    visit: &mut impl FnMut(&[u8], &mut F) -> Result<(), Error>,
 ) -> Result<[u8; 32], Error> {
     let mut bytes = vec![0; 65_536];
     let mut size = 0_u64;
@@ -114,6 +128,7 @@ fn hash(
             .checked_add(count as u64)
             .filter(|n| *n <= entry.expanded)
             .ok_or(Error::InvalidEntryBytes)?;
+        visit(&bytes[..count], cancelled)?;
         hash.update(&bytes[..count]);
         crc.update(&bytes[..count]);
     }

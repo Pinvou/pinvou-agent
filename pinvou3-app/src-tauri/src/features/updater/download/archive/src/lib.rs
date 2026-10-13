@@ -2,8 +2,10 @@
 //! native identity selection and protected extraction remain owner duties.
 
 mod directory;
+mod materialize;
 mod paths;
 mod stream;
+pub use materialize::{ExpectedMember, MaterializedMember, materialize_member};
 
 use pinvou_upgrade_transfer::Artifact;
 use std::fs::File;
@@ -26,6 +28,9 @@ pub enum ArchiveError {
     UnsafeFileType,
     InvalidEntryBytes,
     CompressedTail,
+    InvalidExpectedMember,
+    MemberMismatch,
+    DestinationNotEmpty,
 }
 impl std::fmt::Display for ArchiveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -41,6 +46,9 @@ impl std::fmt::Display for ArchiveError {
             Self::UnsafeFileType => "ARCHIVE_FILE_TYPE_REFUSED",
             Self::InvalidEntryBytes => "ARCHIVE_ENTRY_BYTES_INVALID",
             Self::CompressedTail => "ARCHIVE_COMPRESSED_TAIL_REFUSED",
+            Self::InvalidExpectedMember => "ARCHIVE_EXPECTED_MEMBER_INVALID",
+            Self::MemberMismatch => "ARCHIVE_MEMBER_MISMATCH",
+            Self::DestinationNotEmpty => "ARCHIVE_DESTINATION_NOT_EMPTY",
         })
     }
 }

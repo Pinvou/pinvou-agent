@@ -36,6 +36,24 @@ pub(crate) fn inspect_package_bytes<'a>(
     pinvou_upgrade_archive::inspect_file(file, target, limits, cancelled)
 }
 
+pub(crate) fn materialize_package_member<'a>(
+    source: &mut std::fs::File,
+    destination: &mut std::fs::File,
+    target: pinvou_upgrade_transfer::Artifact<'a>,
+    expected: pinvou_upgrade_archive::ExpectedMember<'_>,
+    limits: pinvou_upgrade_archive::ArchiveLimits,
+    cancelled: impl FnMut() -> bool,
+) -> Result<pinvou_upgrade_archive::MaterializedMember<'a>, pinvou_upgrade_archive::ArchiveError> {
+    pinvou_upgrade_archive::materialize_member(
+        source,
+        destination,
+        target,
+        expected,
+        limits,
+        cancelled,
+    )
+}
+
 pub(crate) fn plan_file_response<'target, 'headers>(
     request: pinvou_upgrade_transfer::RequestPlan<'target>,
     status: u16,
@@ -64,7 +82,7 @@ mod tests {
         use std::io::Write;
         let vectors: serde_json::Value =
             serde_json::from_str(include_str!("archive/tests/fixtures/zip-vectors.json")).unwrap();
-        for case in ["store", "deflate", "compressed-tail"] {
+        for case in ["store", "deflate", "empty-file", "compressed-tail"] {
             let value = vectors
                 .as_array()
                 .unwrap()
@@ -114,6 +132,48 @@ mod tests {
                     inventory.members()[0].size(),
                     value["members"][0]["size"].as_u64().unwrap()
                 );
+                let member = &value["members"][0];
+                let digest: Vec<_> = member["sha256"]
+                    .as_str()
+                    .unwrap()
+                    .as_bytes()
+                    .chunks_exact(2)
+                    .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
+                    .collect();
+                let expected = pinvou_upgrade_archive::ExpectedMember::new(
+                    member["name"].as_str().unwrap(),
+                    member["size"].as_u64().unwrap(),
+                    digest.try_into().unwrap(),
+                )
+                .unwrap();
+                let destination_path = std::env::temp_dir()
+                    .join(format!("pinvou-app-zip-member-{}", uuid::Uuid::new_v4()));
+                let mut destination = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create_new(true)
+                    .open(&destination_path)
+                    .unwrap();
+                let materialized = materialize_package_member(
+                    &mut file,
+                    &mut destination,
+                    target,
+                    expected,
+                    limits,
+                    || false,
+                )
+                .unwrap();
+                assert!(materialized.package() == target);
+                assert_eq!(
+                    materialized.member().size(),
+                    member["size"].as_u64().unwrap()
+                );
+                assert_eq!(
+                    destination.metadata().unwrap().len(),
+                    member["size"].as_u64().unwrap()
+                );
+                drop(destination);
+                std::fs::remove_file(destination_path).unwrap();
             }
             drop(file);
             std::fs::remove_file(path).unwrap();

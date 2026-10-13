@@ -2363,3 +2363,38 @@ original validation budget spans all scans, without a new download duration cap.
 Details: [ZIP inventory](client-upgrade-zip-inventory.md).
 Both independent roles gave final B5 scoped PASS after reviewing the repaired
 backend, actual App evidence and final documentation. No mandatory finding remains.
+
+### T29 sixth batch: materialize and rescan an observed ZIP member (2026-10-13)
+
+The owner supplies an independently authenticated name/size/hash expectation and
+already open protected source/destination handles. The fresh regular destination
+must be empty. Whole-package inspection precedes writes; current raw records and
+selected member are read again, with actual size checked before output writes and
+full member EOF/CRC/SHA/compressed-span checks. The original whole package is
+hashed again after copying. After sync_all, the same destination is read from zero
+to ordinary real EOF for size/CRC/SHA comparison. ZIP offsets or compressed lengths
+never truncate that final scan. Empty members use their actual empty-file identity,
+without a fabricated positive-size Artifact. MaterializedMember is only observed
+byte evidence; it confers no protection, native authenticity or execution rights.
+
+Final ten groups (seven new plus three inventory groups) passed (8.75s), including
+actual Store/Deflate/descriptors, 33 MiB output, empty files, zero-write mismatch and
+nonempty/alias refusals, real handle permissions, every observed cancellation poll,
+late corruption and visible source changes after inspection. Private writer/sync
+faults are separately identified as unit controls. Python checked all 49 container
+hashes and positive inventories. Fmt/Clippy, 49 CI policies, architecture, version
+and diff checks passed. Actual Windows App integration passed all twelve updater
+tests (0.04s after a 2m17s build), including real Store/Deflate/empty-file copying;
+no App-wide pass is claimed. No dependency, lock, CI, version or gitlink changed.
+
+Both independent roles passed the frozen ten groups (12.83s and 9.35s), Python
+49-vector checks, fmt/Clippy and diff checks; one additionally reran all 49 CI
+policies. Failure leaves untrusted destination bytes for owner isolation/cleanup.
+The original T26 validation budget covers every scan/copy/sync; cancellation
+cannot interrupt a running OS operation. Physical protection, path creation,
+native claim selection/authenticity and current rights remain subsequent work.
+Full T29 and deployment remain unfinished, with no download duration or retry cap.
+Details: [member materialization](client-upgrade-member-materialization.md).
+Both independent roles gave final B6 scoped PASS after reviewing the frozen
+implementation, actual App result and final evidence documents. No mandatory
+finding remains.
