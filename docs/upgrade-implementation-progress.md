@@ -4073,3 +4073,37 @@ No Schema/OpenAPI/profile/vectors/locks/crypto/trust/limits/VERSION/gitlinks
 changes. Details: [read-set compatibility](upgrade-api-read-set-compatibility.md).
 Complete client authority/storage/execution tasks remain unfinished.
 Downloads retain no total/cumulative duration or retry cap.
+
+## T27 twenty-eighth batch - supplied transaction-control responses (2026-10-14)
+
+Scope: complete original seven response contracts for consume-status, cancellation
+and execution review. Fixed operation enum, closed frozen Schemas/exact four
+local-only dependencies, whole bounded canonical reparse. Unit success is not
+current read-set proof, verified-object identity, request correlation, durable
+ACK, owner revival or execution authorization. Whole-object uniqueness retains
+different revisions/hashes as Schema-valid; complete current review remains
+owner responsibility. Outside-repository actual original Node generated434
+cases after B27 dependency correction, with all named intended outcomes checked.
+Initial four Rust integration groups passed in10.54s, including all434 actual
+complete original Node contract cases. Both independent static reviews found
+no mandatory issue. Actual Windows updater App43 passed in0.31s after3m27s compilation;
+architecture/version/diff passed and CI policy51 passed in0.075s. Root self-review
+confirms full fixed seven-operation mappings, exact resource closure, status
+nullability, whole-value uniqueness and no added rights/current-time proof.
+Root applicable codec116 passed with actual Node22/both legacy environments,
+filtering only unchanged31556 (complete CI117 retained): new434 in7.18s and
+credential7287 in52.86s. Clippy passed in23.61s; codec and App facade format passed.
+Dependency independent task-scoped5 passed: integration4/actual Node434 in7.41s,
+resourceunit1 in0.03s (four unrelated units filtered), Clippy1.96s/fmt/App facade
+format/diff passed. Both legacy environments enabled; no old full111/7287 or
+App repeat. Compatibility independent task-scoped5 passed: integration4/actual
+Node434 in7.32s, resourceunit1 in0.02s (four unrelated units filtered),
+Clippy1.69s/codec+App facade format/diff passed; CI policy51 in0.053s.
+Both actual Node22/both legacy environments, no repeat of old111/7287/App or
+31556. Both scoped reviews passed without mandatory findings and all processes
+closed. Both independent final documentation reviews passed before commit.
+No Schema/OpenAPI/profile/vectors/dependencies/locks/CI/crypto/trust/limits/
+VERSION/gitlinks changes. Details:
+[transaction responses](client-upgrade-transaction-control-responses.md).
+Complete T27/T32 remain unfinished. Downloads retain no total/cumulative
+duration or retry cap.

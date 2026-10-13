@@ -12,6 +12,16 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+/// Supplied transaction-control response contract, never current review or ACK.
+pub(crate) fn check_supplied_transaction_control_response_bytes(
+    bytes: &[u8],
+    operation: pinvou_upgrade_codec::TransactionControlOperation,
+) -> Result<(), pinvou_upgrade_codec::TransactionControlError> {
+    decode_metadata(bytes)
+        .map_err(pinvou_upgrade_codec::TransactionControlError::Json)?
+        .assert_supplied_transaction_control_contract(operation)
+}
+
 /// Supplied response contract only; never an authorization or consumed ACK.
 pub(crate) fn check_supplied_purpose_response_bytes(
     bytes: &[u8],
@@ -366,6 +376,60 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_checks_transaction_responses_without_creating_review_or_ack() {
+        use pinvou_upgrade_codec::{
+            TransactionControlError as ContractError, TransactionControlOperation as Operation,
+        };
+        for operation in [
+            Operation::ConsumeStatus,
+            Operation::CancelPreinstall,
+            Operation::CancelInstall,
+            Operation::CancelActivate,
+            Operation::ReviewPreinstall,
+            Operation::ReviewInstall,
+            Operation::ReviewActivate,
+        ] {
+            let review = matches!(
+                operation,
+                Operation::ReviewPreinstall | Operation::ReviewInstall | Operation::ReviewActivate
+            );
+            let mut response = serde_json::json!({"protocolVersion":1,"requestId":"request-1"});
+            if review {
+                response["transactionId"] = serde_json::json!("transaction-1");
+                response["transactionRevision"] = serde_json::json!(0);
+                response["reviewedAt"] = serde_json::json!(0);
+                response["verifiedObjectSha256"] = serde_json::json!("a".repeat(64));
+                response["currentReadSet"] = serde_json::json!([
+                    {"recordKind":"transaction","recordId":"record-1","revision":1,"sha256":"a".repeat(64)},
+                    {"recordKind":"transaction","recordId":"record-1","revision":2,"sha256":"a".repeat(64)}]);
+            } else if operation == Operation::ConsumeStatus {
+                response["state"] = serde_json::json!("consumed");
+                response["transactionId"] = serde_json::json!("transaction-1");
+            } else {
+                response["authorizationState"] = serde_json::json!("consumed");
+                response["authorizationRevision"] = serde_json::json!(0);
+            }
+            let check = |value: &serde_json::Value| {
+                check_supplied_transaction_control_response_bytes(
+                    &serde_json::to_vec(value).unwrap(),
+                    operation,
+                )
+            };
+            assert_eq!(check(&response), Ok(()));
+            let baseline = response.clone();
+            if review {
+                response["currentReadSet"][1] = response["currentReadSet"][0].clone();
+            } else if operation == Operation::ConsumeStatus {
+                response["transactionId"] = serde_json::Value::Null;
+            } else {
+                response["authorizationState"] = serde_json::json!("pending");
+            }
+            assert_eq!(check(&response), Err(ContractError::InvalidContract));
+            assert_eq!(check(&baseline), Ok(()));
+        }
+    }
 
     #[test]
     fn feature_facade_checks_six_purpose_responses_without_creating_an_authorization_or_ack() {
