@@ -4,8 +4,10 @@
 // restore_secrets_pack_into_uninitialized_scope_persists_consent) need
 // read-only-home (0o555 directory) fixtures; test-only
 // inline cfg(unix)+PermissionsExt, same exemption precedent as
-// package_export.rs / marketplace/mod.rs (review #455 R9-M5). A write probe
-// guards against running as root (loud ROOT-SKIP marker, round-11 m12);
+// package_export.rs / marketplace/mod.rs (review #455 R9-M5). The root
+// probe/skip discipline lives in the shared
+// platform::test_support::{file_unreadable_or_skip,dir_read_only_or_skip}
+// helpers (loud ROOT-SKIP marker, round-11 m12);
 // Windows is covered by the POSIX-independent restore paths.
 //! 插件中心回收站 —— Upload 来源包卸载的软删除层（marketplace-unification §4 修订）。
 //!
@@ -194,6 +196,38 @@ impl RecycleBin {
         Ok(())
     }
 
+    /// rename 搬移失败的统一兜底（回收/取回共用）：先正向搬移；失败时原路
+    /// 搬回；回滚也失败则响亮留痕 —— 目录可能滞留在回收站一侧
+    /// （`self.root/<id>`）的半搬移状态，静默吞掉将无从排查。`op`/`verb`
+    /// 区分两路的文案（回收·搬移 / 取回·搬回），消息与拆分前逐字一致。
+    fn rename_with_loud_fallback(
+        &self,
+        op: &str,
+        verb: &str,
+        pkg_id: &str,
+        src: &Path,
+        dst: &Path,
+    ) -> Result<(), String> {
+        // rename 走 plugin_import 的 Windows 瞬时占用重试口径（杀软/索引器短暂
+        // 持有新建目录句柄会报 os error 5，实测命中）。
+        if let Err(e) = super::plugin_import::rename_dir_with_retry(src, dst) {
+            // rename 失败通常什么都没动；兜底尝试回滚（部分平台跨设备 rename
+            // 语义差异）。
+            if let Err(re) = super::plugin_import::rename_dir_with_retry(dst, src) {
+                log::error!(
+                    "[recycle-bin] {op} {pkg_id} rename 失败后的兜底回滚也失败（{} 可能处于半搬移状态）: {re}",
+                    self.root.join(pkg_id).display()
+                );
+            }
+            return Err(format!(
+                "{verb} {} → {} 失败: {e}",
+                src.display(),
+                dst.display()
+            ));
+        }
+        Ok(())
+    }
+
     /// 回收：preflight 检查 → rename 搬移 `bundles/<id>/` → `recycle-bin/<id>/`
     /// → 失败回滚（retirement.rs archive 同范式）→ 写清单。
     /// `record_snapshot` 为回收前的 bundles.json 原记录（恢复重建登记用）。
@@ -215,25 +249,20 @@ impl RecycleBin {
             let src = self.bundles_root.join(pkg_id);
             let dst = self.root.join(pkg_id);
             self.preflight_recycle_locked(pkg_id)?;
-            // rename 走 plugin_import 的 Windows 瞬时占用重试口径（杀软/索引器短暂
-            // 持有新建目录句柄会报 os error 5，实测命中）。
-            if let Err(e) = super::plugin_import::rename_dir_with_retry(&src, &dst) {
-                // rename 失败通常什么都没动；兜底尝试回滚（部分平台跨设备 rename 语义差异）。
-                // 回滚失败必须留痕：目录可能处于半搬移状态，静默吞掉将无从排查。
-                if let Err(re) = super::plugin_import::rename_dir_with_retry(&dst, &src) {
-                    log::error!(
-                        "[recycle-bin] 回收 {pkg_id} rename 失败后的兜底回滚也失败（{} 可能处于半搬移状态）: {re}",
-                        dst.display()
-                    );
-                }
-                return Err(format!(
-                    "搬移 {} → {} 失败: {e}",
-                    src.display(),
-                    dst.display()
-                ));
-            }
-            // 搬移成功后写清单；清单写失败则把目录搬回原位（不留无清单的孤儿目录）。
-            let mut file = load_locked(&self.file)?;
+            self.rename_with_loud_fallback("回收", "搬移", pkg_id, &src, &dst)?;
+            // After the move succeeds, read-modify-write the manifest; a manifest
+            // read OR write failure moves the directory back in place (no
+            // manifest-less orphan directory). When the manifest is
+            // corrupt/unreadable, the user's only
+            // copy is stranded at the recycle root with no manifest entry,
+            // invisible to list/restore/purge; the caller (the uninstall
+            // transaction rollback) still restores registration on the assumption
+            // "the directory was rolled back in place", and the end state is
+            // "shown installed, only copy in the recycle bin". Shares the write
+            // leg's compensation.
+            let mut file = load_locked(&self.file).map_err(|e| {
+                Self::rollback_recycled_dir(pkg_id, &src, &dst, &e, "读取回收站清单")
+            })?;
             file.entries.retain(|e| e.id != pkg_id);
             file.entries.push(RecycledEntry {
                 id: pkg_id.to_string(),
@@ -244,19 +273,13 @@ impl RecycleBin {
                 extra: serde_json::Map::new(),
             });
             if let Err(e) = save_locked(&self.file, &file) {
-                if let Err(re) = super::plugin_import::rename_dir_with_retry(&dst, &src) {
-                    // 清单无条目而目录滞留回收站根 = list/restore/purge 不可见的孤儿
-                    // （数据未丢）。必须响亮留痕，并如实上报（不能谎称已回滚）。
-                    log::error!(
-                        "[recycle-bin] 回收 {pkg_id} 清单写入失败，目录回滚也失败：{} 滞留回收站根但无清单条目（数据未丢，需人工搬回）: {re}",
-                        dst.display()
-                    );
-                    return Err(format!(
-                        "写入回收站清单失败: {e}；目录回滚也失败，包目录滞留在 {}（数据未丢，需人工搬回）: {re}",
-                        dst.display()
-                    ));
-                }
-                return Err(format!("写入回收站清单失败（已回滚目录）: {e}"));
+                return Err(Self::rollback_recycled_dir(
+                    pkg_id,
+                    &src,
+                    &dst,
+                    &e,
+                    "写入回收站清单",
+                ));
             }
             log::info!(
                 "[recycle-bin] 已回收包 {pkg_id}（kind={kind}）→ {}",
@@ -266,15 +289,61 @@ impl RecycleBin {
         })
     }
 
+    /// Directory compensation after a manifest failure (read or write): moves
+    /// the pack directory back to its `bundles_root` home so the caller's
+    /// transaction-rollback assumption ("recycle_package rolled the directory
+    /// back in place") holds. When the rollback fails too, log loudly and
+    /// report honestly — orphaned but with no data lost, needing a manual
+    /// move back, never claiming a rollback that did not happen.
+    fn rollback_recycled_dir(
+        pkg_id: &str,
+        src: &Path,
+        dst: &Path,
+        manifest_error: &str,
+        phase: &str,
+    ) -> String {
+        if let Err(re) = super::plugin_import::rename_dir_with_retry(dst, src) {
+            // A directory stranded at the recycle root with no manifest entry
+            // = an orphan invisible to list/restore/purge (no data lost). Log
+            // loudly and report honestly (never claim a rollback that did
+            // not happen). Copy convention: these are user-visible recycle
+            // errors — keep the Chinese shape (写入回收站清单失败…) with
+            // the phase folded in.
+            log::error!(
+                "[recycle-bin] 回收 {pkg_id} {phase}失败，目录回滚也失败：{} 滞留回收站根但无清单条目（数据未丢，需人工搬回）: {re}",
+                dst.display()
+            );
+            return format!(
+                "{phase}失败: {manifest_error}；目录回滚也失败，包目录滞留在 {}（数据未丢，需人工搬回）: {re}",
+                dst.display()
+            );
+        }
+        format!("{phase}失败（已回滚目录）: {manifest_error}")
+    }
+
     /// Round-29 m2 (review #455): 清单是否列有该 id——恢复管线的 preflight
     /// 守卫必须与 take_back 的 fail-closed「不在回收站」拒绝同口径：孤儿回收
     /// 目录（崩溃/双重回滚残留）能通过目录守卫，缺这道检查会让同意门先持久
     /// 化幽灵行 + 安装默认标记，随后才被 take_back 拒绝。take_back 在文件锁
     /// 内复查，仍是权威。
-    pub fn contains(&self, pkg_id: &str) -> Result<bool, String> {
+    fn contains(&self, pkg_id: &str) -> Result<bool, String> {
         file_lock::try_file_lock_for_read(&self.file, || {
             let file = load_locked(&self.file)?;
             Ok(file.entries.iter().any(|e| e.id == pkg_id))
+        })
+    }
+
+    /// 条目的快照 record id（条目缺失返回 `None`）：restore preflight 的
+    /// snapshot-id 镜像用，take_back 在文件锁内复查并仍是权威。try 锁读取，
+    /// 与 `contains` 同一退化口径（锁被占用/不可用时退化为不落盘的解锁快照）。
+    fn entry_snapshot_record_id(&self, pkg_id: &str) -> Result<Option<String>, String> {
+        file_lock::try_file_lock_for_read(&self.file, || {
+            let file = load_locked(&self.file)?;
+            Ok(file
+                .entries
+                .iter()
+                .find(|e| e.id == pkg_id)
+                .map(|e| e.record.id.clone()))
         })
     }
 
@@ -323,6 +392,18 @@ impl RecycleBin {
             let Some(index) = file.entries.iter().position(|e| e.id == pkg_id) else {
                 return Err(format!("包 '{pkg_id}' 不在回收站"));
             };
+            // The manifest is a 0600 state file, but still a
+            // hand-editable one — a snapshot whose record declares a different
+            // id would register the restored tree under the record's id (a
+            // live record no directory backs, and a `source: Preset` record
+            // downgrades the later uninstall to a physical delete). The entry
+            // id is authoritative; refuse the mismatch before anything moves.
+            if file.entries[index].record.id != pkg_id {
+                return Err(format!(
+                    "回收站条目 '{pkg_id}' 的快照 record id '{}' 不一致，拒绝恢复",
+                    file.entries[index].record.id
+                ));
+            }
             let src = self.root.join(pkg_id);
             let dst = self.bundles_root.join(pkg_id);
             if !src.is_dir() {
@@ -336,20 +417,7 @@ impl RecycleBin {
             }
             std::fs::create_dir_all(&self.bundles_root)
                 .map_err(|e| format!("创建包目录根 {} 失败: {e}", self.bundles_root.display()))?;
-            if let Err(e) = super::plugin_import::rename_dir_with_retry(&src, &dst) {
-                // 搬回失败通常什么都没动；兜底回滚失败必须留痕（目录可能半搬移）。
-                if let Err(re) = super::plugin_import::rename_dir_with_retry(&dst, &src) {
-                    log::error!(
-                        "[recycle-bin] 取回 {pkg_id} rename 失败后的兜底回滚也失败（{} 可能处于半搬移状态）: {re}",
-                        src.display()
-                    );
-                }
-                return Err(format!(
-                    "搬回 {} → {} 失败: {e}",
-                    src.display(),
-                    dst.display()
-                ));
-            }
+            self.rename_with_loud_fallback("取回", "搬回", pkg_id, &src, &dst)?;
             let entry = file.entries.remove(index);
             // A failed manifest persist must be compensated (round-19 MAJOR 3): the
             // directory has already moved back to bundles_root while the bin entry is
@@ -555,6 +623,21 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
     if !super::skill_marketplace::is_safe_skill_name(pkg_id) {
         return Err(format!("非法包 id '{pkg_id}'"));
     }
+    // Restore is a same-id `bundles/<id>` writer like
+    // the import pipeline and the uninstall, so it holds the same
+    // cross-process landing lease across its span — without it, the boot
+    // sweep's record-probe→delete pair (which leases against imports and
+    // uninstalls) can delete a just-restored sole copy in the
+    // take_back→registration gap, and a peer same-id import can land over
+    // the restored dir (its `.old` rotation then deletes the restored
+    // content). Order lease → import mutex matches the pipeline; blocking
+    // acquisition, the same accepted fail-stop tradeoff (the restore
+    // command runs in spawn_blocking; the OS releases the lease if the
+    // holder dies).
+    let mut landing_lease = super::plugin_import::open_landing_lease(pkg_id)
+        .map_err(|error| format!("open the landing lease for {pkg_id}: {error}"))?;
+    let _landing_lease_guard = file_lock::lock_write_with_transient_retry!(&mut landing_lease)
+        .map_err(|error| format!("lock the landing lease for {pkg_id}: {error}"))?;
     let import_lock = super::plugin_import::import_lock_for(pkg_id);
     let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
     let bin = RecycleBin::new();
@@ -580,21 +663,38 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
     if !bin.contains(pkg_id)? {
         return Err(format!("包 '{pkg_id}' 不在回收站"));
     }
+    // Mirror take_back's snapshot-id guard too — a
+    // hand-edited manifest whose record declares a different id otherwise
+    // persists the consent rows + install-default markers for the id before
+    // take_back refuses (the same doomed-restore-writes-consent class as the
+    // guard above; take_back re-checks under the lock and stays the
+    // authority).
+    if let Some(record_id) = bin.entry_snapshot_record_id(pkg_id)? {
+        if record_id != pkg_id {
+            return Err(format!(
+                "回收站条目 '{pkg_id}' 的快照 record id '{record_id}' 不一致，拒绝恢复"
+            ));
+        }
+    }
     // 恢复碰撞 preflight（fail-closed，先于任何搬移）：回收期间市场状态可能已
     // 变（例如导入了把同名技能作为 companion 的包），碰撞状态下恢复会造出同
     // 技能双份物理副本，后续技能卸载的候选目录清理会连唯一副本一起删。检查
     // 与导入通道同口径（`ensure_skill_restorable`）；此刻包目录仍在回收站，
     // 自身副本不会被误判为他包副本。
+    // 碰撞校验与同意门共用同一次遍历：两次遍历之间只有排序与纯校验
+    // `ensure_skill_restorable`（无任何目录变更），同目录连续两次 read_dir
+    // 顺序一致，故单次扫描的名单与历史上的两次扫描逐项一致。
     let recycled_skills_dir = bin.root.join(pkg_id).join("skills");
+    let mut skill_names: Vec<String> = Vec::new();
     if recycled_skills_dir.is_dir() {
-        let mut skill_names: Vec<String> = Vec::new();
+        // Propagate mid-scan entry/type errors —
+        // `.flatten()` + `unwrap_or(false)` silently skipped skills, and a
+        // collision missed here would double-materialize the same skill; a
+        // dropped entry would equally shrink the consent cohort. Errors before
+        // take_back keep the bin entry: retry stays real.
         for entry in std::fs::read_dir(&recycled_skills_dir)
             .map_err(|e| format!("读取 {} 失败: {e}", recycled_skills_dir.display()))?
         {
-            // Round-31 m3 (review #455): propagate mid-scan entry/type errors —
-            // `.flatten()` + `unwrap_or(false)` silently skipped skills, and a
-            // collision missed here would double-materialize the same skill.
-            // Errors before take_back keep the bin entry: retry stays real.
             let entry =
                 entry.map_err(|e| format!("遍历 {} 失败: {e}", recycled_skills_dir.display()))?;
             if entry
@@ -605,10 +705,6 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
                 skill_names.push(entry.file_name().to_string_lossy().into_owned());
             }
         }
-        skill_names.sort();
-        for name in &skill_names {
-            super::skill_marketplace::ensure_skill_restorable(pkg_id, name)?;
-        }
     }
     // Consent gate BEFORE take_back (round-11 M3): if its persist fails, the
     // bin entry is still intact and "retry the restore" is a real remedy (the
@@ -617,25 +713,9 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
     // the bin-side package dir — the bundles-side dir only exists after
     // take_back. A later install_upload failure still rolls the entry back
     // with the gate already written (consistent: bin + disabled).
-    let mut consent_ids = vec![pkg_id.to_string()];
-    if recycled_skills_dir.is_dir() {
-        // Round-31 m3 (review #455): the gate's skill enumeration must not
-        // swallow root/entry/type errors either (`if let Ok` + `.flatten()`
-        // silently narrowed the consent cohort); a failure here is before
-        // take_back, so the bin entry stays and the retry is real.
-        for entry in std::fs::read_dir(recycled_skills_dir.as_path())
-            .map_err(|e| format!("读取 {} 失败: {e}", recycled_skills_dir.display()))?
-        {
-            let entry =
-                entry.map_err(|e| format!("遍历 {} 失败: {e}", recycled_skills_dir.display()))?;
-            if entry
-                .file_type()
-                .map_err(|e| format!("读取 {} 类型失败: {e}", entry.path().display()))?
-                .is_dir()
-            {
-                consent_ids.push(entry.file_name().to_string_lossy().into_owned());
-            }
-        }
+    skill_names.sort();
+    for name in &skill_names {
+        super::skill_marketplace::ensure_skill_restorable(pkg_id, name)?;
     }
     // Secrets-declaring packs take the supply-skipped branch below (install_upload
     // never runs), so their id never re-enters installed.json — one of the three
@@ -663,21 +743,21 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
     // bundles_root, where the disk-derived skill arm of the DenyAll expansion
     // (`resolve_scope_disabled_ids`) sees it — the gate's inner-name scan
     // normalizes to the physical owner via skill_gating_owner.
+    // NotFound keeps the no-manifest (false) arm; any other
+    // open/parse failure keeps the fail-toward-force direction.
     let manifest_path = bin.root.join(pkg_id).join("mcp").join("manifest.json");
-    let secrets_declared = if manifest_path.exists() {
-        std::fs::read_to_string(&manifest_path)
+    let secrets_declared = match crate::platform::filesystem::read_private_data_file(&manifest_path)
+    {
+        Ok(content) => serde_json::from_str::<super::types::ToolManifest>(&content)
             .ok()
-            .and_then(|content| serde_json::from_str::<super::types::ToolManifest>(&content).ok())
             .map(|m| !super::secrets::manifest_secret_targets(&m).is_empty())
-            .unwrap_or(true)
-    } else {
-        false
+            .unwrap_or(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => true,
     };
-    // consent_ids[0] is the pack id itself; it is passed separately and lands
-    // in the gate verbatim (round-24 MAJOR 1 — a pack row is never re-owned).
     // Skill dir names equal to the pack id (pure single-skill packs) are not
     // re-normalized either — the pack row already covers them.
-    let consent_skill_ids: Vec<String> = consent_ids[1..]
+    let consent_skill_ids: Vec<String> = skill_names
         .iter()
         .filter(|id| id.as_str() != pkg_id)
         .cloned()
@@ -715,10 +795,7 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
     let mut restored = record.clone();
     restored.installed = true;
     if let Err(e) = BundleStore::new().upsert_preserving(restored) {
-        let rollback_display = match &record.source {
-            super::store::BundleSource::Upload(zip) => zip.clone(),
-            _ => pkg_id.to_string(),
-        };
+        let rollback_display = super::store::upload_display_name(&record, pkg_id);
         let rollback_kind = package_kind(&pkg_dir);
         if let Err(re) =
             bin.recycle_package(pkg_id, rollback_kind, &rollback_display, record.clone())
@@ -752,10 +829,7 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
             // 内部事务回滚）：目录搬回 + 清单条目复原 + 登记移除，用户可从回收站
             // 重试；不回滚会残留「记录已安装、无供给面、条目已消费无从重试」的
             // 半恢复态。回滚自身失败必须响亮留痕并如实上报。
-            let rollback_display = match &record.source {
-                super::store::BundleSource::Upload(zip) => zip.clone(),
-                _ => pkg_id.to_string(),
-            };
+            let rollback_display = super::store::upload_display_name(&record, pkg_id);
             let rollback_kind = package_kind(&pkg_dir);
             if let Err(re) =
                 bin.recycle_package(pkg_id, rollback_kind, &rollback_display, record.clone())
@@ -817,8 +891,12 @@ pub fn restore_plugin(pkg_id: &str) -> Result<RestoreRecycledResult, String> {
 // ---------------------------------------------------------------------------
 
 /// 内层读：文件不存在 → 空清单；JSON 损坏 → Err（fail loud，不静默重建）。
+/// 经硬化打开读取：所有调用方都持有 recycle-bin.json 的跨进程
+/// 文件锁，裸 `read_to_string` 会被植入的 FIFO 卡死在 `open()` 上——锁被持有
+/// 期间所有回收站操作（含 restore 持有的 per-id import 锁）全部停摆。硬化
+/// 语义与其它私有状态文件一致：非普通文件（FIFO/symlink/设备）一律响亮拒绝。
 fn load_locked(path: &Path) -> Result<RecycleBinFile, String> {
-    match std::fs::read_to_string(path) {
+    match crate::platform::filesystem::read_private_data_file(path) {
         Ok(content) => serde_json::from_str(&content).map_err(|e| {
             format!(
                 "解析 {} 失败: {e}（recycle-bin.json 损坏时 fail loud，不静默重建）",
@@ -862,36 +940,6 @@ mod tests {
     #[cfg(unix)]
     use crate::features::marketplace::scope::load_disabled_bundles_file;
 
-    /// Points PINVOU3_HOME at a clean temp dir for the closure, serializing via
-    /// ENV_LOCK with the other env-mutating tests (repo convention: scope.rs /
-    /// mod.rs each keep their own same-named test helper; no cross-module
-    /// sharing). Unix-only: currently used only by the read-only-permission
-    /// fixture regressions.
-    #[cfg(unix)]
-    fn with_temp_home<F: FnOnce()>(f: F) {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!("pinvou3-recyclebin-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        // The write-failure memos are keyed by home path and this harness
-        // reuses a pid-keyed dir: clear them so a prior case's memo cannot
-        // bleed into the next one (same shape as scope.rs's harness).
-        crate::features::marketplace::scope::clear_unpersisted_verdict_for_test();
-        f();
-        match prev {
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
     fn fresh_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
             "pinvou3-recyclebin-test-{tag}-{}-{}",
@@ -914,6 +962,137 @@ mod tests {
             degraded: None,
             extra: serde_json::Map::new(),
         }
+    }
+
+    /// Bins one pure-skill package through the exact uninstall shape the
+    /// marketplace commands run: create `bundles/<id>/skills/<skill>/SKILL.md`,
+    /// register it (`upload_record`), drop the registration, recycle the
+    /// package into the bin. `skill` is passed separately because three pins
+    /// carry an inner skill whose dir name differs from the pack id and is
+    /// pinned verbatim in their path assertions. Returns the pre-recycle
+    /// package path (`bundles/<id>/`) — what a refused restore must NOT land
+    /// at and a successful restore must land back at. File-local per the
+    /// module convention (scope.rs / mod.rs keep their own same-named test
+    /// helpers; no cross-module sharing).
+    fn bin_package(id: &str, skill: &str) -> PathBuf {
+        let pkg = paths::bundles_root().join(id);
+        std::fs::create_dir_all(pkg.join("skills").join(skill)).unwrap();
+        std::fs::write(
+            pkg.join("skills").join(skill).join("SKILL.md"),
+            format!("---\nname: {skill}\n---\n"),
+        )
+        .unwrap();
+        let store = BundleStore::new();
+        store.upsert(upload_record(id)).unwrap();
+        let record = store.get(id).unwrap().unwrap();
+        store.remove(id).unwrap();
+        RecycleBin::new()
+            .recycle_package(id, KIND_SKILL, &format!("{id}.zip"), record)
+            .unwrap();
+        pkg
+    }
+
+    /// A hand-edited manifest whose snapshot record declares
+    /// a different id must be refused BEFORE anything moves — restoring it
+    /// would register the tree under the record's id (a live record no
+    /// directory backs, and a Preset-source record downgrades the later
+    /// uninstall of that directory to a physical delete).
+    #[test]
+    fn take_back_refuses_a_snapshot_record_id_mismatch() {
+        crate::platform::test_support::with_temp_home("pinvou3-recycle-id-mismatch", || {
+            bin_package("demo", "demo");
+            let bin = RecycleBin::new();
+
+            let mut manifest: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&bin.file).unwrap()).unwrap();
+            manifest["entries"][0]["record"]["id"] =
+                serde_json::Value::String("victim".to_string());
+            std::fs::write(&bin.file, manifest.to_string()).unwrap();
+
+            let error = bin.take_back("demo").unwrap_err();
+            assert!(
+                error.contains("不一致"),
+                "the mismatch must be refused with the snapshot-id error: {error}"
+            );
+            assert!(
+                bin.root.join("demo").is_dir(),
+                "the refusal must fire before the directory moves"
+            );
+            assert!(
+                !paths::bundles_root().join("demo").exists(),
+                "nothing may land at the restore target"
+            );
+        });
+    }
+
+    /// The restore preflight mirrors take_back's
+    /// snapshot-id guard too. With the scope lock BROKEN the consent gate
+    /// cannot run, so the mismatch refusal below can only come from the
+    /// preflight — proving it fires BEFORE the gate, which would otherwise
+    /// persist the consent rows + install-default markers for the id first
+    /// and take_back would refuse afterwards (the same
+    /// doomed-restore-writes-consent class as the destination/entry guards).
+    #[test]
+    fn restore_refuses_a_snapshot_record_id_mismatch_before_the_gate() {
+        crate::platform::test_support::with_temp_home("pinvou3-restore-id-mismatch", || {
+            bin_package("demo", "demo");
+            let bin = RecycleBin::new();
+
+            let mut manifest: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&bin.file).unwrap()).unwrap();
+            manifest["entries"][0]["record"]["id"] =
+                serde_json::Value::String("victim".to_string());
+            std::fs::write(&bin.file, manifest.to_string()).unwrap();
+
+            // Break the lock: a gate reach would fail naming
+            // disabled_bundles.lock, so the mismatch error is the preflight's.
+            crate::features::marketplace::scope::break_scope_lock_for_test();
+
+            let error = restore_plugin("demo").unwrap_err();
+            assert!(
+                error.contains("不一致"),
+                "the preflight must refuse the mismatch before the gate: {error}"
+            );
+            assert!(
+                !error.contains("disabled_bundles.lock"),
+                "the refusal must be the preflight's, not a gate lock error: {error}"
+            );
+            assert!(
+                !paths::bundles_root().join("demo").exists(),
+                "nothing may land at the restore target"
+            );
+        });
+    }
+
+    /// RAII-locked, freshly seeded PINVOU3_HOME for the deny-first restore
+    /// pins: takes the env lock, points PINVOU3_HOME at a fresh temp dir, and
+    /// seeds an initialized Code scope (deny list = ["seed-bundle"]) so the
+    /// restore's consent gate has a writable target. Returns
+    /// `(tmp, lock, env)` — keep the guards alive for the test body and drop
+    /// `tmp` with `remove_dir_all` at the end (the RAII env restore also
+    /// covers unwinding assertions).
+    fn seeded_code_home(
+        tag: &str,
+    ) -> (
+        PathBuf,
+        std::sync::MutexGuard<'static, ()>,
+        crate::platform::test_support::EnvRestore,
+    ) {
+        // RAII lock + env snapshot: a failing assertion unwinds
+        // past a straight-line env restore and would cascade unrelated
+        // failures for every later test in the process.
+        let (lock, env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = fresh_dir(tag);
+        // SAFETY: ENV_LOCK held by lock; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        // Initialized DenyAll scope: the restore registration has a writable target.
+        crate::features::marketplace::scope::save_disabled_bundles_for(
+            crate::features::marketplace::ConnectorScope::Code,
+            &["seed-bundle".to_string()],
+        )
+        .unwrap();
+        (tmp, lock, env)
     }
 
     /// 回收 → list → 取回的完整往返：目录搬动、清单条目、记录快照逐字段保留。
@@ -993,6 +1172,30 @@ mod tests {
         assert_eq!(zip.display_name, "zip-skill.zip", "无快照名时回退源文件名");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// 清单读取走硬化打开后，植入的 symlink/FIFO 必须
+    /// 响亮拒绝而不是跟随/挂死——所有调用方持锁读，裸读会被 FIFO 卡死在
+    /// `open()` 上并拖死全部回收站操作。symlink 引脚（unix 专属 API）：拒绝
+    /// 必须指名清单路径（fail loud），且清单内容不得被越过。
+    #[cfg(unix)]
+    #[test]
+    fn recycle_manifest_read_refuses_a_planted_symlink() {
+        crate::platform::test_support::with_temp_home("pinvou3-recyclebin-symlink-pin", || {
+            let manifest = crate::platform::paths::pinvou3_home()
+                .join("marketplace")
+                .join("recycle-bin.json");
+            std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+            let target = crate::platform::paths::pinvou3_home().join("outside.json");
+            std::fs::write(&target, r#"{"entries":[]}"#).unwrap();
+            std::os::unix::fs::symlink(&target, &manifest).unwrap();
+
+            let error = RecycleBin::new().list().unwrap_err();
+            assert!(
+                error.contains("recycle-bin.json"),
+                "the refusal must name the manifest path, not follow the symlink: {error}"
+            );
+        });
     }
 
     /// purge：物理删除目录 + 清单条目；不在清单的 id 拒绝（fail-closed）；
@@ -1081,10 +1284,7 @@ mod tests {
     /// on-the-fly expansion already covers them).
     #[test]
     fn restore_redisables_in_initialized_scopes() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("restore-redisable");
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
@@ -1152,10 +1352,6 @@ mod tests {
             "restore must not initialize an uninitialized scope: {file:?}"
         );
 
-        match prev {
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -1182,54 +1378,29 @@ mod tests {
     /// recycled entry whose id denotes the builtin must be refused outright,
     /// and the folded probe must cover case-variant spellings (the same
     /// package on a case-insensitive filesystem).
-    #[test]
-    fn restore_refuses_builtin_id() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        let tmp = fresh_dir("restore-builtin");
+    fn assert_restore_refuses_builtin_id(input: &str, tag: &str) {
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
+        let tmp = fresh_dir(tag);
+        // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
-        let error = restore_plugin("session-reader").unwrap_err();
+        let error = restore_plugin(input).unwrap_err();
         assert!(
             error.contains("内建插件冲突"),
-            "restore of a builtin id must be refused by the builtin guard: {error}"
+            "restore of builtin id '{input}' must be refused by the builtin guard: {error}"
         );
 
-        if let Some(v) = prev {
-            // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
-            unsafe { std::env::set_var("PINVOU3_HOME", v) };
-        } else {
-            // SAFETY: see above.
-            unsafe { std::env::remove_var("PINVOU3_HOME") };
-        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
+    fn restore_refuses_builtin_id() {
+        assert_restore_refuses_builtin_id("session-reader", "restore-builtin");
+    }
+
+    #[test]
     fn restore_refuses_case_variant_builtin_id() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        let tmp = fresh_dir("restore-builtin-variant");
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-
-        let error = restore_plugin("Session-Reader").unwrap_err();
-        assert!(
-            error.contains("内建插件冲突"),
-            "restore of a case-variant builtin spelling must be refused by the folded guard: {error}"
-        );
-
-        if let Some(v) = prev {
-            // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
-            unsafe { std::env::set_var("PINVOU3_HOME", v) };
-        } else {
-            // SAFETY: see above.
-            unsafe { std::env::remove_var("PINVOU3_HOME") };
-        }
-        let _ = std::fs::remove_dir_all(&tmp);
+        assert_restore_refuses_builtin_id("Session-Reader", "restore-builtin-variant");
     }
 
     /// 恢复管线（纯技能包）：目录搬回 + bundles.json 登记重建（source=Upload、
@@ -1237,29 +1408,12 @@ mod tests {
     /// 走真实 paths（PINVOU3_HOME 指临时目录），借 ENV_LOCK 与其它 env 测试串行。
     #[test]
     fn restore_skill_package_rebuilds_registration() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("restore-skill");
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
-        let pkg = paths::bundles_root().join("my-skill");
-        std::fs::create_dir_all(pkg.join("skills/my-skill")).unwrap();
-        std::fs::write(
-            pkg.join("skills/my-skill/SKILL.md"),
-            "---\nname: my-skill\n---\n",
-        )
-        .unwrap();
+        let pkg = bin_package("my-skill", "my-skill");
         let store = BundleStore::new();
-        store.upsert(upload_record("my-skill")).unwrap();
-
-        // 卸载（模拟 skill_marketplace 的回收路径）：删登记 + 整包回收。
-        let record = store.get("my-skill").unwrap().unwrap();
-        store.remove("my-skill").unwrap();
-        RecycleBin::new()
-            .recycle_package("my-skill", KIND_SKILL, "my-skill.zip", record)
-            .unwrap();
         assert!(store.get("my-skill").unwrap().is_none());
 
         let result = restore_plugin("my-skill").unwrap();
@@ -1283,10 +1437,233 @@ mod tests {
             "恢复后清单应清空"
         );
 
-        match prev {
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The restore's deny-first consent gate (#517): under
+    /// initialized DenyAll scopes the restore registers the deny entry
+    /// before anything moves (a restored package starts disabled); a refused
+    /// registration aborts before landing and the package stays in the bin
+    /// to retry as-is.
+    #[test]
+    fn restore_registers_deny_first_and_refusal_aborts_before_landing() {
+        let (tmp, _lock, _env) = seeded_code_home("restore-deny-first");
+
+        let pkg = bin_package("my-skill", "my-skill");
+
+        // Refusal injection: a directory at the lock path (open must fail) -> the restore aborts before anything moves.
+        let lock_path = paths::pinvou3_home().join("disabled_bundles.lock");
+        std::fs::remove_file(&lock_path).unwrap();
+        std::fs::create_dir_all(&lock_path).unwrap();
+        let err = restore_plugin("my-skill").unwrap_err();
+        assert!(
+            err.contains("disabled_bundles.lock"),
+            "refusal must name the lock file (the #528 false-pass half): {err}"
+        );
+        assert!(!pkg.exists(), "a refused restore must land nothing");
+        assert_eq!(
+            RecycleBin::new().list().unwrap().len(),
+            1,
+            "the bin entry survives a refusal untouched, ready to retry"
+        );
+        std::fs::remove_dir_all(&lock_path).unwrap();
+
+        // Retry succeeds: the restore lands and the DenyAll deny entry is registered (starts disabled).
+        let result = restore_plugin("my-skill").unwrap();
+        assert!(!result.credentials_required);
+        assert!(
+            pkg.join("skills/my-skill/SKILL.md").is_file(),
+            "the retry must land"
+        );
+        let code = crate::features::marketplace::scope::load_disabled_bundles_for(
+            crate::features::marketplace::ConnectorScope::Code,
+        );
+        assert!(
+            code.contains(&"my-skill".to_string()),
+            "the restored package must be deny-first registered in the initialized DenyAll scope: {code:?}"
+        );
+        assert!(code.contains(&"seed-bundle".to_string()));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Regression: the restore gate must NOT consult the known-bundle
+    /// skip. A mid-uninstall `store.remove` failure is a log-only mirror
+    /// delete while the recycle still proceeds, so a binned package can keep
+    /// a stale `installed = true` record — under the skip that record would
+    /// mark the id known and the restored package would land with no deny
+    /// entry in the initialized DenyAll scopes (fail-open). The registration
+    /// here is unconditional.
+    #[test]
+    fn restore_registers_even_when_a_stale_store_record_survives() {
+        let (tmp, _lock, _env) = seeded_code_home("restore-stale-record");
+
+        let store = BundleStore::new();
+        // Simulate the failed mirror delete (store.remove errs, log-only) and
+        // the recycle that proceeds anyway: record stays installed, package
+        // is binned, deny entries were cleared at the command layer. Staged
+        // inline — unlike bin_package it must NOT drop the record.
+        let pkg = paths::bundles_root().join("my-skill");
+        std::fs::create_dir_all(pkg.join("skills").join("my-skill")).unwrap();
+        std::fs::write(
+            pkg.join("skills").join("my-skill").join("SKILL.md"),
+            "---\nname: my-skill\n---\n",
+        )
+        .unwrap();
+        store.upsert(upload_record("my-skill")).unwrap();
+        let record = store.get("my-skill").unwrap().unwrap();
+        RecycleBin::new()
+            .recycle_package("my-skill", KIND_SKILL, "my-skill.zip", record)
+            .unwrap();
+        assert!(store.get("my-skill").unwrap().unwrap().installed);
+
+        // With the lock WORKING, the skip would be observable as a missing
+        // entry, not as a refusal — the helper's seeding already covers it.
+
+        let result = restore_plugin("my-skill").unwrap();
+        assert!(!result.credentials_required);
+        assert!(
+            pkg.join("skills/my-skill/SKILL.md").is_file(),
+            "the restore must land"
+        );
+        let code = crate::features::marketplace::scope::load_disabled_bundles_for(
+            crate::features::marketplace::ConnectorScope::Code,
+        );
+        assert!(
+            code.contains(&"my-skill".to_string()),
+            "a stale installed-record must not skip the restore registration: {code:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Pin: bin-entry validation runs BEFORE the consent gate, so a
+    /// bogus id must fail on the missing entry — never after writing a deny
+    /// entry it would leave behind for a never-restorable id.
+    #[test]
+    fn restore_of_a_bogus_id_leaves_no_deny_entry() {
+        // Initialized DenyAll scope with the lock working (the helper seeds
+        // it): a gate-first ordering would happily register the bogus id.
+        let (tmp, _lock, _env) = seeded_code_home("restore-bogus-id");
+
+        let err = restore_plugin("no-such-id").unwrap_err();
+        assert!(
+            err.contains("no-such-id")
+                && err.contains(
+                    &RecycleBin::new()
+                        .root
+                        .join("no-such-id")
+                        .display()
+                        .to_string(),
+                ),
+            "the failure must be the missing-bin-entry error, not a gate error: {err}"
+        );
+        let code = crate::features::marketplace::scope::load_disabled_bundles_for(
+            crate::features::marketplace::ConnectorScope::Code,
+        );
+        assert!(
+            !code.contains(&"no-such-id".to_string()),
+            "a bogus restore id must never gain a deny entry: {code:?}"
+        );
+        assert!(code.contains(&"seed-bundle".to_string()));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Pin: a `package_missing` entry (manifest present, package
+    /// directory deleted externally) is rejected at entry validation —
+    /// BEFORE the consent gate consumes a registration for a
+    /// never-restorable id. Purge remains the only way to clear it.
+    #[test]
+    fn restore_of_package_missing_entry_registers_no_deny_entry() {
+        let (tmp, _lock, _env) = seeded_code_home("restore-package-missing");
+
+        bin_package("gone-skill", "gone-skill");
+        // The external-deletion scenario: the manifest keeps the entry while
+        // the package directory is gone.
+        std::fs::remove_dir_all(RecycleBin::new().root.join("gone-skill")).unwrap();
+
+        let err = restore_plugin("gone-skill").unwrap_err();
+        assert!(
+            err.contains("gone-skill")
+                && err.contains(
+                    &RecycleBin::new()
+                        .root
+                        .join("gone-skill")
+                        .display()
+                        .to_string(),
+                ),
+            "the failure must be the package-missing validation error, not a gate or take_back error: {err}"
+        );
+        // The gate never consumed a registration for the never-restorable id.
+        let code = crate::features::marketplace::scope::load_disabled_bundles_for(
+            crate::features::marketplace::ConnectorScope::Code,
+        );
+        assert!(
+            !code.contains(&"gone-skill".to_string()),
+            "a never-restorable entry must never gain a deny entry: {code:?}"
+        );
+        assert!(code.contains(&"seed-bundle".to_string()));
+        // The bin entry itself survives — only purge clears it.
+        assert_eq!(
+            RecycleBin::new().list().unwrap().len(),
+            1,
+            "the manifest entry survives a package-missing restore attempt"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Pin: the destination preflight runs BEFORE the consent gate.
+    /// A stale bin entry whose destination was reinstalled/re-imported since
+    /// (dst exists) must be refused before the gate registers a deny entry —
+    /// otherwise the gate would first re-disable the live enabled
+    /// installation and take_back would then refuse as if nothing had
+    /// happened (consent destroyed by a refused restore).
+    #[test]
+    fn restore_refused_before_anything_lands_when_destination_exists() {
+        let (tmp, _lock, _env) = seeded_code_home("restore-dst-exists");
+
+        bin_package("my-skill", "my-skill");
+
+        // Simulate the reinstall/re-import since: the destination exists
+        // again (an empty dir is the same bar take_back's dst.exists() applies).
+        std::fs::create_dir_all(paths::bundles_root().join("my-skill")).unwrap();
+
+        // Snapshot the deny list so the gate's non-consumption is checkable
+        // after the refusal (the helper's seeding ran with the lock WORKING).
+        let deny_before = crate::features::marketplace::scope::load_disabled_bundles_for(
+            crate::features::marketplace::ConnectorScope::Code,
+        );
+
+        let err = restore_plugin("my-skill").unwrap_err();
+        assert!(
+            err.contains(&paths::bundles_root().join("my-skill").display().to_string()),
+            "the failure must be the destination refusal, not a gate lock error: {err}"
+        );
+        assert!(
+            !err.contains("disabled_bundles.lock"),
+            "the lock must be working here; the refusal must be the destination: {err}"
+        );
+        // The gate never consumed a registration: the deny list is unchanged
+        // (the live reinstalled destination was NOT re-disabled).
+        let deny_after = crate::features::marketplace::scope::load_disabled_bundles_for(
+            crate::features::marketplace::ConnectorScope::Code,
+        );
+        assert_eq!(
+            deny_after, deny_before,
+            "a refused-by-destination restore must not re-disable the live installation: {deny_after:?}"
+        );
+        // The stale entry stays in the bin; only purge clears it.
+        assert!(
+            RecycleBin::new()
+                .list()
+                .unwrap()
+                .iter()
+                .any(|e| e.id == "my-skill"),
+            "the bin entry must survive the refusal untouched"
+        );
+
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -1295,27 +1672,12 @@ mod tests {
     /// 此后技能卸载的候选目录清理会把用户唯一副本连他包副本一起删（review P1）。
     #[test]
     fn restore_refuses_skill_name_colliding_with_foreign_package() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("restore-collide");
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
-        let pkg = paths::bundles_root().join("my-skill");
-        std::fs::create_dir_all(pkg.join("skills/my-skill")).unwrap();
-        std::fs::write(
-            pkg.join("skills/my-skill/SKILL.md"),
-            "---\nname: my-skill\n---\n",
-        )
-        .unwrap();
+        bin_package("my-skill", "my-skill");
         let store = BundleStore::new();
-        store.upsert(upload_record("my-skill")).unwrap();
-        let record = store.get("my-skill").unwrap().unwrap();
-        store.remove("my-skill").unwrap();
-        RecycleBin::new()
-            .recycle_package("my-skill", KIND_SKILL, "my-skill.zip", record)
-            .unwrap();
 
         // 冲突注入：回收期间他包 m 实体化了同名 companion 副本。
         let foreign = paths::bundles_root().join("m/skills/my-skill");
@@ -1339,10 +1701,6 @@ mod tests {
         assert!(foreign.join("SKILL.md").is_file(), "他包同名副本不得受影响");
         assert!(store.get("my-skill").unwrap().is_none(), "不得重建登记");
 
-        match prev {
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -1354,10 +1712,7 @@ mod tests {
     /// take_back, the round-25 minor-9 family, manifest-entry arm).
     #[test]
     fn restore_refuses_orphaned_bin_dir_without_phantom_consent() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("restore-orphan");
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
@@ -1374,20 +1729,8 @@ mod tests {
         )
         .unwrap();
 
-        let pkg = paths::bundles_root().join("my-skill");
-        std::fs::create_dir_all(pkg.join("skills/my-skill")).unwrap();
-        std::fs::write(
-            pkg.join("skills/my-skill/SKILL.md"),
-            "---\nname: my-skill\n---\n",
-        )
-        .unwrap();
+        bin_package("my-skill", "my-skill");
         let store = BundleStore::new();
-        store.upsert(upload_record("my-skill")).unwrap();
-        let record = store.get("my-skill").unwrap().unwrap();
-        store.remove("my-skill").unwrap();
-        RecycleBin::new()
-            .recycle_package("my-skill", KIND_SKILL, "my-skill.zip", record)
-            .unwrap();
 
         // Orphan injection: drop the manifest entry, keep the bin dir.
         let bin = RecycleBin::new();
@@ -1450,10 +1793,6 @@ mod tests {
             "no registration may be rebuilt"
         );
 
-        match prev {
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -1468,10 +1807,7 @@ mod tests {
     /// later. The restore must be refused before any move, bin entry intact.
     #[test]
     fn restore_refuses_collision_with_live_same_named_skill_pack() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("restore-collision");
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
@@ -1527,10 +1863,6 @@ mod tests {
             "no registration may be rebuilt for the refused restore"
         );
 
-        match prev {
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -1547,9 +1879,7 @@ mod tests {
     #[test]
     fn restore_consent_gate_persist_failure_is_retryable() {
         use std::os::unix::fs::PermissionsExt;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         for (tag, manifest_json) in [
             // Valid manifest declaring a secret: supply skips (credentials
             // required) and the gate takes the FORCE variant (the pack never
@@ -1569,13 +1899,12 @@ mod tests {
                 ),
             ),
         ] {
-            let prev = std::env::var("PINVOU3_HOME").ok();
+            // The outer locked_env holds ENV_LOCK for the whole test, so the
+            // per-iteration snapshot is the plain (lock-free) capture.
+            let _restore = crate::platform::test_support::EnvRestore::capture(&["PINVOU3_HOME"]);
             let tmp = fresh_dir("restore-gate-retry");
+            // SAFETY: ENV_LOCK held by _lock; env writes serialized in-process.
             unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-            let restore_env = |prev: &Option<String>| match prev {
-                Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-                None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-            };
 
             // Package in the bin; the optional mcp/manifest.json selects the
             // gate variant (absent → unreadable → force; no-secrets → normal).
@@ -1607,15 +1936,10 @@ mod tests {
 
             // Read-only home: the gate's save must fail. Root probe first (mode
             // bits are no-ops for root) — loud skip per round-11 m12.
-            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o555)).unwrap();
-            let probe = tmp.join(".root-probe");
-            if std::fs::write(&probe, b"").is_ok() {
-                let _ = std::fs::remove_file(&probe);
-                std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
-                eprintln!(
-                    "ROOT-SKIP[restore_consent_gate_persist_failure_is_retryable]: running as root - read-only home fixture stays writable; NOT exercised ({tag})"
-                );
-                restore_env(&prev);
+            if !crate::platform::test_support::dir_read_only_or_skip(
+                &tmp,
+                "restore_consent_gate_persist_failure_is_retryable",
+            ) {
                 let _ = std::fs::remove_dir_all(&tmp);
                 continue;
             }
@@ -1666,7 +1990,6 @@ mod tests {
                 "gate-written off is install-default (liftable), not a user verdict ({tag}): {plain_defaults:?}"
             );
 
-            restore_env(&prev);
             let _ = std::fs::remove_dir_all(&tmp);
         }
     }
@@ -1681,10 +2004,7 @@ mod tests {
     /// persisted consent survives.
     #[test]
     fn restore_unreadable_bin_manifest_fails_toward_force() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("restore-force-unreadable");
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
@@ -1735,10 +2055,6 @@ mod tests {
             "the rollback leaves the bin entry retryable"
         );
 
-        match prev {
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -1748,10 +2064,7 @@ mod tests {
     /// 无从重试」的半恢复态（review P2）。
     #[test]
     fn restore_mcp_supply_failure_rolls_back_to_recycle_bin() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("restore-rollback");
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
@@ -1802,10 +2115,6 @@ mod tests {
         assert!(store.get("broken-mcp").unwrap().unwrap().installed);
         assert!(RecycleBin::new().list().unwrap().is_empty());
 
-        match prev {
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -1967,10 +2276,7 @@ mod tests {
     /// 走真实 paths（PINVOU3_HOME 指临时目录），借 ENV_LOCK 与其它 env 测试串行。
     #[test]
     fn exported_zip_reimports_via_plugin_pipeline() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("export-reimport");
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
@@ -2030,10 +2336,6 @@ mod tests {
             BundleSource::Upload("exp-skill.zip".to_string())
         );
 
-        match prev {
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -2116,41 +2418,20 @@ mod tests {
     #[test]
     fn restore_registration_rebuild_failure_rolls_back_to_bin() {
         use std::os::unix::fs::PermissionsExt;
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("restore-upsert-fail");
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
-        let pkg = paths::bundles_root().join("my-skill");
-        std::fs::create_dir_all(pkg.join("skills/my-skill")).unwrap();
-        std::fs::write(
-            pkg.join("skills/my-skill/SKILL.md"),
-            "---\nname: my-skill\n---\n",
-        )
-        .unwrap();
+        let pkg = bin_package("my-skill", "my-skill");
         let store = BundleStore::new();
-        store.upsert(upload_record("my-skill")).unwrap();
-        let record = store.get("my-skill").unwrap().unwrap();
-        store.remove("my-skill").unwrap();
-        RecycleBin::new()
-            .recycle_package("my-skill", KIND_SKILL, "my-skill.zip", record)
-            .unwrap();
 
         // Failure injection: bundles.json exists but is unreadable → upsert_preserving errors on read.
         let store_path = tmp.join("marketplace").join("bundles.json");
         std::fs::write(&store_path, "{}").unwrap();
-        std::fs::set_permissions(&store_path, std::fs::Permissions::from_mode(0o000)).unwrap();
-        if std::fs::File::open(&store_path).is_ok() {
-            std::fs::set_permissions(&store_path, std::fs::Permissions::from_mode(0o644)).unwrap();
-            eprintln!(
-                "ROOT-SKIP[restore_registration_rebuild_failure_rolls_back_to_bin]: running as root - chmod-000 fixture stays readable; NOT exercised"
-            );
-            match prev {
-                Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-                None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-            }
+        if !crate::platform::test_support::file_unreadable_or_skip(
+            &store_path,
+            "restore_registration_rebuild_failure_rolls_back_to_bin",
+        ) {
             let _ = std::fs::remove_dir_all(&tmp);
             return;
         }
@@ -2184,10 +2465,6 @@ mod tests {
             store.get("my-skill").unwrap().is_none(),
             "a failed registration rebuild must not leave a half-written record"
         );
-        match prev {
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -2208,44 +2485,47 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         // Part 1 — writable home: the no-sibling rule caps sidecar copies.
-        with_temp_home(|| {
-            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
-            std::fs::write(&path, b"not-json{{{").unwrap();
-            let file = load_disabled_bundles_file();
-            assert!(
-                file.plain_defaults_migrated && !file.initialized.contains("plain"),
-                "fail-closed recovered state: {file:?}"
-            );
-            assert_eq!(
-                quarantine_copy_count(),
-                1,
-                "first corrupt read quarantines once"
-            );
-            assert!(
-                std::fs::read_to_string(&path)
-                    .unwrap()
-                    .contains("plain_defaults_migrated"),
-                "a writable home self-heals on the same read"
-            );
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-recyclebin-corrupt-recovery",
+            || {
+                let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+                std::fs::write(&path, b"not-json{{{").unwrap();
+                let file = load_disabled_bundles_file();
+                assert!(
+                    file.plain_defaults_migrated && !file.initialized.contains("plain"),
+                    "fail-closed recovered state: {file:?}"
+                );
+                assert_eq!(
+                    quarantine_copy_count(),
+                    1,
+                    "first corrupt read quarantines once"
+                );
+                assert!(
+                    std::fs::read_to_string(&path)
+                        .unwrap()
+                        .contains("plain_defaults_migrated"),
+                    "a writable home self-heals on the same read"
+                );
 
-            // Corrupt again: the sibling from the first read must suppress the
-            // second quarantine (the overwrite itself succeeds and heals).
-            std::fs::write(&path, b"not-json{{{").unwrap();
-            let file = load_disabled_bundles_file();
-            assert!(
-                file.plain_defaults_migrated && !file.initialized.contains("plain"),
-                "second recovery: {file:?}"
-            );
-            assert_eq!(
-                quarantine_copy_count(),
-                1,
-                "the no-sibling rule must cap the sidecar at one"
-            );
-        });
+                // Corrupt again: the sibling from the first read must suppress the
+                // second quarantine (the overwrite itself succeeds and heals).
+                std::fs::write(&path, b"not-json{{{").unwrap();
+                let file = load_disabled_bundles_file();
+                assert!(
+                    file.plain_defaults_migrated && !file.initialized.contains("plain"),
+                    "second recovery: {file:?}"
+                );
+                assert_eq!(
+                    quarantine_copy_count(),
+                    1,
+                    "the no-sibling rule must cap the sidecar at one"
+                );
+            },
+        );
 
         // Part 2 — read-only home: the memo carries the recovery and defers
         // to the next writer without touching disk.
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-recyclebin-corrupt-memo", || {
             let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
             std::fs::write(&path, b"not-json{{{").unwrap();
             // Pre-seed the single sidecar the no-sibling rule allows: the
@@ -2254,14 +2534,14 @@ mod tests {
             std::fs::write(&sidecar, b"not-json{{{").unwrap();
 
             let home = crate::platform::paths::pinvou3_home();
-            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o555)).unwrap();
-            let probe = home.join(".root-probe");
-            if std::fs::write(&probe, b"").is_ok() {
-                let _ = std::fs::remove_file(&probe);
-                std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755)).unwrap();
-                eprintln!(
-                    "ROOT-SKIP[corrupt_recovery_pins_no_sibling_rule_and_memo]: running as root - read-only home fixture stays writable; NOT exercised"
-                );
+            // Pre-create the lock so the reads run FULLY LOCKED (opening an
+            // existing file in a read-only home succeeds): the recovery memo
+            // under test is a locked-read artifact.
+            crate::features::marketplace::scope::pre_create_disabled_bundles_lock_for_test();
+            if !crate::platform::test_support::dir_read_only_or_skip(
+                &home,
+                "corrupt_recovery_pins_no_sibling_rule_and_memo",
+            ) {
                 return;
             }
 
@@ -2341,27 +2621,11 @@ mod tests {
     /// failpoint; the retry then succeeds end to end.
     #[test]
     fn take_back_save_failure_compensates_and_stays_retryable() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("take-back-compensate");
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
-        let pkg = paths::bundles_root().join("compensated");
-        std::fs::create_dir_all(pkg.join("skills/member")).unwrap();
-        std::fs::write(
-            pkg.join("skills/member/SKILL.md"),
-            "---\nname: member\n---\n",
-        )
-        .unwrap();
-        let store = BundleStore::new();
-        store.upsert(upload_record("compensated")).unwrap();
-        let record = store.get("compensated").unwrap().unwrap();
-        store.remove("compensated").unwrap();
-        RecycleBin::new()
-            .recycle_package("compensated", KIND_SKILL, "compensated.zip", record)
-            .unwrap();
+        let pkg = bin_package("compensated", "member");
 
         // Inject the save failure at exactly take_back's manifest persist
         // (round-20 minor 6: via the shared arm_failpoint guard — a bare
@@ -2392,11 +2656,119 @@ mod tests {
         assert!(pkg.join("skills/member/SKILL.md").is_file());
         assert!(RecycleBin::new().list().unwrap().is_empty());
 
-        match prev {
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The manifest LOAD failure after the directory
+    /// rename must compensate exactly like the save leg — a bare `?` left the
+    /// user's only copy sitting in the bin root with no manifest entry
+    /// (invisible to list/restore/purge) while the uninstall rollback
+    /// restored the installed record under the assumption "the directory
+    /// was rolled back in place by recycle_package". Driven by a corrupt
+    /// manifest (the
+    /// fail-loud branch; NotFound is the legitimate first-recycle empty
+    /// state), and the healed retry succeeds.
+    #[test]
+    fn recycle_manifest_load_failure_compensates_and_stays_retryable() {
+        crate::platform::test_support::with_temp_home("pinvou3-recyclebin-load-compensate", || {
+            let tmp = crate::platform::paths::pinvou3_home();
+            // Staged inline: the manifest must be corrupt before the recycle; bin_package asserts a successful recycle.
+            let pkg = paths::bundles_root().join("load-comp");
+            std::fs::create_dir_all(pkg.join("skills/member")).unwrap();
+            std::fs::write(
+                pkg.join("skills/member/SKILL.md"),
+                "---\nname: member\n---\n",
+            )
+            .unwrap();
+            let store = BundleStore::new();
+            store.upsert(upload_record("load-comp")).unwrap();
+            let record = store.get("load-comp").unwrap().unwrap();
+            store.remove("load-comp").unwrap();
+
+            // Corrupt the manifest: the post-rename load must fail loud AND roll
+            // the directory back (the save leg's compensation).
+            std::fs::create_dir_all(tmp.join("marketplace")).unwrap();
+            std::fs::write(tmp.join("marketplace/recycle-bin.json"), "{not json").unwrap();
+
+            let bin = RecycleBin::new();
+            let err = bin
+                .recycle_package("load-comp", KIND_SKILL, "load-comp.zip", record)
+                .unwrap_err();
+            assert!(
+                err.contains("读取回收站清单失败（已回滚目录）"),
+                "the compensation must report the rollback: {err}"
+            );
+            assert!(
+                pkg.join("skills/member/SKILL.md").is_file(),
+                "the user's only copy must be back at bundles_root"
+            );
+            assert!(
+                !tmp.join("marketplace/recycle-bin/load-comp").exists(),
+                "no entryless dir may stay behind in the bin root"
+            );
+            assert!(
+                std::fs::read_to_string(tmp.join("marketplace/recycle-bin.json")).unwrap()
+                    == "{not json",
+                "the corrupt manifest must stay untouched (fail loud, no overwrite)"
+            );
+
+            // Healed manifest: the retry succeeds end to end.
+            std::fs::remove_file(tmp.join("marketplace/recycle-bin.json")).unwrap();
+            bin_package("load-comp", "member");
+            assert!(
+                !pkg.exists(),
+                "the retried recycle moved the dir into the bin"
+            );
+            assert_eq!(RecycleBin::new().list().unwrap().len(), 1);
+        });
+    }
+
+    /// Restore must hold the cross-process landing
+    /// lease across its span — it is a same-id `bundles/<id>` writer, and
+    /// the boot sweep leases against exactly that (a restore in its
+    /// take_back→registration gap could otherwise have its just-restored
+    /// sole copy deleted by the sweep's record-probe→delete pair).
+    /// Behaviorally pinned with the mod.rs uninstall-lease test's
+    /// blocked-worker pattern; the worker always drains before any
+    /// assertion can panic so the env restore cannot race a parked restore.
+    #[test]
+    fn restore_waits_for_the_cross_process_landing_lease() {
+        crate::platform::test_support::with_temp_home("pinvou3-recyclebin-restore-lease", || {
+            // Bin the package (bin entry + dir in place, bundles_root clear).
+            let pkg = bin_package("leased-re", "member");
+            assert!(!pkg.exists(), "fixture: the pack is binned");
+
+            // The peer shape: hold the landing lease on a second fd.
+            let mut lease =
+                crate::features::marketplace::plugin_import::open_landing_lease("leased-re")
+                    .expect("fixture: the landing lease opens");
+            let guard = lease.write().expect("fixture: the landing lease acquires");
+
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let result = restore_plugin("leased-re");
+                tx.send(result).expect("worker should send its result");
+            });
+            // Bounded: a regressed restore that skips the lease completes here
+            // and fails the assertion; a correct one stays parked on the lease.
+            let parked = rx.recv_timeout(std::time::Duration::from_secs(2)).is_err();
+            drop(guard);
+            // Receiving the result also proves restore_plugin has returned, so
+            // the (detached) worker holds nothing past this point.
+            let result = rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .expect("restore completes once the lease is released");
+            assert!(
+                parked,
+                "restore must wait while a peer holds the same-id landing lease"
+            );
+            let result = result.expect("restore succeeds after waiting out the peer");
+            assert!(!result.credentials_required);
+            assert!(
+                pkg.join("skills/member/SKILL.md").is_file(),
+                "the restore landed after the lease released"
+            );
+        });
     }
 
     /// Round-24 MAJOR 1 (review #455): a recycled pack id that a FOREIGN
@@ -2416,10 +2788,7 @@ mod tests {
     // test does no permission-dependent work, so it runs on Windows too).
     #[test]
     fn restore_consent_gate_never_reowns_collided_pack_id() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("restore-gate-collision");
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
@@ -2470,13 +2839,6 @@ mod tests {
             "the foreign pack must not receive the recycled pack's deny row: {plain:?}"
         );
 
-        // Round-26 minor 9: the module convention removes the var when it was
-        // not previously set — the `if let` form leaked a temp PINVOU3_HOME
-        // into the process for later tests when the env started unset.
-        match prev {
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -2495,10 +2857,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn restore_secrets_pack_into_uninitialized_scope_persists_consent() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let prev = std::env::var("PINVOU3_HOME").ok();
+        let (_lock, _env) = crate::platform::test_support::locked_env(&["PINVOU3_HOME"]);
         let tmp = fresh_dir("restore-secrets-uninit");
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
@@ -2559,10 +2918,6 @@ mod tests {
             "an install-default off lifts freely: {outcome:?}"
         );
 
-        match prev {
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -2608,22 +2963,7 @@ mod tests {
             // Handshake: wait until the worker holds the in-process recycle-bin
             // mutex — with the foreign lock held, it is now parked on (or just
             // failed) the OS-lock acquisition (#517 test shape).
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-            loop {
-                match file_lock::process_mutex_for(&lock_path).try_lock() {
-                    Ok(guard) => drop(guard),
-                    Err(std::sync::TryLockError::WouldBlock) => break,
-                    Err(std::sync::TryLockError::Poisoned(p)) => {
-                        drop(p.into_inner());
-                        break;
-                    }
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "worker never reached the recycle-bin lock acquisition point"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
+            file_lock::wait_until_process_mutex_parked(&lock_path, "recycle-bin");
             // The rewrite must not land while the peer holds the lock.
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
             while std::time::Instant::now() < deadline {

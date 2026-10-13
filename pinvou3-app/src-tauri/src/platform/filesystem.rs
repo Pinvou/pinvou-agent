@@ -134,17 +134,13 @@ mod libc {
 /// files/visual_preview artifact previews). Returns `None` for extensions
 /// outside the table so callers decide their own fallback or rejection.
 pub(crate) fn image_mime_type(path: &Path) -> Option<&'static str> {
-    image_mime_type_for_ext(
-        path.extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default(),
-    )
-}
-
-/// [`image_mime_type`] twin for callers holding a bare extension (no separators,
-/// no dot — e.g. `path.extension()` output) instead of a full path.
-pub(crate) fn image_mime_type_for_ext(ext: &str) -> Option<&'static str> {
-    match ext.to_ascii_lowercase().as_str() {
+    match path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "png" => Some("image/png"),
         "jpg" | "jpeg" => Some("image/jpeg"),
         "gif" => Some("image/gif"),
@@ -221,10 +217,6 @@ impl std::error::Error for ReplaceError {
 }
 
 pub(crate) type ReplaceResult = Result<ReplaceState, ReplaceError>;
-
-pub(crate) fn replace_file_atomically(tmp: &Path, target: &Path, backup: &Path) -> ReplaceResult {
-    replace_file_atomically_impl(tmp, target, backup)
-}
 
 /// Converge a layout left by an interrupted Windows replacement. Callers must
 /// hold the same lifecycle lock used for writes so active temporary files are
@@ -305,14 +297,21 @@ fn atomic_write_impl(path: &Path, content: &[u8], private: bool) -> io::Result<(
     let backup = parent.join(format!(".{file_name}.bak-{token}"));
 
     let stage_result = (|| -> io::Result<()> {
-        let mut file = if private {
-            create_secret_file(&tmp)?
-        } else {
-            std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&tmp)?
-        };
+        // Stage with create_new (O_EXCL / CREATE_NEW) on both legs, not a
+        // truncate-open: the pid+nanos name makes collisions unreachable,
+        // so an existing entry at the staged path (a planted symlink, a
+        // leftover strand) must fail the open instead of being truncated
+        // through — the private leg must not be weaker than the plain one.
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        if private {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                options.mode(0o600);
+            }
+        }
+        let mut file = options.open(&tmp)?;
         file.write_all(content)?;
         file.sync_all()?;
         drop(file);
@@ -427,9 +426,17 @@ pub(crate) fn open_private_append_file(path: &Path) -> io::Result<std::fs::File>
 /// empirically), so writes refuse and reads degrade — the accepted
 /// fail-closed directions; where flock does succeed (Linux), all peers
 /// opening the same path exclude on the same inode, so exclusion still
-/// holds — the file just is not the regular lock file. Windows relies
-/// on the owning profile directory's ACL,
-/// consistent with the rest of the application data tree.
+/// holds — the file just is not the regular lock file. A planted
+/// HARDLINK is likewise not refused (flock still excludes on the shared
+/// inode), but the stat-gated tighten then re-modes the linked victim's
+/// inode — disclosed, accepted for a private home.
+/// Deleting or replacing the file while a peer holds the lock splits
+/// exclusion across two inodes on BOTH platforms (Unix unlink is always
+/// possible; Windows opens the handle with the default share mode, which
+/// includes FILE_SHARE_DELETE) — do not delete the lock file while other
+/// Pinvou processes may be running. Cross-user protection on Windows relies
+/// on the owning profile directory's ACL, consistent with the rest of the
+/// application data tree.
 pub(crate) fn open_private_lock_file(path: &Path) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true).write(true).create(true);
@@ -459,10 +466,10 @@ pub(crate) fn open_private_lock_file(path: &Path) -> io::Result<std::fs::File> {
                 .map_err(|error| {
                     // Name the file and the recovery: every marketplace write
                     // refuses while this fails, and the lock file holds no
-                    // user data. Advice is rename-aside, not deletion
-                    // (round-16 review on #517): deleting the file while a
-                    // peer holds the flock splits exclusion across two
-                    // inodes — the lost update the lock exists to prevent.
+                    // user data. Advice is rename-aside, not deletion:
+                    // deleting the file while a peer holds the flock splits
+                    // exclusion across two inodes — the lost update the lock
+                    // exists to prevent.
                     std::io::Error::other(format!(
                         "tighten {} to 0600: {error} (fix the file's permissions, or rename it aside while no other Pinvou process is running; it holds no data)",
                         path.display()
@@ -471,6 +478,189 @@ pub(crate) fn open_private_lock_file(path: &Path) -> io::Result<std::fs::File> {
         }
     }
     Ok(file)
+}
+
+/// Open a private-home DATA file for reading, hardened the same way
+/// [`open_private_lock_file`] hardens the lock file: on
+/// Unix the open carries `O_NOFOLLOW` (a planted symlink at the data path
+/// must fail the read rather than drag a hot reader into whatever the link
+/// points at) and `O_NONBLOCK` (a planted FIFO must not block the `open`);
+/// on Windows the open pins the full share mode so a concurrent writer's
+/// atomic rename-replace (`MoveFileEx` persist) is never blocked by this
+/// reader. The post-open gate is platform-general: it refuses anything that is not a
+/// regular file (a FIFO or device node would otherwise feed the reader
+/// forever — `/dev/zero` is an unbounded read) plus anything larger than the
+/// caller's size bound ([`MAX_PRIVATE_DATA_READ_BYTES`] for the state-file
+/// family). The open-time size check is the fail-fast half: it refuses at
+/// one `stat` before any read; `read_capped` below closes the
+/// append-after-gate window and bounds the allocation either way.
+/// Unlike the lock file this is read-intent: no create, no mode tightening.
+///
+/// Cohort note: a state file that is itself a symlink —
+/// a dotfile manager pointing it at a synced store — previously read
+/// through the link and now refuses (`ELOOP`): `disabled_bundles.json`
+/// recovers fail-closed (all packs off), `mcp.json` reads as unparseable
+/// and boot keeps its writers off. Deliberate: the planted-link threat
+/// model cannot distinguish a hostile link from a managed one; roaming the
+/// state via symlinks should point `PINVOU3_HOME` at the real location
+/// instead. Windows has no `O_NOFOLLOW` equivalent; the same documented
+/// residual applies (profile-directory ACL reliance, consistent with the
+/// rest of the application data tree).
+///
+/// The state-file callers use the default cap; with a caller-chosen size
+/// bound, the marketplace same-content comparison reads landed package
+/// payloads whose legitimate size is the import package budget, not the
+/// state-file cap — bounding the disk read below what the importer accepts
+/// would make an identical re-import of a large package report conflicting
+/// content.
+fn open_private_data_file_within(path: &Path, max_bytes: u64) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        // Pinned by name rather than relying on callers knowing std's
+        // default: a missing `FILE_SHARE_DELETE` would turn a read in
+        // flight during a peer's locked persist into a sharing violation
+        // and a spurious refusal of that write after its retry budget.
+        options.share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+    }
+    let file = options.open(path)?;
+    let metadata = refuse_non_regular_file(&file, path)?;
+    if metadata.len() > max_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{} exceeds the read cap ({max_bytes} bytes); rename it aside if it is yours",
+                path.display()
+            ),
+        ));
+    }
+    Ok(file)
+}
+
+/// Shared post-open gate of the hardened private-data primitives: a handle
+/// that is not a regular file (a planted FIFO or device node) is refused
+/// before any byte is read or written. On success it returns the handle's
+/// metadata so a caller needing size or mode does not re-fstat the same fd.
+fn refuse_non_regular_file(file: &std::fs::File, path: &Path) -> io::Result<std::fs::Metadata> {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{} is not a regular file", path.display()),
+        ));
+    }
+    Ok(metadata)
+}
+
+/// Upper bound for one private-state data read. The regular-file gate
+/// exists because `/dev/zero` is an unbounded read; a planted huge REGULAR
+/// file is the same shape (a full allocation per read on hot per-turn
+/// paths). Generous against every legitimate consumer — the family reads
+/// JSON state files, markers, and SKILL.md-sized bundle assets, nothing
+/// near this bound.
+const MAX_PRIVATE_DATA_READ_BYTES: u64 = 16 * 1024 * 1024;
+
+/// UTF-8 variant of [`read_private_data_file_bytes`]: an invalid-UTF-8
+/// refusal keeps `ErrorKind::InvalidData` (the message text comes from
+/// `FromUtf8Error` instead of std's stream text), so kind-matched callers
+/// are unaffected.
+pub(crate) fn read_private_data_file(path: &Path) -> io::Result<String> {
+    read_private_data_file_bytes(path).and_then(|bytes| {
+        String::from_utf8(bytes).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    })
+}
+
+/// [`read_private_data_file`] for raw bytes: the salvage read that preserves
+/// a corrupt store's bytes before quarantine. The whole hardening is
+/// [`open_private_data_file_within`]'s; this body adds only the read, bounded
+/// by [`read_capped`] so a file appended past the cap after the open-time
+/// gate is refused too.
+pub(crate) fn read_private_data_file_bytes(path: &Path) -> io::Result<Vec<u8>> {
+    read_private_data_file_bytes_within(path, MAX_PRIVATE_DATA_READ_BYTES)
+}
+
+/// [`read_private_data_file_bytes`] with a caller-chosen size bound: the
+/// marketplace same-content comparison reads landed package payloads whose
+/// legitimate size is the import package budget, not the state-file cap —
+/// a disk-side cap below what the importer accepts makes an identical
+/// re-import of a large package report conflicting content.
+/// Every other hardening (no-follow, non-blocking, Windows share mode,
+/// regular-file gate, the bound enforced again past the gate) is the
+/// shared primitive's, unchanged.
+pub(crate) fn read_private_data_file_bytes_within(
+    path: &Path,
+    max_bytes: u64,
+) -> io::Result<Vec<u8>> {
+    let mut file = open_private_data_file_within(path, max_bytes)?;
+    read_capped(&mut file, max_bytes)
+        .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))
+}
+
+/// One bounded read: at most `cap` bytes, with a one-byte overshoot window
+/// so the overflow arm can distinguish "exactly cap" from "cap or more".
+/// The metadata gate in [`open_private_data_file_within`] bounds the read at open
+/// time only — a concurrent appender can grow the file between the gate and
+/// EOF (the fd pins the inode, so no swap is needed), and the former
+/// unbounded `read_to_end` would have read and allocated it whole.
+fn read_capped<R: std::io::Read>(reader: &mut R, cap: u64) -> io::Result<Vec<u8>> {
+    use std::io::Read as _;
+    let mut bytes = Vec::new();
+    reader.take(cap + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > cap {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("exceeds the read cap ({cap} bytes)"),
+        ));
+    }
+    Ok(bytes)
+}
+
+/// Hardened CREATE+WRITE for private-home state files whose bytes are
+/// liveness/crash-recovery signals (the landing journal mark): the write runs
+/// under a cross-process lock, so a planted FIFO or symlink at the path must
+/// refuse, not block the lock holder's `open` (same trust
+/// surface and same consequence as the hardened reads above). Same Unix
+/// hardening as [`open_private_data_file_within`], plus create/truncate at 0600;
+/// the fstat gate runs BEFORE any byte is written, so a non-regular inode is
+/// refused untouched. Windows keeps plain create+write (no `O_NOFOLLOW`
+/// equivalent; the documented profile-ACL residual applies).
+pub(crate) fn write_private_data_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let mut file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        let metadata = refuse_non_regular_file(&file, path)?;
+        // Re-tighten a drifted mode like the lock
+        // file open does — a landing mark written by main's std::fs::write
+        // (0644) otherwise stayed world-readable forever. Stat-gated: the
+        // steady state pays one fstat and no chmod; a chmod failure refuses
+        // the write, the accepted fail-closed direction (the caller degrades
+        // loudly — e.g. the landing mark to live-by-absence with its warn).
+        use std::os::unix::fs::PermissionsExt as _;
+        if metadata.permissions().mode() & 0o777 != 0o600 {
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    use std::io::Write as _;
+    file.write_all(bytes)
 }
 
 #[derive(Clone)]
@@ -626,7 +816,7 @@ pub(crate) fn open_existing_private_file_directory(
     target_os = "macos",
     all(target_os = "linux", target_pointer_width = "64")
 )))]
-pub(crate) fn ensure_private_real_directory(_path: &Path) -> io::Result<RealDirectoryIdentity> {
+fn ensure_private_real_directory(_path: &Path) -> io::Result<RealDirectoryIdentity> {
     private_file_directory_unsupported()
 }
 
@@ -1932,7 +2122,7 @@ fn mark_windows_file_handle_for_deletion(file: &File) -> io::Result<()> {
     target_os = "macos",
     all(target_os = "linux", target_pointer_width = "64")
 ))]
-pub(crate) fn ensure_private_real_directory(path: &Path) -> io::Result<RealDirectoryIdentity> {
+fn ensure_private_real_directory(path: &Path) -> io::Result<RealDirectoryIdentity> {
     match std::fs::symlink_metadata(path) {
         Ok(_) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -2103,7 +2293,7 @@ fn windows_attributes_are_not_reparse(attributes: u32) -> bool {
 }
 
 #[cfg(windows)]
-fn replace_file_atomically_impl(tmp: &Path, target: &Path, backup: &Path) -> ReplaceResult {
+pub(crate) fn replace_file_atomically(tmp: &Path, target: &Path, backup: &Path) -> ReplaceResult {
     replace_file_atomically_with(tmp, target, backup, system_replace_file)
 }
 
@@ -2230,16 +2420,12 @@ fn converge_failed_windows_replace(
 }
 
 #[cfg(not(windows))]
-fn replace_file_atomically_impl(tmp: &Path, target: &Path, _backup: &Path) -> ReplaceResult {
+pub(crate) fn replace_file_atomically(tmp: &Path, target: &Path, _backup: &Path) -> ReplaceResult {
     promote_replacement(tmp, target)
 }
 
-pub(crate) fn reserved_target_is_unchanged(file: &File, path: &Path) -> bool {
-    reserved_target_is_unchanged_impl(file, path)
-}
-
 #[cfg(unix)]
-fn reserved_target_is_unchanged_impl(file: &File, path: &Path) -> bool {
+pub(crate) fn reserved_target_is_unchanged(file: &File, path: &Path) -> bool {
     use std::os::unix::fs::MetadataExt as _;
 
     let (Ok(opened), Ok(named)) = (file.metadata(), std::fs::symlink_metadata(path)) else {
@@ -2249,7 +2435,7 @@ fn reserved_target_is_unchanged_impl(file: &File, path: &Path) -> bool {
 }
 
 #[cfg(windows)]
-fn reserved_target_is_unchanged_impl(_file: &File, path: &Path) -> bool {
+pub(crate) fn reserved_target_is_unchanged(_file: &File, path: &Path) -> bool {
     use std::os::windows::fs::MetadataExt as _;
 
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
@@ -2260,7 +2446,7 @@ fn reserved_target_is_unchanged_impl(_file: &File, path: &Path) -> bool {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn reserved_target_is_unchanged_impl(_file: &File, path: &Path) -> bool {
+pub(crate) fn reserved_target_is_unchanged(_file: &File, path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_file())
 }
 
@@ -2312,16 +2498,41 @@ pub(crate) fn rotate_log_if_oversized(
     Ok(true)
 }
 
-/// Test helper (round-10 review m12): assert the file mode is 0600. The tool layer's CI
-/// tests check the screenshot capture_and_store wrote through this — the target cfg stays
-/// in this adapter layer (architecture guard rule). Windows has no POSIX mode bits, always
-/// passes. The assertion message states only the outcome and never repeats the path
+/// Test helper: assert `path`'s POSIX mode equals `expected` (callers pass
+/// 0600 for files, 0700 for directories — see the thin wrappers below). The
+/// target cfg stays in this adapter layer (architecture guard rule). Windows
+/// has no POSIX mode bits, always passes. The assertion message states only the outcome and never repeats the path
 /// (round-12 review: the path contains a session id, and CodeQL models it formatted into
 /// panic/assert messages as sensitive information reaching logs; on test failure the
 /// specific file is identifiable from the call site).
 #[cfg(test)]
+fn assert_private_mode(path: &Path, expected: u32) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = match std::fs::metadata(path) {
+            Ok(metadata) => metadata.permissions().mode(),
+            Err(_) => panic!("private-mode assertion failed: artifact is missing"),
+        };
+        assert!(
+            mode & 0o777 == expected,
+            "private-mode assertion failed: artifact is more permissive than {expected:o}"
+        );
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, expected);
+    }
+}
+
+/// Test helper: assert the file mode is 0600. The tool layer's CI
+/// tests check the screenshot capture_and_store wrote through this — the target cfg stays
+/// in this adapter layer (architecture guard rule). Windows has no POSIX mode bits, always
+/// passes. Thin wrapper over [`assert_private_mode`], which owns the
+/// never-repeat-the-path rule.
+#[cfg(test)]
 pub(crate) fn assert_private_file_mode(path: &Path) {
-    assert_private_mode_impl(path, 0o600);
+    assert_private_mode(path, 0o600);
 }
 
 /// Test helper (review round-11): assert the directory mode is 0700. computer_use's audit
@@ -2330,47 +2541,40 @@ pub(crate) fn assert_private_file_mode(path: &Path) {
 /// mode bits, always passes.
 #[cfg(test)]
 pub(crate) fn assert_private_dir_mode(path: &Path) {
-    assert_private_mode_impl(path, 0o700);
-}
-
-#[cfg(test)]
-#[cfg(unix)]
-fn assert_private_mode_impl(path: &Path, expected: u32) {
-    use std::os::unix::fs::PermissionsExt as _;
-    let mode = match std::fs::metadata(path) {
-        Ok(metadata) => metadata.permissions().mode(),
-        Err(_) => panic!("private-mode assertion failed: artifact is missing"),
-    };
-    assert!(
-        mode & 0o777 == expected,
-        "private-mode assertion failed: artifact is more permissive than {expected:o}"
-    );
-}
-
-#[cfg(test)]
-#[cfg(not(unix))]
-fn assert_private_mode_impl(path: &Path, expected: u32) {
-    let _ = (path, expected);
+    assert_private_mode(path, 0o700);
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use std::path::Path;
 
-    #[cfg(unix)]
-    use super::open_private_lock_file;
     use super::{
         atomic_write, atomic_write_private, is_executable_file, quarantine_corrupt_file,
-        rotate_log_if_oversized,
+        read_capped, rotate_log_if_oversized,
     };
     #[cfg(unix)]
-    use super::{create_secret_file, open_private_append_file};
+    use super::{create_secret_file, open_private_append_file, open_private_lock_file};
     #[cfg(any(
         windows,
         target_os = "macos",
         all(target_os = "linux", target_pointer_width = "64")
     ))]
     use super::{ensure_private_real_directory, open_private_file_directory};
+
+    /// The open-time metadata gate bounds the read only at
+    /// open time — a file appended past the cap between the gate and EOF
+    /// (the fd pins the inode, so no swap is needed) must be refused by the
+    /// read itself instead of being read and allocated whole.
+    #[test]
+    fn read_capped_refuses_a_reader_grown_past_the_cap() {
+        let mut reader = std::io::repeat(b'x');
+        let error = read_capped(&mut reader, 16).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData, "{error}");
+        assert!(
+            error.to_string().contains("read cap"),
+            "the overflow must name the cap: {error}"
+        );
+    }
 
     #[test]
     fn rotate_log_deletes_oversized_file_when_no_suffix_requested() {
@@ -3337,5 +3541,114 @@ pub(crate) mod tests {
             "the tighten must stay on the opened inode, never the symlink's target"
         );
         assert_eq!(std::fs::read(&target).unwrap(), b"victim");
+    }
+
+    /// The private-home DATA file read carries the same
+    /// planted-path hardening as the lock file. A symlink planted at the
+    /// data path must be refused (O_NOFOLLOW, ELOOP) instead of dragging a
+    /// hot reader into whatever the link points at.
+    #[cfg(unix)]
+    #[test]
+    fn private_data_read_refuses_a_planted_symlink() {
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("victim.txt");
+        std::fs::write(&target, b"victim").unwrap();
+
+        let data_path = temp.path().join("disabled_bundles.json");
+        std::os::unix::fs::symlink(&target, &data_path).expect("plant symlink");
+
+        assert!(
+            super::read_private_data_file(&data_path).is_err(),
+            "a planted symlink at the data path must be refused (O_NOFOLLOW)"
+        );
+        assert!(
+            super::read_private_data_file_bytes(&data_path).is_err(),
+            "the raw salvage read must refuse the planted symlink too"
+        );
+    }
+
+    /// A planted FIFO must fail the data read fast (the
+    /// regular-file fstat gate) instead of hanging a hot reader thread.
+    #[cfg(unix)]
+    #[test]
+    fn private_data_read_refuses_a_fifo_without_hanging() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_path = temp.path().join("disabled_bundles.json");
+        crate::platform::paths::tests::plant_fifo(&data_path);
+
+        // Bounded worker: a regression to an unhardened
+        // read blocks `open()` forever — the shared helper fails the test
+        // on a bounded receive instead of hanging the whole lane. The timed-
+        // out worker holds no lock, so the red does not cascade.
+        let path = data_path.clone();
+        crate::platform::test_support::assert_refused_without_hanging(
+            "a planted FIFO read",
+            move || super::read_private_data_file(&path).is_err(),
+        );
+        crate::platform::test_support::assert_refused_without_hanging(
+            "the raw salvage read",
+            move || super::read_private_data_file_bytes(&data_path).is_err(),
+        );
+    }
+
+    /// A regular data file reads back through the hardened
+    /// helpers byte-for-byte (the hardening must not perturb the normal
+    /// read).
+    #[test]
+    fn private_data_read_serves_a_regular_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_path = temp.path().join("disabled_bundles.json");
+        std::fs::write(&data_path, r#"{"scopes":{}}"#).unwrap();
+        assert_eq!(
+            super::read_private_data_file(&data_path).unwrap(),
+            r#"{"scopes":{}}"#
+        );
+        assert_eq!(
+            super::read_private_data_file_bytes(&data_path).unwrap(),
+            br#"{"scopes":{}}"#
+        );
+    }
+
+    /// A planted huge REGULAR file must be refused by the
+    /// size cap instead of being read into memory in full (the same
+    /// unbounded-allocation shape the regular-file gate closes for
+    /// `/dev/zero`). The fixture uses a sparse file, so nothing is written.
+    #[test]
+    fn private_data_read_refuses_an_oversized_regular_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_path = temp.path().join("huge.json");
+        let file = std::fs::File::create(&data_path).unwrap();
+        file.set_len(super::MAX_PRIVATE_DATA_READ_BYTES + 1)
+            .unwrap();
+        drop(file);
+        assert!(
+            super::read_private_data_file(&data_path).is_err(),
+            "an over-cap regular file must be refused"
+        );
+        assert!(
+            super::read_private_data_file_bytes(&data_path).is_err(),
+            "the raw salvage read must honor the cap too"
+        );
+    }
+
+    /// The hardened write re-tightens a drifted mode on an
+    /// existing file (a landing mark written by main's std::fs::write at
+    /// 0644 used to stay world-readable forever).
+    #[test]
+    #[cfg(unix)]
+    fn private_data_write_re_tightens_a_loose_existing_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("mark.pending");
+        std::fs::write(&path, b"old").unwrap();
+        assert!(
+            crate::platform::test_support::loosen_to_world_readable_for_test(&path),
+            "the loosen simulation must apply on unix"
+        );
+        super::write_private_data_file(&path, b"pending\n").unwrap();
+        assert_eq!(
+            crate::platform::test_support::permission_bits(&path),
+            Some(0o600),
+            "a drifted mode must be re-tightened"
+        );
     }
 }

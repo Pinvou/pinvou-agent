@@ -118,8 +118,9 @@ pub(crate) fn process_mutex_for(lock_path: &Path) -> Arc<Mutex<()>> {
 }
 
 /// Opens (creating if missing) the cross-process lock file. Shared by the
-/// blocking write path and the try-lock read path.
-fn open_lock_file(lock_path: &Path) -> Result<std::fs::File, String> {
+/// blocking write path and the try-lock read path. `pub(super)` so the
+/// sibling marketplace modules can reuse the same open funnel.
+pub(super) fn open_lock_file(lock_path: &Path) -> Result<std::fs::File, String> {
     let open = || crate::platform::filesystem::open_private_lock_file(lock_path);
     // Open first: once the home exists — the steady state, and reads are the
     // common case — this skips the per-read create_dir_all probe; only a
@@ -166,37 +167,51 @@ where
     let mut lock = fd_lock::RwLock::new(file);
     // The in-process mutex is already held while the OS lock is taken, and no
     // lock reachable inside `f` (see the module's global-order note) is held
-    // by another thread waiting on this one, so deadlock is impossible. A
-    // signal-interrupted flock retries below instead of surfacing as a
-    // spurious write refusal — and so does the Windows blocking LockFileEx
-    // race that surfaces a transient ERROR_LOCK_VIOLATION as a raw error
-    // instead of blocking (the race fd-lock's own try path maps to
-    // WouldBlock): a bounded retry turns it into a normal wait, and a
-    // persistent failure still refuses fail-closed once the bound is
-    // exhausted (the #517 `with_scope_file_lock` disposition).
-    let mut lock_write_retries = 0u32;
-    let _os_guard = loop {
-        match lock.write() {
-            Ok(guard) => break guard,
-            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
-            Err(error) => {
-                if lock_write_retries < LOCK_WRITE_TRANSIENT_RETRIES {
-                    lock_write_retries += 1;
-                    std::thread::sleep(LOCK_WRITE_RETRY_DELAY);
-                    continue;
-                }
-                return Err(format!("lock {}: {error}", lock_path.display()));
-            }
-        }
-    };
+    // by another thread waiting on this one, so deadlock is impossible.
+    let _os_guard = lock_write_with_transient_retry!(&mut lock)
+        .map_err(|error| format!("lock {}: {error}", lock_path.display()))?;
     f()
 }
 
-/// Bounded retry for transient OS-lock acquisition errors in
-/// `with_file_lock` (the Windows blocking LockFileEx ERROR_LOCK_VIOLATION
-/// race); a persistent failure still refuses fail-closed after the bound.
-const LOCK_WRITE_TRANSIENT_RETRIES: u32 = 3;
-const LOCK_WRITE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(2);
+/// The one blocking `write()` discipline, shared by the lock funnel above and
+/// the landing-lease takers (the lease sites previously took the OS
+/// lock bare, so the same transient race failed an install/uninstall/restore
+/// that the funnel would have absorbed — fail-closed, but inconsistently
+/// hardened). A signal-interrupted flock retries instead of surfacing as a
+/// spurious write refusal; the other transient OS-lock acquisition errors
+/// (the Windows blocking-LockFileEx `ERROR_LOCK_VIOLATION` race, which
+/// surfaces as a raw error instead of blocking) retry on a bounded ladder —
+/// 3 retries, 2 ms apart — and a persistent failure still refuses fail-closed
+/// after the bound.
+///
+/// A macro, not a function: the acquired guard borrows the caller's lock for
+/// the rest of its scope, and a helper returning that guard across a
+/// function boundary is rejected by NLL — the escape region covers the whole
+/// retry loop, so every earlier iteration reads as a second mutable borrow.
+/// Expanded inline, the loop is exactly the shape `with_file_lock` always
+/// compiled with.
+macro_rules! lock_write_with_transient_retry {
+    ($lock:expr) => {{
+        const LOCK_WRITE_TRANSIENT_RETRIES: u32 = 3;
+        const LOCK_WRITE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(2);
+        let mut retries = 0u32;
+        loop {
+            match $lock.write() {
+                Ok(guard) => break Ok(guard),
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    if retries < LOCK_WRITE_TRANSIENT_RETRIES {
+                        retries += 1;
+                        std::thread::sleep(LOCK_WRITE_RETRY_DELAY);
+                        continue;
+                    }
+                    break Err(error);
+                }
+            }
+        }
+    }};
+}
+pub(super) use lock_write_with_transient_retry;
 
 /// Once-per-mode logging for lock-read failures. Reads must stay bounded even
 /// when the lock is persistently unavailable (a broken home must not print a
@@ -230,51 +245,118 @@ pub(super) fn try_file_lock_for_read<F, R>(data_path: &Path, f: F) -> Result<R, 
 where
     F: FnOnce() -> Result<R, String>,
 {
+    try_file_lock_for_read_report_locked(data_path, |_ran_fully_locked| f())
+}
+
+/// [`try_file_lock_for_read`] with lock-state reporting: `f` receives whether
+/// the read ran **fully locked** (`true` — both locks acquired, so read-time
+/// repairs may persist) or degraded to the unlocked snapshot (`false` — every
+/// contention/error arm, so nothing may persist). The closure is infallible —
+/// every arm runs it and returns its output, so this funnel returns `R`
+/// directly. The scope module's hot read of `disabled_bundles.lock` consumes
+/// the flag to keep its `persist_repairs` distinction without carrying its own
+/// copy of this funnel.
+pub(super) fn try_file_lock_for_read_report_locked<F, R>(data_path: &Path, f: F) -> R
+where
+    F: FnOnce(bool) -> R,
+{
     let lock_path = lock_path_for(data_path);
     // Try the in-process mutex first, so a degraded read below is only ever
     // beaten by a *peer* process's OS lock (never by a local writer's).
     let process_mutex = process_mutex_for(&lock_path);
-    let process_guard = match process_mutex.try_lock() {
-        Ok(guard) => Some(guard),
+    // Held (unnamed) through the locked read so a local writer cannot enter.
+    let _process_guard = match process_mutex.try_lock() {
         // A local writer is inside its critical section (possibly parked on a
         // frozen peer's OS lock): degrade exactly like peer contention.
-        Err(TryLockError::WouldBlock) => None,
-        Err(TryLockError::Poisoned(p)) => Some(p.into_inner()),
+        Err(TryLockError::WouldBlock) => return f(false),
+        Err(TryLockError::Poisoned(p)) => p.into_inner(),
+        Ok(guard) => guard,
     };
     // The OS write guard must outlive `f` but cannot outlive its lock, so the
     // lock stays the match scrutinee and the read runs (and returns) from
     // inside the guard arm. Every other arm falls through to the degraded,
     // unlocked snapshot below — bounded, silent, never persisting.
-    if process_guard.is_some() {
-        match open_lock_file(&lock_path) {
-            Ok(file) => match fd_lock::RwLock::new(file).try_write() {
-                Ok(_os_guard) => {
-                    let result = f();
-                    // Every degradation mode has recovered, so a later
-                    // persistent failure is diagnosable again.
-                    READ_FAILURE_LOGGED.store(0, std::sync::atomic::Ordering::Relaxed);
-                    return result;
-                }
-                // Peer contention is the designed, silent degradation.
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(error) => log_read_failure(
-                    LOG_LOCK_PROBE,
-                    &format!(
-                        "cross-process lock probe failed on {}; unlocked read without persist: {error}",
-                        lock_path.display()
-                    ),
-                ),
-            },
+    match open_lock_file(&lock_path) {
+        Ok(file) => match fd_lock::RwLock::new(file).try_write() {
+            Ok(_os_guard) => {
+                let result = f(true);
+                // Every degradation mode has recovered, so a later
+                // persistent failure is diagnosable again.
+                READ_FAILURE_LOGGED.store(0, std::sync::atomic::Ordering::Relaxed);
+                return result;
+            }
+            // Peer contention is the designed, silent degradation.
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(error) => log_read_failure(
-                LOG_LOCK_OPEN,
+                LOG_LOCK_PROBE,
                 &format!(
-                    "cross-process lock unavailable on {}; unlocked read without persist: {error}",
+                    "cross-process lock probe failed on {}; unlocked read without persist: {error}",
                     lock_path.display()
                 ),
             ),
-        }
+        },
+        Err(error) => log_read_failure(
+            LOG_LOCK_OPEN,
+            &format!(
+                "cross-process lock unavailable on {}; unlocked read without persist: {error}",
+                lock_path.display()
+            ),
+        ),
     }
-    f()
+    f(false)
+}
+
+/// Test-only, shared by the cross-process regression suites (the tests in
+/// this module's siblings — scope.rs, store.rs, recycle_bin.rs, mod.rs — and
+/// runtime_bundle's boot-writer test): opens `lock_path` and holds a foreign
+/// OS write lock through a second fd (the peer-process shape) while `body`
+/// runs; the lock releases when `body` returns. Closure form: the guard
+/// borrows the lock, so it must never escape.
+#[cfg(test)]
+pub(crate) fn with_foreign_write_lock<T>(lock_path: &Path, body: impl FnOnce() -> T) -> T {
+    std::fs::create_dir_all(lock_path.parent().expect("lock path has a parent"))
+        .expect("test should be able to create the lock file's parent");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .open(lock_path)
+        .expect("test should be able to open the lock file");
+    let mut foreign = fd_lock::RwLock::new(file);
+    let _foreign_guard = foreign
+        .write()
+        .expect("test should be able to take the foreign cross-process write lock");
+    body()
+}
+
+/// Blocks until some thread of this process holds `lock_path`'s in-process
+/// mutex: with a foreign OS lock held by the test (see
+/// [`with_foreign_write_lock`]), a worker past the mutex is parked on (or
+/// just failed) the OS-lock acquisition. Without this handshake the caller's
+/// absence assert could pass before the worker even reached the lock (#517
+/// test shape, generalized to the per-path registry mutex). `what` names the
+/// lock in the deadline failure message.
+#[cfg(test)]
+pub(crate) fn wait_until_process_mutex_parked(lock_path: &Path, what: &str) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match process_mutex_for(lock_path).try_lock() {
+            // Not held by the worker yet — retry shortly.
+            Ok(guard) => drop(guard),
+            // Held by the worker: with the foreign lock held, it is now
+            // either blocked on the OS lock or its acquisition failed.
+            Err(TryLockError::WouldBlock) => return,
+            Err(TryLockError::Poisoned(p)) => {
+                drop(p.into_inner());
+                return;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker never reached the {what} lock acquisition point"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
 }
 
 #[cfg(test)]
@@ -298,5 +380,58 @@ mod tests {
                 "{data}"
             );
         }
+    }
+
+    /// The once-per-failure-mode latch must survive degraded reads: a
+    /// clean-read tail that clears every bit unconditionally logs one warn
+    /// per hot read with a healthy data file but a persistently broken lock
+    /// file — the exact per-read spam the latch exists to prevent. A
+    /// degraded read (data leg fine, lock leg failed) must keep the bit
+    /// armed; only a fully locked read re-arms.
+    #[test]
+    fn degraded_reads_keep_the_failure_latch_armed() {
+        // The latch is process-global across every funnel read, so run under
+        // the shared test harness (its ENV_LOCK also serializes against the
+        // other tests that reset the same bits).
+        crate::platform::test_support::with_temp_home("pinvou3-file-lock-latch", || {
+            use std::sync::atomic::Ordering;
+            READ_FAILURE_LOGGED.store(0, Ordering::Relaxed);
+            let data_path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            // A directory at the lock path makes the lock-file open fail on
+            // every platform (EISDIR / access denied) without touching
+            // permissions.
+            let lock_path = lock_path_for(&data_path);
+            std::fs::create_dir(&lock_path).expect("plant the broken lock");
+            // The closure stands in for the caller's data leg (healthy here);
+            // the report flag is what each phase below asserts on. The funnel
+            // is infallible, so its result is the flag itself.
+            let read =
+                || try_file_lock_for_read_report_locked(&data_path, |fully_locked| fully_locked);
+
+            let first = read();
+            assert!(!first, "the broken lock leg must degrade the read");
+            assert!(
+                READ_FAILURE_LOGGED.load(Ordering::Relaxed) & LOG_LOCK_OPEN != 0,
+                "an unavailable lock file must latch the failure mode"
+            );
+
+            let second = read();
+            assert!(!second, "the broken lock leg must still degrade the read");
+            assert!(
+                READ_FAILURE_LOGGED.load(Ordering::Relaxed) & LOG_LOCK_OPEN != 0,
+                "a degraded read over a healthy store must keep the latch armed — clearing it here logs one warn per hot read on a persistently broken lock"
+            );
+
+            // Heal the lock leg: a fully locked clean read re-arms the latch.
+            std::fs::remove_dir(&lock_path).expect("remove the planted dir");
+            let third = read();
+            assert!(third, "the healed lock read must run fully locked");
+            assert_eq!(
+                READ_FAILURE_LOGGED.load(Ordering::Relaxed),
+                0,
+                "a fully locked clean read re-arms the latch"
+            );
+            READ_FAILURE_LOGGED.store(0, Ordering::Relaxed);
+        });
     }
 }

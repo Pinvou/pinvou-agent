@@ -2138,23 +2138,9 @@ mod tests {
         // Handshake: wait until the worker holds the mcp.json in-process mutex
         // — with the foreign lock held, it is now parked on (or just failed)
         // the OS-lock acquisition (#517 test shape).
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            match crate::features::marketplace::file_lock::process_mutex_for(&lock_path).try_lock()
-            {
-                Ok(guard) => drop(guard),
-                Err(std::sync::TryLockError::WouldBlock) => break,
-                Err(std::sync::TryLockError::Poisoned(p)) => {
-                    drop(p.into_inner());
-                    break;
-                }
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "worker never reached the mcp.json lock acquisition point"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
+        crate::features::marketplace::file_lock::wait_until_process_mutex_parked(
+            &lock_path, "mcp.json",
+        );
         // The refresh must not land while the peer holds the lock.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while std::time::Instant::now() < deadline {
