@@ -56,7 +56,7 @@
 //! Dependency direction: this module is a child of `tasks`, so it reuses the
 //! private domain entry points without widening them.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -1032,8 +1032,10 @@ fn result_marker_suppresses(path: &Path, expected_digest: &str) -> bool {
 /// Bound for the result marker read (real markers are ~150 bytes).
 const MAX_RESULT_MARKER_BYTES: usize = 64 * 1024;
 
-fn quarantine(path: &Path) {
-    let _ = std::fs::create_dir_all(failed_dir());
+fn quarantine(path: &Path) -> bool {
+    if std::fs::create_dir_all(failed_dir()).is_err() {
+        return false;
+    }
     let mut target = failed_dir().join(path.file_name().unwrap_or_default());
     if target.exists() {
         // Never overwrite earlier evidence: suffix a counter until free.
@@ -1055,14 +1057,19 @@ fn quarantine(path: &Path) {
             }
         }
     }
-    if let Err(error) = std::fs::rename(path, &target) {
-        // Terminal-path failure: the poison file stays in the spool and will
-        // be re-processed (and re-logged) every poll — say so loudly instead
-        // of failing silently forever.
-        log::warn!(
-            "[scheduled-creation] quarantine rename failed for {:?}: {error}",
-            path
-        );
+    match std::fs::rename(path, &target) {
+        Ok(()) => true,
+        Err(error) => {
+            // Terminal-path failure: the record stays in the spool. Say so
+            // loudly instead of failing silently forever — the caller parks
+            // the name (round-16 MAJOR-1) so the drain skips it instead of
+            // re-processing it every poll.
+            log::warn!(
+                "[scheduled-creation] quarantine rename failed for {:?}: {error}",
+                path
+            );
+            false
+        }
     }
 }
 
@@ -1169,11 +1176,17 @@ fn prune_stale_state_at(now: std::time::SystemTime) {
 
 /// Retry bookkeeping per file: attempt count. Entries are removed on every
 /// terminal path. `spool_dir_error_logged` keeps the unreadable-directory
-/// warning to one line per streak instead of 1 Hz spam.
+/// warning to one line per streak instead of 1 Hz spam. `parked` holds
+/// names whose terminal-path quarantine FAILED (round-16 MAJOR-1): the
+/// record is still in the spool and could not leave it, so re-processing
+/// would re-apply it — no marker suppresses a record whose marker write
+/// cannot land either — with no budget left to bound it. Parked names are
+/// skipped until restart, which re-reads the spool fresh.
 #[derive(Default)]
 struct RetryState {
     attempts: HashMap<String, u32>,
     spool_dir_error_logged: bool,
+    parked: HashSet<String>,
 }
 
 /// Watch loop body: process every pending spool file (sorted names — uuid /
@@ -1226,9 +1239,16 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
         else {
             continue;
         };
+        if retries.parked.contains(&name) {
+            continue;
+        }
         match process_spool_file(path.as_path(), creator, sessions, notifier).await {
             Processed::Done(applied_digest) => {
-                retries.attempts.remove(&name);
+                // Round-16 MAJOR-1: the budget clears only after the record
+                // actually left the spool. This arm used to clear it up
+                // front, so a persisted removal failure re-ran the record's
+                // removal loop on a fresh budget forever while the comment
+                // below claimed the budget stays PUT.
                 // Round-11 MAJOR-4: unlink only what was APPLIED. The
                 // marker's digest binding answers a divergent retry
                 // truthfully (payload_mismatch) only while the record is
@@ -1254,12 +1274,11 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                     continue;
                 }
                 if let Err(error) = std::fs::remove_file(&path) {
-                    // The marker exists, so the operation stays deduped, but
-                    // a stuck file would loop Done/remove every poll — say
-                    // so instead of failing silently. Round-15 REQUIRED-4:
-                    // the budget stays PUT on a persisted removal failure
-                    // (with a failing marker write the record would
-                    // re-apply forever on a cleared budget).
+                    // The marker exists, so the operation stays deduped and
+                    // no poll can re-apply it — but the removal retries
+                    // every poll until it lands. Round-15 REQUIRED-4, now
+                    // actually true: the budget stays PUT on a persisted
+                    // removal failure.
                     log::warn!(
                         "[scheduled-creation] processed {name} but could not remove it: {error}"
                     );
@@ -1268,10 +1287,17 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                 retries.attempts.remove(&name);
             }
             Processed::Poison(error) => {
-                retries.attempts.remove(&name);
                 log::warn!("[scheduled-creation] quarantining {name}: {error:#}");
                 audit_failure(sessions, &path, &error);
-                quarantine(&path);
+                // Round-16 MAJOR-1: the budget clears only when the record
+                // actually left the spool; a persisted rename failure parks
+                // the name so the drain skips it instead of re-poisoning
+                // (and re-auditing) it every poll.
+                if quarantine(&path) {
+                    retries.attempts.remove(&name);
+                } else {
+                    retries.parked.insert(name.clone());
+                }
                 let stem = path
                     .file_stem()
                     .and_then(|s| s.to_str())
@@ -1289,9 +1315,17 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                     log::warn!(
                         "[scheduled-creation] quarantining {name} after {count} create attempts: {error:#}"
                     );
-                    retries.attempts.remove(&name);
                     audit_failure(sessions, &path, &error);
-                    quarantine(&path);
+                    // Round-16 MAJOR-1: the budget clears only when the
+                    // record actually left the spool. Clearing before the
+                    // rename let a persisted quarantine failure re-apply
+                    // the record on a fresh budget every poll; a failure
+                    // now parks the name instead (see RetryState.parked).
+                    if quarantine(&path) {
+                        retries.attempts.remove(&name);
+                    } else {
+                        retries.parked.insert(name.clone());
+                    }
                     let stem = path
                         .file_stem()
                         .and_then(|s| s.to_str())
@@ -1856,6 +1890,91 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("simulated persistent failure")
+        );
+    }
+
+    #[tokio::test]
+    async fn exhausted_record_parks_when_the_failed_dir_is_blocked() {
+        // Round-16 MAJOR-1: with `.done/` and `failed/` both unusable
+        // (planted as REGULAR files so the directories cannot exist) a
+        // successful create cannot land its suppression marker and the
+        // terminal quarantine cannot move the record. The round-15 shape
+        // cleared the attempt budget BEFORE the quarantine rename, so the
+        // record re-applied on a fresh budget every poll forever — one new
+        // real task per cycle. The exhaustion path must instead park the
+        // name and keep the budget: the drain skips parked records until
+        // restart, so exactly MAX_CREATE_ATTEMPTS applies happen — not an
+        // unbounded storm.
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join(".done"), b"blocked\n").unwrap();
+        std::fs::write(spool.join("failed"), b"blocked\n").unwrap();
+        std::fs::write(spool.join("stuck.json"), spool_record_json(&[])).unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut retries = RetryState::default();
+        for _ in 0..MAX_CREATE_ATTEMPTS {
+            process_pending_spool(
+                &StateCreator(&state),
+                &state.sessions,
+                &CountingNotifier(calls.clone()),
+                &mut retries,
+            )
+            .await;
+        }
+        assert!(
+            retries.parked.contains("stuck.json"),
+            "a failed terminal quarantine must park the record"
+        );
+        assert_eq!(
+            retries.attempts.get("stuck.json").copied(),
+            Some(MAX_CREATE_ATTEMPTS),
+            "the budget stays PUT while the record cannot leave the spool"
+        );
+        assert!(spool.join("stuck.json").exists(), "the record stays queued");
+        assert_eq!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .unwrap()
+                .len(),
+            MAX_CREATE_ATTEMPTS as usize,
+            "each poll applied once before parking (the storm's cost is bounded)"
+        );
+        // Later polls skip the parked record: no re-apply and no budget
+        // churn — the store count and the frozen budget prove the drain
+        // never touches it again.
+        for _ in 0..(2 * MAX_CREATE_ATTEMPTS) {
+            process_pending_spool(
+                &StateCreator(&state),
+                &state.sessions,
+                &CountingNotifier(calls.clone()),
+                &mut retries,
+            )
+            .await;
+        }
+        assert_eq!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .unwrap()
+                .len(),
+            MAX_CREATE_ATTEMPTS as usize,
+            "parked records must not re-apply"
+        );
+        assert_eq!(
+            retries.attempts.get("stuck.json").copied(),
+            Some(MAX_CREATE_ATTEMPTS),
+            "parked records must not burn or re-buy budget"
+        );
+        assert!(
+            spool.join("stuck.json").exists(),
+            "the parked record stays put"
         );
     }
 
