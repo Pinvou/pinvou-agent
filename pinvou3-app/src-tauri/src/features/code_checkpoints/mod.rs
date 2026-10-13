@@ -297,9 +297,29 @@ fn estimate_workspace_bytes(execution_root: &Path, ledger_root: &Path) -> Option
 
 /// 执行根是否在快照体积预算内（chat.rs 在 turn 快照前调用；超限的会话如实
 /// 没有回退入口，不算错误）。
+///
+/// 粘性判定（评审 r7 M4 + minor 11）：首次「不在预算内」（超限/条目超上限/
+/// 任何读取错误按 None 处理）即在账本根落 `budget-disabled` 标记，此后每次
+/// turn 直接读标记短路——不再重复全树遍历（超限形状此前每条消息都白付一次
+/// 20 万条目级 walk + 逐目录 canonicalize，且只有一条 info 日志、用户无感知）。
+/// 首次落标记升级为 `log::warn`。标记只随账本根存续；用户换绑/清空目录后
+/// 删除会话即可重置。
 pub fn execution_root_within_snapshot_budget(execution_root: &Path, ledger_root: &Path) -> bool {
-    estimate_workspace_bytes(execution_root, ledger_root)
-        .is_some_and(|bytes| bytes <= MAX_WORKSPACE_BYTES_FOR_SNAPSHOT)
+    let marker = ledger_root.join("budget-disabled");
+    if marker.exists() {
+        return false;
+    }
+    let within = estimate_workspace_bytes(execution_root, ledger_root)
+        .is_some_and(|bytes| bytes <= MAX_WORKSPACE_BYTES_FOR_SNAPSHOT);
+    if !within {
+        log::warn!(
+            "[checkpoints] 执行根不在快照预算内（超限或不可读），本会话的回退入口已停用：{}",
+            execution_root.display()
+        );
+        // 标记写入失败不改变本次判定（本次已拒绝）；只是下次会再走一遍估算。
+        let _ = fs::write(&marker, b"");
+    }
+    within
 }
 
 /// 探测执行根文件系统是否大小写不敏感：写入混合大小写探针文件，再以全大写
@@ -1119,9 +1139,41 @@ pub fn matching_pending_pre_restore(
     {
         return Ok(None);
     }
+    // 索引成员校验（评审 r7 minor 5）：复用目标已被 LRU/压力裁剪时按不复用
+    // 处理并删除陈旧暂记——硬报错会让同目标重试一直失败直到 revision 变化。
+    if find_checkpoint(ledger_root, &pending.pre_restore_id).is_err() {
+        let _ = fs::remove_file(&path);
+        return Ok(None);
+    }
     Ok(Some(pending.pre_restore_id))
 }
 
+/// 按 keepTurns + revision 匹配暂记（忽略目标 checkpoint id）——降级回退
+/// （无快照目标）的携带场景（评审 r7 minor 4）：此前失败的全量回退已把代码
+/// 恢复到目标态并留有暂记，随后的同边界降级回退必须把该 PreRestore 绑进
+/// 备份记录，否则记录承诺「代码保持不变」而实际代码已动，undo 只还原对话。
+/// 同样做索引成员校验；不删除暂记（由成功后的统一清理收口）。
+pub fn pending_pre_restore_for_degraded(
+    ledger_root: &Path,
+    keep_turns: u32,
+    transcript_revision: &str,
+) -> Result<Option<String>> {
+    let path = pending_rewind_path(ledger_root);
+    let Ok(bytes) = fs::read(&path) else {
+        return Ok(None);
+    };
+    let Ok(pending) = serde_json::from_slice::<PendingRewind>(&bytes) else {
+        let _ = fs::remove_file(&path);
+        return Ok(None);
+    };
+    if pending.keep_turns != keep_turns || pending.transcript_revision != transcript_revision {
+        return Ok(None);
+    }
+    if find_checkpoint(ledger_root, &pending.pre_restore_id).is_err() {
+        return Ok(None);
+    }
+    Ok(Some(pending.pre_restore_id))
+}
 /// 清理性质：失败只记日志（陈旧暂记由调用方的已绑定检查兜底，不会把
 /// undo 绑到已完成回退的旧快照上）。
 pub fn clear_pending_rewind(ledger_root: &Path) {
@@ -1759,6 +1811,120 @@ mod tests {
         );
     }
 
+    /// pending_rewind 暂记生命周期（评审 r7 M3：r6-M2 修复此前零测试锚定，
+    /// 删除复用机制可全绿通过）。覆盖：往返命中、目标/keepTurns/revision 任一
+    /// 不匹配即拒绝、损坏暂记隔离删除、复用目标被裁剪后按不复用处理并清理、
+    /// clear 后不复用。
+    #[test]
+    fn pending_rewind_roundtrip_and_guards() {
+        let ledger = TestDir::new("pending-roundtrip-ledger");
+        let exec = TestDir::new("pending-roundtrip-exec");
+        exec.write(
+            "a.txt", "v1
+",
+        );
+        let target = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(2),
+            CheckpointKind::Turn,
+            "target",
+        )
+        .expect("target checkpoint");
+        // 暂记指向的 PreRestore 必须真实存在于索引（成员校验会拒绝幽灵 id——
+        // 幽灵/被裁剪场景由 evicted 测试单独覆盖）。
+        let pre_restore = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            None,
+            CheckpointKind::PreRestore,
+            "undo",
+        )
+        .expect("pre-restore checkpoint");
+
+        // 往返：同目标 + keepTurns + revision → Some(id)。
+        write_pending_rewind(ledger.path(), &target.id, 1, &pre_restore.id, "rev-a")
+            .expect("write pending");
+        assert_eq!(
+            matching_pending_pre_restore(ledger.path(), &target.id, 1, "rev-a").expect("match"),
+            Some(pre_restore.id.clone()),
+            "匹配三元组必须命中暂记的 PreRestore id"
+        );
+
+        // 任一维度不匹配：目标、keepTurns、revision。
+        assert_eq!(
+            matching_pending_pre_restore(ledger.path(), "other-target", 1, "rev-a").expect("match"),
+            None,
+            "目标不同不得复用"
+        );
+        assert_eq!(
+            matching_pending_pre_restore(ledger.path(), &target.id, 2, "rev-a").expect("match"),
+            None,
+            "keepTurns 不同不得复用"
+        );
+        assert_eq!(
+            matching_pending_pre_restore(ledger.path(), &target.id, 1, "rev-b").expect("match"),
+            None,
+            "transcript revision 变化（新轮次/编辑/成功回退）不得复用"
+        );
+
+        // clear 后不复用（成功回退/撤销的收口）。
+        clear_pending_rewind(ledger.path());
+        assert_eq!(
+            matching_pending_pre_restore(ledger.path(), &target.id, 1, "rev-a").expect("match"),
+            None,
+            "clear 之后不得复用"
+        );
+    }
+
+    /// 损坏的暂记文件被隔离删除，退回「新建 PreRestore」路径（不阻塞回退）。
+    #[test]
+    fn pending_rewind_corrupt_file_is_quarantined() {
+        let ledger = TestDir::new("pending-corrupt-ledger");
+        fs::write(ledger.path().join("pending_rewind.json"), "{not json").unwrap();
+        assert_eq!(
+            matching_pending_pre_restore(ledger.path(), "any", 0, "rev").expect("match"),
+            None,
+            "损坏暂记按不匹配处理"
+        );
+        assert!(
+            !ledger.path().join("pending_rewind.json").exists(),
+            "损坏暂记必须被删除（隔离）"
+        );
+    }
+
+    /// 复用目标被裁剪（不在索引）时按不复用处理并清理暂记（r7 minor 5）——
+    /// 不硬报错卡死同目标重试。
+    #[test]
+    fn pending_rewind_evicted_reuse_target_is_ignored() {
+        let ledger = TestDir::new("pending-evicted-ledger");
+        let exec = TestDir::new("pending-evicted-exec");
+        exec.write(
+            "a.txt", "v1
+",
+        );
+        let checkpoint = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "label",
+        )
+        .expect("checkpoint");
+        // 暂记指向一个不存在的 id（模拟被 LRU/压力裁剪）。
+        write_pending_rewind(ledger.path(), "ghost-id", 1, "c-999", "rev-a")
+            .expect("write pending");
+        let _ = &checkpoint;
+        assert_eq!(
+            matching_pending_pre_restore(ledger.path(), "ghost-id", 1, "rev-a").expect("match"),
+            None,
+            "复用目标不在索引时必须退回新建路径"
+        );
+        assert!(
+            !ledger.path().join("pending_rewind.json").exists(),
+            "指向已裁剪目标的暂记必须被清理"
+        );
+    }
     struct TestDir(PathBuf);
 
     impl TestDir {

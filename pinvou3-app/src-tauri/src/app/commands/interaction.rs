@@ -230,7 +230,9 @@ pub async fn accept_plan(
     let checkpoint_ledger_root = Some(roots.ledger.clone());
     // 原生车道（工作模式 + 原生 code）同款快照门：ACP 已在命令入口拒绝；
     // scheduled 会话维持无快照（与 chat()/fork 拒绝口径一致）。
-    if store.scheduled_profile(&session_id).is_none() {
+    if store.scheduled_profile(&session_id).is_none()
+        && !crate::features::sessions::is_aux_session_id(&session_id)
+    {
         created_snapshot_id = super::checkpoints::create_turn_checkpoint(
             store.inner(),
             &session_id,
