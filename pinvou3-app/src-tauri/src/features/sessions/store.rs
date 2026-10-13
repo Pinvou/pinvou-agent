@@ -429,18 +429,10 @@ impl SessionStore {
     }
 
     pub fn load(&self, id: &str) -> Result<SavedSession> {
-        self.load_with_context(id, || format!("load_session({id})"))
-    }
-
-    fn load_with_context(
-        &self,
-        id: &str,
-        context: impl FnOnce() -> String,
-    ) -> Result<SavedSession> {
         let session = self
             .manager
             .load_session_snapshot(id)
-            .with_context(context)?;
+            .with_context(|| format!("load_session({id})"))?;
         // Fail closed on case-variant aliases of AUX records: on
         // case-insensitive filesystems `AUX-<suffix>.json` resolves to the
         // real `aux-…` record while case-sensitive identity tests miss the
