@@ -2350,3 +2350,22 @@ fn collections_delete_cancels_its_own_stranded_job_and_deletes() {
         "the collection must be deleted"
     );
 }
+
+/// Round-54 audit A3 pin: this module's streamed stderr notes must route
+/// through the `note!` macro — a raw `eprintln!` panics on a closed stderr
+/// (`pinvou ... 2>&1 | head`) and turns a diagnosable wait into exit 101
+/// "internal error", outside the documented 0/1/2 contract. Comment lines
+/// are stripped so this doc paragraph itself cannot satisfy the pin; a
+/// future raw `eprintln!(` in knowledge.rs code fails it.
+#[test]
+fn status_retry_notes_route_through_the_note_macro() {
+    let offenders: Vec<&str> = include_str!("../src/knowledge.rs")
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .filter(|line| line.contains("eprintln!("))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "knowledge.rs must emit stderr notes through note!, found raw eprintln! at: {offenders:?}"
+    );
+}
