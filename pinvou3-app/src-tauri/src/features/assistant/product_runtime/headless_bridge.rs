@@ -1346,6 +1346,24 @@ impl PrivateOutputResolver for ProductHeadlessBackend {
     }
 }
 
+/// Debug-only fail-fast for the windowless host: refuse to resolve the real
+/// user data home. In-process callers (tests, harnesses) that forget to set
+/// PINVOU3_HOME would otherwise boot `SessionStore` against the real
+/// `~/.pinvou3` — junk sessions, plus the boot retention sweep silently
+/// evicting the user's oldest real sessions (the observed incident). The
+/// gate is debug-only on purpose: release CLI users legitimately run with
+/// PINVOU3_HOME unset against the real home, and the GUI boots via
+/// `SessionStore::boot_for_process_startup` (lib.rs), never through here.
+#[cfg(debug_assertions)]
+fn ensure_isolated_debug_home() -> Result<()> {
+    if std::env::var_os("PINVOU3_HOME").is_none() {
+        anyhow::bail!(
+            "run_windowless_host refuses the real user data home in debug builds: set PINVOU3_HOME to an isolated temp dir (see platform::test_support::with_temp_home)"
+        );
+    }
+    Ok(())
+}
+
 /// Shared bootstrap of the windowless product host: rustls/env/tokio/the
 /// single generate_context expansion, the store boot sequence, `build_pool`,
 /// and finally handing `EnginePool + SessionStore` to the work closure. Both
@@ -1358,6 +1376,8 @@ where
     Work: FnOnce(EnginePool, SessionStore) -> WorkFuture + Send + 'static,
     WorkFuture: Future<Output = Result<T>> + Send + 'static,
 {
+    #[cfg(debug_assertions)]
+    ensure_isolated_debug_home()?;
     let async_runtime = claim_headless_host_runtime()?;
     tauri::async_runtime::set(async_runtime.handle().clone());
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
@@ -2775,5 +2795,85 @@ mod tests {
         pending.abort();
         assert!(pending.await.unwrap_err().is_cancelled());
         runtime.close_called.notified().await;
+    }
+
+    /// Last line of defense for the session-test-leak bug class: any
+    /// in-process caller that boots the windowless host without
+    /// PINVOU3_HOME must fail fast here, because the store would otherwise
+    /// silently resolve the real `~/.pinvou3` — junk sessions plus the boot
+    /// retention sweep evicting the user's oldest real sessions (the
+    /// observed incident). Debug-only: release CLI users legitimately run
+    /// with PINVOU3_HOME unset against the real home, and the GUI boots via
+    /// `SessionStore::boot_for_process_startup` (lib.rs), never through
+    /// here.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn windowless_host_refuses_unset_pinvou3_home_in_debug() {
+        use crate::platform::test_support::locked_env;
+
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME", "HOME", "USERPROFILE"]);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK via locked_env; env writes serialized in-process.
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
+        // If the gate below is ever dropped, these redirects keep the
+        // resulting store boot off the real user home (`user_home_dir()`
+        // prefers HOME on macOS/Linux and USERPROFILE on Windows) while the
+        // assertion still fails.
+        let fake_home = std::env::temp_dir().join(format!(
+            "pinvou3-headless-gate-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::fs::create_dir_all(&fake_home).unwrap();
+        // SAFETY: holding platform::paths::tests::ENV_LOCK via locked_env.
+        unsafe { std::env::set_var("HOME", &fake_home) };
+        // SAFETY: holding platform::paths::tests::ENV_LOCK via locked_env.
+        unsafe { std::env::set_var("USERPROFILE", &fake_home) };
+
+        // The macOS tao event loop cannot be created off the main thread and
+        // a headless Linux CI runner has no display: past the gate, the host
+        // dies inside `Builder::build` before any store boot. catch_unwind
+        // turns that panic — and any other unrelated failure, or a full
+        // success — into one string the assertion can reject.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            super::run_windowless_host(|_pool, _store| async move { Ok::<(), anyhow::Error>(()) })
+        }));
+        let description = match outcome {
+            Ok(Ok(())) => "the host booted and completed without error".to_owned(),
+            Ok(Err(error)) => format!("{error:#}"),
+            Err(payload) => match payload.downcast_ref::<&str>() {
+                Some(message) => (*message).to_owned(),
+                None => payload
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .unwrap_or_else(|| "opaque panic payload".to_owned()),
+            },
+        };
+        // Clean up before asserting so the temp home does not leak when the
+        // assertion fails.
+        let _ = std::fs::remove_dir_all(&fake_home);
+        assert!(
+            description.contains("PINVOU3_HOME"),
+            "run_windowless_host must fail fast on an unset PINVOU3_HOME in debug builds; got: {description}"
+        );
+    }
+
+    /// The gate itself must open on an isolated temp home, so a host caller
+    /// that did its isolation duty is not refused. Asserted on the gate
+    /// helper rather than through `run_windowless_host`: past the gate the
+    /// full host runs (tao event loop cannot leave the main thread on macOS,
+    /// headless Linux CI has no display), so the public path has no cheap
+    /// success to reach — the caller-visible pass condition is pinned by
+    /// `windowless_host_refuses_unset_pinvou3_home_in_debug` above.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn isolated_debug_home_gate_opens_with_temp_pinvou3_home() {
+        use crate::platform::test_support::with_temp_home;
+
+        with_temp_home("headless-gate-open", || {
+            assert!(
+                super::ensure_isolated_debug_home().is_ok(),
+                "an isolated temp PINVOU3_HOME must pass the debug home gate"
+            );
+        });
     }
 }
