@@ -37,6 +37,8 @@ export function useRewindController({
   invoke,
   reload,
   ownsSession,
+  // r8 M1：跳过重载时失效被跳过会话的缓存 buffer（可选注入；缺省仅跳过）。
+  invalidateSkippedBuffer,
   bumpTick,
   appendNotice,
 }) {
@@ -45,7 +47,7 @@ export function useRewindController({
   // 等价——闭包不再新鲜，ref 补读）。
   const depsRef = useRef({});
   // eslint-disable-next-line react-hooks/refs -- latest-ref sync: deps (copy/reload/ownsSession/…) are read only inside the stable confirm callbacks, never during render; the original in-view orchestration rebuilt fresh closures per render, this mirror is the extracted equivalent
-  depsRef.current = { sessionId, enabled, turns, busy, copy, invoke, reload, ownsSession, bumpTick, appendNotice };
+  depsRef.current = { sessionId, enabled, turns, busy, copy, invoke, reload, ownsSession, invalidateSkippedBuffer, bumpTick, appendNotice };
 
   const checkpoints = useSessionCheckpoints({
     sessionId,
@@ -179,17 +181,23 @@ export function useRewindController({
       const { error: reloadError } = await reloadSessionAfterRewind({
         // reload 前置归属检查（评审 M4）：回退/撤销在途时用户切到其它会话，
         // reload(原会话) 会把视图的活动会话改回原会话、作废新会话的在途
-        // 加载并冻结其流式输出。已切走则跳过重载——磁盘已是目标状态，切回时
-        // 自然重注水；notice 补发走 pendingNotice 暂存。
-        reload: () => (currentOwnsSession(sessionId)
-          ? currentReload(sessionId)
-          : Promise.resolve(null)),
+        // 加载并冻结其流式输出。已切走则跳过重载——但「切回自然重注水」对
+        // ChatView 车道不成立：切回走缓存快路径不读盘，而该缓存停留在回退前
+        // （评审 r8 M1）。跳过时同步失效被跳过会话的缓存 buffer，切回即落到
+        // durable load；notice 补发走 pendingNotice 暂存。
+        reload: () => {
+          if (currentOwnsSession(sessionId)) return currentReload(sessionId);
+          const { invalidateSkippedBuffer: invalidate } = depsRef.current;
+          if (typeof invalidate === 'function') invalidate(sessionId);
+          return Promise.resolve(null);
+        },
         bumpTick: currentBumpTick,
       });
       // 跨会话竞态：await 期间会话被程序化切换（remote control）时，UI 收口
       // 动作只认原会话；重载/状态刷新已按 sessionId 定向完成。已知取舍：若
-      // 重载失败且暂存了 pendingNotice，此早退会丢弃补发——回到该会话时时间线
-      // 按磁盘重注水，仅少一条内联提示；undo 侧有 refresh 重查 rewind_undo_state
+      // 重载失败且暂存了 pendingNotice，此早退会丢弃补发——回到该会话时缓存
+      // 已被失效、时间线经 durable load 按磁盘重注水，仅少一条内联提示；undo
+      // 侧有 refresh 重查 rewind_undo_state
       // 的自愈兜底。而「重载失败+用户取消重试」路径不补发是有意的：彼时屏上
       // 仍是截断前的陈旧时间线，补发「已回退」反而误导。
       if (!currentOwnsSession(sessionId)) return;
