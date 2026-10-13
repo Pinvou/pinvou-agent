@@ -82,6 +82,10 @@ pub use self::util::clean_candidate_sentence;
 // review).
 pub use self::io::{PREFERENCE_TEXT_MAX_CHARS, TIMED_TEXT_MAX_CHARS};
 pub use self::util::clean_text;
+// The CLI's `pending confirm` marker gate and `pending never` duplicate
+// pre-check must resolve the argv id exactly as `confirm_pending_memory`
+// does; this re-export replaces the CLI's hand mirror of the id pipeline.
+pub use self::util::clean_id;
 // Round-45 review: the CLI's content-entry lanes that can render into the
 // model-visible block (`memory add`, `update`) refuse text carrying a
 // memory-block marker — the same boundary the organize validator and review

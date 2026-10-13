@@ -1506,32 +1506,6 @@ fn refuse_memory_block_marker(lane: &str, content: &str) -> Result<(), CliError>
     Ok(())
 }
 
-/// Mirrors the feature layer's `clean_id` (`features/memory/util.rs`, not
-/// exported): the pending store normalizes every stored id through it and
-/// `confirm_pending_memory` resolves its argv id through it, so the confirm
-/// lane's pre-materialization gate must resolve the id the same way to
-/// cover exactly the row the confirm would act on — a raw `item.id == argv`
-/// match would miss a punctuated/padded id and let a marker-carrying row
-/// through ungated. The same mirror-the-pipeline discipline as
-/// [`expected_stored_text`]: if the upstream normalization changes, this
-/// replica must follow.
-fn clean_pending_id(value: &str) -> String {
-    value
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('_')
-        .chars()
-        .take(80)
-        .collect()
-}
-
 /// Adds a memory item through the same pipeline the GUI uses: enqueue the
 /// candidate into `_pending.jsonl` and immediately confirm it so the item is
 /// materialized into its authoritative store.
@@ -2173,12 +2147,12 @@ fn pending(
             // pending row can carry marker text this command would
             // materialize. Read the candidate back and refuse BEFORE
             // `confirm_pending_memory` touches any state, mirroring the
-            // confirm's own id resolution ([`clean_pending_id`]) so the gate
+            // confirm's own id resolution (feature `clean_id`) so the gate
             // covers exactly the row the confirm would act on.
             let candidate = feature::load_pending_memory()
                 .map_err(|error| feature_error("pending", error))?
                 .into_iter()
-                .find(|item| item.id == clean_pending_id(id));
+                .find(|item| item.id == feature::clean_id(id));
             if let Some(candidate) = candidate.as_ref() {
                 refuse_memory_block_marker("pending confirm", &candidate.content)?;
             }
@@ -2284,7 +2258,7 @@ fn pending(
                 .as_deref()
                 .map(|reason_text| feature::clean_text(reason_text, usize::MAX).chars().count());
             // The same row resolution the confirm lane's gate mirrors
-            // ([`clean_pending_id`]): `never_pending_memory` compares the
+            // (feature `clean_id`): `never_pending_memory` compares the
             // stored pattern against THIS row's content, so the duplicate
             // pre-check must resolve the id the same way. The check is
             // advisory across processes — a concurrent never write in the
@@ -2294,7 +2268,7 @@ fn pending(
                 match feature::load_pending_memory()
                     .map_err(|error| feature_error("pending", error))?
                     .into_iter()
-                    .find(|item| item.id == clean_pending_id(id))
+                    .find(|item| item.id == feature::clean_id(id))
                 {
                     Some(candidate) => feature::load_never_memory()
                         .map_err(|error| feature_error("pending", error))?
