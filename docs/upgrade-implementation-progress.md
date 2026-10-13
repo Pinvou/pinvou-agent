@@ -2563,3 +2563,46 @@ Both independent roles gave final B10 scoped PASS after final App evidence and
 documentation review. Each independently passed twenty-two actual HTTPS groups
 (10.57s and 10.16s), 65 wire assertions, fmt/Clippy and diff checks; one additionally
 reran 49 CI policies (0.055s). No mandatory finding remains.
+
+### T27 third batch: closed stable source-fact projection (2026-10-13)
+
+The byte codec derives SHA256(JCS) of exactly the nine frozen stable fields from
+an already bounded duplicate-free Document. Any outer extra is excluded, while
+native identities, installation and data migration remain closed required shapes.
+ASCII patterns, all frozen enums and positive binary64 safe sizes are checked
+without inventing role/format/target cross rules. Decimal-triple versions retain
+original bytes and allow long components without integer conversion. Only this
+fixed validated projection may use the internal Document constructor and existing
+bounded JCS writer. SourceProfile is supplied-fact shape/digest evidence only,
+without a native probe, current Registry match, signature or installation right.
+
+Final eighteen groups passed under Node 22.23.3: existing signing six (13.47s),
+byte seven (1.38s), and five new source groups (2.55s). Both existing Node oracle
+switches were configured and actually executed; the new source oracle additionally
+compared 218 acceptance/canonical-byte/hash cases with the original Node/Ajv
+reference. These cover every variable stable/native field, outer dynamic/self
+exclusion, closed nested/missing/null/type refusal, all frozen target/format enums,
+line endings/identifier/hash/string/version boundaries, safe-number rounding and
+original input limits/escaped duplicate keys even in excluded facts. Self-review
+corrected a Uint8Array-to-Buffer test encoding error and replaced shell-sensitive
+non-ASCII literals with Rust Unicode escapes before final verification. Production
+hash behavior and frozen vectors did not change to accommodate that test adapter.
+Clippy passed (14.99s); standalone/App fmt, 49 CI policies (0.130s), architecture,
+version and diff checks passed. Existing CI installs the frozen Node dependencies
+before the isolated codec gate. No dependency, lock, Schema, CI, version or gitlink
+changed.
+
+Actual Windows App integration passed all fourteen updater tests (0.04s after a
+3m56s build), including the new actual source-projection facade control: frozen
+ID match, outer ownerEpoch exclusion and nested helper epoch refusal. No App-wide
+pass or actual platform source probe is claimed. Native facts/protection, Registry
+uniqueness/current eligibility, signature policy and metadata high-watermarks
+remain subsequent work; full T27 stays unfinished. The unresolved Ed25519 point
+policy is not bypassed by a new verifier. Downloads remain outside total/cumulative
+duration and retry caps. Details: [source projection](client-upgrade-source-projection.md).
+Both independent roles gave final B3 scoped PASS after final App evidence and
+documentation review. Each independently ran Node 22.23.3 with both existing
+oracle switches enabled: eighteen groups passed, including 218 actual source
+Node/Ajv comparisons. Independent source groups took 1.04s and 0.90s; fmt/Clippy
+and diff checks passed, and one role additionally reran 49 CI policies (0.129s).
+No mandatory finding remains.

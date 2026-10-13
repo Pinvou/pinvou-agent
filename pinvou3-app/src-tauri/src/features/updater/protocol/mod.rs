@@ -12,9 +12,46 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+pub(crate) fn derive_source_profile(
+    bytes: &[u8],
+) -> Result<pinvou_upgrade_codec::SourceProfile, pinvou_upgrade_codec::SourceProfileError> {
+    decode_metadata(bytes)
+        .map_err(pinvou_upgrade_codec::SourceProfileError::Json)?
+        .source_profile()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_derives_stable_projection_without_dynamic_or_nested_epoch_confusion() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/digests.json"
+        )))
+        .unwrap();
+        let mut facts = vector["sourceFacts"].clone();
+        let expected = vector["expectedSourceProfileId"].as_str().unwrap();
+        assert_eq!(
+            derive_source_profile(&serde_json::to_vec(&facts).unwrap())
+                .unwrap()
+                .source_profile_id(),
+            expected
+        );
+        facts["ownerEpoch"] = serde_json::json!(7);
+        assert_eq!(
+            derive_source_profile(&serde_json::to_vec(&facts).unwrap())
+                .unwrap()
+                .source_profile_id(),
+            expected
+        );
+        facts["helper"]["ownerEpoch"] = serde_json::json!(7);
+        assert!(matches!(
+            derive_source_profile(&serde_json::to_vec(&facts).unwrap()),
+            Err(pinvou_upgrade_codec::SourceProfileError::InvalidStableFacts)
+        ));
+    }
 
     #[test]
     fn feature_facade_keeps_metadata_and_credential_profiles_distinct() {

@@ -3,6 +3,8 @@
 
 mod bindings;
 mod parse;
+mod source;
+pub use source::{SourceProfile, SourceProfileError};
 
 pub use bindings::{BindingError, KeyDescriptor, SigningInput, key_descriptor};
 
