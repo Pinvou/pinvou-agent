@@ -128,10 +128,6 @@
       );
     }
 
-    function getStatus(sessionId) {
-      return invoke("computer_use_get_status", { sessionId });
-    }
-
     // Server-truth reconciliation: `pending_grant`/`pending_confirm` carry
     // the backend's consent state, so a request the user resolved in ANOTHER
     // window collapses here immediately (its pending is gone server-side),
@@ -619,7 +615,6 @@
     }
 
     return {
-      getStatus,
       refreshStatus,
       clearSessionRequests,
       grant,

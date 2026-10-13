@@ -89,9 +89,9 @@ const expectedProtocolHashes = {
   // Recomputed for M6: the domain gains reset() invoking the atomic
   // reset_aux_session command (one discard+recreate round trip instead of the
   // two independent invokes the frontend used to sequence).
-  // Recomputed for M7: the lane-identical bodies (ensure/snapshot/discard/
-  // reset) moved into the shared lane's auxChat cluster; this file keeps only
-  // the desktop send dispatch (the chat invoke below), so the three aux
+  // Recomputed for M7: the lane-identical bodies (ensure/snapshot/reset)
+  // moved into the shared lane's auxChat cluster; this file keeps only
+  // the desktop send dispatch (the chat invoke below), so the aux
   // management invokes now hash under the shared base.
   auxChat: '559070c284d5738a8fb60664487eb1ce96e766b92fcd786e8baa9dc7a8d461a8',
   // Batch-A dead-code/dedup sweep: byte-identical helpers shared between the web and
@@ -128,7 +128,10 @@ const expectedProtocolHashes = {
   // Recomputed for the permission onboarding row: the new
   // computer_use_permission_status invoke (settings permissionStatus) joins
   // the domain's call set.
-  computerUse: 'a681a541d4352b99d8e964e5a19f9cbaf45fd9fa9d56d5395d6c9e6c88459843',
+  // Recomputed again for the dead-code sweep: the zero-caller getStatus
+  // wrapper (computer_use_get_status invoke) was removed — refreshStatus
+  // owns the status read path.
+  computerUse: 'e0f4aadbba8ab68e1dd54f9ab172680657958d548e3c3da50a489931cf525388',
   multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
   // Recomputed for the shared-helper dedup combined with the rebind wave's
   // workspace_binding redaction and retry-payload changes (see batch note
@@ -241,7 +244,10 @@ const expectedProtocolHashes = {
   // Recomputed again for the dead-code sweep: the JS-side setWebRelayAddress
   // facade (web_access_set_relay invoke) was removed — no production caller
   // (tests/remote_control_race.test.mjs relay tests removed with it).
-  remoteControl: '3a12a5cab4a6c79aecd3772008736af138b192536564e0b64f69afeb36fd43df',
+  // Recomputed again for the dead-code sweep: the zero-caller
+  // getWebRelaySettings wrapper (web_access_relay_settings invoke) was
+  // removed — desktop SettingsView reads the webAccess state slice instead.
+  remoteControl: '5138c9579824d93de124bb291d665adad6544ad6ae722a76ab00b6e75ac08f96',
   // Recomputed for the shared-helper dedup (see batch note above).
   scheduled: '28247031a7401d232000c469c1eed0954c2eb1265817e7d0a1a5fd5768f5871a',
   // Recomputed for one-click full-fidelity session log export: the tauri
@@ -332,9 +338,12 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // cover that text. Hash the shared file's surface with the same extractor to
 // pin payload edits inside the shared base the same way the lane files are.
 // Recomputed for M7: the auxChat cluster joined the shared base (the
-// get_or_create_aux_session / discard_aux_session / reset_aux_session invokes
+// get_or_create_aux_session / reset_aux_session invokes
 // moved here from the per-lane aux bridge copies).
-const expectedSharedBaseHash = 'ceeb3d03d8c8713d65ec1dedb907849db410bd2d8802372332c361342ea07485';
+// Recomputed for the dead-code sweep: the zero-caller raw
+// getEffectiveModelConfig, compactNow, and auxChat.discard facades were
+// removed (loadEffectiveModelConfig / auxChatReset own those flows).
+const expectedSharedBaseHash = '61a9f632cc8ad71d41ef914ca7718d7901ccdaa7f2e7801a3eeadf204282c4a1';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),

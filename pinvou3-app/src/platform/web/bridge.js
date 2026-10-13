@@ -3637,7 +3637,6 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
   const auxChatEnsure = auxChatShared.auxChatEnsure;
   const auxChatSend = auxChatShared.auxChatSend;
   const auxChatSnapshot = auxChatShared.auxChatSnapshot;
-  const auxChatDiscard = auxChatShared.auxChatDiscard;
   const auxChatReset = auxChatShared.auxChatReset;
 
   function findFirstTurnItem(clientMessageId) {
@@ -7940,7 +7939,6 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     auxChatEnsure,
     auxChatSend,
     auxChatSnapshot,
-    auxChatDiscard,
     auxChatReset,
     onSessionDeleted,
     getComposerDraft: function () { return readComposerDraftWithRecovery(); },

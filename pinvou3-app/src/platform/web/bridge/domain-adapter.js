@@ -143,7 +143,7 @@
     return Promise.reject(new Error("computer use is not supported on the web client"));
   }
   const computerUseStubs = {};
-  ["getStatus", "refreshStatus", "grant", "revoke", "stop", "confirm", "deny", "setEnabled", "requestPermissions", "permissionStatus"]
+  ["refreshStatus", "grant", "revoke", "stop", "confirm", "deny", "setEnabled", "requestPermissions", "permissionStatus"]
     .forEach(function (name) { computerUseStubs[name] = computerUseUnsupported; });
 
   window.TauriBridge = {
@@ -156,7 +156,6 @@
       ensure: "auxChatEnsure",
       send: "auxChatSend",
       snapshot: "auxChatSnapshot",
-      discard: "auxChatDiscard",
       reset: "auxChatReset",
     }),
     voice: domain(["startVoiceInput", "cancelVoiceAsrSetup", "closeVoiceAsrSetup", "cancelVoiceInput", "clearVoiceInput", "abandonVoiceResult", "getVoiceOperationId", "beginVoiceSubmission", "completeVoiceSubmission", "dismissVoiceInput", "hasVoiceSubmissionPending", "appendVoiceText"]),
