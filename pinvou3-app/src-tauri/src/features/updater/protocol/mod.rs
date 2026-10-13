@@ -12,6 +12,15 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+/// Supplied download-info contract; does not approve or contact a file origin.
+pub(crate) fn check_supplied_download_info_bytes(
+    bytes: &[u8],
+) -> Result<(), pinvou_upgrade_codec::DownloadInfoContractError> {
+    decode_metadata(bytes)
+        .map_err(pinvou_upgrade_codec::DownloadInfoContractError::Json)?
+        .assert_supplied_download_info_contract()
+}
+
 /// Structural/supplied-semantic check/refresh API contract, never current trust.
 pub(crate) fn check_supplied_check_response_bytes(
     bytes: &[u8],
@@ -347,6 +356,55 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_binds_download_info_without_approving_destination_or_fetch_rights() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        use pinvou_upgrade_codec::DownloadInfoContractError;
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/envelopes.json"
+        )))
+        .unwrap();
+        let v = vectors["vectors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["name"] == "download")
+            .unwrap();
+        let credential: serde_json::Value = serde_json::from_slice(
+            &URL_SAFE_NO_PAD
+                .decode(v["envelopeBase64Url"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        let mut response = serde_json::json!({"protocolVersion":1,"requestId":"request-1",
+            "packageId":credential["signed"]["packageId"],"size":credential["signed"]["package"]["size"],
+            "sha256":credential["signed"]["package"]["sha256"],"url":"https://",
+            "expiresAt":credential["signed"]["exp"],"fileSourceClass":"primary","credential":credential});
+        let check = |value: &serde_json::Value| {
+            check_supplied_download_info_bytes(&serde_json::to_vec(value).unwrap())
+        };
+        assert_eq!(check(&response), Ok(())); // Opaque Schema URL data is not ApprovedDestination.
+        response["packageId"] = serde_json::json!("other-package");
+        assert_eq!(
+            check(&response),
+            Err(DownloadInfoContractError::BindingMismatch)
+        );
+        response["packageId"] = response["credential"]["signed"]["packageId"].clone();
+        assert_eq!(check(&response), Ok(()));
+        response["expiresAt"] = response["credential"]["signed"]["nbf"].clone();
+        assert_eq!(
+            check(&response),
+            Err(DownloadInfoContractError::BindingMismatch)
+        );
+        response["expiresAt"] = response["credential"]["signed"]["exp"].clone();
+        response["url"] = serde_json::json!("http://example.invalid/file");
+        assert_eq!(
+            check(&response),
+            Err(DownloadInfoContractError::InvalidContract)
+        );
+    }
 
     #[test]
     fn feature_facade_checks_closed_check_refresh_contract_without_authentication() {

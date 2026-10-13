@@ -3968,3 +3968,36 @@ final independent evidence is recorded above.
 No dependencies/locks/frozenSchema/CI/VERSION/gitlinks change. Details:
 [check responses](client-upgrade-check-response.md). Complete T27 still unfinished.
 Downloads retain no total/cumulative duration or retry cap.
+
+## T27 twenty-fifth batch - supplied download-info response (2026-10-14)
+
+Scope: complete original download-info API response contract, fixed closed Schema/
+common+Download embedded resources, whole canonical bounded reparse, credential
+64KiB, unchanged private claims semantics at max(iat,nbf), exact declared package
+ID/size/SHA and nbf<locator expiry<=exp. No signature/current-time/eligibility/
+ApprovedDestination or total download deadline is produced. Source class/request
+ID/URL stay original Schema facts. Unicode scalar URL length is preserved.
+T29 separately checks usable origin/DNS/socket before actual network transport.
+
+Private next-batch preparation outside repository discovery generated1517 actual
+original complete API cases; no current frozen review was affected. Initial Rust four-group comparison passed in11.14s, including all1517 actual
+original Node cases. Both independent scoped static reviews found no mandatory
+issue. Final Clippy passed in23.72s; codec/App facade format passed.
+Actual Windows App41 passed in0.18s after3m03s compilation. Architecture/version/
+diff passed; CI policy51 passed in0.059s. Root self-review verifies closed single
+credential coverage, original binary64 primitive equality, Unicode scalar URL
+bounds and no authority/total-download budget. Root final106 passed with actual
+Node22 and both legacy oracle environments (new1517 in9.31s, credential7287
+in49.55s), filtering only unchanged31556 Schema mutations; CI complete107
+retained. Dependency independent106 passed: new1517 in9.42s, credential7287
+in45.76s, Clippy2.21s/fmt/diff passed. Compatibility independent106 passed:
+new1517 in10.26s, credential7287 in44.33s, Clippy2.29s/fmt, CI51 in0.046s/diff
+passed. Both use actual Node22 and both legacy environments, with only the same
+unchanged31556 filtered. Both scoped reviews report no mandatory issue.
+All test executables closed. Both independent final documentation reviews
+passed with no mandatory finding before this scoped commit. Original Node binding negatives
+preflight full API Schema and independent original credential semantics before
+exact API_RESPONSE_MISMATCH. No fake cryptography/private-key output.
+No dependencies/locks/Schema/CI/VERSION/gitlinks change. Details:
+[download-info](client-upgrade-download-info.md). Complete T27/T29 remain unfinished.
+Downloads retain no total/cumulative duration or retry cap.
