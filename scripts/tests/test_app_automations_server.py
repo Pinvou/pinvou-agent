@@ -505,6 +505,14 @@ class CreateSpoolAndResultTests(unittest.TestCase):
             "create", name="旧名字", prompt="汇总新闻",
             rrule="FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30",
         )
+        # The digest THIS call's payload binds (新名字) — the late marker
+        # carries the 旧名字 digest, so the poll-loop read of it is the
+        # mismatch the sleeping continue exists for.
+        requested_digest = server.spool_request_digest(
+            "create", name="新名字", prompt="汇总新闻",
+            rrule="FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30",
+        )
+        assert digest != requested_digest, "fixture guard: the two payloads must bind different digests"
         spool_id = hashlib.sha256(b"reqsrc01|create||k-spin").hexdigest()
         marker = Path(self.requests, "spool", ".done", "%s.json" % spool_id)
         # The marker lands MID-POLL (the watcher applying a stale-key apply,
@@ -520,13 +528,32 @@ class CreateSpoolAndResultTests(unittest.TestCase):
             }), encoding="utf-8")
 
         threading.Thread(target=late_marker, daemon=True).start()
-        sleep_calls = []
-        real_sleep = server.time.sleep
+        # Round-17 MAJOR-5: the pin lives at the READ boundary, not at
+        # time.sleep — a sleep-time marker.exists() check races the
+        # late-landing thread (the None arm's sleep can be misattributed
+        # to the mismatch window), so the assertion was satisfiable with
+        # the mismatch arm's sleep deleted. Count the marker reads
+        # instead: the mismatch arm must be met at least once, and the
+        # total reads must stay at the poll cadence — deleting the
+        # mismatch arm's sleep hot-spins the read count into the tens of
+        # thousands and turns this red deterministically.
+        mismatch_reads = []
+        total_reads = []
+        real_read = server._read_result_marker
 
-        def counting_sleep(seconds):
-            sleep_calls.append(seconds)
+        def counting_read(done_marker_path):
+            result = real_read(done_marker_path)
+            total_reads.append(1)
+            payload_read = result[0] if isinstance(result, tuple) else result
+            if (
+                isinstance(payload_read, dict)
+                and payload_read.get("ok")
+                and payload_read.get("request_digest") != requested_digest
+            ):
+                mismatch_reads.append(1)
+            return result
 
-        server.time.sleep = counting_sleep
+        server._read_result_marker = counting_read
         old_wait = server.RESULT_WAIT_SECONDS
         server.RESULT_WAIT_SECONDS = 0.4
         try:
@@ -536,13 +563,19 @@ class CreateSpoolAndResultTests(unittest.TestCase):
                 )
             )
         finally:
-            server.time.sleep = real_sleep
+            server._read_result_marker = real_read
             server.RESULT_WAIT_SECONDS = old_wait
         self.assertIsNone(error)
         self.assertEqual(payload.get("delivery"), "pending", payload)
         self.assertGreaterEqual(
-            len(sleep_calls), 1,
-            "the mismatch arm must sleep between marker reads (no busy-spin)"
+            len(mismatch_reads), 1,
+            "the poll loop must meet the digest-mismatched marker in-loop"
+        )
+        self.assertLessEqual(
+            len(total_reads), 25,
+            "the poll must read at the poll cadence, not busy-spin: "
+            "deleting the mismatch arm's sleep explodes this count "
+            "(round-17 MAJOR-5)"
         )
 
     def test_diverging_replay_against_completed_key_does_not_respool(self):
