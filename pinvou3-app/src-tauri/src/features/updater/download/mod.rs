@@ -10,6 +10,18 @@ pub(crate) async fn fetch_file<'a>(
     pinvou_upgrade_file_http::fetch(url, request, policy, resolver).await
 }
 
+pub(crate) fn start_cache_segment<'file, 'target>(
+    file: &'file mut std::fs::File,
+    plan: pinvou_upgrade_transfer::BodyPlan<'target>,
+    permission: pinvou_upgrade_byte_check::CacheWritePermission,
+    cancelled: impl FnMut() -> bool,
+) -> Result<
+    pinvou_upgrade_byte_check::FileSegmentWriter<'file, 'target>,
+    pinvou_upgrade_byte_check::SegmentWriteError,
+> {
+    pinvou_upgrade_byte_check::FileSegmentWriter::start(file, plan, permission, cancelled)
+}
+
 pub(crate) fn check_file_bytes<'a>(
     file: &mut std::fs::File,
     target: pinvou_upgrade_transfer::Artifact<'a>,
@@ -76,6 +88,55 @@ mod tests {
         Artifact, PrefixState, ResponseDecision, SourceContinuity, StrongEtag, TransferError,
         WriteMode, plan_request,
     };
+
+    #[test]
+    fn application_cache_writer_graph_replaces_and_verifies_actual_file() {
+        use std::io::Write;
+        let path =
+            std::env::temp_dir().join(format!("pinvou-app-cache-write-{}", uuid::Uuid::new_v4()));
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(b"old cache bytes").unwrap();
+        let target = Artifact::new(
+            "package-1",
+            3,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        )
+        .unwrap();
+        let request = plan_request(target, None, SourceContinuity::Unproven);
+        let ResponseDecision::Transfer(plan) =
+            plan_file_response(request, 200, [("Content-Length", b"3".as_slice())]).unwrap()
+        else {
+            panic!("expected replacement plan");
+        };
+        let mut writer = start_cache_segment(
+            &mut file,
+            plan,
+            pinvou_upgrade_byte_check::CacheWritePermission::ReplaceExisting,
+            || false,
+        )
+        .unwrap();
+        writer.write(b"abc", || false).unwrap();
+        // Structural receipt fixture; this test is not a network EOF E2E.
+        let mut transport = plan.receive();
+        transport.observe_bytes(3).unwrap();
+        let receipt = writer
+            .finish_after_network_eof(transport.finish().unwrap(), || false)
+            .unwrap();
+        assert!(receipt.target() == target);
+        assert!(
+            check_file_bytes(&mut file, target, || false)
+                .unwrap()
+                .target()
+                == target
+        );
+        drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn application_archive_graph_checks_real_store_deflate_and_tail() {

@@ -7,6 +7,9 @@ use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 
+mod segment;
+pub use segment::{CacheWritePermission, FileSegmentWriter, SegmentWriteError};
+
 mod copy;
 pub use copy::copy_and_check;
 

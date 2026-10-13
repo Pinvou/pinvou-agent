@@ -2398,3 +2398,39 @@ Details: [member materialization](client-upgrade-member-materialization.md).
 Both independent roles gave final B6 scoped PASS after reviewing the frozen
 implementation, actual App result and final evidence documents. No mandatory
 finding remains.
+
+### T29 seventh batch: actual cache segment writes (2026-10-13)
+
+The private verify crate now exposes a writer borrowing the actual cache File and
+original validated response plan. Separate explicit owner permission authorizes
+200 replacement; permission/type/cancellation checks precede set_len(0). A 206
+plan only appends at its original offset when the actual current length matches.
+Every write checks the 64 KiB per-call bound and response count before output,
+handles partial/Interrupted/zero writes, and latches every failure independently.
+Finish consumes the writer only after actual network EOF, binds the supplied
+transport receipt to the same target/end, checks exact count and actual length,
+syncs, and rechecks length/cancellation. A short segment's observed next offset
+is not the complete artifact size or a whole-file hash match.
+
+Final 26 groups (eleven new plus fifteen existing) passed (3.85s); Clippy passed
+(2.03s). Actual file evidence covers replacement authorization and preservation,
+short range continuation, both offset mismatches, read-only/append-mode handles,
+foreign receipts, visible length changes, all observed cancellation polls and a
+real 33 MiB write followed by the independent B3 scan. Private writer/sync hooks
+are identified separately. Standalone/App fmt, 49 CI policies (0.048s), architecture,
+version and diff checks passed. Actual Windows App integration passed all thirteen
+updater tests (0.03s after a 3m02s build), including the new actual cache writer;
+no App-wide pass is claimed. No dependency, lock, CI, version or gitlink changed.
+
+The transport receipts in these tests are structural fixtures, so this batch does
+not claim real HTTPS-to-cache E2E. The owner supplies current physical protection,
+prefix continuity and actual EOF, preserves untrusted bytes on failure and later
+runs complete protected validation under the original T26 budget. Blocking IO
+cannot be interrupted mid-call by cancellation. Qualification, URL renewal,
+protected cache/staging, native authenticity and full T29 remain unfinished.
+Downloads retain no total/cumulative deadline or retry cap. Details:
+[cache segment writes](client-upgrade-cache-segment-writes.md).
+Both independent roles passed the frozen 26 groups (4.56s and 4.40s), fmt and
+Clippy; one additionally reran all 49 CI policies (0.045s).
+Both independent roles gave final B7 scoped PASS after reviewing the frozen
+implementation, actual App result and final documents. No mandatory finding remains.
