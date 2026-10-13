@@ -1,6 +1,8 @@
 //! Bounded Upgrade V1 JSON and canonical bytes. Successful decoding is not
 //! signature verification, established Root trust, current eligibility or ACK.
 
+mod release_package;
+pub use release_package::{ReleasePackageError, assert_supplied_release_package_binding};
 mod renewal;
 pub use renewal::{ReleaseRenewalError, assert_supplied_release_renewal};
 mod bindings;

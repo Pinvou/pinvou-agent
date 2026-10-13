@@ -12,6 +12,34 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+pub(crate) fn check_supplied_release_package_bytes(
+    release_bytes: &[u8],
+    package_bytes: &[u8],
+    target_bytes: &[u8],
+) -> Result<(), pinvou_upgrade_codec::ReleasePackageError> {
+    fn decode(
+        bytes: &[u8],
+    ) -> Result<
+        pinvou_upgrade_codec::SchemaCheckedEnvelope,
+        pinvou_upgrade_codec::ReleasePackageError,
+    > {
+        pinvou_upgrade_codec::decode_canonical_envelope(
+            bytes,
+            pinvou_upgrade_codec::InputKind::Metadata,
+        )
+        .map_err(pinvou_upgrade_codec::ReleasePackageError::Envelope)?
+        .check_full_schema()
+        .map_err(pinvou_upgrade_codec::ReleasePackageError::Schema)
+    }
+    let target =
+        decode_metadata(target_bytes).map_err(pinvou_upgrade_codec::ReleasePackageError::Json)?;
+    pinvou_upgrade_codec::assert_supplied_release_package_binding(
+        &decode(release_bytes)?,
+        &decode(package_bytes)?,
+        &target,
+    )
+}
+
 pub(crate) fn check_supplied_release_renewal_bytes(
     previous_bytes: &[u8],
     next_bytes: &[u8],
@@ -238,6 +266,60 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_binds_release_package_after_matching_the_complete_reference() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/envelopes.json"
+        )))
+        .unwrap();
+        let original = |role: &str| {
+            let v = vectors["vectors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["name"] == role)
+                .unwrap();
+            URL_SAFE_NO_PAD
+                .decode(v["envelopeBase64Url"].as_str().unwrap())
+                .unwrap()
+        };
+        let mut release: serde_json::Value = serde_json::from_slice(&original("release")).unwrap();
+        let mut package: serde_json::Value = serde_json::from_slice(&original("package")).unwrap();
+        let key = serde_json::to_vec(&package["signed"]["scope"]["targetKey"]).unwrap();
+        let bind = |release: &mut serde_json::Value, package: &serde_json::Value| {
+            let raw = decode_metadata(&serde_json::to_vec(package).unwrap())
+                .unwrap()
+                .canonical_bytes()
+                .unwrap();
+            let reference = pinvou_upgrade_codec::derive_metadata_reference(&raw).unwrap();
+            release["signed"]["targets"][0]["packageManifest"] =
+                serde_json::from_slice(reference.canonical_bytes()).unwrap();
+            raw
+        };
+        let raw = bind(&mut release, &package);
+        let rraw = decode_metadata(&serde_json::to_vec(&release).unwrap())
+            .unwrap()
+            .canonical_bytes()
+            .unwrap();
+        assert!(check_supplied_release_package_bytes(&rraw, &raw, &key).is_ok());
+        package["signed"]["launcher"]["publisher"] = serde_json::json!("another-publisher");
+        let raw = bind(&mut release, &package);
+        let rraw = decode_metadata(&serde_json::to_vec(&release).unwrap())
+            .unwrap()
+            .canonical_bytes()
+            .unwrap();
+        assert_eq!(
+            check_supplied_release_package_bytes(&rraw, &raw, &key),
+            Err(pinvou_upgrade_codec::ReleasePackageError::BindingMismatch)
+        );
+        assert_eq!(
+            check_supplied_release_package_bytes(&rraw, &raw, b"null"),
+            Err(pinvou_upgrade_codec::ReleasePackageError::TargetInvalid)
+        );
+    }
 
     #[test]
     fn feature_facade_checks_release_renewal_business_without_publishing_or_time_authority() {

@@ -3739,3 +3739,65 @@ the unchanged31556 Schema mutation test and did not repeat App/graphs/downloads.
 Final scoped evidence/document reviews precede commit on unchanged production source. Details: [Release renewal](client-upgrade-release-renewal.md).
 Complete T27 authenticity/protected persistence/publication remains unfinished.
 Downloads retain no total/cumulative duration or retry cap.
+
+
+## T27 twenty-first batch - supplied Release and Package binding (2026-10-14)
+
+The original verifyReleasePackage reference and post-verification relationship
+subset consumes two full-Schema canonical factories and a bounded known-target
+Document. Role/domain checks precede exact first matching Release target. The
+existing unchanged B10 six-field checker binds its Package reference to the
+complete original Package bytes; then target scope/appVersion/full launcher JCS
+and target activation-mode subset bind exactly. Canonical failures propagate.
+Only a small checked reference subtree is cloned, not launcher subtrees.
+
+This does not perform verifyEnvelope or authenticate product/component/target/
+time/current selection authority. Cross product/component and encoding-valid
+zero signature pure-relationship positives are explicit; callers still enforce
+independent expected context and crypto/current qualification. Four target-key
+relation tests do not certify native OS formats or real installers. No execution
+object, ownership, consume result, high-water persistence or erasure is proved.
+
+Four groups cover all keys, mode subsets/supersets and orders, raw signature
+changes/old ref rejection/full rebinding positive, first matching target, roles,
+target/resource boundaries and all four Package relationships. Every Package
+binding negative rebuilds its complete six-field reference and independently
+proves the reference passes, then asserts BindingMismatch, followed by a legal
+restore positive. Actual Node uses original assertReference plus exact original
+private assertReleasePackageBinding with complete original parser/encoding and
+self-derived contexts for relationship isolation, without a crypto substitute
+or full-export equivalence claim. App also binds a legal pair and isolates a
+publisher mismatch after correct reference rebinding.
+
+Initial four groups passed in18.19s, including2944 actual original Node
+Release/Package cases. Root self-review found that known alternate-target and
+valid launcher-format negatives were isolated in standalone tests but not
+explicitly in the Node corpus. The actual Node set now also receives all eight
+successfully rebound relationship negatives and restored positives for each key,
+plus first-target controls; this strengthens evidence without changing production.
+All four strengthened groups passed in14.58s, including3012 actual original Node
+cases; both independent roles checked the saved test delta as strictly in scope.
+Architecture/version/diff passed; CI gate policy passed all51 tests in0.100s.
+
+No dependency/lock/Schema/CI/version/gitlink changes. Final regression selects
+88 applicable tests, filtering only the unchanged B15 31556-case Schema mutation
+test; CI retains complete89. Root applicable88 passed with actualNode22.23.3
+and both legacy oracle flags, including3012 Release/Package cases in13.63s and
+7287 credential cases in54.18s. Schema golden and every other applicable group
+passed; Clippy all-targets -D warnings passed in11.68s with codec fmt and App
+facade rustfmt. Actual Windows App passed all37 updater tests in0.16s after
+3m05s build; no App-wide pass is claimed. Root self-review found no remaining
+in-scope requirement or evidence gap. Independent dependency review returned
+scoped PASS without mandatory findings. ActualNode22.23.3+both legacy flags
+applicable88 passed, including3012 Release/Package cases in14.72s and7287
+credential cases in44.77s. Clippy all-targets -D warnings passed in2.34s,
+with fmt/diff. Independent compatibility review also returned scoped PASS without
+mandatory findings. ActualNode22.23.3+both legacy flags applicable88 passed,
+including3012 Release/Package cases in14.23s and7287 credential cases in46.42s.
+Clippy passed in1.73s with fmt/diff; CI51 passed in0.063s. Both reviews filtered
+only the unchanged31556 Schema mutation test and did not repeat App/graphs/
+downloads. Final scoped evidence/document reviews precede commit on unchanged
+production source. Details:
+[Release/Package relationship](client-upgrade-release-package-binding.md).
+Complete T27 authenticity/protected persistence/selection remains unfinished.
+Downloads retain no total/cumulative duration or retry cap.
