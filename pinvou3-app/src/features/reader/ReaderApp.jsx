@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  Check, Copy, ExternalLink, FolderOpen, Link, X,
-} from '../../components/icons.jsx';
+import { X } from '../../components/icons.jsx';
 import { useCopyFlash } from '../../hooks/useCopyFlash.js';
 import { useFollowMainWindowLanguage } from '../../hooks/useFollowMainWindowLanguage.js';
 import { pathBasename } from '../../shared/path-utils.js';
@@ -11,8 +9,8 @@ import { useSystemDarkMode } from '../../hooks/useSystemDarkMode.js';
 import { normalizeColorScheme, resolveTheme } from '../../shared/color-scheme.js';
 import { dict } from '../../shared/i18n.js';
 import {
-  CODE_VIEWER_ICON_BUTTON,
   CodeViewerContent,
+  CodeViewerToolbar,
   useCodeHighlight,
   useViewerFontSize,
   viewerFontSizeBounds,
@@ -190,7 +188,6 @@ export function ReaderApp() {
     }).catch(nextError => console.error('code reader open failed:', nextError));
   }
 
-  const iconButton = CODE_VIEWER_ICON_BUTTON;
 
   return (
     <div className="h-screen flex flex-col bg-white dark:bg-[#1E1E20] text-gray-900 dark:text-gray-100">
@@ -230,53 +227,20 @@ export function ReaderApp() {
             <div className="min-w-0 flex-1 truncate text-[11px] text-gray-400" title={activeTab.relativePath}>
               {activeTab.relativePath}
             </div>
-            <button
-              type="button"
-              onClick={() => adjustFontSize(-1)}
-              disabled={fontSize <= fontBounds.min}
-              className={`${iconButton} text-[12px] font-medium tracking-tight`}
-              title={copy.fontDecrease}
-              aria-label={copy.fontDecrease}
-            >
-              A-
-            </button>
-            <button
-              type="button"
-              onClick={() => adjustFontSize(1)}
-              disabled={fontSize >= fontBounds.max}
-              className={`${iconButton} text-[12px] font-medium tracking-tight`}
-              title={copy.fontIncrease}
-              aria-label={copy.fontIncrease}
-            >
-              A+
-            </button>
-            <button
-              type="button"
-              onClick={() => copyText('content', activeState?.preview?.kind === 'text' ? activeState.preview.text : '')}
-              disabled={activeState?.preview?.kind !== 'text'}
-              className={iconButton}
-              title={copied === 'content' ? copy.copied : copy.copyContent}
-            >
-              {copied === 'content' ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}
-            </button>
-            <button
-              type="button"
-              onClick={() => copyText('path', activeTab.relativePath)}
-              className={iconButton}
-              title={copied === 'path' ? copy.copied : copy.copyPath}
-            >
-              {copied === 'path' ? <Check size={13} className="text-emerald-500" /> : <Link size={13} />}
-            </button>
-            {activeTab.kind !== 'diff' && (
-              <>
-                <button type="button" onClick={() => openActive('reveal_codex_workspace_file')} className={iconButton} title={copy.reveal}>
-                  <FolderOpen size={13} />
-                </button>
-                <button type="button" onClick={() => openActive('open_codex_workspace_file')} className={iconButton} title={copy.open}>
-                  <ExternalLink size={13} />
-                </button>
-              </>
-            )}
+            <CodeViewerToolbar
+              copy={copy}
+              fontSize={fontSize}
+              fontBounds={fontBounds}
+              adjust={adjustFontSize}
+              copied={copied}
+              copyText={copyText}
+              contentText={activeState?.preview?.kind === 'text' ? activeState.preview.text : ''}
+              canCopyContent={activeState?.preview?.kind === 'text'}
+              copyPathText={activeTab.relativePath}
+              hideDesktopActions={activeTab.kind === 'diff'}
+              onReveal={() => openActive('reveal_codex_workspace_file')}
+              onOpen={() => openActive('open_codex_workspace_file')}
+            />
           </div>
           <ReaderTabContent tab={activeTab} state={activeState} fontSize={fontSize} copy={copy} />
         </>
