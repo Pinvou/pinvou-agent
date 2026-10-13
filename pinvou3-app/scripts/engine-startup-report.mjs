@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { percentile } from '../src/features/browser/browser-performance.mjs';
+
 const KINDS = ['cold', 'rebuilt', 'reused'];
 const STAGES = [
   'runtime_lock_ms',
@@ -17,13 +19,6 @@ const STAGES = [
   'load_session_ms',
   'sync_session_ms',
 ];
-
-function percentile(values, quantile) {
-  if (!values.length) return null;
-  const sorted = [...values].sort((left, right) => left - right);
-  const index = Math.max(0, Math.ceil(sorted.length * quantile) - 1);
-  return sorted[index];
-}
 
 function distribution(values) {
   const finite = values.filter(Number.isFinite);

@@ -1,5 +1,7 @@
 // Shown after a persona card is saved: iOS-style confirm offering to view the
 // user's own cards or dismiss. Lazy-loaded because it only appears after a save.
+import { IOS_FONT_STACK } from './persona-shared.jsx';
+
 export function SavedPersonaConfirmDialog({ onClose, onView, savedConfirm, t, theme }) {
   const dark = theme === 'dark';
 
@@ -10,7 +12,7 @@ export function SavedPersonaConfirmDialog({ onClose, onView, savedConfirm, t, th
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by real buttons inside the card */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
       <div onClick={(event) => event.stopPropagation()} className="w-[270px] rounded-[14px] overflow-hidden text-center"
-        style={{ background: dark ? 'rgba(44,44,46,.95)' : 'rgba(250,250,250,.95)', backdropFilter:'blur(20px)', WebkitBackdropFilter:'blur(20px)', fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
+        style={{ background: dark ? 'rgba(44,44,46,.95)' : 'rgba(250,250,250,.95)', backdropFilter:'blur(20px)', WebkitBackdropFilter:'blur(20px)', fontFamily: IOS_FONT_STACK }}>
         <div className="px-4 pt-5 pb-4">
           <div className="text-[17px] font-semibold" style={{ color: dark ? '#fff' : '#000' }}>{t.cpSavedTitle}</div>
           <div className="text-[13px] mt-1.5" style={{ color: dark ? 'rgba(235,235,245,.6)' : 'rgba(60,60,67,.6)' }}>{t.cpSavedDesc(savedConfirm.name || '')}</div>

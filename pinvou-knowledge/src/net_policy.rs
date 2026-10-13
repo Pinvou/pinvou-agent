@@ -16,13 +16,13 @@ pub(crate) fn is_rfc1918(address: std::net::Ipv4Addr) -> bool {
 }
 
 /// Tailscale IPv4 段（100.64/10）。
-pub(crate) fn is_tailnet(address: std::net::Ipv4Addr) -> bool {
+pub fn is_tailnet(address: std::net::Ipv4Addr) -> bool {
     let octets = address.octets();
     octets[0] == 100 && (64..=127).contains(&octets[1])
 }
 
 /// IPv6 ULA 段（fc00::/7）。
-pub(crate) fn is_ula(address: std::net::Ipv6Addr) -> bool {
+pub fn is_ula(address: std::net::Ipv6Addr) -> bool {
     (address.segments()[0] & 0xfe00) == 0xfc00
 }
 
@@ -30,6 +30,35 @@ pub(crate) fn is_ula(address: std::net::Ipv6Addr) -> bool {
 pub(crate) fn is_tailscale_ipv6(address: std::net::Ipv6Addr) -> bool {
     let segments = address.segments();
     segments[0] == 0xfd7a && segments[1] == 0x115c && segments[2] == 0xa1e0
+}
+
+/// Composed private-network check: IPv4 means RFC1918 / link-local /
+/// Tailscale, IPv6 means ULA / fe80::/10 link-local (IPv4-mapped addresses
+/// normalize to their v4 form before classification).
+///
+/// `allow_loopback` decides whether loopback counts as private: join
+/// requests validate the directly-connected source, for which the host's own
+/// loopback is a legitimate source; share endpoints must reject loopback so
+/// an endpoint cannot point back at the caller itself. server/service and
+/// the desktop app share this check instead of hand-writing the same
+/// composition twice.
+pub fn is_private_network_ip(address: std::net::IpAddr, allow_loopback: bool) -> bool {
+    match address {
+        std::net::IpAddr::V4(address) => {
+            address.is_private()
+                || address.is_link_local()
+                || is_tailnet(address)
+                || (allow_loopback && address.is_loopback())
+        }
+        std::net::IpAddr::V6(address) => {
+            if let Some(address) = address.to_ipv4_mapped() {
+                return is_private_network_ip(std::net::IpAddr::V4(address), allow_loopback);
+            }
+            is_ula(address)
+                || (address.segments()[0] & 0xffc0) == 0xfe80
+                || (allow_loopback && address.is_loopback())
+        }
+    }
 }
 
 #[cfg(test)]
@@ -44,5 +73,37 @@ mod tests {
         for address in ["100.63.0.1", "100.128.0.1", "101.0.0.1"] {
             assert!(!is_tailnet(address.parse().unwrap()), "{address}");
         }
+    }
+
+    #[test]
+    fn private_network_classification_respects_the_loopback_flag() {
+        use std::net::IpAddr;
+        // Loopback is private only under the loopback-accepting semantics
+        // (the server's join-source check).
+        for address in ["127.0.0.1", "::1"] {
+            let address: IpAddr = address.parse().unwrap();
+            assert!(is_private_network_ip(address, true), "{address}");
+            assert!(!is_private_network_ip(address, false), "{address}");
+        }
+        // IPv4-mapped addresses classify by their mapped v4 form under both
+        // semantics.
+        let mapped: IpAddr = "::ffff:192.168.1.10".parse().unwrap();
+        assert!(is_private_network_ip(mapped, true));
+        assert!(is_private_network_ip(mapped, false));
+        assert!(!is_private_network_ip(
+            "::ffff:8.8.8.8".parse::<IpAddr>().unwrap(),
+            true
+        ));
+        // Mapped boundary classes: link-local and tailnet map to their v4
+        // sets under both flags; mapped loopback follows the flag exactly
+        // like plain loopback.
+        for address in ["::ffff:169.254.1.5", "::ffff:100.64.0.1"] {
+            let address: IpAddr = address.parse().unwrap();
+            assert!(is_private_network_ip(address, true), "{address}");
+            assert!(is_private_network_ip(address, false), "{address}");
+        }
+        let mapped_loopback: IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+        assert!(is_private_network_ip(mapped_loopback, true));
+        assert!(!is_private_network_ip(mapped_loopback, false));
     }
 }

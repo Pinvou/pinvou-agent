@@ -47,7 +47,7 @@
   }
 
   function viewModel(bs, info, fallbackVersion, labels) {
-    if (!info) return { visible: false };
+    if (!info) return {};
     const downloading = !!(bs && bs.updateDownloading);
     const ready = !!(bs && bs.updateReady);
     const progress = (bs && bs.updateProgress) || 0;
@@ -69,13 +69,9 @@
         ? (progress >= 100 ? text(labels, "installing", "安装中...") : text(labels, "downloading", "下载中") + " " + progress + "%")
         : (restartAfterInstall ? text(labels, "downloadInstallRestart", "升级并重启") : text(labels, "downloadInstall", "下载并安装")));
     return {
-      visible: true,
       downloading,
-      ready,
-      progress,
       version,
       label,
-      restartAfterInstall,
       action: ready ? (installerLaunch ? "none" : "restart") : (downloading ? "none" : "download"),
       disabled: downloading || (ready && installerLaunch),
       // Localized hint only: the raw error may carry request details and be

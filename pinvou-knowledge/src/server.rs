@@ -16,7 +16,6 @@ use tower_http::trace::TraceLayer;
 
 use crate::MAX_UPLOAD_BYTES;
 use crate::model::*;
-use crate::net_policy::{is_tailnet, is_ula};
 use crate::service::KnowledgeService;
 use crate::store::DeviceMutationError;
 
@@ -62,7 +61,6 @@ async fn tls_config(
 
 pub fn router(service: Arc<KnowledgeService>) -> Router {
     Router::new()
-        .route("/health", get(health))
         .route("/api/v1/info", get(info))
         .route("/api/v1/access", get(current_access))
         .route(
@@ -125,7 +123,7 @@ pub fn router(service: Arc<KnowledgeService>) -> Router {
         )
         .route(
             "/api/v1/collections/{id}",
-            put(update_collection).delete(delete_collection),
+            axum::routing::delete(delete_collection),
         )
         .route("/api/v1/collections/{id}/restore", post(restore_collection))
         .route(
@@ -188,10 +186,6 @@ async fn apply_route_body_limit(
     })
     .apply(&mut request);
     next.run(request).await
-}
-
-async fn health() -> impl IntoResponse {
-    Json(serde_json::json!({"ok": true}))
 }
 
 async fn info(State(service): State<Arc<KnowledgeService>>) -> ApiResult<Json<ServerInfo>> {
@@ -540,20 +534,6 @@ async fn create_collection(
     ))
 }
 
-async fn update_collection(
-    State(service): State<Arc<KnowledgeService>>,
-    headers: HeaderMap,
-    Path(id): Path<i64>,
-    Json(request): Json<CreateCollectionRequest>,
-) -> ApiResult<Json<Collection>> {
-    require_access(&service, &headers, true)?;
-    Ok(Json(
-        service
-            .update_collection(id, request)
-            .map_err(ApiError::bad_request)?,
-    ))
-}
-
 async fn delete_collection(
     State(service): State<Arc<KnowledgeService>>,
     headers: HeaderMap,
@@ -760,20 +740,9 @@ async fn source_window(
 }
 
 fn is_private_network_ip(address: IpAddr) -> bool {
-    match address {
-        IpAddr::V4(address) => {
-            address.is_private()
-                || address.is_loopback()
-                || address.is_link_local()
-                || is_tailnet(address)
-        }
-        IpAddr::V6(address) => {
-            if let Some(address) = address.to_ipv4_mapped() {
-                return is_private_network_ip(IpAddr::V4(address));
-            }
-            address.is_loopback() || is_ula(address) || (address.segments()[0] & 0xffc0) == 0xfe80
-        }
-    }
+    // Join requests validate the directly-connected source, for which the
+    // host's own loopback is a legitimate source (allow loopback).
+    crate::net_policy::is_private_network_ip(address, true)
 }
 
 fn has_forwarding_headers(headers: &HeaderMap) -> bool {
@@ -941,23 +910,26 @@ mod tests {
     use tower::ServiceExt;
 
     #[tokio::test]
-    async fn health_is_public_but_collections_require_authentication() {
+    async fn info_is_public_but_collections_require_authentication() {
         let root = tempfile::tempdir().unwrap();
         let service = KnowledgeService::boot(root.path().to_path_buf(), None)
             .unwrap()
             .service;
         let app = router(service);
-        let health = app
+        // /api/v1/info is the only public endpoint: the CLI --health-check
+        // (deploy/install.sh) and the packaged host-helper probe both depend
+        // on unauthenticated reachability; this test pins that too.
+        let info = app
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/health")
+                    .uri("/api/v1/info")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(health.status(), StatusCode::OK);
+        assert_eq!(info.status(), StatusCode::OK);
         let collections = app
             .oneshot(
                 Request::builder()

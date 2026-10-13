@@ -10,7 +10,6 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::client::normalize_endpoint;
 use crate::model::*;
-use crate::net_policy::{is_tailnet, is_ula};
 use crate::parser::parse_document;
 use crate::store::{DeviceMutationError, DocumentIndexUpdate, RestoreDocumentOutcome, Store};
 use crate::tls::TlsIdentity;
@@ -770,21 +769,6 @@ impl KnowledgeService {
             .map_err(|error| error.to_string())
     }
 
-    pub fn update_collection(
-        &self,
-        id: i64,
-        request: CreateCollectionRequest,
-    ) -> Result<Collection, String> {
-        let name = normalized_name(&request.name, "知识集")?;
-        self.store
-            .update_collection(id, &name, request.description.as_deref())
-            .map_err(|_| "知识集不存在或已删除".to_string())?;
-        self.store
-            .collection(id, false)
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| "知识集不存在或已删除".to_string())
-    }
-
     pub fn trash_collection(&self, id: i64) -> Result<(), String> {
         self.store
             .trash_collection(id)
@@ -1434,13 +1418,14 @@ fn is_private_share_endpoint(endpoint: &str) -> bool {
         return false;
     };
     match url.host() {
+        // Share endpoints reject loopback (loopback-rejecting semantics);
+        // the rest of the private-network classification is shared with the
+        // join-source check.
         Some(url::Host::Ipv4(address)) => {
-            (address.is_private() || address.is_link_local() || is_tailnet(address))
-                && !address.is_loopback()
+            crate::net_policy::is_private_network_ip(IpAddr::V4(address), false)
         }
         Some(url::Host::Ipv6(address)) => {
-            let first = address.segments()[0];
-            !address.is_loopback() && (is_ula(address) || (first & 0xffc0) == 0xfe80)
+            crate::net_policy::is_private_network_ip(IpAddr::V6(address), false)
         }
         Some(url::Host::Domain(host)) => crate::net_policy::PRIVATE_HOST_SUFFIXES
             .iter()
@@ -1576,6 +1561,24 @@ mod tests {
         ] {
             assert!(!is_private_share_endpoint(endpoint), "{endpoint}");
         }
+        // IPv4-mapped addresses classify by their mapped v4 private-network
+        // form (same semantics as the join source).
+        assert!(is_private_share_endpoint(
+            "https://[::ffff:192.168.1.10]:3210"
+        ));
+        assert!(!is_private_share_endpoint("https://[::ffff:8.8.8.8]:3210"));
+        // Mapped boundary classes: link-local and tailnet literals stay
+        // private; a mapped loopback must keep the share gate's reject (only
+        // the join gate accepts loopback sources).
+        assert!(is_private_share_endpoint(
+            "https://[::ffff:169.254.1.5]:3210"
+        ));
+        assert!(is_private_share_endpoint(
+            "https://[::ffff:100.64.0.1]:3210"
+        ));
+        assert!(!is_private_share_endpoint(
+            "https://[::ffff:127.0.0.1]:3210"
+        ));
     }
 
     #[test]

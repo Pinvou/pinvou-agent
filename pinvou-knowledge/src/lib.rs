@@ -16,7 +16,8 @@ pub mod embedding;
 pub mod model;
 #[cfg(feature = "client")]
 pub mod model_download;
-mod net_policy;
+pub mod model_layout;
+pub mod net_policy;
 #[cfg(feature = "server")]
 pub mod parser;
 #[cfg(feature = "server")]

@@ -13,21 +13,6 @@ use tauri::Webview;
 use super::platform::{self, state::NativeTabLease};
 
 const CORE_GLOBAL: &str = "__PINVOU_BROWSER_CORE_V1__";
-// Commit-boundary error codes live in platform::mod so the JS contract tests
-// and every platform adapter share one declaration; these aliases keep the
-// historical local names.
-const ACTION_COMMITTED_FOCUS_RESTORE_FAILED: &str = platform::ACTION_COMMITTED_FOCUS_RESTORE_FAILED;
-const ACTION_COMMIT_UNKNOWN_FOCUS_RESTORE_FAILED: &str =
-    platform::ACTION_COMMIT_UNKNOWN_FOCUS_RESTORE_FAILED;
-const ACTION_COMMIT_UNKNOWN_INPUT_INTERRUPTION: &str =
-    platform::ACTION_COMMIT_UNKNOWN_INPUT_INTERRUPTION;
-const ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION: &str =
-    platform::ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION;
-const ACTION_COMMIT_UNKNOWN_WEBDRIVER: &str = platform::ACTION_COMMIT_UNKNOWN_WEBDRIVER;
-const ACTION_COMMIT_UNKNOWN_NAVIGATION_DISPATCH: &str =
-    platform::ACTION_COMMIT_UNKNOWN_NAVIGATION_DISPATCH;
-const ACTION_COMMIT_UNKNOWN_TAB_CLOSE: &str = platform::ACTION_COMMIT_UNKNOWN_TAB_CLOSE;
-const ACTION_PARTIALLY_COMMITTED: &str = platform::ACTION_PARTIALLY_COMMITTED;
 
 /// JS prelude shared by every BrowserCore evaluation entry (this module, the
 /// macOS adapter, and the Linux WebDriver execute path): resolve the page
@@ -165,9 +150,9 @@ pub(super) fn committed_platform_outcome(action: &str, error: &str) -> Option<Va
         focus_restore_failed,
         sub_action_commit_state,
         explanation,
-    ) = if error.starts_with(ACTION_COMMITTED_FOCUS_RESTORE_FAILED) {
+    ) = if error.starts_with(platform::ACTION_COMMITTED_FOCUS_RESTORE_FAILED) {
         (
-            ACTION_COMMITTED_FOCUS_RESTORE_FAILED,
+            platform::ACTION_COMMITTED_FOCUS_RESTORE_FAILED,
             "committed",
             "committed",
             false,
@@ -177,9 +162,9 @@ pub(super) fn committed_platform_outcome(action: &str, error: &str) -> Option<Va
                 "{action} was committed, but Pinvou could not restore the previous application focus"
             ),
         )
-    } else if error.starts_with(ACTION_COMMIT_UNKNOWN_FOCUS_RESTORE_FAILED) {
+    } else if error.starts_with(platform::ACTION_COMMIT_UNKNOWN_FOCUS_RESTORE_FAILED) {
         (
-            ACTION_COMMIT_UNKNOWN_FOCUS_RESTORE_FAILED,
+            platform::ACTION_COMMIT_UNKNOWN_FOCUS_RESTORE_FAILED,
             "committed",
             "unknown",
             true,
@@ -189,9 +174,9 @@ pub(super) fn committed_platform_outcome(action: &str, error: &str) -> Option<Va
                 "{action} may already have been committed, and Pinvou could not restore the previous application focus"
             ),
         )
-    } else if error.starts_with(ACTION_COMMIT_UNKNOWN_INPUT_INTERRUPTION) {
+    } else if error.starts_with(platform::ACTION_COMMIT_UNKNOWN_INPUT_INTERRUPTION) {
         (
-            ACTION_COMMIT_UNKNOWN_INPUT_INTERRUPTION,
+            platform::ACTION_COMMIT_UNKNOWN_INPUT_INTERRUPTION,
             "committed",
             "unknown",
             true,
@@ -201,9 +186,9 @@ pub(super) fn committed_platform_outcome(action: &str, error: &str) -> Option<Va
                 "{action} may already have been committed because the native input callback was interrupted"
             ),
         )
-    } else if error.starts_with(ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION) {
+    } else if error.starts_with(platform::ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION) {
         (
-            ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION,
+            platform::ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION,
             "committed",
             "unknown",
             true,
@@ -213,9 +198,9 @@ pub(super) fn committed_platform_outcome(action: &str, error: &str) -> Option<Va
                 "{action} may already have mutated the page because the system-WebView script callback was interrupted"
             ),
         )
-    } else if error.starts_with(ACTION_COMMIT_UNKNOWN_WEBDRIVER) {
+    } else if error.starts_with(platform::ACTION_COMMIT_UNKNOWN_WEBDRIVER) {
         (
-            ACTION_COMMIT_UNKNOWN_WEBDRIVER,
+            platform::ACTION_COMMIT_UNKNOWN_WEBDRIVER,
             "committed",
             "unknown",
             true,
@@ -225,9 +210,9 @@ pub(super) fn committed_platform_outcome(action: &str, error: &str) -> Option<Va
                 "{action} may already have been committed because WebDriver did not return a conclusive acknowledgement"
             ),
         )
-    } else if error.starts_with(ACTION_COMMIT_UNKNOWN_NAVIGATION_DISPATCH) {
+    } else if error.starts_with(platform::ACTION_COMMIT_UNKNOWN_NAVIGATION_DISPATCH) {
         (
-            ACTION_COMMIT_UNKNOWN_NAVIGATION_DISPATCH,
+            platform::ACTION_COMMIT_UNKNOWN_NAVIGATION_DISPATCH,
             "committed",
             "unknown",
             true,
@@ -237,9 +222,9 @@ pub(super) fn committed_platform_outcome(action: &str, error: &str) -> Option<Va
                 "{action} may already have been committed because the native WebView did not return a conclusive navigation acknowledgement"
             ),
         )
-    } else if error.starts_with(ACTION_COMMIT_UNKNOWN_TAB_CLOSE) {
+    } else if error.starts_with(platform::ACTION_COMMIT_UNKNOWN_TAB_CLOSE) {
         (
-            ACTION_COMMIT_UNKNOWN_TAB_CLOSE,
+            platform::ACTION_COMMIT_UNKNOWN_TAB_CLOSE,
             "committed",
             "unknown",
             true,
@@ -249,18 +234,19 @@ pub(super) fn committed_platform_outcome(action: &str, error: &str) -> Option<Va
                 "{action} may already have been committed because the native WebView did not return a conclusive close acknowledgement"
             ),
         )
-    } else if error.starts_with(ACTION_PARTIALLY_COMMITTED) {
-        let nested_unknown = error.contains(ACTION_COMMIT_UNKNOWN_FOCUS_RESTORE_FAILED)
-            || error.contains(ACTION_COMMIT_UNKNOWN_INPUT_INTERRUPTION)
-            || error.contains(ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION)
-            || error.contains(ACTION_COMMIT_UNKNOWN_WEBDRIVER)
-            || error.contains(ACTION_COMMIT_UNKNOWN_NAVIGATION_DISPATCH)
-            || error.contains(ACTION_COMMIT_UNKNOWN_TAB_CLOSE);
-        let nested_committed = error.contains(ACTION_COMMITTED_FOCUS_RESTORE_FAILED);
-        let nested_focus_restore_failed =
-            error.contains(ACTION_COMMIT_UNKNOWN_FOCUS_RESTORE_FAILED) || nested_committed;
+    } else if error.starts_with(platform::ACTION_PARTIALLY_COMMITTED) {
+        let nested_unknown = error.contains(platform::ACTION_COMMIT_UNKNOWN_FOCUS_RESTORE_FAILED)
+            || error.contains(platform::ACTION_COMMIT_UNKNOWN_INPUT_INTERRUPTION)
+            || error.contains(platform::ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION)
+            || error.contains(platform::ACTION_COMMIT_UNKNOWN_WEBDRIVER)
+            || error.contains(platform::ACTION_COMMIT_UNKNOWN_NAVIGATION_DISPATCH)
+            || error.contains(platform::ACTION_COMMIT_UNKNOWN_TAB_CLOSE);
+        let nested_committed = error.contains(platform::ACTION_COMMITTED_FOCUS_RESTORE_FAILED);
+        let nested_focus_restore_failed = error
+            .contains(platform::ACTION_COMMIT_UNKNOWN_FOCUS_RESTORE_FAILED)
+            || nested_committed;
         (
-            ACTION_PARTIALLY_COMMITTED,
+            platform::ACTION_PARTIALLY_COMMITTED,
             "partial",
             "partial",
             nested_unknown,
@@ -634,7 +620,7 @@ mod tests {
         assert_eq!(result["isError"], json!(true));
         assert_eq!(
             result["structuredContent"]["errorCode"],
-            json!(ACTION_COMMITTED_FOCUS_RESTORE_FAILED)
+            json!(platform::ACTION_COMMITTED_FOCUS_RESTORE_FAILED)
         );
         assert_eq!(result["structuredContent"]["actionCommitted"], json!(true));
         assert_eq!(
@@ -686,7 +672,7 @@ mod tests {
         .expect("structured WebDriver outcome");
         assert_eq!(
             webdriver_unknown["structuredContent"]["errorCode"],
-            json!(ACTION_COMMIT_UNKNOWN_WEBDRIVER)
+            json!(platform::ACTION_COMMIT_UNKNOWN_WEBDRIVER)
         );
         assert_eq!(
             webdriver_unknown["structuredContent"]["actionCommitState"],
@@ -713,7 +699,7 @@ mod tests {
         .expect("structured interrupted input outcome");
         assert_eq!(
             input_interrupted["structuredContent"]["errorCode"],
-            json!(ACTION_COMMIT_UNKNOWN_INPUT_INTERRUPTION)
+            json!(platform::ACTION_COMMIT_UNKNOWN_INPUT_INTERRUPTION)
         );
         assert_eq!(
             input_interrupted["structuredContent"]["actionCommitState"],
@@ -731,7 +717,7 @@ mod tests {
         .expect("tool-level interrupted script outcome");
         assert_eq!(
             script_interrupted["structuredContent"]["errorCode"],
-            json!(ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION)
+            json!(platform::ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION)
         );
         assert_eq!(
             script_interrupted["structuredContent"]["actionCommitState"],
@@ -770,7 +756,7 @@ mod tests {
         assert_eq!(result["isError"], json!(true));
         assert_eq!(
             result["structuredContent"]["errorCode"],
-            json!(ACTION_PARTIALLY_COMMITTED)
+            json!(platform::ACTION_PARTIALLY_COMMITTED)
         );
         assert_eq!(result["structuredContent"]["outcome"], json!("partial"));
         assert_eq!(

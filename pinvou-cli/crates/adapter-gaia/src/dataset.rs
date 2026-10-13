@@ -12,10 +12,12 @@ use parquet::schema::types::Type;
 use sha2::{Digest, Sha256};
 
 use crate::fs_guard::{FileIdentity, is_link_or_reparse};
-use crate::{GAIA_DATASET_REVISION, GAIA_LEVEL, GAIA_PARQUET_SHA256_BYTES, GAIA_PARQUET_SIZE};
+use crate::{
+    GAIA_DATASET_REVISION, GAIA_LEVEL, GAIA_PARQUET_PATH, GAIA_PARQUET_SHA256_BYTES,
+    GAIA_PARQUET_SIZE,
+};
 
 pub const GAIA_REVISION_MARKER: &str = ".pinvou-gaia-dataset-revision-v1";
-const GAIA_PARQUET_PATH: &str = "2023/validation/metadata.level1.parquet";
 const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_PARQUET_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_PARQUET_ROWS: usize = 128;
@@ -834,10 +836,11 @@ mod level_schema_contract_tests {
     use super::*;
     use std::sync::Arc;
 
-    use arrow_array::{ArrayRef, BinaryArray, Int64Array, RecordBatch, StringArray, StructArray};
-    use arrow_schema::{DataType, Field as ArrowField, Fields, Schema};
-    use parquet::arrow::ArrowWriter;
+    use arrow_array::{ArrayRef, BinaryArray, Int64Array, StringArray, StructArray};
+    use arrow_schema::{DataType, Field as ArrowField, Fields};
     use rand::random;
+
+    use crate::test_fixtures::{FixtureRow, FixtureSchema, write_fixture_schema};
 
     fn write_schema_fixture(level: ArrayRef) -> PathBuf {
         let root = std::env::temp_dir().join(format!(
@@ -846,52 +849,25 @@ mod level_schema_contract_tests {
             random::<u64>()
         ));
         fs::create_dir_all(&root).unwrap();
-        let metadata_names = [
-            "Steps",
-            "Number of steps",
-            "How long did this take?",
-            "Tools",
-            "Number of tools",
-        ];
-        let metadata: ArrayRef = Arc::new(StructArray::new(
-            Fields::from(
-                metadata_names
-                    .iter()
-                    .map(|name| ArrowField::new(*name, DataType::Utf8, true))
-                    .collect::<Vec<_>>(),
-            ),
-            metadata_names
-                .iter()
-                .map(|_| Arc::new(StringArray::from(vec![Some("x")])) as ArrayRef)
-                .collect(),
-            None,
-        ));
-        let columns: Vec<(&str, ArrayRef)> = vec![
-            ("task_id", Arc::new(StringArray::from(vec!["task-1"]))),
-            ("Question", Arc::new(StringArray::from(vec!["question"]))),
-            ("Level", level),
-            ("Final answer", Arc::new(StringArray::from(vec!["answer"]))),
-            ("file_name", Arc::new(StringArray::from(vec![None::<&str>]))),
-            ("file_path", Arc::new(StringArray::from(vec![None::<&str>]))),
-            ("Annotator Metadata", metadata),
-        ];
-        let schema = Arc::new(Schema::new(
-            columns
-                .iter()
-                .map(|(name, array)| ArrowField::new(*name, array.data_type().clone(), true))
-                .collect::<Vec<_>>(),
-        ));
-        let batch = RecordBatch::try_new(
-            schema,
-            columns.into_iter().map(|(_, array)| array).collect(),
-        )
-        .unwrap();
-        let path = root.join("level.parquet");
-        let mut writer =
-            ArrowWriter::try_new(File::create(&path).unwrap(), batch.schema(), None).unwrap();
-        writer.write(&batch).unwrap();
-        writer.close().unwrap();
-        path
+        // The Level column stays parameterized so the verifier's physical-type
+        // contract is exercised directly (Utf8, Int64, Binary, group).
+        write_fixture_schema(
+            &root,
+            "schema-only",
+            &[FixtureRow {
+                task_id: "task-1",
+                question: "question",
+                level: 1,
+                reference: "answer",
+                file_name: None,
+                file_path: None,
+            }],
+            FixtureSchema {
+                level_override: Some(level),
+                ..FixtureSchema::default()
+            },
+        );
+        root.join(GAIA_PARQUET_PATH)
     }
 
     fn level_schema_result(level: ArrayRef) -> Result<(), GaiaDatasetError> {

@@ -28,8 +28,8 @@ use super::types::{
     normalize_work_context_topic,
 };
 use super::util::{
-    clean_id, clean_text, contains_memory_block_marker, looks_completed_work_status,
-    looks_sensitive, validate_memory_content,
+    COMPLETED_WORK_STATUS_NEEDLES, clean_id, clean_text, contains_memory_block_marker,
+    looks_completed_work_status, looks_sensitive, validate_memory_content,
 };
 
 const LLM_REVIEW_TIMEOUT: StdDuration = StdDuration::from_secs(75);
@@ -538,32 +538,9 @@ pub(super) fn assistant_suggests_delivery_complete(user: &str, assistant: &str) 
     if negative.iter().any(|needle| assistant.contains(needle)) {
         return false;
     }
-    [
-        "已完成",
-        "已经完成",
-        "完成了",
-        "已生成",
-        "已经生成",
-        "生成了",
-        "写好了",
-        "整理好了",
-        "已整理",
-        "已经整理",
-        "已实现",
-        "已经实现",
-        "实现了",
-        "已修复",
-        "已经修复",
-        "修复了",
-        "已交付",
-        "已经交付",
-        "交付了",
-        "已更新",
-        "已经更新",
-        "更新了",
-    ]
-    .iter()
-    .any(|needle| assistant.contains(needle))
+    COMPLETED_WORK_STATUS_NEEDLES
+        .iter()
+        .any(|needle| assistant.contains(needle))
 }
 
 /// Shared transport for the two memory LLM calls (the per-turn review and the

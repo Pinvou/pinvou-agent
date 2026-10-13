@@ -17,12 +17,11 @@ use sha2::{Digest, Sha256};
 
 use crate::fs_guard::{FileIdentity, is_link_or_reparse, path_identity};
 use crate::{
-    GAIA_DATASET_REVISION, GAIA_PARQUET_SHA256_BYTES, GAIA_PARQUET_SIZE, GAIA_SCORER_REVISION,
-    GaiaDataset, GaiaDatasetError,
+    GAIA_DATASET_REVISION, GAIA_PARQUET_PATH, GAIA_PARQUET_SHA256_BYTES, GAIA_PARQUET_SIZE,
+    GAIA_SCORER_REVISION, GaiaDataset, GaiaDatasetError,
 };
 
 const GAIA_REPO_ID: &str = "gaia-benchmark/GAIA";
-const GAIA_PARQUET_PATH: &str = "2023/validation/metadata.level1.parquet";
 const READY_SCHEMA: &str = "pinvou-gaia-ready/v1";
 const MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_ATTACHMENTS: usize = 128;
@@ -2106,9 +2105,7 @@ mod review_contract_tests {
     use std::sync::Arc;
     use std::time::SystemTime;
 
-    use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray, StructArray};
-    use arrow_schema::{DataType, Field as ArrowField, Fields, Schema};
-    use parquet::arrow::ArrowWriter;
+    use crate::test_fixtures::{FixtureRow, FixtureSchema, snapshot_batch, write_parquet};
 
     struct DenyDownloader;
 
@@ -2157,68 +2154,25 @@ mod review_contract_tests {
             GAIA_DATASET_REVISION,
         )
         .unwrap();
-        let metadata_names = [
-            "Steps",
-            "Number of steps",
-            "How long did this take?",
-            "Tools",
-            "Number of tools",
-        ];
-        let metadata: ArrayRef = Arc::new(StructArray::new(
-            Fields::from(
-                metadata_names
-                    .iter()
-                    .map(|name| ArrowField::new(*name, DataType::Utf8, true))
-                    .collect::<Vec<_>>(),
-            ),
-            metadata_names
-                .iter()
-                .map(|_| Arc::new(StringArray::from(vec![Some("synthetic")])) as ArrayRef)
-                .collect(),
-            None,
-        ));
-        let columns: Vec<(&str, ArrayRef)> = vec![
-            ("task_id", Arc::new(StringArray::from(vec!["safe-task-1"]))),
-            (
-                "Question",
-                Arc::new(StringArray::from(vec!["PRIVATE_QUESTION_SENTINEL"])),
-            ),
-            ("Level", Arc::new(Int64Array::from(vec![1]))),
-            (
-                "Final answer",
-                Arc::new(StringArray::from(vec!["PRIVATE_REFERENCE_SENTINEL"])),
-            ),
-            (
-                "file_name",
-                Arc::new(StringArray::from(vec![
-                    with_attachment.then_some("input.bin"),
-                ])),
-            ),
-            (
-                "file_path",
-                Arc::new(StringArray::from(vec![
-                    with_attachment.then_some("2023/validation/input.bin"),
-                ])),
-            ),
-            ("Annotator Metadata", metadata),
-        ];
-        let schema = Arc::new(Schema::new(
-            columns
-                .iter()
-                .map(|(name, array)| ArrowField::new(*name, array.data_type().clone(), true))
-                .collect::<Vec<_>>(),
-        ));
-        let batch = RecordBatch::try_new(
-            schema,
-            columns.into_iter().map(|(_, array)| array).collect(),
-        )
-        .unwrap();
-        let path = root.join(GAIA_PARQUET_PATH);
-        let file = File::create(&path).unwrap();
-        let mut writer = ArrowWriter::try_new(file, batch.schema(), None).unwrap();
-        writer.write(&batch).unwrap();
-        writer.close().unwrap();
-        let bytes = fs::read(path).unwrap();
+        let rows = [FixtureRow {
+            task_id: "safe-task-1",
+            question: "PRIVATE_QUESTION_SENTINEL",
+            level: 1,
+            reference: "PRIVATE_REFERENCE_SENTINEL",
+            file_name: with_attachment.then_some("input.bin"),
+            file_path: with_attachment.then_some("2023/validation/input.bin"),
+        }];
+        // The attachment uses the fetch layer's own name and bytes, so only
+        // the shared batch and parquet writer are reused here.
+        let batch = snapshot_batch(
+            &rows,
+            &FixtureSchema {
+                attachment_bytes: None,
+                ..FixtureSchema::default()
+            },
+        );
+        write_parquet(&root.join(GAIA_PARQUET_PATH), &batch, None);
+        let bytes = fs::read(root.join(GAIA_PARQUET_PATH)).unwrap();
         (bytes.len() as u64, Sha256::digest(bytes).into())
     }
 

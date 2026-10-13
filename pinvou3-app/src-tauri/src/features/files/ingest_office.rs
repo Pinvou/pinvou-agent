@@ -12,7 +12,7 @@ use std::path::Path;
 
 use super::IngestResult;
 use super::estimate_tokens;
-use super::ingest_deps::{pandoc_tool_command, pdf_tool_command, system_tools};
+use super::ingest_deps::{pandoc_tool_command, pdftotext_extract, system_tools};
 
 const MAX_FORMULAS_PER_SHEET: usize = 2_048;
 
@@ -60,14 +60,6 @@ pub(super) fn ingest_pandoc(
             format!("pandoc 调用失败: {e}"),
         ),
     }
-}
-
-/// pdftotext 带 kill 的超时兜底（60s）：损坏输入可让 demuxer 挂死。
-fn pdftotext_with_timeout(command: std::process::Command) -> Result<std::process::Output, String> {
-    crate::platform::process::output_with_timeout_and_kill_tree(
-        command,
-        std::time::Duration::from_secs(60),
-    )
 }
 
 /// 用 LibreOffice headless 把文件转成指定 filter 的产物并读回文本。复用于旧
@@ -339,20 +331,7 @@ fn libreoffice_presentation_text(path: &Path) -> Result<String, String> {
                 .and_then(|s| s.to_str())
                 .unwrap_or("converted");
             let pdf_path = tmpdir.join(format!("{stem}.pdf"));
-            let mut pdftotext_cmd = pdf_tool_command("pdftotext");
-            pdftotext_cmd.arg("-layout").arg(&pdf_path).arg("-");
-            pdftotext_with_timeout(pdftotext_cmd)
-                .map_err(|e| format!("pdftotext 调用失败: {e}"))
-                .and_then(|o| {
-                    if o.status.success() {
-                        Ok(String::from_utf8_lossy(&o.stdout).into_owned())
-                    } else {
-                        Err(format!(
-                            "pdftotext 失败: {}",
-                            String::from_utf8_lossy(&o.stderr).trim()
-                        ))
-                    }
-                })
+            pdftotext_extract(&pdf_path)
         },
     )
 }

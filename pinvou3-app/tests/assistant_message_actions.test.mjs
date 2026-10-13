@@ -4,10 +4,12 @@ import {
   assistantItemCopyText,
   assistantResponseAvailable,
   assistantResponseText,
-  copyClipboardText,
-  normalizeAssistantMessageText,
 } from '../src/features/conversation/message-clipboard.js';
-import { assistantMarkdownCopyText } from '../src/features/conversation/structured-assistant-content.js';
+import {
+  assistantMarkdownCopyText,
+  normalizeAssistantMessageText,
+} from '../src/features/conversation/structured-assistant-content.js';
+import { copyClipboardText } from '../src/shared/clipboard.js';
 import {
   assistantExportFilename,
   buildAssistantResponseExport,
