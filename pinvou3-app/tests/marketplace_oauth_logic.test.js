@@ -110,4 +110,113 @@ assert.strictEqual(providerError.authState.oauth_token_present, false);
 assert.match(providerError.alert.subtitle, /拒绝/);
 assertNoYuandian(providerError);
 
-console.log('marketplace_oauth_logic: ok');
+// 安装失败路径的 OAuth 请求归属必须在 await 之后复检：catch 入口的检查只覆盖
+// 进入时刻，loadBackendState 等待期间 cancelOAuthLoading 可能完成取消并展示取消
+// 结果，或用户已发起新一次登录——旧请求此时若仍无条件 setAlert，会用陈旧失败
+// 覆盖取消/新登录界面。这里把 ToolStoreView.jsx 的真实 catch 体抽出来在 vm 里
+// 执行，用延迟兑现的 loadBackendState 复现两个失去归属窗口（取消/换新）与
+// 仍持归属的对照情形。
+const storeView = fs.readFileSync(
+  path.join(__dirname, '..', 'src', 'features', 'tools', 'ToolStoreView.jsx'),
+  'utf8',
+);
+const installFailAnchor = storeView.indexOf("console.error('install failed:', e);");
+assert.ok(installFailAnchor > 0, 'install error-path anchor must exist in ToolStoreView.jsx');
+const catchOpen = storeView.lastIndexOf('} catch (e) {', installFailAnchor);
+const finallyIdx = storeView.indexOf('} finally {', installFailAnchor);
+assert.ok(catchOpen > 0 && finallyIdx > catchOpen, 'install catch body boundaries must exist');
+const installCatchBody = storeView.slice(
+  catchOpen + '} catch (e) {'.length,
+  finallyIdx,
+);
+
+const runInstallCatch = async ({ loadBackendState, isCurrentOAuthRequest, setAlert }) => {
+  const sandbox = {
+    t: { oauthMcp: true },
+    backendId: 'canva',
+    oauthRequestId: 'req-1',
+    e: new Error('consent sync failed'),
+    detailCopy: { actions: { operationFailed: '操作失败' } },
+    console: { error: () => {} },
+    loadBackendState,
+    isCurrentOAuthRequest,
+    setAlert,
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(
+    `this.run = async () => {\n${installCatchBody}\n}`,
+    sandbox,
+    { filename: 'install-catch-body' },
+  );
+  await sandbox.run();
+};
+
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((res) => { resolve = res; });
+  return { promise, resolve };
+};
+
+// 抽出的 catch 体必须真的走到 await 之后才决定是否发布失败提示（否则下面的
+// 失去归属场景检测不到任何差异——守卫放这里而不是靠 setAlert 计数巧合）。
+assert.match(
+  installCatchBody,
+  /await loadBackendState\(\);\s*\n\s*if \(t\?\.oauthMcp && !isCurrentOAuthRequest\(backendId, oauthRequestId\)\) return;/,
+  'the install catch must recheck OAuth request ownership after the awaited refresh',
+);
+
+(async () => {
+  // 取消竞态：cancelOAuthLoading 在 refresh 等待期间完成，清掉了归属并展示取消
+  // 结果；旧失败不得再覆盖它。
+  {
+    const gate = deferred();
+    const alerts = [];
+    let owner = 'req-1';
+    const pending = runInstallCatch({
+      loadBackendState: () => gate.promise,
+      isCurrentOAuthRequest: (_id, requestId) => requestId !== null && requestId === owner,
+      setAlert: (a) => alerts.push(a),
+    });
+    owner = undefined; // clearOAuthRequest 已删条目
+    gate.resolve();
+    await pending;
+    assert.strictEqual(alerts.length, 0, 'a cancelled request must not publish the stale failure alert');
+  }
+
+  // 换新竞态：用户在 refresh 等待期间发起新登录（归属条目被替换）；旧失败不得
+  // 干扰新登录的界面。
+  {
+    const gate = deferred();
+    const alerts = [];
+    let owner = 'req-1';
+    const pending = runInstallCatch({
+      loadBackendState: () => gate.promise,
+      isCurrentOAuthRequest: (_id, requestId) => requestId !== null && requestId === owner,
+      setAlert: (a) => alerts.push(a),
+    });
+    owner = 'req-2'; // beginOAuthRequest 已替换条目
+    gate.resolve();
+    await pending;
+    assert.strictEqual(alerts.length, 0, 'a superseded request must not publish the stale failure alert');
+  }
+
+  // 对照：归属始终有效时，失败照常发布（复现路径保持原语义，不是一刀切吞错）。
+  {
+    const gate = deferred();
+    const alerts = [];
+    const pending = runInstallCatch({
+      loadBackendState: () => gate.promise,
+      isCurrentOAuthRequest: (_id, requestId) => requestId === 'req-1',
+      setAlert: (a) => alerts.push(a),
+    });
+    gate.resolve();
+    await pending;
+    assert.strictEqual(alerts.length, 1, 'the current request must still publish the failure alert');
+    assert.strictEqual(alerts[0].isError, true);
+  }
+
+  console.log('marketplace_oauth_logic: ok');
+})().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

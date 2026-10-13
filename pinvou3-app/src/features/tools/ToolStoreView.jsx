@@ -1767,6 +1767,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           // refresh so the card shows the real (installed) state instead of
           // staying stale until the next mount or pinvou:tools-changed.
           await loadBackendState();
+          if (t?.oauthMcp && !isCurrentOAuthRequest(backendId, oauthRequestId)) return;
           setAlert({ visible: true, loading: false, title: detailCopy.actions.operationFailed, subtitle: String(e && e.message ? e.message : e).slice(0, 240), isInstall: false, isError: true });
         } finally {
           if (t?.oauthMcp) {
