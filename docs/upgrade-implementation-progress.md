@@ -2649,3 +2649,42 @@ status 3.90s/0.38s/1.00s/0.80s; compatibility review 3.29s/0.35s/1.69s/0.97s.
 Independent fmt, Clippy and diff checks passed; compatibility also passed all
 49 CI policies (0.079s). Final documentation/App evidence was reviewed without
 rebuilding. Root self-review found no remaining in-scope gap.
+
+## T27 fifth batch - rollout commitment math (2026-10-13)
+
+This continued batch accepts bounded duplicate-free JSON null or one exact
+seven-field opening. Only null constructs the empty array; a closed valid object
+constructs a singleton array. Caller arrays, missing/null fields and extras fail.
+Original four targets, two ASCII identifiers, two positive binary64 safe integer
+revisions and two lower-hex hashes are validated. Fixed pinvou-rollout-set-v1 plus
+one actual NUL precedes bounded JCS of the fixed array; SHA256 computes the hash.
+The result has private construction and no Debug/Serialize. It proves no salt
+entropy/freshness, current membership, signature, qualification or rights. Shared
+private target/revision predicates moved equivalently from source-profile code.
+
+Root actual Node 22.23.3 run passed 27 groups: signing six (8.62s), byte seven
+(6.39s), rollout four (0.72s/132 original Node/Ajv acceptance/preimage/hash cases),
+source five (1.04s/218) and status five (0.94s/144). Both earlier oracle switches
+were enabled and executed. Controls include both frozen hashes/exact array bytes,
+pretty/reordered input, all seven field bindings, null/array/object distinction,
+escaped duplicates, all original target enums, closed fields/type/null rules,
+identifier/hash boundaries and line endings, safe integer limits/fractions and
+binary64 rounding. All-zero salt is shape-valid, making no entropy assertion.
+Clippy passed (5.33s); standalone/App formatting, 49 CI policies (0.321s),
+architecture, version and diff checks passed. No dependency, lock, Schema, CI,
+product version or gitlink changed. Actual Windows App passed all sixteen updater
+tests (0.15s after a 5m32s build), including both frozen commitments and caller-array
+refusal through the actual facade. No App-wide pass is claimed.
+
+Two independent source reviewers returned scoped PASS. Compatibility's actual
+Node22 run passed signing/byte/rollout/source/status in 18.16s/0.66s/1.05s/1.18s/
+0.85s, Clippy 3.39s and 49 CI policies 0.085s. Dependency's actual Node22 run passed
+all 27 groups, including rollout 132 cases in 1.51s and source/status regressions.
+Both independently passed fmt, Clippy and diff checks. Both reviewers returned final scoped PASS after reviewing the frozen source and
+final App/document evidence without rebuilding. Root self-review found no remaining
+in-scope gap; no App-wide or full T27 claim follows.
+
+Details: [rollout commitment](client-upgrade-rollout-commitment.md). Full T27,
+actual authenticated opening/membership and high-watermark integration remain
+unfinished. The unresolved Ed25519 point policy is not bypassed. Downloads have
+no total/cumulative duration or retry cap.

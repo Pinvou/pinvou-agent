@@ -3,7 +3,9 @@
 
 mod bindings;
 mod parse;
+mod rollout;
 mod shape;
+pub use rollout::{RolloutCommitment, RolloutCommitmentError};
 mod status;
 pub use status::{RecoveryHandleHash, StatusBinding, StatusBindingError, recovery_handle_hash};
 mod source;

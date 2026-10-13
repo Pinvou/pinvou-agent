@@ -30,3 +30,17 @@ pub(super) fn sha256_hex(value: &Value) -> bool {
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     })
 }
+
+pub(super) const TARGETS: [&str; 4] = [
+    "windows-x86_64-nsis-perMachine",
+    "linux-x86_64-deb-perMachine",
+    "linux-arm64-deb-perMachine",
+    "macos-universal-dmg-perMachine",
+];
+
+// All parsed numbers are binary64, matching the frozen Node/Ajv reference.
+pub(super) fn positive_safe_integer(value: &Value) -> bool {
+    value.as_f64().is_some_and(|number| {
+        (1.0..=9_007_199_254_740_991.0).contains(&number) && number.fract() == 0.0
+    })
+}

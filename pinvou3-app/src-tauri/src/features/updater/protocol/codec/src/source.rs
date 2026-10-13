@@ -1,5 +1,5 @@
 //! Closed stable-fact projection of supplied JSON, not actual source detection.
-use crate::shape::{closed, identifier, one_of, sha256_hex};
+use crate::shape::{TARGETS, closed, identifier, one_of, positive_safe_integer, sha256_hex};
 use crate::{Document, Error};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -15,14 +15,7 @@ const STABLE_FIELDS: [&str; 9] = [
     "installation",
     "dataMigration",
 ];
-const TARGETS: [&str; 4] = [
-    "windows-x86_64-nsis-perMachine",
-    "linux-x86_64-deb-perMachine",
-    "linux-arm64-deb-perMachine",
-    "macos-universal-dmg-perMachine",
-];
 const NATIVE_FIELDS: [&str; 5] = ["size", "sha256", "identity", "publisher", "format"];
-const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SourceProfileError {
@@ -122,9 +115,7 @@ fn native(value: &Value) -> bool {
     let Some(facts) = closed(value, &NATIVE_FIELDS) else {
         return false;
     };
-    let size = facts["size"]
-        .as_f64()
-        .is_some_and(|size| (1.0..=MAX_SAFE_INTEGER).contains(&size) && size.fract() == 0.0);
+    let size = positive_safe_integer(&facts["size"]);
     let hash = sha256_hex(&facts["sha256"]);
     size && hash
         && identifier(&facts["identity"])

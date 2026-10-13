@@ -12,6 +12,14 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+pub(crate) fn derive_rollout_commitment(
+    bytes: &[u8],
+) -> Result<pinvou_upgrade_codec::RolloutCommitment, pinvou_upgrade_codec::RolloutCommitmentError> {
+    decode_metadata(bytes)
+        .map_err(pinvou_upgrade_codec::RolloutCommitmentError::Json)?
+        .rollout_commitment()
+}
+
 pub(crate) fn derive_status_binding(
     bytes: &[u8],
 ) -> Result<pinvou_upgrade_codec::StatusBinding, pinvou_upgrade_codec::StatusBindingError> {
@@ -31,6 +39,27 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_matches_empty_and_single_rollout_commitments() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/digests.json"
+        )))
+        .unwrap();
+        for (opening, field) in [
+            (serde_json::Value::Null, "expectedEmptyCommitment"),
+            (vector["opening"].clone(), "expectedOpeningCommitment"),
+        ] {
+            let result = derive_rollout_commitment(&serde_json::to_vec(&opening).unwrap()).unwrap();
+            assert_eq!(result.commitment_hash(), vector[field].as_str().unwrap());
+            assert_eq!(&result.input_bytes()[..22], b"pinvou-rollout-set-v1\0");
+        }
+        assert!(matches!(
+            derive_rollout_commitment(b"[]"),
+            Err(pinvou_upgrade_codec::RolloutCommitmentError::InvalidOpening)
+        ));
+    }
 
     #[test]
     fn feature_facade_binds_status_context_and_exact_raw_secret_without_authority() {
