@@ -58,7 +58,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::features::assistant::engine::{
     AppEngine, EngineTurnSignal, TranscriptOperation, TurnIdentity, TurnLifecycle, TurnReservation,
-    dispatch_turn_bound_cancel,
+    bounded_join_detached_on_timeout, dispatch_turn_bound_cancel,
 };
 #[cfg(any(feature = "benchmark-hooks", test))]
 use crate::features::assistant::eval::{EvalModelSelection, EvalSuiteModelSnapshot, ModelIdentity};
@@ -1052,26 +1052,24 @@ enum BoundedJoinOutcome {
 /// never complete its own bookkeeping. The budget is a parameter so the
 /// `Detached` outcome stays reachable from behavior tests without waiting
 /// on the real 5s clock; production callers always pass
-/// [`TURN_GATE_AWAIT_TIMEOUT`].
+/// [`TURN_GATE_AWAIT_TIMEOUT`]. The bounded join itself is the shared
+/// [`bounded_join_detached_on_timeout`] core (its `Detached` log line is
+/// that core's wording); this wrapper only maps the outcome onto the
+/// panic-distinguishing [`BoundedJoinOutcome`].
 async fn bounded_join_while_holding_turn_gate<T>(
     what: &str,
     budget: std::time::Duration,
     task: tokio::task::JoinHandle<T>,
 ) -> BoundedJoinOutcome {
-    match tokio::time::timeout(budget, task).await {
-        Ok(Ok(_)) => BoundedJoinOutcome::Settled,
-        Ok(Err(join_error)) => {
+    match bounded_join_detached_on_timeout(what, budget, task).await {
+        Some(Ok(_)) => BoundedJoinOutcome::Settled,
+        Some(Err(join_error)) => {
             eprintln!(
                 "[engine_pool] {what} task panicked: {join_error}; treating it as not settled"
             );
             BoundedJoinOutcome::Panicked(join_error)
         }
-        Err(_) => {
-            eprintln!(
-                "[engine_pool] {what} did not settle within {budget:?} while holding the turn gate; letting it finish in the background"
-            );
-            BoundedJoinOutcome::Detached
-        }
+        None => BoundedJoinOutcome::Detached,
     }
 }
 
@@ -1091,23 +1089,34 @@ fn shutdown_op_name(op: &Op) -> &'static str {
     }
 }
 
-/// Delivers the reclaim shutdown ops in order, each send bounded by
-/// [`TURN_GATE_AWAIT_TIMEOUT`] (issue #255): reclaim runs inside the session
-/// turn gate, so a stalled engine with a full ops channel must not extend
-/// the gate hold. Returns the number of ops delivered in order from the
-/// front; the caller re-sends any remainder from a detached task (see
-/// [`retry_shutdown_sends`]). A timed-out send is never enqueued (tokio
-/// mpsc send is cancel-safe), so skipping ahead cannot duplicate an op.
-async fn bounded_shutdown_sends<S, Fut>(mut send: S, ops: impl IntoIterator<Item = Op>) -> usize
+/// Shared loop of the two bounded shutdown-send lanes ([`bounded_shutdown_sends`]
+/// first pass and [`retry_shutdown_sends`] detached retry): delivers `ops`
+/// in order, each send bounded by `budget` (a timed-out send is never
+/// enqueued — tokio mpsc send is cancel-safe, so skipping ahead cannot
+/// duplicate an op), and stops at the first failed or timed-out send.
+/// Returns the number of ops delivered in order from the front;
+/// `on_delivered` observes each delivered op's static name (the gate-held
+/// first pass logs nothing; the retry reports the late delivery once the
+/// engine drained).
+async fn deliver_shutdown_ops<S, Fut, OnDelivered>(
+    mut send: S,
+    ops: impl IntoIterator<Item = Op>,
+    budget: std::time::Duration,
+    on_delivered: OnDelivered,
+) -> usize
 where
     S: FnMut(Op) -> Fut,
     Fut: Future<Output = Result<()>>,
+    OnDelivered: Fn(&str),
 {
     let mut delivered = 0;
     for op in ops {
         let op_name = shutdown_op_name(&op);
-        match tokio::time::timeout(TURN_GATE_AWAIT_TIMEOUT, send(op)).await {
-            Ok(Ok(())) => delivered += 1,
+        match tokio::time::timeout(budget, send(op)).await {
+            Ok(Ok(())) => {
+                on_delivered(op_name);
+                delivered += 1;
+            }
             Ok(Err(e)) => {
                 eprintln!(
                     "[engine_pool] shutdown {op_name} send failed: {e:#}; abandoning remaining shutdown ops"
@@ -1116,13 +1125,28 @@ where
             }
             Err(_) => {
                 eprintln!(
-                    "[engine_pool] shutdown {op_name} send timed out after {TURN_GATE_AWAIT_TIMEOUT:?} while holding the turn gate; abandoning remaining shutdown ops"
+                    "[engine_pool] shutdown {op_name} send timed out after {budget:?}; abandoning remaining shutdown ops"
                 );
                 break;
             }
         }
     }
     delivered
+}
+
+/// Delivers the reclaim shutdown ops in order, each send bounded by
+/// [`TURN_GATE_AWAIT_TIMEOUT`] (issue #255): reclaim runs inside the session
+/// turn gate, so a stalled engine with a full ops channel must not extend
+/// the gate hold. Returns the number of ops delivered in order from the
+/// front; the caller re-sends any remainder from a detached task (see
+/// [`retry_shutdown_sends`]). A timed-out send is never enqueued (tokio
+/// mpsc send is cancel-safe), so skipping ahead cannot duplicate an op.
+async fn bounded_shutdown_sends<S, Fut>(send: S, ops: impl IntoIterator<Item = Op>) -> usize
+where
+    S: FnMut(Op) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    deliver_shutdown_ops(send, ops, TURN_GATE_AWAIT_TIMEOUT, |_| {}).await
 }
 
 /// Retries the shutdown ops that [`bounded_shutdown_sends`] could not
@@ -1136,33 +1160,15 @@ where
 /// (MCP shutdown, subagent flush included). Each send is bounded by
 /// `patience`, so a permanently stalled engine stops the retry after at
 /// most `pending.len() × patience` instead of waiting forever.
-async fn retry_shutdown_sends<S, Fut>(mut send: S, pending: Vec<Op>, patience: std::time::Duration)
+async fn retry_shutdown_sends<S, Fut>(send: S, pending: Vec<Op>, patience: std::time::Duration)
 where
     S: FnMut(Op) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    for op in pending {
-        let op_name = shutdown_op_name(&op);
-        match tokio::time::timeout(patience, send(op)).await {
-            Ok(Ok(())) => {
-                eprintln!(
-                    "[engine_pool] shutdown {op_name} retry delivered after the engine drained"
-                );
-            }
-            Ok(Err(e)) => {
-                eprintln!(
-                    "[engine_pool] shutdown {op_name} retry stopped: engine channel closed ({e:#})"
-                );
-                break;
-            }
-            Err(_) => {
-                eprintln!(
-                    "[engine_pool] shutdown {op_name} retry timed out after {patience:?}; the engine task may linger until process exit"
-                );
-                break;
-            }
-        }
-    }
+    deliver_shutdown_ops(send, pending, patience, |op_name| {
+        eprintln!("[engine_pool] shutdown {op_name} retry delivered after the engine drained");
+    })
+    .await;
 }
 
 /// Tears down a just-spawned engine whose session hydration failed.
