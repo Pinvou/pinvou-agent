@@ -6904,6 +6904,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pinvou-upgrade-file-http"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "pinvou-upgrade-transfer",
+ "reqwest 0.13.4",
+ "tokio",
+]
+
+[[package]]
 name = "pinvou-upgrade-timing"
 version = "0.0.0"
 
@@ -6954,6 +6964,7 @@ dependencies = [
  "parking_lot",
  "pinvou-knowledge",
  "pinvou-upgrade-codec",
+ "pinvou-upgrade-file-http",
  "pinvou-upgrade-timing",
  "pinvou-upgrade-transfer",
  "pipewire",

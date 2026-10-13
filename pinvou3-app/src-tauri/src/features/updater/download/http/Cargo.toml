@@ -1,0 +1,20 @@
+[package]
+name = "pinvou-upgrade-file-http"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+license = "MIT"
+
+[dependencies]
+bytes = "=1.12.1"
+pinvou-upgrade-transfer = { path = "../transfer" }
+reqwest = { version = "=0.13.4", default-features = false, features = ["rustls", "stream", "system-proxy"] }
+tokio = { version = "=1.53.1", features = ["net", "time", "rt", "macros"] }
+
+[dev-dependencies]
+rustls = { version = "=0.23.45", default-features = false, features = ["aws-lc-rs"] }
+serde_json = "=1.0.151"
+
+[lints.rust]
+unsafe_code = "forbid"

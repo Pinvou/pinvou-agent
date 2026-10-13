@@ -190,6 +190,7 @@ jobs:
           predicate-quantifier: some-with-excludes
           filters: |
             rust_code:
+              - 'pinvou3-app/src-tauri/src/features/updater/download/http/**'
               - 'pinvou3-app/src-tauri/src/features/updater/protocol/codec/**'
               - 'specs/upgrade/v1/**'
               - '**/*.rs'
@@ -855,6 +856,19 @@ jobs:
           cargo fmt -- --check
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked
+
+      - name: Set up Go for isolated upgrade HTTPS peer
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.2'
+          cache: false
+
+      - name: Check independent upgrade HTTPS transport
+        working-directory: pinvou3-app/src-tauri/src/features/updater/download/http
+        run: |
+          cargo fmt -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          python3 tests/https_e2e.py
 
       - name: Install frozen upgrade reference dependencies
         run: npm --prefix specs/upgrade/v1 ci --ignore-scripts --no-audit --no-fund

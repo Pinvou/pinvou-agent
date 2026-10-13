@@ -2220,3 +2220,37 @@ HTTPS/DNS/redirect policy, credentials/URL renewal, protected cache and staging,
 provider continuity and physical byte verification remain subsequent work.
 Full T29 and deployment remain unfinished. Details:
 [client transfer planning](client-upgrade-transfer-planning.md).
+
+### T29 second batch: restricted HTTPS file transfer (2026-10-13)
+
+The new private transport binds each actual HTTPS GET to the original byte plan,
+approves canonical origin and every exact-port socket before connecting, handles
+literal IPs without resolver substitution and refuses DNS fallback. Fresh clients
+disable system proxies, redirects and transparent decoding; no control credential
+or cookie injection is accepted. Fixed errors discard SDK URL/source chains.
+When Transfer-Encoding is present, only one chunked coding is permitted and
+Content-Length must be absent. A validated
+plan is visible before byte delivery so 200 replacement cannot be mistaken for
+206 append. Exact EOF supplies only a byte receipt; failure/abort/finish latch.
+Output fragments are bounded to 64 KiB, separately from SDK parser allocation.
+
+Final real HTTPS tests passed all nine groups (2.38s) and 34 wire requests, including
+actual raw duplicate CL/CR/CE and TE conflict controls, CA/name and wrong pin,
+short ranges, partial recovery, stream excess/truncation/abort and continuous
+progress exceeding an idle interval. Proxy/redirect/denied endpoint hits were zero;
+GET identity and Range/If-Range were observed with no control/cookie/proxy credentials.
+Standalone fmt/Clippy and all eleven B1 groups, 47 CI policies, architecture,
+version, diff, YAML and complete locked App/CLI graphs passed. Each parent lock
+adds only the local package/App edge with no external version change. Final actual
+Windows App integration passed all ten updater tests (0.01s after a 1m38s incremental
+build); no App-wide pass is claimed. Two independent roles each passed an earlier
+nine-group/30-wire version, then separately reviewed the final plan getter and raw
+duplicate-header additions, without conflating earlier execution with the final tree.
+
+Qualification, URL renewal, current rights, immutable provider evidence, protected
+file writes/cache/staging and final physical hashing/authenticity remain subsequent
+work. SDK parser bounds are not claimed to equal post-parsed B1 bounds. There is
+no total/cumulative download deadline or retry cap. Full T29 and deployment remain
+unfinished. Details: [restricted HTTPS transport](client-upgrade-file-http.md).
+Both independent roles gave final B2 scoped PASS after the final App/B1 evidence
+and documentation review; no mandatory finding remains.

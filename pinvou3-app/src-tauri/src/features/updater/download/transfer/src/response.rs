@@ -49,7 +49,7 @@ impl<'a> BodyPlan<'a> {
 pub fn plan_response<'a>(
     request: RequestPlan<'a>,
     status: u16,
-    headers: ResponseHeaders<'a>,
+    headers: ResponseHeaders<'_>,
 ) -> Result<ResponseDecision<'a>, TransferError> {
     if request.kind() == RequestKind::VerifyExisting {
         return if status == 416 {
