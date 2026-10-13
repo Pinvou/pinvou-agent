@@ -1,6 +1,8 @@
 //! Bounded Upgrade V1 JSON and canonical bytes. Successful decoding is not
 //! signature verification, established Root trust, current eligibility or ACK.
 
+mod purpose_response;
+pub use purpose_response::{PurposeResponseError, PurposeResponseOperation};
 mod download_info;
 pub use download_info::DownloadInfoContractError;
 mod check_response;

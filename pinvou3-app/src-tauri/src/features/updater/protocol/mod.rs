@@ -12,6 +12,16 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+/// Supplied response contract only; never an authorization or consumed ACK.
+pub(crate) fn check_supplied_purpose_response_bytes(
+    bytes: &[u8],
+    operation: pinvou_upgrade_codec::PurposeResponseOperation,
+) -> Result<(), pinvou_upgrade_codec::PurposeResponseError> {
+    decode_metadata(bytes)
+        .map_err(pinvou_upgrade_codec::PurposeResponseError::Json)?
+        .assert_supplied_purpose_response_contract(operation)
+}
+
 /// Supplied download-info contract; does not approve or contact a file origin.
 pub(crate) fn check_supplied_download_info_bytes(
     bytes: &[u8],
@@ -356,6 +366,76 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_checks_six_purpose_responses_without_creating_an_authorization_or_ack() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        use pinvou_upgrade_codec::{PurposeResponseError, PurposeResponseOperation as Operation};
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/envelopes.json"
+        )))
+        .unwrap();
+        let envelope = |role: &str| -> serde_json::Value {
+            let v = vectors["vectors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["name"] == role)
+                .unwrap();
+            serde_json::from_slice(
+                &URL_SAFE_NO_PAD
+                    .decode(v["envelopeBase64Url"].as_str().unwrap())
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        for (validate, consume, purpose) in [
+            (
+                Operation::ValidatePreinstall,
+                Operation::ConsumePreinstall,
+                "preinstall",
+            ),
+            (
+                Operation::ValidateInstall,
+                Operation::ConsumeInstall,
+                "install",
+            ),
+            (
+                Operation::ValidateActivate,
+                Operation::ConsumeActivate,
+                "activate",
+            ),
+        ] {
+            let authorization = envelope(&format!("authorization-{purpose}"));
+            let response = serde_json::json!({"protocolVersion":1,"requestId":"request-1",
+                "authorizationRevision":0,"authorization":authorization});
+            let check = |value: &serde_json::Value, operation| {
+                check_supplied_purpose_response_bytes(
+                    &serde_json::to_vec(value).unwrap(),
+                    operation,
+                )
+            };
+            assert_eq!(check(&response, validate), Ok(()));
+            assert_eq!(
+                check(&response, consume),
+                Err(PurposeResponseError::InvalidContract)
+            );
+            let credential = envelope(&format!("{purpose}-transaction-event"));
+            let mut response = serde_json::json!({"protocolVersion":1,"requestId":"request-1",
+                "authorizationState":"consumed","authorizationRevision":0,
+                "transactionId":credential["signed"]["transactionId"],"transactionCredential":credential});
+            assert_eq!(check(&response, consume), Ok(()));
+            response["transactionId"] = serde_json::json!("other-transaction");
+            assert_eq!(
+                check(&response, consume),
+                Err(PurposeResponseError::BindingMismatch)
+            );
+            response["transactionId"] =
+                response["transactionCredential"]["signed"]["transactionId"].clone();
+            assert_eq!(check(&response, consume), Ok(()));
+        }
+    }
 
     #[test]
     fn feature_facade_binds_download_info_without_approving_destination_or_fetch_rights() {

@@ -4001,3 +4001,37 @@ exact API_RESPONSE_MISMATCH. No fake cryptography/private-key output.
 No dependencies/locks/Schema/CI/VERSION/gitlinks change. Details:
 [download-info](client-upgrade-download-info.md). Complete T27/T29 remain unfinished.
 Downloads retain no total/cumulative duration or retry cap.
+
+## T27 twenty-sixth batch - supplied three-purpose responses (2026-10-14)
+
+Scope: complete original validate/consume response API contracts for preinstall,
+install and activate. Fixed six-operation enum/closed Schemas and exact seven
+embedded common/credential dependencies; whole bounded canonical reparse;
+independent credential64KiB and unchanged supplied semantics at max(iat,nbf).
+Validate keeps original purpose binding; Consume binds declared transactionId.
+AuthorizationRevision/requestId remain independent Schema facts. Unit-only
+contract success never becomes execution authorization, durable consumed ACK,
+current qualification or permission to revive a retired executor.
+
+Outside-repository preparation ran the actual complete original API oracle
+and generated5453 cases, with all explicitly named positive/negative controls
+checked against their intended original outcomes. No frozen B25 discovery was
+affected. Initial four-group Rust comparison passed in31.63s, including all5453
+actual original Node cases. Both scoped static reviews found no mandatory issue.
+Root final111 passed with actual Node22/both legacy environments, filtering only
+unchanged31556 Schema mutations (CI complete112 retained): new5453 in28.53s,
+credential7287 in52.43s. Clippy29.15s/codec+App facade format passed.
+Actual Windows App42 passed in0.25s after3m17s compilation; architecture/version/
+diff passed, CI policy51 passed in0.047s. Root self-review confirms complete six
+closed responses, field/purpose mapping, original helper use and no authority
+or download cap. Dependency independent111 passed (5453 in29.22s, credential7287
+in46.05s, Clippy3.11s/fmt/diff); compatibility independent111 passed (5453
+in28.90s, credential7287 in46.35s, Clippy2.47s/fmt, CI51 in0.060s/diff).
+Both actual Node22/both legacy environments, same sole31556 filter; no mandatory
+findings and all executables closed. Both independent final documentation
+reviews passed with no mandatory issue before this scoped commit. Node transaction negatives
+preflight full Schema and original independent credential semantics before exact
+API_RESPONSE_MISMATCH. No fake crypto/private-key output or production writes.
+No dependencies/locks/Schema/CI/VERSION/gitlinks change. Details:
+[purpose responses](client-upgrade-purpose-responses.md). T27/T32 remain unfinished.
+Downloads retain no total/cumulative duration or retry cap.
