@@ -83,7 +83,8 @@ const protocolSources = {
 
 const expectedProtocolHashes = {
   // Aux-chat domain debut: three commands — get_or_create_aux_session /
-  // discard_aux_session / chat(restrictTools:true); buffer loading reuses the
+  // discard_aux_session (since removed with its dead frontend chain) /
+  // chat(restrictTools:true); buffer loading reuses the
   // ensureSessionBufferLoaded injected by the sessions domain (the
   // load_session hash is accounted in the sessions domain).
   // Recomputed for M6: the domain gains reset() invoking the atomic

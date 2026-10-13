@@ -1118,8 +1118,7 @@ impl SessionStore {
     /// at the same path, so an unreadable record (transient fault OR
     /// permanent corruption) must never fall into the creation leg
     /// (round-30 B4/B8). The panel surfaces the error as ensureFailed; the
-    /// user's recovery for a truly dead record is an explicit discard
-    /// (`discard_aux_session` deletes by id without parsing the record).
+    /// user's recovery for a truly dead record is an explicit discard.
     /// An auxiliary conversation must not own an aux session (aux-of-aux): an
     /// aux session is itself a Chat kind, so the command layer's
     /// `ensure_chat_session` cannot catch it — the single creation entry point

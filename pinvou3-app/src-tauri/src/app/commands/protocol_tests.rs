@@ -462,7 +462,6 @@ command_protocol!(
         "set_session_pinned",
         "set_session_archived",
         "get_or_create_aux_session",
-        "discard_aux_session",
         "reset_aux_session",
         "save_session_artifacts",
         "save_session_pinvou_scene_events",
@@ -682,11 +681,8 @@ fn aux_refusal_guards_stay_in_their_commands() {
     let interaction = include_str!("interaction.rs");
     let projects = include_str!("projects.rs");
 
-    // The discard command must not silently no-op on aux-shaped ids.
-    assert!(
-        sessions.contains("discard_aux_session: auxiliary conversations do not own an aux session"),
-        "discard_aux_session must reject aux-shaped parent ids",
-    );
+    // The discard command was removed with its dead frontend chain; the
+    // remaining three refusals stay pinned.
     assert!(
         interaction
             .contains("set_multi_agent_mode: auxiliary conversations do not take multi-agent mode"),

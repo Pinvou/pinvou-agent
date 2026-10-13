@@ -2974,8 +2974,8 @@ impl EnginePool {
     }
 
     /// Atomically reset a task's auxiliary conversation (M6): delete the
-    /// existing aux session through the same turn gate as
-    /// `discard_aux_session` / chat delete, then create a fresh one and
+    /// existing aux session through the same turn gate as chat delete, then
+    /// create a fresh one and
     /// return its metadata together with the deleted aux id (so the caller
     /// can emit `session:deleted`). One primitive, one outcome — the
     /// frontend's old two-invoke restart (discard, then ensure) had no
@@ -7257,8 +7257,8 @@ mod scheduled_model_tests {
     }
 
     /// PR #433 review regression: `delete_session`'s Chat branch cascades the
-    /// auxiliary session through the gate (same pipeline as
-    /// `discard_aux_session`) — first `pool.delete_chat_session(aux)`
+    /// auxiliary session through the gate (the same pipeline as the aux
+    /// discard leg) — first `pool.delete_chat_session(aux)`
     /// (reclaim the engine + store.delete + late sweep inside the turn gate),
     /// then delete the main session; `store.delete`'s on-disk cascade only
     /// removes the record and would leave a running aux engine as a

@@ -848,8 +848,8 @@ where
 {
     evict_acp(session_id).await;
     // The aux session cascade must go through the gated delete first (turn
-    // gate + engine reclaim + late sweep, the same path as
-    // discard_aux_session): store.delete's cascade only removes the on-disk
+    // gate + engine reclaim + late sweep, the same path as the pool's
+    // delete_chat_session): store.delete's cascade only removes the on-disk
     // records and would leave a still-running aux engine as a handle-less
     // orphan.
     if let Some(aux_id) = store.aux_session_id(session_id) {
@@ -1370,60 +1370,6 @@ async fn get_or_create_aux_session_inner(
         .map_err(|e| format!("get_or_create_aux_session: {e:#}"))
 }
 
-/// Discard a main session's auxiliary conversation: reclaim the engine,
-/// delete the aux session, and clear the mapping. Repeated calls are
-/// idempotent (no mapping counts as already discarded).
-#[tauri::command]
-pub async fn discard_aux_session(
-    session_id: String,
-    app: AppHandle,
-    store: State<'_, SessionStore>,
-    pool: State<'_, EnginePool>,
-) -> Result<(), String> {
-    // Same folding as get_or_create_aux_session (round-30 B7): the native
-    // chain (e.g. "remove stale session dir /Users/<name>/...") must not
-    // cross the relay.
-    super::remote_control::web_session_result(
-        super::remote_control::WebSessionOperation::DiscardAuxSession,
-        discard_aux_session_inner(session_id, app, store, pool).await,
-    )
-}
-
-async fn discard_aux_session_inner(
-    session_id: String,
-    app: AppHandle,
-    store: State<'_, SessionStore>,
-    pool: State<'_, EnginePool>,
-) -> Result<(), String> {
-    // The derived-id forward query (round-30 B8): None only when the aux
-    // record is genuinely absent (NotFound-only probe), so an absent aux is
-    // the idempotent already-discarded case, and a transient stat fault reads
-    // as "present" and flows into the gated delete, which surfaces the real
-    // error instead of treating "unknown" as "nothing to discard".
-    // An `aux-` input derives no aux of its own (aux-of-aux is structurally
-    // impossible), so the probe below would silently no-op while the caller
-    // believes a discard happened — the sibling ensure/reset commands reject
-    // aux-as-parent explicitly, and so does this one (round-34 minor 2).
-    if crate::features::sessions::is_aux_session_id(&session_id) {
-        return Err(
-            "discard_aux_session: auxiliary conversations do not own an aux session; pass the main task id".to_string(),
-        );
-    }
-    let Some(aux_id) = store.aux_session_id(&session_id) else {
-        return Ok(());
-    };
-    // Same path as delete_session's Chat branch: delete_chat_session reclaims
-    // the engine inside the turn gate and calls store.delete.
-    pool.delete_chat_session(&aux_id)
-        .await
-        .map_err(|error| format!("discard_aux_session: {error:#}"))?;
-    pool.forget_session(&aux_id);
-    let payload = serde_json::json!({ "id": &aux_id });
-    let _ = app.emit("session:deleted", payload.clone());
-    crate::features::remote_control::forward_app_event(&app, "session:deleted", payload);
-    Ok(())
-}
-
 /// Atomically restart a main session's auxiliary conversation (M6): if an
 /// aux session exists, delete it through the pool's turn gate, then create a
 /// fresh one, returning the new binding. This replaces the frontend's old
@@ -1468,7 +1414,7 @@ async fn reset_aux_session_inner(
         .await
         .map_err(|e| format!("reset_aux_session: {e:#}"))?;
     reset_aux_session_finish(outcome, |aux_id| {
-        // Same post-delete notification as discard_aux_session: the aux id
+        // Same post-delete notification as the aux discard path: the aux id
         // is derived (`aux-{parent_id}`), so the fresh session reuses it and
         // the deletion event is what tells every client to drop the old
         // transcript's buffer before the next snapshot read.

@@ -118,7 +118,6 @@ pub(super) enum WebSessionOperation {
     CreateSession,
     LoadSessionChunk,
     GetOrCreateAuxSession,
-    DiscardAuxSession,
     ResetAuxSession,
 }
 
@@ -130,7 +129,6 @@ impl WebSessionOperation {
             Self::CreateSession => "create_session",
             Self::LoadSessionChunk => "load_session_chunk",
             Self::GetOrCreateAuxSession => "get_or_create_aux_session",
-            Self::DiscardAuxSession => "discard_aux_session",
             Self::ResetAuxSession => "reset_aux_session",
         }
     }
@@ -1749,10 +1747,6 @@ mod tests {
         assert_eq!(
             web_session_result(WebSessionOperation::GetOrCreateAuxSession, error).unwrap_err(),
             "web_session_get_or_create_aux_session_failed"
-        );
-        assert_eq!(
-            web_session_result(WebSessionOperation::DiscardAuxSession, error).unwrap_err(),
-            "web_session_discard_aux_session_failed"
         );
         // M6: the atomic reset is web-allowlisted through the same funnel.
         assert_eq!(
