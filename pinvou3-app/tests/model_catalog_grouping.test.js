@@ -125,9 +125,10 @@ test('z.ai coding catalog rows move to the official lowercase spelling; legacy u
   assert.strictEqual(isPresetModel(mkZaiPaas('GLM-5-Turbo')), false, 'the z.ai paas GLM-5-Turbo row is deleted; falls back to custom');
 });
 test('Tencent Coding Plan catalog hits with legacy alias compatibility (official 2026-10-13 model table)', () => {
-  // The live 130092 table lists only tc-code-latest + glm-5; announce 2469
-  // took GLM-5 / GLM-5-Turbo / GLM-5.1 offline Beijing time 2026-10-09 00:00
-  // (Coding Plan users auto-switch to Auto), so the glm-5 row is removed and
+  // The live 130092 table still displays glm-5 with its now-past-due
+  // retirement notice; announce 2469 (GLM-5 / GLM-5-Turbo / GLM-5.1 offline
+  // Beijing time 2026-10-09 00:00, Coding Plan users auto-switch to Auto) is
+  // the authoritative record, so the glm-5 row is removed and
   // old glm-5 / glm-5-0 configs fall back to custom. kimi-k2.5 was retired
   // platform-wide on 2026-08-31 (announce 2414) and removed from the catalog.
   const base = 'https://api.lkeap.cloud.tencent.com/coding/v3';

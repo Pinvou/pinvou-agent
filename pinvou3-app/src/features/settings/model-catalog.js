@@ -26,8 +26,9 @@ import xaiIcon from '../../brand-icons/xai.svg';
 // previous full re-check 2026-09-28):
 // - deepseek: V4.1-Flash (deepseek-flash) is still the mainline and
 //   deepseek-v4-pro keeps serving with unchanged billing (api-docs.deepseek.com
-//   updates/pricing re-verified 2026-10-13; the changelog's newest entry is
-//   still 2026-09-10).
+//   updates/pricing re-verified 2026-10-13; the newest model entry is still
+//   2026-09-10 — the 2026-10-01 changelog entry is the DeepSeek Harness
+//   developer preview, not a model change).
 // - glm: GLM-5.3 launched on 2026-08-19 (China) / 2026-08-18 (z.ai), and is
 //   still the API enum default on both sites (docs.bigmodel.cn / docs.z.ai,
 //   re-verified 2026-10-13; no GLM retirement announced).
@@ -41,9 +42,10 @@ import xaiIcon from '../../brand-icons/xai.svg';
 // - openai: gpt-6.1-sol takes the default (2026-10-13): OpenAI's own
 //   latest-model reference ranks gpt-6-astra for the most demanding work and
 //   gpt-6.1-sol as "Near-Astra performance for complex work at a lower cost"
-//   (announced 2026-10-07 as "An upgrade to GPT-6 Sol that nearly matches
-//   GPT-6 Astra's intelligence on agentic coding ... at roughly a fifth of
-//   the price"), so the balanced-flagship slot moves up from gpt-6-sol. The
+//   (model data 2026-09-29; OpenAI's "Introducing GPT-6.1 Sol" post
+//   2026-10-05: "An upgrade to GPT-6 Sol that nearly matches GPT-6 Astra's
+//   intelligence ... at one-fifth of Astra's standard input and output token
+//   prices"), so the balanced-flagship slot moves up from gpt-6-sol. The
 //   Azure Foundry capability table pins the wire facts (page updated
 //   2026-10-08): gpt-6.1-sol (2026-09-29) lists the Responses API with
 //   "Functions, tools, and parallel tool calling (Responses API only)",
@@ -309,7 +311,10 @@ const MODEL_CATALOG = {
       // custom listing. Two rows the live table added are mirrored:
       // deepseek/deepseek-flash (DeepSeek-V4.1-Flash 原厂直供) and
       // mimo-v2.6-flash, both left unannotated like the other gateway
-      // DeepSeek rows. minimax-m2.7 stays listed (no Tencent-side retirement
+      // DeepSeek rows — the Rust image table still resolves them Supported
+      // via the "deepseek-flash" / "mimo-v2.6" substrings (first-party
+      // multimodal facts); only the FE form annotation stays off per the
+      // gateway policy. minimax-m2.7 stays listed (no Tencent-side retirement
       // notice as of 2026-10-13; MiniMax's platform-level M2.5/M2.7
       // retirement — new-user cutoff 2026-10-19, offline 2026-11-18 — is a
       // watch item for this gateway). The old "high-load" flag on
@@ -373,7 +378,7 @@ const MODEL_CATALOG = {
       preset: 'deepseek',
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'deepseek',
-      // Official figures re-checked on 2026-09-14 (the api-docs.deepseek.com
+      // Official figures re-checked on 2026-10-13 (the api-docs.deepseek.com
       // updates and pricing pages agree): V4.1-Flash (deepseek-flash) is the
       // current mainline with native image input and 1M context;
       // deepseek-v4-pro keeps serving past 09-14 per user requests with
@@ -442,7 +447,7 @@ const MODEL_CATALOG = {
       preset: 'glm',
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'glm',
-      // Official figures re-checked on 2026-09-28 (docs.bigmodel.cn API enum /
+      // Official figures re-checked on 2026-10-13 (docs.bigmodel.cn API enum /
       // pricing page): glm-5.3 is the current flagship (the text-model API
       // enum default) with forced thinking (disabled errors out) and effort
       // limited to low/high/max; glm-5.3-flash is the multimodal
@@ -477,7 +482,7 @@ const MODEL_CATALOG = {
       // existing glm-5-turbo configs fall back to the custom classification
       // (tier hints unaffected), consistent with how this file's
       // glm_coding_plan_global group is handled. glm-5.3-flashx is z.ai's
-      // vision-enum default (re-checked 2026-09-28) and, like bigmodel, is
+      // vision-enum default (re-checked 2026-10-13) and, like bigmodel, is
       // not open on the Coding Plan endpoint.
       items: [
         { model: 'glm-5.3', imageCapable: false, title: 'glm-5.3', desc: '最新旗舰，强制思考' },
@@ -503,7 +508,9 @@ const MODEL_CATALOG = {
       // 302 there): M3 stays the PAYG flagship (1M context, native
       // multimodal); MiniMax-M3.1-Flash-Preview is the newer multimodal tier
       // with real reasoning_effort tuning, but it is served only via the
-      // M Plan / MiniMax Code and Token Plan subscriptions — a plain
+      // M Plan and MiniMax Code subscriptions (the official note lists no
+      // Token Plan direct channel — Token Plan users reach it from 10-19
+      // through M2.x auto-routing instead) — a plain
       // pay-as-you-go key may not invoke it. The model-intro page posts an
       // M2.5/M2.7 retirement notice (verified verbatim 2026-10-13): new-user
       // access ends 2026-10-19, the series goes offline 2026-11-18, and from
@@ -566,7 +573,11 @@ const MODEL_CATALOG = {
       // Official figures re-checked 2026-10-13 (mimo.mi.com model list +
       // deprecation page): the MiMo-V2.6 series launched 2026-09-22 and all
       // three tiers are omni-modal (text/image/audio/video input) with 1M
-      // context; mimo-v2.5-pro is text-only and mimo-v2.5 multimodal. The
+      // context; the deprecation page still calls mimo-v2.5-pro text-only
+      // and mimo-v2.5 multimodal (note: the live model list now shows a
+      // "Full-modal Understanding" capability cell for v2.5-pro — the two
+      // official pages conflict, so the conservative text-only annotation
+      // stays until the rows retire 2026-10-21). The
       // deprecation page (updated 2026-10-09) supersedes the earlier
       // "hard-retire with no replacement" reading: from 2026-10-14 18:00
       // (UTC+8) v2.5 requests auto-route to their v2.6 successors
@@ -801,8 +812,9 @@ const MODEL_CATALOG = {
       baseUrl: 'https://api.openai.com/v1',
       // Official figures re-checked 2026-10-13 (Azure Foundry capability
       // table, page updated 2026-10-08, plus OpenAI's latest-model reference
-      // shipped in the openai/codex repo): gpt-6.1-sol (2026-09-29,
-      // announced 2026-10-07) takes the default — "Near-Astra performance
+      // shipped in the openai/codex repo): gpt-6.1-sol (model data
+      // 2026-09-29; "Introducing GPT-6.1 Sol" post 2026-10-05) takes the
+      // default — "Near-Astra performance
       // for complex work at a lower cost" moves the balanced-flagship slot
       // up from gpt-6-sol. Its Azure row lists the Responses API with
       // "Functions, tools, and parallel tool calling (Responses API only)",
@@ -851,14 +863,20 @@ const MODEL_CATALOG = {
       // for demanding reasoning and long-horizon agentic work.
       // claude-fable-5 and claude-opus-5 are both Legacy (retirement floors
       // 2027-06/2027-07). The 09-22 "coming weeks" watch item resolved:
-      // claude-sonnet-5-5 shipped 2026-09-28 ("a clear upgrade over Sonnet
-      // 5, runs 30%+ faster, costs up to 30% less for most work") and
-      // claude-haiku-5-5 shipped 2026-10-07 ("our fastest, cheapest, and
-      // most capable small model yet", priced 90% below Haiku 4.5 for
-      // requests up to 100K tokens); claude-sonnet-5 demotes to the
-      // previous generation. Azure's retirement schedule moved
-      // claude-haiku-4-5 from its old 2026-10-15 floor to 2026-11-15
-      // (checked 2026-10-13), so the row carries the date. Image input: the Sonnet
+      // claude-sonnet-5-5 shipped 2026-09-28 ("a clear upgrade over Claude
+      // Sonnet 5, runs 30%+ faster, and costs up to 30% less for most work")
+      // and claude-haiku-5-5 shipped 2026-10-07 ("the cheapest, fastest, and
+      // most capable small model we've ever released"; priced 90% below
+      // Haiku 4.5 for requests up to 100K tokens, 50% below above that);
+      // claude-sonnet-5 demotes to the previous generation. Both new ids are
+      // officially 1M context / 128K max output — the whole 5.5 generation
+      // per the models-overview comparison table (checked 2026-10-13),
+      // anchored in core::model_context. Microsoft Foundry's (Azure)
+      // retirement schedule lists claude-haiku-4-5 at 2026-11-15 — it moved
+      // the date up from the previous 2026-10-15 — while Anthropic's own
+      // deprecations table still lists the id Active with no scheduled date
+      // (tentative floor "not sooner than 2026-10-15"), so the row scopes
+      // the date to Azure. Image input: the Sonnet
       // 5.5 announcement shows screenshot-driven benchmark play
       // (Chartography 61.6%) and the Haiku 5.5 page lists a Visual
       // reasoning benchmark (Chartography 46.4%), both checked
@@ -869,13 +887,13 @@ const MODEL_CATALOG = {
       // an alias).
       items: [
         { model: 'claude-opus-5-5', imageCapable: true, title: 'claude-opus-5-5', desc: '官方默认推荐，复杂 Agent 编码' },
-        { model: 'claude-sonnet-5-5', imageCapable: true, title: 'claude-sonnet-5-5', desc: '新均衡款，较 Sonnet 5 快 30% 更便宜' },
+        { model: 'claude-sonnet-5-5', imageCapable: true, title: 'claude-sonnet-5-5', desc: '新均衡款，较 Sonnet 5 快 30%+，至多省 30%' },
         { model: 'claude-fable-5-1', imageCapable: true, title: 'claude-fable-5-1', desc: '最强旗舰，高难推理与长程 Agent' },
         { model: 'claude-fable-5', imageCapable: true, title: 'claude-fable-5', desc: '上代旗舰，兼容保留' },
         { model: 'claude-opus-5', imageCapable: true, title: 'claude-opus-5', desc: '官方已转 Legacy，兼容保留' },
         { model: 'claude-sonnet-5', imageCapable: true, title: 'claude-sonnet-5', desc: '上代均衡款，兼容保留' },
-        { model: 'claude-haiku-5-5', imageCapable: true, title: 'claude-haiku-5-5', desc: '最新小旗舰，较 4.5 降价 90%' },
-        { model: 'claude-haiku-4-5', imageCapable: true, title: 'claude-haiku-4-5', desc: '最快，200K 上下文，官方将于 2026-11-15 下线' },
+        { model: 'claude-haiku-5-5', imageCapable: true, title: 'claude-haiku-5-5', desc: '最新小旗舰，100K 以下请求较 4.5 降价 90%' },
+        { model: 'claude-haiku-4-5', imageCapable: true, title: 'claude-haiku-4-5', desc: '最快，200K 上下文，Azure 端 2026-11-15 下线' },
         { model: '', title: '自定义 Claude 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -906,7 +924,7 @@ const MODEL_CATALOG = {
       items: [
         { model: 'gemini-3.8-flash', imageCapable: true, title: 'gemini-3.8-flash', desc: '最新 Flash，均衡高性价比' },
         { model: 'gemini-3.7-flash', imageCapable: true, title: 'gemini-3.7-flash', desc: '已弃用，请求自动路由至 3.8-flash' },
-        { model: 'gemini-3.6-flash', imageCapable: true, title: 'gemini-3.6-flash', desc: '兼容保留' },
+        { model: 'gemini-3.6-flash', imageCapable: true, title: 'gemini-3.6-flash', desc: '上代稳定 Flash，仍在服务' },
         { model: 'gemini-3.5-flash', imageCapable: true, title: 'gemini-3.5-flash', desc: '已弃用，请求自动路由至 3.6-flash' },
         { model: 'gemini-3.5-flash-lite', imageCapable: true, title: 'gemini-3.5-flash-lite', desc: '快速经济' },
         { model: 'gemini-3.1-pro-preview', imageCapable: true, title: 'gemini-3.1-pro-preview', desc: '旗舰推理（预览）' },
@@ -923,7 +941,7 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'xai',
       baseUrl: 'https://api.x.ai/v1',
-      // Official figures re-checked 2026-09-28 (docs.x.ai models + release
+      // Official figures re-checked 2026-10-13 (docs.x.ai models + release
       // notes): grok-4.7 (September 2026) holds the official recommended
       // slot — "For everything else, including code, use Grok 4.7. It is
       // the most capable model we've built" (500K, effort low/medium/high/
@@ -1152,10 +1170,13 @@ function catalogItemMatchesModel(item, model) {
 // whose detail pages state
 // text, image → text), the GPT-5.x/6 rows, kimi-k3 / k2.7-code / k2.6 and the
 // Kimi Code rows, deepseek-flash(V4.1), MiniMax-M3, qwen3.8-max/3.8-flash/
-// 3.7-plus/3.7-flash/3.6-flash, the six Doubao rows (including the
+// 3.7-plus/3.7-flash/3.6-flash, the eight Doubao rows (including the
 // coding-specialized preview), glm-5.3-flash and
 // mimo-v2.5 are officially multimodal; qwen3.7-max, glm-5.2/5.3,
-// deepseek-v4-pro, MiniMax-M2.x and mimo-v2.5-pro are officially text-only,
+// deepseek-v4-pro, MiniMax-M2.x and mimo-v2.5-pro are officially text-only
+// (mimo-v2.5-pro: the live MiMo model list now shows a Full-modal
+// Understanding cell, conflicting with the deprecation page — see the mimo
+// group comment),
 // annotated false. 2026-10-13 addition: claude-sonnet-5-5 (screenshot-driven
 // benchmark play on its announcement page) and claude-haiku-5-5 (Visual
 // reasoning benchmark) are annotated true on the same public-fact basis.

@@ -39,6 +39,13 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // (api-docs.deepseek.com/quick_start/pricing, checked 2026-09-11).
     // So it must live in this override table rather than PINVOU_KNOWN.
     ("deepseek-flash", 1_000_000),
+    // The Tencent Token Plan gateway row (since 2026-10-13) uses the
+    // vendor-prefixed spelling; model_name_matches has no vendor-prefix
+    // tolerance and the "v4" heuristic needs a substring this id lacks, so
+    // without this row the prefixed spelling falls to the same 128K legacy
+    // heuristic. Same underlying V4.1-Flash, same official 1M figure
+    // (first-party direct supply per the live Tencent 130060 table).
+    ("deepseek/deepseek-flash", 1_000_000),
     // The base known table still records grok-4.20-0309-* as 2M (stale rows in
     // crates/tui/src/models.rs); the docs.x.ai model detail page was re-checked
     // as 1M on 2026-09-11. The known-table hit happens before the prefs
@@ -63,16 +70,20 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     ("claude-fable-5-1", 1_000_000),
     // claude-sonnet-5-5 (catalog row since 2026-10-13) has no base row — the
     // exact known table stops at claude-sonnet-5 — and would fall to the
-    // "unknown-name claude wildcard 200K" fallback, while the Claude 5
-    // family except haiku is 1M (platform.claude.com models overview; the
+    // "unknown-name claude wildcard 200K" fallback, while the whole 5.5
+    // generation (fable/opus/sonnet/haiku) is officially 1M context / 128K
+    // output (platform.claude.com models-overview comparison table; the
     // Anthropic preset fallback meters non-haiku at 1M). Same trap
     // claude-fable-5-1 hit; model_name_matches also tolerates future
     // -date/snapshot suffixes.
     ("claude-sonnet-5-5", 1_000_000),
-    // claude-haiku-5-5 (same refresh) currently rides the wildcard to the
-    // correct 200K haiku figure — anchor it so a wildcard change cannot
-    // silently move it (claude-opus-5 explicit-anchor precedent).
-    ("claude-haiku-5-5", 200_000),
+    // claude-haiku-5-5 (same refresh) also rides the wildcard to 200K, but
+    // the wildcard's "haiku = 200K" premise holds only for the 4.x
+    // generation: the Haiku 5.5 model page states "a 1M token context
+    // window, and up to 128k output tokens" (platform.claude.com, checked
+    // 2026-10-13). Anchor the official 1M so the wildcard cannot state a
+    // 5×-understated window (claude-opus-5 explicit-anchor precedent).
+    ("claude-haiku-5-5", 1_000_000),
     // No gpt-6-family row exists anywhere in the base chain (bundled catalog /
     // known table / heuristics / claude wildcard), so resolved returns None:
     // the engine side falls to 128K while the monitor page still has the Openai
@@ -134,6 +145,12 @@ const PINVOU_KNOWN: &[(&str, u32)] = &[
     ("qwen3.7-plus", 1_000_000),
     ("qwen3.7-max", 1_000_000),
     ("qwen3.7-flash", 1_000_000),
+    // qwen3.5-plus (Alibaba Coding Plan catalog row since 2026-10-13) is
+    // likewise officially 1M (help.aliyun.com/zh/model-studio/
+    // text-generation-model); without it the engine falls to 128K while the
+    // monitor page's Qwen preset fallback shows 131,072 — both short of the
+    // official figure and divergent from each other.
+    ("qwen3.5-plus", 1_000_000),
     // qwen3.8-max is GA: officially a 1M context (983,616 is the thinking-mode
     // max input, not the context window); the `-preview` suffix is tolerated
     // by model_name_matches.
@@ -260,6 +277,15 @@ const PINVOU_DOCUMENTED_OUTPUT: &[(&str, u32)] = &[
     // same Azure capability table as above (page updated 2026-10-08) — a
     // first-party official figure, unlike the corroborated gpt-6 rows above.
     ("gpt-6.1-sol", 128_000),
+    // claude-sonnet-5-5 / claude-haiku-5-5: Max Output 128K for the whole
+    // 5.5 generation per the models-overview comparison table (checked
+    // 2026-10-13; the exact-match base output table stops at claude-sonnet-5
+    // / claude-haiku-4-5). Without these rows the route output fact stays
+    // Unverified at the 64K automatic-request floor; the intersection keeps
+    // the effective cap at 64K — this anchors the documented fact and its
+    // provenance.
+    ("claude-sonnet-5-5", 128_000),
+    ("claude-haiku-5-5", 128_000),
     // gpt-5.4-mini: 128,000 max output tokens — the figure on the official
     // model page (developers.openai.com/api/docs/models/gpt-5.4-mini, per
     // the 2026-09-29 search index; the page itself is bot-shielded from the
@@ -355,6 +381,9 @@ mod tests {
             ("qwen3.7-plus", 1_000_000),
             ("qwen3.7-max", 1_000_000),
             ("qwen3.7-flash", 1_000_000),
+            // Alibaba Coding Plan row since 2026-10-13; officially 1M (see
+            // the PINVOU_KNOWN comment).
+            ("qwen3.5-plus", 1_000_000),
             ("qwen3.6-flash", 1_000_000),
             ("qwen3.8-max", 1_000_000),
             ("qwen3.8-max-preview", 1_000_000),
@@ -395,8 +424,14 @@ mod tests {
         assert_eq!(resolved_context_window("claude-opus-5"), Some(1_000_000));
         // The base falls back to legacy 128K for deepseek names without "v4";
         // V4.1-Flash is officially 1M and must be corrected first by the
-        // override table (see the PINVOU_OVERRIDES comment).
+        // override table (see the PINVOU_OVERRIDES comment). The
+        // vendor-prefixed Tencent gateway spelling matches no other entry
+        // (no vendor-prefix tolerance), hence its own row.
         assert_eq!(resolved_context_window("deepseek-flash"), Some(1_000_000));
+        assert_eq!(
+            resolved_context_window("deepseek/deepseek-flash"),
+            Some(1_000_000)
+        );
         // The base known table still records grok-4.20-0309-* as 2M (behind the
         // docs.x.ai 2026-09 figure), so the override table must correct it
         // first; the base does not list fable-5-1 exactly, otherwise it would
@@ -468,14 +503,21 @@ mod tests {
         // overview: opus-5-5 is 1M context).
         assert_eq!(resolved_context_window("claude-opus-5-5"), Some(1_000_000));
         // The 2026-10-13 catalog additions: sonnet-5-5 has no exact base row
-        // and would hit the unknown-claude wildcard 200K without its anchor
-        // (official family figure 1M); haiku-5-5's wildcard 200K is the
-        // correct haiku figure, pinned so a wildcard change cannot move it.
+        // and would hit the unknown-claude wildcard 200K without its anchor;
+        // haiku-5-5 rides the same wildcard, whose "haiku = 200K" premise
+        // holds only for the 4.x generation — the Haiku 5.5 page documents
+        // 1M context / 128K output, so both anchors carry the official 1M
+        // (whole 5.5 generation per the models-overview comparison table).
         assert_eq!(
             resolved_context_window("claude-sonnet-5-5"),
             Some(1_000_000)
         );
-        assert_eq!(resolved_context_window("claude-haiku-5-5"), Some(200_000));
+        assert_eq!(resolved_context_window("claude-haiku-5-5"), Some(1_000_000));
+        // The new claude ids have no exact base output row either (the base
+        // output table stops at claude-sonnet-5 / claude-haiku-4-5), so the
+        // documented 128K output anchors apply.
+        assert_eq!(resolved_output_limit("claude-sonnet-5-5"), Some(128_000));
+        assert_eq!(resolved_output_limit("claude-haiku-5-5"), Some(128_000));
         // Bare kimi-for-coding serves K2.8 Preview (1M on every tier); the
         // base still records the stale plan-dependent 256K, so the override
         // must correct it — while the highspeed variant keeps its official

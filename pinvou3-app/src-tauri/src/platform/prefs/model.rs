@@ -228,7 +228,8 @@ impl ModelPreset {
             // the old ids hard-fail from 2026-10-21 10:00 (UTC+8)
             // (mimo.mi.com deprecation page, re-checked 2026-10-13).
             ModelPreset::Mimo => "mimo-v2.6-pro",
-            // gpt-6.1-sol is the default (announced 2026-10-07): the whole
+            // gpt-6.1-sol is the default (model data 2026-09-29; OpenAI's
+            // "Introducing GPT-6.1 Sol" post 2026-10-05): the whole
             // preset still rides the OpenAI Responses wire (see bridge
             // `engine_route_provider`), and the id keeps the existing
             // `gpt-6` prefix of `openai_responses_wire_model`. Per the Azure
@@ -236,7 +237,7 @@ impl ModelPreset {
             // models page, updated 2026-10-08) it serves 1,050,000 context /
             // 128,000 max output with function calling on the Responses API
             // only, and OpenAI's latest-model reference ranks it
-            // "near-Astra performance at a lower cost" — the
+            // "Near-Astra performance for complex work at a lower cost" — the
             // balanced-flagship slot moves up from gpt-6-sol. Before
             // changing the default again, confirm the new id
             // supports function calling on the Responses wire and is
@@ -290,9 +291,9 @@ impl ModelPreset {
             // base catalog / core::model_context; this fallback only catches
             // what they miss).
             ModelPreset::OpenaiResponses => Some(131_072),
-            // Anthropic 官方口径：haiku 200K，opus/sonnet/fable 1M
-            // （claude-opus-5 由 model_context 的 PINVOU_OVERRIDES 先行覆盖，此处兜
-            // 底只承接底座不认识的命名）。
+            // Anthropic 官方口径：4.x 代 haiku 200K，opus/sonnet/fable 1M
+            // （5.5 代全系——含 claude-haiku-5-5——官方 1M，由 model_context 的
+            // PINVOU_OVERRIDES 先行钉住；此处兜底只承接底座不认识的旧命名）。
             ModelPreset::Anthropic => match model.map(str::to_ascii_lowercase) {
                 Some(m) if m.contains("haiku") => Some(200_000),
                 _ => Some(1_000_000),

@@ -3,7 +3,9 @@
 // base_url 为准。
 //
 // The model lists were checked against each vendor's official access docs
-// on 2026-09-11 and re-verified on 2026-10-13 (platform.claude.com /
+// on 2026-09-11 and re-verified on 2026-09-28 (per-vendor inline comments
+// keep their own check dates); the anthropic / openai / minimax entries were
+// re-checked again on 2026-10-13 (platform.claude.com /
 // developers.openai.com / api-docs.deepseek.com / platform.kimi.com /
 // docs.bigmodel.cn / help.aliyun.com(model-studio) / platform.minimax.io /
 // docs.x.ai). Presets only provide the base URL and protocol; the model is

@@ -1712,10 +1712,13 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             (ModelPreset::Qwen, "qwen3.6-flash", 1_000_000),
             // New Token Plan rows (auto / the 0813 snapshot / v4.1-flash) and
             // legacy/unmatched ids (qwen3-coder-plus / qwen3-coder-next left
-            // the Qwen Coding Plan group on 2026-10-13; glm-5 only matches
-            // the GLM groups): ids not covered by the base chain fall to the
-            // Qwen preset fallback (131,072), while the deepseek rows ride
-            // the base v4 heuristic.
+            // the Qwen Coding Plan group on 2026-10-13; the only remaining
+            // bare glm-5 row is the Alibaba Coding Plan group, and no
+            // GLM-preset group lists it): ids not covered by the base chain
+            // fall to the Qwen preset fallback (131,072). The bare deepseek
+            // rows ride the base v4 heuristic; the vendor-prefixed
+            // deepseek/deepseek-flash spelling lacks the "v4" substring, so
+            // it is anchored in core::model_context instead.
             (ModelPreset::Qwen, "auto", 131_072),
             (ModelPreset::Qwen, "deepseek-v4-pro-0813", 1_000_000),
             (ModelPreset::Qwen, "deepseek-v4.1-flash", 1_000_000),
@@ -1723,6 +1726,11 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             (ModelPreset::Qwen, "qwen3-coder-plus", 131_072),
             (ModelPreset::Qwen, "qwen3-coder-next", 131_072),
             (ModelPreset::Qwen, "glm-5", 131_072),
+            // The 2026-10-13 Alibaba Coding Plan addition rides the
+            // PINVOU_KNOWN row (officially 1M; listed here so the
+            // settings-page row is covered by this charter too, same as the
+            // opus-5-5 precedent below).
+            (ModelPreset::Qwen, "qwen3.5-plus", 1_000_000),
             // Doubao: evolving is already 1M; the 2-1 -260628 generation and
             // the 2-0 snapshots are officially 256k, while the -260915
             // snapshots moved to 1024k (volcengine 1330310, re-checked
@@ -1829,6 +1837,12 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             // listed here so the settings-page row is covered by this
             // charter too).
             (ModelPreset::Anthropic, "claude-opus-5-5", 1_000_000),
+            // The 2026-10-13 settings rows: both officially 1M (the whole
+            // 5.5 generation, per the models-overview comparison table) via
+            // their PINVOU_OVERRIDES anchors; listed here so the
+            // settings-page rows are covered by this charter too.
+            (ModelPreset::Anthropic, "claude-sonnet-5-5", 1_000_000),
+            (ModelPreset::Anthropic, "claude-haiku-5-5", 1_000_000),
         ];
         for (preset, model, expected) in cases {
             assert_eq!(
