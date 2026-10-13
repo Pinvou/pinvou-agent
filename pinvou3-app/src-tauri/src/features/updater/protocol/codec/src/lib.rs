@@ -2,6 +2,8 @@
 //! signature verification, established Root trust, current eligibility or ACK.
 
 mod bindings;
+mod schema;
+pub use schema::{SchemaCheckedEnvelope, SchemaError};
 mod high_water;
 pub use high_water::{HighWaterError, assert_supplied_high_water};
 mod envelope;

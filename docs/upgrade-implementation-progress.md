@@ -3380,3 +3380,78 @@ Details: [supplied high-water](client-upgrade-supplied-high-water.md).
 No dependency/lock/Schema/CI/version/gitlink changes. Full T27 trust/persistence
 integration remains unfinished. Downloads retain no total/cumulative duration or
 retry cap.
+
+
+## T27 fifteenth batch - complete frozen envelope Schema (2026-10-13)
+
+A private SchemaCheckedEnvelope consumes one original CanonicalEnvelopeShape
+after full frozen Draft2020-12 role Schema validation; only immutable original
+shape access remains. Compile-time embedded original20schemas/common use no
+duplicated normative files or dynamic schema/path/payload$ref interpretation.
+A private OnceLock caches20 validators or a fixed failure; explicit exact-common-
+URN retriever denies every other network/file/resource request independently of
+parent feature unification. Existing FancyRegex/ECMA backend retains negative
+lookahead relative-path support; format validation remains disabled as in Ajv.
+Original own raw bytes are reparsed, not reconstructed from partial signed facts.
+Complete Schema does not prove crypto, expected context, semantics/time, key/
+Root consistency, protected acceptance/high-water persistence or execution rights.
+
+The exact existing parent jsonschema0.46.10/defaultfalse closure is reused;
+App/CLI lock nodes/checksums/versions/edges are unchanged except the new codec
+dependency edge. Isolated lock has114 exact-parent-version/checksum packages.
+Six formerly different isolated transitive versions align to parent: cfg-if
+1.0.5->1.0.4, cpufeatures0.3.1->0.3.0, hybrid-array0.4.15->0.4.14, libc
+0.2.190->0.2.189, syn3.0.8->3.0.5 and unicode-ident1.0.27->1.0.24.
+Initial hand-selected125-package closure was refused by --locked; offline
+resolution pruned unneeded/unified dependencies into the114-package subset.
+This is not a claim that every old isolated dependency version stayed unchanged.
+No parent external upgrade or frozen Schema/CI/version/gitlink change occurred.
+
+Two integration groups test all20 original vectors, full-schema-invalid minimal
+bodies, zero/weak signatures and reversed time semantics remaining Schema-only
+positive, and31556 actual Node cases generated from committed schema paths and
+real nested instances. Required/closed/ref/type/array/numericSAFE/Unicode/regex/
+relative-path cases compare the original parseEnvelope+decodeBase64Url composition
+with actual AJV, not AJV alone on arbitrary raw bytes. Canonical and encoding
+preconditions are part of the claimed domain. Test expected context comes from
+each case's own signed fields to isolate Schema, never as production trusted
+context; actual expected-context validation remains external. Initial two groups passed149.35s;
+the separate explicit resource-refusal unit passed0.03s. A subsequent assertion-
+message-only edit removed whole input printing before the final all65 run.
+
+Root all65 tests passed with actualNode22 and both old oracle flags: resource
+unit1 in0.03s; signing6 in4.48s, bytes7 in0.44s, consume4 in1.44s, envelope4
+in9.31s (2080), high-water4 in2.53s (1935), native3 in0.63s, opening4 in0.92s
+(152), policy4 in4.09s (966), reference4 in0.90s (730), rollout4 in0.62s, Root4
+in4.08s (639), Schema2 in174.48s (31556), Source5 in0.76s (218), status5 in0.63s
+and version4 in0.87s (348); Clippy12.42s/fmt passed. CI51 passed0.176s, architecture/
+version/diff passed. Three isolated/App/CLI locked offline feature graphs passed
+with the same jsonschema/referencing/jsonschema-regex0.46.10 and FancyRegex0.18.0.
+Parent node/checksum/edge comparison proved only the new codec dependency edge.
+Final actual Windows App passed all31 updater tests0.17s after3m27s build; no
+App-wide pass is claimed. Root self-review found no remaining in-scope gap.
+After this run, shared oracle comments were clarified to distinguish B13 unchanged-
+body partial encoding from B15 mutated-body full Schema composition. Only comments
+changed; independent final-source runs verify the resulting test harness without
+another unchanged App rebuild. Compatibility final-source scoped review returned PASS without mandatory:
+actualNode22+both old flags all65 PASS: resource unit1 in0.03s, signing6 in5.99s,
+bytes7 in0.34s, consume4 in1.36s, envelope4 in7.33s (2080), high-water4 in2.43s
+(1935), native3 in0.62s, opening4 in0.91s (152), policy4 in3.81s (966), reference4
+in0.80s (730), rollout4 in0.62s, Root4 in3.94s (639), Schema2 in154.44s (31556),
+Source5 in0.79s (218), status5 in0.61s and version4 in0.91s (348); Clippy3.24s/
+fmt, CI51 in0.061s/diff passed. Its independent lock audit proved the114-package
+exact parent subset/checksums and only the new codec edge in the two parent graphs.
+Dependency final-source scoped review also returned PASS without mandatory:
+actualNode22.23.3+both old flags all65 PASS: resource unit1 in0.03s, signing6
+in3.28s, bytes7 in0.34s, consume4 in1.48s, envelope4 in10.21s (2080), high-water4
+in2.94s (1935), native3 in0.62s, opening4 in0.95s (152), policy4 in4.17s (966),
+reference4 in1.00s (730), rollout4 in0.61s, Root4 in4.03s (639), Schema2 in150.60s
+(31556), Source5 in0.73s (218), status5 in0.61s and version4 in0.91s (348);
+Clippy0.33s/fmt/diff passed. Its114-package exact-parent audit and both complete
+App/CLI actual locked offline metadata graphs passed, with only codec->jsonschema
+as a new parent edge. The run had already completed when a later request sought
+to avoid a duplicate long test; no running test was interrupted or new repetition
+started. Both final documentation/evidence scoped reviews returned PASS on unchanged source.
+Details: [complete envelope Schema](client-upgrade-envelope-schema.md).
+Full T27 authenticity/persistence integration remains unfinished. Downloads retain
+no total/cumulative duration or retry cap.

@@ -12,6 +12,15 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+pub(crate) fn decode_schema_checked_envelope(
+    bytes: &[u8],
+    kind: pinvou_upgrade_codec::InputKind,
+) -> Result<pinvou_upgrade_codec::SchemaCheckedEnvelope, pinvou_upgrade_codec::SchemaError> {
+    pinvou_upgrade_codec::decode_canonical_envelope(bytes, kind)
+        .map_err(|_| pinvou_upgrade_codec::SchemaError::InvalidEnvelope)?
+        .check_full_schema()
+}
+
 pub(crate) fn check_supplied_high_water_bytes(
     original_envelope: &[u8],
     supplied_record: &[u8],
@@ -136,6 +145,51 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_checks_complete_frozen_envelope_schema_without_signature_trust() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/envelopes.json"
+        )))
+        .unwrap();
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        for (index, kind) in [
+            (0, pinvou_upgrade_codec::InputKind::Metadata),
+            (6, pinvou_upgrade_codec::InputKind::Credential),
+        ] {
+            let raw = URL_SAFE_NO_PAD
+                .decode(
+                    vectors["vectors"][index]["envelopeBase64Url"]
+                        .as_str()
+                        .unwrap(),
+                )
+                .unwrap();
+            let shape = decode_schema_checked_envelope(&raw, kind).unwrap();
+            assert_eq!(shape.envelope().raw_bytes(), raw);
+            let mut value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+            value["signed"]["unexpected"] = serde_json::json!(true);
+            let changed = decode_metadata(&serde_json::to_vec(&value).unwrap())
+                .unwrap()
+                .canonical_bytes()
+                .unwrap();
+            assert!(matches!(
+                decode_schema_checked_envelope(&changed, kind),
+                Err(pinvou_upgrade_codec::SchemaError::InvalidEnvelope)
+            ));
+            value["signed"]
+                .as_object_mut()
+                .unwrap()
+                .remove("unexpected");
+            value["signatures"][0]["signature"] =
+                serde_json::json!(URL_SAFE_NO_PAD.encode([0; 64]));
+            let changed = decode_metadata(&serde_json::to_vec(&value).unwrap())
+                .unwrap()
+                .canonical_bytes()
+                .unwrap();
+            assert!(decode_schema_checked_envelope(&changed, kind).is_ok());
+        }
+    }
 
     #[test]
     fn feature_facade_compares_supplied_high_water_with_original_full_envelope() {

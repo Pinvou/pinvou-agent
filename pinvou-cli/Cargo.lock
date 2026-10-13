@@ -6923,6 +6923,7 @@ dependencies = [
 name = "pinvou-upgrade-codec"
 version = "0.0.0"
 dependencies = [
+ "jsonschema",
  "base64 0.22.1",
  "serde",
  "serde_jcs",
