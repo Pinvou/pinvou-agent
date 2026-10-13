@@ -770,8 +770,9 @@ struct SidecarRecoverySummary {
     /// Dead index entries removed: code entries whose durable session record
     /// (`sessions/<id>.json`) is gone.
     pruned_dead_entries: usize,
-    /// Ghost sidecar dirs removed: leftover dirs with no index record and no
-    /// durable record.
+    /// Ghost sidecars removed: sidecar files of record-less dirs whose owner
+    /// record is also gone (the emptied dir is then removed best-effort; a
+    /// dir holding other content survives).
     cleaned_ghost_sidecars: usize,
 }
 
@@ -803,8 +804,9 @@ fn code_session_owner_alive(agents: &SessionAgentStore, session_id: &str) -> boo
 /// Boot-time prune of dead index entries: retention evictions delete the
 /// `sessions/<id>.json` record and the `<id>/` directory but never touch
 /// `session-agents.json`, so code entries in the index can outlive their
-/// owner — the backfill would rebuild a sidecar dir for them and the scan
-/// would resurrect the index, a ghost factory repeating on every boot. Code
+/// owner — the backfill would rebuild a sidecar dir for them on every boot,
+/// and a sidecar surviving next to a lost index entry would be restored
+/// into the index again: a ghost factory repeating on every boot. Code
 /// entries whose owner is dead (only a real NotFound counts as dead, see
 /// `code_session_owner_alive`) are removed together with their sidecar/dir:
 /// `remove` does index removal + persist + sidecar cleanup in one step
@@ -857,8 +859,8 @@ fn restore_code_native_sessions_from_sidecars(
 ) -> SidecarRecoverySummary {
     let mut summary = SidecarRecoverySummary::default();
     // Dead index entries go first: retention deletes records and dirs but
-    // never the agents index, so pruning first cuts the "backfill rebuilds
-    // the dir → scan resurrects the index" ghost-factory loop.
+    // never the agents index, so pruning first cuts the backfill's "rebuild
+    // a sidecar dir for a dead entry" leg of the ghost-factory loop.
     summary.pruned_dead_entries = prune_dead_code_index_entries(agents);
     // Shared iterator (review #463 round-8 elegance): the scan root, the
     // "no sessions directory is normal" case and the unreadable-entry logging
@@ -871,10 +873,13 @@ fn restore_code_native_sessions_from_sidecars(
             continue;
         }
         if record.backend.is_acp() {
-            // 会话已被 ACP 绑定：sidecar 是历史残留，恢复必然被拒，直接清理并
-            // 如实记日志，而不是每次启动重复报 degraded。仅当 sidecar 文件真的
-            // 被删除时才计数/记日志：正常 ACP 会话的目录里本就没有
-            // code-session.json，无条件计数会把每次启动都变成假清理报告。
+            // The session is already ACP-bound: the sidecar is a historical
+            // leftover, restoring it would be rejected, so dispose of it and
+            // log truthfully instead of re-reporting degraded on every boot.
+            // Count and log only when the sidecar file was really removed: a
+            // normal ACP session's dir holds no code-session.json, so an
+            // unconditional count would turn every boot into a false cleanup
+            // report.
             if store::remove_code_session_sidecar(agents.path(), &session_id) {
                 summary.cleaned += 1;
                 eprintln!(
@@ -951,7 +956,7 @@ fn restore_code_native_sessions_from_sidecars(
     }
     if summary.cleaned_ghost_sidecars > 0 {
         eprintln!(
-            "[pinvou3-app] removed {} ghost native code session sidecar dir(s)",
+            "[pinvou3-app] removed {} ghost native code session sidecar(s)",
             summary.cleaned_ghost_sidecars
         );
     }

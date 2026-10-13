@@ -1351,10 +1351,10 @@ impl PrivateOutputResolver for ProductHeadlessBackend {
 /// PINVOU3_HOME would otherwise boot `SessionStore` against the real
 /// `~/.pinvou3` — junk sessions, plus the boot retention sweep silently
 /// evicting the user's oldest real sessions (the observed incident). The
-/// predicate mirrors the store's home resolver (`platform::paths::
-/// pinvou3_home` reads `std::env::var`, so a non-UTF-8 value falls back to
-/// the real home and an empty value resolves `sessions/` relative to the
-/// CWD) — only a set, non-empty, readable value opens the gate. The gate is
+/// predicate mirrors the store's home resolver (`platform::paths::pinvou3_home`
+/// reads `std::env::var`, so a non-UTF-8 value falls back to the real home
+/// and an empty value resolves `sessions/` relative to the CWD) — only a
+/// set, non-empty UTF-8 value opens the gate. The gate is
 /// debug-only on purpose: release CLI users legitimately run with
 /// PINVOU3_HOME unset against the real home, and the GUI boots via
 /// `SessionStore::boot_for_process_startup` (lib.rs), never through here.
