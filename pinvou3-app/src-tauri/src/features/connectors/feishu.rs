@@ -425,7 +425,10 @@ pub async fn feishu_cancel(app: AppHandle) -> Result<Value, String> {
 
 /// Disconnect Feishu: `lark-cli auth logout` (clears tokens). The probe verdict is
 /// unified with DingTalk/tmeet via [`cc::logout_probe_verdict`]: a genuinely not-installed
-/// CLI degrades to `installed:false` and clears the bundle store; when the credential
+/// CLI degrades to `installed:false` and marks the bundle-store record degraded —
+/// the record is kept, including its `installed` fact ([`cc::bundle_store_on_disconnected`]),
+/// and CLI consumers resolve readiness to `cli_disconnected` off that degraded record.
+/// When the credential
 /// state is unconfirmed the error is propagated as-is — never falsely report
 /// "disconnected".
 pub async fn feishu_logout() -> Result<Value, String> {

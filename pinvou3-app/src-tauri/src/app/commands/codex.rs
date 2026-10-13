@@ -807,7 +807,12 @@ pub(crate) async fn create_codex_acp_session_with_workspace_binding(
             .map(|roots| roots.execution)
             .map_err(|error| format!("解析 Codex 临时工作目录失败: {error:#}"))?;
         if let Err(error) = ensure_codex_workspace_root(kind, &temporary_workspace) {
-            let _ = store.delete(&session.metadata.id);
+            // No session-agents binding exists yet at this point, so the
+            // rollback's binding removal is a no-op; the shared helper still
+            // owns the session-record delete because it joins on a blocking
+            // worker and logs instead of discarding the error.
+            rollback_created_code_session(&session.metadata.id, store.inner(), acp_pool.agents())
+                .await;
             return Err(format!("{error:#}"));
         }
     }

@@ -4198,14 +4198,24 @@ impl AcpPool {
             eprintln!("[pinvou3-app] 清理模型探针会话记录失败（{probe_id}）: {error:#}");
         }
         let probe_dir = crate::platform::paths::sessions_root().join(&probe_id);
-        match std::fs::remove_dir_all(&probe_dir) {
-            Ok(()) => {}
-            // 探针未走到 spawn（如 CLI 未安装）时目录本就不存在。
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => eprintln!(
+        let probe_dir_owned = probe_dir.clone();
+        // 与上面的 store 记录清理同样收口到 blocking worker：remove_dir_all
+        // 同步遍历整棵临时目录，不能占用驱动引擎会话泵的 runtime worker；
+        // 清理失败依旧只告警，主结果优先透传。
+        if let Err(error) = on_blocking(move || {
+            match std::fs::remove_dir_all(&probe_dir_owned) {
+                Ok(()) => Ok(()),
+                // 探针未走到 spawn（如 CLI 未安装）时目录本就不存在。
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error.into()),
+            }
+        })
+        .await
+        {
+            eprintln!(
                 "[pinvou3-app] 清理模型探针临时目录失败（{}）: {error:#}",
                 probe_dir.display()
-            ),
+            );
         }
         result
     }

@@ -726,6 +726,21 @@ impl SkillMarketplaceManager {
     /// rehome/orphan/stale-record heuristics must never touch package-owned
     /// content, otherwise user uploads are destroyed within two launches.
     pub fn self_heal_skills(&self, builtin_released: &[&str]) -> SkillSelfHealReport {
+        // 锁序：认领归位/去重、孤儿与退役目录删除、瘫记录清理动的是 bundles/
+        // 下的市场目录与登记，与市场写者同持跨进程市场写锁（boot 从 extraction
+        // 进入时未持其他市场锁，这里是真实获取；flock 之上有事务锁的调用方按
+        // 持有深度 join），store file_lock 在其后取。本函数返回报告而非
+        // Result：获取失败只能警告并按空报告跳过本轮——自愈每个启动周期重跑，
+        // 锁只在写者秒级暂存窗口内被占用，缺一轮安全，不得因此中断启动。
+        let _market_write_lock = match super::plugin_import::MarketplaceWriteLock::acquire() {
+            Ok(lock) => lock,
+            Err(e) => {
+                log::warn!(
+                    "[skill-marketplace] 创建市场写入锁失败，本轮自愈对账跳过（下个启动周期重试）: {e}"
+                );
+                return SkillSelfHealReport::default();
+            }
+        };
         let mut report = SkillSelfHealReport::default();
         // Fail-closed when the store is unreadable OR missing: a missing
         // bundles.json yields an empty record set that is indistinguishable
@@ -1496,6 +1511,22 @@ impl SkillMarketplaceManager {
     /// - 目标已存在或 rename 失败 → 保留旧位置并 warn（读路径 `find_skill_dir`
     ///   对旧位置有回退，迁移下个启动周期自愈）。
     pub fn migrate_flat_skills_layout(&self) -> SkillsMigrationReport {
+        // 锁序：旧扁平目录搬移与退役/断连残留删除动的是 bundles/ 下的市场
+        // 目录，与市场写者同持跨进程市场写锁（boot 从 extraction 进入时未持
+        // 其他市场锁，这里是真实获取；flock 之上有事务锁的调用方按持有深度
+        // join），迁移补写指纹的 store file_lock 在其后取。本函数返回报告而
+        // 非 Result：获取失败只能警告并按空报告跳过本轮——迁移幂等、每个
+        // 启动周期重跑，锁只在写者秒级暂存窗口内被占用，缺一轮安全，不得
+        // 因此中断启动。
+        let _market_write_lock = match super::plugin_import::MarketplaceWriteLock::acquire() {
+            Ok(lock) => lock,
+            Err(e) => {
+                log::warn!(
+                    "[skill-marketplace] 创建市场写入锁失败，本轮技能布局迁移跳过（下个启动周期重试）: {e}"
+                );
+                return SkillsMigrationReport::default();
+            }
+        };
         let mut report = SkillsMigrationReport::default();
         let Ok(rd) = std::fs::read_dir(&self.legacy_skills_dir) else {
             return report;

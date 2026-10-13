@@ -1544,17 +1544,11 @@ pub async fn update_search_settings(search: SearchPrefs) -> Result<UserPrefs, St
     .await
 }
 
-/// Unified post-save restart finalization. Restart bypasses RunEvent::Exit, so persist and close
-/// the browser host and reap child processes first; `saved_label` only keeps each command's own log wording.
-async fn persist_and_restart<S>(
-    app: tauri::AppHandle,
-    saved_label: &str,
-    persister: impl FnOnce() -> Result<S, String>,
-) -> Result<(), String> {
-    persister()?;
+/// Post-save restart finalization — call only after the save has committed: a failed persist must
+/// never restart. Restart bypasses RunEvent::Exit, so close the browser host and reap child
+/// processes before exiting; `saved_label` only keeps each command's own log wording.
+async fn restart_after_save(app: tauri::AppHandle, saved_label: &str) -> Result<(), String> {
     eprintln!("[pinvou3-app] {saved_label} saved, restarting app...");
-    // Restart bypasses RunEvent::Exit, so persist and close the browser host and reap child
-    // processes first.
     crate::prepare_app_restart(&app).await;
     app.restart();
 }
@@ -1565,10 +1559,15 @@ pub async fn save_search_settings_and_restart(
     search: SearchPrefs,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    persist_and_restart(app, "search settings", move || {
+    // The settings transaction holds the cross-process settings.json.lock
+    // across keychain I/O — join it on a spawn_blocking worker like the
+    // sibling commands ([`update_search_settings`]); the restart below only
+    // runs once the persist has succeeded.
+    join_blocking("save_search_settings", move || {
         persist_search_settings(search)
     })
-    .await
+    .await?;
+    restart_after_save(app, "search settings").await
 }
 // 凭据状态迁移(`mark_*` / `clear_plaintext_key`)自 prefs 的密封 trait 提供。
 use crate::platform::prefs::CredentialStateOps;

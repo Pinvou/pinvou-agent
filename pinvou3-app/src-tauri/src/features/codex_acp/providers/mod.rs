@@ -1043,8 +1043,9 @@ impl ProviderManager {
         })
     }
 
-    /// Round-50 review: single home for the persist-failure take-back both
-    /// save arms share (round-49 introduced it on the current arm; the
+    /// Round-50 review: single home for the narrowed take-back the save arms
+    /// (persist failure) and the under-lock bail arms share (round-49
+    /// introduced it on the current arm; the
     /// non-current arm used to propagate with `?` and orphan the just-written
     /// key under a reference no record names — a retry generates a new id, so
     /// the orphan is never reclaimed). Narrowed read-compare-delete: the entry
@@ -1256,12 +1257,13 @@ impl ProviderManager {
         };
         if provider_id.is_some() && fresh_record.is_none() {
             // Take back exactly the key this call wrote (best-effort: the
-            // primary job of this path is the honest bail). The DELETE
-            // action already removed its key; KeepExisting without a write
-            // has nothing to remove.
-            if let Some(wrote) = &written_credential {
-                self.credentials.delete(wrote).ok();
-            }
+            // primary job of this path is the honest bail). Same narrowed
+            // read-compare-delete as the persist-failure arms: delete only
+            // while the entry still holds THIS call's value, so a peer
+            // rotation landing in the pre-lock credential window keeps its
+            // entry. The DELETE action already removed its key; KeepExisting
+            // without a write has nothing to remove.
+            self.take_back_untouched_key(written_credential.as_ref(), written_key_value.as_deref());
             anyhow::bail!("Provider 不存在: {}", record.id);
         }
         // Round-46 review: the removed-record guard above covers a peer
@@ -1300,7 +1302,11 @@ impl ProviderManager {
                 // empty keychain, so the key SURVIVES this honest bail and
                 // the retry re-reads the peer's record fresh.
                 if fresh.credential.is_none() {
-                    self.credentials.delete(wrote).ok();
+                    // Same narrowed read-compare-delete as the persist-failure
+                    // arms: a peer rotation landing in the pre-lock window
+                    // replaced the value and owns the entry, so it survives
+                    // this bail.
+                    self.take_back_untouched_key(Some(wrote), written_key_value.as_deref());
                 }
                 anyhow::bail!(
                     "Provider {} 被并发修改（凭据已被另一端更改），请重试",

@@ -1289,8 +1289,13 @@ fn setup_timeout_report(session_id: &str, submit_entered: bool) -> AgenticTaskRe
 /// means the turn was actually submitted: everything after submit (cancel,
 /// wait, report building) belongs to a session whose transcript exists, while
 /// `false` marks the never-started cases (attachment staging, submit failure,
-/// a post-prepare setup fault, setup timeout) the caller's lifecycle handling
-/// cleans up as stubs.
+/// a post-prepare setup fault, setup timeout) whose records the caller's
+/// lifecycle handling disposes: a fault's zero-message factory-titled stub
+/// still cleans up regardless of `KEEP_SESSION` (an adopted record keeps),
+/// while the setup timeout keeps the session its report names under the
+/// default keep contract — only the explicit one-shot opt-in deletes it,
+/// under the same adoption rule as a submitted run (see
+/// [`run_session_lifecycle`]).
 #[allow(clippy::too_many_arguments)]
 async fn run_turn(
     runtime: &EnginePoolRuntime,
@@ -1373,7 +1378,11 @@ async fn run_turn(
     // stranding unreferenced copies inside a kept one). With the handle
     // parked here, the arms that drop the setup join the task first (see
     // `join_staged_attachments`), so the sweep sees the real copies and no
-    // write outlives the disposition.
+    // write outlives the disposition. The slot holds an unawaited handle
+    // only: once the staging await consumes the task's output,
+    // `prompt_with_attachments` clears the slot — a consumed handle panics on
+    // any further poll — and the arms sweep the copies already recorded in
+    // `staged_attachment_copies`.
     let mut staging_in_flight: Option<tokio::task::JoinHandle<anyhow::Result<StagedBatch>>> = None;
     // Set immediately before `runtime.submit`; read by the timeout arm to tell
     // "the deadline hit while staging attachments" (nothing ran, restore the
@@ -1683,7 +1692,11 @@ async fn run_turn(
             // batch either lands with its copies adopted into the sweep
             // below, or the note names the detachment — the old shape, where
             // an in-flight staging detached immediately and wrote after the
-            // teardown, is gone.
+            // teardown, is gone. A deadline landing after staging already
+            // resolved finds the slot empty — its handle's output was
+            // consumed by the completed await, and polling it again would
+            // panic — so the sweep rides on the copies recorded before the
+            // submit boundary.
             if let Some(copies) = join_staged_attachments(&mut staging_in_flight).await {
                 staged_attachment_copies = copies;
             }
@@ -1949,8 +1962,18 @@ async fn prompt_with_attachments(
     let join = staging_in_flight
         .as_mut()
         .expect("the staging handle was parked above");
-    let staged = (&mut *join).await.context("attachment staging task")??;
-    let (ingested, consumed_sources, staged_copies) = staged;
+    let staged = (&mut *join).await;
+    // The await above consumed the parked handle's output: tokio retires the
+    // task on that first poll, and any further poll of the handle panics. The
+    // slot goes back to `None` the moment the await resolves, success or
+    // failure — a deadline or panic landing later (during the submit, say)
+    // runs the failure arms' `join_staged_attachments` over this slot, where
+    // `None` is a no-op, and the sweep reads the copies this call already
+    // returned (recorded into `staged_attachment_copies` before the submit
+    // boundary).
+    *staging_in_flight = None;
+    let (ingested, consumed_sources, staged_copies) =
+        staged.context("attachment staging task")??;
     Ok((
         build_message_with_attachments_in_dir(
             prompt,
@@ -3232,6 +3255,94 @@ mod tests {
         assert!(fresh.exists(), "fresh sessions are the stub cleanup's job");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Once `prompt_with_attachments`'s staging await resolves, the parked
+    /// handle has served its purpose: that await consumed the task's output,
+    /// and any further poll of a consumed `JoinHandle` panics. The failure
+    /// arms' `join_staged_attachments` runs over the caller's slot after the
+    /// setup future is gone (a deadline landing during the submit, a panic in
+    /// a later setup step), outside the setup's own `catch_unwind` — so the
+    /// slot must read empty from the moment the await resolves, the arms'
+    /// sweep taking the copies the setup already recorded instead.
+    #[tokio::test]
+    async fn prompt_with_attachments_clears_the_parked_staging_slot_once_resolved() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let (store, tmp) = lifecycle_home("staging-slot");
+        let _tmp_cleanup = TempDirGuard::new(tmp.clone());
+        seed_record(&store, "agentic_slot_probe", &[]);
+
+        let source = tmp.join("attachment-source.txt");
+        std::fs::write(&source, b"attachment body").unwrap();
+        let request = AgenticTaskRequest {
+            attachments: vec![AgenticTaskAttachment {
+                path: source,
+                remove_after_ingest: false,
+            }],
+            ..default_request("summarize the attachment")
+        };
+
+        let mut staging_in_flight = None;
+        let (_message, consumed, copies) = super::prompt_with_attachments(
+            &store,
+            "agentic_slot_probe",
+            &request,
+            false,
+            &mut staging_in_flight,
+        )
+        .await
+        .expect("staging a regular file resolves");
+        assert!(
+            consumed.is_empty() && !copies.is_empty(),
+            "precondition: the batch returned staged copies and consumed nothing"
+        );
+        assert!(
+            staging_in_flight.is_none(),
+            "a resolved staging await must not leave the consumed handle parked"
+        );
+        // The exact call the timeout and panic arms make once the setup
+        // future is dropped: on the cleared slot it degrades to `None`, and
+        // the arms sweep the `copies` returned above.
+        assert!(
+            super::join_staged_attachments(&mut staging_in_flight)
+                .await
+                .is_none(),
+            "the failure arms' join must degrade to None once staging already landed"
+        );
+        assert!(
+            copies.iter().all(|path| path.exists()),
+            "the returned copies stay on disk for the failure arms' sweep"
+        );
+
+        // The same invariant on the failure resolution: a staging error also
+        // consumes the handle's output on its first poll, so the slot clears
+        // on that path too.
+        let dir_source = tmp.join("not-stagable");
+        std::fs::create_dir(&dir_source).unwrap();
+        let failing = AgenticTaskRequest {
+            attachments: vec![AgenticTaskAttachment {
+                path: dir_source,
+                remove_after_ingest: false,
+            }],
+            ..default_request("attach a directory")
+        };
+        let mut staging_in_flight = None;
+        assert!(
+            super::prompt_with_attachments(
+                &store,
+                "agentic_slot_probe",
+                &failing,
+                false,
+                &mut staging_in_flight,
+            )
+            .await
+            .is_err(),
+            "a directory source must fail staging"
+        );
+        assert!(
+            staging_in_flight.is_none(),
+            "a failed staging await must not leave the consumed handle parked"
+        );
     }
 
     /// The observer forwards HEADLESS-budget evictions only. A chat-budget

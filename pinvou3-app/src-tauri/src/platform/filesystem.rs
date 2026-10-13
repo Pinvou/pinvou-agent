@@ -699,21 +699,59 @@ pub(crate) fn write_private_data_file(path: &Path, bytes: &[u8]) -> io::Result<(
 /// (`truncate(false)` — the lock files hold no data and are never deleted;
 /// a leftover empty file must not block the next acquirer). Callers apply
 /// their own acquire policy on the returned handle (blocking `lock`,
-/// `try_lock`, bounded retry) and their own error contexts. This is
-/// deliberately NOT [`open_private_lock_file`]: switching would change the
-/// lock files' observable permissions (0600 creation + tighten) and open
-/// semantics (O_NOFOLLOW/O_NONBLOCK hardening) — a behavior change for the
-/// existing consumers, not a refactor.
+/// `try_lock`, bounded retry) and their own error contexts.
+///
+/// 0600 posture (mirrors the settings-lock copies:
+/// `prefs::open_settings_lock_file` and the CLI's `open_family_lock_file`):
+/// these lock files are never deleted, so a file created at the umask
+/// default (0644) stays world-readable forever, and flock needs only READ
+/// permission — on a shared/group home any low-privilege account could then
+/// hold the lock and wedge every writer behind it. A FRESH create is
+/// therefore private from the first instant (`.mode(0o600)`; the umask can
+/// only strip bits owner-only mode does not have), and every open
+/// best-effort re-tightens to 0600 so a pre-existing 0644 file from an
+/// older build heals the next time a lock is taken. The tighten is
+/// best-effort (not [`open_private_lock_file`]'s fail-closed one) for the
+/// same reason the settings-lock copies give: the lock stays usable either
+/// way (flock needs no write permission), so a failing chmod must not fail
+/// the consumer's lock acquisition.
+///
+/// Still deliberately NOT [`open_private_lock_file`]: what remains
+/// unshared is that function's open hardening (O_NOFOLLOW/O_NONBLOCK and
+/// the fail-closed tighten) — it guards opens on paths a third party could
+/// plant or swap, while these consumers open a lock file inside a directory
+/// this scaffold itself just created. Only the permission posture is shared;
+/// switching the open semantics wholesale would still be a behavior change
+/// for the existing consumers, not a refactor.
 pub(crate) fn open_lock_file_with_dirs(path: &Path) -> io::Result<std::fs::File> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::OpenOptions::new()
+    #[cfg(unix)]
+    let opened = {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(path)
+    };
+    #[cfg(not(unix))]
+    let opened = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(path)
+        .open(path);
+    let file = opened?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(file)
 }
 
 #[derive(Clone)]
