@@ -6,6 +6,7 @@ import { DEFAULT_PET_ID } from '../pet/pet-registry.js';
 import { bridge, isLocalModel, useBridgeState } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { copyClipboardText } from '../../shared/clipboard.js';
+import { pathBasename } from '../../shared/path-utils.js';
 import qwenIcon from '../../brand-icons/qwen.svg';
 import {
   MODEL_PRESET_DEFS, PROVIDER_KIND_CODING_PLAN, PROVIDER_KIND_OFFICIAL_API, PROVIDER_KIND_CUSTOM,
@@ -1960,7 +1961,7 @@ function hasStoredCredential(record) {
       ];
       const feedbackAllowedExt = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'mp4', 'mov', 'webm']);
       const feedbackVideoExt = new Set(['mp4', 'mov', 'webm']);
-      const feedbackBaseName = p => String(p || '').replaceAll('\\', '/').split('/').pop() || String(p || '');
+      const feedbackBaseName = p => pathBasename(p, { fallback: String(p || '') });
       const feedbackExt = p => {
         const name = feedbackBaseName(p);
         const idx = name.lastIndexOf('.');

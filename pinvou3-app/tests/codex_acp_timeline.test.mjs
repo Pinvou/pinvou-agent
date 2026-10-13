@@ -33,6 +33,10 @@ copyFileSync(
   path.join(root, 'src', 'shared', 'shell-tools.mjs'),
   path.join(sharedDir, 'shell-tools.mjs'),
 );
+copyFileSync(
+  path.join(root, 'src', 'shared', 'path-utils.js'),
+  path.join(sharedDir, 'path-utils.js'),
+);
 
 const event = (seq, type, data, turnId = 'turn-1') => ({
   version: 1,
