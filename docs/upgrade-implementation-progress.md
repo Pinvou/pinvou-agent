@@ -4537,3 +4537,41 @@ Previously undecided time/platform/native/crypto policies and deployment remain
 deferred. Details: [native bytes materialization](client-upgrade-native-materialization.md).
 Full T29/native authenticity/protected staging and T27 trust remain unfinished.
 Downloads retain no total/cumulative duration or retry cap.
+
+
+## T09 third batch - owned server artifact capture (2026-10-14)
+
+The separate service's artifacts/capture module now captures an exact-length
+source into private process memory under explicit source/memory capacities.
+It requires complete EOF and computes the observed SHA-256 before exposing only
+independent ReaderAt reads and a copied identity. The isolated artifact inspector
+uses that capture through its existing safe source adapter; the additional
+Manifest InspectSnapshot entry delegates all existing current Root/current deny
+and complete byte-binding checks. Existing CLI flags/output/error categories and
+the old immutable ReaderAt inspection API remain compatible.
+
+The root affected regression includes a real 33 MiB-plus source, independent
+hash and concurrent read controls, source/read-buffer mutation refusal, capacity
+boundaries and fixed incomplete/extra/invalid/cancelled reads. Actual local HTTP
+body streaming/owner cancellation and a signed upload with current package deny
+and restored positive passed. Both independent static roles found that the first
+HTTP cancellation marker could run before Capture; the primary role moved it
+into the actual body Reader and required no result before owner cancellation.
+After that test-only repair, capture5 groups passed in6.752s, verification4 in
+4.669s and default CLI2 in2.157s. The earlier rebuilt actual CLI3 including
+child-process E2E passed in2.857s. Full default Go tests, vet, module verification,
+server/CLI builds, original pinned contracts, formatting and diff checks passed.
+Both independent implementation reviews passed after that repair. Dependency
+actual Windows Go1.27.2 passed archive5.968s/capture5=6.879s/sourcefile2.962s/
+verification4=4.330s/actualCLI3+E2E6.638s, affected vet/format/diff. Compatibility
+independently passed archive3.374s/capture5=7.351s/sourcefile2.547s/
+verification4=5.084s/actualCLI3+E2E3.055s and affected vet/format/diff.
+Test processes are closed. Client
+architecture/version/diff checks passed. Both independent final documentation reviews passed before commit.
+
+This is process-memory byte ownership, not durable content-addressed storage,
+native authentication, supply-chain approval, Artifact admission or a production
+upload HTTP workflow. Existing unchanged database/provider/browser/deployment
+opt-ins are not claimed; no SQL/provider/contract/dependency/version changes.
+Full T09 remains unfinished and deployment remains deferred. Download has no
+total/cumulative elapsed deadline or retry budget.
