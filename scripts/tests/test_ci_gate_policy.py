@@ -1415,6 +1415,37 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn(
             "a renamed test must not become a silent pass", windows_rust_steps
         )
+        # Round-53 review (T-ci-2): the job-level routing is pinned verbatim
+        # by GATE_JOB_LEVEL_IFS, but that pin cannot see a NEW step added
+        # INSIDE the job. The Windows regression leg never runs on
+        # merge_group (Merge Queue does not repeat it; Linux validates the
+        # combined tree), so a step conditioned on that event would be dead
+        # code that still shows green here — assert no step-level `if:`
+        # references the event. The job-header chunk (job-level `if:`) is
+        # excluded; folded `if: >-` continuations are folded in so the token
+        # cannot hide past the `if:` line.
+        for step in windows_rust_steps.split("\n      - name:")[1:]:
+            step_lines = step.splitlines()
+            ifs = [
+                number
+                for number, line in enumerate(step_lines)
+                if re.match(r"^\s+if:", line)
+            ]
+            for start in ifs:
+                condition = [step_lines[start]]
+                if step_lines[start].strip().endswith(">-"):
+                    for line in step_lines[start + 1:]:
+                        if not line.strip() or len(line) - len(line.lstrip(" ")) <= 6:
+                            break
+                        condition.append(line.strip())
+                self.assertNotIn(
+                    "merge_group",
+                    "\n".join(condition),
+                    "windows-rust-test steps must not be conditioned on "
+                    "merge_group: the Windows regression leg never runs on "
+                    "that event (Linux validates the combined tree), so the "
+                    "step would be silently dead on every run",
+                )
 
         # macOS-gated CLI code must type-check somewhere: cli-test is
         # ubuntu-only, so the dedicated macos-cli-check leg mirrors the
@@ -1874,6 +1905,29 @@ class CiGatePolicyTests(unittest.TestCase):
                     "success on a real compile or test failure and "
                     "required-gate would accept it",
                 )
+            # Round-53 review (T-ci-3): both scans above assume the idiom
+            # sits on ONE line, but a folded `run: >-` block can split it
+            # across the fold — `cargo ... --locked ||\n  true` folds back
+            # to `|| true` at runtime while matching neither scan. Catch the
+            # line-split coat too: a line ending in `||` (or `;`) whose next
+            # line is exactly the swallow token, indented like any folded
+            # continuation. Runs on the same excised block, so the
+            # documented exemptions above extend to it unchanged; audited
+            # zero-for-zero against every gate job's real steps before
+            # being added.
+            for pattern in (
+                r"(?m)\|\|[ \t]*\n[ \t]+(?:true|:|exit 0)[ \t]*$",
+                r"(?m);[ \t]*\n[ \t]+(?:true|:|exit 0)[ \t]*$",
+            ):
+                self.assertNotRegex(
+                    block,
+                    pattern,
+                    f"{name} must not swallow a command's exit status with "
+                    f"the line-split idiom /{pattern}/: a folded `run: >-` "
+                    "block re-joins it at runtime, the leg would report "
+                    "success on a real compile or test failure and "
+                    "required-gate would accept it",
+                )
             # A `set +e` scan was considered here and deliberately NOT
             # added: the three current sites (windows-rust-test's submodule
             # init timing probe and its two cargo-check timing steps) all
@@ -2123,14 +2177,19 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         # push(main) 只编译暖 cache,不执行测试:MQ 已对同一组合树跑过全量测试;
         # push 恢复暖 cache 后跑全量测试曾连续触发 hosted runner 失联(见 workflow 注释)。
+        # Round-53 review: these name+`if` pairs are END-ANCHORED like the
+        # round-51 cli-test pins — each pinned string ends with the `if:`
+        # line's trailing "\n", so a suffix mutation (`&& false`, a trailing
+        # comment) fails the pin instead of silently skipping the leg's
+        # tests while required-gate accepts 'skipped'.
         self.assertIn(
             "- name: cargo test --lib（含 strict_mode 回归；真 bge-m3/vLLM 测试已 #[ignore]）\n"
-            "        if: ${{ github.event_name != 'push' }}",
+            "        if: ${{ github.event_name != 'push' }}\n",
             rust_test,
         )
         self.assertIn(
             "- name: cargo test --lib --no-run (push main 仅编译暖 cache)\n"
-            "        if: ${{ github.event_name == 'push' }}",
+            "        if: ${{ github.event_name == 'push' }}\n",
             rust_test,
         )
         # 16GB runner 失联防护:编译与执行拆成独立 step(失联后日志全丢,按 step
@@ -2139,7 +2198,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # 看门狗已删除,不再抢先杀编译进程。
         self.assertIn(
             "- name: cargo test --lib --no-run（编译链接测试二进制）\n"
-            "        if: ${{ github.event_name != 'push' }}",
+            "        if: ${{ github.event_name != 'push' }}\n",
             rust_test,
         )
         self.assertIn(
