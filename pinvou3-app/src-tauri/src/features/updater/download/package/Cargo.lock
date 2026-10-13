@@ -630,6 +630,7 @@ name = "pinvou-upgrade-package-check"
 version = "0.0.0"
 dependencies = [
  "pinvou-upgrade-archive",
+ "pinvou-upgrade-cache-object",
  "pinvou-upgrade-codec",
  "pinvou-upgrade-transfer",
  "serde_json",

@@ -14,6 +14,29 @@ pub(crate) fn inspect_bound_full_pack<'a>(
     pinvou_upgrade_package_check::inspect_full_pack(source, input, cancelled)
 }
 
+/// Copy one declared native member from the same readonly source into a fresh
+/// exclusive file; no signature/native authority or writer retirement is granted.
+pub(crate) fn materialize_package_native<'a>(
+    source: &pinvou_upgrade_cache_object::ReadOnlyCacheHandle,
+    destination: &mut pinvou_upgrade_cache_object::ExclusiveCacheFile,
+    input: pinvou_upgrade_package_check::PackageInspection<'a, '_>,
+    kind: pinvou_upgrade_package_check::NativeMemberKind<'_>,
+    member_name: &str,
+    cancelled: impl FnMut() -> bool,
+) -> Result<
+    pinvou_upgrade_package_check::ObservedNativeMember<'a>,
+    pinvou_upgrade_package_check::NativeMaterializeError,
+> {
+    pinvou_upgrade_package_check::materialize_native_member(
+        source,
+        destination,
+        input,
+        kind,
+        member_name,
+        cancelled,
+    )
+}
+
 pub(crate) fn create_exclusive_cache(
     path: &std::path::Path,
 ) -> Result<
@@ -590,6 +613,69 @@ mod tests {
                     Err(pinvou_upgrade_package_check::PackageCheckError::NativeMemberMissing)
                 ));
             }
+        }
+        let source_path =
+            std::env::temp_dir().join(format!("pinvou-app-native-source-{}", uuid::Uuid::new_v4()));
+        match create_exclusive_cache(&source_path) {
+            Err(pinvou_upgrade_cache_object::CacheObjectError::Unsupported) => {
+                assert!(!source_path.exists())
+            }
+            Ok(mut cache) => {
+                cache.file_mut().write_all(&bytes).unwrap();
+                let source = duplicate_cache_read_handle(&cache).unwrap();
+                drop(cache);
+                let output_path = std::env::temp_dir()
+                    .join(format!("pinvou-app-native-output-{}", uuid::Uuid::new_v4()));
+                let mut output = create_exclusive_cache(&output_path).unwrap();
+                let raw = decode(&manifest).canonical_bytes().unwrap();
+                let reference = derive_metadata_reference(&raw).unwrap();
+                let result = materialize_package_native(
+                    &source,
+                    &mut output,
+                    pinvou_upgrade_package_check::PackageInspection {
+                        artifact: target,
+                        manifest_bytes: &raw,
+                        reference: &reference,
+                        expected_context: &context,
+                        expected_version: &version,
+                        supplied_time: &time,
+                        limits: pinvou_upgrade_archive::ArchiveLimits::new(
+                            100000, 100000, 10, 10000, 10000, 1000000,
+                        )
+                        .unwrap(),
+                    },
+                    pinvou_upgrade_package_check::NativeMemberKind::FinalInstaller,
+                    zip["members"][0]["name"].as_str().unwrap(),
+                    || false,
+                )
+                .unwrap();
+                assert_eq!(result.member().member().size(), 3);
+                assert_eq!(
+                    result.identity().canonical_bytes(),
+                    decode(&manifest["signed"]["finalInstaller"])
+                        .native_identity_shape()
+                        .unwrap()
+                        .canonical_bytes()
+                );
+                drop(output);
+                assert!(
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .open(&output_path)
+                        .is_err()
+                );
+                use std::io::{Read, Seek, SeekFrom};
+                let mut reader = result.file().file();
+                reader.seek(SeekFrom::Start(0)).unwrap();
+                let mut actual = Vec::new();
+                reader.read_to_end(&mut actual).unwrap();
+                assert_eq!(actual, b"abc");
+                drop(result);
+                drop(source);
+                std::fs::remove_file(output_path).unwrap();
+                std::fs::remove_file(source_path).unwrap();
+            }
+            Err(_) => panic!("App synthetic native source unavailable"),
         }
         drop(file);
         std::fs::remove_file(path).unwrap();

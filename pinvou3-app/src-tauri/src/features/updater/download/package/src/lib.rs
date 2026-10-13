@@ -4,10 +4,14 @@ use pinvou_upgrade_archive::{ArchiveError, ArchiveLimits, PackageInventory, insp
 use pinvou_upgrade_codec::{
     CanonicalAppVersion, ContextBindingError, Document, EnvelopeShapeError, InputKind,
     MetadataReferenceError, MetadataReferenceShape, MetadataSemanticsError, RootWindowMode,
-    SchemaError, SuppliedProtocolTime, assert_supplied_expected_context,
+    SchemaCheckedEnvelope, SchemaError, SuppliedProtocolTime, assert_supplied_expected_context,
     assert_supplied_metadata_semantics, decode_canonical_envelope,
 };
 use pinvou_upgrade_transfer::Artifact;
+mod materialize;
+pub use materialize::{
+    NativeMaterializeError, NativeMemberKind, ObservedNativeMember, materialize_native_member,
+};
 use std::{collections::BTreeSet, fs::File};
 
 /// Independent supplied expectations, never a trust/owner token. The caller
@@ -63,6 +67,19 @@ pub fn inspect_full_pack<'a>(
     if cancelled() {
         return Err(PackageCheckError::Archive(ArchiveError::Cancelled));
     }
+    let envelope = bind_manifest(&input)?;
+    inspect_members(
+        source,
+        input.artifact,
+        input.limits,
+        envelope.envelope().signed().value(),
+        &mut cancelled,
+    )
+}
+
+fn bind_manifest(
+    input: &PackageInspection<'_, '_>,
+) -> Result<SchemaCheckedEnvelope, PackageCheckError> {
     let envelope = decode_canonical_envelope(input.manifest_bytes, InputKind::Metadata)
         .map_err(PackageCheckError::Envelope)?
         .check_full_schema()
@@ -88,7 +105,17 @@ pub fn inspect_full_pack<'a>(
     {
         return Err(PackageCheckError::ArtifactMismatch);
     }
-    let inventory = inspect_file(source, input.artifact, input.limits, &mut cancelled)
+    Ok(envelope)
+}
+
+fn inspect_members<'a>(
+    source: &mut File,
+    artifact: Artifact<'a>,
+    limits: ArchiveLimits,
+    signed: &serde_json::Value,
+    cancelled: &mut impl FnMut() -> bool,
+) -> Result<PackageInventory<'a>, PackageCheckError> {
+    let inventory = inspect_file(source, artifact, limits, &mut *cancelled)
         .map_err(PackageCheckError::Archive)?;
     // Index once. Repeated equivalent native identities may bind the same member;
     // V1 provides no native source path, and installationTarget is not one.

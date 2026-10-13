@@ -314,3 +314,390 @@ fn cancellation_and_current_file_mismatch_return_no_partial_inventory() {
     ));
     run(&mut source, base, artifact(base), || false).unwrap();
 }
+
+fn owned_source(
+    fixtures: &Fixtures,
+    case: &Value,
+) -> Option<pinvou_upgrade_cache_object::ReadOnlyCacheHandle> {
+    use std::io::Write;
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let path = fixtures.root.join(format!(
+        "source-cache-{}",
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    match pinvou_upgrade_cache_object::create_exclusive_cache(&path) {
+        Err(pinvou_upgrade_cache_object::CacheObjectError::Unsupported) => {
+            assert!(!path.exists());
+            None
+        }
+        Ok(mut source) => {
+            source
+                .file_mut()
+                .write_all(&std::fs::read(case["path"].as_str().unwrap()).unwrap())
+                .unwrap();
+            let view = source.read_only_duplicate().unwrap();
+            drop(source); // Tests retire the original writer; the production API does not.
+            Some(view)
+        }
+        Err(_) => panic!("synthetic cache source unavailable"),
+    }
+}
+fn fresh_destination(
+    fixtures: &Fixtures,
+) -> (PathBuf, pinvou_upgrade_cache_object::ExclusiveCacheFile) {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let path = fixtures.root.join(format!(
+        "destination-cache-{}",
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let file = pinvou_upgrade_cache_object::create_exclusive_cache(&path).unwrap();
+    (path, file)
+}
+fn materialize<'a>(
+    source: &pinvou_upgrade_cache_object::ReadOnlyCacheHandle,
+    destination: &mut pinvou_upgrade_cache_object::ExclusiveCacheFile,
+    case: &Value,
+    artifact: Artifact<'a>,
+    kind: NativeMemberKind<'_>,
+    name: &str,
+    cancelled: impl FnMut() -> bool,
+) -> Result<ObservedNativeMember<'a>, NativeMaterializeError> {
+    let reference = doc(&case["reference"]).metadata_reference_shape().unwrap();
+    let context = doc(&case["expectedContext"]);
+    let version = doc(&case["expectedVersion"]).app_version_shape().unwrap();
+    let time = doc(&case["time"]).protocol_time_shape().unwrap();
+    materialize_native_member(
+        source,
+        destination,
+        PackageInspection {
+            artifact,
+            manifest_bytes: case["manifest"].as_str().unwrap().as_bytes(),
+            reference: &reference,
+            expected_context: &context,
+            expected_version: &version,
+            supplied_time: &time,
+            limits: ArchiveLimits::new(
+                64 * 1024 * 1024,
+                128 * 1024 * 1024,
+                4096,
+                8 * 1024 * 1024,
+                8 * 1024 * 1024,
+                100_000,
+            )
+            .unwrap(),
+        },
+        kind,
+        name,
+        cancelled,
+    )
+}
+#[test]
+fn actual_declared_native_roles_copy_to_fresh_objects_and_readonly_duplicates_preserve_all_fields()
+{
+    use std::io::{Read, Write};
+    let fixtures = Fixtures::new();
+    for name in ["store", "deflate", "large-33MiB"] {
+        let case = fixtures
+            .cases
+            .iter()
+            .find(|case| case["name"] == name)
+            .unwrap();
+        let Some(source) = owned_source(&fixtures, case) else {
+            return;
+        };
+        let envelope: Value = serde_json::from_str(case["manifest"].as_str().unwrap()).unwrap();
+        for (kind, path, value) in [
+            (
+                NativeMemberKind::FinalInstaller,
+                "payload/installer.deb",
+                &envelope["signed"]["finalInstaller"],
+            ),
+            (
+                NativeMemberKind::ExecutionHelper,
+                "helpers/current-helper",
+                &envelope["signed"]["helper"],
+            ),
+            (
+                NativeMemberKind::Launcher,
+                "launcher/stable-launcher",
+                &envelope["signed"]["launcher"],
+            ),
+            (
+                NativeMemberKind::HelperArtifact("helper-extra"),
+                "helpers/other-helper",
+                &envelope["signed"]["helpers"][1]["nativeIdentity"],
+            ),
+        ] {
+            let (output, mut destination) = fresh_destination(&fixtures);
+            let result = materialize(
+                &source,
+                &mut destination,
+                case,
+                artifact(case),
+                kind,
+                path,
+                || false,
+            )
+            .unwrap();
+            assert_eq!(result.member().package().size(), artifact(case).size());
+            assert_eq!(result.member().member().name(), path);
+            assert_eq!(
+                result.identity().canonical_bytes(),
+                doc(value)
+                    .native_identity_shape()
+                    .unwrap()
+                    .canonical_bytes()
+            );
+            assert_eq!(
+                result.file().file().metadata().unwrap().len(),
+                value["size"].as_u64().unwrap()
+            );
+            drop(destination);
+            assert!(
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(&output)
+                    .is_err()
+            );
+            assert!(std::fs::remove_file(&output).is_err());
+            let mut reader = result.file().file();
+            reader.seek(SeekFrom::Start(0)).unwrap();
+            let mut hasher = sha2::Sha256::new();
+            use sha2::Digest;
+            let mut buffer = [0_u8; 65536];
+            let mut size = 0;
+            loop {
+                let count = reader.read(&mut buffer).unwrap();
+                if count == 0 {
+                    break;
+                };
+                size += count;
+                hasher.update(&buffer[..count]);
+            }
+            assert_eq!(size as u64, value["size"].as_u64().unwrap());
+            let actual: String = hasher
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            assert_eq!(actual, value["sha256"].as_str().unwrap());
+            let mut readonly = result.file().file();
+            assert!(readonly.write_all(b"write denied").is_err());
+            assert!(result.file().file().set_len(0).is_err());
+            drop(result);
+            assert!(std::fs::remove_file(output).is_ok());
+        }
+    }
+}
+#[test]
+fn invalid_native_selector_locator_context_and_named_member_do_not_write_and_can_restore() {
+    let fixtures = Fixtures::new();
+    let case = fixtures.baseline();
+    let Some(source) = owned_source(&fixtures, case) else {
+        return;
+    };
+    let (_, mut destination) = fresh_destination(&fixtures);
+    let mut view = source.file();
+    view.seek(SeekFrom::Start(7)).unwrap();
+    assert!(matches!(
+        materialize(
+            &source,
+            &mut destination,
+            case,
+            artifact(case),
+            NativeMemberKind::HelperArtifact("not-declared"),
+            "helpers/other-helper",
+            || false
+        ),
+        Err(NativeMaterializeError::InvalidSelector)
+    ));
+    assert_eq!(source.file().stream_position().unwrap(), 7);
+    assert!(matches!(
+        materialize(
+            &source,
+            &mut destination,
+            case,
+            artifact(case),
+            NativeMemberKind::FinalInstaller,
+            "../unsafe",
+            || false
+        ),
+        Err(NativeMaterializeError::Archive(
+            ArchiveError::InvalidExpectedMember
+        ))
+    ));
+    assert_eq!(source.file().stream_position().unwrap(), 7);
+    let mut context = case.clone();
+    context["expectedContext"]["product"] = json!("other-product");
+    assert!(matches!(
+        materialize(
+            &source,
+            &mut destination,
+            &context,
+            artifact(case),
+            NativeMemberKind::FinalInstaller,
+            "payload/installer.deb",
+            || false
+        ),
+        Err(NativeMaterializeError::Package(PackageCheckError::Context(
+            _
+        )))
+    ));
+    assert_eq!(source.file().stream_position().unwrap(), 7);
+    assert!(matches!(
+        materialize(
+            &source,
+            &mut destination,
+            case,
+            artifact(case),
+            NativeMemberKind::FinalInstaller,
+            "helpers/current-helper",
+            || false
+        ),
+        Err(NativeMaterializeError::Archive(
+            ArchiveError::MemberMismatch
+        ))
+    ));
+    assert_eq!(destination.file_mut().metadata().unwrap().len(), 0);
+    materialize(
+        &source,
+        &mut destination,
+        case,
+        artifact(case),
+        NativeMemberKind::FinalInstaller,
+        "payload/installer.deb",
+        || false,
+    )
+    .unwrap();
+}
+#[test]
+fn native_copy_refuses_existing_destination_and_different_actual_source_without_clobber() {
+    use std::io::Write;
+    let fixtures = Fixtures::new();
+    let case = fixtures.baseline();
+    let Some(source) = owned_source(&fixtures, case) else {
+        return;
+    };
+    let (_, mut existing) = fresh_destination(&fixtures);
+    existing
+        .file_mut()
+        .write_all(b"existing-owner-bytes")
+        .unwrap();
+    assert!(matches!(
+        materialize(
+            &source,
+            &mut existing,
+            case,
+            artifact(case),
+            NativeMemberKind::FinalInstaller,
+            "payload/installer.deb",
+            || false
+        ),
+        Err(NativeMaterializeError::Archive(
+            ArchiveError::DestinationNotEmpty
+        ))
+    ));
+    assert_eq!(existing.file_mut().metadata().unwrap().len(), 20);
+    let (_, mut destination) = fresh_destination(&fixtures);
+    let wrong = owned_source(&fixtures, &fixtures.cases[1]).unwrap();
+    assert!(matches!(
+        materialize(
+            &wrong,
+            &mut destination,
+            case,
+            artifact(case),
+            NativeMemberKind::FinalInstaller,
+            "payload/installer.deb",
+            || false
+        ),
+        Err(NativeMaterializeError::Package(PackageCheckError::Archive(
+            ArchiveError::PackageBytes(_)
+        )))
+    ));
+    assert_eq!(destination.file_mut().metadata().unwrap().len(), 0);
+    materialize(
+        &source,
+        &mut destination,
+        case,
+        artifact(case),
+        NativeMemberKind::FinalInstaller,
+        "payload/installer.deb",
+        || false,
+    )
+    .unwrap();
+}
+#[test]
+fn native_copy_initial_partial_and_last_cancel_leave_no_result_and_owner_keeps_untrusted_bytes() {
+    let fixtures = Fixtures::new();
+    let case = fixtures.baseline();
+    let Some(source) = owned_source(&fixtures, case) else {
+        return;
+    };
+    let (_, mut destination) = fresh_destination(&fixtures);
+    assert!(matches!(
+        materialize(
+            &source,
+            &mut destination,
+            case,
+            artifact(case),
+            NativeMemberKind::FinalInstaller,
+            "payload/installer.deb",
+            || true
+        ),
+        Err(NativeMaterializeError::Archive(ArchiveError::Cancelled))
+    ));
+    assert_eq!(destination.file_mut().metadata().unwrap().len(), 0);
+    let mut count = 0;
+    materialize(
+        &source,
+        &mut destination,
+        case,
+        artifact(case),
+        NativeMemberKind::FinalInstaller,
+        "payload/installer.deb",
+        || {
+            count += 1;
+            false
+        },
+    )
+    .unwrap();
+    let total = count;
+    let (_, mut final_cancel) = fresh_destination(&fixtures);
+    let mut count = 0;
+    assert!(matches!(
+        materialize(
+            &source,
+            &mut final_cancel,
+            case,
+            artifact(case),
+            NativeMemberKind::FinalInstaller,
+            "payload/installer.deb",
+            || {
+                count += 1;
+                count == total
+            }
+        ),
+        Err(NativeMaterializeError::Archive(ArchiveError::Cancelled))
+    ));
+    assert_eq!(count, total);
+    assert!(final_cancel.file_mut().metadata().unwrap().len() > 0);
+    let (_, mut partial) = fresh_destination(&fixtures);
+    let observer = partial.file_mut().try_clone().unwrap();
+    assert!(matches!(
+        materialize(
+            &source,
+            &mut partial,
+            case,
+            artifact(case),
+            NativeMemberKind::FinalInstaller,
+            "payload/installer.deb",
+            || observer.metadata().unwrap().len() > 0
+        ),
+        Err(NativeMaterializeError::Archive(ArchiveError::Cancelled))
+    ));
+    let partial_length = observer.metadata().unwrap().len();
+    assert!(
+        partial_length > 0
+            && partial_length < case["natives"]["finalInstaller"]["size"].as_u64().unwrap()
+    );
+}

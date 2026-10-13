@@ -4494,3 +4494,46 @@ product VERSION or gitlinks change. Details:
 [same-file Package binding](client-upgrade-package-binding.md).
 Full T29/protected staging/native probes and T27 trust remain unfinished.
 Downloads retain no total/cumulative duration or retry cap.
+
+## T29 seventeenth batch - actual declared native materialization (2026-10-14)
+
+Scope: supplied Package native role/helper ID plus independent safe ZIP locator
+to current same readonly source/native membership and actual new exclusive
+destination copy/sync/full rescan, retaining complete supplied five-field native
+identity and current readonly destination duplicate. Private shared metadata/
+member helpers preserve the preceding inspect_full_pack public behavior and
+all original4 actual-file tests. No source path from installationTarget, path
+reopen/delete, command, native signature/current authority/sealing/ACL/writer
+retirement/protected-stage or execution token is introduced.
+Initial compile caught a moved mutable callback in the helper extraction;
+an explicit reborrow preserves the original callback lifetime/order.
+Actual Windows initial8 passed in22.78s after7.17s compilation: original4 plus
+new4 real handle groups/all4 native selections/Store/Deflate/33MiB, field/EOF/
+readonly/sharing proofs, nonempty/mismatched/cancel controls. Final actual
+partial-size assertion and App real typed copy were added. Root final scoped8
+passed in23.47s after4.83s compilation, Clippy alltargets3.38s/package format
+passed. Architecture/version/diff passed; CI53 in0.048s. Root self-review confirms
+private helper extraction preserves the old gates/callbacks/public API, all
+metadata/selection/locator gates precede source duplication, complete current
+membership and physical materialization reuse proven scan/rescan/sync/EOF,
+original/destination readonly duplicates do not imply sealing/other-writer
+retirement, fixed errors and final cancellation release local views without
+returning facts. Genuine partial-size and observed typed-handle tests support
+the scoped claims. Independent dependency scoped8 passed in30.86s, Clippy2.43s/
+package+App facade format/diff passed, actual Windows/Node22/two legacy
+environments; source/test/architecture review found no mandatory issue and
+all processes closed. Actual Windows updater App53 passed in0.61s after3m12s compilation, including
+the added real typed native copying/readback/readonly sharing stage in the
+existing Package App test; no new App test count is invented. Compatibility
+independent scoped8 passed in28.22s, Clippy2.04s/package+App facade format/diff
+passed; CI53 in0.061s, actual Windows/Node22/two legacy environments. Both scoped
+reviews found no mandatory issue, confirmed helper extraction compatibility and
+returned facts/readonly permission limits, and all processes closed.
+Existing complete archive/codec and unrelated full App were not repeated.
+Both independent final documentation reviews passed before commit. Parent/CLI locks only add the
+direct existing cache edge; external versions remain unchanged.
+No Schema/OpenAPI/profile/fixed vectors/product VERSION/gitlinks changes.
+Previously undecided time/platform/native/crypto policies and deployment remain
+deferred. Details: [native bytes materialization](client-upgrade-native-materialization.md).
+Full T29/native authenticity/protected staging and T27 trust remain unfinished.
+Downloads retain no total/cumulative duration or retry cap.
