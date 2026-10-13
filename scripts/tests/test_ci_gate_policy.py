@@ -152,6 +152,29 @@ class CiGatePolicyTests(unittest.TestCase):
         ):
             self.assertIn(command, step)
 
+    def test_upgrade_transfer_sources_and_locks_run_the_standalone_gate(self):
+        block = self.pr_workflow.split("            rust_code:", 1)[1].split(
+            "            rust_dependencies:", 1
+        )[0]
+        patterns = _extract_quoted_paths(block)
+        root = "pinvou3-app/src-tauri/src/features/updater/download/transfer/"
+        for path in ("src/response.rs", "tests/transfer.rs", "Cargo.toml", "Cargo.lock"):
+            with self.subTest(path=path):
+                self.assertTrue(_matches_paths_filter(root + path, patterns))
+        job = self.pr_workflow.split("\n  rust-lint:", 1)[1].split("\n  rust-test:", 1)[0]
+        step = job.split("- name: Check independent upgrade transfer arithmetic", 1)[1].split(
+            "\n      - name:", 1
+        )[0]
+        self.assertNotIn("if:", step)
+        self.assertNotIn("continue-on-error:", step)
+        self.assertIn("working-directory: " + root.rstrip("/"), step)
+        for command in (
+            "cargo fmt -- --check",
+            "cargo clippy --locked --all-targets -- -D warnings",
+            "cargo test --locked",
+        ):
+            self.assertIn(command, step)
+
     def test_full_release_only_runs_for_version_or_manual_trigger(self):
         trigger = self.release_workflow.split("\non:", maxsplit=1)[1].split(
             "\npermissions:", maxsplit=1

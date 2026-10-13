@@ -849,6 +849,13 @@ jobs:
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked
 
+      - name: Check independent upgrade transfer arithmetic
+        working-directory: pinvou3-app/src-tauri/src/features/updater/download/transfer
+        run: |
+          cargo fmt -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+
       - name: Install frozen upgrade reference dependencies
         run: npm --prefix specs/upgrade/v1 ci --ignore-scripts --no-audit --no-fund
 

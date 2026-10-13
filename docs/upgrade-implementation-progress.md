@@ -2189,3 +2189,34 @@ handle immediate identity/data/launch failures. No health probe, health success,
 gate release, protected persistence or cross-power clock certification is claimed.
 Full T26 and deployment remain unfinished, and downloads have no duration cap.
 Details: [client health timing](client-upgrade-health-timing.md).
+Client health-timing arithmetic commit: `dd59630d6`.
+
+### T29 first batch: bound byte-range transfer planning (2026-10-13)
+
+The private std-only transfer crate captures the original structural artifact,
+cache binding and request plan. It validates raw strong ETags, known inclusive
+byte ranges, exact signed total/span, content lengths and identity encoding.
+Unproven continuity or a changed partial cache cannot append. An ignored Range
+with 200 always replaces from zero; 206 requires the original resume conditions.
+Complete caches can request actual local verification even after association loss.
+412/416 plan recovery without declaring completion. Body excess, truncation,
+abort and finished state latch, preventing later input from producing a receipt.
+
+Eleven focused groups, standalone fmt/Clippy, App formatting, complete locked
+App/CLI metadata, 46 CI policies, architecture, version and diff checks passed.
+Each parent lock adds only the new dependency-free local package and App edge.
+The initial Clippy-only findings were two collapsible conditions, now repaired.
+Actual Windows App integration passed all nine updater tests, including the new
+transfer facade control (0.00s after a 2m35s build with the existing compiler stack
+wrapper). Both independent roles gave final B1 scoped PASS after reviewing the
+frozen source and App evidence; no mandatory finding remains. No App-wide pass is
+claimed; earlier unrelated Windows limitations stay documented.
+
+The local header input profile has explicit count/per-value/aggregate resource
+bounds; it does not impose a 32 MiB artifact limit, elapsed deadline or retry cap.
+Headers and segment receipts establish no source trust, final hash/signature,
+platform authenticity, exclusive file ownership or installation rights. Actual
+HTTPS/DNS/redirect policy, credentials/URL renewal, protected cache and staging,
+provider continuity and physical byte verification remain subsequent work.
+Full T29 and deployment remain unfinished. Details:
+[client transfer planning](client-upgrade-transfer-planning.md).

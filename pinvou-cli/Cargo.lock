@@ -6908,6 +6908,10 @@ name = "pinvou-upgrade-timing"
 version = "0.0.0"
 
 [[package]]
+name = "pinvou-upgrade-transfer"
+version = "0.0.0"
+
+[[package]]
 name = "pinvou3-tauri"
 version = "0.10.9"
 dependencies = [
@@ -6951,6 +6955,7 @@ dependencies = [
  "pinvou-knowledge",
  "pinvou-upgrade-codec",
  "pinvou-upgrade-timing",
+ "pinvou-upgrade-transfer",
  "pipewire",
  "qrcode",
  "quick-xml",
