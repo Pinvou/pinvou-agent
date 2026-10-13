@@ -2156,3 +2156,36 @@ clock source, cross-power continuity, durable ledger or preparation/execution
 budget. Health timing is the next separate batch; full T26, cleanup and gate
 integration remain unfinished. Deployment stays deferred. Details:
 [client timing arithmetic](client-upgrade-timing-math.md).
+Client original-budget arithmetic commit: `4969b08d0`.
+
+### T26 second batch: original health timing windows (2026-10-13)
+
+The timing crate now records the first launch's fixed five-minute total window,
+at most two nonoverlapping checks and each check's 120-second limit clipped to
+the original total window. Private check handles reject old callbacks before they
+can change the watermark. Check and total exhaustion latch separately; waiting
+at the bound exhausts, while immediate confirmed completion at the bound can be
+timing-eligible only before exhaustion was observed. Unknown/fault/regression
+cannot clear a latch or release a check. Independent safe-stop closure produces
+no timing-eligible completion, and each finished check has its own saved result.
+
+The isolated draft and actual repository passed nine health groups plus the
+repository's eight original budget groups. A pre-review found an untrimmed check
+remaining value; the primary role clipped it to the total remainder and added
+late-check/SAFE_MAX controls. A subsequent review added the decisive boundary
+regression: latch at D, then unknown/fault/backwards observations, then completion
+at the same D cannot revive it. Both independent roles passed the final isolated
+draft. Actual Windows App integration passed all eight updater tests, including
+the new health timing graph control (0.00s after a 2m12s build with the existing
+compiler stack wrapper). Actual repository fmt/Clippy, 45 CI policies,
+architecture, version consistency and diff checks passed. Both independent roles
+passed the 17 groups and gave final B2 scoped PASS after reviewing the frozen App
+evidence. No mandatory finding remains. This batch changes no dependency, lock or CI
+configuration and does not claim an App-wide pass.
+
+The record proves timing only. The protected owner must bind actual scope,
+transaction, launch/check facts, safe stop and eligible new-version restart, and
+handle immediate identity/data/launch failures. No health probe, health success,
+gate release, protected persistence or cross-power clock certification is claimed.
+Full T26 and deployment remain unfinished, and downloads have no duration cap.
+Details: [client health timing](client-upgrade-health-timing.md).

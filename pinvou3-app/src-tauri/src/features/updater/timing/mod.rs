@@ -59,4 +59,44 @@ mod tests {
         );
         assert_eq!(transferred.first_started_at(), started);
     }
+
+    #[test]
+    fn application_graph_health_check_cannot_outlive_the_first_launch_window() {
+        use pinvou_upgrade_timing::{
+            HealthBudget, HealthCheckStart, HealthCompletionAssessment, HealthWaitAssessment,
+        };
+        let mut health = HealthBudget::from_first_launch(Millis::from_u64(100).unwrap()).unwrap();
+        let check = match health
+            .begin_check(ClockProjection::Known(Millis::from_u64(250_100).unwrap()))
+            .unwrap()
+        {
+            HealthCheckStart::Started(handle) => handle,
+            other => panic!("unexpected start: {other:?}"),
+        };
+        assert_eq!(
+            health.assess_waiting(ClockProjection::Known(Millis::from_u64(250_100).unwrap())),
+            HealthWaitAssessment::Waiting {
+                remaining_total_ms: 50_000,
+                remaining_check_ms: Some(50_000),
+            }
+        );
+        let mut transferred = health.clone();
+        assert_eq!(
+            transferred
+                .complete_check(
+                    check,
+                    ClockProjection::Known(Millis::from_u64(300_100).unwrap())
+                )
+                .unwrap(),
+            HealthCompletionAssessment::WithinBounds {
+                attempt_number: 1,
+                total_elapsed_ms: 300_000,
+                check_elapsed_ms: 50_000,
+            }
+        );
+        assert_eq!(
+            transferred.first_launch_at(),
+            Millis::from_u64(100).unwrap()
+        );
+    }
 }

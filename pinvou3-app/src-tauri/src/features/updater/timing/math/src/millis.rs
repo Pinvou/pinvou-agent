@@ -9,6 +9,10 @@ pub enum TimingError {
     BudgetAboveLimit,
     SessionNotActiveAtStart,
     DeadlineExtension,
+    HealthCheckAlreadyActive,
+    HealthCheckNotActive,
+    HealthCheckMismatch,
+    HealthAttemptsExhausted,
 }
 
 impl fmt::Display for TimingError {
@@ -20,6 +24,10 @@ impl fmt::Display for TimingError {
             Self::BudgetAboveLimit => "TIME_BUDGET_ABOVE_LIMIT",
             Self::SessionNotActiveAtStart => "TIME_PREPARATION_SESSION_EXPIRED",
             Self::DeadlineExtension => "TIME_DEADLINE_EXTENSION_REFUSED",
+            Self::HealthCheckAlreadyActive => "TIME_HEALTH_CHECK_ACTIVE",
+            Self::HealthCheckNotActive => "TIME_HEALTH_CHECK_NOT_ACTIVE",
+            Self::HealthCheckMismatch => "TIME_HEALTH_CHECK_MISMATCH",
+            Self::HealthAttemptsExhausted => "TIME_HEALTH_ATTEMPTS_EXHAUSTED",
         })
     }
 }

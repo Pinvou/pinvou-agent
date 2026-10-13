@@ -3,6 +3,7 @@
 
 mod budget;
 mod deadline;
+mod health;
 mod millis;
 
 pub use budget::{
@@ -10,6 +11,10 @@ pub use budget::{
     StageKind,
 };
 pub use deadline::{ClockProjection, Deadline, DeadlineAssessment, UnknownReason};
+pub use health::{
+    FinishedHealthCheck, HealthBudget, HealthCheckHandle, HealthCheckStart,
+    HealthClosureAssessment, HealthCompletionAssessment, HealthLimit, HealthWaitAssessment,
+};
 pub use millis::{BudgetDuration, Millis, TimingError};
 
 const MAX_SAFE_MILLIS: u64 = 9_007_199_254_740_991;
