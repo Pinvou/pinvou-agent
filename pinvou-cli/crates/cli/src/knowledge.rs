@@ -86,11 +86,12 @@
 //! - model download: the full download + verify + deploy orchestration is
 //!   `kb_model_download` in features/knowledge/model_download.rs, built on
 //!   private statics (`DOWNLOADING`/`CANCEL`/`MODEL_LOAD`) and private
-//!   helpers (`configured_model_dir`, `uses_external_model_dir`,
+//!   helpers (`uses_external_model_dir`,
 //!   `deploy_validated_model`) that the parent `mod.rs` — the only place a
 //!   headless wrapper could be added without touching that file — cannot
 //!   reach (Rust visibility: parent modules cannot see child-module
-//!   privates). A mod.rs re-implementation would fork the downloading/cancel
+//!   privates; `configured_model_dir` left that set when `model status`
+//!   started consuming the exported resolver). A mod.rs re-implementation would fork the downloading/cancel
 //!   state machine (`kb_model_cancel` could neither cancel nor observe a CLI
 //!   download, `model status.downloading` could not see it) and would drop
 //!   the contract-mandated candidate verification through a real ONNX
@@ -141,7 +142,7 @@ use crate::support::{join_rows, render, require_yes, sandbox_home, success};
 use crate::{CliError, CliOutcome, ExitCode, OutputMode};
 use pinvou3_lib::features::knowledge::model_download::MODEL_VERSION;
 use pinvou3_lib::features::knowledge::{
-    IndexState, KnowledgeService, ScanState, SearchQueryDto, default_db_path, model_dir,
+    IndexState, KnowledgeService, ScanState, SearchQueryDto, default_db_path,
 };
 #[cfg(feature = "product-backend")]
 use pinvou3_lib::features::remote_knowledge::RemoteKnowledgeService;
@@ -2369,14 +2370,10 @@ fn index_failed(
 /// `PINVOU3_KB_EMBED_MODEL_DIR` override, else the managed `model_dir()`.
 fn model_status(output: OutputMode) -> Result<CliOutcome, CliError> {
     let service = open_service()?;
-    // Same resolution order as the GUI (`configured_model_dir` in
-    // model_download.rs): the `PINVOU3_KB_EMBED_MODEL_DIR` override first,
-    // then the managed `model_dir()`.
-    let dir = std::env::var("PINVOU3_KB_EMBED_MODEL_DIR")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(model_dir);
+    // The GUI's own resolution (exported `configured_model_dir`):
+    // the `PINVOU3_KB_EMBED_MODEL_DIR` override first, then the managed
+    // `model_dir()`.
+    let dir = pinvou3_lib::features::knowledge::configured_model_dir();
     let installed = pinvou3_lib::features::knowledge::model_directory_is_complete(&dir);
     let ready = service.semantic_ready();
     let human = format!(
@@ -2443,20 +2440,10 @@ fn no_remote_connections(lane: &str) -> CliError {
     ))
 }
 
-/// The errors-join tail the two remote lanes share: per-connection failures
-/// are reported inline, and the command only fails when no connection
-/// answered, with every connection's error string joined for the report.
-#[cfg(feature = "product-backend")]
-fn remote_errors_joined(errors: &[String]) -> String {
-    errors
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
 /// The tail the two remote lanes share: when no connection answered, fail
-/// with every connection's error string joined; otherwise join the human
+/// with every connection's error string joined (`"; "`-joined — per-connection
+/// failures are reported inline, and the command only fails when no connection
+/// answered); otherwise join the human
 /// rows (falling back to `empty_human` when a lane produced none) and render
 /// the payload in both modes. `errors` are `(server_id, error)` pairs so the
 /// JSON keeps its `{server_id, error}` objects, and `query` is carried only
@@ -2474,11 +2461,11 @@ fn remote_render(
     if results.is_empty() {
         let messages = errors
             .iter()
-            .map(|(_, error)| error.clone())
-            .collect::<Vec<_>>();
+            .map(|(_, error)| error.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
         return Err(CliError::failed(format!(
-            "knowledge remote {lane}: {}",
-            remote_errors_joined(&messages)
+            "knowledge remote {lane}: {messages}"
         )));
     }
     let errors = errors
