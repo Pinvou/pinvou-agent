@@ -3455,3 +3455,60 @@ started. Both final documentation/evidence scoped reviews returned PASS on uncha
 Details: [complete envelope Schema](client-upgrade-envelope-schema.md).
 Full T27 authenticity/persistence integration remains unfinished. Downloads retain
 no total/cumulative duration or retry cap.
+
+
+## T27 sixteenth batch - independent expected-context binding (2026-10-13)
+
+A complete SchemaCheckedEnvelope is compared to a separate required bounded
+expected-context Document with own role/product/component/scope fields. No
+candidate-derived expected facts, wrong-role repair, default null, fallback,
+coercion or trimming occurs. Full candidate Schema makes exact string/null Value
+comparison of the first three fields match original strict equality. Entire scope
+is compared through borrowed bounded JCS, binding installationScopeId, numeric
+channelRevision, target/channel and every original scope field. Extra expected
+top-level fields retain raw resources/decoded duplicates. Root missing component
+remains distinct from explicit null. Fixed facade errors retain stage without
+payload. Source authenticity, crypto/time/Root trust, protected acceptance/high
+water/current rights and secure erasure remain external.
+
+Four groups cover all20 independent original expectedContext fixtures, missing/
+null/scalar fields, all scope leaves/extras, reordering/escaping/numeric equivalence,
+decoded64 KiB and exact/+1 1 MiB expected input, UTF8/depth/escaped duplicates.
+First1694 Node cases passed6.12s before facade error variants; final1716 (including
+20 reorders and two1MiB boundaries) passed5.66s. The actual original
+parseEnvelope+decodeBase64Url bodies use a separately parsed bounded expectedRaw,
+making the expected-document input constraint explicit; no expectations come from
+the candidate. Acceptance is compared, not exact stage/error categories.
+
+No dependency/lock/Schema/CI/version/gitlink change occurred. Final regression runs
+select all68 applicable tests and explicitly filter the one unchanged31556-case
+Schema mutation test, already passed by root and both final-source independent
+B15 runs. The20-role Schema golden/minimal-negative group still runs. The CI suite
+remains complete; no gate is weakened.
+Root applicable68 PASS with actualNode22 and both old oracle flags: resource unit1
+in0.02s, signing6 in7.20s, bytes7 in0.44s, consume4 in1.57s, context4 in6.04s
+(1716), envelope4 in7.02s (2080), high-water4 in2.48s (1935), native3 in0.63s,
+opening4 in1.00s (152), policy4 in4.29s (966), reference4 in0.83s (730), rollout4
+in0.62s, Root4 in4.04s (639), Schema golden1 in0.29s (one31556 test filtered),
+Source5 in0.81s (218), status5 in0.65s and version4 in0.94s (348). Clippy20.17s/
+fmt passed; CI51 passed0.055s, architecture/version/diff passed. Actual Windows
+App all32 updater tests passed0.17s after2m44s build. No App-wide pass is claimed.
+Root self-review found no remaining in-scope gap.
+Both independent frozen-source scoped reviews returned PASS without mandatory.
+Dependency actualNode22.23.3+both old flags applicable68 PASS: unit1 in0.03s,
+signing6 in3.28s, bytes7 in0.36s, consume4 in1.45s, context4 in6.11s (1716),
+envelope4 in7.14s (2080), high-water4 in2.46s (1935), native3 in0.65s, opening4
+in0.91s (152), policy4 in3.93s (966), reference4 in0.87s (730), rollout4 in0.64s,
+Root4 in4.19s (639), Schema golden1 in0.33s (one31556 test filtered), Source5
+in0.78s (218), status5 in0.65s and version4 in0.96s (348); Clippy1.76s/fmt/diff
+passed. Compatibility actualNode22+both flags applicable68 PASS: unit1 in0.03s,
+signing6 in3.39s, bytes7 in0.36s, consume4 in1.45s, context4 in6.11s (1716),
+envelope4 in7.03s (2080), high-water4 in2.84s (1935), native3 in0.68s, opening4
+in1.01s (152), policy4 in4.32s (966), reference4 in0.90s (730), rollout4 in1.17s,
+Root4 in4.04s (639), Schema golden1 in0.35s (one31556 test filtered), Source5
+in0.82s (218), status5 in0.64s and version4 in0.99s (348); Clippy0.29s/fmt,
+CI51 in0.047s/diff passed. No unchanged graph/App/download repetition occurred.
+Both final documentation/evidence scoped reviews returned PASS on unchanged source.
+Details: [independent expected context](client-upgrade-expected-context.md).
+Complete T27 authenticity/persistence remains unfinished. Downloads retain no
+total/cumulative duration or retry cap.

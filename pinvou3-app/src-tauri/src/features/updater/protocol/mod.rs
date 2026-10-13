@@ -12,6 +12,20 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+pub(crate) fn check_expected_envelope_context(
+    original_bytes: &[u8],
+    kind: pinvou_upgrade_codec::InputKind,
+    independent_expected: &[u8],
+) -> Result<(), pinvou_upgrade_codec::ContextBindingError> {
+    let envelope = pinvou_upgrade_codec::decode_canonical_envelope(original_bytes, kind)
+        .map_err(pinvou_upgrade_codec::ContextBindingError::Envelope)?
+        .check_full_schema()
+        .map_err(pinvou_upgrade_codec::ContextBindingError::Schema)?;
+    let expected = decode_metadata(independent_expected)
+        .map_err(pinvou_upgrade_codec::ContextBindingError::Json)?;
+    pinvou_upgrade_codec::assert_supplied_expected_context(&envelope, &expected)
+}
+
 pub(crate) fn decode_schema_checked_envelope(
     bytes: &[u8],
     kind: pinvou_upgrade_codec::InputKind,
@@ -145,6 +159,62 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_binds_independent_expected_context_and_full_scope() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/envelopes.json"
+        )))
+        .unwrap();
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        for (index, kind) in [
+            (0, pinvou_upgrade_codec::InputKind::Metadata),
+            (6, pinvou_upgrade_codec::InputKind::Credential),
+        ] {
+            let vector = &vectors["vectors"][index];
+            let raw = URL_SAFE_NO_PAD
+                .decode(vector["envelopeBase64Url"].as_str().unwrap())
+                .unwrap();
+            let mut expected = vector["expectedContext"].clone();
+            assert!(
+                check_expected_envelope_context(
+                    &raw,
+                    kind,
+                    &serde_json::to_vec(&expected).unwrap()
+                )
+                .is_ok()
+            );
+            expected["scope"]["unexpected"] = serde_json::json!(true);
+            assert_eq!(
+                check_expected_envelope_context(
+                    &raw,
+                    kind,
+                    &serde_json::to_vec(&expected).unwrap()
+                ),
+                Err(pinvou_upgrade_codec::ContextBindingError::Mismatch)
+            );
+            expected = vector["expectedContext"].clone();
+            expected["product"] = serde_json::json!("other");
+            assert_eq!(
+                check_expected_envelope_context(
+                    &raw,
+                    kind,
+                    &serde_json::to_vec(&expected).unwrap()
+                ),
+                Err(pinvou_upgrade_codec::ContextBindingError::Mismatch)
+            );
+            expected.as_object_mut().unwrap().remove("component");
+            assert_eq!(
+                check_expected_envelope_context(
+                    &raw,
+                    kind,
+                    &serde_json::to_vec(&expected).unwrap()
+                ),
+                Err(pinvou_upgrade_codec::ContextBindingError::InvalidExpected)
+            );
+        }
+    }
 
     #[test]
     fn feature_facade_checks_complete_frozen_envelope_schema_without_signature_trust() {

@@ -2,6 +2,8 @@
 //! signature verification, established Root trust, current eligibility or ACK.
 
 mod bindings;
+mod context;
+pub use context::{ContextBindingError, assert_supplied_expected_context};
 mod schema;
 pub use schema::{SchemaCheckedEnvelope, SchemaError};
 mod high_water;
