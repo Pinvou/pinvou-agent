@@ -61,6 +61,18 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // (platform.claude.com models overview, 2026-09-11).
     // model_name_matches also tolerates future -date/snapshot suffixes.
     ("claude-fable-5-1", 1_000_000),
+    // claude-sonnet-5-5 (catalog row since 2026-10-13) has no base row — the
+    // exact known table stops at claude-sonnet-5 — and would fall to the
+    // "unknown-name claude wildcard 200K" fallback, while the Claude 5
+    // family except haiku is 1M (platform.claude.com models overview; the
+    // Anthropic preset fallback meters non-haiku at 1M). Same trap
+    // claude-fable-5-1 hit; model_name_matches also tolerates future
+    // -date/snapshot suffixes.
+    ("claude-sonnet-5-5", 1_000_000),
+    // claude-haiku-5-5 (same refresh) currently rides the wildcard to the
+    // correct 200K haiku figure — anchor it so a wildcard change cannot
+    // silently move it (claude-opus-5 explicit-anchor precedent).
+    ("claude-haiku-5-5", 200_000),
     // No gpt-6-family row exists anywhere in the base chain (bundled catalog /
     // known table / heuristics / claude wildcard), so resolved returns None:
     // the engine side falls to 128K while the monitor page still has the Openai
@@ -98,6 +110,15 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // astra's "Responses-only tool calling" note gains these two siblings.
     ("gpt-6-sol", 1_050_000),
     ("gpt-6-luna", 1_050_000),
+    // No gpt-6-family row exists in the base chain for this id either, so
+    // without it the engine falls to 128K and diverges from the monitor
+    // page's Openai preset fallback. Official context is 1,050,000 per the
+    // Azure Foundry capability table (gpt-6.1-sol, 2026-09-29; page updated
+    // 2026-10-08). Openai preset default since 2026-10-13, so this row is
+    // load-bearing for `resolved_context_window(default_model())` (the
+    // engine-side resolution has no prefs fallback — see the monitor
+    // `preset_default_models_resolve_engine_context_window` test).
+    ("gpt-6.1-sol", 1_050_000),
 ];
 
 /// pinvou3 supplemental table: applies only when the base chain (catalog /
@@ -235,6 +256,10 @@ const PINVOU_DOCUMENTED_OUTPUT: &[(&str, u32)] = &[
     ("gpt-6-sol", 128_000),
     ("gpt-6-luna", 128_000),
     ("gpt-6-astra", 128_000),
+    // gpt-6.1-sol: officially documented Max Output Tokens 128,000 on the
+    // same Azure capability table as above (page updated 2026-10-08) — a
+    // first-party official figure, unlike the corroborated gpt-6 rows above.
+    ("gpt-6.1-sol", 128_000),
     // gpt-5.4-mini: 128,000 max output tokens — the figure on the official
     // model page (developers.openai.com/api/docs/models/gpt-5.4-mini, per
     // the 2026-09-29 search index; the page itself is bot-shielded from the
@@ -410,6 +435,10 @@ mod tests {
         // astra (no base gpt-6 row exists anywhere).
         assert_eq!(resolved_context_window("gpt-6-sol"), Some(1_050_000));
         assert_eq!(resolved_context_window("gpt-6-luna"), Some(1_050_000));
+        // The Openai preset default since 2026-10-13: same anchor logic (no
+        // base gpt-6-family row), so removing the row would turn the monitor
+        // `preset_default_models_resolve_engine_context_window` red too.
+        assert_eq!(resolved_context_window("gpt-6.1-sol"), Some(1_050_000));
         // Documented output anchors: the gpt-6 family has no base output row,
         // so without this fact the engine fail-closes the Responses route to
         // the 8192 guess while reasoning meters as output. Suffix tolerance
@@ -419,6 +448,10 @@ mod tests {
         assert_eq!(resolved_output_limit("gpt-6-luna"), Some(128_000));
         assert_eq!(resolved_output_limit("gpt-6-astra"), Some(128_000));
         assert_eq!(resolved_output_limit("gpt-6-sol-2026-05-01"), Some(128_000));
+        // The Openai preset default since 2026-10-13: first-party official
+        // 128,000 (Azure capability table), riding the same Responses-wire
+        // reasoning-as-output concern as the gpt-6 rows above.
+        assert_eq!(resolved_output_limit("gpt-6.1-sol"), Some(128_000));
         // gpt-5.4-mini rides the Responses wire too (prefix predicate) and has
         // no base output row; without the anchor it fail-closes to 8192 while
         // reasoning meters as output on that wire.
@@ -434,6 +467,15 @@ mod tests {
         // claude-opus-5 anchor's 1M via suffix tolerance (official models
         // overview: opus-5-5 is 1M context).
         assert_eq!(resolved_context_window("claude-opus-5-5"), Some(1_000_000));
+        // The 2026-10-13 catalog additions: sonnet-5-5 has no exact base row
+        // and would hit the unknown-claude wildcard 200K without its anchor
+        // (official family figure 1M); haiku-5-5's wildcard 200K is the
+        // correct haiku figure, pinned so a wildcard change cannot move it.
+        assert_eq!(
+            resolved_context_window("claude-sonnet-5-5"),
+            Some(1_000_000)
+        );
+        assert_eq!(resolved_context_window("claude-haiku-5-5"), Some(200_000));
         // Bare kimi-for-coding serves K2.8 Preview (1M on every tier); the
         // base still records the stale plan-dependent 256K, so the override
         // must correct it — while the highspeed variant keeps its official

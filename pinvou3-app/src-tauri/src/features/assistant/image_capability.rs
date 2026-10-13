@@ -387,6 +387,15 @@ mod tests {
             (ModelPreset::OpenaiCompatible, "claude-haiku-4-5"),
             (ModelPreset::OpenaiCompatible, "claude-fable-5"),
             (ModelPreset::OpenaiCompatible, "claude-fable-5-1"),
+            // 2026-10-13 Anthropic additions, both image-capable per their
+            // anthropic.com announcement pages (Sonnet 5.5: beat Pokémon Red
+            // from screenshots / Chartography 61.6%; Haiku 5.5: Visual
+            // reasoning Chartography 46.4%). Neither needs a new table
+            // entry: sonnet-5-5 rides the "claude-sonnet-5" substring and
+            // haiku-5-5 the "claude-haiku" substring (which already covers
+            // the haiku-5 family).
+            (ModelPreset::OpenaiCompatible, "claude-sonnet-5-5"),
+            (ModelPreset::OpenaiCompatible, "claude-haiku-5-5"),
             // V4.1-Flash native vision (api-docs.deepseek.com/guides/vision).
             (ModelPreset::Deepseek, "deepseek-flash"),
             // The retired aliases still route to V4.1-Flash; existing configs

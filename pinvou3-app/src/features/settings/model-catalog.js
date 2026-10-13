@@ -22,36 +22,53 @@ import xaiIcon from '../../brand-icons/xai.svg';
 // endpoint identity is unknown; keep the old flagship gpt-5.6-terra instead
 // of following the official recommended slot, to avoid implying official
 // endorsement).
-// Default models (checked against each vendor's official docs on 2026-09-28;
-// previous full re-check 2026-09-11):
-// - deepseek: V4.1-Flash (deepseek-flash) is still the mainline; the 09-10
-//   v4-pro phase-out news was superseded the same day by the changelog
-//   decision to keep serving v4-pro with unchanged billing (re-verified
-//   2026-09-28).
+// Default models (checked against each vendor's official docs on 2026-10-13;
+// previous full re-check 2026-09-28):
+// - deepseek: V4.1-Flash (deepseek-flash) is still the mainline and
+//   deepseek-v4-pro keeps serving with unchanged billing (api-docs.deepseek.com
+//   updates/pricing re-verified 2026-10-13; the changelog's newest entry is
+//   still 2026-09-10).
 // - glm: GLM-5.3 launched on 2026-08-19 (China) / 2026-08-18 (z.ai), and is
-//   the API enum default on both sites (docs.bigmodel.cn / docs.z.ai).
-// - gemini: gemini-3.8-flash launched on 2026-09-02 as the successor
-//   (ai.google.dev models page).
-// - xai: grok-4.7 holds the official "coding/agent recommended" slot since
-//   September 2026 (docs.x.ai models page: "For everything else, including
-//   code, use Grok 4.7"); grok-4.6 demotes to previous generation.
-// - openai: gpt-6-sol takes the default (2026-09-29): the whole preset rides
-//   the OpenAI Responses wire now (bridge engine_route_provider), so the
-//   Chat-only restriction that kept terra in the slot is gone. Every catalog
-//   id lists `v1/responses` with function calling on its model page
-//   (developers.openai.com/api/docs/models/*, re-verified 2026-09-29): the
-//   gpt-6 pages' "Chat Completions supports function calling only with
-//   reasoning_effort set to none" and astra's "tool calling requires
-//   Responses" only constrained the Chat wire the preset used before. sol is
-//   the balanced flagship ($2/$10; effort ladder covers every tier the
-//   engine's Responses effort mapper sends). Off-tier note: the Responses
-//   effort mapper has no "none" on this route (off normalizes to low), so
-//   the picker exposes low/medium/high/max for the preset.
-// - anthropic: claude-opus-5-5 (2026-09-22) takes the default per the
-//   official models overview "start with Claude Opus 5.5 for most workloads".
-// - mimo: mimo-v2.6-pro (2026-09-22 release) replaces the default; the whole
-//   v2.5 family hard-retires 2026-10-21 with no auto-replacement
-//   (mimo.mi.com deprecation page).
+//   still the API enum default on both sites (docs.bigmodel.cn / docs.z.ai,
+//   re-verified 2026-10-13; no GLM retirement announced).
+// - gemini: gemini-3.8-flash launched on 2026-09-02 and is still the current
+//   Flash flagship (ai.google.dev changelog re-verified 2026-10-13; the Oct 8
+//   entry deprecated gemini-3.7-flash / gemini-3.5-flash with auto-routing to
+//   3.8-flash / 3.6-flash — see the gemini group).
+// - xai: grok-4.7 still holds the official "coding/agent recommended" slot
+//   (docs.x.ai models page re-verified 2026-10-13: "For everything else,
+//   including code, use Grok 4.7"); no newer model exists on the public API.
+// - openai: gpt-6.1-sol takes the default (2026-10-13): OpenAI's own
+//   latest-model reference ranks gpt-6-astra for the most demanding work and
+//   gpt-6.1-sol as "Near-Astra performance for complex work at a lower cost"
+//   (announced 2026-10-07 as "An upgrade to GPT-6 Sol that nearly matches
+//   GPT-6 Astra's intelligence on agentic coding ... at roughly a fifth of
+//   the price"), so the balanced-flagship slot moves up from gpt-6-sol. The
+//   Azure Foundry capability table pins the wire facts (page updated
+//   2026-10-08): gpt-6.1-sol (2026-09-29) lists the Responses API with
+//   "Functions, tools, and parallel tool calling (Responses API only)",
+//   1,050,000 context / 128,000 output — and the whole preset keeps riding
+//   the OpenAI Responses wire (bridge engine_route_provider), so the picker
+//   exposes low/medium/high/max as before (the Responses effort mapper has
+//   no "none"; off normalizes to low). gpt-6-sol / gpt-6-luna stay listed:
+//   Azure shows no retirement for the GPT-6 family (the gpt-5.6 rows are
+//   scheduled 2028-01-11 on Azure's retirement schedule).
+// - anthropic: claude-opus-5-5 (2026-09-22) keeps the default per the
+//   official models overview "start with Claude Opus 5.5 for most workloads"
+//   (re-verified 2026-10-13). The 09-22 "coming weeks" watch item resolved:
+//   claude-sonnet-5-5 shipped 2026-09-28 and claude-haiku-5-5 shipped
+//   2026-10-07 (both verified on their anthropic.com announcement pages) —
+//   see the anthropic group.
+// - minimax: MiniMax-M3 stays the default; the official docs posted an
+//   M2.5/M2.7 retirement notice (new-user cutoff 2026-10-19, offline
+//   2026-11-18, requests auto-route to M3.1 Flash Preview with the old names
+//   kept as compatibility entries — platform.minimax.cn models intro,
+//   verified 2026-10-13); see the minimax group.
+// - mimo: mimo-v2.6-pro (2026-09-22 release) stays the default; the v2.5
+//   family auto-routes to its v2.6 successors from 2026-10-14 18:00 (UTC+8)
+//   and the old ids hard-fail from 2026-10-21 10:00 (mimo.mi.com deprecation
+//   page re-verified 2026-10-13: v2.5-pro → v2.6-pro, v2.5 → v2.6-flash —
+//   superseding the earlier "no auto-replacement" reading).
 const MODEL_PRESET_DEFS = {
   local_vllm:  { baseUrl: 'http://127.0.0.1:8000/v1',                model: 'qwen36_35b_256k' },
   deepseek:    { baseUrl: 'https://api.deepseek.com',                model: 'deepseek-flash' },
@@ -63,12 +80,12 @@ const MODEL_PRESET_DEFS = {
   minimax:     { baseUrl: 'https://api.minimaxi.com/v1',            model: 'MiniMax-M3' },
   glm:         { baseUrl: 'https://open.bigmodel.cn/api/paas/v4',   model: 'glm-5.3' },
   mimo:        { baseUrl: 'https://api.xiaomimimo.com/v1',          model: 'mimo-v2.6-pro' },
-  openai:      { baseUrl: 'https://api.openai.com/v1',              model: 'gpt-6-sol' },
+  openai:      { baseUrl: 'https://api.openai.com/v1',              model: 'gpt-6.1-sol' },
   // Custom OpenAI Responses endpoints: protocol is /v1/responses (the bridge
   // lands on the foundation's named-custom route with wire="responses"). The
   // default URL/model prefill the official endpoint so it works out of the
   // box; users aiming at an aggregator change the model along with the URL.
-  openai_responses: { baseUrl: 'https://api.openai.com/v1',         model: 'gpt-6-sol' },
+  openai_responses: { baseUrl: 'https://api.openai.com/v1',         model: 'gpt-6.1-sol' },
   anthropic:   { baseUrl: 'https://api.anthropic.com/v1',           model: 'claude-opus-5-5' },
   gemini:      { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-3.8-flash' },
   xai:         { baseUrl: 'https://api.x.ai/v1',                    model: 'grok-4.7' },
@@ -250,6 +267,14 @@ const MODEL_CATALOG = {
     // kimi-k2.5 was removed from both groups: Tencent announce 2414 retired it
     // platform-wide on 2026-08-31 00:00 (plan users auto-switch to Auto /
     // tc-code-latest), verified against the live 130092/130119 tables.
+    // glm-5 was removed from Coding Plan and glm-5.1 / glm-5 from Token Plan:
+    // Tencent announce 2469 took GLM-5 / GLM-5-Turbo / GLM-5.1 offline
+    // Beijing time 2026-10-09 00:00 (Coding Plan users auto-switch to Auto,
+    // Token Plan users to GLM-5.3). The live 130092 table still displays
+    // glm-5 with its (now past-due) retirement notice, so the announcement is
+    // the authoritative record. The old ids fall back to the custom listing
+    // (endpoint classification is URL-based and unaffected), same treatment
+    // as kimi-k2.5.
     {
       key: 'tencent_coding_plan',
       section: 'coding_plan',
@@ -263,7 +288,6 @@ const MODEL_CATALOG = {
       endpointAliases: ['https://api.lkeap.cloud.tencent.com/coding/v3/chat/completions'],
       items: [
         { model: 'tc-code-latest', title: 'tc-code-latest', desc: 'Coding Plan 自动模型' },
-        { model: 'glm-5', legacyAliases: ['glm-5-0'], title: 'glm-5', desc: '旗舰编码模型，官方将于 2026-10-09 下线' },
         { model: '', title: '自定义腾讯云 Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
       ],
     },
@@ -279,27 +303,34 @@ const MODEL_CATALOG = {
       baseUrl: 'https://api.lkeap.cloud.tencent.com/plan/v3',
       endpointAliases: ['https://api.lkeap.cloud.tencent.com/plan/v3/chat/completions'],
       // Row lineup mirrors the live 130060 personal-plan table (re-checked
-      // 2026-09-28; the page updated 2026-09-24); GLM-5/GLM-5.1 retire
-      // 2026-10-09 per 130060 (the TokenHub platform list 130051 marks the
-      // underlying models 2026-10-08, so treat end of 10-08 as the safe
-      // cutoff). The old "high-load" flag on hy4-preview is gone from the
-      // current 130060 table, so the note is dropped. DeepSeek rows
-      // are first-party direct supply without SLA, per 130060.
+      // 2026-10-13; the page updated 2026-09-30). GLM-5 / GLM-5.1 retired
+      // 2026-10-09 per announce 2469 (Token Plan users auto-switch to
+      // GLM-5.3), so their rows are removed and old configs fall to the
+      // custom listing. Two rows the live table added are mirrored:
+      // deepseek/deepseek-flash (DeepSeek-V4.1-Flash 原厂直供) and
+      // mimo-v2.6-flash, both left unannotated like the other gateway
+      // DeepSeek rows. minimax-m2.7 stays listed (no Tencent-side retirement
+      // notice as of 2026-10-13; MiniMax's platform-level M2.5/M2.7
+      // retirement — new-user cutoff 2026-10-19, offline 2026-11-18 — is a
+      // watch item for this gateway). The old "high-load" flag on
+      // hy4-preview is gone from the current 130060 table, so the note is
+      // dropped. DeepSeek rows are first-party direct supply without SLA,
+      // per 130060.
       items: [
         { model: 'tc-code-latest', title: 'tc-code-latest', desc: '自动模型，智能路由' },
         { model: 'glm-5.3', legacyAliases: ['glm-5-3'], imageCapable: false, title: 'glm-5.3', desc: '旗舰推理与编码' },
         { model: 'glm-5.3-flash', imageCapable: true, title: 'glm-5.3-flash', desc: '多模态高性价比' },
         { model: 'glm-5.2', legacyAliases: ['glm-5-2'], imageCapable: false, title: 'glm-5.2', desc: '上代旗舰推理' },
-        { model: 'glm-5.1', legacyAliases: ['glm-5-1'], title: 'glm-5.1', desc: '官方将于 2026-10-09 下线' },
-        { model: 'glm-5', legacyAliases: ['glm-5-0'], title: 'glm-5', desc: '通用推理，官方将于 2026-10-09 下线' },
         { model: 'kimi-k3', imageCapable: true, title: 'kimi-k3', desc: 'Kimi 最新旗舰' },
         { model: 'kimi-k2.7-code', imageCapable: true, title: 'kimi-k2.7-code', desc: 'Kimi 编码模型' },
+        { model: 'deepseek/deepseek-flash', title: 'deepseek/deepseek-flash', desc: 'V4.1-Flash 原厂直供' },
         { model: 'deepseek-v4-pro-202606', legacyAliases: ['deepseek/deepseek-v4-pro-0813', 'deepseek/deepseek-v4-pro'], title: 'deepseek-v4-pro-202606', desc: '高能力模型' },
         { model: 'deepseek-v4-flash-202605', legacyAliases: ['deepseek/deepseek-v4-flash-0731', 'deepseek/deepseek-v4-flash'], title: 'deepseek-v4-flash-202605', desc: '快速响应' },
         { model: 'minimax-m3', legacyAliases: ['minimax-m-3-0'], imageCapable: true, title: 'minimax-m3', desc: 'MiniMax 最新旗舰' },
         { model: 'minimax-m2.7', legacyAliases: ['minimax-m-2-7'], imageCapable: false, title: 'minimax-m2.7', desc: '通用能力' },
         { model: 'hy3', legacyAliases: ['hy3-preview', 'hy3-202608'], title: 'hy3', desc: 'Hy 套餐专属模型' },
         { model: 'hy4-preview', title: 'hy4-preview', desc: 'Hy4 预览' },
+        { model: 'mimo-v2.6-flash', title: 'mimo-v2.6-flash', desc: 'MiMo 全模态轻量款' },
         { model: '', title: '自定义腾讯云 Token Plan 模型', desc: '手动填写 Token Plan 模型 ID', custom: true },
       ],
     },
@@ -467,31 +498,37 @@ const MODEL_CATALOG = {
       preset: 'minimax',
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'minimax',
-      // Official figures re-checked 2026-09-28 (platform.minimax.cn / .io
-      // model intro + chat API reference): M3 stays the PAYG flagship (1M
-      // context, native multimodal); MiniMax-M3.1-Flash-Preview is the newer
-      // multimodal tier with real reasoning_effort tuning, but it is
-      // temporarily only served via the Token Plan and MiniMax Code
-      // subscriptions — a plain pay-as-you-go key may not invoke it (no
-      // dated announcement page exists; per the current model-intro pages).
+      // Official figures re-checked 2026-10-13 (platform.minimax.cn model
+      // intro + chat API reference; the old platform.minimaxi.com docs URLs
+      // 302 there): M3 stays the PAYG flagship (1M context, native
+      // multimodal); MiniMax-M3.1-Flash-Preview is the newer multimodal tier
+      // with real reasoning_effort tuning, but it is served only via the
+      // M Plan / MiniMax Code and Token Plan subscriptions — a plain
+      // pay-as-you-go key may not invoke it. The model-intro page posts an
+      // M2.5/M2.7 retirement notice (verified verbatim 2026-10-13): new-user
+      // access ends 2026-10-19, the series goes offline 2026-11-18, and from
+      // 10-19 requests auto-route to M3.1 Flash Preview with the old names
+      // kept as compatibility entries — the M2.x rows below carry the date.
       // The whole M2.x family is text-only with thinking always on (M3
       // accepts thinking.type=disabled; effort tuning is M3.1-only). The
-      // official China docs' primary domain moved to api.minimax.cn;
-      // api.minimaxi.com still answers (401 liveness probe, 2026-09-28) and
-      // stays the default because the base tiered route pins it, with the
-      // new domain registered as an alias below — note the alias only
-      // classifies configs into this group; the exact-route thinking gate
-      // still pins the two legacy hosts, so a saved api.minimax.cn config
-      // gets no M3 effort tiers until the base learns the new host.
+      // official China docs' primary endpoint is api.minimax.cn;
+      // api.minimaxi.com still answers (401 liveness probe, re-checked
+      // 2026-10-13) and stays the default because the base tiered route pins
+      // it, with the new domain registered as an alias below — note the
+      // alias only classifies configs into this group; the exact-route
+      // thinking gate still pins the two legacy hosts, so a saved
+      // api.minimax.cn config gets no M3 effort tiers until the base learns
+      // the new host (upstream CodeWhale change; switching the default
+      // app-side alone would silently drop the M3 tier UI).
       // International and China use separate account/key systems.
       endpointAliases: ['https://api.minimax.cn/v1'],
       items: [
         { model: 'MiniMax-M3', imageCapable: true, title: 'MiniMax-M3', desc: '最新旗舰，1M 上下文多模态' },
         { model: 'MiniMax-M3.1-Flash-Preview', imageCapable: true, title: 'MiniMax-M3.1-Flash-Preview', desc: '新预览旗舰，仅订阅渠道' },
-        { model: 'MiniMax-M2.7', imageCapable: false, title: 'MiniMax-M2.7', desc: '通用能力' },
-        { model: 'MiniMax-M2.7-highspeed', imageCapable: false, title: 'MiniMax-M2.7-highspeed', desc: '高速响应' },
-        { model: 'MiniMax-M2.5', imageCapable: false, title: 'MiniMax-M2.5', desc: '官方已转 Legacy，兼容保留' },
-        { model: 'MiniMax-M2.5-highspeed', imageCapable: false, title: 'MiniMax-M2.5-highspeed', desc: '官方已转 Legacy，兼容高速' },
+        { model: 'MiniMax-M2.7', imageCapable: false, title: 'MiniMax-M2.7', desc: '官方将于 2026-11-18 下线' },
+        { model: 'MiniMax-M2.7-highspeed', imageCapable: false, title: 'MiniMax-M2.7-highspeed', desc: '高速款，官方将于 2026-11-18 下线' },
+        { model: 'MiniMax-M2.5', imageCapable: false, title: 'MiniMax-M2.5', desc: '官方已转 Legacy，2026-11-18 下线' },
+        { model: 'MiniMax-M2.5-highspeed', imageCapable: false, title: 'MiniMax-M2.5-highspeed', desc: '官方已转 Legacy，高速款 2026-11-18 下线' },
         { model: '', title: '自定义 MiniMax 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -505,13 +542,16 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'minimax',
       baseUrl: 'https://api.minimax.io/v1',
+      // Mirror of the China group (separate account/key system); the M2.x
+      // rows carry the same 2026-11-18 retirement date per MiniMax's
+      // official notice (see the China group comment, verified 2026-10-13).
       items: [
         { model: 'MiniMax-M3', imageCapable: true, title: 'MiniMax-M3', desc: '最新旗舰，1M 上下文多模态' },
         { model: 'MiniMax-M3.1-Flash-Preview', imageCapable: true, title: 'MiniMax-M3.1-Flash-Preview', desc: '新预览旗舰，仅订阅渠道' },
-        { model: 'MiniMax-M2.7', imageCapable: false, title: 'MiniMax-M2.7', desc: '通用能力' },
-        { model: 'MiniMax-M2.7-highspeed', imageCapable: false, title: 'MiniMax-M2.7-highspeed', desc: '高速响应' },
-        { model: 'MiniMax-M2.5', imageCapable: false, title: 'MiniMax-M2.5', desc: '官方已转 Legacy，兼容保留' },
-        { model: 'MiniMax-M2.5-highspeed', imageCapable: false, title: 'MiniMax-M2.5-highspeed', desc: '官方已转 Legacy，兼容高速' },
+        { model: 'MiniMax-M2.7', imageCapable: false, title: 'MiniMax-M2.7', desc: '官方将于 2026-11-18 下线' },
+        { model: 'MiniMax-M2.7-highspeed', imageCapable: false, title: 'MiniMax-M2.7-highspeed', desc: '高速款，官方将于 2026-11-18 下线' },
+        { model: 'MiniMax-M2.5', imageCapable: false, title: 'MiniMax-M2.5', desc: '官方已转 Legacy，2026-11-18 下线' },
+        { model: 'MiniMax-M2.5-highspeed', imageCapable: false, title: 'MiniMax-M2.5-highspeed', desc: '官方已转 Legacy，高速款 2026-11-18 下线' },
         { model: '', title: '自定义 MiniMax 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -523,14 +563,16 @@ const MODEL_CATALOG = {
       preset: 'mimo',
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'mimo',
-      // Official figures re-checked 2026-09-28 (mimo.mi.com model list +
+      // Official figures re-checked 2026-10-13 (mimo.mi.com model list +
       // deprecation page): the MiMo-V2.6 series launched 2026-09-22 and all
       // three tiers are omni-modal (text/image/audio/video input) with 1M
       // context; mimo-v2.5-pro is text-only and mimo-v2.5 multimodal. The
-      // two v2.5 chat models (both listed below) hard-retire Beijing time
-      // 2026-10-21 10:00 with NO system replacement (requests error out),
-      // so the v2.6 rows lead and the v2.5 rows carry the retirement
-      // notice.
+      // deprecation page (updated 2026-10-09) supersedes the earlier
+      // "hard-retire with no replacement" reading: from 2026-10-14 18:00
+      // (UTC+8) v2.5 requests auto-route to their v2.6 successors
+      // (v2.5-pro → v2.6-pro, v2.5 → v2.6-flash), and the old ids hard-fail
+      // from 2026-10-21 10:00 (UTC+8) — the v2.6 rows lead and the v2.5
+      // rows carry the migration notice.
       // Token Plan subscription keys (tp-/ttp-) must switch to the cluster
       // hosts (token-plan-cn / -sgp / -ams.xiaomimimo.com/v1); the console's
       // displayed URL is authoritative.
@@ -538,8 +580,8 @@ const MODEL_CATALOG = {
         { model: 'mimo-v2.6-pro', imageCapable: true, title: 'mimo-v2.6-pro', desc: '最新旗舰，1M 上下文' },
         { model: 'mimo-v2.6-flash', imageCapable: true, title: 'mimo-v2.6-flash', desc: '全模态，低成本' },
         { model: 'mimo-v2.6-pro-ultraspeed', imageCapable: true, title: 'mimo-v2.6-pro-ultraspeed', desc: '旗舰效果，极速输出' },
-        { model: 'mimo-v2.5-pro', imageCapable: false, title: 'mimo-v2.5-pro', desc: '官方将于 2026-10-21 下线' },
-        { model: 'mimo-v2.5', imageCapable: true, title: 'mimo-v2.5', desc: '官方将于 2026-10-21 下线' },
+        { model: 'mimo-v2.5-pro', imageCapable: false, title: 'mimo-v2.5-pro', desc: '10-14 起自动路由至 v2.6-pro，10-21 失效' },
+        { model: 'mimo-v2.5', imageCapable: true, title: 'mimo-v2.5', desc: '10-14 起自动路由至 v2.6-flash，10-21 失效' },
         { model: '', title: '自定义 MiMo 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -649,24 +691,28 @@ const MODEL_CATALOG = {
       baseUrl: 'https://coding.dashscope.aliyuncs.com/v1',
       endpointAliases: ['https://coding-intl.dashscope.aliyuncs.com/v1'],
       // Alibaba Model Studio Coding Plan (help.aliyun.com/zh/model-studio/
-      // coding-plan, checked 2026-09-28): a fixed-monthly subscription
-      // (Pro ¥200/mo; the Lite tier closed to new purchases 2026-03-20)
-      // separate from the Token Plan, usable only inside AI coding tools.
-      // Keys are also sk-sp- prefixed. The endpoint serves exact-version
-      // ids only; the rows are a deliberate subset of the official page
-      // list (the page additionally recommends kimi-k2.5 — not mirrored
-      // because Moonshot retired it platform-wide on 2026-08-31 — and
-      // lists qwen3.5-plus / qwen3-max-2026-01-23 under "more models").
+      // coding-plan, re-checked 2026-10-13; the page was last modified
+      // 2026-10-10): a fixed-monthly subscription (Pro ¥200/mo; the Lite
+      // tier closed to new purchases 2026-03-20) separate from the Token
+      // Plan, usable only inside AI coding tools. Keys are also sk-sp-
+      // prefixed. The endpoint serves exact-version ids only; the rows
+      // mirror the current page — recommended qwen3.7-plus / qwen3.6-plus /
+      // glm-5 / MiniMax-M2.5, "more models" qwen3.5-plus. qwen3-coder-plus
+      // / qwen3-coder-next / glm-4.7 are no longer listed and their rows
+      // are removed (old configs keep the endpoint classification via URL
+      // and fall to the custom listing). kimi-k2.5 is still listed on the
+      // page but stays unmirrored: Moonshot retired it platform-wide on
+      // 2026-08-31. MiniMax-M2.5 is kept per the live page; MiniMax's
+      // platform-level M2.5/M2.7 retirement (new-user cutoff 2026-10-19,
+      // offline 2026-11-18) is a watch item for this gateway.
       // Gateway deployments are not verified one by one, so rows stay
       // unannotated.
       items: [
         { model: 'qwen3.7-plus', title: 'qwen3.7-plus', desc: '均衡性价比' },
         { model: 'qwen3.6-plus', title: 'qwen3.6-plus', desc: '均衡性价比' },
+        { model: 'qwen3.5-plus', title: 'qwen3.5-plus', desc: '官方更多模型档' },
         { model: 'glm-5', title: 'glm-5', desc: '高能力模型' },
         { model: 'MiniMax-M2.5', title: 'MiniMax-M2.5', desc: '通用能力' },
-        { model: 'qwen3-coder-plus', title: 'qwen3-coder-plus', desc: '代码场景' },
-        { model: 'qwen3-coder-next', title: 'qwen3-coder-next', desc: '代码场景' },
-        { model: 'glm-4.7', title: 'glm-4.7', desc: '通用能力' },
         { model: '', title: '自定义 Coding Plan 模型', desc: '手动填写 Coding Plan 模型 ID', custom: true },
       ],
     },
@@ -753,30 +799,30 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'openai',
       baseUrl: 'https://api.openai.com/v1',
-      // Official figures re-checked 2026-09-29 (developers.openai.com
-      // models/pricing/guides + per-model endpoint tables): the GPT-6 family
-      // expanded — gpt-6-sol ("built to power complex coding and agentic
-      // workflows", $2/$10) and gpt-6-luna ($0.10/$0.50) joined gpt-6-astra.
-      // The whole preset rides the OpenAI Responses wire since 2026-09-29
-      // (bridge engine_route_provider → foundation named-custom route with
-      // wire="responses"): every listed id's model page documents
-      // `v1/responses` as Supported with function calling, so the Chat-only
-      // restrictions that previously kept gpt-5.6-terra as the default
-      // ("Chat Completions supports function calling only with
-      // reasoning_effort set to none" on the gpt-6 pages; astra's "tool
-      // calling requires Responses") no longer bind this preset. gpt-6-sol
-      // is the default (balanced flagship; see the MODEL_PRESET_DEFS note
-      // for the effort-ladder caveat: the engine's Responses effort mapper
-      // has no "none" here, so the picker exposes low/medium/high/max).
-      // The 5.6 family and gpt-5.5 / gpt-5.4-mini are on sale and not
-      // deprecated (5.6-sol promo pricing documented through at least
-      // 2026-11-21). gpt-5.3-codex remains Responses-only and is not listed
-      // (its home is the Codex ACP lane). Hand-typed ids outside the
+      // Official figures re-checked 2026-10-13 (Azure Foundry capability
+      // table, page updated 2026-10-08, plus OpenAI's latest-model reference
+      // shipped in the openai/codex repo): gpt-6.1-sol (2026-09-29,
+      // announced 2026-10-07) takes the default — "Near-Astra performance
+      // for complex work at a lower cost" moves the balanced-flagship slot
+      // up from gpt-6-sol. Its Azure row lists the Responses API with
+      // "Functions, tools, and parallel tool calling (Responses API only)",
+      // 1,050,000 context / 128,000 output. The whole preset keeps riding
+      // the OpenAI Responses wire since 2026-09-29 (bridge
+      // engine_route_provider → foundation named-custom route with
+      // wire="responses") and gpt-6.1-sol matches the existing `gpt-6`
+      // prefix of openai_responses_wire_model. astra stays the strongest
+      // tier; gpt-6-sol / gpt-6-luna are demoted but stay listed (no GPT-6
+      // retirement on Azure's schedule; the gpt-5.6 rows are scheduled
+      // 2028-01-11). The 5.6 family and gpt-5.5 / gpt-5.4-mini are on sale
+      // and not deprecated (5.6-sol promo pricing documented through at
+      // least 2026-11-21). gpt-5.3-codex remains Responses-only and is not
+      // listed (its home is the Codex ACP lane). Hand-typed ids outside the
       // catalog families keep the Chat wire (bridge
       // openai_responses_wire_model), so legacy chat-only ids stay usable;
       // force Responses via the dedicated openai_responses group instead.
       items: [
-        { model: 'gpt-6-sol', imageCapable: true, title: 'gpt-6-sol', desc: '编码与 Agent 新旗舰（默认）' },
+        { model: 'gpt-6.1-sol', imageCapable: true, title: 'gpt-6.1-sol', desc: '近 Astra 旗舰，编码与 Agent（默认）' },
+        { model: 'gpt-6-sol', imageCapable: true, title: 'gpt-6-sol', desc: '上代均衡旗舰' },
         { model: 'gpt-6-luna', imageCapable: true, title: 'gpt-6-luna', desc: '低价高效' },
         { model: 'gpt-6-astra', imageCapable: true, title: 'gpt-6-astra', desc: '最强旗舰' },
         { model: 'gpt-5.6-sol', imageCapable: true, title: 'gpt-5.6-sol', desc: 'GPT-5.6 家族旗舰，推理与编码' },
@@ -797,28 +843,39 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'anthropic',
       baseUrl: 'https://api.anthropic.com/v1',
-      // Official figures re-checked 2026-09-28 (platform.claude.com models
-      // overview + per-model pages): claude-opus-5-5 (released 2026-09-22,
-      // "costs 40% less to run than Opus 5") is the new default
-      // recommendation ("start with Claude Opus 5.5 for most workloads");
-      // claude-fable-5-1 remains the highest-capability tier for demanding
-      // reasoning and long-horizon agentic work. claude-fable-5 and
-      // claude-opus-5 are both Legacy (retirement floors 2027-06/2027-07).
-      // claude-haiku-4-5 keeps its 200K context / no-effort figures; watch
-      // item: its retirement floor is 2026-10-15, and Sonnet 5.5 / Haiku 5.5
-      // were both announced as "coming weeks" on 2026-09-22 — re-check both
-      // slots at the next refresh. Every current model supports image input
-      // (the base bundled offline seed recording them as text-only is
-      // stale; the official docs win). From the 4.6 generation on, IDs
-      // without a date are fixed snapshots (claude-haiku-4-5 predates that
-      // and stays an alias).
+      // Official figures re-checked 2026-10-13 (platform.claude.com models
+      // overview + anthropic.com announcement pages): claude-opus-5-5
+      // (released 2026-09-22, "costs 40% less to run than Opus 5") keeps
+      // the default recommendation ("start with Claude Opus 5.5 for most
+      // workloads"); claude-fable-5-1 remains the highest-capability tier
+      // for demanding reasoning and long-horizon agentic work.
+      // claude-fable-5 and claude-opus-5 are both Legacy (retirement floors
+      // 2027-06/2027-07). The 09-22 "coming weeks" watch item resolved:
+      // claude-sonnet-5-5 shipped 2026-09-28 ("a clear upgrade over Sonnet
+      // 5, runs 30%+ faster, costs up to 30% less for most work") and
+      // claude-haiku-5-5 shipped 2026-10-07 ("our fastest, cheapest, and
+      // most capable small model yet", priced 90% below Haiku 4.5 for
+      // requests up to 100K tokens); claude-sonnet-5 demotes to the
+      // previous generation. Azure's retirement schedule moved
+      // claude-haiku-4-5 from its old 2026-10-15 floor to 2026-11-15
+      // (checked 2026-10-13), so the row carries the date. Image input: the Sonnet
+      // 5.5 announcement shows screenshot-driven benchmark play
+      // (Chartography 61.6%) and the Haiku 5.5 page lists a Visual
+      // reasoning benchmark (Chartography 46.4%), both checked
+      // 2026-10-13; every other current model supports image input (the
+      // base bundled offline seed recording them as text-only is stale;
+      // the official docs win). From the 4.6 generation on, IDs without a
+      // date are fixed snapshots (claude-haiku-4-5 predates that and stays
+      // an alias).
       items: [
         { model: 'claude-opus-5-5', imageCapable: true, title: 'claude-opus-5-5', desc: '官方默认推荐，复杂 Agent 编码' },
+        { model: 'claude-sonnet-5-5', imageCapable: true, title: 'claude-sonnet-5-5', desc: '新均衡款，较 Sonnet 5 快 30% 更便宜' },
         { model: 'claude-fable-5-1', imageCapable: true, title: 'claude-fable-5-1', desc: '最强旗舰，高难推理与长程 Agent' },
         { model: 'claude-fable-5', imageCapable: true, title: 'claude-fable-5', desc: '上代旗舰，兼容保留' },
         { model: 'claude-opus-5', imageCapable: true, title: 'claude-opus-5', desc: '官方已转 Legacy，兼容保留' },
-        { model: 'claude-sonnet-5', imageCapable: true, title: 'claude-sonnet-5', desc: '速度与智能均衡' },
-        { model: 'claude-haiku-4-5', imageCapable: true, title: 'claude-haiku-4-5', desc: '最快，200K 上下文' },
+        { model: 'claude-sonnet-5', imageCapable: true, title: 'claude-sonnet-5', desc: '上代均衡款，兼容保留' },
+        { model: 'claude-haiku-5-5', imageCapable: true, title: 'claude-haiku-5-5', desc: '最新小旗舰，较 4.5 降价 90%' },
+        { model: 'claude-haiku-4-5', imageCapable: true, title: 'claude-haiku-4-5', desc: '最快，200K 上下文，官方将于 2026-11-15 下线' },
         { model: '', title: '自定义 Claude 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -832,18 +889,25 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'gemini',
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-      // Official figures as of 2026-09-11 (ai.google.dev models / deprecations):
-      // gemini-3.8-flash (2026-09-02) is the latest Flash; 3.7 (2026-08-13),
-      // 3.6 and 3.5 are all Stable and on sale, with 3.5 officially called the
-      // legacy baseline; gemini-3.1-pro-preview remains the flagship Pro with
-      // a non-GA id (gemini-3-pro-preview was retired on 2026-03-09).
-      // Thinking cannot be turned off for the Gemini 3 family on the
-      // OpenAI-compatible layer.
+      // Official figures re-checked 2026-10-13 (ai.google.dev changelog /
+      // deprecations pages, both updated 2026-10-09): gemini-3.8-flash
+      // (2026-09-02) is still the latest Flash. The Oct 8 changelog entry
+      // deprecated gemini-3.7-flash ("deprecated and has been replaced by
+      // gemini-3.8-flash. All requests to gemini-3.7-flash are
+      // automatically routed to gemini-3.8-flash") and gemini-3.5-flash
+      // ("deprecated and has been replaced by gemini-3.6-flash. All requests
+      // to gemini-3.5-flash are automatically routed to gemini-3.6-flash"),
+      // neither with a shutdown date —
+      // both rows stay with the auto-route note. gemini-3.6-flash and
+      // gemini-3.5-flash-lite are Stable; gemini-3.1-pro-preview remains
+      // the flagship Pro with a non-GA id (gemini-3-pro-preview was
+      // retired on 2026-03-09). Thinking cannot be turned off for the
+      // Gemini 3 family on the OpenAI-compatible layer.
       items: [
         { model: 'gemini-3.8-flash', imageCapable: true, title: 'gemini-3.8-flash', desc: '最新 Flash，均衡高性价比' },
-        { model: 'gemini-3.7-flash', imageCapable: true, title: 'gemini-3.7-flash', desc: '上一代 Flash' },
+        { model: 'gemini-3.7-flash', imageCapable: true, title: 'gemini-3.7-flash', desc: '已弃用，请求自动路由至 3.8-flash' },
         { model: 'gemini-3.6-flash', imageCapable: true, title: 'gemini-3.6-flash', desc: '兼容保留' },
-        { model: 'gemini-3.5-flash', imageCapable: true, title: 'gemini-3.5-flash', desc: '基线速度，兼容保留' },
+        { model: 'gemini-3.5-flash', imageCapable: true, title: 'gemini-3.5-flash', desc: '已弃用，请求自动路由至 3.6-flash' },
         { model: 'gemini-3.5-flash-lite', imageCapable: true, title: 'gemini-3.5-flash-lite', desc: '快速经济' },
         { model: 'gemini-3.1-pro-preview', imageCapable: true, title: 'gemini-3.1-pro-preview', desc: '旗舰推理（预览）' },
         { model: '', title: '自定义 Gemini 模型', desc: '手动填写模型 ID', custom: true },
@@ -1092,7 +1156,9 @@ function catalogItemMatchesModel(item, model) {
 // coding-specialized preview), glm-5.3-flash and
 // mimo-v2.5 are officially multimodal; qwen3.7-max, glm-5.2/5.3,
 // deepseek-v4-pro, MiniMax-M2.x and mimo-v2.5-pro are officially text-only,
-// annotated false.
+// annotated false. 2026-10-13 addition: claude-sonnet-5-5 (screenshot-driven
+// benchmark play on its announcement page) and claude-haiku-5-5 (Visual
+// reasoning benchmark) are annotated true on the same public-fact basis.
 // Returns the first explicit annotation (true/false) in scan order; an
 // unannotated hit does not short-circuit the scan;
 // returns null on no hit or when no hit carries an annotation (the "auto"

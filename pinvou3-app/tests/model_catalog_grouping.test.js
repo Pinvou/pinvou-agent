@@ -124,40 +124,50 @@ test('z.ai coding catalog rows move to the official lowercase spelling; legacy u
   const mkZaiPaas = model => mk({ preset: 'glm', provider_kind: 'official_api', vendor: 'glm', base_url: 'https://api.z.ai/api/paas/v4', model });
   assert.strictEqual(isPresetModel(mkZaiPaas('GLM-5-Turbo')), false, 'the z.ai paas GLM-5-Turbo row is deleted; falls back to custom');
 });
-test('Tencent Coding Plan catalog hits with legacy alias compatibility (official 2026-09-11 model table)', () => {
-  // Both model rows hit; glm-5-0 is the official parallel second spelling on
-  // the same page, registered in legacyAliases, so stored configs count as
-  // preset with either spelling. kimi-k2.5 was retired platform-wide on
-  // 2026-08-31 (announce 2414) and removed from the catalog.
+test('Tencent Coding Plan catalog hits with legacy alias compatibility (official 2026-10-13 model table)', () => {
+  // The live 130092 table lists only tc-code-latest + glm-5; announce 2469
+  // took GLM-5 / GLM-5-Turbo / GLM-5.1 offline Beijing time 2026-10-09 00:00
+  // (Coding Plan users auto-switch to Auto), so the glm-5 row is removed and
+  // old glm-5 / glm-5-0 configs fall back to custom. kimi-k2.5 was retired
+  // platform-wide on 2026-08-31 (announce 2414) and removed from the catalog.
   const base = 'https://api.lkeap.cloud.tencent.com/coding/v3';
   const mkPlan = model => mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'tencent', base_url: base, model });
-  for (const model of ['tc-code-latest', 'glm-5', 'glm-5-0']) {
-    assert.strictEqual(isPresetModel(mkPlan(model)), true, model);
-  }
+  assert.strictEqual(isPresetModel(mkPlan('tc-code-latest')), true, 'tc-code-latest');
+  assert.strictEqual(isPresetModel(mkPlan('glm-5')), false, 'glm-5 retired 2026-10-09 (announce 2469); row removed, falls back to custom');
+  assert.strictEqual(isPresetModel(mkPlan('glm-5-0')), false, 'glm-5-0 parallel spelling is removed together with the glm-5 row');
   assert.strictEqual(isPresetModel(mkPlan('kimi-k2.5')), false, 'kimi-k2.5 is retired platform-wide and removed from the catalog');
   assert.strictEqual(isPresetModel(mkPlan('kimi-k-2-5')), false, 'kimi-k-2-5 parallel spelling is no longer listed either');
   assert.strictEqual(isPresetModel(mkPlan('glm-5.2')), false, 'glm-5.2 is not in the official Coding Plan model table');
 });
 test('Tencent Token Plan is a separate catalog: distinguished from Coding Plan by base_url, no cross-group match', () => {
-  // /plan/v3 general-tier rows hit their own group (official 2026-09-11 model
-  // table, every row and every registered parallel spelling); on Coding Plan's
-  // /coding/v3 the URL does not match, and with identical vendor+provider_kind
-  // the exact comparison keeps the model custom. kimi-k2.5 was removed
-  // platform-wide (announce 2414) and is no longer a catalog row in either group.
+  // /plan/v3 general-tier rows hit their own group (official 2026-10-13 model
+  // table re-check of the 130060 lineup, every row and every registered
+  // parallel spelling); on Coding Plan's /coding/v3 the URL does not match,
+  // and with identical vendor+provider_kind the exact comparison keeps the
+  // model custom. GLM-5 / GLM-5.1 retired 2026-10-09 (announce 2469) and
+  // their rows are removed; kimi-k2.5 was removed platform-wide (announce
+  // 2414) and is no longer a catalog row in either group. The live table's
+  // additions (deepseek/deepseek-flash, mimo-v2.6-flash) are listed.
   const planBase = 'https://api.lkeap.cloud.tencent.com/plan/v3';
   const mkTokenPlan = model => mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'tencent', base_url: planBase, model });
   const planModels = [
     'tc-code-latest',
-    'glm-5.3', 'glm-5-3', 'glm-5.3-flash', 'glm-5.2', 'glm-5-2', 'glm-5.1', 'glm-5-1', 'glm-5', 'glm-5-0',
+    'glm-5.3', 'glm-5-3', 'glm-5.3-flash', 'glm-5.2', 'glm-5-2',
     'kimi-k3', 'kimi-k2.7-code',
+    'deepseek/deepseek-flash',
     'deepseek-v4-pro-202606', 'deepseek/deepseek-v4-pro-0813', 'deepseek/deepseek-v4-pro',
     'deepseek-v4-flash-202605', 'deepseek/deepseek-v4-flash-0731', 'deepseek/deepseek-v4-flash',
     'minimax-m3', 'minimax-m-3-0', 'minimax-m2.7', 'minimax-m-2-7',
     'hy3', 'hy3-preview', 'hy3-202608', 'hy4-preview',
+    'mimo-v2.6-flash',
   ];
   for (const model of planModels) {
     assert.strictEqual(isPresetModel(mkTokenPlan(model)), true, model);
   }
+  assert.strictEqual(isPresetModel(mkTokenPlan('glm-5')), false, 'glm-5 retired 2026-10-09 (announce 2469); row removed');
+  assert.strictEqual(isPresetModel(mkTokenPlan('glm-5-0')), false, 'glm-5-0 parallel spelling is removed together with the glm-5 row');
+  assert.strictEqual(isPresetModel(mkTokenPlan('glm-5.1')), false, 'glm-5.1 retired 2026-10-09 (announce 2469); row removed');
+  assert.strictEqual(isPresetModel(mkTokenPlan('glm-5-1')), false, 'glm-5-1 parallel spelling is removed together with the glm-5.1 row');
   assert.strictEqual(isPresetModel(mkTokenPlan('kimi-k2.5')), false, 'kimi-k2.5 is retired; no Tencent Cloud group lists it anymore');
   assert.strictEqual(isPresetModel(mkTokenPlan('kimi-k-2-5')), false, 'kimi-k-2-5 parallel spelling is no longer listed either');
   assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'tencent', base_url: 'https://api.lkeap.cloud.tencent.com/coding/v3', model: 'glm-5.2' })), false, 'Token Plan-exclusive models must not match the Coding Plan catalog');
@@ -271,8 +281,9 @@ test('2026-09-28 catalog refresh lands in their provider groups (preset recognit
   // Alibaba Coding Plan group classifies with the plan's exact ids (intl
   // alias host included; kimi-k2.5 stays excluded platform-wide).
   assert.strictEqual(isPresetModel(mk({ preset: 'qwen', provider_kind: 'coding_plan', vendor: 'qwen', base_url: 'https://coding.dashscope.aliyuncs.com/v1', model: 'qwen3.7-plus' })), true);
-  assert.strictEqual(isPresetModel(mk({ preset: 'qwen', provider_kind: 'coding_plan', vendor: 'qwen', base_url: 'https://coding-intl.dashscope.aliyuncs.com/v1', model: 'qwen3-coder-plus' })), true);
   assert.strictEqual(isPresetModel(mk({ preset: 'qwen', provider_kind: 'coding_plan', vendor: 'qwen', base_url: 'https://coding.dashscope.aliyuncs.com/v1', model: 'kimi-k2.5' })), false);
+  // (qwen3-coder-plus used to pin the intl alias host here; the official
+  // page dropped it in the 2026-10-10 refresh — see the 2026-10-13 test.)
   // Aggregator groups: org-prefixed ids classify per vendor, and the new
   // section is registered.
   assert.strictEqual(MODEL_CATALOG_SECTIONS.aggregator, '聚合平台');
@@ -296,7 +307,37 @@ test('2026-09-28 catalog refresh lands in their provider groups (preset recognit
   assert.deepStrictEqual([...(reasoningEffortTiersForModel({ vendor: 'openrouter', model: 'deepseek/deepseek-v4.1-flash', base_url: 'https://openrouter.ai/api/v1' }) || [])], ['off', 'low', 'medium', 'high']);
 });
 
-test('MODEL_PRESET_DEFS default models match the locked Rust prefs figures (default_model_matches_vendor_docs_2026_09_28)', () => {
+test('2026-10-13 catalog refresh lands in their provider groups (preset recognition)', () => {
+  const mkCloud = (preset, vendor, base, model) => mk({ preset, provider_kind: 'official_api', vendor, base_url: base, model });
+  // OpenAI: gpt-6.1-sol (2026-09-29, announced 2026-10-07) joins as the new
+  // default; gpt-6-sol / gpt-6-luna stay listed and keep the Responses
+  // ladder.
+  assert.strictEqual(isPresetModel(mkCloud('openai', 'openai', 'https://api.openai.com/v1', 'gpt-6.1-sol')), true);
+  assert.deepStrictEqual([...(reasoningEffortTiersForModel({ vendor: 'openai', model: 'gpt-6.1-sol' }) || [])], ['low', 'medium', 'high', 'max']);
+  // Anthropic: sonnet-5-5 (2026-09-28) and haiku-5-5 (2026-10-07) join;
+  // opus-5-5 keeps the default slot.
+  assert.strictEqual(isPresetModel(mkCloud('anthropic', 'anthropic', 'https://api.anthropic.com/v1', 'claude-sonnet-5-5')), true);
+  assert.strictEqual(isPresetModel(mkCloud('anthropic', 'anthropic', 'https://api.anthropic.com/v1', 'claude-haiku-5-5')), true);
+  assert.strictEqual(catalogImageCapableForModel('claude-sonnet-5-5'), true);
+  assert.strictEqual(catalogImageCapableForModel('claude-haiku-5-5'), true);
+  // Tencent Coding Plan collapses to tc-code-latest (announce 2469); the
+  // Token Plan mirrors the live table's additions.
+  assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'tencent', base_url: 'https://api.lkeap.cloud.tencent.com/plan/v3', model: 'deepseek/deepseek-flash' })), true);
+  assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'tencent', base_url: 'https://api.lkeap.cloud.tencent.com/plan/v3', model: 'mimo-v2.6-flash' })), true);
+  // Alibaba Coding Plan re-synced to the official 2026-10-10 page:
+  // qwen3.5-plus joins; qwen3-coder-plus / qwen3-coder-next / glm-4.7 are
+  // no longer listed and their rows are removed (configs fall to custom,
+  // endpoint classification is URL-based and unaffected).
+  const alibabaCoding = 'https://coding.dashscope.aliyuncs.com/v1';
+  const mkAlibabaPlan = model => mk({ preset: 'qwen', provider_kind: 'coding_plan', vendor: 'qwen', base_url: alibabaCoding, model });
+  assert.strictEqual(isPresetModel(mkAlibabaPlan('qwen3.5-plus')), true);
+  assert.strictEqual(isPresetModel(mkAlibabaPlan('qwen3-coder-plus')), false);
+  assert.strictEqual(isPresetModel(mkAlibabaPlan('qwen3-coder-next')), false);
+  assert.strictEqual(isPresetModel(mkAlibabaPlan('glm-4.7')), false);
+  assert.strictEqual(isPresetModel(mk({ preset: 'qwen', provider_kind: 'coding_plan', vendor: 'qwen', base_url: 'https://coding-intl.dashscope.aliyuncs.com/v1', model: 'qwen3.5-plus' })), true, 'the intl alias host classifies the same rows');
+});
+
+test('MODEL_PRESET_DEFS default models match the locked Rust prefs figures (default_model_matches_vendor_docs_2026_10_13)', () => {
   // The identically named test in prefs/model.rs locks the Rust side; this
   // test locks the frontend side, so drift on either side surfaces explicitly
   // in the corresponding test (the qwen default once drifted for a long time
@@ -311,8 +352,8 @@ test('MODEL_PRESET_DEFS default models match the locked Rust prefs figures (defa
     minimax: 'MiniMax-M3',
     glm: 'glm-5.3',
     mimo: 'mimo-v2.6-pro',
-    openai: 'gpt-6-sol',
-    openai_responses: 'gpt-6-sol',
+    openai: 'gpt-6.1-sol',
+    openai_responses: 'gpt-6.1-sol',
     anthropic: 'claude-opus-5-5',
     gemini: 'gemini-3.8-flash',
     xai: 'grok-4.7',
@@ -719,7 +760,7 @@ test('OpenAI 档位路由：Responses wire 家族切 openai_responses 表，Chat
   // catalog" (otherwise the backend injects effort with no frontend
   // control).
   const responsesFamily = [
-    'gpt-6-sol', 'gpt-6-luna', 'gpt-6-astra',
+    'gpt-6.1-sol', 'gpt-6-sol', 'gpt-6-luna', 'gpt-6-astra',
     'gpt-5.6', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
     'gpt-5.5', 'gpt-5.5-pro',
     'gpt-5.5-2026-01-01', 'gpt-5.5-pro-2026-01-01',
