@@ -12,6 +12,14 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+pub(crate) fn decode_canonical_envelope_shape(
+    bytes: &[u8],
+    kind: pinvou_upgrade_codec::InputKind,
+) -> Result<pinvou_upgrade_codec::CanonicalEnvelopeShape, pinvou_upgrade_codec::EnvelopeShapeError>
+{
+    pinvou_upgrade_codec::decode_canonical_envelope(bytes, kind)
+}
+
 pub(crate) fn declared_role_policy_bytes(
     root: &pinvou_upgrade_codec::RootPolicyShape,
     signed_body: &[u8],
@@ -112,6 +120,56 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_checks_original_envelope_encoding_and_role_profile() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/envelopes.json"
+        )))
+        .unwrap();
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        for (index, kind) in [
+            (0, pinvou_upgrade_codec::InputKind::Metadata),
+            (6, pinvou_upgrade_codec::InputKind::Credential),
+        ] {
+            let raw = URL_SAFE_NO_PAD
+                .decode(
+                    vectors["vectors"][index]["envelopeBase64Url"]
+                        .as_str()
+                        .unwrap(),
+                )
+                .unwrap();
+            let shape = decode_canonical_envelope_shape(&raw, kind).unwrap();
+            assert_eq!(shape.raw_bytes(), raw);
+            assert!(!shape.signatures().is_empty());
+            let opposite = if kind == pinvou_upgrade_codec::InputKind::Metadata {
+                pinvou_upgrade_codec::InputKind::Credential
+            } else {
+                pinvou_upgrade_codec::InputKind::Metadata
+            };
+            assert!(matches!(
+                decode_canonical_envelope_shape(&raw, opposite),
+                Err(pinvou_upgrade_codec::EnvelopeShapeError::WrongProfile)
+            ));
+            let mut changed = raw.clone();
+            changed.push(b' ');
+            assert!(matches!(
+                decode_canonical_envelope_shape(&changed, kind),
+                Err(pinvou_upgrade_codec::EnvelopeShapeError::NotCanonical)
+            ));
+            let mut value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+            value["signatures"][0]["signature"] = serde_json::json!("A".repeat(85) + "B");
+            let canonical = decode_metadata(&serde_json::to_vec(&value).unwrap())
+                .unwrap()
+                .canonical_bytes()
+                .unwrap();
+            assert!(matches!(
+                decode_canonical_envelope_shape(&canonical, kind),
+                Err(pinvou_upgrade_codec::EnvelopeShapeError::InvalidSignature)
+            ));
+        }
+    }
 
     #[test]
     fn feature_facade_looks_up_only_exact_declared_role_scope_without_product_fallback() {

@@ -83,3 +83,26 @@ pub(super) fn canonical_version(value: &Value) -> bool {
     }
     parts.next().is_none()
 }
+
+pub(super) const ROLES: [&str; 20] = [
+    "root",
+    "timestamp",
+    "snapshot",
+    "target",
+    "release",
+    "package",
+    "decision",
+    "download",
+    "authorization-preinstall",
+    "authorization-install",
+    "authorization-activate",
+    "helper-cleanup",
+    "telemetry-event",
+    "preinstall-transaction-event",
+    "install-transaction-event",
+    "activate-transaction-event",
+    "reconciliation-action",
+    "recovery-review-action",
+    "reconciliation-event",
+    "recovery-review-event",
+];

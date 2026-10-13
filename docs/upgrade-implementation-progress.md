@@ -3275,3 +3275,54 @@ Root4 in4.96s (639), Source5 in0.91s (218), status5 in1.48s and version4 in1.17s
 Details: [declared role policy](client-upgrade-declared-role-policy.md). Complete
 T27 signature/trust/lineage/high-watermark integration remains unfinished.
 Downloads retain no total/cumulative duration or retry cap.
+
+
+## T27 thirteenth batch - original canonical envelope shape (2026-10-13)
+
+This batch checks the same original wire bytes against bounded JCS and the closed
+outer envelope/signature shapes; verifies the five common signed context fields
+and matching6-metadata/14-credential InputKind; and requires original strictly
+ascending unique lowercase key IDs and canonical86-character base64url64-byte
+signatures. Nonzero pad bits are refused through decode/reencode equality.
+The same frozen20-role set is moved unchanged to shared scalar predicates.
+After whole checks, the signed subtree is moved into a Document; private immutable
+original bytes and typed records have no public constructor/Debug/Serialize.
+This is partial context/encoding only, not full role Schema, expected-context,
+curve/signature validity, key authority, threshold, Root trust/time or execution
+rights. Minimal bodies and zero/weak signature bytes remain shape-positive only.
+
+Four groups include all20 frozen public vectors, both opposite role profiles,
+common-context invalid/missing fields, original spelling/duplicates/UTF8, depth/
+string and both exact/+1 wire limits,4096 signatures/+1. Final2080 Node cases
+execute unchanged extracted parseEnvelope+decodeBase64Url and original private
+isMetadata/schemaName with actual imports, restricted to original full-Schema-valid
+signed bodies unchanged. This combination, not parseEnvelope alone or arbitrary
+partial bodies, is the stated equivalence domain. A test fixture size-estimation
+error failed once and was corrected by measuring exact wire punctuation; the
+final four groups passed6.63s. No production failure or reference change occurred.
+
+Root all58 codec tests passed with actual Node22 and both old oracle flags:
+signing6 in3.54s, bytes7 in0.46s, consume4 in1.57s, envelope4 in8.05s (2080),
+native3 in0.65s, opening4 in0.98s (152), policy4 in4.42s (966), reference4
+in2.30s (730), rollout4 in0.63s, Root4 in4.26s (639), Source5 in0.84s (218),
+status5 in5.88s and version4 in0.92s (348). Clippy7.54s/fmt passed. CI51 passed
+0.128s; architecture/version/diff and frozen boundary checks passed. Final actual
+Windows App passed all29 updater tests0.07s after2m36s build, including both
+role profiles, original-byte getters, noncanonical wire and pad-bit refusal.
+No App-wide pass is claimed. Root self-review found no remaining in-scope gap.
+Both independent frozen-source scoped reviews returned PASS without mandatory.
+Dependency actualNode22+both old flags all58 PASS: signing6 in3.19s, bytes7
+in0.35s, consume4 in1.39s, envelope4 in7.42s (2080), native3 in0.76s,
+opening4 in1.00s (152), policy4 in4.07s (966), reference4 in1.06s (730),
+rollout4 in0.65s, Root4 in4.11s (639), Source5 in0.83s (218), status5 in0.64s
+and version4 in0.96s (348); Clippy1.08s/fmt/diff passed. Compatibility actual
+Node22+both old flags all58 PASS: signing6 in3.06s, bytes7 in0.37s, consume4
+in1.56s, envelope4 in7.83s (2080), native3 in0.79s, opening4 in0.96s (152),
+policy4 in4.17s (966), reference4 in0.94s (730), rollout4 in0.64s, Root4
+in4.12s (639), Source5 in0.78s (218), status5 in0.67s and version4 in0.93s
+(348); Clippy0.10s/fmt, CI51 in0.058s/diff passed. Frozen code is unchanged.
+Both final documentation/evidence reviews returned scoped PASS on unchanged source.
+No remaining in-scope issue was found in root self-review.
+Details: [canonical envelope shape](client-upgrade-canonical-envelope.md).
+No dependency/lock/Schema/CI/version/gitlink changes. Full T27 trust integration
+remains unfinished. Downloads retain no total/cumulative duration or retry cap.

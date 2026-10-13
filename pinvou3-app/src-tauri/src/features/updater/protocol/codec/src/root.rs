@@ -2,33 +2,11 @@
 use crate::policy::{
     DeclaredRolePolicy, PolicyLookupError, RoleContextShape, RolePolicyData, select_declared_policy,
 };
-use crate::shape::{TARGETS, closed, identifier, one_of, positive_safe_integer, sha256_hex};
+use crate::shape::{ROLES, TARGETS, closed, identifier, one_of, positive_safe_integer, sha256_hex};
 use crate::{Document, Error, key_descriptor};
 use serde_json::Value;
 use std::collections::BTreeSet;
 
-const ROLES: [&str; 20] = [
-    "root",
-    "timestamp",
-    "snapshot",
-    "target",
-    "release",
-    "package",
-    "decision",
-    "download",
-    "authorization-preinstall",
-    "authorization-install",
-    "authorization-activate",
-    "helper-cleanup",
-    "telemetry-event",
-    "preinstall-transaction-event",
-    "install-transaction-event",
-    "activate-transaction-event",
-    "reconciliation-action",
-    "recovery-review-action",
-    "reconciliation-event",
-    "recovery-review-event",
-];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RootPolicyError {
     Json(Error),

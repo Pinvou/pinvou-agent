@@ -2,6 +2,10 @@
 //! signature verification, established Root trust, current eligibility or ACK.
 
 mod bindings;
+mod envelope;
+pub use envelope::{
+    CanonicalEnvelopeShape, EnvelopeShapeError, SignatureRecordShape, decode_canonical_envelope,
+};
 mod consume;
 pub use consume::{ConsumeDigestError, ConsumeRequestDigest};
 mod native;
