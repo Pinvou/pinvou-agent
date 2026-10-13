@@ -1422,7 +1422,7 @@ class CiGatePolicyTests(unittest.TestCase):
         # ready cli_rust/rust_full PRs, the matching Merge Queue combined tree
         # (green-alone PRs can still combine into a macOS-only compile break),
         # and main push (cumulative); see
-        # test_macos_cli_check_runs_on_main_push_and_merge_group.
+        # test_gate_job_level_ifs_are_pinned_verbatim.
         macos_cli = _extract_job_block(self.pr_workflow, "macos-cli-check")
         # Round-46 review: the needs wire stays pinned here too, so a
         # bypass of the wiring test cannot silently drop it.
@@ -1503,51 +1503,6 @@ class CiGatePolicyTests(unittest.TestCase):
             "silently hides which packages are load-bearing",
         )
 
-    def test_macos_cli_check_runs_on_main_push_and_merge_group(self):
-        # macos-cli-check is the only leg that type-checks
-        # #[cfg(target_os = "macos")] CLI code, and Linux cannot cover that risk
-        # class for the Merge Queue combined tree. It must therefore run on
-        # push(main) unconditionally (cumulative verification, independent of a
-        # single push's paths-filter) and on the Merge Queue when the combined
-        # diff touches cli_rust/rust_full.
-        macos_cli = _extract_job_block(self.pr_workflow, "macos-cli-check")
-        # Round-46 review: the `needs: changes` wire is what feeds the MQ
-        # branch's outputs — without it `needs.changes.outputs.*` evaluates
-        # empty, the PR/MQ legs silently skip, and required-gate accepts
-        # `skipped`. Same pin cli-lint and macos-rust-check carry.
-        self.assertIn("needs: changes", macos_cli)
-        self.assertIn("github.event_name == 'push' ||", macos_cli)
-        self.assertIn("github.event_name == 'merge_group'", macos_cli)
-        merge_group_branch = macos_cli.split(
-            "github.event_name == 'merge_group'", maxsplit=1
-        )[1].split("github.event_name == 'pull_request'", maxsplit=1)[0]
-        self.assertIn(
-            "needs.changes.outputs.cli_rust == 'true'",
-            merge_group_branch,
-            "the Merge Queue leg must be gated by cli_rust like the PR leg",
-        )
-        self.assertIn(
-            "needs.changes.outputs.rust_full == 'true'",
-            merge_group_branch,
-        )
-        # Draft gating only applies to the pull_request leg (merge_group and
-        # push have no draft concept).
-        pull_request_branch = macos_cli.split(
-            "github.event_name == 'pull_request'", maxsplit=1
-        )[1]
-        self.assertIn("github.event.pull_request.draft == false", pull_request_branch)
-        self.assertNotIn(
-            "github.event.pull_request.draft",
-            merge_group_branch,
-        )
-
-        required_gate = self._required_gate()
-        self.assertIn("- macos-cli-check", required_gate)
-        self.assertIn(
-            "MACOS_CLI_RESULT: ${{ needs.macos-cli-check.result }}",
-            required_gate,
-        )
-
     def test_macos_cli_check_configures_the_sibling_restorable_cache(self):
         # Round-17 close-out, fixed in round 18: the job header claimed "no
         # macOS cache exists in this workflow that a refs/pull/N/merge run
@@ -1600,20 +1555,10 @@ class CiGatePolicyTests(unittest.TestCase):
         # The trigger set must mirror cli-test exactly: main push (cumulative,
         # paths-filter independent), the Merge Queue combined tree gated by
         # cli_rust/rust_full, and ready non-draft PRs (drafts skip the heavy
-        # leg).
-        self.assertIn("github.event_name == 'push' ||", cli_lint)
-        self.assertIn("github.event_name == 'merge_group'", cli_lint)
-        self.assertIn(
-            "needs.changes.outputs.cli_rust == 'true'", cli_lint
-        )
-        self.assertIn(
-            "needs.changes.outputs.rust_full == 'true'", cli_lint
-        )
-        self.assertIn(
-            "github.event.pull_request.draft == false",
-            cli_lint,
-            "draft PRs must skip the lint leg like the other heavy CLI jobs",
-        )
+        # leg). That routing lives entirely in the job-level `if:`, which is
+        # pinned verbatim by GATE_JOB_LEVEL_IFS["cli-lint"] — any appended
+        # `&& false`, deleted branch, or flipped draft gate fails there, so
+        # this test keeps only the non-if wiring and command pins.
         # Fail-closed on compile errors and nothing else may soften it: the
         # warn-visible clippy policy (debt cleanup pending the [lints] table,
         # see the job comment) must never grow a bypass here.
@@ -2162,30 +2107,10 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertNotIn("headless_bridge_contract_tests", rust_lint)
 
         rust_test = _extract_job_block(self.pr_workflow, "rust-test")
-        self.assertRegex(
-            rust_test,
-            r"github\.event_name == 'merge_group'\s*&&\s*"
-            r"needs\.changes\.outputs\.rust_full == 'true'",
-        )
-        self.assertIn(
-            "needs.changes.outputs.rust_full == 'true'",
-            rust_test,
-        )
-        self.assertIn(
-            "needs.changes.outputs.rust_code == 'true'",
-            rust_test,
-        )
-        self.assertIn("github.event.pull_request.draft == false", rust_test)
-        self.assertIn(
-            "contains(github.event.pull_request.labels.*.name, 'ci:full-rust')",
-            rust_test,
-        )
-        # Main is a cumulative compile verification and must not depend on
-        # adjacent diff paths.
-        self.assertIn(
-            "github.event_name == 'push' ||",
-            rust_test,
-        )
+        # rust-test's job-level routing (push, merge_group+rust_full, ready
+        # non-draft PRs, rust_full/rust_code+ci:full-rust) is pinned verbatim
+        # by GATE_JOB_LEVEL_IFS["rust-test"]; the asserts below keep the
+        # step-level pins that `if:` cannot cover.
         self.assertIn(
             "cargo test --manifest-path pinvou3-app/src-tauri/Cargo.toml --lib "
             "--features benchmark-hooks --locked -- --test-threads=1",
@@ -2568,21 +2493,10 @@ class CiGatePolicyTests(unittest.TestCase):
         windows_rust_test = _extract_job_block(
             self.pr_workflow, "windows-rust-test"
         )
-        self.assertIn(
-            "github.event_name == 'push' ||", windows_rust_test
-        )
-        self.assertIn(
-            "needs.changes.outputs.rust_full == 'true'",
-            windows_rust_test,
-        )
-        self.assertNotIn("github.event_name == 'merge_group'", windows_rust_test)
-        self.assertIn(
-            "contains(github.event.pull_request.labels.*.name, 'ci:full-rust')",
-            windows_rust_test,
-        )
-        self.assertIn(
-            "github.event.pull_request.draft == false", windows_rust_test
-        )
+        # The job-level routing (unconditional push, rust_full/cli_rust PR
+        # legs, draft gate, label fallback, and the absence of merge_group)
+        # is pinned verbatim by GATE_JOB_LEVEL_IFS["windows-rust-test"]; the
+        # asserts below keep the non-if pins.
         # Cold Windows compile plus the lib link check recently died at the
         # 90-minute cap while passing runs already took 85-87 minutes; the
         # 2026-10-01 stable rollover to 1.99.0 invalidated the rust-cache key
@@ -2934,44 +2848,18 @@ class CiGatePolicyTests(unittest.TestCase):
         )
 
     def test_macos_rust_check_routes_by_rust_filters_not_frontend_paths(self):
-        # PR/MQ-side routing: the macos job's if must not consume the
-        # frontend/pet outputs (it is a rust gate; frontend changes are
-        # validated by frontend-test). On main push the folded mac legs run
-        # path-independently (the cumulative main-push contract,
-        # frontend-only pushes included), so this pin is about PR routing,
-        # not push. The bundle_chain filter must also not treat
-        # pure-frontend src/** as a packaging-chain change — but
-        # package.json/package-lock.json must stay bundle_chain triggers (the
-        # lockfile affects the build). Formerly pinned the standalone
-        # mac-build.yml trigger; the workflow was folded into pr-check's
-        # macos-rust-check in 2026-10.
-        macos_job = _extract_job_block(self.pr_workflow, "macos-rust-check")
-        job_if = macos_job.split("\n    if: >-", maxsplit=1)[1].split(
-            "\n    runs-on:", maxsplit=1
-        )[0]
-        for output in ("frontend", "pet"):
-            self.assertNotIn(
-                f"needs.changes.outputs.{output}",
-                job_if,
-                f"macos-rust-check is a rust gate; {output} changes must not trigger it",
-            )
-        # Positive shape: push must stay unconditional and the PR branch must
-        # keep the rust-filter routing. Without this, collapsing the whole if
-        # to a bare push check deletes PR-side macOS coverage (the only leg
-        # that runs macOS-only unit tests on PRs) while every negative pin
-        # and step-level pin stays green.
-        self.assertIn(
-            "github.event_name == 'push' ||",
-            job_if,
-            "a main push must enter this job unconditionally "
-            "(the path-independent cumulative coverage contract)",
-        )
-        self.assertIn(
-            "needs.changes.outputs.rust_full == 'true'",
-            job_if,
-            "the PR side must keep the rust-filter routing (high-risk draft/ready paths)",
-        )
-
+        # PR/MQ-side routing is pinned verbatim by
+        # GATE_JOB_LEVEL_IFS["macos-rust-check"]: the job's `if:` must not
+        # consume the frontend/pet outputs (it is a rust gate; frontend
+        # changes are validated by frontend-test), main push stays
+        # unconditional (the cumulative main-push contract, frontend-only
+        # pushes included), and the PR branch keeps the rust_full/cli_rust
+        # routing. This test keeps what the job-level `if:` cannot cover:
+        # the bundle_chain filter must not treat pure-frontend src/** as a
+        # packaging-chain change — but package.json/package-lock.json must
+        # stay bundle_chain triggers (the lockfile affects the build).
+        # Formerly pinned the standalone mac-build.yml trigger; the workflow
+        # was folded into pr-check's macos-rust-check in 2026-10.
         changes = _without_yaml_comments(_changes_block(self.pr_workflow))
         bundle_tail = changes.split("            bundle_chain:", maxsplit=1)[1]
         # bundle_chain is the last filter group and the extraction below has
