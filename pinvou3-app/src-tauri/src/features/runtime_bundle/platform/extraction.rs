@@ -481,12 +481,25 @@ impl Pinvou3Bundle {
             if !dir.exists() {
                 continue;
             }
-            // Hardened read — family rationale on `open_private_data_file_within`. A
-            // refused (non-regular) read is empty → the same unmarked
-            // treatment as an absent marker.
-            let marker =
-                crate::platform::filesystem::read_private_data_file(&dir.join(".installed-from"))
-                    .unwrap_or_default();
+            // Hardened read — family rationale on `open_private_data_file_within`.
+            // 数据保底：只有"标记确实不存在"（裸残留）或"读到内容且恰为空/本市场
+            // id"才允许删除；其余任何读 refusal（symlink 不穿透、FIFO/设备、超
+            // cap、非 UTF-8、权限）一律保留目录——main 的 read_to_string 会穿透
+            // symlink 读到 upload: 内容并据此保护，硬化读把这一类变成 Err，若
+            // fail-open 成空标记会把用户内容连同目录一起删掉。
+            let marker = match crate::platform::filesystem::read_private_data_file(
+                &dir.join(".installed-from"),
+            ) {
+                Ok(content) => content,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(error) => {
+                    log::warn!(
+                        "[pinvou3-app] marketplace skill cleanup preserved '{}' (unreadable .installed-from: {error})",
+                        dir.display()
+                    );
+                    continue;
+                }
+            };
             let marker = marker.trim();
             if marker.starts_with("upload:") {
                 continue; // 用户上传的同名技能,保护不删
@@ -2366,5 +2379,58 @@ mod tests {
             "write_if_changed on a planted FIFO",
             move || bundle.write_if_changed(&fifo, "bundle content").is_err(),
         );
+    }
+
+    /// 下架技能清理的数据保底：`.installed-from` 标记读取被拒（planted symlink /
+    /// FIFO）时目录必须原样保留。main 的 `read_to_string` 穿透 symlink 读到
+    /// `upload:` 内容会据此保护；硬化的不穿透读把这一类变成 Err——若 fail-open
+    /// 成"空标记=裸残留"口径，用户上传的同名技能连同全部内容会被误删。
+    #[test]
+    #[cfg(unix)]
+    fn cleanup_removed_marketplace_skills_preserves_dir_when_marker_read_refused() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _env = crate::platform::paths::tests::EnvVarGuard::capture(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-cleanup-refused-marker-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let bundle = super::Pinvou3Bundle::paths();
+        std::fs::create_dir_all(&bundle.skills_dir).unwrap();
+
+        // Symlink 腿：marker 指向别处的 upload: 记录，目录内有用户内容。
+        let uploaded = bundle.skills_dir.join("brainstorming");
+        std::fs::create_dir_all(&uploaded).unwrap();
+        std::fs::write(uploaded.join("SKILL.md"), "# user-uploaded skill\n").unwrap();
+        let victim = tmp.join("elsewhere-marker.txt");
+        std::fs::write(&victim, "upload:my.zip").unwrap();
+        std::os::unix::fs::symlink(&victim, uploaded.join(".installed-from")).unwrap();
+
+        // FIFO 腿：非 regular 标记同样必须保留目录（硬化读无阻塞拒绝，不会挂起）。
+        let fua = bundle.skills_dir.join("pua");
+        std::fs::create_dir_all(&fua).unwrap();
+        std::fs::write(fua.join("SKILL.md"), "# user content\n").unwrap();
+        crate::platform::paths::tests::plant_fifo(&fua.join(".installed-from"));
+
+        bundle.cleanup_removed_marketplace_skills().unwrap();
+
+        assert!(
+            uploaded.exists(),
+            "marker 读取被拒时必须保留目录，不得误删用户内容"
+        );
+        assert_eq!(
+            std::fs::read_to_string(uploaded.join("SKILL.md")).unwrap(),
+            "# user-uploaded skill\n",
+            "保留的目录内容必须原样"
+        );
+        assert!(fua.exists(), "FIFO 标记同样必须保留目录");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
