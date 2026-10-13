@@ -3692,3 +3692,50 @@ exceptional-state, dependency-direction or regression-evidence gap.
 Final scoped evidence/document reviews precede commit on unchanged production source. Details: [consume binding](client-upgrade-consume-binding.md).
 Complete T27 authenticity/persistence/consumption remains unfinished. Downloads
 retain no total/cumulative duration or retry cap.
+
+
+## T27 twentieth batch - supplied Release renewal (2026-10-14)
+
+The original assertReleaseRenewal relationship now consumes two complete
+SchemaCheckedEnvelope factories. Both roles must be release and revision must
+strictly increase, allowing jumps. A private borrowed serializer excludes only
+root revision/issuedAt/expiresAt and binds all remaining signed properties using
+bounded JCS with propagated errors. Nested expiresAt remains included and arrays
+retain order. Outer signature records are not business properties.
+
+No time, signature/Root/context/history/qualification, publication, high-water
+persistence, ownership or execution certificate is provided. Schema-valid
+reversed time and encoding-valid changed signatures are explicit positive relation
+controls; separate caller operations must establish their respective obligations.
+
+Four groups cover jump/equal/lower revisions and SAFE boundaries, all business
+leaves, nested refs, two-target order, both wrong-role directions, complete
+Schema/encoding, duplicates and signature/time exclusions. Actual Node runs
+the unchanged original export after original complete parser/encoding with
+self-derived expected context for relationship isolation only. App checks jump,
+reversed time, business change and equality. No crypto substitute is used.
+
+Initial four groups passed in8.33s, including1256 actual original Node
+Release renewal pairs. No observed acceptance divergence.
+
+No dependency/lock/Schema/CI/version/gitlink changes. Final regression selects
+84 applicable tests, filtering only the unchanged B15 31556-case Schema mutation
+test; CI retains complete85. Root final applicable84 passed with actual
+Node22.23.3 and both legacy oracle flags, including1256 renewal pairs in8.77s
+and7287 credential cases in76.24s. Schema golden and all other applicable tests
+passed. Clippy all-targets -D warnings passed in11.10s on this same frozen
+production source, with codec fmt and App facade rustfmt checks.
+Architecture/version/diff checks passed; CI51 passed in0.064s. Actual Windows
+App passed all36 updater tests in0.24s after4m07s build; no App-wide pass is
+claimed. Root self-review found no remaining in-scope gap. Independent dependency
+review returned scoped PASS without mandatory findings. ActualNode22.23.3 and
+both legacy oracle flags applicable84 passed, including1256 renewal pairs in7.89s
+and7287 credential cases in68.16s. Clippy all-targets -D warnings passed in2.63s
+with fmt/diff. Independent compatibility review also returned scoped PASS without
+mandatory findings. ActualNode22.23.3+both legacy flags applicable84 passed,
+including1256 renewal pairs in8.01s and7287 credential cases in59.83s. Clippy
+passed in2.45s with fmt/diff; CI51 passed in0.090s. Both reviews filtered only
+the unchanged31556 Schema mutation test and did not repeat App/graphs/downloads.
+Final scoped evidence/document reviews precede commit on unchanged production source. Details: [Release renewal](client-upgrade-release-renewal.md).
+Complete T27 authenticity/protected persistence/publication remains unfinished.
+Downloads retain no total/cumulative duration or retry cap.

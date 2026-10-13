@@ -12,6 +12,30 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+pub(crate) fn check_supplied_release_renewal_bytes(
+    previous_bytes: &[u8],
+    next_bytes: &[u8],
+) -> Result<(), pinvou_upgrade_codec::ReleaseRenewalError> {
+    fn decode(
+        bytes: &[u8],
+    ) -> Result<
+        pinvou_upgrade_codec::SchemaCheckedEnvelope,
+        pinvou_upgrade_codec::ReleaseRenewalError,
+    > {
+        pinvou_upgrade_codec::decode_canonical_envelope(
+            bytes,
+            pinvou_upgrade_codec::InputKind::Metadata,
+        )
+        .map_err(pinvou_upgrade_codec::ReleaseRenewalError::Envelope)?
+        .check_full_schema()
+        .map_err(pinvou_upgrade_codec::ReleaseRenewalError::Schema)
+    }
+    pinvou_upgrade_codec::assert_supplied_release_renewal(
+        &decode(previous_bytes)?,
+        &decode(next_bytes)?,
+    )
+}
+
 pub(crate) fn check_supplied_consume_binding_bytes(
     request_bytes: &[u8],
     authorization_bytes: &[u8],
@@ -214,6 +238,48 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_checks_release_renewal_business_without_publishing_or_time_authority() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/envelopes.json"
+        )))
+        .unwrap();
+        let vector = vectors["vectors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["name"] == "release")
+            .unwrap();
+        let previous = URL_SAFE_NO_PAD
+            .decode(vector["envelopeBase64Url"].as_str().unwrap())
+            .unwrap();
+        let mut next: serde_json::Value = serde_json::from_slice(&previous).unwrap();
+        next["signed"]["revision"] =
+            serde_json::json!(next["signed"]["revision"].as_u64().unwrap() + 2);
+        next["signed"]["issuedAt"] = serde_json::json!(9007199254740991u64);
+        next["signed"]["expiresAt"] = serde_json::json!(0);
+        let bytes = decode_metadata(&serde_json::to_vec(&next).unwrap())
+            .unwrap()
+            .canonical_bytes()
+            .unwrap();
+        assert!(check_supplied_release_renewal_bytes(&previous, &bytes).is_ok());
+        next["signed"]["appVersion"] = serde_json::json!("9.0.0");
+        let bytes = decode_metadata(&serde_json::to_vec(&next).unwrap())
+            .unwrap()
+            .canonical_bytes()
+            .unwrap();
+        assert_eq!(
+            check_supplied_release_renewal_bytes(&previous, &bytes),
+            Err(pinvou_upgrade_codec::ReleaseRenewalError::BusinessChanged)
+        );
+        assert_eq!(
+            check_supplied_release_renewal_bytes(&previous, &previous),
+            Err(pinvou_upgrade_codec::ReleaseRenewalError::RevisionInvalid)
+        );
+    }
 
     #[test]
     fn feature_facade_matches_three_supplied_consume_bindings_and_refuses_stale_raw_hash() {

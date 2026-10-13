@@ -1,6 +1,8 @@
 //! Bounded Upgrade V1 JSON and canonical bytes. Successful decoding is not
 //! signature verification, established Root trust, current eligibility or ACK.
 
+mod renewal;
+pub use renewal::{ReleaseRenewalError, assert_supplied_release_renewal};
 mod bindings;
 mod credential_semantics;
 pub use credential_semantics::{CredentialSemanticsError, assert_supplied_credential_semantics};
