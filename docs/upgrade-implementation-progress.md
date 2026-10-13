@@ -4619,3 +4619,46 @@ rereads current trust/time/deny and protected object identity at admission.
 No SQL/dependency/contract changes; unchanged database/provider/deployment opt-ins
 are not claimed. Full T09 remains unfinished, and downloads retain no cumulative
 elapsed deadline or retry budget.
+
+
+## T09 fifth batch - exact observed evidence source bytes (2026-10-14)
+
+The separate service now captures safe exact outer logical filenames, including
+directory prefixes, without choosing host paths or inner ZIP decoys. Extraction
+privately reuses its existing FullPack capture work; old FullPack API, selector
+and fixed invalid error and old bare-root/root-ZIP selectors remain unchanged.
+The additive Manifest evidence entry applies the same current signed trust and
+byte-binding inspection, extracts exactly the declared SBOM/provenance and checks
+each independent owned child's observed size/hash. Both return together; any
+error, including failed provenance after successful SBOM, returns no earlier
+Facts or child.
+
+Root actual logical-name/inner-decoy/capacity/cancel/later-corrupt/source/restore,
+bare+prefixed signed evidence, current deny/restore and actual hash/context
+controls passed. Deliberately incomplete SBOM/provenance content tests
+prove exact declared bytes, not CycloneDX or provenance content approval.
+Full default Go suite passed (archive6.292s/capture14.949s/extraction7.083s/
+sourcefile5.863s/verification9.597s/defaultCLI16.399s), as did full vet/
+module verification/server+CLI builds/pinned/format/diff. Rebuilt actual CLI3
+including child-process E2E passed in2.816s.
+Compatibility audit found the original hash negative also changed size; the
+primary role changed it to equal-length single-byte mutation with an explicit
+different SHA, preserved signed claims and correct regenerated ZIP CRC.
+The repaired three evidence groups passed in1.703s; production code stayed
+unchanged after full checks. Both independent implementation/test reviews passed
+after repair. Dependency actual Windows Go1.27.2 archive2.037s/capture2.025s/
+extraction3.708s/sourcefile5.736s/verification8=5.970s/actualCLI3+E2E7.888s
+and affected vet/format/diff passed. Compatibility independently passed
+archive6.216s/capture3.552s/extraction4.372s/sourcefile3.272s/
+verification8=9.424s/actualCLI3+E2E4.188s and affected vet/format/diff.
+Test processes are closed; client
+architecture/version/diff passed. Both independent final documentation reviews passed before commit.
+
+Memory capacities bound parent, aggregate nested buffers, ordinary evidence
+capture, independent child buffers and the retained first evidence separately;
+the owner must account for the aggregate. No production capacity, schema
+acceptance, scanner, pipeline allowlist, native authentication, durable storage,
+admission or deployment policy is selected by this batch. No SQL/contract/
+dependency/version changes; unchanged database/provider/deployment opt-ins
+are not claimed. Full T09 remains incomplete; download has no total/cumulative
+elapsed deadline or retry budget.
