@@ -122,6 +122,12 @@ fn strict_mode_rejects_failed_turn_without_error_event() {
     let timeline = vec![(
         0.1,
         Event::TurnComplete {
+            // Round-16: CodeWhale #97 added the turn/submission/compaction
+            // attribution to terminal events; a synthetic test timeline
+            // carries none of them.
+            turn_id: None,
+            submission_id: None,
+            compaction_id: None,
             usage: Usage::default(),
             status: TurnOutcomeStatus::Failed,
             error: Some("engine task panicked".to_string()),
