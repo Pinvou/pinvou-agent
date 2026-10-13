@@ -142,7 +142,7 @@ use pinvou3_lib::features::marketplace::{
         set_project_skills_enabled, to_package_id_with,
     },
     skill_marketplace::{SkillMarketplaceManager, read_skill_name_from_str, sanitize_skill_name},
-    store::{BundleSource, BundleStore},
+    store::{BundleSource, BundleStore, is_display_unsafe_char},
     sync_deny_all_scopes_after_install,
 };
 use pinvou3_lib::platform::credential_store::{
@@ -626,22 +626,6 @@ fn translate_plugin_import_error(error: &str) -> Option<String> {
         ));
     }
     None
-}
-
-/// Mirror of the GUI's display-value hygiene
-/// (`features/marketplace/store.rs::is_display_unsafe_char`, crate-private):
-/// control characters, zero-width/bidi controls, and line/paragraph
-/// separators never belong in a stored display name.
-fn is_display_unsafe_char(c: char) -> bool {
-    c.is_control()
-        || matches!(c,
-            '\u{00AD}' // SOFT HYPHEN
-            | '\u{200B}'..='\u{200D}' // ZERO WIDTH SPACE..JOINER
-            | '\u{2028}'..='\u{2029}' // LINE/PARAGRAPH SEPARATOR
-            | '\u{202A}'..='\u{202E}' // bidi embedding/override controls
-            | '\u{2066}'..='\u{2069}' // bidi isolate controls
-            | '\u{FEFF}' // BOM / ZERO WIDTH NO-BREAK SPACE
-        )
 }
 
 /// Longest display name the GUI stores for an imported package
@@ -1436,8 +1420,8 @@ fn import(path: &Path, output: OutputMode) -> Result<CliOutcome, CliError> {
     };
     // The raw file name becomes the package display name in bundles.json, so
     // it gets the same invisible-character hygiene as the GUI's display
-    // values (mirror of `features/marketplace/store.rs
-    // is_display_unsafe_char`, which is crate-private): strip instead of
+    // values (shared `features/marketplace/store.rs
+    // is_display_unsafe_char`): strip instead of
     // reject — the name came from the user's own file path, and a rename
     // requirement would be a worse outcome than a cleaned label. The RAW
     // lossy name is kept alongside: the fallback-id branch inside

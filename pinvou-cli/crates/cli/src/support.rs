@@ -533,14 +533,13 @@ pub(crate) fn join_rows<T>(items: &[T], row: impl Fn(&T) -> String) -> String {
 
 /// The display-hygiene set behind [`collapse_control_characters`]: a
 /// superset of the GUI's `features::marketplace::store::
-/// is_display_unsafe_char` (crate-private there), which this crate mirrors
-/// verbatim in `plugins::is_display_unsafe_char` for stored display names —
-/// the control check plus the first six ranges below. This helper
-/// *sanitizes* strings that are only rendered, so it deliberately extends
-/// the mirrored GUI set with the further terminal-row invisible-character
-/// classes listed below (where `plugins` *rejects* a stored name, this one
-/// collapses the character in place); the divergence is intentional, not
-/// drift.
+/// is_display_unsafe_char`, which this crate now imports for stored display
+/// names (`plugins`) — the control check plus the first six ranges below.
+/// This helper *sanitizes* strings that are only rendered, so it deliberately
+/// extends the shared GUI set with the further terminal-row
+/// invisible-character classes listed below (where `plugins` *rejects* a
+/// stored name, this one collapses the character in place); the divergence
+/// is intentional, not drift.
 fn is_row_unsafe_char(ch: char) -> bool {
     ch.is_control()
         || matches!(ch,
