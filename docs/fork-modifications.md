@@ -50,7 +50,7 @@
 | 项 | 当前值 |
 |---|---|
 | 上游基线 | tag `v0.9.12`，commit `dcd4c200f72f0c1ffd60d8e7f6850313db879fc5` |
-| 维护分支 | `pinvou3-clean` = `a7f64b5c4830525dd91e2d3a5dad86effead97e6`（r1 基线 `1fafee7e2` 之上 48 个合入：#41/#47/#49、2026-09-10/11 遗留 PR 清理批次 #31/#37/#38/#39/#43/#48/#50/#51/#52/#53、2026-09-17 批次 #56/#58/#59/#60/#61、2026-09-18 批次 #55/#57/#62、2026-09-20 批次 #66、2026-09-21 批次 #64/#67、2026-09-22/23 批次 #63/#65/#68/#69/#70/#71/#72/#73、收口追加 #77/#76（替换原 #74）、2026-10-02 批次 #80、2026-10-08/09 批次 #79/#88/#89/#75/#78/#94/#95、2026-10-12/13 批次 #90/#91/#97/#98/#93 与 2026-10-13 工具箱停用批次 #104） |
+| 维护分支 | `pinvou3-clean` = `196bed7fa3fb834be0e9212d9e95ddb105c77209`（r1 基线 `1fafee7e2` 之上 49 个合入：#41/#47/#49、2026-09-10/11 遗留 PR 清理批次 #31/#37/#38/#39/#43/#48/#50/#51/#52/#53、2026-09-17 批次 #56/#58/#59/#60/#61、2026-09-18 批次 #55/#57/#62、2026-09-20 批次 #66、2026-09-21 批次 #64/#67、2026-09-22/23 批次 #63/#65/#68/#69/#70/#71/#72/#73、收口追加 #77/#76（替换原 #74）、2026-10-02 批次 #80、2026-10-08/09 批次 #79/#88/#89/#75/#78/#94/#95、2026-10-12/13 批次 #90/#91/#97/#98/#93 与 2026-10-13 工具箱停用批次 #104（含复审修正第二提交）） |
 | 发布状态 | r3 已收口（2026-09-23）：不可变 tag `pinvou-v0.9.12-r3` 切在合并头 `61cb769be`；2026-10-02 起 #80 使登记头领先 tag，进入过渡期，`scripts/verify-public-submodule.sh` 以 `TRANSITION_BASELINE` 断言 tag 仍钉在 `61cb769be` 且 gitlink = 维护分支头并领先 tag（2026-10-08/09 批次 #79/#88/#89/#75/#78、2026-10-12/13 批次 #90/#91/#93/#97/#98 与 2026-10-13 工具箱停用批次 #104 延续该过渡态）。r2 tag `pinvou-v0.9.12-r2` 仍钉在其收口 `6f780290f`（24 个提交）作为回退点。r3 tag 曾短暂钉在 `ba2a07768f`，在父仓引用前因 #77 Windows 编译修复重切至 `61cb769be`（同日完成，未被任何父仓提交引用） |
 | 升级前回退点 | 公开不可变 tag `pinvou-v0.9.5-r13` → `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 `backup/pre-v0.9.12-sync` 仅作便利引用 |
 | 历史组织 | 上游之上 63 个带 DCO sign-off 的提交，归属 4 个长期主题（T1–T4）+ 3 个追加减量主题（T5 会话归档导出、T6 蜂群限流治理、T8 roster 宿主 profiles 呈现，即 Pinvou/CodeWhale#65 提交主题里的 T7，按 #365 先例在父仓登记时重编号）+ 2 个已合入维护分支的主题（T7 压缩检查点角色兼容；T9 custom wire 运行时路线——底座 #79 随 2026-10-08/09 批次 squash 合入，父仓配套随 #625 落地）；r1 之后 48 个提交经 PR 合入并过必需门禁（2026-10-13 工具箱停用批次为保持提交形态的单提交，随本父仓 PR 进入维护分支）。T8 主题经 Pinvou/CodeWhale#65 落位：原以五个提交随父仓蜂群二期 PR 走保持提交合入以保全钉定 SHA，实际经 squash 合入（`c5fadb86d`）——登记随之改为钉定公开维护分支头（现 `3118c36b8a`），不再钉定合入前的波次 SHA（详见第 13 节教训登记） |
@@ -199,7 +199,7 @@
 - execpolicy deny 表达力 phase-2（#37）：cmd.exe 单字母斜杠旗标（`/f` 形）可跳过而多字符 `/tmp` 类 POSIX 路径保持位置匹配；规则中段 `*` 通配零或多个命令令牌（DFS 有界）；deny 命令词单向折叠一个 `.exe` 后缀；rooted（`/`、`~/`、Windows 盘符）File 路径规则经分隔符/大小写折叠后精确匹配工作区外调用；规则集经 `Arc<RwLock>` 跨克隆活共享（`set_ruleset` 对全部派生执行器生效），`approved_for_session` 刻意克隆私有；subagent 工具调用在执行信封之后过与主线相同的 execpolicy 门（`Block` 镜像主线拒绝文案，`Prompt` 按继承的 auto-approve 姿态裁决），堵住「主线被拒转交子代理」的绕过口。均为嵌入方通用能力，候选上游化。
 - 工具结果可经 `ToolResult.metadata["images"]`（文件路径数组）把图片产物交给视觉模型（#48）：引擎回合循环按与用户附件相同的 `<image path>` 三元组追加到工具结果消息，单结果上限 2 张、5 MB 共享上限、坏图/超数降级为纯文本并 `warn`，错误路径结果不附图；wire builder、会话持久化、压缩与非视觉路由剥离因走既有 `ImageUrl` 块路径而零改动。computer-use 截图回传的基础。
 - 模型面文档与工具门控对齐（#31/#41/#50）：finance 工具两端点 host 前置过 `NetworkPolicyDecider`（`Deny`/未决 `Prompt` fail-closed，与 web_search/speech 同构错误形状）；verifier 背景 metadata 不再教退役工具名 `exec_shell_wait`；notify 工具对 `[notifications].method = "off"` 的合同有回归钉（配置 off 静默但工具结果仍报成功、settings 安装时机、方法变体 round-trip）；Bash 工具描述与 `command` 字段指引由与执行同一 shell dispatcher 派生（PowerShell/Bash/sh/zsh/cmd/fish 各有具体语法指引，Windows PowerShell 不再收到 login-shell 措辞）。
-- 会话工具箱容量上限停用（codewhale-hq/Codewhale#6969）：上游以 8 名/16KiB 有界 LRU 驱逐已激活 deferred 工具且对模型零报告，而 2026-10 定价下每次驱逐都改写请求 tools 数组、以 miss 价（含 Anthropic/Kimi k3/GPT-5.6+ 新增 1.25x–2x 缓存写溢价）重填 system+tools+全部历史，只为省下 ~0.1x 的缓存读；实测驱逐→通知→再搜索→再激活整环 ≈2.5× 全历史 token，且线上事故形态是模型对已静默消失的工具伪造结果。本主题把 `TOOL_ACTIVATION_CACHE_MAX_NAMES`/`MAX_SCHEMA_BYTES` 置为 `usize::MAX`：准入记账与 catalog-shrink 再验证（断连、deny、模式切换、eager 提升、session sync）与上游逐字一致，仅容量上界不再触发；tool_search 超限拒绝文案改为由常量派生，永不与常量矛盾。驱逐经济学与消息内动态工具注入模式已作为上游 #6969 的方向建议提交讨论。
+- 会话工具箱容量上限停用（codewhale-hq/Codewhale#6969，Pinvou/CodeWhale#104）：上游以 8 名/16KiB 有界 LRU 驱逐已激活 deferred 工具且对模型零报告，而 2026-10 定价下每次驱逐都改写请求 tools 数组、以 miss 价（含 Anthropic 1.25x–2x、Kimi k3 1x–2x、GPT-5.6+ 1.25x 缓存写溢价）重填 system+tools+全部历史，只为省下 ~0.1x 的缓存读；实测驱逐→通知→再搜索→再激活整环 ≈2.5× 全历史 token，且线上事故形态是模型对已静默消失的工具伪造结果。本主题把 `TOOL_ACTIVATION_CACHE_MAX_NAMES`/`MAX_SCHEMA_BYTES` 置为 `usize::MAX / 2`（对类型极值的比较会触发 deny-by-default 的 clippy `absurd_extreme_comparisons`，故取一个实际不可达的哨兵值而非字面 `usize::MAX`）：准入记账与 catalog-shrink 再验证（断连、deny、模式切换、eager 提升、session sync）与上游逐字一致，仅容量上界不再触发；tool_search 超限拒绝文案改为由常量派生，永不与常量矛盾。容量上界取消后激活集成为请求 tools 数组的唯一钳制，超大激活集可能逼近 provider 请求尺寸/工具数上限（已如实写入 TOOL_SURFACE.md）。驱逐经济学与消息内动态工具注入模式已作为上游 #6969 的方向建议提交讨论；上游 `activate()` 已演进 priority-aware 批量插入（fork 基线尚无），下次同步需在新代码上重新表述并重论证此分歧。
 
 ### 关键测试
 
@@ -234,6 +234,9 @@
 - `settings_installs_configured_method_from_config`
 - `forkguard_shell_catalog_guidance_matches_execution`
 - `forkguard_deferred_toolbox_bounds_are_disabled`
+- `forkguard_oversized_schema_is_admitted_while_the_bounds_are_disabled`
+- `forkguard_cached_execution_keeps_every_activation_without_granting_uncached_names`
+- `forkguard_small_surface_caches_are_independent_unbounded_and_revalidated`
 
 ## 6. T3 — 嵌入上下文与 Skills 来源
 
