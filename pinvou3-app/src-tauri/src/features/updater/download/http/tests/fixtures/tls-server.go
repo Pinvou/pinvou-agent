@@ -206,6 +206,10 @@ func main() {
 				connection.Close()
 			}
 			return
+		case "/cache-header-wait":
+			// Observe the request above, but send no response headers or bytes.
+			<-r.Context().Done()
+			return
 		case "/cache-cancel-wait":
 			w.Header().Set("Content-Length", "10")
 			w.(http.Flusher).Flush()

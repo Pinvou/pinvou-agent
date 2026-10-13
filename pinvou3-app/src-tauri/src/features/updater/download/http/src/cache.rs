@@ -48,7 +48,7 @@ pub fn receive_cache_body_on_worker<'a>(
     let mut writer = FileSegmentWriter::start(file, body.plan(), permission, &mut cancelled)
         .map_err(CacheReceiveError::Write)?;
     loop {
-        let chunk = runtime.block_on(next_or_cancel(&mut body, &mut cancelled))?;
+        let chunk = runtime.block_on(await_or_cancel(body.next_chunk(), &mut cancelled))?;
         match chunk {
             FileChunk::Data(bytes) => writer
                 .write(&bytes, &mut cancelled)
@@ -61,11 +61,10 @@ pub fn receive_cache_body_on_worker<'a>(
         }
     }
 }
-async fn next_or_cancel<'a>(
-    body: &mut FileBody<'a>,
+pub(super) async fn await_or_cancel<T>(
+    next: impl std::future::Future<Output = Result<T, FileHttpError>>,
     cancelled: &mut impl FnMut() -> bool,
-) -> Result<FileChunk<'a>, CacheReceiveError> {
-    let next = body.next_chunk();
+) -> Result<T, CacheReceiveError> {
     tokio::pin!(next);
     loop {
         if cancelled() {

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 const DELIVERED_CHUNK_BYTES: usize = 65_536;
 
-struct StallLimits {
+pub(super) struct StallLimits {
     connect: Duration,
     read_idle: Duration,
     #[cfg(test)]
@@ -47,7 +47,7 @@ pub async fn fetch<'a>(
     fetch_with_profile(raw_url, request, policy, resolver, StallLimits::default()).await
 }
 
-async fn fetch_with_profile<'a>(
+pub(super) async fn fetch_with_profile<'a>(
     raw_url: &str,
     request: RequestPlan<'a>,
     policy: &dyn DestinationPolicy,

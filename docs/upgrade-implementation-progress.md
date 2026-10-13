@@ -2480,3 +2480,42 @@ Both independent roles gave final B8 scoped PASS after the repaired cancellation
 test and final evidence documents. Each independently passed all thirteen actual
 HTTPS groups (5.64s and 5.72s), 47 wire assertions, fmt/Clippy and diff checks; one
 additionally reran 49 CI policies (0.053s). No mandatory finding remains.
+
+### T29 ninth batch: one restricted GET/cache attempt (2026-10-13)
+
+The immutable request combines the original RequestPlan, URL, current owner policy
+and resolver with mandatory separate replacement approval. A legal original 206
+appends through B8; a legal 200 requires Allow before touching old cache bytes.
+The same actual fetch future remains pinned over cancellation polls during DNS/
+connection/header waits, preserving the original operation timers. A ready result
+observes cancellation again before a write or projection. Restart for 412/416 and
+VerifyExisting leave file bytes/length/cursor unchanged. A complete cache without
+association requests later local B3 verification without requiring URL/DNS, rather
+than pretending that planned length already proves the current file. No retry,
+qualification refresh, URL renewal, new session or deadline reset is performed.
+
+Final real HTTPS regression passed sixteen groups (6.73s) and 55 wire assertions;
+Clippy passed (4.19s). Three new groups cover replacement approval/refusal, short
+range output, 412/416 and mismatched validator preservation, complete-cache local
+verification and immediate-result cancellation, DNS cancellation after an actual
+resolver call marker with one call and positive completed-resolver control, and
+header cancellation against a peer sending no headers/body. The independent wire
+verifier requires that exact header-wait request to reach the peer, preventing a
+pre-DNS/TLS cancellation from masquerading as the pending-header case. Existing
+B8 no-data/EOF cancellation and false-cancel controls passed through the shared
+pinned-future helper. Actual Windows App integration passed all thirteen updater
+tests (0.03s after a 2m45s build). It compiles the new facade; actual HTTPS-to-file
+execution is the isolated fixture, not a full App workflow or App-wide pass.
+
+Standalone/App fmt, 49 CI policies (0.060s), architecture, version and diff checks
+passed. This batch changes no dependency, lock, CI, product version or gitlink.
+Private fixture profiles remain crate-internal; no production CA bypass is exposed.
+Current qualification, immutable-source evidence, protected cache/staging, URL
+renewal/retry coordination, native authenticity/rights and full T29 remain open.
+The owner preserves protection and original T26 validation timing and confirms
+safe worker stop. No total/cumulative download duration or retry cap is imposed.
+Details: [single cache attempt](client-upgrade-single-cache-attempt.md).
+Both independent roles gave final B9 scoped PASS after final App evidence and
+documentation review. Each independently passed sixteen actual HTTPS groups
+(6.25s and 6.44s), 55 wire assertions, fmt/Clippy and diff checks; one additionally
+reran 49 CI policies (0.066s). No mandatory finding remains.

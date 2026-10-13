@@ -10,6 +10,18 @@ pub(crate) async fn fetch_file<'a>(
     pinvou_upgrade_file_http::fetch(url, request, policy, resolver).await
 }
 
+pub(crate) fn fetch_cache_once_on_worker<'a>(
+    runtime: &tokio::runtime::Handle,
+    request: pinvou_upgrade_file_http::CacheFetchRequest<'_, 'a>,
+    file: &mut std::fs::File,
+    cancelled: impl FnMut() -> bool,
+) -> Result<
+    pinvou_upgrade_file_http::CacheFetchOutcome<'a>,
+    pinvou_upgrade_file_http::CacheReceiveError,
+> {
+    pinvou_upgrade_file_http::fetch_cache_once_on_worker(runtime, request, file, cancelled)
+}
+
 pub(crate) fn receive_file_body_on_worker<'a>(
     runtime: &tokio::runtime::Handle,
     body: pinvou_upgrade_file_http::FileBody<'a>,

@@ -1,6 +1,11 @@
 //! Restricted file-plane GET transport. Approval, qualification, immutable source
 //! continuity, physical file protection and final verification remain owner duties.
 
+mod attempt;
+pub use attempt::{
+    CacheFetchOutcome, CacheFetchRequest, ReplacementPermission, fetch_cache_once_on_worker,
+};
+
 mod cache;
 pub use cache::{CacheReceiveError, receive_cache_body_on_worker};
 
