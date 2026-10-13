@@ -12,6 +12,16 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+/// Complete supplied client request contract; never authorization or a sent request.
+pub(crate) fn check_supplied_client_request_bytes(
+    bytes: &[u8],
+    operation: pinvou_upgrade_codec::ClientRequestOperation,
+) -> Result<(), pinvou_upgrade_codec::ClientRequestError> {
+    decode_metadata(bytes)
+        .map_err(pinvou_upgrade_codec::ClientRequestError::Json)?
+        .assert_supplied_client_request_contract(operation)
+}
+
 /// Complete supplied HTTP contract; unit success is structural for errors too.
 pub(crate) fn check_supplied_client_http_response_bytes(
     bytes: &[u8],
@@ -446,6 +456,33 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_checks_request_bytes_without_sending_or_authorizing_them() {
+        use pinvou_upgrade_codec::{
+            ClientRequestError as ContractError, ClientRequestOperation as Op, Error,
+        };
+        let mut status = serde_json::json!({"protocolVersion":1,"product":"pinvou","component":"app",
+            "installationScopeId":"scope-1","purpose":"install","authorizationJti":"jti-1",
+            "consumeKey":"consume-1","transactionId":"transaction-1",
+            "consumeRequestDigest":"a".repeat(64),"recoverySecret":"A".repeat(43)});
+        let check = |v: &serde_json::Value| {
+            check_supplied_client_request_bytes(&serde_json::to_vec(v).unwrap(), Op::ConsumeStatus)
+        };
+        assert_eq!(check(&status), Ok(()));
+        status["recoverySecret"] = serde_json::json!("A".repeat(42) + "B");
+        assert_eq!(check(&status), Err(ContractError::InvalidContract));
+        status["recoverySecret"] = serde_json::json!("A".repeat(43));
+        assert_eq!(check(&status), Ok(()));
+        let duplicate =
+            serde_json::to_string(&status)
+                .unwrap()
+                .replacen("{", r#"{"protocolVersion":1,"#, 1);
+        assert_eq!(
+            check_supplied_client_request_bytes(duplicate.as_bytes(), Op::ConsumeStatus),
+            Err(ContractError::Json(Error::DuplicateKey))
+        );
+    }
 
     #[test]
     fn feature_facade_dispatches_http_contracts_without_interpreting_business_success() {

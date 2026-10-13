@@ -1,6 +1,8 @@
 //! Bounded Upgrade V1 JSON and canonical bytes. Successful decoding is not
 //! signature verification, established Root trust, current eligibility or ACK.
 
+mod client_request;
+pub use client_request::{ClientRequestError, ClientRequestOperation};
 mod client_http_response;
 pub use client_http_response::ClientHttpResponseError;
 mod client_error_response;

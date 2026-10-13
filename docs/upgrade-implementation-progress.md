@@ -9,10 +9,10 @@ client, service, physical platform certification or rollout readiness.
 |---|---|---|
 | T01 | Implemented; independently reviewed and verified | Executable metadata/credential Schemas, byte/trust profile, reference verifier, independently verified fixed vectors and local CLI E2E |
 | T02 | Implemented; independently reviewed and verified | Closed control APIs, publication/lifecycle/selection/quality reference models and regression tests; no production service implementation |
-| T03–T04 | Not completed | Platform/data scope, measured preparation budgets and trustworthy time evidence remain pending; follow the task graph |
+| T03閳ユ彑04 | Not completed | Platform/data scope, measured preparation budgets and trustworthy time evidence remain pending; follow the task graph |
 | T05 | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; actual Keycloak realm acceptance remains pending |
 | T06 | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
-| T07–T47 (including final T43) | Not completed | Follow the task graph; no runtime or certification completion is claimed |
+| T07閳ユ彑47 (including final T43) | Not completed | Follow the task graph; no runtime or certification completion is claimed |
 
 Confirmed implementation decisions (2026-10-09):
 
@@ -4342,5 +4342,57 @@ without mandatory finding and all processes closed. Both final documentation
 reviews passed before commit. No Schema/OpenAPI/profile/vectors/
 dependencies/locks/CI/crypto/trust/limits/VERSION/gitlinks changes. Details:
 [complete HTTP entry](client-upgrade-http-response-entry.md).
+Full T27/real transport/ownership remain unfinished. Downloads retain no
+total/cumulative duration or retry cap.
+
+## T27 thirty-sixth batch - supplied client request contracts (2026-10-14)
+
+Scope: complete original26 client request contracts. Shared exact operation
+catalog alias, fixed frozen request Schemas/exact18 dependencies, whole bounded
+canonical reparse. Module boundaries separate resource/cache, credential/scope
+gates and operation guards. Original supplied semantics max(iat,nbf)/64KiB each,
+full scope and operation-specific digest/purpose/event/evidence rules, reusing
+existing credential semantics and consume digest without alteration.
+Unit success never verifies signatures/current time/read set/owner/object,
+sends a request, consumes/cancels/executes, records quality or erases a secret.
+Later post-auth consume envelope hash binding is deliberately a separate phase.
+Outside-repository actual original Node generated7285 cases over all26/cross
+pairs/surrounding required/scalar/explicit preflighted guard/cap cases. A draft
+preparation negative used a nonexistent epoch field; reading frozen Schema
+corrected it to ownerEpoch before shipment and all guard negatives now preflight
+full Schema/independent credential semantics before exact expected API code.
+Initial integration4/7285 passed in72.72s; test-only signature capacity arithmetic
+replaced iterative appends while retaining actual canonical <=64KiB/next>64KiB
+assertions (production unchanged), then integration4/7285 passed in32.31s,
+resourceunit1 in0.44s (11 unrelated units filtered), Clippy21.91s/fmt passed.
+Independent compatibility review found missing isolated consume identity
+controls, now all3 purposes x3 legal identifiers rebuild the digest, pass
+original Schema/credential semantics and precisely reject consume mismatch,
+then restore. Its requested isolated non-telemetry purpose control was
+impossible: all five original request fields are const. That test draft failed
+original Schema preflight (integration4 failed in47.10s); reading each frozen
+Schema confirmed the boundary and reviewer withdrew this part of the finding.
+Final controls precisely require Schema rejection plus restore, without changing
+production. Root final scope5 passed: integration4/actual original7313 in33.32s,
+resourceunit1 in0.40s (11 unrelated units filtered), Clippy4.06s/fmt passed.
+Actual Windows updater App51 passed in0.37s after2m37s compilation; subsequent
+test-oracle-only correction did not change App production/facade/test source.
+Architecture/version/diff passed; CI policy51 in0.060s.
+Root self-review confirms original26 request acceptance, closed18 resources,
+whole bounded input/each64KiB credential, exact supplied semantics/full scope
+and every operation guard, preflighted isolated error controls and the actual
+Schema-first redundant event-purpose boundary. Existing B6/B18 helpers remain
+unchanged; no later B19 authentication binding or request sending/authority
+was inferred. Unchanged full146/31556 were not repeated. Dependency independent scope5 passed:
+integration4/actual7313 in33.10s, registryunit1 in0.37s/11 filtered,
+Clippy1.72s/codec+App facade format/diff passed. Compatibility independent
+scope5 passed: integration4/actual7313 in32.64s, registryunit1 in0.38s/11 filtered,
+Clippy1.69s/codec+App facade format/diff passed; CI51 in0.044s. Both actual
+Node22/two legacy environments, no old146/31556/App repeat. Both scoped reviews
+passed with no remaining mandatory findings and all processes closed.
+Final documentation closure pending.
+No Schema/OpenAPI/profile/vectors/dependencies/locks/CI/crypto/trust/limits/
+VERSION/gitlinks changes. Details:
+[client requests](client-upgrade-request-contracts.md).
 Full T27/real transport/ownership remain unfinished. Downloads retain no
 total/cumulative duration or retry cap.
