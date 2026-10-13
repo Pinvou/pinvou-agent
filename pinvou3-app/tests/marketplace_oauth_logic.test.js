@@ -17,6 +17,17 @@ const { resolveOAuthInstallOutcome } = ctx;
 const toolName = 'Canva 可画';
 const pendingAuth = { mcp_configured: true, oauth_token_present: false, status: 'config_installed_auth_pending', server_name: 'canva_mcp' };
 const connectedAuth = { mcp_configured: true, oauth_token_present: true, status: 'connected', server_name: 'canva_mcp', message: 'OAuth 授权已完成。' };
+// copy is required (production passes the tri-lingual storeCopy.oauthOutcome);
+// the test uses a local fixture identical to the original zh default.
+const zhOutcomeCopy = {
+  connectedTitle: (name) => `已连接「${name}」`,
+  timeoutTitle: (name) => `${name}授权超时`,
+  cancelledTitle: (name) => `${name}授权已取消`,
+  serviceErrorTitle: (name) => `${name}授权服务错误`,
+  failedTitle: (name) => `${name}授权失败`,
+  tokenMissing: '授权流程返回成功，但本地未检测到 OAuth token，当前不会启用该工具。请重新授权。',
+  incomplete: '授权未完成，请重新连接。',
+};
 
 function assertNoYuandian(value) {
   assert.doesNotMatch(JSON.stringify(value), /元典|华宇元典/);
@@ -31,7 +42,8 @@ assert.doesNotMatch(toolStoreView, /尚未完成元典 OAuth|尚未连接华宇�
 const pending = resolveOAuthInstallOutcome(
   toolName,
   { status: 'timeout', message: '授权超时', server_name: 'canva_mcp' },
-  pendingAuth
+  pendingAuth,
+  zhOutcomeCopy
 );
 assert.strictEqual(pending.connected, false);
 assert.strictEqual(pending.authState.status, 'timeout');
@@ -44,7 +56,8 @@ assertNoYuandian(pending);
 const falseSuccess = resolveOAuthInstallOutcome(
   toolName,
   { status: 'connected', message: 'ok', server_name: 'canva_mcp' },
-  pendingAuth
+  pendingAuth,
+  zhOutcomeCopy
 );
 assert.strictEqual(falseSuccess.connected, false);
 assert.strictEqual(falseSuccess.authState.status, 'auth_failed');
@@ -56,7 +69,8 @@ assertNoYuandian(falseSuccess);
 const connected = resolveOAuthInstallOutcome(
   toolName,
   { status: 'connected', message: 'ok', server_name: 'canva_mcp' },
-  connectedAuth
+  connectedAuth,
+  zhOutcomeCopy
 );
 assert.strictEqual(connected.connected, true);
 assert.strictEqual(connected.authState.status, 'connected');
@@ -68,7 +82,8 @@ assertNoYuandian(connected);
 const timeoutAtCallbackBoundary = resolveOAuthInstallOutcome(
   toolName,
   { status: 'timeout', message: '授权超时', server_name: 'canva_mcp' },
-  connectedAuth
+  connectedAuth,
+  zhOutcomeCopy
 );
 assert.strictEqual(timeoutAtCallbackBoundary.connected, true);
 assert.strictEqual(timeoutAtCallbackBoundary.authState.oauth_token_present, true);
@@ -78,7 +93,8 @@ assertNoYuandian(timeoutAtCallbackBoundary);
 const cancelled = resolveOAuthInstallOutcome(
   toolName,
   { status: 'cancelled', message: '已取消等待浏览器授权', server_name: 'canva_mcp' },
-  pendingAuth
+  pendingAuth,
+  zhOutcomeCopy
 );
 assert.strictEqual(cancelled.connected, false);
 assert.strictEqual(cancelled.authState.status, 'cancelled');
@@ -91,7 +107,8 @@ assertNoYuandian(cancelled);
 const serviceError = resolveOAuthInstallOutcome(
   toolName,
   { status: 'service_error', message: 'OAuth 授权服务返回错误或 404', server_name: 'canva_mcp' },
-  pendingAuth
+  pendingAuth,
+  zhOutcomeCopy
 );
 assert.strictEqual(serviceError.connected, false);
 assert.strictEqual(serviceError.authState.status, 'service_error');
@@ -102,7 +119,8 @@ assertNoYuandian(serviceError);
 const providerError = resolveOAuthInstallOutcome(
   toolName,
   { status: 'provider_error', message: 'OAuth 授权服务拒绝了本次授权', server_name: 'canva_mcp' },
-  pendingAuth
+  pendingAuth,
+  zhOutcomeCopy
 );
 assert.strictEqual(providerError.connected, false);
 assert.strictEqual(providerError.authState.status, 'provider_error');

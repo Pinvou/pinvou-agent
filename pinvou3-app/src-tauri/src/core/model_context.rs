@@ -108,15 +108,6 @@ const PINVOU_KNOWN: &[(&str, u32)] = &[
     // The Kimi K3 direct-platform model is officially rated at 1M tokens
     // (platform.kimi.com/docs/models).
     ("kimi-k3", 1_048_576),
-    // The Coding Plan bare-k3 window depends on the plan; the base records the
-    // safe 256K value and 1M plans should configure it explicitly.
-    // kimi-for-coding-highspeed belongs to K2.7 Code HighSpeed, officially 256K;
-    // bare kimi-for-coding is corrected to 1M by PINVOU_OVERRIDES since it
-    // started serving K2.8 Preview (see that table). The identical highspeed
-    // row here is unreachable while the override exists (OVERRIDES resolve
-    // first); it documents the official figure at the supplemental layer in
-    // case the override is ever retired.
-    ("kimi-for-coding-highspeed", 262_144),
     ("kimi-k2.7-code-highspeed", 262_144),
     // Alibaba Cloud's official docs give qwen3.7-plus/max/flash a 1M context.
     ("qwen3.7-plus", 1_000_000),

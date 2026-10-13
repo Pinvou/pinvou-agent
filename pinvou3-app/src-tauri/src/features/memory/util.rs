@@ -26,11 +26,15 @@ pub(super) fn clean_scalar(value: &str) -> String {
     clean_text(value, 200)
 }
 
+/// Collapse consecutive whitespace into single spaces (no length cap).
+/// `clean_text` = this function + truncation; render's snapshot-line assembly
+/// only needs the uncapped version.
+pub(super) fn collapse_whitespace(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 pub(super) fn clean_text(value: &str, max_chars: usize) -> String {
-    value
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    collapse_whitespace(value)
         .trim()
         .chars()
         .take(max_chars)
@@ -655,24 +659,41 @@ pub(super) fn looks_ongoing_work_status(value: &str) -> bool {
         .any(|needle| value.contains(needle))
 }
 
+/// Single source for the "delivery / work completed" CJK needles: shared by
+/// the timed-store status probe (`looks_completed_work_status`) and the LLM
+/// review's delivery trigger (`assistant_suggests_delivery_complete`); one
+/// const keeps the two probes from drifting (previously "已经交付" only
+/// triggered the review trigger).
+pub(super) const COMPLETED_WORK_STATUS_NEEDLES: [&str; 25] = [
+    "已完成",
+    "已经完成",
+    "完成了",
+    "刚完成",
+    "已生成",
+    "已经生成",
+    "生成了",
+    "写好了",
+    "写完",
+    "整理好了",
+    "已整理",
+    "已经整理",
+    "整理完",
+    "已实现",
+    "已经实现",
+    "实现了",
+    "已修复",
+    "已经修复",
+    "修复了",
+    "已交付",
+    "已经交付",
+    "交付了",
+    "已更新",
+    "已经更新",
+    "更新了",
+];
+
 pub(super) fn looks_completed_work_status(value: &str) -> bool {
-    [
-        "刚完成",
-        "已完成",
-        "完成了",
-        "已生成",
-        "生成了",
-        "已实现",
-        "实现了",
-        "已修复",
-        "修复了",
-        "已交付",
-        "交付了",
-        "写完",
-        "整理完",
-        "已整理",
-        "整理好了",
-    ]
-    .iter()
-    .any(|needle| value.contains(needle))
+    COMPLETED_WORK_STATUS_NEEDLES
+        .iter()
+        .any(|needle| value.contains(needle))
 }

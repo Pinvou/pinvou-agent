@@ -62,13 +62,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use super::super::backend::ComputerUseBackend;
+use super::super::guard::raw_element_binding;
 use super::super::types::{
     Capabilities, Capture, ComputerUseError, ElementInfo, Key, MouseButton, ScrollDirection,
     UiTreeOptions,
 };
 use super::helpers::{
     MAX_SCROLL_CLICKS, combine_drag_errors, drag_waypoints, normalize_typed_newlines,
-    sanitize_name, screening_name,
+    sanitize_name, screening_hit,
 };
 use super::wayland_portal::{self, PortalInput};
 
@@ -404,11 +405,17 @@ async fn screen_extents(
 }
 
 /// Strict extents: hit-testing relies on window extents to decide "is the
-/// point inside this window", so a query failure must be propagated (clearly
-/// distinct from the "no element" Ok(None) — Ok(None) is let through by the
-/// tool layer under the None policy); it must not continue as "the window
-/// does not cover the point", swallowing a query failure into a pass
-/// justification.
+/// point inside this window", so an undecidable window must be reported as a
+/// query failure (clearly distinct from the "no element" Ok(None) — Ok(None)
+/// is let through by the tool layer under the None policy). It must never be
+/// answered as "the window does not cover the point", which would swallow a
+/// query failure into a pass justification.
+///
+/// What the *caller* does with that failure is the caller's decision, and
+/// `element_at_point_async` deliberately does not propagate every one of them:
+/// a non-active window that cannot be decided is skipped so a single hidden
+/// helper cannot disable screening for the whole desktop. This function's
+/// contract is only that the failure is never disguised as a negative answer.
 async fn screen_extents_strict(
     conn: &zbus::Connection,
     proxy: &AccessibleProxy<'_>,
@@ -444,7 +451,11 @@ async fn screen_extents_strict(
 /// exclusive). Pure function, easy to unit-test.
 fn extents_contain(extents: (i32, i32, i32, i32), x: i32, y: i32) -> bool {
     let (wx, wy, ww, wh) = extents;
-    x >= wx && x < wx + ww && y >= wy && y < wy + wh
+    // saturating_add: the extents are app-reported and a hostile (or broken)
+    // window can name coordinates near i32::MAX; release builds wrap instead
+    // of panicking, which would corrupt the containment test in the
+    // attacker's favor.
+    x >= wx && x < wx.saturating_add(ww) && y >= wy && y < wy.saturating_add(wh)
 }
 
 /// All application top-level windows under the registry root (active or
@@ -520,16 +531,33 @@ async fn app_windows<'a>(
 }
 
 /// Moves the window with `State::Active` to the front (hit-testing prefers
-/// the active window).
-async fn active_first(windows: &mut [AccessibleProxy<'_>]) {
+/// the active window). Returns whether an active window was found, so the
+/// caller can tell "index 0 is the active window" from "index 0 is merely
+/// first on the bus" — bus order is not z-order, so that distinction is the
+/// only ordering signal available here. A failed state query is remembered
+/// and returned alongside: "no window claims Active" and "we failed to ask"
+/// are different facts, and only the first licenses the bus-order
+/// fall-through (the same rule `focused_element_async` applies).
+async fn active_first(windows: &mut [AccessibleProxy<'_>]) -> (bool, Option<ComputerUseError>) {
+    let mut state_fault = None;
     for (index, window) in windows.iter().enumerate() {
-        if let Ok(state) = window.get_state().await {
-            if state.contains(State::Active) {
-                windows.swap(0, index);
-                return;
+        match window.get_state().await {
+            Ok(state) => {
+                if state.contains(State::Active) {
+                    windows.swap(0, index);
+                    return (true, None);
+                }
+            }
+            Err(error) => {
+                if state_fault.is_none() {
+                    state_fault = Some(ComputerUseError::unavailable(format!(
+                        "AT-SPI window state query: {error}"
+                    )));
+                }
             }
         }
     }
+    (false, state_fault)
 }
 
 /// Builds an [`ElementInfo`] from an AccessibleProxy.
@@ -556,18 +584,30 @@ async fn element_info_of(
     // screening copy must respect that erasure and never re-introduce the
     // raw text through a side channel — secure fields always confirm via the
     // password screen anyway.
-    let (name, screening) = if secure {
-        (String::new(), None)
+    let (name, name_screening_hit, raw_name) = if secure {
+        // The erasure below must extend to the raw binding too: it exists to
+        // keep a secure field's raw text from re-entering anything through a
+        // side channel, so the binding hashes the erased identity (secure
+        // fields always confirm via the password screen anyway). The cost,
+        // accepted: every secure field on the desktop binds the identical
+        // `hash("", role)` — a token approved on one password field would
+        // also spend on another. macOS/Windows keep twin detection by hashing
+        // the raw *label* (a password field's accessible name is its label,
+        // not its content); on Linux the AT-SPI name can carry the content
+        // itself, so the erasure wins.
+        (String::new(), false, String::new())
     } else {
         let raw = proxy.name().await.unwrap_or_default();
-        let display_name = sanitize_name(&raw, MAX_NAME_CHARS);
-        let screening = screening_name(&raw, &display_name);
-        (display_name, screening)
+        let hit = screening_hit(&raw);
+        let display = sanitize_name(&raw, MAX_NAME_CHARS);
+        (display, hit, raw)
     };
+    let raw_binding = raw_element_binding(&raw_name, role.name());
     let (x, y, width, height) = screen_extents(conn, proxy).await.unwrap_or(fallback_bounds);
     ElementInfo {
         role: role.name().to_string(),
-        screening_name: screening,
+        name_screening_hit,
+        raw_binding,
         name,
         x,
         y,
@@ -677,9 +717,10 @@ async fn ui_tree_async(
     };
 
     // Observation path: best-effort enumeration (a single hung app is
-    // skipped).
+    // skipped); the state-fault half of the result is irrelevant here, the
+    // tree only borrows the ordering.
     let mut windows = app_windows(conn, &root, false).await?;
-    active_first(&mut windows).await;
+    let _ = active_first(&mut windows).await;
     if let Some(active) = windows.first() {
         if let Ok(state) = active.get_state().await {
             if state.contains(State::Active) {
@@ -704,18 +745,37 @@ async fn ui_tree_async(
 /// Hit test. The two outcomes have clearly distinct semantics (the review's
 /// fail-open fix):
 /// - `Ok(None)`: **no element** — none of the enumerated windows covers the
-///   point, the AT-SPI hit inside the covering window is empty (null
-///   ObjectRef), **or the reachable tree is empty** (the registry answers but
-///   no application registered — the normal state when the target app's
-///   toolkit a11y is disabled). An empty tree and "the element is not at this
-///   point" are indistinguishable here; both are let through under the
-///   mainstream None policy (no element → no forced confirmation); this is a
-///   policy statement, not a screening proof.
+///   point, or the reachable tree is empty (the registry answers but no
+///   application registered — the normal state when the target app's
+///   toolkit a11y is disabled). An empty tree and "the element is not at
+///   this point" are indistinguishable here; both are let through under the
+///   mainstream None policy (no element → no forced confirmation); this is
+///   a policy statement, not a screening proof. A **null hit** (the
+///   covering window answers with an empty ObjectRef) is deliberately *not*
+///   this outcome: the window's extents contained the point, so "nothing
+///   here" is not proven and the search falls through to the windows
+///   behind — conservative, in the same direction as the extents
+///   skip-and-remember below.
 /// - `Err`: **query failure** — a breakdown in any link of root/app/window
-///   enumeration, extents, or the hit query is propagated; a query fault is
-///   never swallowed into Ok(None)'s "no element" pass justification; how
-///   screening handles faults (let it execute, no confirmation) is decided
-///   uniformly by the tool layer.
+///   enumeration or the hit query is propagated, as is the **active**
+///   window's extents fault, and as is a **window-state fault when no
+///   window claimed Active** (we cannot distinguish "no active window"
+///   from "the active window failed to answer", so any answer would risk
+///   naming the occluded element behind it; `focused_element_async` raises
+///   the same way). A non-active window's extents fault is deliberately
+///   skipped-and-remembered (see below) and surfaces as `Err` only when no
+///   window answered the point; how screening handles faults (let it
+///   execute, no confirmation) is decided uniformly by the tool layer.
+///
+/// Ordering limitation, architectural: AT-SPI exposes no z-order, so
+/// "active first, then bus order" is the only signal, and the first
+/// extents-containing window answers even when a non-active overlay
+/// (notification toast, always-on-top panel) actually covers the point —
+/// the occluded element of the window *behind* it is then what gets named
+/// and bound. A hostile app can also self-report `Active` on an invisible
+/// window (below). Surfacing a degraded-screening state instead of the
+/// tool layer's silent Clear is a product decision, tracked with the
+/// other disclosure items.
 async fn element_at_point_async(
     conn: &zbus::Connection,
     x: i32,
@@ -723,11 +783,57 @@ async fn element_at_point_async(
 ) -> Result<Option<ElementInfo>, ComputerUseError> {
     let root = root_accessible(conn).await?;
     let mut windows = app_windows(conn, &root, true).await?;
-    active_first(&mut windows).await;
-    for window in &windows {
-        // extents failure → containment undecidable → query failure (no
-        // continue).
-        let extents = screen_extents_strict(conn, window).await?;
+    let (has_active, state_fault) = active_first(&mut windows).await;
+    // A state-query fault means the enumeration cannot tell "no window is
+    // active" from "the active window failed to answer": answering from
+    // whichever window is listed first (or reports extents) risks binding
+    // the approval token to the occluded element behind a window we failed
+    // to identify. Raise the fault instead of guessing — the tool layer
+    // fails open on Err, so the cost is the disclosed degraded-screening
+    // posture, never a wedge.
+    if !has_active {
+        if let Some(fault) = state_fault {
+            return Err(fault);
+        }
+    }
+    // One undecidable window must not abandon the whole hit test. AT-SPI
+    // reports all-zero extents for unmapped top-levels — and commonly for
+    // every window on Wayland — while `app_windows` enumerates without a
+    // visibility filter, so propagating the first extents failure meant a
+    // single hidden helper window anywhere on the bus disabled coordinate
+    // screening for the entire desktop, which the tool layer then reads as
+    // Clear. Skip the undecidable window, remember the fault, and surface it
+    // only when no window produced an answer.
+    //
+    // The **active** window is the one exception. Skipping it and letting a
+    // window behind it answer does not just lose screening, it screens the
+    // wrong element: on a mixed session a native-Wayland foreground window
+    // reports zero extents while an XWayland window underneath reports real
+    // ones, so the hit test would return the occluded element — and this
+    // backend's verdict now also names the target in the consent dialog and
+    // binds the approval token to it. Reporting the fault is honest; a
+    // confident wrong answer is not.
+    //
+    // Residual, deliberate: the active state is app-self-reported over
+    // AT-SPI, and the carve-out only protects against an *honest* foreground
+    // app. A hostile app can withhold `Active` and report zero extents for
+    // itself, letting the fall-through bind the approval to an occluded
+    // element — but the same app controls its own AT-SPI answers more
+    // cheaply than that, so the carve-out's trust level matches the bus.
+    let mut first_fault = None;
+    for (index, window) in windows.iter().enumerate() {
+        let extents = match screen_extents_strict(conn, window).await {
+            Ok(extents) => extents,
+            Err(error) => {
+                if has_active && index == 0 {
+                    return Err(error);
+                }
+                if first_fault.is_none() {
+                    first_fault = Some(error);
+                }
+                continue;
+            }
+        };
         if !extents_contain(extents, x, y) {
             continue; // definitively does not cover the point.
         }
@@ -752,7 +858,15 @@ async fn element_at_point_async(
         let info = element_info_of(conn, &target, (x, y, 0, 0)).await;
         return Ok(Some(info));
     }
-    Ok(None)
+    // No window covered the point. If some window was undecidable, the answer
+    // is "query failure", not "nothing there" — a definitive negative from
+    // another window (`continue` above) does not clear the fault, because the
+    // undecidable window may still have covered the point and "nothing here"
+    // from one window is not proof the point is empty.
+    match first_fault {
+        Some(error) => Err(error),
+        None => Ok(None),
+    }
 }
 
 /// Focused element. atspi 0.30's proxy layer has no GetFocusedObject-style
@@ -2919,10 +3033,22 @@ mod x11_live_tests {
 
     use super::*;
     use crate::features::computer_use::backend::BackendHandle;
-    use crate::features::computer_use::guard::{ComputerUseShared, ConfirmationCheck};
+    use crate::features::computer_use::guard::ComputerUseShared;
     use crate::features::computer_use::tool::{ComputerUseEventSink, ComputerUseTool};
     use crate::features::computer_use::types::{EVENT_CONFIRM_REQUIRED, EVENT_GRANT_REQUIRED};
     use deepseek_tui::tools::spec::{ToolContext, ToolSpec};
+
+    /// Validate-then-consume, mirroring what the tool does around its
+    /// target re-screen. Returns the approved element label on success.
+    fn spend(shared: &ComputerUseShared, confirm_id: &str, summary: &str) -> Option<String> {
+        let (label, _element_binding) =
+            shared.peek_confirmation(confirm_id, SESSION, summary, 0)?;
+        assert!(
+            shared.consume_confirmation(confirm_id),
+            "a peeked token must still be there to consume"
+        );
+        Some(label)
+    }
     use serde_json::{Value, json};
     use std::process::Command;
     use std::sync::{Arc, Mutex as StdMutex};
@@ -3347,13 +3473,11 @@ mod x11_live_tests {
         let summary = "left click x1 at Some((200, 300))";
         let confirm_id = fx
             .shared
-            .new_pending_confirmation(SESSION, summary, "Live", 0)
+            .new_pending_confirmation(SESSION, summary, "Live", 0, 0)
             .expect("pending registered");
         assert!(fx.shared.pending_confirmation(&confirm_id).is_some());
-        assert_eq!(
-            fx.shared
-                .take_confirmation(&confirm_id, SESSION, summary, 0),
-            ConfirmationCheck::Unknown,
+        assert!(
+            spend(&fx.shared, &confirm_id, summary).is_none(),
             "an un-minted token must not be spendable"
         );
         assert!(
@@ -3361,15 +3485,12 @@ mod x11_live_tests {
             "minting must succeed while the pending exists"
         );
         assert_eq!(
-            fx.shared
-                .take_confirmation(&confirm_id, SESSION, summary, 0),
-            ConfirmationCheck::Granted,
-            "the minted token must be spendable"
+            spend(&fx.shared, &confirm_id, summary).as_deref(),
+            Some("Live"),
+            "the minted token must be spendable and carry the approved target"
         );
-        assert_eq!(
-            fx.shared
-                .take_confirmation(&confirm_id, SESSION, summary, 0),
-            ConfirmationCheck::Unknown,
+        assert!(
+            spend(&fx.shared, &confirm_id, summary).is_none(),
             "the token is single-use"
         );
         // The bookkeeping performs no injection: the pointer must still be
@@ -3480,7 +3601,7 @@ mod x11_live_tests {
         // element is reachable here, so the guard API is used directly).
         let confirm_id = fx
             .shared
-            .new_pending_confirmation(SESSION, "left click x1 at Some((300, 200))", "Live", 0)
+            .new_pending_confirmation(SESSION, "left click x1 at Some((300, 200))", "Live", 0, 0)
             .expect("pending registered");
         assert!(fx.shared.pending_confirmation(&confirm_id).is_some());
 

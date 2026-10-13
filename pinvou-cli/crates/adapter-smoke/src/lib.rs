@@ -1,12 +1,11 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
-use std::future::Future;
-use std::pin::Pin;
 use std::time::Duration;
 
 use agent_backend_api::{
     AgentBackendError, PrivateInputHandle, PrivateInputResolver, ResolvedPrivateInput, SecretText,
 };
+use async_trait::async_trait;
 use benchmark_core::{
     BenchmarkAdapter, BenchmarkDescriptor, BenchmarkError, BenchmarkId, BenchmarkPlan,
     BenchmarkTask, CompletedRun, ExecutionKind, ExecutionRequest, OfficialScoreReport,
@@ -149,23 +148,13 @@ impl fmt::Debug for SmokePrivateInputs {
     }
 }
 
+#[async_trait]
 impl PrivateInputResolver for SmokePrivateInputs {
-    fn resolve<'life0, 'life1, 'async_trait>(
-        &'life0 self,
-        handle: &'life1 PrivateInputHandle,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<ResolvedPrivateInput, AgentBackendError>>
-                + Send
-                + 'async_trait,
-        >,
-    >
-    where
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-        Self: 'async_trait,
-    {
-        Box::pin(async move { self.resolve_handle(handle) })
+    async fn resolve(
+        &self,
+        handle: &PrivateInputHandle,
+    ) -> Result<ResolvedPrivateInput, AgentBackendError> {
+        self.resolve_handle(handle)
     }
 }
 
@@ -283,7 +272,6 @@ impl SmokeUsage {
 
 #[derive(Clone, Default)]
 pub struct SmokeAnalysisMaterial {
-    tool_names: Vec<String>,
     tool_events: Vec<SmokeToolEvent>,
     usage: Option<SmokeUsage>,
 }
@@ -296,23 +284,13 @@ impl SmokeAnalysisMaterial {
             .map(|name| SmokeToolEvent::new(name, false))
             .collect();
         Self {
-            tool_names,
             tool_events,
             usage: None,
         }
     }
 
     pub fn with_details(tool_events: Vec<SmokeToolEvent>, usage: Option<SmokeUsage>) -> Self {
-        let tool_names = tool_events.iter().map(|event| event.name.clone()).collect();
-        Self {
-            tool_names,
-            tool_events,
-            usage,
-        }
-    }
-
-    pub fn tool_names(&self) -> &[String] {
-        &self.tool_names
+        Self { tool_events, usage }
     }
 
     pub fn tool_events(&self) -> &[SmokeToolEvent] {
@@ -428,9 +406,6 @@ pub struct RuleAnalysis {
 impl RuleAnalysis {
     pub fn findings(&self) -> &[SmokeFinding] {
         &self.findings
-    }
-    pub fn limitations(&self) -> &[String] {
-        &self.limitations
     }
 }
 

@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 agent-backend-api = { path = "../agent-backend-api" }
+async-trait.workspace = true
 benchmark-core = { path = "../benchmark-core" }
 serde.workspace = true
 

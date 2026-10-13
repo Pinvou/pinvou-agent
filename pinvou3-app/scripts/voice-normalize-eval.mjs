@@ -35,6 +35,8 @@ import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
 
+import { percentile } from '../src/features/browser/browser-performance.mjs';
+
 const DEFAULT_CASES_PATH = 'tests/fixtures/voice-normalize-labeled-samples.json';
 const VOICE_BRIDGE_PATH = 'src/platform/tauri/bridge/voice.js';
 const VOICE_RUST_PATH = 'src-tauri/src/app/commands/voice.rs';
@@ -481,13 +483,6 @@ async function callOpenAiCompatible(correctedText, rawText, mode, production, ll
   return { output, llm_ms: Math.round(performance.now() - started), source: config.source };
 }
 
-function percentileNearest(values, p) {
-  const nums = values.filter(value => Number.isFinite(value)).sort((a, b) => a - b);
-  if (!nums.length) return null;
-  const idx = Math.ceil((p / 100) * nums.length) - 1;
-  return nums[Math.max(0, Math.min(nums.length - 1, idx))];
-}
-
 function runClassifyCheck(cases, production) {
   const rows = cases.map(testCase => {
     const classified = production.classifyVoiceText(testCase.raw, testCase.mode);
@@ -621,7 +616,7 @@ async function main() {
     estimated_manual_edit_rate: scored.length ? `${scored.length - usableCount}/${scored.length} = ${((1 - usableCount / scored.length) * 100).toFixed(1)}%` : 'N/A',
     llm_call_rate: scored.length ? `${llmCalledCount}/${scored.length} = ${(llmCalledCount / scored.length * 100).toFixed(1)}%` : 'N/A',
     fallback_rate: scored.length ? `${fallbackCount}/${scored.length} = ${(fallbackCount / scored.length * 100).toFixed(1)}%` : 'N/A',
-    llm_p90: percentileNearest(scored.map(row => row.llm_ms), 90),
+    llm_p90: percentile(scored.map(row => row.llm_ms).filter(Number.isFinite), 0.9),
   };
   console.log(JSON.stringify(summary, null, 2));
 

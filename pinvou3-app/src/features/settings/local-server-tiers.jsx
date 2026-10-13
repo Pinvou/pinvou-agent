@@ -121,14 +121,6 @@ export function useModelReasoningTierState({ model, storedEffort = null, baseUrl
   return { isLocalCompatible, probedKind, probePending, reasoningEffortTiers, noControlThinking, reasoningEffortDisplay };
 }
 
-// zh fallback strings for the tier hints: same semantics as the i18n copy, used only when
-// t.uiSettingsDetail lacks the key (matching the inline fallbacks at both call sites before extraction).
-const TIER_FALLBACK_COPY = {
-  pending: '正在探测服务类型…',
-  alwaysOn: '该模型思考始终开启，无法关闭',
-  unsupported: '该端点不支持思考档位调节',
-};
-
 // Tier pill selector: non-empty tiers render the pill group, empty tiers render a hint line ("probing"/"always
 // on"/"unsupported"). variant only switches layout and tone (composer = compact session-popover pills, form =
 // right-aligned form row); the DOM structure and class strings are verbatim from the two original implementations.
@@ -145,10 +137,10 @@ export function ReasoningTierPicker({ t, tiers, selected, onSelect, pending, noC
   if (!Array.isArray(tiers) || tiers.length === 0) {
     const detail = (t && t.uiSettingsDetail) || {};
     const text = pending
-      ? (detail.reasoningProbePending || TIER_FALLBACK_COPY.pending)
+      ? detail.reasoningProbePending
       : noControlThinking
-        ? (detail.reasoningThinkingAlwaysOn || TIER_FALLBACK_COPY.alwaysOn)
-        : (detail.reasoningProbeUnsupported || TIER_FALLBACK_COPY.unsupported);
+        ? detail.reasoningThinkingAlwaysOn
+        : detail.reasoningProbeUnsupported;
     const tone = pending
       ? (variant === 'form' ? 'text-[#8A8A8E] dark:text-[#98989D]' : 'text-gray-400 dark:text-gray-500')
       : 'text-[#FF9500] dark:text-[#FFB340]';

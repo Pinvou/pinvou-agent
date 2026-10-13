@@ -4,10 +4,6 @@ import {
 } from './structured-assistant-content.js';
 import { createTurndownService } from '../../shared/turndown-factory.js';
 
-// Test seam: tests/assistant_message_actions.test.mjs imports copyClipboardText
-// from this module, so the re-export from shared/clipboard.js must stay.
-export { copyClipboardText } from '../../shared/clipboard.js';
-
 // 旧 HTML 会话复制为 Markdown 的转换器懒加载缓存。
 let legacyHtmlConverter = null;
 let legacyConverterLoading = null;
@@ -90,8 +86,6 @@ export function readClipboardText() {
   }
   return Promise.resolve('');
 }
-
-export { normalizeAssistantMessageText };
 
 // 旧 HTML 会话的复制走异步转换(turndown 懒加载后执行);text 直存的新会话
 // 在同一函数内走同步路径,不触发懒加载。

@@ -755,17 +755,6 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         Ok(true)
     }
 
-    pub fn create_tab(
-        &mut self,
-        app: &tauri::AppHandle,
-        session_id: &str,
-        tab_token: &str,
-        url: &str,
-        background: bool,
-    ) -> Result<Option<String>, String> {
-        self.create_user_tab(app, session_id, tab_token, url, background)
-    }
-
     /// Wrapper tab creation must carry the same host lease as the currently
     /// visible page. A WebView may be staged while hidden, but must CAS-commit
     /// under the control lock before workspace registration. If user takeover
@@ -1052,7 +1041,41 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         Ok(true)
     }
 
-    fn create_user_tab(
+    /// Shared rollback scaffold for failed user mutations. Callers revert their
+    /// own tab-registry and active-tab state first; this publishes the revert
+    /// as a NEW User control revision (never rewinding control to its
+    /// pre-failure value, so every old lease or event that observed the failed
+    /// mutation becomes stale), persists the reverted mapping best-effort,
+    /// redisplays the active workspace best-effort, then broadcasts the
+    /// rollback snapshot. `staged_label` optionally closes a staged WebView
+    /// between the revision bump and persistence (create path). Full per-site
+    /// log messages are passed in so existing log triage and the source
+    /// contract pins keep working unchanged.
+    fn rollback_user_mutation_and_redisplay(
+        app: &tauri::AppHandle,
+        workspace: &mut Workspace,
+        session_id: &str,
+        control: &WorkspaceControl,
+        staged_label: Option<&str>,
+        mapping_failure_message: &str,
+        display_failure_message: &str,
+    ) {
+        let rollback = control.bump(Some(NativeControlOwner::User));
+        if let Some(label) = staged_label {
+            if let Some(webview) = app.get_webview(label) {
+                let _ = webview.close();
+            }
+        }
+        if let Err(restore_error) = persist_workspace_snapshot(workspace, rollback.revision) {
+            eprintln!("[browser] {mapping_failure_message}: {restore_error}");
+        }
+        if let Err(restore_error) = show_active_workspace(app, workspace) {
+            eprintln!("[browser] {display_failure_message}: {restore_error}");
+        }
+        emit_control_changed(app, session_id, &workspace.active_tab, rollback);
+    }
+
+    pub fn create_tab(
         &mut self,
         app: &tauri::AppHandle,
         session_id: &str,
@@ -1154,22 +1177,15 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             if let Err(error) = show_active_workspace(app, workspace) {
                 let _ = workspace.tabs.remove_token(tab_token);
                 workspace.active_tab = previous_active;
-                let rollback = control.bump(Some(NativeControlOwner::User));
-                if let Some(webview) = app.get_webview(&created_label) {
-                    let _ = webview.close();
-                }
-                if let Err(restore_error) = persist_workspace_snapshot(workspace, rollback.revision)
-                {
-                    eprintln!(
-                        "[browser] Failed to roll back user-created tab mapping: {restore_error}"
-                    );
-                }
-                if let Err(restore_error) = show_active_workspace(app, workspace) {
-                    eprintln!(
-                        "[browser] Failed to roll back user-created tab display: {restore_error}"
-                    );
-                }
-                emit_control_changed(app, session_id, &workspace.active_tab, rollback);
+                Self::rollback_user_mutation_and_redisplay(
+                    app,
+                    workspace,
+                    session_id,
+                    &control,
+                    Some(&created_label),
+                    "Failed to roll back user-created tab mapping",
+                    "Failed to roll back user-created tab display",
+                );
                 return Err(error);
             }
         }
@@ -1570,23 +1586,15 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
             if let Some(app) = visible_app {
                 if let Err(error) = show_active_workspace(app, workspace) {
                     workspace.active_tab = previous_active;
-                    // Never rewind control revision to its pre-failure value.
-                    // Publish rollback as a new User mutation so every old lease
-                    // or event that observed the failed activation becomes stale.
-                    let rollback = control.bump(Some(NativeControlOwner::User));
-                    if let Err(restore_error) =
-                        persist_workspace_snapshot(workspace, rollback.revision)
-                    {
-                        eprintln!(
-                            "[browser] Failed to roll back user tab activation mapping: {restore_error}"
-                        );
-                    }
-                    if let Err(restore_error) = show_active_workspace(app, workspace) {
-                        eprintln!(
-                            "[browser] Failed to roll back user tab activation display: {restore_error}"
-                        );
-                    }
-                    emit_control_changed(app, session_id, &workspace.active_tab, rollback);
+                    Self::rollback_user_mutation_and_redisplay(
+                        app,
+                        workspace,
+                        session_id,
+                        &control,
+                        None,
+                        "Failed to roll back user tab activation mapping",
+                        "Failed to roll back user tab activation display",
+                    );
                     return Err(error);
                 }
             }
@@ -2575,20 +2583,15 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
                     if let Err(error) = show_active_workspace(app, workspace) {
                         let _ = workspace.tabs.remove_token(tab_token);
                         workspace.active_tab = previous_active;
-                        let rollback = control.bump(Some(NativeControlOwner::User));
-                        if let Err(restore_error) =
-                            persist_workspace_snapshot(workspace, rollback.revision)
-                        {
-                            eprintln!(
-                                "[browser] Failed to roll back user pending-tab display mapping: {restore_error}"
-                            );
-                        }
-                        if let Err(restore_error) = show_active_workspace(app, workspace) {
-                            eprintln!(
-                                "[browser] Failed to roll back user pending-tab physical surface: {restore_error}"
-                            );
-                        }
-                        emit_control_changed(app, session_id, &workspace.active_tab, rollback);
+                        Self::rollback_user_mutation_and_redisplay(
+                            app,
+                            workspace,
+                            session_id,
+                            &control,
+                            None,
+                            "Failed to roll back user pending-tab display mapping",
+                            "Failed to roll back user pending-tab physical surface",
+                        );
                         return Err(error);
                     }
                 }

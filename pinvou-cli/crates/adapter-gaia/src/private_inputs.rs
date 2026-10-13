@@ -1,12 +1,11 @@
 use std::fmt;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 
 use agent_backend_api::{
     AgentBackendError, AttachmentHandle, PrivateInputHandle, PrivateInputResolver,
     ResolvedAttachmentSource, ResolvedPrivateInput, SecretText,
 };
+use async_trait::async_trait;
 
 use crate::GaiaDataset;
 
@@ -96,41 +95,20 @@ impl fmt::Debug for GaiaPrivateInputs {
     }
 }
 
+#[async_trait]
 impl PrivateInputResolver for GaiaPrivateInputs {
-    fn resolve<'life0, 'life1, 'async_trait>(
-        &'life0 self,
-        handle: &'life1 PrivateInputHandle,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<ResolvedPrivateInput, AgentBackendError>>
-                + Send
-                + 'async_trait,
-        >,
-    >
-    where
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-        Self: 'async_trait,
-    {
-        Box::pin(async move { self.resolve_handle(handle) })
+    async fn resolve(
+        &self,
+        handle: &PrivateInputHandle,
+    ) -> Result<ResolvedPrivateInput, AgentBackendError> {
+        self.resolve_handle(handle)
     }
 
-    fn resolve_attachment<'life0, 'life1, 'async_trait>(
-        &'life0 self,
-        handle: &'life1 AttachmentHandle,
-    ) -> Pin<
-        Box<
-            dyn Future<Output = Result<ResolvedAttachmentSource, AgentBackendError>>
-                + Send
-                + 'async_trait,
-        >,
-    >
-    where
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-        Self: 'async_trait,
-    {
-        Box::pin(async move { self.resolve_attachment_handle(handle) })
+    async fn resolve_attachment(
+        &self,
+        handle: &AttachmentHandle,
+    ) -> Result<ResolvedAttachmentSource, AgentBackendError> {
+        self.resolve_attachment_handle(handle)
     }
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "pinvou-cli"
-version = "0.10.8"
+version = "0.10.9"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
