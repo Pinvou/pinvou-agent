@@ -6904,6 +6904,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "pinvou-upgrade-timing"
+version = "0.0.0"
+
+[[package]]
 name = "pinvou3-tauri"
 version = "0.10.9"
 dependencies = [
@@ -6946,6 +6950,7 @@ dependencies = [
  "parking_lot",
  "pinvou-knowledge",
  "pinvou-upgrade-codec",
+ "pinvou-upgrade-timing",
  "pipewire",
  "qrcode",
  "quick-xml",

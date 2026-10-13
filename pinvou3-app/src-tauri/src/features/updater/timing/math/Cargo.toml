@@ -1,0 +1,10 @@
+[package]
+name = "pinvou-upgrade-timing"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+license = "MIT"
+
+[lints.rust]
+unsafe_code = "forbid"

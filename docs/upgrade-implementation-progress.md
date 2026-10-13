@@ -2127,3 +2127,32 @@ Strict Ed25519 point/
 signature policy remains an explicit pending protocol decision; this batch has no
 verifier or bootstrap path. Full T27, time/platform/provider certification and
 deployment remain unfinished. Downloads retain no hard elapsed-duration cap.
+Client signing-byte binding commit: `bf956c8aa`.
+
+### T26 first batch: original deadline and budget arithmetic (2026-10-13)
+
+The private std-only timing crate implements safe whole milliseconds, checked
+original deadlines and separate preparation, validation, execution and consume-
+recovery budgets. It captures the original preparation session cutoff and only
+permits tightening; three execution purposes use actual qualified durations within
+their individual bounds. Consume recovery starts at the first transmission and
+cannot be refreshed by a status query. Backwards known observations are unproven;
+unknown clocks and confirmed faults carry distinct reasons without a guessed
+remaining duration. No download budget is introduced.
+
+Eight focused groups, standalone fmt/Clippy, 45 CI policy tests, complete locked
+App/CLI metadata, architecture and product-version checks passed. Each integration
+lock adds only the local dependency-free package and App edge. Actual Windows App
+integration passed all seven updater tests, including two new timing controls
+(0.00s after a 31m59s build with the existing compiler stack wrapper). Workflow
+YAML parsing and the fast fork guard passed. Both independent roles found no
+mandatory source finding and independently passed eight groups and 45 CI policies.
+Both gave final B1 scoped PASS after reviewing the frozen App evidence and staged
+scope; no mandatory timing-arithmetic finding remains.
+
+The current 0.10.9 product version and CodeWhale gitlink came from the initial
+safe main synchronization for this task. This batch does not certify a target,
+clock source, cross-power continuity, durable ledger or preparation/execution
+budget. Health timing is the next separate batch; full T26, cleanup and gate
+integration remain unfinished. Deployment stays deferred. Details:
+[client timing arithmetic](client-upgrade-timing-math.md).

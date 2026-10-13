@@ -842,6 +842,13 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Check independent upgrade timing arithmetic
+        working-directory: pinvou3-app/src-tauri/src/features/updater/timing/math
+        run: |
+          cargo fmt -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+
       - name: Install frozen upgrade reference dependencies
         run: npm --prefix specs/upgrade/v1 ci --ignore-scripts --no-audit --no-fund
 

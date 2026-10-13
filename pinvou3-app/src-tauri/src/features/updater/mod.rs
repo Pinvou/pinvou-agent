@@ -24,6 +24,7 @@ use tauri::AppHandle;
 
 mod platform;
 pub(crate) mod protocol;
+pub(crate) mod timing;
 
 pub(crate) fn cleanup_stale_backup() {
     platform::cleanup_stale_backup();
