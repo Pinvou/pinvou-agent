@@ -3029,3 +3029,50 @@ change. Root self-review found no remaining in-scope gap.
 Details: [read-only cache copy](client-upgrade-read-only-cache-copy.md). Full T29,
 protected staging/sealing and actual native identity/qualification remain open.
 Downloads retain no total/cumulative duration or retry cap.
+
+
+## T27 eighth batch - supplied Root policy consistency (2026-10-13)
+
+RootPolicyShape now validates the plain supplied signed Root10-field body,
+closed key3/rolePolicy6 objects, canonical raw public-key descriptor identity,
+unique declared keys and exact nullable four-tuple policies, unique existing
+members and bounded positive thresholds. Exactly one Root policy has null
+component/channel/target, threshold at least2 and at least3 distinct members;
+nonroot policies require component. All20 frozen roles and original nullable
+channel/target combinations are preserved without extra cross-role rules.
+Ordered sets avoid repeated key scans. Canonical supplied-body bytes preserve
+array order and unused keys; result is private/no Debug/Serialize/constructor.
+
+This exactly scopes frozen validateTrustedRoot structural checking. Time fields
+are safe nonnegative integer shapes only: equal/reversed times remain legal.
+No anchor, signature verification/threshold satisfaction, point validity, current
+time/Root trust, rotation lineage or high-watermark fact follows. Strict Ed25519
+point/signature policy remains undecided and deferred. No new dependency/lock/
+Schema/CI/product version/gitlink changes.
+
+Four new groups include639 actual original Node/AJV cases across20 roles,
+nullable scopes, wrong shape/encoding/ID, duplicate keys/tuples/members, absent
+members, thresholds, unused keys/array order, literal/escaped duplicate names,
+finite binary64 rounding and1MiB/4096 exact/+1 wire/key/policy/member ceilings.
+Root final all38 codec tests passed with actual Node22 and both existing oracle
+flags: signing6 in5.55s, bytes7 in0.77s, consume4 in1.47s, native3 in0.67s,
+rollout4 in0.59s, Root4 in5.41s, Source5 in0.79s and status5 in0.63s. Clippy1.88s/
+fmt passed, CI51 in0.047s, architecture/version/diff passed. The earlier37-test
+pre-resource tree is not substituted for final evidence. Final actual Windows
+App passed all24 updater tests in0.05s after2m29s build, including Root structure
+acceptance and weakened-threshold refusal. No App-wide pass is claimed.
+
+Dependency independent frozen-source and final documentation scoped PASS: all38
+actual Node22 tests with both old oracle flags passed, signing6 in3.46s, bytes7
+in0.38s, consume4 in1.53s, native3 in0.77s, rollout4 in0.68s, Root4 in5.95s
+(with639 original cases), Source5 in1.30s and status5 in0.92s. Clippy1.91s/fmt/diff
+passed. Compatibility final source/tests/docs scoped PASS: all38 actual Node22
+tests with both old oracle flags passed, signing6 in3.67s, bytes7 in0.45s,
+consume4 in1.48s, native3 in0.69s, rollout4 in0.58s, Root4 in4.17s (639 cases),
+Source5 in0.83s and status5 in0.79s. Clippy1.75s/fmt, CI51 in0.071s and diff
+passed. Both final reviews used unchanged frozen source; root self-review found
+no remaining in-scope gap.
+
+Details: [Root policy shape](client-upgrade-root-policy-shape.md). Full T27
+Root authenticity/chain/high-watermark/native-fact integration remains open.
+Downloads retain no total/cumulative duration or retry cap.

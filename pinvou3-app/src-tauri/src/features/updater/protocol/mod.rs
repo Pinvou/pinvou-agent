@@ -12,6 +12,14 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+pub(crate) fn decode_root_policy_shape(
+    bytes: &[u8],
+) -> Result<pinvou_upgrade_codec::RootPolicyShape, pinvou_upgrade_codec::RootPolicyError> {
+    decode_metadata(bytes)
+        .map_err(pinvou_upgrade_codec::RootPolicyError::Json)?
+        .root_policy_shape()
+}
+
 pub(crate) fn decode_native_identity_shape(
     bytes: &[u8],
 ) -> Result<pinvou_upgrade_codec::NativeIdentityShape, pinvou_upgrade_codec::NativeIdentityError> {
@@ -55,6 +63,31 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_checks_root_policy_structure_without_anchor_or_point_trust() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let keys: Vec<_> = (0..3).map(|byte| {
+            let text=URL_SAFE_NO_PAD.encode([byte;32]);
+            let descriptor=pinvou_upgrade_codec::key_descriptor(&text).unwrap();
+            serde_json::json!({"keyId":descriptor.key_id(),"algorithm":"ed25519","publicKey":descriptor.public_key()})
+        }).collect();
+        let ids: Vec<_> = keys.iter().map(|key| key["keyId"].clone()).collect();
+        let mut claims = serde_json::json!({"protocolVersion":1,"role":"root","product":"pinvou","component":null,"scope":{},"version":1,"issuedAt":0,"expiresAt":0,"keys":keys,"roles":[{"role":"root","component":null,"channel":null,"targetKey":null,"threshold":2,"keyIds":ids}]});
+        let shape = decode_root_policy_shape(&serde_json::to_vec_pretty(&claims).unwrap()).unwrap();
+        assert_eq!(
+            shape.canonical_bytes(),
+            decode_metadata(&serde_json::to_vec(&claims).unwrap())
+                .unwrap()
+                .canonical_bytes()
+                .unwrap()
+        );
+        claims["roles"][0]["threshold"] = serde_json::json!(1);
+        assert!(matches!(
+            decode_root_policy_shape(&serde_json::to_vec(&claims).unwrap()),
+            Err(pinvou_upgrade_codec::RootPolicyError::InvalidPolicy)
+        ));
+    }
 
     #[test]
     fn feature_facade_compares_all_native_facts_not_only_package_bytes() {
