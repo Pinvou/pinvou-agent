@@ -537,6 +537,15 @@ impl SessionAgentStore {
             .unwrap_or_default()
     }
 
+    /// Snapshot of the in-memory index's session ids. `load` is all-or-nothing
+    /// (an unparsable file leaves the map empty) and every persist rewrites
+    /// the file from this same state, so iterating memory is iterating the
+    /// state that would be persisted — the boot prune walks this set instead
+    /// of reaching into the on-disk format.
+    pub(super) fn session_ids(&self) -> Vec<String> {
+        self.records.read().keys().cloned().collect()
+    }
+
     /// Returns session ids bound to the given project workspace for
     /// code-capable sessions: ACP sessions in any mode (they execute file
     /// edits in the project directory even in plain mode) and native sessions
@@ -1391,6 +1400,15 @@ impl SessionAgentStore {
     /// 两类来源：sidecar 持久化修复前构建创建的存量会话从未写过 sidecar；绑定时
     /// sidecar 写失败只记日志未补写。索引记录 `code_session=true` 而 sidecar 缺失
     /// 时按索引补写；返回成功补写的数量（写失败已逐条记日志，不计入）。
+    ///
+    /// Ghost gate: index entries whose durable record `<id>.json` was already
+    /// deleted by retention are skipped as dead instead of being backfilled —
+    /// otherwise every boot would mass-"resurrect" long-evicted sessions as
+    /// dirs containing only `code-session.json`. This gate only skips and
+    /// counts; removing the entry itself belongs to the boot scan's prune.
+    /// The probe keeps `binding_owner_exists`'s conservative semantics: only
+    /// a real NotFound counts as dead, so a transient stat error never keeps
+    /// a live session from being backfilled.
     pub fn backfill_missing_code_session_sidecars(&self) -> Result<usize> {
         // Round-43 review: the boot-era snapshot must not decide which
         // sidecars are "missing" — a CLI `sessions delete` landing after
@@ -1403,11 +1421,20 @@ impl SessionAgentStore {
         let _section = self.lock_and_reload()?;
         let records = self.records.read().clone();
         let mut backfilled = 0usize;
+        let mut skipped_dead = 0usize;
         for (session_id, record) in records {
             if !record.mode.is_code() {
                 continue;
             }
             if read_code_session_sidecar(&self.path, &session_id).is_some() {
+                continue;
+            }
+            // Ghost gate: an entry whose durable record was deleted by
+            // retention gets no backfilled sidecar — that would resurrect a
+            // ghost dir under sessions/<id>/; removing the entry itself
+            // belongs to the boot scan's prune.
+            if !self.binding_owner_exists(&session_id) {
+                skipped_dead += 1;
                 continue;
             }
             if write_code_session_sidecar(
@@ -1419,6 +1446,11 @@ impl SessionAgentStore {
                 backfilled += 1;
                 eprintln!("[pinvou3-app] 回填原生代码会话 sidecar: {session_id}");
             }
+        }
+        if skipped_dead > 0 {
+            eprintln!(
+                "[pinvou3-app] backfill skipped {skipped_dead} native code session entries without a live owner record"
+            );
         }
         Ok(backfilled)
     }
@@ -3662,6 +3694,9 @@ mod tests {
         store
             .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
             .unwrap();
+        // session-1's durable record is still present (not evicted by
+        // retention): a missing sidecar is still backfilled from the index.
+        touch_owner_record(store.path(), "session-1");
         // 非代码会话不参与回填。
         store
             .set_acp_workspace(
@@ -3671,15 +3706,36 @@ mod tests {
                 None,
             )
             .unwrap();
+        // Replicate the leftover shape after a retention eviction: the index
+        // says code_session=true, but both the durable record <id>.json and
+        // the session dir <id>/ are gone (retention cleanup never touches
+        // the agents index).
+        store
+            .bind_code_native_session("session-3", CodexWorkspaceKind::Project, Some(root.clone()))
+            .unwrap();
+        fs::remove_dir_all(code_session_sidecar_root(store.path()).join("session-3")).unwrap();
         // 模拟存量会话/绑定时写失败：索引记录 code_session=true 但 sidecar 缺失。
         fs::remove_file(code_session_sidecar_path(store.path(), "session-1")).unwrap();
+        // Only session-1, whose durable record is still present, is
+        // backfilled; session-3 is a ghost entry and must be skipped — no
+        // rebuilt dir under sessions/<id>/, no fabricated sidecar (the very
+        // source of the boot-time mass resurrection of evicted sessions).
+        // Removing the leftover entry belongs to the boot scan's prune.
         assert_eq!(store.backfill_missing_code_session_sidecars().unwrap(), 1);
         let sidecar = read_code_session_sidecar(store.path(), "session-1")
             .expect("sidecar should be backfilled");
         assert_eq!(sidecar.version, CODE_SESSION_SIDECAR_VERSION);
         assert_eq!(sidecar.workspace_kind, CodexWorkspaceKind::Project);
         assert_eq!(sidecar.workspace_path.as_deref(), Some(root.as_path()));
-        // 幂等：sidecar 完好、非代码会话都不补写。
+        // The ghost entry stays dead: no sidecar, no resurrected session dir.
+        assert!(
+            !code_session_sidecar_root(store.path())
+                .join("session-3")
+                .exists()
+        );
+        assert!(read_code_session_sidecar(store.path(), "session-3").is_none());
+        // Idempotent: intact sidecars, non-code sessions and ghost entries
+        // are all left alone.
         assert_eq!(store.backfill_missing_code_session_sidecars().unwrap(), 0);
         fs::remove_dir_all(&root).unwrap();
     }
@@ -3699,6 +3755,9 @@ mod tests {
         store
             .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
             .unwrap();
+        // Durable record still present: only an old-version sidecar treated
+        // as missing goes through the backfill rewrite.
+        touch_owner_record(store.path(), "session-1");
         // 写入高于当前支持版本的 sidecar：拒读并按缺失处理，不能静默按 v1 解析。
         let future = CodeSessionSidecar {
             version: CODE_SESSION_SIDECAR_VERSION + 1,
