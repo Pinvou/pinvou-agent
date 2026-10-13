@@ -4148,3 +4148,37 @@ VERSION/gitlinks changes. Details:
 [task-create responses](client-upgrade-task-create-responses.md).
 Complete T27/T32 remain unfinished. Downloads retain no total/cumulative
 duration or retry cap.
+
+## T27 thirtieth batch - supplied event/task-action receipts (2026-10-14)
+
+Scope: complete original six event-report and two task-action response contracts.
+Fixed eight-operation enum/closed frozen Schemas with only common resource;
+whole bounded canonical reparse. Original receipts contain no credential or
+additional response semantic guards. Event receipts allow duplicate complete
+objects and same event different dispositions (no uniqueItems), with1..4096
+bounds. Same family remains Schema-compatible; request/event/task identities
+are supplied structural facts, not correlation or durable commitment.
+Unit success never releases protection/occupancy, admits quality contribution,
+establishes task completion or revives an executor.
+Outside-repository actual original complete Node generated358 required/scalar/
+boundary cases, all named intended outcomes checked. Root task-scoped5 passed:
+integration4/actual original358 in2.28s, resourceunit1 in0.02s (six unrelated
+units filtered); Clippy alltargets23.58s/codec+App facade format passed.
+Architecture/version/diff passed; CI policy51 in0.051s. Actual Windows updater
+App45 passed in0.36s after2m51s compilation. Root self-review confirms full fixed
+eight-operation mapping/common-only resource closure, original duplicate/
+same-family acceptance, limits and no authority upgrade. No existing helper
+changed, and unchanged old116/31556 were not repeated.
+Both independent static reviews found no mandatory issue. Dependency
+independent5 passed (integration4/actual358 in3.02s/resourceunit1 in0.02s/six
+unrelated units filtered, Clippy1.93s/fmt/App facade format/diff passed).
+Compatibility independent5 passed (integration4/actual358 in2.21s/resourceunit1
+in0.02s/six unrelated units filtered, Clippy2.13s/fmt/App facade format/diff;
+CI policy51 in0.075s). Both actual Node22/both legacy environments, no repeat
+of old116/31556/App. Both scoped reviews passed without mandatory finding and
+all processes closed. Both independent final documentation reviews passed
+before commit. No Schema/OpenAPI/profile/vectors/
+dependencies/locks/CI/crypto/trust/limits/VERSION/gitlinks changes. Details:
+[receipts](client-upgrade-receipt-responses.md).
+Complete T27/T20/T22/T32 remain unfinished. Downloads retain no total/cumulative
+duration or retry cap.

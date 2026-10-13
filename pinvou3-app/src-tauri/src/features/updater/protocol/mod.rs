@@ -12,6 +12,16 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+/// Supplied receipt contract; never proof of event commitment or task completion.
+pub(crate) fn check_supplied_receipt_response_bytes(
+    bytes: &[u8],
+    operation: pinvou_upgrade_codec::ReceiptResponseOperation,
+) -> Result<(), pinvou_upgrade_codec::ReceiptResponseError> {
+    decode_metadata(bytes)
+        .map_err(pinvou_upgrade_codec::ReceiptResponseError::Json)?
+        .assert_supplied_receipt_response_contract(operation)
+}
+
 /// Supplied task-create response contract; never authenticated task/action rights.
 pub(crate) fn check_supplied_task_create_response_bytes(
     bytes: &[u8],
@@ -386,6 +396,49 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_checks_receipts_without_committing_events_or_releasing_protection() {
+        use pinvou_upgrade_codec::{
+            ReceiptResponseError as ContractError, ReceiptResponseOperation as Operation,
+        };
+        for operation in [
+            Operation::TelemetryEvents,
+            Operation::PreinstallEvents,
+            Operation::InstallEvents,
+            Operation::ActivateEvents,
+            Operation::ReconciliationEvents,
+            Operation::RecoveryReviewEvents,
+            Operation::ReconciliationAction,
+            Operation::RecoveryReviewAction,
+        ] {
+            let events = !matches!(
+                operation,
+                Operation::ReconciliationAction | Operation::RecoveryReviewAction
+            );
+            let mut response = serde_json::json!({"protocolVersion":1,"requestId":"request-1"});
+            if events {
+                response["acknowledgements"] = serde_json::json!([
+                {"eventId":"event-1","disposition":"committed"},{"eventId":"event-1","disposition":"late-diagnostic"}]);
+            } else {
+                response["taskId"] = serde_json::json!("task-1");
+                response["taskRevision"] = serde_json::json!(0);
+                response["disposition"] = serde_json::json!("recorded");
+            }
+            let check = |v: &serde_json::Value| {
+                check_supplied_receipt_response_bytes(&serde_json::to_vec(v).unwrap(), operation)
+            };
+            assert_eq!(check(&response), Ok(()));
+            let baseline = response.clone();
+            if events {
+                response["acknowledgements"][0]["disposition"] = serde_json::json!("pending");
+            } else {
+                response["disposition"] = serde_json::json!("approved");
+            }
+            assert_eq!(check(&response), Err(ContractError::InvalidContract));
+            assert_eq!(check(&baseline), Ok(()));
+        }
+    }
 
     #[test]
     fn feature_facade_binds_task_responses_without_creating_a_task_or_action_authority() {
