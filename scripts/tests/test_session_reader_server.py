@@ -955,6 +955,12 @@ class StdioContractTests(unittest.TestCase):
             self.assertEqual(init["result"]["protocolVersion"], server.PROTOCOL_VERSION)
             self.assertEqual(
                 init["result"]["serverInfo"]["name"], "pinvou3-session-reader")
+            # serverInfo stays in lockstep with the packaged manifest — a
+            # manifest-only bump turns this red.
+            manifest = json.loads(
+                SERVER_PATH.with_name("manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                init["result"]["serverInfo"]["version"], manifest["version"])
 
             tools = self._rpc(proc, "tools/list")
             names = [tool["name"] for tool in tools["result"]["tools"]]
@@ -1686,7 +1692,10 @@ class ScopedReadTests(unittest.TestCase):
         self.assertIsNone(payload)
         self.assertIn("not readable", error)
         self.assertIn("scoped", error)
-        self.assertIn("sibling02", error)
+        # The id must NOT ride the denial text (round-3 M3(b): even a shared
+        # template interpolating the requested id would be an existence
+        # oracle — the member-absent answer cannot echo the id either).
+        self.assertNotIn("sibling02", error)
 
     def test_scope_match_is_exact_not_case_insensitive(self):
         # The aux engine passes the parent id verbatim from its instructions;
@@ -1703,16 +1712,21 @@ class ScopedReadTests(unittest.TestCase):
             self.assertIsNone(payload)
             self.assertIn("not readable", error)
 
-    def test_deleted_parent_returns_structured_not_found(self):
+    def test_deleted_parent_returns_the_same_not_readable_denial(self):
         # A3: the parent record can be deleted out-of-band while the aux panel
-        # is open — the scoped read must degrade to the structured not_found
-        # error (never a raw filesystem error), and the scoped listing must
-        # degrade to empty (see ScopedListTests).
+        # is open — the scoped read must degrade to the same structured
+        # not-readable denial as any non-scope id (never a raw filesystem
+        # error, never a distinguishable "not found": round-3 M3(b) — a
+        # member-absent answer distinct from the non-member answer would be
+        # an existence oracle for sibling ids). The scoped listing still
+        # degrades to empty (see ScopedListTests).
         (Path(self.dir) / "parent01.json").unlink()
         payload, error = self.read("parent01")
         self.assertIsNone(payload)
-        self.assertIn("not found", error)
-        self.assertIn("parent01", error)
+        self.assertIsNotNone(error)
+        _, sibling_error = self.read("sibling99")
+        self.assertEqual(error, sibling_error)
+        self.assertNotIn("parent01", error)
 
     def test_pagination_and_cursor_work_inside_the_scope(self):
         first, error = self.read("parent01", turn_limit=2)
@@ -1761,6 +1775,20 @@ class ScopedListTests(unittest.TestCase):
         self.assertEqual(payload["sessions"], [])
         self.assertEqual(payload["total"], 0)
 
+    def test_scope_check_precedes_any_filesystem_probe(self):
+        # M3(b): a non-scope id and a deleted-in-scope id must be
+        # indistinguishable — same error text — otherwise the scope check
+        # leaks existence (an oracle for sibling session ids).
+        _write_session(self.dir, "gone01", _three_turn_messages(), title="t")
+        (Path(self.dir) / "gone01.json").unlink()
+        scope = server.scoped_allowed_sessions("gone01")
+        _, in_scope_error = server.read_session_history(
+            self.dir, "gone01", allowed_sessions=scope)
+        _, out_scope_error = server.read_session_history(
+            self.dir, "sibling99", allowed_sessions=scope)
+        self.assertIsNotNone(in_scope_error)
+        self.assertEqual(in_scope_error, out_scope_error)
+
     def test_query_and_limit_do_not_filter_the_pinned_answer_set(self):
         # The scope pins the answer set: a non-matching query must not turn
         # "record present" into an indistinguishable empty (the empty state is
@@ -1777,6 +1805,15 @@ class ScopedListTests(unittest.TestCase):
         payload, error = self.list()
         self.assertIsNone(error)
         self.assertEqual(payload["sessions"], [])
+
+    def test_invalid_scope_member_refuses_the_whole_call(self):
+        # M3(a): a scope member failing its own validation must refuse the
+        # call — never silently skip the entry and degrade to a directory
+        # scan or an empty list. Softening this branch to a silent skip
+        # turns this test red.
+        payload, error = self.list(only_session="aux-evil")
+        self.assertIsNone(payload)
+        self.assertIsNotNone(error)
 
 
 class ScopedFeatureGateTests(unittest.TestCase):
@@ -1879,6 +1916,13 @@ class ScopedStdioTests(unittest.TestCase):
             })
             self.assertEqual(
                 init["result"]["serverInfo"]["name"], "pinvou3-session-reader")
+            # M3(d): serverInfo stays in lockstep with the packaged manifest
+            # (both bumped to 1.1.0 with the scoped mode) — a manifest-only
+            # bump turns this red.
+            manifest = json.loads(
+                SERVER_PATH.with_name("manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                init["result"]["serverInfo"]["version"], manifest["version"])
             # tools/list is unchanged in scoped mode — the engine-side
             # allowlist filters the catalog, not the server.
             tools = self._rpc(proc, "tools/list")
@@ -1909,6 +1953,49 @@ class ScopedStdioTests(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertEqual([entry["sessionId"] for entry in payload["sessions"]],
                              ["parent01"])
+        finally:
+            proc.kill()
+            proc.communicate()
+
+    def test_scoped_stdio_feature_gate_fires_over_the_wire(self):
+        # M3(c): the union feature gate (session-mention + long-memory,
+        # ADR-0024 clause 8) is exercised end-to-end in scoped mode — both
+        # features disabled via the state file, so the call must gate with a
+        # structured feature_disabled instead of reading.
+        # The state file must sit at <parent of --sessions-dir>/marketplace —
+        # the server's lookup is relative to the sessions dir, NOT to
+        # PINVOU3_HOME (a nested sessions dir would silently disarm the gate).
+        sessions_dir = Path(self.tmp.name) / "home" / "sessions"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / "parent01.json").write_text(
+            (Path(self.dir) / "parent01.json").read_text(encoding="utf-8"),
+            encoding="utf-8")
+        marketplace = Path(self.tmp.name) / "home" / "marketplace"
+        marketplace.mkdir(parents=True)
+        (marketplace / "builtin_features.json").write_text(json.dumps(
+            {"disabled_features": ["session-mention", "long-memory"]}),
+            encoding="utf-8")
+        env = dict(os.environ)
+        env["PINVOU3_HOME"] = str(sessions_dir.parent)
+        proc = subprocess.Popen(
+            [sys.executable, str(SERVER_PATH),
+             "--sessions-dir", str(sessions_dir), "--only-session", "parent01"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, encoding="utf-8", env=env,
+        )
+        try:
+            self._rpc(proc, "initialize", {
+                "protocolVersion": server.PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "0"},
+            })
+            gated = self._rpc(proc, "tools/call", {
+                "name": "read_session",
+                "arguments": {"session_id": "parent01"},
+            })
+            payload = json.loads(gated["result"]["content"][0]["text"])
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload.get("code"), "feature_disabled")
         finally:
             proc.kill()
             proc.communicate()

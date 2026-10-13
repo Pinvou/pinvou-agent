@@ -1393,8 +1393,13 @@ impl Pinvou3Bundle {
     /// two-token `--only-session -x` would make argparse read the pin as an
     /// option and kill the server at boot (a dead tool declaration); the
     /// `=` form assigns any charset-valid value verbatim (review round-3).
-    /// `None` only when the embedded manifest is unavailable (a build/catalog
-    /// invariant break); the caller fails closed to the zero-tool aux branch.
+    /// `None` when the embedded manifest is unavailable (a build/catalog
+    /// invariant break) or when the released `server.py` is missing — the
+    /// boot seed is skipped when the secret migration fails, seed-install
+    /// failures are non-blocking, and a mid-session deletion has no in-app
+    /// heal, so the writer judges the launch target itself rather than
+    /// trusting the seed, matching `rebuild_local_mcp_entry`'s no-dead-entry
+    /// discipline; the caller fails closed to the zero-tool aux branch.
     fn aux_session_reader_entry(parent_id: &str) -> Option<serde_json::Value> {
         let manifest =
             crate::features::marketplace::mcp_catalog::embedded_manifest("session-reader")
@@ -1404,6 +1409,13 @@ impl Pinvou3Bundle {
             crate::features::marketplace::mcp_catalog::package_mcp_dir("session-reader");
         let mut args =
             crate::features::marketplace::mcp_catalog::local_server_args(&manifest, &server_dir);
+        if args
+            .first()
+            .map(|script| !std::path::Path::new(script).is_file())
+            .unwrap_or(true)
+        {
+            return None;
+        }
         args.push(format!("--only-session={parent_id}"));
         Some(serde_json::json!({
             "command": crate::features::marketplace::mcp_catalog::local_server_command(&manifest),
@@ -1771,6 +1783,13 @@ mod tests {
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
         let bundle = super::Pinvou3Bundle::paths();
 
+        // The writer judges the launch target itself (round-3 MAJOR-2), so
+        // the isolated home needs the released package the way the boot seed
+        // would have produced it; the byte-compare release path is pinned
+        // separately by the `ensure_package_released` mismatch tests.
+        crate::features::marketplace::mcp_catalog::ensure_package_released("session-reader")
+            .expect("seed the released session-reader package");
+
         let aux_id = "aux-l5cz0m8xq2k1b";
         let parent_id = "l5cz0m8xq2k1b";
         let path = bundle
@@ -1878,6 +1897,52 @@ mod tests {
             .aux_mcp_config_path_for_session("aux-other01", "other01")
             .expect("second aux config");
         assert_ne!(other, path);
+
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Review round-3 MAJOR-2: the writer judges the launch target itself.
+    /// When the released `server.py` is absent (boot seed skipped on a
+    /// keyring-less machine, a log-only seed-install failure, or a
+    /// mid-session deletion), the entry builder must return `None` so the
+    /// caller demotes the aux spawn to the zero-tool branch instead of
+    /// writing a config that declares a dead tool. Deleting the
+    /// `is_file()` guard from `aux_session_reader_entry` turns this test red.
+    #[test]
+    fn aux_mcp_config_demotes_when_released_server_script_is_missing() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-aux-mcp-missing-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let bundle = super::Pinvou3Bundle::paths();
+        // The isolated home contains no released session-reader package, so
+        // the launch target cannot exist.
+        assert!(
+            !crate::features::marketplace::mcp_catalog::package_mcp_dir("session-reader")
+                .join("server.py")
+                .is_file()
+        );
+
+        assert!(
+            bundle
+                .aux_mcp_config_path_for_session("aux-l5cz0m8xq2k1b", "l5cz0m8xq2k1b")
+                .is_none(),
+            "a missing released script must demote to the zero-tool branch, never a dead entry"
+        );
+        assert!(
+            !crate::platform::paths::aux_session_mcp_json("aux-l5cz0m8xq2k1b").exists(),
+            "no config file may be written for a dead entry"
+        );
 
         // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
         unsafe { std::env::remove_var("PINVOU3_HOME") };

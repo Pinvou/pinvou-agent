@@ -42,7 +42,7 @@ pub(crate) fn validate_scheduled_session_id(id: &str) -> Result<()> {
     Ok(())
 }
 
-/// Case-insensitive `aux-` prefix test. The aux zero-tools gates
+/// Case-insensitive `aux-` prefix test. The aux tool-surface gates
 /// (`turn_restrict_tools`, the spawn-config backstop) and the aux-of-aux /
 /// sidecar guards decide "is this an aux session" from the client-supplied id
 /// string, but `validate_session_id` allows uppercase and ids resolve to

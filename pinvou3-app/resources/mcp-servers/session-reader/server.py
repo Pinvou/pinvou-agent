@@ -694,6 +694,14 @@ def _fit_turn_to_budget(shaped, budget):
         shaped["itemsTruncated"] = True
 
 
+SCOPED_NOT_READABLE_ERROR = (
+    "session is not readable via this tool (this instance is scoped to a "
+    "single session)")
+"""The ONE scoped-denial text: no session-id interpolation, so a non-member id
+and a member id whose record is absent are byte-identical to the caller —
+deleting the id would be an existence oracle for sibling ids (round-3 M3(b))."""
+
+
 def read_session_history(sessions_dir, session_id, turn_limit=DEFAULT_TURN_LIMIT,
                          cursor=None, include_outputs=False,
                          max_output_chars_per_item=DEFAULT_MAX_OUTPUT_CHARS,
@@ -702,18 +710,20 @@ def read_session_history(sessions_dir, session_id, turn_limit=DEFAULT_TURN_LIMIT
 
     allowed_sessions (scoped instances, ADR-0024): a frozenset the id must be
     a member of; any non-member id — sibling, aux-, sched-, eval_ — gets a
-    structured not-readable error before any filesystem access."""
+    structured not-readable error before any filesystem access. Scoped mode
+    returns the SAME not-readable error for a member id whose record is
+    absent: a distinct "not found" would be an existence oracle for sibling
+    session ids (round-3 M3(b))."""
     id_error = validate_session_id(session_id)
     if id_error:
         return None, id_error
-    if allowed_sessions is not None and session_id not in allowed_sessions:
-        return None, (
-            "session %s is not readable via this tool (this instance is "
-            "scoped to a single session)" % (
-                session_id[:64] + "..." if len(session_id) > 64 else session_id,)
-        )
+    scoped = allowed_sessions is not None
+    if scoped and session_id not in allowed_sessions:
+        return None, SCOPED_NOT_READABLE_ERROR
     path = _resolve_session_path(sessions_dir, session_id)
     if path is None:
+        if scoped:
+            return None, SCOPED_NOT_READABLE_ERROR
         return None, "session not found: %s" % session_id
     try:
         is_file = path.is_file()
@@ -723,6 +733,8 @@ def read_session_history(sessions_dir, session_id, turn_limit=DEFAULT_TURN_LIMIT
         # below — raw OSError text embeds the absolute host path.
         return None, "session file unreadable: %s" % session_id
     if not is_file:
+        if scoped:
+            return None, SCOPED_NOT_READABLE_ERROR
         return None, "session not found: %s" % session_id
     try:
         if path.stat().st_size > MAX_SESSION_FILE_BYTES:

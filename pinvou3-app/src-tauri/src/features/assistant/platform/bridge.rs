@@ -2551,7 +2551,9 @@ impl Pinvou3Bridge {
             let (instructions, allowed_tools) = match aux_tool_surface(session_id) {
                 AuxToolSurface::ParentScopedRead { ref parent_id } => {
                     // Fail closed: no scoped config file, no scoped tools —
-                    // demote to the byte-identical zero-tool shape.
+                    // demote to the zero-tool shape (spawn config
+                    // byte-identical; the per-turn reminder text is the
+                    // scoped-read form, disclosed in engine_pool).
                     match self
                         .bundle
                         .aux_mcp_config_path_for_session(session_id, parent_id)
@@ -3351,10 +3353,10 @@ impl Pinvou3Bridge {
     }
 
     fn ensure_session_skills_for_send(&self, session_id: &str) {
-        // Aux sessions have no skill surface: their engine is isolated (empty
-        // tool catalog, minimal instructions), so materializing the composed
-        // directory would only feed a `## Skills` block the zero-tool turn
-        // cannot act on. Spawn-time materialization and the toggle hot
+        // Aux sessions have no skill surface: their engine is isolated (at
+        // most one scoped read-only context tool, minimal instructions), so
+        // materializing the composed directory would only feed a `## Skills`
+        // block the aux turn cannot act on. Spawn-time materialization and the toggle hot
         // refresh skip aux for the same reason (engine_pool).
         if crate::features::sessions::is_aux_session_id(session_id) {
             return;
@@ -6984,6 +6986,11 @@ mod tests {
         // SAFETY: platform::paths::tests::ENV_LOCK held via locked_env; env
         // writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+        // The scoped writer judges the launch target itself (round-3
+        // MAJOR-2), so the isolated home needs the released package the way
+        // the boot seed would have produced it.
+        crate::features::marketplace::mcp_catalog::ensure_package_released("session-reader")
+            .expect("seed the released session-reader package");
         // Vision-capable fixture: the aux `vision_config = None` assertion
         // below only has teeth when the main-session value is `Some`.
         let mut bridge = fixture_bridge();
@@ -7088,7 +7095,8 @@ mod tests {
         );
 
         // ①-c ZeroTool fallback (D2): an isolated-prefix parent demotes to
-        // the legacy zero-tool branch byte-for-byte.
+        // the legacy zero-tool branch (spawn config byte-for-byte; the
+        // per-turn reminder is the scoped-read text, disclosed).
         let fallback_cfg =
             bridge.build_engine_config_for_session_roots("aux-sched-xyz", roots("fallback"));
         assert_eq!(
