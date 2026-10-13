@@ -3780,6 +3780,50 @@ impl EnginePool {
         .await
     }
 
+    /// Shared turn-admission prelude of the reserved-turn senders (send /
+    /// edit-resend / eval send): stamp the display message onto the
+    /// reservation's baseline, take the session turn gate, re-verify the
+    /// store under the gate (a scheduled session re-validates against its
+    /// owning task; every other session must still exist), re-activate the
+    /// reservation, and refresh the idle clock so the idle sweep cannot
+    /// reclaim the engine between reserve and send (attachment resolution
+    /// and other time-consuming steps sit in that window). `role` only
+    /// names the admission in the deleted-session error ("turn" / "edit" /
+    /// "eval turn"). Returns the reservation for the caller's divergent
+    /// tail; the eval lane's session ids are never `sched-`, so its
+    /// scheduled arm is a no-op.
+    async fn admit_reserved_turn(
+        &self,
+        session_id: &str,
+        op: TranscriptOperation,
+        display_message: Message,
+        role: &str,
+        mut reservation: TurnReservation,
+    ) -> Result<TurnReservation> {
+        let baseline_revision = reservation
+            .base_transcript_revision()
+            .context("turn reservation has no base transcript revision")?
+            .to_string();
+        reservation.set_transcript_with_baseline(op, display_message, baseline_revision)?;
+        let scheduled_profile = self.store.scheduled_profile(session_id);
+        if scheduled_profile.is_none() && crate::features::sessions::is_sched_session_id(session_id)
+        {
+            bail!("Scheduled session '{session_id}' no longer exists");
+        }
+        let turn_lock = self.turn_locks.for_session(session_id).await;
+        let _turn = turn_lock.lock().await;
+        if let Some(profile) = scheduled_profile {
+            scheduled_profile_after_turn_gate(&self.store, session_id, &profile.task_id)?;
+        } else {
+            self.store.load(session_id).with_context(|| {
+                format!("Session '{session_id}' was deleted before the {role} could start")
+            })?;
+        }
+        reservation.ensure_active()?;
+        self.touch_engine_activity(session_id).await;
+        Ok(reservation)
+    }
+
     #[cfg(any(feature = "benchmark-hooks", test))]
     async fn send_reserved_eval_user_message(
         &self,
@@ -3787,23 +3831,17 @@ impl EnginePool {
         content: String,
         display_message: Message,
         policy: &crate::features::assistant::product_runtime::eval_tool_policy::EvalTurnPolicy,
-        mut reservation: TurnReservation,
+        reservation: TurnReservation,
     ) -> Result<()> {
-        let baseline_revision = reservation
-            .base_transcript_revision()
-            .context("turn reservation has no base transcript revision")?
-            .to_string();
-        reservation.set_transcript_with_baseline(
-            TranscriptOperation::Append,
-            display_message,
-            baseline_revision,
-        )?;
-        let turn_lock = self.turn_locks.for_session(session_id).await;
-        let _turn = turn_lock.lock().await;
-        self.store.load(session_id).with_context(|| {
-            format!("Session '{session_id}' was deleted before the eval turn could start")
-        })?;
-        reservation.ensure_active()?;
+        let reservation = self
+            .admit_reserved_turn(
+                session_id,
+                TranscriptOperation::Append,
+                display_message,
+                "eval turn",
+                reservation,
+            )
+            .await?;
         self.get_or_spawn(session_id)
             .await?
             .send_reserved_eval_message(content, policy, reservation)
@@ -3825,37 +3863,17 @@ impl EnginePool {
         restrict_tools_for_turn: bool,
         expert_snapshot: Option<std::sync::Arc<ExpertRosterSnapshot>>,
         expert_candidates: Vec<String>,
-        mut reservation: TurnReservation,
+        reservation: TurnReservation,
     ) -> Result<()> {
-        let baseline_revision = reservation
-            .base_transcript_revision()
-            .context("turn reservation has no base transcript revision")?
-            .to_string();
-        reservation.set_transcript_with_baseline(
-            TranscriptOperation::Append,
-            display_message,
-            baseline_revision,
-        )?;
-        let scheduled_profile = self.store.scheduled_profile(session_id);
-        if scheduled_profile.is_none() && crate::features::sessions::is_sched_session_id(session_id)
-        {
-            bail!("Scheduled session '{session_id}' no longer exists");
-        }
-        let turn_lock = self.turn_locks.for_session(session_id).await;
-        let _turn = turn_lock.lock().await;
-        if let Some(profile) = scheduled_profile {
-            scheduled_profile_after_turn_gate(&self.store, session_id, &profile.task_id)?;
-        } else {
-            self.store.load(session_id).with_context(|| {
-                format!("Session '{session_id}' was deleted before the turn could start")
-            })?;
-        }
-        reservation.ensure_active()?;
-        // The turn is formally submitted: refresh the idle clock (attachment
-        // resolution and other time-consuming steps sit between reserve and
-        // send; keep the idle sweep from reclaiming the engine in this
-        // window).
-        self.touch_engine_activity(session_id).await;
+        let reservation = self
+            .admit_reserved_turn(
+                session_id,
+                TranscriptOperation::Append,
+                display_message,
+                "turn",
+                reservation,
+            )
+            .await?;
         // Side B card pool: when this session is wearing an expert mask,
         // inject a light anchor (short) every turn to maintain the identity.
         // The full body was injected once with the first equip message
@@ -4462,35 +4480,17 @@ impl EnginePool {
         session_id: &str,
         new_message: String,
         display_message: Message,
-        mut reservation: TurnReservation,
+        reservation: TurnReservation,
     ) -> Result<()> {
-        let baseline_revision = reservation
-            .base_transcript_revision()
-            .context("turn reservation has no base transcript revision")?
-            .to_string();
-        reservation.set_transcript_with_baseline(
-            TranscriptOperation::EditLast,
-            display_message,
-            baseline_revision,
-        )?;
-        let scheduled_profile = self.store.scheduled_profile(session_id);
-        if scheduled_profile.is_none() && crate::features::sessions::is_sched_session_id(session_id)
-        {
-            bail!("Scheduled session '{session_id}' no longer exists");
-        }
-        let turn_lock = self.turn_locks.for_session(session_id).await;
-        let _turn = turn_lock.lock().await;
-        if let Some(profile) = scheduled_profile {
-            scheduled_profile_after_turn_gate(&self.store, session_id, &profile.task_id)?;
-        } else {
-            self.store.load(session_id).with_context(|| {
-                format!("Session '{session_id}' was deleted before the edit could start")
-            })?;
-        }
-        reservation.ensure_active()?;
-        // A resend is also a turn submission: refresh the idle clock (same
-        // reason as send_reserved_user_message).
-        self.touch_engine_activity(session_id).await;
+        let reservation = self
+            .admit_reserved_turn(
+                session_id,
+                TranscriptOperation::EditLast,
+                display_message,
+                "edit",
+                reservation,
+            )
+            .await?;
         // Aux scoped-tool reminder for edit resends (round-14 minor-1): this
         // path bypasses send_reserved_user_message, so the reminder is merged
         // into the resent message by forward_edit_resend_with_reminder —
