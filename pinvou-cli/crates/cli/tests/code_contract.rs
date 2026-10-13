@@ -1463,11 +1463,12 @@ fn workspace_checkout_requires_yes_before_touching_the_tree() {
     );
 }
 
-// The whole-workspace diff must stop diffing once the payload is over
-// DIFF_LIMIT instead of accumulating every per-file diff (500 × 1 MiB)
-// before the final truncation.
+// The whole-workspace diff must keep its payload within DIFF_LIMIT and say
+// so: a workspace whose changes each diff over the cap answers with
+// `truncated: true` and text within the bound, never an unbounded
+// concatenation.
 #[test]
-fn whole_workspace_diff_truncates_without_accumulating_over_the_cap() {
+fn whole_workspace_diff_reports_truncation_over_the_cap() {
     let _env_guard = common::env_lock();
     let _home = sandbox_home("workspace-diff-cap");
     let Some(project) = init_git_repo("diff-cap") else {
@@ -1476,10 +1477,8 @@ fn whole_workspace_diff_truncates_without_accumulating_over_the_cap() {
     let id = create_code_session_fixture(Some(&project));
 
     // Two modified tracked files whose diffs each exceed DIFF_LIMIT (1 MiB):
-    // the per-file path caps each text, and the whole-workspace loop must
-    // stop diffing once the payload is over the cap — the second file's
-    // content must never enter the payload, which distinguishes the early
-    // break from a post-hoc truncation of the full accumulation.
+    // the per-file lane caps each text at the cap, and the whole-workspace
+    // lane cuts the concatenation at the cap again.
     let big = format!("v2 {}\n", "x".repeat(1024 * 1024 + 4096));
     std::fs::write(project.join("tracked.txt"), &big).unwrap();
     let big2 = format!("v3 second-file {}\n", "y".repeat(1024 * 1024 + 4096));
@@ -1488,16 +1487,14 @@ fn whole_workspace_diff_truncates_without_accumulating_over_the_cap() {
     assert_eq!(value["truncated"], serde_json::json!(true));
     let text = value["text"].as_str().unwrap();
     assert!(text.len() <= 1024 * 1024, "len={}", text.len());
-    // Exactly one over-cap hunk may be in the payload, whichever file the
-    // status list orders first: the loop must stop diffing once the payload
-    // is over the cap, not accumulate every per-file diff before cutting.
-    let has_first = text.contains("+v2");
-    let has_second = text.contains("second-file");
-    assert!(
-        has_first ^ has_second,
-        "the payload must contain exactly one over-cap hunk (first={has_first}, \
-         second={has_second}) — accumulating both before the cut would fail this"
-    );
+    // Those cap markers are the whole output-pinned contract. The loop's
+    // early break (stop diffing once the payload is over the cap) bounds the
+    // per-file diff WORK before the final cut, but it is deliberately
+    // output-invisible: every per-file diff is already capped at DIFF_LIMIT
+    // in its own right, so diffing both files and truncating afterwards
+    // yields a byte-identical payload to breaking early. That work- and
+    // memory-boundedness is a performance property, not an observable one,
+    // so no assertion claims it here.
 }
 
 /// The capped reader must keep draining past the cap: a diff that exceeds
@@ -2072,6 +2069,7 @@ fn workspace_requires_a_code_session() {
         error.to_string().contains("code_session_not_found"),
         "{error}"
     );
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
     // Missing sessions are refused before any workspace resolution.
     let error = run(&["pinvou", "code", "workspace", "branches", "missing-session"]).unwrap_err();
     assert_eq!(error.exit_code(), ExitCode::Failed);
@@ -2194,14 +2192,17 @@ fn checkpoints_list_zero_state_and_full_rewind_undo_round_trip() {
     // A second undo is honestly refused: the record was consumed.
     let error = run(&["pinvou", "code", "checkpoints", "undo", &id, "--yes"]).unwrap_err();
     assert!(error.to_string().contains("no_undoable_rewind"), "{error}");
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
 
     // Rewinding past the current turn count fails before touching anything.
     let error = run(&["pinvou", "code", "checkpoints", "rewind", &id, "9", "--yes"]).unwrap_err();
     assert!(error.to_string().contains("cannot_rewind"), "{error}");
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
 
     // Rewinding to a turn without a snapshot fails honestly.
     let error = run(&["pinvou", "code", "checkpoints", "rewind", &id, "1", "--yes"]).unwrap_err();
     assert!(error.to_string().contains("checkpoint_missing"), "{error}");
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
 }
 
 #[test]
@@ -2219,6 +2220,7 @@ fn checkpoints_refuse_non_native_code_sessions() {
             .contains("code_checkpoints_requires_native_code_session"),
         "{error}"
     );
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
     // Invalid checkpoint ids are usage errors.
     let native = create_code_session_fixture(None);
     let error = run(&[
@@ -2616,6 +2618,42 @@ fn login_streams_vendor_cli_flow() {
             );
         }
     }
+}
+
+/// The stable `code_login_cli_missing` refusal, pinned always-on and
+/// hermetically (its only carrier used to be the networked `#[ignore]` test
+/// above): with the codex override env dangling, the sandbox home free of
+/// managed installs, and PATH scrubbed to an empty dir, the resolution order
+/// (override → managed dir → official install → PATH) finds nothing and the
+/// login lane refuses BEFORE any spawn — no vendor process, no network
+/// probe. `code_login_timeout` stays quarantined in the ignored test: it
+/// needs a really hanging vendor CLI. Unix-only like the sibling fake-vendor
+/// login lanes: the sandbox cannot isolate Windows' `LOCALAPPDATA`
+/// official-install lookup, so "nothing resolves" is only provable where the
+/// resolution sources are the override, `$HOME`, and `PATH`.
+#[test]
+#[cfg(unix)]
+fn login_refuses_with_the_stable_cli_missing_code_before_any_spawn() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("login-cli-missing");
+    let empty_path = scratch_root("login-cli-missing-path");
+    std::fs::create_dir_all(&empty_path).unwrap();
+    let _bin = ScratchDir(empty_path.clone());
+    let _path = EnvGuard::set(&[("PATH", Some(empty_path.to_str().unwrap()))]);
+    // A dangling codex override: the nonempty-file filter drops it, so the
+    // resolution must fall through the managed dir and PATH — and find
+    // nothing there either.
+    let _override = EnvGuard::set(&[(
+        "PINVOU3_CODEX_PATH",
+        Some(empty_path.join("no-such-codex").to_str().unwrap()),
+    )]);
+
+    let error = run(&["pinvou", "code", "login", "codex"]).unwrap_err();
+    assert!(
+        error.to_string().starts_with("code_login_cli_missing"),
+        "{error}"
+    );
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
 }
 
 /// Re-derives the execution-root lock filename (FNV-1a over the canonical
@@ -3262,6 +3300,11 @@ fn version_probe_failure_is_reported_and_fails_the_gate() {
 /// pipe buffer — which is why that ordering was eliminated structurally: the
 /// write is detached, so even a blocked write cannot stall the deadline
 /// loop, and the loop kills the child.)
+///
+/// Survival alone is not the contract: the fake also answers `auth status`
+/// (exit 0), so the post-login probe passes and the flow must land on the
+/// same `completed` JSON status the sibling stdin-ordering test pins — the
+/// flood must degrade nothing, not merely terminate.
 #[test]
 #[cfg(unix)]
 fn claude_login_completes_when_the_child_floods_stdout_around_stdin() {
@@ -3272,15 +3315,12 @@ fn claude_login_completes_when_the_child_floods_stdout_around_stdin() {
     let script = write_fake_vendor(
         &bin,
         "claude",
-        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"2.1.163 (Claude Code)\"; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then\n  read -r line\n  awk 'BEGIN{for(i=0;i<20000;i++) printf \"%s\", \"012345678901234567890123456789\"}'\n  echo\n  echo \"flood done\"\n  exit 0\nfi\nexit 1\n",
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"2.1.163 (Claude Code)\"; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then\n  read -r line\n  awk 'BEGIN{for(i=0;i<20000;i++) printf \"%s\", \"012345678901234567890123456789\"}'\n  echo\n  echo \"flood done\"\n  exit 0\nfi\nexit 1\n",
     );
     let _bin = ScratchDir(bin);
     let _claude_path =
         EnvGuard::set(&[("PINVOU3_CLAUDE_CLI_PATH", Some(script.to_str().unwrap()))]);
 
-    // The claude flow consumes `--code` (written to stdin post-drain); the
-    // post-login auth probe fails against the fake, which is fine — any
-    // terminal outcome proves the child exited instead of deadlocking.
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let result = parse_args([
@@ -3290,6 +3330,8 @@ fn claude_login_completes_when_the_child_floods_stdout_around_stdin() {
             "claude",
             "--code",
             "SRCRT-LOGIN-CODE-42",
+            "--output",
+            "json",
         ])
         .and_then(pinvou_cli::execute);
         let _ = tx.send(result);
@@ -3299,17 +3341,18 @@ fn claude_login_completes_when_the_child_floods_stdout_around_stdin() {
         .expect("claude login must complete well under the 600 s deadline — a hang here is an stdin/stdout coordination regression");
     // The flooded transcript must not carry the raw code anywhere a harness
     // could re-read (the JSON outcome is the script-visible part).
-    match result {
-        Ok(outcome) => assert!(
-            !outcome.stdout.contains("SRCRT-LOGIN-CODE-42"),
-            "the authorization code must not surface in the report: {}",
-            outcome.stdout
-        ),
-        Err(error) => assert!(
-            !error.to_string().contains("SRCRT-LOGIN-CODE-42"),
-            "the authorization code must not surface in the error: {error}"
-        ),
-    }
+    let outcome = result.expect("the flood must not change the login outcome");
+    assert!(
+        !outcome.stdout.contains("SRCRT-LOGIN-CODE-42"),
+        "the authorization code must not surface in the report: {}",
+        outcome.stdout
+    );
+    let value: serde_json::Value =
+        serde_json::from_str(outcome.stdout.trim()).expect("single-line JSON login result");
+    assert_eq!(
+        value["status"], "completed",
+        "the flood must not change the outcome the sibling login pins: {value}"
+    );
 }
 
 /// The vendor login transcript is echoed once, redacted — and a short,

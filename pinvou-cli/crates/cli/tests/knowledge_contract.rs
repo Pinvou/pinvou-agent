@@ -826,6 +826,8 @@ fn mount_family_refuses_honestly_as_product_host_bound() {
 /// remote probe are real now and covered by the round-trip/opt-in tests.
 #[test]
 fn model_download_keeps_its_stable_unavailable_code() {
+    let _env_guard = env_lock();
+    let _home = temp_home("model-download");
     let error = expect_failed(&["pinvou", "knowledge", "model", "download"]);
     assert!(
         error
@@ -2053,19 +2055,10 @@ fn search_hits_scan_seeded_files_with_nl_merge_and_explicit_flags() {
     std::fs::write(docs.join("季度报告.pdf"), b"pinvou knowledge fixture").unwrap();
     std::fs::write(docs.join("notes.txt"), b"plain text").unwrap();
 
-    let started = run_json(&[
-        "pinvou",
-        "knowledge",
-        "scan",
-        "start",
-        "--root",
-        docs.to_str().unwrap(),
-    ]);
-    assert!(
-        started["phase"] == serde_json::json!("scanning")
-            || started["phase"] == serde_json::json!("done"),
-        "scan start must begin scanning or finish immediately"
-    );
+    // The same wait-and-report contract every sibling scan pin goes through:
+    // `scan start` itself must reach its terminal `done` phase inside the
+    // invocation, not merely have begun scanning.
+    scan_start_done(&docs);
     poll_json_until(
         "scan did not finish in time",
         30,

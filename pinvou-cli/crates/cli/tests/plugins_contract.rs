@@ -2224,7 +2224,7 @@ fn builtin_disable_and_uninstall_are_refused_without_touching_the_store() {
     ])
     .to_string();
     assert!(
-        message.contains("cannot be"),
+        message.contains("cannot be disabled or hidden"),
         "the uninstall refusal must name the builtin rule: {message}"
     );
 
