@@ -1644,6 +1644,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             });
         },
         ownsSession: (id) => activeSessionIdRef.current === id,
+        // r8 M1：回退在途切走、重载被跳过时失效被跳过会话的缓存 buffer——
+        // 否则切回的快速路径直接复用回退前缓存，展示陈旧时间线并续写旧 buffer。
+        invalidateSkippedBuffer: (sid) => {
+          if (bridge.sessions && typeof bridge.sessions.invalidateSessionBuffer === 'function') {
+            bridge.sessions.invalidateSessionBuffer(sid);
+          }
+        },
         // bs 订阅本身就是重投影驱动（switchToSessionInternal 结束时 notify），
         // 无 codex lane 那样的独立 tick 需要兜底。
         bumpTick: () => {},

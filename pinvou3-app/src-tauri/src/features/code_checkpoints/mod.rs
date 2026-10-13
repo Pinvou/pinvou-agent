@@ -793,6 +793,19 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
             excludes.push(text);
         }
     }
+    // 账本根侧的运行时小文件（评审 r8 M2）：非绑定会话两根相同，它们落在
+    // 工作树内且在 checkpoints/ 排除目录之外——不排除会被 `clean -fd` 删掉
+    // （pending_rewind 恰在其协调的恢复步骤中被毁，重试承诺失效）或被旧快照
+    // 的 checkout-index 复活。仅当账本根位于执行根内时添加（绑定会话的文件
+    // 在工作树外，同名模式不应改变其快照语义）；「被 ignored」同向豁免 clean。
+    {
+        let canonical_ledger =
+            fs::canonicalize(ledger_root).unwrap_or_else(|_| ledger_root.to_path_buf());
+        if canonical_ledger.starts_with(execution_root) {
+            excludes.push("pending_rewind.json".to_string());
+            excludes.push("budget-disabled".to_string());
+        }
+    }
     let info_dir = repo.join("info");
     fs::create_dir_all(&info_dir)
         .with_context(|| format!("创建 checkpoint 仓库 info 目录失败: {}", info_dir.display()))?;
@@ -911,6 +924,19 @@ fn normalize_checkpoint_label(label: &str) -> String {
 /// `restore_checkpoint` 打 PreRestore 时以此保住恢复目标——否则目标恰落在被
 /// 淘汰的一半里时 ref 被删、commit 被 prune，随后 read-tree 失败，用户请求
 /// 的历史被销毁（评审 M2）。
+/// 存储压力决策谓词（评审 r8 M3 提取为纯函数以便单测锚定）。
+/// 断路：总字节超预算且打包字节也超 → 内容性超额，gc 徒劳，跳过裁剪/gc；
+/// 打包字节未超预算 → 超额可经 gc 收敛，走裁剪+gc 老路径。
+fn pressure_breaker_engaged(total_bytes: u64, packed_bytes: u64) -> bool {
+    total_bytes > MAX_SHADOW_REPO_BYTES as u64 && packed_bytes >= MAX_SHADOW_REPO_BYTES as u64
+}
+
+/// 硬停：断路模式下字节回收被跳过、增长只受内容变化约束——打包体积达
+/// 2× 预算即拒绝新的 Turn 快照登记（回退路径的 PreRestore 豁免：可反悔
+/// 兜底不可缺席，其频率由用户回退行为约束）。该轮入口如实降级为仅对话。
+fn turn_snapshot_hard_stopped(packed_bytes: u64, kind: CheckpointKind) -> bool {
+    kind == CheckpointKind::Turn && packed_bytes >= (MAX_SHADOW_REPO_BYTES as u64).saturating_mul(2)
+}
 fn create_checkpoint_preserving(
     ledger_root: &Path,
     execution_root: &Path,
@@ -921,6 +947,18 @@ fn create_checkpoint_preserving(
 ) -> Result<CheckpointMeta> {
     let execution_root = canonical_execution_root(execution_root)?;
     let repo = ensure_repo(ledger_root, &execution_root)?;
+    // 硬停（评审 r8 M3）：打包体积 ≥ 2× 预算时 Turn 快照拒绝登记——断路模式
+    // （跳过裁剪/gc）下影子库只增不减，这里补回字节上限：Err 走「快照失败不
+    // 阻断 turn」路径，该轮入口如实降级为仅对话回退。PreRestore 豁免：回退
+    // 路径必须保留可反悔兜底，其频率由用户回退行为约束。
+    let packed_at_entry = packed_repo_bytes(&repo, &execution_root);
+    if turn_snapshot_hard_stopped(packed_at_entry, kind) {
+        bail!(
+            "影子仓库已达硬上限（打包 {}MB ≥ 2×{}MB），本轮跳过 Turn 快照",
+            packed_at_entry / 1024 / 1024,
+            MAX_SHADOW_REPO_BYTES / 1024 / 1024,
+        );
+    }
     // add -A 全量暂存（影子 index），write-tree 取内容树；与上一条 commit 的树相同
     // 则复用（空 turn 不产生冗余快照内容，但 meta 仍按新 turn 登记，保持对齐）。
     git_ok(&repo, &execution_root, &["add", "-A"])?;
@@ -1003,15 +1041,17 @@ fn create_checkpoint_preserving(
     // 存储压力闸（对齐底座 MAX_SNAPSHOT_SIZE_MB）：LRU 裁条目不裁字节，大文件
     // 项目单靠条目数守不住体积。超预算时裁到一半条目 + 主动 gc 收敛（至少保留
     // 最新一条——刚登记的本条；被裁的 undo 绑定由可反悔判定如实收敛）。
-    if shadow_repo_bytes(&repo) > MAX_SHADOW_REPO_BYTES && index.entries.len() > 1 {
+    let total_bytes = shadow_repo_bytes(&repo);
+    if total_bytes > MAX_SHADOW_REPO_BYTES as u64 && index.entries.len() > 1 {
         // 评审 M5 内容性超额断路：先读打包体积（count-objects -v 的 size-pack，
         // 只读对象库统计、不做任何打包）。打包体积本身已 ≥ 预算 → 超额是内容
         // 性的（工作区大且不可压缩），gc --prune=now 无法收敛——此前该分支每轮
         // 登记都触发「裁半 + 全量 gc」（591MB 实测一次 10s+，且在持有 turn 预约
         // 的发送路径内联执行），条目数 1↔2 振荡、只剩最近一轮可回退，与确认
         // 弹窗「最近 20 个」披露矛盾。跳过裁剪与 gc：条目仍受 MAX_CHECKPOINTS
-        // 上限约束，磁盘增长仍受工作区准入（2GB）与每轮内容变化量约束。
-        if packed_repo_bytes(&repo, &execution_root) >= MAX_SHADOW_REPO_BYTES as u64 {
+        // 上限约束；字节上限由 turn_snapshot_hard_stopped 硬停兜底（r8 M3——
+        // 打包 ≥ 2× 预算即拒绝新的 Turn 快照，此模式不再是只增不减）。
+        if pressure_breaker_engaged(total_bytes, packed_repo_bytes(&repo, &execution_root)) {
             eprintln!(
                 "[checkpoints] shadow repo over {}MB budget is content-driven (packed size ≥ budget); keeping entries, skipping futile gc",
                 MAX_SHADOW_REPO_BYTES / 1024 / 1024,
@@ -1811,6 +1851,54 @@ mod tests {
         );
     }
 
+    /// 存储压力决策谓词（评审 r8 M3：断路与硬停是 r7 引擎改动的零锚定区）。
+    #[test]
+    fn pressure_predicates() {
+        const CAP: u64 = MAX_SHADOW_REPO_BYTES as u64;
+        // 断路：总字节超且打包也超才触发；打包未超走老路径。
+        assert!(pressure_breaker_engaged(CAP + 1, CAP));
+        assert!(pressure_breaker_engaged(CAP + 1, CAP + 1));
+        assert!(
+            !pressure_breaker_engaged(CAP + 1, CAP - 1),
+            "打包未超预算 → gc 可收敛，不断路"
+        );
+        assert!(
+            !pressure_breaker_engaged(CAP, CAP * 3),
+            "总字节未超预算不触发压力分支"
+        );
+        // 硬停：Turn 且打包 ≥ 2× 预算；PreRestore 豁免（可反悔兜底不可缺席）。
+        assert!(turn_snapshot_hard_stopped(CAP * 2, CheckpointKind::Turn));
+        assert!(!turn_snapshot_hard_stopped(
+            CAP * 2 - 1,
+            CheckpointKind::Turn
+        ));
+        assert!(
+            !turn_snapshot_hard_stopped(CAP * 3, CheckpointKind::PreRestore),
+            "PreRestore 豁免硬停"
+        );
+    }
+
+    /// 粘性超预算标记（评审 r8 M3 锚定）：标记存在即短路（不触估算路径——
+    /// 用不存在的执行根验证：无标记时会走估算并落标记，有标记时直接 false）。
+    #[test]
+    fn budget_disabled_marker_short_circuits() {
+        let ledger = TestDir::new("budget-marker-ledger");
+        let missing_exec = ledger.path().join("no-such-exec-root");
+        // 无标记：估算失败（目录不存在）按不在预算内 → false，且落下标记。
+        assert!(!execution_root_within_snapshot_budget(
+            &missing_exec,
+            ledger.path()
+        ));
+        assert!(
+            ledger.path().join("budget-disabled").exists(),
+            "首次不在预算内必须落下粘性标记"
+        );
+        // 有标记：短路返回 false（此刻执行根存在与否、可读与否都无关）。
+        assert!(!execution_root_within_snapshot_budget(
+            &missing_exec,
+            ledger.path()
+        ));
+    }
     /// pending_rewind 暂记生命周期（评审 r7 M3：r6-M2 修复此前零测试锚定，
     /// 删除复用机制可全绿通过）。覆盖：往返命中、目标/keepTurns/revision 任一
     /// 不匹配即拒绝、损坏暂记隔离删除、复用目标被裁剪后按不复用处理并清理、

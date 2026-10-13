@@ -143,7 +143,7 @@ pub(super) async fn drop_unsent_turn_checkpoint(
 // rename_all（评审 r6 M1）：本文件所有 JS 可见响应体都走 camelCase wire——
 // 缺了它则 wire 携带 user_turns 而前端读 userTurns，调和门静默退化为不比对
 // （r5 的实际事故，测试只注入参数、从未见过真实 wire 键）。wire 形状由
-/// tests::list_checkpoints_wire_shape_is_camel_case 钉住。
+/// tests::js_facing_response_wire_shapes_are_camel_case 钉住（覆盖全部五个 JS 可见响应体）。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckpointListForUi {
@@ -167,12 +167,18 @@ pub async fn list_checkpoints(
         .ledger;
     // 与 rewind_to_turn 预检同源的计数（count_user_turns，is_user_turn_prompt
     // 同口径）：调和门比对的必须是后端回退时实际校验的那个数。
-    let user_turns = {
-        let session = store
-            .load(&session_id)
+    // 阻塞 IO（全量 transcript 解析）同样移出 async 命令线程（评审 r8 minor 3，
+    // 与 rewind_to_turn 的同款 load 同步口径；该列表每 turn 边沿被拉两次）。
+    let store_count = store.inner().clone();
+    let session_id_count = session_id.clone();
+    let user_turns = tauri::async_runtime::spawn_blocking(move || {
+        let session = store_count
+            .load(&session_id_count)
             .map_err(|error| format!("读取会话失败: {error:#}"))?;
-        checkpoints::count_user_turns(&session.messages)
-    };
+        Ok::<_, String>(checkpoints::count_user_turns(&session.messages))
+    })
+    .await
+    .map_err(|error| format!("读取会话任务失败: {error}"))??;
     tauri::async_runtime::spawn_blocking(move || {
         checkpoints::list_checkpoints(&ledger)
             .map(|checkpoints| CheckpointListForUi {
