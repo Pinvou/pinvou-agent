@@ -3512,3 +3512,69 @@ Both final documentation/evidence scoped reviews returned PASS on unchanged sour
 Details: [independent expected context](client-upgrade-expected-context.md).
 Complete T27 authenticity/persistence remains unfinished. Downloads retain no
 total/cumulative duration or retry cap.
+
+
+## T27 seventeenth batch - six-role metadata semantics (2026-10-13)
+
+The six metadata role subset of original checkSemantics now consumes a complete
+SchemaCheckedEnvelope and private supplied protocol time shape. Time accepts only
+nonnegative SAFE finite integral binary64, including -0; it does not attest a
+trusted physical clock. Package also requires supplied time but has no own expiry.
+Five metadata windows remain half-open, positive and<=365/1/7/30/90 days. Default
+Current refuses exact expiry. Explicit AllowExpired affects Root only and still
+requires original bounded positive window/now>=issuedAt; it works before expiry
+and is ignored for other metadata, never proving lineage or custody.
+
+Recursive reference scope/version/expiry marker checks retain original generic
+identifier and historical reference acceptance. Snapshot identity is role+whole
+scope JCS for Target/Release, Package hash only across scopes. Timestamp/Target
+reference roles, sorted exact host architectures, Release unique targets/Package
+scope/one-way irreversible backup, and Package unique helper IDs/target/full-five-
+field helper JCS/revision40or64/strict production delta/provenanceSHA/native formats
+follow the reference exactly. Canonicalization failures propagate. No Root key/
+policy consistency, crypto, actual native probe, supplied time authority, expected
+context, protected acceptance/persistence/current rights or secure erasure is
+claimed. Credential semantics are explicitly unsupported.
+
+Four groups include all six metadata/all14 unsupported credential roles and4854
+actual original Node composed parser/encoding/Schema/checkSemantics cases. The
+oracle self-derived context isolates this semantic subset, not independent trust.
+Initial4884 cases passed10.17s but one standalone test used invalid backupPolicy
+"none"; a replacement attempt failed to alter that line, so the same standalone
+failure recurred while4854 valid-enum cases passed8.89s. Correcting the actual
+fixture to frozen "notRequired" produced final four groups PASS8.51s. No observed
+production/reference divergence occurred. A preliminary review also replaced
+canonical errors converted to Option equality with explicit propagation before
+testing; no None==None failure acceptance remains.
+
+No dependency/lock/Schema/CI/version/gitlink change. Applicable final regression
+selects72 tests, filtering only the unchanged31556-case Schema mutation group
+with B15 final evidence; CI retains the complete73-test suite. Root applicable72 PASS with actualNode22 and both old oracle flags: unit1
+in0.04s, signing6 in4.03s, bytes7 in0.46s, consume4 in1.66s, context4 in6.01s
+(1716), envelope4 in6.98s (2080), high-water4 in2.44s (1935), metadata4 in9.20s
+(4854), native3 in0.63s, opening4 in1.05s (152), policy4 in4.05s (966), reference4
+in0.84s (730), rollout4 in0.63s, Root4 in4.63s (639), Schema golden1 in0.30s
+(one31556 test filtered), Source5 in0.97s (218), status5 in2.87s and version4
+in0.96s (348); Clippy19.20s/fmt passed. CI51 passed0.200s, architecture/version/
+diff passed. Root self-review found no remaining in-scope gap.
+Both independent frozen-source scoped reviews returned PASS without mandatory.
+Dependency actualNode22.23.3+both old flags applicable72 PASS: unit1 in0.03s,
+signing6 in3.09s, bytes7 in0.34s, consume4 in1.39s, context4 in5.61s (1716),
+envelope4 in7.14s (2080), high-water4 in2.42s (1935), metadata4 in9.53s (4854),
+native3 in0.67s, opening4 in0.98s (152), policy4 in4.29s (966), reference4 in0.89s
+(730), rollout4 in0.68s, Root4 in4.03s (639), Schema golden1 in0.27s (one31556
+test filtered), Source5 in0.78s (218), status5 in0.69s and version4 in0.94s (348);
+Clippy1.77s/fmt/diff passed. Compatibility actualNode22+both flags applicable72
+PASS: unit1 in0.03s, signing6 in3.17s, bytes7 in0.35s, consume4 in1.45s, context4
+in6.42s (1716), envelope4 in7.12s (2080), high-water4 in2.56s (1935), metadata4
+in9.35s (4854), native3 in0.70s, opening4 in0.94s (152), policy4 in4.32s (966),
+reference4 in0.79s (730), rollout4 in0.59s, Root4 in4.14s (639), Schema golden1
+in0.28s (one31556 test filtered), Source5 in0.75s (218), status5 in0.66s and
+version4 in0.93s (348); Clippy0.29s/fmt, CI51 in0.092s/diff passed.
+Final actual Windows App passed all33 updater tests0.13s after2m53s build,
+including current Root supplied-time success, exact-expiry refusal, explicit
+expired-Root calculation and invalid-time refusal. No App-wide pass is claimed.
+Both final documentation/evidence scoped reviews returned PASS on unchanged source.
+Details: [metadata semantics](client-upgrade-metadata-semantics.md).
+Complete T27 authenticity/persistence remains unfinished. Downloads retain no
+total/cumulative duration or retry cap.

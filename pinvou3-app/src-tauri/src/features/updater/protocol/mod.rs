@@ -12,6 +12,24 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+pub(crate) fn check_supplied_metadata_semantics_bytes(
+    original_bytes: &[u8],
+    supplied_time: &[u8],
+    root_mode: pinvou_upgrade_codec::RootWindowMode,
+) -> Result<(), pinvou_upgrade_codec::MetadataSemanticsError> {
+    let envelope = pinvou_upgrade_codec::decode_canonical_envelope(
+        original_bytes,
+        pinvou_upgrade_codec::InputKind::Metadata,
+    )
+    .map_err(pinvou_upgrade_codec::MetadataSemanticsError::Envelope)?
+    .check_full_schema()
+    .map_err(pinvou_upgrade_codec::MetadataSemanticsError::Schema)?;
+    let now = decode_metadata(supplied_time)
+        .map_err(pinvou_upgrade_codec::MetadataSemanticsError::Json)?
+        .protocol_time_shape()?;
+    pinvou_upgrade_codec::assert_supplied_metadata_semantics(&envelope, &now, root_mode)
+}
+
 pub(crate) fn check_expected_envelope_context(
     original_bytes: &[u8],
     kind: pinvou_upgrade_codec::InputKind,
@@ -159,6 +177,55 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_checks_metadata_windows_at_supplied_time_without_clock_authority() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/envelopes.json"
+        )))
+        .unwrap();
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let vector = &vectors["vectors"][0];
+        let raw = URL_SAFE_NO_PAD
+            .decode(vector["envelopeBase64Url"].as_str().unwrap())
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        let now = serde_json::to_vec(&vector["now"]).unwrap();
+        assert!(
+            check_supplied_metadata_semantics_bytes(
+                &raw,
+                &now,
+                pinvou_upgrade_codec::RootWindowMode::Current
+            )
+            .is_ok()
+        );
+        let expiry = serde_json::to_vec(&value["signed"]["expiresAt"]).unwrap();
+        assert_eq!(
+            check_supplied_metadata_semantics_bytes(
+                &raw,
+                &expiry,
+                pinvou_upgrade_codec::RootWindowMode::Current
+            ),
+            Err(pinvou_upgrade_codec::MetadataSemanticsError::ClosedWindow)
+        );
+        assert!(
+            check_supplied_metadata_semantics_bytes(
+                &raw,
+                &expiry,
+                pinvou_upgrade_codec::RootWindowMode::AllowExpired
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            check_supplied_metadata_semantics_bytes(
+                &raw,
+                b"null",
+                pinvou_upgrade_codec::RootWindowMode::Current
+            ),
+            Err(pinvou_upgrade_codec::MetadataSemanticsError::InvalidTime)
+        );
+    }
 
     #[test]
     fn feature_facade_binds_independent_expected_context_and_full_scope() {

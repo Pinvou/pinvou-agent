@@ -2,6 +2,11 @@
 //! signature verification, established Root trust, current eligibility or ACK.
 
 mod bindings;
+mod metadata_semantics;
+pub use metadata_semantics::{
+    MetadataSemanticsError, RootWindowMode, SuppliedProtocolTime,
+    assert_supplied_metadata_semantics,
+};
 mod context;
 pub use context::{ContextBindingError, assert_supplied_expected_context};
 mod schema;
