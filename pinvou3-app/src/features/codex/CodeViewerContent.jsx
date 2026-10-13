@@ -1,5 +1,12 @@
 import { useCallback, useMemo, useState, useSyncExternalStore } from 'react';
-import { RefreshCw } from '../../components/icons.jsx';
+import {
+  Check,
+  Copy,
+  ExternalLink,
+  FolderOpen,
+  Link,
+  RefreshCw,
+} from '../../components/icons.jsx';
 import { pathBasename } from '../../shared/path-utils.js';
 import {
   getSyntaxHighlightVersion,
@@ -77,6 +84,82 @@ export function useCodeHighlight(preview, fileName, languageHint) {
     return highlightCode(preview.text, languageHint || languageHintForFile(preview.name || fileName));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- syntaxVersion is a version counter; any change requires recomputing to restore highlighting
   }, [preview, fileName, languageHint, syntaxVersion]);
+}
+
+// Shared title-bar button row for the code viewer (CodeViewerModal +
+// ReaderApp): A-/A+/copy-content/copy-path plus the optional desktop
+// reveal/open actions, which stay hidden while a diff is shown or when the
+// callback is unavailable (the web access contract pins this gating).
+// `extra` renders host-specific buttons (modal: open-in-new-window + close).
+export function CodeViewerToolbar({
+  copy,
+  fontSize,
+  fontBounds,
+  adjust,
+  copied,
+  copyText,
+  contentText = '',
+  canCopyContent = false,
+  copyPathText,
+  hideDesktopActions = false,
+  onReveal,
+  onOpen,
+  extra = null,
+}) {
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => adjust(-1)}
+        disabled={fontSize <= fontBounds.min}
+        className={`${CODE_VIEWER_ICON_BUTTON} text-[12px] font-medium tracking-tight`}
+        title={copy.fontDecrease}
+        aria-label={copy.fontDecrease}
+        data-testid="code-viewer-font-decrease"
+      >
+        A-
+      </button>
+      <button
+        type="button"
+        onClick={() => adjust(1)}
+        disabled={fontSize >= fontBounds.max}
+        className={`${CODE_VIEWER_ICON_BUTTON} text-[12px] font-medium tracking-tight`}
+        title={copy.fontIncrease}
+        aria-label={copy.fontIncrease}
+        data-testid="code-viewer-font-increase"
+      >
+        A+
+      </button>
+      <button
+        type="button"
+        onClick={() => copyText('content', canCopyContent ? contentText : '')}
+        disabled={!canCopyContent}
+        className={CODE_VIEWER_ICON_BUTTON}
+        title={copied === 'content' ? copy.copied : copy.copyContent}
+      >
+        {copied === 'content' ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}
+      </button>
+      <button
+        type="button"
+        onClick={() => copyText('path', copyPathText)}
+        className={CODE_VIEWER_ICON_BUTTON}
+        title={copied === 'path' ? copy.copied : copy.copyPath}
+      >
+        {copied === 'path' ? <Check size={13} className="text-emerald-500" /> : <Link size={13} />}
+      </button>
+      {!hideDesktopActions && onReveal && (
+        <button type="button" onClick={onReveal} className={CODE_VIEWER_ICON_BUTTON} title={copy.reveal}>
+          <FolderOpen size={13} />
+        </button>
+      )}
+      {!hideDesktopActions && onOpen && (
+        <button type="button" onClick={onOpen} className={CODE_VIEWER_ICON_BUTTON} title={copy.open}>
+          <ExternalLink size={13} />
+        </button>
+      )}
+      {extra}
+    </>
+  );
 }
 
 export function CodeViewerContent({

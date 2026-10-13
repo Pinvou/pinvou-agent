@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  AppWindow, Check, Copy, ExternalLink, FolderOpen, Link, X,
+  AppWindow, X,
 } from '../../components/icons.jsx';
 import { useCopyFlash } from '../../hooks/useCopyFlash.js';
 import { pathBasename } from '../../shared/path-utils.js';
@@ -9,6 +9,7 @@ import { FileColoredIcon } from '../../components/files/FileColoredIcon.jsx';
 import {
   CODE_VIEWER_ICON_BUTTON,
   CodeViewerContent,
+  CodeViewerToolbar,
   useCodeHighlight,
   useViewerFontSize,
   viewerFontSizeBounds,
@@ -187,70 +188,39 @@ export function CodeViewerModal({
             </div>
             <div className="truncate text-[10px] text-gray-400" title={relativePath}>{relativePath}</div>
           </div>
-          <button
-            type="button"
-            onClick={() => adjustViewerFontSize(-1)}
-            disabled={fontSize <= fontBounds.min}
-            className={`${CODE_VIEWER_ICON_BUTTON} text-[12px] font-medium tracking-tight`}
-            title={copy.fontDecrease}
-            aria-label={copy.fontDecrease}
-            data-testid="code-viewer-font-decrease"
-          >
-            A-
-          </button>
-          <button
-            type="button"
-            onClick={() => adjustViewerFontSize(1)}
-            disabled={fontSize >= fontBounds.max}
-            className={`${CODE_VIEWER_ICON_BUTTON} text-[12px] font-medium tracking-tight`}
-            title={copy.fontIncrease}
-            aria-label={copy.fontIncrease}
-            data-testid="code-viewer-font-increase"
-          >
-            A+
-          </button>
-          <button
-            type="button"
-            onClick={() => copyText('content', renderPreview?.kind === 'text' ? renderPreview.text : '')}
-            disabled={renderPreview?.kind !== 'text'}
-            className={CODE_VIEWER_ICON_BUTTON}
-            title={copied === 'content' ? copy.copied : copy.copyContent}
-          >
-            {copied === 'content' ? <Check size={13} className="text-emerald-500" /> : <Copy size={13} />}
-          </button>
-          <button
-            type="button"
-            onClick={() => copyText('path', relativePath)}
-            className={CODE_VIEWER_ICON_BUTTON}
-            title={copied === 'path' ? copy.copied : copy.copyPath}
-          >
-            {copied === 'path' ? <Check size={13} className="text-emerald-500" /> : <Link size={13} />}
-          </button>
-          {!diff && onReveal && (
-            <button type="button" onClick={onReveal} className={CODE_VIEWER_ICON_BUTTON} title={copy.reveal}>
-              <FolderOpen size={13} />
-            </button>
-          )}
-          {!diff && onOpen && (
-            <button type="button" onClick={onOpen} className={CODE_VIEWER_ICON_BUTTON} title={copy.open}>
-              <ExternalLink size={13} />
-            </button>
-          )}
-          {onOpenInNewWindow && (
-            <button
-              type="button"
-              onClick={onOpenInNewWindow}
-              className={CODE_VIEWER_ICON_BUTTON}
-              aria-label={copy.openInNewWindow}
-              title={copy.openInNewWindow}
-              data-testid="code-viewer-open-in-new-window"
-            >
-              <AppWindow size={13} />
-            </button>
-          )}
-          <button type="button" onClick={onClose} className={CODE_VIEWER_ICON_BUTTON} aria-label={copy.closeViewer} title={copy.closeViewer}>
-            <X size={14} />
-          </button>
+          <CodeViewerToolbar
+            copy={copy}
+            fontSize={fontSize}
+            fontBounds={fontBounds}
+            adjust={adjustViewerFontSize}
+            copied={copied}
+            copyText={copyText}
+            contentText={renderPreview?.kind === 'text' ? renderPreview.text : ''}
+            canCopyContent={renderPreview?.kind === 'text'}
+            copyPathText={relativePath}
+            hideDesktopActions={diff}
+            onReveal={onReveal}
+            onOpen={onOpen}
+            extra={(
+              <>
+                {onOpenInNewWindow && (
+                  <button
+                    type="button"
+                    onClick={onOpenInNewWindow}
+                    className={CODE_VIEWER_ICON_BUTTON}
+                    aria-label={copy.openInNewWindow}
+                    title={copy.openInNewWindow}
+                    data-testid="code-viewer-open-in-new-window"
+                  >
+                    <AppWindow size={13} />
+                  </button>
+                )}
+                <button type="button" onClick={onClose} className={CODE_VIEWER_ICON_BUTTON} aria-label={copy.closeViewer} title={copy.closeViewer}>
+                  <X size={14} />
+                </button>
+              </>
+            )}
+          />
         </div>
 
         <CodeViewerContent

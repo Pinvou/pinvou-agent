@@ -111,8 +111,8 @@ const codexWorkspacePanel = readSource(
   path.join(root, 'src', 'features', 'codex', 'CodexWorkspacePanel.jsx'),
   'utf8',
 );
-const codeViewerModal = readSource(
-  path.join(root, 'src', 'features', 'codex', 'CodeViewerModal.jsx'),
+const codeViewerContent = readSource(
+  path.join(root, 'src', 'features', 'codex', 'CodeViewerContent.jsx'),
   'utf8',
 );
 const acpPlatformClient = readSource(path.join(root, 'src', 'features', 'codex', 'acpClient.js'), 'utf8');
@@ -406,8 +406,8 @@ assert.match(codexWorkspacePanel, /can\('externalSystemOpen'\)/,
 assert.match(codexWorkspacePanel, /onOpen=\{systemOpenAvailable/);
 assert.match(codexWorkspacePanel, /onReveal=\{systemOpenAvailable/);
 assert.match(codexWorkspacePanel, /onOpenInNewWindow=\{systemOpenAvailable/);
-assert.match(codeViewerModal, /\{!diff && onReveal && \(/);
-assert.match(codeViewerModal, /\{!diff && onOpen && \(/,
+assert.match(codeViewerContent, /\{!hideDesktopActions && onReveal && \(/);
+assert.match(codeViewerContent, /\{!hideDesktopActions && onOpen && \(/,
   'the shared code preview must omit desktop system actions when callbacks are unavailable');
 
 // 浏览器本机上传:双入口按能力协商门控,分块有界,取消/失败路径完备。
