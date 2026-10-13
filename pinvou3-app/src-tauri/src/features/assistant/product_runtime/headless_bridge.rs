@@ -1351,17 +1351,21 @@ impl PrivateOutputResolver for ProductHeadlessBackend {
 /// PINVOU3_HOME would otherwise boot `SessionStore` against the real
 /// `~/.pinvou3` — junk sessions, plus the boot retention sweep silently
 /// evicting the user's oldest real sessions (the observed incident). The
-/// gate is debug-only on purpose: release CLI users legitimately run with
+/// predicate mirrors the store's home resolver (`platform::paths::
+/// pinvou3_home` reads `std::env::var`, so a non-UTF-8 value falls back to
+/// the real home and an empty value resolves `sessions/` relative to the
+/// CWD) — only a set, non-empty, readable value opens the gate. The gate is
+/// debug-only on purpose: release CLI users legitimately run with
 /// PINVOU3_HOME unset against the real home, and the GUI boots via
 /// `SessionStore::boot_for_process_startup` (lib.rs), never through here.
 #[cfg(debug_assertions)]
 fn ensure_isolated_debug_home() -> Result<()> {
-    if std::env::var_os("PINVOU3_HOME").is_none() {
-        anyhow::bail!(
-            "run_windowless_host refuses the real user data home in debug builds: set PINVOU3_HOME to an isolated temp dir (see platform::test_support::with_temp_home)"
-        );
+    match std::env::var("PINVOU3_HOME") {
+        Ok(home) if !home.is_empty() => Ok(()),
+        _ => anyhow::bail!(
+            "run_windowless_host refuses the real user data home in debug builds: set PINVOU3_HOME to an isolated, non-empty temp dir (see platform::test_support::with_temp_home)"
+        ),
     }
-    Ok(())
 }
 
 /// Shared bootstrap of the windowless product host: rustls/env/tokio/the
@@ -2875,5 +2879,26 @@ mod tests {
                 "an isolated temp PINVOU3_HOME must pass the debug home gate"
             );
         });
+    }
+
+    /// An EMPTY PINVOU3_HOME must not open the gate: the store's resolver
+    /// would take the value verbatim and root `sessions/` relative to the
+    /// process CWD — the same silent-misdirection class this gate refuses,
+    /// just onto the repo dir instead of the real home. Pinned on the gate
+    /// helper (same reasoning as the gate-opens test above).
+    #[cfg(debug_assertions)]
+    #[test]
+    fn isolated_debug_home_gate_refuses_empty_pinvou3_home() {
+        use crate::platform::test_support::locked_env;
+
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK via locked_env; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", "") };
+        let error = super::ensure_isolated_debug_home()
+            .expect_err("an empty PINVOU3_HOME must not pass the debug home gate");
+        assert!(
+            format!("{error:#}").contains("PINVOU3_HOME"),
+            "the refusal must name the offending variable: {error:#}"
+        );
     }
 }
