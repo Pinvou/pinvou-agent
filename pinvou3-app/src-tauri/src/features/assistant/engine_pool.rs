@@ -4413,14 +4413,21 @@ impl EnginePool {
     /// engine is not running read their initial value from the persisted list
     /// at the next spawn (build_engine_config), so new windows / new
     /// conversations all inherit the same governance state.
-    pub async fn set_disallowed_all(&self, tools: Vec<String>) {
-        let targets = self
-            .entries
+    /// Snapshot of every running engine entry (session id + engine handle)
+    /// for a broadcast loop: the entries lock is taken momentarily and
+    /// released before any send, so the global engine-table lock is never
+    /// held across an await.
+    async fn live_engine_targets(&self) -> Vec<(String, AppEngine)> {
+        self.entries
             .lock()
             .await
             .iter()
             .map(|(sid, entry)| (sid.clone(), entry.engine.clone()))
-            .collect::<Vec<_>>();
+            .collect::<Vec<_>>()
+    }
+
+    pub async fn set_disallowed_all(&self, tools: Vec<String>) {
+        let targets = self.live_engine_targets().await;
         for (sid, engine) in targets {
             // The global hot refresh is shaped per session as well (code
             // sessions keep present_artifact hidden), and the entries lock is
@@ -4447,13 +4454,7 @@ impl EnginePool {
     /// from build_engine_config_for_session_roots — both share
     /// `bridge.scope_deny_ruleset`.
     pub async fn refresh_permission_rulesets(&self) {
-        let targets = self
-            .entries
-            .lock()
-            .await
-            .iter()
-            .map(|(sid, entry)| (sid.clone(), entry.engine.clone()))
-            .collect::<Vec<_>>();
+        let targets = self.live_engine_targets().await;
         for (sid, engine) in targets {
             if let Err(e) = engine
                 .handle
