@@ -1433,7 +1433,7 @@ test('cascade wiring contract: ChatView gates all four layers, stops the block w
   // Round-9: acceptance is STRICT (=== true — "restored" is a non-dispatch)
   // and consumes only the serialized refs via the shared filter.
   assert.match(chatViewSource, /settleSessionRefSend\(refsAtSend, draftKeyAtSend, accepted\);/);
-  assert.match(chatViewSource, /setSessionRefs\(current => refsSurvivingAcceptance\(refsAtSend, current, featureOn\)\)/);
+  assert.match(chatViewSource, /setSessionRefs\(current => dedupeSessionRefs\(\[\n\s*\.\.\.refsSurvivingAcceptance\(refsAtSend, current, featureOn\),\n\s*\.\.\.carriedKept,/);
   // The mention menu keyboard branch bails out during IME composition.
   assert.match(chatViewSource, /if \(isImeComposing\(e\)\) return;/);
   // A refs-only message keeps the send button visible while busy.
@@ -1617,6 +1617,14 @@ test('@ trigger stays inert inside URL path segments (round-5 minor 7)', () => {
   // A @ after whitespace still triggers, including at the end of a URL-ish
   // text where the reference is intentional.
   assert.deepEqual(sessionMentionTriggerAt('参考 https://github.com/ @octocat', true), { start: 23, query: 'octocat', token: '23:octocat' });
+});
+
+test('@ at end-of-string inside a URL still does not trigger (round-22 m4)', () => {
+  // The round-5 pin's two inputs cannot detect removal of '/' from the
+  // exclusion class (both are null under the mutated regex for other
+  // reasons); this end-of-string URL is the discriminating shape.
+  assert.equal(sessionMentionTriggerAt('https://github.com/@octocat'), null,
+    'a URL whose path segment ends the text must not open the panel');
 });
 
 // ── Round-8: restore verdict routing, sibling-site wiring, drop/send pins ──
@@ -2326,8 +2334,8 @@ test('failure restores are stash-backed across unmount and draft materialization
       await carrySend.handleSend();
       assert.deepEqual(
         restoreSessionMentionDraft('draft:12'),
-        [...REFS, midAwaitPick],
-        'the aborted send snapshot AND the carried pick return to the draft',
+        [midAwaitPick, ...REFS],
+        'the aborted send snapshot AND the carried pick return to the draft (carry-first cap priority)',
       );
       assert.deepEqual(
         restoreSessionMentionDraft('session:TGT12'),
@@ -2395,14 +2403,14 @@ test('failure restores are stash-backed across unmount and draft materialization
       // merges the carried pick into live — BOTH visible in the composer
       assert.deepEqual(
         comboLive.applied.at(-1) || [],
-        [...REFS, comboPick],
-        'the carried pick merges into the live draft set on rollback',
+        [comboPick, ...REFS],
+        'the carried pick merges into the live draft set on rollback (carry-first priority)',
       );
       // and the next cleanup snapshot (live) no longer loses it
       comboStore.stashSessionMentionDraft('draft:13', [...comboRefs.current]);
       assert.deepEqual(
         restoreSessionMentionDraft('draft:13'),
-        [...REFS, comboPick],
+        [comboPick, ...REFS],
         'the cleanup snapshot keeps the carried pick',
       );
       stashSessionMentionDraft('draft:13', []);
@@ -2601,11 +2609,140 @@ test('failure restores are stash-backed across unmount and draft materialization
       );
       assert.deepEqual(
         restoreSessionMentionDraft('draft:16'),
-        [...REFS, { sessionId: 'carried160', title: '草稿带来的' }],
-        'the distinct carry returns to the draft with the aborted snapshot',
+        [{ sessionId: 'carried160', title: '草稿带来的' }, ...REFS],
+        'the distinct carry returns to the draft with the aborted snapshot (carry-first priority)',
       );
       stashSessionMentionDraft('draft:16', []);
       stashSessionMentionDraft('session:TGT16', []);
+    }
+
+    // Round-22 (both reviewers): verdict TRUE and FALSE with a non-empty
+    // carry, driven through the REAL scope-effect migration (not direct
+    // ledger recording) — the acceptance arm used to return before the
+    // carry consumer and strand mid-await picks silently.
+    {
+      const effectSrc = extractChatViewFunction(`useEffect(() => {
+        const restored = bridge.available`);
+      const carrySettle = async (verdict, backOnDraftScope) => {
+        const store = recordingDraftStore();
+        const keyRef = { current: null };
+        const refs = { current: [] };
+        const sends = { current: new Set() };
+        let effectBody = null;
+        const runEffect = (scope) => {
+          const sandbox = {
+            useEffect: (callback) => { effectBody = callback; },
+            bridge: { available: true, chat: { getComposerDraft: () => '正文' } },
+            bs: {},
+            setInputText: () => {},
+            ...scope,
+            mentionDraftKeyRef: keyRef,
+            mentionPendingDraftSendsRef: sends,
+            recordDraftMaterialization,
+            setSessionRefs: (value) => { refs.current = typeof value === 'function' ? value(refs.current) : value; },
+            setMentionDismissedToken: () => {},
+            setMentionSelection: () => {},
+            sessionRefsRef: refs,
+            stashSessionMentionDraft: store.stashSessionMentionDraft,
+            restoreSessionMentionDraft: store.restoreSessionMentionDraft,
+            dedupeSessionRefs,
+            console,
+          };
+          vm.runInNewContext(`${effectSrc})`, sandbox);
+          return effectBody();
+        };
+        // draft scope with a mid-await pick stashed, send registered
+        const draftCleanup = runEffect({ activeSessionId: null, draftEpoch: 21 });
+        refs.current = [{ sessionId: 'await221', title: '等待中的挑选' }];
+        draftCleanup(); // cleanup stashes the live pick under draft:21
+        const applied = { live: [] };
+        const send = {
+          mentionDraftKeyRef: keyRef,
+          mentionPendingDraftSendsRef: sends,
+          sessionMentionEnabledRef: { current: true },
+          isMultiAgentReadOnly: false,
+          canSend: true,
+          chatVoice: null,
+          inputText: '正文',
+          inputTextRef: { current: '正文' },
+          constrainChatInput: (value) => ({ text: value, truncated: false }),
+          setInputText: () => {},
+          sessionMentionEnabled: true,
+          buildSessionMentionBlock,
+          dedupeSessionRefs,
+          stashSessionMentionDraft: store.stashSessionMentionDraft,
+          restoreSessionMentionDraft: store.restoreSessionMentionDraft,
+          resolveMaterializedDraftKey,
+          materializationCarry,
+          clearDraftMaterialization,
+          sessionRefs: REFS,
+          sendChatMessage: async () => {
+            // mid-await: the send registered the draft key, the REAL effect
+            // performs the migration (carry into the ledger), then the
+            // verdict lands. backOnDraftScope switches to an UNRELATED
+            // scope (a plain third session) so the away arm runs — a
+            // return to the draft keeps the ledger-resolved keys equal
+            // and takes the live arm by design (the M2 race semantics).
+            sends.current.add('draft:21');
+            runEffect({ activeSessionId: 'MAT21', draftEpoch: 22 });
+            if (backOnDraftScope) { keyRef.current = 'session:OTHER23'; refs.current = []; }
+            return verdict;
+          },
+          setSessionRefs: (value) => { refs.current = typeof value === 'function' ? value(refs.current) : value; applied.live.push([...refs.current]); },
+          bridge: { chat: { prefillComposer: () => {} } },
+          personalWorkbenchTemplateIdRef: { current: null },
+          setPersonalWorkbenchTemplateId: () => {},
+          console,
+        };
+        vm.runInNewContext(`${settlePrefix}${sendFn}\nthis.handleSend = handleSend;`, send);
+        await send.handleSend();
+        return { store, applied, keyRef };
+      };
+      // TRUE, staying on the materialized scope: the mid-await pick
+      // survives acceptance LIVE (the serialized set is consumed).
+      {
+        const { applied, keyRef } = await carrySettle(true, false);
+        assert.equal(keyRef.current, 'session:MAT21');
+        assert.deepEqual(
+          applied.live.at(-1) || [],
+          [{ sessionId: 'await221', title: '等待中的挑选' }],
+          'acceptance keeps the mid-await pick live in the materialized session',
+        );
+        assert.equal(
+          materializationCarry('draft:21'),
+          null,
+          'acceptance consumes the ledger entry (no stale rescue for a second send)',
+        );
+        // second-send shape: a later failure must not resolve through the
+        // retired entry — the draft key resolves to itself now.
+        assert.equal(resolveMaterializedDraftKey('draft:21'), 'draft:21');
+        clearDraftMaterialization('draft:21');
+        stashSessionMentionDraft('session:MAT21', []);
+      }
+      // TRUE, switched to an unrelated scope before settle: the pick lands
+      // in the stash of the materialized session.
+      {
+        await carrySettle(true, true);
+        assert.deepEqual(
+          restoreSessionMentionDraft('session:MAT21'),
+          [{ sessionId: 'await221', title: '等待中的挑选' }],
+          'acceptance away from the scope stashes the mid-await pick in the materialized session',
+        );
+        clearDraftMaterialization('draft:21');
+        stashSessionMentionDraft('session:MAT21', []);
+      }
+      // FALSE after the real migration: the snapshot AND the carry land
+      // under the materialized session key (the false-tail carry merge).
+      {
+        await carrySettle(false, false);
+        assert.deepEqual(
+          restoreSessionMentionDraft('session:MAT21'),
+          [{ sessionId: 'await221', title: '等待中的挑选' }, ...REFS],
+          'failure merges the carry and the snapshot under the materialized key (carry first)',
+        );
+        clearDraftMaterialization('draft:21');
+        stashSessionMentionDraft('session:MAT21', []);
+      }
     }
 
     // Round-15 m1 (negative): plain navigation (no in-flight send) must NOT
