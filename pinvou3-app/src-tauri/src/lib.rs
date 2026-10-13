@@ -1979,8 +1979,10 @@ mod startup_order_contract {
     /// would rewrite `session-agents.json` from its own memory on every
     /// purge, clobbering concurrent binds. Textual pin like the legs above
     /// (needles fragment-concatenated against self-match, `find` takes the
-    /// first = production occurrence): deleting the capture, or swapping it
-    /// for an independent `SessionAgentStore::load_or_empty`, fails here.
+    /// first = production occurrence): deleting the capture, swapping it
+    /// for an independent `SessionAgentStore::load_or_empty`, or swapping
+    /// the `pool.agents()` binding itself for an independent instance all
+    /// fail here.
     #[test]
     fn purge_hook_captures_the_pool_agents_store() {
         let source = include_str!("lib.rs");
@@ -1997,9 +1999,18 @@ mod startup_order_contract {
                     "lib.rs is missing the purge-hook agents-index capture from code_session_agents"
                 )
             });
+        let agents_binding = source
+            .find(&["let agents = pool.", "agents().clone();"].concat())
+            .unwrap_or_else(|| {
+                panic!("lib.rs is missing the pool agents binding for the purge hook")
+            });
         let pool_binding = source
             .find(&["let (code_session_", "agents, acp_pool_for_capabilities)"].concat())
             .unwrap_or_else(|| panic!("lib.rs is missing the AcpPool agents binding"));
+        assert!(
+            agents_binding < capture,
+            "the purge hook's store must be cloned from the AcpPool's agents store, not an independent instance"
+        );
         assert!(
             pool_binding < capture,
             "the purge hook must capture the store derived from AcpPool::new (pool.agents()), not an independent instance"
