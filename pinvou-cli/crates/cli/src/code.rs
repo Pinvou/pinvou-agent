@@ -4109,8 +4109,9 @@ fn code_sessions_timeline(id: &str, output: OutputMode) -> Result<CliOutcome, Cl
 // Read-only ops (list/search/preview/changes/branches) call
 // `features::codex_acp::workspace` directly and serialize its types, so the
 // CLI JSON matches the GUI's exactly. Two pieces stay local on purpose: the
-// diff lane (the app's per-file diff reads untracked files unbounded, uses
-// Chinese section copy, and has no whole-workspace composition — the mirror
+// diff lane (the app's per-file diff uses Chinese section copy and has no
+// whole-workspace composition — its untracked-file reads have been bounded
+// at `DIFF_LIMIT+1` since the round-48 fix; the mirror
 // is differentially pinned against the app module by a contract test) and
 // `workspace checkout` (cross-process locks, the `--yes` gate, and
 // commit-identity hardening are CLI-specific value). Path validation stays a
