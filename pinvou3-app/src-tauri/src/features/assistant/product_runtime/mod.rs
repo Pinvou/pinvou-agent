@@ -418,16 +418,6 @@ impl EnginePoolRuntime {
         // kept (StopDropInbox).
         self.pool.cancel(session_id, false).await;
     }
-
-    /// 删除本次评测的临时会话（释放引擎资源且不污染用户历史）
-    pub(crate) async fn close(&self, session_id: &str) {
-        if let Err(error) = self.pool.delete_chat_session(session_id).await {
-            note_stderr(&format!(
-                "[eval] failed to delete the temporary session {session_id}: {}",
-                error.root_cause()
-            ));
-        }
-    }
 }
 
 /// Best-effort note on stderr: Rust ignores SIGPIPE, so a closed stderr
