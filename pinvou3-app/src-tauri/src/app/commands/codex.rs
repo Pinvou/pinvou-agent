@@ -95,9 +95,7 @@ async fn rollback_created_code_session(
 }
 
 #[tauri::command]
-pub async fn list_acp_agents(
-    _acp_pool: State<'_, AcpPool>,
-) -> Result<Vec<AcpAgentDescriptor>, String> {
+pub async fn list_acp_agents() -> Result<Vec<AcpAgentDescriptor>, String> {
     list_acp_agents_for_pool().await
 }
 
