@@ -925,26 +925,22 @@ fn spool_request_digest(request: &SpooledCreationRequest) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// Round-11 MAJOR-2/3: stat + regular-file gate BEFORE any read, then a
-/// capped read. `symlink_metadata` never follows the final component, so a
-/// planted FIFO is refused by `is_file()` instead of opened blocking (the
-/// single drain task would wedge forever), a symlink to /dev/zero cannot
-/// spin an infinite read, and a sparse oversize file hits the cap instead
-/// of being slurped whole at 1 Hz. `None` = missing/not a regular file/
-/// oversize/unreadable — callers treat that as "no usable bytes".
+/// Round-11 MAJOR-2/3, re-cut at round-19 MAJOR-1: the gate moved from
+/// stat-then-open to the platform's open-time-gated read. The old shape
+/// (`symlink_metadata`, then a separate `File::open`) left a window where
+/// a FIFO planted into the path opened BLOCKING and wedged the single
+/// drain task forever — the exact failure the round-11 comment claimed
+/// this helper prevents, but only for a FIFO present at stat time. The
+/// platform primitive gates at the open itself (O_NOFOLLOW|O_NONBLOCK,
+/// fd-level regular-file refusal) and re-bounds the cap past the gate.
+/// `None` = missing/not a regular file/oversize/unreadable — callers
+/// treat that as "no usable bytes". Residual: the fd pins the inode, so a
+/// concurrent appender can still grow the file past the gate — the
+/// primitive's capped read re-bounds that.
 fn read_regular_bounded(path: &Path, cap: usize) -> Option<Vec<u8>> {
-    use std::io::Read as _;
-    let meta = std::fs::symlink_metadata(path).ok()?;
-    if !meta.is_file() || meta.len() > cap as u64 {
-        return None;
-    }
-    let file = std::fs::File::open(path).ok()?;
-    let mut buf = Vec::new();
-    file.take(cap as u64 + 1).read_to_end(&mut buf).ok()?;
-    if buf.len() > cap {
-        return None;
-    }
-    Some(buf)
+    crate::platform::filesystem::read_private_data_file_bytes_within(path, cap as u64)
+        .ok()
+        .filter(|bytes| bytes.len() <= cap)
 }
 
 fn write_done_marker(path: &Path, payload: &serde_json::Value) -> Result<()> {
@@ -1105,6 +1101,31 @@ fn sanitize_marker_text(text: &str) -> String {
         }
     }
     sanitized
+}
+
+// Round-19 MAJOR-2: the scrubber was mutation-green — the poison fixture's
+// validation error contained no path, so deleting the whole body kept the
+// suite green. Pin it with a path-bearing input (an IO-context apply error
+// embeds exactly these prefixes).
+#[test]
+fn sanitize_marker_text_scrubs_home_prefixes() {
+    let pinvou3_home = crate::platform::paths::pinvou3_home();
+    let user_home = crate::platform::paths::user_home_dir();
+    let text = format!(
+        "create workspace {}/workspaces/w-1 (under {}) failed: is a file",
+        pinvou3_home.display(),
+        user_home.display()
+    );
+    let scrubbed = sanitize_marker_text(&text);
+    assert!(
+        !scrubbed.contains(&pinvou3_home.display().to_string())
+            && !scrubbed.contains(&user_home.display().to_string()),
+        "no absolute prefix may survive: {scrubbed}"
+    );
+    assert!(
+        scrubbed.contains("<pinvou3-home>") && scrubbed.contains('~'),
+        "both prefixes fold to their placeholders: {scrubbed}"
+    );
 }
 
 /// Write a failure marker for an already-consumed spool file (the caller has
@@ -1710,6 +1731,10 @@ mod tests {
         assert_eq!(line["detail"]["tool"], SCHEDULED_TASK_CREATE_TOOL);
         assert_eq!(line["detail"]["task_id"], records[0].id);
         assert_eq!(line["detail"]["outcome"], "create");
+        // Round-19 MAJOR-2: the honesty stamp rides the SUCCESS line too —
+        // the sender is a model-supplied claim on every audit surface, not
+        // only on failures.
+        assert_eq!(line["detail"]["claimed_from_session_verified"], false);
     }
 
     #[tokio::test]
@@ -1906,6 +1931,27 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("simulated persistent failure")
+        );
+        // Round-19 MAJOR-2: the apply-failed SHADOW line is pinned — the
+        // body's "every applied and apply-failed request" claim rides on
+        // it, and deleting the Err-arm shadow write shipped green.
+        use crate::features::scheduled::tasks::scheduled_automation_root;
+        let shadow = std::fs::read_to_string(
+            scheduled_automation_root()
+                .join("audit")
+                .join("workflow_audit.jsonl"),
+        )
+        .expect("the shadow trail records the failures");
+        let apply_failed = shadow
+            .lines()
+            .filter(|line| {
+                let value: serde_json::Value = serde_json::from_str(line).unwrap();
+                value["detail"]["outcome"] == "apply-failed"
+            })
+            .count();
+        assert!(
+            apply_failed >= 1,
+            "the apply-failed disposition must reach the shadow trail: {shadow}"
         );
     }
 
@@ -2972,6 +3018,12 @@ mod tests {
         assert!(
             content.contains("\"claimed_from_session\":null"),
             "the omitted sender is recorded as explicitly unverified"
+        );
+        // Round-19 MAJOR-2: the unverified stamp rides the SHADOW line as
+        // well (the body's audit paragraph describes it there).
+        assert!(
+            content.contains("\"claimed_from_session_verified\":false"),
+            "the shadow line carries the unverified stamp"
         );
         assert!(
             !spool.join("nosender.json").exists(),
