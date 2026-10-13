@@ -4275,3 +4275,40 @@ vectors/dependencies/locks/CI/crypto/trust/limits/VERSION/gitlinks changes. Deta
 [client response entry](client-upgrade-response-entry.md).
 Full T27/real transport/ownership remain unfinished. Downloads retain no
 total/cumulative duration or retry cap.
+
+## T27 thirty-fourth batch - supplied client HTTP errors (2026-10-14)
+
+Scope: frozen closed error/unactivated body Schemas with exact client operation/
+HTTP-status error alternatives from original OpenAPI, no duplicated handwritten
+code/status table. Fixed26 client inventory complete/unique, common-only resource,
+whole bounded canonical reparse. Original retryable flags/optional retryAfterMs
+and special checkAfterMs remain hints, not total download/retry budgets.
+Unit success is not trusted transport/correlation/confirmed absence/ACK,
+occupancy release/execution right/owner revival.
+Outside-repository actual original OpenAPI Ajv generated14464 cases over all
+26 client operations/all21 error codes/status pairs plus required/scalar/delay
+boundaries; all named intended outcomes checked. Root task-scoped5 passed:
+integration3/actual original14464 in3.05s/resourceunits2 in0.07s (nine unrelated
+units filtered), Clippy alltargets22.83s/codec+App facade format passed.
+Architecture/version/diff passed; CI policy51 in0.109s. Root self-review confirms
+fixed local resources, complete unique client inventory, original operation/
+status/code and retry-field rules, bounded input/non-object handling and no
+authority/absence/retry-budget inference. No existing validator/helper changed,
+and unchanged full138/31556 were not repeated. Both independent static reviews
+found no mandatory issue; compatibility independently checked every actual
+OpenAPI error alternative equals the generic error branch or exact unactivated
+reference (zero divergent), confirming the membership/body combination has no
+missing variant guard in the frozen artifact. Actual Windows updater App49
+passed in0.28s after2m46s compilation. Dependency independent5 passed
+(integration3/actual14464 in2.99s/resourceunits2 in0.08s/nine unrelated units
+filtered, Clippy1.78s/fmt/App facade format/diff passed). Compatibility
+independent5 passed (integration3/actual14464 in2.75s/resourceunits2 in0.07s/nine
+unrelated units filtered, Clippy1.77s/fmt/App facade format/diff passed;
+CI policy51 in0.070s). Both actual Node22/both legacy environments, no old138/
+31556/App repeat. Both scoped reviews passed without mandatory findings and
+all processes closed. Both independent final documentation reviews passed
+before commit. No Schema/OpenAPI/profile/vectors/
+dependencies/locks/CI/crypto/trust/limits/VERSION/gitlinks changes. Details:
+[client error responses](client-upgrade-error-responses.md).
+Full T27/real transport/ownership remain unfinished. Downloads retain no
+total/cumulative duration or retry cap.

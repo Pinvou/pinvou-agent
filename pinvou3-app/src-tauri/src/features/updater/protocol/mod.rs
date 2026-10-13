@@ -12,6 +12,17 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+/// Supplied client HTTP error contract, never confirmed absence or retry rights.
+pub(crate) fn check_supplied_client_error_response_bytes(
+    bytes: &[u8],
+    operation: pinvou_upgrade_codec::ClientResponseOperation,
+    http_status: u16,
+) -> Result<(), pinvou_upgrade_codec::ClientErrorResponseError> {
+    decode_metadata(bytes)
+        .map_err(pinvou_upgrade_codec::ClientErrorResponseError::Json)?
+        .assert_supplied_client_error_response_contract(operation, http_status)
+}
+
 /// Fixed supplied client response contract; never authenticated transport or ACK.
 pub(crate) fn check_supplied_client_response_bytes(
     bytes: &[u8],
@@ -424,6 +435,39 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_checks_error_membership_without_retry_or_outcome_authority() {
+        use pinvou_upgrade_codec::{
+            ClientErrorResponseError as ContractError, ClientResponseOperation as Operation,
+        };
+        let unactivated = serde_json::json!({"protocolVersion":1,"requestId":"request-1",
+            "code":"SCOPE_UNACTIVATED","retryable":true,"checkAfterMs":86400000});
+        let check = |v: &serde_json::Value, operation, status| {
+            check_supplied_client_error_response_bytes(
+                &serde_json::to_vec(v).unwrap(),
+                operation,
+                status,
+            )
+        };
+        assert_eq!(check(&unactivated, Operation::Check, 409), Ok(()));
+        assert_eq!(
+            check(&unactivated, Operation::Refresh, 409),
+            Err(ContractError::InvalidContract)
+        );
+        assert_eq!(
+            check(&unactivated, Operation::Check, 503),
+            Err(ContractError::InvalidContract)
+        );
+        assert_eq!(check(&unactivated, Operation::Check, 409), Ok(()));
+        let unknown = serde_json::json!({"protocolVersion":1,"requestId":"request-1",
+            "code":"UNKNOWN_CONSUME_OUTCOME","retryable":false});
+        assert_eq!(check(&unknown, Operation::ConsumeStatus, 404), Ok(()));
+        assert_eq!(
+            check(&unknown, Operation::ConsumeInstall, 404),
+            Err(ContractError::InvalidContract)
+        );
+    }
 
     #[test]
     fn feature_facade_routes_client_bytes_without_transport_or_trusted_ack() {
