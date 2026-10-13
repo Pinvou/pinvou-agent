@@ -10,7 +10,9 @@
 // CLI config); the create-time mode bit is a unix-only OpenOptions flag,
 // and routing the create through a platform adapter would split the
 // create_new + AlreadyExists no-op semantics this backup's idempotence
-// relies on.
+// relies on. The post-merge persist-fault pins are also cfg(unix)-gated:
+// the fault is a chmod-0555 providers home with no portable non-unix
+// equivalent, and the tests self-skip when the mode is not enforced.
 
 mod claude;
 mod codex;
@@ -1052,12 +1054,29 @@ impl ProviderManager {
     /// is deleted only while it still equals what THIS call wrote — a peer
     /// rotation landing in the window replaced that value and owns the entry
     /// now, so it is left alone.
+    ///
+    /// `surviving_owner` gates record OWNERSHIP, which the value check alone
+    /// cannot see: the reference is deterministic, so replacing the key of an
+    /// already-keyed provider overwrites the very slot its persisted record
+    /// names, and after a persist failure that record survives unchanged and
+    /// still advertises `has_credential: true`. Deleting the entry there
+    /// strands the surviving record over an emptied keychain — its original
+    /// value is already gone (overwritten by this call's write), so the
+    /// delete would destroy the only live value. When `surviving_owner` names
+    /// `wrote`, the entry is LIVE, not an orphan: this call's value stays,
+    /// which is the outcome the pre-take-back shape left behind. Callers pass
+    /// `None` only where the record is provably gone or its pointer provably
+    /// cleared (the under-lock bail arms).
     fn take_back_untouched_key(
         &self,
         wrote: Option<&CredentialReference>,
         wrote_value: Option<&str>,
+        surviving_owner: Option<&CredentialReference>,
     ) {
         if let (Some(wrote), Some(wrote_value)) = (wrote, wrote_value) {
+            if surviving_owner == Some(wrote) {
+                return;
+            }
             if self.credentials.get(wrote).ok().flatten().as_deref() == Some(wrote_value) {
                 self.credentials.delete(wrote).ok();
             }
@@ -1262,8 +1281,13 @@ impl ProviderManager {
             // while the entry still holds THIS call's value, so a peer
             // rotation landing in the pre-lock credential window keeps its
             // entry. The DELETE action already removed its key; KeepExisting
-            // without a write has nothing to remove.
-            self.take_back_untouched_key(written_credential.as_ref(), written_key_value.as_deref());
+            // without a write has nothing to remove. No surviving owner: the
+            // record is gone from disk, so nothing names the reference.
+            self.take_back_untouched_key(
+                written_credential.as_ref(),
+                written_key_value.as_deref(),
+                None,
+            );
             anyhow::bail!("Provider 不存在: {}", record.id);
         }
         // Round-46 review: the removed-record guard above covers a peer
@@ -1305,8 +1329,10 @@ impl ProviderManager {
                     // Same narrowed read-compare-delete as the persist-failure
                     // arms: a peer rotation landing in the pre-lock window
                     // replaced the value and owns the entry, so it survives
-                    // this bail.
-                    self.take_back_untouched_key(Some(wrote), written_key_value.as_deref());
+                    // this bail. No surviving owner: the on-disk record's
+                    // pointer is None (this branch's condition), so nothing
+                    // names the reference.
+                    self.take_back_untouched_key(Some(wrote), written_key_value.as_deref(), None);
                 }
                 anyhow::bail!(
                     "Provider {} 被并发修改（凭据已被另一端更改），请重试",
@@ -1335,9 +1361,22 @@ impl ProviderManager {
                 // reference and delete only while it still equals what THIS
                 // call wrote — a peer rotation landing in the window replaced
                 // that value and owns the entry now, so it is left alone.
+                // Post-merge P2: the upsert failed, so the on-disk record is
+                // unchanged and still names the pointer it named before this
+                // call — when that pointer IS this call's reference (an
+                // already-keyed provider), the entry is owned by the
+                // surviving record and must NOT be taken back: the value this
+                // call wrote stays in the slot, which is the credential the
+                // record keeps advertising. Only a first-create / first-key
+                // write (surviving pointer None) leaves a slot no record
+                // names: a true orphan to reclaim.
+                let surviving_owner = existing
+                    .as_ref()
+                    .and_then(|record| record.credential.as_ref());
                 self.take_back_untouched_key(
                     written_credential.as_ref(),
                     written_key_value.as_deref(),
+                    surviving_owner,
                 );
                 // store 持久化失败：回滚配置写入（含 kimi 的 default_model），
                 // 保持「失败 = 什么都没发生」语义。回滚失败如实附加（复审 F3）。
@@ -1363,9 +1402,18 @@ impl ProviderManager {
                 // is never reclaimed). Same narrowed read-compare-delete:
                 // a peer rotation landing in the window replaced that
                 // value and owns the entry now, so it is left alone.
+                // Post-merge P2, same ownership gate as the current arm: an
+                // already-keyed provider's persist failure leaves the
+                // on-disk record naming this call's reference, so the entry
+                // is LIVE and stays; only an unowned (first-create /
+                // first-key) slot is reclaimed.
+                let surviving_owner = existing
+                    .as_ref()
+                    .and_then(|record| record.credential.as_ref());
                 self.take_back_untouched_key(
                     written_credential.as_ref(),
                     written_key_value.as_deref(),
+                    surviving_owner,
                 );
                 return Err(error);
             }
@@ -1841,6 +1889,29 @@ mod tests {
             credential: None,
             created_at: "2026-09-30T00:00:00Z".into(),
         }
+    }
+
+    /// Whether any file under `dir` contains `needle` (lossy text read).
+    /// The orphan-reclamation pin uses this to stay independent of the file
+    /// secret backend's on-disk layout.
+    fn tree_contains_string(dir: &Path, needle: &str) -> bool {
+        fn walk(dir: &Path, needle: &str) -> std::io::Result<bool> {
+            for entry in fs::read_dir(dir)? {
+                let path = entry?.path();
+                if path.is_dir() {
+                    if walk(&path, needle)? {
+                        return Ok(true);
+                    }
+                } else if fs::read(&path)
+                    .map(|bytes| String::from_utf8_lossy(&bytes).contains(needle))
+                    .unwrap_or(false)
+                {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        walk(dir, needle).unwrap_or(false)
     }
 
     /// Locked env + isolated HOME for the tests that drive the real
@@ -2578,19 +2649,25 @@ mod tests {
     /// Round-50 review: the shared take-back helper's narrowed semantics,
     /// pinned directly — it deletes only while the entry still equals what
     /// THIS call wrote, so a peer rotation in the window survives, and the
-    /// `None` arms are honest no-ops. (The arm wiring — that both save arms
-    /// call it on persist failure — rides the compile-time call graph; a
-    /// hermetic persist-failure seam for the full save path does not exist,
-    /// since `atomic_write`'s staging token is pid+nanotime.)
+    /// `None` arms are honest no-ops. Post-merge P2: it also deletes only
+    /// UNOWNED entries — when a surviving record still names the reference
+    /// (the already-keyed Replace persist-failure shape), the entry is that
+    /// record's live credential and must survive even when it holds exactly
+    /// this call's value. (The arm wiring — that both save arms call it on
+    /// persist failure with the surviving record's pointer — is pinned by the
+    /// full-save fault tests below; a hermetic persist-failure seam for the
+    /// full save path does not exist, since `atomic_write`'s staging token is
+    /// pid+nanotime.)
     #[test]
     fn take_back_untouched_key_deletes_only_its_own_value() {
         let (_lock, _env, home) = locked_provider_env("take-back");
         let manager = ProviderManager::new(SystemCredentialStore::new()).expect("manager");
         let reference = CredentialReference::for_acp_provider("codex", "unit-take-back");
+        let other = CredentialReference::for_acp_provider("codex", "unit-take-back-other");
 
         // Matching value: the entry this call wrote is taken back.
         manager.credentials.set(&reference, "sk-mine").expect("set");
-        manager.take_back_untouched_key(Some(&reference), Some("sk-mine"));
+        manager.take_back_untouched_key(Some(&reference), Some("sk-mine"), None);
         assert_eq!(
             SystemCredentialStore::new().get(&reference).expect("get"),
             None,
@@ -2599,7 +2676,7 @@ mod tests {
 
         // A peer rotation replaced the value first: the peer's entry survives.
         manager.credentials.set(&reference, "sk-peer").expect("set");
-        manager.take_back_untouched_key(Some(&reference), Some("sk-mine"));
+        manager.take_back_untouched_key(Some(&reference), Some("sk-mine"), None);
         assert_eq!(
             SystemCredentialStore::new()
                 .get(&reference)
@@ -2609,9 +2686,33 @@ mod tests {
             "a peer's rotated value must be left alone"
         );
 
+        // Post-merge P2: a surviving record naming THIS reference owns the
+        // entry — the delete must not fire even on an exact value match
+        // (this call's replacement overwrote the slot before the persist
+        // failed; the surviving record keeps advertising it).
+        manager.take_back_untouched_key(Some(&reference), Some("sk-peer"), Some(&reference));
+        assert_eq!(
+            SystemCredentialStore::new()
+                .get(&reference)
+                .expect("get")
+                .as_deref(),
+            Some("sk-peer"),
+            "an entry a surviving record names must never be taken back"
+        );
+
+        // A surviving owner naming a DIFFERENT reference shields nothing:
+        // only the pointer the record actually names is owned.
+        manager.take_back_untouched_key(Some(&reference), Some("sk-peer"), Some(&other));
+        assert_eq!(
+            SystemCredentialStore::new().get(&reference).expect("get"),
+            None,
+            "an entry the surviving owner does not name is still reclaimed"
+        );
+
         // The `None` arms (nothing written / no recorded value) are no-ops.
-        manager.take_back_untouched_key(None, Some("sk-peer"));
-        manager.take_back_untouched_key(Some(&reference), None);
+        manager.credentials.set(&reference, "sk-peer").expect("set");
+        manager.take_back_untouched_key(None, Some("sk-peer"), None);
+        manager.take_back_untouched_key(Some(&reference), None, None);
         assert_eq!(
             SystemCredentialStore::new()
                 .get(&reference)
@@ -2620,6 +2721,252 @@ mod tests {
             Some("sk-peer"),
         );
         manager.credentials.delete(&reference).ok();
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// Post-merge P2 regression pin, the non-current arm: a persist-failed
+    /// Replace on an ALREADY-KEYED provider must leave the slot its
+    /// surviving record names LIVE. The reference is deterministic, so the
+    /// write overwrote that slot before the persist was attempted; the
+    /// take-back then used to delete it because the entry held exactly what
+    /// this call wrote — stranding the record's `has_credential: true` over
+    /// an emptied keychain (base kept the key). Preserve, don't reclaim: the
+    /// failed save leaves THIS call's value in the slot, which is what the
+    /// record advertises.
+    /// unix-only: the fault is a chmod-0555 providers home — the store
+    /// persist cannot stage its tmp file there while the keychain (a
+    /// subdirectory) keeps working; self-skips when the mode is not
+    /// enforced (running as root).
+    #[cfg(unix)]
+    #[test]
+    fn save_persist_failure_keeps_the_key_of_an_already_keyed_provider() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_lock, _env, home) = locked_provider_env("persist-fault-keyed");
+        let store_path = home.join("acp-providers.json");
+
+        let manager = ProviderManager::new(SystemCredentialStore::new()).expect("manager");
+        let created = manager
+            .save(
+                "codex",
+                None,
+                "Keyed Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                Some("sk-persist-fault-original".into()),
+                CredentialEditAction::Replace,
+            )
+            .expect("keyed create saves");
+        assert!(created.credential.is_some());
+
+        let original_mode = fs::metadata(&home).unwrap().permissions().mode();
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o555)).unwrap();
+        // The fault must be INDUCED before the save is meaningful: on a host
+        // that does not enforce the mode (running as root) the persist would
+        // succeed and nothing can be pinned here — skip via early return,
+        // never by treating the un-induced probe as evidence.
+        let fault_induced = fs::write(home.join(".persist-fault-probe"), b"x").is_err();
+        let result = manager.save(
+            "codex",
+            Some(&created.id),
+            "Keyed Provider".into(),
+            "https://api.example.com/v1".into(),
+            None,
+            None,
+            None,
+            ProviderWireApi::Openai,
+            Some("sk-persist-fault-replacement".into()),
+            CredentialEditAction::Replace,
+        );
+        fs::set_permissions(&home, fs::Permissions::from_mode(original_mode)).unwrap();
+        if !fault_induced {
+            let _ = fs::remove_dir_all(&home);
+            return;
+        }
+
+        result.expect_err("the persist-faulted save must fail");
+        // The record on disk is unchanged by the failed upsert and still
+        // names the slot.
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&store_path).unwrap()).unwrap();
+        let record = &file["agents"]["codex"]["providers"][0];
+        assert_eq!(record["id"], created.id.as_str());
+        assert_eq!(
+            record["credential"]["account"],
+            format!("codex:{}", created.id).as_str(),
+            "the surviving record must keep advertising its credential",
+        );
+        // The slot must hold THIS call's value — live and usable, never
+        // emptied (the original was already overwritten before the persist
+        // ran; there is nothing to roll back to).
+        assert_eq!(
+            manager
+                .api_key("codex", &created.id)
+                .expect("keychain read")
+                .as_deref(),
+            Some("sk-persist-fault-replacement"),
+            "the persist-failed Replace must not empty the slot its surviving record names",
+        );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// Post-merge P2 regression pin, the active-provider arm: same shape as
+    /// the non-current pin, but this arm also applies the vendor config and
+    /// rolls it back on the persist failure — the take-back must still not
+    /// empty the slot the surviving record names, and the returned error
+    /// must be the honest persist-failure arm. unix-only + self-skip, same
+    /// fault shape as the non-current pin.
+    #[cfg(unix)]
+    #[test]
+    fn save_persist_failure_keeps_the_active_provider_key() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_lock, _env, home) = locked_provider_env("persist-fault-active");
+        let store_path = home.join("acp-providers.json");
+
+        let manager = ProviderManager::new(SystemCredentialStore::new()).expect("manager");
+        let created = manager
+            .save(
+                "codex",
+                None,
+                "Active Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                Some("sk-persist-fault-original".into()),
+                CredentialEditAction::Replace,
+            )
+            .expect("keyed create saves");
+        manager
+            .switch("codex", &created.id)
+            .expect("switch makes the provider active");
+        assert_eq!(
+            manager.store.current("codex").as_deref(),
+            Some(created.id.as_str()),
+            "the provider must be active before the faulted save"
+        );
+
+        let original_mode = fs::metadata(&home).unwrap().permissions().mode();
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o555)).unwrap();
+        let fault_induced = fs::write(home.join(".persist-fault-probe"), b"x").is_err();
+        let result = manager.save(
+            "codex",
+            Some(&created.id),
+            "Active Provider".into(),
+            "https://api.example.com/v1".into(),
+            None,
+            None,
+            None,
+            ProviderWireApi::Openai,
+            Some("sk-persist-fault-replacement".into()),
+            CredentialEditAction::Replace,
+        );
+        fs::set_permissions(&home, fs::Permissions::from_mode(original_mode)).unwrap();
+        if !fault_induced {
+            let _ = fs::remove_dir_all(&home);
+            return;
+        }
+
+        let error = result.expect_err("the persist-faulted save must fail");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("已尝试回滚配置"),
+            "the failure must be the active arm's persist failure (config rolled back), got: {rendered}"
+        );
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&store_path).unwrap()).unwrap();
+        let record = &file["agents"]["codex"]["providers"][0];
+        assert_eq!(record["id"], created.id.as_str());
+        assert_eq!(
+            record["credential"]["account"],
+            format!("codex:{}", created.id).as_str(),
+            "the surviving record must keep advertising its credential",
+        );
+        assert_eq!(
+            manager
+                .api_key("codex", &created.id)
+                .expect("keychain read")
+                .as_deref(),
+            Some("sk-persist-fault-replacement"),
+            "the persist-failed Replace must not empty the slot its surviving record names",
+        );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// The retained cleanup under the same fault: a FIRST-CREATE write has
+    /// no surviving owner (no persisted record names the generated
+    /// reference), so the persist failure must still reclaim the just-written
+    /// key — the ownership gate must not widen the orphan window. unix-only
+    /// + self-skip, same fault shape as the keyed pins.
+    #[cfg(unix)]
+    #[test]
+    fn save_persist_failure_still_reclaims_a_first_create_orphan() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_lock, _env, home) = locked_provider_env("persist-fault-orphan");
+        let store_path = home.join("acp-providers.json");
+
+        // Bootstrap a keyed provider so the keychain subdirectory and the
+        // store file exist before the fault: the failing create's keychain
+        // write must succeed for the orphan cleanup to be its own concern
+        // (an early keychain failure would pin nothing).
+        let manager = ProviderManager::new(SystemCredentialStore::new()).expect("manager");
+        manager
+            .save(
+                "codex",
+                None,
+                "Bootstrap".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                Some("sk-persist-fault-bootstrap".into()),
+                CredentialEditAction::Replace,
+            )
+            .expect("bootstrap create saves");
+        assert!(store_path.exists());
+
+        let original_mode = fs::metadata(&home).unwrap().permissions().mode();
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o555)).unwrap();
+        let fault_induced = fs::write(home.join(".persist-fault-probe"), b"x").is_err();
+        let result = manager.save(
+            "codex",
+            None,
+            "Orphaned Create".into(),
+            "https://api.example.com/v1".into(),
+            None,
+            None,
+            None,
+            ProviderWireApi::Openai,
+            Some("sk-persist-fault-orphan".into()),
+            CredentialEditAction::Replace,
+        );
+        fs::set_permissions(&home, fs::Permissions::from_mode(original_mode)).unwrap();
+        if !fault_induced {
+            let _ = fs::remove_dir_all(&home);
+            return;
+        }
+
+        result.expect_err("the persist-faulted create must fail");
+        // The store file still holds exactly the bootstrap record.
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&store_path).unwrap()).unwrap();
+        let providers = file["agents"]["codex"]["providers"].as_array().unwrap();
+        assert_eq!(
+            providers.len(),
+            1,
+            "the failed create must not land a record"
+        );
+        // And the key it wrote is reclaimed: nothing on disk may keep the
+        // orphan alive. Walked, not path-pinned: the file secret backend's
+        // layout is the facade's concern, not this module's.
+        assert!(
+            !tree_contains_string(&home, "sk-persist-fault-orphan"),
+            "an unowned first-create key must be reclaimed on the persist failure",
+        );
         let _ = fs::remove_dir_all(&home);
     }
 
