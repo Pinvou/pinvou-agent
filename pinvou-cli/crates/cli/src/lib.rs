@@ -67,7 +67,7 @@ pub enum ExitCode {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BenchmarkAvailability {
+enum BenchmarkAvailability {
     Available,
     Unavailable,
     Planned,
