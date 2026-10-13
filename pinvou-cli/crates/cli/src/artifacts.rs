@@ -392,8 +392,9 @@ fn deliverable_index(only_session: Option<&str>) -> Result<DeliverableIndex, Cli
         // which itself omits when empty), so a record carrying NEITHER key
         // is corrupt in its early region — exactly the slice whose
         // not-a-record disclosure the skip would have swallowed. Parse
-        // those (rare) so corrupt records stay disclosed; the common
-        // artifact-less well-formed record keeps skipping the parse.
+        // those (rare) so the no-artifacts-index arm below discloses them;
+        // the common artifact-less well-formed record keeps skipping the
+        // parse.
         // Round-51 review: the same disclosure contract covers a record
         // that IS unparseable but carries `"metadata"` — a mid-write or
         // hand-truncated file cut after the metadata region hits the skip
@@ -429,6 +430,20 @@ fn deliverable_index(only_session: Option<&str>) -> Result<DeliverableIndex, Cli
             .unwrap_or("")
             .to_owned();
         let Some(artifacts) = view.get("artifacts").and_then(|value| value.as_array()) else {
+            // The record parsed but holds no artifacts index — a foreign
+            // JSON document (any top-level non-object parses too), or the
+            // parses-fine subset of the corrupt early-region classes above
+            // (missing key, or a present-but-non-array value). Same
+            // "incomplete ≠ empty" disclosure as the corrupt-JSON arm: the
+            // record is dropped from the index, so it must surface in
+            // skipped_sessions instead of vanishing. A record with a real
+            // `artifacts: []` binds below and stays a valid
+            // zero-deliverable session, not a skip.
+            note!(
+                "[artifacts] list skips {} (parses but holds no artifacts index)",
+                file.display()
+            );
+            skipped.push(stem);
             continue;
         };
         for artifact in artifacts {

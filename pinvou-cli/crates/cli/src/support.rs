@@ -1253,7 +1253,12 @@ pub fn drain_capped_to_eof<R: std::io::Read>(pipe: Option<R>, cap: u64) -> (Vec<
             Ok(n) => {
                 total += n as u64;
                 if (kept.len() as u64) <= cap {
-                    let remaining = (cap + 1 - kept.len() as u64) as usize;
+                    // Round-45-review parity with the byte-read twin
+                    // `read_bytes_capped`: saturate so a u64::MAX cap
+                    // ("unbounded") neither panics in debug nor wraps the
+                    // keep window to zero in release.
+                    let remaining =
+                        cap.saturating_add(1).saturating_sub(kept.len() as u64) as usize;
                     kept.extend_from_slice(&chunk[..n.min(remaining)]);
                 }
             }

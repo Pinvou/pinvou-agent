@@ -322,8 +322,11 @@ fn require_existing(store: &SessionStore, id: &str, action: &str) -> Result<(), 
 /// every mutating subcommand that takes an id refuses aux ids with this
 /// exact text — retitling one would desync the rename pair, and
 /// pin/archive ones would land ghost sidecar entries no list can clear,
-/// because aux sessions are invisible in every list. Shared with the
-/// `projects move` ghost-entry gate.
+/// because aux sessions are invisible in every list. `delete` is the one
+/// carve-out: the store derives aux ids from their main, so removing the
+/// main leaves no dangling pointer and the GUI's delete cascade removes
+/// the aux ids with the parent the same way. Shared with the `projects
+/// move` ghost-entry gate.
 pub(crate) fn aux_session_error(prefix: &str, id: &str) -> CliError {
     CliError::failed(format!(
         "{prefix}({id}): auxiliary conversations are managed through their main session"

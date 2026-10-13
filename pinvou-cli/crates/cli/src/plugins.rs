@@ -102,8 +102,11 @@
 //! - enable/disable/project-skills → `load_disabled_bundles_for` +
 //!   `save_disabled_bundles_for` (the same load-modify-save the GUI's
 //!   `set_disabled_skills` / `set_disabled_connectors` persist through, with
-//!   the requested state verified on the exact list handed to the writer) /
-//!   `set_project_skills_enabled`, with `scope::resolve_pack_owner_id` normalizing
+//!   the requested state verified against a fresh read-back of the persisted
+//!   list, resolved over the same normalized projection the mutation used —
+//!   recomputing the check over the list handed to the writer observed
+//!   nothing the writer did) / `set_project_skills_enabled`, with
+//!   `scope::resolve_pack_owner_id` normalizing
 //!   ids for the verification. The load and the save are two separate
 //!   in-process critical sections, so a desktop-app write to the same file
 //!   landing in between is last-writer-wins (see docs/pinvou-cli.md, Known

@@ -535,8 +535,12 @@ fn validate_rrule(rrule: &str) -> Result<(), CliError> {
     // `parse_rrule_pairs` dedupes keys, so at most one INTERVAL pair exists
     // and a single find replaces the per-key scan.
     if let Some((_, interval_value)) = parts.iter().find(|(key, _)| key == "INTERVAL") {
-        // Only for the HOURLY grammar, where the sweep does interval
-        // arithmetic; ONCE/WEEKLY/CRON ignore the field.
+        // The bound only bites the HOURLY grammar: it is the only one whose
+        // parser admits INTERVAL (the unanchored sweep does interval
+        // arithmetic there) — ONCE/WEEKLY/CRON reject the field outright at
+        // the foundation parse right below. This pre-check therefore exists
+        // only to fail fast on the huge-INTERVAL sweep hazard; the skip
+        // decision can never admit a scheduler-breaking record.
         if parts
             .iter()
             .any(|(key, value)| key == "FREQ" && value.trim().eq_ignore_ascii_case("HOURLY"))

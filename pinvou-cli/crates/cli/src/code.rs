@@ -64,7 +64,7 @@ use pinvou3_lib::features::codex_acp::{
     MIN_CODEX_VERSION, MIN_KIMI_VERSION, ProviderManager, ProviderWireApi, SessionAgentStore,
     version_at_least,
 };
-use pinvou3_lib::features::sessions::{SessionKind, SessionStore};
+use pinvou3_lib::features::sessions::{SessionKind, SessionStore, is_aux_session_id};
 use pinvou3_lib::platform::credential_store::{
     CredentialEditAction, CredentialStore, SystemCredentialStore,
 };
@@ -2183,10 +2183,13 @@ fn agents_status(agent: &str, output: OutputMode) -> Result<CliOutcome, CliError
         crate::support::collapse_control_characters(probe.version.as_deref().unwrap_or("-")),
         probe.min_version,
         if probe.authenticated { "yes" } else { "no" },
+        // The path comes from PATH resolution over user-controlled
+        // directories, so the human block collapses it like the version cell
+        // beside it (the JSON above keeps it verbatim).
         probe
             .cli_path
             .as_ref()
-            .map(|path| path.display().to_string())
+            .map(|path| crate::support::collapse_control_characters(&path.display().to_string()))
             .unwrap_or_else(|| "-".to_owned()),
     );
     Ok(success(render(output, human, &value)))
@@ -3764,6 +3767,14 @@ fn acp_session_model(model: &str) -> bool {
 }
 
 fn is_code_chat_session(agents: &SessionAgentStore, id: &str, model: &str) -> bool {
+    // An aux session is never a code session: an aux of an ACP main inherits
+    // the exact `* (ACP)` model string, so the model sniff below alone would
+    // classify it ACP (the GUI's `is_acp_metadata` guards the same way). The
+    // aux lifecycle and tool posture are aux-owned, so the id prefix wins
+    // over every sidecar/model signal beneath it.
+    if is_aux_session_id(id) {
+        return false;
+    }
     let record = agents.get(id);
     record.backend.is_acp() || record.mode.is_code() || acp_session_model(model)
 }
@@ -3773,6 +3784,9 @@ fn is_code_chat_session(agents: &SessionAgentStore, id: &str, model: &str) -> bo
 /// stable error instead of rendering an empty view. The caller loads the
 /// session itself (the loaded type is not nameable from this crate) and feeds
 /// in the persisted model name, so the sidecar-lost fallback still applies.
+/// Aux ids are refused through the same error: an aux is a conversation of
+/// its main session, not a code session (`sessions` refuses it outright and
+/// `code sessions list` never lists it, so info/timeline must not read it).
 fn require_code_chat_session(
     agents: &SessionAgentStore,
     id: &str,
@@ -5502,9 +5516,11 @@ fn untracked_diff(root: &Path, path: &Path, relative: &str) -> Result<String, Cl
     }
     // The output is truncated at DIFF_LIMIT, but the read itself must also be
     // bounded: a multi-GB text file would be loaded whole just to be cut.
-    // Reading DIFF_LIMIT + 1 bytes keeps the truncation marker exact (the
-    // loop's final iteration overshoots by one line at most, which the loop
-    // already tolerates); a torn multi-byte tail is lossy-decoded away.
+    // The read takes DIFF_READ_CAP — DIFF_LIMIT + 1 KiB, overshooting the cut
+    // so the loop sees past-limit content and fires its break without a
+    // second read — while the exactness of the truncation marker comes from
+    // the final cut at DIFF_LIMIT below, which holds no matter how many bytes
+    // were read. A torn multi-byte tail is lossy-decoded away.
     let file = std::fs::File::open(&canonical)
         .map_err(|error| CliError::failed(format!("code workspace diff: {error}")))?;
     let mut capped = file.take(DIFF_READ_CAP);

@@ -3674,7 +3674,8 @@ fn spawn_and_capture_url(
     // reading (it breaks at the first URL) is still queued; absorb it
     // non-blockingly before the verdict is formatted, so the failure message
     // carries the vendor's last words and not just its first. The drains are
-    // byte-capped (`LOGIN_DRAIN_CAP_BYTES`), so the queue is bounded too.
+    // byte-capped (`LOGIN_DRAIN_CAP_BYTES`) and each event kind carries its
+    // own count budget (`drain_for_url`), so the queue is bounded too.
     for event in rx.try_iter() {
         match event {
             // The queue after the loop still carries events the loop never
@@ -3979,11 +3980,11 @@ fn url_host_matches_auth_domain(url: &str, domains: &[&str]) -> bool {
 /// `CliCtx::extract_url` (truncate at whitespace, keep query strings) — plus
 /// the first `user_code`-style line (mirror of dingtalk `extract_user_code`).
 /// Line processing keeps within [`LOGIN_DRAIN_CAP_BYTES`] like
-/// `run_cli_bounded`'s drains (that cap is what bounds the event queue the
-/// caller absorbs); past the cap the drainer keeps READING — and
-/// discarding — until true EOF, so a chatty or hostile vendor CLI (or a
-/// descendant that inherited the pipes) can still finish instead of
-/// blocking on a full pipe and being misreported as a login timeout.
+/// `run_cli_bounded`'s drains, and the per-kind event budgets below bound
+/// the queue the caller absorbs; past the byte cap the drainer keeps
+/// READING — and discarding — until true EOF, so a chatty or hostile vendor
+/// CLI (or a descendant that inherited the pipes) can still finish instead
+/// of blocking on a full pipe and being misreported as a login timeout.
 fn drain_for_url<R: std::io::Read + Send + 'static>(
     spec: &VendorSpec,
     reader: R,
@@ -3991,6 +3992,9 @@ fn drain_for_url<R: std::io::Read + Send + 'static>(
 ) -> std::thread::JoinHandle<()> {
     let domains = spec.auth_domains;
     let redact_bare_token = redact_bare_token_for(spec);
+    // The budget note names the vendor binary, and `spec` cannot cross the
+    // thread boundary by reference — clone the one field the note needs.
+    let spec_cli_bin = spec.cli_bin.to_owned();
     std::thread::spawn(move || {
         let mut reader = BufReader::new(reader);
         // The caller stops consuming Log events once the URL is in hand and
@@ -4000,7 +4004,34 @@ fn drain_for_url<R: std::io::Read + Send + 'static>(
         // of 1-byte lines would balloon memory before the drain cap ends
         // the stream).
         const LOGIN_LOG_EVENT_CAP: usize = 512;
+        // The Code and Url kinds carry the same budget: their sends run per
+        // matching LINE, so a chatty vendor whose every line matches queues
+        // an unbounded-count backlog the caller absorbs only after the wait
+        // ends. The consumers keep the FIRST capture of each kind (the wait
+        // loop breaks at the first URL; the post-wait absorb guards on
+        // `user_code.is_none()` / `url.is_none()`), so first-N-wins drops
+        // nothing any consumer would have used — the budget bounds the
+        // queue, it does not change which capture lands.
+        const LOGIN_CODE_EVENT_CAP: usize = 512;
+        const LOGIN_URL_EVENT_CAP: usize = 512;
         let mut log_events = 0usize;
+        let mut code_events = 0usize;
+        let mut url_events = 0usize;
+        // One stderr note when a kind first crosses its budget; the drops
+        // are invisible by construction (the consumers already hold their
+        // capture), so silent loss of the vendor's later repeats deserves
+        // the same point-of-action disclosure as every other budget here.
+        let mut budget_noted = false;
+        let mut note_budget_once = || {
+            if !budget_noted {
+                budget_noted = true;
+                note!(
+                    "{} vendor output exceeded the code/link event budget; further code and \
+                     link captures are dropped",
+                    spec_cli_bin
+                );
+            }
+        };
         for line in (&mut reader).take(LOGIN_DRAIN_CAP_BYTES).lines() {
             let line = match line {
                 Ok(line) => line,
@@ -4033,10 +4064,16 @@ fn drain_for_url<R: std::io::Read + Send + 'static>(
                     return;
                 }
             }
-            if let Some(code) = extract_user_code(&line)
-                && tx.send(LoginStreamEvent::Code(code)).is_err()
-            {
-                return;
+            if let Some(code) = extract_user_code(&line) {
+                code_events += 1;
+                if code_events <= LOGIN_CODE_EVENT_CAP
+                    && tx.send(LoginStreamEvent::Code(code)).is_err()
+                {
+                    return;
+                }
+                if code_events == LOGIN_CODE_EVENT_CAP + 1 {
+                    note_budget_once();
+                }
             }
             let Some(index) = line.find("https://") else {
                 continue;
@@ -4045,10 +4082,15 @@ fn drain_for_url<R: std::io::Read + Send + 'static>(
                 .chars()
                 .take_while(|c| !c.is_whitespace())
                 .collect();
-            if url_host_matches_auth_domain(&url, domains)
-                && tx.send(LoginStreamEvent::Url(url)).is_err()
-            {
-                return;
+            if url_host_matches_auth_domain(&url, domains) {
+                url_events += 1;
+                if url_events <= LOGIN_URL_EVENT_CAP && tx.send(LoginStreamEvent::Url(url)).is_err()
+                {
+                    return;
+                }
+                if url_events == LOGIN_URL_EVENT_CAP + 1 {
+                    note_budget_once();
+                }
             }
         }
         // Past the cap: same loop as `drain_vendor_output` — drain to EOF in

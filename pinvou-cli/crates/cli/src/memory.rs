@@ -1720,8 +1720,14 @@ the memory profile instead)",
                 .iter()
                 .map(|item| (item.id.clone(), item.text.clone()))
                 .collect::<Vec<_>>();
+            // The success line is terminal output: the id is store-derived
+            // (a hand-planted store file can carry control characters in an
+            // id), so it goes through the same `one_line` collapse the row
+            // renderers apply — the row contract must not depend on which
+            // cell happened to be machine-made, and neither may this line.
+            // JSON keeps the raw id.
             (
-                format!("Remembered preference: {}", item.id),
+                format!("Remembered preference: {}", one_line(&item.id)),
                 serde_json::to_value(item).unwrap_or_default(),
                 replaced_entries(&existing, &after),
             )
@@ -1747,8 +1753,10 @@ the memory profile instead)",
                 .iter()
                 .map(|item| (item.id.clone(), item.text.clone()))
                 .collect::<Vec<_>>();
+            // Same store-derived-id collapse as the preference arm: the
+            // success line is terminal output, JSON keeps the raw id.
             (
-                format!("Remembered work context: {}", item.id),
+                format!("Remembered work context: {}", one_line(&item.id)),
                 serde_json::to_value(item).unwrap_or_default(),
                 replaced_entries(&existing, &after),
             )
@@ -1792,10 +1800,18 @@ the memory profile instead)",
         if let Some(object) = value.as_object_mut() {
             object.insert("replaced".to_owned(), serde_json::json!(replaced));
         }
+        // The replaced ids are store-derived like the success line's id, so
+        // each gets the same `one_line` collapse in the human note; the JSON
+        // array keeps the raw values.
+        let replaced_list = replaced
+            .iter()
+            .map(|id| one_line(id))
+            .collect::<Vec<_>>()
+            .join(", ");
         human.push_str(&format!(
             "\nNote: this replaced {} earlier item(s) in the same topic bucket: {}",
             replaced.len(),
-            replaced.join(", ")
+            replaced_list
         ));
     }
     Ok(success(render(output, human, &value)))
@@ -2000,8 +2016,10 @@ fn update(
             let event = feature::update_preference(id, patch)
                 .map_err(|error| feature_error("update", error))?
                 .ok_or_else(|| not_found(store, id))?;
+            // Store-derived id into terminal text: the same `one_line`
+            // collapse the row renderers apply (JSON keeps the raw id).
             (
-                format!("Updated preference: {}", event.value.id),
+                format!("Updated preference: {}", one_line(&event.value.id)),
                 serde_json::to_value(&event.value).unwrap_or_default(),
                 event.cleanup_warning,
             )
@@ -2010,8 +2028,9 @@ fn update(
             let event = feature::update_work_context(id, patch)
                 .map_err(|error| feature_error("update", error))?
                 .ok_or_else(|| not_found(store, id))?;
+            // Same store-derived-id collapse as the preference arm.
             (
-                format!("Updated work context: {}", event.value.id),
+                format!("Updated work context: {}", one_line(&event.value.id)),
                 serde_json::to_value(&event.value).unwrap_or_default(),
                 event.cleanup_warning,
             )
@@ -2020,8 +2039,9 @@ fn update(
             let item = feature::update_timed_memory(store.as_str(), id, patch)
                 .map_err(|error| feature_error("update", error))?
                 .ok_or_else(|| not_found(store, id))?;
+            // Same store-derived-id collapse as the preference arm.
             (
-                format!("Updated {}: {}", store.canonical_str(), item.id),
+                format!("Updated {}: {}", store.canonical_str(), one_line(&item.id)),
                 serde_json::to_value(&item).unwrap_or_default(),
                 None,
             )
@@ -2245,25 +2265,67 @@ fn pending(
             // here: the stderr note before the write (state the cap
             // outcome, not a claim) and the output-channel fields after it
             // succeeded (stderr notes vanish into `2>/dev/null`).
+            //
+            // The write also drops the reason WHOLE when the never store
+            // already holds the pending content as its pattern (the push is
+            // gated on `pattern != content`), and the event cannot say so —
+            // the truncation counts would then be false facts ("80 stored"
+            // about a reason nothing kept). Resolve the row first, and let
+            // a duplicate take the nothing-stored path on both channels.
+            // Measured on the whitespace-collapsed text, the same mirror
+            // of the store's `clean_text` the add lane pins: the store
+            // collapses BEFORE taking the 80 characters, so measuring
+            // the raw argv string over-reports for input padded with
+            // newlines or runs of spaces and published false
+            // `truncated`/`submitted_characters` facts (round-41 review
+            // — the exact bug class the add lane fixed two hunks
+            // earlier).
+            let collapsed_count = reason
+                .as_deref()
+                .map(|reason_text| feature::clean_text(reason_text, usize::MAX).chars().count());
+            // The same row resolution the confirm lane's gate mirrors
+            // ([`clean_pending_id`]): `never_pending_memory` compares the
+            // stored pattern against THIS row's content, so the duplicate
+            // pre-check must resolve the id the same way. The check is
+            // advisory across processes — a concurrent never write in the
+            // window before the store's own check is the cross-process race
+            // the module header already discloses.
+            let reason_already_present = if reason.is_some() {
+                match feature::load_pending_memory()
+                    .map_err(|error| feature_error("pending", error))?
+                    .into_iter()
+                    .find(|item| item.id == clean_pending_id(id))
+                {
+                    Some(candidate) => feature::load_never_memory()
+                        .map_err(|error| feature_error("pending", error))?
+                        .iter()
+                        .any(|never| never.pattern == candidate.content),
+                    // No row to act on: the write below refuses with
+                    // not-found, which needs no duplicate knowledge.
+                    None => false,
+                }
+            } else {
+                false
+            };
             let mut truncation: Option<(usize, usize)> = None;
-            if let Some(reason_text) = reason.as_deref() {
-                // Measured on the whitespace-collapsed text, the same mirror
-                // of the store's `clean_text` the add lane pins: the store
-                // collapses BEFORE taking the 80 characters, so measuring
-                // the raw argv string over-reports for input padded with
-                // newlines or runs of spaces and published false
-                // `truncated`/`submitted_characters` facts (round-41 review
-                // — the exact bug class the add lane fixed two hunks
-                // earlier).
-                let collapsed_count = feature::clean_text(reason_text, usize::MAX).chars().count();
-                if collapsed_count > NEVER_REASON_CAP_CHARS {
+            if let Some(submitted) = collapsed_count {
+                if reason_already_present {
+                    // The reason will not be stored at all, so the cap
+                    // note's "would be truncated to the cap" would be as
+                    // false as its counts — the duplicate note replaces it.
+                    crate::note!(
+                        "memory pending never --reason: the never store already holds \
+                         this pending item's content as a pattern; the submitted reason \
+                         was not stored"
+                    );
+                } else if submitted > NEVER_REASON_CAP_CHARS {
                     note_truncation(
                         "pending never --reason",
-                        collapsed_count,
+                        submitted,
                         NEVER_REASON_CAP_CHARS,
                         "the never-store reason field",
                     );
-                    truncation = Some((collapsed_count, NEVER_REASON_CAP_CHARS));
+                    truncation = Some((submitted, NEVER_REASON_CAP_CHARS));
                 }
             }
             let event = feature::never_pending_memory(id, reason)
@@ -2271,7 +2333,26 @@ fn pending(
                 .ok_or_else(|| not_found(MemoryStore::Pending, id))?;
             let mut human = format!("Marked pending as never: {id}");
             let mut value = serde_json::json!({ "id": id, "result": "never", "event": serde_json::to_value(&event).unwrap_or_default() });
-            if let Some((submitted, stored)) = truncation {
+            if reason_already_present {
+                // Same key vocabulary as the truncation disclosure — a
+                // boolean fact flag plus the character counts — with the
+                // store-observable truth where the stored count goes and no
+                // `truncated`: nothing was cut to the cap, the reason was
+                // dropped whole.
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("reason_stored".to_owned(), serde_json::json!(false));
+                    object.insert(
+                        "submitted_characters".to_owned(),
+                        serde_json::json!(collapsed_count.unwrap_or_default()),
+                    );
+                    object.insert("stored_characters".to_owned(), serde_json::json!(0));
+                }
+                human.push_str(
+                    "\nNote: the never store already holds this pending item's content as a \
+                     pattern; nothing was stored — the existing pattern and its reason \
+                     stand, and the submitted reason was dropped whole",
+                );
+            } else if let Some((submitted, stored)) = truncation {
                 disclose_truncation(
                     &mut value,
                     &mut human,

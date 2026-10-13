@@ -134,6 +134,15 @@ pub fn spawn_supervised(
             });
         }
         let saved = imp::block_interrupt_signals();
+        // Declared BEFORE the window guard on purpose: locals drop in
+        // reverse declaration order, so on every exit — the refusal return,
+        // the ordinary return, and a panic unwind — the spawn window closes
+        // first and the mask restores second, the same sequence the explicit
+        // pairs used to run. The restore is load-bearing on EVERY exit path,
+        // including a panic between the block and the spawn (the round-42
+        // note on the refusal arm below spells out what a stranded mask
+        // breaks).
+        let _mask = SavedInterruptMask(saved);
         // The window guard makes the spawn→register pair atomic against the
         // watcher's snapshots: on a worker thread the sigmask block above
         // defers nothing (an interrupt is delivered to main's handler while
@@ -158,18 +167,17 @@ pub fn spawn_supervised(
         // either the flag is already set (refuse — holding the window for
         // the instant the drop takes is harmless) or the register below
         // lands before the watcher's blocked-on-window snapshot proceeds.
+        // Round-42 review, corrected in the same wave (caught live by
+        // the connectors interrupt suite): the mask restore is
+        // load-bearing on EVERY exit path. Phase 3's re-raise targets
+        // the PROCESS because delivery needs a thread with the family
+        // unblocked — "the main thread, whose mask spawn_supervised
+        // always restores". A refusal that kept the mask left that
+        // invariant broken: the watcher completed phase 3, its kill
+        // pended forever on a fully-blocked process, and main parked on
+        // a process that could no longer die. The restore now rides
+        // `_mask`'s drop, so the refusal below needs no explicit one.
         if imp::cleanup_started() {
-            // Round-42 review, corrected in the same wave (caught live by
-            // the connectors interrupt suite): the mask restore is
-            // load-bearing on EVERY exit path. Phase 3's re-raise targets
-            // the PROCESS because delivery needs a thread with the family
-            // unblocked — "the main thread, whose mask spawn_supervised
-            // always restores". A refusal that kept the mask left that
-            // invariant broken: the watcher completed phase 3, its kill
-            // pended forever on a fully-blocked process, and main parked on
-            // a process that could no longer die.
-            drop(_window);
-            imp::restore_interrupt_signals(saved);
             return Err(std::io::Error::other(
                 "interrupt cleanup in progress; spawn refused",
             ));
@@ -199,9 +207,9 @@ pub fn spawn_supervised(
             }
             imp::register(child.id());
         }
-        drop(_window);
-        imp::restore_interrupt_signals(saved);
         spawned
+        // Scope end: `_window` closes, then `_mask` restores the interrupt
+        // family and delivers anything that went pending inside it.
     }
     #[cfg(not(unix))]
     {
@@ -217,8 +225,14 @@ pub fn spawn_supervised(
 /// loses that race and scripts observe the family's exit 1 instead of
 /// 128+N. Once cleanup has started the watcher is GUARANTEED to terminate
 /// the process (the grace loop is bounded and phase 3 reinstalls SIG_DFL
-/// and kills), so parking here cannot hang. No cleanup started: returns
-/// immediately, the normal path.
+/// and kills), so parking here cannot hang. The one dependency — the
+/// watcher itself staying alive to run phase 3 — is watched, not assumed:
+/// a watcher thread that DIED before phase 3 (its closure can only
+/// complete by dying there — the phase ends the process from inside
+/// itself) would park main forever, so the loop keeps the watcher's
+/// retained JoinHandle under observation and exits with a failing status
+/// and one stderr note if the watcher is gone while the flag is still set.
+/// No cleanup started: returns immediately, the normal path.
 pub fn park_while_interrupt_cleanup_concludes() {
     #[cfg(unix)]
     imp::park_while_cleanup_concludes();
@@ -292,6 +306,26 @@ impl Drop for GroupGuard {
     }
 }
 
+/// RAII over one saved sigmask from [`imp::block_interrupt_signals`]: the
+/// interrupt family is restored on EVERY exit path of its scope, ordinary
+/// return AND unwind. The restore is load-bearing, not cosmetic — phase 3's
+/// re-raise targets the process precisely so it is deliverable to a thread
+/// whose mask `spawn_supervised` always restores — and a plain local saved
+/// across a spawn used to keep SIGINT/SIGTERM/SIGHUP blocked for the
+/// process's remaining life when a panic unwound between the block and the
+/// explicit restore. Restoring the same mask twice is harmless
+/// (`SIG_SETMASK` of the identical set), and each guard owns its saved value
+/// exclusively, so a single drop covers each block exactly once.
+#[cfg(unix)]
+struct SavedInterruptMask(libc::sigset_t);
+
+#[cfg(unix)]
+impl Drop for SavedInterruptMask {
+    fn drop(&mut self) {
+        imp::restore_interrupt_signals(self.0);
+    }
+}
+
 /// True once an interrupt-family signal (SIGINT, SIGTERM or SIGHUP) has been
 /// observed by the watcher. Spawn sites and timeout code can poll it to
 /// unwind early instead of soldiering on in a process that is about to
@@ -340,6 +374,13 @@ mod imp {
     /// `OnceLock<Mutex<…>>` shape (voice.rs, models.rs).
     static CHILD_GROUPS: OnceLock<Mutex<Vec<libc::pid_t>>> = OnceLock::new();
 
+    /// The watcher's JoinHandle, retained where the spawner used to drop it
+    /// so [`park_while_cleanup_concludes`] can tell a watcher that DIED
+    /// before phase 3 from one still mid-cleanup (see
+    /// [`watcher_finished_before_phase3`]). Read once per 100 ms park tick,
+    /// on the exit path only.
+    static WATCHER: OnceLock<Mutex<Option<std::thread::JoinHandle<()>>>> = OnceLock::new();
+
     /// Excludes a spawn→register window (held inside `spawn_supervised`)
     /// from the watcher's registry snapshots: a fresh group is either in the
     /// registry before a snapshot runs, or the snapshot waits for the window
@@ -360,7 +401,10 @@ mod imp {
     /// phase 3 always terminates the process (bounded by the grace +
     /// escalation), so the park cannot hang — it only stops main from
     /// winning the race to `std::process::exit` and robbing the 128+N
-    /// re-raise of its conventional exit status.
+    /// re-raise of its conventional exit status. The single audited
+    /// exception is a watcher that died before it could reach phase 3,
+    /// which the park detects and escapes (see
+    /// [`park_while_cleanup_concludes`]).
     static CLEANUP_STARTED: AtomicBool = AtomicBool::new(false);
 
     // Test-only override consulted first by [`cleanup_started`]
@@ -472,22 +516,31 @@ mod imp {
         let watcher = std::thread::Builder::new()
             .name("pinvou-child-supervisor".to_owned())
             .spawn(move || watcher(read_end));
-        if watcher.is_err() {
-            // The failed spawn also never ran the closure that captured
-            // `read_end` (a Copy fd: the binding stays valid). Close both
-            // ends — resetting PIPE_WRITE alone leaks the descriptors for
-            // the process lifetime — and return to the pre-install state.
-            let write_end = PIPE_WRITE.swap(-1, Ordering::SeqCst);
-            // SAFETY: both are the pipe(2) fds this function created; the
-            // watcher thread owns neither (it never started).
-            unsafe {
-                libc::close(read_end);
-                if write_end >= 0 {
-                    libc::close(write_end);
+        let watcher = match watcher {
+            Ok(handle) => handle,
+            Err(_) => {
+                // The failed spawn also never ran the closure that captured
+                // `read_end` (a Copy fd: the binding stays valid). Close both
+                // ends — resetting PIPE_WRITE alone leaks the descriptors for
+                // the process lifetime — and return to the pre-install state.
+                let write_end = PIPE_WRITE.swap(-1, Ordering::SeqCst);
+                // SAFETY: both are the pipe(2) fds this function created; the
+                // watcher thread owns neither (it never started).
+                unsafe {
+                    libc::close(read_end);
+                    if write_end >= 0 {
+                        libc::close(write_end);
+                    }
                 }
+                return;
             }
-            return;
-        }
+        };
+        // Retained for the exit-path park's dead-watcher escape; see
+        // [`WATCHER`].
+        *WATCHER
+            .get_or_init(|| Mutex::new(None))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(watcher);
         // BSD-semantic `signal(2)`: SA_RESTART for the restarted calls.
         // The handler itself never depends on that — see `on_signal`.
         // The double cast (fn item → raw pointer → sighandler_t) is the
@@ -796,7 +849,8 @@ mod imp {
 
     /// See [`super::park_while_interrupt_cleanup_concludes`]. A plain
     /// sleep-loop: this runs at most once per process lifetime, on a path
-    /// whose only exit is the watcher killing the process.
+    /// whose only exit is the watcher killing the process — plus the
+    /// dead-watcher escape below, for a watcher that died before it could.
     pub(super) fn park_while_cleanup_concludes() {
         // Flush any interrupt already pended for this thread: the block
         // window makes a delivered signal pend, and POSIX runs the handler
@@ -818,8 +872,41 @@ mod imp {
         // this load still races main's exit; that window is the process
         // tearing down by definition and is not closable here.)
         while CLEANUP_STARTED.load(Ordering::Acquire) {
+            // The park's "cannot hang" rests on the watcher reaching phase 3.
+            // Phase 3 does not return — the SIG_DFL re-raise ends the process
+            // with the closure still on the stack — so a FINISHED watcher
+            // while this flag is still set means it died BEFORE phase 3 (the
+            // dead-pipe early return, or a panic mid-cleanup): nobody will
+            // terminate the process, and parking here would hang the CLI
+            // forever. The watcher's whole job is terminating the process,
+            // so say so on stderr and leave with a failing status instead.
+            if watcher_finished_before_phase3() {
+                crate::note!(
+                    "pinvou: warning: the interrupt-supervisor watcher died before it could \
+                     terminate this process; exiting"
+                );
+                std::process::exit(1);
+            }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
+    }
+
+    /// Whether the watcher thread has finished while a cleanup is still in
+    /// flight. Only meaningful under a set [`CLEANUP_STARTED`], where a
+    /// finished watcher can only mean it never reached phase 3 — that phase
+    /// ends the process from inside itself, so its closure cannot complete
+    /// on the normal path. A lost handle (no install, slot still `None`) is
+    /// not a death: the park keeps its original semantics there.
+    fn watcher_finished_before_phase3() -> bool {
+        WATCHER
+            .get()
+            .map(|slot| {
+                slot.lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .as_ref()
+                    .is_some_and(|handle| handle.is_finished())
+            })
+            .unwrap_or(false)
     }
 
     /// Blocking read of the cleanup-start byte; `None` on a dead pipe (never

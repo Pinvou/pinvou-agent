@@ -509,7 +509,10 @@ enum BoundedWait {
 /// The observed Ctrl-C is the standing exception in spirit: the watcher is
 /// taking this process down, unwinding here lets the callers' staged-file
 /// guards run, and the child is verifiably still alive at this point in the
-/// loop.
+/// loop. The poll is not exact-time: the deadline branch therefore re-checks
+/// once before killing, so a child that exited between the last poll and the
+/// deadline fires keeps its real exit status (with the Ctrl-C check still
+/// first, a coincident Ctrl-C and timeout stays an interrupt).
 fn wait_bounded(child: &mut std::process::Child, timeout: Duration) -> BoundedWait {
     let started = Instant::now();
     loop {
@@ -526,6 +529,17 @@ fn wait_bounded(child: &mut std::process::Child, timeout: Duration) -> BoundedWa
                     return BoundedWait::Interrupted;
                 }
                 if started.elapsed() >= timeout {
+                    // One last try_wait before the kill: this poll can land
+                    // up to one sleep past the deadline, and a child that
+                    // exited inside that band already has its real exit
+                    // status — taking it keeps the verdict that of the
+                    // child's actual exit instead of killing a finished run
+                    // into a timeout. Only an observed exit upgrades the
+                    // verdict; an errored re-check leaves the deadline
+                    // outcome standing.
+                    if let Ok(Some(status)) = child.try_wait() {
+                        return BoundedWait::Exited(status);
+                    }
                     // Tree kill: a bare `kill()` would orphan descendants.
                     crate::support::kill_process_tree(child);
                     return BoundedWait::TimedOut;

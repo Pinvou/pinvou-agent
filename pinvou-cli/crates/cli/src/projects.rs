@@ -1286,7 +1286,39 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
                 "[projects] rebind artifact-path rebase failed: {}",
                 error.root_cause()
             );
+            // The GUI's rebase error arm ghost-classifies before failing
+            // (its round-24 MAJOR 1 / minor 8): a record this run's own
+            // load no longer finds is a mid-run delete, not a failed
+            // translate — a dead id must not be blanket-claimed as failed.
+            if record_ghost_if_absent(
+                &sessions,
+                session_id,
+                finally_stale,
+                &moved_this_run,
+                &mut rebound_session_ids,
+                &mut failed_session_ids,
+            ) {
+                continue;
+            }
             failed_session_ids.push(session_id.clone());
+            continue;
+        }
+        // Post-write owner re-check (the GUI's round-24 MAJOR 1, mirroring
+        // the plain lane's round-18 minor-7 check): the user-side delete
+        // holds `scheduled_mutation` across the record removal, so it cannot
+        // interleave inside this loop's load→save pairs — but a delete
+        // landing between the rebase save's release and the next write must
+        // not sail on into acp-state translation and set_workspace, either
+        // of which would re-create the deleted record wholesale and turn
+        // the ghost into a live-looking rebound.
+        if record_ghost_if_absent(
+            &sessions,
+            session_id,
+            finally_stale,
+            &moved_this_run,
+            &mut rebound_session_ids,
+            &mut failed_session_ids,
+        ) {
             continue;
         }
         if let Err(error) =
@@ -1359,9 +1391,17 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
         // `code_project_workspace` (a plain-chat admittee in neither plain
         // set must not gain a codex baseline it never reads, round-21
         // SF-4), and `final_stale` covers the GUI's plain-lane failed set.
+        // Arm 2 carries the same conjunct (the GUI's round-14 MINOR 1):
+        // every legitimate arm-2 subject is a codex-lane session (the
+        // strand repair runs on the agent store; an SF-2 admittee is behind
+        // a CODE binding), while a plain chat whose metadata is behind its
+        // binding also sets `metadata_behind_binding` — without the probe
+        // it captured a codex-workspace-baseline.json the plain lane never
+        // reads, the exact stray-file-plus-wasted-walk this gate exists to
+        // prevent.
         let is_code_session = agents.code_project_workspace(session_id).is_some();
         if (code_rebound_ids.contains(session_id)
-            || metadata_behind_binding
+            || (metadata_behind_binding && is_code_session)
             || (to_lane_admitted.contains(session_id)
                 && synced_this_loop
                 && is_code_session
@@ -1419,6 +1459,37 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
         failed_session_ids,
         affected_project_ids,
     )
+}
+
+/// The loop-head ghost classification (the GUI's
+/// `classify_absent_record_session`, round-24 MAJOR 1) behind a combined
+/// absence probe: `false` when the durable record is still on disk, `true`
+/// when it was absent and the classified outcome is routed into the report
+/// lists — no surviving binding artifacts, or a ghost an earlier run
+/// stranded, reports nothing (Skip); a stale sidecar wins over moved and
+/// reports failed (a rerun retries it); a ghost this run moved reports
+/// rebound. The rebase error arm and the post-rebase re-check share this so
+/// their call sites cannot drift from the loop head's inline copy.
+fn record_ghost_if_absent(
+    sessions: &SessionStore,
+    session_id: &str,
+    finally_stale: bool,
+    moved_this_run: &HashSet<String>,
+    rebound_session_ids: &mut Vec<String>,
+    failed_session_ids: &mut Vec<String>,
+) -> bool {
+    if !sessions.durable_session_record_is_absent(session_id) {
+        return false;
+    }
+    if !sessions.workspace_binding_artifacts_exist(session_id) {
+        return true;
+    }
+    if finally_stale {
+        failed_session_ids.push(session_id.to_string());
+    } else if moved_this_run.contains(session_id) {
+        rebound_session_ids.push(session_id.to_string());
+    }
+    true
 }
 
 /// One to-lane candidate of the GUI's `admit_rebind_retry_candidate` scan

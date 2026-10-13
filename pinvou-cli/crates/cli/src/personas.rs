@@ -1369,10 +1369,14 @@ fn active(session_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> 
         // empty pool that proves nothing, and telling that caller to
         // `unequip` would destroy a perfectly good equip sidecar.
         if !pinvou3_lib::features::personas::user_pool_enumeration_confirmed() {
+            // The id comes from the equip sidecar on disk, so it gets the same
+            // column collapse the renderers apply — an error line must not
+            // offer a newline or ESC a forged second line either.
             return Err(CliError::failed(format!(
-                "personas active: session {session_id} has persona {persona_id} equipped but \
+                "personas active: session {session_id} has persona {} equipped but \
                  the persona pool could not be read in this process; nothing was changed — \
-                 retry when the pool directory is readable"
+                 retry when the pool directory is readable",
+                crate::support::collapse_control_characters(persona_id)
             )));
         }
         // Card deleted from the desktop app (or the pool file removed by
@@ -1380,9 +1384,10 @@ fn active(session_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> 
         // sidecar is there, it still holds the deleted card's whole
         // injection body at 0600, and nothing else in the CLI reports it.
         return Err(CliError::failed(format!(
-            "personas active: session {session_id} has persona {persona_id} equipped but that \
+            "personas active: session {session_id} has persona {} equipped but that \
              card no longer exists; its sidecar still holds the card's full injection body — \
-             clear it with `pinvou personas unequip {session_id}`"
+             clear it with `pinvou personas unequip {session_id}`",
+            crate::support::collapse_control_characters(persona_id)
         )));
     }
     let human = match &summary {
