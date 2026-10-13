@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+const { test } = require('node:test');
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
@@ -165,58 +166,51 @@ assert.match(
   'the install catch must recheck OAuth request ownership after the awaited refresh',
 );
 
-(async () => {
+test('oauth install catch: a cancelled request must not publish the stale failure alert', async () => {
   // 取消竞态：cancelOAuthLoading 在 refresh 等待期间完成，清掉了归属并展示取消
   // 结果；旧失败不得再覆盖它。
-  {
-    const gate = deferred();
-    const alerts = [];
-    let owner = 'req-1';
-    const pending = runInstallCatch({
-      loadBackendState: () => gate.promise,
-      isCurrentOAuthRequest: (_id, requestId) => requestId !== null && requestId === owner,
-      setAlert: (a) => alerts.push(a),
-    });
-    owner = undefined; // clearOAuthRequest 已删条目
-    gate.resolve();
-    await pending;
-    assert.strictEqual(alerts.length, 0, 'a cancelled request must not publish the stale failure alert');
-  }
+  const gate = deferred();
+  const alerts = [];
+  let owner = 'req-1';
+  const pending = runInstallCatch({
+    loadBackendState: () => gate.promise,
+    isCurrentOAuthRequest: (_id, requestId) => requestId !== null && requestId === owner,
+    setAlert: (a) => alerts.push(a),
+  });
+  owner = undefined; // clearOAuthRequest 已删条目
+  gate.resolve();
+  await pending;
+  assert.strictEqual(alerts.length, 0);
+});
 
+test('oauth install catch: a superseded request must not publish the stale failure alert', async () => {
   // 换新竞态：用户在 refresh 等待期间发起新登录（归属条目被替换）；旧失败不得
   // 干扰新登录的界面。
-  {
-    const gate = deferred();
-    const alerts = [];
-    let owner = 'req-1';
-    const pending = runInstallCatch({
-      loadBackendState: () => gate.promise,
-      isCurrentOAuthRequest: (_id, requestId) => requestId !== null && requestId === owner,
-      setAlert: (a) => alerts.push(a),
-    });
-    owner = 'req-2'; // beginOAuthRequest 已替换条目
-    gate.resolve();
-    await pending;
-    assert.strictEqual(alerts.length, 0, 'a superseded request must not publish the stale failure alert');
-  }
+  const gate = deferred();
+  const alerts = [];
+  let owner = 'req-1';
+  const pending = runInstallCatch({
+    loadBackendState: () => gate.promise,
+    isCurrentOAuthRequest: (_id, requestId) => requestId !== null && requestId === owner,
+    setAlert: (a) => alerts.push(a),
+  });
+  owner = 'req-2'; // beginOAuthRequest 已替换条目
+  gate.resolve();
+  await pending;
+  assert.strictEqual(alerts.length, 0);
+});
 
+test('oauth install catch: the current request still publishes the failure alert', async () => {
   // 对照：归属始终有效时，失败照常发布（复现路径保持原语义，不是一刀切吞错）。
-  {
-    const gate = deferred();
-    const alerts = [];
-    const pending = runInstallCatch({
-      loadBackendState: () => gate.promise,
-      isCurrentOAuthRequest: (_id, requestId) => requestId === 'req-1',
-      setAlert: (a) => alerts.push(a),
-    });
-    gate.resolve();
-    await pending;
-    assert.strictEqual(alerts.length, 1, 'the current request must still publish the failure alert');
-    assert.strictEqual(alerts[0].isError, true);
-  }
-
-  console.log('marketplace_oauth_logic: ok');
-})().catch((err) => {
-  console.error(err);
-  process.exit(1);
+  const gate = deferred();
+  const alerts = [];
+  const pending = runInstallCatch({
+    loadBackendState: () => gate.promise,
+    isCurrentOAuthRequest: (_id, requestId) => requestId === 'req-1',
+    setAlert: (a) => alerts.push(a),
+  });
+  gate.resolve();
+  await pending;
+  assert.strictEqual(alerts.length, 1);
+  assert.strictEqual(alerts[0].isError, true);
 });
