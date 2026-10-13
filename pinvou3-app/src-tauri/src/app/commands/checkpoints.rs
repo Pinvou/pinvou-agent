@@ -323,24 +323,16 @@ async fn reject_if_peer_busy(
             &store_gate,
             &session_id_gate,
             &execution_gate,
-            |id| {
-                agents_gate.acp_project_workspace(id).or_else(|| {
-                    store_gate
-                        .session_roots(id)
-                        .ok()
-                        .map(|roots| roots.execution)
-                })
-            },
+            production_execution_root_resolver(agents_gate, store_gate.clone()),
             |id| pool_gate.is_turn_active(id) || pool_gate.is_scheduled_turn_running(id),
         )?;
-        let peers = peers_on_same_execution_root(&acp_store, &acp_session, &acp_execution, |id| {
-            agents_peers.acp_project_workspace(id).or_else(|| {
-                acp_store
-                    .session_roots(id)
-                    .ok()
-                    .map(|roots| roots.execution)
-            })
-        })?;
+        let acp_peers_store = acp_store.clone();
+        let peers = peers_on_same_execution_root(
+            &acp_store,
+            &acp_session,
+            &acp_execution,
+            production_execution_root_resolver(agents_peers, acp_peers_store),
+        )?;
         Ok::<_, String>((busy, peers))
     })
     .await
@@ -409,8 +401,8 @@ fn peers_on_same_execution_root(
         // can never write files, so the gate's premise — a peer engine leaving
         // half-written files in the shared execution root — is structurally
         // false for them. In production the exclusion is defense-in-depth:
-        //  resolves an aux id to its private
-        //  (no codex record, no workspace-binding
+        // `SessionStore::session_roots` resolves an aux id to its private
+        // `sessions/aux-<id>/workspace` (no codex record, no workspace-binding
         // sidecar is ever written for aux), so an aux root can never equal
         // the parent's. The skip keeps the gate correct against any future
         // resolver change that would surface a shared root for aux records.
@@ -433,6 +425,22 @@ fn peers_on_same_execution_root(
     Ok(peers)
 }
 
+/// 生产根解析（评审 r7 NIT：此前两处闭包 + 测试内一处手写副本，形状漂移无
+/// 锚）：ACP 项目绑定（agents store 的 `acp_project_workspace`——ACP 会话
+/// mode 恒 Plain，`session_roots`/`code_project_workspace` 都解析不到其真实
+/// 项目目录）优先，`session_roots` 兜底。调用点（正门两条腿、apply 前复检）
+/// 与端到端测试共用本函数，测试因此测的就是生产形状本身。
+fn production_execution_root_resolver(
+    agents: crate::features::codex_acp::SessionAgentStore,
+    store: SessionStore,
+) -> impl Fn(&str) -> Option<std::path::PathBuf> {
+    move |id| {
+        agents
+            .acp_project_workspace(id)
+            .or_else(|| store.session_roots(id).ok().map(|roots| roots.execution))
+    }
+}
+
 /// 跨会话忙碌门（设计 §6 防线二）：枚举全部会话（`list_sessions_cached`，含
 /// scheduled 的 sched- 前缀会话——`store.list()` 会把它们滤掉，那是确定性
 /// 漏判），找出 execution 根相同的其它会话，任一 `is_busy` 即返回其展示名
@@ -440,8 +448,12 @@ fn peers_on_same_execution_root(
 /// `is_scheduled_turn_running`（scheduled 轮的 spawn→submit 窗口）。
 ///
 /// 调用方必须先在 `begin_execution_root_rewind` 置位互斥 flag 再调本函数：
-/// 在途 peer 由本函数复查拦下，新 peer 由 flag 门在预约侧拦下（两侧在同一把
-/// flag 锁上做 check-and-act，消除 check-then-act 竞态）。
+/// 在途 peer 由本函数复查拦下，新 peer 由 flag 门在预约侧拦下——**原生与
+/// scheduled 车道**两侧在同一把 flag 锁上做 check-and-act，无竞态。**ACP 车
+/// 道例外（评审 r7 M2）**：ACP prompt 的 admit 不经 EnginePool、不读该 flag，
+/// 正门只能拦「检查时已在途」的 ACP 写入；预约→apply 之间放入的 ACP 写入由
+/// rewind_to_turn 的 apply 前复检兜底，残余窗口（复检返回→apply 启动）在
+/// 设计 §12 如实披露。
 ///
 /// ACP 会话：本函数的 is_busy 闭包只覆盖 EnginePool（原生车道）；ACP turn 不
 /// 经 EnginePool，其忙碌由 [`reject_if_peer_busy`] 的 ACP 腿
@@ -579,18 +591,26 @@ pub async fn rewind_to_turn(
     // 不对混合/已回退状态新拍快照，undo 不会绑到错误状态。暂记复用前先核对
     // 「该 PreRestore 未被任何成功回退的备份记录绑定」，防成功后清理失败的
     // 陈旧暂记误复用。
+    //
+    // 评审 r7 M2：apply 前最后一刻复检 ACP peer。正门（reject_if_peer_busy）在
+    // 预约时检查过，但 ACP prompt 的 admit 不经 EnginePool、不受执行根回退 flag
+    // 拦截（围栏是单向的）——预约与 apply 之间仍可能放进同根 ACP 会话的写入。
+    // 此处把窗口从「整个 apply（秒级）」压缩到「复检返回 → apply 启动」；残余
+    // check-then-act 窗口如实记录（§12 与 busy_peer_on_same_execution_root 的
+    // 注释已按实际保证范围改写）。
     let mut restored_checkpoint = None;
     if let Some(checkpoint) = plan.checkpoint {
         let ledger_restore = ledger.clone();
         let execution_restore = execution.clone();
         let bound_check_store = store.inner().clone();
         let bound_check_session = session_id.clone();
-        let undo = tauri::async_runtime::spawn_blocking(move || {
+        let revision_for_prepare = transcript_revision.clone();
+        let (target_meta, undo) = tauri::async_runtime::spawn_blocking(move || {
             let reuse = checkpoints::matching_pending_pre_restore(
                 &ledger_restore,
                 &checkpoint.id,
                 keep_turns,
-                &transcript_revision,
+                &revision_for_prepare,
             )
             .map_err(|error| format!("读取回退暂记失败: {error:#}"))?
             .filter(|pre_restore_id| {
@@ -616,26 +636,81 @@ pub async fn rewind_to_turn(
                 &checkpoint.id,
                 keep_turns,
                 &undo.id,
-                &transcript_revision,
+                &revision_for_prepare,
             )
             .map_err(|error| format!("写入回退暂记失败: {error:#}"))?;
-            checkpoints::apply_restore(&ledger_restore, &execution_restore, &target_meta).map_err(
-                |error| {
-                    // 评审 M3：恢复是多步变更（read-tree → purge → checkout-index
-                    // → clean -fd），中途失败（ENOSPC/EACCES/AV 锁）时工作区已是
-                    // 目标态与回退前的混合体，且本分支尚未写 undo 记录（「撤销回
-                    // 退」不可用）——与截断失败分支对齐，如实披露混合态并引导
-                    // 重试：重试会复用回滚点 {} 重新执行恢复（幂等）并完成后续截断。
-                    format!(
-                        "回滚检查点失败: {error:#}。工作区当前可能处于混合状态（部分文件已恢复、部分仍为回退前），请勿在此状态继续工作；直接重试回退会复用回滚点 {} 重新执行恢复（幂等）并完成后续截断",
-                        undo.id
-                    )
-                },
-            )?;
-            Ok::<_, String>(undo)
+            Ok::<_, String>((target_meta, undo))
         })
         .await
-        .map_err(|error| format!("回滚检查点任务失败: {error}"))??;
+        .map_err(|error| format!("准备回滚检查点任务失败: {error}"))??;
+        // ACP peer 复检（r7 M2）：同根 ACP 会话任一忙碌/配置中/待响应即拒绝，
+        // 状态不可读同样拒绝（与正门同谓词、同保守语义）。
+        let recheck_store = store.inner().clone();
+        let recheck_session = session_id.clone();
+        let recheck_execution = execution.clone();
+        let recheck_agents = acp_pool.agents().clone();
+        let recheck_peers = tauri::async_runtime::spawn_blocking(move || {
+            peers_on_same_execution_root(
+                &recheck_store,
+                &recheck_session,
+                &recheck_execution,
+                production_execution_root_resolver(recheck_agents, recheck_store.clone()),
+            )
+        })
+        .await
+        .map_err(|error| format!("回退前 ACP 复检任务失败: {error}"))??;
+        let recheck_ids: Vec<String> = recheck_peers
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .filter(|id| acp_pool.is_acp(id))
+            .map(str::to_string)
+            .collect();
+        if !recheck_ids.is_empty() {
+            match acp_pool.rebind_blocking_sessions(&recheck_ids).await {
+                None => {
+                    return Err(format!(
+                        "同目录 ACP 会话的忙碌状态暂时不可读（并发冷启动握手中），请稍后重试回退"
+                    ));
+                }
+                Some(blocking) => {
+                    if let Some(blocked_id) = blocking.first() {
+                        let label = recheck_peers
+                            .iter()
+                            .find(|(id, _)| id == blocked_id)
+                            .map(|(_, label)| label.clone())
+                            .unwrap_or_else(|| blocked_id.clone());
+                        return Err(format!(
+                            "会话「{label}」绑定同一项目目录且正在执行，请先停止该会话再回退"
+                        ));
+                    }
+                }
+            }
+        }
+        let apply_ledger = ledger.clone();
+        let apply_execution = execution.clone();
+        let undo_id = undo.id.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            checkpoints::apply_restore(&apply_ledger, &apply_execution, &target_meta)
+        })
+        .await
+        .map_err(|error| {
+            // JoinError = 阻塞任务 panic/被取消：可能发生在 apply 中途，工作区
+            // 可能已部分变更——按混合态披露，不假设「尚未启动」。
+            format!(
+                "回滚检查点任务异常终止: {error}。工作区可能处于混合状态（部分文件已恢复），请勿在此状态继续工作；直接重试回退会复用回滚点 {undo_id} 重新执行恢复（幂等）并完成后续截断"
+            )
+        })?
+        .map_err(|error| {
+            // 评审 M3：恢复是多步变更（read-tree → purge → checkout-index
+            // → clean -fd），中途失败（ENOSPC/EACCES/AV 锁）时工作区已是
+            // 目标态与回退前的混合体，且本分支尚未写 undo 记录（「撤销回
+            // 退」不可用）——与截断失败分支对齐，如实披露混合态并引导
+            // 重试：重试会复用回滚点 {} 重新执行恢复（幂等）并完成后续截断。
+            format!(
+                "回滚检查点失败: {error:#}。工作区当前可能处于混合状态（部分文件已恢复、部分仍为回退前），请勿在此状态继续工作；直接重试回退会复用回滚点 {} 重新执行恢复（幂等）并完成后续截断",
+                undo.id
+            )
+        })?;
         restored_checkpoint = Some(undo);
     }
     // 2) 截断对话（被截段落先备份进 `_rewound_turns.json`，备份失败则中止；
@@ -646,9 +721,16 @@ pub async fn rewind_to_turn(
     //    改动此处时需人工核对 undo 绑定链路。
     let store_truncate = store.inner().clone();
     let session_id_truncate = session_id.clone();
-    let pre_restore_id = restored_checkpoint
-        .as_ref()
-        .map(|checkpoint| checkpoint.id.clone());
+    let pre_restore_id = match restored_checkpoint.as_ref() {
+        Some(checkpoint) => Some(checkpoint.id.clone()),
+        // 评审 r7 minor 4：降级回退携带同边界失败全量回退的暂记 PreRestore——
+        // 代码已在那次尝试中回退，undo 必须能恢复它（记录不得承诺「代码保持
+        // 不变」而与实际不符）。无匹配暂记（真降级）保持 None 语义不变。
+        None => {
+            checkpoints::pending_pre_restore_for_degraded(&ledger, keep_turns, &transcript_revision)
+                .map_err(|error| format!("读取回退暂记失败: {error:#}"))?
+        }
+    };
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         store_truncate.truncate_to_user_turn(&session_id_truncate, keep_turns, pre_restore_id)
     })
@@ -659,7 +741,7 @@ pub async fn rewind_to_turn(
         // 不可用；独立的 restore 入口已移除。可执行的自救只有重试回退（恢复
         // 幂等，重试会重做恢复与截断）；回滚点 id 仅作排查线索如实给出。
         Some(checkpoint) => format!(
-            "代码已回退（原代码保存在回滚点 {}），但截断对话失败: {error:#}。请直接重试回退以完成截断（重试会复用该回滚点，不会对当前状态新拍快照）；应用内没有单独恢复代码的入口",
+            "代码已回退（原代码保存在回滚点 {}），但截断对话失败: {error:#}。请勿在此混合状态下继续工作；直接重试回退会复用该回滚点完成截断（不会对当前状态新拍快照）；应用内没有单独恢复代码的入口",
             checkpoint.id
         ),
         None => format!("截断对话失败: {error:#}"),
@@ -672,12 +754,17 @@ pub async fn rewind_to_turn(
     //    复用，留着旧分支快照会让 first-wins 对齐锚到被遗弃分支）。降级模式同样
     //    要作废——对话已截断，turn 复用问题与是否恢复代码无关。git 子进程 +
     //    gc 是阻塞 IO，移出 async worker。
+    // 评审 r7 minor 3：作废是清理性质——JoinError（panic/取消）不得把已完整
+    // 生效的回退报成失败（前端会误示错误且不刷新）。与内部非致命路径同级：
+    // 如实记日志，副作用留给下一次回退的陈旧和解兜底。
     let ledger_invalidate = ledger.clone();
-    tauri::async_runtime::spawn_blocking(move || {
+    if let Err(error) = tauri::async_runtime::spawn_blocking(move || {
         invalidate_abandoned_turn_checkpoints(&ledger_invalidate, keep_turns);
     })
     .await
-    .map_err(|error| format!("作废被截分支检查点任务失败: {error}"))?;
+    {
+        eprintln!("[checkpoints] 作废被截分支检查点任务异常（回退已生效，仅清理未做）: {error}");
+    }
     // 3) 回收 engine 实例（复用删除会话的回收路径：cancel + Shutdown + abort
     //    forwarder）；下次发送时 get_or_spawn 未命中 → lazy respawn → 用截断后
     //    的磁盘历史 SyncSession 注水（engine_pool.rs 既有链路，设计 §4.2）。
@@ -927,29 +1014,84 @@ mod tests {
     // git 可用性探测与 feature 层测试共用（features/code_checkpoints 内唯一实现）。
     use checkpoints::git_available;
 
-    /// wire 形状 pin（评审 r6 M1）：list_checkpoints 响应体必须序列化为
-    /// camelCase 键（前端 conversation/checkpoints.js 读 payload.userTurns）。
-    /// r5 事故：缺 rename_all 时 wire 携带 user_turns，调和门静默退化为不比对
-    /// ——纯函数单测只注入参数、从未见到真实 wire 键，测不出这类错位；本 pin
-    /// 直接断言 serde 输出。
+    /// wire 形状 pin（评审 r6 M1；r7 M3 扩展到全部 JS 可见响应体）：事故类是
+    /// 「结构体缺 rename_all → wire 携带 snake_case 键而前端读 camelCase，
+    /// 功能静默失效」——r5 的 list_checkpoints 实际发生过（userTurns 恒
+    /// undefined，调和门从未生效）。逐结构断言 camelCase 键存在且 snake_case
+    /// 键不存在：任何一个结构丢 rename_all 都必须让本 pin 变红。
     #[test]
-    fn list_checkpoints_wire_shape_is_camel_case() {
-        let payload = CheckpointListForUi {
-            checkpoints: Vec::new(),
+    fn js_facing_response_wire_shapes_are_camel_case() {
+        let sample_meta = meta("c1-1", Some(1), CheckpointKind::Turn);
+        let list = serde_json::to_value(CheckpointListForUi {
+            checkpoints: vec![sample_meta.clone()],
             user_turns: 3,
-        };
-        let value = serde_json::to_value(&payload).expect("serialize CheckpointListForUi");
+        })
+        .expect("serialize CheckpointListForUi");
         assert!(
-            value.get("userTurns").is_some(),
-            "wire must carry userTurns (camelCase), got: {value}"
+            list.get("userTurns").is_some(),
+            "list wire must carry userTurns: {list}"
         );
         assert!(
-            value.get("user_turns").is_none(),
-            "wire must not carry the snake_case key, got: {value}"
+            list.get("user_turns").is_none(),
+            "list wire must not carry user_turns: {list}"
         );
         assert!(
-            value.get("checkpoints").is_some(),
-            "wire must carry checkpoints"
+            list["checkpoints"][0].get("createdAt").is_some(),
+            "CheckpointMeta wire must carry createdAt: {}",
+            list["checkpoints"][0]
+        );
+        assert!(
+            list["checkpoints"][0].get("created_at").is_none(),
+            "CheckpointMeta wire must not carry created_at"
+        );
+
+        let rewind = serde_json::to_value(RewindToTurnResult {
+            restored_checkpoint: Some(sample_meta.clone()),
+            rewound_turns: 2,
+            degraded: false,
+            had_compaction: true,
+        })
+        .expect("serialize RewindToTurnResult");
+        for key in ["restoredCheckpoint", "rewoundTurns", "hadCompaction"] {
+            assert!(
+                rewind.get(key).is_some(),
+                "RewindToTurnResult wire must carry {key}: {rewind}"
+            );
+        }
+        assert!(
+            rewind.get("rewound_turns").is_none(),
+            "RewindToTurnResult must not carry snake_case"
+        );
+
+        let undo_info = serde_json::to_value(RewindUndoInfo {
+            checkpoint_id: Some("pre-1".into()),
+            kept_turns: 1,
+            rewound_turns: 2,
+            rewound_at: "2026-10-13T00:00:00Z".into(),
+        })
+        .expect("serialize RewindUndoInfo");
+        for key in ["checkpointId", "keptTurns", "rewoundTurns", "rewoundAt"] {
+            assert!(
+                undo_info.get(key).is_some(),
+                "RewindUndoInfo wire must carry {key}: {undo_info}"
+            );
+        }
+        assert!(
+            undo_info.get("kept_turns").is_none(),
+            "RewindUndoInfo must not carry snake_case"
+        );
+
+        let undo = serde_json::to_value(UndoLastRewindResult {
+            restored_messages: 5,
+        })
+        .expect("serialize UndoLastRewindResult");
+        assert!(
+            undo.get("restoredMessages").is_some(),
+            "UndoLastRewindResult wire must carry restoredMessages: {undo}"
+        );
+        assert!(
+            undo.get("restored_messages").is_none(),
+            "UndoLastRewindResult must not carry snake_case"
         );
     }
 
@@ -995,11 +1137,14 @@ mod tests {
             .expect("set acp workspace");
 
         // 生产形状解析：ACP 项目绑定优先 → bob 与 alice 同根，被列为 peer。
-        let production_peers = peers_on_same_execution_root(&store, &alice_id, &root, |id| {
-            agents
-                .acp_project_workspace(id)
-                .or_else(|| store.session_roots(id).ok().map(|roots| roots.execution))
-        })
+        // 直接复用 production_execution_root_resolver——端到端测试因此锚定的
+        // 就是生产形状本身（评审 r7 NIT：不再维护测试侧手写镜像）。
+        let production_peers = peers_on_same_execution_root(
+            &store,
+            &alice_id,
+            &root,
+            production_execution_root_resolver(agents, store.clone()),
+        )
         .expect("peers");
         assert!(
             production_peers.iter().any(|(id, _)| id == &bob_id),
