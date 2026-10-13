@@ -167,6 +167,10 @@ struct PrepareGeneration {
     revision: u64,
 }
 
+/// The only native browser surface: desktop (Windows/macOS/Linux) via
+/// `NativeBrowserSurface`. Mobile targets are unsupported until a real
+/// surface lands — do not re-introduce no-op fallback stubs; the drift they
+/// accumulate makes them non-compiling and silently unsupported anyway.
 pub(crate) struct DesktopBrowserSurface<P: PlatformWebviewConfig> {
     platform: P,
     data_directory: Option<PathBuf>,
