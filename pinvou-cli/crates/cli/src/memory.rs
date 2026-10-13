@@ -47,8 +47,8 @@ use std::path::PathBuf;
 
 use pinvou3_lib::features::memory as feature;
 use pinvou3_lib::features::memory::{
-    MemoryOrganizeReport, MemorySuggestion, MemoryTextPatch, ORGANIZE_LOCK_BUSY,
-    PendingIgnoreOutcome, PreferenceFile, RecentWorkItem, TimedMemoryItem, WorkContextFile,
+    MemorySuggestion, MemoryTextPatch, ORGANIZE_LOCK_BUSY, PendingIgnoreOutcome, PreferenceFile,
+    RecentWorkItem, TimedMemoryItem, WorkContextFile,
 };
 
 use crate::support::{self, render, require_yes, success};
@@ -2494,7 +2494,7 @@ fn organize(output: OutputMode) -> Result<CliOutcome, CliError> {
     // three-channel disclosure the `overview` rewrite makes.
     let snapshot_rewritten_without_runtime = refresh_snapshot_document_after_organize();
     let mut lines = vec![
-        support::collapse_control_characters(&organize_summary(&report)),
+        support::collapse_control_characters(&report.summary()),
         // Round-46 review: store-derived timestamps collapse like every
         // other human cell.
         format!(
@@ -2601,7 +2601,7 @@ fn organize_history(output: OutputMode) -> Result<CliOutcome, CliError> {
                     "{}\t{}\t{}",
                     support::collapse_control_characters(&report.started_at),
                     support::collapse_control_characters(&report.model),
-                    support::collapse_control_characters(&organize_summary(report))
+                    support::collapse_control_characters(&report.summary())
                 )
             })
             .collect::<Vec<_>>()
@@ -2609,25 +2609,6 @@ fn organize_history(output: OutputMode) -> Result<CliOutcome, CliError> {
     };
     let value = serde_json::to_value(&history).unwrap_or_default();
     Ok(success(render(output, human, &value)))
-}
-
-/// Same summary wording as the scheduled executor's memory_organize_summary.
-fn organize_summary(report: &MemoryOrganizeReport) -> String {
-    let total = |counts: &BTreeMap<String, u32>| counts.values().copied().sum::<u32>();
-    if report.no_change {
-        return format!(
-            "Memory organize completed: scanned {}, no changes needed",
-            total(&report.scanned)
-        );
-    }
-    format!(
-        "Memory organize completed: scanned {}, deleted {}, updated {}, merged {}, skipped sensitive {}",
-        total(&report.scanned),
-        total(&report.deleted),
-        total(&report.updated),
-        total(&report.merged),
-        report.skipped_sensitive,
-    )
 }
 
 // ---- shared overview loading helpers (mirror app/commands/memory.rs) ----

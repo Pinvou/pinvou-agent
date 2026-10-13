@@ -227,7 +227,7 @@ impl ScheduledChatExecutor {
         match organized {
             Ok(report) => TaskExecutionResult {
                 status: TaskStatus::Completed,
-                result_text: Some(memory_organize_summary(&report)),
+                result_text: Some(report.summary()),
                 error: None,
                 terminal_reason: TaskTerminalReason::Completed,
             },
@@ -246,24 +246,6 @@ impl ScheduledChatExecutor {
             },
         }
     }
-}
-
-/// A human-readable summary at run completion (goes only into the base Task's
-/// result_summary, never into the run record).
-fn memory_organize_summary(report: &MemoryOrganizeReport) -> String {
-    let total =
-        |counts: &std::collections::BTreeMap<String, u32>| counts.values().copied().sum::<u32>();
-    let scanned = total(&report.scanned);
-    if report.no_change {
-        return format!("Memory organize completed: scanned {scanned}, no changes needed");
-    }
-    format!(
-        "Memory organize completed: scanned {scanned}, deleted {}, updated {}, merged {}, skipped sensitive {}",
-        total(&report.deleted),
-        total(&report.updated),
-        total(&report.merged),
-        report.skipped_sensitive,
-    )
 }
 
 #[async_trait]
