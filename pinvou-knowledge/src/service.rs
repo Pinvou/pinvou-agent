@@ -1189,9 +1189,6 @@ impl KnowledgeService {
             return Ok(hits);
         }
         let query = request.query.trim();
-        if query.is_empty() {
-            return Ok(Vec::new());
-        }
         let embedder = self
             .embedder
             .read()
