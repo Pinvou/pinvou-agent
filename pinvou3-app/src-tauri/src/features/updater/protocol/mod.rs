@@ -12,6 +12,24 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+pub(crate) fn check_supplied_credential_semantics_bytes(
+    original_bytes: &[u8],
+    supplied_time: &[u8],
+) -> Result<(), pinvou_upgrade_codec::CredentialSemanticsError> {
+    let envelope = pinvou_upgrade_codec::decode_canonical_envelope(
+        original_bytes,
+        pinvou_upgrade_codec::InputKind::Credential,
+    )
+    .map_err(pinvou_upgrade_codec::CredentialSemanticsError::Envelope)?
+    .check_full_schema()
+    .map_err(pinvou_upgrade_codec::CredentialSemanticsError::Schema)?;
+    let now = decode_metadata(supplied_time)
+        .map_err(pinvou_upgrade_codec::CredentialSemanticsError::Json)?
+        .protocol_time_shape()
+        .map_err(pinvou_upgrade_codec::CredentialSemanticsError::Time)?;
+    pinvou_upgrade_codec::assert_supplied_credential_semantics(&envelope, &now)
+}
+
 pub(crate) fn check_supplied_metadata_semantics_bytes(
     original_bytes: &[u8],
     supplied_time: &[u8],
@@ -177,6 +195,41 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_checks_credential_semantics_without_authentication_or_consumption() {
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/envelopes.json"
+        )))
+        .unwrap();
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let vector = &vectors["vectors"][6];
+        let raw = URL_SAFE_NO_PAD
+            .decode(vector["envelopeBase64Url"].as_str().unwrap())
+            .unwrap();
+        let mut value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        let now = serde_json::to_vec(&vector["now"]).unwrap();
+        assert!(check_supplied_credential_semantics_bytes(&raw, &now).is_ok());
+        let expiry = serde_json::to_vec(&value["signed"]["exp"]).unwrap();
+        assert_eq!(
+            check_supplied_credential_semantics_bytes(&raw, &expiry),
+            Err(pinvou_upgrade_codec::CredentialSemanticsError::WindowClosed)
+        );
+        value["signed"]["updateAvailable"] = serde_json::json!(false);
+        let changed = decode_metadata(&serde_json::to_vec(&value).unwrap())
+            .unwrap()
+            .canonical_bytes()
+            .unwrap();
+        assert_eq!(
+            check_supplied_credential_semantics_bytes(&changed, &now),
+            Err(pinvou_upgrade_codec::CredentialSemanticsError::DecisionBinding)
+        );
+        assert!(matches!(
+            check_supplied_credential_semantics_bytes(&raw, b"null"),
+            Err(pinvou_upgrade_codec::CredentialSemanticsError::Time(_))
+        ));
+    }
 
     #[test]
     fn feature_facade_checks_metadata_windows_at_supplied_time_without_clock_authority() {

@@ -164,7 +164,7 @@ fn canonical(value: &Value) -> Result<Vec<u8>, MetadataSemanticsError> {
     }
     Ok(output.bytes)
 }
-fn references(value: &Value) -> Result<(), MetadataSemanticsError> {
+pub(super) fn references(value: &Value) -> Result<(), MetadataSemanticsError> {
     match value {
         Value::Object(object) => {
             if object.contains_key("envelopeSha256") {

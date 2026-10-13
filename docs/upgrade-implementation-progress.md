@@ -3578,3 +3578,65 @@ Both final documentation/evidence scoped reviews returned PASS on unchanged sour
 Details: [metadata semantics](client-upgrade-metadata-semantics.md).
 Complete T27 authenticity/persistence remains unfinished. Downloads retain no
 total/cumulative duration or retry cap.
+
+
+## T27 eighteenth batch - fourteen-role credential semantics (2026-10-14)
+
+Complete14-credential checkSemantics subset follows full Schema and existing safe
+supplied-time shape. Modules separate entry/metadata-set, update, authorization
+and event/task rules. The existing recursive metadata reference checker gains
+only private pub(super) visibility, with no algorithm or public entrance change.
+Original role lifetimes/nbf, Decision two-way availability, complete metadata set,
+entity/path/plan/version/state/rollout/bridge/package/ref/window/opening/locator,
+authorization JTI/freeze/backup/preparation/slot/staged/mode, Download package JCS,
+event anchors and task bindings are all implemented. Version strings reuse the
+prior exact decimal comparator without magnitude caps. Bounded whole-JCS errors
+propagate. Six metadata roles explicitly refuse in this entry point.
+
+Preinstall can precede installNotBefore; Actions need not be now-inside-taskwindow
+and eventNotAfter/locator expiry are not new now cutoffs. Only original staged
+30day addition checks SAFE; nonstaged nearSAFE behavior remains binary64. No
+signature/Root/expected source/trusted clock/current qualification/consume/
+ownership/execution/persistence/secure-erasure guarantee is introduced. Credential
+TTLs are separate from download duration, with no total download cap.
+
+Four groups include all14 fixtures/all6 unsupported metadata, maxTTL/+1, exact
+expiry/nbf, original scalar leaves, coherent candidate/bridge/approved ordinary-path,
+preinstall/window/task/event exceptions, nearSAFE nonstaged positive, staged
+overflow negative and4096-digit version controls. First5820 original Node composed
+parser/encoding/Schema/checkSemantics cases passed34.47s, but two standalone fixtures
+failed: opening used "salt" instead of frozen "leafSalt", and an assumed fixture
+now had not crossed eventNotAfter. A diagnostic single-branch run confirmed the
+Schema fixture failure; correcting the field and choosing explicit later supplied
+time yielded all four groups PASS32.19s. Extending coherent SAFE/version/preinstall
+scenarios produced final7287 Node cases/allfour PASS43.12s before facade staged
+error variants were added. No observed production/reference acceptance divergence.
+Oracle self-derived context isolates semantics; independent context is B16.
+
+No dependency/lock/Schema/CI/version/gitlink changes. Applicable final regression
+selects76 tests and filters only the unchanged31556-case Schema mutation test with
+B15 final evidence; CI retains the complete77-test suite. Initial final regression
+passed all76 tests but Clippy rejected eight nonminimal boolean expressions.
+Changing a == !is_null to equivalent a != is_null preserved all four truth-table
+cases and original short-circuit order; both independent roles checked the saved
+changes. Post-fix root applicable76 passed with actual Node22.23.3 and both legacy
+oracle flags; the7287 credential comparisons passed in48.18s. The unchanged Schema
+golden and all other applicable tests passed, with the one31556 mutation test
+explicitly filtered. Final root Clippy passed in8.92s and fmt passed.
+Actual Windows App passed all34 updater tests in0.16s after1m12s build on the
+post-fix production source; no App-wide pass is claimed. Architecture/version/diff
+checks passed; CI gate policy passed all51 tests in0.046s.
+Independent dependency review returned scoped PASS with no mandatory findings;
+its actualNode22.23.3 and both legacy flags applicable76 passed, including7287
+credential cases in45.71s. Clippy all-targets -D warnings passed in2.32s; fmt/diff
+passed. Independent compatibility review also returned scoped PASS without
+mandatory findings; actualNode22.23.3+both legacy flags applicable76 passed,
+including7287 credential cases in55.33s. Clippy passed in2.25s with fmt/diff;
+CI51 passed in0.048s. Both reviews explicitly filtered only the unchanged31556
+Schema mutation test and did not repeat App/graph/download tests. Root self-review
+confirmed requirement coverage, exact original branches and exceptional-state
+boundaries with no remaining in-scope gap. Final evidence/document reviews are
+recorded before commit on unchanged production source.
+Details: [credential semantics](client-upgrade-credential-semantics.md).
+Complete T27 authenticity/persistence remains unfinished. Downloads retain no
+total/cumulative duration or retry cap.

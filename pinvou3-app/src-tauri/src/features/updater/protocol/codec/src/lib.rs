@@ -2,6 +2,8 @@
 //! signature verification, established Root trust, current eligibility or ACK.
 
 mod bindings;
+mod credential_semantics;
+pub use credential_semantics::{CredentialSemanticsError, assert_supplied_credential_semantics};
 mod metadata_semantics;
 pub use metadata_semantics::{
     MetadataSemanticsError, RootWindowMode, SuppliedProtocolTime,
