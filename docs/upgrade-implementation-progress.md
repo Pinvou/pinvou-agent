@@ -4575,3 +4575,47 @@ upload HTTP workflow. Existing unchanged database/provider/browser/deployment
 opt-ins are not claimed; no SQL/provider/contract/dependency/version changes.
 Full T09 remains unfinished and deployment remains deferred. Download has no
 total/cumulative elapsed deadline or retry budget.
+
+
+## T09 fourth batch - independent observed FullPack (2026-10-14)
+
+The separate service now captures a safe exact root ZIP through its existing
+complete parser while retaining the selected root buffer in the live nested
+memory budget through later outer entries. Capturing FullPack and parsing it
+share one buffer; capture/nested bounds are checked before allocation. The old
+non-container root-file selector and uncaptured sibling accounting remain
+compatible. The new extraction port requires an owned upload Snapshot and
+returns a separate observed FullPack Snapshot, comparing actual parent and child
+identities. The additional Manifest verifier entry binds that child to the exact
+signed FullPack after the same current Root/deny checks; every failure returns
+no earlier Facts or child.
+
+Actual Store and Deflate ZIPs with a 33 MiB-plus expanded fixture passed child
+capture and independent inspection. Exact/below child capacities, held-root plus
+later-sibling memory limits and restored controls, root-only selection, later
+corruption, invalid/cancelled parent, signed child/outer separation and current
+package deny/restored positive passed. These are byte/format/signature tests,
+not native platform certification.
+
+Final root full default Go tests passed (archive3.870s/capture7.437s/
+extraction6.863s/sourcefile5.812s/verification9.347s/defaultCLI4.828s),
+as did full vet/module verification/server+CLI builds/pinned contracts/
+format/diff. Rebuilt actual CLI3 including child E2E passed in2.864s.
+Both independent static reviews passed without mandatory findings; independent
+frozen tests passed: dependency actual Windows Go1.27.2 archive3.859s/
+capture3.804s/extraction7.499s/sourcefile5.965s/verification9.316s/
+actualCLI3+childE2E4.440s plus affected vet/format/diff. Compatibility independently
+passed archive4.240s/capture3.535s/extraction4.330s/sourcefile6.015s/
+verification6.018s/actualCLI3+childE2E8.415s and affected vet/format/diff.
+Test processes are closed.
+The final return cancellation poll has static/full-regression evidence; no dedicated
+final-poll injection test is claimed. Both independent final documentation reviews passed before commit.
+
+This batch selects no storage provider or deployment policy, writes no paths,
+and grants no durable storage, supply-chain/native approval or Artifact admission.
+Source snapshot, aggregate live nested buffers and the returned child's memory
+capacity remain distinct finite allocations. The final business owner still
+rereads current trust/time/deny and protected object identity at admission.
+No SQL/dependency/contract changes; unchanged database/provider/deployment opt-ins
+are not claimed. Full T09 remains unfinished, and downloads retain no cumulative
+elapsed deadline or retry budget.
