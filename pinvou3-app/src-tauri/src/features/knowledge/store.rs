@@ -104,8 +104,6 @@ CREATE TABLE IF NOT EXISTS collections (
     description TEXT,
     created_at  INTEGER NOT NULL,
     updated_at  INTEGER NOT NULL,
-    embed_model TEXT,                       -- 绑定的 embedding 模型（NULL=仅全文）
-    embed_dim   INTEGER NOT NULL DEFAULT 0, -- 向量维度，换模型→重建
     status      TEXT NOT NULL DEFAULT 'ready' -- ready / indexing / pending
 );
 
@@ -1172,8 +1170,8 @@ mod tests {
         c.execute_batch(
             "CREATE TABLE collections(\
                id INTEGER PRIMARY KEY,name TEXT NOT NULL,category TEXT,description TEXT,\
-               created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,embed_model TEXT,\
-               embed_dim INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'ready'\
+               created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,\
+               status TEXT NOT NULL DEFAULT 'ready'\
              );\
              INSERT INTO collections(id,name,created_at,updated_at,status)\
              VALUES(7,'保留的知识集',1,1,'ready');\
