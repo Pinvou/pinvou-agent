@@ -726,13 +726,17 @@ fn aux_refusal_guards_stay_in_their_commands() {
     // The sched- send gates go through the alias-defeating predicate, not
     // exact prefix matching (round-34 minor 4; the contains() form was
     // corrected to the exact call shape — a re-spelled prefix would
-    // false-pass a substring hunt, round-35 minor 8).
+    // false-pass a substring hunt, round-35 minor 8). The duplicated
+    // per-sender gates were folded into the shared admit_reserved_turn
+    // prelude (dead-code wave RT3 F-RT3-1), so the predicate now appears
+    // exactly once there and every reserved-turn sender (send /
+    // edit-resend / eval) inherits it; a deleted guard still flips red.
     let pool = include_str!("../../features/assistant/engine_pool.rs");
     assert!(
         pool.matches("crate::features::sessions::is_sched_session_id(session_id)")
             .count()
-            >= 2,
-        "both sched- send gates must use the case-insensitive predicate",
+            >= 1,
+        "the shared sched- send gate must use the case-insensitive predicate",
     );
     assert!(
         !pool.contains("starts_with(\"sched-\")"),
