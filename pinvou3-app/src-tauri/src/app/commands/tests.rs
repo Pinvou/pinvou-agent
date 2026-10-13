@@ -2266,7 +2266,7 @@ fn post_reservation_failure_never_unlinks_the_current_path() {
     let workspace = mk_test_ws("post-reserve-failure");
     let reserved = std::sync::Arc::new(std::sync::Mutex::new(None));
     let observed = reserved.clone();
-    let result = stage_text_in_workspace_with_writer(
+    let result = stage_text_in_workspace_inner(
         "report.md",
         "txt",
         &workspace,
@@ -2292,7 +2292,7 @@ fn post_reservation_failure_never_unlinks_the_current_path() {
     // content assert are unconditional — gating them on the injection having
     // run would silently skip the pin if the rename ever failed.
     let replacement_workspace = mk_test_ws("post-reserve-replacement");
-    let result = stage_text_in_workspace_with_writer(
+    let result = stage_text_in_workspace_inner(
         "report.md",
         "txt",
         &replacement_workspace,
