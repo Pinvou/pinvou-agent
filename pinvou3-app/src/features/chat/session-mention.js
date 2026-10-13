@@ -87,7 +87,11 @@ const capRefTitle = (title) => {
  *   two newlines so it can be concatenated with the body directly.
  */
 export function buildSessionMentionBlock(refs) {
-  const items = (Array.isArray(refs) ? refs : [])
+  // Self-contained like the title cap (round-22 m10): the seven live call
+  // sites pre-dedupe today, but the builder's own parser-side invariants
+  // (dedupe, cap count, isolated prefixes) apply to hand-assembled inputs
+  // too.
+  const items = dedupeSessionRefs(Array.isArray(refs) ? refs : [])
     .map((ref) => ({
       sessionId: String((ref && ref.sessionId) || ''),
       // Cap here, not just in dedupe: an uncapped (pasted) session rename

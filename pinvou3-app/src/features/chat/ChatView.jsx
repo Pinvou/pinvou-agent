@@ -250,61 +250,72 @@ const makeSettleSessionRefSend = ({ mentionDraftKeyRef, sessionMentionEnabledRef
     // capture the dispatch-time render value, but a mid-await re-enable
     // plus a fresh pick must not be wiped by the stale OFF gate.
     const featureOn = sessionMentionEnabledRef.current;
+    const carry = materializationCarry(draftKeyAtSend);
     if (verdict === true) {
-      // Acceptance consumes exactly the serialized set; the live feature
-      // state decides whether mid-await picks (possibly made after a
-      // re-enable) survive or stale pre-toggle chips clear.
-      if (resolveMaterializedDraftKey(mentionDraftKeyRef.current) === resolveMaterializedDraftKey(draftKeyAtSend)) {
-        setSessionRefs(current => refsSurvivingAcceptance(refsAtSend, current, featureOn));
+      // Acceptance consumes exactly the serialized set; the carry (mid-await
+      // picks that followed a REAL materialization into the ledger) was
+      // never sent, so they survive acceptance — kept live in the
+      // materialized scope, merged into the stash on a mid-settle switch
+      // (round-22 MAJOR, both reviewers' independent finding: the early
+      // return used to strand them silently). Cap priority: the surviving
+      // computation consumes refsAtSend first, the carry rides after.
+      const carriedKept = featureOn && carry && carry.target === resolveMaterializedDraftKey(draftKeyAtSend)
+        ? carry.carriedRefs : [];
+      const onDispatchScope = resolveMaterializedDraftKey(mentionDraftKeyRef.current)
+        === resolveMaterializedDraftKey(draftKeyAtSend);
+      if (onDispatchScope) {
+        setSessionRefs(current => dedupeSessionRefs([
+          ...refsSurvivingAcceptance(refsAtSend, current, featureOn),
+          ...carriedKept,
+        ]));
       } else {
         const stashKey = resolveMaterializedDraftKey(draftKeyAtSend);
-        stashSessionMentionDraft(stashKey, refsSurvivingAcceptance(
-          refsAtSend, restoreSessionMentionDraft(stashKey), featureOn));
+        stashSessionMentionDraft(stashKey, dedupeSessionRefs([
+          ...carriedKept,
+          ...refsSurvivingAcceptance(refsAtSend, dedupeSessionRefs([...carriedKept, ...restoreSessionMentionDraft(stashKey)]), featureOn),
+        ]));
       }
+      if (carry) clearDraftMaterialization(draftKeyAtSend);
       return;
     }
+    let stashKey;
+    let carriedRefs = [];
     if (verdict === 'restored') {
-      // Aborted materialization (round-16 MAJOR-2 + rounds 19/20): undo the
-      // provisional supersession AND return the carry — the carried chips
-      // live in the ledger entry (never in the misread target's stash, so
-      // the target's own picks and cap slots were never touched). They go
-      // back to the still-alive draft; the target needs no repair.
-      const carry = materializationCarry(draftKeyAtSend);
-      if (carry && carry.carriedRefs.length) {
-        stashSessionMentionDraft(draftKeyAtSend, dedupeSessionRefs(
-          [...carry.carriedRefs, ...restoreSessionMentionDraft(draftKeyAtSend)]));
-        if (mentionDraftKeyRef.current === draftKeyAtSend) {
-          // The user is BACK on the draft (round-20 asto MAJOR-1): merge
-          // the carried picks into the live set too — stash-only would be
-          // overwritten by the next scope cleanup's live snapshot.
-          setSessionRefs(current => dedupeSessionRefs([...current, ...carry.carriedRefs]));
-        }
+      // Aborted materialization (round-16 MAJOR-2 + rounds 19/20/22): the
+      // carry returns to the still-alive draft — the ledger holds it
+      // ownership-separated, so the misread target was never touched.
+      stashKey = draftKeyAtSend;
+      carriedRefs = carry ? carry.carriedRefs : [];
+      if (mentionDraftKeyRef.current === draftKeyAtSend) {
+        // Still on the aborted scope (the ordinary "restored" shape, or the
+        // user navigated back to the draft): restore the snapshot live,
+        // carry first (round-20 asto MAJOR-1 — stash-only would be
+        // overwritten by the next scope cleanup's live snapshot).
+        setSessionRefs(current => dedupeSessionRefs([...carriedRefs, ...refsAtSend, ...current]));
       }
-      clearDraftMaterialization(draftKeyAtSend);
+    } else {
+      // Failure / non-dispatch after a REAL materialization: the snapshot
+      // restores through the ledger-resolved session key, the carry merges
+      // alongside it (cap priority: the carry first — it has no other
+      // recovery path; refsAtSend ride with the restored text).
+      stashKey = resolveMaterializedDraftKey(draftKeyAtSend);
+      carriedRefs = carry && carry.target === stashKey ? carry.carriedRefs : [];
     }
-    // Failure / non-dispatch: restore the snapshot through the ledger (a
-    // stash key consumed by a REAL materialization resolves to the live
-    // session key; an aborted one was re-scoped to the draft above), live
-    // when the current scope resolves to the same key — including the user
-    // having navigated BACK to the draft while the mapping is still
-    // recorded (round-19 M2's discriminating race). A real
-    // materialization's carried chips merge into the resolved key
-    // alongside the serialized set.
-    const carry = materializationCarry(draftKeyAtSend);
-    const carriedRefs = carry && carry.target === resolveMaterializedDraftKey(draftKeyAtSend)
-      ? carry.carriedRefs : [];
-    const stashKey = resolveMaterializedDraftKey(draftKeyAtSend);
-    if (resolveMaterializedDraftKey(mentionDraftKeyRef.current) === stashKey) {
+    // Live restore when the current scope resolves to the same key —
+    // including the user having navigated BACK to the draft while the
+    // mapping was still recorded (round-19 M2's discriminating race; the
+    // restored arm already live-merged above, and its re-scoped stashKey
+    // cannot match the mapping-resolved current). The ledger entry stays
+    // live until AFTER this guard and the stash write: clearing earlier
+    // would unresolve the current scope mid-race.
+    if (verdict !== 'restored' && resolveMaterializedDraftKey(mentionDraftKeyRef.current) === stashKey) {
       setSessionRefs(current => dedupeSessionRefs([...refsAtSend, ...carriedRefs, ...current]));
     }
     stashSessionMentionDraft(stashKey, dedupeSessionRefs(
-      [...refsAtSend, ...carriedRefs, ...restoreSessionMentionDraft(stashKey)]));
+      [...carriedRefs, ...refsAtSend, ...restoreSessionMentionDraft(stashKey)]));
+    if (carry) clearDraftMaterialization(draftKeyAtSend);
   };
 
-// Unified scene table after the design lane was merged into work: a scene
-// only expresses "the professional context of this message" and is
-// lane-independent; scene cards render below the empty-state greeting
-// (scene-cards.jsx).
 // Presentation for the canonical scene registry (scene-registry.js owns the
 // key order and the lane tags); this table only adds the UI label key + icon.
 const SCENE_TAB_PRESENTATION = {
