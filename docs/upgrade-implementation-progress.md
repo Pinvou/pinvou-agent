@@ -4750,3 +4750,39 @@ current time/trust/deny/immutable identities. No SQL/provider/protocol/dependenc
 application version changes; unchanged DB/provider/browser/deployment opt-ins
 are not claimed. Full T09 remains incomplete and downloads retain no cumulative
 elapsed deadline or retry budget.
+
+
+## T09 eighth batch - actual protected-source composition (2026-10-14)
+
+The separate service's existing real PostgreSQL artifact integration now also
+runs owned upload capture, exact paired evidence and offline SBOM Schema against
+the actual protected runtime/SERIALIZABLE source. Existing protected genesis,
+T05 dual review, T06 Root publication and package-role rotation stay unchanged;
+the original byte-only fixture remains unchanged. Added strong signed pretty
+CycloneDX1.6 at safe outer evidence prefixes retains actual raw identity and
+current read-set facts. Schema/version/format negatives first pass the same
+actual byte-only observer before precise Schema refusal/zeroFacts/nilpair;
+each restores a supported positive.
+
+A valid canonical indexed package deny in the actual isolated table refuses the
+same previously accepted owned upload; restoring exact original genesis body/
+digest/index restores the positive. These owner SQL changes are adversarial
+current-read/integrity controls, not approved deny commands or publication writes.
+
+The root actual baseline passed in13.794s (7.49s/4.54s); after the test-only delta
+the two actual PostgreSQL groups passed in14.052s (6.70s/5.14s). Full default Go
+tests/vet/modverify/server build/pinned contracts/format/diff also passed.
+Dependency independently passed the same actual PostgreSQL2 groups in13.788s
+(6.83s/4.71s), affected vet/format/diff and frozen code/test scoped review.
+Compatibility independently passed the same actual PostgreSQL2 groups in14.901s
+(7.34s/4.79s), affected vet/format/diff and frozen scoped review.
+All independent/root processes are closed; private connection values stayed only
+in process environment and were not printed. Client architecture/version/diff
+passed. Both independent final documentation reviews passed before commit.
+
+No production code, SQL schema, provider/dependency/protocol/application version
+or deployment changes. This proof concerns protected reading and structural
+observation, not HA/native publisher, final-installer SBOM binding, provenance/
+pipeline/scan or Artifact admission. Unrelated provider/browser/deployment opt-ins
+are not claimed; full T09 remains incomplete. Download has no total/cumulative
+elapsed deadline or retry budget.
