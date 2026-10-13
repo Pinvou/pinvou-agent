@@ -12,6 +12,17 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+/// Complete supplied HTTP contract; unit success is structural for errors too.
+pub(crate) fn check_supplied_client_http_response_bytes(
+    bytes: &[u8],
+    operation: pinvou_upgrade_codec::ClientResponseOperation,
+    http_status: u16,
+) -> Result<(), pinvou_upgrade_codec::ClientHttpResponseError> {
+    decode_metadata(bytes)
+        .map_err(pinvou_upgrade_codec::ClientHttpResponseError::Json)?
+        .assert_supplied_client_http_response_contract(operation, http_status)
+}
+
 /// Supplied client HTTP error contract, never confirmed absence or retry rights.
 pub(crate) fn check_supplied_client_error_response_bytes(
     bytes: &[u8],
@@ -435,6 +446,49 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_dispatches_http_contracts_without_interpreting_business_success() {
+        use pinvou_upgrade_codec::{
+            ClientHttpResponseError as ContractError, ClientResponseOperation as Operation, Error,
+        };
+        let channel = serde_json::json!({"protocolVersion":1,"requestId":"request-1",
+            "channel":"stable","channelRevision":1});
+        let error = serde_json::json!({"protocolVersion":1,"requestId":"request-1",
+            "code":"SERVICE_UNAVAILABLE","retryable":true});
+        let check = |v: &serde_json::Value, status| {
+            check_supplied_client_http_response_bytes(
+                &serde_json::to_vec(v).unwrap(),
+                Operation::ChannelChange,
+                status,
+            )
+        };
+        assert_eq!(check(&channel, 200), Ok(()));
+        assert_eq!(check(&error, 503), Ok(()));
+        assert_eq!(check(&channel, 204), Err(ContractError::InvalidStatus));
+        assert!(matches!(
+            check(&channel, 503),
+            Err(ContractError::ErrorResponse(_))
+        ));
+        assert!(matches!(
+            check(&error, 200),
+            Err(ContractError::Operation(_))
+        ));
+        let duplicate = serde_json::to_string(&channel).unwrap().replacen(
+            "{",
+            r#"{"requestId":"duplicate","#,
+            1,
+        );
+        assert_eq!(
+            check_supplied_client_http_response_bytes(
+                duplicate.as_bytes(),
+                Operation::ChannelChange,
+                200
+            ),
+            Err(ContractError::Json(Error::DuplicateKey))
+        );
+        assert_eq!(check(&channel, 200), Ok(()));
+    }
 
     #[test]
     fn feature_facade_checks_error_membership_without_retry_or_outcome_authority() {

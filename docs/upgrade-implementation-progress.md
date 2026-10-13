@@ -4312,3 +4312,35 @@ dependencies/locks/CI/crypto/trust/limits/VERSION/gitlinks changes. Details:
 [client error responses](client-upgrade-error-responses.md).
 Full T27/real transport/ownership remain unfinished. Downloads retain no
 total/cumulative duration or retry cap.
+
+## T27 thirty-fifth batch - supplied client HTTP entry (2026-10-14)
+
+Scope: complete fixed client HTTP contract entry. HTTP200 delegates unchanged
+complete operation response;4xx/5xx delegates unchanged original OpenAPI-bound
+error response; all other statuses reject. Typed wrapper errors retain original
+fixed codes, App raw byte entry keeps metadata profile/duplicate rejection.
+Unit success is structural for declared errors too, not business success,
+trusted transport/ACK/absence/current rights or owner revival.
+Outside-repository actual original oracles generated15497 cases: complete
+operation and direct OpenAPI/Ajv error controls plus undeclared HTTP statuses
+and wrong-branch operation bodies. Three integration groups and actual App
+facade were checked; no new resource unit. Root task-scoped3 passed with all
+15497 original cases in5.97s, Clippy alltargets41.65s/codec+App facade format
+passed. Architecture/version/diff passed; CI policy51 in0.058s. Actual Windows
+updater App50 passed in0.31s after3m11s compilation. Root self-review confirms
+fixed200/error/undeclared-status branches, unchanged validator delegation,
+typed/fixed errors and metadata profile, structural-only unit success for
+declared errors, and no authority or business-state inference. Unchanged full
+143/31556 were not repeated. Both independent static reviews found no mandatory
+issue. Dependency independent3 passed (actual original15497 in7.57s,
+Clippy2.17s/codec+App facade format/diff passed), actual Node22/both legacy
+environments, no new resource unit/no old143/31556/App repeat. Compatibility
+independent3 passed (actual original15497 in6.44s, Clippy1.89s/codec+App facade
+format/diff passed; CI policy51 in0.093s), actual Node22/both legacy environments,
+no new resource unit/no old143/31556/App repeat. Both scoped reviews passed
+without mandatory finding and all processes closed. Both final documentation
+reviews passed before commit. No Schema/OpenAPI/profile/vectors/
+dependencies/locks/CI/crypto/trust/limits/VERSION/gitlinks changes. Details:
+[complete HTTP entry](client-upgrade-http-response-entry.md).
+Full T27/real transport/ownership remain unfinished. Downloads retain no
+total/cumulative duration or retry cap.
