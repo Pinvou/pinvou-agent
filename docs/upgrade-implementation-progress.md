@@ -3640,3 +3640,55 @@ recorded before commit on unchanged production source.
 Details: [credential semantics](client-upgrade-credential-semantics.md).
 Complete T27 authenticity/persistence remains unfinished. Downloads retain no
 total/cumulative duration or retry cap.
+
+
+## T27 nineteenth batch - supplied consume binding (2026-10-14)
+
+A borrowed private closed17 ConsumeRequestShape reuses the unchanged B6 request
+predicate through parent-only visibility. Digest projection exclusions are not
+allowed in this exact semantic request. Full Schema/canonical envelope remains
+a separate private-factory input. Three purposes bind exact authorization roles,
+the complete original envelope SHA including signatures, eleven whole-JCS fields
+and installation scope/plans. Bounded JCS failures propagate without cloning
+production subtrees or exposing an unchecked value entrance.
+
+This is only the original assertConsumeBinding post-verification fragment.
+The caller must separately establish signature/Root/expected context/time and
+current qualification, then perform atomic consumption. consumeKey and
+recoveryHandleHash remain Schema-valid independent owner inputs here. No
+persistence/ownership/execution/erasure right is established. Download duration
+remains unlimited and is unrelated to credential TTL.
+
+Four groups include all three purposes, full nullable/plan records, bound leaf
+mutations, raw signature changes, signed-body hash refusal, wrong roles, exact
+closed request shape, reordered JSON and duplicate/resource boundaries. Actual
+Node runs the precisely extracted original post-verification body, preceded
+by original request Schema and complete envelope parser/encoding. There is no
+verifyEnvelope substitute or whole-export equivalence claim. App checks all
+three purposes, stale hash and forbidden transport fields.
+
+Initial four groups passed in16.72s, including2752 actual original Node
+post-verification binding cases. No observed acceptance divergence. Architecture/
+version/diff checks passed; CI gate policy passed all51 tests in0.090s.
+
+No dependency/lock/Schema/CI/version/gitlink changes. Final regression selects
+80 applicable tests, filtering only the unchanged B15 31556-case Schema mutation
+test; CI retains the complete81-test suite. Final root applicable80 passed with
+actualNode22.23.3 and both legacy oracle flags, including2752 consume-binding
+cases in17.81s. Schema golden and every other applicable test passed, including
+B18 credential7287 in78.16s. Final actual Windows App passed all35 updater tests
+in0.18s after4m03s build; no App-wide pass is claimed. Root Clippy passed
+in12.82s and fmt passed. Independent dependency review returned scoped PASS
+without mandatory findings; actualNode22.23.3+both legacy flags applicable80
+passed, including2752 consume-binding cases in15.34s and7287 credential cases
+in52.42s. Its Clippy all-targets -D warnings passed in2.90s; fmt/diff passed.
+Independent compatibility review also returned scoped PASS without mandatory
+findings; actualNode22.23.3+both legacy flags applicable80 passed, including2752
+consume-binding cases in12.70s and7287 credential cases in45.85s. Its Clippy
+passed in2.30s with fmt/diff, and CI51 passed in0.048s. Both reviews explicitly
+filtered only the unchanged31556 Schema mutation test and did not repeat App,
+graphs or downloads. Root self-review found no remaining in-scope requirement,
+exceptional-state, dependency-direction or regression-evidence gap.
+Final scoped evidence/document reviews precede commit on unchanged production source. Details: [consume binding](client-upgrade-consume-binding.md).
+Complete T27 authenticity/persistence/consumption remains unfinished. Downloads
+retain no total/cumulative duration or retry cap.

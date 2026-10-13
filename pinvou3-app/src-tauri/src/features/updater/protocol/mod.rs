@@ -12,6 +12,25 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+pub(crate) fn check_supplied_consume_binding_bytes(
+    request_bytes: &[u8],
+    authorization_bytes: &[u8],
+) -> Result<(), pinvou_upgrade_codec::ConsumeBindingError> {
+    let request =
+        decode_metadata(request_bytes).map_err(pinvou_upgrade_codec::ConsumeBindingError::Json)?;
+    let request = request
+        .consume_request_shape()
+        .map_err(pinvou_upgrade_codec::ConsumeBindingError::Request)?;
+    let authorization = pinvou_upgrade_codec::decode_canonical_envelope(
+        authorization_bytes,
+        pinvou_upgrade_codec::InputKind::Credential,
+    )
+    .map_err(pinvou_upgrade_codec::ConsumeBindingError::Envelope)?
+    .check_full_schema()
+    .map_err(pinvou_upgrade_codec::ConsumeBindingError::Schema)?;
+    pinvou_upgrade_codec::assert_supplied_consume_binding(&request, &authorization)
+}
+
 pub(crate) fn check_supplied_credential_semantics_bytes(
     original_bytes: &[u8],
     supplied_time: &[u8],
@@ -195,6 +214,76 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_matches_three_supplied_consume_bindings_and_refuses_stale_raw_hash() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        use sha2::{Digest, Sha256};
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/envelopes.json"
+        )))
+        .unwrap();
+        let base: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/digests.json"
+        )))
+        .unwrap();
+        for purpose in ["preinstall", "install", "activate"] {
+            let role = format!("authorization-{purpose}");
+            let vector = vectors["vectors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["name"] == role)
+                .unwrap();
+            let raw = URL_SAFE_NO_PAD
+                .decode(vector["envelopeBase64Url"].as_str().unwrap())
+                .unwrap();
+            let mut envelope: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+            let signed = &envelope["signed"];
+            let mut request = base["consumeRequest"].clone();
+            for field in [
+                "product",
+                "component",
+                "purpose",
+                "authorizationJti",
+                "transactionId",
+                "clientFactsDigest",
+                "preparation",
+                "freezeEpoch",
+                "backup",
+                "staged",
+                "preinstallSlot",
+            ] {
+                request[field] = signed[field].clone();
+            }
+            request["installationScopeId"] = signed["scope"]["installationScopeId"].clone();
+            request["plans"] = signed["update"]["plans"].clone();
+            let hash: String = Sha256::digest(&raw)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            request["authorizationEnvelopeSha256"] = serde_json::json!(hash);
+            let request_raw = serde_json::to_vec(&request).unwrap();
+            assert!(check_supplied_consume_binding_bytes(&request_raw, &raw).is_ok());
+            envelope["signatures"][0]["signature"] =
+                serde_json::json!(URL_SAFE_NO_PAD.encode([0; 64]));
+            let changed = decode_metadata(&serde_json::to_vec(&envelope).unwrap())
+                .unwrap()
+                .canonical_bytes()
+                .unwrap();
+            assert_eq!(
+                check_supplied_consume_binding_bytes(&request_raw, &changed),
+                Err(pinvou_upgrade_codec::ConsumeBindingError::BindingMismatch)
+            );
+            request["headers"] = serde_json::json!(null);
+            assert!(matches!(
+                check_supplied_consume_binding_bytes(&serde_json::to_vec(&request).unwrap(), &raw),
+                Err(pinvou_upgrade_codec::ConsumeBindingError::Request(_))
+            ));
+        }
+    }
 
     #[test]
     fn feature_facade_checks_credential_semantics_without_authentication_or_consumption() {

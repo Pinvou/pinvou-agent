@@ -20,7 +20,11 @@ pub use envelope::{
     CanonicalEnvelopeShape, EnvelopeShapeError, SignatureRecordShape, decode_canonical_envelope,
 };
 mod consume;
+mod consume_binding;
 pub use consume::{ConsumeDigestError, ConsumeRequestDigest};
+pub use consume_binding::{
+    ConsumeBindingError, ConsumeRequestShape, assert_supplied_consume_binding,
+};
 mod native;
 mod parse;
 pub use native::{NativeIdentityError, NativeIdentityShape, assert_native_identity};

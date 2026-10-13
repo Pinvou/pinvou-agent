@@ -110,7 +110,7 @@ impl Document {
         Ok(ConsumeRequestDigest { canonical, hash })
     }
 }
-fn valid_request(value: &Value) -> bool {
+pub(super) fn valid_request(value: &Value) -> bool {
     let Some(request) = closed(value, &FIELDS) else {
         return false;
     };
