@@ -116,7 +116,8 @@ mv -f "$model_tmp" "$ASR_DIR/$MODEL_FILE"
 
 echo "[5/5] 安装 shim …"
 shim_tmp="$ASR_DIR/.pinvou3-asr-shim.py.tmp.$$"
-cp "$HERE/pinvou3-asr-shim.py" "$shim_tmp" || { rm -f "$shim_tmp"; exit 1; }
+# 单一来源:与打包进 app 的 resources 副本同源,防止两份 shim 静默漂移。
+cp "$HERE/../../pinvou3-app/src-tauri/resources/platforms/linux/asr/pinvou3-asr-shim.py" "$shim_tmp" || { rm -f "$shim_tmp"; exit 1; }
 chmod +x "$shim_tmp"
 mv -f "$shim_tmp" "$ASR_DIR/pinvou3-asr-shim.py"
 
