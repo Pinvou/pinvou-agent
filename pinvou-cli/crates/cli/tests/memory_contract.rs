@@ -19,7 +19,7 @@ use pinvou_cli::{CliCommand, OutputMode, parse_args};
 
 use common::{
     HomeGuard, Isolation, assert_usage, command_error, env_lock, expect_failed, parsed_debug,
-    run_json, run_ok,
+    run_child, run_json, run_ok,
 };
 
 /// A throwaway `PINVOU3_HOME` for one test.
@@ -78,6 +78,19 @@ fn assert_pending_queue_untouched(home: &HomeGuard) {
         !pending.exists() || std::fs::read_to_string(&pending).unwrap().trim().is_empty(),
         "the refused add must not enqueue a memory item"
     );
+}
+
+/// Finds the pending row a test addresses by id — the shared lookup of the
+/// confirm/refuse round-trips below, with the whole queue in the panic
+/// message.
+fn pending_row<'a>(
+    pending: &'a [pinvou3_lib::features::memory::PendingMemoryItem],
+    id: &str,
+) -> &'a pinvou3_lib::features::memory::PendingMemoryItem {
+    pending
+        .iter()
+        .find(|item| item.id == id)
+        .unwrap_or_else(|| panic!("pending fixture {id} missing: {pending:?}"))
 }
 
 // ---- parse-level coverage ----
@@ -922,11 +935,7 @@ fn memory_overview_counts_match_fixtures_and_write_snapshot() {
     // `note!` writes to the process's own stderr, which the in-process
     // helpers cannot capture, so it is asserted through the real binary
     // (same rule as code_contract.rs's stderr assertions).
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
-        .args(["memory", "overview"])
-        .env("PINVOU3_HOME", home.path())
-        .output()
-        .expect("the pinvou binary must run");
+    let output = run_child(home.path(), &["memory", "overview"], &[]);
     assert!(output.status.success(), "overview must still succeed");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -1655,18 +1664,18 @@ fn memory_update_preferences_over_the_cap_reports_the_truncation() {
     // an update that then fails. `note!` writes to the process's own stderr,
     // which the in-process helpers cannot capture, so it is asserted through
     // the real binary (same rule as the overview stderr assertion above).
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
-        .args([
+    let output = run_child(
+        home.path(),
+        &[
             "memory",
             "update",
             "preferences",
             json["id"].as_str().unwrap(),
             "--content",
             &content,
-        ])
-        .env("PINVOU3_HOME", home.path())
-        .output()
-        .expect("the pinvou binary must run");
+        ],
+        &[],
+    );
     assert!(
         output.status.success(),
         "an over-cap update still succeeds: {:?}",
@@ -1886,10 +1895,7 @@ fn memory_add_refuses_a_same_text_candidate_in_a_foreign_topic_bucket() {
     // The GUI candidate is untouched — still awaiting its owner's review,
     // still in its own bucket.
     let pending = pinvou3_lib::features::memory::load_pending_memory().unwrap();
-    let gui_row = pending
-        .iter()
-        .find(|item| item.id == gui.id)
-        .unwrap_or_else(|| panic!("pending fixture {} missing: {pending:?}", gui.id));
+    let gui_row = pending_row(&pending, &gui.id);
     assert_eq!(gui_row.status, "pending_confirm", "{pending:?}");
     assert_eq!(gui_row.topic, "workflow_preference", "{pending:?}");
     assert_eq!(gui_row.content, "Prefer concise answers", "{pending:?}");
@@ -1945,10 +1951,7 @@ fn memory_add_refuses_a_same_text_work_context_candidate_in_a_foreign_bucket() {
     );
 
     let pending = pinvou3_lib::features::memory::load_pending_memory().unwrap();
-    let gui_row = pending
-        .iter()
-        .find(|item| item.id == gui.id)
-        .unwrap_or_else(|| panic!("pending fixture {} missing: {pending:?}", gui.id));
+    let gui_row = pending_row(&pending, &gui.id);
     assert_eq!(gui_row.status, "pending_confirm", "{pending:?}");
     assert_eq!(gui_row.topic, "role_domain", "{pending:?}");
     assert_eq!(gui_row.content, "We deploy on Fridays", "{pending:?}");
@@ -1986,10 +1989,7 @@ fn memory_add_still_confirms_when_every_field_matches_this_adds_own_candidate() 
     let seeded = enqueue_fixture("preference", "Prefer concise answers");
     add_default_preference();
     let pending = pinvou3_lib::features::memory::load_pending_memory().unwrap();
-    let seeded_row = pending
-        .iter()
-        .find(|item| item.id == seeded.id)
-        .unwrap_or_else(|| panic!("pending fixture {} missing: {pending:?}", seeded.id));
+    let seeded_row = pending_row(&pending, &seeded.id);
     assert_eq!(seeded_row.status, "confirmed", "{pending:?}");
     let stored = pinvou3_lib::features::memory::list_preferences().unwrap();
     assert_eq!(stored.len(), 1, "{stored:?}");
@@ -2011,10 +2011,7 @@ fn memory_add_still_confirms_when_every_field_matches_this_adds_own_candidate() 
         "We deploy on Fridays",
     ]);
     let pending = pinvou3_lib::features::memory::load_pending_memory().unwrap();
-    let ctx_row = pending
-        .iter()
-        .find(|item| item.id == seeded_ctx.id)
-        .unwrap_or_else(|| panic!("pending fixture {} missing: {pending:?}", seeded_ctx.id));
+    let ctx_row = pending_row(&pending, &seeded_ctx.id);
     assert_eq!(ctx_row.status, "confirmed", "{pending:?}");
     let stored_ctx = pinvou3_lib::features::memory::load_work_context().unwrap();
     assert_eq!(stored_ctx.len(), 1, "{stored_ctx:?}");
@@ -2051,10 +2048,7 @@ fn memory_add_leaves_a_same_text_candidate_of_a_different_kind_alone() {
     add_default_preference();
 
     let pending = pinvou3_lib::features::memory::load_pending_memory().unwrap();
-    let gui_row = pending
-        .iter()
-        .find(|item| item.id == gui.id)
-        .unwrap_or_else(|| panic!("pending fixture {} missing: {pending:?}", gui.id));
+    let gui_row = pending_row(&pending, &gui.id);
     assert_eq!(gui_row.status, "pending_confirm", "{pending:?}");
     assert_eq!(gui_row.kind, "current_focus", "{pending:?}");
     assert_eq!(gui_row.topic, "", "{pending:?}");
@@ -2518,10 +2512,7 @@ fn memory_pending_confirm_refuses_block_marker_content_before_materializing() {
     // pending-status literal is "pending_confirm", not "confirmed") and the
     // preference store stayed empty.
     let pending = pinvou3_lib::features::memory::load_pending_memory().unwrap();
-    let survivor = pending
-        .iter()
-        .find(|item| item.id == row.id)
-        .expect("the refused row stays in the pending queue");
+    let survivor = pending_row(&pending, &row.id);
     assert_eq!(survivor.status, "pending_confirm", "{survivor:?}");
     assert!(
         pinvou3_lib::features::memory::list_preferences()

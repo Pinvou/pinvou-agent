@@ -715,13 +715,18 @@ fn parse_provider_kind(raw: &str) -> Result<String, CliError> {
     )))
 }
 
-/// A free-form metadata value that must not be stored as whitespace: the
+/// Trims a text flag value and refuses a whitespace-only one, reported at
+/// parse time so it exits 2 with the flag named. `word` carries the noun the
+/// message uses (`blank`, `empty`) so each call site keeps its exact former
+/// wording: a free-form metadata value must not be stored as whitespace (the
 /// prefs normalizer maps a blank `vendor` / `endpoint_mode` back to `None`,
-/// so accepting one here would report a write that the next save undoes.
-fn parse_metadata_value(flag: &str, raw: &str) -> Result<String, CliError> {
+/// so accepting one would report a write that the next save undoes), and an
+/// identity field matches what `models add` rejects in `add()` ("--name,
+/// --model and --base-url must not be empty").
+fn parse_text_value(flag: &str, raw: &str, word: &str) -> Result<String, CliError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err(CliError::usage(format!("--{flag} must not be blank")));
+        return Err(CliError::usage(format!("--{flag} must not be {word}")));
     }
     Ok(trimmed.to_owned())
 }
@@ -729,11 +734,11 @@ fn parse_metadata_value(flag: &str, raw: &str) -> Result<String, CliError> {
 /// Reads the five optional GUI-form metadata fields off a parsed option set.
 fn parse_metadata(options: &Options) -> Result<ModelMetadata, CliError> {
     Ok(ModelMetadata {
-        alias: opt_flag_text(options, "alias", parse_metadata_value)?,
+        alias: opt_flag_text(options, "alias", "blank")?,
         provider_kind: opt_flag(options, "provider-kind", parse_provider_kind)?,
-        vendor: opt_flag_text(options, "vendor", parse_metadata_value)?,
-        endpoint_mode: opt_flag_text(options, "endpoint-mode", parse_metadata_value)?,
-        vision_model_id: opt_flag_text(options, "vision-model-id", parse_metadata_value)?,
+        vendor: opt_flag_text(options, "vendor", "blank")?,
+        endpoint_mode: opt_flag_text(options, "endpoint-mode", "blank")?,
+        vision_model_id: opt_flag_text(options, "vision-model-id", "blank")?,
     })
 }
 
@@ -834,16 +839,11 @@ fn opt_flag<T>(
     }
 }
 
-/// [`opt_flag`] over one of the `(flag, raw)`-shaped text validators
-/// (`parse_required_text`, `parse_metadata_value`), which need the flag name
-/// for their error message; building that closure here keeps every call site
-/// to one line.
-fn opt_flag_text(
-    options: &Options,
-    flag: &str,
-    parse: fn(&str, &str) -> Result<String, CliError>,
-) -> Result<Option<String>, CliError> {
-    opt_flag(options, flag, |raw: &str| parse(flag, raw))
+/// [`opt_flag`] over [`parse_text_value`]: the caller names the flag and the
+/// noun its refusal message uses; building that closure here keeps every call
+/// site to one line.
+fn opt_flag_text(options: &Options, flag: &str, word: &str) -> Result<Option<String>, CliError> {
+    opt_flag(options, flag, |raw: &str| parse_text_value(flag, raw, word))
 }
 
 /// The clearable companion of [`opt_flag_text`], for `models edit` fields the
@@ -851,9 +851,9 @@ fn opt_flag_text(
 fn clearable_flag_text(
     options: &Options,
     flag: &str,
-    parse: fn(&str, &str) -> Result<String, CliError>,
+    word: &str,
 ) -> Result<Option<Option<String>>, CliError> {
-    parse_clearable(options, flag, |raw: &str| parse(flag, raw))
+    parse_clearable(options, flag, |raw: &str| parse_text_value(flag, raw, word))
 }
 
 fn parse_edit(rest: &[String]) -> Result<ModelsCommand, CliError> {
@@ -885,9 +885,9 @@ fn parse_edit(rest: &[String]) -> Result<ModelsCommand, CliError> {
         // The three identity fields are not clearable: a model with no name,
         // wire model or base_url is not a model. `--name none` therefore
         // stores the literal, like `models add` would.
-        name: opt_flag_text(&options, "name", parse_required_text)?,
-        model: opt_flag_text(&options, "model", parse_required_text)?,
-        base_url: opt_flag_text(&options, "base-url", parse_required_text)?,
+        name: opt_flag_text(&options, "name", "empty")?,
+        model: opt_flag_text(&options, "model", "empty")?,
+        base_url: opt_flag_text(&options, "base-url", "empty")?,
         context_window: parse_clearable(&options, "context-window", |raw: &str| {
             parse_positive_u32("--context-window", raw)
         })?,
@@ -895,11 +895,11 @@ fn parse_edit(rest: &[String]) -> Result<ModelsCommand, CliError> {
             parse_positive_u32("--max-output", raw)
         })?,
         reasoning_effort: parse_clearable(&options, "reasoning-effort", parse_reasoning_effort)?,
-        alias: clearable_flag_text(&options, "alias", parse_metadata_value)?,
+        alias: clearable_flag_text(&options, "alias", "blank")?,
         provider_kind: parse_clearable(&options, "provider-kind", parse_provider_kind)?,
-        vendor: clearable_flag_text(&options, "vendor", parse_metadata_value)?,
-        endpoint_mode: clearable_flag_text(&options, "endpoint-mode", parse_metadata_value)?,
-        vision_model_id: clearable_flag_text(&options, "vision-model-id", parse_metadata_value)?,
+        vendor: clearable_flag_text(&options, "vendor", "blank")?,
+        endpoint_mode: clearable_flag_text(&options, "endpoint-mode", "blank")?,
+        vision_model_id: clearable_flag_text(&options, "vision-model-id", "blank")?,
     };
     if changes.is_empty()
         && api_key_env.is_none()
@@ -935,17 +935,6 @@ fn parse_edit(rest: &[String]) -> Result<ModelsCommand, CliError> {
         yes: options.has("yes"),
         set_active: options.has("set-active"),
     }))
-}
-
-/// Trims an identity field and refuses a whitespace-only value, matching what
-/// `models add` rejects in `add()` ("--name, --model and --base-url must not
-/// be empty") — reported at parse time so it exits 2 with the flag named.
-fn parse_required_text(flag: &str, raw: &str) -> Result<String, CliError> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return Err(CliError::usage(format!("--{flag} must not be empty")));
-    }
-    Ok(trimmed.to_owned())
 }
 
 fn parse_search(rest: &[String]) -> Result<ModelsCommand, CliError> {
@@ -1534,7 +1523,9 @@ fn edit<S: CredentialStore>(
             match (&replacement, clear_api_key) {
                 // Replace: store first, then mark configured, all inside the
                 // closure so the save that follows either commits both or neither.
-                (Some(key), _) if !key.is_empty() => {
+                // The resolver's contract is a returned key is already trimmed
+                // and non-empty, so Some is exactly "there is a key to store".
+                (Some(key), _) => {
                     let reference = updated.credential_reference();
                     let previous = store.get(&reference).map_err(|error| error.user_message());
                     written = Some((reference.clone(), previous));
@@ -1600,7 +1591,7 @@ fn edit<S: CredentialStore>(
         return Err(prefs_error(error));
     }
     let had_stored_reference = cleared_stored_reference.get();
-    let credential = if replacement.as_ref().is_some_and(|key| !key.is_empty()) {
+    let credential = if replacement.is_some() {
         "replaced"
     } else if clear_api_key {
         // Round-42 review: mirror `settings search set --clear`'s doctrine —
@@ -3329,7 +3320,14 @@ fn search_test<S: CredentialStore>(
         run_bing_probe()
     } else {
         match resolve_search_key(store, provider) {
-            Ok(Some(key)) if !key.trim().is_empty() => run_search_api_probe(provider, key.trim()),
+            // The resolver's contract: a returned key is already trimmed and
+            // non-empty.
+            Ok(Some(key)) => {
+                let Some(endpoint) = search_api_endpoint(provider) else {
+                    unreachable!("Bing is routed to `run_bing_probe` before the api-key lane")
+                };
+                run_search_api_probe_at(provider, &key, endpoint)
+            }
             Ok(_) => SearchProbe {
                 ok: false,
                 code: "no_api_key",
@@ -3406,19 +3404,6 @@ impl SearchProbe {
             code: probe.code,
             detail: probe.detail,
             verified: VERIFIED_LIVE_PROBE,
-        }
-    }
-
-    /// The row for a provider that has no api-key request shape at all.
-    fn unsupported(provider: SearchProvider) -> Self {
-        Self {
-            ok: false,
-            code: "unsupported_provider",
-            detail: Some(format!(
-                "provider {} has no api-key search request",
-                provider.as_str()
-            )),
-            verified: VERIFIED_NOTHING,
         }
     }
 
@@ -3525,21 +3510,12 @@ fn search_api_request_at(
     Some(request)
 }
 
-/// Runs one API provider's live probe and classifies the answer with the
-/// SAME status vocabulary `models test` uses (`connection_http_result`:
-/// `auth_invalid` for 401, `auth_forbidden` for 403, `rate_limited` for 429,
-/// ...), so one exit contract covers both commands. Transport failures go
-/// through `connection_error_result`, which redacts the message.
-fn run_search_api_probe(provider: SearchProvider, key: &str) -> SearchProbe {
-    match search_api_endpoint(provider) {
-        // Bing is routed to `run_bing_probe` before this function is reached.
-        None => SearchProbe::unsupported(provider),
-        Some(endpoint) => run_search_api_probe_at(provider, key, endpoint),
-    }
-}
-
 /// Sends one API provider's search probe against the given endpoint and
-/// classifies the answer.
+/// classifies the answer with the SAME status vocabulary `models test` uses
+/// (`connection_http_result`: `auth_invalid` for 401, `auth_forbidden` for
+/// 403, `rate_limited` for 429, ...), so one exit contract covers both
+/// commands. Transport failures go through `connection_error_result`, which
+/// redacts the message.
 ///
 /// The endpoint is a parameter (rather than read from the pinned consts via
 /// [`search_api_endpoint`]) so the loopback unit tests in this module can
@@ -3551,7 +3527,7 @@ fn run_search_api_probe_at(provider: SearchProvider, key: &str, endpoint: &str) 
         return SearchProbe::client_error();
     };
     let Some(request) = search_api_request_at(client, provider, key, endpoint) else {
-        return SearchProbe::unsupported(provider);
+        unreachable!("Bing is routed to `run_bing_probe` before the api-key lane")
     };
     match request.send() {
         Ok(response) => search_response_probe(provider, response),
@@ -4420,24 +4396,11 @@ mod tests {
         );
     }
 
-    /// One client per lane for the whole process: the GUI memoizes
-    /// `shared_probe_client` and the mirror rebuilt a
-    /// `reqwest::blocking::Client` — pool, internal runtime thread and all —
-    /// inside `get_json`, i.e. once per candidate request.
-    #[test]
-    fn probe_client_is_a_process_wide_singleton() {
-        let first = probe_client().expect("probe client builds");
-        let second = probe_client().expect("probe client builds");
-        assert!(
-            std::ptr::eq(first, second),
-            "every caller must share one client, not rebuild one per request"
-        );
-    }
-
     /// Every probe lane now reuses a process-wide singleton, not per-request
-    /// clients: `models test` and the api-key lanes of
-    /// `settings search test` used to construct a new client (connection
-    /// pool + internal runtime thread) on every call.
+    /// clients: the GUI memoizes `shared_probe_client`, while the mirror
+    /// rebuilt a `reqwest::blocking::Client` — pool, internal runtime thread
+    /// and all — inside `get_json`, i.e. once per candidate request, for
+    /// `models test` and the api-key lanes of `settings search test` alike.
     #[test]
     fn every_probe_lane_reuses_one_client() {
         assert!(std::ptr::eq(
@@ -4447,6 +4410,10 @@ mod tests {
         assert!(std::ptr::eq(
             search_probe_client().expect("search client builds"),
             search_probe_client().expect("search client rebuilds")
+        ));
+        assert!(std::ptr::eq(
+            probe_client().expect("probe client builds"),
+            probe_client().expect("probe client rebuilds")
         ));
         // Different lanes have different timeouts, so they must be distinct
         // clients; if two lanes shared one, one of the two timeouts would

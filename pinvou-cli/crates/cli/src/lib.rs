@@ -108,12 +108,6 @@ impl BenchmarkCommandSpec {
     pub fn id(&self) -> &'static str {
         self.id
     }
-    pub fn availability(&self) -> BenchmarkAvailability {
-        self.availability
-    }
-    pub fn score_kind(&self) -> &'static str {
-        self.score_kind
-    }
     pub fn command_error(&self) -> &'static str {
         self.command_error
     }
@@ -641,8 +635,9 @@ fn required_value(values: &[String], command: &str) -> Result<String, CliError> 
 }
 
 pub fn render_list(output: OutputMode) -> String {
-    match output {
-        OutputMode::Human => benchmark_registry()
+    support::render(
+        output,
+        benchmark_registry()
             .iter()
             .map(|spec| {
                 format!(
@@ -654,26 +649,25 @@ pub fn render_list(output: OutputMode) -> String {
             })
             .collect::<Vec<_>>()
             .join("\n"),
-        OutputMode::Json => format!(
-            "{{\"benchmarks\":[{}]}}",
-            benchmark_registry()
+        &serde_json::json!({
+            "benchmarks": benchmark_registry()
                 .iter()
-                .map(|spec| format!(
-                    // `description` joins the payload so JSON carries the
-                    // same facts as the human rows (round-37 review: the
-                    // human table prints it, JSON dropped it).
-                    "{{\"id\":\"{}\",\"availability\":\"{}\",\"available\":{},\"score_kind\":\"{}\",\"command_error\":\"{}\",\"description\":\"{}\"}}",
-                    spec.id,
-                    spec.availability.as_str(),
-                    spec.availability.is_available(),
-                    spec.score_kind,
-                    spec.command_error,
-                    json_escape(spec.description),
-                ))
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-    }
+                .map(|spec| {
+                    serde_json::json!({
+                        // `description` joins the payload so JSON carries the
+                        // same facts as the human rows (round-37 review: the
+                        // human table prints it, JSON dropped it).
+                        "id": spec.id,
+                        "availability": spec.availability.as_str(),
+                        "available": spec.availability.is_available(),
+                        "score_kind": spec.score_kind,
+                        "command_error": spec.command_error,
+                        "description": spec.description,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        }),
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -813,28 +807,28 @@ fn finalize_smoke_outcomes(
         .canonicalize()
         .map_err(|_| CliError::failed("smoke_report_failed"))?;
     let failed = outcomes.len().saturating_sub(completed);
-    let score_value = score
-        .total()
-        .map_or("null".to_owned(), |value| value.to_string());
-    let text = match output {
-        OutputMode::Human => format!(
+    let text = support::render(
+        output,
+        format!(
             "Run: {run_id}\nCompleted: {completed}\nFailed: {failed}\nSmoke Health Score: {}\nReport: {}",
             score
                 .total()
                 .map_or_else(|| "unavailable".to_owned(), |value| format!("{value}/100")),
             report_path.display(),
         ),
-        OutputMode::Json => format!(
-            "{{\"run_id\":\"{}\",\"completed\":{completed},\"failed\":{failed},\"score\":{score_value},\"report_path\":\"{}\"}}",
-            json_escape(run_id),
-            json_escape(&report_path.display().to_string()),
-        ),
-    };
+        &serde_json::json!({
+            "run_id": run_id,
+            "completed": completed,
+            "failed": failed,
+            "score": score.total(),
+            "report_path": report_path.display().to_string(),
+        }),
+    );
     Ok(finalized_outcome(text, failed))
 }
 
 fn status(run_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let store = RunStore::open(&benchmark_base()?, run_id).map_err(core_error)?;
+    let store = RunStore::open(&support::sandbox_home()?, run_id).map_err(core_error)?;
     let recovered = store.recover().map_err(core_error)?;
     let terminal = store.read_outcomes().map_err(core_error)?;
     let failed = terminal
@@ -868,7 +862,7 @@ fn status(run_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
 const BENCHMARK_ARTIFACT_READ_CAP: usize = 32 * 1024 * 1024;
 
 fn report(run_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let store = RunStore::open(&benchmark_base()?, run_id).map_err(core_error)?;
+    let store = RunStore::open(&support::sandbox_home()?, run_id).map_err(core_error)?;
     let path = store.run_dir().join("report.md");
     // Round-38 review: capped like every other store read — the report is
     // tool-written, but the no-OOM bound is the family contract.
@@ -880,32 +874,15 @@ fn report(run_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     .and_then(|bytes| {
         String::from_utf8(bytes).map_err(|_| CliError::failed("report_not_available"))
     })?;
-    let text = match output {
-        OutputMode::Human => markdown,
-        OutputMode::Json => format!(
-            "{{\"run_id\":\"{}\",\"report_path\":\"{}\"}}",
-            json_escape(run_id),
-            json_escape(&path.display().to_string())
-        ),
-    };
+    let text = support::render(
+        output,
+        markdown,
+        &serde_json::json!({
+            "run_id": run_id,
+            "report_path": path.display().to_string(),
+        }),
+    );
     Ok(success(text))
-}
-
-/// The product data root the benchmark run store lives under.
-///
-/// This used to resolve `PINVOU3_HOME`/`USERPROFILE`/`HOME` itself, which made
-/// it a THIRD home resolver in one binary, carrying the exact hazards
-/// [`support::sandbox_home`] documents: `var_os` reports a set-but-empty
-/// variable as `Some("")`, so an empty `PINVOU3_HOME` produced the *relative*
-/// path `""` (and an empty `$HOME` the relative `.pinvou3`) — a benchmark run
-/// store materialized under the current working directory; a non-UTF-8
-/// override was accepted here while the app silently ignores it; and
-/// `USERPROFILE` was preferred over `HOME` even on unix, where the app never
-/// reads it. Every one of those splits the store between two roots for the
-/// same invocation. There is nothing benchmark-specific about the answer, so
-/// the one resolver the families already share answers it.
-fn benchmark_base() -> Result<PathBuf, CliError> {
-    support::sandbox_home()
 }
 
 fn core_error(error: benchmark_core::BenchmarkError) -> CliError {
@@ -913,7 +890,7 @@ fn core_error(error: benchmark_core::BenchmarkError) -> CliError {
 }
 
 fn gaia_acquisition_root() -> Result<PathBuf, CliError> {
-    let root = benchmark_base()?
+    let root = support::sandbox_home()?
         .join("benchmarks")
         .join("gaia")
         .join("datasets");
@@ -963,13 +940,14 @@ fn fetch_gaia(
     let acquisition = gaia_manager()?
         .acquire(source)
         .map_err(|error| CliError::failed(error.code()))?;
-    let text = match output {
-        OutputMode::Human => format!("GAIA snapshot ready\nRevision: {}", acquisition.revision()),
-        OutputMode::Json => format!(
-            "{{\"status\":\"ready\",\"dataset_revision\":\"{}\"}}",
-            json_escape(acquisition.revision())
-        ),
-    };
+    let text = support::render(
+        output,
+        format!("GAIA snapshot ready\nRevision: {}", acquisition.revision()),
+        &serde_json::json!({
+            "status": "ready",
+            "dataset_revision": acquisition.revision(),
+        }),
+    );
     Ok(success(text))
 }
 
@@ -995,17 +973,19 @@ fn verify_gaia_with(
     verify: impl FnOnce(&Path) -> Result<(), CliError>,
 ) -> Result<CliOutcome, CliError> {
     verify(source)?;
-    let text = match output {
-        OutputMode::Human => format!("GAIA dataset verified\nRevision: {GAIA_DATASET_REVISION}"),
-        OutputMode::Json => {
-            format!("{{\"status\":\"verified\",\"dataset_revision\":\"{GAIA_DATASET_REVISION}\"}}")
-        }
-    };
+    let text = support::render(
+        output,
+        format!("GAIA dataset verified\nRevision: {GAIA_DATASET_REVISION}"),
+        &serde_json::json!({
+            "status": "verified",
+            "dataset_revision": GAIA_DATASET_REVISION,
+        }),
+    );
     Ok(success(text))
 }
 
 fn open_gaia_run(run_id: &str) -> Result<(GaiaAdapter, benchmark_core::CompletedRun), CliError> {
-    let store = RunStore::open(&benchmark_base()?, run_id).map_err(core_error)?;
+    let store = RunStore::open(&support::sandbox_home()?, run_id).map_err(core_error)?;
     let unbound = GaiaAdapter::new();
     let manifest = store
         .read_manifest()
@@ -1028,7 +1008,7 @@ fn open_gaia_run(run_id: &str) -> Result<(GaiaAdapter, benchmark_core::Completed
 fn score_gaia(run_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let (adapter, run) = open_gaia_run(run_id)?;
     let report = adapter.score(&run).map_err(core_error)?;
-    let store = RunStore::open(&benchmark_base()?, run_id).map_err(core_error)?;
+    let store = RunStore::open(&support::sandbox_home()?, run_id).map_err(core_error)?;
     if report.is_complete() {
         publish_gaia_score_artifacts(&store, run_id, &report)?;
     }
@@ -1565,10 +1545,11 @@ fn submission_gaia(
     adapter
         .write_submission(&run, destination)
         .map_err(core_error)?;
-    let text = match output {
-        OutputMode::Human => "GAIA submission written".to_owned(),
-        OutputMode::Json => "{\"status\":\"written\"}".to_owned(),
-    };
+    let text = support::render(
+        output,
+        "GAIA submission written".to_owned(),
+        &serde_json::json!({ "status": "written" }),
+    );
     Ok(success(text))
 }
 
@@ -1700,7 +1681,7 @@ mod product {
     }
 
     pub(super) fn run(output: OutputMode) -> Result<CliOutcome, CliError> {
-        let base = benchmark_base()?;
+        let base = support::sandbox_home()?;
         pinvou_product_backend::run_with_product_backend(move |backend| async move {
             let identity = backend
                 .suite_model_identity()
@@ -1723,7 +1704,7 @@ mod product {
     }
 
     pub(super) fn run_gaia(output: OutputMode) -> Result<CliOutcome, CliError> {
-        let base = benchmark_base()?;
+        let base = support::sandbox_home()?;
         let snapshot = gaia_snapshot_root()?;
         pinvou_product_backend::run_with_product_backend(move |backend| async move {
             let identity = backend
@@ -1755,7 +1736,7 @@ mod product {
     }
 
     pub(super) fn resume_gaia(run_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-        let base = benchmark_base()?;
+        let base = support::sandbox_home()?;
         let snapshot = gaia_snapshot_root()?;
         let run_id = run_id.to_owned();
         pinvou_product_backend::run_with_product_backend(move |backend| async move {
@@ -1802,7 +1783,7 @@ mod product {
     }
 
     pub(super) fn resume(run_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-        let base = benchmark_base()?;
+        let base = support::sandbox_home()?;
         let run_id = run_id.to_owned();
         pinvou_product_backend::run_with_product_backend(move |backend| async move {
             let identity = backend
@@ -1844,20 +1825,21 @@ mod product {
 
     fn gaia_summary(summary: RunSummary, output: OutputMode) -> CliOutcome {
         let failed = summary.outcomes().len().saturating_sub(summary.completed());
-        let stdout = match output {
-            OutputMode::Human => format!(
+        let stdout = support::render(
+            output,
+            format!(
                 "Run: {}\nCompleted: {}\nFailed: {failed}\nRemaining: {}",
                 summary.run_id(),
                 summary.completed(),
                 summary.remaining(),
             ),
-            OutputMode::Json => format!(
-                "{{\"run_id\":\"{}\",\"completed\":{},\"failed\":{failed},\"remaining\":{}}}",
-                json_escape(summary.run_id()),
-                summary.completed(),
-                summary.remaining(),
-            ),
-        };
+            &serde_json::json!({
+                "run_id": summary.run_id(),
+                "completed": summary.completed(),
+                "failed": failed,
+                "remaining": summary.remaining(),
+            }),
+        );
         finalized_outcome(stdout, failed)
     }
 
@@ -1888,7 +1870,7 @@ fn run_smoke(output: OutputMode) -> Result<CliOutcome, CliError> {
 /// elsewhere (round-39 review).
 #[cfg(feature = "product-backend")]
 fn resume_run(run_id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let store = RunStore::open(&benchmark_base()?, run_id).map_err(core_error)?;
+    let store = RunStore::open(&support::sandbox_home()?, run_id).map_err(core_error)?;
     match store.read_manifest().map_err(core_error)?.benchmark() {
         "gaia" => product::resume_gaia(run_id, output),
         "smoke" => product::resume(run_id, output),
@@ -1935,33 +1917,6 @@ mod tests {
         // Arguments after --help are still a usage error, like --version.
         let error = parse_args(["pinvou", "--help", "benchmark"]).unwrap_err();
         assert_eq!(error.exit_code(), ExitCode::Usage);
-    }
-
-    /// The benchmark run store and the families must resolve one product data
-    /// root. The private `USERPROFILE`-then-`HOME` copy that used to live here
-    /// accepted roots `sandbox_home` refuses (set-but-empty, relative,
-    /// non-UTF-8), so `pinvou benchmark` could write under a root `pinvou
-    /// sessions` would never read in the same invocation.
-    ///
-    /// Deliberately env-free: the assertion is the agreement between the two
-    /// resolvers under whatever ambient home the test process has, which is
-    /// exactly the invariant, and it cannot race the sibling tests that swap
-    /// `PINVOU3_HOME` for their own fixtures.
-    #[test]
-    fn benchmark_base_is_the_shared_sandbox_home_resolver() {
-        let base = benchmark_base();
-        assert_eq!(
-            base.is_ok(),
-            support::sandbox_home().is_ok(),
-            "the benchmark base must accept exactly the roots the families accept"
-        );
-        if let Ok(base) = base {
-            assert!(
-                base.is_absolute(),
-                "a cwd-relative benchmark store is the failure this resolver exists to prevent: {}",
-                base.display()
-            );
-        }
     }
 
     fn temp_base(name: &str) -> PathBuf {

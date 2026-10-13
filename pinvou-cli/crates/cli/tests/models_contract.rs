@@ -81,42 +81,18 @@ fn listed_model(value: &serde_json::Value, id: &str) -> serde_json::Value {
         .clone()
 }
 
-const ADD_ARGS: &[&str] = &[
-    "pinvou",
-    "models",
-    "add",
-    "--preset",
-    "deepseek",
-    "--name",
-    "DeepSeek test",
-    "--model",
-    "deepseek-v4-pro",
-    "--base-url",
-    "https://api.deepseek.com",
-];
-
-/// The canonical parse-fixture base argv for `models add` rejections:
-/// preset deepseek, name N, model M, base-url U.
-const PARSE_ADD_BASE: &[&str] = &[
-    "pinvou",
-    "models",
-    "add",
-    "--preset",
-    "deepseek",
-    "--name",
-    "N",
-    "--model",
-    "M",
-    "--base-url",
-    "U",
-];
-
-/// `PARSE_ADD_BASE` plus `extra` value flags — the argv shape the
-/// parse-level rejection tests pin.
-fn add_args<'a>(extra: &[&'a str]) -> Vec<&'a str> {
-    let mut args = PARSE_ADD_BASE.to_vec();
-    args.extend_from_slice(extra);
-    args
+/// The canonical `models add` argv spine — preset deepseek, name
+/// "DeepSeek test", model deepseek-v4-pro, base-url https://api.deepseek.com —
+/// plus `extra` value flags: the one fixture every success and rejection case
+/// builds on, so the family cannot drift between spellings.
+fn base_add_args<'a>(extra: &[&'a str]) -> Vec<&'a str> {
+    add_model(
+        "deepseek",
+        "DeepSeek test",
+        "deepseek-v4-pro",
+        "https://api.deepseek.com",
+        extra,
+    )
 }
 
 /// Builds one `pinvou models add` argv: the command spine is spelled once and
@@ -280,7 +256,7 @@ fn models_add_rejects_bad_presets_and_efforts() {
         "usage names valid presets: {message}"
     );
 
-    let message = usage_error(&add_args(&["--reasoning-effort", "turbo"]));
+    let message = usage_error(&base_add_args(&["--reasoning-effort", "turbo"]));
     assert!(
         message.contains("off, low, medium, high, max"),
         "usage names valid efforts: {message}"
@@ -289,10 +265,11 @@ fn models_add_rejects_bad_presets_and_efforts() {
 
 #[test]
 fn models_add_requires_core_fields() {
-    // Each case is PARSE_ADD_BASE minus exactly the dropped flag/value pair.
+    // Each case is the spine minus exactly the dropped flag/value pair.
     for dropped in ["--preset", "--name", "--model", "--base-url"] {
-        let mut arguments = PARSE_ADD_BASE[..3].to_vec();
-        for pair in PARSE_ADD_BASE[3..].chunks(2) {
+        let spine = base_add_args(&[]);
+        let mut arguments = spine[..3].to_vec();
+        for pair in spine[3..].chunks(2) {
             if pair[0] != dropped {
                 arguments.extend_from_slice(pair);
             }
@@ -310,10 +287,10 @@ fn models_add_requires_core_fields() {
 #[test]
 fn models_add_rejects_bad_numbers_and_conflicting_key_sources() {
     for args in [
-        add_args(&["--context-window", "abc"]),
-        add_args(&["--context-window", "0"]),
-        add_args(&["--max-output", "-3"]),
-        add_args(&["--api-key-env", "A", "--api-key-stdin"]),
+        base_add_args(&["--context-window", "abc"]),
+        base_add_args(&["--context-window", "0"]),
+        base_add_args(&["--max-output", "-3"]),
+        base_add_args(&["--api-key-env", "A", "--api-key-stdin"]),
     ] {
         let error = parse_args(args).expect_err("invalid add options");
         assert_eq!(error.exit_code(), ExitCode::Usage, "{error}");
@@ -678,7 +655,7 @@ fn models_add_use_show_remove_round_trip_without_secrets() {
     let _restore_deepseek_key = clear_ambient_deepseek_key();
 
     // Add without a key: must not touch the credential store.
-    let stdout = run_ok(ADD_ARGS);
+    let stdout = run_ok(&base_add_args(&[]));
     let added_id = added_model_id(&stdout);
     assert!(
         added_id.starts_with("m_"),
@@ -1086,7 +1063,7 @@ fn models_rejects_empty_option_values() {
             "--base-url",
             "https://example.com",
         ],
-        add_args(&["--api-key-env", ""]),
+        base_add_args(&["--api-key-env", ""]),
         vec!["pinvou", "models", "probe-local", "--url", ""],
         vec!["pinvou", "settings", "search", "set", "--provider", ""],
     ] {
@@ -1359,7 +1336,7 @@ fn models_edit_clear_and_replace_credential_semantics_are_unchanged() {
         Some("sk-rotate-second-1234567890"),
     )]);
 
-    let stdout = run_ok(ADD_ARGS);
+    let stdout = run_ok(&base_add_args(&[]));
     let id = added_model_id(&stdout);
 
     // Replace keeps replace semantics: still configured, and the revealed
@@ -1604,7 +1581,7 @@ fn models_add_writes_the_gui_form_metadata() {
 
     // An unrecognized provider_kind is a typo, not a value the prefs layer
     // will keep.
-    let message = usage_error(&add_args(&["--provider-kind", "nope"]));
+    let message = usage_error(&base_add_args(&["--provider-kind", "nope"]));
     assert!(
         message.contains("official_api") && message.contains("custom"),
         "{message}"
@@ -1902,7 +1879,7 @@ fn models_reject_plaintext_secret_flags_instead_of_ingesting_them() {
     let _home = sandbox_home("argv-secret");
     let secret = "sk-argv-secret-value-1234567890";
     for flag in ["--api-key", "--token"] {
-        let message = usage_error(&add_args(&[flag, secret]));
+        let message = usage_error(&base_add_args(&[flag, secret]));
         assert!(
             !message.contains(secret),
             "the usage error must not echo the rejected secret: {message}"
@@ -2060,7 +2037,7 @@ fn settings_write_refuses_and_preserves_legacy_plaintext_key_when_credential_sto
     // authors a valid settings.json, then inject a legacy plaintext key into
     // the record it created (value-level edit of a known-good document, so
     // the fixture cannot drift from the real serde shape).
-    let stdout = run_ok(ADD_ARGS);
+    let stdout = run_ok(&base_add_args(&[]));
     let id = added_model_id(&stdout);
     let settings = home.path().join("settings.json");
     let mut document: serde_json::Value =

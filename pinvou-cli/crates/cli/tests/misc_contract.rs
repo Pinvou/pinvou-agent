@@ -20,8 +20,11 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use common::{EnvGuard, HomeGuard, Isolation, RestoreCwd, command_error, run, run_json};
-use pinvou_cli::{CliError, ExitCode, OutputMode, execute, parse_args};
+use common::{
+    EnvGuard, HomeGuard, Isolation, RestoreCwd, command_error, run, run_json,
+    write_credential_fixture,
+};
+use pinvou_cli::{ExitCode, OutputMode, execute, parse_args};
 
 // Tests that mutate the process-global `PINVOU3_HOME` environment variable
 // hold [`common::env_lock`] for their whole body; the product-home preset
@@ -61,39 +64,13 @@ impl Drop for ScopedHomeDir {
     }
 }
 
-fn assert_usage(error: &CliError, context: &str) {
-    assert_eq!(
-        error.exit_code(),
-        ExitCode::Usage,
-        "{context}: expected exit 2, got {error}"
-    );
-}
-
-/// The batch form of [`assert_usage`] for the parse lane: every argv in
-/// `invalid` must be refused by `parse_args` with the family's exit-2 usage
-/// class, the failure naming the offending line.
+/// The batch form of the usage-class assertion for the parse lane: every
+/// argv in `invalid` must be refused with the family's exit-2 usage class
+/// (`common::usage_error` asserts the class and returns the message).
 fn assert_all_rejected_as_usage(invalid: Vec<Vec<&str>>) {
     for arguments in invalid {
-        let error = parse_args(&arguments).expect_err(arguments.join(" ").as_str());
-        assert_usage(&error, &arguments.join(" "));
+        common::usage_error(&arguments);
     }
-}
-
-/// Stages the fake-credential fixture the credential-path refusal tests pin
-/// against: creates `<home>/<component>/`, writes `content` into `file`
-/// inside it, and returns the file's path. The refusals fire on the path
-/// component before any content is read, so the bodies are placeholders.
-fn write_credential_fixture(
-    home: &std::path::Path,
-    component: &str,
-    file: &str,
-    content: &str,
-) -> PathBuf {
-    let dir = home.join(component);
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join(file);
-    std::fs::write(&path, content).unwrap();
-    path
 }
 
 /// The GUI's `warning` chip and sibling i18n copy is Simplified Chinese; none
@@ -543,13 +520,10 @@ fn voice_transcribe_refuses_option_shaped_positional_at_parse() {
     // lib.rs, so the family-level pin uses tokens the family really sees.)
     for token in ["-o", "--text", "--output-file"] {
         let arguments = ["pinvou", "voice", "transcribe", token];
-        let error = parse_args(arguments).expect_err(token);
-        assert_usage(&error, token);
+        let message = common::usage_error(&arguments);
         assert!(
-            error
-                .to_string()
-                .contains(&format!("option-like token {token:?}")),
-            "the usage error must name the offending token {token:?}: {error}"
+            message.contains(&format!("option-like token {token:?}")),
+            "the usage error must name the offending token {token:?}: {message}"
         );
     }
 }
@@ -838,11 +812,10 @@ fn voice_postprocess_edit_refuses_a_blank_draft_before_booting_the_host() {
             "把它改成三条要点",
         ];
         arguments.extend(draft.iter().copied());
-        let error = run(&arguments).expect_err("a blank draft must be refused");
-        assert_usage(&error, &arguments.join(" "));
+        let message = common::assert_usage(&arguments);
         assert!(
-            error.to_string().contains("draft"),
-            "the refusal must name the draft: {error}"
+            message.contains("draft"),
+            "the refusal must name the draft: {message}"
         );
     }
 }
@@ -1171,12 +1144,10 @@ fn voice_postprocess_retry_failure_is_an_error() {
 fn voice_asr_install_without_yes_exits_two_before_touching_the_system() {
     let _env = common::env_lock();
     let _home = HomeGuard::new("misc", "voice-install-no-yes", Isolation::ProductHome);
-    let error = run(&["pinvou", "voice", "asr-install"])
-        .expect_err("install without --yes must be refused");
-    assert_usage(&error, "voice asr-install without --yes");
+    let message = common::assert_usage(&["pinvou", "voice", "asr-install"]);
     assert!(
-        error.to_string().contains("--yes"),
-        "the refusal must name the --yes flag: {error}"
+        message.contains("--yes"),
+        "the refusal must name the --yes flag: {message}"
     );
 }
 
@@ -1302,9 +1273,7 @@ fn deps_install_without_yes_exits_two_before_touching_the_system() {
     // hermetic usage-error check.
     let _env = common::env_lock();
     let _home = HomeGuard::new("misc", "deps-no-yes", Isolation::ProductHome);
-    let error = run(&["pinvou", "deps", "install", "ffmpeg"])
-        .expect_err("install without --yes must be refused");
-    assert_usage(&error, "deps install without --yes");
+    common::assert_usage(&["pinvou", "deps", "install", "ffmpeg"]);
 }
 
 #[test]

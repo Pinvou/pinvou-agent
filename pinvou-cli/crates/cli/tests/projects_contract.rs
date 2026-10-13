@@ -95,33 +95,31 @@ fn seed_acp_state(home: &HomeGuard, session_id: &str, workspace: &Path) {
     .unwrap();
 }
 
-/// Runs `projects rebind <from> <to> --yes` through the in-process dispatch:
-/// the exact argv every rebind report/lane test shares (the sites whose argv
-/// or verdict genuinely differs — the no-`--yes` and shape-error refusals,
-/// the corrupt-legacy-table error lane, and the real-binary spawns — keep
-/// their inline calls).
-fn rebind(from: &Path, to: &Path) -> Result<CliOutcome, CliError> {
-    run(&[
+/// The argv every rebind report/lane test shares, built once: the two path
+/// positionals plus the `--yes` gate (the sites whose argv or verdict
+/// genuinely differs — the no-`--yes` and shape-error refusals, the
+/// corrupt-legacy-table error lane, and the real-binary spawns — keep their
+/// inline calls).
+fn rebind_argv<'a>(from: &'a Path, to: &'a Path) -> Vec<&'a str> {
+    vec![
         "pinvou",
         "projects",
         "rebind",
         from.to_str().unwrap(),
         to.to_str().unwrap(),
         "--yes",
-    ])
+    ]
+}
+
+/// Runs `projects rebind <from> <to> --yes` through the in-process dispatch.
+fn rebind(from: &Path, to: &Path) -> Result<CliOutcome, CliError> {
+    run(&rebind_argv(from, to))
 }
 
 /// [`rebind`], asserting the success class and parsing the single-line JSON
 /// envelope (the same contract as the harness's `run_json`).
 fn rebind_json(from: &Path, to: &Path) -> serde_json::Value {
-    run_json(&[
-        "pinvou",
-        "projects",
-        "rebind",
-        from.to_str().unwrap(),
-        to.to_str().unwrap(),
-        "--yes",
-    ])
+    run_json(&rebind_argv(from, to))
 }
 
 /// Asserts the rebind report carried no `failed_session_ids`; `label` keeps
@@ -199,24 +197,11 @@ fn every_projects_subcommand_parses_and_invalid_usage_exits_two() {
     ];
     for arguments in &valid {
         // The Projects command tree is dispatched exclusively through the
-        // Projects variant; assert family + subcommand through the derived
-        // Debug form (the types are not nameable from integration tests).
-        // Every Projects variant is the subcommand token's capitalization, so
-        // the expected Debug token is derived from the argv itself.
-        let debug = parsed_debug(arguments);
-        let mut chars = arguments[2].chars();
-        let variant: String = chars
-            .next()
-            .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
-            .unwrap_or_default();
-        assert!(
-            debug.starts_with("Projects("),
-            "{arguments:?} did not render a Projects debug"
-        );
-        assert!(
-            debug.contains(&variant),
-            "{arguments:?} did not mention the {variant} subcommand"
-        );
+        // Projects variant; the shared harness assertion freezes the family
+        // prefix and the subcommand token's capitalized variant in the
+        // derived Debug form (the types are not nameable from integration
+        // tests).
+        common::assert_family_parse("Projects(", arguments);
     }
 
     let invalid: Vec<Vec<&str>> = vec![
@@ -1163,9 +1148,14 @@ fn projects_rebind_from_equal_to_is_a_reported_noop() {
     let session_id = bind_plain_session(&same);
 
     let value = rebind_json(&same, &same);
-    assert_eq!(value["rebound_session_ids"].as_array().unwrap().len(), 0);
-    assert_eq!(value["failed_session_ids"].as_array().unwrap().len(), 0);
-    assert_eq!(value["affected_project_ids"].as_array().unwrap().len(), 0);
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "rebound_session_ids": [],
+            "failed_session_ids": [],
+            "affected_project_ids": [],
+        })
+    );
 
     // Nothing changed anywhere.
     let list = run_json(&["pinvou", "projects", "list"]);

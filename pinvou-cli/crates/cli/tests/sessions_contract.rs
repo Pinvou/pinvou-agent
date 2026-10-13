@@ -96,21 +96,11 @@ fn every_sessions_subcommand_parses_and_unknown_flags_exit_two() {
     ];
     for arguments in &valid {
         // The Sessions command tree is dispatched exclusively through the
-        // Sessions variant; the type is not nameable from integration tests,
-        // so assert family + variant through the derived Debug form. Every
-        // Sessions variant is the subcommand token's capitalization, so the
-        // expected Debug token is derived from the argv itself.
-        let debug = parsed_debug(arguments);
-        let mut chars = arguments[2].chars();
-        let variant: String = chars
-            .next()
-            .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
-            .unwrap_or_default();
-        assert!(debug.starts_with("Sessions("), "{arguments:?} -> {debug}");
-        assert!(
-            debug.contains(&format!("{variant} ")) || debug.ends_with(&variant),
-            "{arguments:?} -> {debug}"
-        );
+        // Sessions variant; the shared harness assertion freezes the family
+        // prefix and the subcommand token's capitalized variant in the
+        // derived Debug form (the type is not nameable from integration
+        // tests).
+        common::assert_family_parse("Sessions(", arguments);
     }
 
     let invalid: Vec<Vec<&str>> = vec![

@@ -387,13 +387,18 @@ pub fn parse(values: &[String]) -> Result<KnowledgeCommand, CliError> {
                 "status" => {
                     let (head, tail) = positionals(&rest[1..]);
                     no_options(tail, "index status")?;
-                    Ok(KnowledgeCommand::IndexStatus {
-                        job_id: optional_single(
-                            head,
-                            "an index job id (or none for the latest job)",
-                        )?
-                        .map(|value| value.to_owned()),
-                    })
+                    let job_id = match head {
+                        [] => None,
+                        [only] => Some(only.to_owned()),
+                        _ => {
+                            return Err(CliError::usage(format!(
+                                "knowledge an index job id (or none for the latest job) must be \
+                                 a single token (got {})",
+                                head.join(" ")
+                            )));
+                        }
+                    };
+                    Ok(KnowledgeCommand::IndexStatus { job_id })
                 }
                 "cancel" | "resume" => {
                     let (head, tail) = positionals(&rest[1..]);
@@ -420,7 +425,23 @@ pub fn parse(values: &[String]) -> Result<KnowledgeCommand, CliError> {
                     let (options, _) = parse_flags(tail, INDEX_FAILED_OPTIONS, &[])?;
                     let offset = match option(&options, "--offset") {
                         None => 0,
-                        Some(value) => parse_non_negative(value, "--offset")?,
+                        Some(value) => {
+                            let parsed = value.parse::<usize>().map_err(|_| {
+                                CliError::usage("knowledge --offset must be a non-negative integer")
+                            })?;
+                            // The value lands upstream as a SQLite i64 (e.g. `index failed
+                            // --offset`); a larger usize would wrap negative in the cast and
+                            // silently serve page 0 again. Rejected as usage, like every
+                            // other out-of-range numeric flag in the family, rather than
+                            // answered with a misleading empty page.
+                            if parsed > i64::MAX as usize {
+                                return Err(CliError::usage(format!(
+                                    "knowledge --offset must be at most {max} (got {value})",
+                                    max = i64::MAX
+                                )));
+                            }
+                            parsed
+                        }
                     };
                     let limit = parse_positive(&options, "--limit")?;
                     Ok(KnowledgeCommand::IndexFailed {
@@ -586,17 +607,6 @@ fn exactly_two<'a>(head: &'a [String], what: &str) -> Result<(&'a String, &'a St
     }
 }
 
-fn optional_single<'a>(head: &'a [String], what: &str) -> Result<Option<&'a String>, CliError> {
-    match head {
-        [] => Ok(None),
-        [only] => Ok(Some(only)),
-        _ => Err(CliError::usage(format!(
-            "knowledge {what} must be a single token (got {})",
-            head.join(" ")
-        ))),
-    }
-}
-
 fn require_session_id(value: &str) -> Result<String, CliError> {
     // Same charset gate as every other session-id family: an id the store
     // would reject is a usage error (exit 2), not a host failure, and a
@@ -642,23 +652,6 @@ fn option<'a>(options: &'a [(&'a str, &'a str)], name: &str) -> Option<&'a str> 
 
 fn parse_positive(options: &[(&str, &str)], name: &str) -> Result<Option<usize>, CliError> {
     crate::support::parse_family_positive::<usize>(options, name, "knowledge")
-}
-
-fn parse_non_negative(value: &str, name: &str) -> Result<usize, CliError> {
-    let parsed = value
-        .parse::<usize>()
-        .map_err(|_| CliError::usage(format!("knowledge {name} must be a non-negative integer")))?;
-    // The value lands upstream as a SQLite i64 (e.g. `index failed --offset`);
-    // a larger usize would wrap negative in the cast and silently serve page
-    // 0 again. Rejected as usage, like every other out-of-range numeric flag
-    // in the family, rather than answered with a misleading empty page.
-    if parsed > i64::MAX as usize {
-        return Err(CliError::usage(format!(
-            "knowledge {name} must be at most {max} (got {value})",
-            max = i64::MAX
-        )));
-    }
-    Ok(parsed)
 }
 
 /// Stable error for `model download`: the feature orchestration and its
@@ -2449,12 +2442,54 @@ fn no_remote_connections(lane: &str) -> CliError {
 /// are reported inline, and the command only fails when no connection
 /// answered, with every connection's error string joined for the report.
 #[cfg(feature = "product-backend")]
-fn remote_errors_joined(errors: &[serde_json::Value]) -> String {
+fn remote_errors_joined(errors: &[String]) -> String {
     errors
         .iter()
-        .filter_map(|error| error["error"].as_str())
+        .map(String::as_str)
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+/// The tail the two remote lanes share: when no connection answered, fail
+/// with every connection's error string joined; otherwise join the human
+/// rows (falling back to `empty_human` when a lane produced none) and render
+/// the payload in both modes. `errors` are `(server_id, error)` pairs so the
+/// JSON keeps its `{server_id, error}` objects, and `query` is carried only
+/// by the lane whose payload spells it (`remote search`).
+#[cfg(feature = "product-backend")]
+fn remote_render(
+    lane: &str,
+    output: OutputMode,
+    lines: &[String],
+    empty_human: &str,
+    query: Option<&str>,
+    results: &[serde_json::Value],
+    errors: &[(String, String)],
+) -> Result<CliOutcome, CliError> {
+    if results.is_empty() {
+        let messages = errors
+            .iter()
+            .map(|(_, error)| error.clone())
+            .collect::<Vec<_>>();
+        return Err(CliError::failed(format!(
+            "knowledge remote {lane}: {}",
+            remote_errors_joined(&messages)
+        )));
+    }
+    let errors = errors
+        .iter()
+        .map(|(server_id, error)| serde_json::json!({ "server_id": server_id, "error": error }))
+        .collect::<Vec<_>>();
+    let human = if lines.is_empty() {
+        empty_human.to_owned()
+    } else {
+        lines.join("\n")
+    };
+    let value = match query {
+        Some(query) => serde_json::json!({ "query": query, "results": results, "errors": errors }),
+        None => serde_json::json!({ "results": results, "errors": errors }),
+    };
+    Ok(success(render(output, human, &value)))
 }
 
 /// GUI `remote_kb_connections`: probe every configured connection (network).
@@ -2554,7 +2589,7 @@ fn remote_collections(output: OutputMode) -> Result<CliOutcome, CliError> {
     }
     let mut lines = Vec::new();
     let mut results = Vec::new();
-    let mut errors = Vec::new();
+    let mut errors: Vec<(String, String)> = Vec::new();
     let pages = pinvou3_lib::headless_bridge::run_bare_host(move || async move {
         let mut pages = Vec::new();
         for connection in connections {
@@ -2604,26 +2639,19 @@ fn remote_collections(output: OutputMode) -> Result<CliOutcome, CliError> {
                     crate::support::collapse_control_characters(&server_id),
                     crate::support::collapse_control_characters(&error)
                 ));
-                errors.push(serde_json::json!({ "server_id": server_id, "error": error }));
+                errors.push((server_id, error));
             }
         }
     }
-    if results.is_empty() {
-        return Err(CliError::failed(format!(
-            "knowledge remote collections: {}",
-            remote_errors_joined(&errors)
-        )));
-    }
-    let human = if lines.is_empty() {
-        "no remote collections".to_owned()
-    } else {
-        lines.join("\n")
-    };
-    Ok(success(render(
+    remote_render(
+        "collections",
         output,
-        human,
-        &serde_json::json!({ "results": results, "errors": errors }),
-    )))
+        &lines,
+        "no remote collections",
+        None,
+        &results,
+        &errors,
+    )
 }
 
 /// GUI `remote_kb_search(server_id, collection_ids, query, limit)` with the
@@ -2644,7 +2672,7 @@ fn remote_search(
     let remote_query = query.to_owned();
     let mut lines = Vec::new();
     let mut results = Vec::new();
-    let mut errors = Vec::new();
+    let mut errors: Vec<(String, String)> = Vec::new();
     let outcomes = pinvou3_lib::headless_bridge::run_bare_host(move || async move {
         let mut outcomes = Vec::new();
         for connection in connections {
@@ -2670,6 +2698,13 @@ fn remote_search(
     .map_err(|error| host_error("remote search", error))?;
     for (server_id, (collection_id, hits, error)) in outcomes {
         match (hits, error) {
+            (_, Some(error)) => {
+                lines.push(format!(
+                    "{server_id}\terror: {}",
+                    crate::support::collapse_control_characters(&error)
+                ));
+                errors.push((server_id, error));
+            }
             (Some(hits), None) => {
                 for hit in &hits {
                     lines.push(format!(
@@ -2691,32 +2726,26 @@ fn remote_search(
                     "hits": serde_json::to_value(&hits).unwrap_or_default(),
                 }));
             }
-            (_, Some(error)) => {
-                lines.push(format!(
-                    "{server_id}\terror: {}",
-                    crate::support::collapse_control_characters(&error)
-                ));
-                errors.push(serde_json::json!({ "server_id": server_id, "error": error }));
-            }
-            _ => {}
+            // The closure above produces exactly three outcome shapes: the
+            // search answered (hits and no error), the collection resolved
+            // but the search failed, and the collection never resolved (the
+            // name lookup missed or the connections call failed). In the two
+            // error shapes `error` is always present — only the success
+            // shape pairs `None` hits with `None` — so this arm is dead by
+            // construction and says so instead of silently dropping a
+            // connection's outcome.
+            (None, None) => unreachable!("a search outcome without hits always carries an error"),
         }
     }
-    if results.is_empty() {
-        return Err(CliError::failed(format!(
-            "knowledge remote search: {}",
-            remote_errors_joined(&errors)
-        )));
-    }
-    let human = if lines.is_empty() {
-        "no hits".to_owned()
-    } else {
-        lines.join("\n")
-    };
-    Ok(success(render(
+    remote_render(
+        "search",
         output,
-        human,
-        &serde_json::json!({ "query": query, "results": results, "errors": errors }),
-    )))
+        &lines,
+        "no hits",
+        Some(query),
+        &results,
+        &errors,
+    )
 }
 
 /// GUI `shared_kb_host_status`; the snapshot function is async (systemd

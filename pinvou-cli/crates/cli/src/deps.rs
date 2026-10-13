@@ -88,12 +88,6 @@ pub fn execute(command: DepsCommand, output: OutputMode) -> Result<CliOutcome, C
     }
 }
 
-/// Progress sink `install_dependencies` calls for each adapter line:
-/// `(package, index, total, line)`. Named because the bare trait-object type is
-/// unreadable at the call site and appears in both the closure's annotation and
-/// the adapter's own signature.
-type InstallProgress = dyn Fn(&str, usize, usize, Option<&str>) + Sync;
-
 fn check(output: OutputMode) -> Result<CliOutcome, CliError> {
     let mut items = file_ingest::check_dependencies();
     // The GUI localizes dependency `hint` strings through its i18n table;
@@ -147,27 +141,10 @@ fn install(packages: &[String], yes: bool, output: OutputMode) -> Result<CliOutc
     //
     // stderr, not stdout: `--output json` must stay a single serde_json line,
     // and progress is not part of the result (same split as every other lane
-    // that narrates with `note!`).
-    let progress = |package: &str, current: usize, total: usize, detail: Option<&str>| {
-        match detail {
-            // Vendor lines are third-party process output the CLI did not
-            // compose. `brew`/`apt-get` echo URLs and occasionally tokens
-            // embedded in them, so they get the same heuristic scrub every
-            // other lane applies to external command output before showing it
-            // (see `code.rs`'s vendor-CLI transcript handling).
-            Some(line) => note!(
-                "[deps] ({current}/{total}) {package}: {}",
-                pinvou3_lib::platform::credential_store::redact_secret(line)
-            ),
-            None => note!("[deps] ({current}/{total}) installing {package}"),
-        }
-    };
-    // Spelled out rather than inferred: the adapter takes a trait object with a
-    // `Sync` bound (macOS drains stdout and stderr from two scoped threads that
-    // both call it), and the annotation makes the unsize coercion explicit
-    // instead of leaving it to expected-type inference. The closure captures
-    // nothing, so `Sync` holds trivially.
-    let progress: &InstallProgress = &progress;
+    // that narrates with `note!`). The hook itself is the shared
+    // `support::install_progress("[deps]")` — the voice `[asr-install]` lane
+    // runs the identical closure under its own tag.
+    let progress: &crate::support::InstallProgress = &crate::support::install_progress("[deps]");
     pinvou3_lib::features::dependencies::install_dependencies(packages.to_vec(), Some(progress))
         .map_err(|error| {
             // The adapter error embeds raw vendor stderr (brew/apt tails);

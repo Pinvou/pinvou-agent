@@ -356,12 +356,12 @@ pub fn parse(values: &[String]) -> Result<CodeCommand, CliError> {
         }
         "respond" => {
             let session = require_session_id(rest.first())?;
-            let request_id = rest
-                .get(1)
-                .filter(|id| !id.is_empty())
-                .ok_or_else(|| CliError::usage("code respond requires a request id"))?
-                .clone();
-            require_non_flag_id(&request_id, "request")?;
+            let request_id = crate::support::require_family_id(
+                rest.get(1),
+                "code respond",
+                "code",
+                "a request id",
+            )?;
             let allow = match rest.get(2).map(String::as_str) {
                 Some("allow") => true,
                 Some("deny") => false,
@@ -551,12 +551,12 @@ fn parse_providers(rest: &[String]) -> Result<CodeCommand, CliError> {
         }
         "switch" => {
             let agent = require_agent(rest.first().map(String::as_str), &providers_usage())?;
-            let provider_id = rest
-                .get(1)
-                .filter(|id| !id.is_empty())
-                .ok_or_else(|| CliError::usage("code providers switch requires a provider id"))?
-                .clone();
-            require_non_flag_id(&provider_id, "provider")?;
+            let provider_id = crate::support::require_family_id(
+                rest.get(1),
+                "code providers switch",
+                "code",
+                "a provider id",
+            )?;
             if rest.len() > 2 {
                 return Err(CliError::usage("code providers switch accepts no options"));
             }
@@ -783,12 +783,12 @@ fn parse_checkpoints(rest: &[String]) -> Result<CodeCommand, CliError> {
         }
         "diff" => {
             let session = require_session_id(rest.get(1))?;
-            let checkpoint_id = rest
-                .get(2)
-                .filter(|value| !value.is_empty())
-                .ok_or_else(|| CliError::usage("code checkpoints diff requires a checkpoint id"))?
-                .clone();
-            require_non_flag_id(&checkpoint_id, "checkpoint")?;
+            let checkpoint_id = crate::support::require_family_id(
+                rest.get(2),
+                "code checkpoints diff",
+                "code",
+                "a checkpoint id",
+            )?;
             if rest.len() > 3 {
                 return Err(CliError::usage("code checkpoints diff accepts no options"));
             }
@@ -903,122 +903,82 @@ type SplitFlags<'a> = (
     Vec<(&'a str, &'a str)>,
 );
 
+/// Shared implementation in `support::parse_family_flags_core`; `family`
+/// only names this family in error messages. This shape has NO positional
+/// slot: an unknown token is the unsupported-option usage error whether or
+/// not it is `--`-prefixed (the ordering the inline loop pinned). The code
+/// family's two parser quirks ride the extended parser's own parameters:
+/// `--model-slot` is the repeatable flag, `--message` the one flag allowed
+/// a `--`-prefixed value, and `duplicate_after_value` keeps the
+/// read-and-shape-check-the-value-first order the hand-rolled loops this
+/// parser replaces used to pin.
 fn parse_flags<'a>(
     values: &'a [String],
     value_flags: &[&str],
     boolean_flags: &[&str],
     label: &str,
 ) -> Result<ParsedFlags<'a>, CliError> {
-    let mut options = Flags::new();
-    let mut flags = Vec::new();
+    let (options, flags) = crate::support::parse_family_flags_extended(
+        values,
+        value_flags,
+        boolean_flags,
+        &["--model-slot"],
+        &format!("code {label}"),
+        &mut reject_swallowed_boolean_flag(boolean_flags, label),
+        &["--message"],
+        true,
+    )?;
+    Ok(split_model_slot_repeats(options, flags))
+}
+
+/// Splits the shared parser's argv-order pairs into the shape the ~20
+/// `Flags`/`option()` call sites keep: every `--model-slot` occurrence
+/// lands in the repeats channel (`parse_model_slot_pairs`' input), the rest
+/// file into the option map. Duplicates outside the repeatable flag are
+/// already refused by the parser, so the map insert cannot overwrite.
+fn split_model_slot_repeats<'a>(
+    options: Vec<(&'a str, &'a str)>,
+    flags: Vec<&'a str>,
+) -> ParsedFlags<'a> {
+    let mut map = Flags::new();
     let mut repeated = Vec::new();
-    let mut index = 0;
-    while index < values.len() {
-        match take_flag_token(
-            values,
-            index,
-            value_flags,
-            boolean_flags,
-            label,
-            &mut options,
-            &mut flags,
-            &mut repeated,
-        )? {
-            Some(step) => index += step,
-            // Not a known flag, and this shape has no positional slot: the
-            // same unsupported-option usage error whether or not the token is
-            // `--`-prefixed (the ordering the inline loop pinned).
-            None => {
-                return Err(CliError::usage(format!(
-                    "unsupported code {label} option: {}",
-                    values[index]
-                )));
-            }
+    for (name, value) in options {
+        if name == "--model-slot" {
+            repeated.push((name, value));
+        } else {
+            map.insert(name, value);
         }
     }
-    Ok((options, flags, repeated))
+    (map, flags, repeated)
 }
 
-/// Guard for the `--message` value exemption shared by the two splitters: a
-/// `--`-prefixed message is legal, but when the value is verbatim one of this
-/// command's own boolean flags the user almost certainly meant to pass the
-/// flag, not to name their commit after it. Say so instead of consuming it.
-fn reject_swallowed_boolean_flag(
-    token: &str,
-    value: &str,
-    boolean_flags: &[&str],
-    label: &str,
-) -> Result<(), CliError> {
-    if token == "--message" && boolean_flags.contains(&value) {
-        return Err(CliError::usage(format!(
-            "code {label} option --message consumed {value} as its message text, so {value} \
-             was never applied; move {value} before --message (a message that must read \
-             exactly \"{value}\" is not expressible here)"
-        )));
-    }
-    Ok(())
-}
-
-/// The per-token body shared by [`parse_flags`] and [`split_positional_flags`]
-/// (the two loops were hand-copied, error strings included): classifies
-/// `values[index]` and, for a known flag, records it and returns the step to
-/// advance (1 for a boolean flag, 2 for a value flag plus its value).
-/// `Ok(None)` marks a token that is no known flag — the only behavioral
-/// difference between the two loops — and each caller keeps that branch
-/// itself so neither loop's usage-message ordering can be reordered.
-#[allow(clippy::too_many_arguments)]
-fn take_flag_token<'a>(
-    values: &'a [String],
-    index: usize,
-    value_flags: &[&str],
-    boolean_flags: &[&str],
-    label: &str,
-    options: &mut Flags<'a>,
-    flags: &mut Vec<&'a str>,
-    repeated: &mut Vec<(&'a str, &'a str)>,
-) -> Result<Option<usize>, CliError> {
-    let token = values[index].as_str();
-    if boolean_flags.contains(&token) {
-        if flags.contains(&token) {
+/// The `--message` value-exemption guard the shared parser runs as its
+/// `validate_value` hook at every value's own token (this factory builds
+/// the closure the two wrappers hand it): a `--`-prefixed message is legal,
+/// but when the value is verbatim one of this command's own boolean flags
+/// the user almost certainly meant to pass the flag, not to name their
+/// commit after it. Say so instead of consuming it — the exemption also
+/// makes `--message --yes` swallow the confirmation flag, and the failure
+/// then surfaces much later as the generic "pass --yes to confirm this
+/// destructive action", which names neither `--message` nor the flag it
+/// ate. Rejecting only the exact case where the value IS one of this
+/// command's own boolean flags is the smaller fix than dropping the
+/// exemption: every legitimate `--`-prefixed message keeps working, and the
+/// one ambiguous spelling gets told what happened.
+fn reject_swallowed_boolean_flag<'a>(
+    boolean_flags: &'a [&'a str],
+    label: &'a str,
+) -> impl FnMut(&str, &str) -> Result<(), CliError> + 'a {
+    move |token: &str, value: &str| {
+        if token == "--message" && boolean_flags.contains(&value) {
             return Err(CliError::usage(format!(
-                "duplicate code {label} option {token}"
+                "code {label} option --message consumed {value} as its message text, so {value} \
+                 was never applied; move {value} before --message (a message that must read \
+                 exactly \"{value}\" is not expressible here)"
             )));
         }
-        flags.push(token);
-        return Ok(Some(1));
+        Ok(())
     }
-    if !value_flags.contains(&token) {
-        return Ok(None);
-    }
-    let value = values
-        .get(index + 1)
-        .ok_or_else(|| CliError::usage(format!("code {label} option {token} requires a value")))?;
-    if value.is_empty() || (value.starts_with("--") && token != "--message") {
-        return Err(CliError::usage(format!(
-            "code {label} option {token} requires a value"
-        )));
-    }
-    // `--message` is the one flag allowed a `--`-prefixed value, because a
-    // commit message may legitimately start with `--`. That exemption also
-    // makes `--message --yes` swallow the confirmation flag, and the
-    // failure then surfaces much later as the generic "pass --yes to
-    // confirm this destructive action" — which names neither `--message`
-    // nor the flag it ate. Rejecting only the exact case where the value
-    // IS one of this command's own boolean flags is the smaller fix than
-    // dropping the exemption: every legitimate `--`-prefixed message keeps
-    // working, and the one ambiguous spelling gets told what happened.
-    // Guard shared by both splitters here, so a future subcommand that
-    // routes `--message` through the positional splitter inherits the guard
-    // instead of the confusing late failure.
-    reject_swallowed_boolean_flag(token, value, boolean_flags, label)?;
-    if token == "--model-slot" {
-        repeated.push((token, value.as_str()));
-    } else if options.insert(token, value.as_str()).is_some() {
-        return Err(CliError::usage(format!(
-            "duplicate code {label} option {token}"
-        )));
-    }
-    Ok(Some(2))
 }
 
 fn option<'a>(options: &'a Flags, name: &str) -> Option<&'a str> {
@@ -1028,42 +988,25 @@ fn option<'a>(options: &'a Flags, name: &str) -> Option<&'a str> {
 /// Flag splitter for subcommands whose positional argument may appear before
 /// or after the flags (`providers import <PATH> --agent A`). Positional tokens
 /// are collected in order; anything starting with `--` that is not a known
-/// flag is a usage error.
+/// flag is a usage error. Same shared parser as [`parse_flags`], with the
+/// positional channel the with-positionals shape adds.
 fn split_positional_flags<'a>(
     values: &'a [String],
     value_flags: &[&str],
     boolean_flags: &[&str],
     label: &str,
 ) -> Result<SplitFlags<'a>, CliError> {
-    let mut positionals = Vec::new();
-    let mut options = Flags::new();
-    let mut flags = Vec::new();
-    let mut repeated = Vec::new();
-    let mut index = 0;
-    while index < values.len() {
-        match take_flag_token(
-            values,
-            index,
-            value_flags,
-            boolean_flags,
-            label,
-            &mut options,
-            &mut flags,
-            &mut repeated,
-        )? {
-            Some(step) => index += step,
-            None => {
-                let token = values[index].as_str();
-                if token.starts_with("--") {
-                    return Err(CliError::usage(format!(
-                        "unsupported code {label} option: {token}"
-                    )));
-                }
-                positionals.push(token);
-                index += 1;
-            }
-        }
-    }
+    let (positionals, options, flags) = crate::support::parse_family_flags_with_positionals(
+        values,
+        value_flags,
+        boolean_flags,
+        &["--model-slot"],
+        &format!("code {label}"),
+        &mut reject_swallowed_boolean_flag(boolean_flags, label),
+        &["--message"],
+        true,
+    )?;
+    let (options, flags, repeated) = split_model_slot_repeats(options, flags);
     Ok((positionals, options, flags, repeated))
 }
 
@@ -1079,20 +1022,17 @@ fn require_agent(value: Option<&str>, usage: &str) -> Result<String, CliError> {
     }
 }
 
+/// The session-id slot's guard. Round-40 review: a flag-shaped token in a
+/// non-session id slot is an argv-decidable mistake — refusing it at parse
+/// keeps the exit-2 usage class instead of an exit-1 store lookup for an id
+/// named after a flag; all four id slots route through the shared
+/// `support::require_family_id` guard.
 fn require_session_id(value: Option<&String>) -> Result<String, CliError> {
-    let id = value
-        .map(String::as_str)
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| CliError::usage("code command requires a session id"))?;
-    // A flag-shaped token passes the session-id alphabet (`-` is a legal
-    // character), so `code sessions info --workspace` with the id forgotten
-    // would otherwise become an exit-1 store lookup for a session named
-    // after the flag. Same discipline as `projects`' id guard.
-    require_non_flag_id(id, "session")?;
-    if !crate::support::valid_session_id(id) {
+    let id = crate::support::require_family_id(value, "code command", "code", "a session id")?;
+    if !crate::support::valid_session_id(&id) {
         return Err(CliError::usage("invalid session id"));
     }
-    Ok(id.to_owned())
+    Ok(id)
 }
 
 /// Credential-marker vocabulary from the GUI's login sanitizer
@@ -1120,21 +1060,6 @@ fn login_echo_withheld(combined: &str) -> bool {
     LOGIN_ECHO_WITHHOLD_MARKERS
         .iter()
         .any(|marker| normalized.contains(marker))
-}
-
-/// Round-40 review: a flag-shaped token in a non-session id slot is an
-/// argv-decidable mistake — refusing it at parse keeps the exit-2 usage
-/// class instead of an exit-1 store lookup for an id named after the flag
-/// (`code providers switch codex --model` used to answer
-/// `provider_not_found: no provider '--model'`). `require_session_id`
-/// applies the same discipline to session ids.
-fn require_non_flag_id(id: &str, label: &str) -> Result<(), CliError> {
-    if id.starts_with("--") {
-        return Err(CliError::usage(format!(
-            "code: expected a {label} id, got flag-shaped {id:?}"
-        )));
-    }
-    Ok(())
 }
 
 /// Converts repeated `--model-slot SLOT=MODEL` pairs collected by
@@ -1432,10 +1357,11 @@ pub fn execute(command: CodeCommand, output: OutputMode) -> Result<CliOutcome, C
 
 fn open_store() -> Result<SessionStore, CliError> {
     // Same absolute-path contract as the other families: a relative
-    // PINVOU3_HOME would silently resolve against the cwd.
+    // PINVOU3_HOME would silently resolve against the cwd. The shared
+    // `boot_session_store` deliberately carries only the boot; this gate
+    // stays the caller's so the failure names this family's action.
     crate::support::sandbox_home()?;
-    let store = SessionStore::boot()
-        .map_err(|error| CliError::failed(format!("sessions store unavailable: {error:#}")))?;
+    let store = crate::support::boot_session_store()?;
     // Same two-root wiring as the app startup (pinvou3-app/src-tauri/src/lib.rs):
     // project-bound native code sessions resolve their execution root through
     // the persisted SessionAgentStore; without this every root would fall back
@@ -1445,10 +1371,6 @@ fn open_store() -> Result<SessionStore, CliError> {
         agents.code_project_workspace(session_id)
     }));
     Ok(store)
-}
-
-fn store_error(action: &str, id: &str, error: impl std::fmt::Display) -> CliError {
-    CliError::failed(format!("code {action}({id}): {error:#}"))
 }
 
 fn provider_not_found(agent: &str, id: &str) -> CliError {
@@ -1465,7 +1387,7 @@ fn require_existing(store: &SessionStore, id: &str, action: &str) -> Result<(), 
     store
         .load(id)
         .map(|_| ())
-        .map_err(|error| store_error(action, id, error))
+        .map_err(|error| crate::support::store_error("code", action, id, error))
 }
 
 fn open_providers() -> Result<ProviderManager, CliError> {
@@ -1840,14 +1762,13 @@ fn nonempty_file(path: &Path) -> bool {
 fn probe_override_gate(agent: &str, path: &Path) -> Option<VersionProbe> {
     let probe = probe_cli_version(path);
     let passes = match &probe {
-        VersionProbe::Version(version) => match MIN_VERSIONS
-            .iter()
-            .find(|(id, _)| *id == agent)
-            .map(|(_, min)| *min)
-        {
-            Some(minimum) => version_supported_for(agent, version, minimum),
-            None => true,
-        },
+        // `min_version_for` falls back to "0.0.0" for an agent outside the
+        // `MIN_VERSIONS` table, and every version passes a 0.0.0 gate — the
+        // same verdict the former no-table arm stated inline (`None =>
+        // true`), now decided in the one place the table is read.
+        VersionProbe::Version(version) => {
+            version_supported_for(agent, version, min_version_for(agent))
+        }
         VersionProbe::Failed | VersionProbe::TimedOut => false,
     };
     passes.then_some(probe)
@@ -2216,37 +2137,31 @@ fn probe_json(probe: &AgentProbe) -> serde_json::Value {
 
 fn agents_list(output: OutputMode) -> Result<CliOutcome, CliError> {
     let probes = probe_all_agents();
-    let human = probes
-        .iter()
-        .map(|probe| {
-            format!(
-                "{}\t{}\t{}\t{}\t{}",
-                probe.agent_id,
-                probe.agent_name,
-                if probe.installed() {
-                    "installed"
-                } else if probe.version_probe_failed {
-                    // A cold binary, an unprobing one, or a hang is not the
-                    // same fact as a too-old version (the GUI distinguishes
-                    // TimedOut/Failed from Found and retries timeouts).
-                    "probe-failed"
-                } else if probe.cli_path.is_some() {
-                    "version-too-old"
-                } else {
-                    "not-installed"
-                },
-                crate::support::collapse_control_characters(
-                    probe.version.as_deref().unwrap_or("-"),
-                ),
-                if probe.authenticated {
-                    "authenticated"
-                } else {
-                    "-"
-                },
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let human = crate::support::join_rows(&probes, |probe| {
+        format!(
+            "{}\t{}\t{}\t{}\t{}",
+            probe.agent_id,
+            probe.agent_name,
+            if probe.installed() {
+                "installed"
+            } else if probe.version_probe_failed {
+                // A cold binary, an unprobing one, or a hang is not the
+                // same fact as a too-old version (the GUI distinguishes
+                // TimedOut/Failed from Found and retries timeouts).
+                "probe-failed"
+            } else if probe.cli_path.is_some() {
+                "version-too-old"
+            } else {
+                "not-installed"
+            },
+            crate::support::collapse_control_characters(probe.version.as_deref().unwrap_or("-"),),
+            if probe.authenticated {
+                "authenticated"
+            } else {
+                "-"
+            },
+        )
+    });
     let value = serde_json::json!({ "agents": probes.iter().map(probe_json).collect::<Vec<_>>() });
     Ok(success(render(output, human, &value)))
 }
@@ -3161,7 +3076,7 @@ fn providers_list(agent: Option<&str>, output: OutputMode) -> Result<CliOutcome,
     for agent in &agents {
         let view = manager
             .list(agent)
-            .map_err(|error| store_error("providers list", agent, error))?;
+            .map_err(|error| crate::support::store_error("code", "providers list", agent, error))?;
         views.push((agent.clone(), view));
     }
     if views.len() == 1 {
@@ -3176,11 +3091,8 @@ fn providers_list(agent: Option<&str>, output: OutputMode) -> Result<CliOutcome,
                 .map(|(agent, view)| serde_json::json!({ "agent": agent, "providers": view }))
                 .collect::<Vec<_>>(),
         });
-        let human = views
-            .iter()
-            .map(|(agent, view)| render_provider_view(agent, view))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let human =
+            crate::support::join_rows(&views, |(agent, view)| render_provider_view(agent, view));
         Ok(success(render(output, human, &value)))
     }
 }
@@ -3458,7 +3370,7 @@ fn providers_save(input: ProviderSaveInput, output: OutputMode) -> Result<CliOut
             secret,
             api_key_action,
         )
-        .map_err(|error| store_error("providers save", agent, error))?;
+        .map_err(|error| crate::support::store_error("code", "providers save", agent, error))?;
     let value = serde_json::json!({
         "agent": agent,
         "action": if provider_id.is_some() { "updated" } else { "added" },
@@ -3502,9 +3414,9 @@ fn providers_remove(
     {
         return Err(provider_not_found(agent, provider_id));
     }
-    let removed = manager
-        .delete(agent, provider_id)
-        .map_err(|error| store_error("providers remove", provider_id, error))?;
+    let removed = manager.delete(agent, provider_id).map_err(|error| {
+        crate::support::store_error("code", "providers remove", provider_id, error)
+    })?;
     // The human line must not claim a removal that did not happen (a peer
     // delete landing before ours leaves nothing to remove; the JSON field
     // already reports `removed: false`).
@@ -3583,9 +3495,9 @@ fn providers_switch(
              to name `providers add --id`, a flag `add` does not take)"
         )));
     }
-    manager
-        .switch(agent, provider_id)
-        .map_err(|error| store_error("providers switch", provider_id, error))?;
+    manager.switch(agent, provider_id).map_err(|error| {
+        crate::support::store_error("code", "providers switch", provider_id, error)
+    })?;
     let value = serde_json::json!({
         "agent": agent,
         "action": "switched",
@@ -3600,9 +3512,9 @@ fn providers_switch(
 
 fn providers_switch_official(agent: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let manager = open_providers()?;
-    manager
-        .switch_official(agent)
-        .map_err(|error| store_error("providers switch-official", agent, error))?;
+    manager.switch_official(agent).map_err(|error| {
+        crate::support::store_error("code", "providers switch-official", agent, error)
+    })?;
     let value = serde_json::json!({
         "agent": agent,
         "action": "switched_official",
@@ -3622,7 +3534,7 @@ fn providers_export(
     let manager = open_providers()?;
     let content = manager
         .export(agent)
-        .map_err(|error| store_error("providers export", agent, error))?;
+        .map_err(|error| crate::support::store_error("code", "providers export", agent, error))?;
     const PLAINTEXT_WARNING: &str =
         "warning: the export contains plaintext API keys; store the file in a safe place";
     match destination {
@@ -3769,7 +3681,7 @@ fn providers_import(agent: &str, path: &Path, output: OutputMode) -> Result<CliO
     }
     let result = manager
         .import(agent, &json)
-        .map_err(|error| store_error("providers import", agent, error))?;
+        .map_err(|error| crate::support::store_error("code", "providers import", agent, error))?;
 
     /// The JSON type name for the import shape refusal (the store's own
     /// deserializer accepts only arrays of entry objects).
@@ -3909,7 +3821,7 @@ fn code_workspace_info(
     if record.mode.is_code() {
         let roots = store
             .session_roots(id)
-            .map_err(|error| store_error("workspace", id, error))?;
+            .map_err(|error| crate::support::store_error("code", "workspace", id, error))?;
         let available = roots.execution.is_dir();
         return Ok((record.workspace_kind, roots.execution, available));
     }
@@ -3935,7 +3847,7 @@ fn code_workspace_info(
         CodexWorkspaceKind::Temporary => {
             let roots = store
                 .session_roots(id)
-                .map_err(|error| store_error("workspace", id, error))?;
+                .map_err(|error| crate::support::store_error("code", "workspace", id, error))?;
             (CodexWorkspaceKind::Temporary, roots.execution)
         }
     };
@@ -3951,7 +3863,7 @@ fn code_sessions_list(output: OutputMode) -> Result<CliOutcome, CliError> {
     let agents = SessionAgentStore::load_or_empty();
     let mut rows = store
         .list()
-        .map_err(|error| store_error("sessions list", "-", error))?;
+        .map_err(|error| crate::support::store_error("code", "sessions list", "-", error))?;
     rows.retain(|metadata| {
         matches!(store.session_kind(&metadata.id), Ok(SessionKind::Chat))
             && !store.is_hidden(&metadata.id)
@@ -4031,7 +3943,7 @@ fn code_sessions_info(id: &str, output: OutputMode) -> Result<CliOutcome, CliErr
     // through the persisted model name).
     let metadata = store
         .load(id)
-        .map_err(|error| store_error("sessions info", id, error))?
+        .map_err(|error| crate::support::store_error("code", "sessions info", id, error))?
         .metadata;
     require_code_chat_session(&agents, id, &metadata.model)?;
     let record = agents.get(id);
@@ -4083,7 +3995,7 @@ fn code_sessions_timeline(id: &str, output: OutputMode) -> Result<CliOutcome, Cl
     // model-name fallback for sessions whose sidecar record was lost.
     let metadata = store
         .load(id)
-        .map_err(|error| store_error("sessions timeline", id, error))?
+        .map_err(|error| crate::support::store_error("code", "sessions timeline", id, error))?
         .metadata;
     require_code_chat_session(&agents, id, &metadata.model)?;
     let path = paths::sessions_root().join(id).join("acp-timeline.jsonl");
@@ -4136,48 +4048,44 @@ fn code_sessions_timeline(id: &str, output: OutputMode) -> Result<CliOutcome, Cl
             )));
         }
     }
-    let human = events
-        .iter()
-        .map(|event| {
-            // AcpEventEnvelope serializes camelCase with `AcpEvent::event_type`
-            // renamed to "type" (features/codex_acp/events.rs); the older
-            // snake_case spellings are accepted so journals written by
-            // intermediate builds still render. Round-51 review: the text
-            // cells go through the row sanitizer like every other store-fed
-            // render in this module — the journal is a user-home file any
-            // tool can write, and the row contract must not depend on which
-            // cell happened to be machine-made (JSON keeps verbatim bytes
-            // by design).
-            format!(
-                "{}\t{}\t{}\t{}",
+    let human = crate::support::join_rows(&events, |event| {
+        // AcpEventEnvelope serializes camelCase with `AcpEvent::event_type`
+        // renamed to "type" (features/codex_acp/events.rs); the older
+        // snake_case spellings are accepted so journals written by
+        // intermediate builds still render. Round-51 review: the text
+        // cells go through the row sanitizer like every other store-fed
+        // render in this module — the journal is a user-home file any
+        // tool can write, and the row contract must not depend on which
+        // cell happened to be machine-made (JSON keeps verbatim bytes
+        // by design).
+        format!(
+            "{}\t{}\t{}\t{}",
+            event
+                .get("seq")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+            crate::support::collapse_control_characters(
                 event
-                    .get("seq")
-                    .and_then(|value| value.as_u64())
-                    .unwrap_or(0),
-                crate::support::collapse_control_characters(
-                    event
-                        .get("timestamp")
-                        .and_then(|value| value.as_str())
-                        .unwrap_or(""),
-                ),
-                crate::support::collapse_control_characters(
-                    event
-                        .pointer("/event/type")
-                        .or_else(|| event.pointer("/event/event_type"))
-                        .and_then(|value| value.as_str())
-                        .unwrap_or(""),
-                ),
-                crate::support::collapse_control_characters(
-                    event
-                        .get("turnId")
-                        .or_else(|| event.get("turn_id"))
-                        .and_then(|value| value.as_str())
-                        .unwrap_or("-"),
-                ),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+                    .get("timestamp")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or(""),
+            ),
+            crate::support::collapse_control_characters(
+                event
+                    .pointer("/event/type")
+                    .or_else(|| event.pointer("/event/event_type"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or(""),
+            ),
+            crate::support::collapse_control_characters(
+                event
+                    .get("turnId")
+                    .or_else(|| event.get("turn_id"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("-"),
+            ),
+        )
+    });
     let value = serde_json::json!({ "id": id, "events": events });
     Ok(success(render(output, human, &value)))
 }
@@ -4250,12 +4158,23 @@ fn session_mutation_lock(
     // the lock path), so they carry the same stable `{action}_lock` code the
     // try_write arm emits — a prose-only shape let a whole failure class
     // dodge the documented contract. Round-49: the directory-create, open
-    // and 0600 tightening are the shared
-    // `support::open_family_lock_file` seam; the stable messages live in
-    // `family_lock_error` below.
-    let file = crate::support::open_family_lock_file(&format!("code-session-{session}.lock"))
-        .map_err(|error| family_lock_error(action, error))?;
-    Ok(fd_lock::RwLock::new(file))
+    // and 0600 tightening are the shared `support::family_lock` seam; the
+    // two closures keep this family's stable messages byte-identical.
+    crate::support::family_lock(
+        &format!("code-session-{session}.lock"),
+        |dir, error| {
+            CliError::failed(format!(
+                "{action}_lock: cannot create {}: {error}",
+                dir.display()
+            ))
+        },
+        |path, error| {
+            CliError::failed(format!(
+                "{action}_lock: cannot open {}: {error}",
+                path.display()
+            ))
+        },
+    )
 }
 
 /// Opens the execution-root lock: the GUI's rewind exclusion unit is the
@@ -4283,28 +4202,46 @@ fn execution_root_lock(
     // before `open_store` runs on some paths.
     crate::support::sandbox_home()?;
     // Same `{action}_lock` rule as the session lock above (round-37 review);
-    // same shared seam (round-49).
-    let file = crate::support::open_family_lock_file(&format!("code-root-{}.lock", stable(root)))
-        .map_err(|error| family_lock_error(action, error))?;
-    Ok(fd_lock::RwLock::new(file))
+    // same shared seam.
+    crate::support::family_lock(
+        &format!("code-root-{}.lock", stable(root)),
+        |dir, error| {
+            CliError::failed(format!(
+                "{action}_lock: cannot create {}: {error}",
+                dir.display()
+            ))
+        },
+        |path, error| {
+            CliError::failed(format!(
+                "{action}_lock: cannot open {}: {error}",
+                path.display()
+            ))
+        },
+    )
 }
 
-/// The two code.rs lock sites' shared mapping of the
-/// `support::open_family_lock_file` failure arms onto the family's stable
-/// `{action}_lock` messages — byte-for-byte the text the hand-copied blocks
-/// carried, so scripts keying on the documented code (and the path named in
-/// it) see no change.
-fn family_lock_error(action: &str, error: crate::support::FamilyLockError) -> CliError {
-    match error {
-        crate::support::FamilyLockError::CreateDir { dir, error } => CliError::failed(format!(
-            "{action}_lock: cannot create {}: {error}",
-            dir.display()
-        )),
-        crate::support::FamilyLockError::Open { path, error } => CliError::failed(format!(
-            "{action}_lock: cannot open {}: {error}",
-            path.display()
-        )),
-    }
+/// Acquires a mutation lock or fails fast with a stable busy error. The
+/// two lanes keep their own place phrases: the session lane names
+/// `session {id}` twice, while the execution-root lane's busy message
+/// carries the root path (the thing another process actually holds) and
+/// its lock message does not (the lock that could not be taken is keyed
+/// by that root, but the session is what the script is mutating).
+fn lock_for_mutation<'a>(
+    lock: &'a mut fd_lock::RwLock<std::fs::File>,
+    action: &str,
+    busy_place: &str,
+    lock_place: &str,
+) -> Result<fd_lock::RwLockWriteGuard<'a, std::fs::File>, CliError> {
+    lock.try_write().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::WouldBlock {
+            CliError::failed(format!(
+                "{action}_busy: another pinvou process is mutating {busy_place}; retry \
+                 after it finishes"
+            ))
+        } else {
+            CliError::failed(format!("{action}_lock: cannot lock {lock_place}: {error}"))
+        }
+    })
 }
 
 /// Acquires the execution-root lock or fails fast with a stable busy error.
@@ -4314,23 +4251,15 @@ fn lock_root_for_mutation<'a>(
     action: &str,
     session: &str,
 ) -> Result<fd_lock::RwLockWriteGuard<'a, std::fs::File>, CliError> {
-    lock.try_write().map_err(|error| {
-        if error.kind() == std::io::ErrorKind::WouldBlock {
-            CliError::failed(format!(
-                "{action}_busy: another pinvou process is mutating the project directory of \
-                 session {session} ({}); retry after it finishes",
-                root.display()
-            ))
-        } else {
-            // Same stable `_lock` code the session-level twin emits: a
-            // script keying on the busy/lock codes must not depend on which
-            // lock level refused (docs/pinvou-cli.md's code row promises
-            // `{action}_lock` when the lock file itself cannot be taken).
-            CliError::failed(format!(
-                "{action}_lock: cannot lock the project directory of session {session}: {error}"
-            ))
-        }
-    })
+    lock_for_mutation(
+        lock,
+        action,
+        &format!(
+            "the project directory of session {session} ({})",
+            root.display()
+        ),
+        &format!("the project directory of session {session}"),
+    )
 }
 
 /// Canonicalized execution root for lock keying; falls back to the unresolved
@@ -4347,18 +4276,12 @@ fn lock_session_for_mutation<'a>(
     session: &str,
     action: &str,
 ) -> Result<fd_lock::RwLockWriteGuard<'a, std::fs::File>, CliError> {
-    lock.try_write().map_err(|error| {
-        if error.kind() == std::io::ErrorKind::WouldBlock {
-            CliError::failed(format!(
-                "{action}_busy: another pinvou process is mutating session {session}; retry \
-                 after it finishes"
-            ))
-        } else {
-            CliError::failed(format!(
-                "{action}_lock: cannot lock session {session}: {error}"
-            ))
-        }
-    })
+    lock_for_mutation(
+        lock,
+        action,
+        &format!("session {session}"),
+        &format!("session {session}"),
+    )
 }
 
 fn canonical_workspace(root: &Path) -> Result<PathBuf, CliError> {
@@ -4408,25 +4331,20 @@ fn workspace_list(
         .map_err(|error| CliError::failed(format!("code workspace list: {error:#}")))?;
     let value = serde_json::to_value(&listing)
         .map_err(|error| CliError::failed(format!("code workspace list: {error}")))?;
-    let human = listing
-        .entries
-        .iter()
-        .map(|entry| {
-            // Collapsed like every other agent-writable cell in this family
-            // (the preview and session-title lanes already do): the
-            // workspace is agent-writable by this module's own admission, so
-            // a name carrying a newline or an ESC/CSI sequence is hostile
-            // input rather than mirror data. JSON keeps the verbatim name.
-            format!(
-                "{}\t{}\t{}\t{}",
-                entry.kind,
-                crate::support::collapse_control_characters(&entry.name),
-                entry.size,
-                entry.modified
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let human = crate::support::join_rows(&listing.entries, |entry| {
+        // Collapsed like every other agent-writable cell in this family
+        // (the preview and session-title lanes already do): the
+        // workspace is agent-writable by this module's own admission, so
+        // a name carrying a newline or an ESC/CSI sequence is hostile
+        // input rather than mirror data. JSON keeps the verbatim name.
+        format!(
+            "{}\t{}\t{}\t{}",
+            entry.kind,
+            crate::support::collapse_control_characters(&entry.name),
+            entry.size,
+            entry.modified
+        )
+    });
     Ok(success(render(output, human, &value)))
 }
 
@@ -4450,11 +4368,9 @@ fn workspace_search(root: &Path, query: &str, output: OutputMode) -> Result<CliO
     let value = serde_json::json!({ "results": results, "truncated": truncated });
     // Same hostile-cell collapse as `workspace list`: an agent-writable
     // relative path is terminal input, and JSON keeps the verbatim bytes.
-    let human = results
-        .iter()
-        .map(|entry| crate::support::collapse_control_characters(&entry.relative_path))
-        .collect::<Vec<_>>()
-        .join("\n");
+    let human = crate::support::join_rows(&results, |entry| {
+        crate::support::collapse_control_characters(&entry.relative_path)
+    });
     Ok(success(render(output, human, &value)))
 }
 
@@ -4857,6 +4773,14 @@ fn run_git_output(command: std::process::Command, arguments: &[&str]) -> Result<
 /// pathological repo from buffering unbounded into memory.
 const GIT_CAPTURE_CAP: u64 = 16 * 1024 * 1024;
 
+/// Read cap shared by the diff lanes (the tracked `git diff` readers and
+/// the untracked file reader): `DIFF_LIMIT` + 1 KiB, so a caller
+/// truncating at `DIFF_LIMIT` keeps its marker exact — the reads
+/// themselves stay bounded (a multi-gigabyte payload must not buffer
+/// whole just to be cut right after). One constant so the two lanes
+/// cannot drift apart on where the cut fires.
+const DIFF_READ_CAP: u64 = DIFF_LIMIT as u64 + 1024;
+
 /// One supervised, bounded git capture: the exit status plus both streams
 /// (lossy-decoded, matching `Command::output`'s `from_utf8_lossy` contract)
 /// and whether the stdout cut fired.
@@ -4900,8 +4824,8 @@ fn run_git_captured(
 /// pipes under `cap` (stderr on a thread so the two pipes cannot deadlock),
 /// wait with the fate-unknown group kill, and release the registration.
 /// Returns the raw parts so the callers keep their distinct conventions
-/// (`run_git_capped` reports failure as `success: false`; `git_output_capped`
-/// turns it into a redacted error).
+/// (`run_git_at_capped` reports failure as `success: false`;
+/// `git_output_capped` turns it into a redacted error).
 fn run_git_captured_capped(
     mut command: std::process::Command,
     arguments: &[&str],
@@ -5061,20 +4985,15 @@ fn workspace_changes(
     // terminal escape. The siblings (workspace list's `entry.name`, search's
     // `relative_path`, checkpoints' `label`) all collapse for exactly this
     // threat; JSON stays verbatim by design.
-    let human = changes
-        .changes
-        .iter()
-        .map(|change| {
-            format!(
-                "{}\t{}\t{}\t{}",
-                crate::support::collapse_control_characters(&change.status),
-                if change.staged { "staged" } else { "-" },
-                crate::support::collapse_control_characters(&change.origin),
-                crate::support::collapse_control_characters(&change.relative_path),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let human = crate::support::join_rows(&changes.changes, |change| {
+        format!(
+            "{}\t{}\t{}\t{}",
+            crate::support::collapse_control_characters(&change.status),
+            if change.staged { "staged" } else { "-" },
+            crate::support::collapse_control_characters(&change.origin),
+            crate::support::collapse_control_characters(&change.relative_path),
+        )
+    });
     Ok(success(render(output, human, &value)))
 }
 
@@ -5434,7 +5353,6 @@ fn workspace_diff_one(
         // pathspec globbing, so a requested `a*x.txt` used to render the
         // tracked `abx.txt`'s diff instead of its own. Mirrors the tracked-
         // ness oracle's literal pathspec in this file.
-        const GIT_READ_CAP: u64 = DIFF_LIMIT as u64 + 1024;
         let literal = format!(":(literal){relative}");
         let (unstaged, unstaged_cut) = git_output_capped(
             root,
@@ -5445,7 +5363,7 @@ fn workspace_diff_one(
                 "--",
                 literal.as_str(),
             ],
-            GIT_READ_CAP,
+            DIFF_READ_CAP,
         )?;
         let (staged, staged_cut) = git_output_capped(
             root,
@@ -5457,7 +5375,7 @@ fn workspace_diff_one(
                 "--",
                 literal.as_str(),
             ],
-            GIT_READ_CAP,
+            DIFF_READ_CAP,
         )?;
         captured_over_cap = unstaged_cut || staged_cut;
         let mut combined = String::new();
@@ -5587,10 +5505,9 @@ fn untracked_diff(root: &Path, path: &Path, relative: &str) -> Result<String, Cl
     // Reading DIFF_LIMIT + 1 bytes keeps the truncation marker exact (the
     // loop's final iteration overshoots by one line at most, which the loop
     // already tolerates); a torn multi-byte tail is lossy-decoded away.
-    const READ_CAP: u64 = DIFF_LIMIT as u64 + 1024;
     let file = std::fs::File::open(&canonical)
         .map_err(|error| CliError::failed(format!("code workspace diff: {error}")))?;
-    let mut capped = file.take(READ_CAP);
+    let mut capped = file.take(DIFF_READ_CAP);
     let mut raw = Vec::new();
     capped
         .read_to_end(&mut raw)
@@ -5727,7 +5644,7 @@ fn require_native_code_session(
     }
     let roots = store
         .session_roots(session)
-        .map_err(|error| store_error("checkpoints", session, error))?;
+        .map_err(|error| crate::support::store_error("code", "checkpoints", session, error))?;
     Ok((roots.ledger, roots.execution))
 }
 
@@ -5736,7 +5653,7 @@ fn checkpoints_list(session: &str, output: OutputMode) -> Result<CliOutcome, Cli
     let agents = SessionAgentStore::load_or_empty();
     let (ledger, _) = require_native_code_session(&store, &agents, session)?;
     let entries = checkpoints::list_checkpoints(&ledger)
-        .map_err(|error| store_error("checkpoints list", session, error))?;
+        .map_err(|error| crate::support::store_error("code", "checkpoints list", session, error))?;
     let value = serde_json::to_value(&entries)
         .map(|checkpoints| serde_json::json!({ "session": session, "checkpoints": checkpoints }))
         .map_err(|error| {
@@ -5744,29 +5661,25 @@ fn checkpoints_list(session: &str, output: OutputMode) -> Result<CliOutcome, Cli
                 "checkpoints list({session}): checkpoint entries failed to serialize: {error}"
             ))
         })?;
-    let human = entries
-        .iter()
-        .map(|entry| {
-            format!(
-                "{}\t{}\t{}\t{}",
-                entry.id,
-                match entry.kind {
-                    checkpoints::CheckpointKind::Turn => "turn",
-                    checkpoints::CheckpointKind::PreRestore => "pre-restore",
-                },
-                entry
-                    .turn
-                    .map(|turn| turn.to_string())
-                    .unwrap_or_else(|| "-".to_owned()),
-                // Labels are agent/GUI-authored display text: same row
-                // sanitizer as every other vendor-fed cell (the app side
-                // only trims and clamps the length, it does not strip
-                // control or bidi characters).
-                crate::support::collapse_control_characters(&entry.label),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let human = crate::support::join_rows(&entries, |entry| {
+        format!(
+            "{}\t{}\t{}\t{}",
+            entry.id,
+            match entry.kind {
+                checkpoints::CheckpointKind::Turn => "turn",
+                checkpoints::CheckpointKind::PreRestore => "pre-restore",
+            },
+            entry
+                .turn
+                .map(|turn| turn.to_string())
+                .unwrap_or_else(|| "-".to_owned()),
+            // Labels are agent/GUI-authored display text: same row
+            // sanitizer as every other vendor-fed cell (the app side
+            // only trims and clamps the length, it does not strip
+            // control or bidi characters).
+            crate::support::collapse_control_characters(&entry.label),
+        )
+    });
     Ok(success(render(output, human, &value)))
 }
 
@@ -5792,8 +5705,9 @@ fn checkpoints_diff(
     let root = canonical_execution_root(&execution);
     let mut root_lock = execution_root_lock(&root, "diff")?;
     let _root_guard = lock_root_for_mutation(&mut root_lock, &root, "diff", session)?;
-    let diff = checkpoints::diff_checkpoint(&ledger, &execution, checkpoint_id, true)
-        .map_err(|error| store_error("checkpoints diff", checkpoint_id, error))?;
+    let diff = checkpoints::diff_checkpoint(&ledger, &execution, checkpoint_id, true).map_err(
+        |error| crate::support::store_error("code", "checkpoints diff", checkpoint_id, error),
+    )?;
     let value = serde_json::to_value(&diff)
         .map(|value| serde_json::json!({ "session": session, "diff": value }))
         .map_err(|error| {
@@ -5929,11 +5843,12 @@ fn checkpoints_rewind(
         }
     }
 
-    let entries = checkpoints::list_checkpoints(&ledger)
-        .map_err(|error| store_error("checkpoints rewind", session, error))?;
-    let loaded = store
-        .load(session)
-        .map_err(|error| store_error("checkpoints rewind", session, error))?;
+    let entries = checkpoints::list_checkpoints(&ledger).map_err(|error| {
+        crate::support::store_error("code", "checkpoints rewind", session, error)
+    })?;
+    let loaded = store.load(session).map_err(|error| {
+        crate::support::store_error("code", "checkpoints rewind", session, error)
+    })?;
     let messages = serde_json::to_value(&loaded.messages)
         .map_err(|error| CliError::failed(format!("code checkpoints rewind: {error}")))?;
     let total_turns = count_user_turns_exact(&messages)?;
@@ -5947,8 +5862,10 @@ fn checkpoints_rewind(
 
     // 1) Restore the code snapshot (restore_checkpoint forces a PreRestore
     //    rollback point and returns it for the undo bookkeeping).
-    let undo = checkpoints::restore_checkpoint(&ledger, &execution, &checkpoint.id)
-        .map_err(|error| store_error("checkpoints rewind", &checkpoint.id, error))?;
+    let undo =
+        checkpoints::restore_checkpoint(&ledger, &execution, &checkpoint.id).map_err(|error| {
+            crate::support::store_error("code", "checkpoints rewind", &checkpoint.id, error)
+        })?;
     // 2) Truncate the transcript to the end of turn N (backs up the removed
     //    messages into the rewind sidecar, bound to the PreRestore id).
     let outcome = store
@@ -6020,13 +5937,13 @@ fn resolve_undo_state(
 ) -> Result<Option<UndoState>, CliError> {
     let Some(record) = store
         .latest_rewound_turns_record(session)
-        .map_err(|error| store_error("checkpoints undo", session, error))?
+        .map_err(|error| crate::support::store_error("code", "checkpoints undo", session, error))?
     else {
         return Ok(None);
     };
     let loaded = store
         .load(session)
-        .map_err(|error| store_error("checkpoints undo", session, error))?;
+        .map_err(|error| crate::support::store_error("code", "checkpoints undo", session, error))?;
     let messages = serde_json::to_value(&loaded.messages)
         .map_err(|error| CliError::failed(format!("code checkpoints undo: {error}")))?;
     if count_user_turns_exact(&messages)? != record.kept_turns {
@@ -6034,15 +5951,18 @@ fn resolve_undo_state(
     }
     if !record.truncated_revision.is_empty() {
         let revision = pinvou3_lib::features::sessions::transcript_revision(&loaded.messages)
-            .map_err(|error| store_error("checkpoints undo", session, error))?;
+            .map_err(|error| {
+                crate::support::store_error("code", "checkpoints undo", session, error)
+            })?;
         if revision != record.truncated_revision {
             return Ok(None);
         }
     }
     let checkpoint_id = match &record.pre_restore_checkpoint_id {
         Some(bound) => {
-            let entries = checkpoints::list_checkpoints(ledger)
-                .map_err(|error| store_error("checkpoints undo", session, error))?;
+            let entries = checkpoints::list_checkpoints(ledger).map_err(|error| {
+                crate::support::store_error("code", "checkpoints undo", session, error)
+            })?;
             let still_there = entries.iter().any(|entry| {
                 entry.kind == checkpoints::CheckpointKind::PreRestore && entry.id == *bound
             });
@@ -6123,8 +6043,9 @@ fn checkpoints_undo(session: &str, yes: bool, output: OutputMode) -> Result<CliO
     })?;
     let checkpoint_id = info.checkpoint_id.clone();
     if let Some(checkpoint_id) = checkpoint_id.as_deref() {
-        checkpoints::restore_checkpoint(&ledger, &execution, checkpoint_id)
-            .map_err(|error| store_error("checkpoints undo", checkpoint_id, error))?;
+        checkpoints::restore_checkpoint(&ledger, &execution, checkpoint_id).map_err(|error| {
+            crate::support::store_error("code", "checkpoints undo", checkpoint_id, error)
+        })?;
     }
     let restored_messages = store.restore_rewound_turns(session).map_err(|error| {
         let detail = format!("{error:#}");

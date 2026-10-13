@@ -661,11 +661,10 @@ fn external_asr_command() -> Option<PathBuf> {
     // excluded: its managed binary is `sense-voice-main`, a SenseVoice.cpp
     // build with the incompatible `-m MODEL INPUT -t -l -itn` protocol that
     // the native lane (and only the native lane) knows how to call.
-    if !cfg!(target_os = "linux") {
-        let managed = asr_dir().join(engine_binary_name());
-        if managed.is_file() {
-            return Some(managed);
-        }
+    if !cfg!(target_os = "linux")
+        && let Some(managed) = engine_path()
+    {
+        return Some(managed);
     }
     let default = PathBuf::from("pinvou-asr");
     command_exists(&default).then_some(default)
@@ -788,11 +787,6 @@ fn asr_status(output: OutputMode) -> Result<CliOutcome, CliError> {
     Ok(success(render(output, human, &value)))
 }
 
-/// Progress sink `install_dependencies` calls for each adapter line. `deps.rs`
-/// keeps its identical alias private, so the shape is spelled out again here:
-/// `(package, index, total, line)`.
-type AsrInstallProgress = dyn Fn(&str, usize, usize, Option<&str>) + Sync;
-
 /// Linux install lane: gated behind `--yes` like `deps install` because it
 /// mutates the system — missing ffmpeg goes through the same public
 /// `features::dependencies::install_dependencies` call the GUI platform
@@ -824,7 +818,32 @@ fn asr_install(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     // reason neither user can act on. `try_write` rather than a blocking
     // wait, mirroring the GUI's immediate "already installing" refusal and
     // `code.rs`'s `*_busy` convention.
-    let mut install_lock = asr_install_lock()?;
+    //
+    // The lock comes straight from the shared `family_lock` helper (same
+    // `$PINVOU3_HOME/locks` directory and same fd-lock primitive as `code.rs`'s
+    // session/root locks and `connectors.rs`'s install lock; `sandbox_home`
+    // already ran in `execute`, so it cannot land in a cwd-relative directory).
+    // Shared family helper (round-49, the memory/scheduled conversion wave):
+    // one copy of the directory-create and open this site hand-rolled, and the
+    // file is tightened to 0600 on every open so a lock left at the umask
+    // default by an older build heals instead of staying readable by every
+    // local account. The arms map onto the exact messages the hand-rolled pair
+    // produced. The lock binding must stay alive alongside its write guard.
+    let mut install_lock = family_lock(
+        "voice-asr-install.lock",
+        |dir, error| {
+            CliError::failed(format!(
+                "voice asr-install: cannot create {}: {error}",
+                dir.display()
+            ))
+        },
+        |path, error| {
+            CliError::failed(format!(
+                "voice asr-install: cannot open {}: {error}",
+                path.display()
+            ))
+        },
+    )?;
     let _install_guard = install_lock.try_write().map_err(|error| {
         if error.kind() == std::io::ErrorKind::WouldBlock {
             CliError::failed(
@@ -849,29 +868,15 @@ fn asr_install(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
         // `deps:install_progress`; passing `None` here made the whole ffmpeg
         // step silent while `deps install` streams its progress — a `pkexec`
         // run can block for minutes (or indefinitely waiting on a polkit agent
-        // that is not running), and silence makes that indistinguishable from
-        // a hang. Same closure shape as `deps.rs`, with the `[asr-install]`
-        // tag naming this lane.
+        // that is not running), and silence makes that indistinguishable from a
+        // hang.
         //
         // stderr, not stdout: `--output json` must stay a single serde_json
-        // line, and progress is not part of the result.
-        let progress = |package: &str, current: usize, total: usize, detail: Option<&str>| {
-            match detail {
-                // Vendor lines are third-party process output the CLI did not
-                // compose, so they get the same heuristic scrub every other
-                // lane applies to external command output before showing it.
-                Some(line) => crate::note!(
-                    "[asr-install] ({current}/{total}) {package}: {}",
-                    pinvou3_lib::platform::credential_store::redact_secret(line)
-                ),
-                None => crate::note!("[asr-install] ({current}/{total}) installing {package}"),
-            }
-        };
-        // Spelled out rather than inferred, like `deps.rs`: the adapter takes a
-        // trait object with a `Sync` bound, and the annotation makes the unsize
-        // coercion explicit. The closure captures nothing, so `Sync` holds
-        // trivially.
-        let progress: &AsrInstallProgress = &progress;
+        // line, and progress is not part of the result. The hook itself is the
+        // shared `support::install_progress("[asr-install]")` — the `deps`
+        // lane runs the identical closure under its own tag.
+        let progress: &crate::support::InstallProgress =
+            &crate::support::install_progress("[asr-install]");
         pinvou3_lib::features::dependencies::install_dependencies(
             vec!["ffmpeg".to_owned()],
             Some(progress),
@@ -880,7 +885,7 @@ fn asr_install(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
             // Round-40 review: the adapter error embeds raw vendor stderr
             // (brew/apt tails can carry token-shaped strings — a proxy or
             // mirror line like `user:token@host`), and `translate_deps_error`
-            // passes unknown text through unchanged. The progress hook above
+            // passes unknown text through unchanged. The progress lane
             // redacts every streamed line and the deps lane wraps this exact
             // error in `redact_secret` for the same reason, so the final
             // error gets the identical scrub instead of printing verbatim
@@ -906,15 +911,14 @@ fn asr_install(yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
         steps.push(format!("downloaded model {}", path.display()));
     }
     let (engine, _, model, _) = asr_components(|| ffmpeg_ok);
-    let ffmpeg = ffmpeg_ok;
     let value = serde_json::json!({
         "engine": engine,
-        "ffmpeg": ffmpeg,
+        "ffmpeg": ffmpeg_ok,
         "model": model,
-        "ready": engine && ffmpeg && model,
+        "ready": engine && ffmpeg_ok && model,
         "steps": steps,
     });
-    let human = asr_install_human(&steps, engine, ffmpeg, model);
+    let human = asr_install_human(&steps, engine, ffmpeg_ok, model);
     Ok(success(render(output, human, &value)))
 }
 
@@ -958,35 +962,6 @@ fn asr_install_human(steps: &[String], engine: bool, ffmpeg: bool, model: bool) 
         return text;
     }
     "voice asr-install: nothing to install, ASR already ready".to_owned()
-}
-
-/// Opens the cross-process ASR install lock (same `$PINVOU3_HOME/locks`
-/// directory and same fd-lock primitive as `code.rs`'s session/root locks and
-/// `connectors.rs`'s install lock). The caller must keep the returned lock
-/// alive alongside its write guard.
-fn asr_install_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
-    // `sandbox_home` already ran in `execute`, so the lock cannot land in a
-    // cwd-relative directory. Shared family helper (round-49, the
-    // memory/scheduled conversion wave): one copy of the directory-create
-    // and open this site hand-rolled, and the file is tightened to 0600 on
-    // every open so a lock left at the umask default by an older build heals
-    // instead of staying readable by every local account. The arms map onto
-    // the exact messages the hand-rolled pair produced.
-    family_lock(
-        "voice-asr-install.lock",
-        |dir, error| {
-            CliError::failed(format!(
-                "voice asr-install: cannot create {}: {error}",
-                dir.display()
-            ))
-        },
-        |path, error| {
-            CliError::failed(format!(
-                "voice asr-install: cannot open {}: {error}",
-                path.display()
-            ))
-        },
-    )
 }
 
 fn download_asr_model() -> Result<PathBuf, CliError> {
@@ -1058,6 +1033,22 @@ fn file_is_sha256(path: &Path, expected: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// The exclusive-create primitive the staged `.part` and the private audio
+/// staging share: `create_new` is the symlink defense (`File::create` would
+/// truncate a planted link's target), and the 0600 mode is applied AT open
+/// (`OpenOptions::mode`), so the file never exists at the umask default —
+/// a post-create chmod would leave a 0644 window in the shared temp dir.
+fn open_exclusive_private(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut open_options = std::fs::OpenOptions::new();
+    open_options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        open_options.mode(0o600);
+    }
+    open_options.open(path)
+}
+
 /// DRIFT GUARD — this reproduces the staged-download contract of
 /// `pinvou3-app/src-tauri/src/platform/download.rs::download_to_part_with_verify`
 /// (`.part` sibling, `max_bytes` cap, sha256 verified before the rename, part
@@ -1079,16 +1070,7 @@ fn file_is_sha256(path: &Path, expected: &str) -> bool {
 /// link's target and publish the renamed symlink), and the 0600 mode is set
 /// on the SAME open, matching the module's staged-file convention.
 fn open_staged_part(part: &Path) -> std::io::Result<std::fs::File> {
-    let reserve = || {
-        let mut open_options = std::fs::OpenOptions::new();
-        open_options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            open_options.mode(0o600);
-        }
-        open_options.open(part)
-    };
+    let reserve = || open_exclusive_private(part);
     match reserve() {
         Ok(file) => Ok(file),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -1460,15 +1442,7 @@ fn transcribe_with(
 /// available here, so its guarantees are mirrored) never has that window,
 /// and the mirror is only faithful without it.
 fn create_private_staging(path: &Path) -> Result<std::fs::File, CliError> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600);
-    }
-    options
-        .open(path)
+    open_exclusive_private(path)
         .map_err(|error| CliError::failed(format!("voice transcribe: cannot stage audio: {error}")))
 }
 
@@ -2231,12 +2205,6 @@ fn summarize_request_error(error: &reqwest::Error, subject: &str) -> String {
     format!("{subject} request failed")
 }
 
-/// Mirror of `summarize_voice_postprocess_error`: reqwest Display carries the
-/// full URL (possibly an intranet address), so only the error class is kept.
-fn summarize_postprocess_error(error: &reqwest::Error) -> String {
-    summarize_request_error(error, "model endpoint")
-}
-
 #[derive(Debug)]
 struct PostprocessOutcome {
     text: String,
@@ -2519,7 +2487,6 @@ fn postprocess(
 /// presets the GUI's `voice_reasoning_dialect` decides without URL
 /// sniffing). OpenCode gateway routes carry the mandatory
 /// `x-opencode-session` header, like every hand-rolled auxiliary client.
-#[allow(clippy::too_many_arguments)]
 fn call_postprocess_model(
     bridge: &pinvou3_lib::features::assistant::platform::bridge::Pinvou3Bridge,
     mode: PostprocessMode,
@@ -2547,7 +2514,15 @@ fn call_postprocess_model(
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(postprocess_http_exchange(
-            base_url, api_key, provider, preset, system, user, model_name, mode, retry, timeout,
+            base_url,
+            api_key,
+            provider,
+            preset,
+            system,
+            user,
+            model_name,
+            postprocess_max_tokens(mode, retry),
+            timeout,
         ));
     });
     // The client's total timeout bounds the thread, so a recv past the
@@ -2570,8 +2545,7 @@ fn postprocess_http_exchange(
     system: &'static str,
     user: String,
     model_name: String,
-    mode: PostprocessMode,
-    retry: bool,
+    max_tokens: u32,
     timeout: Duration,
 ) -> Result<(String, bool), CliError> {
     let client = reqwest::blocking::Client::builder()
@@ -2594,7 +2568,7 @@ fn postprocess_http_exchange(
         }
     };
     // The send→status→json chain both wire lanes share, with the one failure
-    // message both carry verbatim (`summarize_postprocess_error` keeps only
+    // message both carry verbatim (`summarize_request_error` keeps only
     // the error class, never the URL).
     let send_json =
         |request: reqwest::blocking::RequestBuilder| -> Result<serde_json::Value, CliError> {
@@ -2605,7 +2579,7 @@ fn postprocess_http_exchange(
                 .map_err(|error| {
                     CliError::failed(format!(
                         "model endpoint request failed: {}",
-                        summarize_postprocess_error(&error)
+                        summarize_request_error(&error, "model endpoint")
                     ))
                 })
         };
@@ -2624,7 +2598,7 @@ fn postprocess_http_exchange(
             &model_name,
             system,
             &user,
-            postprocess_max_tokens(mode, retry),
+            max_tokens,
         ));
         if !api_key.trim().is_empty() {
             request = request.header("x-api-key", api_key.trim());
@@ -2665,12 +2639,7 @@ fn postprocess_http_exchange(
         return Ok((sanitize_postprocess_output(&text), truncated));
     }
 
-    let mut body = postprocess_chat_body(
-        &model_name,
-        system,
-        &user,
-        postprocess_max_tokens(mode, retry),
-    );
+    let mut body = postprocess_chat_body(&model_name, system, &user, max_tokens);
     apply_postprocess_reasoning_controls(&mut body, preset, provider.as_str(), &model_name);
     let mut request = client.post(format!(
         "{}/chat/completions",
@@ -3114,7 +3083,7 @@ mod review_fix_tests {
             "URL leaked: {mirror}"
         );
         // The postprocess lane keeps its established subject line.
-        let endpoint = summarize_postprocess_error(&error);
+        let endpoint = summarize_request_error(&error, "model endpoint");
         assert!(endpoint.starts_with("model endpoint "), "got: {endpoint}");
         assert!(!endpoint.contains("127.0.0.1"), "URL leaked: {endpoint}");
     }
@@ -3127,14 +3096,7 @@ mod review_fix_tests {
     /// leave `pinvou-cli-voice-*.wav` debris in the shared temp dir).
     #[test]
     fn staged_file_guard_removes_the_staged_wav_on_an_error_path() {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "pinvou-cli-voice-guard-{}-{nonce}.wav",
-            std::process::id()
-        ));
+        let path = crate::support::test_support::scratch_dir("voice-guard").join("guard.wav");
         std::fs::write(&path, vec![0u8; 44]).unwrap();
 
         // The error path: the guard is dropped while the early `?` return
@@ -3176,7 +3138,7 @@ mod tests {
         anthropic_stop_reason_says_truncated, apply_postprocess_reasoning_controls,
         asr_download_max_bytes, asr_preflight, asr_timeout_secs, download_to, execute,
         native_engine_timeout_secs, postprocess_anthropic_body, postprocess_chat_body,
-        postprocess_http_exchange, postprocess_prompt, transcribe_with,
+        postprocess_http_exchange, postprocess_max_tokens, postprocess_prompt, transcribe_with,
     };
 
     /// Serves `body` exactly once on a loopback `std::net::TcpListener` (no
@@ -3422,15 +3384,7 @@ content-length: {}\r\n\r\n{}",
     fn download_to_accepts_at_cap_and_refuses_over_cap_band() {
         const BAND: u64 = 4096;
 
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-cli-voice-band-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::support::test_support::scratch_dir("voice-band");
 
         // At-cap: exactly `BAND` bytes passes the `size > max_bytes` gate
         // and the sha256 verify.
@@ -3494,8 +3448,7 @@ content-length: {}\r\n\r\n{}",
             postprocess_prompt(PostprocessMode::Task),
             "user".to_owned(),
             "model".to_owned(),
-            PostprocessMode::Task,
-            false,
+            postprocess_max_tokens(PostprocessMode::Task, false),
             Duration::from_secs(10),
         )
         .expect("the mock exchange must succeed");
@@ -3658,8 +3611,7 @@ content-length: {}\r\n\r\n{}",
             postprocess_prompt(PostprocessMode::Task),
             "user".to_owned(),
             "model".to_owned(),
-            PostprocessMode::Task,
-            false,
+            postprocess_max_tokens(PostprocessMode::Task, false),
             Duration::from_secs(10),
         )
         .expect("the mock exchange must succeed");
@@ -3852,15 +3804,7 @@ content-length: {}\r\n\r\n{}",
     /// recognition. Restoring that return makes this fail.
     #[test]
     fn transcribe_reaches_recognition_for_a_wav_input_without_ffmpeg() {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-cli-voice-gate-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::support::test_support::scratch_dir("voice-gate");
         let wav = dir.join("capture.wav");
         // 44-byte header-only WAV: large enough to pass the empty-audio gate.
         std::fs::write(&wav, vec![0u8; 44]).unwrap();
@@ -3925,15 +3869,7 @@ mod staged_part_tests {
     #[test]
     #[cfg(unix)]
     fn staged_part_open_heals_plain_debris_and_refuses_symlinks() {
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-voice-part-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::support::test_support::scratch_dir("voice-part");
         let part = dir.join("model.gguf.part");
 
         std::fs::write(&part, b"stale debris").unwrap();
@@ -3973,15 +3909,7 @@ mod round41_model_gate_tests {
     /// corrupt-model case the handoff must not pass), and a missing file.
     #[test]
     fn model_available_verified_enforces_size_and_sha256() {
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-voice-gate-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::support::test_support::scratch_dir("voice-gate-test");
         let path = dir.join("model.gguf");
         std::fs::write(&path, b"pinvou-round41-model-bytes").unwrap();
         let len = std::fs::metadata(&path).unwrap().len();

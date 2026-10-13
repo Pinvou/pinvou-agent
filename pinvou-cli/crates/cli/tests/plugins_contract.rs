@@ -93,6 +93,25 @@ fn bundle_record(home: &Path, id: &str) -> serde_json::Value {
         .clone()
 }
 
+/// Asserts the human `readiness` table's shared 6-column row shape: the row
+/// for `id` exists and carries exactly id, kind, installed, ready, reason,
+/// probe — with the probe verdict last.
+fn assert_human_readiness_row(human: &str, id: &str, probe: &str) {
+    let line = human
+        .lines()
+        .find(|line| line.starts_with(&format!("{id}\t")))
+        .unwrap_or_else(|| panic!("{id} human row"));
+    assert_eq!(
+        line.split('\t').count(),
+        6,
+        "human row: id, kind, installed, ready, reason, probe"
+    );
+    assert!(
+        line.ends_with(&format!("\t{probe}")),
+        "human row discloses the probe: {line}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // fixture helpers
 // ---------------------------------------------------------------------------
@@ -1036,7 +1055,7 @@ fn tools_list_shows_embedded_catalog_with_installed_state() {
     let value = run_json(&["pinvou", "plugins", "tools", "list"]);
     let tools = value["tools"].as_array().expect("tools array");
     assert!(tools.len() >= 11, "embedded catalog has 11 packages");
-    let weather = tools.iter().find(|tool| tool["id"] == "weather").unwrap();
+    let weather = row_of(&value, "tools", "id", "weather");
     // JSON mirrors the GUI MarketplaceToolInfo DTO. Presentation-only
     // fields (icon/color/category) stay in the frontend overlay on main,
     // so the CLI's catalog view does not carry them.
@@ -1642,19 +1661,7 @@ fn readiness_zero_state_reports_uninstalled_catalog() {
     assert_eq!(feishu["reason"], serde_json::json!("cli_not_installed"));
     assert_eq!(feishu["probe"], serde_json::json!("unavailable_in_cli"));
     // The human table carries the probe column too (6 tab-separated fields).
-    let feishu_line = human
-        .lines()
-        .find(|line| line.starts_with("feishu\t"))
-        .expect("feishu human row");
-    assert_eq!(
-        feishu_line.split('\t').count(),
-        6,
-        "human row: id, kind, installed, ready, reason, probe"
-    );
-    assert!(
-        feishu_line.ends_with("\tunavailable_in_cli"),
-        "human row discloses the probe: {feishu_line}"
-    );
+    assert_human_readiness_row(&human, "feishu", "unavailable_in_cli");
 }
 
 #[test]
@@ -1866,16 +1873,7 @@ fn readiness_ima_without_credentials_reports_the_gui_reason() {
     assert_eq!(ima["probe"], serde_json::json!("registry"));
     // Human row keeps the shared 6-column shape (probe column included).
     let human = run_ok(&["pinvou", "plugins", "readiness"]);
-    let ima_line = human
-        .lines()
-        .find(|line| line.starts_with("ima\t"))
-        .expect("ima human row");
-    assert_eq!(
-        ima_line.split('\t').count(),
-        6,
-        "human row: id, kind, installed, ready, reason, probe"
-    );
-    assert!(ima_line.ends_with("\tregistry"), "ima row: {ima_line}");
+    assert_human_readiness_row(&human, "ima", "registry");
 
     // The special case must not bleed into other rows: a required-credential
     // MCP package keeps its registry verdict, and a cli-kind row keeps the

@@ -391,9 +391,10 @@ pub fn parse(values: &[String]) -> Result<ConnectorsCommand, CliError> {
                     .ok()
                     .filter(|secs| *secs > 0 && *secs <= CONNECT_MAX_TIMEOUT_SECS)
                     .ok_or_else(|| {
-                        CliError::usage(
-                            "connectors connect --timeout must be between 1 and 604800 seconds",
-                        )
+                        CliError::usage(format!(
+                            "connectors connect --timeout must be between 1 and \
+                             {CONNECT_MAX_TIMEOUT_SECS} seconds"
+                        ))
                     })?,
             };
             Ok(ConnectorsCommand::Connect { connector, timeout })
@@ -967,35 +968,32 @@ enum LogoutGate {
 }
 
 fn logout_probe(spec: &VendorSpec, deadline: Instant) -> LogoutGate {
+    // The three Unconfirmed verdicts share one shell — only the "why" cell
+    // differs — so the wording cannot drift between the arms.
+    let unconfirmed = |reason: String| {
+        LogoutGate::Unconfirmed(format!(
+            "{} CLI is installed but {reason}; the login state is unconfirmed, so the stored \
+             connection was not changed",
+            spec.display_name
+        ))
+    };
     if resolve_vendor_cli(spec).is_none() {
         return LogoutGate::NotInstalled;
     }
     let (ok, stdout, stderr) = match run_cli_bounded(spec, &["--version"], deadline) {
         Ok(result) => result,
         Err(error) => {
-            return LogoutGate::Unconfirmed(format!(
-                "{} CLI is installed but the version probe failed ({error}); the login state is \
-                 unconfirmed, so the stored connection was not changed",
-                spec.display_name
-            ));
+            return unconfirmed(format!("the version probe failed ({error})"));
         }
     };
     if !ok {
-        return LogoutGate::Unconfirmed(format!(
-            "{} CLI is installed but `--version` failed; the login state is unconfirmed, so the \
-             stored connection was not changed",
-            spec.display_name
-        ));
+        return unconfirmed("`--version` failed".to_owned());
     }
     // tmeet additionally requires a parseable version (its GUI probe folds
     // an unparseable version into the same Unconfirmed verdict); dingtalk is
     // version-ungated presence.
     if spec.id == "tmeet" && cli_semver(spec, &stdout, &stderr).is_none() {
-        return LogoutGate::Unconfirmed(format!(
-            "{} CLI is installed but its version could not be parsed; the login state is \
-             unconfirmed, so the stored connection was not changed",
-            spec.display_name
-        ));
+        return unconfirmed("its version could not be parsed".to_owned());
     }
     LogoutGate::Installed
 }
@@ -1363,11 +1361,7 @@ fn status(connector: Option<ConnectorKind>, output: OutputMode) -> Result<CliOut
         }
     }
 
-    let human = entries
-        .iter()
-        .map(human_status_row)
-        .collect::<Vec<_>>()
-        .join("\n");
+    let human = crate::support::join_rows(&entries, human_status_row);
     Ok(success(render(
         output,
         human,
@@ -2762,9 +2756,7 @@ fn sweep_dead_pid_debris(dir: &Path) {
 }
 
 /// Parses the pid from a debris name's trailing `-extract-<pid>` /
-/// `-installing-<pid>` suffix. The staged-binary writer spells its temp file
-/// `.{filename}.installing-<pid>` (dot separator), so both spellings of the
-/// `installing` marker are accepted; the name before the marker and the pid
+/// `.installing-<pid>` suffix. The name before the marker and the pid
 /// digits must both be non-empty, so ordinary binaries (the version dir also
 /// holds `<filename>` and `licenses/`) and half-spelled names never match.
 #[cfg(unix)]
@@ -2775,7 +2767,6 @@ fn debris_pid(name: &str) -> Option<u32> {
     }
     let stem = head
         .strip_suffix("-extract")
-        .or_else(|| head.strip_suffix("-installing"))
         .or_else(|| head.strip_suffix(".installing"))?;
     if stem.is_empty() {
         return None;
@@ -3098,7 +3089,8 @@ fn extract_member(archive: &Path, member: &str, target: &Path) -> Result<(), Cli
     // those two facts — `-xOf` is the one flag-taking-operand form where a
     // misplaced `--` changes the parse (`-xOf -- archive member` opens an
     // archive named "--"), so it is placed as a separator after the archive
-    // operand in both child constructions (see `tar_separated_operands`).
+    // operand in both child constructions (see
+    // `tar_children_carry_the_operand_separator_after_the_archive`).
     let mut list = tar_program();
     list.arg("-tf").arg(archive).arg("--");
     let listing_bytes = tar_capture(
@@ -5157,7 +5149,7 @@ mod tests {
     // A signal-killed install never unwinds, so its extract/staging cleanup
     // closures never run; only the current pid's paths are pre-cleaned by
     // the ensure path. The sweeper is the unit: entries whose
-    // `-extract-<pid>` / `-installing-<pid>` suffix names a pid the kernel
+    // `-extract-<pid>` / `.installing-<pid>` suffix names a pid the kernel
     // no longer has are removed, everything else survives.
 
     #[cfg(unix)]

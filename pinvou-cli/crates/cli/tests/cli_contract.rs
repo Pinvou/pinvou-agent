@@ -18,8 +18,7 @@ mod common;
 use adapter_gaia::{GAIA_LEVEL, GAIA_SPLIT, GaiaAdapter};
 use benchmark_core::{BenchmarkAdapter, ModelIdentity, RunManifest, RunStore, Split, ToolPolicyId};
 use pinvou_cli::{
-    BenchmarkAvailability, BenchmarkCommand, CliCommand, ExitCode, OutputMode, benchmark_registry,
-    parse_args, render_list,
+    BenchmarkCommand, CliCommand, ExitCode, OutputMode, benchmark_registry, parse_args, render_list,
 };
 use std::path::PathBuf;
 
@@ -402,12 +401,36 @@ fn registry_is_the_stable_source_for_all_benchmark_commands() {
         registry.iter().map(|spec| spec.id()).collect::<Vec<_>>(),
         ["smoke", "gaia", "bfcl", "workbuddy"]
     );
-    assert_eq!(registry[0].score_kind(), "internal_health");
-    assert_eq!(registry[1].availability(), BenchmarkAvailability::Available);
-    assert_eq!(registry[1].score_kind(), "official_compatible_local");
+    // score_kind and availability are no longer exposed as accessors; the
+    // `render_list` JSON rows are the contract surface that carries them.
+    let json = render_list(OutputMode::Json);
+    assert!(
+        json.contains(&format!(
+            r#""id":"smoke","availability":"{}","available":{},"score_kind":"internal_health""#,
+            if cfg!(feature = "product-backend") {
+                "available"
+            } else {
+                "unavailable"
+            },
+            cfg!(feature = "product-backend"),
+        )),
+        "{json}"
+    );
+    assert!(
+        json.contains(
+            r#""id":"gaia","availability":"available","available":true,"score_kind":"official_compatible_local""#
+        ),
+        "{json}"
+    );
     for spec in &registry[2..] {
-        assert_eq!(spec.availability(), BenchmarkAvailability::Planned);
         assert_eq!(spec.command_error(), "benchmark_not_available");
+        assert!(
+            json.contains(&format!(
+                r#""id":"{}","availability":"planned","available":false,"score_kind":"official""#,
+                spec.id()
+            )),
+            "{json}"
+        );
     }
 }
 

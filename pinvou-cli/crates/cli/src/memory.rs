@@ -614,6 +614,20 @@ fn not_found(store: MemoryStore, id: &str) -> CliError {
     CliError::failed(format!("{}_not_found: {id}", store.as_str()))
 }
 
+/// The shared defence-in-depth refusal of the two per-item edit lanes
+/// (`update`/`delete`) for the stores without per-item content editing:
+/// `parse_editable_store` already refuses them at parse time, so the argv
+/// route never lands here, but the matches must stay exhaustive and a
+/// handled refusal beats a panic for any in-process caller that constructs
+/// the command directly.
+fn unsupported_edit_store(action: &str, store: MemoryStore) -> CliError {
+    CliError::usage(format!(
+        "memory {action} does not support store '{}' (valid: preferences, \
+work-context, current-focus, recent-activity)",
+        store.canonical_str()
+    ))
+}
+
 /// The eight authoritative memory sources loaded through the shared
 /// per-source diagnostics, plus the warning list and the per-source
 /// availability map: the single loading path behind `overview` and the
@@ -2024,11 +2038,7 @@ fn update(
             // Round-50 review: echo the canonical hyphen spelling (the one
             // the valid list in this very message uses), not `as_str()`'s
             // underscore form.
-            return Err(CliError::usage(format!(
-                "memory update does not support store '{}' (valid: preferences, \
-work-context, current-focus, recent-activity)",
-                store.canonical_str()
-            )));
+            return Err(unsupported_edit_store("update", store));
         }
     };
     // The warning composes filesystem paths (cleanup failures), so it gets
@@ -2100,13 +2110,9 @@ fn delete(
         // be exhaustive and a handled refusal beats a panic for any in-process
         // caller that constructs the command directly.
         MemoryStore::RecentWork | MemoryStore::Pending | MemoryStore::Never => {
-            return Err(CliError::usage(format!(
-                "memory delete does not support store '{}' (valid: preferences, \
-work-context, current-focus, recent-activity)",
-                // Round-50 review: canonical hyphen spellings (as_str()
-                // is the underscore storage form).
-                store.canonical_str()
-            )));
+            // Round-50 review: canonical hyphen spellings (as_str()
+            // is the underscore storage form).
+            return Err(unsupported_edit_store("delete", store));
         }
     };
     if !changed {

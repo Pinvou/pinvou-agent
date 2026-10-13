@@ -125,6 +125,8 @@ pub(crate) fn parse(values: &[String]) -> Result<AgentCommand, CliError> {
                 &["--attach"],
                 "agent run",
                 &mut validate,
+                &[],
+                false,
             )?;
             Ok(AgentCommand::Run {
                 prompt_file: crate::support::family_option(&options, "--prompt-file")
@@ -142,10 +144,9 @@ pub(crate) fn parse(values: &[String]) -> Result<AgentCommand, CliError> {
                 session: crate::support::family_option(&options, "--session").map(str::to_owned),
                 mode: crate::support::family_option(&options, "--mode").map(str::to_owned),
                 model: crate::support::family_option(&options, "--model").map(str::to_owned),
-                attachments: options
-                    .iter()
-                    .filter(|(name, _)| *name == "--attach")
-                    .map(|(_, value)| PathBuf::from(value))
+                attachments: crate::support::family_options(&options, "--attach")
+                    .into_iter()
+                    .map(PathBuf::from)
                     .collect(),
             })
         }

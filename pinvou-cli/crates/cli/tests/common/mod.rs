@@ -258,6 +258,23 @@ pub fn create_session_fixture() -> String {
     session.metadata.id
 }
 
+/// Stages the fake-credential fixture the credential-path refusal tests pin
+/// against: creates `<home>/<component>/`, writes `content` into `file`
+/// inside it, and returns the file's path. The refusals fire on the path
+/// component before any content is read, so the bodies are placeholders.
+pub fn write_credential_fixture(
+    home: &std::path::Path,
+    component: &str,
+    file: &str,
+    content: &str,
+) -> PathBuf {
+    let dir = home.join(component);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join(file);
+    std::fs::write(&path, content).unwrap();
+    path
+}
+
 /// Spawns the real CLI binary as a child process against `root` as
 /// `PINVOU3_HOME` (plus `PINVOU_NO_COLOR=1`, then any `extra_env` applied
 /// last so callers can override). Takes the argv AFTER the binary name —
@@ -370,4 +387,37 @@ pub fn parsed_debug(arguments: &[&str]) -> String {
             .expect("valid command")
             .command()
     )
+}
+
+/// Shared parse-level assertion for a family's "every subcommand parses"
+/// loop: the argv must parse, the derived Debug must render the family
+/// (`prefix`, e.g. `"Projects("`) AND the subcommand token's capitalized
+/// variant. Every family variant is its subcommand token's capitalization,
+/// so the expected Debug token is derived from the argv itself.
+///
+/// The variant name appears in the Debug in one of TWO renderings, and the
+/// assertion must admit both: a variant WITH payload fields renders the name
+/// followed by a space (`Create { name: "N", … }` → `contains("Create ")`),
+/// while a FIELDLESS variant renders as a bare unit — `Projects(List)` — so
+/// the name is immediately followed by the family's closing paren and there
+/// is no trailing space to find; that case is covered by the
+/// `ends_with("{variant})")` arm (plus the plain `ends_with(&variant)` arm
+/// for a debug whose last token is the variant itself).
+pub fn assert_family_parse(prefix: &str, arguments: &[&str]) {
+    let debug = parsed_debug(arguments);
+    let mut chars = arguments[2].chars();
+    let variant: String = chars
+        .next()
+        .map(|first| first.to_uppercase().collect::<String>() + chars.as_str())
+        .unwrap_or_default();
+    assert!(
+        debug.starts_with(prefix),
+        "{arguments:?} did not render a {prefix} debug: {debug}"
+    );
+    assert!(
+        debug.contains(&format!("{variant} "))
+            || debug.ends_with(&variant)
+            || debug.ends_with(&format!("{variant})")),
+        "{arguments:?} did not mention the {variant} subcommand: {debug}"
+    );
 }

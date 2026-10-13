@@ -86,8 +86,8 @@ use pinvou3_lib::platform::prefs::UserPrefs;
 
 use crate::support::{
     collapse_control_characters, expect_no_arguments, family_lock, family_option,
-    gate_canonical_path, parse_family_positive, redact_error_text, render, require_family_id,
-    require_yes, sandbox_home, success,
+    gate_canonical_path, join_rows, parse_family_positive, redact_error_text, render,
+    require_family_id, require_yes, sandbox_home, success,
 };
 use crate::{CliError, CliOutcome, OutputMode};
 
@@ -262,7 +262,7 @@ pub fn parse(values: &[String]) -> Result<ScheduledCommand, CliError> {
             Ok(ScheduledCommand::List)
         }
         "show" => {
-            let id = require_id(rest.first(), "scheduled show")?;
+            let id = require_id(rest.first(), "scheduled show", "a task id")?;
             let (options, _) = parse_flags(&rest[1..], &["--limit"], &[])?;
             Ok(ScheduledCommand::Show {
                 id,
@@ -277,12 +277,16 @@ pub fn parse(values: &[String]) -> Result<ScheduledCommand, CliError> {
                     "scheduled run requires a task id; {RUN_HELP_HOST_REQUIREMENT}"
                 ))
             })?;
-            let id = require_id(Some(id), "scheduled run")?;
+            let id = require_id(Some(id), "scheduled run", "a task id")?;
             expect_no_arguments(&rest[1..], "scheduled run")?;
             Ok(ScheduledCommand::Run { id })
         }
         "pause" | "resume" | "pin" | "unpin" => {
-            let id = require_id(rest.first(), &format!("scheduled {subcommand}"))?;
+            let id = require_id(
+                rest.first(),
+                &format!("scheduled {subcommand}"),
+                "a task id",
+            )?;
             expect_no_arguments(&rest[1..], &format!("scheduled {subcommand}"))?;
             Ok(match subcommand.as_str() {
                 "pause" => ScheduledCommand::Pause { id },
@@ -292,7 +296,7 @@ pub fn parse(values: &[String]) -> Result<ScheduledCommand, CliError> {
             })
         }
         "delete" => {
-            let id = require_id(rest.first(), "scheduled delete")?;
+            let id = require_id(rest.first(), "scheduled delete", "a task id")?;
             let (_, flags) = parse_flags(&rest[1..], &[], &["--yes"])?;
             Ok(ScheduledCommand::Delete {
                 id,
@@ -300,7 +304,7 @@ pub fn parse(values: &[String]) -> Result<ScheduledCommand, CliError> {
             })
         }
         "runs" => {
-            let id = require_id(rest.first(), "scheduled runs")?;
+            let id = require_id(rest.first(), "scheduled runs", "a task id")?;
             let (options, _) = parse_flags(&rest[1..], &["--limit"], &[])?;
             Ok(ScheduledCommand::Runs {
                 id,
@@ -314,7 +318,7 @@ pub fn parse(values: &[String]) -> Result<ScheduledCommand, CliError> {
             })
         }
         "mark-viewed" => {
-            let task_id = require_id(rest.first(), "scheduled mark-viewed")?;
+            let task_id = require_id(rest.first(), "scheduled mark-viewed", "a task id")?;
             // Round-52 review: the run-id slot is the same id shape as the
             // task-id slot, so it goes through the same guard
             // (`require_family_id`, the shared implementation `require_id`
@@ -322,13 +326,7 @@ pub fn parse(values: &[String]) -> Result<ScheduledCommand, CliError> {
             // (`mark-viewed t-1 --foo`) skipped the guard at parse and died
             // one step later as an exit-1 not-found lookup against a record
             // named after the flag.
-            let run_id = rest.get(1).map(|id| id.trim().to_owned());
-            let run_id = require_family_id(
-                run_id.as_ref(),
-                "scheduled mark-viewed",
-                "scheduled mark-viewed",
-                "a run id",
-            )?;
+            let run_id = require_id(rest.get(1), "scheduled mark-viewed", "a run id")?;
             expect_no_arguments(&rest[2..], "scheduled mark-viewed")?;
             Ok(ScheduledCommand::MarkViewed { task_id, run_id })
         }
@@ -407,7 +405,7 @@ fn parse_create(rest: &[String]) -> Result<ScheduledCommand, CliError> {
 }
 
 fn parse_update(rest: &[String]) -> Result<ScheduledCommand, CliError> {
-    let id = require_id(rest.first(), "scheduled update")?;
+    let id = require_id(rest.first(), "scheduled update", "a task id")?;
     // `--kind` is a create-time property and `--mode` is forced to `yolo`
     // for every run (the GUI validates it and still persists yolo, so an
     // update can never change the effective value); reject them with the
@@ -455,14 +453,14 @@ fn parse_update(rest: &[String]) -> Result<ScheduledCommand, CliError> {
     })
 }
 
-fn require_id(value: Option<&String>, command: &str) -> Result<String, CliError> {
+fn require_id(value: Option<&String>, command: &str, noun: &str) -> Result<String, CliError> {
     // This family trims the id slot BEFORE the guard (the shared helper
     // deliberately does not — see `require_family_id`): a padded id still
     // passes, a whitespace-only one still refuses as missing, and a padded
     // flag token still reads as flag-shaped. The two prefixes are the same
     // `{command}` here; the guard's messages are the family's stable texts.
     let trimmed = value.map(|id| id.trim().to_owned());
-    require_family_id(trimmed.as_ref(), command, command, "a task id")
+    require_family_id(trimmed.as_ref(), command, command, noun)
 }
 
 /// Shared implementation in `support::parse_family_flags`; `family`
@@ -1874,7 +1872,6 @@ fn list(output: OutputMode) -> Result<CliOutcome, CliError> {
     let views = SidecarViews::load(&store_holder);
     let defs = store_holder.list_defs()?;
     let titles = session_titles(&sessions);
-    let mut lines = Vec::new();
     let tasks = defs
         .iter()
         .map(|def| {
@@ -1889,32 +1886,32 @@ fn list(output: OutputMode) -> Result<CliOutcome, CliError> {
             // grows with store age (~8,760 records/year for one hourly
             // task).
             let runs = store_holder.list_runs(str_field(def, "id").unwrap_or(""), None)?;
-            let value = map_task(def, &runs, Some(&sessions), &views, &titles);
-            // Human rows must not be forgeable: every textual cell goes
-            // through the shared collapse (JSON keeps the originals), the
-            // same rule the sibling families pin.
-            lines.push(format!(
+            Ok(map_task(def, &runs, Some(&sessions), &views, &titles))
+        })
+        .collect::<Result<Vec<_>, CliError>>()?;
+    // Human rows must not be forgeable: every textual cell goes through the
+    // shared collapse (JSON keeps the originals), the same rule the sibling
+    // families pin.
+    let human = if tasks.is_empty() {
+        "No scheduled tasks.".to_owned()
+    } else {
+        join_rows(&tasks, |task| {
+            format!(
                 "{}\t{}\t{}\t{}\t{}\t{}",
-                collapse_control_characters(value["id"].as_str().unwrap_or("")),
-                collapse_control_characters(value["status"].as_str().unwrap_or("")),
-                collapse_control_characters(value["nextRunAt"].as_str().unwrap_or("-")),
-                collapse_control_characters(value["kind"].as_str().unwrap_or("chat")),
-                if value["pinned"].as_bool().unwrap_or(false) {
+                collapse_control_characters(task["id"].as_str().unwrap_or("")),
+                collapse_control_characters(task["status"].as_str().unwrap_or("")),
+                collapse_control_characters(task["nextRunAt"].as_str().unwrap_or("-")),
+                collapse_control_characters(task["kind"].as_str().unwrap_or("")),
+                if task["pinned"].as_bool().unwrap_or(false) {
                     "pinned"
                 } else {
                     "-"
                 },
-                collapse_control_characters(value["name"].as_str().unwrap_or("")),
-            ));
-            Ok(value)
+                collapse_control_characters(task["name"].as_str().unwrap_or("")),
+            )
         })
-        .collect::<Result<Vec<_>, CliError>>()?;
-    let value = serde_json::json!({ "tasks": tasks });
-    let human = if lines.is_empty() {
-        "No scheduled tasks.".to_owned()
-    } else {
-        lines.join("\n")
     };
+    let value = serde_json::json!({ "tasks": tasks });
     Ok(success(render(output, human, &value)))
 }
 
@@ -2293,28 +2290,24 @@ fn rollback_committed_update_definition(
         // ran): the raw-restored `next_run_at` is then past due and the
         // foundation sweep delivers it late — exactly what the
         // re-resolution step exists to prevent. Pausing clears the slot,
-        // trading a late fire for a disclosed paused task.
-        let parked = if status == "active" {
-            // Same park-through-foundation pause (manager + `pause_automation`,
-            // identical error bytes) as every other paused restore; passing
-            // "paused" selects `restore_automation_status`'s pause arm.
-            restore_automation_status(store_holder, id, "paused")
-        } else {
-            // The non-active status was already restored paused above and that
-            // call failed; retrying the foundation here would add a second,
-            // side-effecting write this rollback never performed.
-            Err(CliError::failed("status not active"))
-        };
-        match parked {
-            Ok(_parked) => note!(
+        // trading a late fire for a disclosed paused task. The pause is
+        // attempted only for an ACTIVE status (the `&&` short-circuits):
+        // a non-active status was already restored paused by the failed
+        // call above, and retrying the foundation here would add a second,
+        // side-effecting write this rollback never performed.
+        let parked_paused =
+            status == "active" && restore_automation_status(store_holder, id, "paused").is_ok();
+        if parked_paused {
+            note!(
                 "pinvou: warning: scheduled update: the rollback could not re-resolve the pre-update \
                  schedule ({restore_error}); the task is left PAUSED with its previous \
                  definition — resume it after checking the schedule"
-            ),
-            Err(_) => note!(
+            );
+        } else {
+            note!(
                 "pinvou: warning: scheduled update: the rollback could not re-resolve the pre-update \
                  schedule: {restore_error}"
-            ),
+            );
         }
     }
     error
@@ -3510,8 +3503,10 @@ fn chat_prompt(output: OutputMode) -> Result<CliOutcome, CliError> {
 }
 
 fn open_sessions() -> Result<SessionStore, CliError> {
-    SessionStore::boot()
-        .map_err(|error| CliError::failed(format!("sessions store unavailable: {error:#}")))
+    // Shared boot, deliberately without a `sandbox_home()` gate: every
+    // caller reaches the sessions store through `TaskStore::new()`, whose
+    // `sandbox_home()?` already enforced the home contract.
+    crate::support::boot_session_store()
 }
 
 /// Best-effort sessions store for enriching a response after the store write

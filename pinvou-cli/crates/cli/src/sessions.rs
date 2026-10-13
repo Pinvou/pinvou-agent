@@ -55,7 +55,7 @@
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
-use crate::support::{render, require_yes, sandbox_home, success};
+use crate::support::{join_rows, render, require_yes, sandbox_home, success};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::codex_acp::SessionAgentStore;
 use pinvou3_lib::features::sessions::{SessionKind, SessionStore, is_aux_session_id};
@@ -307,19 +307,14 @@ fn open_store() -> Result<SessionStore, CliError> {
     // Same absolute-path contract as `sessions folder`: a relative
     // PINVOU3_HOME would silently resolve against the cwd.
     crate::support::sandbox_home()?;
-    SessionStore::boot()
-        .map_err(|error| CliError::failed(format!("sessions store unavailable: {error:#}")))
-}
-
-fn store_error(action: &str, id: &str, error: impl std::fmt::Display) -> CliError {
-    CliError::failed(format!("sessions {action}({id}): {error:#}"))
+    crate::support::boot_session_store()
 }
 
 fn require_existing(store: &SessionStore, id: &str, action: &str) -> Result<(), CliError> {
     store
         .load(id)
         .map(|_| ())
-        .map_err(|error| store_error(action, id, error))
+        .map_err(|error| crate::support::store_error("sessions", action, id, error))
 }
 
 /// The shared aux-session refusal (`sessions <prefix>(<id>): auxiliary
@@ -410,13 +405,13 @@ struct SessionRow {
 fn collect_rows(store: &SessionStore, archived: bool) -> Result<Vec<SessionRow>, CliError> {
     let mut metas = store
         .list()
-        .map_err(|error| store_error("list", "-", error))?;
+        .map_err(|error| crate::support::store_error("sessions", "list", "-", error))?;
     if archived {
         // Same merge as the GUI `list_archived_sessions`: scheduled-run
         // sessions live in the same durable store but need the extra listing.
         let scheduled = store
             .list_scheduled()
-            .map_err(|error| store_error("list", "-", error))?;
+            .map_err(|error| crate::support::store_error("sessions", "list", "-", error))?;
         metas.extend(scheduled);
         metas.retain(|metadata| store.is_hidden(&metadata.id));
         metas.sort_by_key(|metadata| std::cmp::Reverse(metadata.updated_at));
@@ -456,37 +451,33 @@ fn list(archived: bool, limit: Option<usize>, output: OutputMode) -> Result<CliO
             "kind": row.kind,
         })).collect::<Vec<_>>(),
     });
-    let human = rows
-        .iter()
-        .map(|row| {
-            format!(
-                "{}\t{}\t{}\t{}\t{}\t{}",
-                // The id is NOT machine-made here: `store.list()` reports the
-                // ids it scanned off `sessions/*.json` filenames, and a POSIX
-                // filename may contain `\t` or `\n` (only ids arriving via
-                // argv pass `require_valid_session_id`). A hand-placed or
-                // restored-from-backup file is enough to break the row, so the
-                // id gets the same collapse as the title rather than a comment
-                // claiming it cannot.
-                crate::support::collapse_control_characters(&row.id),
-                if row.pinned { "pinned" } else { "-" },
-                if row.archived { "archived" } else { "-" },
-                row.kind,
-                row.updated_at,
-                // Titles are stored verbatim and legitimately contain newlines
-                // (the GUI's attachment marker embeds "\n\n") or a tab, either
-                // of which would split this row into two lines or invent a
-                // seventh column for whoever is cutting on \t. The full
-                // collapse (tab and newline included, unlike the
-                // transcript-body sanitizer above) is what keeps the row
-                // contract; JSON keeps the real title. The remaining columns
-                // are genuinely machine-made (fixed markers, a fixed kind
-                // label, an RFC3339 timestamp).
-                crate::support::collapse_control_characters(&row.title),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let human = join_rows(&rows, |row| {
+        format!(
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            // The id is NOT machine-made here: `store.list()` reports the
+            // ids it scanned off `sessions/*.json` filenames, and a POSIX
+            // filename may contain `\t` or `\n` (only ids arriving via
+            // argv pass `require_valid_session_id`). A hand-placed or
+            // restored-from-backup file is enough to break the row, so the
+            // id gets the same collapse as the title rather than a comment
+            // claiming it cannot.
+            crate::support::collapse_control_characters(&row.id),
+            if row.pinned { "pinned" } else { "-" },
+            if row.archived { "archived" } else { "-" },
+            row.kind,
+            row.updated_at,
+            // Titles are stored verbatim and legitimately contain newlines
+            // (the GUI's attachment marker embeds "\n\n") or a tab, either
+            // of which would split this row into two lines or invent a
+            // seventh column for whoever is cutting on \t. The full
+            // collapse (tab and newline included, unlike the
+            // transcript-body sanitizer above) is what keeps the row
+            // contract; JSON keeps the real title. The remaining columns
+            // are genuinely machine-made (fixed markers, a fixed kind
+            // label, an RFC3339 timestamp).
+            crate::support::collapse_control_characters(&row.title),
+        )
+    });
     Ok(success(render(output, human, &value)))
 }
 
@@ -531,7 +522,7 @@ fn show(
     let store = open_store()?;
     let mut session = store
         .load(id)
-        .map_err(|error| store_error("show", id, error))?;
+        .map_err(|error| crate::support::store_error("sessions", "show", id, error))?;
     let kind = kind_label(&store, id);
     // The session log is the source of truth for the total (the metadata
     // counter can lag behind hand-seeded or replayed transcripts).
@@ -549,18 +540,17 @@ fn show(
         let start = session.messages.len().saturating_sub(last);
         session.messages.drain(..start);
     }
-    let metadata =
-        serde_json::to_value(&session.metadata).map_err(|error| store_error("show", id, error))?;
-    let messages =
-        serde_json::to_value(&session.messages).map_err(|error| store_error("show", id, error))?;
+    let metadata = serde_json::to_value(&session.metadata)
+        .map_err(|error| crate::support::store_error("sessions", "show", id, error))?;
+    let messages = serde_json::to_value(&session.messages)
+        .map_err(|error| crate::support::store_error("sessions", "show", id, error))?;
     drop(session);
     // Take the array by value; `as_array().cloned()` would reintroduce a copy
     // of the very window this function just narrowed. (`to_value` of a `Vec`
-    // always serializes as an array, so the fallback arm is unreachable — it
-    // only keeps a hypothetical shape change from panicking.)
+    // always serializes as an array, so the fallback arm is unreachable.)
     let messages = match messages {
         serde_json::Value::Array(messages) => messages,
-        _other => Vec::new(),
+        _other => unreachable!("to_value of a Vec is always an array"),
     };
     let rendered = messages
         .iter()
@@ -642,7 +632,7 @@ fn rename(id: &str, title: &str, output: OutputMode) -> Result<CliOutcome, CliEr
     let store = open_store()?;
     store
         .set_title(id, title.to_owned())
-        .map_err(|error| store_error("rename", id, error))?;
+        .map_err(|error| crate::support::store_error("sessions", "rename", id, error))?;
     let value = serde_json::json!({ "id": id, "action": "renamed", "title": title });
     // The echo goes through the same collapse as the list/show title columns:
     // a title is argv here, but it is rendered back on one line and the CLI
@@ -820,7 +810,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
         // created inside the probe→load window, which falls through to the
         // delete the caller asked for.
         if let Err(error) = store.load(id) {
-            return Err(store_error("delete", id, error));
+            return Err(crate::support::store_error("sessions", "delete", id, error));
         }
     }
     // The store delete path mirrors the GUI chat-session cascade (session
@@ -828,7 +818,7 @@ fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliErro
     // the GUI deletes through their automation only.
     store
         .delete(id)
-        .map_err(|error| store_error("delete", id, error))?;
+        .map_err(|error| crate::support::store_error("sessions", "delete", id, error))?;
     // Second half of the GUI cascade (`app/commands/sessions.rs` calls
     // `acp_pool.agents().remove(&id)` after a successful chat delete): drop the
     // session's record from `~/.pinvou3/session-agents.json`. `store.delete`
@@ -887,16 +877,17 @@ fn export(
     let store = open_store()?;
     let session = store
         .load(id)
-        .map_err(|error| store_error("export", id, error))?;
+        .map_err(|error| crate::support::store_error("sessions", "export", id, error))?;
     // Consumed, not borrowed: an export renders the WHOLE transcript, so the
     // `Value` cannot be narrowed the way `show` narrows its window — but
     // moving the session in lets it be freed as soon as the `Value` exists,
     // instead of being held alive alongside both the `Value` and the rendered
     // `content` string until the end of this function.
-    let value = serde_json::to_value(session).map_err(|error| store_error("export", id, error))?;
+    let value = serde_json::to_value(session)
+        .map_err(|error| crate::support::store_error("sessions", "export", id, error))?;
     let content = match format {
         ExportFormat::Json => serde_json::to_string_pretty(&value)
-            .map_err(|error| store_error("export", id, error))?,
+            .map_err(|error| crate::support::store_error("sessions", "export", id, error))?,
         ExportFormat::Markdown => render_markdown(id, &value),
     };
     match destination {
@@ -1163,19 +1154,15 @@ fn timeline(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
                 .unwrap_or(fallback),
         )
     };
-    let human = events
-        .iter()
-        .map(|event| {
-            format!(
-                "{}\t{}\t{}\t{}",
-                cell(event, "ts", ""),
-                cell(event, "event", ""),
-                cell(event, "turn_id", ""),
-                cell(event, "status", "-"),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let human = join_rows(&events, |event| {
+        format!(
+            "{}\t{}\t{}\t{}",
+            cell(event, "ts", ""),
+            cell(event, "event", ""),
+            cell(event, "turn_id", ""),
+            cell(event, "status", "-"),
+        )
+    });
     let value = serde_json::json!({ "id": id, "events": events });
     Ok(success(render(output, human, &value)))
 }
@@ -1189,58 +1176,54 @@ fn subagents(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     require_existing(&store, id, "subagents")?;
     let ledger = store
         .ledger_root(id)
-        .map_err(|error| store_error("subagents", id, error))?;
+        .map_err(|error| crate::support::store_error("sessions", "subagents", id, error))?;
     let summaries = pinvou3_lib::features::multiagent::transcripts::list(&ledger, None)
-        .map_err(|error| store_error("subagents", id, error))?;
-    let human = summaries
-        .iter()
-        .map(|summary| {
-            let state = if !summary.has_transcript {
-                "queued"
-            } else if summary.failed {
-                // Every terminal non-success lands here — failed, cancelled and
-                // interrupted alike — because the foundation defines
-                // `failed = done && status != Completed`
-                // (`features/multiagent/transcripts.rs`), so `failed` already
-                // implies `done` and there is no second `failed` arm to reach.
-                // The human column prints the foundation's own status name
-                // rather than flattening all three into "failed"; the fallback
-                // is the interrupted projection, which is what a listing with
-                // no live engine (this CLI) reports for a worker that never
-                // reached a terminal status.
-                summary.status.as_deref().unwrap_or("interrupted")
-            } else if summary.blocked {
-                "blocked"
-            } else if summary.done {
-                "done"
-            } else {
-                "running"
-            };
-            // `objective` is verbatim from the model's own `agent` tool call
-            // and `error` carries whatever the failing worker reported, so
-            // both are untrusted here. They are also the two rightmost cells
-            // of a tab-separated row: an embedded tab would invent a fifth
-            // column and a newline would turn one subagent into two rows, so
-            // the whole row goes through the column collapse (agent_id and
-            // state included — the row contract must not depend on which
-            // cell happened to be machine-made).
-            let cell = crate::support::collapse_control_characters;
-            format!(
-                "{}\t{}\t{}\t{}",
-                cell(&summary.agent_id),
-                cell(state),
-                cell(summary.objective.as_deref().unwrap_or("-")),
-                cell(summary.error.as_deref().unwrap_or("-")),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+        .map_err(|error| crate::support::store_error("sessions", "subagents", id, error))?;
+    let human = join_rows(&summaries, |summary| {
+        let state = if !summary.has_transcript {
+            "queued"
+        } else if summary.failed {
+            // Every terminal non-success lands here — failed, cancelled and
+            // interrupted alike — because the foundation defines
+            // `failed = done && status != Completed`
+            // (`features/multiagent/transcripts.rs`), so `failed` already
+            // implies `done` and there is no second `failed` arm to reach.
+            // The human column prints the foundation's own status name
+            // rather than flattening all three into "failed"; the fallback
+            // is the interrupted projection, which is what a listing with
+            // no live engine (this CLI) reports for a worker that never
+            // reached a terminal status.
+            summary.status.as_deref().unwrap_or("interrupted")
+        } else if summary.blocked {
+            "blocked"
+        } else if summary.done {
+            "done"
+        } else {
+            "running"
+        };
+        // `objective` is verbatim from the model's own `agent` tool call
+        // and `error` carries whatever the failing worker reported, so
+        // both are untrusted here. They are also the two rightmost cells
+        // of a tab-separated row: an embedded tab would invent a fifth
+        // column and a newline would turn one subagent into two rows, so
+        // the whole row goes through the column collapse (agent_id and
+        // state included — the row contract must not depend on which
+        // cell happened to be machine-made).
+        let cell = crate::support::collapse_control_characters;
+        format!(
+            "{}\t{}\t{}\t{}",
+            cell(&summary.agent_id),
+            cell(state),
+            cell(summary.objective.as_deref().unwrap_or("-")),
+            cell(summary.error.as_deref().unwrap_or("-")),
+        )
+    });
     // A failed serialization is a host failure, not an empty roster: telling
     // a script "no subagents dispatched" when the listing could not be
     // rendered turns a reportable error into a wrong answer (same propagation
     // as `show` and `export` above).
-    let serialized =
-        serde_json::to_value(&summaries).map_err(|error| store_error("subagents", id, error))?;
+    let serialized = serde_json::to_value(&summaries)
+        .map_err(|error| crate::support::store_error("sessions", "subagents", id, error))?;
     let value = serde_json::json!({ "id": id, "subagents": serialized });
     Ok(success(render(output, human, &value)))
 }
@@ -1259,7 +1242,7 @@ fn folder(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     let path = if store.scheduled_profile(id).is_some() {
         store
             .ledger_root(id)
-            .map_err(|error| store_error("folder", id, error))?
+            .map_err(|error| crate::support::store_error("sessions", "folder", id, error))?
     } else {
         home.join("sessions").join(id)
     };

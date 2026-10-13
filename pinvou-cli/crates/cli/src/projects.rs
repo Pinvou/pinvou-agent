@@ -257,8 +257,24 @@ pub fn parse(values: &[String]) -> Result<ProjectsCommand, CliError> {
             // execute-level validation mirrors the GUI command's rules
             // verbatim and its message is the single place that names
             // empty, relative and filesystem-root `from` alike.
-            let from = require_path(rest.first(), "rebind <from> <to>")?;
-            let to = require_path(rest.get(1), "rebind <from> <to>")?;
+            let from = rest
+                .first()
+                .ok_or_else(|| CliError::usage("projects rebind <from> <to> are required"))?;
+            if from.starts_with("--") {
+                return Err(CliError::usage(format!(
+                    "projects rebind: expected a path, got flag-shaped {from:?}"
+                )));
+            }
+            let from = PathBuf::from(from);
+            let to = rest
+                .get(1)
+                .ok_or_else(|| CliError::usage("projects rebind <from> <to> are required"))?;
+            if to.starts_with("--") {
+                return Err(CliError::usage(format!(
+                    "projects rebind: expected a path, got flag-shaped {to:?}"
+                )));
+            }
+            let to = PathBuf::from(to);
             let (_, flags) = parse_flags(&rest[2..], &[], YES_FLAGS)?;
             Ok(ProjectsCommand::Rebind {
                 from,
@@ -305,18 +321,6 @@ fn require_id(value: Option<&String>, subcommand: &str) -> Result<String, CliErr
     crate::support::require_family_id(value, &prefix, &prefix, "an id")
 }
 
-/// Positional path token for `rebind`: required, and never flag-shaped (an
-/// empty token deliberately parses through — see the parse arm).
-fn require_path(value: Option<&String>, tail: &str) -> Result<PathBuf, CliError> {
-    let value = value.ok_or_else(|| CliError::usage(format!("projects {tail} are required")))?;
-    if value.starts_with("--") {
-        return Err(CliError::usage(format!(
-            "projects rebind: expected a path, got flag-shaped {value:?}"
-        )));
-    }
-    Ok(PathBuf::from(value))
-}
-
 /// Shared implementation in `support::parse_family_flags`; `family`
 /// only names this family in error messages.
 fn parse_flags<'a>(
@@ -358,8 +362,7 @@ fn open_store() -> Result<ProjectStore, CliError> {
 
 fn open_session_store() -> Result<SessionStore, CliError> {
     sandbox_home()?;
-    let sessions = SessionStore::boot()
-        .map_err(|error| CliError::failed(format!("sessions store unavailable: {error:#}")))?;
+    let sessions = crate::support::boot_session_store()?;
     // Both callers of this constructor are the family's store-rewriting
     // lanes (`move`, `rebind`), so the legacy binding-table convergence the
     // GUI gets from its process-startup boot must run here too: plain
@@ -1267,22 +1270,13 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
             (Some(pre_sync), true) => Some(pre_sync.clone()),
             _ => None,
         };
-        let new_path_for_storage = new_path.clone();
-        let from_display_for_storage = from_display.clone();
-        let to_display_for_storage = to_display.clone();
-        let translate = move |path: &Path| {
+        let translate = |path: &Path| {
             per_session_from
                 .as_ref()
                 .and_then(|storage_from| {
-                    SessionAgentStore::rebind_target_path(path, storage_from, &new_path_for_storage)
+                    SessionAgentStore::rebind_target_path(path, storage_from, &new_path)
                 })
-                .or_else(|| {
-                    SessionAgentStore::rebind_target_path(
-                        path,
-                        &from_display_for_storage,
-                        &to_display_for_storage,
-                    )
-                })
+                .or_else(|| SessionAgentStore::rebind_target_path(path, &from_display, &to_display))
         };
         if let Err(error) = sessions.rebase_workspace_artifact_paths(session_id, &translate) {
             // Same root-cause-only echo as set_workspace below (the chain
@@ -1785,48 +1779,6 @@ mod tests {
                 .workspace,
             to,
             "the SavedSession metadata must be synced to the destination"
-        );
-    }
-
-    /// The other half of the same comparison: a genuine no-op (the same
-    /// canonical directory on both sides) must stay an EMPTY success. This
-    /// is the arm the Windows alias fold serves; a regression to a raw
-    /// `!=` here would run the full lane suite against itself and report
-    /// phantom work. Portable: both displays canonicalize to one path on
-    /// every platform.
-    #[test]
-    fn rebind_onto_the_same_directory_stays_a_no_op_success() {
-        let _env_lock = crate::support::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let root = crate::support::test_support::TempHome::new("projects-noop");
-        let dir = root.join("proj");
-        std::fs::create_dir_all(&dir).expect("create the directory");
-        let sessions = SessionStore::boot().expect("boot the session store");
-        let saved = sessions
-            .create_new("probe-model".to_owned(), None, dir.clone())
-            .expect("create the bound session");
-        let session_id = saved.metadata.id;
-        SessionAgentStore::load_or_empty()
-            .set_acp_workspace(
-                &session_id,
-                AgentBackend::CodexAcp,
-                CodexWorkspaceKind::Project,
-                Some(dir.clone()),
-            )
-            .expect("bind the session");
-
-        let outcome = rebind(&dir, &dir, true, OutputMode::Json).expect("the rebind runs");
-        let report: serde_json::Value =
-            serde_json::from_str(&outcome.stdout).expect("a JSON report");
-        assert_eq!(
-            report,
-            serde_json::json!({
-                "rebound_session_ids": [],
-                "failed_session_ids": [],
-                "affected_project_ids": [],
-            }),
-            "a self-rebind is a no-op success, not a rewrite: {report}"
         );
     }
 

@@ -162,6 +162,7 @@ fn agent_tool_policy_id_rejects_credentials_controls_and_oversized_values() {
         "bearer-private",
         "client_secret_private",
         "credential-private",
+        "PRIVATE_CREDENTIAL_SENTINEL",
         "password-private",
         "cookie-private",
         "authorization-private",
@@ -171,14 +172,6 @@ fn agent_tool_policy_id_rejects_credentials_controls_and_oversized_values() {
         assert_eq!(error.to_string(), "unsafe agent tool policy id");
         assert!(!format!("{error:?}").contains(value));
     }
-}
-
-#[test]
-fn agent_tool_policy_debug_does_not_expose_credential_sentinel() {
-    let credential_sentinel = "PRIVATE_CREDENTIAL_SENTINEL";
-    let error = AgentToolPolicyId::new(credential_sentinel).unwrap_err();
-
-    assert!(!format!("{error:?}").contains(credential_sentinel));
 }
 
 #[test]

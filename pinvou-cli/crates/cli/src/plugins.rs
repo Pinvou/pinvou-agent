@@ -519,27 +519,7 @@ fn parse_secret_pair(value: &str) -> Result<(String, String), CliError> {
             "plugins tools install --secret requires non-empty KEY and ENV_VAR_NAME",
         ));
     }
-    // Round-42 review: the value must look like an env-var NAME. The docs
-    // promise "the argv carries only the variable NAME"; without a shape
-    // gate a pasted literal secret (`--secret api_key=sk-...`) sailed
-    // through parsing and failed later as a missing variable — after
-    // riding argv. The pattern is the conventional export name: letters,
-    // digits, underscore, not starting with a digit. Names outside it
-    // exist (`$HOME` is bash syntax, not an env-var name; bytes outside
-    // this set cannot be exported by any POSIX shell without printf
-    // tricks), so refusing is fail-fast, not a capability loss.
-    let name_is_sound = env_var.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
-        && env_var
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_');
-    if !name_is_sound {
-        return Err(CliError::usage(
-            "plugins tools install --secret: ENV_VAR_NAME must be an environment variable \
-             NAME (letters, digits, underscore, not starting with a digit) — the secret \
-             itself never belongs on argv"
-                .to_owned(),
-        ));
-    }
+    crate::support::ensure_env_var_name("plugins tools install --secret: ENV_VAR_NAME", env_var)?;
     Ok((key.to_owned(), env_var.to_owned()))
 }
 
@@ -1100,12 +1080,12 @@ fn tools_uninstall(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome
 /// an untyped `get("servers").get(name)` reported `mcp_configured: true` for
 /// configurations the GUI rejects.
 ///
-/// Returns `Err` only for a read/parse/shape failure; `Ok(None)` means the
-/// file (or the map) is simply absent.
-fn read_mcp_json_servers(context: &str) -> Result<Option<serde_json::Value>, CliError> {
+/// Returns `Err` only for a read/parse/shape failure; `Ok(false)` means the
+/// file, the map, or the queried server is simply absent.
+fn read_mcp_json_servers(context: &str, server_name: &str) -> Result<bool, CliError> {
     let path = pinvou3_lib::platform::paths::mcp_config_path();
     if !path.is_file() {
-        return Ok(None);
+        return Ok(false);
     }
     // Round-43 review: capped like every other family lane — a pathological
     // mcp.json refuses with the read-limit error instead of being slurped
@@ -1141,7 +1121,7 @@ fn read_mcp_json_servers(context: &str) -> Result<Option<serde_json::Value>, Cli
             )));
         }
         (Some(servers), None) | (None, Some(servers)) => servers,
-        (None, None) => return Ok(None),
+        (None, None) => return Ok(false),
     };
     let Some(entries) = servers.as_object() else {
         return Err(CliError::failed(format!(
@@ -1160,7 +1140,7 @@ fn read_mcp_json_servers(context: &str) -> Result<Option<serde_json::Value>, Cli
             )));
         }
     }
-    Ok(Some(servers.clone()))
+    Ok(servers.get(server_name).is_some())
 }
 
 /// Whether one `mcp.json` server entry would deserialize into the foundation's
@@ -1239,9 +1219,8 @@ fn tools_auth(id: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
     // strict reader: its GUI counterpart propagates the parse error too,
     // because it is about to ACT on that config.)
     if let Some(name) = server_name.as_deref() {
-        match read_mcp_json_servers("auth") {
-            Ok(Some(servers)) => mcp_configured = servers.get(name).is_some(),
-            Ok(None) => {}
+        match read_mcp_json_servers("auth", name) {
+            Ok(present) => mcp_configured = present,
             Err(error) => {
                 note!("[plugins] {error}; reporting the MCP config as not installed");
             }
@@ -1302,8 +1281,8 @@ fn tools_oauth_login(id: &str) -> CliError {
     // The lookup IS the guard: a declared server missing from mcp.json
     // refuses here, and the resolved entry has no further consumer — the
     // login flow it would feed lives in the foundation crate (refused below).
-    let present = match read_mcp_json_servers("oauth-login") {
-        Ok(servers) => servers.is_some_and(|servers| servers.get(&server_name).is_some()),
+    let present = match read_mcp_json_servers("oauth-login", &server_name) {
+        Ok(present) => present,
         Err(error) => return error,
     };
     if !present {

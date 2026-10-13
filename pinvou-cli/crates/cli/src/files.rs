@@ -188,14 +188,6 @@ fn write_file(
             destination.display()
         ))
     })?;
-    // Best-effort owner-only tighten after the write, mirroring the
-    // create-time mode above; the ignored result keeps a failing chmod from
-    // failing a write that already succeeded.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
-    }
     let mut value = ingest_json(result);
     if let Some(map) = value.as_object_mut() {
         map.insert(
@@ -294,9 +286,6 @@ fn translate_ingest_error(message: &str) -> String {
         if let Some(path) = rest.strip_suffix(" is not a file") {
             return format!("{path} is not a regular file");
         }
-    }
-    if let Some(path) = message.strip_prefix("path must be absolute: ") {
-        return format!("{path} could not be resolved to an absolute path");
     }
     message.to_owned()
 }

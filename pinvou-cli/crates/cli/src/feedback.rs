@@ -83,6 +83,8 @@ pub fn parse(values: &[String]) -> Result<FeedbackCommand, CliError> {
         &["--attach"],
         "feedback",
         &mut validate,
+        &[],
+        false,
     )?;
     Ok(FeedbackCommand {
         // An invalid `--type` value cannot reach here — the hook above
@@ -102,10 +104,9 @@ pub fn parse(values: &[String]) -> Result<FeedbackCommand, CliError> {
         body_file: crate::support::family_option(&options, "--body-file")
             .ok_or_else(|| CliError::usage("feedback submit requires --body-file F"))?
             .into(),
-        attachments: options
-            .iter()
-            .filter(|(name, _)| *name == "--attach")
-            .map(|(_, value)| PathBuf::from(value))
+        attachments: crate::support::family_options(&options, "--attach")
+            .into_iter()
+            .map(PathBuf::from)
             .collect(),
     })
 }
@@ -529,22 +530,12 @@ fn poll_once<F: std::future::Future>(future: F) -> Option<F::Output> {
 #[cfg(test)]
 mod tests {
     use super::PendingBundleGuard;
-    use std::path::PathBuf;
-
-    /// Scratch path for one guard test; the pid keeps parallel test runs
-    /// apart the same way `new_feedback_id` keeps receipts apart.
-    fn scratch_path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "pinvou-feedback-guard-{}-{name}",
-            std::process::id()
-        ))
-    }
 
     /// The invariant that keeps `feedback/pending/` transient: dropping the
     /// guard removes the staged bundle, whatever the run concluded with.
     #[test]
     fn pending_guard_removes_the_staged_bundle_when_dropped() {
-        let path = scratch_path("removes");
+        let path = crate::support::test_support::scratch_dir("feedback").join("removes");
         std::fs::write(&path, b"{}\n").expect("write scratch bundle");
         drop(PendingBundleGuard { path: path.clone() });
         assert!(!path.exists(), "the guard must remove the staged bundle");
@@ -555,13 +546,13 @@ mod tests {
     /// not panic the drop: the run's own outcome still propagates.
     #[test]
     fn pending_guard_tolerates_a_missing_or_unremovable_bundle() {
-        let missing = scratch_path("missing");
+        let missing = crate::support::test_support::scratch_dir("feedback").join("missing");
         drop(PendingBundleGuard {
             path: missing.clone(),
         });
         assert!(!missing.exists());
 
-        let stuck = scratch_path("stuck");
+        let stuck = crate::support::test_support::scratch_dir("feedback").join("stuck");
         std::fs::create_dir(&stuck).expect("create scratch directory");
         drop(PendingBundleGuard {
             path: stuck.clone(),

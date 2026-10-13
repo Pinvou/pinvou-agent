@@ -293,6 +293,39 @@ fn stalled_add_sources(
     )
 }
 
+/// The frozen-import fixture the interrupted-job tests start from: a fresh
+/// collection over the deterministic empty stall tree (9000 traversed
+/// entries, zero importable files), driven under a 1 ms stall bound that
+/// each 5000-entry heartbeat segment always outlives. Asserts the trip is
+/// honest — exit 1, the stall named, the interrupted-and-resumable remedy
+/// stated — and that the job landed `interrupted` with its id on disk.
+/// Returns (collection id, interrupted job id).
+fn interrupted_job_from_stall(home: &HomeGuard, name: &str, tree: &str) -> (i64, String) {
+    let id = create_collection(name);
+    let root = write_empty_stall_tree(home, tree);
+    let outcome = stalled_add_sources(home, id, &root, "1");
+    let stderr = String::from_utf8_lossy(&outcome.stderr).into_owned();
+    assert!(
+        !outcome.status.success(),
+        "a signature frozen past the bound must trip it, got success with stderr {stderr}"
+    );
+    assert!(
+        stderr.contains("reported no progress"),
+        "the timeout must name the stall, not a generic fault: {stderr}"
+    );
+    assert!(
+        stderr.contains("interrupted and is resumable now"),
+        "the remedy must state the interrupt landed and the job is resumable: {stderr}"
+    );
+    let settled = run_json(&["pinvou", "knowledge", "index", "status"]);
+    assert_eq!(settled["phase"], serde_json::json!("interrupted"));
+    let job_id = settled["jobId"]
+        .as_str()
+        .expect("the interrupted job is named for resuming")
+        .to_owned();
+    (id, job_id)
+}
+
 /// Seeds a live-owner import through `seed_running_job` and parks its thread
 /// deterministically on `PINVOU_KB_IMPORT_HOLD_FILE`: the park sits between
 /// `prepare_items` (which stages and promotes the row to `running`) and the
@@ -326,6 +359,46 @@ fn hold_import_until_parked(home: &HomeGuard, label: &str) -> (HoldEnvGuard, Pat
     );
     unsafe { std::env::remove_var("PINVOU_KB_IMPORT_HOLD_FILE") };
     (guard, hold, job_id, collection)
+}
+
+/// The second add-sources behind a running latest job, the fixture both
+/// live-owner tests share: a fresh "other" collection and one source file
+/// that must never be enqueued. `run` receives the FULL argv including the
+/// leading `"pinvou"` token and performs the channel-specific refusal
+/// assertions (the child-process `run_child` harness takes its argv after
+/// the binary name, so that caller slices `&arguments[1..]`; the in-process
+/// `expect_failed` caller uses it whole). Afterwards the helper proves the
+/// refused sources stayed out of the collection's documents.
+fn refused_second_add_sources(home: &HomeGuard, run: impl Fn(&[&str])) {
+    let other = run_json(&[
+        "pinvou",
+        "knowledge",
+        "collections",
+        "create",
+        "--name",
+        "other",
+    ]);
+    let other_id = other["id"]
+        .as_i64()
+        .expect("other collection id")
+        .to_string();
+    let second_source = home.path().join("second.txt");
+    std::fs::write(&second_source, "must not be enqueued.").unwrap();
+    let arguments = vec![
+        "pinvou",
+        "knowledge",
+        "collections",
+        "add-sources",
+        &other_id,
+        second_source.to_str().unwrap(),
+    ];
+    run(&arguments);
+    let documents = run_json(&["pinvou", "knowledge", "documents", &other_id]);
+    assert_eq!(
+        documents["documents"],
+        serde_json::json!([]),
+        "refused sources must not be enqueued"
+    );
 }
 
 // ---- parse-level coverage ----
@@ -1329,43 +1402,18 @@ fn index_resume_refuses_a_stranded_running_job_then_continues_after_recovery() {
     // way while the store's latest job is running, and the new sources must
     // not be silently enqueued (the upstream short-circuit would drop them
     // behind the unfinished job while reporting success).
-    let other = run_json(&[
-        "pinvou",
-        "knowledge",
-        "collections",
-        "create",
-        "--name",
-        "other",
-    ]);
-    let other_id = other["id"].as_i64().expect("other collection id");
-    let extra = home.path().join("second.txt");
-    std::fs::write(&extra, "must not be enqueued.").unwrap();
-    let refused_enqueue = run_child(
-        home.path(),
-        &[
-            "knowledge",
-            "collections",
-            "add-sources",
-            &other_id.to_string(),
-            extra.to_str().unwrap(),
-        ],
-        &[],
-    );
-    assert!(
-        !refused_enqueue.status.success(),
-        "add-sources behind a running latest job must refuse"
-    );
-    let enqueue_stderr = String::from_utf8_lossy(&refused_enqueue.stderr);
-    assert!(
-        enqueue_stderr.contains("still running") && enqueue_stderr.contains("NOT enqueued"),
-        "{enqueue_stderr}"
-    );
-    let other_documents = run_json(&["pinvou", "knowledge", "documents", &other_id.to_string()]);
-    assert_eq!(
-        other_documents["documents"],
-        serde_json::json!([]),
-        "refused sources must not be enqueued"
-    );
+    refused_second_add_sources(&home, |arguments| {
+        let refused_enqueue = run_child(home.path(), &arguments[1..], &[]);
+        assert!(
+            !refused_enqueue.status.success(),
+            "add-sources behind a running latest job must refuse"
+        );
+        let enqueue_stderr = String::from_utf8_lossy(&refused_enqueue.stderr);
+        assert!(
+            enqueue_stderr.contains("still running") && enqueue_stderr.contains("NOT enqueued"),
+            "{enqueue_stderr}"
+        );
+    });
 
     // The refusals must not have flipped the strand: it still reads running
     // and not resumable exactly as the killed child left it.
@@ -1493,30 +1541,14 @@ fn running_jobs_refuse_resume_retry_and_second_add_sources() {
     // A second add-sources against a DIFFERENT collection is likewise
     // refused while the store's latest job is running, and the new sources
     // must not be enqueued.
-    let other = run_json(&[
-        "pinvou",
-        "knowledge",
-        "collections",
-        "create",
-        "--name",
-        "other",
-    ]);
-    let other_id = other["id"].as_i64().expect("other collection id");
-    let second_source = home.path().join("second.txt");
-    std::fs::write(&second_source, "must not be enqueued.").unwrap();
-    let error = expect_failed(&[
-        "pinvou",
-        "knowledge",
-        "collections",
-        "add-sources",
-        &other_id.to_string(),
-        second_source.to_str().unwrap(),
-    ]);
-    let message = error.to_string();
-    assert!(
-        message.contains("still running") && message.contains("NOT enqueued"),
-        "{message}"
-    );
+    refused_second_add_sources(&home, |arguments| {
+        let error = expect_failed(arguments);
+        let message = error.to_string();
+        assert!(
+            message.contains("still running") && message.contains("NOT enqueued"),
+            "{message}"
+        );
+    });
 
     // The refused commands must not have flipped the seeded job: it stays
     // on its active progression (interrupted would mean something ran the
@@ -1543,13 +1575,6 @@ fn running_jobs_refuse_resume_retry_and_second_add_sources() {
         state["phase"],
         serde_json::json!("interrupted"),
         "no refusal may run boot recovery against a live owner"
-    );
-
-    let documents = run_json(&["pinvou", "knowledge", "documents", &other_id.to_string()]);
-    assert_eq!(
-        documents["documents"],
-        serde_json::json!([]),
-        "refused sources must not be enqueued"
     );
 }
 
@@ -1610,37 +1635,12 @@ fn a_walk_outliving_the_stall_bound_completes_with_an_honest_zero() {
 fn a_frozen_import_is_interrupted_and_resumable() {
     let _env_guard = env_lock();
     let home = temp_home("stall-interrupt");
-    let id = create_collection("stall-interrupt");
 
     // Same empty-directory shape as the negative test: 9000 traversed
     // entries, zero importable files. The walk's first heartbeat only fires
     // at entry 5000, so with the bound at 1 ms the signature is frozen at
     // the loop's first polls and the trip is deterministic.
-    let root = write_empty_stall_tree(&home, "stall-tree");
-
-    let outcome = stalled_add_sources(&home, id, &root, "1");
-    let stderr = String::from_utf8_lossy(&outcome.stderr);
-    assert!(
-        !outcome.status.success(),
-        "a signature frozen past the bound must trip it, got success with stderr {stderr}"
-    );
-    assert!(
-        stderr.contains("reported no progress"),
-        "the timeout must name the stall, not a generic fault: {stderr}"
-    );
-    assert!(
-        stderr.contains("interrupted and is resumable now"),
-        "the remedy must state the interrupt landed and the job is resumable: {stderr}"
-    );
-
-    // The on-disk state backs the remedy: `interrupted`, with a job id a
-    // fresh invocation can resume.
-    let settled = run_json(&["pinvou", "knowledge", "index", "status"]);
-    assert_eq!(settled["phase"], serde_json::json!("interrupted"));
-    let job_id = settled["jobId"]
-        .as_str()
-        .expect("the interrupted job is named for resuming")
-        .to_owned();
+    let (_id, job_id) = interrupted_job_from_stall(&home, "stall-interrupt", "stall-tree");
 
     // The remedy's command works verbatim: no desktop-app boot in between.
     run_ok(&["pinvou", "knowledge", "index", "resume", &job_id]);
@@ -1692,20 +1692,10 @@ fn index_cancel_discloses_the_staged_progress_destruction() {
 fn index_retry_names_a_bad_item_id_instead_of_the_job() {
     let _env_guard = env_lock();
     let home = temp_home("retry-item-miss");
-    let id = create_collection("retry-item-miss");
 
     // Same deterministic stall shape as the frozen-import test: 9000
     // traversed entries, zero importable files, 1 ms bound → interrupted.
-    let root = write_empty_stall_tree(&home, "retry-tree");
-    let outcome = stalled_add_sources(&home, id, &root, "1");
-    assert!(!outcome.status.success(), "the 1 ms bound must trip");
-
-    let settled = run_json(&["pinvou", "knowledge", "index", "status"]);
-    assert_eq!(settled["phase"], serde_json::json!("interrupted"));
-    let job_id = settled["jobId"]
-        .as_str()
-        .expect("the interrupted job is named")
-        .to_owned();
+    let (_id, job_id) = interrupted_job_from_stall(&home, "retry-item-miss", "retry-tree");
 
     let error = expect_failed(&["pinvou", "knowledge", "index", "retry", &job_id, "999999"]);
     let message = error.to_string();

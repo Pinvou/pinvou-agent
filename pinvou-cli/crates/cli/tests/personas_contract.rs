@@ -21,7 +21,7 @@ use pinvou_cli::{ExitCode, OutputMode, parse_args};
 
 use common::{
     HomeGuard, Isolation, assert_usage, create_session_fixture, env_lock, expect_failed,
-    parsed_debug, run, run_child, run_json, unique_root, usage_error,
+    parsed_debug, run, run_child, run_json, unique_root, usage_error, write_credential_fixture,
 };
 
 /// A throwaway `PINVOU3_HOME` for one test.
@@ -155,13 +155,12 @@ fn create_user_persona(name: &str, body: &Path) -> String {
 fn personas_create_refuses_a_credential_location_body_file() {
     let _env_guard = env_lock();
     let home = temp_home("create-credential-body");
-    let file = home.path().join(".aws").join("credentials");
-    std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-    std::fs::write(
-        &file,
+    let file = write_credential_fixture(
+        home.path(),
+        ".aws",
+        "credentials",
         "[default]\naws_access_key_id = AKIAIOSFODNN7EXAMPLE\n",
-    )
-    .unwrap();
+    );
 
     let error = expect_failed(&[
         "pinvou",

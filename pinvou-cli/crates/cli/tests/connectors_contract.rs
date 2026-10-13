@@ -19,9 +19,9 @@ mod common;
 
 use std::path::PathBuf;
 
-// PermissionsExt imports live inside the #[cfg(unix)] tests that need them
-// (755, 1289, 1345, 1503): a module-level import compiles on unix even when
-// none of those tests is included, which is how this became an unused name.
+// PermissionsExt imports live inside the #[cfg(unix)] tests that need them:
+// a module-level import compiles on unix even when none of those tests is
+// included, which is how this became an unused name.
 use common::{EnvGuard, Isolation, run, run_json, usage_error};
 use pinvou_cli::{ExitCode, parse_args};
 
@@ -79,6 +79,15 @@ fn plant_skill_tree(home: &HomeGuard, id: &str, dir: &str, skill_md: &str) -> Pa
     std::fs::write(skills.join(format!("NOTICE-{id}.md")), "notice").unwrap();
     std::fs::create_dir_all(skills.join("unrelated")).unwrap();
     skills
+}
+
+/// Runs `connectors status <id>` and returns the single entry it reports —
+/// the one fetch seam every single-connector status assertion shares. The
+/// caller holds `env_lock` and passes the sandbox home the row is produced
+/// against (proving it is still alive, not used here).
+fn status_entry(_home: &HomeGuard, id: &str) -> serde_json::Value {
+    let value = run_json(&["pinvou", "connectors", "status", id]);
+    value["connectors"][0].clone()
 }
 
 /// Points `PATH` at a directory holding no vendor connector CLI (or the
@@ -421,9 +430,9 @@ fn connectors_enable_disable_switch_through_scope_state_only() {
     // status reads the switch, not the marker: a connector switched off in
     // the scope state must report enabled=false (before this contract it
     // read only the marker and reported a GUI-disabled connector as on).
-    let value = run_json(&["pinvou", "connectors", "status", "feishu"]);
-    assert_eq!(value["connectors"][0]["enabled"], false);
-    assert_eq!(value["connectors"][0]["legacy_disabled_marker"], false);
+    let entry = status_entry(&home, "feishu");
+    assert_eq!(entry["enabled"], false);
+    assert_eq!(entry["legacy_disabled_marker"], false);
     let outcome = run(&["pinvou", "connectors", "status", "feishu"]).expect("human status");
     assert!(outcome.stdout.contains("enabled=no"));
     assert!(!outcome.stdout.contains("legacy_disabled_marker"));
@@ -437,8 +446,8 @@ fn connectors_enable_disable_switch_through_scope_state_only() {
             .unwrap()
             .contains("feishu")
     );
-    let value = run_json(&["pinvou", "connectors", "status", "feishu"]);
-    assert_eq!(value["connectors"][0]["enabled"], true);
+    let entry = status_entry(&home, "feishu");
+    assert_eq!(entry["enabled"], true);
 
     // Both directions are idempotent.
     let value = run_json(&["pinvou", "connectors", "enable", "feishu"]);
@@ -461,13 +470,13 @@ fn connectors_status_surfaces_a_legacy_marker_and_enable_heals_it() {
     // this file exists, and no GUI action can remove it.
     std::fs::write(home.disabled_marker("wecom"), b"1").unwrap();
 
-    let value = run_json(&["pinvou", "connectors", "status", "wecom"]);
+    let entry = status_entry(&home, "wecom");
     assert_eq!(
-        value["connectors"][0]["enabled"], false,
+        entry["enabled"], false,
         "a legacy marker really hides the skills, so enabled must report false"
     );
     assert_eq!(
-        value["connectors"][0]["legacy_disabled_marker"], true,
+        entry["legacy_disabled_marker"], true,
         "the marker must be surfaced distinctly from the scope switch"
     );
     let outcome = run(&["pinvou", "connectors", "status", "wecom"]).expect("human status");
@@ -489,9 +498,9 @@ fn connectors_status_surfaces_a_legacy_marker_and_enable_heals_it() {
         !home.disabled_marker("wecom").exists(),
         "enable must heal a stale legacy marker"
     );
-    let value = run_json(&["pinvou", "connectors", "status", "wecom"]);
-    assert_eq!(value["connectors"][0]["enabled"], true);
-    assert_eq!(value["connectors"][0]["legacy_disabled_marker"], false);
+    let entry = status_entry(&home, "wecom");
+    assert_eq!(entry["enabled"], true);
+    assert_eq!(entry["legacy_disabled_marker"], false);
 }
 
 /// Round-45: the family's runtime failures carry stable `connectors_*` code
@@ -564,7 +573,7 @@ fn connectors_logout_and_apply_skills_on_uninstalled_connector_degrade_like_the_
         assert_eq!(value["id"], id, "{id}");
         assert_eq!(value["installed"], false, "{id}");
         assert_eq!(
-            run_json(&["pinvou", "connectors", "status", id])["connectors"][0]["installed"],
+            status_entry(&_home, id)["installed"],
             false,
             "{id}: the store mirror must not keep claiming connected after the degrade"
         );
@@ -737,11 +746,8 @@ fn vendor_cli_argv_is_passed_exactly_once() {
     );
     let _path = VendorCliGuard::new_at(bin.clone());
 
-    let status = run_json(&["pinvou", "connectors", "status", "feishu"]);
-    assert_eq!(
-        status["connectors"][0]["connected"],
-        serde_json::json!(true)
-    );
+    let status = status_entry(&_home, "feishu");
+    assert_eq!(status["connected"], serde_json::json!(true));
 
     let seen = std::fs::read_to_string(&args_file).unwrap();
     let arguments: Vec<&str> = seen.lines().collect();
@@ -1097,8 +1103,7 @@ fn status_probes_a_below_minimum_install_like_the_gui_dtos() {
     write_fake_cli(&bin, "tmeet", "tmeet version 1.0.10", "");
     let _path = VendorCliGuard::new_at(bin.clone());
 
-    let value = run_json(&["pinvou", "connectors", "status", "wecom"]);
-    let entry = &value["connectors"][0];
+    let entry = status_entry(&_home, "wecom");
     assert_eq!(entry["installed"], true, "{entry}");
     assert_eq!(entry["upgrade_required"], true, "{entry}");
     assert_eq!(entry["version"], "wecom-cli 1.2.0", "{entry}");
@@ -1134,8 +1139,7 @@ fn status_probes_a_below_minimum_install_like_the_gui_dtos() {
 
     // The mirror case: a probe that fails reports connected:false (honest
     // "not logged in"), never a fabricated connection either.
-    let value = run_json(&["pinvou", "connectors", "status", "tmeet"]);
-    let entry = &value["connectors"][0];
+    let entry = status_entry(&_home, "tmeet");
     assert_eq!(entry["installed"], true, "{entry}");
     assert_eq!(entry["upgrade_required"], true, "{entry}");
     assert_eq!(
@@ -1175,8 +1179,7 @@ fn feishu_below_the_lark_minimum_is_upgrade_required_not_usable() {
     );
     let _path = VendorCliGuard::new_at(bin.clone());
 
-    let value = run_json(&["pinvou", "connectors", "status", "feishu"]);
-    let entry = &value["connectors"][0];
+    let entry = status_entry(&_home, "feishu");
     assert_eq!(
         entry["installed"], true,
         "a parseable below-minimum install is installed: {entry}"
@@ -1229,8 +1232,7 @@ fn feishu_with_an_unparseable_version_reports_not_installed() {
     write_fake_cli(&bin, "lark-cli", "lark-cli version banana", "");
     let _path = VendorCliGuard::new_at(bin.clone());
 
-    let value = run_json(&["pinvou", "connectors", "status", "feishu"]);
-    let entry = &value["connectors"][0];
+    let entry = status_entry(&_home, "feishu");
     assert_eq!(
         entry["installed"], false,
         "an unparseable version must not count as installed (GUI parse-gate parity): {entry}"
@@ -1399,9 +1401,8 @@ fn a_vendor_cli_that_outproduces_the_drain_cap_still_completes() {
     let _path = VendorCliGuard::new_at(bin.clone());
 
     let started = std::time::Instant::now();
-    let value = run_json(&["pinvou", "connectors", "status", "tmeet"]);
+    let entry = status_entry(&_home, "tmeet");
     let took = started.elapsed();
-    let entry = &value["connectors"][0];
     assert_eq!(
         entry["connected"], true,
         "a child blocked mid-write must not be misreported as a probe timeout: {entry}"
@@ -1458,8 +1459,7 @@ fn a_wedged_status_probe_keeps_the_installed_facts_and_names_the_failure() {
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     let _path = VendorCliGuard::new_at(bin.clone());
 
-    let value = run_json(&["pinvou", "connectors", "status", "tmeet"]);
-    let entry = &value["connectors"][0];
+    let entry = status_entry(&_home, "tmeet");
     assert_eq!(
         entry["installed"], true,
         "the version gate answered, so the connector is installed: {entry}"
@@ -1662,9 +1662,9 @@ fn status_finds_a_gui_installed_npm_prefix_cli() {
     let _prefix =
         EnvGuard::set_values(&[("NPM_CONFIG_PREFIX", Some(prefix.clone().into_os_string()))]);
 
-    let status = run_json(&["pinvou", "connectors", "status", "tmeet"]);
+    let status = status_entry(&_home, "tmeet");
     assert_eq!(
-        status["connectors"][0]["connected"],
+        status["connected"],
         serde_json::json!(true),
         "a GUI-installed npm-prefix CLI must be visible to the CLI: {status}"
     );

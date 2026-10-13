@@ -22,7 +22,7 @@ use common::{
     EnvGuard, HomeGuard, Isolation, command_error, env_lock, execute_error, parsed_debug, run,
     run_json, usage_error,
 };
-use pinvou_cli::{ExitCode, OutputMode, parse_args};
+use pinvou_cli::{CliError, CliOutcome, ExitCode, OutputMode, parse_args};
 use pinvou3_lib::features::code_checkpoints as checkpoints;
 use pinvou3_lib::features::codex_acp::workspace as app_workspace;
 use pinvou3_lib::features::codex_acp::{CodexWorkspaceKind, SessionAgentStore};
@@ -67,6 +67,25 @@ fn yes_gate_error(arguments: &[&str]) {
     assert!(
         message.contains("--yes"),
         "{arguments:?}: the refusal must name the flag: {message}"
+    );
+}
+
+/// The two symlink-escape refusals' shared assertion: the diff must refuse
+/// with the host-failure exit code (exit 1), the message must name the
+/// symlink escape, and the secret's bytes must not reach it. Shared by the
+/// non-git and git arms so the git arm carries the same exit-code pin.
+fn assert_symlink_escape_refused(result: Result<CliOutcome, CliError>, secret: &Path) {
+    let error = result.expect_err("an escaping symlink must be refused");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = error.to_string();
+    assert!(
+        message.contains("symlink") && message.contains("escapes the workspace"),
+        "the refusal must name the symlink escape: {message}"
+    );
+    assert!(
+        !message.contains("TOP SECRET"),
+        "the secret at {} must not leak into the error: {message}",
+        secret.display()
     );
 }
 
@@ -201,6 +220,36 @@ fn fixture_git_ok(root: &Path, arguments: &[&str]) -> bool {
     }
 }
 
+/// Stages `paths` and commits `message` in a fixture repository, with the
+/// `-c user.name`/`-c user.email` identity prefixes INSIDE the invocation —
+/// the same ambient-config isolation as [`fixture_git_command`], so a
+/// developer's global identity cannot decide what the fixture records. A
+/// failing git is a panic (a broken fixture), never a silent skip: by the
+/// time a scaffold commits, `init_git_repo` already proved git is present.
+fn fixture_commit(root: &Path, message: &str, paths: &[&str]) {
+    for path in paths {
+        assert!(
+            fixture_git_ok(root, &["add", path]),
+            "fixture add {path} failed"
+        );
+    }
+    assert!(
+        fixture_git_ok(
+            root,
+            &[
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                message,
+            ]
+        ),
+        "fixture commit failed"
+    );
+}
+
 /// Initializes a git repository with `main` + `feature` branches and one
 /// committed file; returns `None` when git is unavailable, printing a visible
 /// skip line so a green run cannot hide an environment gap.
@@ -269,6 +318,22 @@ fn update<'a>(id: &'a str, agent: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
     arguments
 }
 
+/// The claude model-slot ids the gates name — the same set the production
+/// code iterates from the imported `CLAUDE_MODEL_SLOTS` — spelled once so
+/// the "valid slots:" message pins build from the list instead of
+/// hand-copying it.
+const VALID_SLOTS: [&str; 5] = ["opus", "sonnet", "haiku", "fable", "subagent"];
+
+/// Interleaves the five `SLOT=MODEL` pair values with the `--model-slot`
+/// flag each pair rides on: all `&'static str`, so the returned fragment
+/// splices into the `&[&str]` argv scaffolds (`add`/`update`) verbatim.
+fn claude_slot_args(pairs: [&str; 5]) -> Vec<&str> {
+    pairs
+        .into_iter()
+        .flat_map(|pair| ["--model-slot", pair])
+        .collect()
+}
+
 #[test]
 fn every_code_subcommand_parses() {
     let _env_guard = common::env_lock();
@@ -330,23 +395,17 @@ fn every_code_subcommand_parses() {
         add(
             "claude",
             &[
-                "--name",
-                "Relay",
-                "--base-url",
-                "https://api.example.com",
-                "--model-slot",
-                "opus=o1",
-                "--model-slot",
-                "sonnet=s1",
-                "--model-slot",
-                "haiku=h1",
-                "--model-slot",
-                "fable=f1",
-                "--model-slot",
-                "subagent=su1",
-                "--api-key-env",
-                "MY_KEY",
-            ],
+                vec!["--name", "Relay", "--base-url", "https://api.example.com"],
+                claude_slot_args([
+                    "opus=o1",
+                    "sonnet=s1",
+                    "haiku=h1",
+                    "fable=f1",
+                    "subagent=su1",
+                ]),
+                vec!["--api-key-env", "MY_KEY"],
+            ]
+            .concat(),
         ),
         add(
             "kimi",
@@ -1663,26 +1722,18 @@ fn workspace_diff_refuses_a_symlink_that_escapes_a_non_git_workspace() {
     let secret = home.path().join("home").join("secret.txt");
     std::fs::write(&secret, "TOP SECRET\n").unwrap();
     symlink(&secret, project.join("leak.md")).unwrap();
-    let error = run(&[
-        "pinvou",
-        "code",
-        "workspace",
-        "diff",
-        &id,
-        "leak.md",
-        "--output",
-        "json",
-    ])
-    .expect_err("an escaping symlink must be refused");
-    assert_eq!(error.exit_code(), ExitCode::Failed);
-    let message = error.to_string();
-    assert!(
-        message.contains("symlink") && message.contains("escapes the workspace"),
-        "the refusal must name the symlink escape: {message}"
-    );
-    assert!(
-        !message.contains("TOP SECRET"),
-        "the secret must not leak into the error: {message}"
+    assert_symlink_escape_refused(
+        run(&[
+            "pinvou",
+            "code",
+            "workspace",
+            "diff",
+            &id,
+            "leak.md",
+            "--output",
+            "json",
+        ]),
+        &secret,
     );
 }
 
@@ -1710,25 +1761,7 @@ fn workspace_diff_refuses_a_symlink_that_escapes_a_git_workspace() {
     let id = create_code_session_fixture(Some(&project));
     // A tracked commit so the repo has a HEAD (the tracked-unmodified arm).
     std::fs::write(project.join("tracked.txt"), "hello\n").unwrap();
-    assert!(
-        fixture_git_ok(&project, &["add", "tracked.txt"]),
-        "fixture add failed"
-    );
-    assert!(
-        fixture_git_ok(
-            &project,
-            &[
-                "-c",
-                "user.name=test",
-                "-c",
-                "user.email=test@example.com",
-                "commit",
-                "-m",
-                "init",
-            ]
-        ),
-        "fixture commit failed"
-    );
+    fixture_commit(&project, "init", &["tracked.txt"]);
 
     // Control: a plain untracked file inside the workspace still diffs.
     std::fs::write(project.join("inside.txt"), "plain\n").unwrap();
@@ -1762,25 +1795,18 @@ fn workspace_diff_refuses_a_symlink_that_escapes_a_git_workspace() {
     ));
     std::fs::write(&secret, "TOP SECRET\n").unwrap();
     symlink(&secret, project.join("leak.md")).unwrap();
-    let error = run(&[
-        "pinvou",
-        "code",
-        "workspace",
-        "diff",
-        &id,
-        "leak.md",
-        "--output",
-        "json",
-    ])
-    .expect_err("an escaping symlink must be refused");
-    let message = error.to_string();
-    assert!(
-        message.contains("symlink") && message.contains("escapes the workspace"),
-        "the refusal must name the symlink escape: {message}"
-    );
-    assert!(
-        !message.contains("TOP SECRET"),
-        "the secret must not leak into the error: {message}"
+    assert_symlink_escape_refused(
+        run(&[
+            "pinvou",
+            "code",
+            "workspace",
+            "diff",
+            &id,
+            "leak.md",
+            "--output",
+            "json",
+        ]),
+        &secret,
     );
 
     // A workspace-LOCAL untracked symlink still diffs through its canonical
@@ -1817,24 +1843,7 @@ fn workspace_diff_diffs_an_untracked_glob_shaped_filename() {
     };
     let id = create_code_session_fixture(Some(&project));
     std::fs::write(project.join("abx.txt"), "tracked\n").unwrap();
-    for args in [
-        vec!["add", "abx.txt"],
-        vec![
-            "-c",
-            "user.name=test",
-            "-c",
-            "user.email=test@example.com",
-            "commit",
-            "-m",
-            "init",
-        ],
-    ] {
-        assert!(
-            fixture_git_ok(&project, &args),
-            "fixture git {:?} failed",
-            args.first()
-        );
-    }
+    fixture_commit(&project, "init", &["abx.txt"]);
 
     std::fs::write(project.join("a*x.txt"), "glob-shaped untracked\n").unwrap();
     let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "a*x.txt"]);
@@ -1854,24 +1863,7 @@ fn workspace_diff_diffs_an_untracked_glob_shaped_filename() {
     // prefix the diff renders a*x.txt's own hunks only, while a plain
     // `a*x.txt` pathspec globs onto the modified abx.txt too and its
     // unrelated hunks leak into the answer — red below.
-    for args in [
-        vec!["add", "a*x.txt"],
-        vec![
-            "-c",
-            "user.name=test",
-            "-c",
-            "user.email=test@example.com",
-            "commit",
-            "-m",
-            "track the glob-shaped file",
-        ],
-    ] {
-        assert!(
-            fixture_git_ok(&project, &args),
-            "fixture git {:?} failed",
-            args.first()
-        );
-    }
+    fixture_commit(&project, "track the glob-shaped file", &["a*x.txt"]);
     std::fs::write(
         project.join("a*x.txt"),
         "glob-shaped untracked\nglob-modified\n",
@@ -3483,7 +3475,7 @@ fn providers_add_claude_rejects_a_partial_model_slot_set() {
         "the error must name every missing slot: {message}"
     );
     assert!(
-        message.contains("valid slots: opus, sonnet, haiku, fable, subagent"),
+        message.contains(&format!("valid slots: {}", VALID_SLOTS.join(", "))),
         "the error must make the slot set discoverable: {message}"
     );
 }
@@ -3522,7 +3514,7 @@ fn providers_refuse_an_unknown_model_slot_naming_the_valid_set() {
             "the refusal must name the offending slot: {message}"
         );
         assert!(
-            message.contains("valid slots: opus, sonnet, haiku, fable, subagent"),
+            message.contains(&format!("valid slots: {}", VALID_SLOTS.join(", "))),
             "the refusal must make the slot set discoverable: {message}"
         );
     }
@@ -3550,23 +3542,17 @@ fn providers_update_claude_rejects_a_legacy_record_without_slots() {
     let added = run_json(&add(
         "claude",
         &[
-            "--name",
-            "Relay",
-            "--base-url",
-            "https://api.example.com",
-            "--model-slot",
-            "opus=claude-opus-4",
-            "--model-slot",
-            "sonnet=claude-sonnet-4",
-            "--model-slot",
-            "haiku=claude-haiku-4",
-            "--model-slot",
-            "fable=claude-fable-4",
-            "--model-slot",
-            "subagent=claude-subagent-4",
-            "--api-key-env",
-            "PINVOU_CLI_TEST_SLOTS_KEY",
-        ],
+            vec!["--name", "Relay", "--base-url", "https://api.example.com"],
+            claude_slot_args([
+                "opus=claude-opus-4",
+                "sonnet=claude-sonnet-4",
+                "haiku=claude-haiku-4",
+                "fable=claude-fable-4",
+                "subagent=claude-subagent-4",
+            ]),
+            vec!["--api-key-env", "PINVOU_CLI_TEST_SLOTS_KEY"],
+        ]
+        .concat(),
     ));
     assert_eq!(added["action"], "added");
     let provider_id = added["provider"]["id"].as_str().unwrap().to_owned();
@@ -3608,19 +3594,16 @@ fn providers_update_claude_rejects_a_legacy_record_without_slots() {
         &provider_id,
         "claude",
         &[
-            "--name",
-            "Renamed",
-            "--model-slot",
-            "opus=claude-opus-4",
-            "--model-slot",
-            "sonnet=claude-sonnet-4",
-            "--model-slot",
-            "haiku=claude-haiku-4",
-            "--model-slot",
-            "fable=claude-fable-4",
-            "--model-slot",
-            "subagent=claude-subagent-4",
-        ],
+            vec!["--name", "Renamed"],
+            claude_slot_args([
+                "opus=claude-opus-4",
+                "sonnet=claude-sonnet-4",
+                "haiku=claude-haiku-4",
+                "fable=claude-fable-4",
+                "subagent=claude-subagent-4",
+            ]),
+        ]
+        .concat(),
     ));
     assert_eq!(updated["action"], "updated");
 }

@@ -12,6 +12,8 @@
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
+use pinvou3_lib::features::sessions::SessionStore;
+
 use crate::{CliError, CliOutcome, ExitCode};
 
 /// The one lock for every test in this crate's LIBRARY test binary that
@@ -584,6 +586,30 @@ pub fn require_valid_session_id(id: &str, action: &str) -> Result<(), CliError> 
     }
 }
 
+/// The families' shared sessions-store opener: `SessionStore::boot` plus the
+/// one `"sessions store unavailable: …"` refusal copy every open site used to
+/// hand-write. Deliberately NO `sandbox_home()` — the absolute-path gate is
+/// the CALLER's contract (each family runs `sandbox_home()?` first so its own
+/// error names its own action), so this opener carries only the boot and the
+/// shared refusal copy, nothing else.
+pub(crate) fn boot_session_store() -> Result<pinvou3_lib::features::sessions::SessionStore, CliError>
+{
+    SessionStore::boot()
+        .map_err(|error| CliError::failed(format!("sessions store unavailable: {error:#}")))
+}
+
+/// The `{family} {action}({id}): {error:#}` store-failure shape the sessions
+/// and code families each kept as a private `store_error` — stated once so a
+/// new family cannot hand-copy a diverging format.
+pub(crate) fn store_error(
+    family: &str,
+    action: &str,
+    id: &str,
+    error: impl std::fmt::Display,
+) -> CliError {
+    CliError::failed(format!("{family} {action}({id}): {error:#}"))
+}
+
 /// The families' identical `require_id` guard, stated once: a missing or
 /// empty id and a `--`-prefixed (flag-shaped) id are usage errors, and any
 /// other value passes through untouched. The two messages keep each
@@ -635,6 +661,10 @@ pub(crate) fn expect_no_arguments(values: &[String], command: &str) -> Result<()
 /// then the boolean flags seen.
 pub(crate) type FamilyFlags<'a> = (Vec<(&'a str, &'a str)>, Vec<&'a str>);
 
+/// Parsed argv: positionals, then the (name, value) option pairs, then the boolean flags — the [`parse_family_flags`] family's single return shape.
+pub(crate) type ParsedFamilyArgs<'a> =
+    Result<(Vec<&'a str>, Vec<(&'a str, &'a str)>, Vec<&'a str>), CliError>;
+
 /// Family flag parser shared by the sessions/scheduled/knowledge/plugins/
 /// personas/connectors families (mirrors the pair-based `named_options`
 /// helper in lib.rs, extended with valueless boolean flags).
@@ -662,6 +692,8 @@ pub fn parse_family_flags<'a>(
         &[],
         family,
         &mut |_, _| Ok(()),
+        &[],
+        false,
     )
 }
 
@@ -676,6 +708,15 @@ pub fn parse_family_flags<'a>(
 /// left-to-right error precedence the hand-rolled loops this parser
 /// replaces gave; a post-parse validation pass would let a later token's
 /// unsupported/duplicate/missing-value error win instead.
+///
+/// `allow_dash_value` names the value flags whose value may start with `--`
+/// (the code family's `--message`): an EMPTY value is still refused, and
+/// every value flag outside the list keeps the flag-shaped-value refusal.
+/// `duplicate_after_value` moves the non-repeatable duplicate refusal to
+/// AFTER the value has been read, shape-checked and validated — the order
+/// the code family's hand-rolled loop pinned; see
+/// [`parse_family_flags_core`] for both orders.
+#[allow(clippy::too_many_arguments)]
 pub fn parse_family_flags_extended<'a>(
     values: &'a [String],
     value_flags: &[&str],
@@ -683,7 +724,84 @@ pub fn parse_family_flags_extended<'a>(
     repeatable: &[&str],
     family: &str,
     validate_value: &mut dyn FnMut(&str, &str) -> Result<(), CliError>,
+    allow_dash_value: &[&str],
+    duplicate_after_value: bool,
 ) -> Result<FamilyFlags<'a>, CliError> {
+    parse_family_flags_core(
+        values,
+        value_flags,
+        boolean_flags,
+        repeatable,
+        family,
+        validate_value,
+        allow_dash_value,
+        duplicate_after_value,
+        false,
+    )
+    .map(|(_, options, flags)| (options, flags))
+}
+
+/// The [`parse_family_flags`] extension for the subcommands whose positional
+/// argument may appear before or after the flags (the code family's
+/// `providers import <PATH> --agent A`): a token that is no known flag and
+/// does NOT start with `--` is collected as a positional instead of
+/// refusing, while a `--`-prefixed unknown token stays the "unsupported
+/// option" usage error. Everything else — value shapes, duplicates,
+/// `validate_value` at the token, the [`parse_family_flags_core`] refusal
+/// orders — is the one shared loop, so the two call shapes cannot drift.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn parse_family_flags_with_positionals<'a>(
+    values: &'a [String],
+    value_flags: &[&str],
+    boolean_flags: &[&str],
+    repeatable: &[&str],
+    family: &str,
+    validate_value: &mut dyn FnMut(&str, &str) -> Result<(), CliError>,
+    allow_dash_value: &[&str],
+    duplicate_after_value: bool,
+) -> ParsedFamilyArgs<'a> {
+    parse_family_flags_core(
+        values,
+        value_flags,
+        boolean_flags,
+        repeatable,
+        family,
+        validate_value,
+        allow_dash_value,
+        duplicate_after_value,
+        true,
+    )
+}
+
+/// The one loop under [`parse_family_flags`], [`parse_family_flags_extended`]
+/// and [`parse_family_flags_with_positionals`]: one token grammar, and the
+/// call shapes differ only in the unknown-token channel
+/// (`collect_positionals`) — the flags-only shape refuses EVERY unknown
+/// token as an unsupported option, the positional shape collects a
+/// non-`--` token and keeps the refusal for `--`-prefixed ones.
+///
+/// `duplicate_after_value` keeps BOTH refusal orders the callers pinned:
+/// the sessions-style families refuse a non-repeatable repeat BEFORE its
+/// value is read (`--limit 3 --limit` is a duplicate, not a missing
+/// value), while the code family's hand-rolled loop read and shape-checked
+/// the value first — its `--message` second occurrence had to clear the
+/// dash-value exemption and the swallowed-boolean guard before the
+/// duplicate refusal could fire, and a value-shaped failure had to win
+/// over the duplicate one. `true` moves the duplicate refusal after
+/// `validate_value`; `false` is the historical extended-parser order.
+#[allow(clippy::too_many_arguments)]
+fn parse_family_flags_core<'a>(
+    values: &'a [String],
+    value_flags: &[&str],
+    boolean_flags: &[&str],
+    repeatable: &[&str],
+    family: &str,
+    validate_value: &mut dyn FnMut(&str, &str) -> Result<(), CliError>,
+    allow_dash_value: &[&str],
+    duplicate_after_value: bool,
+    collect_positionals: bool,
+) -> ParsedFamilyArgs<'a> {
+    let mut positionals = Vec::new();
     let mut options = Vec::new();
     let mut flags = Vec::new();
     let mut index = 0;
@@ -700,11 +818,19 @@ pub fn parse_family_flags_extended<'a>(
             continue;
         }
         if !value_flags.contains(&token) {
+            if collect_positionals && !token.starts_with("--") {
+                positionals.push(token);
+                index += 1;
+                continue;
+            }
             return Err(CliError::usage(format!(
                 "unsupported {family} option: {token}"
             )));
         }
-        if !repeatable.contains(&token) && options.iter().any(|(name, _)| *name == token) {
+        if !duplicate_after_value
+            && !repeatable.contains(&token)
+            && options.iter().any(|(name, _)| *name == token)
+        {
             return Err(CliError::usage(format!(
                 "duplicate {family} option {token}"
             )));
@@ -712,16 +838,21 @@ pub fn parse_family_flags_extended<'a>(
         let value = values
             .get(index + 1)
             .ok_or_else(|| CliError::usage(format!("{family} option {token} requires a value")))?;
-        if value.is_empty() || value.starts_with("--") {
+        if value.is_empty() || (value.starts_with("--") && !allow_dash_value.contains(&token)) {
             return Err(CliError::usage(format!(
                 "{family} option {token} requires a value"
             )));
         }
         validate_value(token, value)?;
+        if !repeatable.contains(&token) && options.iter().any(|(name, _)| *name == token) {
+            return Err(CliError::usage(format!(
+                "duplicate {family} option {token}"
+            )));
+        }
         options.push((token, value.as_str()));
         index += 2;
     }
-    Ok((options, flags))
+    Ok((positionals, options, flags))
 }
 
 /// First value filed under `name` in a [`parse_family_flags`] option list.
@@ -729,6 +860,16 @@ pub fn family_option<'a>(options: &'a [(&'a str, &'a str)], name: &str) -> Optio
     options
         .iter()
         .find_map(|(candidate, value)| (*candidate == name).then_some(*value))
+}
+
+/// Every value filed under `name` in a [`parse_family_flags`] option list, in
+/// argv order — the repeatable-option counterpart of [`family_option`] (which
+/// keeps only the first value).
+pub(crate) fn family_options<'a>(options: &[(&'a str, &'a str)], name: &str) -> Vec<&'a str> {
+    options
+        .iter()
+        .filter_map(|(candidate, value)| (*candidate == name).then_some(*value))
+        .collect()
 }
 
 /// Positive-integer option shared by the families (`--limit`, `--max-*`):
@@ -892,6 +1033,32 @@ pub(crate) fn redact_error_text(rendered: &str) -> String {
     pinvou3_lib::platform::credential_store::redact_secret(
         &pinvou3_lib::platform::redact_url_credentials_in_text(rendered),
     )
+}
+
+/// Progress sink `install_dependencies` calls for each adapter line:
+/// `(package, index, total, line)`. Named because the bare trait-object type is
+/// unreadable at the call site and appears in both the closure's annotation and
+/// the adapter's own signature.
+pub(crate) type InstallProgress = dyn Fn(&str, usize, usize, Option<&str>) + Sync;
+
+/// The stderr progress hook both `install_dependencies` lanes share —
+/// `deps install` tags it `[deps]`, the voice ffmpeg step `[asr-install]` —
+/// unified from the two hand-copied closures: identical per-line
+/// `credential_store::redact_secret` scrub (vendor lines are third-party
+/// process output the CLI did not compose, and `brew`/`apt-get` echo URLs that
+/// can carry token-shaped strings) and identical `note!` shape, differing only
+/// in the tag. The closure captures nothing, so the `Sync` bound the adapter's
+/// two scoped threads need holds trivially.
+pub(crate) fn install_progress(
+    tag: &'static str,
+) -> impl Fn(&str, usize, usize, Option<&str>) + Sync {
+    move |package: &str, current: usize, total: usize, detail: Option<&str>| match detail {
+        Some(line) => crate::note!(
+            "[{tag}] ({current}/{total}) {package}: {}",
+            pinvou3_lib::platform::credential_store::redact_secret(line)
+        ),
+        None => crate::note!("[{tag}] ({current}/{total}) installing {package}"),
+    }
 }
 
 pub fn success(stdout: String) -> crate::CliOutcome {
@@ -1811,6 +1978,47 @@ pub(crate) mod test_support {
                 None => unsafe { std::env::remove_var("PINVOU3_HOME") },
             }
             let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// A fresh per-test scratch directory under the system temp dir: the
+    /// pid + nanos token keeps concurrent test binaries and reruns from
+    /// colliding, and any stale directory from a previous run is removed
+    /// first so every test starts from an empty fixture.
+    pub(crate) fn scratch_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Parses a family's own argv slice through the real `parse_args`
+    /// dispatch — the arguments start at the subcommand token, so `pinvou` and
+    /// the family name are inserted ahead of them and `parse_args` strips the
+    /// program slot — so a family's tests exercise the shipped parser instead
+    /// of a private re-derivation. Panics naming the family when the fixture
+    /// argv parses into some other command, so the mismatch is a loud test
+    /// failure rather than an `Option` every caller must unwrap.
+    pub(crate) fn parse_family<F>(
+        family: &str,
+        arguments: &[&str],
+        extract: impl Fn(&crate::CliCommand) -> Option<F>,
+    ) -> Result<F, crate::CliError> {
+        let mut owned: Vec<String> = arguments.iter().map(|value| value.to_string()).collect();
+        owned.insert(0, family.to_owned());
+        owned.insert(0, "pinvou".to_owned());
+        match extract(crate::parse_args(owned)?.command()) {
+            Some(parsed) => Ok(parsed),
+            None => panic!(
+                "parsed an unexpected {family} command; the fixture argv does not match the test"
+            ),
         }
     }
 }

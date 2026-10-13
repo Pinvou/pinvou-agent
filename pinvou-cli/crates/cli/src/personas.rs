@@ -79,7 +79,7 @@
 
 use std::path::PathBuf;
 
-use crate::support::{render, require_yes, sandbox_home, success};
+use crate::support::{join_rows, render, require_yes, sandbox_home, success};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::personas::{
     PersonaCard, PersonaSummary, all_summaries, create_user_persona, delete_user_persona,
@@ -480,11 +480,7 @@ fn list(source: SourceFilter, output: OutputMode) -> Result<CliOutcome, CliError
     let human = if summaries.is_empty() {
         "No personas.".to_owned()
     } else {
-        summaries
-            .iter()
-            .map(persona_row)
-            .collect::<Vec<_>>()
-            .join("\n")
+        join_rows(&summaries, persona_row)
     };
     // A serialization failure is a failure, not an empty deck. The previous
     // fallback answered `{"personas": []}` with exit 0 — a caller scripting
@@ -1180,19 +1176,6 @@ fn equip_state_lock() -> Result<fd_lock::RwLock<std::fs::File>, CliError> {
     )
 }
 
-/// Test-only convenience: the production equip/unequip lanes call the
-/// checked variant directly (round-44 review removed the dead in-production
-/// wrapper; the unit tests stage through the always-true checker). Its
-/// callers are product-backend-gated tests, so the wrapper is too.
-#[cfg(all(test, feature = "product-backend"))]
-fn persist_equipped_persona(
-    session_id: &str,
-    persona_id: &str,
-    pending_body: &str,
-) -> Result<(), CliError> {
-    persist_equipped_persona_checked(session_id, persona_id, pending_body, &|| Ok(()))
-}
-
 /// Round-43 review: the production variant re-validates session existence
 /// INSIDE the equip lock. The equip lane's pre-check runs before the lock,
 /// so a GUI session delete landing in between would otherwise materialize
@@ -1451,8 +1434,7 @@ fn open_equipped_session(
     // Same absolute-path contract as the other families: a relative
     // PINVOU3_HOME would silently resolve against the cwd.
     sandbox_home()?;
-    let store = SessionStore::boot()
-        .map_err(|error| CliError::failed(format!("sessions store unavailable: {error:#}")))?;
+    let store = crate::support::boot_session_store()?;
     store.load(session_id).map_err(|error| {
         CliError::failed(format!(
             "personas {verb}: session {session_id} does not exist ({error})"
@@ -1555,25 +1537,7 @@ mod tests {
         let _env_lock = crate::support::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        struct RestoreHome(Option<std::ffi::OsString>);
-        impl Drop for RestoreHome {
-            fn drop(&mut self) {
-                match self.0.take() {
-                    Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-                    None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-                }
-            }
-        }
-        let previous = RestoreHome(std::env::var_os("PINVOU3_HOME"));
-        let temp = std::env::temp_dir().join(format!(
-            "pinvou3-personas-checker-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_dir_all(&temp);
-        std::fs::create_dir_all(&temp).expect("temp home");
-        // SAFETY: ENV_LOCK is held for the whole test; env writes serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &temp) };
+        let _home = crate::support::test_support::TempHome::new("personas-checker");
 
         let error = persist_equipped_persona_checked("gone-session", "p-1", "body", &|| {
             Err(CliError::failed("the session is gone"))
@@ -1592,9 +1556,6 @@ mod tests {
                 "the abort must not create the session sidecar directory"
             );
         }
-
-        drop(previous);
-        let _ = std::fs::remove_dir_all(&temp);
     }
 
     fn parse_list(arguments: &[&str]) -> Result<PersonasCommand, CliError> {
@@ -1773,6 +1734,16 @@ mod tests {
         );
     }
 
+    /// Test-only stage fixture: the unit tests stage through the always-true
+    /// checker.
+    fn persist_equipped_persona(
+        session_id: &str,
+        persona_id: &str,
+        pending_body: &str,
+    ) -> Result<(), CliError> {
+        persist_equipped_persona_checked(session_id, persona_id, pending_body, &|| Ok(()))
+    }
+
     // ── agent-run consumption seam ─────────────────────────────────────
 
     /// The credential-lane rule from models.rs applies here too: the turn
@@ -1786,7 +1757,6 @@ mod tests {
     /// BEFORE the fixture binding, so the previous env value is restored
     /// while the lock is still held (the race history is on the lock's doc
     /// comment).
-    #[cfg(feature = "product-backend")]
     use crate::support::{ENV_LOCK, test_support::TempHome};
 
     /// The round-18 wiring this seam exists for: `equip` stages
@@ -1796,10 +1766,10 @@ mod tests {
     /// needs) and the consume (one-shot body clearance that keeps the
     /// persona_id, mirroring `take_pending_turn_injections`' split between
     /// `pending_persona_body` and `active_persona`) at the unit level. The
-    /// sidecar paths stay explicit, but the consume takes the equip lock
-    /// under `pinvou3_home()`, so the test still roots a `TempHome` — the
-    /// lock directory must not be created in the developer's real data root
-    /// (round-39 review).
+    /// staged sidecar lives under the test's own `TempHome` (`seam/`), and
+    /// the consume takes the equip lock under `pinvou3_home()`, so the test
+    /// roots a `TempHome` — the lock directory must not be created in the
+    /// developer's real data root (round-39 review).
     #[cfg(feature = "product-backend")]
     #[test]
     fn the_seam_returns_the_equip_staged_body_verbatim() {
@@ -1809,14 +1779,7 @@ mod tests {
         let _home = TempHome::new("personas-unit-seam-verbatim");
         let card = card("user-seam", "Seam", "# Persona\n\nDoes things.");
         let injection = equip_body_injection(&card);
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-cli-personas-seam-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = _home.join("seam");
         std::fs::create_dir_all(&dir).unwrap();
         let sidecar = dir.join("persona_equipped.json");
         pinvou3_lib::platform::atomic_write_private(
@@ -1850,7 +1813,6 @@ mod tests {
         // Re-consuming the already-consumed sidecar is a no-op success
         // (idempotent, like `unequip`).
         consume_staged_persona_injection_at(&sidecar, &expected).expect("re-consume must succeed");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Missing and corrupt sidecars are the "no persona" case on both sides
@@ -1867,14 +1829,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _home = TempHome::new("personas-unit-seam-tolerant");
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-cli-personas-seam-tol-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let dir = _home.join("seam");
         std::fs::create_dir_all(&dir).unwrap();
         let missing = dir.join("persona_equipped.json");
         assert!(staged_persona_injection_at(&missing).is_none());
@@ -1890,7 +1845,6 @@ mod tests {
         assert!(staged_persona_injection_at(&corrupt).is_none());
         consume_staged_persona_injection_at(&corrupt, &any_expected)
             .expect("a corrupt sidecar must consume as a no-op");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The pool re-check behind [`staged_persona_turn`]: a staged body

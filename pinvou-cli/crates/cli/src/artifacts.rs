@@ -36,7 +36,9 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::support::{collapse_control_characters, read_text_file_capped, render, success};
+use crate::support::{
+    collapse_control_characters, join_rows, read_text_file_capped, render, success,
+};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::deliverables::{DELIVERABLE_EXTS, deliverable_category};
 use pinvou3_lib::features::sessions::{SessionStore, is_aux_session_id};
@@ -714,36 +716,32 @@ fn list(session: Option<String>, output: OutputMode) -> Result<CliOutcome, CliEr
         // filename that does not match its own id.
         rows.retain(|row| row.session_id == session);
     }
-    let human = rows
-        .iter()
-        .map(|row| {
-            format!(
-                "{}\t{}\t{}\t{}\t{}\t{}",
-                // The cells are NOT machine-made here: `name` and `path` are
-                // read off the session record's `storage_path`, whose filename
-                // part may legally contain `\t` or `\n` (a POSIX filename
-                // allows both), and `session_id` comes from the record's
-                // `metadata/id` JSON field. Either would split the row into
-                // two lines or invent a seventh column for whoever cuts on
-                // `\t`, and ESC must not reach the terminal — the same
-                // reasons `sessions list` collapses its id and title.
-                // `ext` is whitelisted (`DELIVERABLE_EXTS`) and `category` is
-                // derived from it, so both are machine-made in practice, but
-                // by house rule (see the personas renderer) they go through
-                // the column collapse too rather than a chosen subset; a
-                // future whitelist change must not re-open the row. JSON
-                // keeps the verbatim bytes and `size` is numeric.
-                // (sync: `sessions.rs` list, `projects.rs` list)
-                crate::support::collapse_control_characters(&row.name),
-                crate::support::collapse_control_characters(&row.ext),
-                crate::support::collapse_control_characters(&row.category),
-                row.size,
-                crate::support::collapse_control_characters(&row.session_id),
-                crate::support::collapse_control_characters(&row.path)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let human = join_rows(&rows, |row| {
+        format!(
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            // The cells are NOT machine-made here: `name` and `path` are
+            // read off the session record's `storage_path`, whose filename
+            // part may legally contain `\t` or `\n` (a POSIX filename
+            // allows both), and `session_id` comes from the record's
+            // `metadata/id` JSON field. Either would split the row into
+            // two lines or invent a seventh column for whoever cuts on
+            // `\t`, and ESC must not reach the terminal — the same
+            // reasons `sessions list` collapses its id and title.
+            // `ext` is whitelisted (`DELIVERABLE_EXTS`) and `category` is
+            // derived from it, so both are machine-made in practice, but
+            // by house rule (see the personas renderer) they go through
+            // the column collapse too rather than a chosen subset; a
+            // future whitelist change must not re-open the row. JSON
+            // keeps the verbatim bytes and `size` is numeric.
+            // (sync: `sessions.rs` list, `projects.rs` list)
+            crate::support::collapse_control_characters(&row.name),
+            crate::support::collapse_control_characters(&row.ext),
+            crate::support::collapse_control_characters(&row.category),
+            row.size,
+            crate::support::collapse_control_characters(&row.session_id),
+            crate::support::collapse_control_characters(&row.path)
+        )
+    });
     let value = serde_json::json!({
         "artifacts": rows.iter().map(|row| serde_json::json!({
             "name": row.name,
@@ -907,17 +905,17 @@ fn write(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse_args;
 
     fn parse(arguments: &[&str]) -> Result<ArtifactsCommand, CliError> {
-        let mut owned: Vec<String> = arguments.iter().map(|value| value.to_string()).collect();
-        owned.insert(0, "pinvou".to_owned());
-        match parse_args(owned)?.command() {
-            crate::CliCommand::Artifacts(command) => Ok(command.clone()),
+        let ["artifacts", rest @ ..] = arguments else {
+            panic!("the fixture argv must start with the artifacts family token: {arguments:?}")
+        };
+        crate::support::test_support::parse_family("artifacts", rest, |command| match command {
+            crate::CliCommand::Artifacts(parsed) => Some(parsed.clone()),
             _other => panic!(
                 "parsed an unexpected command family; the fixture argv does not match the test"
             ),
-        }
+        })
     }
 
     #[test]
@@ -1014,25 +1012,12 @@ mod tests {
         }
     }
 
-    fn scratch(label: &str) -> PathBuf {
-        let nonce = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou-cli-atomic-{label}-{}-{nonce}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
     #[test]
     fn atomic_write_replaces_the_target_with_the_new_content() {
         // The widened app writer (`platform::filesystem::atomic_write`, the
         // one implementation behind this lane since the local copy was
         // deleted) must leave exactly the new content and no staging residue.
-        let dir = scratch("happy");
+        let dir = crate::support::test_support::scratch_dir("artifacts");
         let target = dir.join("report.md");
         std::fs::write(&target, b"old").unwrap();
         pinvou3_lib::platform::atomic_write(&target, b"new").unwrap();
@@ -1054,7 +1039,7 @@ mod tests {
 
     #[test]
     fn capped_record_read_cuts_off_past_the_cap() {
-        let dir = scratch("capped-read");
+        let dir = crate::support::test_support::scratch_dir("artifacts");
         let record = dir.join("s-1.json");
         let body = r#"{"metadata":{"id":"s-1"}}"#;
         std::fs::write(&record, body).unwrap();
@@ -1122,7 +1107,7 @@ mod tests {
     fn owner_only_writes_land_with_mode_0600() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = scratch("mode");
+        let dir = crate::support::test_support::scratch_dir("artifacts");
         let target = dir.join("secret.json");
         pinvou3_lib::platform::atomic_write_private(&target, b"{}").unwrap();
         let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
