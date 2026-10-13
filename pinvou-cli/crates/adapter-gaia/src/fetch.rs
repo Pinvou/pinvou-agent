@@ -138,7 +138,8 @@ pub struct GaiaAcquisition {
 }
 
 impl GaiaAcquisition {
-    pub fn snapshot_root(&self) -> &Path {
+    #[cfg(test)]
+    fn snapshot_root(&self) -> &Path {
         &self.snapshot_root
     }
 
@@ -146,7 +147,8 @@ impl GaiaAcquisition {
         &self.revision
     }
 
-    pub fn dataset(&self) -> &GaiaDataset {
+    #[cfg(test)]
+    fn dataset(&self) -> &GaiaDataset {
         &self.dataset
     }
 

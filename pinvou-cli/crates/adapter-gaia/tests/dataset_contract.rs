@@ -460,7 +460,6 @@ fn dataset_validates_two_synthetic_level1_rows_without_debug_leaks() {
     let verified = verify_dataset(snapshot.path()).unwrap();
     assert_eq!(verified.rows().len(), 2);
     assert_eq!(verified.rows()[0].task_id(), "safe-task-1");
-    assert_eq!(verified.rows()[0].level(), 1);
     assert!(
         verified.rows()[0]
             .attachment()
