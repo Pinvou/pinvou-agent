@@ -12,6 +12,14 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+pub(crate) fn derive_status_binding(
+    bytes: &[u8],
+) -> Result<pinvou_upgrade_codec::StatusBinding, pinvou_upgrade_codec::StatusBindingError> {
+    decode_metadata(bytes)
+        .map_err(pinvou_upgrade_codec::StatusBindingError::Json)?
+        .status_binding()
+}
+
 pub(crate) fn derive_source_profile(
     bytes: &[u8],
 ) -> Result<pinvou_upgrade_codec::SourceProfile, pinvou_upgrade_codec::SourceProfileError> {
@@ -23,6 +31,35 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_binds_status_context_and_exact_raw_secret_without_authority() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/digests.json"
+        )))
+        .unwrap();
+        let mut binding = vector["statusBinding"].clone();
+        let result = derive_status_binding(&serde_json::to_vec(&binding).unwrap()).unwrap();
+        assert_eq!(
+            result.binding_hash(),
+            vector["expectedStatusBindingHash"].as_str().unwrap()
+        );
+        assert_eq!(&result.input_bytes()[..25], b"pinvou-consume-status-v1\0");
+        assert_eq!(
+            pinvou_upgrade_codec::recovery_handle_hash(&[1_u8; 32])
+                .unwrap()
+                .as_hex(),
+            vector["consumeRequest"]["recoveryHandleHash"]
+                .as_str()
+                .unwrap()
+        );
+        binding["requestId"] = serde_json::json!("transport-extra");
+        assert!(matches!(
+            derive_status_binding(&serde_json::to_vec(&binding).unwrap()),
+            Err(pinvou_upgrade_codec::StatusBindingError::InvalidBinding)
+        ));
+    }
 
     #[test]
     fn feature_facade_derives_stable_projection_without_dynamic_or_nested_epoch_confusion() {

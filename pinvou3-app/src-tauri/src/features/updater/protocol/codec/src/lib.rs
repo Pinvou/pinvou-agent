@@ -3,6 +3,9 @@
 
 mod bindings;
 mod parse;
+mod shape;
+mod status;
+pub use status::{RecoveryHandleHash, StatusBinding, StatusBindingError, recovery_handle_hash};
 mod source;
 pub use source::{SourceProfile, SourceProfileError};
 

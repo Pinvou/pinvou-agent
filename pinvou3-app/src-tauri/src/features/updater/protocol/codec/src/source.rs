@@ -1,4 +1,5 @@
 //! Closed stable-fact projection of supplied JSON, not actual source detection.
+use crate::shape::{closed, identifier, one_of, sha256_hex};
 use crate::{Document, Error};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -69,8 +70,8 @@ impl Document {
         if !STABLE_FIELDS.iter().all(|name| facts.contains_key(*name)) {
             return Err(SourceProfileError::MissingStableFacts);
         }
-        let valid = token(&facts["product"])
-            && token(&facts["component"])
+        let valid = identifier(&facts["product"])
+            && identifier(&facts["component"])
             && one_of(&facts["targetKey"], &TARGETS)
             && version(&facts["canonicalAppVersion"])
             && ["application", "helper", "launcher"]
@@ -96,26 +97,6 @@ impl Document {
         let id = digest.iter().map(|byte| format!("{byte:02x}")).collect();
         Ok(SourceProfile { canonical, id })
     }
-}
-fn closed<'a>(value: &'a Value, fields: &[&str]) -> Option<&'a Map<String, Value>> {
-    value.as_object().filter(|object| {
-        object.len() == fields.len() && fields.iter().all(|name| object.contains_key(*name))
-    })
-}
-fn one_of(value: &Value, choices: &[&str]) -> bool {
-    value.as_str().is_some_and(|text| choices.contains(&text))
-}
-// Frozen ASCII pattern ^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$ with Node's
-// non-multiline Unicode RegExp semantics. Do not normalize or trim original text.
-fn token(value: &Value) -> bool {
-    value.as_str().is_some_and(|text| {
-        let bytes = text.as_bytes();
-        (1..=128).contains(&bytes.len())
-            && bytes[0].is_ascii_alphanumeric()
-            && bytes
-                .iter()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(byte))
-    })
 }
 fn version(value: &Value) -> bool {
     let Some(text) = value.as_str() else {
@@ -144,15 +125,10 @@ fn native(value: &Value) -> bool {
     let size = facts["size"]
         .as_f64()
         .is_some_and(|size| (1.0..=MAX_SAFE_INTEGER).contains(&size) && size.fract() == 0.0);
-    let hash = facts["sha256"].as_str().is_some_and(|hash| {
-        hash.len() == 64
-            && hash
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    });
+    let hash = sha256_hex(&facts["sha256"]);
     size && hash
-        && token(&facts["identity"])
-        && token(&facts["publisher"])
+        && identifier(&facts["identity"])
+        && identifier(&facts["publisher"])
         && one_of(
             &facts["format"],
             &["nsis", "deb", "dmg", "helper", "launcher"],
@@ -164,11 +140,11 @@ fn installation(value: &Value) -> bool {
     };
     one_of(&facts["format"], &["nsis", "deb", "dmg"])
         && facts["installScope"].as_str() == Some("perMachine")
-        && token(&facts["ownershipProtocol"])
+        && identifier(&facts["ownershipProtocol"])
 }
 fn data_migration(value: &Value) -> bool {
     let Some(facts) = closed(value, &["dataFormat", "migrationProtocol"]) else {
         return false;
     };
-    token(&facts["dataFormat"]) && token(&facts["migrationProtocol"])
+    identifier(&facts["dataFormat"]) && identifier(&facts["migrationProtocol"])
 }

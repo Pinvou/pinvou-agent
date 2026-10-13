@@ -2606,3 +2606,46 @@ oracle switches enabled: eighteen groups passed, including 218 actual source
 Node/Ajv comparisons. Independent source groups took 1.04s and 0.90s; fmt/Clippy
 and diff checks passed, and one role additionally reran 49 CI policies (0.129s).
 No mandatory finding remains.
+
+### T27 fourth batch: closed consume-status and raw-secret hash bindings (2026-10-13)
+
+The status method validates the complete nine-field root object with no exclusions
+or defaults: six identifiers, two lower-hex SHA256 fields and exactly the three
+preinstall/install/activate purposes. Existing bounded JCS serializes the whole
+binding; fixed pinvou-consume-status-v1 plus one actual NUL prefixes it before
+SHA256. The raw-secret function borrows exactly 32 bytes and hashes those bytes
+without a domain/base64/wrapper. Private results store no raw secret and have no
+Debug/Serialize. Neither computation attests entropy, possession, a persisted
+server record, consume result, signature, time or installation rights.
+
+Private common Schema predicates were moved from source to a shared shape module
+because status reuses them; source projection keeps its original root-extra-ignore
+behavior and independently passes all 218 reference cases. Status root extras,
+including transport/self fields, are strictly refused. Final Node 22.23.3 tests
+passed twenty-three groups: existing signing six (5.46s), byte seven (0.44s), source
+five (1.04s/218 cases) and five new status groups (5.87s/144 original Node/Ajv
+acceptance/preimage/hash/secret cases). Both existing oracle switches were enabled
+and executed. New controls match frozen input hex/hash, distinguish NUL from
+escaped text, bind every field, allow all three purposes, refuse extras/missing/
+null/types/bad shapes/escaped duplicates, preserve reordered/pretty JSON and check
+secret lengths plus base64-text refusal. A zero 32-byte control explicitly proves
+no entropy is asserted. Clippy passed (12.17s); standalone/App fmt, 49 CI policies
+(0.042s), architecture, version and diff checks passed. No dependency, lock, Schema,
+CI, product version or gitlink changed.
+
+Actual Windows App integration passed all fifteen updater tests (0.03s after a
+2m50s build), including frozen status/secret vectors and a transport-extra refusal
+through the new facade. No App-wide pass is claimed. The module sends no query,
+stores/generates no secret, creates no consumption and grants no rights. Secret
+entropy/protection/original association, actual query recovery, current trust and
+full T27/T32 remain later owner work. The unresolved Ed25519 point policy is not
+bypassed. Downloads have no total/cumulative duration or retry cap. Details:
+[consume-status binding](client-upgrade-status-binding.md).
+
+Two independent reviewers returned final scoped PASS after source and final
+evidence review. Their actual Node 22.23.3 runs passed all 23 groups, including
+218 source and 144 status/secret cases: dependency review signing/byte/source/
+status 3.90s/0.38s/1.00s/0.80s; compatibility review 3.29s/0.35s/1.69s/0.97s.
+Independent fmt, Clippy and diff checks passed; compatibility also passed all
+49 CI policies (0.079s). Final documentation/App evidence was reviewed without
+rebuilding. Root self-review found no remaining in-scope gap.
