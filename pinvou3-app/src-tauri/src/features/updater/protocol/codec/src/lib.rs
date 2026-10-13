@@ -2,6 +2,8 @@
 //! signature verification, established Root trust, current eligibility or ACK.
 
 mod bindings;
+mod consume;
+pub use consume::{ConsumeDigestError, ConsumeRequestDigest};
 mod parse;
 mod rollout;
 mod shape;

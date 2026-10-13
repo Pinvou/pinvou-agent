@@ -2688,3 +2688,45 @@ Details: [rollout commitment](client-upgrade-rollout-commitment.md). Full T27,
 actual authenticated opening/membership and high-watermark integration remain
 unfinished. The unresolved Ed25519 point policy is not bypassed. Downloads have
 no total/cumulative duration or retry cap.
+
+## T27 sixth batch - semantic consume-request digest (2026-10-13)
+
+This continued batch derives SHA256 of plain semantic JCS, with no domain/NUL/
+wrapper. The complete original Document is bounded and duplicate-checked first,
+including fields later excluded. Only four exact top-level fields are excluded:
+consumeRequestDigest, recoverySecret, requestId, headers. Every other field is
+retained and validated against closed17 consumeRequest and the original closed
+nested preparation/backup/staged/plans/preinstallSlot rules. Nullable required
+fields are never defaulted; installation plan is mandatory non-null; five other
+required plans may be null. Finite binary64 const1, positive epochs/revisions and
+nonnegative staged times follow original Schema without added temporal/purpose
+relationships. Private results contain only semantic JCS/hash without Debug/
+Serialize; original Document/caller input may still contain excluded secret. No
+secure memory, automatic erasure, actual consumption or rights is attested.
+
+Root actual Node22.23.3 passed all 31 groups: signing6 6.41s, byte7 0.37s, consume4
+1.98s/1093 original Node/Ajv acceptance/JCS/hash cases, rollout4 0.81s/132, source5
+2.52s/218, status5 0.83s/144. Both old oracle switches were enabled and executed.
+Controls cover the frozen digest/plain JCS, pretty/reordered objects, every
+variable semantic leaf, nullable branches, all three purposes, zero/descending
+staged times, four root exclusions with arbitrary values, missing/null/types/
+extras at every nested object, numeric boundaries/rounding, identifiers/hashes/
+line endings and escaped duplicates. Excluded fields still reject original
+duplicate/input/depth/string/member excess. Clippy passed 5.60s; standalone/App
+formatting, 49 CI policies (0.050s), architecture, version and diff passed. No
+dependency, lock, Schema, CI, product version or gitlink changed.
+
+Two independent source reviews returned scoped PASS. Dependency independently
+passed all31 actual Node22 groups including1093 consume cases in7.86s and fmt/
+Clippy/diff. Compatibility passed sign/byte/consume/rollout/source/status in
+6.24s/8.55s/2.70s/6.25s/1.26s/0.90s, Clippy1.61s, CI49 0.093s and fmt/diff.
+Actual Windows App passed all17 updater tests (0.09s after3m22s build), including
+frozen digest, exact excluded root fields and refusal of a missing required nullable
+field through the actual facade. No App-wide pass is claimed. Both reviewers returned final scoped PASS after frozen-source and final App/
+document evidence review, without rebuilding. Root self-review found no remaining
+in-scope gap.
+
+Details: [semantic consume digest](client-upgrade-consume-digest.md). Full T27/T32,
+actual secret custody, ConsumeAttempt, current trust and backup/slot authenticity
+remain later work. Unresolved Ed25519 policy is not bypassed. Downloads retain no
+total/cumulative duration or retry cap.

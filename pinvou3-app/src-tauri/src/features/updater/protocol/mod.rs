@@ -12,6 +12,14 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+pub(crate) fn derive_consume_request_digest(
+    bytes: &[u8],
+) -> Result<pinvou_upgrade_codec::ConsumeRequestDigest, pinvou_upgrade_codec::ConsumeDigestError> {
+    decode_metadata(bytes)
+        .map_err(pinvou_upgrade_codec::ConsumeDigestError::Json)?
+        .consume_request_digest()
+}
+
 pub(crate) fn derive_rollout_commitment(
     bytes: &[u8],
 ) -> Result<pinvou_upgrade_codec::RolloutCommitment, pinvou_upgrade_codec::RolloutCommitmentError> {
@@ -39,6 +47,33 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_binds_semantic_consume_request_without_transport_or_null_defaults() {
+        let vector: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/digests.json"
+        )))
+        .unwrap();
+        let mut request = vector["consumeRequest"].clone();
+        let expected = vector["expectedConsumeRequestDigest"].as_str().unwrap();
+        let result = derive_consume_request_digest(&serde_json::to_vec(&request).unwrap()).unwrap();
+        assert_eq!(result.request_digest(), expected);
+        assert_eq!(result.canonical_semantic()[0], b'{');
+        request["headers"] = serde_json::json!({"ignored":true});
+        request["recoverySecret"] = serde_json::Value::Null;
+        assert_eq!(
+            derive_consume_request_digest(&serde_json::to_vec(&request).unwrap())
+                .unwrap()
+                .request_digest(),
+            expected
+        );
+        request.as_object_mut().unwrap().remove("backup");
+        assert!(matches!(
+            derive_consume_request_digest(&serde_json::to_vec(&request).unwrap()),
+            Err(pinvou_upgrade_codec::ConsumeDigestError::InvalidRequest)
+        ));
+    }
 
     #[test]
     fn feature_facade_matches_empty_and_single_rollout_commitments() {
