@@ -19,7 +19,7 @@ const MAX_BINARY_BYTES: u64 = 128 * 1024 * 1024;
 /// the download order for artifacts whose official source is github.com
 /// becomes "acceleration prefix URL → lock-table reviewed mirror → official
 /// source"; it does not apply to other sites.
-const GITHUB_ASSET_MIRROR_PREFIX_ENV: &str = "PINVOU3_GITHUB_ASSET_MIRROR_PREFIX";
+pub const GITHUB_ASSET_MIRROR_PREFIX_ENV: &str = "PINVOU3_GITHUB_ASSET_MIRROR_PREFIX";
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 const DWS_LICENSE: &str =
     include_str!("../../../resources/common/bundle/dingtalk-skills/dws/LICENSE");
@@ -336,6 +336,19 @@ fn write_license(bin_dir: &Path, name: &str) -> Result<(), String> {
         .map_err(|e| format!("写入连接器许可证失败: {e}"))
 }
 
+/// Round-40 review: the headless CLI's `connectors ensure-cli` installs the
+/// same pinned native payloads into the same `assets_cli_dir` layout but
+/// used to skip the license side-files the GUI installer writes next to
+/// them — a machine provisioned only through the CLI held pinned
+/// third-party binaries with no license text anywhere. This exposes the
+/// GUI's writer unchanged (same texts, same `licenses/` location derived
+/// from the version dir) so both surfaces ship identical license
+/// side-files; the unknown-connector error keeps the npm-lane connectors
+/// (tmeet) out, which have no bundled license text.
+pub fn write_managed_license(bin_dir: &Path, connector: &str) -> Result<(), String> {
+    write_license(bin_dir, connector)
+}
+
 fn load_lock() -> Result<ConnectorLock, String> {
     let lock_json = crate::platform::connector_lock::lock_json();
     if lock_json.is_empty() {
@@ -473,7 +486,17 @@ fn download_from_url(
         .get(url.clone())
         .send()
         .and_then(reqwest::blocking::Response::error_for_status)
-        .map_err(|e| format!("下载 {} 失败: {e}", artifact.name))?;
+        // Round-40 review: the reqwest error embeds the requested URL
+        // (`... for url (...)`); the aggregation below is echoed to the
+        // user, so userinfo a mirror prefix carried gets scrubbed here like
+        // the invalid-candidate arm above already does.
+        .map_err(|e| {
+            format!(
+                "下载 {} 失败: {}",
+                artifact.name,
+                crate::platform::download::redact_url_credentials_in_text(&e.to_string())
+            )
+        })?;
     if response
         .content_length()
         .is_some_and(|length| length > MAX_ARCHIVE_BYTES)

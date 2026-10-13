@@ -35,8 +35,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::features::marketplace::bundle::BundleKind;
 
-/// 插件包解压累计上限（自带运行时可能较大，放宽到 200 MiB）。
-pub(crate) const MAX_PLUGIN_SIZE_BYTES: u64 = 200 * 1024 * 1024;
+/// Cumulative unarchive cap for a plugin package (bundled runtimes can be
+/// large, hence the relaxed 200 MiB). `pub`: headless callers (the CLI's
+/// plugins-import pre-wrap reads) bound themselves by the same limit and
+/// reference this constant directly, so the two sides cannot drift.
+pub const MAX_PLUGIN_SIZE_BYTES: u64 = 200 * 1024 * 1024;
 
 /// plugin.json 清单（插件包的权威声明）。未知字段 flatten 保留（前向兼容）。
 /// 不再有「spanner 独立组件」入口；skill 包的 `tools[]` + `runtime` 可执行协议
@@ -343,9 +346,7 @@ pub(crate) fn read_zip_entry_bounded(
         .read_to_end(&mut buf)
         .map_err(|e| format!("读{what}: {e}"))?;
     if buf.len() as u64 > declared_size {
-        return Err(format!(
-            "{what} 实际解压大小超过 zip 头声明（疑似伪造头部/zip bomb），拒绝"
-        ));
+        return Err(format!("{what}{}", REJECT_FORGED_HEADER));
     }
     Ok(buf)
 }
@@ -365,21 +366,46 @@ pub(crate) fn checked_zip_entry_path(
     label: &str,
 ) -> Result<String, String> {
     let Some(enclosed) = entry.enclosed_name() else {
-        return Err("zip 含不安全路径(穿越),拒绝".to_string());
+        return Err(REJECT_TRAVERSAL.to_string());
     };
     if let Some(mode) = entry.unix_mode() {
         if mode & 0o170000 == 0o120000 {
-            return Err("zip 含 symlink,拒绝".to_string());
+            return Err(REJECT_SYMLINK.to_string());
         }
     }
     *declared_total = declared_total.saturating_add(entry.size());
     if *declared_total > max_bytes {
-        return Err(format!(
-            "{label}解压超过 {} MiB 上限",
-            max_bytes / 1024 / 1024
-        ));
+        return Err(reject_declared_cap(label, max_bytes));
     }
     Ok(enclosed.to_string_lossy().replace('\\', "/"))
+}
+
+/// The rejection literals carry the substrings the headless CLI's
+/// `translate_plugin_import_error` anchors on; they are single-sourced here
+/// so the anchor test below pins the production strings, not hand copies
+/// (round-38 review: the copies had drifted from being a test of anything).
+pub(crate) const REJECT_TRAVERSAL: &str = "zip 含不安全路径(穿越),拒绝";
+pub(crate) const REJECT_SYMLINK: &str = "zip 含 symlink,拒绝";
+pub(crate) const REJECT_FORGED_HEADER: &str =
+    " 实际解压大小超过 zip 头声明（疑似伪造头部/zip bomb），拒绝";
+
+/// Declared-size cap rejection (the head-declared budget `checked_zip_entry_path`
+/// enforces). `label` names the entry; the fixed halves carry the substrings
+/// the headless CLI's `translate_plugin_import_error` anchors on (解压+上限).
+pub(crate) fn reject_declared_cap(label: &str, max_bytes: u64) -> String {
+    format!("{label}解压超过 {} MiB 上限", max_bytes / 1024 / 1024)
+}
+
+/// Actual-size cap rejection (the zip-bomb backstop on the real bytes read).
+/// Same anchor contract as [`reject_declared_cap`]; the two hand-copied
+/// format sites (pass-1 read and pass-2 write) now share this helper
+/// (round-39 review: rewording either site silently reverted the CLI's cap
+/// rejection to verbatim Chinese while the anchor test stayed green).
+pub(crate) fn reject_actual_cap(max_bytes: u64) -> String {
+    format!(
+        "插件包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
+        max_bytes / 1024 / 1024
+    )
 }
 
 /// 进程内导入互斥锁表（按包 id，四轮评审 M-4）：同一包 id 的并发导入共享
@@ -402,6 +428,112 @@ pub(crate) fn import_lock_for(id: &str) -> std::sync::Arc<std::sync::Mutex<()>> 
         .entry(id.to_string())
         .or_insert_with(|| std::sync::Arc::new(std::sync::Mutex::new(())))
         .clone()
+}
+
+/// [`import_lock_for`] 的跨进程补充：进程内互斥表看不见另一个进程，而
+/// round-51 起 CLI 的 `plugins import` / `plugins skills install` /
+/// `skills uninstall` 会在第二个进程里调用这些 mutator，与 GUI 共享同一批
+/// 固定名 `.tmp` 暂存路径——两个写者会互相删掉对方的暂存内容，再把一份
+/// 静默残缺的包装进正式目录并回 exit-0（与定时任务定义暂存别名同类的
+/// 缺陷，那条已在上游以唯一暂存名修复；这里的根因修复在本地即可完成）。
+/// 每个市场 mutator 在自己的「冲突检查 → 原子 rename」整段临界区持有本
+/// 文件锁（round-52 review M2 起含回收搬移/退役残留/布局迁移），位置一律
+/// 在各自 `import_lock_for` 之后、store `file_lock` 之前；与事务锁之间也
+/// 统一本锁在前——凡事务临界区会触及市场 mutator 的入口（install_inner /
+/// uninstall / repair / reconcile）都先持本锁再取事务锁，反向获取会与本锁
+/// 外等事务的持锁路径构成 ABBA（round-52 review M1）。import_lock 与事务锁
+/// 的配对仍属文档化未决类，不据此主张全仓锁序已定，以
+/// `MARKETPLACE_TRANSACTION_LOCK` 的文档为准。同线程嵌套获取（import →
+/// install_upload → release_package 这条真实调用链）按持有深度 join，不再
+/// 对新 fd 重复 flock——flock 按 fd 排他，第二个 fd 会对自己的第一个 fd
+/// 阻塞。锁文件不删除（崩溃不能楔住对端；进程死亡由内核释放锁），与
+/// settings 部 `lock_settings_file` 同一纪律；0600 亦同（flock 只需读权限，
+/// 世界可读的锁文件会让共享宿主上的第二个本地用户无限期楔住全部市场写者）。
+pub(crate) struct MarketplaceWriteLock {
+    /// `Some`：本线程的最外层（真实）获取，持有进程内段锁与跨进程 fd。
+    /// `None`：同线程重入 join，不新增 fd。
+    real: Option<MarketplaceWriteGuard>,
+}
+
+struct MarketplaceWriteGuard {
+    // 字段顺序即释放顺序：先释放 fd（连同 flock），再放开进程内段锁让下
+    // 一个本进程等待者进入。
+    file: std::fs::File,
+    _section: std::sync::MutexGuard<'static, ()>,
+}
+
+impl std::ops::Drop for MarketplaceWriteGuard {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+thread_local! {
+    /// 本线程持有深度：嵌套 `acquire` 按此 join（见类型文档）。真实守卫的
+    /// Drop 把深度清零，join 守卫的 Drop 递减——两条路径在展开（panic）时
+    /// 都会执行，不会留下幽灵持有者。
+    static LOCK_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// 进程内段锁：本线程之外的获取者在此排队，胜者再做跨进程 flock。段锁随
+/// 真实守卫持有整个临界区——提前松开会让第二个线程重新 flock，把同进程的
+/// 互斥切成两段。
+static LOCK_SECTION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+impl MarketplaceWriteLock {
+    pub(crate) fn acquire() -> std::io::Result<Self> {
+        if LOCK_DEPTH.get() > 0 {
+            LOCK_DEPTH.set(LOCK_DEPTH.get() + 1);
+            return Ok(Self { real: None });
+        }
+        let section = LOCK_SECTION
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let path = crate::platform::paths::bundles_root().join(".imports.lock");
+        // 与 file_lock::open_lock_file 同一开启纪律（见
+        // `open_private_lock_file`）：O_NOFOLLOW 拒绝被植入的符号链接，
+        // O_NONBLOCK 不给 FIFO 阻塞 open 的机会，权限漂移收紧失败即整体
+        // 失败——这里不再保留手写 open+chmod 的弱化副本。先开启，仅在
+        // 缺失（父目录未建）时补建后重试。
+        let open = || crate::platform::filesystem::open_private_lock_file(&path);
+        let file = match open() {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                open()?
+            }
+            Err(e) => return Err(e),
+        };
+        // 阻塞等待而非 try+busy：导入/安装本就是秒级用户动作，持锁方死亡
+        // 由内核释放，存活方只在各自的暂存窗口内持锁。
+        file.lock()?;
+        LOCK_DEPTH.set(1);
+        Ok(Self {
+            real: Some(MarketplaceWriteGuard {
+                file,
+                _section: section,
+            }),
+        })
+    }
+
+    /// [`Self::acquire`] + the uniform 「创建市场写入锁」 error mapping every
+    /// market mutator returns; the literal is single-sourced here (the type's
+    /// home) so the call sites cannot drift apart.
+    pub(crate) fn acquire_map_err() -> Result<Self, String> {
+        Self::acquire().map_err(|e| format!("创建市场写入锁: {e}"))
+    }
+}
+
+impl std::ops::Drop for MarketplaceWriteLock {
+    fn drop(&mut self) {
+        if self.real.is_some() {
+            LOCK_DEPTH.set(0);
+        } else {
+            LOCK_DEPTH.set(LOCK_DEPTH.get().saturating_sub(1));
+        }
+    }
 }
 
 /// 插件导入报告（统一上传路径的返回）。
@@ -715,8 +847,13 @@ fn synthesized_manifest(det: &ComponentDetection) -> PluginManifest {
 // `bundles/<id>/` live with no record — "live-by-absence" in initialized
 // scopes, zero consent, invisible to the in-process rollback. The
 // journal closes it precisely: the import marks its id before the landing and
-// clears the mark on any in-process exit (guard drop), so a leftover mark is
-// proof of a crash in that exact window. The startup reconciliation acts ONLY
+// clears the mark on any in-process exit (guard drop) — except a failed
+// registry upsert, which defuses the guard and fails the import while keeping
+// the mark (bundles.json is a pure-skill upload's only registration; warning
+// and continuing would end live-by-absence with no mark, unreachable by the
+// reconcile forever). A leftover mark is therefore proof of a crash in that
+// exact window or of a failed registration — both present the same
+// "landed dir, no record" state. The startup reconciliation acts ONLY
 // on journaled ids (never a blind scan — zero misclassification surface): it
 // moves the landed dir out of `bundles_root` into a recoverable holding dir,
 // loudly logged and marked on the startup timeline.
@@ -843,12 +980,26 @@ fn test_park_before_registration() {
 }
 
 /// Clears the landing mark on any in-process exit; a crash skips the drop and
-/// leaves the mark for the startup reconciliation.
-struct LandingJournalGuard(String);
+/// leaves the mark for the startup reconciliation. `defuse` opts out of the
+/// drop-clear for the registration-failure path: the mark must survive so the
+/// next boot's reconcile quarantines the landed-but-unregistered pack (its
+/// Ok(None) arm) instead of returning it to unmarked live-by-absence.
+struct LandingJournalGuard {
+    id: String,
+    clear_on_drop: bool,
+}
 
 impl Drop for LandingJournalGuard {
     fn drop(&mut self) {
-        clear_landing(&self.0);
+        if self.clear_on_drop {
+            clear_landing(&self.id);
+        }
+    }
+}
+
+impl LandingJournalGuard {
+    fn defuse(&mut self) {
+        self.clear_on_drop = false;
     }
 }
 
@@ -899,15 +1050,18 @@ fn sweep_and_clear_crash_orphaned_staging(id: &str, pkg_dir: &Path, why: &str) {
 /// only the mark-clear crashed (clear); landed dir with no record → crash
 /// residue: move it out of `bundles_root` into a recoverable holding dir so no
 /// scan admits it live-by-absence. Store-read failures keep the entry (retry
-/// next boot, fail-closed). Actively holds the id's import lock per entry so
-/// a same-process import cannot interleave with the inspection/move, and
-/// probes the id's landing lease non-blockingly before
-/// treating anything as residue: the mark alone cannot distinguish a live
-/// import from a crashed one, and a peer booting mid-import (the shared-home
-/// GUI + headless premise) must not sweep a live import's staged `.tmp` dir
-/// or clear its mark. Contention (or an un-lockable lease) defers the entry
-/// to the next boot; the probe never blocks, so the mutex → try-lease order
-/// cannot deadlock against the pipeline's lease → mutex order.
+/// next boot, fail-closed). Actively holds the id's import lock per entry, PLUS
+/// the cross-process market write lock (order: import_lock → market write
+/// lock), and probes the id's landing lease non-blockingly before
+/// treating anything as residue: the in-process mutex cannot see a second
+/// process's in-flight import — which otherwise looks exactly like crash
+/// residue (mark, landed dir, no registry record yet) — so inspecting and
+/// moving without exclusion would quarantine a pack mid-import, whether
+/// that import excludes via the market lock or the landing lease. The lease
+/// probe never blocks, so the mutex → try-lease order cannot deadlock
+/// against the pipeline's lease → mutex order; market lock-acquisition
+/// failures defer the entry the same fail-closed way (mark kept, retried
+/// next boot).
 pub fn reconcile_import_journal() -> Result<(), String> {
     let dir = landing_journal_dir();
     let entries = match std::fs::read_dir(&dir) {
@@ -961,6 +1115,25 @@ pub fn reconcile_import_journal() -> Result<(), String> {
             Err(error) => {
                 log::warn!(
                     "[plugin-import] import journal: the landing lease for '{id}' is un-lockable, deferring crash recovery to the next startup: {error}"
+                );
+                continue;
+            }
+        };
+        // The in-process import lock cannot see a second process: a CLI
+        // `plugins import` that has landed its dir but not yet registered
+        // looks exactly like crash residue here — mark, landed dir, no
+        // registry record — and quarantining it mid-import would leave the
+        // CLI's completed registration pointing at a moved-away dir. The
+        // cross-process market write lock excludes the in-flight importer
+        // (lock order: import_lock → market write lock, uniform at every
+        // market mutator). On acquisition failure defer the entry like the
+        // store-read failure below: keep the mark, retry next boot
+        // (fail-closed).
+        let _market_lock = match MarketplaceWriteLock::acquire() {
+            Ok(guard) => guard,
+            Err(e) => {
+                log::warn!(
+                    "[plugin-import] import journal: acquiring the market write lock for '{id}' failed, deferring this entry to the next startup: {e}"
                 );
                 continue;
             }
@@ -1119,7 +1292,7 @@ fn ensure_package_id_self_mapping(id: &str) -> Result<(), String> {
 /// rolling an already-landed import back via uninstall would destroy a
 /// pre-existing installation (re-import overwrites), while a deny-first
 /// refusal loses nothing.
-pub(crate) fn import_plugin_package_gated(
+pub fn import_plugin_package_gated(
     zip_path: &str,
     display_name: &str,
     pre_land: &dyn Fn(&str, &[String]) -> Result<(), String>,
@@ -1149,10 +1322,7 @@ pub(crate) fn import_plugin_package_gated(
         let buf = read_zip_entry_bounded(entry, declared_size, what)?;
         actual_total = actual_total.saturating_add(buf.len() as u64);
         if actual_total > MAX_PLUGIN_SIZE_BYTES {
-            return Err(format!(
-                "插件包实际解压超过 {} MiB 上限（zip 头声明与真实大小不符，可能为 zip bomb）",
-                MAX_PLUGIN_SIZE_BYTES / 1024 / 1024
-            ));
+            return Err(reject_actual_cap(MAX_PLUGIN_SIZE_BYTES));
         }
         Ok(buf)
     };
@@ -1452,7 +1622,10 @@ pub(crate) fn import_plugin_package_gated(
         super::file_lock::lock_write_with_transient_retry!(&mut landing_lease)
             .map_err(|error| format!("lock the landing lease for {id}: {error}"))?;
     mark_landing(&id);
-    let _landing_guard = LandingJournalGuard(id.clone());
+    let mut landing_guard = LandingJournalGuard {
+        id: id.clone(),
+        clear_on_drop: true,
+    };
 
     // Pre-land gate hook: the id is final and validated here, nothing has
     // been written yet. A refusal aborts the whole import before any content
@@ -1473,6 +1646,11 @@ pub(crate) fn import_plugin_package_gated(
     // → 原子 rename 完成」整段临界区（guard 至函数尾生效，详见 import_lock_for）。
     let import_lock = import_lock_for(&id);
     let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
+    // Round-51 review M2: the in-process mutex above cannot see the CLI's
+    // second process — hold the cross-process market lock for the whole
+    // conflict-check → rename window (lock order: import_lock → market
+    // file lock → store file lock, identical at every market mutator).
+    let _market_lock = MarketplaceWriteLock::acquire_map_err()?;
     // Re-check the fold divergence under the import lock: the
     // first check ran before the consent gate, and a claimant (preset skill
     // install, CLI companion, ima connect) completing in between would fold
@@ -1481,7 +1659,6 @@ pub(crate) fn import_plugin_package_gated(
     // Nothing has landed at this point, so the refusal aborts with the home
     // untouched (the gate's earlier registration is an over-denial row on an
     // installed claimant — fail-closed).
-    ensure_package_id_self_mapping(&id)?;
     // 上传包 id 冲突：目标包目录已存在且内容不同 → 拒绝（提示改名重试），避免
     // 不同包静默互覆盖（二轮评审：冲突检查需覆盖上传包）。内容一致视为同包
     // 重导/升级，允许走原子替换。比对为全内容口径（五轮评审，详见
@@ -1527,7 +1704,15 @@ pub(crate) fn import_plugin_package_gated(
             let mut entry = archive
                 .by_name(path_str)
                 .map_err(|e| format!("读条目 {path_str}: {e}"))?;
-            let buf = read_bounded_checked(&mut entry, &format!("条目 {path_str}"))?;
+            let declared_size = entry.size();
+            let buf =
+                read_zip_entry_bounded(&mut entry, declared_size, &format!("条目 {path_str}"))?;
+            // 实际写盘计量：pass1 的头部声明预算可被伪造，这里按真实读出字节累计
+            // （zip bomb 兜底，二轮评审 M-4）。超限由调用方清 staged 拒收。
+            actual_total = actual_total.saturating_add(buf.len() as u64);
+            if actual_total > MAX_PLUGIN_SIZE_BYTES {
+                return Err(reject_actual_cap(MAX_PLUGIN_SIZE_BYTES));
+            }
             std::fs::write(&target, buf).map_err(|e| format!("写文件: {e}"))?;
         }
 
@@ -1724,20 +1909,15 @@ pub(crate) fn import_plugin_package_gated(
     // Tail failpoint: lets the hold-span pin observe the lease at the very
     // end of the span. No-op outside tests.
     test_park_before_registration();
-    if let Err(e) = store.upsert_preserving(record) {
-        // Fail visible. The dir is live and supply succeeded, so
-        // this is not rollback territory — but swallowing the failure into a
-        // success report left a recordless-live pack (no Upload-source
-        // protection, no recycle-on-uninstall, no display metadata) with the
-        // journal mark already cleared, so the boot reconcile could never see
-        // it. The caller surfaces the error; a retry re-imports the same id
-        // (no record ⇒ no conflict) and converges. Consent stays closed
-        // either way: the pre-land deny-first gate already registered the id
-        // (no record vouched known then, and nothing vouches later without
-        // one), so the pack stays default-off in initialized DenyAll scopes.
-        log::error!("[plugin-import] bundles.json 镜像写入失败（import {id}）: {e}");
+    if let Err(e) = super::store::BundleStore::new().upsert_preserving(record) {
+        // 登记失败必须如实失败：bundles.json 是纯技能上传包的唯一登记，警告
+        // 后照常返回会让包落盘无登记、标记又被 guard 清掉——live-by-absence
+        // 且下次启动的 reconcile 永远追不到。defuse 保留 <id>.pending，本次
+        // 导入报错；下个启动周期按「有标记 + 有目录 + 无记录」把包搬进可恢复
+        // 隔离目录。
+        landing_guard.defuse();
         return Err(format!(
-            "{id} landed on disk, but the registration write failed ({e}): the pack is usable; retry the import to complete the registration, or uninstall and reinstall"
+            "登记 bundles.json 失败（import {id}）: {e}；已保留恢复标记，下次启动会把该包对账隔离到可恢复目录，可从隔离目录手动恢复后重试导入"
         ));
     }
     // （导入即重基线：消费点在上方 rebaseline 调用处——仅供给成功后消费；
@@ -1752,6 +1932,46 @@ pub(crate) fn import_plugin_package_gated(
 
 #[cfg(test)]
 mod tests {
+    // Round-37 review anti-drift pin: the CLI's error translation keys on
+    // substrings of the rejection strings below (不安全路径 / symlink /
+    // 伪造头部 / 解压+上限). Rewording any of them silently reverts the
+    // headless surface to verbatim Chinese on exactly the zip-slip/bomb
+    // refusals; if you must reword, update
+    // pinvou-cli/crates/cli/src/plugins.rs `translate_plugin_import_error`
+    // in the same change.
+    const CLI_TRANSLATION_ANCHORS: [(&str, &[&str]); 4] = [
+        ("zip-slip traversal", &["不安全路径"]),
+        ("symlink entry", &["symlink"]),
+        ("forged header / zip bomb", &["伪造头部", "解压"]),
+        ("extraction cap", &["解压", "上限"]),
+    ];
+
+    /// The literal rejection messages must keep carrying the substrings the
+    /// CLI translator searches for. Asserts on the PRODUCTION constants
+    /// (round-38 review: hand-copied strings made this vacuous — rewording
+    /// the real messages passed while the translator silently stopped
+    /// matching). The extraction-cap arms are pinned through the production
+    /// `reject_*_cap` helpers, whose formatted output is what the CLI's
+    /// 解压+上限 branch actually sees (round-39 review: the cap branch was
+    /// claimed here but never anchored).
+    #[test]
+    fn cli_error_translation_anchors_are_present_in_the_messages() {
+        let joined = format!(
+            "{REJECT_TRAVERSAL}{REJECT_SYMLINK}x{REJECT_FORGED_HEADER}x{}x{}",
+            reject_declared_cap("条目 x", MAX_PLUGIN_SIZE_BYTES),
+            reject_actual_cap(MAX_PLUGIN_SIZE_BYTES),
+        );
+        for (_, anchors) in CLI_TRANSLATION_ANCHORS {
+            for anchor in anchors {
+                assert!(
+                    joined.contains(anchor),
+                    "the CLI translator anchors on '{anchor}', which no longer appears in the \
+                     rejection messages"
+                );
+            }
+        }
+    }
+
     use super::*;
 
     use crate::platform::test_support::write_test_zip;
@@ -3313,6 +3533,43 @@ mod tests {
         });
     }
 
+    /// zip-slip regression: an entry whose name escapes the package root via
+    /// `../` (and one with an absolute path) must be rejected wholesale by the
+    /// pass1 `enclosed_name()` safety check — before any detection, extraction,
+    /// or disk writes. The guard existed since the unified pipeline landed;
+    /// this test pins it so refactors cannot silently drop the enforcement.
+    #[test]
+    fn import_rejects_zip_slip_traversal_entries() {
+        use std::io::Write;
+        crate::platform::test_support::with_temp_home("pinvou-zip-slip", || {
+            // Entry names are written verbatim by the zip writer, so the archive
+            // carries the traversal / absolute paths exactly as a malicious
+            // package would.
+            let zip_path = crate::platform::paths::pinvou3_home().join("zipslip.zip");
+            {
+                let f = std::fs::File::create(&zip_path).unwrap();
+                let mut zw = zip::ZipWriter::new(f);
+                let opts = zip::write::SimpleFileOptions::default();
+                zw.start_file("../outside.txt", opts).unwrap();
+                zw.write_all(b"traversal").unwrap();
+                zw.start_file("/abs/evil.txt", opts).unwrap();
+                zw.write_all(b"absolute").unwrap();
+                zw.finish().unwrap();
+            }
+
+            let err =
+                import_plugin_package(&zip_path.to_string_lossy(), "zipslip.zip").unwrap_err();
+            assert!(
+                err.contains("不安全路径"),
+                "zip-slip traversal entry must be rejected, got: {err}"
+            );
+            assert!(
+                !crate::platform::paths::bundles_root().exists(),
+                "rejected package must not land any bundle directory"
+            );
+        });
+    }
+
     /// 并发互斥（四轮评审 M-4）：两线程同时导入同 id 同内容包，按 id 的进程内
     /// 互斥锁必须保证双方成功且落盘完整、无 staged/.old 残留（修复前线程 B 的
     /// `remove_dir_all(staged)` 可删线程 A 的在建目录，冲突检查与 rename 间为
@@ -3366,6 +3623,131 @@ mod tests {
                     && !dir.join("bundles").join("demo.old").exists(),
                 "并发导入结束后不得残留 staged/.old 目录"
             );
+        });
+    }
+
+    /// Round-51 review M2: the cross-process market write lock must actually
+    /// exclude a second open file description — that is the whole point (the
+    /// CLI's plugins/skills lanes are a second process against the same
+    /// staging paths). flock conflicts are per open description, so a second
+    /// in-process handle hitting `WouldBlock` while the guard is held (and
+    /// succeeding after the drop) proves the exclusion with no threads and
+    /// no sleeps.
+    #[test]
+    fn marketplace_write_lock_excludes_a_second_handle() {
+        crate::platform::test_support::with_temp_home("pinvou-market-write-lock", || {
+            let guard = MarketplaceWriteLock::acquire().expect("acquire market write lock");
+            let lock_path = crate::platform::paths::bundles_root().join(".imports.lock");
+            assert!(
+                lock_path.exists(),
+                "the lock file must exist under bundles root"
+            );
+            let second = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&lock_path)
+                .unwrap();
+            let conflict = second.try_lock();
+            assert!(
+                matches!(conflict, Err(std::fs::TryLockError::WouldBlock)),
+                "a second handle must be excluded while the guard is held: {conflict:?}"
+            );
+            drop(guard);
+            second
+                .try_lock()
+                .expect("a dropped guard must release the lock");
+        });
+    }
+
+    /// Round-52 review M1：同线程嵌套获取按持有深度 join，不再发起新的
+    /// flock——`import_plugin_package → install_upload → release_package` 这
+    /// 条真实调用链要求嵌套获取必须成功（flock 按 fd 排他，第二个 fd 会对
+    /// 自己阻塞）。join 释放后外层仍持锁；全部释放后锁空闲。排他本身由上
+    /// 面的裸 fd 用例证明，这里用同一探针复核 join 未削弱排他。
+    #[test]
+    fn marketplace_write_lock_joins_reentrantly_on_the_holding_thread() {
+        crate::platform::test_support::with_temp_home("pinvou-market-lock-reenter", || {
+            let lock_path = crate::platform::paths::bundles_root().join(".imports.lock");
+            let outer = MarketplaceWriteLock::acquire().expect("acquire market write lock");
+            let inner = MarketplaceWriteLock::acquire()
+                .expect("a nested acquire on the holding thread must join, not block");
+            let probe = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&lock_path)
+                .unwrap();
+            assert!(
+                matches!(probe.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+                "the joined hold must stay exclusive to other fds"
+            );
+            drop(inner);
+            assert!(
+                matches!(probe.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+                "dropping the inner join must keep the outer hold"
+            );
+            drop(outer);
+            probe
+                .try_lock()
+                .expect("dropping every guard must release the lock");
+        });
+    }
+
+    /// Round-52 review M1：跨线程仍是真实互斥——第二个线程先以裸 fd 探测
+    /// （确定性 WouldBlock，不靠时序），主线程释放后其阻塞获取必然完成，
+    /// 且它持有期间对第三个探针保持排他。这条用例守住段锁 + flock 的生命
+    /// 周期：section 随真实守卫跨线程移交，fd 随之释放与重取。
+    #[test]
+    fn marketplace_write_lock_excludes_a_second_thread_until_release() {
+        use std::sync::Arc;
+        crate::platform::test_support::with_temp_home("pinvou-market-lock-threads", || {
+            let lock_path = Arc::new(crate::platform::paths::bundles_root().join(".imports.lock"));
+            let guard = MarketplaceWriteLock::acquire().expect("acquire market write lock");
+            let path_for_thread = Arc::clone(&lock_path);
+            // 会合：先等对方线程完成「主线程仍持锁」的裸 fd 探测，再释放——
+            // 探针的 WouldBlock 断言因此是确定性的，不靠调度时序。
+            let (probe_done, probe_seen) = std::sync::mpsc::channel();
+            // 守卫含 MutexGuard（!Send），线程内完成全部探测后释放再返回。
+            let holder = std::thread::spawn(move || {
+                let probe = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&*path_for_thread)
+                    .unwrap();
+                let excluded = matches!(probe.try_lock(), Err(std::fs::TryLockError::WouldBlock));
+                drop(probe);
+                probe_done
+                    .send(excluded)
+                    .expect("the main thread waits for this send before releasing");
+                // 主线程仍持锁（它在等 probe_seen），这里阻塞；主线程 drop 后
+                // 必然完成。
+                let acquired = MarketplaceWriteLock::acquire()
+                    .expect("the blocking acquire must finish once the first thread releases");
+                let reprobe = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&*path_for_thread)
+                    .unwrap();
+                assert!(
+                    matches!(reprobe.try_lock(), Err(std::fs::TryLockError::WouldBlock)),
+                    "the second thread's own hold must exclude a fresh fd"
+                );
+                drop(acquired);
+                let free = std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&*path_for_thread)
+                    .unwrap();
+                free.try_lock()
+                    .expect("the second thread's release must free the lock");
+            });
+            assert!(
+                probe_seen
+                    .recv()
+                    .expect("the probe thread must report before release"),
+                "the first thread's hold must exclude the second thread's raw fd"
+            );
+            drop(guard);
+            holder.join().expect("the second thread must not deadlock");
         });
     }
 

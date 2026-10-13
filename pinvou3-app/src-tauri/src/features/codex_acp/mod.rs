@@ -87,7 +87,11 @@ use crate::core::reaper::{
 use attachments::prepare_codex_prompt;
 use deepseek_tui::session_manager::SessionMetadata;
 pub(crate) use events::project_acp_value_for_web;
-pub(crate) use events::translate_acp_state_workspace;
+// `pub` for the headless CLI (`pinvou projects rebind`): the GUI's rebind
+// runs this storage pass per session, and the CLI's mirror must run the same
+// half or an untranslated acp-state workspace resurrects the vanished root
+// on boot recovery.
+pub use events::translate_acp_state_workspace;
 pub use events::{
     AcpEventEnvelope, project_acp_elicitation_request_for_web,
     project_acp_permission_request_for_web,
@@ -100,14 +104,156 @@ use operation_gate::admit_prompt_turn;
 pub use providers::{
     AcpProvidersView, ImportResult, ProviderManager, ProviderRecord, ProviderWireApi,
 };
-use runtime::{
-    MIN_CODEX_VERSION, ResolvedCodex, codex_version, probe_codex_runtime, version_at_least,
-};
+// `CLAUDE_MODEL_SLOTS` 通过本 facade 公开再导出：同仓 `pinvou-cli` 的
+// `providers add` 预检与 `ProviderManager::save` 共用同一 claude 模型槽位
+// 列表，消除手工副本漂移；行为不变。
+pub use providers::CLAUDE_MODEL_SLOTS;
+// `GIT_OVERRIDE_KEYS` (from `platform::process`) is published through this
+// facade re-export: the workspace git env scrubbing in the same-repo
+// `pinvou-cli` shares the exact key list with `strip_git_override_env`,
+// eliminating hand-copied drift (the CLI-side copy had drifted by three
+// keys); behavior is unchanged.
+pub use crate::platform::process::GIT_OVERRIDE_KEYS;
+// `GIT_IDENTITY_KEYS` (from `platform::process`) is published through this
+// facade re-export for the same reason: the CLI's `--mode commit` lane strips
+// the exact identity list the GUI's commit lane strips, eliminating the
+// hand-copied drift window; behavior is unchanged.
+pub use crate::platform::process::GIT_IDENTITY_KEYS;
+// `MIN_CODEX_VERSION` 通过本 facade 公开再导出：同仓 `pinvou-cli` 与运行时共用
+// 同一最低版本约束，消除手工副本漂移；行为不变。
+pub use runtime::MIN_CODEX_VERSION;
+/// The comparison itself, not only the constants: `pinvou-cli`'s `code`
+/// gates (`agents status`, override resolution) consume this so a
+/// comparison-semantics change app-side cannot drift behind a CLI-local
+/// copy (round-27 review; the fn's module stays private — the re-export is
+/// the sanctioned surface, same as the constants beside it).
+pub use runtime::version_at_least;
+use runtime::{ResolvedCodex, codex_version, probe_codex_runtime};
 use store::{AcpConfigDefaultsStore, SessionAgentRecord, SessionMode};
 pub use store::{
     AgentBackend, CodexWorkspaceKind, RebindWorkspacePrefixOutcome, SessionAgentStore,
     validate_codex_project_workspace,
 };
+
+/// How long a store's cross-process section lock waits for a peer's
+/// reload→mutate→persist section before degrading to unlocked operation
+/// (with a warning). Generous against human-frequency contention; the bound
+/// exists so a peer wedged or SIGSTOP'd inside its section cannot park the
+/// GUI's settings worker forever (round-37 review, concurrency lane).
+pub(crate) const SECTION_LOCK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Cross-process advisory lock over a store's reload→mutate→persist
+/// section, shared by the acp stores (`acp-providers.json`,
+/// `acp-agent-defaults.json`). The lock file carries no state and the OS
+/// releases it when the holder dies, so a crash cannot wedge the store.
+/// Best-effort with an observable degrade (round-37 review): if the lock
+/// file cannot be opened, the lock syscall fails, or a peer holds the
+/// section longer than [`SECTION_LOCK_TIMEOUT`], the caller proceeds
+/// unlocked — the pre-lock behavior — but every degrade warns, so the
+/// lost-update window is never silent. `label` names the store in warnings.
+///
+/// Round-46 review: the known hold-length aggravator is keychain I/O
+/// inside a section — a parked keychain prompt extends the hold past the
+/// timeout by minutes, and only the WAITING side sees the warning.
+/// `ProviderManager::switch` therefore fetches its key before the section
+/// (providers/mod.rs); `save`'s active-provider re-apply and `delete`'s
+/// best-effort keychain delete keep their short reads/writes inside, with
+/// the residual named at those sites.
+pub(crate) fn cross_process_section_lock(lock_path: &Path, label: &str) -> Option<std::fs::File> {
+    // The lock file is a sibling of the store file, so on a first-ever
+    // mutation in a fresh home its parent does not exist yet — the open
+    // below would ENOENT and every mutator would silently degrade to
+    // unlocked exactly once, at the moment cross-process exclusion matters
+    // most (the write that creates the store). Create the parent first and
+    // degrade on a genuine failure the same way the open path does; the
+    // persist sites run the same `create_dir_all` afterwards.
+    if let Some(parent) = lock_path.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            eprintln!(
+                "[pinvou3-app] Unable to create the {label} section lock directory {}: {error}; proceeding without cross-process exclusion",
+                parent.display()
+            );
+            return None;
+        }
+    }
+    let file = match std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(lock_path)
+    {
+        Ok(file) => file,
+        Err(error) => {
+            eprintln!(
+                "[pinvou3-app] Unable to open the {label} section lock {}: {error}; proceeding without cross-process exclusion",
+                lock_path.display()
+            );
+            return None;
+        }
+    };
+    // Poll instead of one blocking `lock()`: mutators are human-frequency
+    // and the section is a read + a small rename, so contention costs
+    // milliseconds — but a peer wedged INSIDE its section (or SIGSTOP'd)
+    // must not park a GUI settings action indefinitely, and a refusal on a
+    // busy store would surface as a settings error for a transient
+    // cross-process race. Past the deadline the window reopens, loudly.
+    let deadline = Instant::now() + SECTION_LOCK_TIMEOUT;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Some(file),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                if Instant::now() >= deadline {
+                    eprintln!(
+                        "[pinvou3-app] The {label} section lock {} stayed held for over {}s; proceeding without cross-process exclusion — a concurrent write on the other surface may be lost",
+                        lock_path.display(),
+                        SECTION_LOCK_TIMEOUT.as_secs()
+                    );
+                    return None;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(std::fs::TryLockError::Error(error)) => {
+                eprintln!(
+                    "[pinvou3-app] The {label} section lock {} could not be locked: {error}; proceeding without cross-process exclusion",
+                    lock_path.display()
+                );
+                return None;
+            }
+        }
+    }
+}
+
+/// Run one provider/store section on a blocking worker and map the join
+/// failure onto the shared command-surface error. The provider commands'
+/// `spawn_blocking` sites repeated the identical clone → spawn → await →
+/// join-error chain; this keeps the error string (and therefore every
+/// user-visible message) byte-identical while collapsing the repetition.
+/// Closures that do not themselves return `Result` translate their
+/// fallible half inside (context included) so the join mapping stays
+/// shared.
+async fn on_blocking<T, F>(f: F) -> anyhow::Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> anyhow::Result<T> + Send + 'static,
+{
+    on_blocking_labeled("provider task join error", f).await
+}
+
+/// [`on_blocking`] with a caller-chosen join-error label. Holds the single
+/// `spawn_blocking` body so the clone → spawn → await → join-error chain
+/// stays written exactly once: a join failure maps onto
+/// `{join_error_label}: {error}`, keeping every caller's user-visible
+/// message byte-identical. `pub(crate)`: shared with the codex command
+/// surface, whose session-index joins carry their own label.
+pub(crate) async fn on_blocking_labeled<T, F>(join_error_label: &str, f: F) -> anyhow::Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> anyhow::Result<T> + Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|error| anyhow::anyhow!("{join_error_label}: {error}"))?
+}
 
 /// Managed-runtime directory schema retained for compatibility with installs
 /// created before the bundled bridge moved past 1.1.5. This is not the
@@ -128,7 +274,9 @@ const CLAUDE_ACP_SESSION_MODEL: &str = "Claude Code (ACP)";
 const KIMI_ACP_PACKAGE: &str = "kimi acp";
 const KIMI_ACP_SESSION_MODEL: &str = "Kimi (ACP)";
 /// claude-agent-acp 要求的最低 claude CLI 版本（输出形如 `2.1.163 (Claude Code)`）。
-const MIN_CLAUDE_VERSION: &str = "2.0.0";
+/// `pub` 导出供同仓 `pinvou-cli` 直接引用：CLI 的 `agents status/login` 与本
+/// 运行时使用同一最低版本，消除手工副本漂移；GUI 语义不变。
+pub const MIN_CLAUDE_VERSION: &str = "2.0.0";
 /// npm China mirror registry (Alibaba npmmirror, a syncing mirror of the
 /// official registry). Defined in [`crate::platform::download`] (the
 /// connector-side tmeet uses it too; platform is the shared downward
@@ -139,21 +287,14 @@ const MIN_CLAUDE_VERSION: &str = "2.0.0";
 /// change the user's npm configuration.
 pub(crate) use crate::platform::download::NPM_MIRROR_REGISTRY;
 /// Kimi ACP 要求的最低 kimi CLI 版本（裸 semver；旧 Python 版 kimi-cli 已废弃）。
-const MIN_KIMI_VERSION: &str = "0.9.0";
+/// `pub` 导出理由同 `MIN_CLAUDE_VERSION`。
+pub const MIN_KIMI_VERSION: &str = "0.9.0";
 const CODEX_INSTALL_SCRIPT_UNIX: &str = "https://chatgpt.com/codex/install.sh";
 const CODEX_INSTALL_SCRIPT_WINDOWS: &str = "https://chatgpt.com/codex/install.ps1";
 const CLAUDE_INSTALL_SCRIPT_UNIX: &str = "https://claude.ai/install.sh";
 const CLAUDE_INSTALL_SCRIPT_WINDOWS: &str = "https://claude.ai/install.ps1";
 const KIMI_INSTALL_SCRIPT_UNIX: &str = "https://code.kimi.com/kimi-code/install.sh";
 const KIMI_INSTALL_SCRIPT_WINDOWS: &str = "https://code.kimi.com/kimi-code/install.ps1";
-
-// ACP 空闲回收阈值/巡检间隔（IDLE_EVICT_AFTER_SECS / REAP_INTERVAL_SECS）、
-// 回收判定本体、锁内复核 + 原子移除（take_session_if_still_idle）与巡检
-// 句柄/循环（IdleReaperGuard / start_idle_reaper）收敛到 `core::reaper`：
-// 每个空闲会话都是一个活的 node/codex/kimi 子进程（spawn 带 kill_on_drop），
-// 池无上限、内存随会话数线性涨。空闲超过阈值且无在跑 turn / 配置同步 /
-// 非 active 会话时回收。回收只是回到 lazy spawn 语义（下次 get_or_spawn
-// 重新起进程），30 分钟取偏保守值：宁可少回收也不误杀刚要被使用的会话。
 
 /// codex_acp 测试共用的临时目录夹具（attachments / workspace 的 tests 模块
 /// 复用）：`create_dir_all` 建目录，Drop 时 `remove_dir_all` 清理；目录名按
@@ -395,20 +536,14 @@ async fn rebind_blocking_from_sessions<T>(
     )
 }
 
-fn backend_for_session_model(model: &str) -> Option<AgentBackend> {
-    match model {
+/// 会话类型判定：ACP 后端直接生效；否则按创建时持久化的 `* (ACP)` 模型串兜底。
+fn acp_session_backend(backend: AgentBackend, model: &str) -> Option<AgentBackend> {
+    backend.is_acp().then_some(backend).or_else(|| match model {
         CODEX_ACP_SESSION_MODEL => Some(AgentBackend::CodexAcp),
         CLAUDE_ACP_SESSION_MODEL => Some(AgentBackend::ClaudeAcp),
         KIMI_ACP_SESSION_MODEL => Some(AgentBackend::KimiAcp),
         _ => None,
-    }
-}
-
-fn acp_session_backend(backend: AgentBackend, model: &str) -> Option<AgentBackend> {
-    backend
-        .is_acp()
-        .then_some(backend)
-        .or_else(|| backend_for_session_model(model))
+    })
 }
 
 fn same_workspace(left: &Path, right: &Path) -> bool {
@@ -652,9 +787,13 @@ fn restore_code_native_sessions_from_sidecars(
     // are defined once next to the sidecar readers, so the boot restore and
     // both rebind scans cannot drift apart again.
     for session_id in store::code_session_dir_ids(agents.path(), "native code session restore") {
-        let Some(sidecar) = store::read_code_session_sidecar(agents.path(), &session_id) else {
+        // Round-44 review: the sidecar content is re-read under the section
+        // lock inside the restore (the enumeration snapshot can be stale in
+        // both directions), so the scan only needs its existence as a
+        // pre-filter.
+        if store::read_code_session_sidecar(agents.path(), &session_id).is_none() {
             continue;
-        };
+        }
         let record = agents.get(&session_id);
         if record.mode.is_code() {
             // 索引完好无需恢复：不计入 restored，避免每次启动误报恢复信号。
@@ -670,7 +809,7 @@ fn restore_code_native_sessions_from_sidecars(
             );
             continue;
         }
-        match agents.restore_missing_code_session_record(&session_id, sidecar) {
+        match agents.restore_missing_code_session_record(&session_id) {
             Ok(true) => {
                 summary.restored += 1;
                 eprintln!("[pinvou3-app] recovered native code session index for {session_id}");
@@ -682,8 +821,15 @@ fn restore_code_native_sessions_from_sidecars(
         }
     }
     // 回填自愈：索引在而 sidecar 缺失（修复前构建的存量会话，或绑定时 sidecar
-    // 写失败）时按索引补写 sidecar，写失败逐条记日志。
-    summary.backfilled = agents.backfill_missing_code_session_sidecars();
+    // 写失败）时按索引补写 sidecar，写失败逐条记日志。Round-43 review：回填
+    // 与恢复同走 section 锁，索引损坏时拒绝（fail-closed）而不是对不可读表
+    // 回填，处理方式与上方恢复臂一致。
+    match agents.backfill_missing_code_session_sidecars() {
+        Ok(backfilled) => summary.backfilled = backfilled,
+        Err(error) => {
+            eprintln!("[pinvou3-app] native code session sidecar backfill skipped: {error:#}")
+        }
+    }
     if summary.restored > 0 {
         eprintln!(
             "[pinvou3-app] recovered {} native code session index record(s) from sidecars",
@@ -1205,6 +1351,15 @@ impl AcpSession {
     }
 }
 
+/// 临时会话的执行目录：由 `SessionStore::session_roots` 按会话推导。
+/// 代码模块原生会话与 ACP 临时会话共用同一推导与错误语义。
+fn session_execution_workspace(session_store: &SessionStore, session_id: &str) -> Result<PathBuf> {
+    session_store
+        .session_roots(session_id)
+        .map(|roots| roots.execution)
+        .with_context(|| format!("解析会话 {session_id} 临时工作目录失败"))
+}
+
 /// “代码”模块原生（品悟 Engine）会话的工作区信息。
 ///
 /// 临时会话执行目录与 ACP 临时会话一样由 `SessionStore::session_roots` 推导；
@@ -1225,10 +1380,7 @@ fn code_native_workspace_info(
             workspace_path: path.to_string_lossy().into_owned(),
         });
     }
-    let path = session_store
-        .session_roots(session_id)
-        .map(|roots| roots.execution)
-        .with_context(|| format!("解析会话 {session_id} 临时工作目录失败"))?;
+    let path = session_execution_workspace(session_store, session_id)?;
     Ok(CodexAcpWorkspaceInfo {
         workspace_kind: CodexWorkspaceKind::Temporary,
         workspace_path: path.to_string_lossy().into_owned(),
@@ -1271,17 +1423,16 @@ pub struct AcpPool {
     bundled_claude_adapter: Option<PathBuf>,
     bundled_node: Option<PathBuf>,
     /// 第三方 Provider（中转）管理：store + 凭据 + 三写入器。
-    providers: ProviderManager,
+    /// Arc is for the command boundary's `spawn_blocking`: the manager's
+    /// sync methods poll the section lock and do keychain I/O, which must
+    /// leave the async runtime workers (round-46 review).
+    providers: Arc<ProviderManager>,
     /// 空闲回收巡检任务句柄。放在 Arc 里由所有 pool clone 共享：pool 本身是
     /// Clone（Tauri State 每次命令取的都是 clone），不能直接 impl Drop，否则
     /// 任一 clone 释放都会误停巡检。pool 是进程级 managed state，巡检随进程
     /// 退出自然终止；guard 的 Drop 清理仅作防御（见 start_idle_reaper 注释）。
     idle_reaper: Arc<parking_lot::Mutex<Option<IdleReaperGuard>>>,
 }
-
-/// `IdleReaperGuard`（Drop 时先 cancel 再 abort，双保险停止巡检，参考
-/// scheduled/tasks.rs ScheduledTaskState 的 Drop 清理模式）收敛到
-/// `core::reaper`，与 EnginePool 侧共用同一实现。
 
 /// 同一 Agent 的安装/升级互斥，不同 Agent 的状态与任务彼此隔离。
 /// guard 在外部命令完成后显式 drop，使随后返回的 status 已恢复 installing=false；
@@ -1361,6 +1512,24 @@ fn remove_agent_paths(paths: Vec<PathBuf>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// 升级失败（含用户取消）时恢复移开的旧二进制：仅在备份仍存在且原路径已空时
+/// rename 回去，避免覆盖并发方刚写入的文件。npm 与官方脚本两条升级通道共用。
+fn restore_moved_aside_backups(moved_backups: &[(PathBuf, PathBuf)]) {
+    for (original, backup) in moved_backups {
+        if backup.is_file() && !original.exists() {
+            let _ = std::fs::rename(backup, original);
+        }
+    }
+}
+
+/// 升级验证通过后清理 .pre-upgrade 备份，释放磁盘空间（先验证后删除，假成功
+/// 时旧二进制备份保留）。
+fn discard_moved_aside_backups(moved_backups: &[(PathBuf, PathBuf)]) {
+    for (_, backup) in moved_backups {
+        let _ = std::fs::remove_file(backup);
+    }
 }
 
 /// Degradation decision for the `official_script` action (pure-function core,
@@ -1473,13 +1642,22 @@ impl AcpPool {
             if agents.backend(session_id).is_acp() {
                 continue;
             }
-            match load_acp_recovery_record(session_id, *backend, &session_store)
-                .and_then(|record| agents.restore_missing_acp_record(session_id, record))
-            {
-                Ok(()) => eprintln!(
+            match load_acp_recovery_record(session_id, *backend, &session_store).and_then(
+                |record| {
+                    // Round-44 review: re-load the recovery source under the
+                    // store's section lock; a `sessions delete` landing between
+                    // the boot-pass read and the lock must not leave an orphan
+                    // ACP index record behind.
+                    agents.restore_missing_acp_record(session_id, record, || {
+                        load_acp_recovery_record(session_id, *backend, &session_store).is_ok()
+                    })
+                },
+            ) {
+                Ok(true) => eprintln!(
                     "[pinvou3-app] recovered {} ACP session index for {session_id}",
                     backend.display_name()
                 ),
+                Ok(false) => {}
                 Err(error) => eprintln!(
                     "[pinvou3-app] {} ACP session {session_id} remains read-only until its index can be recovered: {error:#}",
                     backend.display_name()
@@ -1555,9 +1733,9 @@ impl AcpPool {
             bundled_adapter,
             bundled_claude_adapter,
             bundled_node,
-            providers: ProviderManager::new(
+            providers: Arc::new(ProviderManager::new(
                 crate::platform::credential_store::SystemCredentialStore::new(),
-            )?,
+            )?),
             idle_reaper: Arc::new(parking_lot::Mutex::new(None)),
         })
     }
@@ -1707,11 +1885,9 @@ impl AcpPool {
             CodexWorkspaceKind::Project => record
                 .workspace_path
                 .context("Codex 项目会话缺少工作目录记录")?,
-            CodexWorkspaceKind::Temporary => self
-                .session_store
-                .session_roots(session_id)
-                .map(|roots| roots.execution)
-                .with_context(|| format!("解析会话 {session_id} 临时工作目录失败"))?,
+            CodexWorkspaceKind::Temporary => {
+                session_execution_workspace(&self.session_store, session_id)?
+            }
         };
         let available = match record.workspace_kind {
             CodexWorkspaceKind::Project => path.is_dir(),
@@ -1742,19 +1918,13 @@ impl AcpPool {
                     )
                 });
             }
-            return self
-                .session_store
-                .session_roots(session_id)
-                .map(|roots| roots.execution)
-                .with_context(|| format!("解析会话 {session_id} 临时工作目录失败"));
+            return session_execution_workspace(&self.session_store, session_id);
         }
         let record = self.acp_record(session_id)?;
         match record.workspace_kind {
-            CodexWorkspaceKind::Temporary => self
-                .session_store
-                .session_roots(session_id)
-                .map(|roots| roots.execution)
-                .with_context(|| format!("解析会话 {session_id} 临时工作目录失败")),
+            CodexWorkspaceKind::Temporary => {
+                session_execution_workspace(&self.session_store, session_id)
+            }
             CodexWorkspaceKind::Project => {
                 let path = record.workspace_path.with_context(|| {
                     format!("{} 项目会话缺少工作目录记录", record.backend.display_name())
@@ -2679,11 +2849,7 @@ impl AcpPool {
         if result.is_err() && !moved_backups.is_empty() {
             // npm install failed (including user cancel): restore the old
             // files so the previous version is not lost.
-            for (original, backup) in &moved_backups {
-                if backup.is_file() && !original.exists() {
-                    let _ = std::fs::rename(backup, original);
-                }
-            }
+            restore_moved_aside_backups(&moved_backups);
             diagnostics::write(
                 &operation_id,
                 "npm:restore_backups",
@@ -2708,9 +2874,7 @@ impl AcpPool {
                     .finalize_agent_install(backend, previous_codex_version)
                     .await;
                 if finalized.is_ok() {
-                    for (_, backup) in &moved_backups {
-                        let _ = std::fs::remove_file(backup);
-                    }
+                    discard_moved_aside_backups(&moved_backups);
                 }
                 finalized
             }
@@ -2797,11 +2961,7 @@ impl AcpPool {
         .await;
         if result.is_err() && !moved_backups.is_empty() {
             // 脚本失败（含用户取消）：恢复旧文件，避免旧版本丢失。
-            for (original, backup) in &moved_backups {
-                if backup.is_file() && !original.exists() {
-                    let _ = std::fs::rename(backup, original);
-                }
-            }
+            restore_moved_aside_backups(&moved_backups);
             diagnostics::write(
                 &operation_id,
                 "script:restore_backups",
@@ -2827,9 +2987,7 @@ impl AcpPool {
                     .finalize_agent_install(backend, previous_codex_version)
                     .await;
                 if finalized.is_ok() {
-                    for (_, backup) in &moved_backups {
-                        let _ = std::fs::remove_file(backup);
-                    }
+                    discard_moved_aside_backups(&moved_backups);
                 }
                 finalized
             }
@@ -2971,13 +3129,29 @@ impl AcpPool {
     // 第三方 Provider（中转）管理
     // ------------------------------------------------------------------
 
-    pub fn list_acp_providers(&self, agent: &str) -> Result<AcpProvidersView> {
-        self.providers.list(agent)
+    pub async fn list_acp_providers(&self, agent: &str) -> Result<AcpProvidersView> {
+        // Round-46 review: the sync body polls the cross-process section
+        // lock (up to SECTION_LOCK_TIMEOUT) and reads the keychain — both
+        // blocking; keep them off the async runtime workers, which also
+        // drive the ACP engine session pumps.
+        let providers = self.providers.clone();
+        let agent = agent.to_string();
+        on_blocking(move || providers.list(&agent)).await
     }
 
     /// 读取 Provider 的 API key（明文，仅编辑弹窗「显示密钥」按需调用）。
-    pub fn get_acp_provider_key(&self, agent: &str, provider_id: &str) -> Result<Option<String>> {
-        self.providers.api_key(agent, provider_id)
+    pub async fn get_acp_provider_key(
+        &self,
+        agent: &str,
+        provider_id: &str,
+    ) -> Result<Option<String>> {
+        // Round-46 review: keychain I/O — this used to be a synchronous
+        // command executed on the main thread (the original freeze class);
+        // the blocking read now runs on a blocking worker.
+        let providers = self.providers.clone();
+        let agent = agent.to_string();
+        let provider_id = provider_id.to_string();
+        on_blocking(move || providers.api_key(&agent, &provider_id)).await
     }
 
     /// 保存 Provider。若保存的是**生效中**的 Provider，配置已重写但运行中的
@@ -2998,21 +3172,42 @@ impl AcpPool {
         api_key_action: crate::platform::credential_store::CredentialEditAction,
     ) -> Result<ProviderRecord> {
         let backend = AgentBackend::parse(Some(agent))?;
-        let record = self.providers.save(
-            agent,
-            provider_id,
-            name,
-            base_url,
-            model,
-            model_slots,
-            context_window,
-            wire_api,
-            api_key,
-            api_key_action,
-        )?;
-        // 保存的是生效中 Provider：配置已重写，重启该 Agent 会话使新配置生效
-        // （与 switch/delete/official 同一链路；codex 的 key 在 spawn 时注入）。
-        if self.providers.store().current(agent).as_deref() == Some(record.id.as_str()) {
+        // Round-46 review: the sync save polls the section lock, does
+        // keychain work, and writes vendor configs — run it on a blocking
+        // worker (M3).
+        let providers = self.providers.clone();
+        let agent_owned = agent.to_string();
+        let provider_id = provider_id.map(str::to_string);
+        let (record, is_current) = on_blocking(move || {
+            let record = providers.save(
+                &agent_owned,
+                provider_id.as_deref(),
+                name,
+                base_url,
+                model,
+                model_slots,
+                context_window,
+                wire_api,
+                api_key,
+                api_key_action,
+            )?;
+            // 保存的是生效中 Provider：配置已重写，重启该 Agent 会话使新配置生效
+            // （与 switch/delete/official 同一链路；codex 的 key 在 spawn 时注入）。
+            // 判定走 reload 后的 fresh read：reload-on-mutator 落地后，CLI 进程
+            // 可以在本 GUI 启动后改写 current，读内存会把「当前 Provider」判错，
+            // 该重启的会话不重启（或反之）。
+            // The fresh read polls the cross-process section lock (up to
+            // SECTION_LOCK_TIMEOUT) and reloads the store from disk — blocking,
+            // so it stays on the same blocking worker as the save above.
+            let is_current = providers
+                .store()
+                .current_after_reload(&agent_owned)
+                .as_deref()
+                == Some(record.id.as_str());
+            Ok((record, is_current))
+        })
+        .await?;
+        if is_current {
             self.invalidate_auth_cache(backend);
             self.restart_agent_sessions(backend).await;
         }
@@ -3027,8 +3222,20 @@ impl AcpPool {
         provider_id: &str,
     ) -> Result<CodexAcpStatus> {
         let backend = AgentBackend::parse(Some(agent))?;
-        let was_current = self.providers.store().current(agent).as_deref() == Some(provider_id);
-        self.providers.delete(agent, provider_id)?;
+        // 与 save 同一 fresh-read 纪律：CLI 在本 GUI 背后的 switch 不得让
+        // 重启判定沿用启动时的内存值。Round-46 review: both the fresh read
+        // (section lock) and the delete (keychain) are blocking — run the
+        // pair on a blocking worker in decision order.
+        let providers = self.providers.clone();
+        let agent = agent.to_string();
+        let provider_id = provider_id.to_string();
+        let was_current = on_blocking(move || {
+            let was_current = providers.store().current_after_reload(&agent).as_deref()
+                == Some(provider_id.as_str());
+            providers.delete(&agent, &provider_id)?;
+            Ok(was_current)
+        })
+        .await?;
         if was_current {
             self.invalidate_auth_cache(backend);
             self.restart_agent_sessions(backend).await;
@@ -3044,7 +3251,12 @@ impl AcpPool {
         provider_id: &str,
     ) -> Result<CodexAcpStatus> {
         let backend = AgentBackend::parse(Some(agent))?;
-        self.providers.switch(agent, provider_id)?;
+        // Round-46 review: the switch body can park on a keychain prompt —
+        // blocking worker (M3).
+        let providers = self.providers.clone();
+        let agent = agent.to_string();
+        let provider_id = provider_id.to_string();
+        on_blocking(move || providers.switch(&agent, &provider_id)).await?;
         self.invalidate_auth_cache(backend);
         self.restart_agent_sessions(backend).await;
         Ok(self.status_for_async(backend).await)
@@ -3053,18 +3265,26 @@ impl AcpPool {
     /// 恢复官方登录：只删除本功能写入的键/表，然后走同一套重启链路。
     pub async fn switch_acp_provider_official(&self, agent: &str) -> Result<CodexAcpStatus> {
         let backend = AgentBackend::parse(Some(agent))?;
-        self.providers.switch_official(agent)?;
+        // Round-46 review: same blocking-worker discipline as `switch`.
+        let providers = self.providers.clone();
+        let agent = agent.to_string();
+        on_blocking(move || providers.switch_official(&agent)).await?;
         self.invalidate_auth_cache(backend);
         self.restart_agent_sessions(backend).await;
         Ok(self.status_for_async(backend).await)
     }
 
-    pub fn export_acp_providers(&self, agent: &str) -> Result<String> {
-        self.providers.export(agent)
+    pub async fn export_acp_providers(&self, agent: &str) -> Result<String> {
+        let providers = self.providers.clone();
+        let agent = agent.to_string();
+        on_blocking(move || providers.export(&agent)).await
     }
 
-    pub fn import_acp_providers(&self, agent: &str, json: &str) -> Result<ImportResult> {
-        self.providers.import(agent, json)
+    pub async fn import_acp_providers(&self, agent: &str, json: &str) -> Result<ImportResult> {
+        let providers = self.providers.clone();
+        let agent = agent.to_string();
+        let json = json.to_string();
+        on_blocking(move || providers.import(&agent, &json)).await
     }
 
     /// Per-session provider override (F11): writes the "provider" key into the
@@ -3094,15 +3314,37 @@ impl AcpPool {
         let agent = backend.agent_id().context("非 ACP 会话")?;
         match provider_id {
             Some(provider_id) => {
-                self.providers
-                    .store()
-                    .get(agent, &provider_id)
-                    .with_context(|| format!("Provider 不存在: {provider_id}"))?;
-                self.agents
-                    .set_acp_config_value(session_id, "provider", &provider_id)?;
+                // 同 save/delete 的 fresh-read 纪律：CLI 进程在本 GUI 启动后
+                // add 的 Provider，读启动内存会被误判「不存在」。
+                // The fresh read polls the cross-process section lock and
+                // reloads the store from disk — blocking worker, matching
+                // save/delete/switch.
+                let providers = self.providers.clone();
+                let agent_owned = agent.to_string();
+                let provider_owned = provider_id.clone();
+                on_blocking(move || {
+                    providers
+                        .store()
+                        .record_after_reload(&agent_owned, &provider_owned)
+                        .with_context(|| format!("Provider 不存在: {provider_owned}"))
+                })
+                .await?;
+                // Round-49 review: the session-index mutator polls the
+                // cross-process section lock and rewrites the whole
+                // session-agents.json — blocking worker, same as the fresh
+                // read above.
+                let agents = self.agents.clone();
+                let session_owned = session_id.to_string();
+                on_blocking(move || {
+                    agents.set_acp_config_value(&session_owned, "provider", &provider_id)
+                })
+                .await?;
             }
             None => {
-                self.agents.clear_acp_config_value(session_id, "provider")?;
+                let agents = self.agents.clone();
+                let session_owned = session_id.to_string();
+                on_blocking(move || agents.clear_acp_config_value(&session_owned, "provider"))
+                    .await?;
             }
         }
         self.restart_agent_sessions(backend).await;
@@ -3111,28 +3353,52 @@ impl AcpPool {
 
     /// 当前会话生效的 Provider key（会话 option > 全局 current_provider）。
     /// 仅用于 Codex 的 spawn env 注入。
-    fn session_provider_api_key(&self, session_id: &str) -> Result<Option<String>> {
+    ///
+    /// The decision reads poll the cross-process section lock (up to
+    /// SECTION_LOCK_TIMEOUT) and reload the store from disk, and the key
+    /// itself comes from the keychain — all blocking, so they run on a
+    /// blocking worker. The only caller is the async spawn path, whose
+    /// runtime workers also drive the ACP engine session pumps.
+    async fn session_provider_api_key(&self, session_id: &str) -> Result<Option<String>> {
         let backend = self.backend(session_id);
         let Some(agent) = backend.agent_id() else {
             return Ok(None);
         };
+        // In-memory read: the session's own provider option.
         let session_provider = self
             .agents
             .get(session_id)
             .acp_config_values
             .get("provider")
             .cloned();
-        let provider_id = match session_provider {
-            Some(provider_id) => Some(provider_id),
-            None => self.providers.store().current(agent),
-        };
-        let Some(provider_id) = provider_id else {
-            return Ok(None);
-        };
-        if self.providers.store().get(agent, &provider_id).is_none() {
-            return Ok(None);
-        }
-        self.providers.api_key(agent, &provider_id)
+        // codex 的 key 在 spawn 时注入：判定必须走 reload 后的 fresh
+        // read——CLI 进程在本 GUI 启动后 switch 过 current 时，读启动
+        // 内存会把旧 Provider 的 key 注进指向新 endpoint 的 config，
+        // 产生无因的 401。与 save/delete 的 fresh-read 纪律同一形状。
+        // 一次 state_after_reload 同时取回 current 与 providers 表：原
+        // 先的 current_after_reload + record_after_reload 是两段各自
+        // 加锁重读的临界区，这里的本地查找在同一份快照上完成判定。
+        let providers = self.providers.clone();
+        let agent = agent.to_string();
+        on_blocking(move || {
+            let state = providers.store().state_after_reload(&agent);
+            let provider_id = match session_provider {
+                Some(provider_id) => Some(provider_id),
+                None => state.current_provider_id.clone(),
+            };
+            let Some(provider_id) = provider_id else {
+                return Ok(None);
+            };
+            if !state
+                .providers
+                .iter()
+                .any(|candidate| candidate.id == provider_id)
+            {
+                return Ok(None);
+            }
+            providers.api_key(&agent, &provider_id)
+        })
+        .await
     }
 
     /// 卸载 ACP Agent CLI。有运行中会话时拒绝；`cleanup=true` 时额外删除该 Agent
@@ -3254,10 +3520,26 @@ impl AcpPool {
             tokio::task::spawn_blocking(move || remove_agent_paths(config_paths))
                 .await
                 .context("删除 Agent 配置任务异常退出")??;
-            for record in self.providers.store().state(agent_id).providers {
-                let _ = self.providers.delete(agent_id, &record.id);
-            }
-            let _ = self.providers.store().set_current(agent_id, None);
+            // 与上面同一 fresh-read 纪律：CLI 在本 GUI 启动后 add 的受管
+            // Provider 也要进清理集合，否则其凭据与受管配置在卸载后残留。
+            // The fresh read (section lock + disk reload) and every delete
+            // (keychain removal + vendor config rewrite) block — run the
+            // whole cleanup on a blocking worker, matching the uninstall
+            // lanes above.
+            let providers = self.providers.clone();
+            let cleanup_agent = agent_id.to_string();
+            tokio::task::spawn_blocking(move || {
+                for record in providers
+                    .store()
+                    .state_after_reload(&cleanup_agent)
+                    .providers
+                {
+                    let _ = providers.delete(&cleanup_agent, &record.id);
+                }
+                let _ = providers.store().set_current(&cleanup_agent, None);
+            })
+            .await
+            .context("Provider 清理任务异常退出")?;
         }
         // 渠道翻转防护：卸载后仍探测到「已安装」说明存在另一渠道的安装（如
         // 脚本目录删除后探测回落到 npm/PATH 的另一份）。如实告知，避免
@@ -3897,24 +4179,43 @@ impl AcpPool {
             PROBE_SEQ.fetch_add(1, Ordering::Relaxed),
         );
         // 临时工作区：spawn 时自动创建独立目录，不污染真实项目。
-        self.agents
-            .set_acp_workspace(&probe_id, backend, CodexWorkspaceKind::Temporary, None)?;
+        // Round-49 review: the index mutator polls the cross-process section
+        // lock and rewrites the whole session-agents.json, so it runs on a
+        // blocking worker like the fresh reads.
+        let agents = self.agents.clone();
+        let probe_owned = probe_id.clone();
+        on_blocking(move || {
+            agents.set_acp_workspace(&probe_owned, backend, CodexWorkspaceKind::Temporary, None)
+        })
+        .await?;
         let result = self.session_info(&probe_id).await;
         // 无论成败都必须收口，不得留下运行中的探针进程或 store 残留记录；
         // 清理失败只告警，主结果（上报或原始错误）优先透传。
         self.evict(&probe_id).await;
-        if let Err(error) = self.agents.remove(&probe_id) {
+        let agents = self.agents.clone();
+        let probe_owned = probe_id.clone();
+        if let Err(error) = on_blocking(move || agents.remove(&probe_owned)).await {
             eprintln!("[pinvou3-app] 清理模型探针会话记录失败（{probe_id}）: {error:#}");
         }
         let probe_dir = crate::platform::paths::sessions_root().join(&probe_id);
-        match std::fs::remove_dir_all(&probe_dir) {
-            Ok(()) => {}
-            // 探针未走到 spawn（如 CLI 未安装）时目录本就不存在。
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => eprintln!(
+        let probe_dir_owned = probe_dir.clone();
+        // 与上面的 store 记录清理同样收口到 blocking worker：remove_dir_all
+        // 同步遍历整棵临时目录，不能占用驱动引擎会话泵的 runtime worker；
+        // 清理失败依旧只告警，主结果优先透传。
+        if let Err(error) = on_blocking(move || {
+            match std::fs::remove_dir_all(&probe_dir_owned) {
+                Ok(()) => Ok(()),
+                // 探针未走到 spawn（如 CLI 未安装）时目录本就不存在。
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error.into()),
+            }
+        })
+        .await
+        {
+            eprintln!(
                 "[pinvou3-app] 清理模型探针临时目录失败（{}）: {error:#}",
                 probe_dir.display()
-            ),
+            );
         }
         result
     }
@@ -4287,7 +4588,8 @@ impl AcpPool {
                 let adapter = self.resolve_adapter().context("Codex ACP 尚未安装")?;
                 let mut command = self.adapter_command(&adapter)?;
                 self.configure_codex_path(&mut command)?;
-                self.configure_codex_provider_env(&mut command, pinvou_session_id)?;
+                self.configure_codex_provider_env(&mut command, pinvou_session_id)
+                    .await?;
                 (
                     command,
                     adapter,
@@ -4584,7 +4886,13 @@ impl AcpPool {
         let desired_config_values = if saved.acp_session_id.is_some() {
             saved_config_values(&saved)
         } else {
-            self.config_defaults.get(backend)
+            // Round-40 review: fresh read. The CLI's `code` family rewrites
+            // the defaults store from a second process; a boot-era memory
+            // answer spawned new sessions with a stale default mode after
+            // exactly the second-writer write this store's section lock was
+            // built for. (`get_after_reload` needs no cross-process lock —
+            // the writers persist by atomic rename.)
+            self.config_defaults.get_after_reload(backend)
         };
         // Record whether spawn resumed or created the session so restart recovery
         // can report whether history survived. Missing or failed load creates fresh.
@@ -4637,12 +4945,22 @@ impl AcpPool {
         let models = codex_models(&config_options);
         let config_values = config_values_from_options(&config_options, &mode_state);
         let prompt_capabilities = initialized.agent_capabilities.prompt_capabilities.clone();
-        self.agents.set_acp_session(
-            pinvou_session_id,
-            acp_session_id.clone(),
-            current_model_id.clone(),
-            config_values,
-        )?;
+        // Round-49 review: the index mutator polls the cross-process section
+        // lock and rewrites the whole session-agents.json — blocking worker,
+        // matching the provider reads on this spawn path.
+        let agents = self.agents.clone();
+        let pinvou_session_owned = pinvou_session_id.to_string();
+        let acp_session_owned = acp_session_id.clone();
+        let current_model_owned = current_model_id.clone();
+        on_blocking(move || {
+            agents.set_acp_session(
+                &pinvou_session_owned,
+                acp_session_owned,
+                current_model_owned,
+                config_values,
+            )
+        })
+        .await?;
         persist_acp_state(
             pinvou_session_id,
             json!({
@@ -4752,7 +5070,7 @@ impl AcpPool {
 
     /// Codex 的 Provider key 注入：config.toml 只支持 env_key 引用，实际 key 在
     /// spawn 时注入子进程 env。进程 env 已设置时优先（用户显式配置），不覆盖。
-    fn configure_codex_provider_env(
+    async fn configure_codex_provider_env(
         &self,
         command: &mut Command,
         pinvou_session_id: &str,
@@ -4760,7 +5078,7 @@ impl AcpPool {
         if std::env::var_os("OPENAI_API_KEY").is_some_and(|value| !value.is_empty()) {
             return Ok(());
         }
-        let Some(key) = self.session_provider_api_key(pinvou_session_id)? else {
+        let Some(key) = self.session_provider_api_key(pinvou_session_id).await? else {
             return Ok(());
         };
         command.env("OPENAI_API_KEY", key);
@@ -5860,7 +6178,17 @@ mod tests {
         writer
             .bind_code_native_session("code-1", CodexWorkspaceKind::Project, Some(root.clone()))
             .unwrap();
-        // 模拟辅助索引丢失：空内存索引 + 磁盘 sidecar 仍在 → 真实恢复一次。
+        // 模拟辅助索引丢失。Round-43 review：恢复臂现在在 section 锁下重读
+        // 磁盘索引，所以“索引丢失”的前提必须落在磁盘上（记录从索引文件中
+        // 移除、权威 sidecar 保留），而不仅是空内存表——否则重载后记录仍在，
+        // 恢复正确地早退。
+        let mut raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        raw["sessions"]
+            .as_object_mut()
+            .expect("index sessions object")
+            .remove("code-1");
+        std::fs::write(&path, raw.to_string()).unwrap();
         let agents = SessionAgentStore::for_test(path.clone());
         let summary = restore_code_native_sessions_from_sidecars(&agents);
         assert_eq!(

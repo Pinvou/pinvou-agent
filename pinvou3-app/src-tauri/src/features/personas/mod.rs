@@ -200,7 +200,10 @@ fn set_user_stamp(stamp: UserDirStamp) {
 /// certifies the pool; `None` means the very first load hit a directory
 /// fault — e.g. the personas volume was not yet mounted at app start — and
 /// the resulting empty pool proves nothing about any individual card.
-pub(crate) fn user_pool_enumeration_confirmed() -> bool {
+/// `pub`: the headless CLI's persona lanes share the same pool and must
+/// apply the same guard (a faulted first load there must not read as
+/// "card deleted" either — round-37 review).
+pub fn user_pool_enumeration_confirmed() -> bool {
     USER_STAMP
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -582,6 +585,17 @@ pub fn update_user_persona(mut card: PersonaCard) -> Result<PersonaSummary, Stri
     write_card(&card)?;
     reload_user();
     Ok(card.summary())
+}
+
+/// Delete a user card (only `user-` cards) for a caller outside the desktop
+/// app, such as the headless CLI. Which sessions equip a card is in-memory
+/// state of the running app, so this cannot clear it; the app reconciles on
+/// its own: its readers reload the pool once the file is gone, and the chat
+/// path unequips a card that no longer exists before its next turn. In-app
+/// deletes go through `delete_user_persona_with`, which clears sessions
+/// synchronously.
+pub fn delete_user_persona(id: &str) -> Result<(), String> {
+    delete_user_persona_with(id, || ())
 }
 
 /// Delete a card and run cross-feature cleanup before another operation can

@@ -82,6 +82,22 @@ use crate::platform::paths;
 /// import_lock(X) waiting on TRANSACTION. Known, unresolved; this doc must
 /// not be cited as proof of a settled global lock order.
 ///
+/// Cross-process marketplace write lock (`.imports.lock`, round-52 review
+/// M1): this lock sits ABOVE the transaction lock, and the order is uniform.
+/// Every transaction entry that can reach a market mutator inside its
+/// critical section (`install_inner` → `release_package`; `uninstall` →
+/// companion skill uninstall + `recycle_package` + its own
+/// `remove_dir_all`; `repair_*` → the downgrade pass's `recycle_package` +
+/// `ensure_package_released`; `reconcile` → `rebuild_local_mcp_entry` →
+/// `release_package`) takes `MarketplaceWriteLock` BEFORE acquiring this
+/// mutex; import (`import_plugin_package`) holds it across `install_upload`
+/// for the same reason. The reverse (taking the file lock while holding
+/// this mutex) would let a flock holder waiting on this mutex and this
+/// holder's reentrant join wait on the flock deadlock each other — the
+/// round-51 shape fixed in round-52. Same-thread re-acquisition joins the
+/// held exclusion by depth (flock is per-fd); other threads queue on the
+/// in-process section, other processes on the flock.
+///
 /// Cross-process file locks (#521, `file_lock.rs`): the marketplace state
 /// files' combined locks (`bundles.lock` / `recycle-bin.lock` / `mcp.lock`,
 /// each in-process mutex + OS flock) nest strictly BELOW this lock — install,
@@ -837,6 +853,11 @@ pub fn migrate_mcp_json_paths() -> Result<bool, String> {
 /// 跳过）；内嵌预置由 `ensure_package_released` 从快照重释放，不在此搬。返回
 /// (moved, kept)。
 pub fn migrate_custom_mcp_layout() -> std::io::Result<(usize, usize)> {
+    // 锁序（round-52 review M2）：旧布局目录搬移动 bundles/<id>，与市场写者
+    // 同持跨进程市场写锁（boot 从 extraction 进入时未持其他市场锁，这里是
+    // 真实获取；flock 之上有事务锁的调用方按深度 join）。
+    let _market_write_lock =
+        plugin_import::MarketplaceWriteLock::acquire().map_err(std::io::Error::other)?;
     let old_root = paths::bundle_mcp_servers_dir();
     let Ok(rd) = std::fs::read_dir(&old_root) else {
         return Ok((0, 0));
@@ -1390,6 +1411,13 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // test seam: only install_with_python (cfg(test)) passes Some
         python_override: Option<&str>,
     ) -> Result<(), String> {
+        // 锁序（round-52 review M1）：先持跨进程市场写锁、再进事务锁。本临界区
+        // 内的 release_package / 技能卸载 / 回收搬移都会重入市场写锁；若允许
+        // 「事务锁 → 市场锁」的反向获取，会与 import 路径「市场锁 → 事务锁」
+        // （plugin_import.rs 的临界区横跨 install_upload）构成 ABBA：持锁线程
+        // 等事务、事务线程等锁，两个 GUI 线程永久互等。import 路径进入本函数
+        // 时已持锁，这里按持有深度同线程 join；独立安装路径在此真实获取。
+        let _market_write_lock = plugin_import::MarketplaceWriteLock::acquire_map_err()?;
         let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1598,6 +1626,11 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // 同 id 并发卸载时后到者等先到者卸完再重读登记，看到的是「已回收」终态，
         // 回收失败回滚不会把先删的记录复活成幽灵 installed；顺带串行化跨 id 的
         // installed.json / mcp.json 读-改-写。
+        // 锁序（round-52 review M1/M2）：先持跨进程市场写锁再取事务锁——卸载
+        // 临界区经 companion 清理会进入技能卸载与回收搬移（两者都重入市场写
+        // 锁），且卸载自身对 bundles/<id> 的 remove_dir_all 与 installed.json
+        // 事务也属于市场写面；反向获取构成 ABBA（见 install_inner 的锁序注释）。
+        let _market_write_lock = plugin_import::MarketplaceWriteLock::acquire_map_err()?;
         let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2185,6 +2218,10 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// Transient failures preserve the committed registration for automatic startup retry. Only a
     /// permanently invalid trusted lock is downgraded, and every state transition is transactional.
     pub fn repair_installed_python_tools(&self) -> Result<Vec<String>, String> {
+        // 锁序（round-52 review M1）：修复/降级路径会经 recycle_package（回收
+        // 搬移）与 ensure_package_released（release_package）重入市场写锁，
+        // 先持锁再取事务锁，同 install_inner（反序构成 ABBA）。
+        let _market_write_lock = plugin_import::MarketplaceWriteLock::acquire_map_err()?;
         let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2309,6 +2346,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         &self,
         python_command: &str,
     ) -> Result<Vec<String>, String> {
+        let _market_write_lock = plugin_import::MarketplaceWriteLock::acquire_map_err()?;
         let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -2356,6 +2394,10 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// Python dependency repair so a restored entry can be upgraded to the
     /// managed-runtime form in the same startup.
     pub fn reconcile_installed_mcp_entries(&self) -> Result<Vec<String>, String> {
+        // 锁序（round-52 review M1）：回归路径经 rebuild_local_mcp_entry →
+        // ensure_package_released → release_package 重入市场写锁，先持锁再取
+        // 事务锁，同 install_inner（反序构成 ABBA）。
+        let _market_write_lock = plugin_import::MarketplaceWriteLock::acquire_map_err()?;
         let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);

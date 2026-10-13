@@ -583,6 +583,13 @@ impl Pinvou3Bundle {
         };
         let import_lock = crate::features::marketplace::plugin_import::import_lock_for(tool_id);
         let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
+        // 锁序（round-52 review M2）：下面的 remove_dir_all 动的是
+        // bundles/<id>，与市场写者同持跨进程市场写锁（import_lock →
+        // 市场锁，与导入临界区同序）。acquire 阻塞等锁，取不到即真错误，
+        // 按错误传播交由启动提取失败重试。
+        let _market_write_lock =
+            crate::features::marketplace::plugin_import::MarketplaceWriteLock::acquire()
+                .map_err(|e| std::io::Error::other(format!("retired-tool cleanup lock: {e}")))?;
         // The pre-lock probe above may have read a no-record store
         // while an import for the same id was mid-landing (it had not
         // committed when the probe ran, and holds this very lock

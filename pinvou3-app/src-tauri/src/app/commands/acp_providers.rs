@@ -25,13 +25,22 @@ fn parse_key_action(
     }
 }
 
+// Round-38 review: these three reads run under the providers' cross-process
+// section lock (`state_after_reload`/`import`), which waits up to
+// SECTION_LOCK_TIMEOUT for a concurrent CLI mutator. A sync `#[tauri::command]`
+// executes on the main thread, so a CLI `code providers save` holding the lock
+// across a keychain prompt would freeze the whole UI for up to that timeout;
+// async commands alone still ran the blocking section-lock poll and keychain
+// I/O on a runtime worker (round-46 review M3), so the pool methods now move
+// that work onto `spawn_blocking` workers.
 #[tauri::command]
-pub fn list_acp_providers(
+pub async fn list_acp_providers(
     agent: String,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<AcpProvidersView, String> {
     acp_pool
         .list_acp_providers(&agent)
+        .await
         .map_err(|error| format!("读取 Provider 列表失败: {error:#}"))
 }
 
@@ -128,15 +137,18 @@ pub async fn cancel_acp_agent_install(
 }
 
 /// 读取 Provider 的 API key（明文，仅编辑弹窗「显示密钥」时按需调用；
-/// 列表/卡片永不回传）。无 key 时返回 null。
+/// 列表/卡片永不回传）。无 key 时返回 null。Round-46 review: the keychain
+/// read must not run on the main thread — async command + spawn_blocking
+/// in the pool.
 #[tauri::command]
-pub fn get_acp_provider_key(
+pub async fn get_acp_provider_key(
     agent: String,
     provider_id: String,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<Option<String>, String> {
     acp_pool
         .get_acp_provider_key(&agent, &provider_id)
+        .await
         .map_err(|error| format!("读取 Provider key 失败: {error:#}"))
 }
 
@@ -153,20 +165,25 @@ pub async fn logout_acp_agent(
 }
 
 #[tauri::command]
-pub fn export_acp_providers(agent: String, acp_pool: State<'_, AcpPool>) -> Result<String, String> {
+pub async fn export_acp_providers(
+    agent: String,
+    acp_pool: State<'_, AcpPool>,
+) -> Result<String, String> {
     acp_pool
         .export_acp_providers(&agent)
+        .await
         .map_err(|error| format!("导出 Provider 失败: {error:#}"))
 }
 
 #[tauri::command]
-pub fn import_acp_providers(
+pub async fn import_acp_providers(
     agent: String,
     json: String,
     acp_pool: State<'_, AcpPool>,
 ) -> Result<ImportResult, String> {
     acp_pool
         .import_acp_providers(&agent, &json)
+        .await
         .map_err(|error| format!("导入 Provider 失败: {error:#}"))
 }
 
