@@ -6632,6 +6632,7 @@ dependencies = [
 name = "pinvou-upgrade-byte-check"
 version = "0.0.0"
 dependencies = [
+ "pinvou-upgrade-cache-object",
  "pinvou-upgrade-transfer",
  "sha2 0.11.0",
 ]

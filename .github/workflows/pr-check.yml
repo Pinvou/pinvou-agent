@@ -1673,6 +1673,14 @@ jobs:
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked -- --test-threads=1
 
+      - name: Check native Windows upgrade byte verification
+        if: ${{ matrix.phase == 'regression' }}
+        working-directory: pinvou3-app/src-tauri/src/features/updater/download/verify
+        run: |
+          cargo fmt -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked -- --test-threads=1
+
       # Non-sensitive cache baseline: target presence plus fingerprint and
       # direct dependency-artifact counts, without a recursive scan.
       - name: Windows Rust cache baseline diagnostics

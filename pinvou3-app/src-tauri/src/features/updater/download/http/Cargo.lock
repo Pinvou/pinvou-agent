@@ -667,8 +667,16 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 name = "pinvou-upgrade-byte-check"
 version = "0.0.0"
 dependencies = [
+ "pinvou-upgrade-cache-object",
  "pinvou-upgrade-transfer",
  "sha2",
+]
+
+[[package]]
+name = "pinvou-upgrade-cache-object"
+version = "0.0.0"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

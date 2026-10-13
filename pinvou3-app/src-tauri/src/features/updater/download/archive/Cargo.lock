@@ -131,8 +131,16 @@ dependencies = [
 name = "pinvou-upgrade-byte-check"
 version = "0.0.0"
 dependencies = [
+ "pinvou-upgrade-cache-object",
  "pinvou-upgrade-transfer",
  "sha2",
+]
+
+[[package]]
+name = "pinvou-upgrade-cache-object"
+version = "0.0.0"
+dependencies = [
+ "windows-sys",
 ]
 
 [[package]]
@@ -238,6 +246,21 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "windows-link"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
+
+[[package]]
+name = "windows-sys"
+version = "0.61.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
+dependencies = [
+ "windows-link",
+]
 
 [[package]]
 name = "zlib-rs"

@@ -2946,3 +2946,47 @@ Details: [read-only duplicate](client-upgrade-read-only-cache-handle.md). Full T
 sealed content/retired-writer proof, protected staging/namespace/native identity
 and actual original-clock/budget integration remain unfinished. Downloads retain
 no total/cumulative duration or retry cap.
+
+
+## T29 fourteenth batch - actual read-only cache scan (2026-10-13)
+
+Typed ReadOnlyCacheHandle now feeds B3 through a privately cloned current actual
+File, with no path reopening, arbitrary mutable File, old match or original-target
+replacement. Cancellation precedes cloning, covers every original scan boundary
+and follows final hashing. All exits close the internal clone through RAII. Aliases
+share a cursor and require owner coordination; writer retirement/content sealing,
+namespace protection and original T26 clock/budget integration remain external.
+The result is byte-match observation only, never VMO or execution authority.
+
+Three new Windows groups cover actual EOF/full original size and SHA, shared cursor,
+wrong size/hash, all six cancellation boundaries and clone cleanup on each exit.
+Unsupported platforms report no physical controls executed and use no ordinary
+File fallback. The Windows CI regression gate now executes the Verify crate in
+addition to its existing Linux gate; CI policy coverage increased to51.
+
+Root Verify29 passed8.90s, Clippy5.89s/fmt; CI51 passed0.053s, architecture/version/
+diff checks passed. Changed-transitive regressions passed: Archive10 in15.21s with
+Clippy17.98s; actual HTTPS27 and79 wire assertions in10.02s with Clippy7.78s.
+Final actual Windows App passed all22 updater tests in0.12s after3m39s build,
+including readonly-facade match and wrong-original-hash refusal. No App-wide or
+other-platform physical pass is claimed. The prior privileged symlink scenario
+remains ignored/unverified, not certified by these tests.
+
+Verify adds a private lower cache-object dependency. Five lock graphs were checked
+against their prior state: all previous external versions/sources/checksums/edges
+and the Archive backend are unchanged; isolated Verify15, Archive33 and HTTP179
+are exact parent-version/source/checksum subsets. Parent changes are local edges
+only. No Schema, product version or gitlink changes.
+
+Both independent source reviewers returned scoped PASS without mandatory fixes.
+Dependency Verify29 passed4.09s/Clippy1.48s, Cache8 passed0.02s/one privilege ignore/
+Clippy0.92s, CI51 passed0.127s; compatibility Verify29 passed10.83s/Clippy2.40s,
+Cache8 passed0.09s/one ignore, CI51 passed0.073s. Both ran fmt/diff and independently
+checked lock compatibility, actual Windows controls and feature boundaries.
+Both returned final documentation/evidence scoped PASS without rebuilding or
+changing the frozen source. Root self-review found no remaining in-scope gap.
+
+Details: [read-only byte scan](client-upgrade-read-only-byte-scan.md). Full T29,
+protected staging/sealing, actual native identity/qualification and original clock/
+budget integration remain unfinished. Downloads retain no total/cumulative
+duration or retry cap.

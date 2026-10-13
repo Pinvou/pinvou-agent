@@ -8,6 +8,7 @@ license = "MIT"
 
 [dependencies]
 pinvou-upgrade-transfer = { path = "../transfer" }
+pinvou-upgrade-cache-object = { path = "../cache" }
 sha2 = "=0.11.0"
 
 [lints.rust]

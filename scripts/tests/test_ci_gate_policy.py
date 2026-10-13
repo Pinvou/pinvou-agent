@@ -224,6 +224,15 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertNotIn("if:", linux.split("- name: Check independent upgrade cache object adaptation", 1)[1].split("\n      - name:", 1)[0])
         self.assertIn("matrix.phase == 'regression'", windows.split("- name: Check native Windows upgrade cache objects", 1)[1].split("\n      - name:", 1)[0])
 
+    def test_read_only_cache_byte_controls_run_on_native_windows(self):
+        job = self.pr_workflow.split("\n  windows-rust-test:", 1)[1].split("\n  macos-rust-check:", 1)[0]
+        step = job.split("- name: Check native Windows upgrade byte verification", 1)[1].split("\n      - name:", 1)[0]
+        self.assertIn("matrix.phase == 'regression'", step)
+        self.assertIn("working-directory: pinvou3-app/src-tauri/src/features/updater/download/verify", step)
+        self.assertNotIn("continue-on-error:", step)
+        for command in ("cargo fmt -- --check", "cargo clippy --locked --all-targets -- -D warnings", "cargo test --locked -- --test-threads=1"):
+            self.assertIn(command, step)
+
     def test_upgrade_zip_oracle_and_vectors_run_the_inventory_gate(self):
         block = self.pr_workflow.split("            rust_code:", 1)[1].split("            rust_dependencies:", 1)[0]
         patterns = _extract_quoted_paths(block)
