@@ -6952,6 +6952,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pinvou-upgrade-package-check"
+version = "0.0.0"
+dependencies = [
+ "pinvou-upgrade-archive",
+ "pinvou-upgrade-codec",
+ "pinvou-upgrade-transfer",
+ "serde_json",
+]
+
+[[package]]
 name = "pinvou-upgrade-timing"
 version = "0.0.0"
 
@@ -7007,6 +7017,7 @@ dependencies = [
  "pinvou-upgrade-codec",
  "pinvou-upgrade-control-http",
  "pinvou-upgrade-file-http",
+ "pinvou-upgrade-package-check",
  "pinvou-upgrade-timing",
  "pinvou-upgrade-transfer",
  "pipewire",

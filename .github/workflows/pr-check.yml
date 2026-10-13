@@ -191,6 +191,7 @@ jobs:
           filters: |
             rust_code:
               - 'pinvou3-app/src-tauri/src/features/updater/download/archive/**'
+              - 'pinvou3-app/src-tauri/src/features/updater/download/package/**'
               - 'pinvou3-app/src-tauri/src/features/updater/download/cache/**'
               - 'pinvou3-app/src-tauri/src/features/updater/download/http/**'
               - 'pinvou3-app/src-tauri/src/features/updater/protocol/codec/**'
@@ -903,6 +904,13 @@ jobs:
         env:
           PINVOU_UPGRADE_NODE_REFERENCE: ${{ github.workspace }}/specs/upgrade/v1/reference/canonical-json.mjs
           PINVOU_UPGRADE_SIGNATURE_REFERENCE: ${{ github.workspace }}/specs/upgrade/v1/reference/signatures.mjs
+        run: |
+          cargo fmt -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+
+      - name: Check independent upgrade Package byte binding
+        working-directory: pinvou3-app/src-tauri/src/features/updater/download/package
         run: |
           cargo fmt -- --check
           cargo clippy --locked --all-targets -- -D warnings

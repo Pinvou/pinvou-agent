@@ -4454,3 +4454,43 @@ OpenAPI/profile/vectors, crypto/trust policy, product VERSION or gitlinks change
 Details: [actual control transport](client-upgrade-control-http.md).
 Full T27/real authority/protected persistence/workflows remain unfinished.
 Downloads retain no total/cumulative duration or retry cap.
+
+## T29 sixteenth batch - same-file FullPack/Package binding (2026-10-14)
+
+Scope: complete read-only metadata-to-actual-FullPack relationship; separate
+feature crate composes unchanged canonical/full Schema/expected-context/full
+raw-reference/Package semantics/canonical-version guards with actual archive
+inspection. Independent caller Artifact matches all FullPack fields; each
+declared native/helper byte identity must exist as a direct regular member.
+A bounded identity set avoids helper x member scans or repeated name copies.
+No source path is invented from installationTarget, and identical claims/members
+may share bytes. Nested native files alone cannot satisfy direct membership.
+No signature/native publisher/current qualification/immutable token or install
+right is inferred; outer-wrapper SBOM/provenance admission stays independent.
+Initial actual-file4/14 generated ZIP variants passed in5.87s after1m01s
+compilation. Original Node strong-signature/Schema/semantics preflight was real;
+native payloads are synthetic and not certified. Final wrong-role-before-I/O
+and final-return cancellation controls passed: root scoped actual4/14 in4.28s
+after5.66s compilation, Clippy alltargets10.04s/package+App download facade
+format passed. Actual Windows updater App53 passed in0.36s after3m10s compilation.
+Architecture/version/diff passed; CI policy53 in0.061s. Root self-review confirms
+mandatory Package role and complete independent expectation/reference/version/
+Artifact preconditions, same actual source scan, bounded direct-member index
+and native/helper completeness, non-path semantics and final cancellation with
+no partial return. No native-signature/current-rights inference was introduced.
+Independent dependency scoped actual4/14 passed in4.20s, Clippy1.81s/package+
+App facade format/diff passed, actual Node22/two legacy environments. It reviewed
+all new code/tests/CI/App/docs without mandatory findings and closed all
+processes. Compatibility independent scoped actual4/14 passed in4.17s, Clippy1.98s/
+package+App facade format/diff passed; CI53 in0.074s, actual Node22. It found
+no mandatory issue and closed all processes. Both reviews confirmed original
+outer-upload versus direct FullPack boundaries and supplied-only signature/
+native proof limits. Existing full archive/codec suites and unrelated full
+App were not repeated. Both independent final documentation reviews passed before commit.
+App/CLI only add the local crate; standalone lock inherits parent external
+versions. Original crypto policy/clock/platform/production capacities decisions
+and deployment remain deferred. No Schema/OpenAPI/profile/fixed vectors,
+product VERSION or gitlinks change. Details:
+[same-file Package binding](client-upgrade-package-binding.md).
+Full T29/protected staging/native probes and T27 trust remain unfinished.
+Downloads retain no total/cumulative duration or retry cap.

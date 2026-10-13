@@ -1,6 +1,19 @@
 //! Byte-transfer facade. The restricted GET adapter and structural planner do
 //! not own protected cache writes, qualification or installation rights.
 
+/// Same actual FullPack byte/inventory relation to supplied Package metadata.
+/// This returns observed facts, never authenticated native code or install rights.
+pub(crate) fn inspect_bound_full_pack<'a>(
+    source: &mut std::fs::File,
+    input: pinvou_upgrade_package_check::PackageInspection<'a, '_>,
+    cancelled: impl FnMut() -> bool,
+) -> Result<
+    pinvou_upgrade_archive::PackageInventory<'a>,
+    pinvou_upgrade_package_check::PackageCheckError,
+> {
+    pinvou_upgrade_package_check::inspect_full_pack(source, input, cancelled)
+}
+
 pub(crate) fn create_exclusive_cache(
     path: &std::path::Path,
 ) -> Result<
@@ -469,6 +482,115 @@ mod tests {
                 .target()
                 == target
         );
+        drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn application_full_pack_binding_uses_actual_member_bytes_without_native_or_signature_authority()
+     {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        use pinvou_upgrade_codec::{Document, InputKind, derive_metadata_reference};
+        use std::io::Write;
+        let vectors: serde_json::Value =
+            serde_json::from_str(include_str!("archive/tests/fixtures/zip-vectors.json")).unwrap();
+        let zip = &vectors
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["case"] == "store")
+            .unwrap();
+        let bytes: Vec<u8> = zip["hex"]
+            .as_str()
+            .unwrap()
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|p| u8::from_str_radix(std::str::from_utf8(p).unwrap(), 16).unwrap())
+            .collect();
+        let path = std::env::temp_dir().join(format!(
+            "pinvou-app-package-binding-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        file.write_all(&bytes).unwrap();
+        let crypto: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/envelopes.json"
+        )))
+        .unwrap();
+        let fixture = crypto["vectors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|v| v["name"] == "package")
+            .unwrap();
+        let mut manifest: serde_json::Value = serde_json::from_slice(
+            &URL_SAFE_NO_PAD
+                .decode(fixture["envelopeBase64Url"].as_str().unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        let pkg = &mut manifest["signed"];
+        pkg["fullPackage"] =
+            serde_json::json!({"packageId":"package-1","size":bytes.len(),"sha256":zip["sha256"]});
+        for name in ["finalInstaller", "helper", "launcher"] {
+            pkg[name]["size"] = zip["members"][0]["size"].clone();
+            pkg[name]["sha256"] = zip["members"][0]["sha256"].clone();
+        }
+        pkg["helpers"][0]["nativeIdentity"] = pkg["helper"].clone();
+        pkg["provenance"]["finalInstallerSha256"] = pkg["finalInstaller"]["sha256"].clone();
+        // These intentionally altered claims/signature prove only structural
+        // byte binding; the same abc member may satisfy repeated byte identities.
+        manifest["signatures"][0]["signature"] = serde_json::json!("A".repeat(86));
+        let decode = |v: &serde_json::Value| {
+            Document::parse(&serde_json::to_vec(v).unwrap(), InputKind::Metadata).unwrap()
+        };
+        let context = decode(&fixture["expectedContext"]);
+        let version = decode(&manifest["signed"]["appVersion"])
+            .app_version_shape()
+            .unwrap();
+        let time = decode(&fixture["now"]).protocol_time_shape().unwrap();
+        let mut missing = manifest.clone();
+        missing["signed"]["finalInstaller"]["size"] = serde_json::json!(4);
+        let target = Artifact::new(
+            "package-1",
+            bytes.len() as u64,
+            zip["sha256"].as_str().unwrap(),
+        )
+        .unwrap();
+        for (value, positive) in [(&manifest, true), (&missing, false), (&manifest, true)] {
+            let raw = decode(value).canonical_bytes().unwrap();
+            let reference = derive_metadata_reference(&raw).unwrap();
+            let result = inspect_bound_full_pack(
+                &mut file,
+                pinvou_upgrade_package_check::PackageInspection {
+                    artifact: target,
+                    manifest_bytes: &raw,
+                    reference: &reference,
+                    expected_context: &context,
+                    expected_version: &version,
+                    supplied_time: &time,
+                    limits: pinvou_upgrade_archive::ArchiveLimits::new(
+                        100000, 100000, 10, 10000, 10000, 1000000,
+                    )
+                    .unwrap(),
+                },
+                || false,
+            );
+            if positive {
+                assert_eq!(result.unwrap().members().len(), 1);
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(pinvou_upgrade_package_check::PackageCheckError::NativeMemberMissing)
+                ));
+            }
+        }
         drop(file);
         std::fs::remove_file(path).unwrap();
     }

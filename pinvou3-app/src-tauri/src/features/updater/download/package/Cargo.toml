@@ -1,0 +1,20 @@
+[package]
+name = "pinvou-upgrade-package-check"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+license = "MIT"
+
+[dependencies]
+pinvou-upgrade-codec = { path = "../../protocol/codec" }
+pinvou-upgrade-archive = { path = "../archive" }
+pinvou-upgrade-transfer = { path = "../transfer" }
+serde_json = "=1.0.151"
+
+[dev-dependencies]
+# Fixtures use the already selected digest version, not a new crypto provider.
+sha2 = "=0.11.0"
+
+[lints.rust]
+unsafe_code = "forbid"

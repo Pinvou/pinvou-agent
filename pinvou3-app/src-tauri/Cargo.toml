@@ -70,6 +70,7 @@ pinvou-upgrade-file-http = { path = "src/features/updater/download/http" }
 pinvou-upgrade-byte-check = { path = "src/features/updater/download/verify" }
 pinvou-upgrade-cache-object = { path = "src/features/updater/download/cache" }
 pinvou-upgrade-archive = { path = "src/features/updater/download/archive" }
+pinvou-upgrade-package-check = { path = "src/features/updater/download/package" }
 pinvou-knowledge = { path = "../../pinvou-knowledge", default-features = false, features = ["client", "discovery"] }
 # workflow 整目录内嵌(含二进制),include_str 撑不住
 include_dir = "0.7"
