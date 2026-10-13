@@ -457,6 +457,7 @@ function pinvouSharedweb() {
       summonNeedsSession: "Start a conversation first, then summon Pinvou to review.",
       remoteDoneUnsynced: "⚠️ The chat finished on the desktop, but the authoritative record is not synced yet. Retry after reconnecting.",
       pickFolderTitle: "Choose a working directory",
+      fileMediaFilterName: "Images and videos",
       kbPickFolderTitle: "Choose a folder to import into the knowledge base",
       rebindPickFolderTitle: "Choose the folder to rebind this project to",
       metricUnavailable: "Not provided",
@@ -577,6 +578,7 @@ function pinvouSharedweb() {
       summonNeedsSession: "先に会話を始めてから Pinvou レビューを召喚してください。",
       remoteDoneUnsynced: "⚠️ チャットはデスクトップ側で完了しましたが、正式な記録がまだ同期されていません。接続回復後に再試行できます。",
       pickFolderTitle: "作業ディレクトリを選択",
+      fileMediaFilterName: "画像と動画",
       kbPickFolderTitle: "知識ベースにインポートするフォルダーを選択",
       rebindPickFolderTitle: "このプロジェクトの再バインド先フォルダーを選択",
       metricUnavailable: "未提供",
@@ -697,6 +699,7 @@ function pinvouSharedweb() {
       summonNeedsSession: "先开始一个对话,再召唤 Pinvou 检阅。",
       remoteDoneUnsynced: "⚠️ 对话已在桌面端完成，但权威记录暂未同步；恢复连接后可重试。",
       pickFolderTitle: "选择工作目录",
+      fileMediaFilterName: "图片和视频",
       kbPickFolderTitle: "选择要导入知识库的文件夹",
       rebindPickFolderTitle: "选择重绑定项目的新文件夹",
       metricUnavailable: "未提供",
@@ -7822,7 +7825,7 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     const selected = await dialogOpen({
       multiple: true,
       filters: [
-        { name: "Images and videos", extensions: ["png", "jpg", "jpeg", "gif", "webp", "mp4", "mov", "webm"] },
+        { name: bt("fileMediaFilterName"), extensions: ["png", "jpg", "jpeg", "gif", "webp", "mp4", "mov", "webm"] },
       ],
     });
     if (!selected) return [];
