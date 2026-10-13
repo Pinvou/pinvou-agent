@@ -417,10 +417,17 @@ pub fn profile_label_would_be_wiped(value: &str, topic: &str) -> bool {
     !value.trim().is_empty() && normalize_profile_label(value, topic).is_empty()
 }
 
+/// The default preference bucket `normalize_preference_topic` folds every
+/// unmatched (including empty) topic onto. `pub` + re-exported from
+/// `features::memory`: the CLI's add lane predicts the pending row's topic
+/// from the ORIGINAL input, so it names this value instead of hand-copies
+/// the literal (same single-sourcing rationale as the text caps).
+pub const DEFAULT_PREFERENCE_TOPIC: &str = "answer_style";
+
 pub(super) fn normalize_preference_topic(topic: &str) -> String {
     match clean_id(&clean_text(topic, 40)).as_str() {
         "answer_style" | "output_style" | "output_preference" | "reply_style" => {
-            "answer_style".to_string()
+            DEFAULT_PREFERENCE_TOPIC.to_string()
         }
         "workflow_preference" | "work_style" | "workflow" | "process" | "collaboration" => {
             "workflow_preference".to_string()
@@ -431,7 +438,7 @@ pub(super) fn normalize_preference_topic(topic: &str) -> String {
         | "report_style"
         | "ppt_style"
         | "document_style" => "document_preference".to_string(),
-        _ => "answer_style".to_string(),
+        _ => DEFAULT_PREFERENCE_TOPIC.to_string(),
     }
 }
 
