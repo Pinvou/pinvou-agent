@@ -4035,3 +4035,41 @@ API_RESPONSE_MISMATCH. No fake crypto/private-key output or production writes.
 No dependencies/locks/Schema/CI/VERSION/gitlinks change. Details:
 [purpose responses](client-upgrade-purpose-responses.md). T27/T32 remain unfinished.
 Downloads retain no total/cumulative duration or retry cap.
+
+## T27 twenty-seventh batch - reference API read-set correction (2026-10-14)
+
+Future transaction-control response work exposed an actual reference dependency
+bug: valid multi-object currentReadSet passes direct ordinary-object Schema but
+assertApiContract strict reparse produces null prototypes, causing Ajv
+uniqueItems/fast-deep-equal TypeError (valueOf). Independent read-only review
+confirmed the root cause and correction as a technical bug, not a new policy
+decision. No Schema/wire/interface changes are needed.
+
+Five regression groups were written against the actual reference first:3 failed
+with the original TypeError and2 strict/prototype guards passed. Root corrected
+only the API adapter: canonicalize once, unchanged strictparse of identical bytes,
+ordinary JSON.parse copy only for Schema, original value for semantics/return.
+All5 then passed (Node runner859.73ms). Null-prototype parser, resource checks,
+whole-object uniqueness, no-hook/no-pollution and return identity remain intact.
+
+Root full Node22 reference172 passed in14.65s; affected Rust12 passed:
+check3446 in23.39s, download1517 in10.81s and purpose5453 in31.31s.
+Root architecture/version/diff passed; CI policy51 passed in0.052s.
+All five service pinned committed-source and bundled artifact bytes exactly
+match their manifest SHA256; reference code is not part of that bundle.
+Root self-review confirms unchanged strict checks, original semantic input/
+return identity, closed Schema rejection, whole-value uniqueness and no hooks/
+prototype assignment. Both independent static reviews found no mandatory issue.
+Dependency independent full Node172 passed in19.04s and affected Rust12 passed
+(check24.10s/download10.11s/purpose29.69s), actual Node22/both legacy environments,
+all executables closed. Compatibility independent full Node172 passed in14.32s
+and affected Rust12 passed (check23.15s/download9.52s/purpose30.08s), actual
+Node22/both legacy environments; no mandatory finding and all executables
+closed. Both independent final documentation reviews passed after clarifying
+that only the affected Rust groups were repeated for this reference correction.
+The full Rust suite, App tests and heavy31556 mutation test were not rerun;
+affected Rust12 were rerun as recorded above.
+No Schema/OpenAPI/profile/vectors/locks/crypto/trust/limits/VERSION/gitlinks
+changes. Details: [read-set compatibility](upgrade-api-read-set-compatibility.md).
+Complete client authority/storage/execution tasks remain unfinished.
+Downloads retain no total/cumulative duration or retry cap.

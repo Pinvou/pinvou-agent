@@ -32,7 +32,14 @@ export function assertApiContract(operationName, direction, value) {
   const operation = OPERATIONS.find((item) => item.name === operationName);
   requireCondition(operation !== undefined && ['request', 'response'].includes(direction), 'API_OPERATION_UNKNOWN');
   // Reparse also applies T01's UTF-8, depth, string and aggregate input bounds.
-  assertApiShape(`${operationName}-${direction}`, parseJson(canonicalize(value)));
+  const canonical = canonicalize(value);
+  parseJson(canonical);
+  // The strict parser deliberately creates null-prototype objects. Ajv's
+  // uniqueItems equality requires ordinary JSON objects for object members.
+  // Only parse the exact bytes already checked for all strict limits; keep the
+  // original value for semantics and return identity, without assigning/merging
+  // any properties or invoking caller hooks.
+  assertApiShape(operationName + '-' + direction, JSON.parse(Buffer.from(canonical).toString('utf8')));
   for (const envelope of embeddedCredentials(value)) {
     requireCondition(canonicalize(envelope).length <= 65_536, 'CREDENTIAL_TOO_LARGE');
     checkSemantics(envelope.signed, { now: Math.max(envelope.signed.iat, envelope.signed.nbf) });
