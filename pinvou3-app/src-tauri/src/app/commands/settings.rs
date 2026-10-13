@@ -2079,9 +2079,11 @@ mod tests {
         // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
-        let mut initial = UserPrefs::default();
-        initial.migrate_models();
-        initial.save().expect("initial settings should save");
+        UserPrefs::update_transaction(|initial| {
+            initial.migrate_models();
+            Ok(())
+        })
+        .expect("initial settings should save");
 
         let barrier = Arc::new(Barrier::new(3));
         let theme_barrier = Arc::clone(&barrier);
