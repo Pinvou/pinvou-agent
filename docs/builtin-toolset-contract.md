@@ -28,7 +28,7 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
    plugin for an individual feature.
 2. **Current member registry**: `session-reader` (`server.py`, originally commit
    `d93457d9a`) is the carrier server of the "session memory & reference" family.
-   `app-automations` (`server.py`, landed 2026-09, design
+   `app-automations` (`server.py`, landed 2026-10, design
    `docs/app-automations-定时任务创建工具-设计与验收.md`) is the carrier server of the
    "scheduled task automation" family — a genuinely separate capability family
    (future run-now / memory-tidy automation tools belong there), which is why it is

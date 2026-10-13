@@ -189,6 +189,18 @@ test('renderer wiring is present (timeline card + summary routing)', () => {
     'the lazy card must render inside the local error boundary',
   );
   assert.match(renderers, /class ScheduledTaskLoadBoundary/, 'the boundary must be defined');
+  // Round-18: the boundary's mechanism is pinned too — dropping
+  // getDerivedStateFromError or neutering render stayed green before.
+  assert.match(
+    renderers,
+    /static getDerivedStateFromError\(\) \{[\s\S]{0,80}return \{ failed: true \}/,
+    'the boundary must actually trip on render errors',
+  );
+  assert.match(
+    renderers,
+    /render\(\) \{\s*return this\.state\.failed \? this\.props\.fallback : this\.props\.children;/,
+    'the boundary must swap to the fallback, not pass errors through',
+  );
   const cardModule = read('features/tools/scheduled-task-card.jsx');
   assert.match(cardModule, /ScheduledTaskToolCard/, 'the result card must be defined');
   assert.match(cardModule, /data-testid="scheduled-task-tool-card"/, 'the card must be testable');
