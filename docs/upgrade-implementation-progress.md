@@ -3919,3 +3919,52 @@ issue; the B23 source and evidence are approved for this scoped commit.
 Details: [public graph](client-upgrade-public-graph.md).
 Complete T27 authenticity/protected persistence/current selection stays unfinished.
 Downloads retain no total/cumulative duration or retry cap.
+
+## T27 twenty-fourth batch - supplied check/refresh responses (2026-10-14)
+
+Scope: complete original assertApiContract check/refresh response acceptance:
+closed frozen Schemas with exact embedded dependency retrieval; whole canonical
+reparse; independent embedded credential64KiB bounds; unchanged B18 claims
+semantics evaluated at max(iat,nbf); seven identity fields and full scope;
+refresh writableSessionId binding. Response requestId/workflowRevision stay
+independent schema facts. No signature sorting/verification or current-time
+authority is added to API Schema data. Unit-only result, not a trusted check
+projection, writable session, persisted chain or execution permission.
+B18 claims helper and JCS equality are extracted privately without algorithm
+change; its original envelope API remains unchanged.
+
+Initial four integration groups passed in26.39s, including3446 actual complete
+original Node API contract cases. Root self-review strengthened standalone
+whole-scope negatives to require precise BindingMismatch with restoration, and
+added the greatest within64KiB signature count positive before the next-count
+over-limit negative. These are test-only additions; production remains unchanged.
+Dependency independent review found test-only P2: Node targetKey mutation used
+the default fixture key (no-op). Root's just-added standalone scope control
+also reused that key; the first final run consequently stopped with3/4 in
+check_response (Node3446 passed in22.32s, but its target mutant was ineffective).
+Root changed both controls to another legal ARM key, added explicit mutation
+inequality, and Node now preflights complete Schema and both independent
+credential semantics before requiring exact API_RESPONSE_MISMATCH for all
+identity/scope/session negatives. Production algorithm is unchanged. Corrected
+final regression passed all101 applicable tests, filtering only unchanged
+B15's31556-case Schema mutation test (CI complete102 retained). Actual Node22
+and both original optional oracle environments were enabled. Clippy3.31s,
+codec/App facade formatting passed. Actual Windows App40 passed in0.25s after
+2m43s compilation; architecture/version/diff passed, CI policy51 passed in0.047s.
+Root self-review confirms closed-response coverage, unchanged original helpers,
+raw and canonical limits, error isolation and absence of authority/total-download
+caps. Both independent scoped reviews close the test P2 with no residual
+finding. Dependency frozen101 passed: new3446 in21.82s, credential7287 in46.02s,
+Clippy2.22s/fmt passed. Compatibility frozen101 passed: new3446 in21.66s,
+credential7287 in44.25s, Clippy2.92s/fmt, CI51 in0.050s/diff passed. Both use
+actual Node22 with both legacy environments and only the unchanged31556 filtered.
+All test executables closed. Both independent final documentation reviews
+passed with no mandatory finding before this scoped commit.
+No partial first101 PASS is claimed. The Node oracle calls complete original assertApiContract
+with nested required/scalar mutations, isolated cross-identity controls and
+future-nbf/duplicate-signature/zero-signature contract positives; no fake crypto
+or private-key output. Root self-review and static P2 closure are complete;
+final independent evidence is recorded above.
+No dependencies/locks/frozenSchema/CI/VERSION/gitlinks change. Details:
+[check responses](client-upgrade-check-response.md). Complete T27 still unfinished.
+Downloads retain no total/cumulative duration or retry cap.

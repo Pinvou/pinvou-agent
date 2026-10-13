@@ -121,7 +121,14 @@ pub fn assert_supplied_credential_semantics(
     envelope: &SchemaCheckedEnvelope,
     time: &SuppliedProtocolTime,
 ) -> Result<(), CredentialSemanticsError> {
-    let claims = envelope.envelope().signed().value();
+    assert_claims_semantics(envelope.envelope().signed().value(), time)
+}
+/// Parent-only reuse after a complete frozen credential Schema has passed.
+/// API contracts validate supplied claims at max(iat,nbf), never trusted now.
+pub(super) fn assert_claims_semantics(
+    claims: &Value,
+    time: &SuppliedProtocolTime,
+) -> Result<(), CredentialSemanticsError> {
     let role = text(&claims["role"])?;
     let now = time.as_millis();
     let lifetime = match role {
@@ -274,7 +281,7 @@ fn canonical(value: &Value) -> Result<Vec<u8>, CredentialSemanticsError> {
     }
     Ok(output.bytes)
 }
-fn same(left: &Value, right: &Value) -> Result<bool, CredentialSemanticsError> {
+pub(super) fn same(left: &Value, right: &Value) -> Result<bool, CredentialSemanticsError> {
     Ok(canonical(left)? == canonical(right)?)
 }
 fn higher(target: &Value, source: &Value) -> Result<bool, CredentialSemanticsError> {

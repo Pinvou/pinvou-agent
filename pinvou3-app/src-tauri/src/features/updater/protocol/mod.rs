@@ -12,6 +12,16 @@ pub(crate) fn decode_credential(
     pinvou_upgrade_codec::Document::parse(bytes, pinvou_upgrade_codec::InputKind::Credential)
 }
 
+/// Structural/supplied-semantic check/refresh API contract, never current trust.
+pub(crate) fn check_supplied_check_response_bytes(
+    bytes: &[u8],
+    operation: pinvou_upgrade_codec::CheckResponseOperation,
+) -> Result<(), pinvou_upgrade_codec::CheckResponseError> {
+    decode_metadata(bytes)
+        .map_err(pinvou_upgrade_codec::CheckResponseError::Json)?
+        .assert_supplied_check_response_contract(operation)
+}
+
 pub(crate) fn check_supplied_public_graph_bytes(
     timestamp_bytes: &[u8],
     snapshot_bytes: &[u8],
@@ -337,6 +347,58 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_checks_closed_check_refresh_contract_without_authentication() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        use pinvou_upgrade_codec::{CheckResponseError, CheckResponseOperation};
+        let vectors: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/envelopes.json"
+        )))
+        .unwrap();
+        let envelope = |role: &str| -> serde_json::Value {
+            let v = vectors["vectors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["name"] == role)
+                .unwrap();
+            serde_json::from_slice(
+                &URL_SAFE_NO_PAD
+                    .decode(v["envelopeBase64Url"].as_str().unwrap())
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        let mut response = serde_json::json!({"protocolVersion":1,"requestId":"request-1",
+            "decision":envelope("decision"),"telemetryCredential":envelope("telemetry-event")});
+        let check = |value: &serde_json::Value, operation| {
+            check_supplied_check_response_bytes(&serde_json::to_vec(value).unwrap(), operation)
+        };
+        assert_eq!(check(&response, CheckResponseOperation::Check), Ok(()));
+        response["telemetryCredential"]["signed"]["decisionId"] =
+            serde_json::json!("other-decision");
+        assert_eq!(
+            check(&response, CheckResponseOperation::Check),
+            Err(CheckResponseError::BindingMismatch)
+        );
+        response["telemetryCredential"]["signed"]["decisionId"] =
+            response["decision"]["signed"]["decisionId"].clone();
+        response["workflowRevision"] = serde_json::json!(0);
+        response["writableSessionId"] =
+            response["decision"]["signed"]["telemetrySessionId"].clone();
+        assert_eq!(check(&response, CheckResponseOperation::Refresh), Ok(()));
+        response["writableSessionId"] = serde_json::json!("other-session");
+        assert_eq!(
+            check(&response, CheckResponseOperation::Refresh),
+            Err(CheckResponseError::BindingMismatch)
+        );
+        assert_eq!(
+            check(&response, CheckResponseOperation::Check),
+            Err(CheckResponseError::InvalidContract)
+        );
+    }
 
     #[test]
     fn feature_facade_checks_complete_public_graph_relationships_without_granting_trust() {

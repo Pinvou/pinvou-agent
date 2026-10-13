@@ -1,6 +1,8 @@
 //! Bounded Upgrade V1 JSON and canonical bytes. Successful decoding is not
 //! signature verification, established Root trust, current eligibility or ACK.
 
+mod check_response;
+pub use check_response::{CheckResponseError, CheckResponseOperation};
 mod public_graph;
 pub use public_graph::{PublicGraphError, assert_supplied_public_graph};
 mod candidate;
