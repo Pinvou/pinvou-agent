@@ -140,6 +140,13 @@ REQUEST_KINDS = ("create", "update", "delete")
 # channel's 32k body cap — a task prompt becomes the recurring user turn.
 MAX_NAME_CHARS = 200
 MAX_PROMPT_CHARS = 32 * 1024
+# Round-16 MAJOR-3: store records are NOT result markers — a legitimate
+# record is bounded by the 32k-char prompt (~96 KB as UTF-8 CJK), the same
+# budget the Rust watcher enforces on spool files (MAX_SPOOL_FILE_BYTES).
+# The 64 KiB marker cap applied to full records made read_scheduled_task
+# answer a legitimate large task with "not found" (inviting a duplicate)
+# and list_scheduled_tasks silently skip it.
+MAX_STORE_RECORD_BYTES = 256 * 1024
 MAX_MODEL_ID_CHARS = 200
 # Bounded like every other field: an oversize-but-valid-shape rrule must be a
 # validation error here, not a spool file that the watcher's byte cap turns
@@ -696,11 +703,13 @@ def read_scheduled_task(automations_dir, task_id):
         # reader — lstat without following the final component (a planted
         # FIFO must not block the single-threaded stdio server forever) and
         # a byte cap (a sparse oversize record is refused, not slurped).
+        # Round-16 MAJOR-3: the cap is the STORE record budget (256 KiB,
+        # sized for the max CJK prompt), not the 64 KiB marker cap.
         st = os.lstat(path)
-        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_RESULT_MARKER_BYTES:
+        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_STORE_RECORD_BYTES:
             return None, "not found: no scheduled task with id %s" % task_id
         with open(path, "r", encoding="utf-8") as handle:
-            record = json.loads(handle.read(MAX_RESULT_MARKER_BYTES + 1))
+            record = json.loads(handle.read(MAX_STORE_RECORD_BYTES + 1))
     except (OSError, ValueError, RecursionError):
         # Deliberately no raw exception text: OSError messages embed absolute
         # local paths, which must not leak into tool responses.
@@ -1212,11 +1221,13 @@ def list_scheduled_tasks(automations_dir, limit=DEFAULT_LIST_LIMIT):
         path = os.path.join(tasks_dir, name)
         try:
             # Round-15 REQUIRED-3: same gated read as the single-record path.
+            # Round-16 MAJOR-3: store-record budget (256 KiB), not the 64 KiB
+            # marker cap.
             st = os.lstat(path)
-            if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_RESULT_MARKER_BYTES:
+            if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_STORE_RECORD_BYTES:
                 continue
             with open(path, "r", encoding="utf-8") as handle:
-                record = json.loads(handle.read(MAX_RESULT_MARKER_BYTES + 1))
+                record = json.loads(handle.read(MAX_STORE_RECORD_BYTES + 1))
         except (OSError, ValueError, RecursionError):
             continue
         if not isinstance(record, dict):

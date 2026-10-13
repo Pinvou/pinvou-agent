@@ -749,6 +749,86 @@ class ReadScheduledTaskTests(unittest.TestCase):
         self.assertIsNone(payload)
         self.assertIn("not found", error)
 
+    def test_store_reader_refuses_non_regular_and_oversize(self):
+        """Round-16 MAJOR-3: the store readers' lstat/S_ISREG/cap gate is
+        behaviorally pinned — a symlink, a FIFO, and an oversize record are
+        all refused (read -> not found, list -> skipped), and the 256 KiB
+        store cap admits a legitimate max-size CJK prompt (~96 KB of UTF-8)
+        that the 64 KiB marker cap used to reject as "not found"."""
+        store = Path(self.automations, "automations")
+        store.mkdir(parents=True, exist_ok=True)
+        real = store / "task-real.json"
+        real.write_text(
+            json.dumps({"id": "task-real", "name": "n", "prompt": "p"}),
+            encoding="utf-8",
+        )
+
+        if os.name == "posix":
+            # A symlink to a regular record: never followed (policy: refused).
+            link = store / "task-link.json"
+            try:
+                os.symlink(real, link)
+            except (OSError, NotImplementedError):
+                self.skipTest("symlinks unavailable")
+            payload, error = server.read_scheduled_task(str(self.automations), "task-link")
+            self.assertIsNone(payload)
+            self.assertIn("not found", error)
+            # A FIFO at the record path: refused at lstat, open never runs.
+            fifo = store / "task-fifo.json"
+            try:
+                os.mkfifo(fifo)
+            except (OSError, AttributeError):
+                self.skipTest("mkfifo unavailable")
+            payload, error = server.read_scheduled_task(str(self.automations), "task-fifo")
+            self.assertIsNone(payload)
+            self.assertIn("not found", error)
+
+        # An oversize record is refused at the stat gate.
+        oversize = store / "task-big.json"
+        oversize.write_text(
+            "x" * (server.MAX_STORE_RECORD_BYTES + 1), encoding="utf-8"
+        )
+        payload, error = server.read_scheduled_task(str(self.automations), "task-big")
+        self.assertIsNone(payload)
+        self.assertIn("not found", error)
+
+        # A legitimate max-size CJK prompt (~96 KB of UTF-8) reads fine
+        # under the 256 KiB store cap — the exact record the 64 KiB marker
+        # cap used to answer with "not found".
+        max_prompt = "\u6c49" * server.MAX_PROMPT_CHARS
+        cjk = store / "task-cjk.json"
+        cjk.write_text(
+            json.dumps(
+                {"id": "task-cjk", "name": "早报", "prompt": max_prompt},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        self.assertGreater(
+            cjk.stat().st_size,
+            server.MAX_RESULT_MARKER_BYTES,
+            "fixture guard: the CJK record must exceed the old marker cap",
+        )
+        self.assertLessEqual(
+            cjk.stat().st_size,
+            server.MAX_STORE_RECORD_BYTES,
+            "fixture guard: the CJK record must fit the store cap",
+        )
+        payload, error = server.read_scheduled_task(str(self.automations), "task-cjk")
+        self.assertIsNone(error)
+        self.assertEqual(payload["prompt"], max_prompt)
+
+        # The list projection skips the refused entries and returns the
+        # readable one.
+        result, error = server.list_scheduled_tasks(str(self.automations))
+        self.assertIsNone(error)
+        listed = {task["id"] for task in result["tasks"]}
+        self.assertIn("task-cjk", listed)
+        self.assertNotIn("task-big", listed)
+        if os.name == "posix":
+            self.assertNotIn("task-fifo", listed)
+            self.assertNotIn("task-link", listed)
+
 
 class UpdateDeleteRequestTests(unittest.TestCase):
     """I4/I5: kind-aware validation for update and delete, and the spool record shape."""

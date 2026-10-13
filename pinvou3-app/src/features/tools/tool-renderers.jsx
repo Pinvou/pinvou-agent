@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useState } from 'react';
 import { ChevronDown, Wrench } from '../../components/icons.jsx';
 import { StatusDot } from '../../components/StatusDot.jsx';
 import { isShellExecutionTool } from '../../shared/shell-tools.mjs';
@@ -197,10 +197,41 @@ const SCHEDULED_TASK_TOOL_OPS = {
 };
 // The result card and its parser live in the lazy scheduled-task chunk
 // (startup-budget policy in vite.config.mjs: new entry work is split or
-// lazy-loaded; the lazyChunkContracts entry pins the module to exactly one
-// non-entry chunk). The entry keeps only the op-name dispatch.
+// lazy-loaded; the budget gate plus the dynamic-import route pin below are
+// what hold the split in place). The entry keeps only the op-name
+// dispatch.
 const ScheduledTaskToolResult = lazy(() =>
   import('./scheduled-task-card.jsx').then(m => ({ default: m.ScheduledTaskToolResult })));
+
+// Round-16 MAJOR-2: a rejected lazy import re-throws during render and
+// React unmounts the entire root — one stale-cached index.html hitting a
+// 404 on the hashed chunk would white-screen the app over one tool row.
+// The repo's lazy-mount policy (ChatView's boundary comment) pairs every
+// Suspense with a local error boundary so the failure stays contained to
+// the slot; the fallback is the same default raw view the parse-miss path
+// renders, so a chunk failure degrades to exactly the pre-lazy behavior.
+class ScheduledTaskLoadBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { failed: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch(error, info) {
+    console.error(
+      '[tools] scheduled-task card chunk failed to load',
+      error && error.stack ? error.stack : error,
+      info && info.componentStack ? info.componentStack : info,
+    );
+  }
+
+  render() {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
+}
 
 // eslint-disable-next-line sonarjs/cognitive-complexity -- per-tool output view routing; splitting by tool has low payoff;legacy view; tracked separately
 const ToolOutput = ({ item, t }) => {
@@ -215,15 +246,17 @@ const ToolOutput = ({ item, t }) => {
       const scheduledTaskOp = SCHEDULED_TASK_TOOL_OPS[item.name];
       if (scheduledTaskOp && item.state === 'done') {
         return (
-          <Suspense fallback={null}>
-            <ScheduledTaskToolResult
-              op={scheduledTaskOp}
-              out={out}
-              args={item.args}
-              t={t}
-              fallback={<OutputPre text={out} />}
-            />
-          </Suspense>
+          <ScheduledTaskLoadBoundary fallback={<OutputPre text={out} />}>
+            <Suspense fallback={null}>
+              <ScheduledTaskToolResult
+                op={scheduledTaskOp}
+                out={out}
+                args={item.args}
+                t={t}
+                fallback={<OutputPre text={out} />}
+              />
+            </Suspense>
+          </ScheduledTaskLoadBoundary>
         );
       }
       // computer_use: render the screenshot card when the output references
