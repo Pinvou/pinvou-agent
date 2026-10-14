@@ -1132,7 +1132,15 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     // already-synced sessions are not re-reported — nothing was translated
     // for them, so a failure entry would be a guaranteed no-op.
     let mut to_lane_admitted: HashSet<String> = HashSet::new();
+    // The GUI's `code_lane_retry_ids` (its round-9 minor 2): every
+    // agent-store to-lane hit at its already-translated path, kept for the
+    // post-loop baseline recapture below — the metadata loop recaptures
+    // only its own members, so an already-synced session whose earlier
+    // run's capture failed or never ran is invisible to every arm above
+    // (round-1 review M1, the audit A2's under-coverage clause).
+    let mut code_lane_retry_ids: Vec<(String, PathBuf)> = Vec::new();
     for (session_id, bound_path) in agents.sessions_under_workspace(&to_display) {
+        code_lane_retry_ids.push((session_id.clone(), bound_path.clone()));
         admit_to_lane_retry_candidate(
             session_id,
             bound_path,
@@ -1425,6 +1433,40 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
                 pinvou3_lib::features::codex_acp::workspace::capture_baseline(session_id, &new_path)
         {
             note!("[projects] rebind capture_baseline failed: {error:#}");
+        }
+    }
+    // Round-1 review M1 (the audit A2's under-coverage clause, the GUI's
+    // post-loop `code_lane_retry_ids` pass): the loop above recaptures only
+    // its own members — a to-lane code session translated by an EARLIER run
+    // whose metadata already synced (so the admission scan above did not
+    // admit it) never enters the loop, and a baseline recapture that failed
+    // or never ran back then stayed stale forever: `load_baseline`
+    // self-invalidates for the new root, so `workspace_changes` degrades
+    // every change to "unknown" for that session. Recapture those here —
+    // the same agent-store population the GUI uses (the scan above,
+    // sidecar-authoritative scope included), minus the metadata loop's
+    // members, at their already-translated paths. The minus also keeps
+    // orphans and corrupt records out exactly like the GUI (both sit in
+    // metadata_targets via the to-lane admission): an orphan's durable
+    // JSON is gone, so a baseline sidecar would classify nothing. Gated on
+    // staleness like every other arm (round-54 A2), best-effort with the
+    // same note!-only failure shape — and never reported rebound: nothing
+    // was translated for these sessions THIS run.
+    let metadata_target_ids: HashSet<&str> = metadata_targets
+        .iter()
+        .map(|(session_id, _)| session_id.as_str())
+        .collect();
+    for (session_id, path) in &code_lane_retry_ids {
+        if metadata_target_ids.contains(session_id.as_str()) {
+            continue;
+        }
+        if pinvou3_lib::features::codex_acp::workspace::baseline_is_current(session_id, path) {
+            continue;
+        }
+        if let Err(error) =
+            pinvou3_lib::features::codex_acp::workspace::capture_baseline(session_id, path)
+        {
+            note!("[projects] rebind to-lane baseline recapture failed: {error:#}");
         }
     }
     // Store-side fence hits the outcome union never saw (a sidecar left

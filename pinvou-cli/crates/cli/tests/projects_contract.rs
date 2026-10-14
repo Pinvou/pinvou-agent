@@ -1716,3 +1716,86 @@ fn rebind_baseline_recapture_is_staleness_gated() {
         "the staleness gate must guard (precede) the recapture call"
     );
 }
+
+/// Round-1 review M1 (the audit A2's under-coverage clause): the GUI's
+/// post-loop `code_lane_retry_ids` pass, behaviorally. A to-lane code
+/// session fully synced by an earlier run (bindings AND metadata at the
+/// destination) but whose baseline recapture failed or never ran is
+/// invisible to every in-loop arm — the lanes found nothing under `from`
+/// and the to-lane admission skips an already-synced session. Without the
+/// post-loop pass the missing baseline survived every rerun.
+#[test]
+fn projects_rebind_recaptures_a_missing_to_lane_baseline() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new(
+        "projects",
+        "rebind-to-lane-baseline",
+        Isolation::ProductHome,
+    );
+    let from = make_root_dir("rebind-tolane-from");
+    let to = make_root_dir("rebind-tolane-to");
+
+    // Fully converged at the destination: session metadata, agent index,
+    // and sidecar all name `to` — no baseline exists (the earlier run's
+    // capture failed or never ran).
+    let code_id = bind_code_session(&to);
+
+    let value = rebind_json(&from, &to);
+    assert_no_failed_sessions(&value, "a converged rerun must not report failures");
+    assert!(
+        !report_ids(&value, "rebound_session_ids").contains(&code_id),
+        "an already-synced session must not be reported rebound: nothing was translated this run"
+    );
+
+    // The post-loop pass captured the missing baseline for the new root.
+    let baseline =
+        std::fs::read_to_string(home.session_file(&code_id, "codex-workspace-baseline.json"))
+            .expect("an already-synced to-lane code session must have its baseline recaptured");
+    assert!(
+        baseline.contains(to.to_str().unwrap()),
+        "the recaptured baseline must name the destination: {baseline}"
+    );
+    assert!(
+        !baseline.contains(from.to_str().unwrap()),
+        "the recaptured baseline must not name the never-involved source: {baseline}"
+    );
+}
+
+/// Round-1 review m2: the staleness gate's behavioral pin (the audit A2's
+/// over-capture clause, rerun shape). A baseline already current for the
+/// new root IS the session-start reference; a rerun must not recapture it
+/// — changes made between runs would otherwise be baked into the
+/// reference (non-git: the changes-since-session-start view wiped; git:
+/// currently-dirty files flipped to preexisting). Seeded through the same
+/// lib capture the command itself uses; byte-compared across the rerun so
+/// no format detail can mask a recapture.
+#[test]
+fn projects_rebind_keeps_a_current_to_lane_baseline_across_a_rerun() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("projects", "rebind-baseline-gate", Isolation::ProductHome);
+    let from = make_root_dir("rebind-gate-from");
+    let to = make_root_dir("rebind-gate-to");
+
+    let code_id = bind_code_session(&to);
+    pinvou3_lib::features::codex_acp::workspace::capture_baseline(&code_id, &to)
+        .expect("seed the session-start baseline");
+    let baseline_path = home.session_file(&code_id, "codex-workspace-baseline.json");
+    let seeded = std::fs::read(&baseline_path).expect("the seeded baseline must be on disk");
+
+    // A workspace change lands between the runs …
+    std::fs::write(to.join("between-runs.txt"), "change").expect("seed the between-runs change");
+
+    // … and the rerun must NOT bake it into the session-start reference.
+    let value = rebind_json(&from, &to);
+    assert_no_failed_sessions(&value, "a converged rerun must not report failures");
+    let after = std::fs::read(&baseline_path).expect("the current baseline must survive the rerun");
+    assert_eq!(
+        seeded, after,
+        "a baseline already current for the destination must not be recaptured by a rerun"
+    );
+    let after_text = String::from_utf8_lossy(&after);
+    assert!(
+        !after_text.contains("between-runs.txt"),
+        "the between-runs change must stay OUTSIDE the session-start reference: {after_text}"
+    );
+}
