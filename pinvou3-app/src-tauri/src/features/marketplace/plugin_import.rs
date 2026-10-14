@@ -1959,6 +1959,10 @@ mod tests {
     /// 放行边界与 u64 饱和边界。委托实现的错误路径不再把新累计值写回
     /// `declared_total`（旧实现先写回再返回 Err）——错误会直接中止导入，累计
     /// 值随之作废，无可观察差异。
+    ///
+    /// 钉的是引擎语义而非生产接线：接线由唯一的编译期生产调用点
+    /// （`checked_zip_entry_path`）约束，把调用点静默改回内联算术本钉不红，
+    /// 引擎侧语义漂移才在此变红——两类漂移各有归属，勿混淆。
     #[test]
     fn forkguard_declared_size_cap_delegates_to_engine_add_entry_size() {
         let max_bytes: u64 = 1000;
@@ -1992,7 +1996,8 @@ mod tests {
     /// 的归一化输出喂给 `skill_md_rank` 等下游布局逻辑（`./SKILL.md` 今日归一
     /// 成 `SKILL.md` 后才参与 rank），且其对根前缀/中段 `..` 的「净化放行」
     /// 语义是既有放行面。本钉把底座谓词在这些输入上的 verdict 差异登记为刻意
-    /// 选择，防止后续无意识互换（zip crate 的 `enclosed_name` 是 pub(crate)）。
+    /// 选择，防止后续无意识互换（zip crate 的归一化器不可独立复用，只能经
+    /// `ZipFile::enclosed_name` 触达）。
     /// sanitizer 侧 verdict 由下方内存 zip 断言直接 executable 化，不依赖
     /// 端到端导入测试的间接覆盖。
     #[test]
@@ -2024,7 +2029,14 @@ mod tests {
             std::process::id(),
             crate::platform::paths::tests::unique_suffix()
         ));
-        let _ = std::fs::remove_file(&zip_path);
+        // 断言中途 unwrap 恐慌也不遗留临时 zip（panic 走 unwind，Drop 仍执行）。
+        struct RemoveTempZip<'a>(&'a std::path::Path);
+        impl Drop for RemoveTempZip<'_> {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(self.0);
+            }
+        }
+        let _temp_guard = RemoveTempZip(&zip_path);
         let entries = [
             ("../x", None::<&str>),
             ("/abs/x", Some("abs/x")),
@@ -2054,7 +2066,6 @@ mod tests {
                 })
                 .collect()
         };
-        let _ = std::fs::remove_file(&zip_path);
         for ((name, expected), actual) in entries.iter().zip(verdicts.iter()) {
             let expected = expected.map(|e| e.to_string());
             assert_eq!(
