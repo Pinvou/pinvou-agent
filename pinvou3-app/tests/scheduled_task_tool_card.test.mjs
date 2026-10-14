@@ -60,8 +60,23 @@ assert.match(
 );
 assert.match(cardSource, /data-testid="scheduled-task-updated-name"/, 'the updatedName row renders');
 assert.match(cardSource, /\{copy\.mismatchNote\}/, 'the card uses the localized copy, not the server note');
-const clippedSurrogate = scheduledTaskPromptExcerpt({ prompt: '\u{1F600}'.repeat(200) });
-assert.ok(!clippedSurrogate.includes('\uFFFD'), 'no replacement char at the clip boundary');
+// Round-24 MAJOR-3: the previous execution pin was vacuous — a 200-emoji
+// fixture puts a LOW surrogate at the cut boundary, so the back-off never
+// fires and even a naive slice ends on a complete pair; and a genuinely
+// split pair contains no literal U+FFFD code unit (it only renders as one).
+// This fixture puts an astral code point STARTING at cut-1 — the exact
+// branch the back-off exists for: deleting the back-off leaves a lone high
+// surrogate as the last content code unit, which the tail assert rejects.
+const clippedSurrogate = scheduledTaskPromptExcerpt({
+  prompt: 'a'.repeat(119) + '\u{1F600}'.repeat(50),
+});
+const clippedBody = clippedSurrogate.slice(0, -1); // drop the ellipsis
+assert.ok(!/[\uD800-\uDBFF]/.test(clippedBody), 'no lone high surrogate survives at the clip tail');
+assert.equal(
+  clippedBody,
+  'a'.repeat(119),
+  'the split pair is backed off entirely, not half-kept',
+);
 
 test('create summary shows task name and rrule with localized quoting', () => {
   // Round-6 minor 9: the quoting is localized copy — the summary composes
