@@ -1660,9 +1660,15 @@ function isScheduledRunSession(sid) { return pinvouSharedweb().isScheduledRunSes
               resolvedPlanTickets[key].push(String(item.planId));
             });
             const liveChatItems = rawLiveChatItems.filter(function (item) {
-              if (!item || item.type === "user" || item.type === "tool") return false;
+              if (!item || item.type === "user") return false;
               if (item.type === "assistant") return item.interruptedDisplayOnly === true;
               if (item.turnErrorNotice && !item.legacyConversationOnly) return false;
+              // Background shells keep running after chat:done; the durable
+              // transcript only carries the tool-result text, with no
+              // taskId/background/liveOutput, so the authoritative reload must
+              // keep the live card and merge it by toolId. (Same rule as the
+              // tauri lane's reconcileRemoteTurn.)
+              if (item.type === "tool") return item.background === true && item.state === "running";
               // Plan cards need semantic matching by their plan snapshot. Their
               // generic hydration key includes ticket/action state and would
               // append an active live duplicate after the durable frozen card.
@@ -2997,7 +3003,12 @@ function emitPersonaAt(atOrAfter, isTail) { return pinvouSharedwebN189622().emit
       const m = state.messages[mi];
       const blocks = Array.isArray(m.content) ? m.content : [];
       if (m.role === "user") {
-        const utext = userMessageDisplayText(blocks, isScheduledRunSession(state.activeSessionId));
+        // Always strip exact internal envelopes: sessions saved before the
+        // persistence alignment still carry the engine-baked <turn_meta>
+        // block on mid-turn steered messages, and without the filter the
+        // hydrated bubble rendered the raw envelope after a reload. (Same
+        // rule as the tauri lane's rerenderFromMessages.)
+        const utext = userMessageDisplayText(blocks, true);
         if (utext) {
           // pinvouTransfer 是展示层标记、不在 messages → rerender 从转交固定措辞还原品/悟样式
           const uitem2 = { type: "user", text: utext, time: "", messageIndex: mi };
@@ -6335,6 +6346,7 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedweb().is
     try {
       const st = await invoke("discard_plan", { sessionId: sid, planId: planTicket });
       applyAuthoritativeModeState(sid, st);
+      patchItemByIdFor(sid, itemId, { planResolutionConfirmed: true });
     } catch (e) {
       const errorText = String(e && e.message ? e.message : e || "");
       const planNotActive = errorText.includes("plan_not_active");
