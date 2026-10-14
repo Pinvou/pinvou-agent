@@ -5,7 +5,7 @@ pub(super) use tauri::{AppHandle, Emitter, Manager, State};
 
 pub(super) use crate::features::assistant::engine_pool::EnginePool;
 pub(super) use crate::features::knowledge::KnowledgeService;
-pub(super) use crate::features::monitor::{MonitorSnapshot, MonitorState, VllmStatus};
+pub(super) use crate::features::monitor::{MonitorSnapshot, MonitorState, VllmSnapshot};
 pub(super) use crate::features::sessions::{SerializableMode, SessionModeState};
 pub(super) use crate::features::sessions::{SessionKind, SessionStore};
 pub(super) use crate::platform::credential_store::{

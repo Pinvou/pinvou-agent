@@ -153,10 +153,10 @@ fn status_payload(
     snapshot: Option<&VllmSnapshot>,
     now_ms: Option<u64>,
 ) -> (String, serde_json::Value) {
-    let online = snapshot.is_some_and(|snapshot| {
-        snapshot.health_status == "verified"
-            && matches!(snapshot.status, VllmStatus::Ready | VllmStatus::Busy)
-    });
+    // Delegates to `VllmSnapshot::is_online` (the shared backend-online
+    // predicate next to the `health_status` producer) instead of re-matching
+    // the `"verified"` literal here — see get_backend_status's twin.
+    let online = snapshot.is_some_and(VllmSnapshot::is_online);
     let health_status = snapshot
         .map(|snapshot| snapshot.health_status.clone())
         .unwrap_or_else(|| "unavailable".to_owned());
