@@ -919,10 +919,6 @@ function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedtauri
   const normalizedPath = artifactTrackerFeature.normalizedPath;
   const noteArtifactChange = artifactTrackerFeature.noteArtifactChange;
   const filterSessionArtifacts = artifactTrackerFeature.filterSessionArtifacts;
-  // Wholesale artifact saves rebase from→to while a workspace_rebound mark
-  // exists (round-B Major 1): a chat turn's buffer save must not durably
-  // revert the backend lane's rebase of the persisted artifact paths.
-  const rebaseArtifactPathsForRebind = artifactTrackerFeature.rebaseArtifactPathsForRebind;
   const isDeliverable = artifactTrackerFeature.isDeliverable;
   const trackArtifact = artifactTrackerFeature.trackArtifact;
   const markTurnDirtyArtifact = artifactTrackerFeature.markTurnDirtyArtifact;
@@ -1209,52 +1205,7 @@ function isScheduledRunSession(sid) { return pinvouSharedtauriMain().isScheduled
 
   // Transcript persistence is authoritative in Rust. The UI only persists the
   // presentation-side artifact index and derives the optional auto-title.
-  async function persistMessagesFor(sid) {
-    if (!sid) return;
-    if (isScheduledRunSession(sid)) return;
-    // 代码会话（品悟原生/ACP）不在 list_sessions 里：它不是桥接聊天会话——
-    // 消息由后端 persist_chat_engine_state 持久化、标题由后端自动命名管理。
-    // 跳过产物索引与自动重命名：meta 缺失时 msgs 会错读 active 聊天 state 的
-    // 首条用户消息，把别的会话文本命名到代码会话上。正常聊天会话经
-    // ensureSession 创建后即 refreshHistoryList 入列，!meta 只会命中非桥接会话。
-    const meta = state.sessions.find(function (s) { return s.id === sid; });
-    if (!meta) return;
-    const buf = sid === state.activeSessionId ? null : sessionStates[sid];
-    const msgs = buf ? buf.messages : state.messages;
-    const arts = filterSessionArtifacts(buf ? buf.artifacts : state.artifacts, sid);
-    if (buf) buf.artifacts = arts;
-    else state.artifacts = arts;
-    try {
-      try { await invoke("save_session_artifacts", { id: sid, paths: rebaseArtifactPathsForRebind(sid, arts.map(function (a) { return a.path; })) }); } catch { /* disk-write failure must not block session switching */ }
-      if (isDefaultChatTitle(meta.title) || personaPlaceholderTitles[sid]) {
-        const firstUser = msgs.find(function (m) { return m.role === "user"; });
-        // 自动标题复用展示层过滤（与 web 侧一致）：内部信封/子智能体交接不参与
-        // 命名；hideInternalEnvelope=true 同时剥离 turn_meta/system-reminder 元数据
-        // 块，避免 XML 痕迹进 sidebar 标题。
-        let titleText = firstUser ? userMessageDisplayText(firstUser.content || [], true) : "";
-        // The session-mention injection block (the ## Referenced chats contract
-        // at the head of a message) is not user body text and never feeds
-        // auto-titling; the single source of the contract parsing is
-        // features/chat/session-mention.js (published via the window global —
-        // classic-script bridges do not import features back).
-        // The received cross-session message block (features/messaging
-        // delivery of send_message_to_session) is stripped OUTERMOST first —
-        // the sender block wraps the body and the body may itself start with
-        // a mention block; the order matches chat.rs's
-        // first_send_title_source and UserBubble's parse order.
-        const splitMessage = window.__PINVOU_SESSION_MESSAGE__ && window.__PINVOU_SESSION_MESSAGE__.splitSessionMessageBlock;
-        if (splitMessage) titleText = splitMessage(titleText).text.trim();
-        const splitMention = window.__PINVOU_SESSION_MENTION__ && window.__PINVOU_SESSION_MENTION__.splitSessionMentionBlock;
-        if (splitMention) titleText = splitMention(titleText).text.trim();
-        if (titleText) {
-          const newTitle = titleText.slice(0, 20);
-          await invoke("rename_session", { id: sid, title: newTitle });
-          meta.title = newTitle;
-          delete personaPlaceholderTitles[sid]; // 已被对话内容命名,卸下占位标记
-        }
-      }
-    } catch (e) { console.warn("persist failed", e); }
-  }
+  async function persistMessagesFor(sid) { return pinvouSharedtauriMain().persistMessagesFor(sid); }
 
 function planCardHydrationKey(item) { return pinvouSharedtauriMain().planCardHydrationKey(item); }
 
@@ -1656,10 +1607,6 @@ function toolResultDisplayContent(content) { return pinvouSharedtauriMain().tool
   // careful hook 拦截结果(shell.rs BLOCKED 固定格式)→ 反解出 careful_blocked 卡所需 metadata。
   // metadata 不进持久化 messages,session 重载只能从 tool_result 文本识别,否则 🛑 红卡重启即丢。
 
-function userMessageInputProvenance(blocks) { return pinvouSharedtauriMain().userMessageInputProvenance(blocks); }
-
-function isInternalUserMessageProvenance(provenance) { return pinvouSharedtauriMain().isInternalUserMessageProvenance(provenance); }
-
   function isInternalRuntimeEnvelopeText(value) {
     return window.PinvouBridgeMessages.isInternalRuntimeUserMessage(value);
   }
@@ -1668,24 +1615,7 @@ function isInternalUserMessageProvenance(provenance) { return pinvouSharedtauriM
   // 子智能体完成交接同理：结果必须留在父模型上下文，但不能冒充用户消息上屏。
   // 原始 blocks 必须保留给模型续聊；展示层只隐藏该内部消息，避免伪装成用户气泡/新 Turn。
   // 定时会话还会过滤送模 envelope，只投影真实任务正文。
-  function userMessageDisplayText(blocks, hideInternalEnvelope) {
-    const textParts = (Array.isArray(blocks) ? blocks : [])
-      .filter(function (block) { return block && block.type === "text"; })
-      .map(function (block) { return String(block.text || ""); });
-    if (textParts.some(isInternalRuntimeEnvelopeText)) return "";
-    if (isInternalUserMessageProvenance(userMessageInputProvenance(blocks))) return "";
-    if (!hideInternalEnvelope) return textParts.join("");
-
-    return textParts.filter(function (text) {
-      const trimmed = text.trim();
-      return !(
-        (trimmed.indexOf("<turn_meta>") === 0 && trimmed.endsWith("</turn_meta>")) ||
-        trimmed === "<turn_meta_unchanged />"
-      );
-    }).map(function (text) {
-      return text.replace(/^\s*<system-reminder>[\s\S]*?<\/system-reminder>\s*/, "");
-    }).join("");
-  }
+  function userMessageDisplayText(blocks, hideInternalEnvelope) { return pinvouSharedtauriMain().userMessageDisplayText(blocks, hideInternalEnvelope); }
 
   // ── Rerender from messages (session restore) ─────────────────────
   // opts.keepLiveToolMeta: passed when hydrating a live session
