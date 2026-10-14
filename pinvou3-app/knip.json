@@ -18,6 +18,7 @@
     "src/features/personas/personas-i18n.js",
     "src/features/updater/update-notice-logic.js",
     "src/shared/authority-sync-diagnostics.js",
+    "src/shared/tool-store-events.js",
     "src/shared/bridge-messages.js",
     "src/shared/chunked-file-upload.js",
     "src/shared/format-utils.js",

@@ -156,28 +156,34 @@ function buildWebBridgeContext() {
   console.log('✓ shared fallback escapes HTML when vendor globals are missing');
 }
 
-// ── Case 4: 守护两处 bridge 源码——最末级 fallback 不得退化为原文返回 ──
+// ── Case 4: 守护渲染入口——最末级 fallback 不得退化为原文返回 ──
 // 防止未来重构再次把 escapeHtml 抽走、留下 fail-open 的 `return String(text || "")`。
+// Wave 6 后 renderMarkdown/escapeHtml 只在 shared/bridge-shared-helpers.js 定义
+// （安全原语单一实现），两条 lane 仅保留 cluster 转发——分别守护。
+const sharedRenderSource = readApp('src', 'shared', 'bridge-shared-helpers.js');
+assert.match(
+  sharedRenderSource,
+  /return escapeHtml\(text \|\| ""\)/u,
+  'shared renderMarkdown final fallback must escape (not return raw text)',
+);
+assert.match(
+  sharedRenderSource,
+  /function escapeHtml\(s\)/u,
+  'shared helpers must define escapeHtml for the final fallback',
+);
+assert.match(
+  sharedRenderSource,
+  /window\.PinvouMarkdownRenderer\.renderMarkdown\(text\)/u,
+  'shared renderMarkdown must keep delegating to the vendor renderer',
+);
 for (const bridgeRel of [['src', 'platform', 'web', 'bridge.js'], ['src', 'platform', 'tauri', 'bridge.js']]) {
   const src = readApp(...bridgeRel);
   assert.match(
     src,
-    /return escapeHtml\(text \|\| ""\)/u,
-    `${bridgeRel.join('/')} final fallback must escape (not return raw text)`,
+    /function renderMarkdown\(text\) \{ return pinvouShared/u,
+    `${bridgeRel.join('/')} must keep forwarding renderMarkdown to the shared cluster`,
   );
-  // 同时守护 escapeHtml 的定义就地产于此文件（安全原语不依赖外部脚本）。
-  assert.match(
-    src,
-    /function escapeHtml\(s\)/u,
-    `${bridgeRel.join('/')} must define its own escapeHtml for the final fallback`,
-  );
-  // 委托共享渲染器的主路径仍须保留。
-  assert.match(
-    src,
-    /window\.PinvouMarkdownRenderer\.renderMarkdown\(text\)/u,
-    `${bridgeRel.join('/')} must keep delegating to the shared renderer`,
-  );
-  console.log(`✓ ${bridgeRel.join('/')} keeps safe final fallback + renderer delegation`);
+  console.log(`✓ ${bridgeRel.join('/')} forwards renderMarkdown to the shared cluster`);
 }
 
 console.log('\nmarkdown bridge fallback safety: ok');

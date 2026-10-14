@@ -9,7 +9,7 @@
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["personas"] = function (context) {let pinvouSharedtauriPersonasCache = null;
 function pinvouSharedtauriPersonas() {
-  if (!pinvouSharedtauriPersonasCache) pinvouSharedtauriPersonasCache = window.PinvouBridgeShared.create("tauriPersonas", { state, notify, personaPoolCache: { get value() { return personaPoolCache; }, set value(v) { personaPoolCache = v; } }, invoke, deletedPersonaIds, sessionStates, lastEquippedSid: { get value() { return lastEquippedSid; }, set value(v) { lastEquippedSid = v; } }, runOnSession, addChatItem, mountedCollectionDraftTarget: { get value() { return mountedCollectionDraftTarget; }, set value(v) { mountedCollectionDraftTarget = v; } }, ensureSession, mountedCollectionUpdate: { get value() { return mountedCollectionUpdate; }, set value(v) { mountedCollectionUpdate = v; } }, addSystemItem, bt, timeStr, personaPlaceholderTitles, personaSyncSeq: { get value() { return personaSyncSeq; }, set value(v) { personaSyncSeq = v; } } });
+  if (!pinvouSharedtauriPersonasCache) pinvouSharedtauriPersonasCache = window.PinvouBridgeShared.create("tauriPersonas", { state, notify, personaPoolCache: { get value() { return personaPoolCache; }, set value(v) { personaPoolCache = v; } }, invoke, deletedPersonaIds, sessionStates, lastEquippedSid: { get value() { return lastEquippedSid; }, set value(v) { lastEquippedSid = v; } }, runOnSession, addChatItem, mountedCollectionDraftTarget: { get value() { return mountedCollectionDraftTarget; }, set value(v) { mountedCollectionDraftTarget = v; } }, ensureSession, mountedCollectionUpdate: { get value() { return mountedCollectionUpdate; }, set value(v) { mountedCollectionUpdate = v; } }, addSystemItem, bt, timeStr, isDefaultChatTitle, personaPlaceholderTitles, personaSyncSeq: { get value() { return personaSyncSeq; }, set value(v) { personaSyncSeq = v; } }, itemIdSeq: { get value() { return context.itemIdSeq; }, set value(v) { context.itemIdSeq = v; } } });
   return pinvouSharedtauriPersonasCache;
 }
 
@@ -25,6 +25,7 @@ function pinvouSharedtauriPersonas() {
     const ensureSession = context.ensureSession;
     const runOnSession = context.runOnSession;
     const personaPlaceholderTitles = context.personaPlaceholderTitles;
+    const isDefaultChatTitle = context.isDefaultChatTitle;
     let personaPoolCache = [];
   // ── 卡片池: 专家面具加持 ─────────────────────────────────────────
   // 懒加载全部专家卡(1078 张),前端缓存供 facet/搜索。只拉一次。

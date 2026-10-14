@@ -10,7 +10,7 @@
 
 let pinvouSharedtauriMainCache = null;
 function pinvouSharedtauriMain() {
-  if (!pinvouSharedtauriMainCache) pinvouSharedtauriMainCache = window.PinvouBridgeShared.create("tauriMain", { state, BT_TABLE, PINVOU_SCENE_EVENTS_STORAGE_PREFIX, invoke, startThinking, recordAuthoritySyncDiagnostic, getBuffer, runSyncOnSession, notify, scheduledRunSessionOwners, sessionStates });
+  if (!pinvouSharedtauriMainCache) pinvouSharedtauriMainCache = window.PinvouBridgeShared.create("tauriMain", { state, BT_TABLE, PINVOU_SCENE_EVENTS_STORAGE_PREFIX, invoke, startThinking, recordAuthoritySyncDiagnostic, getBuffer, runSyncOnSession, notify, addChatItem, extractArtifactPaths, scheduledRunSessionOwners, sessionStates });
   return pinvouSharedtauriMainCache;
 }
 
@@ -119,7 +119,6 @@ function pinvouSharedtauriMain() {
   // 最末级 fallback 必须自带 escapeHtml：共享脚本未加载时 renderMarkdown 仍会被
   // dangerouslySetInnerHTML 消费，原文返回即 fail-open。escapeHtml 作为安全原语保留在本文件
   // （不依赖任何外部脚本），仅 marked.parse+sanitize 这段较重的兜底被抽到共享文件。
-function escapeHtml(s) { return pinvouSharedtauriMain().escapeHtml(s); }
 function renderMarkdown(text) { return pinvouSharedtauriMain().renderMarkdown(text); }
 
 
@@ -741,7 +740,6 @@ function bt(key) { return pinvouSharedtauriMain().bt(key); }
   // Transfer badges are restored from message text, but messages persist in the
   // UI language used at send time; replay must match all three variants instead
   // of only the current language. Used for the review/plan wording keys.
-function textMatchesBtKey(text, key) { return pinvouSharedtauriMain().textMatchesBtKey(text, key); }
   // 默认会话标题哨兵:三语兜底标题都视为占位(自动改名/显示映射的依据),
   // 与 web 桥和 main.jsx 的同款判断保持一致。
 function isDefaultChatTitle(title) { return pinvouSharedtauriMain().isDefaultChatTitle(title); }
@@ -817,7 +815,6 @@ function loadPinvouSceneEventsForSession(sid) { return pinvouSharedtauriMain().l
     return cached;
   }
 function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedtauriMain().recordPinvouSceneForMessage(sid, pos, scene); }
-function pinvouSceneForMessagePos(pos) { return pinvouSharedtauriMain().pinvouSceneForMessagePos(pos); }
   // ── Steered-message sidecar（mid-turn steer 位置标记）──────────────
   // steer 落盘与普通 admission 对齐、不含 <turn_meta> 块（Rust sanitize 统一
   // 剥离），重载投影无法再借信封反推"非 turn admission"，因此结算时把
@@ -934,7 +931,6 @@ function pinvouSceneForMessagePos(pos) { return pinvouSharedtauriMain().pinvouSc
   const updatePresentedArtifact = artifactTrackerFeature.updatePresentedArtifact;
   const reconcileArtifacts = artifactTrackerFeature.reconcileArtifacts;
   const extractArtifactPaths = artifactTrackerFeature.extractArtifactPaths;
-  const extractArtifactPath = artifactTrackerFeature.extractArtifactPath;
   const fileMutationAction = artifactTrackerFeature.fileMutationAction;
   const isPresentArtifactTool = artifactTrackerFeature.isPresentArtifactTool;
   const artifactPathFromToolOutput = artifactTrackerFeature.artifactPathFromToolOutput;
@@ -1501,9 +1497,6 @@ function planCardHydrationKey(item) { return pinvouSharedtauriMain().planCardHyd
   // and allocate only changed paths. Long transcripts therefore stay shared
   // between snapshots while an in-place streaming item mutation still produces
   // a stable new item for subscribers. get/getMany retain their deep-copy API.
-function defineSubscriptionStateProperty(target, key, value) { return pinvouSharedtauriMain().defineSubscriptionStateProperty(target, key, value); }
-function copySubscriptionStateObject(source) { return pinvouSharedtauriMain().copySubscriptionStateObject(source); }
-  // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
 function subscriptionStateValue(value, previous, ancestors) { return pinvouSharedtauriMain().subscriptionStateValue(value, previous, ancestors); }
   let subscriptionSliceRevision = 0;
   const subscriptionSliceCache = Object.create(null);
@@ -1649,23 +1642,19 @@ function subscriptionStateValue(value, previous, ancestors) { return pinvouShare
   const PLAN_TOOLS = new Set(["update_plan", "checklist_write", "todo_write"]);
 
   // tool_result.content 可能是 string 或 Anthropic content blocks 数组，归一成纯文本。
-function toolResultText(content) { return pinvouSharedtauriMain().toolResultText(content); }
 
 
 
 function toolResultDisplayContent(content) { return pinvouSharedtauriMain().toolResultDisplayContent(content); }
 
   // plan 类工具结果格式："...updated:\n{json}"——切第一个换行后 parse（与 engine.rs 一致）。
-function parsePlanSnapshot(content) { return pinvouSharedtauriMain().parsePlanSnapshot(content); }
 
   // request_user_input 结果是纯 JSON {answers:[{id,label,value}]}（turn_loop.rs ToolResult::json）。
   // 按 question.id 匹配，还原成 UserInputCard 的 answers 数组（顺序对齐 questions）。
   // multi_select 多选保留全部同 id 答案、不塌缩（与 code-native-lane parseNativeUserAnswers 对齐）。
-function parseUserAnswers(content, questions) { return pinvouSharedtauriMain().parseUserAnswers(content, questions); }
 
   // careful hook 拦截结果(shell.rs BLOCKED 固定格式)→ 反解出 careful_blocked 卡所需 metadata。
   // metadata 不进持久化 messages,session 重载只能从 tool_result 文本识别,否则 🛑 红卡重启即丢。
-function parseCarefulBlocked(text) { return pinvouSharedtauriMain().parseCarefulBlocked(text); }
 
 function userMessageInputProvenance(blocks) { return pinvouSharedtauriMain().userMessageInputProvenance(blocks); }
 
@@ -1704,7 +1693,6 @@ function isInternalUserMessageProvenance(provenance) { return pinvouSharedtauriM
   // in-flight tools (tool_use not yet in messages), and clearing it would
   // leave the later chat:tool_end without its meta (stuck selection
   // card / degraded artifact card).
-  // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
   function rerenderFromMessages(opts) {let pinvouSharedtauriMainN99856Cache = null;
 function pinvouSharedtauriMainN99856() {
   if (!pinvouSharedtauriMainN99856Cache) pinvouSharedtauriMainN99856Cache = window.PinvouBridgeShared.create("tauriMain:99856", { pe, addChatItem, bt });
@@ -1978,7 +1966,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const cancelUserInput = interactionFeature.cancelUserInput;
   const editLastTurn = interactionFeature.editLastTurn;
 
-  const memoryFeature = installBridgeFeature("memory", { state, notify, invoke, bt, addSystemItem, runSyncOnSession, patchItemById, patchItemByIdFor, runOnSession, addChatItem, timeStr });
+  const memoryFeature = installBridgeFeature("memory", { state, notify, invoke, bt, addSystemItem, runSyncOnSession, patchItemById, patchItemByIdFor, runOnSession, addChatItem, timeStr, get itemIdSeq() { return itemIdSeq; }, set itemIdSeq(value) { itemIdSeq = value; } });
   const handleMemoryWrite = memoryFeature.handleMemoryWrite;
   const loadMemoryOverview = memoryFeature.loadMemoryOverview;
   const saveMemoryProfilePatch = memoryFeature.saveMemoryProfilePatch;
@@ -2013,7 +2001,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const resolveConversationAttachment = artifactsFeature.resolveConversationAttachment;
   const openConversationAttachment = artifactsFeature.openConversationAttachment;
   const revealConversationAttachment = artifactsFeature.revealConversationAttachment;
-  const personasFeature = installBridgeFeature("personas", { state, sessionStates, notify, invoke, listen, bt, isDefaultChatTitle, addSystemItem, addChatItem, timeStr, ensureSession, runOnSession, personaPlaceholderTitles });
+  const personasFeature = installBridgeFeature("personas", { state, sessionStates, notify, invoke, listen, bt, isDefaultChatTitle, addSystemItem, addChatItem, timeStr, ensureSession, runOnSession, personaPlaceholderTitles, get itemIdSeq() { return itemIdSeq; }, set itemIdSeq(value) { itemIdSeq = value; } });
   const loadPersonas = personasFeature.loadPersonas;
   const getPersonas = personasFeature.getPersonas;
   const createPersona = personasFeature.createPersona;

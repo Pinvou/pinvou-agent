@@ -9,7 +9,7 @@
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["memory"] = function (context) {let pinvouSharedtauriMemoryCache = null;
 function pinvouSharedtauriMemory() {
-  if (!pinvouSharedtauriMemoryCache) pinvouSharedtauriMemoryCache = window.PinvouBridgeShared.create("tauriMemory", { state, runOnSession, invoke, notify, bt, addSystemItem, patchItemByIdFor, timeStr, addChatItem, loadMemoryOverview, memoryOverviewSeq: { get value() { return memoryOverviewSeq; }, set value(v) { memoryOverviewSeq = v; } } });
+  if (!pinvouSharedtauriMemoryCache) pinvouSharedtauriMemoryCache = window.PinvouBridgeShared.create("tauriMemory", { state, runOnSession, invoke, notify, bt, addSystemItem, candidateCardPatcher: patchItemByIdFor, timeStr, addChatItem, itemIdSeq: { get value() { return context.itemIdSeq; }, set value(v) { context.itemIdSeq = v; } }, loadMemoryOverview, memoryOverviewSeq: { get value() { return memoryOverviewSeq; }, set value(v) { memoryOverviewSeq = v; } } });
   return pinvouSharedtauriMemoryCache;
 }
 
@@ -28,12 +28,9 @@ function pinvouSharedtauriMemory() {
 
 function handleMemoryWrite(payload) { return pinvouSharedtauriMemory().handleMemoryWrite(payload); }
 
-function orderedMemoryWarnings(warnings) { return pinvouSharedtauriMemory().orderedMemoryWarnings(warnings); }
 function applyMemoryProfileState(result) { return pinvouSharedtauriMemory().applyMemoryProfileState(result); }
 function applyMemoryWriteState(result, update) { return pinvouSharedtauriMemory().applyMemoryWriteState(result, update); }
-function upsertMemoryValue(items, value, replacedId) { return pinvouSharedtauriMemory().upsertMemoryValue(items, value, replacedId); }
 
-function rehydratePendingMemoryCandidates(overview) { return pinvouSharedtauriMemory().rehydratePendingMemoryCandidates(overview); }
   // 记忆面板混合两类数据：runtime 按 session 分文件，profile/preferences/
   // pending 等为全局单文件(见后端 paths.rs)。加载仍必须带归属+序号校验：
   // await 挂起期间切会话或再次加载，旧响应返回后不得覆盖当前显示(尤其
@@ -44,7 +41,6 @@ async function loadMemoryOverview(options) { return pinvouSharedtauriMemory().lo
   // 守卫命中的善后：序号已被更新加载接管时由它负责收尾 loading；仅会话
   // 变化、无人接管时(如切草稿不续发加载)必须自己清掉 loading，否则面板
   // 永远停在"同步中"(审计补充)。
-function discardStaleLoad(seq) { return pinvouSharedtauriMemory().discardStaleLoad(seq); }
   async function saveMemoryProfilePatch(patch) {
     if (!invoke) return null;
     // 入口捕获触发会话：invoke 往返期间切走，A 的写结果/错误不得渲染进
