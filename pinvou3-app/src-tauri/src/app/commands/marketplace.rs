@@ -41,11 +41,12 @@ async fn hot_refresh(
 }
 
 /// 上传展示名净化（仅写 bundles.json 的 upload 来源标记用）：去路径分隔符与
-/// 控制字符，截 128 字符。zip 名与裸 `.md` 文件名两个上传通道共用同一口径。
+/// 控制字符，截 [`MAX_IMPORT_DISPLAY_NAME_CHARS`] 字符。zip 名与裸 `.md`
+/// 文件名两个上传通道共用同一口径。
 fn sanitize_display_name(raw: &str) -> String {
     raw.chars()
         .filter(|c| !c.is_control() && *c != '/' && *c != '\\')
-        .take(128)
+        .take(crate::features::marketplace::store::MAX_IMPORT_DISPLAY_NAME_CHARS)
         .collect()
 }
 
