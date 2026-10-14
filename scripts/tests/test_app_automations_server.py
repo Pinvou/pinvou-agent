@@ -493,6 +493,53 @@ class CreateSpoolAndResultTests(unittest.TestCase):
         self.assertTrue(payload["payload_mismatch"], payload)
         self.assertIn("DIFFERENT payload", payload["mismatch_note"])
 
+    def test_forged_non_literal_ok_marker_is_not_terminal(self):
+        """Round-22 M2: ok:1 / ok:"true" with a MATCHING digest used to be
+        classified as success by the server's truthiness check (answering a
+        fabricated duplicate while the watcher — literal `== Some(true)` —
+        deleted the marker and re-applied). Both server sites now bind
+        `is True`; a non-literal marker must answer like no marker at all
+        (poll to pending, record stays spooled)."""
+        import hashlib
+
+        digest = server.spool_request_digest(
+            "create", name="新名字", prompt="汇总新闻",
+            rrule="FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30",
+        )
+        spool_id = hashlib.sha256(b"reqsrc01|create||k-forged").hexdigest()
+        marker = Path(self.requests, "spool", ".done", "%s.json" % spool_id)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        for forged in (
+            {"ok": 1, "task_id": "FORGED-1", "task_name": "伪造",
+             "request_digest": digest},
+            {"ok": "true", "task_id": "FORGED-1", "task_name": "伪造",
+             "request_digest": digest},
+        ):
+            marker.write_text(json.dumps(forged), encoding="utf-8")
+            spool = Path(self.requests, "spool", "%s.json" % spool_id)
+            spool.write_text(
+                json.dumps({
+                    "schema_version": 1, "id": spool_id, "kind": "create",
+                    "name": "新名字", "prompt": "汇总新闻",
+                    "rrule": "FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30",
+                    "from_session": "reqsrc01", "idempotency_key": "k-forged",
+                    "created_at": "2026-10-14T00:00:00Z",
+                }),
+                encoding="utf-8",
+            )
+            payload, error = server.create_scheduled_task(
+                **self._create_kwargs(
+                    name="新名字", from_session="reqsrc01", idempotency_key="k-forged"
+                )
+            )
+            # The honest answer for a non-literal-ok marker: NOT a fabricated
+            # success (the round-22 shape answered ok=True taskId=FORGED-999
+            # duplicate=True) — the server refuses to classify it and the
+            # record stays queued for the watcher.
+            self.assertIsNone(payload, "a non-literal-ok marker must not answer success")
+            self.assertIsNotNone(error)
+            self.assertTrue(spool.exists(), "the record stays queued")
+
     def test_digest_mismatch_poll_path_sleeps(self):
         """Round-12 MAJOR-5: the keyed poll's digest-mismatch arm sleeps
         between reads at the poll cadence — the bare `continue` used to
