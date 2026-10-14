@@ -1109,8 +1109,10 @@ impl ProviderManager {
     /// record keeps advertising `has_credential: true` over an emptied
     /// keychain (the captured value is the only copy left). Fires only on
     /// the pointer the record actually names (`surviving_owner == Some(
-    /// reference)`, the same ownership signal the take-back uses); a
-    /// keyless delete captured None and restores nothing. Returns the
+    /// reference)`, the same ownership signal the take-back uses) AND only
+    /// into a slot this call's delete actually emptied (round-2 M2: a peer
+    /// write at the same reference owns the slot now); a keyless delete
+    /// captured None and restores nothing. Returns the
     /// restore failure — if any — so the caller appends it to the error it
     /// is already propagating; a credential loss is never swallowed.
     fn restore_deleted_key_after_failed_save(
@@ -1122,6 +1124,18 @@ impl ProviderManager {
         let value = deleted_key_value?;
         if surviving_owner != Some(reference) {
             return None;
+        }
+        // Round-2 review M2: read-compare-write mirror of the take-back's
+        // read-compare-delete — restore only into the slot this call's
+        // delete emptied. A present value is a peer's committed write at
+        // the same deterministic reference (a peer Replace's pointer never
+        // moves, so no divergence guard sees it); overwriting it with the
+        // stale captured value would silently revert a completed key
+        // rotation the surviving record still advertises.
+        match self.credentials.get(reference) {
+            Ok(None) => {}
+            Ok(Some(_)) => return None,
+            Err(error) => return Some(anyhow::Error::from(error)),
         }
         self.credentials
             .set(reference, value)
@@ -3344,6 +3358,108 @@ mod tests {
             record["credential"],
             serde_json::Value::Null,
             "the peer's keyless record must survive untouched",
+        );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// Round-2 review M2 regression pin: the round-1 Delete restore was an
+    /// unconditional `set` — a peer Replace committing inside the parked
+    /// window (its write lands at the same deterministic reference, so the
+    /// pointer never moves and no divergence guard sees it) plus our
+    /// persist failure made the stale captured value silently revert the
+    /// peer's committed rotation. The restore must only fill a slot this
+    /// call's delete actually emptied (read-compare-write, the mirror of
+    /// the take-back's read-compare-delete).
+    #[cfg(unix)]
+    #[test]
+    fn save_skips_the_delete_restore_when_a_peer_owns_the_slot() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_lock, _env, home) = locked_provider_env("peer-replace-delete-restore");
+        let store_path = home.join("acp-providers.json");
+
+        let bootstrap = ProviderManager::new(SystemCredentialStore::new()).expect("manager");
+        let created = bootstrap
+            .save(
+                "codex",
+                None,
+                "Keyed Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                Some("sk-round2-stale-owner".into()),
+                CredentialEditAction::Replace,
+            )
+            .expect("keyed create saves");
+        assert!(created.credential.is_some());
+
+        let created_id = created.id.clone();
+        let (gate_tx, gate_rx) = std::sync::mpsc::channel::<Arc<DivergenceGate>>();
+        let worker = std::thread::spawn(move || {
+            // The worker's Delete parks after capturing and destroying the
+            // keychain entry, before the under-lock fresh read.
+            let (worker_manager, gate) =
+                ProviderManager::new_with_armed_divergence_gate(SystemCredentialStore::new());
+            gate_tx.send(gate).unwrap();
+            worker_manager.save(
+                "codex",
+                Some(&created_id),
+                "Keyed Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                None,
+                CredentialEditAction::Delete,
+            )
+        });
+
+        let gate = gate_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("worker must hand over the gate");
+        assert!(
+            gate.wait_until_arrived(std::time::Duration::from_secs(10)),
+            "the save must reach the divergence window within the deadline"
+        );
+        // The peer's Replace completes inside the window: it writes its new
+        // key into the slot the worker's delete just emptied, and its
+        // successful save leaves the on-disk pointer unchanged (the same
+        // deterministic reference) — which is exactly why no divergence
+        // guard observes the peer.
+        let reference = CredentialReference::for_acp_provider("codex", &created.id);
+        SystemCredentialStore::new()
+            .set(&reference, "sk-round2-peer-rotation")
+            .expect("peer keychain write");
+        let original_mode = fs::metadata(&home).unwrap().permissions().mode();
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o555)).unwrap();
+        let fault_induced = fs::write(home.join(".persist-fault-probe"), b"x").is_err();
+        gate.release();
+
+        let result = worker.join().unwrap();
+        fs::set_permissions(&home, fs::Permissions::from_mode(original_mode)).unwrap();
+        if !fault_induced {
+            let _ = fs::remove_dir_all(&home);
+            return;
+        }
+
+        result.expect_err("the persist-faulted delete must fail");
+        assert_eq!(
+            SystemCredentialStore::new()
+                .get(&reference)
+                .expect("keychain read")
+                .as_deref(),
+            Some("sk-round2-peer-rotation"),
+            "the restore must not clobber a peer's committed key",
+        );
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&store_path).unwrap()).unwrap();
+        let record = &file["agents"]["codex"]["providers"][0];
+        assert_eq!(
+            record["credential"]["account"],
+            format!("codex:{}", created.id).as_str(),
+            "the surviving record keeps advertising the credential the peer owns",
         );
         let _ = fs::remove_dir_all(&home);
     }
