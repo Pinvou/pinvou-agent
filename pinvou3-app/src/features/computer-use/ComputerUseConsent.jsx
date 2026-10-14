@@ -12,7 +12,7 @@ import { bannerErrorReset, computerUseConsentView, formatComputerUseConfirmActio
  * computerUseConsentView: with the feature toggle off every surface is hidden.
  *
  * The dialogs render through createPortal(document.body): ChatView's root is
- * `relative z-10`, a stacking context, so a fixed z-[1210] overlay inside it
+ * `relative z-10`, a stacking context, so a fixed z-1210 overlay inside it
  * would still paint UNDER every body-level portal modal (voice intro,
  * move-to-project, …) — a security-critical prompt hidden behind another
  * dialog. Portaling puts the dialogs in the root stacking context like every
@@ -244,7 +244,7 @@ export function ComputerUseDialogs({ slice, copy }) {
   // the grant first; the confirm request stays pending underneath.
   if (grantRequest) {
     return createPortal(
-      <div data-testid="computer-use-grant-dialog" className="fixed inset-0 z-[1210] flex items-center justify-center p-4 bg-black/45">
+      <div data-testid="computer-use-grant-dialog" className="fixed inset-0 z-1210 flex items-center justify-center p-4 bg-black/45">
         <div
           role="dialog"
           aria-modal="true"
@@ -297,7 +297,7 @@ export function ComputerUseDialogs({ slice, copy }) {
   const confirmDetails = formatComputerUseConfirmAction(copy, confirmRequest);
 
   return createPortal(
-    <div data-testid="computer-use-confirm-dialog" className="fixed inset-0 z-[1210] flex items-center justify-center p-4 bg-black/45">
+    <div data-testid="computer-use-confirm-dialog" className="fixed inset-0 z-1210 flex items-center justify-center p-4 bg-black/45">
       <div
         role="dialog"
         aria-modal="true"
@@ -310,12 +310,12 @@ export function ComputerUseDialogs({ slice, copy }) {
           <div className="text-[13px] leading-relaxed mb-4 space-y-1.5">
             <div className="flex gap-2">
               <span className="shrink-0 opacity-60">{copy.confirmActionLabel}</span>
-              <span className="min-w-0 break-words font-medium">{confirmDetails.description}</span>
+              <span className="min-w-0 wrap-break-word font-medium">{confirmDetails.description}</span>
             </div>
             {confirmRequest.element && (
               <div className="flex gap-2">
                 <span className="shrink-0 opacity-60">{copy.confirmElementLabel}</span>
-                <span className="min-w-0 break-words">{localizeTarget(confirmRequest.element)}</span>
+                <span className="min-w-0 wrap-break-word">{localizeTarget(confirmRequest.element)}</span>
               </div>
             )}
           </div>
@@ -327,7 +327,7 @@ export function ComputerUseDialogs({ slice, copy }) {
               <div className="text-[12px] leading-relaxed text-[#B3261E] dark:text-[#F28B82] mb-2">{copy.fullTextWarning}</div>
               <pre
                 data-testid="computer-use-confirm-full-text"
-                className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-xl p-3 text-[12px] font-mono bg-[#F1F3F4] dark:bg-[#2A2B2D] select-text"
+                className="max-h-40 overflow-auto whitespace-pre-wrap wrap-break-word rounded-xl p-3 text-[12px] font-mono bg-[#F1F3F4] dark:bg-[#2A2B2D] select-text"
                 style={{ userSelect: 'text' }}
               >
                 {confirmDetails.preview}

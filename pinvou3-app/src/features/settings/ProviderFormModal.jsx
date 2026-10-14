@@ -26,7 +26,7 @@ function SuggestPanel({ testId, maxHeightClass, children }) {
   return (
     <div
       data-testid={testId}
-      className={`absolute z-10 mt-1 ${maxHeightClass} w-full overflow-y-auto custom-scrollbar rounded-xl border border-black/[0.08] dark:border-white/[0.12] bg-white dark:bg-[#2A2B2D] shadow-lg`}
+      className={`absolute z-10 mt-1 ${maxHeightClass} w-full overflow-y-auto custom-scrollbar rounded-xl border border-black/8 dark:border-white/12 bg-white dark:bg-[#2A2B2D] shadow-lg`}
     >
       {children}
     </div>
@@ -79,7 +79,7 @@ function ModelSuggestInput({ value, onChange, suggestions, inputClass, placehold
               type="button"
               data-testid={`${testId}-option-${modelName}`}
               onMouseDown={selectViaMouseDown(() => onChange(modelName), setOpen)}
-              className="block w-full px-3 py-2 text-left font-mono text-[12px] hover:bg-black/[0.05] dark:hover:bg-white/[0.08]"
+              className="block w-full px-3 py-2 text-left font-mono text-[12px] hover:bg-black/5 dark:hover:bg-white/8"
             >
               {modelName}
             </button>
@@ -116,7 +116,7 @@ function PresetSelect({ value, onChange, presets, otherLabel, copy, inputClass }
             type="button"
             data-testid="acp-provider-preset-option-other"
             onMouseDown={selectViaMouseDown(() => onChange(''), setOpen)}
-            className="block w-full px-3 py-2 text-left text-[12px] opacity-70 hover:bg-black/[0.05] dark:hover:bg-white/[0.08]"
+            className="block w-full px-3 py-2 text-left text-[12px] opacity-70 hover:bg-black/5 dark:hover:bg-white/8"
           >
             {otherLabel}
           </button>
@@ -126,7 +126,7 @@ function PresetSelect({ value, onChange, presets, otherLabel, copy, inputClass }
               type="button"
               data-testid={`acp-provider-preset-option-${preset.key}`}
               onMouseDown={selectViaMouseDown(() => onChange(preset.key), setOpen)}
-              className={`block w-full px-3 py-2 text-left text-[12px] hover:bg-black/[0.05] dark:hover:bg-white/[0.08] ${preset.key === value ? 'font-semibold text-[#007AFF]' : ''}`}
+              className={`block w-full px-3 py-2 text-left text-[12px] hover:bg-black/5 dark:hover:bg-white/8 ${preset.key === value ? 'font-semibold text-[#007AFF]' : ''}`}
             >
               {label(preset)}
             </button>
@@ -307,7 +307,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
     const apiKeyAction = initial
       ? trimmedKey
         ? 'replace'
-        : (!initial.hasCredential || !keyLoaded ? 'keep' : 'delete')
+        : (initial.hasCredential && keyLoaded ? 'delete' : 'keep')
       : (trimmedKey ? 'replace' : 'keep');
     if (!trimmedKey && (!initial || !initial.hasCredential)) {
       setConfirmStep('emptyKey');
@@ -345,7 +345,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
     }
   };
 
-  const inputClass = `w-full h-10 rounded-xl px-3 text-[13px] outline-none transition-colors bg-[#F0F4F9] text-[#1F1F1F] border border-black/[0.06] focus:border-[#0B57D0]/50 dark:bg-white/[0.06] dark:text-[#E8EAED] dark:border-white/[0.09] dark:focus:border-[#64B5F6]/50`;
+  const inputClass = `w-full h-10 rounded-xl px-3 text-[13px] outline-hidden transition-colors bg-[#F0F4F9] text-[#1F1F1F] border border-black/6 focus:border-[#0B57D0]/50 dark:bg-white/6 dark:text-[#E8EAED] dark:border-white/9 dark:focus:border-[#64B5F6]/50`;
 
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; keyboard path is the form's top-right close button
@@ -353,7 +353,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
       data-testid="acp-provider-form-dialog"
       role="dialog"
       aria-modal="true"
-      className="fixed inset-0 z-[110] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
+      className="fixed inset-0 z-110 flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
       onClick={onClose}
     >
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: click propagation stop layer; keyboard events need no bubbling here */}
@@ -366,7 +366,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
           <h2 className="text-[17px] font-semibold">
             {initial ? `${copy.edit} · ${initial.name}` : copy.addProvider}
           </h2>
-          <button type="button" data-testid="acp-provider-form-close" onClick={onClose} aria-label={copy.cancel} className="h-8 w-8 rounded-full flex items-center justify-center hover:bg-black/[0.06] dark:hover:bg-white/[0.08]">
+          <button type="button" data-testid="acp-provider-form-close" onClick={onClose} aria-label={copy.cancel} className="h-8 w-8 rounded-full flex items-center justify-center hover:bg-black/6 dark:hover:bg-white/8">
             <X size={16} />
           </button>
         </div>
@@ -417,7 +417,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
           <span className="block text-[12px] font-medium opacity-70 mb-1.5">{copy.wireApi}</span>
           {wireLocked ? (
             // Claude Code 固定 Anthropic / Codex 固定 Responses
-            <div className="mt-1.5 h-9 inline-flex items-center px-3.5 rounded-full bg-black/[0.04] dark:bg-white/[0.06] text-[12px] font-semibold opacity-70">
+            <div className="mt-1.5 h-9 inline-flex items-center px-3.5 rounded-full bg-black/4 dark:bg-white/6 text-[12px] font-semibold opacity-70">
               {wireLockedLabel}
             </div>
           ) : (
@@ -437,7 +437,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
                   className={`h-9 px-3.5 rounded-full text-[12px] font-semibold transition-colors ${
                     wireApi === option.key
                       ? 'bg-[#007AFF] text-white'
-                      : 'bg-[#F0F4F9] text-[#5F6368] dark:bg-white/[0.08] dark:text-[#C7C7CC]'
+                      : 'bg-[#F0F4F9] text-[#5F6368] dark:bg-white/8 dark:text-[#C7C7CC]'
                   }`}
                 >
                   {option.label}
@@ -448,7 +448,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
         </div>
 
         {anthropicEndpointMissing && (
-          <div data-testid="acp-provider-no-anthropic-warning" className="mb-4 rounded-xl px-3 py-2.5 text-[12px] leading-relaxed bg-amber-500/[0.1] text-amber-700 dark:text-amber-300">
+          <div data-testid="acp-provider-no-anthropic-warning" className="mb-4 rounded-xl px-3 py-2.5 text-[12px] leading-relaxed bg-amber-500/10 text-amber-700 dark:text-amber-300">
             {copy.noAnthropicEndpointWarning}
           </div>
         )}
@@ -536,7 +536,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
               type="button"
               data-testid="acp-provider-key-toggle"
               onClick={() => setShowKey(current => !current)}
-              className="shrink-0 h-10 px-3 rounded-xl text-[12px] font-medium border border-black/[0.08] dark:border-white/[0.12]"
+              className="shrink-0 h-10 px-3 rounded-xl text-[12px] font-medium border border-black/8 dark:border-white/12"
             >
               {showKey ? copy.hideKey : copy.showKey}
             </button>
@@ -545,24 +545,24 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
         </label>
 
         {error && (
-          <div data-testid="acp-provider-form-error" className="mb-4 rounded-xl px-3 py-2.5 text-[12px] text-red-500 bg-red-500/[0.08]">
+          <div data-testid="acp-provider-form-error" className="mb-4 rounded-xl px-3 py-2.5 text-[12px] text-red-500 bg-red-500/8">
             {error}
           </div>
         )}
 
-        <div className={`rounded-xl px-3 py-2.5 text-[12px] leading-relaxed bg-amber-500/[0.1] text-amber-800 dark:bg-amber-500/[0.08] dark:text-amber-200/80`}>
+        <div className={`rounded-xl px-3 py-2.5 text-[12px] leading-relaxed bg-amber-500/10 text-amber-800 dark:bg-amber-500/8 dark:text-amber-200/80`}>
           {copy.thirdPartyWarning}
         </div>
 
         {/* 二级确认弹窗（Tauri WebView2 下系统 window.confirm 不弹，应用内
             自绘弹窗无此限制）：新建/无密钥编辑 + 空 key、编辑清空已存密钥。
-            z-[120] 压在整个表单弹窗（z-[110]）之上；背景点击只关确认层 */}
+            z-120 压在整个表单弹窗（z-[110]）之上；背景点击只关确认层 */}
         {confirmStep && (
           // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; keyboard path is the real buttons inside the confirm layer
           // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, not an interactive container
           <div
             data-testid="acp-provider-form-confirm"
-            className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
+            className="fixed inset-0 z-120 flex items-center justify-center bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
             onClick={event => {
               event.stopPropagation();
               setConfirmStep(null);
@@ -581,7 +581,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
                 <button type="button"
                   onClick={() => setConfirmStep(null)}
                   disabled={saving}
-                  className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12] disabled:opacity-50"
+                  className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/8 dark:border-white/12 disabled:opacity-50"
                 >
                   {copy.cancel}
                 </button>
@@ -608,7 +608,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
             data-testid="acp-provider-form-cancel"
             onClick={onClose}
             disabled={saving}
-            className="h-10 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12] disabled:opacity-50"
+            className="h-10 px-4 rounded-full text-[13px] font-semibold border border-black/8 dark:border-white/12 disabled:opacity-50"
           >
             {copy.cancel}
           </button>

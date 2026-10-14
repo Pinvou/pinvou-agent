@@ -265,7 +265,7 @@ export function ResizableSidePanel({
       document.removeEventListener('pointercancel', onCancel);
       document.removeEventListener('keydown', onKeyDown);
       document.removeEventListener('visibilitychange', onVisibilityChange);
-      window.removeEventListener('blur', onCancel);
+      window.removeEventListener('blur-sm', onCancel);
       window.removeEventListener('resize', onCancel);
       window.removeEventListener('pagehide', onCancel);
       if (frame) cancelAnimationFrame(frame);
@@ -347,7 +347,7 @@ export function ResizableSidePanel({
           onPointerDown={startResize}
           onKeyDown={handleSeparatorKeyDown}
           onDoubleClick={resetRatio}
-          className="absolute inset-y-0 left-0 z-20 w-1.5 -translate-x-1/2 cursor-col-resize bg-black/10 transition-colors hover:bg-[#0B57D0]/50 focus:bg-[#0B57D0]/50 focus:outline-none dark:bg-white/10 dark:hover:bg-[#A8C7FA]/60 dark:focus:bg-[#A8C7FA]/60"
+          className="absolute inset-y-0 left-0 z-20 w-1.5 -translate-x-1/2 cursor-col-resize bg-black/10 transition-colors hover:bg-[#0B57D0]/50 focus:bg-[#0B57D0]/50 focus:outline-hidden dark:bg-white/10 dark:hover:bg-[#A8C7FA]/60 dark:focus:bg-[#A8C7FA]/60"
           title={resizeHint}
         />
       )}

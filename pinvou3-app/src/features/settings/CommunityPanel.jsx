@@ -25,15 +25,15 @@ export function CommunityPanel({ copy, onOpenDiscussions }) {
 
   return (
     <div data-community-panel="true" className="space-y-4">
-      <section className="flex items-center gap-6 rounded-[24px] bg-gradient-to-br from-[#EAF7FF] to-[#F3F0FF] p-6 max-sm:flex-col dark:from-[#102B3A] dark:to-[#22213B]">
+      <section className="flex items-center gap-6 rounded-[24px] bg-linear-to-br from-[#EAF7FF] to-[#F3F0FF] p-6 max-sm:flex-col dark:from-[#102B3A] dark:to-[#22213B]">
         <img
           data-testid="community-qr-image"
           src={COMMUNITY_QQ_QR_IMAGE_SRC}
           alt={copy.communityQrAlt}
-          className="h-[224px] w-[224px] shrink-0 rounded-[22px] bg-white object-contain shadow-sm max-sm:h-auto max-sm:w-full max-sm:max-w-[280px]"
+          className="h-[224px] w-[224px] shrink-0 rounded-[22px] bg-white object-contain shadow-xs max-sm:h-auto max-sm:w-full max-sm:max-w-[280px]"
         />
         <div className="min-w-0 flex-1 max-sm:text-center">
-          <div className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-white/80 px-2.5 py-1 text-[12px] font-semibold text-[#007AFF] dark:bg-white/[0.08] dark:text-[#64D2FF]">
+          <div className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-white/80 px-2.5 py-1 text-[12px] font-semibold text-[#007AFF] dark:bg-white/8 dark:text-[#64D2FF]">
             <MessageCircle size={14} />
             {copy.communityChannelTag}
           </div>
@@ -65,7 +65,7 @@ export function CommunityPanel({ copy, onOpenDiscussions }) {
       <button
         type="button"
         onClick={onOpenDiscussions}
-        className="flex min-h-[58px] w-full items-center justify-between gap-3 rounded-[18px] bg-white px-4 py-3 text-left text-[15px] text-[#007AFF] hover:bg-black/[0.035] dark:bg-[#2C2C2E] dark:text-[#64D2FF] dark:hover:bg-white/[0.05]"
+        className="flex min-h-[58px] w-full items-center justify-between gap-3 rounded-[18px] bg-white px-4 py-3 text-left text-[15px] text-[#007AFF] hover:bg-black/[0.035] dark:bg-[#2C2C2E] dark:text-[#64D2FF] dark:hover:bg-white/5"
       >
         <span className="font-semibold">{copy.communityDiscussions}</span>
         <ExternalLink size={17} />

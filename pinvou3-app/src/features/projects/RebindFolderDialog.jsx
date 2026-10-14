@@ -66,7 +66,7 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, bus
     // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close; keyboard path is the Escape listener and the cancel button
     <div
       role="presentation"
-      className="fixed inset-0 z-[200] flex items-center justify-center p-4"
+      className="fixed inset-0 z-200 flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,.34)', backdropFilter: 'blur(14px) saturate(140%)', WebkitBackdropFilter: 'blur(14px) saturate(140%)' }}
       onMouseDown={(e) => { backdropPressRef.current = e.target === e.currentTarget; }}
       onMouseUp={(e) => { if (backdropPressRef.current && e.target !== e.currentTarget) backdropPressRef.current = false; }}
@@ -80,7 +80,7 @@ const RebindFolderDialog = ({ from, to, warnExisting, errorMessage, partial, bus
         aria-label={t.uiProjects.rebindTitle}
         tabIndex={-1}
         onClick={e => e.stopPropagation()}
-        className="w-[380px] max-w-[calc(100vw-48px)] overflow-hidden rounded-[16px] shadow-2xl bg-[rgba(250,250,250,.96)] dark:bg-[rgba(44,44,46,.96)] text-[#000] dark:text-[#F2F2F7]"
+        className="w-[380px] max-w-[calc(100vw-48px)] overflow-hidden rounded-[16px] shadow-2xl bg-[rgba(250,250,250,.96)] dark:bg-[rgba(44,44,46,.96)] text-black dark:text-[#F2F2F7]"
         style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}
         data-testid="rebind-folder-confirm"
       >

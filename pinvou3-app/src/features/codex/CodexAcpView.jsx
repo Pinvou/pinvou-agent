@@ -220,7 +220,7 @@ function BranchSelector({ copy, branches, disabled, busy, menuOpen, onToggle, on
         <ChevronDown size={12} className="shrink-0" />
       </button>
       {menuOpen && (
-        <div ref={panelRef} className="absolute z-40 top-9 right-0 w-[240px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
+        <div ref={panelRef} className="absolute z-40 top-9 right-0 w-[240px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/8 dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
           <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">{copy.branches}</div>
           <div className="max-h-64 overflow-y-auto custom-scrollbar">
             {branches.branches.map(name => (
@@ -229,7 +229,7 @@ function BranchSelector({ copy, branches, disabled, busy, menuOpen, onToggle, on
                 type="button"
                 title={name}
                 onClick={() => onSelect(name)}
-                className="w-full rounded-lg px-3 py-2 flex items-center gap-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
+                className="w-full rounded-lg px-3 py-2 flex items-center gap-2 text-left hover:bg-black/4 dark:hover:bg-white/6"
               >
                 <GitBranch size={13} className={`shrink-0 ${name === branches.current ? 'text-blue-500' : 'text-gray-400'}`} />
                 <span className={`truncate text-[13px] ${name === branches.current ? 'font-semibold text-blue-600 dark:text-blue-300' : ''}`}>{name}</span>
@@ -256,7 +256,7 @@ function WorkspacePanelToggle({ testId, active, changeCount, onToggle, copy }) {
       className={`h-8 px-2.5 rounded-lg inline-flex items-center gap-1.5 text-[11px] transition-colors ${
         active
           ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
-          : 'text-gray-500 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
+          : 'text-gray-500 dark:text-gray-400 hover:bg-black/4 dark:hover:bg-white/6'
       }`}
       title={copy.workspaceTitle}
     >
@@ -272,7 +272,7 @@ function WorkspacePanelToggle({ testId, active, changeCount, onToggle, copy }) {
 }
 
 // Branch-switch dialog shell: same pattern as RewindConfirmDialog / the shared
-// YoloConfirmCard — portal to <body> (the composer container's backdrop-blur
+// YoloConfirmCard — portal to <body> (the composer container's backdrop-blur-sm
 // becomes the containing block for fixed descendants), focus capture/restore,
 // Escape to close (disabled while busy). The backdrop is a button disabled
 // along with busy: while a switch is in flight, clicking the blank area must
@@ -282,10 +282,10 @@ function BranchDialogShell({ copy, busy, testid, labelledBy, initialFocusRef, on
   return (
     <ModalShell
       testid={testid}
-      zIndexClass="z-[120]"
+      zIndexClass="z-120"
       backdropLabel={copy.branchSwitchCancel}
       backdropClass="absolute inset-0 cursor-default bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
-      panelClass="w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] outline-none dark:bg-[#1E1F20] dark:text-[#E8EAED]"
+      panelClass="w-[min(400px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] outline-hidden dark:bg-[#1E1F20] dark:text-[#E8EAED]"
       busy={busy}
       initialFocusRef={initialFocusRef}
       labelledBy={labelledBy}
@@ -374,8 +374,8 @@ function CodexComposerConfigSelect({
         className={`inline-flex h-8 min-w-0 max-w-[220px] items-center gap-1.5 overflow-hidden rounded-xl border px-2.5 transition-all ${
           disabled
             ? 'cursor-default opacity-50'
-            : 'cursor-pointer hover:-translate-y-px hover:shadow-sm focus-within:border-[#007AFF]/45 focus-within:ring-2 focus-within:ring-[#007AFF]/10'
-        } border-black/[0.07] bg-black/[0.025] text-[#1F1F1F] dark:border-white/[0.09] dark:bg-white/[0.055] dark:text-[#E8EAED]`}
+            : 'cursor-pointer hover:-translate-y-px hover:shadow-xs focus-within:border-[#007AFF]/45 focus-within:ring-2 focus-within:ring-[#007AFF]/10'
+        } border-black/[0.07] bg-black/2.5 text-[#1F1F1F] dark:border-white/9 dark:bg-white/5.5 dark:text-[#E8EAED]`}
       >
         <span className="pointer-events-none shrink-0 text-[10px] font-medium text-gray-400 dark:text-gray-500">
           {label}
@@ -410,7 +410,7 @@ function CodexComposerConfigSelect({
                 {/* 槽位/别名标签：Claude 的 5 个选项显示名相同（同为槽位映射的
                     模型名），用别名标签区分，避免「五个一样的模型」 */}
                 {choice.tag && choice.tag !== choice.name && (
-                  <span className="rounded-md bg-black/[0.05] px-1.5 py-0.5 font-mono text-[10px] text-gray-500 group-hover:bg-white/20 group-hover:text-white dark:bg-white/[0.08] dark:text-gray-400">
+                  <span className="rounded-md bg-black/5 px-1.5 py-0.5 font-mono text-[10px] text-gray-500 group-hover:bg-white/20 group-hover:text-white dark:bg-white/8 dark:text-gray-400">
                     {choice.tag}
                   </span>
                 )}
@@ -548,12 +548,12 @@ function NativePlanCard({ item, theme, t, copy, modePlan, busy, onAccept, onDisc
   return (
     <div className={cardBoxCls('border-[#0B57D0]/20 dark:border-[#A8C7FA]/30')}>
       <div className={`text-[14px] font-semibold mb-3 ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>{t.planReady}</div>
-      {(!item.plan && !item.todos)
-        ? <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.planEmpty}</div>
-        : <>
+      {(item.plan || item.todos)
+        ? <>
             <PlanLayer label={t.planLabel} explanation={item.plan && item.plan.explanation} items={item.plan && item.plan.items} field="step" />
             <PlanLayer label={t.planTodos} items={item.todos && item.todos.items} field="content" />
-          </>}
+          </>
+        : <div className={`text-[13px] ${isDark ? 'text-[#C4C7C5]' : 'text-[#444746]'}`}>{t.planEmpty}</div>}
       <div className={`h-px my-3 ${isDark ? 'bg-white/10' : 'bg-black/10'}`}></div>
       {active ? (
         <div className="flex items-center gap-2 flex-wrap">
@@ -669,7 +669,7 @@ export function CodexAcpView({
   // 挂载后的容器焦点夺取覆盖，无法真正落焦）。
   const branchCommitInputRef = useRef(null);
   const [workspaceRefreshTick, setWorkspaceRefreshTick] = useState(0);
-  // 这四个 composer 弹层不能用 `fixed inset-0` 关闭层：composer 容器的 backdrop-blur
+  // 这四个 composer 弹层不能用 `fixed inset-0` 关闭层：composer 容器的 backdrop-blur-sm
   // 会成为 fixed 后代的包含块，使关闭层只覆盖输入框区域、外点失效。统一用
   // document 级 pointerdown 外点检测（见 ComposerPopover.jsx）。
   const commandMenuPanelRef = useRef(null);
@@ -3252,7 +3252,7 @@ export function CodexAcpView({
     }
     if (item.type === 'permission' && item.extensionType === 'careful_blocked') {
       return (
-        <div className="rounded-xl border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-[12px] text-red-600 dark:text-red-300">
+        <div className="rounded-xl border border-red-500/20 bg-red-500/6 px-3 py-2 text-[12px] text-red-600 dark:text-red-300">
           {codexCopy.nativeBlockedNotice}
         </div>
       );
@@ -3395,8 +3395,8 @@ export function CodexAcpView({
     <div className={`relative h-full min-h-0 flex flex-col ${theme === 'dark' ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
         <ComposerAttachmentDropOverlay enabled={deviceFileUploadAvailable || (!isWeb && canInvoke('ingest_draft_file_chunk'))} onFiles={files => uploadDeviceFiles(files, attachmentKey)} dark={theme === 'dark'} variant={isWeb ? 'web' : 'desktop'} copy={t.uiAttachments} />
         {activeSession && (
-        <header className="h-14 shrink-0 px-5 flex items-center gap-3 border-b border-black/[0.05] dark:border-white/[0.06]">
-          <div className="w-8 h-8 rounded-xl bg-black/[0.04] dark:bg-white/[0.08] flex items-center justify-center"><AcpAgentLogo agentId={activeAgentId} className="h-5 w-5" title={activeAgentName} /></div>
+        <header className="h-14 shrink-0 px-5 flex items-center gap-3 border-b border-black/5 dark:border-white/6">
+          <div className="w-8 h-8 rounded-xl bg-black/4 dark:bg-white/8 flex items-center justify-center"><AcpAgentLogo agentId={activeAgentId} className="h-5 w-5" title={activeAgentName} /></div>
           <div className="min-w-0 flex-1">
             <div className="text-[14px] font-semibold">{activeSession.title || 'Codex'}</div>
             <div className={`text-[10px] truncate ${activeSession && !activeSession.workspace_available ? 'text-red-500' : 'text-gray-400'}`}
@@ -3443,7 +3443,7 @@ export function CodexAcpView({
               className={`h-8 px-2.5 rounded-lg inline-flex items-center gap-1.5 text-[11px] transition-colors ${
                 auxChatPanel && auxChatDockActive
                   ? 'bg-blue-500/10 text-blue-600 dark:text-blue-300'
-                  : 'text-gray-500 dark:text-gray-400 hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
+                  : 'text-gray-500 dark:text-gray-400 hover:bg-black/4 dark:hover:bg-white/6'
               }`}
             >
               <MessageSquare size={14} />
@@ -3459,7 +3459,7 @@ export function CodexAcpView({
         </header>
         )}
         {!isWeb && !activeSession && draftWorkspacePath && (
-        <header className="h-14 shrink-0 px-5 flex items-center justify-end gap-3 border-b border-black/[0.05] dark:border-white/[0.06]">
+        <header className="h-14 shrink-0 px-5 flex items-center justify-end gap-3 border-b border-black/5 dark:border-white/6">
           <BranchSelector
             copy={codexCopy}
             branches={workspaceBranches}
@@ -3555,7 +3555,7 @@ export function CodexAcpView({
             )}
             {!visibleTurns.length && (
               <div className="flex min-h-[320px] flex-1 flex-col items-center justify-center text-center">
-                <div className="w-14 h-14 rounded-2xl bg-black/[0.04] dark:bg-white/[0.08] flex items-center justify-center shadow-lg"><AcpAgentLogo agentId={activeAgentId} className="h-8 w-8" title={activeAgentName} /></div>
+                <div className="w-14 h-14 rounded-2xl bg-black/4 dark:bg-white/8 flex items-center justify-center shadow-lg"><AcpAgentLogo agentId={activeAgentId} className="h-8 w-8" title={activeAgentName} /></div>
                 <div className="mt-5 text-[20px] font-semibold">
                   {codexCopy.welcomeTitle}
                 </div>
@@ -3672,7 +3672,7 @@ export function CodexAcpView({
                 onClick={scrollConversationToBottom}
                 aria-label={pending.length || pendingElicitations.length ? codexCopy.attentionLatest : codexCopy.latest}
                 title={pending.length || pendingElicitations.length ? codexCopy.attentionLatest : codexCopy.latest}
-                className={`pointer-events-auto w-9 h-9 rounded-full flex items-center justify-center shadow-lg backdrop-blur transition-all hover:-translate-y-0.5 active:translate-y-0 border ${
+                className={`pointer-events-auto w-9 h-9 rounded-full flex items-center justify-center shadow-lg backdrop-blur-sm transition-all hover:-translate-y-0.5 active:translate-y-0 border ${
                   pending.length || pendingElicitations.length
                     ? 'bg-amber-500/95 text-white border-amber-400'
                     : 'bg-white/95 dark:bg-[#2B2C2F]/95 text-[#1F1F1F] dark:text-[#E3E3E3] border-black/10 dark:border-white/10'
@@ -3707,7 +3707,7 @@ export function CodexAcpView({
                 <span>{codexCopy.sessionSyncing}</span>
               </div>
             )}
-            {error && <div className="mb-2 px-3 text-[11px] text-red-500 break-words">{error}</div>}
+            {error && <div className="mb-2 px-3 text-[11px] text-red-500 wrap-break-word">{error}</div>}
             <VoiceComposerStatus
               voiceInput={nativeVoiceInput}
               voiceMode={nativeVoiceMode}
@@ -3721,7 +3721,7 @@ export function CodexAcpView({
               onCancel={handleNativeVoiceCancel}
               onClose={handleNativeVoiceClose}
             />
-            <div className="relative rounded-[24px] border border-black/[0.08] dark:border-white/10 bg-white/85 dark:bg-[#1B1C1E]/90 backdrop-blur-xl shadow-lg px-4 pt-3 pb-2.5 focus-within:border-blue-400/50">
+            <div className="relative rounded-[24px] border border-black/8 dark:border-white/10 bg-white/85 dark:bg-[#1B1C1E]/90 backdrop-blur-xl shadow-lg px-4 pt-3 pb-2.5 focus-within:border-blue-400/50">
               <VoiceComposerPillLayer
                 voiceInput={nativeVoiceInput}
                 voiceMode={nativeVoiceMode}
@@ -3778,12 +3778,12 @@ export function CodexAcpView({
                 </div>
               )}
               {commandOpen && availableCommands.length > 0 && (
-                <div ref={commandMenuPanelRef} className="absolute z-40 left-0 right-0 bottom-full mb-2 max-h-72 overflow-y-auto rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
+                <div ref={commandMenuPanelRef} className="absolute z-40 left-0 right-0 bottom-full mb-2 max-h-72 overflow-y-auto rounded-2xl border border-black/8 dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
                   <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-gray-400">{codexCopy.agentCommands}</div>
                   {availableCommands.map(command => (
                     <button key={command.name} type="button"
                       onClick={() => { setDraft(`/${command.name}${command.input ? ' ' : ''}`); setCommandOpen(false); }}
-                      className="w-full rounded-xl px-3 py-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
+                      className="w-full rounded-xl px-3 py-2 text-left hover:bg-black/4 dark:hover:bg-white/6">
                       <span className="block text-[12px] font-semibold">/{command.name}</span>
                       <span className="block mt-0.5 text-[11px] text-gray-400">{command.description}</span>
                     </button>
@@ -3813,7 +3813,7 @@ export function CodexAcpView({
                   }
                 }}
                 placeholder={codexCopy.placeholder}
-                rows={1} className="w-full min-h-[48px] max-h-48 resize-none bg-transparent outline-none text-[15px] leading-6 placeholder:text-gray-400" />
+                rows={1} className="w-full min-h-[48px] max-h-48 resize-none bg-transparent outline-hidden text-[15px] leading-6 placeholder:text-gray-400" />
               <div data-testid="codex-composer-footer" className="flex items-center justify-between mt-1">
                 <div className="flex min-w-0 flex-wrap items-center gap-2 text-[10px] text-gray-400">
                   {!activeId && (
@@ -3823,7 +3823,7 @@ export function CodexAcpView({
                         ref={workspaceMenuTriggerRef}
                         data-testid="codex-workspace-selector"
                         onClick={() => setWorkspaceMenuOpen(value => !value)}
-                        className="h-7 max-w-[180px] rounded-lg px-2 inline-flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
+                        className="h-7 max-w-[180px] rounded-lg px-2 inline-flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400 hover:bg-black/5 dark:hover:bg-white/[0.07]"
                         title={draftWorkspacePath || codexCopy.temporarySession}
                       >
                         {draftWorkspacePath
@@ -3835,19 +3835,19 @@ export function CodexAcpView({
                         <ChevronDown size={12} className="shrink-0" />
                       </button>
                       {workspaceMenuOpen && (
-                        <div ref={workspaceMenuPanelRef} className="absolute z-40 bottom-9 left-0 w-[280px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
+                        <div ref={workspaceMenuPanelRef} className="absolute z-40 bottom-9 left-0 w-[280px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/8 dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
                             <button type="button" onClick={() => chooseProjectDraft().catch(showError)}
-                              className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
+                              className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/4 dark:hover:bg-white/6">
                               <FolderOpen size={16} className="text-blue-500 shrink-0" />
                               <span><span className="block text-[12px] font-semibold">{codexCopy.chooseProject}</span><span className="block text-[10px] text-gray-400 mt-0.5">{codexCopy.chooseProjectDesc}</span></span>
                             </button>
                             <button type="button" onClick={() => beginDraft(null)}
-                              className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
+                              className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/4 dark:hover:bg-white/6">
                               <Sparkles size={16} className="text-emerald-500 shrink-0" />
                               <span><span className="block text-[12px] font-semibold">{codexCopy.temporarySession}</span><span className="block text-[10px] text-gray-400 mt-0.5">{codexCopy.temporarySessionDesc}</span></span>
                             </button>
                             {recentWorkspaces.length > 0 && (
-                              <div className="mt-1 pt-2 border-t border-black/[0.05] dark:border-white/[0.06]">
+                              <div className="mt-1 pt-2 border-t border-black/5 dark:border-white/6">
                                 <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">{codexCopy.recentProjects}</div>
                                 {recentWorkspaces.map(path => (
                                   <button key={path} type="button" title={path}
@@ -3855,7 +3855,7 @@ export function CodexAcpView({
                                       if (isWeb) chooseProjectDraft(path).catch(showError);
                                       else beginDraft(path);
                                     }}
-                                    className="w-full rounded-lg px-3 py-1.5 flex items-center gap-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
+                                    className="w-full rounded-lg px-3 py-1.5 flex items-center gap-2 text-left hover:bg-black/4 dark:hover:bg-white/6">
                                     <FolderOpen size={13} className="shrink-0 text-gray-400" />
                                     <span className="truncate text-[11px]">{workspaceName(path, codexCopy.unknownDirectory)}</span>
                                   </button>
@@ -3920,7 +3920,7 @@ export function CodexAcpView({
                   {!isNativeAgent && (
                     <button type="button" ref={commandMenuTriggerRef} onClick={() => setCommandOpen(value => !value)}
                       disabled={!availableCommands.length}
-                      className={`h-7 px-2 rounded-lg text-[11px] font-mono hover:bg-black/[0.05] dark:hover:bg-white/[0.07] ${
+                      className={`h-7 px-2 rounded-lg text-[11px] font-mono hover:bg-black/5 dark:hover:bg-white/[0.07] ${
                         // 父容器是 text-gray-400，可用态必须显式加深，否则与禁用态肉眼无差别。
                         availableCommands.length
                           ? 'font-semibold text-gray-900 dark:text-gray-100'
@@ -3988,7 +3988,7 @@ export function CodexAcpView({
                           disabled={busy || working || nativeCompacting}
                           title={codexCopy.nativeUsageTitle(formatCompactCount(nativeTokensInput), nativeCtxPct)}
                           aria-label={codexCopy.nativeUsageTitle(formatCompactCount(nativeTokensInput), nativeCtxPct)}
-                          className="relative inline-flex h-8 items-center gap-1.5 overflow-hidden rounded-xl border border-black/[0.07] bg-black/[0.025] px-2.5 text-[11px] font-semibold text-[#1F1F1F] transition-all hover:-translate-y-px hover:shadow-sm disabled:cursor-default disabled:opacity-50 dark:border-white/[0.09] dark:bg-white/[0.055] dark:text-[#E8EAED]"
+                          className="relative inline-flex h-8 items-center gap-1.5 overflow-hidden rounded-xl border border-black/[0.07] bg-black/2.5 px-2.5 text-[11px] font-semibold text-[#1F1F1F] transition-all hover:-translate-y-px hover:shadow-xs disabled:cursor-default disabled:opacity-50 dark:border-white/9 dark:bg-white/5.5 dark:text-[#E8EAED]"
                         >
                           {nativeCtxPct != null && (
                             <span
@@ -4012,13 +4012,13 @@ export function CodexAcpView({
                             title={codexCopy.nativeMemoryTitle}
                             aria-label={codexCopy.nativeMemoryTitle}
                             aria-expanded={memoryOpen}
-                            className="inline-flex h-8 items-center gap-1.5 rounded-xl border border-black/[0.07] bg-black/[0.025] px-2.5 text-[11px] font-semibold text-[#1F1F1F] transition-all hover:-translate-y-px hover:shadow-sm dark:border-white/[0.09] dark:bg-white/[0.055] dark:text-[#E8EAED]"
+                            className="inline-flex h-8 items-center gap-1.5 rounded-xl border border-black/[0.07] bg-black/2.5 px-2.5 text-[11px] font-semibold text-[#1F1F1F] transition-all hover:-translate-y-px hover:shadow-xs dark:border-white/9 dark:bg-white/5.5 dark:text-[#E8EAED]"
                           >
                             <Brain size={13} className="shrink-0 text-gray-400" />
                             {`${codexCopy.nativeMemory} ${nativeMemoryItems.length}`}
                           </button>
                           {memoryOpen && (
-                            <div ref={memoryPanelRef} data-testid="native-memory-panel" className="absolute bottom-full left-0 z-40 mb-2 max-h-72 w-[320px] max-w-[calc(100vw-32px)] overflow-y-auto rounded-2xl border border-black/[0.08] bg-white/95 p-2 shadow-xl backdrop-blur-xl dark:border-white/10 dark:bg-[#202124]/95">
+                            <div ref={memoryPanelRef} data-testid="native-memory-panel" className="absolute bottom-full left-0 z-40 mb-2 max-h-72 w-[320px] max-w-[calc(100vw-32px)] overflow-y-auto rounded-2xl border border-black/8 bg-white/95 p-2 shadow-xl backdrop-blur-xl dark:border-white/10 dark:bg-[#202124]/95">
                               <div className="px-2 py-1 text-[10px] uppercase tracking-wider text-gray-400">{codexCopy.nativeMemoryTitle}</div>
                               {nativeMemoryItems.map((item, index) => (
                                 <div key={item.id || `memory-${index}`} className="rounded-xl px-3 py-2">
@@ -4039,7 +4039,7 @@ export function CodexAcpView({
                       ref={accountMenuTriggerRef}
                       data-testid="acp-account-menu-trigger"
                       onClick={() => setAccountMenuOpen(value => !value)}
-                      className="inline-flex h-7 min-w-0 max-w-[260px] items-center gap-1.5 rounded-lg px-2 text-[10px] text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
+                      className="inline-flex h-7 min-w-0 max-w-[260px] items-center gap-1.5 rounded-lg px-2 text-[10px] text-gray-400 hover:bg-black/5 dark:hover:bg-white/[0.07]"
                       title={codexCopy.accountAndService}
                     >
                       <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${
@@ -4060,10 +4060,10 @@ export function CodexAcpView({
                       <div
                         ref={accountMenuPanelRef}
                         data-testid="acp-account-menu"
-                        className="absolute bottom-9 left-0 z-40 w-[300px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] bg-white/95 p-2 shadow-xl backdrop-blur-xl dark:border-white/10 dark:bg-[#202124]/95"
+                        className="absolute bottom-9 left-0 z-40 w-[300px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/8 bg-white/95 p-2 shadow-xl backdrop-blur-xl dark:border-white/10 dark:bg-[#202124]/95"
                       >
                           <div className="flex items-center gap-3 px-3 py-2.5">
-                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-black/[0.04] dark:bg-white/[0.07]">
+                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-black/4 dark:bg-white/[0.07]">
                               <AcpAgentLogo agentId={activeAgentId} className="h-5 w-5" title={activeAgentName} />
                             </div>
                             <div className="min-w-0 flex-1">
@@ -4078,13 +4078,13 @@ export function CodexAcpView({
                               </div>
                             </div>
                           </div>
-                          <div className="mt-1 border-t border-black/[0.05] pt-1 dark:border-white/[0.06]">
+                          <div className="mt-1 border-t border-black/5 pt-1 dark:border-white/6">
                             {runtimeManagementAvailable ? (
                               <button
                                 type="button"
                                 onClick={switchAccount}
                                 disabled={working || activeRuntimeBusy || activeStatus?.login_in_progress}
-                                className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12px] font-medium hover:bg-black/[0.04] disabled:opacity-40 dark:hover:bg-white/[0.06]"
+                                className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12px] font-medium hover:bg-black/4 disabled:opacity-40 dark:hover:bg-white/6"
                               >
                                 <User size={15} className="text-blue-500" />
                                 <span className="min-w-0">
@@ -4103,7 +4103,7 @@ export function CodexAcpView({
                                 setAccountMenuOpen(false);
                                 refreshStatus(activeAgentId, true).catch(showError);
                               }}
-                              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12px] hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
+                              className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left text-[12px] hover:bg-black/4 dark:hover:bg-white/6"
                             >
                               <RefreshCw size={15} className="text-gray-400" />
                               {codexCopy.recheck}
@@ -4217,7 +4217,7 @@ export function CodexAcpView({
                         funneled into the preview card (apply and send), so buttons based on draft
                         cannot send the raw text or double-send during the preview. */}
                     <button type="button" onClick={() => send()} disabled={!!nativeVoice.editPreview || composerSendBlockers.sessionNotReady || (!draft.trim() && attachments.every(attachment => attachment.status !== 'ready') && !workspaceReferences.length) || composerSendBlockers.working || composerSendBlockers.configApplying || composerSendBlockers.setupMissing}
-                      className="w-9 h-9 rounded-full flex items-center justify-center bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6] disabled:bg-black/[0.06] dark:disabled:bg-white/10 disabled:text-gray-400 disabled:shadow-none">
+                      className="w-9 h-9 rounded-full flex items-center justify-center bg-[#007AFF] text-white shadow-xs hover:bg-[#006EE6] disabled:bg-black/6 dark:disabled:bg-white/10 disabled:text-gray-400 disabled:shadow-none">
                       <Send size={16} />
                     </button>
                   </>
@@ -4314,7 +4314,7 @@ export function CodexAcpView({
                   data-testid={option.testid}
                   onClick={option.onClick}
                   disabled={branchBusy}
-                  className="w-full rounded-xl px-3 py-2.5 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06] disabled:opacity-50"
+                  className="w-full rounded-xl px-3 py-2.5 text-left hover:bg-black/4 dark:hover:bg-white/6 disabled:opacity-50"
                 >
                   <span className="block text-[13px] font-semibold">{option.label}</span>
                   <span className="block text-[11px] text-gray-400 mt-0.5 leading-relaxed">{option.hint}</span>
@@ -4326,7 +4326,7 @@ export function CodexAcpView({
                 type="button"
                 onClick={() => setPendingBranchSwitch(null)}
                 disabled={branchBusy}
-                className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12] disabled:opacity-50"
+                className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/8 dark:border-white/12 disabled:opacity-50"
               >
                 {codexCopy.branchSwitchCancel}
               </button>
@@ -4363,14 +4363,14 @@ export function CodexAcpView({
               }}
               placeholder={codexCopy.branchSwitchCommitPlaceholder}
               rows={4}
-              className="mt-4 w-full px-3 py-2 rounded-xl text-[13px] leading-relaxed resize-none bg-black/[0.04] dark:bg-white/[0.06] outline-none border border-transparent focus:border-[#007AFF]/60 placeholder:text-gray-400"
+              className="mt-4 w-full px-3 py-2 rounded-xl text-[13px] leading-relaxed resize-none bg-black/4 dark:bg-white/6 outline-hidden border border-transparent focus:border-[#007AFF]/60 placeholder:text-gray-400"
             />
             <div className="mt-5 flex justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setCommitBranchSwitch(null)}
                 disabled={branchBusy}
-                className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12] disabled:opacity-50"
+                className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/8 dark:border-white/12 disabled:opacity-50"
               >
                 {codexCopy.branchSwitchCancel}
               </button>

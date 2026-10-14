@@ -73,7 +73,7 @@ test('new lazy global mounts contain chunk failures without exposing protected c
   const gateMountAt = mainSource.indexOf('apiKeyGateOpen && browserOverlayPublicationReady && (');
   assert.ok(gateMountAt >= 0, 'the API key gate mount must exist');
   const gateMount = mainSource.slice(gateMountAt, gateMountAt + 900);
-  const backdropAt = gateMount.indexOf('fixed inset-0 z-[57]');
+  const backdropAt = gateMount.indexOf('fixed inset-0 z-57');
   const boundaryAt = gateMount.indexOf('<ViewErrorBoundary t={t}>');
   const suspenseAt = gateMount.indexOf('<Suspense fallback={null}>');
   assert.ok(

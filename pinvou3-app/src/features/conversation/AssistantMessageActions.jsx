@@ -39,7 +39,7 @@ function menuPosition(trigger, width, height) {
 
 export function AssistantMessageFooter({ children }) {
   return (
-    <div data-testid="assistant-message-footer" className="!mt-0 flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1 pt-2">
+    <div data-testid="assistant-message-footer" className="mt-0! flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1 pt-2">
       {children}
     </div>
   );
@@ -257,9 +257,9 @@ export function AssistantMessageActions({ resolveText, copy }) {
     }
   };
 
-  const actionClass = 'inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[12px] text-[#747775] transition-colors hover:bg-black/[0.06] hover:text-[#1F1F1F] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0A84FF]/50 dark:text-[#9AA0A6] dark:hover:bg-white/10 dark:hover:text-[#E3E3E3]';
+  const actionClass = 'inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[12px] text-[#747775] transition-colors hover:bg-black/6 hover:text-[#1F1F1F] focus:outline-hidden focus-visible:ring-2 focus-visible:ring-[#0A84FF]/50 dark:text-[#9AA0A6] dark:hover:bg-white/10 dark:hover:text-[#E3E3E3]';
   const menuClass = 'overflow-hidden rounded-xl border border-black/10 bg-white py-1 shadow-xl dark:border-white/10 dark:bg-[#2B2C2F]';
-  const menuItemClass = 'flex min-h-11 w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] text-[#1F1F1F] transition-colors hover:bg-black/[0.06] focus:bg-black/[0.06] focus:outline-none dark:text-[#E3E3E3] dark:hover:bg-white/10 dark:focus:bg-white/10';
+  const menuItemClass = 'flex min-h-11 w-full items-center gap-2.5 px-3 py-2 text-left text-[13px] text-[#1F1F1F] transition-colors hover:bg-black/6 focus:bg-black/6 focus:outline-hidden dark:text-[#E3E3E3] dark:hover:bg-white/10 dark:focus:bg-white/10';
 
   return (
     <>
@@ -270,7 +270,7 @@ export function AssistantMessageActions({ resolveText, copy }) {
           onClick={handleCopy}
           title={copyLabel}
           aria-label={copyLabel}
-          className={`${actionClass} ${copyStatus === 'failed' ? '!bg-red-500/[0.08] !text-[#C5221F] dark:!bg-red-400/10 dark:!text-[#F28B82]' : ''}`}
+          className={`${actionClass} ${copyStatus === 'failed' ? 'bg-red-500/8! text-[#C5221F]! dark:bg-red-400/10! dark:text-[#F28B82]!' : ''}`}
         >
           {copyStatus === 'copied'
             ? <Check size={14} className="text-[#34C759]" />
@@ -358,12 +358,12 @@ export function AssistantMessageActions({ resolveText, copy }) {
               {/* biome-ignore lint/a11y/useSemanticElements: visual menu divider; hr would break the established menu styling */}
               {/* biome-ignore lint/a11y/useAriaPropsForRole: visual menu divider; valuenow semantics do not apply */}
               {/* biome-ignore lint/a11y/useFocusableInteractive: visual menu divider; not a focusable control */}
-              <div role="separator" className="mx-3 my-1 border-t border-black/[0.08] dark:border-white/10" />
+              <div role="separator" className="mx-3 my-1 border-t border-black/8 dark:border-white/10" />
               <div id={`${menuIds.share}-apps-label`} role="presentation" className="px-3 pb-1 pt-1 text-[11px] font-medium text-[#747775] dark:text-[#9AA0A6]">{copy.shareApps}</div>
               {/* biome-ignore lint/a11y/useSemanticElements: the group-label container carries the established layout styles; fieldset cannot */}
               <div role="group" aria-labelledby={`${menuIds.share}-apps-label`}>
                 {SHARE_TARGETS.map((target, index) => (
-                  <button ref={element => { menuItemsRef.current[index + 1] = element; }} key={target} type="button" role="menuitem" aria-label={copy.shareTargets[target]} data-testid={`assistant-share-${target}`} className={`${menuItemClass} !min-h-9 !py-1.5`} onClick={() => handleAppShare(target)}>
+                  <button ref={element => { menuItemsRef.current[index + 1] = element; }} key={target} type="button" role="menuitem" aria-label={copy.shareTargets[target]} data-testid={`assistant-share-${target}`} className={`${menuItemClass} min-h-9! py-1.5!`} onClick={() => handleAppShare(target)}>
                     <MessageCircle size={15} className="shrink-0" />
                     <span>{copy.shareTargets[target]}</span>
                   </button>

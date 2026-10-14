@@ -20,7 +20,7 @@ const DOT_TONES = {
 
 const TAG_TONES = {
   green: 'bg-[#34C759]/15 text-[#248A3D]',
-  gray: 'bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]',
+  gray: 'bg-[#E5E5EA] text-[#636366] dark:bg-white/8 dark:text-[#C7C7CC]',
 };
 
 export function StatusChip({ variant = 'tag', tone = 'green', toneClass = '', children }) {

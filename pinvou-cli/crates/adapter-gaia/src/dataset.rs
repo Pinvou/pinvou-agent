@@ -11,6 +11,7 @@ use parquet::record::Field;
 use parquet::schema::types::Type;
 use sha2::{Digest, Sha256};
 
+use crate::fetch::Sha256Writer;
 use crate::fs_guard::{FileIdentity, is_link_or_reparse};
 use crate::{
     GAIA_DATASET_REVISION, GAIA_LEVEL, GAIA_PARQUET_PATH, GAIA_PARQUET_SHA256_BYTES,
@@ -126,7 +127,7 @@ impl GaiaAttachment {
             let mut hasher = Sha256::new();
             let copied = std::io::copy(
                 &mut std::io::Read::by_ref(&mut file).take(MAX_ATTACHMENT_BYTES + 1),
-                &mut hasher,
+                &mut Sha256Writer(&mut hasher),
             )
             .map_err(|_| GaiaDatasetError::AttachmentUnsafe)?;
             if copied != self.size || <[u8; 32]>::from(hasher.finalize()) != expected_sha256 {
@@ -156,8 +157,10 @@ impl GaiaAttachment {
         let verified = source
             .try_read_verified_file(|reader| {
                 let mut hasher = Sha256::new();
-                let copied =
-                    std::io::copy(&mut reader.take(MAX_ATTACHMENT_BYTES + 1), &mut hasher)?;
+                let copied = std::io::copy(
+                    &mut reader.take(MAX_ATTACHMENT_BYTES + 1),
+                    &mut Sha256Writer(&mut hasher),
+                )?;
                 Ok((copied, <[u8; 32]>::from(hasher.finalize())))
             })
             .map_err(|_| GaiaDatasetError::AttachmentUnsafe)?

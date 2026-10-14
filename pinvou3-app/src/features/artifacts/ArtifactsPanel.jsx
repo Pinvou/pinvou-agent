@@ -17,7 +17,7 @@ import { localizedVisualWarning, visualWarningNeedsDependencyCheck } from './vis
 
 const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls = 'w-5 h-5' }) => {
       return (
-        <span className={`shrink-0 inline-flex items-center justify-center bg-black/[0.04] dark:bg-white/[0.08] ${tileCls}`}>
+        <span className={`shrink-0 inline-flex items-center justify-center bg-black/4 dark:bg-white/8 ${tileCls}`}>
           <FileTypeIcon name={name} className={glyphCls} />
         </span>
       );
@@ -502,7 +502,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
               type="button"
               data-testid="artifact-switcher-button"
               onClick={() => setArtifactMenuOpen((open) => !open)}
-              className={`flex h-9 max-w-[360px] items-center gap-2 rounded-full border px-3 text-left text-[13px] font-semibold shadow-sm transition-colors border-black/[0.06] bg-white text-[#1D1D1F] hover:bg-[#F5F5F7] dark:border-white/10 dark:bg-[#2C2C2E] dark:text-[#F5F5F7] dark:hover:bg-[#3A3A3C]`}
+              className={`flex h-9 max-w-[360px] items-center gap-2 rounded-full border px-3 text-left text-[13px] font-semibold shadow-xs transition-colors border-black/6 bg-white text-[#1D1D1F] hover:bg-[#F5F5F7] dark:border-white/10 dark:bg-[#2C2C2E] dark:text-[#F5F5F7] dark:hover:bg-[#3A3A3C]`}
               aria-haspopup="menu"
               aria-expanded={artifactMenuOpen ? 'true' : 'false'}
               title={sel.basename}
@@ -532,7 +532,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                       className={`group flex w-full items-center gap-1 rounded-[12px] transition-colors ${
                         active
                           ? 'bg-[#E5F0FF] dark:bg-[#0A84FF]/24'
-                          : 'hover:bg-black/[0.05] dark:hover:bg-white/10'
+                          : 'hover:bg-black/5 dark:hover:bg-white/10'
                       }`}
                       title={a.path}
                     >
@@ -621,7 +621,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
         // includeJson re-kinds a parseable .json result from 'text' to 'json' (see
         // artifact-preview.js), so both must land here — same as FilePreviewModal.
         if (pv.kind === 'text' || pv.kind === 'json') {
-          return <pre className={`text-[12px] whitespace-pre-wrap break-words font-mono text-[#444746] dark:text-[#C4C7C5]`}>{pv.text}</pre>;
+          return <pre className={`text-[12px] whitespace-pre-wrap wrap-break-word font-mono text-[#444746] dark:text-[#C4C7C5]`}>{pv.text}</pre>;
         }
         // 可视化结果
         const vis = pv.visual;
@@ -641,7 +641,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
             <div className="flex flex-col items-center gap-3">
               {visualWarningLabel(vis) && <div className={`self-start flex items-center gap-2 text-[12px] text-[#E37400] dark:text-[#FDD663]`}><span>⚠️ {visualWarningLabel(vis)}</span>{dependencyCheckButton(vis)}</div>}
               {(vis.images || []).map((src, i) => (
-                <img key={i} src={src} className="max-w-full h-auto rounded-lg shadow-sm" alt={`page-${i + 1}`} />
+                <img key={i} src={src} className="max-w-full h-auto rounded-lg shadow-xs" alt={`page-${i + 1}`} />
               ))}
             </div>
           );
@@ -685,10 +685,10 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                     aria-pressed={designEditMode}
                     aria-label={designEditMode ? uiA.fsExitEdit : uiA.fsEnterEdit}
                     title={designEditMode ? uiA.fsExitEdit : uiA.fsEnterEdit}
-                    className={`h-8 rounded-full inline-flex items-center gap-1.5 px-3 text-[13px] font-semibold transition-colors shadow-sm ${
+                    className={`h-8 rounded-full inline-flex items-center gap-1.5 px-3 text-[13px] font-semibold transition-colors shadow-xs ${
                       designEditMode
                         ? 'bg-[#007AFF] text-white hover:bg-[#0066D6]'
-                        : 'bg-[#F2F2F7] text-[#1D1D1F] hover:bg-[#E5E5EA] ring-1 ring-black/[0.04] dark:bg-white/10 dark:text-[#F5F5F7] dark:hover:bg-white/15 dark:ring-white/10'
+                        : 'bg-[#F2F2F7] text-[#1D1D1F] hover:bg-[#E5E5EA] ring-1 ring-black/4 dark:bg-white/10 dark:text-[#F5F5F7] dark:hover:bg-white/15 dark:ring-white/10'
                     }`}>
                     <Edit2 size={15} />
                     <span>{designEditMode ? uiA.fsExitEditShort : uiA.fsEditMode}</span>
@@ -777,7 +777,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                                     className={`flex h-9 w-full items-center justify-between rounded-[10px] px-3 text-left font-medium transition-colors ${
                                       htmlZoomMode === option.key
                                         ? 'bg-[#E5F0FF] text-[#0057D9] dark:bg-[#0A84FF]/25 dark:text-[#F5F5F7]'
-                                        : 'hover:bg-black/[0.05] dark:hover:bg-white/10'
+                                        : 'hover:bg-black/5 dark:hover:bg-white/10'
                                     }`}
                                   >
                                     <span>{uiA[option.labelKey]}</span>
@@ -813,14 +813,14 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                       {showDesignWorkbench && (
                         <div
                           aria-hidden="true"
-                          className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-32 bg-gradient-to-t from-black/45 via-black/16 to-transparent"
+                          className="pointer-events-none absolute inset-x-0 bottom-0 z-20 h-32 bg-linear-to-t from-black/45 via-black/16 to-transparent"
                         />
                       )}
                       {showDesignWorkbench && (
                         <form
                           data-testid="artifact-design-ai-composer"
                           onSubmit={submitDesignAiText}
-                          className={`absolute bottom-16 left-1/2 z-30 flex min-h-11 -translate-x-1/2 items-center gap-2 rounded-[22px] border px-2.5 py-1.5 shadow-[0_14px_38px_rgba(0,0,0,.24)] backdrop-blur-2xl border-white/80 bg-white/[0.96] text-[#1D1D1F] dark:border-white/15 dark:bg-[#1C1C1E]/95 dark:text-[#F5F5F7]`}
+                          className={`absolute bottom-16 left-1/2 z-30 flex min-h-11 -translate-x-1/2 items-center gap-2 rounded-[22px] border px-2.5 py-1.5 shadow-[0_14px_38px_rgba(0,0,0,.24)] backdrop-blur-2xl border-white/80 bg-white/96 text-[#1D1D1F] dark:border-white/15 dark:bg-[#1C1C1E]/95 dark:text-[#F5F5F7]`}
                           style={{ width: 'min(520px, calc(100% - 260px))' }}
                         >
                           {designAiStatus === 'idle' ? (
@@ -830,7 +830,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                                 onChange={(event) => setDesignAiStatePatch({ text: event.target.value })}
                                 data-testid="artifact-design-ai-input"
                                 placeholder={selectedDesignElement ? uiA.aiPhElement : uiA.aiPhDesign}
-                                className={`min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-[#6E6E73] dark:placeholder:text-[#C7C7CC]`}
+                                className={`min-w-0 flex-1 bg-transparent text-[13px] outline-hidden placeholder:text-[#6E6E73] dark:placeholder:text-[#C7C7CC]`}
                               />
                               <button
                                 type="submit"
@@ -838,7 +838,7 @@ const ArtifactTileIcon = ({ name, tileCls = 'w-9 h-9 rounded-[10px]', glyphCls =
                                 disabled={!designAiText.trim()}
                                 className={`h-8 rounded-full px-3 text-[12px] font-semibold transition-colors ${
                                   designAiText.trim()
-                                    ? 'bg-[#007AFF] text-white shadow-sm hover:bg-[#006EE6]'
+                                    ? 'bg-[#007AFF] text-white shadow-xs hover:bg-[#006EE6]'
                                     : 'bg-[#E5E5EA] text-[#8E8E93] dark:bg-white/14 dark:text-[#C7C7CC]'
                                 }`}
                               >

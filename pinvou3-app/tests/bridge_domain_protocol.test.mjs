@@ -208,9 +208,11 @@ const expectedProtocolHashes = {
   // pending notify frame, frame publishes contain subscriber throws, and the
   // flush helper documents its runSyncOnSession extent contract.
   // Recomputed for review follow-up: chat:delta records the first bubble's
-  // successfully rendered text for per-bubble preview reuse. Event names,
-  // invoke shapes and authoritative payload handling remain unchanged.
-  chat: '8ed97da80bc69b73630fcd4d5a25bdb6844a98306ed0da8867c2d954a8dd83c0',
+  // successfully rendered text for per-bubble preview reuse (main), on top of
+  // this PR's eslint-plugin-unicorn 78 prefer-continue callback relayouts in
+  // chat-events. Event names, invoke shapes and authoritative payload
+  // handling remain unchanged.
+  chat: '83be41261ea9127b77ff8ae6d841707f1d2a208088c2b1b215efb946582bb9f1',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target

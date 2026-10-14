@@ -9,9 +9,9 @@ import { AcShieldCheck, AcSparkles } from './tool-common.jsx';
 // color; Pin needs isDark), text (class), softBg (class), Icon }.
 const pvRole = (isWu, isDark) => isWu
   ? { name: '悟', accentHex: '#5E5CE6', text: 'text-[#5E5CE6]',
-      softBg: 'bg-[#5E5CE6]/[0.10] dark:bg-[#5E5CE6]/15', Icon: AcSparkles }
+      softBg: 'bg-[#5E5CE6]/10 dark:bg-[#5E5CE6]/15', Icon: AcSparkles }
   : { name: '品', accentHex: isDark ? '#FF9F0A' : '#FF9500', text: 'text-[#FF9500] dark:text-[#FF9F0A]',
-      softBg: 'bg-[#FF9500]/[0.10] dark:bg-[#FF9F0A]/15', Icon: AcShieldCheck };
+      softBg: 'bg-[#FF9500]/10 dark:bg-[#FF9F0A]/15', Icon: AcShieldCheck };
 
 // ==========================================
 // PinvouSummonCard — summoned review (the user explicitly calls Pinvou).
@@ -30,7 +30,7 @@ const pvRole = (isWu, isDark) => isWu
 // a separate component so its useState calls keep a stable hook order.
 const PinvouRows = ({ review, t, role }) => {
   const roleLabel = role || pvRole(false, false);
-  const body = 'text-[#000] dark:text-[#fff]';
+  const body = 'text-black dark:text-white';
   const muted = 'text-[#3C3C43]/60 dark:text-[#EBEBF5]/60';
   // iOS semantic colors: high red / medium orange / low gray.
   const sevDot = (s) => s === 'high' ? '#FF3B30' : s === 'medium' ? '#FF9500' : '#C7C7CC';
@@ -74,8 +74,8 @@ const PinvouRows = ({ review, t, role }) => {
   // unselected = outline.
   const chip = (on, active) => `text-[12px] px-2.5 py-1 rounded-full font-medium transition-all active:scale-[0.96] ${on
     ? (active ? 'text-white border border-transparent'
-              : 'bg-black/[0.08] text-[#000] border border-transparent dark:bg-white/15 dark:text-[#fff]')
-    : 'border border-black/[0.12] text-[#3C3C43]/80 hover:bg-black/5 dark:border-white/15 dark:text-[#EBEBF5]/70 dark:hover:bg-white/5'}`;
+              : 'bg-black/8 text-black border border-transparent dark:bg-white/15 dark:text-white')
+    : 'border border-black/12 text-[#3C3C43]/80 hover:bg-black/5 dark:border-white/15 dark:text-[#EBEBF5]/70 dark:hover:bg-white/5'}`;
   const onResolve = () => {
     if (!bridge.available) return;
     // The modal's review is a deep copy from notify, so writing resolution on
@@ -105,7 +105,7 @@ const PinvouRows = ({ review, t, role }) => {
           const decided = res[it.k];
           const passive = ['accept', 'confirmed', 'skip'].includes(decided);
           return (
-            <div key={it.k} className={`rounded-[12px] px-3 py-2.5 transition-opacity ${passive ? 'opacity-40' : ''} bg-[#F2F2F7] dark:bg-white/[0.06]`}>
+            <div key={it.k} className={`rounded-[12px] px-3 py-2.5 transition-opacity ${passive ? 'opacity-40' : ''} bg-[#F2F2F7] dark:bg-white/6`}>
               <div className="flex gap-2.5">
                 <span className="mt-[7px] w-[7px] h-[7px] rounded-full shrink-0" style={{ background: it.dot }} />
                 <div className="flex-1 min-w-0">
@@ -182,7 +182,7 @@ export const PinvouSummonCard = ({ item, theme, t, isLocal }) => {
   const isWu = !!item.coverage; // Wu = divergent (coverage); Pin = error check
   const role = pvRole(isWu, isDark);
   const muted = 'text-[#3C3C43]/60 dark:text-[#EBEBF5]/60';
-  const body = 'text-[#000] dark:text-[#fff]';
+  const body = 'text-black dark:text-white';
   // isDark stays: Pin's accentHex and the PinvouLoading SVG stroke need it.
   if (item.loading) return <PinvouLoading isWu={isWu} isDark={isDark} t={t} isLocal={isLocal} />;
   if (item.error) return (
@@ -230,7 +230,7 @@ export function PinvouSummonModal({ item, theme, t, isLocal }) {
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard users close the dialog through its real close button
     // biome-ignore lint/a11y/noStaticElementInteractions: this is a pointer-only backdrop around an accessible dialog card
-    <div className="fixed inset-0 z-[55] flex items-center justify-center p-6"
+    <div className="fixed inset-0 z-55 flex items-center justify-center p-6"
          style={{ background: theme === 'dark' ? 'rgba(0,0,0,.45)' : 'rgba(255,255,255,.35)', backdropFilter: 'blur(20px) saturate(140%)', WebkitBackdropFilter: 'blur(20px) saturate(140%)' }}
          onClick={() => { if (!item.loading) bridge.interaction.dismissPinvouReview(); }}>
       {/* Backdrop clicks cannot close the modal while loading: the summon call
@@ -247,7 +247,7 @@ export function PinvouSummonModal({ item, theme, t, isLocal }) {
             loading it cancels the wait and closes; the guard discards the
             in-flight result. */}
         <button type="button" onClick={() => bridge.available && bridge.interaction.dismissPinvouReview()} aria-label={t.pvSkip}
-          className="absolute top-3.5 right-3.5 z-10 w-7 h-7 flex items-center justify-center rounded-full bg-black/[0.06] dark:bg-white/10 text-[#8E8E93] hover:bg-black/10 dark:hover:bg-white/15 active:scale-90 transition-colors">
+          className="absolute top-3.5 right-3.5 z-10 w-7 h-7 flex items-center justify-center rounded-full bg-black/6 dark:bg-white/10 text-[#8E8E93] hover:bg-black/10 dark:hover:bg-white/15 active:scale-90 transition-colors">
           <X size={16} />
         </button>
         <div className="max-h-[90vh] overflow-y-auto custom-scrollbar px-5 pt-5 pb-6">

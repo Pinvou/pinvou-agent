@@ -341,12 +341,14 @@ function pinvouSharedtauriChatEvents() {
       // tool_use id, yet the job may still be running.
       for (let i = 0; i < state.chatItems.length; i++) {
         const item = state.chatItems[i];
-        if (item && item.type === "tool" && item.toolId && item.background !== true
+        if (!(item && item.type === "tool" && item.toolId && item.background !== true
           && item.shellSnapshot !== true
-          && (item.state === "pending" || item.state === "running") && !paired[item.toolId]) {
-          item.success = false;
-          item.state = "failed";
+          && (item.state === "pending" || item.state === "running") && !paired[item.toolId])) {
+          continue;
         }
+
+        item.success = false;
+        item.state = "failed";
       }
     }
     const markTurnDirtyArtifact = context.markTurnDirtyArtifact;
@@ -635,16 +637,18 @@ function pinvouSharedtauriChatEvents() {
           // different messages with similar prefixes. On mismatch, keep
           // scanning the later additions (with a zero baseline, historical
           // user messages precede the additions).
-          if (firstText && firstText === itemText) {
-            fallbackQueued.shift();
-            // Legacy-backend steer settlement: same mid-turn semantics as
-            // settleSteerCommitted's bubble (no admission, no timing record).
-            addChatItem({ type: "user", text: itemText, time: timeStr(), steeredMidTurn: true });
-            // The persisted position is known exactly here (the match ran
-            // against the durable snapshot): record the sidecar marker
-            // directly, no pending-capture retry needed.
-            recordSteeredMessages(sid, [{ pos: newMessages.indexOf(message), text: itemText }]);
+          if (!(firstText && firstText === itemText)) {
+            continue;
           }
+
+          fallbackQueued.shift();
+          // Legacy-backend steer settlement: same mid-turn semantics as
+          // settleSteerCommitted's bubble (no admission, no timing record).
+          addChatItem({ type: "user", text: itemText, time: timeStr(), steeredMidTurn: true });
+          // The persisted position is known exactly here (the match ran
+          // against the durable snapshot): record the sidecar marker
+          // directly, no pending-capture retry needed.
+          recordSteeredMessages(sid, [{ pos: newMessages.indexOf(message), text: itemText }]);
         }
       });
       notify();
