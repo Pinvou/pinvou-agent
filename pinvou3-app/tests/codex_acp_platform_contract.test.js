@@ -135,9 +135,12 @@ assert.match(install, /vec!\["upgrade", "--cask", "codex"\]/);
 // brew 升级已泛化到三个 Agent：claude-code 是 cask，kimi-code 是 formula（无 --cask）。
 assert.match(install, /vec!\["upgrade", "--cask", "claude-code"\]/);
 assert.match(install, /vec!\["upgrade", "kimi-code"\]/);
-assert.match(install, /&\["list", "--cask", "codex"\]/);
-assert.match(install, /&\["list", "--cask", "claude-code"\]/);
-assert.match(install, /&\["list", "kimi-code"\]/);
+// The probe list args are parametrized over brew_package's shared table.
+assert.match(install, /&\["list", "--cask", package\]/);
+assert.match(install, /&\["list", package\]/);
+assert.match(install, /AgentBackend::CodexAcp => Some\(\("codex", true\)\)/);
+assert.match(install, /AgentBackend::ClaudeAcp => Some\(\("claude-code", true\)\)/);
+assert.match(install, /AgentBackend::KimiAcp => Some\(\("kimi-code", false\)\)/);
 assert.doesNotMatch(install, /brew (?:install|upgrade) codex/);
 // npm 全局来源探测与升级：Windows 用 npm.cmd，包名固定，升级参数 install -g <pkg>@latest。
 assert.match(install, /find_in_path\("npm\.cmd"\)/);
