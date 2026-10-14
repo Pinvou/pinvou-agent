@@ -214,7 +214,10 @@ const expectedProtocolHashes = {
   // Recomputed for review follow-up: chat:delta records the first bubble's
   // successfully rendered text for per-bubble preview reuse. Event names,
   // invoke shapes and authoritative payload handling remain unchanged.
-  chat: '8ed97da80bc69b73630fcd4d5a25bdb6844a98306ed0da8867c2d954a8dd83c0',
+  // Recomputed for the lane-merge wave 4: summonPinvou (summon_pinvou invoke)
+  // and resolvePinvouReview moved into the shared tauriChat/web cluster;
+  // chat.js keeps the transport-legit send path. Command surface unchanged.
+  chat: '458f04051ca8f057e2fcac404462f33398e31ec6013078b0646d8dd9aa5423a5',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
@@ -366,7 +369,9 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // invokes and the confirm/ignore/never pending-memory trio joined it.
 // Recomputed for the lane-merge wave 3: the scheduled create/parse cluster and
 // the personas equip flow joined it.
-const expectedSharedBaseHash = 'c8809411206a569549ad2e4b78b19fe6d66090ebdf4bad446715e0e2493ffc7f';
+// Recomputed for the lane-merge wave 4: the voice-operation state machine
+// block, encodeWav, and the Pinvou summon/resolve review flow joined it.
+const expectedSharedBaseHash = '69a2d57e2aebc48130d707cec45b52d4389eff857c1fae82a3663e87e8da65a5';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),
