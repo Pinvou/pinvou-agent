@@ -142,7 +142,7 @@ use crate::support::{join_rows, render, require_yes, sandbox_home, success};
 use crate::{CliError, CliOutcome, ExitCode, OutputMode};
 use pinvou3_lib::features::knowledge::model_download::MODEL_VERSION;
 use pinvou3_lib::features::knowledge::{
-    IndexState, KnowledgeService, ScanState, SearchQueryDto, default_db_path,
+    IndexState, KnowledgeService, ScanState, SearchQuery, default_db_path,
 };
 #[cfg(feature = "product-backend")]
 use pinvou3_lib::features::remote_knowledge::RemoteKnowledgeService;
@@ -1026,7 +1026,7 @@ fn search(
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     let service = open_service()?;
-    let dto = SearchQueryDto {
+    let dto = SearchQuery {
         text: Some(query.to_owned()),
         exts: ext.map(|value| vec![value.to_owned()]).unwrap_or_default(),
         mtime_after: after

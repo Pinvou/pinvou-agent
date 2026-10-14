@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use rusqlite::{Connection, params, params_from_iter, types::Value};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// schema 版本。v3 起包含用户创建的 L1 数据，后续版本必须提供原地迁移。
 /// v2：FTS 砍掉 path 列（path-trigram 实测占 2/3 库体积、是写入 CPU 大头）。
@@ -251,9 +251,13 @@ pub(crate) fn like_pattern(q: &str) -> String {
 }
 
 /// 秒搜查询条件。`text` 为名/路径子串；其余为结构化过滤。
-#[derive(Debug, Clone, Default)]
+/// The serde shape is the `kb_search` IPC payload (camelCase); the headless
+/// CLI constructs it Rust-to-Rust, so there is exactly one query type.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SearchQuery {
     pub text: Option<String>,
+    #[serde(default)]
     pub exts: Vec<String>,
     pub mtime_after: Option<i64>,
     pub mtime_before: Option<i64>,
@@ -266,6 +270,7 @@ pub struct SearchQuery {
     pub id_before: Option<i64>,
     pub min_size: Option<u64>,
     pub max_size: Option<u64>,
+    #[serde(default)]
     pub limit: usize,
 }
 
