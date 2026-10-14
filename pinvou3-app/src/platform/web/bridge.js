@@ -5637,6 +5637,68 @@ function currentMemoryArtifacts() { return pinvouSharedweb().currentMemoryArtifa
     return new Error(bt("downloadLimitError")(suffix));
   }
 
+  // F-XT7-7：分块 base64 下载管线（artifact 与会话附件两条流共用一个实现）。
+  // 统一采用 artifact 变体的更严边界（每个分片都做 maxBytes 越界复核；attachment
+  // 变体原本只有 total 上限复核——防御深度差异，不是可利用缺口）。expectedSize
+  // 传 null 即为「首片协商大小」的附件模式；errKeys 为两族错误键的参数化。
+  async function streamBase64PartsToBlob(readPart, expectedSize, maxBytes, errKeys, initialFilename) {
+    let offset = 0;
+    const chunks = [];
+    let filename = initialFilename;
+    let negotiatedSize = expectedSize;
+    while (true) {
+      const part = await readPart(offset);
+      if (!part) throw new Error(bt(errKeys.noData));
+      const partOffset = Number(part.offset);
+      const partSize = Number(part.size);
+      if (!Number.isSafeInteger(partOffset) || partOffset !== offset ||
+          !Number.isSafeInteger(partSize) || partSize < 0) {
+        throw new Error(bt(errKeys.chunkInvalid));
+      }
+      if (partSize > maxBytes) {
+        throw webArtifactDownloadLimitError(partSize);
+      }
+      if (negotiatedSize === null) {
+        negotiatedSize = partSize;
+        if (negotiatedSize > maxBytes) {
+          throw webArtifactDownloadLimitError(negotiatedSize);
+        }
+      } else if (partSize !== negotiatedSize) {
+        throw new Error(bt(errKeys.changed));
+      }
+      filename = part.name || filename;
+      const encoded = String(part.data_base64 || part.dataBase64 || "");
+      const binary = atob(encoded);
+      const bytes = new Uint8Array(binary.length);
+// binary is a single-byte Latin-1 string produced by atob; charCode is the byte value. codePointAt is equivalent here but gains nothing.
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i); // eslint-disable-line unicorn/prefer-code-point
+      if (!bytes.length && !part.eof) throw new Error(bt(errKeys.noProgress));
+      if (bytes.length > maxBytes - offset) {
+        throw webArtifactDownloadLimitError(offset + bytes.length);
+      }
+      if (offset + bytes.length > negotiatedSize) {
+        throw new Error(bt(errKeys.overflow));
+      }
+      chunks.push(bytes);
+      offset += bytes.length;
+      if (part.eof) {
+        if (offset !== negotiatedSize) throw new Error(bt(errKeys.incomplete));
+        break;
+      }
+    }
+    const blob = new Blob(chunks, { type: "application/octet-stream" });
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = filename;
+    anchor.style.display = "none";
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+    setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 30000);
+    return true;
+  }
+
   async function downloadArtifact(path, sessionId) {
     if (IS_WEB && !hasCapability("artifactDownload")) {
       addSystemItem(bt("downloadUnsupported"));
@@ -5664,60 +5726,21 @@ function currentMemoryArtifacts() { return pinvouSharedweb().currentMemoryArtifa
     if (expectedSize > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES) {
       throw webArtifactDownloadLimitError(expectedSize);
     }
-    let offset = 0;
-    const chunks = [];
-    let filename = basename(path) || "artifact";
-    while (true) {
-      const part = await invoke("web_access_read_artifact_chunk", {
+    return streamBase64PartsToBlob(function (offset) {
+      return invoke("web_access_read_artifact_chunk", {
         path,
         sessionId: resolvedSessionId,
         offset,
         limit: 262144,
       });
-      if (!part) throw new Error("Artifact download returned no data");
-      const partOffset = Number(part.offset);
-      const partSize = Number(part.size);
-      if (!Number.isSafeInteger(partOffset) || partOffset !== offset ||
-          !Number.isSafeInteger(partSize) || partSize < 0) {
-        throw new Error(bt("artifactChunkInvalid"));
-      }
-      if (partSize > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES) {
-        throw webArtifactDownloadLimitError(partSize);
-      }
-      if (partSize !== expectedSize) {
-        throw new Error(bt("artifactChanged"));
-      }
-      filename = part.name || filename;
-      const encoded = String(part.data_base64 || part.dataBase64 || "");
-      const binary = atob(encoded);
-      const bytes = new Uint8Array(binary.length);
-// binary is a single-byte Latin-1 string produced by atob; charCode is the byte value. codePointAt is equivalent here but gains nothing.
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i); // eslint-disable-line unicorn/prefer-code-point
-      if (!bytes.length && !part.eof) throw new Error(bt("artifactNoProgress"));
-      if (bytes.length > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES - offset) {
-        throw webArtifactDownloadLimitError(offset + bytes.length);
-      }
-      if (offset + bytes.length > expectedSize) {
-        throw new Error(bt("artifactOverflow"));
-      }
-      chunks.push(bytes);
-      offset += bytes.length;
-      if (part.eof) {
-        if (offset !== expectedSize) throw new Error(bt("artifactIncomplete"));
-        break;
-      }
-    }
-    const blob = new Blob(chunks, { type: "application/octet-stream" });
-    const objectUrl = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = objectUrl;
-    anchor.download = filename;
-    anchor.style.display = "none";
-    document.body.append(anchor);
-    anchor.click();
-    anchor.remove();
-    setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 30000);
-    return true;
+    }, expectedSize, MAX_WEB_ARTIFACT_DOWNLOAD_BYTES, {
+      noData: "Artifact download returned no data",
+      chunkInvalid: "artifactChunkInvalid",
+      changed: "artifactChanged",
+      noProgress: "artifactNoProgress",
+      overflow: "artifactOverflow",
+      incomplete: "artifactIncomplete",
+    }, basename(path) || "artifact");
   }
 
   // ── 附件 ────────────────────────────────────────────────────────
@@ -5732,58 +5755,19 @@ function conversationAttachmentArgs(reference) { return pinvouSharedweb().conver
       throw new Error(bt("attachDownloadUnsupported"));
     }
     const args = conversationAttachmentArgs(reference);
-    let expectedSize = null;
-    let offset = 0;
-    const chunks = [];
-    let filename = args.basename || "attachment";
-    while (true) {
-      const part = await invoke("web_access_read_conversation_attachment_chunk", Object.assign({
+    return streamBase64PartsToBlob(function (offset) {
+      return invoke("web_access_read_conversation_attachment_chunk", Object.assign({
         offset,
         limit: 262144,
       }, args));
-      if (!part) throw new Error(bt("attachNoData"));
-      const partOffset = Number(part.offset);
-      const partSize = Number(part.size);
-      if (!Number.isSafeInteger(partOffset) || partOffset !== offset ||
-          !Number.isSafeInteger(partSize) || partSize < 0) {
-        throw new Error(bt("attachChunkInvalid"));
-      }
-      if (expectedSize === null) {
-        expectedSize = partSize;
-        if (expectedSize > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES) {
-          throw webArtifactDownloadLimitError(expectedSize);
-        }
-      } else if (partSize !== expectedSize) {
-        throw new Error(bt("attachChanged"));
-      }
-      filename = part.name || filename;
-      const encoded = String(part.data_base64 || part.dataBase64 || "");
-      const binary = atob(encoded);
-      const bytes = new Uint8Array(binary.length);
-// binary is a single-byte Latin-1 string produced by atob; charCode is the byte value. codePointAt is equivalent here but gains nothing.
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i); // eslint-disable-line unicorn/prefer-code-point
-      if (!bytes.length && !part.eof) throw new Error(bt("attachNoProgress"));
-      if (offset + bytes.length > expectedSize) {
-        throw new Error(bt("attachOverflow"));
-      }
-      chunks.push(bytes);
-      offset += bytes.length;
-      if (part.eof) {
-        if (offset !== expectedSize) throw new Error(bt("attachIncomplete"));
-        break;
-      }
-    }
-    const blob = new Blob(chunks, { type: "application/octet-stream" });
-    const objectUrl = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = objectUrl;
-    anchor.download = filename;
-    anchor.style.display = "none";
-    document.body.append(anchor);
-    anchor.click();
-    anchor.remove();
-    setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 30000);
-    return true;
+    }, null, MAX_WEB_ARTIFACT_DOWNLOAD_BYTES, {
+      noData: "attachNoData",
+      chunkInvalid: "attachChunkInvalid",
+      changed: "attachChanged",
+      noProgress: "attachNoProgress",
+      overflow: "attachOverflow",
+      incomplete: "attachIncomplete",
+    }, args.basename || "attachment");
   }
   async function openConversationAttachment(reference) {
     try {
