@@ -3941,26 +3941,45 @@ mod tests {
         });
     }
 
-    /// Round-1 review m1: the re-check's POSITION is load-bearing — it must
-    /// sit AFTER the market-lock acquisition, because the market lock is
-    /// what a CROSS-PROCESS claimant (a CLI `plugins skills install`)
-    /// contends on; moved before it, the re-check would still exist (the
-    /// behavioral pin above stays green) while the second-process window
-    /// reopened. Ordering pin on comment-stripped source: the last
-    /// re-check call (the first is the pre-gate twin) must follow the
-    /// market lock's acquisition.
+    /// Round-1 review m1 / round-2 M3 repair: the re-check's POSITION is
+    /// load-bearing — it must sit AFTER the market-lock acquisition,
+    /// because the market lock is what a CROSS-PROCESS claimant (a CLI
+    /// `plugins skills install`) contends on; moved before it, the
+    /// behavioral pin above stays green (its claimant is in-process and
+    /// stays excluded by the import lock the moved call still sits behind)
+    /// while the second-process window reopens. The round-1 form asserted
+    /// this with a whole-file `rfind`, which self-matched this test's own
+    /// needle literal and could never fail (round-2 mutation-verified:
+    /// green under both a move of the call and a full deletion). The
+    /// repaired pin scopes the search to the production slice and the
+    /// pipeline function: the re-check must keep exactly two call sites
+    /// there (the pre-gate twin and the under-lock call), the market lock
+    /// is acquired once, and the LAST re-check must follow it.
     #[test]
     fn the_under_lock_recheck_sits_after_the_market_lock_acquisition() {
         let code: String = include_str!("plugin_import.rs")
             .lines()
+            // Stop at the test module: needles must match production code
+            // only — the round-1 defect was the test's own literal
+            // satisfying the rfind.
+            .take_while(|line| !line.trim_start().starts_with("mod tests"))
             .filter(|line| !line.trim_start().starts_with("//"))
             .collect::<Vec<_>>()
             .join("\n");
-        let lock_at = code
+        let pipeline = &code[code
+            .find("fn import_plugin_package_gated")
+            .expect("the gated import pipeline must exist")..];
+        let recheck = "ensure_package_id_self_mapping(&id)?;";
+        assert_eq!(
+            pipeline.matches(recheck).count(),
+            2,
+            "the pipeline must keep both re-checks (pre-gate twin + under-lock)"
+        );
+        let lock_at = pipeline
             .find("MarketplaceWriteLock::acquire_map_err()?")
             .expect("the import pipeline must acquire the market lock");
-        let recheck_at = code
-            .rfind("ensure_package_id_self_mapping(&id)?;")
+        let recheck_at = pipeline
+            .rfind(recheck)
             .expect("the under-lock re-check call must exist");
         assert!(
             lock_at < recheck_at,
