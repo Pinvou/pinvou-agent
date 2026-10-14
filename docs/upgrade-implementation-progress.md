@@ -6780,3 +6780,79 @@ Dependency audit ran all fifteen actual PE groups in 2.159s; compatibility audit
 ran them in 1.544s. Both enabled all three original-image fixture groups without
 skips and passed affected vet, two-file formatting and diff checks; all independent
 processes closed.
+
+## T09 forty-third batch: exact declared resource-path byte capture
+
+`pe.CaptureResource` accepts the original owned image, explicit image/resource/
+tree/value capacities and an exact declared ResourceKey path. Source identity,
+positive image byte capacity, selector entry/depth and intrinsic source-size
+bounds are checked before cloning. An over-capacity image refuses before selector
+copy. Named keys cannot contain numeric IDs, and numeric keys cannot contain
+names. The selector is cloned before context/source callbacks can change caller
+storage. It is a declaration path, not a filesystem path, native Windows lookup
+or a default Type/Name/Language selection.
+
+The complete same-owned Resource tree is freshly checked before any selected
+leaf is used. Exact zero/multiple matches refuse; case variants and numeric/name
+coercion do not select another declaration. The entire leaf span is captured into
+a new immutable snapshot under positive value source/memory capacities. Its
+complete identity must equal the freshly checked leaf's identity, and context is
+checked after capture and identity comparison. The returned selected leaf path
+also owns a separate slice from the returned full tree. Explicit empty resources
+retain an actual owned empty-byte snapshot. Every later error returns literal
+zero CapturedResource, without earlier PE, Resource tree, leaf or value bytes.
+
+Three new groups cover exact numeric and named selection, selector mutation in a
+synchronous context callback, independent source/tree/selected-path mutation,
+same-owned restoration, empty values, missing/directory-only/case-variant and
+mixed-key selectors, isolated intrinsic source-size and image-capacity negatives
+before context callbacks, capture source/memory limits, pre-cancellation and a
+valid early selection followed by a malformed later unselected resource. That
+late tree failure cannot be hidden by selecting the earlier good leaf.
+
+Independent compatibility audit found a test-proof gap: final cancellation was
+originally calibrated using the wrapper's own successful call count, which could
+move to an earlier stage if the wrapper's last check were removed. Root changed
+only the test. The complete independent InspectResourceTree and capture.Capture
+APIs now count their same-source prefix checks using the independently fixed
+original span 768/3. The wrapper positive must reach exactly prefix+1, and the
+negative cancels at that extra post-copy check with literal zero output. Removing
+the wrapper's final poll now breaks the control rather than recalibrating it.
+Both independent static audits closed the finding.
+
+The actual opt-in bounded-reads the same frozen original Windows image. The exact
+[16,1,1033] leaf is independently fixed at entry offset 1640, image RVA 359704,
+file offset 351512 and size 884 with its original full-resource SHA. Expected
+bytes use the independently fixed original range. All 884 bytes are retained;
+the inner version root's 880-byte declaration is not silently substituted.
+No image is executed or native lookup/publisher probe repeated.
+
+Root initial eighteen-group run passed in 1.581s. Isolated source-size and
+post-copy cancellation controls passed in 1.617s; the self-review's early image
+capacity guard plus its isolated control passed in 1.577s. After the independent
+cancellation-proof repair, all eighteen passed in 1.627s with all four original-
+image fixture groups enabled and no skips. Affected vet, formatting and diff
+also passed; all root processes closed.
+
+Complete default Go tests passed at package parallelism 2 before that later
+test-only repair: PE fourteen mandatory groups with four fixture skips, 1.842s;
+verification 16.923s, Debian 2.024s, windowsversion 0.976s, compression 3.518s
+and TAR 1.177s. Module verification, whole vet, server build, unchanged contract
+pins and formatting/diff checks passed. Production remained unchanged after
+that full pass, so the later test-only repair received actual eighteen-group and
+affected checks without a redundant whole-suite rerun.
+
+No dependency, SQL, protocol, application-version, deployment or download-budget
+change. Copy capacities remain logical limits, not aggregate heap/preparation
+policy or the 32 MiB atomic business-batch cap. This provides original selected
+resource bytes, not semantic version parsing, Windows lookup/loading, NSIS
+contents, approved app/version/architecture, Authenticode/publisher trust or
+Artifact admission. Existing APIs remain unchanged; full T09 stays incomplete.
+Downloads have no hard total/cumulative elapsed or retry-count limit. Unchanged
+database/provider/browser integration was not repeated.
+
+Both final independent scoped code/test audits passed without required fixes.
+Dependency audit ran all eighteen actual PE groups in 1.439s; compatibility audit
+ran them in 1.616s. All four original-image fixture groups executed without skips.
+Both passed affected vet, two-file formatting and diff checks; every independent
+process closed. The independent-prefix post-copy cancellation finding is closed.
