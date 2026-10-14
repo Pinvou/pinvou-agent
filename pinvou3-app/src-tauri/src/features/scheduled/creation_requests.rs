@@ -639,6 +639,21 @@ fn trimmed_non_empty(value: &Option<String>) -> Option<String> {
 /// execution root (failures inside `audit::append` only log, never panic).
 /// Without a usable `from_session` the task record itself is the audit trail
 /// (design D3).
+/// Round-24 M4 (the messaging sibling's round-8 M1 rule): bound sessions'
+/// audit lines route to the PRIVATE ledger root — appending to
+/// `roots.execution` lands `workflow_audit.jsonl` inside the user's bound
+/// project directory (git-status pollution), and the provenance line sits
+/// inside the audited model's own working tree, where that session's model
+/// can read and rewrite it with ordinary file tools. Unbound sessions keep
+/// the execution root (both roots are the same private dir there).
+fn audit_root_for(roots: &crate::features::sessions::SessionRoots) -> std::path::PathBuf {
+    if roots.bound {
+        roots.ledger.clone()
+    } else {
+        roots.execution.clone()
+    }
+}
+
 fn audit_request(
     sessions: &crate::features::sessions::SessionStore,
     request: &SpooledCreationRequest,
@@ -682,7 +697,8 @@ fn audit_request(
         detail["changed"] = serde_json::json!(changed);
     }
     if let Ok(roots) = sessions.session_roots(from) {
-        crate::features::assistant::audit::append(&roots.execution, kind, "app", detail);
+        let audit_root = audit_root_for(&roots);
+        crate::features::assistant::audit::append(&audit_root, kind, "app", detail);
     }
 }
 
@@ -770,12 +786,8 @@ fn audit_failure(
         "claimed_from_session_verified": false,
         "error": error_text.chars().take(500).collect::<String>(),
     });
-    crate::features::assistant::audit::append(
-        &roots.execution,
-        "scheduled_task_failed",
-        "app",
-        detail,
-    );
+    let audit_root = audit_root_for(&roots);
+    crate::features::assistant::audit::append(&audit_root, "scheduled_task_failed", "app", detail);
 }
 
 /// Process one spool file: read → validate → (marker check) → create →
@@ -1434,7 +1446,17 @@ impl ScheduledTaskState {
                     _ = tokio::time::sleep(POLL_INTERVAL) => {}
                 }
                 if last_prune.elapsed() >= PRUNE_INTERVAL {
-                    prune_stale_state();
+                    // Round-24 M2: prune runs inside its own sync
+                    // catch_unwind — a bookkeeping panic must not kill the
+                    // detached watcher task (whose Drop would cancel the
+                    // panel scheduler app-wide). The per-record isolation
+                    // inside process_pending_spool covers the drain path;
+                    // this guard covers the prune.
+                    if let Err(panic) =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(prune_stale_state))
+                    {
+                        log::error!("[scheduled-creation] prune panicked: {panic:?}");
+                    }
                     last_prune = tokio::time::Instant::now();
                 }
                 // Round-6 minor 4 / round-21 M1: the panic isolation now
@@ -1908,7 +1930,17 @@ mod tests {
         let _home = TempHome::new();
         let spool = spool_root();
         std::fs::create_dir_all(&spool).unwrap();
-        std::fs::write(spool.join("stuck.json"), spool_record_json(&[])).unwrap();
+        std::fs::write(
+            spool.join("stuck.json"),
+            spool_record_json(&[("from_session", serde_json::json!("reqsrc01"))]),
+        )
+        .unwrap();
+        std::fs::create_dir_all(
+            crate::platform::paths::sessions_root()
+                .join("reqsrc01")
+                .join("workspace"),
+        )
+        .unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
         let mut retries = RetryState::default();
         let sessions = crate::features::sessions::SessionStore::boot_for_process_startup()
@@ -1946,6 +1978,16 @@ mod tests {
         assert_eq!(retries.attempts.len(), 0, "terminal path clears state");
         assert!(failed_dir().join("stuck.json").exists(), "quarantined");
         assert!(!spool.join("stuck.json").exists());
+        // Round-22 M4: the exhaustion arm's per-session failure line is
+        // pinned (only the poison arm had a line pin before).
+        let audit_path = crate::platform::paths::sessions_root()
+            .join("reqsrc01")
+            .join("workspace")
+            .join("workflow_audit.jsonl");
+        let audit = std::fs::read_to_string(audit_path).expect("session failure line");
+        let line: serde_json::Value = serde_json::from_str(audit.lines().next().unwrap()).unwrap();
+        assert_eq!(line["kind"], "scheduled_task_failed");
+        assert_eq!(line["detail"]["outcome"], "failed");
         // The waiting MCP call receives the failure through the marker.
         let marker: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(done_dir().join("stuck.json")).expect("failure marker"),
