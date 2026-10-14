@@ -1452,6 +1452,12 @@ fn rebind(from: &Path, to: &Path, yes: bool, output: OutputMode) -> Result<CliOu
     // staleness like every other arm (round-54 A2), best-effort with the
     // same note!-only failure shape — and never reported rebound: nothing
     // was translated for these sessions THIS run.
+    //
+    // Round-2 review m4 note: the drain is deliberately serial, unlike the
+    // GUI's JoinSet-bounded recapture concurrency — this is a one-shot CLI
+    // command (no dialog to stall) and the staleness gate bounds the walk
+    // to baselines that are genuinely stale or missing, so only a first
+    // run over a large destination pays the full capture cost.
     let metadata_target_ids: HashSet<&str> = metadata_targets
         .iter()
         .map(|(session_id, _)| session_id.as_str())
