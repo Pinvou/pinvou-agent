@@ -6623,3 +6623,80 @@ record fixture groups without skips and passed affected vet, two-file formatting
 and diff checks; all independent processes closed. Client architecture and
 synchronized-version guards passed. Unchanged database/provider/browser integration
 and the previously recorded native API probe were not repeated.
+
+
+## T09 forty-first batch: original PE Resource-directory byte capture
+
+`pe.CaptureResources` first completely inspects the same owned PE32/PE32+ image
+before rereading its original optional-header Resource data-directory declaration.
+The declared address is an RVA, not a raw file offset. Directory count and actual
+optional-header size are checked before the index is read. Missing declarations
+return ResourceUnsupported; half-empty declarations refuse. Original APIs remain
+unchanged, and no caller-supplied PE report is accepted.
+
+The supported profile maps the whole nonempty declared interval to headers or one
+section's positive VirtualSize/raw-size intersection. Every competing virtual
+claim that intersects even part of the interval causes ResourceInvalid, including
+zero-fill/BSS claims. Cross-section stitching is never performed: multiple
+intersecting claims return ResourceInvalid. Absent backing, zero VirtualSize or
+one incomplete raw/virtual backing return ResourceUnsupported; loader defaults
+and zero-filled bytes are not invented. Widened arithmetic avoids integer overflow,
+and the resource interval must remain in the 32-bit RVA domain: an exclusive end
+of 2^32 is valid, while any included byte beyond 0xffffffff refuses.
+
+The entire exact mapped span is captured into a separate immutable snapshot under
+explicit source/copy capacities. It retains the complete original image report,
+declared RVA and exact file offset. Context is checked before success. Any later
+declaration/mapping/capture/cancellation failure returns literal zero Resources
+without earlier image or resource bytes. Capacities retain logical copy meaning,
+not aggregate heap or preparation/installation policy.
+
+This proves physical original byte association, not a parsed Resource tree,
+version-record origin, Windows virtual loading, NSIS format, app/version/architecture
+approval, Authenticode or publisher trust. Header-backed declarations and unknown
+machine values do not become native qualification. No file extraction, installation,
+executable handoff or Artifact admission is introduced.
+
+Four new groups cover PE32/PE32+ original RVA/file-offset/bytes, explicit complete
+header backing, caller-source/report isolation, missing and partial declarations,
+directory-count omission, zero-fill/incomplete virtual backing, partial competing
+virtual claims, capture capacities, cancellation and same-owned restoration.
+Each isolated mapping negative first succeeds in the old physical image observer.
+The actual opt-in uses the fixed Windows system image, independently measured
+Resource RVA 237568, file offset 229376, size 123344 and exact region SHA plus the
+original fixed image identity. Expected bytes use that independent fixed range.
+No image is executed and no native API probe or binary fixture is committed.
+
+Initial actual PE eleven-group run failed in 1.592s because the test expected
+Unsupported for a huge declared interval that also intersects a second virtual
+BSS claim; root corrected the expected ambiguity result to Invalid without
+changing production behavior. The actual eleven-group rerun passed in 1.566s.
+Both earlier image and new resource fixture groups executed.
+
+Independent audits then found a production RVA-domain boundary gap and a zero-fill
+test-isolation gap. Root added exact end<=2^32 checking, with old-image positives
+before a three-byte interval at 0xfffffffe refuses and its two-byte boundary succeeds.
+Independent controls now separately test larger virtual/smaller raw backing and
+smaller virtual/larger raw backing; both refuse without image facts. The identical
+owned good snapshot succeeds before and after the negative matrix. Root actual
+eleven-group repaired rerun passed in 1.543s without skips; complete checks were
+rerun because production changed.
+
+Complete default Go tests passed with package parallelism 2: PE nine mandatory
+groups plus two fixture skips, 1.679s; verification 15.721s, Debian 1.764s,
+windowsversion 1.770s, compression 3.964s and TAR 1.574s. Module verification,
+whole vet, server build, unchanged contract pins, two-file formatting and diff
+checks passed; every root process closed. Actual PE eleven groups had already
+passed in 1.543s with both original-image fixture groups enabled.
+
+Dependency audit independently ran all eleven PE groups in 1.446s; compatibility
+audit ran them in 1.588s, both without skips. Both rechecked the frozen repairs
+and closed the RVA-boundary and isolated-zero-fill findings. Affected vet,
+formatting and diff checks passed; all independent processes closed.
+
+No dependency, SQL, protocol, app-version, deployment or download-budget change.
+Full T09 remains incomplete. Resource-tree parsing, version origin, approved
+native app/version/publisher mapping, Artifact admission and durable production
+storage remain later work. Downloads have no hard total/cumulative elapsed or
+retry-count limit. Unchanged database/provider/browser integration and the earlier
+native API probe were not repeated.
