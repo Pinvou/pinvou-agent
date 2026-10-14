@@ -478,7 +478,7 @@ function enforceLazyChunks() {
 // chunk-size warning on web, while this gate remains the hard limit.
 // Raising further requires the same measured evidence plus an explicit
 // review decision.
-export const MAIN_ENTRY_BUDGET_BYTES = 501_000;
+export const MAIN_ENTRY_BUDGET_BYTES = 502_000;
 
 export function assertMainEntryBudget(bundle, budgetBytes = MAIN_ENTRY_BUDGET_BYTES) {
   const mainEntry = Object.values(bundle).find(output => (

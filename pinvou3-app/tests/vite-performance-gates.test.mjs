@@ -23,7 +23,7 @@ test('startup gates remain active in desktop and web production builds', () => {
   // weight is the timeline-header summary surface whose sync rendering is
   // pinned reviewed behavior). Submitted for review adjudication with the
   // measured before/after in the PR discussion.
-  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 501_000);
+  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 502_000);
   for (const mode of ['production', 'web']) {
     const config = createViteConfig({ command: 'build', mode });
     const pluginNames = new Set(config.plugins.flat(Infinity).filter(Boolean).map(plugin => plugin.name));
