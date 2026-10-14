@@ -9,7 +9,7 @@
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["personas"] = function (context) {let pinvouSharedtauriPersonasCache = null;
 function pinvouSharedtauriPersonas() {
-  if (!pinvouSharedtauriPersonasCache) pinvouSharedtauriPersonasCache = window.PinvouBridgeShared.create("tauriPersonas", { state, notify, personaPoolCache: { get value() { return personaPoolCache; }, set value(v) { personaPoolCache = v; } }, invoke, deletedPersonaIds, sessionStates, lastEquippedSid: { get value() { return lastEquippedSid; }, set value(v) { lastEquippedSid = v; } }, runOnSession, addChatItem, mountedCollectionDraftTarget: { get value() { return mountedCollectionDraftTarget; }, set value(v) { mountedCollectionDraftTarget = v; } }, ensureSession, mountedCollectionUpdate: { get value() { return mountedCollectionUpdate; }, set value(v) { mountedCollectionUpdate = v; } }, addSystemItem, bt });
+  if (!pinvouSharedtauriPersonasCache) pinvouSharedtauriPersonasCache = window.PinvouBridgeShared.create("tauriPersonas", { state, notify, personaPoolCache: { get value() { return personaPoolCache; }, set value(v) { personaPoolCache = v; } }, invoke, deletedPersonaIds, sessionStates, lastEquippedSid: { get value() { return lastEquippedSid; }, set value(v) { lastEquippedSid = v; } }, runOnSession, addChatItem, mountedCollectionDraftTarget: { get value() { return mountedCollectionDraftTarget; }, set value(v) { mountedCollectionDraftTarget = v; } }, ensureSession, mountedCollectionUpdate: { get value() { return mountedCollectionUpdate; }, set value(v) { mountedCollectionUpdate = v; } }, addSystemItem, bt, timeStr, personaPlaceholderTitles, personaSyncSeq: { get value() { return personaSyncSeq; }, set value(v) { personaSyncSeq = v; } } });
   return pinvouSharedtauriPersonasCache;
 }
 
@@ -25,7 +25,6 @@ function pinvouSharedtauriPersonas() {
     const ensureSession = context.ensureSession;
     const runOnSession = context.runOnSession;
     const personaPlaceholderTitles = context.personaPlaceholderTitles;
-    const isDefaultChatTitle = context.isDefaultChatTitle;
     let personaPoolCache = [];
   // ── 卡片池: 专家面具加持 ─────────────────────────────────────────
   // 懒加载全部专家卡(1078 张),前端缓存供 facet/搜索。只拉一次。
@@ -41,61 +40,7 @@ async function deletePersona(personaId) { return pinvouSharedtauriPersonas().del
 function personaName(p) { return pinvouSharedtauriPersonas().personaName(p); }
   // 记一条卡牌事件到时间线 sidecar(pos=当前 messages 数),并落盘。重载历史时按 pos 插回。
 function recordPersonaEvent(ev) { return pinvouSharedtauriPersonas().recordPersonaEvent(ev); }
-  async function equipPersona(personaId) {
-    if (!state.activeSessionId) {
-      // 草稿态加卡 → 先物化 session(lazy session)。用返回值判空：切走场景
-      // ensureSession 返回 null 但 activeSessionId 非空，会把卡加进新会话。
-      const materialized = await ensureSession();
-      if (!materialized) return; // 物化失败/切走,放弃
-    }
-    // 入口捕获触发会话：await 期间用户可能切走，UI 写入不得落进别的会话
-    // （错误会话被重命名/插卡是持久化污染，不可自愈）。后端已按发起会话
-    // 定向；切走后放弃前端播报，挂件靠 syncActivePersona 恢复（审计）。
-    const sid = state.activeSessionId;
-    try {
-      // invoke 形状保持原样（协议指纹按文本计算）；发起瞬间 activeSessionId === sid。
-      const card = await invoke("equip_persona", { sessionId: state.activeSessionId, personaId });
-      if (deletedPersonaIds.has(personaId)) return null;
-      lastEquippedSid = sid; // 成功加持的目标会话(即使已切走)：供紧随其后的引导卡定向(审计补充)
-      if (sid !== state.activeSessionId) return card; // 已切走：不写当前显示
-      // 标题仍是默认占位(三语哨兵,见 isDefaultChatTitle)→ 用卡牌名命名(无论草稿态物化还是遗留空会话;
-      // 用户已主动改名 / 已被首条消息命名的会话不动)。决策:卡牌优先于首条消息。
-      const m = state.sessions.find(function (s) { return s.id === sid; });
-      // 标题还是默认值 / 仍是卡牌占位(换卡场景)→ 用(新)卡牌名命名,并标记为占位。
-      // 占位名会被首条用户消息覆盖(见 persistMessages*),让同卡会话靠对话内容区分。
-      if (m && (isDefaultChatTitle(m.title) || personaPlaceholderTitles[sid])) {
-        const newTitle = personaName(card);
-        if (newTitle) {
-          try { await invoke("rename_session", { id: sid, title: newTitle }); } catch { /* rename failure does not affect local display */ }
-          if (sid !== state.activeSessionId) return card; // rename 挂起期间切走:放弃后续 UI 写入(审计补充)
-          m.title = newTitle;
-          personaPlaceholderTitles[sid] = true;
-        }
-      }
-      // 同 session 换了一张不同的卡 → 先弹一条"已卸下旧专家",再弹新加持。
-      // 旧专家在写点复核而非入口捕获：同会话快速连续换卡时,入口值可能已被
-      // 上一次 equip 的权威写覆盖,陈旧值会播报错误的"已卸下"(二审补充)。
-      if (deletedPersonaIds.has(personaId)) return null;
-      const prev = state.activePersona;
-      if (prev && prev.id !== card.id) {
-        addChatItem({ type: "system", text: bt("personaUnequipped") + personaName(prev), time: timeStr() });
-        recordPersonaEvent({ kind: "unequip", name: personaName(prev) });
-      }
-      personaSyncSeq++; // 权威写前 bump：作废在途 syncActivePersona 的旧快照(审计补充)
-      state.activePersona = card;
-      addChatItem({ type: "persona_equip", card, time: timeStr() });
-      recordPersonaEvent({ kind: "equip", card });
-      notify();
-      return card;
-    } catch (e) {
-      // 失败也守住归属：失败气泡只落发起会话,不得插进 await 窗口内切到的
-      // 会话(addSystemItem 随消息流持久化);同时作废 lastEquippedSid——失败
-      // equip 后紧随的引导卡不得回退定向到历史成功 equip 的无关会话(二审补充)。
-      lastEquippedSid = null;
-      if (sid === state.activeSessionId) addSystemItem(bt("equipFailed") + e);
-      return null;
-    }
-  }
+async function equipPersona(personaId) { return pinvouSharedtauriPersonas().equipPersona(personaId); }
   // 摘下当前 session 的专家面具。
   async function unequipPersona() {
     if (!state.activeSessionId) return;

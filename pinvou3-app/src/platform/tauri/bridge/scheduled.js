@@ -6,7 +6,7 @@
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry.scheduled = function (context) {let pinvouSharedtauriScheduledCache = null;
 function pinvouSharedtauriScheduled() {
-  if (!pinvouSharedtauriScheduledCache) pinvouSharedtauriScheduledCache = window.PinvouBridgeShared.create("tauriScheduled", { SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY, scheduledTaskTemplateSources: { get value() { return scheduledTaskTemplateSources; } }, persistScheduledTaskTemplateSources, state, scheduledTaskRequestTokens: { get value() { return scheduledTaskRequestTokens; } }, scheduledTaskRefreshInFlight: { get value() { return scheduledTaskRefreshInFlight; }, set value(v) { scheduledTaskRefreshInFlight = v; } }, scheduledRecentRunsRequestToken: { get value() { return scheduledRecentRunsRequestToken; }, set value(v) { scheduledRecentRunsRequestToken = v; } }, scheduledRunEventRefreshTimer: { get value() { return scheduledRunEventRefreshTimer; }, set value(v) { scheduledRunEventRefreshTimer = v; } }, notify, scheduledTaskPendingLoads: { get value() { return scheduledTaskPendingLoads; } }, scheduledTaskSelectionGeneration: { get value() { return scheduledTaskSelectionGeneration; }, set value(v) { scheduledTaskSelectionGeneration = v; } }, bt, createScheduledTask, invoke, rememberScheduledRunOwner, scheduledRunShortcutRefreshes: { get value() { return scheduledRunShortcutRefreshes; } }, SCHEDULED_LINK_POLL_DEADLINE_MS: { get value() { return SCHEDULED_LINK_POLL_DEADLINE_MS; } }, SCHEDULED_LINK_POLL_FAST_ATTEMPTS: { get value() { return SCHEDULED_LINK_POLL_FAST_ATTEMPTS; } }, SCHEDULED_LINK_POLL_FAST_MS: { get value() { return SCHEDULED_LINK_POLL_FAST_MS; } }, SCHEDULED_LINK_POLL_SLOW_MS: { get value() { return SCHEDULED_LINK_POLL_SLOW_MS; } }, isScheduledRunTerminal, scheduledTaskBackendInput, forgetScheduledTaskTemplateSource, scheduledTaskAutoCreateSeq: { get value() { return scheduledTaskAutoCreateSeq; }, set value(v) { scheduledTaskAutoCreateSeq = v; } }, createNewSession, prefillComposer });
+  if (!pinvouSharedtauriScheduledCache) pinvouSharedtauriScheduledCache = window.PinvouBridgeShared.create("tauriScheduled", { SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY, scheduledTaskTemplateSources: { get value() { return scheduledTaskTemplateSources; } }, persistScheduledTaskTemplateSources, state, scheduledTaskRequestTokens: { get value() { return scheduledTaskRequestTokens; } }, scheduledTaskRefreshInFlight: { get value() { return scheduledTaskRefreshInFlight; }, set value(v) { scheduledTaskRefreshInFlight = v; } }, scheduledRecentRunsRequestToken: { get value() { return scheduledRecentRunsRequestToken; }, set value(v) { scheduledRecentRunsRequestToken = v; } }, scheduledRunEventRefreshTimer: { get value() { return scheduledRunEventRefreshTimer; }, set value(v) { scheduledRunEventRefreshTimer = v; } }, notify, scheduledTaskPendingLoads: { get value() { return scheduledTaskPendingLoads; } }, scheduledTaskSelectionGeneration: { get value() { return scheduledTaskSelectionGeneration; }, set value(v) { scheduledTaskSelectionGeneration = v; } }, bt, createScheduledTask, invoke, rememberScheduledRunOwner, scheduledRunShortcutRefreshes: { get value() { return scheduledRunShortcutRefreshes; } }, SCHEDULED_LINK_POLL_DEADLINE_MS: { get value() { return SCHEDULED_LINK_POLL_DEADLINE_MS; } }, SCHEDULED_LINK_POLL_FAST_ATTEMPTS: { get value() { return SCHEDULED_LINK_POLL_FAST_ATTEMPTS; } }, SCHEDULED_LINK_POLL_FAST_MS: { get value() { return SCHEDULED_LINK_POLL_FAST_MS; } }, SCHEDULED_LINK_POLL_SLOW_MS: { get value() { return SCHEDULED_LINK_POLL_SLOW_MS; } }, isScheduledRunTerminal, scheduledTaskBackendInput, forgetScheduledTaskTemplateSource, scheduledTaskAutoCreateSeq: { get value() { return scheduledTaskAutoCreateSeq; }, set value(v) { scheduledTaskAutoCreateSeq = v; } }, scheduledTaskAutoCreateInFlight: { get value() { return scheduledTaskAutoCreateInFlight; } }, runSyncOnSession, addSystemItem, createNewSession, prefillComposer });
   return pinvouSharedtauriScheduledCache;
 }
 
@@ -88,15 +88,7 @@ function clearScheduledTaskSelection() { return pinvouSharedtauriScheduled().cle
 
 function extractBalancedJsonObject(text) { return pinvouSharedtauriScheduled().extractBalancedJsonObject(text); }
 
-  function parseLooseJsonObject(text) {
-    try { return JSON.parse(text); } catch { /* invalid JSON: the caller falls back to the raw text */ }
-    try { return JSON.parse(String(text || "").replaceAll(/,(\s*[}\]])/g, "$1")); } catch { /* invalid JSON: the caller falls back to the raw text */ }
-    const balanced = extractBalancedJsonObject(String(text || ""));
-    if (!balanced) return null;
-    try { return JSON.parse(balanced); } catch { /* invalid JSON: the caller falls back to the raw text */ }
-    try { return JSON.parse(balanced.replaceAll(/,(\s*[}\]])/g, "$1")); } catch { /* invalid JSON: the caller falls back to the raw text */ }
-    return null;
-  }
+function parseLooseJsonObject(text) { return pinvouSharedtauriScheduled().parseLooseJsonObject(text); }
 
 function normalizeScheduledTaskDraft(value) { return pinvouSharedtauriScheduled().normalizeScheduledTaskDraft(value); }
 
@@ -104,25 +96,7 @@ function activeScheduledTaskModelConfig() { return pinvouSharedtauriScheduled().
 
 function lockScheduledTaskDraftModel(draft) { return pinvouSharedtauriScheduled().lockScheduledTaskDraftModel(draft); }
 
-  function parseScheduledTaskDraftFromText(text) {
-    if (!text || !text.includes("{")) return null;
-    let preferred = null;
-    let fallback = null;
-    const re = /```([^\n`]*)\n([\s\S]*?)```/g;
-    let match;
-    // biome-ignore lint/suspicious/noAssignInExpressions: the assignment doubles as the loop condition; refactoring would hurt readability
-    while ((match = re.exec(text))) {
-      const label = String(match[1] || "").trim().toLowerCase();
-      const raw = String(match[2] || "").trim();
-      if (!raw || raw.charAt(0) !== "{") continue;
-      const candidate = normalizeScheduledTaskDraft(parseLooseJsonObject(raw));
-      if (!candidate) continue;
-      if (label === "scheduled-task-draft") return candidate;
-      if ((label === "json" || !label) && !fallback) fallback = candidate;
-      if (!preferred) preferred = candidate;
-    }
-    return fallback || preferred;
-  }
+function parseScheduledTaskDraftFromText(text) { return pinvouSharedtauriScheduled().parseScheduledTaskDraftFromText(text); }
 
 function scheduledTaskInputFromDraft(draft) { return pinvouSharedtauriScheduled().scheduledTaskInputFromDraft(draft); }
 
@@ -131,40 +105,7 @@ function scheduledTaskInputFromDraft(draft) { return pinvouSharedtauriScheduled(
   // startScheduledTaskChat 清空后陈旧 completion 会复活 auto-open（审计 f）。
   // 全局单调创建序号，仅最新意图可写。
   let scheduledTaskAutoCreateSeq = 0;
-  function autoCreateScheduledTaskDraft(draft, creationSessionId) {
-    if (!draft || !creationSessionId || scheduledTaskAutoCreateInFlight[creationSessionId]) return;
-    const lockedDraft = lockScheduledTaskDraftModel(draft);
-    const creationSeq = ++scheduledTaskAutoCreateSeq;
-    const creation = Promise.resolve()
-      .then(function () {
-        return createScheduledTask(scheduledTaskInputFromDraft(lockedDraft));
-      })
-      .then(function (created) {
-        if (state.scheduledTaskCreationSessionId === creationSessionId) {
-          state.scheduledTaskCreationSessionId = null;
-        }
-        if (created && created.id && creationSeq === scheduledTaskAutoCreateSeq) state.scheduledTaskAutoOpenId = created.id;
-        notify();
-        return created;
-      })
-      .catch(function (error) {
-        // createScheduledTask 通常已记录错误；忙锁在进入 action 前抛出时在这里补记，且不产生未处理 Promise。
-        if (!state.scheduledTaskError) setScheduledTaskError(error, "action");
-        runSyncOnSession(creationSessionId, function () {
-          addSystemItem(bt("scheduledCreateFailed") + scheduledTaskErrorText(error), {
-            scheduledTaskCreationError: true,
-          });
-        });
-        notify();
-        return null;
-      })
-      .finally(function () {
-        if (scheduledTaskAutoCreateInFlight[creationSessionId] === creation) {
-          delete scheduledTaskAutoCreateInFlight[creationSessionId];
-        }
-      });
-    scheduledTaskAutoCreateInFlight[creationSessionId] = creation;
-  }
+function autoCreateScheduledTaskDraft(draft, creationSessionId) { return pinvouSharedtauriScheduled().autoCreateScheduledTaskDraft(draft, creationSessionId); }
 
 async function loadScheduledTasks() { return pinvouSharedtauriScheduled().loadScheduledTasks(); }
 
@@ -219,32 +160,7 @@ async function runScheduledTaskAction(action, operation) { return pinvouSharedta
     return backendInput;
   }
 
-  async function createScheduledTask(input) {
-    return runScheduledTaskAction("create", async function () {
-      const templateId = input && typeof input.templateId === "string" ? input.templateId.trim() : "";
-      // kind is create-time task metadata (currently only "memory_organize"; the
-      // backend rejects anything else). It deliberately stays out of
-      // SCHEDULED_TASK_WRITABLE_FIELDS so edit flows can never resend it.
-      const kind = input && typeof input.kind === "string" ? input.kind.trim() : "";
-      const selectAfterCreate = !input || input.selectAfterCreate !== false;
-      const backendInput = scheduledTaskBackendInput(input);
-      if (kind) backendInput.kind = kind;
-      const created = await invoke("create_scheduled_task", { input: backendInput });
-      if (!created || !created.id) {
-        throw new Error(bt("scheduledCreateNoId"));
-      }
-      if (templateId) rememberScheduledTaskTemplateSource(created.id, templateId);
-      attachScheduledTaskTemplateSource(created);
-      // 立即重拉任务列表:新 stamp 会使创建前仍在途的 list_scheduled_tasks 响应失效,
-      // 防止旧结果落地时把刚创建的任务从列表里覆盖掉。
-      await loadScheduledTasks();
-      upsertScheduledTask(created);
-      if (selectAfterCreate) selectScheduledTask(created.id);
-      if (selectAfterCreate) state.scheduledTaskDetail = created;
-      notify();
-      return created;
-    });
-  }
+async function createScheduledTask(input) { return pinvouSharedtauriScheduled().createScheduledTask(input); }
 
 async function updateScheduledTask(id, input) { return pinvouSharedtauriScheduled().updateScheduledTask(id, input); }
 

@@ -243,7 +243,10 @@ const expectedProtocolHashes = {
   // bridge-shared-helpers.js; monitor.js keeps only pollBackendStatus.
   monitor: 'e63e8d5d4edf813640e08c9951a12abdbc3cad4991763d3dd956e883e277fb1c',
   // Recomputed for the shared-helper dedup (see batch note above).
-  personas: 'c168ac5ede23cb76ef6a93b5323ca4837b4d97395d5e5ca9c2eabf4eb40dd01f',
+  // Recomputed for the lane-merge wave 3: equipPersona (equip_persona /
+  // rename_session invokes) moved into the shared tauriPersonas/web cluster;
+  // personas.js keeps unequipPersona and the syncActivePersona read path.
+  personas: 'b3b4f526f422dfc503d3ef972cfac2c3c53679c1ae4636a726ca652841ef1a0e',
   // Recomputed for the voice error-code relay: web_access_rpc_respond gains
   // errorCode/errorCategory so structured VoiceCommandError identity reaches
   // the browser lane's trilingual mapping instead of only the message text.
@@ -258,7 +261,12 @@ const expectedProtocolHashes = {
   // removed — desktop SettingsView reads the webAccess state slice instead.
   remoteControl: '5138c9579824d93de124bb291d665adad6544ad6ae722a76ab00b6e75ac08f96',
   // Recomputed for the shared-helper dedup (see batch note above).
-  scheduled: '28247031a7401d232000c469c1eed0954c2eb1265817e7d0a1a5fd5768f5871a',
+  // Recomputed for the lane-merge wave 3: createScheduledTask
+  // (create_scheduled_task), autoCreateScheduledTaskDraft,
+  // parseScheduledTaskDraftFromText and parseLooseJsonObject moved into the
+  // shared tauriScheduled/web cluster; every dropped signature still executes
+  // via the shared payload with unchanged command + payload text.
+  scheduled: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
   // Recomputed for one-click full-fidelity session log export: the tauri
   // sessions bridge gains the export_session_archive invoke wrapping the
   // export_session command (web lane intentionally has no such backend).
@@ -356,7 +364,9 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // (get_monitor_snapshot invoke inside pollMonitor) joined the shared base.
 // Recomputed for the lane-merge wave 2: the memory overview/update/delete
 // invokes and the confirm/ignore/never pending-memory trio joined it.
-const expectedSharedBaseHash = '33d3c323e8ccef981bfe6375d935e833d133d755df0f809d058f4df3251d3596';
+// Recomputed for the lane-merge wave 3: the scheduled create/parse cluster and
+// the personas equip flow joined it.
+const expectedSharedBaseHash = 'c8809411206a569549ad2e4b78b19fe6d66090ebdf4bad446715e0e2493ffc7f';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),
