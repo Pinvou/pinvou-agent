@@ -1393,16 +1393,7 @@ function planCardHydrationKey(item) { return pinvouSharedtauriMain().planCardHyd
               if (!resolvedPlanTickets[key]) resolvedPlanTickets[key] = [];
               resolvedPlanTickets[key].push(String(item.planId));
             });
-            const liveChatItems = rawLiveChatItems.filter(function (item) {
-              if (!item || item.type === "user") return false;
-              if (item.type === "assistant") return item.interruptedDisplayOnly === true;
-              if (item.turnErrorNotice && !item.legacyConversationOnly) return false;
-              // 后台 Shell 在 chat:done 后仍继续运行；持久化 transcript 只有工具结果文本，
-              // 没有 taskId/background/liveOutput，权威重载时必须保留实时卡片并按 toolId 合并。
-              if (item.type === "tool") return item.background === true && item.state === "running";
-              if (item.type === "plan_card") return false;
-              return true;
-            });
+            const liveChatItems = rawLiveChatItems.filter(function (item) { return pinvouSharedtauriMain().liveChatItemKeptForHydration(item); });
             state.messages = saved.messages;
             state.artifacts = filterSessionArtifacts(
               mergeHydratedArtifacts(saved.artifacts, state.artifacts),
@@ -1491,29 +1482,9 @@ function planCardHydrationKey(item) { return pinvouSharedtauriMain().planCardHyd
   // ── Pub/Sub ──────────────────────────────────────────────────────
   // let (not const): unsubscribe removes a subscriber by replacing the whole array.
   let subscribers = [];
-  const STATE_SLICE_FIELDS = {
-    platform: ["appVersion", "backendOnline", "platformCapabilities"],
-    sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch", "draftWorkspacePath"],
-    chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
-    voice: ["voiceInput", "voiceAsrSetup"],
-    knowledge: ["kbModelSetup", "mountedCollection", "mountedCollections", "mountedRemoteCollections", "mountedCollectionsRevision"],
-    scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],
-    monitor: ["monitor", "monitorError"],
-    settings: ["settings", "selectedPet"],
-    models: ["activeModelId", "currentSessionModelId", "effectiveModelConfig", "savedModels"],
-    vllm: [],
-    interaction: ["pinvouModal", "pinvouReviews", "pinvouSummoning", "superPermEnabled"],
-    computerUse: ["computerUse"],
-    personas: ["activePersona", "personaEvents", "personaPool"],
-    memory: ["memory"],
-    remoteControl: ["webAccess"],
-    updater: ["updateCancelling", "updateCheckError", "updateChecking", "updateDownloading", "updateError", "updateInfo", "updateProgress", "updateReady"],
-    dependencies: ["deps", "depsChecking", "depsInstallError", "depsInstallProgress", "depsInstalling"],
-    // Registered by the projects feature (bridge/projects.js). Must stay in
-    // sync with APP_BRIDGE_STATE_DOMAINS in main.jsx — locked by
-    // tests/bridge_state_domains.test.mjs.
-    projects: ["projectsList"],
-  };
+  // FE14 wave 5：切片字段注册表统一在 shared/bridge-shared-helpers.js（两 lane 一份）；
+  // 与 main.jsx 的 APP_BRIDGE_STATE_DOMAINS 的同步由 tests/bridge_state_domains.test.mjs 锁定。
+  const STATE_SLICE_FIELDS = window.PinvouBridgeShared.STATE_SLICE_FIELDS;
   function snapshotStateSlice(domain) {
     const fields = STATE_SLICE_FIELDS[domain];
     if (!fields) throw new Error("Unknown Tauri bridge state slice: " + domain);
@@ -1540,72 +1511,7 @@ function planCardHydrationKey(item) { return pinvouSharedtauriMain().planCardHyd
 function defineSubscriptionStateProperty(target, key, value) { return pinvouSharedtauriMain().defineSubscriptionStateProperty(target, key, value); }
 function copySubscriptionStateObject(source) { return pinvouSharedtauriMain().copySubscriptionStateObject(source); }
   // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
-  function subscriptionStateValue(value, previous, ancestors) {
-    const valueType = typeof value;
-    if (!value || valueType !== "object") {
-      if (["function", "symbol", "bigint"].includes(valueType)) {
-        throw new TypeError("Subscription state only supports JSON-like scalar values");
-      }
-      return value;
-    }
-    const isArray = Array.isArray(value);
-    if (!isArray) {
-      const prototype = Object.getPrototypeOf(value);
-      const isPlainObject = prototype === null || (
-        Object.getPrototypeOf(prototype) === null &&
-        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 floor; Object.hasOwn is unavailable and this call is already the safe form
-        Object.prototype.hasOwnProperty.call(prototype, "constructor") &&
-        prototype.constructor && prototype.constructor.name === "Object"
-      );
-      if (!isPlainObject) {
-        throw new TypeError("Subscription state only supports arrays and plain objects");
-      }
-    }
-    ancestors = ancestors || new WeakSet();
-    if (ancestors.has(value)) throw new TypeError("Subscription state must not contain cycles");
-    ancestors.add(value);
-    try {
-      if (isArray) {
-        const previousArray = Array.isArray(previous) ? previous : null;
-        if (!previousArray) {
-          return Object.freeze(value.map(function (item) {
-            return subscriptionStateValue(item, undefined, ancestors);
-          }));
-        }
-        let nextArray = value.length === previousArray.length ? null : previousArray.slice(0, value.length);
-        for (let arrayIndex = 0; arrayIndex < value.length; arrayIndex++) {
-          const nextItem = subscriptionStateValue(value[arrayIndex], previousArray[arrayIndex], ancestors);
-          if (!Object.is(nextItem, previousArray[arrayIndex])) {
-            if (!nextArray) nextArray = [...previousArray];
-            nextArray[arrayIndex] = nextItem;
-          }
-        }
-        return nextArray ? Object.freeze(nextArray) : previousArray;
-      }
-
-      const keys = Object.keys(value);
-      const previousObject = previous && typeof previous === "object" && !Array.isArray(previous)
-        ? previous
-        : null;
-      const previousKeys = previousObject ? Object.keys(previousObject) : [];
-      const sameShape = !!previousObject && keys.length === previousKeys.length && keys.every(function (key) {
-        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 floor; Object.hasOwn is unavailable and this call is already the safe form
-        return Object.prototype.hasOwnProperty.call(previousObject, key);
-      });
-      let nextObject = sameShape ? null : {};
-      for (let objectIndex = 0; objectIndex < keys.length; objectIndex++) {
-        const key = keys[objectIndex];
-        const nextValue = subscriptionStateValue(value[key], previousObject && previousObject[key], ancestors);
-        if (!sameShape || !Object.is(nextValue, previousObject[key])) {
-          if (!nextObject) nextObject = copySubscriptionStateObject(previousObject);
-          defineSubscriptionStateProperty(nextObject, key, nextValue);
-        }
-      }
-      return nextObject ? Object.freeze(nextObject) : previousObject;
-    } finally {
-      ancestors.delete(value);
-    }
-  }
+function subscriptionStateValue(value, previous, ancestors) { return pinvouSharedtauriMain().subscriptionStateValue(value, previous, ancestors); }
   let subscriptionSliceRevision = 0;
   const subscriptionSliceCache = Object.create(null);
   function subscriptionStateSlice(domain) {
@@ -1811,277 +1717,74 @@ function pinvouSharedtauriMainN99856() {
 }
 
 
-    state.chatItems = [];
-    itemIdSeq = 0;
-    // Replay rebuilds toolMeta only for historical tool_uses that still have a
-    // matching tool_result to backfill (write/patch's large args otherwise
-    // duplicate the whole transcript inside the 32-entry all-session LRU).
-    // Durable replay clears first (when not live hydrating), reclaiming only
-    // orphan entries left by interrupted turns (the live event path itself
-    // stays insert/delete balanced); entries are deleted again right after
-    // their tool_result backfill lookup — nothing reads them afterwards.
-    if (!(opts && opts.keepLiveToolMeta)) toolMeta = {};
     // 卡牌事件按 pos 插回原位(pos=事件发生时的 messages 数)。让重载历史不割裂。
     const pe = Array.isArray(state.personaEvents) ? state.personaEvents : [];
 function emitPersonaAt(atOrAfter, isTail) { return pinvouSharedtauriMainN99856().emitPersonaAt(atOrAfter, isTail); }
-    // 预扫 tool_result：tool_use 在 assistant 消息、result 在后续 user 消息，需提前建映射
-    // 才能在还原选择卡/方案卡时拿到结果（选项/快照）。
-    const resultById = {};
-    for (let ri = 0; ri < state.messages.length; ri++) {
-      const rc = state.messages[ri].content;
-      if (!Array.isArray(rc)) continue;
-      for (let rj = 0; rj < rc.length; rj++) {
-        if (rc[rj].type === "tool_result") {
-          resultById[rc[rj].tool_use_id] = { content: rc[rj].content, is_error: !!rc[rj].is_error };
+    // 重放主体在 shared/bridge-shared-helpers.js 的 rerenderFromMessagesCore；
+    // 以下为 desktop lane 的差异 hooks（steer 标记 / toolMeta 重建-清理策略 /
+    // careful_blocked 卡形状 / 未决工具卡终态 sweep）。
+    return pinvouSharedtauriMain().rerenderFromMessagesCore({
+      itemIdSeq: { get value() { return itemIdSeq; }, set value(v) { itemIdSeq = v; } },
+      toolMeta: { get value() { return toolMeta; }, set value(v) { toolMeta = v; } },
+      emitPersonaAt,
+      userMessageDisplayText,
+      updateToolItem,
+      PLAN_TOOLS,
+      renderMarkdown,
+      // A mid-turn steer injection is no admission (no timing record):
+      // the conversation projection must not let it consume a lifecycle
+      // record (phantom "interrupted"). New sessions mark it via the
+      // steered-messages sidecar (pos + text verified); the envelope
+      // check stays as the fallback for pre-alignment persisted sessions.
+      markSteered: function (uitem2, mi, utext, blocks) {
+        if (isSteeredMessagePos(mi, utext) || (Array.isArray(blocks) ? blocks : []).some(function (b) {
+          const t = String(b && b.type === "text" ? b.text : "").trim();
+          return (t.indexOf("<turn_meta>") === 0 && t.endsWith("</turn_meta>")) || t === "<turn_meta_unchanged />";
+        })) uitem2.steeredMidTurn = true;
+      },
+      carefulBlockedItem: function (c, tm, blockedMd) {
+        return { type: "careful_blocked", args: tm.args, metadata: blockedMd, time: "" };
+      },
+      // Delete after backfill: the meta serves exactly this one
+      // tool_result restoration (a late duplicate tool_end exits early
+      // via toolCallAlreadyFinished); leftovers would keep historical
+      // args resident in the session buffer.
+      afterToolResultBackfill: function (toolUseId) { delete toolMeta[toolUseId]; },
+      // Rebuild meta only for historical tool_use entries that still
+      // have a tool_result pending backfill (the backfill loop above
+      // deletes them right after consuming); leftovers from interrupted
+      // turns with no result have no consumer and are no longer inserted.
+      // live hydration exception (keepLiveToolMeta): the tool_end event
+      // of an in-flight tool still needs the meta.
+      rebuildToolMeta: function (b, resultById, coreOpts) {
+        if (resultById[b.id] || (coreOpts && coreOpts.keepLiveToolMeta)) {
+          toolMeta[b.id] = { name: b.name, args: b.input };
         }
-      }
-    }
-    // 预扫:每个产物最后一次被 write/append/edit 改的 tool_use id → rerender 只在最后一次
-    // 续一张成品卡(与实时 chat:done 的一张对齐,不刷一堆)。
-    const lastDirtyArtifactId = {};
-    const writtenArtifacts = {}; // write/append 写过的 path=产物;没 present 时兜底补首卡
-    const presentedArtifacts = {}; // 整篇 present_artifact 过的 path → 别再兜底补首卡(present 会出卡,否则重复)
-    const presentedArtifactNames = {}; // path 可能一边相对一边绝对,basename 去重防重复卡
-    for (let di = 0; di < state.messages.length; di++) {
-      const dc = state.messages[di].content;
-      if (!Array.isArray(dc)) continue;
-      for (let dj = 0; dj < dc.length; dj++) {
-        const db = dc[dj];
-        const dbMutation = db.type === "tool_use" && fileMutationAction(db.name, db.input);
-        if (dbMutation) {
-          extractArtifactPaths(db.input).forEach(function (dap) {
-            lastDirtyArtifactId[dap] = db.id;
-            // 与实时 tool_end 同一门控:tmp/ 中间文件、非成品扩展名不记账,
-            // 否则实时不进面板的文件切 session 重放后反而兜底冒出成品卡。
-            if (dbMutation !== "edit" && isDeliverable(dap)) writtenArtifacts[dap] = true;
-          });
-        } else if (db.type === "tool_use" && isPresentArtifactTool(db.name)) {
-          const pap = extractArtifactPath(db.input);
-          const pres = resultById[db.id];
-          const pp = presentArtifactAbsPath(pres && pres.content, pap);
-          if (pp) {
-            presentedArtifacts[pp] = true;
-            presentedArtifactNames[basename(pp)] = true;
-          }
-        } else if (db.type === "tool_use" && shouldUseToolOutputAsArtifact(db.name)) {
-          const gres = resultById[db.id];
-          if (!(gres && gres.is_error)) {
-            const gp = artifactPathFromToolOutput(gres && gres.content);
-            if (gp && isDeliverable(gp)) {
-              lastDirtyArtifactId[gp] = db.id;
-              writtenArtifacts[gp] = true;
-            }
-          }
-        }
-      }
-    }
-    for (let mi = 0; mi < state.messages.length; mi++) {
-      emitPersonaAt(mi, false); // 该消息之前发生的卡牌事件先插
-      const m = state.messages[mi];
-      const blocks = Array.isArray(m.content) ? m.content : [];
-      if (m.role === "user") {
-        // Always strip exact internal envelopes: sessions saved before the
-        // persistence alignment still carry the engine-baked <turn_meta>
-        // block on mid-turn steered messages, and without the filter the
-        // hydrated bubble rendered the raw envelope after a restart.
-        const utext = userMessageDisplayText(blocks, true);
-        if (utext) {
-          // pinvouTransfer 是展示层标记、不在 messages → rerender 从转交固定措辞还原品/悟样式
-          const uitem2 = { type: "user", text: utext, time: "", messageIndex: mi };
-          // A mid-turn steer injection is no admission (no timing record):
-          // the conversation projection must not let it consume a lifecycle
-          // record (phantom "interrupted"). New sessions mark it via the
-          // steered-messages sidecar (pos + text verified); the envelope
-          // check stays as the fallback for pre-alignment persisted sessions.
-          if (isSteeredMessagePos(mi, utext) || (Array.isArray(blocks) ? blocks : []).some(function (b) {
-            const t = String(b && b.type === "text" ? b.text : "").trim();
-            return (t.indexOf("<turn_meta>") === 0 && t.endsWith("</turn_meta>")) || t === "<turn_meta_unchanged />";
-          })) uitem2.steeredMidTurn = true;
-          const scene = pinvouSceneForMessagePos(mi);
-          if (scene) uitem2.pinvouScene = scene;
-          if (textMatchesBtKey(utext, "reviewFillHeader")) uitem2.pinvouTransfer = "悟";
-          else if (textMatchesBtKey(utext, "reviewFixHeader") || textMatchesBtKey(utext, "reviewAdoptHeader") || textMatchesBtKey(utext, "reviewAskHeader")) uitem2.pinvouTransfer = "品";
-          addChatItem(uitem2);
-        }
-        // tool_result（只回填普通工具卡；选择卡/方案卡的结果已在 tool_use 处还原）
-        for (let ci = 0; ci < blocks.length; ci++) {
-          const c = blocks[ci];
-          if (c.type !== "tool_result") continue;
-          const tm = toolMeta[c.tool_use_id];
-          if (tm) {
-            // careful hook 拦截 → 还原 🛑 红卡(实时由 tool_end metadata 插,重载从文本反解)
-            const blockedMd = parseCarefulBlocked(toolResultText(c.content));
-            if (blockedMd) {
-              updateToolItem(c.tool_use_id, toolResultDisplayContent(c.content), false); // 被拦=失败态,与实时一致
-              addChatItem({ type: "careful_blocked", args: tm.args, metadata: blockedMd, time: "" });
-            } else {
-              // load_skill 同样脱敏：重载历史时也不还原 SKILL.md 全文，展开只见占位。
-              const contentForCard = (tm.name === "load_skill")
-                ? bt("skillContentHidden")
-                : toolResultDisplayContent(c.content);
-              updateToolItem(c.tool_use_id, contentForCard, !c.is_error);
-            }
-          }
-          // Delete after backfill: the meta serves exactly this one
-          // tool_result restoration (a late duplicate tool_end exits early
-          // via toolCallAlreadyFinished); leftovers would keep historical
-          // args resident in the session buffer.
-          delete toolMeta[c.tool_use_id];
-        }
-        continue;
-      }
-      if (m.role !== "assistant") continue;
-      let textBuf = "";
-      let planSnap = null, todosSnap = null, sawPlanTool = false;
-      for (let bi = 0; bi < blocks.length; bi++) {
-        const b = blocks[bi];
-        if (b.type === "text") {
-          textBuf += b.text;
-        } else if (b.type === "thinking") {
-          if (textBuf) {
-            addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
-            textBuf = "";
-          }
-          const reasoningText = String(b.thinking || b.text || "");
-          if (reasoningText) {
-            addChatItem({
-              type: "reasoning", text: reasoningText, time: "", streaming: false,
-              startedAt: null, completedAt: null,
-            });
-          }
-        } else if (b.type === "tool_use") {
-          if (textBuf) {
-            addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
-            textBuf = "";
-          }
-          // Rebuild meta only for historical tool_use entries that still
-          // have a tool_result pending backfill (the backfill loop above
-          // deletes them right after consuming); leftovers from interrupted
-          // turns with no result have no consumer and are no longer inserted.
-          // live hydration exception (keepLiveToolMeta): the tool_end event
-          // of an in-flight tool still needs the meta.
-          if (resultById[b.id] || (opts && opts.keepLiveToolMeta)) {
-            toolMeta[b.id] = { name: b.name, args: b.input };
-          }
-          // request_user_input → 还原只读选择卡（问题来自 input，选项高亮来自 result）
-          if (b.name === "request_user_input") {
-            const qs = (b.input && b.input.questions) || [];
-            if (Array.isArray(qs) && qs.length) {
-              const res = resultById[b.id];
-              // 快照可能落在 turn 进行中（底座每次落盘）：tool_use 尚无对应
-              // tool_result，不能按历史恢复为 submitted。跳过，等
-              // chat:user_input_required 事件渲染可交互的 active 卡。
-              if (!res) continue;
-              addChatItem({
-                type: "user_input", toolCallId: b.id, questions: qs,
-                resolved: true, cardState: res.is_error ? "cancelled" : "submitted",
-                restoredAnswers: parseUserAnswers(res.content, qs), time: "",
-              });
-            }
-            continue;
-          }
-          // present_artifact → 还原成品卡(切会话不丢)。仅当工具成功时还原:
-          // 失败的调用回退成普通工具卡(下方 default addChatItem)。
-          if (isPresentArtifactTool(b.name)) {
-            const pares = resultById[b.id];
-            if (!(pares && pares.is_error)) {
-              const rpp = presentArtifactAbsPath(pares && pares.content, b.input && b.input.path);
-              const restoredCard = {
-                type: "artifact_card",
-                path: rpp,
-                title: (b.input && b.input.title) || "",
-                description: (b.input && b.input.description) || "",
-                time: "",
-                sessionId: state.activeSessionId,
-              };
-              if (!updatePresentedArtifact(restoredCard)) addChatItem(restoredCard);
-              continue;
-            }
-          }
-          // update_plan / checklist_write / todo_write → 收集快照，本条消息末尾还原方案卡
-          if (PLAN_TOOLS.has(b.name)) {
-            const snap = parsePlanSnapshot(resultById[b.id] && resultById[b.id].content);
-            if (snap) {
-              if (b.name === "update_plan") planSnap = snap; else todosSnap = snap;
-            }
-            sawPlanTool = true;
-            continue;
-          }
-          addChatItem({ type: "tool", toolId: b.id, name: b.name, args: b.input, output: null, success: null, state: "pending" });
-          if (shouldUseToolOutputAsArtifact(b.name)) {
-            const gres2 = resultById[b.id];
-            const gap = artifactPathFromToolOutput(gres2 && gres2.content);
-            if (!(gres2 && gres2.is_error) && gap && isDeliverable(gap) && lastDirtyArtifactId[gap] === b.id && !presentedArtifacts[gap] && !presentedArtifactNames[basename(gap)]) {
-              const gprev = findPresentedArtifact(gap);
-              if (gprev) {
-                const gcard = {
-                  type: "artifact_card", path: gprev.path, title: gprev.title,
-                  description: gprev.description, time: "", sessionId: state.activeSessionId,
-                };
-                if (!updatePresentedArtifact(gcard)) addChatItem(gcard);
-              } else if (writtenArtifacts[gap]) {
-                addChatItem({ type: "artifact_card", path: gap, title: basename(gap), description: "", time: "", sessionId: state.activeSessionId });
-              }
-            }
-          }
-          // 还原"自动续卡":File.write/File.edit 改的文件之前 present 过 → 续一张
-          // 成品卡(与实时 tool_end 的自动续逻辑对齐,切会话不丢)。present 的卡按
-          // 顺序在前(必须先 present 才进集合),此处 findPresentedArtifact 能命中。
-          if (fileMutationAction(b.name, b.input)) {
-            const wres = resultById[b.id];
-            extractArtifactPaths(b.input).forEach(function (wap) {
-              // 去重:同产物只在最后一次修改处补一张卡(与实时对齐)。
-              if ((wres && wres.is_error) || lastDirtyArtifactId[wap] !== b.id) return;
-              const wprev = findPresentedArtifact(wap);
-              if (wprev) {
-                const wcard = {
-                  type: "artifact_card", path: wprev.path, title: wprev.title,
-                  description: wprev.description, time: "", sessionId: state.activeSessionId,
-                };
-                if (!updatePresentedArtifact(wcard)) addChatItem(wcard);
-              } else if (writtenArtifacts[wap] && !presentedArtifacts[wap] && !presentedArtifactNames[basename(wap)]) {
-                // AI 写了产物但全程没 present_artifact → 兜底补首卡(与实时 chat:done 对齐)
-                addChatItem({ type: "artifact_card", path: wap, title: basename(wap), description: "", time: "", sessionId: state.activeSessionId });
-              }
-            });
+      },
+      // Replay-time terminal ratchet (parity with the codex native lane): a
+      // tool_use that never got a matching tool_result in the persisted
+      // transcript is an interrupted in-flight call — it can never complete
+      // after reload, so settle it as failed instead of leaving an eternal
+      // "running" card (a live spawn row would then pulse forever through the
+      // swarm aggregation). Skipped while the session is mid-turn: pending
+      // cards then belong to the live turn and are settled by its own events;
+      // background shells keep running across turns and are excluded; so are
+      // synthetic shell-snapshot cards ("shell-task:" ids never pair with a
+      // tool_use id, and their job may still be running — the terminal poll
+      // settles them itself from the snapshot).
+      sweepUnsettledTools: function (resultById) {
+        if (!state.busy) {
+          for (const item of state.chatItems) {
+            const unsettled = item && item.type === "tool" && item.toolId && item.background !== true
+              && item.shellSnapshot !== true
+              && (item.state === "pending" || item.state === "running") && !resultById[item.toolId];
+            if (!unsettled) continue;
+            item.success = false;
+            item.state = "failed";
           }
         }
-      }
-      if (textBuf) {
-        addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
-      }
-      // 本条 assistant 消息用过 plan 工具 → 还原一张只读历史方案卡
-      if (sawPlanTool && (planSnap || todosSnap)) {
-        const snaps = { plan: planSnap, todos: todosSnap };
-        addChatItem({
-          type: "plan_card", plan: planSnap, todos: todosSnap,
-          planMarkdown: composePlanMarkdown(snaps),
-          cardState: "frozen", resolved: true, statusLabel: bt("planHistorical"), time: "",
-        });
-      }
-    }
-    // Replay-time terminal ratchet (parity with the codex native lane): a
-    // tool_use that never got a matching tool_result in the persisted
-    // transcript is an interrupted in-flight call — it can never complete
-    // after reload, so settle it as failed instead of leaving an eternal
-    // "running" card (a live spawn row would then pulse forever through the
-    // swarm aggregation). Skipped while the session is mid-turn: pending
-    // cards then belong to the live turn and are settled by its own events;
-    // background shells keep running across turns and are excluded; so are
-    // synthetic shell-snapshot cards ("shell-task:" ids never pair with a
-    // tool_use id, and their job may still be running — the terminal poll
-    // settles them itself from the snapshot).
-    if (!state.busy) {
-      for (const item of state.chatItems) {
-        const unsettled = item && item.type === "tool" && item.toolId && item.background !== true
-          && item.shellSnapshot !== true
-          && (item.state === "pending" || item.state === "running") && !resultById[item.toolId];
-        if (!unsettled) continue;
-        item.success = false;
-        item.state = "failed";
-      }
-    }
-    emitPersonaAt(state.messages.length, true); // 最后一条消息之后发生的卡牌事件(末尾加持/卸下)
+      },
+    }, opts);
   }
 
   const terminalFeature = installBridgeFeature("terminal", { state, notify, invoke, bt, runSyncOnSession, addChatItem });

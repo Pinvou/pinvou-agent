@@ -43,6 +43,32 @@
     return !!candidate && typeof candidate === "object" && "value" in candidate;
   }
 
+  // FE14 wave 5：桥接状态切片字段注册表——tauri/bridge.js（桌面订阅快照）与
+  // web/bridge/domain-adapter.js（Web 端 getMany/stablePick）共用同一份常量，
+  // 由 root.PinvouBridgeShared.STATE_SLICE_FIELDS 静态导出（无 deps、两 lane 只读）。
+  // projects 由 projects feature (bridge/projects.js) 注册；必须与 main.jsx 的
+  // APP_BRIDGE_STATE_DOMAINS 保持同步 —— tests/bridge_state_domains.test.mjs 锁定。
+  const STATE_SLICE_FIELDS = {
+    platform: ["appVersion", "backendOnline", "platformCapabilities"],
+    sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch", "draftWorkspacePath"],
+    chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
+    voice: ["voiceInput", "voiceAsrSetup"],
+    knowledge: ["kbModelSetup", "mountedCollection", "mountedCollections", "mountedRemoteCollections", "mountedCollectionsRevision"],
+    scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],
+    monitor: ["monitor", "monitorError"],
+    settings: ["settings", "selectedPet"],
+    models: ["activeModelId", "currentSessionModelId", "effectiveModelConfig", "savedModels"],
+    vllm: [],
+    interaction: ["pinvouModal", "pinvouReviews", "pinvouSummoning", "superPermEnabled"],
+    computerUse: ["computerUse"],
+    personas: ["activePersona", "personaEvents", "personaPool"],
+    memory: ["memory"],
+    remoteControl: ["webAccess"],
+    updater: ["updateCancelling", "updateCheckError", "updateChecking", "updateDownloading", "updateError", "updateInfo", "updateProgress", "updateReady"],
+    dependencies: ["deps", "depsChecking", "depsInstallError", "depsInstallProgress", "depsInstalling"],
+    projects: ["projectsList"],
+  };
+
   function ensureCells(deps) {
     if (deps == null) throw new TypeError("bridge shared deps object required");
     const wrapped = Object.assign({}, deps);
@@ -63,7 +89,7 @@
       switchToSessionInternal, openScheduledRunChatOnce, loadWorkingSetFrom, purgeSessionBuffer, refreshHistoryList, saveWorkingSetTo,
       normalizeTerminalTail, latestShellToolIsWaitObserver, extractArtifactPaths, parseToolResultPayload, clearMonitorBaseline,
       loadSessionModel, setActiveModel, currentDraftModeState, setDraftMode,
-      applyAuthoritativeModeState, sendMessage, pushUserEcho, flushAssistantMessageToHistory, dialogOpen, addAttachmentByPath,
+      applyAuthoritativeModeState, sendMessage, pushUserEcho, dialogOpen, addAttachmentByPath,
       ensureSession, stopMediaTracks, finishVoiceInput, BT_TABLE, PINVOU_SCENE_EVENTS_STORAGE_PREFIX, sessionStates,
       sessionBufferTouchClock, scheduledRunSessionOwners, scheduledRunOwnerTouchClock, MAX_SCHEDULED_RUN_SESSION_OWNERS, scheduledTaskTemplateSources, scheduledTaskRequestTokens,
       scheduledTaskRefreshInFlight, scheduledRecentRunsRequestToken, scheduledRunEventRefreshTimer, scheduledTaskPendingLoads, scheduledTaskSelectionGeneration, scheduledRunShortcutRefreshes,
@@ -71,7 +97,7 @@
       personaPlaceholderTitles, sessionSwitchRequestToken, SHELL_TOOL_NAMES, shellPollState, DELIVERABLE_EXTS, monitorBaseline,
       monitorIntervalId, monitorPollInFlight, gpuUtilHistory, settingsWriteQueue, modelsLoadSeq, memoryOverviewSeq, personaPoolCache, personaSyncSeq,
       deletedPersonaIds, lastEquippedSid, mountedCollectionDraftTarget, mountedCollectionUpdate, activeVoiceInput, voiceOperations, VOICE_DEVICE_REQUEST_TIMEOUT_MS,
-      pe, sid, ensureSessionBufferLoaded, auxChatDispatch
+      pe, sid, ensureSessionBufferLoaded, auxChatDispatch, pendingStreamNotifications, pendingAssistantText, pendingAssistantBlocks, finalizeAssistantStreamBeforeReasoning, flushPendingTextBlock
     } = deps;
 
   // web+tauriMain 共享
@@ -445,6 +471,74 @@
       defineSubscriptionStateProperty(result, key, source[key]);
     });
     return result;
+  }
+
+  // web+tauriMain 共享（FE14 wave 5）
+  function subscriptionStateValue(value, previous, ancestors) {
+    const valueType = typeof value;
+    if (!value || valueType !== "object") {
+      if (["function", "symbol", "bigint"].includes(valueType)) {
+        throw new TypeError("Subscription state only supports JSON-like scalar values");
+      }
+      return value;
+    }
+    const isArray = Array.isArray(value);
+    if (!isArray) {
+      const prototype = Object.getPrototypeOf(value);
+      const isPlainObject = prototype === null || (
+        Object.getPrototypeOf(prototype) === null &&
+        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 floor; Object.hasOwn is unavailable and this call is already the safe form
+        Object.prototype.hasOwnProperty.call(prototype, "constructor") &&
+        prototype.constructor && prototype.constructor.name === "Object"
+      );
+      if (!isPlainObject) {
+        throw new TypeError("Subscription state only supports arrays and plain objects");
+      }
+    }
+    ancestors = ancestors || new WeakSet();
+    if (ancestors.has(value)) throw new TypeError("Subscription state must not contain cycles");
+    ancestors.add(value);
+    try {
+      if (isArray) {
+        const previousArray = Array.isArray(previous) ? previous : null;
+        if (!previousArray) {
+          return Object.freeze(value.map(function (item) {
+            return subscriptionStateValue(item, undefined, ancestors);
+          }));
+        }
+        let nextArray = value.length === previousArray.length ? null : previousArray.slice(0, value.length);
+        for (let arrayIndex = 0; arrayIndex < value.length; arrayIndex++) {
+          const nextItem = subscriptionStateValue(value[arrayIndex], previousArray[arrayIndex], ancestors);
+          if (!Object.is(nextItem, previousArray[arrayIndex])) {
+            if (!nextArray) nextArray = [...previousArray];
+            nextArray[arrayIndex] = nextItem;
+          }
+        }
+        return nextArray ? Object.freeze(nextArray) : previousArray;
+      }
+
+      const keys = Object.keys(value);
+      const previousObject = previous && typeof previous === "object" && !Array.isArray(previous)
+        ? previous
+        : null;
+      const previousKeys = previousObject ? Object.keys(previousObject) : [];
+      const sameShape = !!previousObject && keys.length === previousKeys.length && keys.every(function (key) {
+        // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 floor; Object.hasOwn is unavailable and this call is already the safe form
+        return Object.prototype.hasOwnProperty.call(previousObject, key);
+      });
+      let nextObject = sameShape ? null : {};
+      for (let objectIndex = 0; objectIndex < keys.length; objectIndex++) {
+        const key = keys[objectIndex];
+        const nextValue = subscriptionStateValue(value[key], previousObject && previousObject[key], ancestors);
+        if (!sameShape || !Object.is(nextValue, previousObject[key])) {
+          if (!nextObject) nextObject = copySubscriptionStateObject(previousObject);
+          defineSubscriptionStateProperty(nextObject, key, nextValue);
+        }
+      }
+      return nextObject ? Object.freeze(nextObject) : previousObject;
+    } finally {
+      ancestors.delete(value);
+    }
   }
 
   // web+tauriScheduled 共享
@@ -4264,6 +4358,405 @@
     return auxId;
   }
 
+  // web+tauriChatEvents 共享（FE14 wave 5：chat 事件 lane 的 DI 对）
+  function visibleUserTurnIndex() {
+    const count = state.chatItems.filter(function (item) { return item && item.type === "user"; }).length;
+    return Math.max(0, count - 1);
+  }
+
+  // web+tauriChatEvents 共享
+  function latestOpenTimelineStart() {
+    const events = state.turnTimeline || [];
+    const completed = Object.create(null);
+    events.forEach(function (event) {
+      if (event && event.event === "assistant_done") completed[event.turn_id] = true;
+    });
+    for (let index = events.length - 1; index >= 0; index--) {
+      const event = events[index];
+      if (event && event.event === "user_start" && !completed[event.turn_id]) return event;
+    }
+    return null;
+  }
+
+  // web+tauriChatEvents 共享
+  function recordTurnStarted() {
+    if (state.activeTurnTimelineId) return;
+    const timestamp = Date.now();
+    const turnIndex = visibleUserTurnIndex();
+    const existing = latestOpenTimelineStart();
+    if (existing && Math.abs(timestamp - Number(existing.timestamp || 0)) < 60000) {
+      existing.ui_turn_index = turnIndex;
+      state.activeTurnTimelineId = existing.turn_id;
+      return;
+    }
+    const turnId = "ui_" + String(state.activeSessionId || "session") + "_" + timestamp + "_" + turnIndex;
+    state.activeTurnTimelineId = turnId;
+    state.turnTimeline = [...(state.turnTimeline || []), {
+      turn_id: turnId,
+      event: "user_start",
+      timestamp,
+      ts: new Date(timestamp).toISOString(),
+      ui_turn_index: turnIndex,
+    }];
+  }
+
+  // web+tauriChatEvents 共享
+  // Every semantic notification is a synchronous flush boundary. Its
+  // snapshot already contains all accumulated deltas, so the pending frame
+  // must be cancelled to avoid a duplicate callback after done/error/tool/
+  // permission/session events.
+  function cancelPendingStreamNotify(sid) {
+    const pending = sid && pendingStreamNotifications.value[sid];
+    if (!pending) return;
+    if (pending.frame !== null && typeof window.cancelAnimationFrame === "function") {
+      window.cancelAnimationFrame(pending.frame);
+    }
+    if (pending.timer !== null && typeof clearTimeout === "function") clearTimeout(pending.timer);
+    delete pendingStreamNotifications.value[sid];
+  }
+
+  // web+tauriChatEvents 共享
+  function preserveInterruptedAssistantPresentation() {
+    let userItemIndex = -1;
+    let afterMessageIndex = -1;
+    let afterUserOrdinal = -1;
+    for (let index = 0; index < state.chatItems.length; index++) {
+      const candidate = state.chatItems[index];
+      if (!candidate || candidate.type !== "user") continue;
+      afterUserOrdinal += 1;
+      userItemIndex = index;
+      afterMessageIndex = -1;
+      if (Number.isFinite(Number(candidate.messageIndex))) {
+        afterMessageIndex = Number(candidate.messageIndex);
+      }
+    }
+    // 没有任何 user 气泡时无法锚定轮次;若把全部历史 assistant 项都标记为
+    // 仅展示,下次权威重载会在末尾追加整段历史的重复副本。此时放弃保留,
+    // 退化为修复前行为(重载后消失),但必须清空 pending 以免污染下一轮。
+    if (userItemIndex < 0) {
+      pendingAssistantText.value = "";
+      pendingAssistantBlocks.value = [];
+      return;
+    }
+    for (let itemIndex = userItemIndex + 1; itemIndex < state.chatItems.length; itemIndex++) {
+      const item = state.chatItems[itemIndex];
+      if (!item || item.type !== "assistant" || !item.html) continue;
+      item.interruptedDisplayOnly = true;
+      item.afterMessageIndex = afterMessageIndex;
+      item.afterUserOrdinal = afterUserOrdinal;
+    }
+    pendingAssistantText.value = "";
+    pendingAssistantBlocks.value = [];
+  }
+
+  // web+tauriChatEvents 共享
+  function startReasoningBlock(index) {
+    const existing = streamingReasoningItem(index);
+    if (existing) return existing;
+    finalizeStreamingReasoning();
+    finalizeAssistantStreamBeforeReasoning();
+    const item = {
+      type: "reasoning",
+      text: "",
+      time: timeStr(),
+      streaming: true,
+      startedAt: Date.now(),
+      completedAt: null,
+      reasoningIndex: index,
+    };
+    addChatItem(item);
+    // 用空 thinking block 记录明确的 Started 边界，使两个相邻的
+    // thinking content block 不会在持久化时被误合并。
+    pendingAssistantBlocks.value.push({ type: "thinking", thinking: "" });
+    return item;
+  }
+
+  // web+tauriChatEvents 共享
+  function appendReasoningBlock(text) {
+    const blocks = pendingAssistantBlocks.value;
+    const last = blocks[blocks.length - 1];
+    if (last && last.type === "thinking") last.thinking += text;
+    else blocks.push({ type: "thinking", thinking: text });
+  }
+
+  // web+tauriChatEvents 共享
+  function flushAssistantMessageToHistory() {
+    flushPendingTextBlock();
+    if (pendingAssistantBlocks.value.length) {
+      const assistantText = pendingAssistantBlocks.value
+        .filter(function (block) { return block && block.type === "text" && block.text; })
+        .map(function (block) { return block.text; })
+        .join("\n\n");
+      if (state.activeSessionId && state.activeSessionId === state.scheduledTaskCreationSessionId) {
+        const scheduledTaskDraft = parseScheduledTaskDraftFromText(assistantText);
+        if (scheduledTaskDraft) {
+          autoCreateScheduledTaskDraft(scheduledTaskDraft, state.activeSessionId);
+        }
+      }
+      state.messages.push({ role: "assistant", content: pendingAssistantBlocks.value });
+      pendingAssistantBlocks.value = [];
+    }
+  }
+
+  // web+tauriMain 共享（FE14 wave 5：rerenderFromMessages 共享核心）。
+  // 重放主体两侧逐字一致；仅剩的 lane 差异点全部经 lane hooks 注入：
+  //   itemIdSeq                重放前清零（cell）
+  //   toolMeta(cell)           重放 meta 表（cell；清空时机两 lane 一致）
+  //   emitPersonaAt            卡牌事件按 pos 插回（lane 以本次调用的 pe 快照构造
+  //                            嵌套 cluster，见两 lane wrapper）
+  //   markSteered              mid-turn steer 标记（desktop steering 专属；web 无）
+  //   carefulBlockedItem       🛑 红卡形状（web 附 toolCallId 供前端联动）
+  //   afterToolResultBackfill  回填后清理（tauri 删 toolMeta 条目；web 按 32 条 LRU
+  //                            策略保留残差——两侧注释各自成文）
+  //   rebuildToolMeta          meta 重建策略（tauri 只重建有 result 的；web 全量重建）
+  //   sweepUnsettledTools      重放后未决工具卡终态（tauri 置 failed；web 无 sweep）
+  function rerenderFromMessagesCore(lane, opts) {
+    state.chatItems = [];
+    lane.itemIdSeq.value = 0;
+    // Replay rebuilds toolMeta only for historical tool_uses that still have a
+    // matching tool_result to backfill (write/patch's large args otherwise
+    // duplicate the whole transcript inside the 32-entry all-session LRU).
+    // Durable replay clears first (when not live hydrating), reclaiming only
+    // orphan entries left by interrupted turns (the live event path itself
+    // stays insert/delete balanced); entries are deleted again right after
+    // their tool_result backfill lookup — nothing reads them afterwards.
+    if (!(opts && opts.keepLiveToolMeta)) lane.toolMeta.value = {};
+    // 预扫 tool_result：tool_use 在 assistant 消息、result 在后续 user 消息，需提前建映射
+    // 才能在还原选择卡/方案卡时拿到结果（选项/快照）。
+    const resultById = {};
+    for (let ri = 0; ri < state.messages.length; ri++) {
+      const rc = state.messages[ri].content;
+      if (!Array.isArray(rc)) continue;
+      for (let rj = 0; rj < rc.length; rj++) {
+        if (rc[rj].type === "tool_result") {
+          resultById[rc[rj].tool_use_id] = { content: rc[rj].content, is_error: !!rc[rj].is_error };
+        }
+      }
+    }
+    // 预扫:每个产物最后一次被 write/append/edit 改的 tool_use id → rerender 只在最后一次
+    // 续一张成品卡(与实时 chat:done 的一张对齐,不刷一堆)。
+    const lastDirtyArtifactId = {};
+    const writtenArtifacts = {}; // write/append 写过的 path=产物;没 present 时兜底补首卡
+    const presentedArtifacts = {}; // 整篇 present_artifact 过的 path → 别再兜底补首卡(present 会出卡,否则重复)
+    const presentedArtifactNames = {}; // path 可能一边相对一边绝对,basename 去重防重复卡
+    for (let di = 0; di < state.messages.length; di++) {
+      const dc = state.messages[di].content;
+      if (!Array.isArray(dc)) continue;
+      for (let dj = 0; dj < dc.length; dj++) {
+        const db = dc[dj];
+        const dbMutation = db.type === "tool_use" && fileMutationAction(db.name, db.input);
+        if (dbMutation) {
+          extractArtifactPaths(db.input).forEach(function (dap) {
+            lastDirtyArtifactId[dap] = db.id;
+            // 与实时 tool_end 同一门控:tmp/ 中间文件、非成品扩展名不记账,
+            // 否则实时不进面板的文件切 session 重放后反而兜底冒出成品卡。
+            if (dbMutation !== "edit" && isDeliverable(dap)) writtenArtifacts[dap] = true;
+          });
+        } else if (db.type === "tool_use" && isPresentArtifactTool(db.name)) {
+          const pap = extractArtifactPath(db.input);
+          const pres = resultById[db.id];
+          const pp = presentArtifactAbsPath(pres && pres.content, pap);
+          if (pp) {
+            presentedArtifacts[pp] = true;
+            presentedArtifactNames[basename(pp)] = true;
+          }
+        } else if (db.type === "tool_use" && shouldUseToolOutputAsArtifact(db.name)) {
+          const gres = resultById[db.id];
+          if (!(gres && gres.is_error)) {
+            const gp = artifactPathFromToolOutput(gres && gres.content);
+            if (gp && isDeliverable(gp)) {
+              lastDirtyArtifactId[gp] = db.id;
+              writtenArtifacts[gp] = true;
+            }
+          }
+        }
+      }
+    }
+    for (let mi = 0; mi < state.messages.length; mi++) {
+      lane.emitPersonaAt(mi, false); // 该消息之前发生的卡牌事件先插
+      const m = state.messages[mi];
+      const blocks = Array.isArray(m.content) ? m.content : [];
+      if (m.role === "user") {
+        // Always strip exact internal envelopes: sessions saved before the
+        // persistence alignment still carry the engine-baked <turn_meta>
+        // block on mid-turn steered messages, and without the filter the
+        // hydrated bubble rendered the raw envelope after a restart.
+        const utext = lane.userMessageDisplayText(blocks, true);
+        if (utext) {
+          // pinvouTransfer 是展示层标记、不在 messages → rerender 从转交固定措辞还原品/悟样式
+          const uitem2 = { type: "user", text: utext, time: "", messageIndex: mi };
+          lane.markSteered(uitem2, mi, utext, blocks);
+          const scene = pinvouSceneForMessagePos(mi);
+          if (scene) uitem2.pinvouScene = scene;
+          if (textMatchesBtKey(utext, "reviewFillHeader")) uitem2.pinvouTransfer = "悟";
+          else if (textMatchesBtKey(utext, "reviewFixHeader") || textMatchesBtKey(utext, "reviewAdoptHeader") || textMatchesBtKey(utext, "reviewAskHeader")) uitem2.pinvouTransfer = "品";
+          addChatItem(uitem2);
+        }
+        // tool_result（只回填普通工具卡；选择卡/方案卡的结果已在 tool_use 处还原）
+        for (let ci = 0; ci < blocks.length; ci++) {
+          const c = blocks[ci];
+          if (c.type !== "tool_result") continue;
+          const tm = lane.toolMeta.value[c.tool_use_id];
+          if (tm) {
+            // careful hook 拦截 → 还原 🛑 红卡(实时由 tool_end metadata 插,重载从文本反解)
+            const blockedMd = parseCarefulBlocked(toolResultText(c.content));
+            if (blockedMd) {
+              lane.updateToolItem(c.tool_use_id, toolResultDisplayContent(c.content), false); // 被拦=失败态,与实时一致
+              addChatItem(lane.carefulBlockedItem(c, tm, blockedMd));
+            } else {
+              // load_skill 同样脱敏：重载历史时也不还原 SKILL.md 全文，展开只见占位。
+              const contentForCard = (tm.name === "load_skill")
+                ? bt("skillContentHidden")
+                : toolResultDisplayContent(c.content);
+              lane.updateToolItem(c.tool_use_id, contentForCard, !c.is_error);
+            }
+          }
+          lane.afterToolResultBackfill(c.tool_use_id);
+        }
+        continue;
+      }
+      if (m.role !== "assistant") continue;
+      let textBuf = "";
+      let planSnap = null, todosSnap = null, sawPlanTool = false;
+      for (let bi = 0; bi < blocks.length; bi++) {
+        const b = blocks[bi];
+        if (b.type === "text") {
+          textBuf += b.text;
+        } else if (b.type === "thinking") {
+          if (textBuf) {
+            addChatItem({ type: "assistant", text: textBuf, html: lane.renderMarkdown(textBuf), time: "", streaming: false });
+            textBuf = "";
+          }
+          const reasoningText = String(b.thinking || b.text || "");
+          if (reasoningText) {
+            addChatItem({
+              type: "reasoning", text: reasoningText, time: "", streaming: false,
+              startedAt: null, completedAt: null,
+            });
+          }
+        } else if (b.type === "tool_use") {
+          if (textBuf) {
+            addChatItem({ type: "assistant", text: textBuf, html: lane.renderMarkdown(textBuf), time: "", streaming: false });
+            textBuf = "";
+          }
+          lane.rebuildToolMeta(b, resultById, opts);
+          // request_user_input → 还原只读选择卡（问题来自 input，选项高亮来自 result）
+          if (b.name === "request_user_input") {
+            const qs = (b.input && b.input.questions) || [];
+            if (Array.isArray(qs) && qs.length) {
+              const res = resultById[b.id];
+              // 快照可能落在 turn 进行中（底座每次落盘）：tool_use 尚无对应
+              // tool_result，不能按历史恢复为 submitted。跳过，等
+              // chat:user_input_required 事件渲染可交互的 active 卡。
+              if (!res) continue;
+              addChatItem({
+                type: "user_input", toolCallId: b.id, questions: qs,
+                resolved: true, cardState: res.is_error ? "cancelled" : "submitted",
+                restoredAnswers: parseUserAnswers(res.content, qs), time: "",
+              });
+            }
+            continue;
+          }
+          // present_artifact → 还原成品卡(切会话不丢)。仅当工具成功时还原:
+          // 失败的调用回退成普通工具卡(下方 default addChatItem)。
+          if (isPresentArtifactTool(b.name)) {
+            const pares = resultById[b.id];
+            if (!(pares && pares.is_error)) {
+              const rpp = presentArtifactAbsPath(pares && pares.content, b.input && b.input.path);
+              const restoredCard = {
+                type: "artifact_card",
+                path: rpp,
+                title: (b.input && b.input.title) || "",
+                description: (b.input && b.input.description) || "",
+                time: "",
+                sessionId: state.activeSessionId,
+              };
+              if (!updatePresentedArtifact(restoredCard)) addChatItem(restoredCard);
+              continue;
+            }
+          }
+          // update_plan / checklist_write / todo_write → 收集快照，本条消息末尾还原方案卡
+          if (lane.PLAN_TOOLS.has(b.name)) {
+            const snap = parsePlanSnapshot(resultById[b.id] && resultById[b.id].content);
+            if (snap) {
+              if (b.name === "update_plan") planSnap = snap; else todosSnap = snap;
+            }
+            sawPlanTool = true;
+            continue;
+          }
+          addChatItem({ type: "tool", toolId: b.id, name: b.name, args: b.input, output: null, success: null, state: "pending" });
+          if (shouldUseToolOutputAsArtifact(b.name)) {
+            const gres2 = resultById[b.id];
+            const gap = artifactPathFromToolOutput(gres2 && gres2.content);
+            if (!(gres2 && gres2.is_error) && gap && isDeliverable(gap) && lastDirtyArtifactId[gap] === b.id && !presentedArtifacts[gap] && !presentedArtifactNames[basename(gap)]) {
+              const gprev = findPresentedArtifact(gap);
+              if (gprev) {
+                const gcard = {
+                  type: "artifact_card", path: gprev.path, title: gprev.title,
+                  description: gprev.description, time: "", sessionId: state.activeSessionId,
+                };
+                if (!updatePresentedArtifact(gcard)) addChatItem(gcard);
+              } else if (writtenArtifacts[gap]) {
+                addChatItem({ type: "artifact_card", path: gap, title: basename(gap), description: "", time: "", sessionId: state.activeSessionId });
+              }
+            }
+          }
+          // 还原"自动续卡":File.write/File.edit 改的文件之前 present 过 → 续一张
+          // 成品卡(与实时 tool_end 的自动续逻辑对齐,切会话不丢)。present 的卡按
+          // 顺序在前(必须先 present 才进集合),此处 findPresentedArtifact 能命中。
+          if (fileMutationAction(b.name, b.input)) {
+            const wres = resultById[b.id];
+            extractArtifactPaths(b.input).forEach(function (wap) {
+              // 去重:同产物只在最后一次修改处补一张卡(与实时对齐)。
+              if ((wres && wres.is_error) || lastDirtyArtifactId[wap] !== b.id) return;
+              const wprev = findPresentedArtifact(wap);
+              if (wprev) {
+                const wcard = {
+                  type: "artifact_card", path: wprev.path, title: wprev.title,
+                  description: wprev.description, time: "", sessionId: state.activeSessionId,
+                };
+                if (!updatePresentedArtifact(wcard)) addChatItem(wcard);
+              } else if (writtenArtifacts[wap] && !presentedArtifacts[wap] && !presentedArtifactNames[basename(wap)]) {
+                // AI 写了产物但全程没 present_artifact → 兜底补首卡(与实时 chat:done 对齐)
+                addChatItem({ type: "artifact_card", path: wap, title: basename(wap), description: "", time: "", sessionId: state.activeSessionId });
+              }
+            });
+          }
+        }
+      }
+      if (textBuf) {
+        addChatItem({ type: "assistant", text: textBuf, html: lane.renderMarkdown(textBuf), time: "", streaming: false });
+      }
+      // 本条 assistant 消息用过 plan 工具 → 还原一张只读历史方案卡
+      if (sawPlanTool && (planSnap || todosSnap)) {
+        const snaps = { plan: planSnap, todos: todosSnap };
+        addChatItem({
+          type: "plan_card", plan: planSnap, todos: todosSnap,
+          planMarkdown: composePlanMarkdown(snaps),
+          cardState: "frozen", resolved: true, statusLabel: bt("planHistorical"), time: "",
+        });
+      }
+    }
+    lane.sweepUnsettledTools(resultById);
+    lane.emitPersonaAt(state.messages.length, true); // 最后一条消息之后发生的卡牌事件(末尾加持/卸下)
+  }
+
+  // web+tauriMain 共享（FE14 wave 5：权威重载的 live 卡片过滤——后台 Shell 保留策略）
+  function liveChatItemKeptForHydration(item) {
+    if (!item || item.type === "user") return false;
+    if (item.type === "assistant") return item.interruptedDisplayOnly === true;
+    if (item.turnErrorNotice && !item.legacyConversationOnly) return false;
+    // 后台 Shell 在 chat:done 后仍继续运行；持久化 transcript 只有工具结果文本，
+    // 没有 taskId/background/liveOutput，权威重载时必须保留实时卡片并按 toolId 合并。
+    if (item.type === "tool") return item.background === true && item.state === "running";
+    // Plan cards need semantic matching by their plan snapshot. Their generic
+    // hydration key includes ticket/action state and would append an active
+    // live duplicate after the durable frozen card.
+    if (item.type === "plan_card") return false;
+    return true;
+  }
+
+
   // lane 转发优先：以下名字在部分 lane 会以 deps（lane 内转发函数）传入；
   // 有传入时保持合并前的解析路径（转发到原 cluster 实例），未传入时用上方共享实现。
   const FORWARDER_DEP_NAMES = [
@@ -4310,7 +4803,7 @@
     if (deps[name] !== undefined) forwarderSetters[name](deps[name]);
   }
 
-    return {bt, textMatchesBtKey, isDefaultChatTitle, authoritySyncBufferSnapshot, normalizePinvouScene, pinvouSceneStorageKey, normalizePinvouSceneEvents, loadPinvouSceneEventsForSession, savePinvouSceneEventsForSession, recordPinvouSceneForMessage, pinvouSceneForMessagePos, getBuffer, isProtectedScheduledBuffer, touchSessionBuffer, registerScheduledRunOwner, scheduledRunOwnerVisibleRank, scheduledRunOwnerPriority, pruneScheduledRunSessionOwners, isScheduledRunTerminal, rememberScheduledRunOwner, scheduledRunBuffer, markScheduledInitialTurnActive, markScheduledInitialTurnTerminal, beginScheduledOpenActivation, rollbackScheduledOpenActivation, markRemoteTurn, onSessionEvent, isScheduledRunSession, defineSubscriptionStateProperty, copySubscriptionStateObject, loadScheduledTaskTemplateSources, rememberScheduledTaskTemplateSource, attachScheduledTaskTemplateSource, attachAndPruneScheduledTaskTemplateSources, upsertScheduledTask, applyScheduledRunViewed, invalidateScheduledTaskReads, invalidateScheduledRecentRuns, invalidateScheduledRecentRunsForSession, scheduleScheduledRunRefresh, scheduledTaskErrorText, setScheduledTaskError, dismissScheduledTaskError, clearScheduledTaskLoadError, beginScheduledTaskLoad, endScheduledTaskLoad, scheduledTaskRequestStamp, isCurrentScheduledTaskRequest, selectScheduledTask, clearScheduledTaskSelection, extractBalancedJsonObject, parseLooseJsonObject, parseScheduledTaskDraftFromText, normalizeScheduledTaskDraft, activeScheduledTaskModelConfig, lockScheduledTaskDraftModel, scheduledTaskInputFromDraft, autoCreateScheduledTaskDraft, createScheduledTask, loadScheduledTasks, readScheduledTask, mergeScheduledTaskRecentRuns, loadScheduledTaskRuns, upsertRecentRunRow, loadScheduledTaskRecentRuns, refreshScheduledTaskData, refreshScheduledRunShortcutUntilLinked, upsertScheduledTaskRun, runScheduledTaskAction, updateScheduledTask, pauseScheduledTask, resumeScheduledTask, toggleScheduledTaskPinned, deleteScheduledTask, runScheduledTaskNow, startScheduledTaskChat, toolCallAlreadyFinished, hasChatItemForTool, addSystemItem, addAuthoritySyncNotice, compactPruneRollupText, removeCompactionStartItem, addOrMergePruneCompaction, timeStr, createNewSession, reportSessionSwitchFailure, mergeHydratedMessages, hydratedChatItemKey, switchToSession, openScheduledRunChat, exitScheduledRunChat, recentScheduledRunForSession, leaveSessionView, applyDeletedSession, onSessionDeleted, renameSession, toggleSessionPinned, archiveSession, restoreArchivedSession, toolResultText, stripInternalToolRuntimeSuffix, toolResultDisplayContent, parsePlanSnapshot, parseUserAnswers, parseCarefulBlocked, userMessageInputProvenance, isInternalUserMessageProvenance, isShellExecutionTool, utf8Length, formatShellSnapshot, shellCommandForItem, shellSnapshotKey, terminalShellHistoryMatch, applyShellSnapshots, scheduleShellPoll, runShellPoll, patchLastItem, hasUnresolvedItem, basename, isAbsPath, normalizedPath, applyWorkspaceReboundMark, sessionRecentlyRebound, rebaseArtifactPathsForRebind, pathIsRebindStale, noteArtifactChange, isSharedMcpArtifactPath, artifactBelongsToSession, filterSessionArtifacts, isTmpPath, isDeliverable, markTurnDirtyArtifact, untrackArtifact, findPresentedArtifact, updatePresentedArtifact, pushArtifactPath, extractArtifactPath, fileMutationAction, composePlanMarkdown, isBusyFor, formatAttachmentDisplayText, queuedPayloadEnvelope, stripMentionBlockForComposerRestore, makeQueuedMessage, rebuiltQueuedPayload, rebuiltQueuedMetaPayload, getComposerDraft, setComposerDraft, prefillComposer, inspectPinvou, recordPinvouReview, dismissPinvouReview, summonPinvou, resolvePinvouReview, persistPinvouReviews, planCardHydrationKey, reasoningEventIndex, streamingReasoningItem, finalizeStreamingReasoning, isPresentArtifactTool, artifactPathFromToolOutput, shouldUseToolOutputAsArtifact, presentArtifactAbsPath, numOr0, adjustCounters, startMonitorPolling, stopMonitorPolling, pollMonitor, loadSettings, loadSelectedPet, setSelectedPet, enqueueSettingsWrite, submitFeedback, discoverLocalVllm, loadEffectiveModelConfig, getImageInputCapability, loadModels, revealModelApiKey, switchModel, testModelConnection, testImageInputCapability, refreshSuperPerm, setModeLane, patchItemById, runOnSession, addSystemItemFor, patchItemByIdFor, memoryWriteLabel, memoryWriteStatusLabel, normalizeMemoryCandidateText, handleMemoryWrite, orderedMemoryWarnings, applyMemoryProfileState, applyMemoryWriteState, upsertMemoryValue, upsertPendingMemoryCandidate, rehydratePendingMemoryCandidates, discardStaleLoad, loadOrganizeHistory, applyMemoryOverview, loadMemoryOverview, updateMemoryItem, deleteMemoryItem, resolveMemoryCandidate, startThinking, thinkingTool, thinkingIdle, stopThinking, isActionablePlanCard, setPlanModeNext, planStuckReplan, submitUserInput, openContainingFolder, revealSessionFolder, openScheduledTaskFolder, deliverableCategory, sessionTitleById, currentMemoryArtifacts, conversationAttachmentArgs, pickAndAttach, loadPersonas, refreshPersonas, createPersona, updatePersona, deletePersona, personaName, recordPersonaEvent, equipPersona, postCardCreatorIntro, normalizeMountedCollections, applyMountedCollections, mountedCollectionTargetAtEnqueue, updateMountedCollections, mountCollection, setCollectionEnabled, removeCollection, checkForUpdate, checkDependencies, setVoiceInputStatus, emitVoiceDiagnostic, voiceFlowError, requestVoiceMedia, mergeFloatChunks, downsamplePcm, closeVoiceAsrSetup, downloadKbModel, cancelVoiceInput, appendVoiceText, trackVoiceTerminal, rememberVoiceOperation, getVoiceOperationId, beginVoiceSubmission, voiceOperationSessionId, hasVoiceSubmissionPending, rebindVoiceOperationToDraft, completeVoiceSubmission, encodeWav, interruptedDisplayRange, emitPersonaAt, restoreUiTurnState, rememberDraftWorkspaceRecent, maybePruneFailedWorkspaceRecent, forgetDraftWorkspaceRecent, auxChatEnsure, auxChatSend, auxChatSnapshot, auxChatReset };}
+    return {bt, textMatchesBtKey, isDefaultChatTitle, authoritySyncBufferSnapshot, normalizePinvouScene, pinvouSceneStorageKey, normalizePinvouSceneEvents, loadPinvouSceneEventsForSession, savePinvouSceneEventsForSession, recordPinvouSceneForMessage, pinvouSceneForMessagePos, getBuffer, isProtectedScheduledBuffer, touchSessionBuffer, registerScheduledRunOwner, scheduledRunOwnerVisibleRank, scheduledRunOwnerPriority, pruneScheduledRunSessionOwners, isScheduledRunTerminal, rememberScheduledRunOwner, scheduledRunBuffer, markScheduledInitialTurnActive, markScheduledInitialTurnTerminal, beginScheduledOpenActivation, rollbackScheduledOpenActivation, markRemoteTurn, onSessionEvent, isScheduledRunSession, defineSubscriptionStateProperty, copySubscriptionStateObject, subscriptionStateValue, loadScheduledTaskTemplateSources, rememberScheduledTaskTemplateSource, attachScheduledTaskTemplateSource, attachAndPruneScheduledTaskTemplateSources, upsertScheduledTask, applyScheduledRunViewed, invalidateScheduledTaskReads, invalidateScheduledRecentRuns, invalidateScheduledRecentRunsForSession, scheduleScheduledRunRefresh, scheduledTaskErrorText, setScheduledTaskError, dismissScheduledTaskError, clearScheduledTaskLoadError, beginScheduledTaskLoad, endScheduledTaskLoad, scheduledTaskRequestStamp, isCurrentScheduledTaskRequest, selectScheduledTask, clearScheduledTaskSelection, extractBalancedJsonObject, parseLooseJsonObject, parseScheduledTaskDraftFromText, normalizeScheduledTaskDraft, activeScheduledTaskModelConfig, lockScheduledTaskDraftModel, scheduledTaskInputFromDraft, autoCreateScheduledTaskDraft, createScheduledTask, loadScheduledTasks, readScheduledTask, mergeScheduledTaskRecentRuns, loadScheduledTaskRuns, upsertRecentRunRow, loadScheduledTaskRecentRuns, refreshScheduledTaskData, refreshScheduledRunShortcutUntilLinked, upsertScheduledTaskRun, runScheduledTaskAction, updateScheduledTask, pauseScheduledTask, resumeScheduledTask, toggleScheduledTaskPinned, deleteScheduledTask, runScheduledTaskNow, startScheduledTaskChat, toolCallAlreadyFinished, hasChatItemForTool, addSystemItem, addAuthoritySyncNotice, compactPruneRollupText, removeCompactionStartItem, addOrMergePruneCompaction, timeStr, createNewSession, reportSessionSwitchFailure, mergeHydratedMessages, hydratedChatItemKey, switchToSession, openScheduledRunChat, exitScheduledRunChat, recentScheduledRunForSession, leaveSessionView, applyDeletedSession, onSessionDeleted, renameSession, toggleSessionPinned, archiveSession, restoreArchivedSession, toolResultText, stripInternalToolRuntimeSuffix, toolResultDisplayContent, parsePlanSnapshot, parseUserAnswers, parseCarefulBlocked, userMessageInputProvenance, isInternalUserMessageProvenance, isShellExecutionTool, utf8Length, formatShellSnapshot, shellCommandForItem, shellSnapshotKey, terminalShellHistoryMatch, applyShellSnapshots, scheduleShellPoll, runShellPoll, patchLastItem, hasUnresolvedItem, basename, isAbsPath, normalizedPath, applyWorkspaceReboundMark, sessionRecentlyRebound, rebaseArtifactPathsForRebind, pathIsRebindStale, noteArtifactChange, isSharedMcpArtifactPath, artifactBelongsToSession, filterSessionArtifacts, isTmpPath, isDeliverable, markTurnDirtyArtifact, untrackArtifact, findPresentedArtifact, updatePresentedArtifact, pushArtifactPath, extractArtifactPath, fileMutationAction, composePlanMarkdown, isBusyFor, formatAttachmentDisplayText, queuedPayloadEnvelope, stripMentionBlockForComposerRestore, makeQueuedMessage, rebuiltQueuedPayload, rebuiltQueuedMetaPayload, getComposerDraft, setComposerDraft, prefillComposer, inspectPinvou, recordPinvouReview, dismissPinvouReview, summonPinvou, resolvePinvouReview, persistPinvouReviews, planCardHydrationKey, reasoningEventIndex, streamingReasoningItem, finalizeStreamingReasoning, visibleUserTurnIndex, latestOpenTimelineStart, recordTurnStarted, cancelPendingStreamNotify, preserveInterruptedAssistantPresentation, startReasoningBlock, appendReasoningBlock, flushAssistantMessageToHistory, isPresentArtifactTool, artifactPathFromToolOutput, shouldUseToolOutputAsArtifact, presentArtifactAbsPath, numOr0, adjustCounters, startMonitorPolling, stopMonitorPolling, pollMonitor, loadSettings, loadSelectedPet, setSelectedPet, enqueueSettingsWrite, submitFeedback, discoverLocalVllm, loadEffectiveModelConfig, getImageInputCapability, loadModels, revealModelApiKey, switchModel, testModelConnection, testImageInputCapability, refreshSuperPerm, setModeLane, patchItemById, runOnSession, addSystemItemFor, patchItemByIdFor, memoryWriteLabel, memoryWriteStatusLabel, normalizeMemoryCandidateText, handleMemoryWrite, orderedMemoryWarnings, applyMemoryProfileState, applyMemoryWriteState, upsertMemoryValue, upsertPendingMemoryCandidate, rehydratePendingMemoryCandidates, discardStaleLoad, loadOrganizeHistory, applyMemoryOverview, loadMemoryOverview, updateMemoryItem, deleteMemoryItem, resolveMemoryCandidate, startThinking, thinkingTool, thinkingIdle, stopThinking, isActionablePlanCard, setPlanModeNext, planStuckReplan, submitUserInput, openContainingFolder, revealSessionFolder, openScheduledTaskFolder, deliverableCategory, sessionTitleById, currentMemoryArtifacts, conversationAttachmentArgs, pickAndAttach, loadPersonas, refreshPersonas, createPersona, updatePersona, deletePersona, personaName, recordPersonaEvent, equipPersona, postCardCreatorIntro, normalizeMountedCollections, applyMountedCollections, mountedCollectionTargetAtEnqueue, updateMountedCollections, mountCollection, setCollectionEnabled, removeCollection, checkForUpdate, checkDependencies, setVoiceInputStatus, emitVoiceDiagnostic, voiceFlowError, requestVoiceMedia, mergeFloatChunks, downsamplePcm, closeVoiceAsrSetup, downloadKbModel, cancelVoiceInput, appendVoiceText, trackVoiceTerminal, rememberVoiceOperation, getVoiceOperationId, beginVoiceSubmission, voiceOperationSessionId, hasVoiceSubmissionPending, rebindVoiceOperationToDraft, completeVoiceSubmission, encodeWav, interruptedDisplayRange, emitPersonaAt, rerenderFromMessagesCore, liveChatItemKeptForHydration, restoreUiTurnState, rememberDraftWorkspaceRecent, maybePruneFailedWorkspaceRecent, forgetDraftWorkspaceRecent, auxChatEnsure, auxChatSend, auxChatSnapshot, auxChatReset };}
 
   // 嵌套 cluster（<base>:<offset>）：web/tauri 两侧正文逐字相同，每对共用一个工厂并注册在两个 key 下。
   const nestedInterruptedDisplayRange = function (deps) {
@@ -4332,10 +4825,10 @@
     "web": function (deps) {
       const b = sharedBridgeBase(ensureCells(deps));
 
-      return Object.freeze({bt: b.bt, textMatchesBtKey: b.textMatchesBtKey, isDefaultChatTitle: b.isDefaultChatTitle, authoritySyncBufferSnapshot: b.authoritySyncBufferSnapshot, normalizePinvouScene: b.normalizePinvouScene, pinvouSceneStorageKey: b.pinvouSceneStorageKey, normalizePinvouSceneEvents: b.normalizePinvouSceneEvents, loadPinvouSceneEventsForSession: b.loadPinvouSceneEventsForSession, savePinvouSceneEventsForSession: b.savePinvouSceneEventsForSession, recordPinvouSceneForMessage: b.recordPinvouSceneForMessage, pinvouSceneForMessagePos: b.pinvouSceneForMessagePos, getBuffer: b.getBuffer, isProtectedScheduledBuffer: b.isProtectedScheduledBuffer, touchSessionBuffer: b.touchSessionBuffer, registerScheduledRunOwner: b.registerScheduledRunOwner, scheduledRunOwnerVisibleRank: b.scheduledRunOwnerVisibleRank, scheduledRunOwnerPriority: b.scheduledRunOwnerPriority, pruneScheduledRunSessionOwners: b.pruneScheduledRunSessionOwners, isScheduledRunTerminal: b.isScheduledRunTerminal, rememberScheduledRunOwner: b.rememberScheduledRunOwner, scheduledRunBuffer: b.scheduledRunBuffer, markScheduledInitialTurnActive: b.markScheduledInitialTurnActive, markScheduledInitialTurnTerminal: b.markScheduledInitialTurnTerminal, beginScheduledOpenActivation: b.beginScheduledOpenActivation, rollbackScheduledOpenActivation: b.rollbackScheduledOpenActivation, markRemoteTurn: b.markRemoteTurn, onSessionEvent: b.onSessionEvent, isScheduledRunSession: b.isScheduledRunSession, defineSubscriptionStateProperty: b.defineSubscriptionStateProperty, copySubscriptionStateObject: b.copySubscriptionStateObject, loadScheduledTaskTemplateSources: b.loadScheduledTaskTemplateSources, rememberScheduledTaskTemplateSource: b.rememberScheduledTaskTemplateSource, attachScheduledTaskTemplateSource: b.attachScheduledTaskTemplateSource, attachAndPruneScheduledTaskTemplateSources: b.attachAndPruneScheduledTaskTemplateSources, upsertScheduledTask: b.upsertScheduledTask, applyScheduledRunViewed: b.applyScheduledRunViewed, invalidateScheduledTaskReads: b.invalidateScheduledTaskReads, invalidateScheduledRecentRuns: b.invalidateScheduledRecentRuns, invalidateScheduledRecentRunsForSession: b.invalidateScheduledRecentRunsForSession, scheduleScheduledRunRefresh: b.scheduleScheduledRunRefresh, scheduledTaskErrorText: b.scheduledTaskErrorText, setScheduledTaskError: b.setScheduledTaskError, dismissScheduledTaskError: b.dismissScheduledTaskError, clearScheduledTaskLoadError: b.clearScheduledTaskLoadError, beginScheduledTaskLoad: b.beginScheduledTaskLoad, endScheduledTaskLoad: b.endScheduledTaskLoad, scheduledTaskRequestStamp: b.scheduledTaskRequestStamp, isCurrentScheduledTaskRequest: b.isCurrentScheduledTaskRequest, selectScheduledTask: b.selectScheduledTask, clearScheduledTaskSelection: b.clearScheduledTaskSelection, extractBalancedJsonObject: b.extractBalancedJsonObject, parseLooseJsonObject: b.parseLooseJsonObject, parseScheduledTaskDraftFromText: b.parseScheduledTaskDraftFromText, normalizeScheduledTaskDraft: b.normalizeScheduledTaskDraft, activeScheduledTaskModelConfig: b.activeScheduledTaskModelConfig, lockScheduledTaskDraftModel: b.lockScheduledTaskDraftModel, scheduledTaskInputFromDraft: b.scheduledTaskInputFromDraft, autoCreateScheduledTaskDraft: b.autoCreateScheduledTaskDraft, createScheduledTask: b.createScheduledTask, loadScheduledTasks: b.loadScheduledTasks, readScheduledTask: b.readScheduledTask, mergeScheduledTaskRecentRuns: b.mergeScheduledTaskRecentRuns, loadScheduledTaskRuns: b.loadScheduledTaskRuns, loadScheduledTaskRecentRuns: b.loadScheduledTaskRecentRuns, refreshScheduledTaskData: b.refreshScheduledTaskData, refreshScheduledRunShortcutUntilLinked: b.refreshScheduledRunShortcutUntilLinked, upsertScheduledTaskRun: b.upsertScheduledTaskRun, runScheduledTaskAction: b.runScheduledTaskAction, updateScheduledTask: b.updateScheduledTask, pauseScheduledTask: b.pauseScheduledTask, resumeScheduledTask: b.resumeScheduledTask, toggleScheduledTaskPinned: b.toggleScheduledTaskPinned, deleteScheduledTask: b.deleteScheduledTask, runScheduledTaskNow: b.runScheduledTaskNow, startScheduledTaskChat: b.startScheduledTaskChat, toolCallAlreadyFinished: b.toolCallAlreadyFinished, hasChatItemForTool: b.hasChatItemForTool, addSystemItem: b.addSystemItem, addAuthoritySyncNotice: b.addAuthoritySyncNotice, compactPruneRollupText: b.compactPruneRollupText, removeCompactionStartItem: b.removeCompactionStartItem, addOrMergePruneCompaction: b.addOrMergePruneCompaction, timeStr: b.timeStr, createNewSession: b.createNewSession, reportSessionSwitchFailure: b.reportSessionSwitchFailure, mergeHydratedMessages: b.mergeHydratedMessages, hydratedChatItemKey: b.hydratedChatItemKey, switchToSession: b.switchToSession, openScheduledRunChat: b.openScheduledRunChat, exitScheduledRunChat: b.exitScheduledRunChat, recentScheduledRunForSession: b.recentScheduledRunForSession, leaveSessionView: b.leaveSessionView, applyDeletedSession: b.applyDeletedSession, onSessionDeleted: b.onSessionDeleted, renameSession: b.renameSession, toggleSessionPinned: b.toggleSessionPinned, archiveSession: b.archiveSession, restoreArchivedSession: b.restoreArchivedSession, toolResultText: b.toolResultText, toolResultDisplayContent: b.toolResultDisplayContent, parsePlanSnapshot: b.parsePlanSnapshot, parseUserAnswers: b.parseUserAnswers, parseCarefulBlocked: b.parseCarefulBlocked, userMessageInputProvenance: b.userMessageInputProvenance, isInternalUserMessageProvenance: b.isInternalUserMessageProvenance, isShellExecutionTool: b.isShellExecutionTool, utf8Length: b.utf8Length, formatShellSnapshot: b.formatShellSnapshot, shellCommandForItem: b.shellCommandForItem, shellSnapshotKey: b.shellSnapshotKey, terminalShellHistoryMatch: b.terminalShellHistoryMatch, applyShellSnapshots: b.applyShellSnapshots, scheduleShellPoll: b.scheduleShellPoll, runShellPoll: b.runShellPoll, patchLastItem: b.patchLastItem, hasUnresolvedItem: b.hasUnresolvedItem, basename: b.basename, isAbsPath: b.isAbsPath, normalizedPath: b.normalizedPath, applyWorkspaceReboundMark: b.applyWorkspaceReboundMark, sessionRecentlyRebound: b.sessionRecentlyRebound, rebaseArtifactPathsForRebind: b.rebaseArtifactPathsForRebind, pathIsRebindStale: b.pathIsRebindStale, noteArtifactChange: b.noteArtifactChange, isSharedMcpArtifactPath: b.isSharedMcpArtifactPath, artifactBelongsToSession: b.artifactBelongsToSession, filterSessionArtifacts: b.filterSessionArtifacts, isDeliverable: b.isDeliverable, markTurnDirtyArtifact: b.markTurnDirtyArtifact, untrackArtifact: b.untrackArtifact, findPresentedArtifact: b.findPresentedArtifact, updatePresentedArtifact: b.updatePresentedArtifact, pushArtifactPath: b.pushArtifactPath, extractArtifactPath: b.extractArtifactPath, fileMutationAction: b.fileMutationAction, composePlanMarkdown: b.composePlanMarkdown, isBusyFor: b.isBusyFor, formatAttachmentDisplayText: b.formatAttachmentDisplayText, stripMentionBlockForComposerRestore: b.stripMentionBlockForComposerRestore, makeQueuedMessage: b.makeQueuedMessage, rebuiltQueuedPayload: b.rebuiltQueuedPayload, rebuiltQueuedMetaPayload: b.rebuiltQueuedMetaPayload, getComposerDraft: b.getComposerDraft, setComposerDraft: b.setComposerDraft, prefillComposer: b.prefillComposer, inspectPinvou: b.inspectPinvou, recordPinvouReview: b.recordPinvouReview, dismissPinvouReview: b.dismissPinvouReview, summonPinvou: b.summonPinvou, resolvePinvouReview: b.resolvePinvouReview, persistPinvouReviews: b.persistPinvouReviews, planCardHydrationKey: b.planCardHydrationKey, reasoningEventIndex: b.reasoningEventIndex, streamingReasoningItem: b.streamingReasoningItem, finalizeStreamingReasoning: b.finalizeStreamingReasoning, isPresentArtifactTool: b.isPresentArtifactTool, artifactPathFromToolOutput: b.artifactPathFromToolOutput, shouldUseToolOutputAsArtifact: b.shouldUseToolOutputAsArtifact, presentArtifactAbsPath: b.presentArtifactAbsPath, numOr0: b.numOr0, adjustCounters: b.adjustCounters, startMonitorPolling: b.startMonitorPolling, stopMonitorPolling: b.stopMonitorPolling, pollMonitor, loadSettings: b.loadSettings, loadSelectedPet: b.loadSelectedPet, setSelectedPet: b.setSelectedPet, enqueueSettingsWrite: b.enqueueSettingsWrite, submitFeedback: b.submitFeedback, discoverLocalVllm: b.discoverLocalVllm, getImageInputCapability: b.getImageInputCapability, loadModels: b.loadModels, revealModelApiKey: b.revealModelApiKey, switchModel: b.switchModel, testModelConnection: b.testModelConnection, testImageInputCapability: b.testImageInputCapability, refreshSuperPerm: b.refreshSuperPerm, setModeLane: b.setModeLane, patchItemById: b.patchItemById, runOnSession: b.runOnSession, addSystemItemFor: b.addSystemItemFor, patchItemByIdFor: b.patchItemByIdFor, handleMemoryWrite: b.handleMemoryWrite, orderedMemoryWarnings: b.orderedMemoryWarnings, applyMemoryProfileState: b.applyMemoryProfileState, applyMemoryWriteState: b.applyMemoryWriteState, upsertMemoryValue: b.upsertMemoryValue, rehydratePendingMemoryCandidates: b.rehydratePendingMemoryCandidates, discardStaleLoad: b.discardStaleLoad, loadOrganizeHistory: b.loadOrganizeHistory, applyMemoryOverview: b.applyMemoryOverview, loadMemoryOverview: b.loadMemoryOverview, updateMemoryItem: b.updateMemoryItem, deleteMemoryItem: b.deleteMemoryItem, resolveMemoryCandidate: b.resolveMemoryCandidate, startThinking: b.startThinking, thinkingTool: b.thinkingTool, thinkingIdle: b.thinkingIdle, stopThinking: b.stopThinking, isActionablePlanCard: b.isActionablePlanCard, setPlanModeNext: b.setPlanModeNext, planStuckReplan: b.planStuckReplan, submitUserInput: b.submitUserInput, openContainingFolder: b.openContainingFolder, revealSessionFolder: b.revealSessionFolder, openScheduledTaskFolder: b.openScheduledTaskFolder, deliverableCategory: b.deliverableCategory, sessionTitleById: b.sessionTitleById, currentMemoryArtifacts: b.currentMemoryArtifacts, conversationAttachmentArgs: b.conversationAttachmentArgs, pickAndAttach: b.pickAndAttach, loadPersonas: b.loadPersonas, createPersona: b.createPersona, updatePersona: b.updatePersona, deletePersona: b.deletePersona, personaName: b.personaName, recordPersonaEvent: b.recordPersonaEvent, equipPersona: b.equipPersona, postCardCreatorIntro: b.postCardCreatorIntro, normalizeMountedCollections: b.normalizeMountedCollections, applyMountedCollections: b.applyMountedCollections, mountedCollectionTargetAtEnqueue: b.mountedCollectionTargetAtEnqueue, updateMountedCollections: b.updateMountedCollections, mountCollection: b.mountCollection, setCollectionEnabled: b.setCollectionEnabled, removeCollection: b.removeCollection, checkForUpdate: b.checkForUpdate, checkDependencies: b.checkDependencies, setVoiceInputStatus: b.setVoiceInputStatus, emitVoiceDiagnostic: b.emitVoiceDiagnostic, voiceFlowError: b.voiceFlowError, requestVoiceMedia: b.requestVoiceMedia, mergeFloatChunks: b.mergeFloatChunks, downsamplePcm: b.downsamplePcm, closeVoiceAsrSetup: b.closeVoiceAsrSetup, downloadKbModel: b.downloadKbModel, cancelVoiceInput: b.cancelVoiceInput, appendVoiceText: b.appendVoiceText, trackVoiceTerminal: b.trackVoiceTerminal, rememberVoiceOperation: b.rememberVoiceOperation, getVoiceOperationId: b.getVoiceOperationId, beginVoiceSubmission: b.beginVoiceSubmission, voiceOperationSessionId: b.voiceOperationSessionId, hasVoiceSubmissionPending: b.hasVoiceSubmissionPending, rebindVoiceOperationToDraft: b.rebindVoiceOperationToDraft, completeVoiceSubmission: b.completeVoiceSubmission, encodeWav: b.encodeWav, loadEffectiveModelConfig: b.loadEffectiveModelConfig });},
+      return Object.freeze({bt: b.bt, textMatchesBtKey: b.textMatchesBtKey, isDefaultChatTitle: b.isDefaultChatTitle, authoritySyncBufferSnapshot: b.authoritySyncBufferSnapshot, normalizePinvouScene: b.normalizePinvouScene, pinvouSceneStorageKey: b.pinvouSceneStorageKey, normalizePinvouSceneEvents: b.normalizePinvouSceneEvents, loadPinvouSceneEventsForSession: b.loadPinvouSceneEventsForSession, savePinvouSceneEventsForSession: b.savePinvouSceneEventsForSession, recordPinvouSceneForMessage: b.recordPinvouSceneForMessage, pinvouSceneForMessagePos: b.pinvouSceneForMessagePos, getBuffer: b.getBuffer, isProtectedScheduledBuffer: b.isProtectedScheduledBuffer, touchSessionBuffer: b.touchSessionBuffer, registerScheduledRunOwner: b.registerScheduledRunOwner, scheduledRunOwnerVisibleRank: b.scheduledRunOwnerVisibleRank, scheduledRunOwnerPriority: b.scheduledRunOwnerPriority, pruneScheduledRunSessionOwners: b.pruneScheduledRunSessionOwners, isScheduledRunTerminal: b.isScheduledRunTerminal, rememberScheduledRunOwner: b.rememberScheduledRunOwner, scheduledRunBuffer: b.scheduledRunBuffer, markScheduledInitialTurnActive: b.markScheduledInitialTurnActive, markScheduledInitialTurnTerminal: b.markScheduledInitialTurnTerminal, beginScheduledOpenActivation: b.beginScheduledOpenActivation, rollbackScheduledOpenActivation: b.rollbackScheduledOpenActivation, markRemoteTurn: b.markRemoteTurn, onSessionEvent: b.onSessionEvent, isScheduledRunSession: b.isScheduledRunSession, defineSubscriptionStateProperty: b.defineSubscriptionStateProperty, copySubscriptionStateObject: b.copySubscriptionStateObject, subscriptionStateValue: b.subscriptionStateValue, rerenderFromMessagesCore: b.rerenderFromMessagesCore, liveChatItemKeptForHydration: b.liveChatItemKeptForHydration, loadScheduledTaskTemplateSources: b.loadScheduledTaskTemplateSources, rememberScheduledTaskTemplateSource: b.rememberScheduledTaskTemplateSource, attachScheduledTaskTemplateSource: b.attachScheduledTaskTemplateSource, attachAndPruneScheduledTaskTemplateSources: b.attachAndPruneScheduledTaskTemplateSources, upsertScheduledTask: b.upsertScheduledTask, applyScheduledRunViewed: b.applyScheduledRunViewed, invalidateScheduledTaskReads: b.invalidateScheduledTaskReads, invalidateScheduledRecentRuns: b.invalidateScheduledRecentRuns, invalidateScheduledRecentRunsForSession: b.invalidateScheduledRecentRunsForSession, scheduleScheduledRunRefresh: b.scheduleScheduledRunRefresh, scheduledTaskErrorText: b.scheduledTaskErrorText, setScheduledTaskError: b.setScheduledTaskError, dismissScheduledTaskError: b.dismissScheduledTaskError, clearScheduledTaskLoadError: b.clearScheduledTaskLoadError, beginScheduledTaskLoad: b.beginScheduledTaskLoad, endScheduledTaskLoad: b.endScheduledTaskLoad, scheduledTaskRequestStamp: b.scheduledTaskRequestStamp, isCurrentScheduledTaskRequest: b.isCurrentScheduledTaskRequest, selectScheduledTask: b.selectScheduledTask, clearScheduledTaskSelection: b.clearScheduledTaskSelection, extractBalancedJsonObject: b.extractBalancedJsonObject, parseLooseJsonObject: b.parseLooseJsonObject, parseScheduledTaskDraftFromText: b.parseScheduledTaskDraftFromText, normalizeScheduledTaskDraft: b.normalizeScheduledTaskDraft, activeScheduledTaskModelConfig: b.activeScheduledTaskModelConfig, lockScheduledTaskDraftModel: b.lockScheduledTaskDraftModel, scheduledTaskInputFromDraft: b.scheduledTaskInputFromDraft, autoCreateScheduledTaskDraft: b.autoCreateScheduledTaskDraft, createScheduledTask: b.createScheduledTask, loadScheduledTasks: b.loadScheduledTasks, readScheduledTask: b.readScheduledTask, mergeScheduledTaskRecentRuns: b.mergeScheduledTaskRecentRuns, loadScheduledTaskRuns: b.loadScheduledTaskRuns, loadScheduledTaskRecentRuns: b.loadScheduledTaskRecentRuns, refreshScheduledTaskData: b.refreshScheduledTaskData, refreshScheduledRunShortcutUntilLinked: b.refreshScheduledRunShortcutUntilLinked, upsertScheduledTaskRun: b.upsertScheduledTaskRun, runScheduledTaskAction: b.runScheduledTaskAction, updateScheduledTask: b.updateScheduledTask, pauseScheduledTask: b.pauseScheduledTask, resumeScheduledTask: b.resumeScheduledTask, toggleScheduledTaskPinned: b.toggleScheduledTaskPinned, deleteScheduledTask: b.deleteScheduledTask, runScheduledTaskNow: b.runScheduledTaskNow, startScheduledTaskChat: b.startScheduledTaskChat, toolCallAlreadyFinished: b.toolCallAlreadyFinished, hasChatItemForTool: b.hasChatItemForTool, addSystemItem: b.addSystemItem, addAuthoritySyncNotice: b.addAuthoritySyncNotice, compactPruneRollupText: b.compactPruneRollupText, removeCompactionStartItem: b.removeCompactionStartItem, addOrMergePruneCompaction: b.addOrMergePruneCompaction, timeStr: b.timeStr, createNewSession: b.createNewSession, reportSessionSwitchFailure: b.reportSessionSwitchFailure, mergeHydratedMessages: b.mergeHydratedMessages, hydratedChatItemKey: b.hydratedChatItemKey, switchToSession: b.switchToSession, openScheduledRunChat: b.openScheduledRunChat, exitScheduledRunChat: b.exitScheduledRunChat, recentScheduledRunForSession: b.recentScheduledRunForSession, leaveSessionView: b.leaveSessionView, applyDeletedSession: b.applyDeletedSession, onSessionDeleted: b.onSessionDeleted, renameSession: b.renameSession, toggleSessionPinned: b.toggleSessionPinned, archiveSession: b.archiveSession, restoreArchivedSession: b.restoreArchivedSession, toolResultText: b.toolResultText, toolResultDisplayContent: b.toolResultDisplayContent, parsePlanSnapshot: b.parsePlanSnapshot, parseUserAnswers: b.parseUserAnswers, parseCarefulBlocked: b.parseCarefulBlocked, userMessageInputProvenance: b.userMessageInputProvenance, isInternalUserMessageProvenance: b.isInternalUserMessageProvenance, isShellExecutionTool: b.isShellExecutionTool, utf8Length: b.utf8Length, formatShellSnapshot: b.formatShellSnapshot, shellCommandForItem: b.shellCommandForItem, shellSnapshotKey: b.shellSnapshotKey, terminalShellHistoryMatch: b.terminalShellHistoryMatch, applyShellSnapshots: b.applyShellSnapshots, scheduleShellPoll: b.scheduleShellPoll, runShellPoll: b.runShellPoll, patchLastItem: b.patchLastItem, hasUnresolvedItem: b.hasUnresolvedItem, basename: b.basename, isAbsPath: b.isAbsPath, normalizedPath: b.normalizedPath, applyWorkspaceReboundMark: b.applyWorkspaceReboundMark, sessionRecentlyRebound: b.sessionRecentlyRebound, rebaseArtifactPathsForRebind: b.rebaseArtifactPathsForRebind, pathIsRebindStale: b.pathIsRebindStale, noteArtifactChange: b.noteArtifactChange, isSharedMcpArtifactPath: b.isSharedMcpArtifactPath, artifactBelongsToSession: b.artifactBelongsToSession, filterSessionArtifacts: b.filterSessionArtifacts, isDeliverable: b.isDeliverable, markTurnDirtyArtifact: b.markTurnDirtyArtifact, untrackArtifact: b.untrackArtifact, findPresentedArtifact: b.findPresentedArtifact, updatePresentedArtifact: b.updatePresentedArtifact, pushArtifactPath: b.pushArtifactPath, extractArtifactPath: b.extractArtifactPath, fileMutationAction: b.fileMutationAction, composePlanMarkdown: b.composePlanMarkdown, isBusyFor: b.isBusyFor, formatAttachmentDisplayText: b.formatAttachmentDisplayText, stripMentionBlockForComposerRestore: b.stripMentionBlockForComposerRestore, makeQueuedMessage: b.makeQueuedMessage, rebuiltQueuedPayload: b.rebuiltQueuedPayload, rebuiltQueuedMetaPayload: b.rebuiltQueuedMetaPayload, getComposerDraft: b.getComposerDraft, setComposerDraft: b.setComposerDraft, prefillComposer: b.prefillComposer, inspectPinvou: b.inspectPinvou, recordPinvouReview: b.recordPinvouReview, dismissPinvouReview: b.dismissPinvouReview, summonPinvou: b.summonPinvou, resolvePinvouReview: b.resolvePinvouReview, persistPinvouReviews: b.persistPinvouReviews, planCardHydrationKey: b.planCardHydrationKey, reasoningEventIndex: b.reasoningEventIndex, streamingReasoningItem: b.streamingReasoningItem, finalizeStreamingReasoning: b.finalizeStreamingReasoning, visibleUserTurnIndex: b.visibleUserTurnIndex, latestOpenTimelineStart: b.latestOpenTimelineStart, recordTurnStarted: b.recordTurnStarted, cancelPendingStreamNotify: b.cancelPendingStreamNotify, preserveInterruptedAssistantPresentation: b.preserveInterruptedAssistantPresentation, startReasoningBlock: b.startReasoningBlock, appendReasoningBlock: b.appendReasoningBlock, flushAssistantMessageToHistory: b.flushAssistantMessageToHistory, isPresentArtifactTool: b.isPresentArtifactTool, artifactPathFromToolOutput: b.artifactPathFromToolOutput, shouldUseToolOutputAsArtifact: b.shouldUseToolOutputAsArtifact, presentArtifactAbsPath: b.presentArtifactAbsPath, numOr0: b.numOr0, adjustCounters: b.adjustCounters, startMonitorPolling: b.startMonitorPolling, stopMonitorPolling: b.stopMonitorPolling, pollMonitor, loadSettings: b.loadSettings, loadSelectedPet: b.loadSelectedPet, setSelectedPet: b.setSelectedPet, enqueueSettingsWrite: b.enqueueSettingsWrite, submitFeedback: b.submitFeedback, discoverLocalVllm: b.discoverLocalVllm, getImageInputCapability: b.getImageInputCapability, loadModels: b.loadModels, revealModelApiKey: b.revealModelApiKey, switchModel: b.switchModel, testModelConnection: b.testModelConnection, testImageInputCapability: b.testImageInputCapability, refreshSuperPerm: b.refreshSuperPerm, setModeLane: b.setModeLane, patchItemById: b.patchItemById, runOnSession: b.runOnSession, addSystemItemFor: b.addSystemItemFor, patchItemByIdFor: b.patchItemByIdFor, handleMemoryWrite: b.handleMemoryWrite, orderedMemoryWarnings: b.orderedMemoryWarnings, applyMemoryProfileState: b.applyMemoryProfileState, applyMemoryWriteState: b.applyMemoryWriteState, upsertMemoryValue: b.upsertMemoryValue, rehydratePendingMemoryCandidates: b.rehydratePendingMemoryCandidates, discardStaleLoad: b.discardStaleLoad, loadOrganizeHistory: b.loadOrganizeHistory, applyMemoryOverview: b.applyMemoryOverview, loadMemoryOverview: b.loadMemoryOverview, updateMemoryItem: b.updateMemoryItem, deleteMemoryItem: b.deleteMemoryItem, resolveMemoryCandidate: b.resolveMemoryCandidate, startThinking: b.startThinking, thinkingTool: b.thinkingTool, thinkingIdle: b.thinkingIdle, stopThinking: b.stopThinking, isActionablePlanCard: b.isActionablePlanCard, setPlanModeNext: b.setPlanModeNext, planStuckReplan: b.planStuckReplan, submitUserInput: b.submitUserInput, openContainingFolder: b.openContainingFolder, revealSessionFolder: b.revealSessionFolder, openScheduledTaskFolder: b.openScheduledTaskFolder, deliverableCategory: b.deliverableCategory, sessionTitleById: b.sessionTitleById, currentMemoryArtifacts: b.currentMemoryArtifacts, conversationAttachmentArgs: b.conversationAttachmentArgs, pickAndAttach: b.pickAndAttach, loadPersonas: b.loadPersonas, createPersona: b.createPersona, updatePersona: b.updatePersona, deletePersona: b.deletePersona, personaName: b.personaName, recordPersonaEvent: b.recordPersonaEvent, equipPersona: b.equipPersona, postCardCreatorIntro: b.postCardCreatorIntro, normalizeMountedCollections: b.normalizeMountedCollections, applyMountedCollections: b.applyMountedCollections, mountedCollectionTargetAtEnqueue: b.mountedCollectionTargetAtEnqueue, updateMountedCollections: b.updateMountedCollections, mountCollection: b.mountCollection, setCollectionEnabled: b.setCollectionEnabled, removeCollection: b.removeCollection, checkForUpdate: b.checkForUpdate, checkDependencies: b.checkDependencies, setVoiceInputStatus: b.setVoiceInputStatus, emitVoiceDiagnostic: b.emitVoiceDiagnostic, voiceFlowError: b.voiceFlowError, requestVoiceMedia: b.requestVoiceMedia, mergeFloatChunks: b.mergeFloatChunks, downsamplePcm: b.downsamplePcm, closeVoiceAsrSetup: b.closeVoiceAsrSetup, downloadKbModel: b.downloadKbModel, cancelVoiceInput: b.cancelVoiceInput, appendVoiceText: b.appendVoiceText, trackVoiceTerminal: b.trackVoiceTerminal, rememberVoiceOperation: b.rememberVoiceOperation, getVoiceOperationId: b.getVoiceOperationId, beginVoiceSubmission: b.beginVoiceSubmission, voiceOperationSessionId: b.voiceOperationSessionId, hasVoiceSubmissionPending: b.hasVoiceSubmissionPending, rebindVoiceOperationToDraft: b.rebindVoiceOperationToDraft, completeVoiceSubmission: b.completeVoiceSubmission, encodeWav: b.encodeWav, loadEffectiveModelConfig: b.loadEffectiveModelConfig });},
     "tauriMain": function (deps) {
       const b = sharedBridgeBase(ensureCells(deps));
-      return Object.freeze({ authoritySyncBufferSnapshot: b.authoritySyncBufferSnapshot, bt: b.bt, textMatchesBtKey: b.textMatchesBtKey, isDefaultChatTitle: b.isDefaultChatTitle, normalizePinvouScene: b.normalizePinvouScene, pinvouSceneStorageKey: b.pinvouSceneStorageKey, normalizePinvouSceneEvents: b.normalizePinvouSceneEvents, loadPinvouSceneEventsForSession: b.loadPinvouSceneEventsForSession, savePinvouSceneEventsForSession: b.savePinvouSceneEventsForSession, recordPinvouSceneForMessage: b.recordPinvouSceneForMessage, pinvouSceneForMessagePos: b.pinvouSceneForMessagePos, markRemoteTurn: b.markRemoteTurn, onSessionEvent: b.onSessionEvent, isScheduledRunSession: b.isScheduledRunSession, planCardHydrationKey: b.planCardHydrationKey, defineSubscriptionStateProperty: b.defineSubscriptionStateProperty, copySubscriptionStateObject: b.copySubscriptionStateObject, toolResultText: b.toolResultText, toolResultDisplayContent: b.toolResultDisplayContent, parsePlanSnapshot: b.parsePlanSnapshot, parseUserAnswers: b.parseUserAnswers, parseCarefulBlocked: b.parseCarefulBlocked, userMessageInputProvenance: b.userMessageInputProvenance, isInternalUserMessageProvenance: b.isInternalUserMessageProvenance, patchLastItem: b.patchLastItem, hasUnresolvedItem: b.hasUnresolvedItem, composePlanMarkdown: b.composePlanMarkdown });
+      return Object.freeze({ authoritySyncBufferSnapshot: b.authoritySyncBufferSnapshot, bt: b.bt, textMatchesBtKey: b.textMatchesBtKey, isDefaultChatTitle: b.isDefaultChatTitle, normalizePinvouScene: b.normalizePinvouScene, pinvouSceneStorageKey: b.pinvouSceneStorageKey, normalizePinvouSceneEvents: b.normalizePinvouSceneEvents, loadPinvouSceneEventsForSession: b.loadPinvouSceneEventsForSession, savePinvouSceneEventsForSession: b.savePinvouSceneEventsForSession, recordPinvouSceneForMessage: b.recordPinvouSceneForMessage, pinvouSceneForMessagePos: b.pinvouSceneForMessagePos, markRemoteTurn: b.markRemoteTurn, onSessionEvent: b.onSessionEvent, isScheduledRunSession: b.isScheduledRunSession, rerenderFromMessagesCore: b.rerenderFromMessagesCore, liveChatItemKeptForHydration: b.liveChatItemKeptForHydration, planCardHydrationKey: b.planCardHydrationKey, defineSubscriptionStateProperty: b.defineSubscriptionStateProperty, copySubscriptionStateObject: b.copySubscriptionStateObject, subscriptionStateValue: b.subscriptionStateValue, toolResultText: b.toolResultText, toolResultDisplayContent: b.toolResultDisplayContent, parsePlanSnapshot: b.parsePlanSnapshot, parseUserAnswers: b.parseUserAnswers, parseCarefulBlocked: b.parseCarefulBlocked, userMessageInputProvenance: b.userMessageInputProvenance, isInternalUserMessageProvenance: b.isInternalUserMessageProvenance, patchLastItem: b.patchLastItem, hasUnresolvedItem: b.hasUnresolvedItem, composePlanMarkdown: b.composePlanMarkdown });
     },
     "tauriSessions": function (deps) {
       const b = sharedBridgeBase(ensureCells(deps));
@@ -4365,7 +4858,7 @@
     "tauriChat:31666": nestedRestoreUiTurnState,
     "tauriChatEvents": function (deps) {
       const b = sharedBridgeBase(ensureCells(deps));
-      return Object.freeze({ reasoningEventIndex: b.reasoningEventIndex, streamingReasoningItem: b.streamingReasoningItem, finalizeStreamingReasoning: b.finalizeStreamingReasoning, normalizeMountedCollections: b.normalizeMountedCollections });
+      return Object.freeze({ reasoningEventIndex: b.reasoningEventIndex, streamingReasoningItem: b.streamingReasoningItem, finalizeStreamingReasoning: b.finalizeStreamingReasoning, normalizeMountedCollections: b.normalizeMountedCollections, visibleUserTurnIndex: b.visibleUserTurnIndex, latestOpenTimelineStart: b.latestOpenTimelineStart, recordTurnStarted: b.recordTurnStarted, cancelPendingStreamNotify: b.cancelPendingStreamNotify, preserveInterruptedAssistantPresentation: b.preserveInterruptedAssistantPresentation, startReasoningBlock: b.startReasoningBlock, appendReasoningBlock: b.appendReasoningBlock, flushAssistantMessageToHistory: b.flushAssistantMessageToHistory });
     },
     "tauriMonitor": function (deps) {
       const b = sharedBridgeBase(ensureCells(deps));
@@ -4413,12 +4906,55 @@
     },
   };
 
+  // F-FE13-2（FE14 wave 5）：assistant_done 时间线记录构建器——此前 tauri
+  // chat-events.js 与 web turn-terminal.js 各存一份逐字副本。无 lane deps，
+  // 挂在 root.PinvouBridgeShared 静态面上（与 STATE_SLICE_FIELDS 同一模式），
+  // web 的独立 classic 模块 turn-terminal.js 也能直接转发。
+  function buildAssistantDoneTimelineRecord(state, openStart, payload) {
+    const turnId = state.activeTurnTimelineId || (openStart && openStart.turn_id);
+    if (!turnId) return null;
+    if (payload && payload.error && !(payload.user_error || payload.userError) &&
+        window.PinvouBridgeMessages &&
+        typeof window.PinvouBridgeMessages.modelServiceUserError === "function") {
+      const userError = window.PinvouBridgeMessages.modelServiceUserError(payload, state);
+      if (userError) {
+        payload.user_error = userError;
+        payload.userError = userError;
+      }
+    }
+    const timestamp = Date.now();
+    const start = openStart || (state.turnTimeline || []).find(function (event) {
+      return event && event.turn_id === turnId && event.event === "user_start";
+    });
+    const record = {
+      turn_id: turnId,
+      event: "assistant_done",
+      timestamp,
+      ts: new Date(timestamp).toISOString(),
+      status: payload && payload.status || (payload && payload.error ? "Failed" : "Completed"),
+      error: payload && payload.error || null,
+      user_error: payload && (payload.user_error || payload.userError) || null,
+      ui_turn_index: start && start.ui_turn_index,
+    };
+    state.turnTimeline = [...(state.turnTimeline || []), record];
+    state.activeTurnTimelineId = null;
+    // The return value drives the terminal-bubble hiding decision: only a
+    // timeline terminal record that was actually written with an error
+    // lets the timeline error card take over (hiding otherwise = silent
+    // swallow).
+    return record;
+  }
+
   root.PinvouBridgeShared = Object.freeze({
     create: function (cluster, deps) {
       const factory = CLUSTERS[cluster];
       if (!factory) throw new Error("Unknown bridge shared cluster: " + cluster);
       return factory(deps);
     },
+    // FE14 wave 5：双 lane 共享的桥接状态切片字段注册表（见上方注释）。
+    STATE_SLICE_FIELDS,
+    // F-FE13-2：assistant_done 时间线记录构建器（无 deps，静态共享）。
+    buildAssistantDoneTimelineRecord,
   });
 // eslint-disable-next-line unicorn/no-this-outside-of-class -- UMD root reference
 })(typeof window === "undefined" ? this : window);

@@ -769,7 +769,10 @@ assert.match(bridge, /remoteAdmissionKeys/);
 assert.match(bridge, /(?:var|const|let) activePlanCards = Object\.create\(null\)/);
 assert.match(bridge, /(?:var|const|let) hydratedKey = planCardHydrationKey\(hydratedPlan\)/);
 assert.match(bridge, /hydratedPlan\.cardState = "active"/);
-assert.match(bridge, /if \(item\.type === "plan_card"\) return false/);
+// Wave 5 moved the hydration live-card filter into the shared base
+// (liveChatItemKeptForHydration); pin the shared body + the lane delegation.
+assert.match(bridge, /liveChatItemKeptForHydration/);
+assert.match(readSource(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8'), /if \(item\.type === "plan_card"\) return false/);
 assert.match(bridge, /action === "accept_plan"/);
 assert.match(bridge, /acceptedMode = payload\.mode_state \|\| payload\.modeState/);
 assert.match(bridge, /planNotActive = errorText\.(?:indexOf\("plan_not_active"\)|includes\("plan_not_active"\))/);
@@ -866,10 +869,23 @@ assert.ok(
 // 提交信号由发送链路在后端受理新一轮后派发：常规发送（desktop/web doSendFor）、
 // Web 首轮提交、接受计划（desktop/web acceptPlan）、编辑重跑（desktop/web
 // editLastTurn）、原生代码车道发送与接受方案，缺任一处 pending 都不会转正。
-assert.match(bridge, /window\.dispatchEvent\(new CustomEvent\("pinvou:chat-round-committed", \{ detail: \{ scope: "plain" \} \}\)\)/);
+// FFE4-1：原始 dispatch 只存在于 shared/tool-store-events.js；platform 桥接层
+// 的 7 处发送/接受/重跑路径必须经 window.PinvouToolStoreEvents 调用。
+const toolStoreEventsShared = readSource(path.join(root, 'src', 'shared', 'tool-store-events.js'), 'utf8');
+assert.match(toolStoreEventsShared, /pinvou:chat-round-committed/);
+assert.match(toolStoreEventsShared, /pinvou:tools-changed/);
+assert.match(
+  bridge,
+  /window\.PinvouToolStoreEvents\.notifyChatRoundCommitted\(\)/,
+  'platform bridges must dispatch the round-committed event through the shared helper',
+);
 assert.ok(
-  (bridge.match(/pinvou:chat-round-committed/g) || []).length >= 7,
+  (bridge.match(/PinvouToolStoreEvents\.notifyChatRoundCommitted\(\)/g) || []).length >= 7,
   'desktop doSendFor/acceptPlan/editLastTurn and web doSendFor/first-turn/acceptPlan/editLastTurn must each dispatch the round-committed event',
+);
+assert.ok(
+  (bridge.match(/PinvouToolStoreEvents\.notifyComposerToolsChanged\(\)/g) || []).length >= 1,
+  'the desktop bridge must dispatch the tools-changed refresh through the shared helper',
 );
 assert.ok(
   (codexView.match(/notifyChatRoundCommitted\('code'\);/g) || []).length >= 2,
