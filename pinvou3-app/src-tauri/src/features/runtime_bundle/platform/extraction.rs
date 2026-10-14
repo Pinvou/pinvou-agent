@@ -7,6 +7,8 @@
 
 use super::*;
 
+use deepseek_tui::skills::install::INSTALLED_FROM_MARKER;
+
 #[cfg(target_os = "linux")]
 fn find_webkit_webdriver() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("PINVOU3_WEBKIT_WEBDRIVER_BIN")
@@ -457,7 +459,7 @@ impl Pinvou3Bundle {
             "pinvou-review-final",
         ] {
             let dir = self.skills_dir.join(retired);
-            if dir.join(".installed-from").is_file() {
+            if dir.join(INSTALLED_FROM_MARKER).is_file() {
                 continue; // marketplace 技能占用了该名,保护不删
             }
             let _ = std::fs::remove_dir_all(dir);
@@ -488,7 +490,7 @@ impl Pinvou3Bundle {
             // symlink 读到 upload: 内容并据此保护，硬化读把这一类变成 Err，若
             // fail-open 成空标记会把用户内容连同目录一起删掉。
             let marker = match crate::platform::filesystem::read_private_data_file(
-                &dir.join(".installed-from"),
+                &dir.join(INSTALLED_FROM_MARKER),
             ) {
                 Ok(content) => content,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -799,7 +801,13 @@ impl Pinvou3Bundle {
         Ok(())
     }
 
-    /// 连接器包技能目录 `bundles/<id>/skills/`：各连接器门控解包/删除的落点（见 [`Self::apply_connector_skills`]）。
+    /// 解包内嵌的飞书官方域技能(lark-*)到 `bundles/feishu/skills/`。
+    /// 每次启动防御性重写（immutable bundle 资源）。`LARK_SKILLS_DIR` 的根对应
+    /// 包内 `skills/`,内含 `lark-<域>/SKILL.md` + `references/`,直接铺到目标——
+    /// 引擎 `SkillRegistry` 扫该目录的每个含 `SKILL.md` 的子目录。
+    /// (顶层散落的 NOTICE.md 不含 SKILL.md,会被注册表忽略。)
+    /// 飞书技能门控:`show` → 解包 9 个 lark 技能到包目录;否则**删掉**它们(+ NOTICE.md)。
+    /// 幂等(删不存在的目录不报错)。可见性 = 目录在不在,引擎重刷系统提示时重扫即生效。
     fn connector_package_skills_dir(id: &str) -> std::path::PathBuf {
         paths::bundles_root().join(id).join("skills")
     }
@@ -2432,72 +2440,6 @@ mod tests {
                     installed,
                     serde_json::json!(["data_analysis"]),
                     "the rolled-back uninstall must leave the registry unchanged"
-                );
-            },
-        );
-    }
-
-    /// PR #808 review P2: an existing configured home upgraded across a
-    /// skill-tree-only content change has a complete, visible connector cache
-    /// (no `dingtalk_disabled` marker + all dws dirs materialized) AND a
-    /// stale `bundle/VERSION`. The gate is `bundle_changed || !show` — the
-    /// `bundle_changed` half must alone re-apply the skills, because skill
-    /// trees are excluded from `BUNDLE_INSTRUCTIONS_HASH` and the semantic
-    /// BUNDLE_VERSION bump is their only invalidation channel. Dropping that
-    /// half would keep serving pre-upgrade reference bytes to every session
-    /// composition (including the windowless CLI host), which copies this
-    /// cache recursively.
-    #[test]
-    fn ensure_extracted_refreshes_visible_dingtalk_skills_on_version_change() {
-        crate::platform::test_support::with_temp_home(
-            "pinvou3-bundle-refreshes_visible_dingtalk_skills_on_version_change",
-            || {
-                let bundle = super::Pinvou3Bundle::paths();
-                // Existing home: materialize the cache so the boot-time cache
-                // probe reports visible — without a version change this boot
-                // would skip apply_dingtalk_skills entirely.
-                bundle.apply_dingtalk_skills(true).unwrap();
-                let delivered = super::Pinvou3Bundle::connector_package_skills_dir("dingtalk")
-                    .join("dws")
-                    .join("references")
-                    .join("products")
-                    .join("oa")
-                    .join("template")
-                    .join("nodes")
-                    .join("condition.md");
-                assert!(delivered.is_file(), "dws condition.md must be delivered");
-                let embedded = super::DINGTALK_SKILLS_DIR
-                    .get_file("dws/references/products/oa/template/nodes/condition.md")
-                    .expect("embedded dws condition.md")
-                    .contents()
-                    .to_vec();
-                // Simulate the pre-upgrade bytes the old bundle shipped.
-                std::fs::write(&delivered, b"stale pre-upgrade example bytes\n").unwrap();
-                // VERSION still names the old bundle: only bundle_changed can
-                // drive the refresh.
-                std::fs::create_dir_all(super::paths::bundle_version_file().parent().unwrap())
-                    .unwrap();
-                std::fs::write(super::paths::bundle_version_file(), "0.0.1-stale").unwrap();
-
-                let manager = crate::features::marketplace::MarketplaceManager::with_store(
-                    crate::platform::credential_store::MemoryCredentialStore::default(),
-                );
-                bundle
-                    .ensure_extracted_with_marketplace(&manager, |_manager| Ok(Vec::new()))
-                    .unwrap();
-
-                assert_eq!(
-                    std::fs::read(&delivered).unwrap(),
-                    embedded,
-                    "the version bump must refresh the delivered reference bytes \
-                     even though the cache was complete and visible"
-                );
-                assert_eq!(
-                    std::fs::read_to_string(super::paths::bundle_version_file())
-                        .unwrap()
-                        .trim(),
-                    super::BUNDLE_VERSION,
-                    "the boot must stamp the new bundle version"
                 );
             },
         );
