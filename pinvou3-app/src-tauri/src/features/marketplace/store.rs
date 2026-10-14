@@ -566,6 +566,11 @@ fn apply_display_meta(
 /// （如变体选择符）不拦——宁可少拦可见字符，不误伤正常文案。
 /// `pub`：headless CLI 的 plugins 家族为共享 `bundles.json` 的导入显示名
 /// 直接复用本判定（曾因 crate-private 而逐字手抄镜像）。
+/// 上传来源展示名的长度上限（字符数）：GUI 的 `sanitize_display_name`
+/// 与 headless CLI 的导入净化共用同一截断口径（与上面 64 字符的展示元数据
+/// 校验上限是两个不同的口径，勿混用）。
+pub const MAX_IMPORT_DISPLAY_NAME_CHARS: usize = 128;
+
 pub fn is_display_unsafe_char(c: char) -> bool {
     c.is_control()
         || matches!(c,

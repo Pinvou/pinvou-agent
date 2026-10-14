@@ -143,7 +143,7 @@ use pinvou3_lib::features::marketplace::{
         set_project_skills_enabled, to_package_id_with,
     },
     skill_marketplace::{SkillMarketplaceManager, read_skill_name_from_str, sanitize_skill_name},
-    store::{BundleSource, BundleStore, is_display_unsafe_char},
+    store::{BundleSource, BundleStore, MAX_IMPORT_DISPLAY_NAME_CHARS, is_display_unsafe_char},
     sync_deny_all_scopes_after_install,
 };
 use pinvou3_lib::features::status_with_store;
@@ -623,10 +623,6 @@ fn translate_plugin_import_error(error: &str) -> Option<String> {
     }
     None
 }
-
-/// Longest display name the GUI stores for an imported package
-/// (`app/commands/marketplace.rs::sanitize_display_name` takes 128 chars).
-const MAX_IMPORT_DISPLAY_NAME_CHARS: usize = 128;
 
 /// Display name for an imported package, kept byte-identical to the GUI's
 /// stored value for the same file. The value lands verbatim in
