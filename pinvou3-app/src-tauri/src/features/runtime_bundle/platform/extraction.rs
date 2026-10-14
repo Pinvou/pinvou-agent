@@ -1445,6 +1445,10 @@ impl Pinvou3Bundle {
         // at the token path would wedge a bare `read_to_string` forever,
         // blocking the spawn path with no demotion — this file's own
         // doctrine (`load_mcp_json_for_repair`) fixed that class repo-wide.
+        // A compare miss (absent, non-regular, oversized, or simply stale
+        // content) falls through to the write side, which replaces the
+        // planted file atomically — the fail-closed contract is that a WRITE
+        // failure yields None, not that bad on-disk state does.
         if crate::platform::filesystem::read_private_data_file(&path)
             .map(|existing| existing == json)
             .unwrap_or(false)
@@ -1913,6 +1917,112 @@ mod tests {
             .aux_mcp_config_path_for_session("aux-other01", "other01")
             .expect("second aux config");
         assert_ne!(other, path);
+
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Round-5 MAJOR-1 pin: the idempotence compare reads through the
+    /// hardened primitive — a swap-in FIFO at the token path must demote
+    /// (None) instead of wedging the spawn path on a bare read forever.
+    /// Reverting the compare to `std::fs::read_to_string` turns this red
+    /// (the bare read blocks on the FIFO).
+    #[cfg(unix)]
+    #[test]
+    fn aux_mcp_config_demotes_on_fifo_at_token_path() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-aux-mcp-fifo-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let bundle = super::Pinvou3Bundle::paths();
+        crate::features::marketplace::mcp_catalog::ensure_package_released("session-reader")
+            .expect("seed the released session-reader package");
+
+        let path = crate::platform::paths::aux_session_mcp_json("aux-fifo01");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let fifo = std::ffi::CString::new(path.to_string_lossy().as_bytes()).unwrap();
+        // SAFETY: mkfifo on a fresh path inside the isolated home.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+
+        let verdict = std::thread::scope(|scope| {
+            let handle =
+                scope.spawn(|| bundle.aux_mcp_config_path_for_session("aux-fifo01", "fifo01"));
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if handle.is_finished() {
+                handle.join().expect("writer thread")
+            } else {
+                panic!("the compare wedged on the FIFO — the hardened read is gone")
+            }
+        });
+        // The compare cannot prove identity on a FIFO (the hardened read
+        // refuses it), so the writer falls through and atomically REPLACES
+        // the planted file with the real config — the fail-closed contract
+        // is "no wedge, no dead entry", not "demote on bad on-disk state".
+        assert!(
+            verdict.is_some(),
+            "the write side must replace the planted FIFO with the real config"
+        );
+        let written = std::fs::metadata(&path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileTypeExt;
+            assert!(
+                !written.file_type().is_fifo(),
+                "the token path must be a regular file after the write"
+            );
+        }
+
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Round-5 minor 3 pin: the idempotent skip re-tightens a planted 0644
+    /// file with identical content instead of serving it as-is, and a
+    /// dir-chmod failure demotes (try_make_private_dir error → None).
+    #[cfg(unix)]
+    #[test]
+    fn aux_mcp_config_skip_retightens_and_dir_chmod_failure_demotes() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-aux-mcp-modes-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let bundle = super::Pinvou3Bundle::paths();
+        crate::features::marketplace::mcp_catalog::ensure_package_released("session-reader")
+            .expect("seed the released session-reader package");
+
+        use std::os::unix::fs::PermissionsExt;
+        let path = bundle
+            .aux_mcp_config_path_for_session("aux-mode01", "mode01")
+            .expect("first write");
+        // Plant the older-writer state: identical content, permissive mode.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let again = bundle
+            .aux_mcp_config_path_for_session("aux-mode01", "mode01")
+            .expect("identical content must still serve the path");
+        assert_eq!(again, path);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "the skip path must re-tighten a permissive file, not serve it as-is"
+        );
 
         // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
         unsafe { std::env::remove_var("PINVOU3_HOME") };

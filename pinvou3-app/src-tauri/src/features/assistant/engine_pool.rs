@@ -5393,7 +5393,7 @@ mod scheduled_model_tests {
         );
         assert!(
             reminder.contains(AUX_SCOPED_TOOL_REMINDER),
-            "the zero-tool reminder must reach the outgoing aux turn"
+            "the scoped-tool boundary reminder must reach the outgoing aux turn"
         );
 
         // Aux id without a persona anchor: the reminder is the boundary alone.
@@ -5402,11 +5402,11 @@ mod scheduled_model_tests {
         assert_eq!(
             reminder.as_deref(),
             Some(AUX_SCOPED_TOOL_REMINDER),
-            "with no persona anchor the aux reminder is the zero-tool boundary itself"
+            "with no persona anchor the aux reminder is the scoped-tool boundary itself"
         );
 
         // Control: a plain session's reminder passes through untouched —
-        // no zero-tool block is ever attached to a normal turn.
+        // no aux boundary block is ever attached to a normal turn.
         let reminder = forward_forced_turn_restrict(
             "sess-plain",
             false,

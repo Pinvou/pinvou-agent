@@ -1762,6 +1762,15 @@ class ScopedListTests(unittest.TestCase):
         _write_session(self.dir, "sibling02", [
             _msg("user", _text("q")), _msg("assistant", _text("a")),
         ], title="sibling session")
+        # Round-6 M2(1) scan sentinel: a sibling file whose name is not even
+        # JSON-decodable by name alone proves nothing, but a sibling that
+        # RAISES on read does — a scan-then-filter implementation touches it
+        # and dies (or logs), while the scoped branch returns before any
+        # os.listdir/read of non-scope entries. A directory entry that is a
+        # directory (not a .json file) is the cheapest poison: open() on it
+        # raises IsADirectoryError for any scanner that stats-then-reads
+        # *.json by name.
+        (Path(self.dir) / "poison03.json").mkdir()
         payload, error = self.list()
         self.assertIsNone(error)
         self.assertEqual(payload["total"], 1)
@@ -1901,6 +1910,12 @@ class ScopedStdioTests(unittest.TestCase):
         return json.loads(line)
 
     def test_scoped_stdio_journey(self):
+        # A sibling record exists ON DISK: the denial below then proves the
+        # scope check fires, not merely that the file is absent (round-6
+        # minor 4).
+        _write_session(self.dir, "other99", [
+            _msg("user", _text("sibling q")), _msg("assistant", _text("sibling a")),
+        ], title="sibling on disk")
         env = dict(os.environ)
         env["PINVOU3_HOME"] = self.tmp.name
         proc = subprocess.Popen(

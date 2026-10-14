@@ -164,7 +164,9 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   ownership design. Scoped-read exception (landed; ADR-0024): the auxiliary side chat
   reads its parent task's session record through exactly one session-reader instance
   pinned at spawn time via
-  `--only-session <parent_id>` — an app-anchored scope (the id is derived from the
+  `--only-session=<parent_id>` (the `=` form — the session-id charset admits
+  leading `-`; a two-token pin would make argparse misread it) — an
+  app-anchored scope (the id is derived from the
   aux id by the host, never claimed by the model). This widens no read surface the
   session-reader tool has: the tool keeps rejecting `aux-`/`sched-`/`eval_` ids, and
   the pinned aux instance accepts only the pinned parent — the any-id read

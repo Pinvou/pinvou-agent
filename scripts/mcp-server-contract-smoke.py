@@ -162,7 +162,10 @@ def check_session_reader_scoped_journey() -> None:
 
         with RpcServer(
             MCP_ROOT / "session-reader",
-            args=["--sessions-dir", sessions, "--only-session", "parent01"],
+            # The shipped per-aux config emits the = form (dash-immune);
+            # the wire journey must drive the shipped form, not the
+            # two-token spelling the code abandoned.
+            args=["--sessions-dir", sessions, "--only-session=parent01"],
         ) as rpc:
             # tools/list is unchanged in scoped mode — the engine-side
             # allowlist filters the catalog, not the server.
@@ -197,7 +200,7 @@ def check_session_reader_scoped_journey() -> None:
         text=True, encoding="utf-8",
     )
     _, stderr = proc.communicate(timeout=10)
-    assert proc.returncode != 0, "an isolated-prefix pin must refuse to start"
+    assert proc.returncode == 2, "an isolated-prefix pin must refuse to start with exit 2"
     assert "--only-session" in stderr and "not readable" in stderr, stderr
     print("✅ session-reader: scoped instance (--only-session) 全旅程 + 隔离前缀拒启")
 

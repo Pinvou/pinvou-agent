@@ -2607,7 +2607,16 @@ impl Pinvou3Bridge {
                             // demoted engine must not leave it readable.
                             let stale = crate::platform::paths::aux_session_mcp_json(session_id);
                             if stale.exists() {
-                                let _ = std::fs::remove_file(&stale);
+                                // A failed unlink leaves the per-turn probe
+                                // scoped for a zero-catalog engine — calls are
+                                // still rejected at execution (fail-safe), but
+                                // the half-state must be visible in the log.
+                                if let Err(error) = std::fs::remove_file(&stale) {
+                                    log::warn!(
+                                        "[bridge] aux demotion could not remove stale scoped config {}: {error}",
+                                        stale.display()
+                                    );
+                                }
                             }
                             (Self::AUX_ZERO_TOOL_INSTRUCTIONS.to_string(), Vec::new())
                         }
@@ -7373,6 +7382,55 @@ mod tests {
         assert!(
             !crate::platform::paths::aux_session_mcp_json("aux-xyz").exists(),
             "no config file may be left behind by a failed scoped write"
+        );
+
+        // Round-5 minor 1 / round-6 M2(3): plant a stale per-aux config from
+        // an earlier successful spawn, then demote — the demotion arm must
+        // unlink it, or the per-turn probe would hand a zero-catalog engine
+        // the scoped allowlist.
+        crate::features::marketplace::mcp_catalog::ensure_package_released("session-reader")
+            .expect("seed the released session-reader package");
+        let bridge_ok = fixture_bridge();
+        let roots_ok = SessionRoots {
+            execution: root.join("exec-ok"),
+            ledger: root.join("ledger-ok"),
+            bound: false,
+        };
+        let cfg_ok = bridge_ok.build_engine_config_for_session_roots("aux-xyz", roots_ok);
+        let staged = crate::platform::paths::aux_session_mcp_json("aux-xyz");
+        assert!(
+            staged.is_file(),
+            "a successful scoped spawn leaves the per-aux config behind"
+        );
+        assert!(
+            cfg_ok
+                .features
+                .enabled(deepseek_tui::features::Feature::Mcp),
+            "control: the successful spawn keeps Feature::Mcp enabled"
+        );
+
+        // Now the package vanishes (mid-session deletion): the respawn
+        // demotes AND unlinks the stale config.
+        let pkg_dir = crate::features::marketplace::mcp_catalog::package_mcp_dir("session-reader");
+        let pkg_backup = pkg_dir.with_file_name("mcp.bak");
+        std::fs::rename(&pkg_dir, &pkg_backup).expect("stash the released package");
+        let demoted = bridge.build_engine_config_for_session_roots(
+            "aux-xyz",
+            SessionRoots {
+                execution: root.join("exec-again"),
+                ledger: root.join("ledger-again"),
+                bound: false,
+            },
+        );
+        std::fs::rename(&pkg_backup, &pkg_dir).expect("restore the released package");
+        assert_eq!(
+            demoted.allowed_tools,
+            Some(Vec::new()),
+            "the respawn demotes to zero tools"
+        );
+        assert!(
+            !staged.exists(),
+            "the demotion arm must unlink the stale per-aux config (round-5 minor 1)"
         );
 
         // SAFETY: platform::paths::tests::ENV_LOCK held via locked_env; env
