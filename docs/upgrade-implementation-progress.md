@@ -5230,3 +5230,44 @@ app/version/architecture/publisher, provide native authentication, admit Artifac
 or select a production preparation policy. Debian member dispatch and other codecs
 remain separate work. Full T09 remains incomplete. No dependency/provider/SQL/
 protocol/application version/deployment changes or package execution.
+
+
+## T09 eighteenth batch: complete Debian plain/gzip member decoding
+
+Added a Debian platform composition that first observes complete framing and
+captures both exact selected stored byte sequences, then dispatches plain/gzip
+formats to independent expanded snapshots. Stored and expanded capacities stay
+separate for control/data. Plain members reuse already immutable owned snapshots
+while checking expanded capacity; gzip uses the complete per-member decoder.
+Stored AR identities remain distinct from expanded snapshot identities. Other
+recognized compression labels return explicit unsupported, never a guessed
+fallback. Any failure returns zero framing facts and neither decoded member.
+
+Root ten Debian groups including two existing public-package byte observations
+and the new independently generated Python gzip-package observation passed1.459s.
+Tests cover four plain/gzip combinations, expanded/stored identity separation,
+later decoy isolation, empty streams, caller buffer isolation, four one-below
+expanded limits, missing limits, cancellation and exact supported restoration.
+A corrupted data checksum first passes the existing stored-member observer then
+fails decoding without earlier control; xz framing first passes the old observer
+then returns unsupported at the explicit decoder boundary. Plain data also
+refuses insufficient expanded memory. Root full default Go tests passed:
+Debian7 groups (all three actual-fixture opt-ins skipped)3.342s, verification25
+groups32.190s. Module verification, whole-repository vet, server build, pinned
+contracts, changed-file formatting and diff passed. Client architecture and
+version guards passed. Dependency independent Debian10 including all three
+actual cases passed1.418s; compatibility independent Debian10 passed1.513s.
+Both affected vet, formatting and diff checks passed; all test/tool processes
+closed. Both final documentation reviews passed.
+
+The independent Python USTAR/gzip/AR fixture has520 stored bytes with SHA-256
+0c7bfea20dbd6983f7b142f3f693ca028095264ba1e8a93ec2e64f2545cfc7c7.
+Its control/data expanded sequences are10240 bytes each; their original SHA-256
+values are checked without tar interpretation or package execution. This is an
+isolated format fixture, not authenticated application provenance or identity.
+
+No tar/control metadata/script execution, app/version/architecture/publisher
+certification, native trust, Artifact admission, production storage/heap/preparation
+policy or support for other codecs is implied. Full T09 remains incomplete;
+no dependency/provider/SQL/protocol/application version/deployment changes.
+Download has no cumulative deadline or retry budget.
