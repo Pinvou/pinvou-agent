@@ -642,188 +642,50 @@ fn model_connection_result(
 fn model_connection_http_result(status: reqwest::StatusCode) -> ModelConnectionTestResult {
     let status_code = status.as_u16();
     let detail = Some(format!("HTTP {status_code}"));
-    if status.is_success() {
-        return model_connection_result(
-            true,
-            "ok",
-            "连接成功，服务可用",
-            detail,
-            Some(status_code),
-        );
-    }
-    if status.is_redirection() {
-        return model_connection_result(
-            false,
-            "redirect",
-            "服务地址发生跳转，当前测试无法确认可用性",
-            detail,
-            Some(status_code),
-        );
-    }
-    match status_code {
-        400 | 422 => model_connection_result(
-            false,
-            "request_invalid",
-            "请求格式不被服务接受，请检查模型配置",
-            detail,
-            Some(status_code),
-        ),
-        401 => model_connection_result(
-            false,
-            "auth_invalid",
-            "API Key 无效，请检查后重新填写",
-            detail,
-            Some(status_code),
-        ),
-        403 => model_connection_result(
-            false,
-            "auth_forbidden",
-            "当前 API Key 没有访问权限",
-            detail,
-            Some(status_code),
-        ),
-        404 => model_connection_result(
-            false,
-            "endpoint_not_found",
-            "服务地址不正确，或该服务不支持模型列表接口",
-            detail,
-            Some(status_code),
-        ),
-        405 => model_connection_result(
-            false,
-            "method_not_allowed",
-            "服务可以访问，但不支持当前测试方式",
-            detail,
-            Some(status_code),
-        ),
-        402 => model_connection_result(
-            false,
-            "billing",
-            "账户余额不足，请充值后重试，或切换到其他模型",
-            detail,
-            Some(status_code),
-        ),
-        408 => model_connection_result(
-            false,
-            "timeout",
-            "连接超时，请检查网络或本地服务是否启动",
-            detail,
-            Some(status_code),
-        ),
-        429 => model_connection_result(
-            false,
-            "rate_limited",
-            "请求过于频繁或额度不足，请稍后再试",
-            detail,
-            Some(status_code),
-        ),
-        500..=599 => model_connection_result(
-            false,
-            "server_unavailable",
-            "服务暂时不可用，请稍后再试",
-            detail,
-            Some(status_code),
-        ),
-        _ => model_connection_result(
-            false,
-            "http_error",
-            "连接失败，请检查配置后重试",
-            detail,
-            Some(status_code),
-        ),
-    }
-}
-
-/// Shared transport-error classification (decision ladder: redact → timeout → tls → dns → refused),
-/// shared by the connection test and the image-input probe. `detail` is the redacted underlying
-/// error string; each caller generates its zh summary from the code — no single-language hardcoding in Rust.
-enum TransportClass {
-    Timeout,
-    Tls,
-    Dns,
-    Refused,
-    Network,
-}
-
-fn classify_transport_error(err: &reqwest::Error) -> (TransportClass, String) {
-    // Two-pass scrub, the same composition as the CLI's
-    // `support::redact_error_text`: strip URL userinfo first, then the
-    // secret-shaped token patterns. Order is load-bearing — reqwest's Display
-    // embeds the full requested URL, and `redact_secret`'s generic heuristic
-    // needs a digit, so a `http://user:pass@host` base_url on a transport
-    // error must not depend on reqwest's own Display redaction staying
-    // complete (the CLI lane applies the identical composition).
-    let raw = crate::platform::credential_store::redact_secret(
-        &crate::platform::redact_url_credentials_in_text(&err.to_string()),
-    );
-    let raw_lower = raw.to_lowercase();
-    let class = if err.is_timeout() {
-        TransportClass::Timeout
-    } else if raw_lower.contains("certificate")
-        || raw_lower.contains("tls")
-        || raw_lower.contains("ssl")
-    {
-        TransportClass::Tls
-    } else if raw_lower.contains("dns")
-        || raw_lower.contains("lookup")
-        || raw_lower.contains("name or service not known")
-    {
-        TransportClass::Dns
-    } else if raw_lower.contains("connection refused")
-        || raw_lower.contains("os error 10061")
-        || raw_lower.contains("actively refused")
-    {
-        TransportClass::Refused
-    } else {
-        TransportClass::Network
+    // The status ladder itself is shared with the CLI
+    // (`model_probe::model_probe_http_code`); this side only attaches the
+    // zh summary, resolved by the frontend from the code.
+    let code = crate::core::model_endpoint::model_probe_http_code(status);
+    let message = match code {
+        "ok" => "连接成功，服务可用",
+        "redirect" => "服务地址发生跳转，当前测试无法确认可用性",
+        "request_invalid" => "请求格式不被服务接受，请检查模型配置",
+        "auth_invalid" => "API Key 无效，请检查后重新填写",
+        "auth_forbidden" => "当前 API Key 没有访问权限",
+        "endpoint_not_found" => "服务地址不正确，或该服务不支持模型列表接口",
+        "method_not_allowed" => "服务可以访问，但不支持当前测试方式",
+        "billing" => "账户余额不足，请充值后重试，或切换到其他模型",
+        "timeout" => "连接超时，请检查网络或本地服务是否启动",
+        "rate_limited" => "请求过于频繁或额度不足，请稍后再试",
+        "server_unavailable" => "服务暂时不可用，请稍后再试",
+        _ => "连接失败，请检查配置后重试",
     };
-    (class, raw)
+    model_connection_result(code == "ok", code, message, detail, Some(status_code))
+}
+
+/// Shared transport-error classification: the ladder itself lives in
+/// `core::model_endpoint::model_probe_transport_code` (shared with the
+/// CLI); the connection test and the image-input probe map the returned
+/// code to their own zh summaries — no single-language hardcoding in Rust.
+fn classify_transport_error(err: &reqwest::Error) -> (&'static str, String) {
+    crate::core::model_endpoint::model_probe_transport_code(err)
 }
 
 fn model_connection_error_result(err: &reqwest::Error) -> ModelConnectionTestResult {
-    let (class, raw) = classify_transport_error(err);
+    let (code, raw) = classify_transport_error(err);
     // The detail passes the redacted underlying error through untouched;
-    // the zh summary above is resolved by the frontend from the code via
+    // the zh summary is resolved by the frontend from the code via
     // connectionMessages (a hardcoded Chinese detail prefix would mix
     // scripts in en/ja interfaces).
     let detail = Some(raw);
-    match class {
-        TransportClass::Timeout => model_connection_result(
-            false,
-            "timeout",
-            "连接超时，请检查网络或本地服务是否启动",
-            detail,
-            None,
-        ),
-        TransportClass::Tls => model_connection_result(
-            false,
-            "tls_error",
-            "安全证书校验失败，请检查代理或网络环境",
-            detail,
-            None,
-        ),
-        TransportClass::Dns => model_connection_result(
-            false,
-            "dns_failed",
-            "无法解析服务地址，请检查网络",
-            detail,
-            None,
-        ),
-        TransportClass::Refused => model_connection_result(
-            false,
-            "connection_refused",
-            "无法连接到服务，请确认本地模型服务已启动",
-            detail,
-            None,
-        ),
-        TransportClass::Network => model_connection_result(
-            false,
-            "network_error",
-            "网络连接失败，请检查网络后重试",
-            detail,
-            None,
-        ),
-    }
+    let message = match code {
+        "timeout" => "连接超时，请检查网络或本地服务是否启动",
+        "tls_error" => "安全证书校验失败，请检查代理或网络环境",
+        "dns_failed" => "无法解析服务地址，请检查网络",
+        "connection_refused" => "无法连接到服务，请确认本地模型服务已启动",
+        _ => "网络连接失败，请检查网络后重试",
+    };
+    model_connection_result(false, code, message, detail, None)
 }
 
 /// 测试连接:GET {base_url}/models(OpenAI 兼容标准端点),验 base_url + key 可达。
@@ -1222,13 +1084,13 @@ fn classify_image_capability_http(
 }
 
 fn image_capability_transport_error(err: &reqwest::Error) -> ImageCapabilityTestResult {
-    let (class, raw) = classify_transport_error(err);
-    let summary = match class {
-        TransportClass::Timeout => format!("连接超时，请检查网络或服务是否启动: {raw}"),
-        TransportClass::Tls => format!("安全证书校验失败，请检查代理或网络环境: {raw}"),
-        TransportClass::Dns => format!("无法解析服务地址，请检查网络: {raw}"),
-        TransportClass::Refused => format!("无法连接到服务，请确认服务已启动: {raw}"),
-        TransportClass::Network => format!("网络连接失败，请检查网络后重试: {raw}"),
+    let (code, raw) = classify_transport_error(err);
+    let summary = match code {
+        "timeout" => format!("连接超时，请检查网络或服务是否启动: {raw}"),
+        "tls_error" => format!("安全证书校验失败，请检查代理或网络环境: {raw}"),
+        "dns_failed" => format!("无法解析服务地址，请检查网络: {raw}"),
+        "connection_refused" => format!("无法连接到服务，请确认服务已启动: {raw}"),
+        _ => format!("网络连接失败，请检查网络后重试: {raw}"),
     };
     image_capability_result("error", false, summary, None)
 }
