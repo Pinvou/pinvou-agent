@@ -5798,3 +5798,58 @@ name/version/architecture/publisher certification, Artifact admission, productio
 storage, SQL/protocol/application version/deployment or dependency change.
 Full T09 remains incomplete. Downloads have no total/cumulative elapsed or
 retry-count limit.
+
+## T09 twenty-ninth batch: current signed Debian TAR pair composition
+
+Debian InspectTars uses one owned installer for complete framing, stored-member
+capture, decoding, then complete control/data TAR physical inspection. Caller
+TarLimits are independent for each expanded member and separate from stored/
+expanded decoding limits. TarMembers retains the same owned decoded sequences
+plus their complete physical reports; no pathname reopen or extraction occurs.
+Every failure returns zero framing and nil members, including data failure after
+successful control inspection. The original inspection/decoding APIs are intact.
+
+Verifier InspectTarDebianInstaller first applies the existing current signed
+Manifest, FullPack/native-byte and Debian framing guards. It inspects the same
+owned Native.Bytes and compares the resulting whole source identity with the
+previous framing. Any later failure returns zero earlier package/native/framing
+facts and no expanded sequences; cancellation is checked before successful return.
+The observations grant no safe logical paths, app identity, publisher or Artifact
+admission. Current authorization and original byte/source binding are preserved.
+
+Three new Debian groups cover complete plain/gzip control/data pairs, exact
+stored/expanded/report identities, caller-buffer isolation, independent control/
+data TAR capacities, data payload/count caps, a late second-header checksum
+negative after successful old decoding, and exact same-source restoration. The
+actual opt-in group requires all six existing frozen packages: public hello plus
+independent Python gzip, bzip2, LZMA, XZ and Zstandard. Whole package identities
+and decoded stream identities are frozen; public TAR counts are3/143 and the
+independent packages have1/1 ordinary members. No installation or script execution
+occurs. These fixtures do not certify native app identity or publisher.
+
+Four new signed-composition groups cover exact same source/expanded sequences,
+current package denial and restoration, old signed-decoding positive followed by
+isolated TAR failure, per-data capacity refusal, cancellation and same original
+restore. Actual public hello and Python Zstandard compositions preserve complete
+signed byte/framing facts and frozen decoded TAR identities/counts. Their Pinvou
+signed claims are synthetic test byte bindings, not native platform certification.
+Root actual Debian26 groups passed1.265s and verification36 groups passed15.280s,
+with all nine/seven fixture opt-in groups executed. Both initial independent
+static audits passed without required fixes. Complete default Go tests passed
+with package parallelism2: Debian17 groups plus nine fixture skips,1.364s;
+verification29 groups plus seven fixture skips,14.990s; TAR8 groups plus one
+fixture skip,1.828s; compression29 groups plus one fixture skip,4.108s. Module
+verification, whole vet, server build, pinned contracts, changed-file formatting/
+diff and client architecture/version guards passed. All root processes closed.
+Both final independent scoped code/test audits passed with no remaining required
+fixes. Dependency audit independently ran actual Debian26 in1.377s and
+verification36 in15.733s; compatibility audit ran them in1.418s and15.039s.
+Each ran all nine/seven fixture opt-in groups without skips and passed affected
+vet, four-file formatting and diff checks. All independent processes closed.
+Unchanged database/provider/browser integration was not repeated.
+
+No existing codec, dependency, SQL/protocol/application version or deployment
+change. Logical TAR contents/control interpretation, native identity/publisher
+certification, Artifact admission and production storage remain separate work.
+Full T09 remains incomplete. Downloads retain no total/cumulative elapsed or
+retry-count limit.
