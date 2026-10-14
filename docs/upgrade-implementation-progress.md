@@ -4992,3 +4992,59 @@ must establish aggregate memory/preparation policy. No production defaults,
 SQL/provider/dependency/protocol/application version or deployment changes.
 Full T09 remains incomplete; download has no total/cumulative elapsed deadline
 or retry budget.
+
+
+## T09 thirteenth batch - bounded native AR physical spans (2026-10-14)
+
+The isolated artifacts/platform/ar adapter observes the physical short-name
+SysV/GNU AR container used by Debian packaging. It validates original magic,
+fixed header/trailer and decimal/octal fields, every size/offset and odd-length
+newline padding, then hashes each exact member with bounded32KiB reads from an
+owned snapshot. Explicit positive original byte and member-count capacities are
+required. Header names/modes remain declarations, never host paths/permissions.
+Duplicate names retain distinct spans; empty physical AR and empty ordinary
+members are valid syntax. Long names, symbol/name tables, thin archives and path
+name variants return explicit unsupported, without fetching external data.
+Every error/cancellation returns zero source and no partial member facts.
+
+This is container observation, not Debian member order/version/control/data
+validation, package/app version/architecture, helper/launcher format, publisher,
+native authentication or Artifact admission. The returned whole original source
+identity remains exact; no member or header is reencoded. It writes no file and
+performs no network/provider/database operations. No existing API changes.
+
+Root initial three grammar groups passed1.740s. After narrowing BSD symbol-table
+recognition to the explicit reserved names, the same grammar groups passed0.923s.
+Controls include independent raw source/member identities and actual spans,
+ordinary GNU trailing slash, duplicate and zero members, >32KiB body, odd/even
+padding, corrupt later/truncated/oversized frame, numeric field/trailer/name/pad
+errors, unsupported variants, exact/below capacities, nil/unowned/context/invalid
+limits and restored positives. Cancellation is polled between bounded memory
+reads and before success; no synchronous finite header operation is claimed to
+be individually interruptible.
+
+An opt-in real LLVM/GNU AR subprocess test is provided, using only isolated
+short-name test files and explicitly selected tool. No such executable was found
+in PATH or the checked existing toolchain/install locations; actual tool-produced
+E2E is explicitly skipped and no real Debian/ELF/native package certification is
+claimed. Its30s test allowance is not a product/download deadline.
+
+The first full default Go/vet/module verification/server build/pinned contracts/
+format/diff passed (AR3=6.384s), before the scoped review found a P2: checking BSD
+reserved symbol names before removing the optional GNU trailing slash treated
+__.SYMDEF/ and __.SYMDEF_64/ as ordinary members. A single-variable regression
+reproduced success where Unsupported was required (1.192s). The root moved the
+exact reserved-name check after normalization; ordinary similar prefixes stay
+supported. The four repaired grammar groups passed0.969s with real-tool opt-in
+still explicitly skipped. Repaired full default Go suite passed (AR4=6.032s/
+verification22=21.121s plus all existing regressions), full vet/module verification/
+server build/pinned contracts/format/diff and client architecture/version/diff
+passed. Both second static scoped reviews closed the P2. Dependency independently
+passed AR4=1.652s and affected vet/format/diff; compatibility independently passed
+AR4=1.129s and affected vet/format/diff. Both explicitly skipped real-tool opt-in
+without installing tools and completed repaired scoped code/test review with no
+remaining mandatory finding. All processes are closed. Both independent final documentation reviews passed before commit; unchanged DB/provider/browser/CLI opt-ins are not claimed.
+
+No SQL/provider/dependency/protocol/application version or deployment changes.
+Full T09 remains incomplete. Download retains no total/cumulative elapsed
+deadline or retry budget.
