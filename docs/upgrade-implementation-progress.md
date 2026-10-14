@@ -5365,3 +5365,49 @@ Artifact admission is supplied. Other codecs, tar/control validation, protected
 storage and aggregate preparation policy remain separate unfinished work.
 No dependency/provider/SQL/protocol/application version/deployment changes.
 Full T09 stays incomplete; download has no cumulative deadline or retry budget.
+
+
+## T09 twenty-first batch: current signed Debian member decoding
+
+Added a separate signed-inspection composition that retains current Manifest,
+FullPack, native selected bytes and Debian framing, then decodes control/data
+from that same owned native snapshot. The framing source identity is rechecked
+against the earlier native observation, and original signed/read-set facts remain
+paired with independent expanded snapshots. Any later refusal returns zero
+installer/package/framing facts and no partially decoded members. Existing
+byte-only and outer-framing observers keep their acceptance.
+
+Root new three groups including the existing independent Python bzip2 fixture
+passed1.756s. Strong signed synthetic gzip data preserves exact native and expanded
+identity/current reads. A checksum-negative first passes the old signed framing
+observer, then refuses complete decoding without earlier signed facts; independent
+expanded memory refusal, restored positive, current package deny and cancellation
+with original-source restoration pass. The real independent Python format fixture
+is wrapped with exact strong synthetic signed package hashes; its control/data
+expanded10240-byte identities match their frozen independent originals. Synthetic
+Pinvou claims do not authenticate the fixture's native app/version/publisher.
+
+Actual protected PostgreSQL2 groups passed13.202s (6.70s/4.35s). The added plain
+member composition retains exact native/control/data bytes and Root read revision2
+through the actual SERIALIZABLE runtime source. A one-below expanded data-memory
+limit refuses after earlier signed/frame success with no earlier facts, then the
+same original source restores. The actual canonical indexed package deny refuses
+the previously accepted source; exact original genesis restoration restores it.
+Owner SQL mutations are adversarial current-read controls, not approved commands
+or Artifact admission. Private connection values stayed only in child environment.
+Root actual verification29 including both existing fixture opt-ins passed14.403s.
+Complete default Go tests passed with package parallelism2 (verification27 groups,
+both fixture opt-ins skipped,14.404s); module verification, whole-repository vet,
+server build, pinned contracts, changed-file formatting/diff and client
+architecture/version guards passed. Dependency independent verification29
+including both fixtures passed14.048s; actual PostgreSQL2 passed14.359s
+(6.05s/6.20s). Affected vet, formatting and diff passed, all processes closed.
+Compatibility independent verification29 including both fixtures passed14.095s;
+actual PostgreSQL2 passed12.566s (5.94s/4.45s). Affected vet, formatting and diff
+passed, all processes closed. Both final documentation reviews passed.
+
+This composition does not interpret tar/control metadata, authenticate native app/
+architecture/publisher, grant execution or admit Artifacts. Other codec support,
+protected storage and aggregate preparation policy remain unfinished. No provider/
+dependency/SQL migration/protocol/application version/deployment changes. Full T09
+remains incomplete; downloads have no cumulative elapsed or retry limit.
