@@ -5853,3 +5853,63 @@ change. Logical TAR contents/control interpretation, native identity/publisher
 certification, Artifact admission and production storage remain separate work.
 Full T09 remains incomplete. Downloads retain no total/cumulative elapsed or
 retry-count limit.
+
+## T09 thirtieth batch: bounded original Debian control-record lexical parsing
+
+ParseControl observes one immutable UTF-8 binary-control stanza. Explicit
+ControlLimits.SourceBytes and MemoryBytes bound the logical copied source;
+Fields bounds report cardinality. These capacities do not bound the combined
+raw/string/report heap or aggregate preparation policy. Copy loops use 32 KiB
+chunks, host-int checks before allocation and context checks. All failures return
+zero source identity and nil fields, including late duplicate/second-stanza errors.
+
+The lexical profile follows [Debian Policy section 5.1](https://www.debian.org/doc/debian-policy/ch-controlfields.html#syntax-of-control-files):
+ASCII field names use the documented printable ranges and cannot start with # or -;
+names are case-insensitive and duplicate identities refuse. One stanza supports
+LF/CRLF, final EOF without newline and horizontal-whitespace stanza separators.
+Orphan continuations, source-template comments, second stanzas, wholly empty
+field values, invalid UTF-8, ASCII C0 bytes except HT/LF/CR framing, DEL and stray
+CR refuse. Other valid UTF-8 value text is opaque; Unicode control categories are
+not claimed to be prohibited. Blank separators never become guessed field values.
+
+ControlField preserves original field-name spelling and value/continuation line
+content, including leading/trailing horizontal whitespace and dot lines. CRLF/LF
+terminators are parsed while Source binds the exact original bytes. Field-specific
+folding, multiline unescaping, required binary-field semantics, package/version/
+architecture grammar, safe display/path policy, approved app mapping and publisher
+trust are separate work. A Maintainer text field never proves signing custody.
+Existing Debian framing/codec/TAR/signed-composition APIs are unchanged; no new
+inspection composition or Artifact validity is introduced.
+
+Five new groups cover UTF-8, case folding, raw line preservation, line endings,
+late duplicate and second-stanza rejection, malformed names/value/control bytes,
+source/memory/field capacities, context/nil and same-source restoration. A 33 MiB
+opaque extension value succeeds under caller-selected artifact capacities; one-
+byte lower logical memory refuses. The business atomic 32 MiB limit is unrelated.
+Two actual frozen records opt in via UPGRADE_TEST_DEBIAN_CONTROL_FIXTURE_DIRECTORY:
+public hello control: 757 bytes; SHA-256
+27ee01d2de09a1a678763c41013d4d1aa47e6985230ca08f414e903a237fd163,
+13 fields; independent Python control: 109 bytes; SHA-256
+d557a48d2711f6984cb7b3c4bfa4d67e95db4da68e14fd967d0199d7a6253d79,
+4 fields. Their observed package/version/architecture remain declarations;
+fixtures and public format-research captures stay outside repositories.
+
+Root selected control 5 passed 1.735s (.30s large value). Root complete actual
+Debian 31 passed 1.785s (.24s large value), with all ten fixture opt-in groups
+executed. Both initial independent scoped static audits passed without required
+fixes. Complete default Go tests passed with package parallelism 2: Debian 21
+groups plus ten fixture skips, 5.892s; verification 29 groups plus seven fixture
+skips, 19.639s; TAR 8 groups plus one fixture skip, 1.618s; compression 29 groups
+plus one fixture skip, 3.816s. Module verification, whole vet, server build, pinned
+contracts, changed-file formatting/diff and client architecture/version guards
+passed. All root processes closed. Dependency audit independently ran actual
+Debian 31 in 2.440s (large value .27s), all ten fixture groups without skips, and
+passed affected vet, two-file formatting and diff checks; all processes closed.
+Compatibility audit independently ran actual Debian 31 in 1.713s (large value
+.24s), all ten fixture groups without skips, and passed affected vet, two-file
+formatting and diff checks; all processes closed. Both final independent scoped
+code/test audits passed with no remaining required fixes.
+Unchanged database/provider/browser integration was not repeated.
+No dependency, SQL/protocol/application version/deployment or existing behavior
+change. Full T09 remains incomplete. Downloads retain no total/cumulative elapsed
+or retry-count limit.
