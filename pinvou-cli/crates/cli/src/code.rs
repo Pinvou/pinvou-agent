@@ -4164,6 +4164,33 @@ static CHECKOUT_LOCK: Mutex<()> = Mutex::new(());
 /// concurrent GUI turn on the same session remains undetectable here
 /// (documented in the command docs and `docs/pinvou-cli.md`).
 /// Callers must keep the returned lock alive alongside its write guard.
+/// The two `{action}_lock: cannot create/open ...` closures both code
+/// mutation locks pass to `support::family_lock` (FnOnce there, so the pair
+/// is built per call). One family, one stable message pair — the seam's
+/// per-family contract, kept in one place instead of pasted twice.
+fn code_mutation_lock_closures(
+    action: String,
+) -> (
+    impl FnOnce(std::path::PathBuf, std::io::Error) -> CliError,
+    impl FnOnce(std::path::PathBuf, std::io::Error) -> CliError,
+) {
+    {
+        let action = action + "_lock";
+        let action_create = action.clone();
+        (
+            move |dir, error| {
+                CliError::failed(format!(
+                    "{action_create}: cannot create {}: {error}",
+                    dir.display()
+                ))
+            },
+            move |path, error| {
+                CliError::failed(format!("{action}: cannot open {}: {error}", path.display()))
+            },
+        )
+    }
+}
+
 fn session_mutation_lock(
     session: &str,
     action: &str,
@@ -4182,20 +4209,11 @@ fn session_mutation_lock(
     // dodge the documented contract. Round-49: the directory-create, open
     // and 0600 tightening are the shared `support::family_lock` seam; the
     // two closures keep this family's stable messages byte-identical.
+    let (on_create_dir, on_open) = code_mutation_lock_closures(action.to_string());
     crate::support::family_lock(
         &format!("code-session-{session}.lock"),
-        |dir, error| {
-            CliError::failed(format!(
-                "{action}_lock: cannot create {}: {error}",
-                dir.display()
-            ))
-        },
-        |path, error| {
-            CliError::failed(format!(
-                "{action}_lock: cannot open {}: {error}",
-                path.display()
-            ))
-        },
+        on_create_dir,
+        on_open,
     )
 }
 
@@ -4225,20 +4243,11 @@ fn execution_root_lock(
     crate::support::sandbox_home()?;
     // Same `{action}_lock` rule as the session lock above (round-37 review);
     // same shared seam.
+    let (on_create_dir, on_open) = code_mutation_lock_closures(action.to_string());
     crate::support::family_lock(
         &format!("code-root-{}.lock", stable(root)),
-        |dir, error| {
-            CliError::failed(format!(
-                "{action}_lock: cannot create {}: {error}",
-                dir.display()
-            ))
-        },
-        |path, error| {
-            CliError::failed(format!(
-                "{action}_lock: cannot open {}: {error}",
-                path.display()
-            ))
-        },
+        on_create_dir,
+        on_open,
     )
 }
 
@@ -4371,16 +4380,11 @@ fn workspace_list(
 }
 
 fn workspace_search(root: &Path, query: &str, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let query = query.trim().to_lowercase();
-    if query.is_empty() {
-        return Ok(success(render(
-            output,
-            String::new(),
-            &serde_json::json!({ "results": [], "truncated": false }),
-        )));
-    }
+    // The callee normalizes (trim/lowercase/empty -> no results), which
+    // renders as the same empty envelope below; the raw query is passed
+    // through so the app owns the normalization rule.
     let root = canonical_workspace(root)?;
-    let results = workspace::search_workspace(&root, &query)
+    let results = workspace::search_workspace(&root, query)
         .map_err(|error| CliError::failed(format!("code workspace search: {error:#}")))?;
     // The app walk stops silently at SEARCH_LIMIT, so from the outside the
     // cap being reached is all we can observe; `truncated` is therefore the
