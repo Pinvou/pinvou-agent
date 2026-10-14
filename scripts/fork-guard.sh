@@ -34,7 +34,7 @@ fail=0
 bold "── Layer 0: v0.9.12 registered maintenance topology (integration-pin window) ──"
 actual_head="$(git -C "$CODEWHALE" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
-  green "  ✓ CodeWhale matches registered review head ${EXPECTED_HEAD} (integration-pin window; public maintenance alignment is checked separately)"
+  green "  ✓ CodeWhale matches registered review head ${EXPECTED_HEAD} (integration-pin window — registered head / maintenance head / pin semantics in docs/fork-modifications.md §0; public maintenance alignment is checked separately)"
 else
   red "  ✗ CodeWhale HEAD ${actual_head:-<unreadable>} differs from registered head $EXPECTED_HEAD"
   fail=1

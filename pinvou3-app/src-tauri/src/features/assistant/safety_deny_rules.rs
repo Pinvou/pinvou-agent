@@ -519,12 +519,14 @@
 //!   class covers both spellings. The chmod face itself is exact-token:
 //!   symbolic modes (`chmod ugo+rwx /`) stay allowed alongside the
 //!   enumerated `000/777/0777/0000` numerics.
-//! - Home-root `.env` files: the name joins every project root in ordinary
-//!   development, so a blanket `.env` token would hard-deny unrelated
-//!   workspace work for a partial win — only the home-anchored spelling
-//!   could be enumerated, and `~/.env` is a marginal credential location
-//!   compared with the enumerated stores. Registered, not enumerated (the
-//!   cloud-CLI stores of the same tier ARE enumerated, v3.3).
+//! - Home-root `.env` and `credentials.json` files: the names join every
+//!   project root in ordinary development, so a blanket token would hard-deny
+//!   unrelated workspace work for a partial win — only home-anchored
+//!   spellings could be enumerated, and `~/.env`/`~/credentials.json` are
+//!   marginal credential locations compared with the enumerated stores.
+//!   Registered, not enumerated (the cloud-CLI stores of the same tier ARE
+//!   enumerated, v3.3; the ingest component face covers both names
+//!   everywhere via `platform::path_policy::BLOCKED_COMPONENTS`).
 //! - Windows cmdlet vocabulary outside the enumerated destroy/upload sets:
 //!   `Set-Content`/`Add-Content`/`copy`/`xcopy` INTO startup/config files
 //!   (the persistence write face is POSIX-vocabulary; the registered
@@ -2025,13 +2027,16 @@ mod tests {
                 .any(|f| *f == *engine_prefix || *f == glob);
             let deliberate_absence = matches!(
                 *engine_prefix,
-                "/etc/ssh/" | "/root/" | "/var/log/auth" | "/proc/" | "/sys/"
+                "/etc/ssh/" | "/root/" | "/var/log/auth" | "/var/log/auth.log" | "/proc/" | "/sys/"
             );
             assert!(
                 in_abs || deliberate_absence,
                 "引擎前缀 {engine_prefix} 未被枚举也不在残差登记中"
             );
         }
+        // `/var/log/auth.log` 已按 #87 现审头预登记：摄取前缀面采纳的
+        // `/var/log/auth` 以 `starts_with` 覆盖 `.log`/轮转变体，语料无需
+        // 逐词面枚举；引擎合并后上面的覆盖循环自动生效。
     }
 
     fn engine() -> ExecPolicyEngine {
