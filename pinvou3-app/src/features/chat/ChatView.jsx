@@ -418,7 +418,7 @@ const recordSendMaterialization = (draftKey, meta) => {
     // now, so a naive overwrite would drop the mid-await picks).
     if (existing.target === target) {
       // The effect happened to record the true target: the report confirms
-      // it (the settle's stale-navigation discriminator keys on this).
+      // the entry (the settle's stale-navigation discriminator keys on this).
       recordDraftMaterialization(draftKey, target, existing.carriedRefs, true);
       return;
     }
