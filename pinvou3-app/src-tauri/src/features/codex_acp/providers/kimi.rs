@@ -13,7 +13,7 @@ use toml::Value;
 
 use super::{
     AgentConfigWriter, EffectiveConfig, EffectiveEntry, PROVIDER_ID_PREFIX, ProviderTarget,
-    ProviderWireApi, atomic_write,
+    ProviderWireApi, atomic_write, read_toml_config, remove_prefixed_entries,
 };
 
 pub struct KimiConfigWriter {
@@ -30,17 +30,7 @@ impl KimiConfigWriter {
 
     /// 读取当前配置；文件缺失时视为空表，不可解析时**拒绝覆盖**并明确报错。
     fn read_config(&self) -> Result<Value> {
-        if !self.config_path.exists() {
-            return Ok(Value::Table(Default::default()));
-        }
-        let raw = fs::read_to_string(&self.config_path)
-            .with_context(|| format!("读取 {} 失败", self.config_path.display()))?;
-        toml::from_str::<Value>(&raw).with_context(|| {
-            format!(
-                "{} 不是有效的 TOML，拒绝覆盖；请手动修复或删除该文件后重试",
-                self.config_path.display()
-            )
-        })
+        read_toml_config(&self.config_path)
     }
 }
 
@@ -113,59 +103,18 @@ impl AgentConfigWriter for KimiConfigWriter {
         let Some(table) = config.as_table_mut() else {
             return Ok(());
         };
-        let mut changed = false;
-        let managed_providers = table
-            .get("providers")
-            .and_then(Value::as_table)
-            .map(|providers| {
-                providers
-                    .keys()
-                    .filter(|key| key.starts_with(PROVIDER_ID_PREFIX))
-                    .cloned()
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        if !managed_providers.is_empty() {
-            // managed_providers was just collected from the providers table
-            // of the same in-memory config, so it must be retrievable again;
-            // if not, the data shape is abnormal and we should error out
-            // instead of panicking.
-            let Some(providers) = table.get_mut("providers").and_then(Value::as_table_mut) else {
-                anyhow::bail!("kimi config.toml providers table lost during rollback");
-            };
-            for id in managed_providers {
-                providers.remove(&id);
-            }
-            changed = true;
-            if providers.is_empty() {
-                table.remove("providers");
-            }
-        }
-        let managed_models = table
-            .get("models")
-            .and_then(Value::as_table)
-            .map(|models| {
-                models
-                    .keys()
-                    .filter(|key| key.starts_with(PROVIDER_ID_PREFIX))
-                    .cloned()
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        if !managed_models.is_empty() {
-            // Same as above: managed_models was just collected from the
-            // models table of the same in-memory config.
-            let Some(models) = table.get_mut("models").and_then(Value::as_table_mut) else {
-                anyhow::bail!("kimi config.toml models table lost during rollback");
-            };
-            for id in managed_models {
-                models.remove(&id);
-            }
-            changed = true;
-            if models.is_empty() {
-                table.remove("models");
-            }
-        }
+        let mut changed = remove_prefixed_entries(
+            table,
+            "providers",
+            PROVIDER_ID_PREFIX,
+            "kimi config.toml providers table lost during rollback",
+        )?;
+        changed |= remove_prefixed_entries(
+            table,
+            "models",
+            PROVIDER_ID_PREFIX,
+            "kimi config.toml models table lost during rollback",
+        )?;
         let default_ref = table
             .get("default_model")
             .and_then(Value::as_str)

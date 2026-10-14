@@ -784,6 +784,58 @@ fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
         .with_context(|| format!("写入 {} 失败", path.display()))
 }
 
+/// 读取 TOML 配置；文件缺失时视为空表，不可解析时**拒绝覆盖**并明确报错。
+/// codex/kimi 两个 TOML 写入器共用（claude 是 JSON 写入器，自带读取）。
+pub(super) fn read_toml_config(path: &Path) -> Result<toml::Value> {
+    if !path.exists() {
+        return Ok(toml::Value::Table(Default::default()));
+    }
+    let raw = fs::read_to_string(path).with_context(|| format!("读取 {} 失败", path.display()))?;
+    toml::from_str::<toml::Value>(&raw).with_context(|| {
+        format!(
+            "{} 不是有效的 TOML，拒绝覆盖；请手动修复或删除该文件后重试",
+            path.display()
+        )
+    })
+}
+
+/// 受管块清理（`revert_to_official` 共用）：删除 `table[key]` 子表中以 `prefix`
+/// 开头的键，子表删空后整体移除；返回是否有改动。子表存在但形状异常（非表）时
+/// 按 `context_label` 报错——受管 id 刚从同一份内存配置的同一子表读出，取不回
+/// 属异常数据形状，应报错而非 panic。codex 的 `model_providers` 与 kimi 的
+/// `providers` / `models` 三处清理由此收敛。
+pub(super) fn remove_prefixed_entries(
+    table: &mut toml::map::Map<String, toml::Value>,
+    key: &str,
+    prefix: &str,
+    context_label: &str,
+) -> Result<bool> {
+    let managed_ids = table
+        .get(key)
+        .and_then(toml::Value::as_table)
+        .map(|entries| {
+            entries
+                .keys()
+                .filter(|entry_key| entry_key.starts_with(prefix))
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if managed_ids.is_empty() {
+        return Ok(false);
+    }
+    let Some(entries) = table.get_mut(key).and_then(toml::Value::as_table_mut) else {
+        anyhow::bail!("{context_label}");
+    };
+    for id in managed_ids {
+        entries.remove(&id);
+    }
+    if entries.is_empty() {
+        table.remove(key);
+    }
+    Ok(true)
+}
+
 pub(crate) use claude::ClaudeConfigWriter;
 pub(crate) use codex::CodexConfigWriter;
 pub(crate) use codex::codex_config_relay_env_key_present;
