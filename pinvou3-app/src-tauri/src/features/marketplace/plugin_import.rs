@@ -1271,8 +1271,10 @@ pub fn import_plugin_package(
 }
 
 /// Refuses an id that an installed claimant's companion vocabulary folds
-/// onto. Called once before the pre-land gate and once under
-/// the import lock (a TOCTOU re-check).
+/// onto. Called once before the pre-land gate and once under the import
+/// AND market locks (a TOCTOU re-check) — the market lock is the seam
+/// that excludes a CROSS-PROCESS claimant (a CLI skills install contends
+/// on it, not on this import's per-id lock).
 fn ensure_package_id_self_mapping(id: &str) -> Result<(), String> {
     let folded = crate::features::marketplace::scope::to_package_id(id);
     if folded == id {
@@ -3937,6 +3939,34 @@ mod tests {
                 "the refused import must not leave the victim pack on disk"
             );
         });
+    }
+
+    /// Round-1 review m1: the re-check's POSITION is load-bearing — it must
+    /// sit AFTER the market-lock acquisition, because the market lock is
+    /// what a CROSS-PROCESS claimant (a CLI `plugins skills install`)
+    /// contends on; moved before it, the re-check would still exist (the
+    /// behavioral pin above stays green) while the second-process window
+    /// reopened. Ordering pin on comment-stripped source: the last
+    /// re-check call (the first is the pre-gate twin) must follow the
+    /// market lock's acquisition.
+    #[test]
+    fn the_under_lock_recheck_sits_after_the_market_lock_acquisition() {
+        let code: String = include_str!("plugin_import.rs")
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lock_at = code
+            .find("MarketplaceWriteLock::acquire_map_err()?")
+            .expect("the import pipeline must acquire the market lock");
+        let recheck_at = code
+            .rfind("ensure_package_id_self_mapping(&id)?;")
+            .expect("the under-lock re-check call must exist");
+        assert!(
+            lock_at < recheck_at,
+            "the TOCTOU re-check must sit after the market-lock acquisition \
+             (that position is what excludes a cross-process claimant)"
+        );
     }
 
     /// 未声明技能子树拒收（五轮评审必修 2）：detect 只登记声明/识别的技能，
