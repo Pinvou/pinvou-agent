@@ -7035,3 +7035,68 @@ repair, then reran the final repaired four in 1.418s. Compatibility audit ran th
 final four in 1.570s. All four executed, including the original public ELF fixture,
 without skips. Both passed affected ELF vet, two-file formatting and diff checks;
 all independent processes closed. The genuine ELF32 control finding is closed.
+
+## T09 forty-sixth batch: exact original TAR regular-member capture
+
+`tar.CaptureRegular` freshly inspects the complete same owned TAR, including every
+later member, both end blocks and the full zero trailer, before selecting exact
+declaration bytes. The name is an immutable string value, not a host path.
+Ordinary USTAR's actual maximum 155-byte prefix plus slash plus 100-byte name
+allows 256 bytes; longer selectors cannot match this unextended profile.
+No prefix stripping, case folding, normalization, host extraction or link
+following is introduced, and no approved application path is assumed.
+
+Zero or multiple exact name matches refuse. Uniqueness covers all declaration
+types, so a regular file competing with a directory/link cannot be selected.
+Only an ordinary raw regular type is copied. The legacy zero type remains
+accepted as a file, but its trailing-slash directory form refuses rather than
+becoming an empty executable. A selected empty regular file still receives a
+real owned empty-byte snapshot.
+
+The original bounded member span is copied directly from the same immutable TAR
+into another owned snapshot under explicit source/memory capacities. Its complete
+identity must match the freshly observed member identity, followed by a final
+context check. Every later archive/name/type/copy/identity/cancellation failure
+returns literal zero CapturedRegular, without earlier archive/member/value facts.
+Copy capacities remain logical limits, not aggregate heap/preparation policy.
+
+Three new top-level groups cover independent exact ./ versus plain declarations,
+case/missing/impossible selectors, source/archive/member projection isolation and
+same-owned restoration, regular/legacy/empty values, duplicate regular and
+regular/directory competitors, symbolic/hard-link refusal, legacy-directory
+refusal, later unselected damaged headers, source/copy capacities and final
+cancellation. That negative independently completes the original Inspect and
+fixed 512/3 capture prefix, then cancels at exactly the wrapper's extra final
+poll; removing that poll breaks the positive/negative controls. The full 256-byte
+ordinary USTAR name is a positive, and a 33 MiB captured payload does not inherit
+the 32 MiB atomic business-batch limit.
+
+The actual opt-in uses the independently frozen 256000-byte public hello data
+TAR, with bounded regular-file reading and exact complete SHA before inspection.
+Independent Python measurements fix 143 ordinary members and the exact
+./usr/bin/hello declaration at payload offset 2048, size 31448, raw regular type,
+mode 493 and SHA 1aab5d66fba9313733ca534dc9693f262532ab696eb9d29cc70978c5e1c7078c.
+Expected payload bytes use that independent original range, not a returned
+offset. No file is extracted into an installation namespace or executed.
+
+Root actual twelve TAR groups passed in 1.654s, then in 1.666s after maximum-name
+and 33 MiB owned-capture positives. Both original fixture groups executed without
+skips. Complete default Go tests passed at package parallelism 2: TAR ten mandatory
+groups with two fixture skips, 3.987s; verification 18.040s, ELF 1.478s, PE 1.616s,
+windowsversion 2.386s, Debian 2.266s and compression 3.922s. Module verification,
+whole vet, server build, unchanged contract pins, two-file formatting and diff
+checks passed; all root processes closed.
+
+No dependency, SQL, protocol, application-version, deployment or download-budget
+change. This is original ordinary-file byte selection, not installation path
+safety, executable/native identity, approved app mapping or Artifact admission.
+Current signed Debian-to-original-ELF composition and approved platform/app/
+publisher mappings remain later work; full T09 stays incomplete. Downloads have
+no hard total/cumulative elapsed or retry-count cap. Unchanged database/provider/
+browser integration was not repeated.
+
+Both final independent scoped code/test audits passed without required fixes.
+Dependency audit ran all twelve actual TAR groups in 2.082s; compatibility audit
+ran them in 6.599s. Both enabled both original fixture groups without skips and
+passed affected TAR vet, two-file formatting and diff checks; every independent
+process closed. No production or test changes followed the frozen audit runs.
