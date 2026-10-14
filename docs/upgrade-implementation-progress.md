@@ -5573,3 +5573,53 @@ Debian XZ dispatch, tar/control interpretation, Artifact admission or deployment
 Decoder/model workspace is separate from snapshot/dictionary/count limits and
 does not certify total heap or aggregate preparation budgets. Full T09 remains
 incomplete; downloads have no cumulative elapsed or retry limit.
+
+
+## T09 twenty-fifth batch: Debian control/data XZ member dispatch
+
+Debian decoded-member inspection now dispatches control.tar.xz and data.tar.xz to
+the previously reviewed bounded XZ adapter. Dictionary/block/stream capacities
+are explicit and apply independently to each member invocation, rather than a
+control+data aggregate or total heap/preparation budget. Old plain/gzip/bzip2/LZMA
+callers retain their keyed zero-field behavior. Stored/expanded capacities and
+original framing identities stay independent; failures return neither report nor
+decoded pair. The former unsupported-XZ regression now uses recognized unimplemented
+Zstandard, preserving its no-fallback refusal after XZ support was added.
+
+Root Debian20 groups including seven fixture checks passed1.179s. Mandatory cases
+cover plain/gzip/XZ control mixed with XZ data, owned bytes and later decoys,
+expanded source/memory caps, absent explicit dictionary/counts, excessive dictionary
+with repaired header CRC, and raw tail refusal after old stored observation
+succeeds, followed by restoration. The independent Python/liblzma both-XZ package
+has640 bytes, SHA-256
+677478ae83412ace2f2a880e4b441d9656888b03fd87a7278235d65b498a78bb;
+its248/200 stored control/data bytes expand to the existing10240-byte tar sources.
+The frozen public hello package's1868/51020 stored control/data bytes expand to
+10240 bytes SHA-256
+32ceb51ab23c8e75cf90b441d7f4c1ae164883ea4f4fa06603a72ca86eb948d5,
+and256000 bytes SHA-256
+f0c28e66b1a4d548ff77e392ae277fbba70683818a19ae97c51fbdd6ba46c1b5.
+All expanded identities were independently frozen with liblzma; no package was
+installed or executed.
+
+Root actual verification31 with all four package fixture opt-ins passed13.991s.
+The new signed both-XZ composition retains original/expanded identities and
+refuses missing dictionary capacity with zero earlier facts, then restores the
+same original source. Synthetic signed Pinvou claims bind bytes and do not attest
+native app/version/architecture/publisher. Both independent static audits passed;
+complete default Go tests passed with package parallelism2 (Debian13 mandatory
+plus seven fixture skips,5.702s; compression24 plus one skip,3.796s; verification27
+plus four fixture skips,18.644s). Module verification, whole-repository vet, server
+build, pinned contracts, changed-file formatting/diff and client architecture/
+version guards passed; all root processes closed. Dependency independent Debian20
+with all seven fixture checks passed1.441s; verification31 with all four package
+fixture opt-ins passed14.419s. Affected vet, formatting and diff passed; all
+processes closed. Compatibility independent Debian20 with all seven fixture checks
+passed1.077s; verification31 with all four package fixture opt-ins passed14.060s.
+Affected vet, formatting and diff passed; all processes closed. Both independent
+scoped audits and both final documentation reviews passed.
+
+Tar/control interpretation, native installer certification, Zstandard, Artifact
+admission, production storage and aggregate preparation evidence remain unfinished.
+No new dependency/SQL/protocol/application version/deployment change. Full T09
+remains incomplete; downloads have no cumulative elapsed or retry limit.
