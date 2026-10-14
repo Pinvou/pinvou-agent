@@ -1192,7 +1192,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     ) -> Result<Vec<String>, String> {
         // On quarantine failure (ENOSPC etc.) nothing else may proceed: the
         // original bytes would become unrecoverable (review #455 R5-m4).
-        self.backup_corrupt_installed_bytes(raw).map_err(|quarantine_err| {
+        quarantine_corrupt_state_file(&self.installed_file, raw).map_err(|quarantine_err| {
             format!(
                 "installed.json is invalid: {parse_error}; {quarantine_err}; installed set unknown, leaving the corrupt file untouched"
             )
@@ -1709,16 +1709,12 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // 回收失败即整体回到卸载前状态（目录由 recycle_package 自回滚，登记以本次
         // 所删为限回写，installed.json / mcp.json 由事务快照恢复），不残留
         // 「显示已安装、实际未供给」的半卸载态。
-        // 不变量：写入器拒绝（坏 mcp.json）必须是闭包内第一个操作——事务快照只
-        // 覆盖 mcp.json / installed.json，bundles.json 镜像与包目录在快照之外，
-        // 拒绝若发生在它们之后，回滚将不完整。调整顺序前先读这条。
+        // 不变量：写入器拒绝（坏 mcp.json）必须是闭包内第一个操作——见
+        // remove_registration_locked。
         let transaction = MarketplaceStateTransaction::begin(&self.installed_file)?;
         let mut removed_install_record = false;
         let result = (|| {
-            self.remove_from_mcp_json(tool_id)?;
-            let mut installed = self.try_installed_ids_for_writer()?;
-            installed.retain(|id| id != tool_id);
-            self.save_installed(&installed)?;
+            self.remove_registration_locked(tool_id)?;
 
             // 镜像删除（与 install 对称：失败只记日志。命令层 OAuth token 前置删除的
             // 中止语义在 uninstall_marketplace_tool_sync，先于本函数，不受影响）。
@@ -2132,14 +2128,8 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         let companion_owners = self.snapshot_companion_owners(tool_id);
         let transaction = MarketplaceStateTransaction::begin(&self.installed_file)
             .map_err(DowngradeError::Integrity)?;
-        // 不变量与 uninstall 相同：写入器拒绝必须是闭包内第一个操作，事务快照
-        // 只覆盖 mcp.json / installed.json，之后的其他清理依赖本次提交成功。
-        let result = (|| {
-            self.remove_from_mcp_json(tool_id)?;
-            let mut installed = self.try_installed_ids_for_writer()?;
-            installed.retain(|id| id != tool_id);
-            self.save_installed(&installed)
-        })();
+        // 不变量与 uninstall 相同（见 remove_registration_locked）。
+        let result = self.remove_registration_locked(tool_id);
         match result {
             Ok(()) => {
                 transaction.commit().map_err(DowngradeError::Integrity)?;
@@ -2899,22 +2889,23 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         if FAIL_NEXT_INSTALLED_WRITE.swap(false, std::sync::atomic::Ordering::SeqCst) {
             return Err("test injection: installed.json write failed".to_string());
         }
-        // installed_file 由数据根 join 而来，必有父级；仍以错误返回兜底。
-        // installed_file is joined from the data root, so a parent always
-        // exists; still return an error as the fallback.
-        let dir = self.installed_file.parent().ok_or_else(|| {
-            format!(
-                "installed.json has no parent directory: {}",
-                self.installed_file.display()
-            )
-        })?;
-        std::fs::create_dir_all(dir).map_err(|e| format!("创建目录失败: {e}"))?;
         let json = serde_json::to_string_pretty(ids).map_err(|e| e.to_string())?;
+        // write_atomic_file 自带 ensure-parent（create_dir_all）与私有原子写，
+        // 不在此重复——installed_file 由数据根 join 而来，必有父级。
         write_atomic_file(&self.installed_file, json.as_bytes())
     }
 
-    fn backup_corrupt_installed_bytes(&self, raw: &[u8]) -> Result<(), String> {
-        quarantine_corrupt_state_file(&self.installed_file, raw)
+    /// Unregister `tool_id` from mcp.json + installed.json inside an open
+    /// `MarketplaceStateTransaction`（uninstall 与修复降级共用这一段）。
+    /// 不变量（两处调用点相同）：写入器拒绝（坏 mcp.json）必须是事务闭包内
+    /// 第一个操作——事务快照只覆盖 mcp.json / installed.json，bundles.json
+    /// 镜像与包目录在快照之外，拒绝若发生在它们之后，回滚将不完整。调整
+    /// 顺序前先读这条。
+    fn remove_registration_locked(&self, tool_id: &str) -> Result<(), String> {
+        self.remove_from_mcp_json(tool_id)?;
+        let mut installed = self.try_installed_ids_for_writer()?;
+        installed.retain(|id| id != tool_id);
+        self.save_installed(&installed)
     }
 
     /// Rebuilds the installed set from mcp.json. Returning Err = the
