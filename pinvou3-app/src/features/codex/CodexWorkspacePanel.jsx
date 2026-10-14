@@ -63,7 +63,7 @@ function WorkspaceTree({
     return (
       <Fragment key={entry.relativePath}>
         <div
-          className="group h-8 flex items-center gap-1.5 rounded-lg pr-1 hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+          className="group h-8 flex items-center gap-1.5 rounded-lg pr-1 hover:bg-black/4 dark:hover:bg-white/5"
           style={{ paddingLeft: 6 + depth * 14 }}
         >
           <button
@@ -88,7 +88,7 @@ function WorkspaceTree({
               aria-label={copy.openInNewWindow}
               title={copy.openInNewWindow}
               onClick={() => onOpenReader(entry)}
-              className="w-6 h-6 shrink-0 rounded-md flex items-center justify-center text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] transition-opacity"
+              className="w-6 h-6 shrink-0 rounded-md flex items-center justify-center text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/[0.07] transition-opacity"
             >
               <AppWindow size={13} />
             </button>
@@ -98,7 +98,7 @@ function WorkspaceTree({
             aria-label={copiedPath === entry.relativePath ? copy.copied : copy.copyPath}
             title={copiedPath === entry.relativePath ? copy.copied : copy.copyPath}
             onClick={() => copyRowPath(entry.relativePath, entry.relativePath)}
-            className="w-6 h-6 shrink-0 rounded-md flex items-center justify-center text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] transition-opacity"
+            className="w-6 h-6 shrink-0 rounded-md flex items-center justify-center text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/[0.07] transition-opacity"
           >
             {copiedPath === entry.relativePath
               ? <Check size={13} className="text-emerald-500" />
@@ -114,7 +114,7 @@ function WorkspaceTree({
                 className={`w-6 h-6 shrink-0 rounded-md flex items-center justify-center transition-opacity ${
                   referenced
                     ? 'text-blue-500 bg-blue-500/10'
-                    : 'text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]'
+                    : 'text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/[0.07]'
                 }`}
               >
                 <Plus size={13} />
@@ -125,7 +125,7 @@ function WorkspaceTree({
                   aria-label={copy.open}
                   title={copy.open}
                   onClick={() => onOpenExternal(entry)}
-                  className="w-6 h-6 shrink-0 rounded-md flex items-center justify-center text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] transition-opacity"
+                  className="w-6 h-6 shrink-0 rounded-md flex items-center justify-center text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/[0.07] transition-opacity"
                 >
                   <ExternalLink size={13} />
                 </button>
@@ -399,10 +399,10 @@ export function CodexWorkspacePanel({
       visible={visible}
       activationKey={activationKey}
       onActiveChange={onActiveChange}
-      className="border-l border-black/[0.06] bg-white/92 backdrop-blur-xl dark:border-white/[0.07] dark:bg-[#17181A]/96"
+      className="border-l border-black/6 bg-white/92 backdrop-blur-xl dark:border-white/[0.07] dark:bg-[#17181A]/96"
       dataTestId="codex-workspace-panel"
     >
-      <div className="h-14 shrink-0 px-3 flex items-center gap-2 border-b border-black/[0.05] dark:border-white/[0.06]">
+      <div className="h-14 shrink-0 px-3 flex items-center gap-2 border-b border-black/5 dark:border-white/6">
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-semibold">{copy.title}</div>
           <div className="truncate text-[10px] text-gray-400" title={session?.workspace_path || browsePath}>
@@ -415,23 +415,23 @@ export function CodexWorkspacePanel({
             loadDirectory('', { force: true });
             loadChanges();
           }}
-          className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
+          className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/5 dark:hover:bg-white/[0.07]"
           title={copy.refresh}
         >
           <RefreshCw size={14} />
         </button>
-        <button type="button" onClick={onClose} className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]" aria-label={copy.close}>
+        <button type="button" onClick={onClose} className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/5 dark:hover:bg-white/[0.07]" aria-label={copy.close}>
           <X size={14} />
         </button>
       </div>
 
       <>
           <div className="shrink-0 px-3 pt-2">
-            <div className="grid grid-cols-2 rounded-lg bg-black/[0.035] dark:bg-white/[0.055] p-0.5">
-              <button type="button" onClick={() => setTab('files')} className={`h-7 rounded-md text-[11px] ${tab === 'files' ? 'bg-white dark:bg-white/10 shadow-sm font-medium' : 'text-gray-400'}`}>
+            <div className="grid grid-cols-2 rounded-lg bg-black/[0.035] dark:bg-white/5.5 p-0.5">
+              <button type="button" onClick={() => setTab('files')} className={`h-7 rounded-md text-[11px] ${tab === 'files' ? 'bg-white dark:bg-white/10 shadow-xs font-medium' : 'text-gray-400'}`}>
                 {copy.files}
               </button>
-              <button type="button" onClick={() => { setTab('changes'); loadChanges(); }} className={`h-7 rounded-md text-[11px] ${tab === 'changes' ? 'bg-white dark:bg-white/10 shadow-sm font-medium' : 'text-gray-400'}`}>
+              <button type="button" onClick={() => { setTab('changes'); loadChanges(); }} className={`h-7 rounded-md text-[11px] ${tab === 'changes' ? 'bg-white dark:bg-white/10 shadow-xs font-medium' : 'text-gray-400'}`}>
                 {copy.changed}{changes?.changes?.length ? ` ${changes.changes.length}` : ''}
               </button>
             </div>
@@ -441,13 +441,13 @@ export function CodexWorkspacePanel({
           {tab === 'files' ? (
             <>
               <div className="shrink-0 px-3 py-2">
-                <div className="h-8 px-2.5 rounded-lg bg-black/[0.035] dark:bg-white/[0.055] flex items-center gap-2">
+                <div className="h-8 px-2.5 rounded-lg bg-black/[0.035] dark:bg-white/5.5 flex items-center gap-2">
                   <Search size={13} className="text-gray-400" />
                   <input
                     value={query}
                     onChange={event => setQuery(event.target.value)}
                     placeholder={copy.search}
-                    className="min-w-0 flex-1 bg-transparent outline-none text-[11px] placeholder:text-gray-400"
+                    className="min-w-0 flex-1 bg-transparent outline-hidden text-[11px] placeholder:text-gray-400"
                   />
                   {searching && <RefreshCw size={12} className="animate-spin text-gray-400" />}
                   {query && <button type="button" onClick={() => setQuery('')} className="text-gray-400"><X size={12} /></button>}
@@ -455,7 +455,7 @@ export function CodexWorkspacePanel({
               </div>
               <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar px-2 pb-3">
                 {rows ? rows.map(entry => (
-                  <div key={entry.relativePath} className="group h-9 px-2 flex items-center gap-2 rounded-lg hover:bg-black/[0.04] dark:hover:bg-white/[0.05]">
+                  <div key={entry.relativePath} className="group h-9 px-2 flex items-center gap-2 rounded-lg hover:bg-black/4 dark:hover:bg-white/5">
                     <button type="button" onClick={() => showFile(entry)} className="min-w-0 flex-1 flex items-center gap-2 text-left" title={entry.relativePath}>
                       <FileText size={14} className="shrink-0 text-gray-400" />
                       <span className="min-w-0">
@@ -500,7 +500,7 @@ export function CodexWorkspacePanel({
                   {(changes?.changes || []).map(change => (
                     <div
                       key={`${change.status}:${change.relativePath}`}
-                      className="group min-h-11 px-2 py-1.5 flex items-center gap-2 rounded-lg hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+                      className="group min-h-11 px-2 py-1.5 flex items-center gap-2 rounded-lg hover:bg-black/4 dark:hover:bg-white/5"
                     >
                       <button type="button" onClick={() => showDiff(change)} className="min-w-0 flex-1 flex items-center gap-2 text-left" title={change.relativePath}>
                         <span className={`min-w-10 h-5 px-1.5 rounded-md inline-flex items-center justify-center text-[9px] font-medium ${statusTone(change.status)}`}>
@@ -520,7 +520,7 @@ export function CodexWorkspacePanel({
                         className={`w-6 h-6 shrink-0 rounded-md flex items-center justify-center transition-opacity ${
                           referencedPaths.has(change.relativePath)
                             ? 'text-blue-500 bg-blue-500/10'
-                            : 'text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]'
+                            : 'text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/5 dark:hover:bg-white/[0.07]'
                         }`}
                       >
                         <Plus size={13} />

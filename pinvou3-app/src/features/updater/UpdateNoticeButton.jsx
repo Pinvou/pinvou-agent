@@ -47,9 +47,9 @@ export const UpdateNoticeButton = ({ bs, t, onShowChangelog }) => {
   };
 
   return (
-    <div data-update-notice-card="true" className={`fixed left-4 bottom-4 z-[70] w-[260px] p-3.5 backdrop-blur-xl rounded-2xl border shadow-xl shrink-0 transition-all duration-300 bg-white/85 border-gray-200/60 text-gray-800 dark:bg-[#1c1c21]/85 dark:border-white/[0.06] dark:text-gray-200 dark:shadow-2xl`}>
+    <div data-update-notice-card="true" className={`fixed left-4 bottom-4 z-70 w-[260px] p-3.5 backdrop-blur-xl rounded-2xl border shadow-xl shrink-0 transition-all duration-300 bg-white/85 border-gray-200/60 text-gray-800 dark:bg-[#1c1c21]/85 dark:border-white/6 dark:text-gray-200 dark:shadow-2xl`}>
       <div className="flex items-center gap-3 mb-3">
-        <div className={`w-10 h-10 rounded-[10px] border shadow-inner flex items-center justify-center shrink-0 overflow-hidden relative transition-colors duration-300 bg-gradient-to-br from-gray-100 to-gray-50 border-gray-200/80 dark:bg-gradient-to-br dark:from-[#2c2c35] dark:to-[#1a1a20] dark:border-white/[0.08]`}>
+        <div className={`w-10 h-10 rounded-[10px] border shadow-inner flex items-center justify-center shrink-0 overflow-hidden relative transition-colors duration-300 bg-linear-to-br from-gray-100 to-gray-50 border-gray-200/80 dark:bg-linear-to-br dark:from-[#2c2c35] dark:to-[#1a1a20] dark:border-white/8`}>
           <PinvouLogo className="h-6 w-6" />
         </div>
 
@@ -59,18 +59,18 @@ export const UpdateNoticeButton = ({ bs, t, onShowChangelog }) => {
             <button
               type="button"
               onClick={() => setClosed(true)}
-              className={`p-1 -mr-1 rounded-full transition-colors focus:outline-none text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:text-gray-500 dark:hover:text-gray-300 dark:hover:bg-white/[0.08]`}
+              className={`p-1 -mr-1 rounded-full transition-colors focus:outline-hidden text-gray-400 hover:text-gray-600 hover:bg-gray-100 dark:text-gray-500 dark:hover:text-gray-300 dark:hover:bg-white/8`}
               title={t.winClose}
             >
               <X size={14} />
             </button>
           </div>
-          <span className={`text-[11px] font-mono px-1.5 py-0.5 rounded w-fit mt-0.5 transition-colors duration-300 text-gray-500 bg-gray-100 dark:text-gray-400 dark:bg-black/20`}>PINVOU v{vm.version}</span>
+          <span className={`text-[11px] font-mono px-1.5 py-0.5 rounded-sm w-fit mt-0.5 transition-colors duration-300 text-gray-500 bg-gray-100 dark:text-gray-400 dark:bg-black/20`}>PINVOU v{vm.version}</span>
         </div>
       </div>
 
       {vm.error && (
-        <div className="mb-3 text-[11px] leading-relaxed text-[#EA4335] break-words">{vm.error}</div>
+        <div className="mb-3 text-[11px] leading-relaxed text-[#EA4335] wrap-break-word">{vm.error}</div>
       )}
 
       <div className="flex gap-2 text-xs font-medium">
@@ -78,7 +78,7 @@ export const UpdateNoticeButton = ({ bs, t, onShowChangelog }) => {
           type="button"
           data-update-notes-button="true"
           onClick={handleShowChangelog}
-          className={`flex-1 py-2 rounded-xl transition-all active:scale-[0.96] bg-gray-100 hover:bg-gray-200 text-gray-700 dark:bg-white/[0.06] dark:hover:bg-white/[0.1] dark:text-gray-200`}
+          className={`flex-1 py-2 rounded-xl transition-all active:scale-[0.96] bg-gray-100 hover:bg-gray-200 text-gray-700 dark:bg-white/6 dark:hover:bg-white/10 dark:text-gray-200`}
         >
           {t.updateNotes}
         </button>
@@ -86,7 +86,7 @@ export const UpdateNoticeButton = ({ bs, t, onShowChangelog }) => {
           type="button"
           onClick={handleUpgrade}
           disabled={vm.disabled}
-          className="flex-1 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl transition-all active:scale-[0.96] flex justify-center items-center gap-1.5 shadow-sm shadow-blue-900/20 disabled:opacity-80 disabled:cursor-not-allowed"
+          className="flex-1 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl transition-all active:scale-[0.96] flex justify-center items-center gap-1.5 shadow-xs shadow-blue-900/20 disabled:opacity-80 disabled:cursor-not-allowed"
         >
           {vm.downloading ? <span className="w-3.5 h-3.5 rounded-full border-2 border-white/70 border-t-transparent animate-spin" /> : <RefreshCw size={14} />}
           <span>{vm.label}</span>

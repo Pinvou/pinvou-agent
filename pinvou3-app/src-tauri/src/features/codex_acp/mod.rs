@@ -268,7 +268,7 @@ const CODEX_ACP_ADAPTER_VERSION: &str = "1.6.2";
 /// `scripts/codex-bridge-runtime/package.json` and its lockfile because this
 /// value is written to session `acp-state.json` as the declared adapter version.
 /// `forkguard_declared_adapter_versions_match_the_bridge_pin` pins the invariant.
-pub const CLAUDE_ACP_VERSION: &str = "0.79.0";
+pub const CLAUDE_ACP_VERSION: &str = "0.90.0";
 const CLAUDE_ACP_PACKAGE: &str = "@agentclientprotocol/claude-agent-acp";
 const CLAUDE_ACP_SESSION_MODEL: &str = "Claude Code (ACP)";
 const KIMI_ACP_PACKAGE: &str = "kimi acp";

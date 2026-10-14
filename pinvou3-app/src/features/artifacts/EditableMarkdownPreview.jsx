@@ -392,7 +392,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
   return (
     <div ref={rootRef} className="relative min-h-[420px]">
       {showStatus ? (
-        <div className={`absolute right-2 top-2 z-20 rounded-full border px-3 py-1 text-[12px] shadow-sm ${saveState === 'error'
+        <div className={`absolute right-2 top-2 z-20 rounded-full border px-3 py-1 text-[12px] shadow-xs ${saveState === 'error'
           ? 'border-[#F4C7C3] bg-[#FCE8E6] text-[#C5221F] dark:border-[#5F2120] dark:bg-[#2B1716] dark:text-[#F28B82]'
           : 'border-black/10 bg-white text-[#5F6368] dark:border-white/10 dark:bg-[#202124] dark:text-[#C4C7C5]'}`}>
           {status}{errorText ? `: ${errorText}` : ''}
@@ -410,13 +410,13 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
         onBlur={() => { saveNow(); }}
         onMouseUp={updateSelection}
         onKeyUp={updateSelection}
-        className="msg-md light-code dark-code min-h-[420px] rounded-lg px-1 py-1 text-[14px] leading-relaxed outline-none focus:ring-2 focus:ring-[#A8C7FA]/60 text-[#1F1F1F] dark:text-[#E3E3E3]"
+        className="msg-md light-code dark-code min-h-[420px] rounded-lg px-1 py-1 text-[14px] leading-relaxed outline-hidden focus:ring-2 focus:ring-[#A8C7FA]/60 text-[#1F1F1F] dark:text-[#E3E3E3]"
       />
 
       {selectionUi ? (
         <div
           ref={overlayRef}
-          className="fixed z-[90]"
+          className="fixed z-90"
           style={{ left: aiInputOpen ? selectionUi.inputX : selectionUi.buttonX, top: selectionUi.y }}
         >
           {aiInputOpen ? (
@@ -435,7 +435,7 @@ const EditableMarkdownPreview = forwardRef(function EditableMarkdownPreview({
                   if (e.key === 'Escape') clearAiUi();
                 }}
                 placeholder={t.apMdAiInstructionPlaceholder}
-                className="min-w-0 flex-1 bg-transparent outline-none text-[13px] leading-5 text-[#1C1C1E] placeholder:text-[#8E8E93] dark:text-[#F2F2F7]"
+                className="min-w-0 flex-1 bg-transparent outline-hidden text-[13px] leading-5 text-[#1C1C1E] placeholder:text-[#8E8E93] dark:text-[#F2F2F7]"
               />
               <button type="button" onClick={submitAiEdit}
                 className="shrink-0 w-8 h-8 rounded-full inline-flex items-center justify-center transition-colors bg-[#007AFF] text-white hover:bg-[#006EE6] dark:bg-[#0A84FF] dark:hover:bg-[#409CFF]">

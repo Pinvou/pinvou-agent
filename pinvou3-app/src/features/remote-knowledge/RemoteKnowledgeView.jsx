@@ -40,9 +40,9 @@ function classifyUploadedDocument(document, duplicate) {
 }
 const danger = `${button} px-3 text-[#d63a3a] hover:bg-[#d63a3a]/10`;
 const iconButton = 'grid h-8 w-8 shrink-0 place-items-center rounded-full text-[#444746] transition-colors hover:bg-[#E1E5EA] dark:text-[#C4C7C5] dark:hover:bg-[#333537] disabled:cursor-not-allowed disabled:opacity-45';
-const field = 'h-10 w-full rounded-xl border border-[#dfe3ea] bg-white px-3.5 text-[13px] text-[#1F1F1F] outline-none transition-shadow placeholder:text-[#8b8d94] focus:border-[#0B57D0] focus:ring-2 focus:ring-[#0B57D0]/10 dark:border-white/10 dark:bg-[#171719] dark:text-[#E3E3E3] dark:focus:border-[#A8C7FA]';
+const field = 'h-10 w-full rounded-xl border border-[#dfe3ea] bg-white px-3.5 text-[13px] text-[#1F1F1F] outline-hidden transition-shadow placeholder:text-[#8b8d94] focus:border-[#0B57D0] focus:ring-2 focus:ring-[#0B57D0]/10 dark:border-white/10 dark:bg-[#171719] dark:text-[#E3E3E3] dark:focus:border-[#A8C7FA]';
 const ownerSection = 'rounded-2xl border border-[#e3e7ee] bg-white p-4 dark:border-white/10 dark:bg-[#1E1F20] sm:p-5';
-const ownerTab = 'inline-flex h-10 min-w-0 items-center justify-center gap-2 rounded-lg px-3 text-[13px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0B57D0]/25';
+const ownerTab = 'inline-flex h-10 min-w-0 items-center justify-center gap-2 rounded-lg px-3 text-[13px] font-semibold transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-[#0B57D0]/25';
 const documentPageSize = 200;
 const documentStatusBatchSize = 500;
 const uploadIndexPollIntervalMs = 1000;
@@ -86,7 +86,7 @@ async function settleDocumentStatusBatches(documentIds, deadline, requestBatch) 
 }
 
 // Page-level and owner panel share one success / error notice. Differences preserved as-is: page level pins
-// role=status, a break-all body and a plain close button; the owner panel uses role=alert + a break-words body on errors,
+// role=status, a break-all body and a plain close button; the owner panel uses role=alert + a wrap-break-word body on errors,
 // and an icon close button with aria-label. role can be overridden explicitly; defaults are alert for errors, status for success.
 function NoticeBanner({ notice, onClose, role, owner = false, closeLabel }) {
   if (!notice) return null;
@@ -97,7 +97,7 @@ function NoticeBanner({ notice, onClose, role, owner = false, closeLabel }) {
       className={`flex items-start gap-2 rounded-xl border px-3.5 py-3 text-[13px] ${error ? 'border-[#d63a3a]/20 bg-[#d63a3a]/8 text-[#b72f2f]' : 'border-[#18a957]/20 bg-[#18a957]/8 text-[#16894a]'}`}
     >
       {error ? <AlertTriangle size={16} /> : <CheckCircle2 size={16} />}
-      <span className={`min-w-0 flex-1 ${owner ? 'break-words' : 'break-all'}`}>{notice.text}</span>
+      <span className={`min-w-0 flex-1 ${owner ? 'wrap-break-word' : 'break-all'}`}>{notice.text}</span>
       <button type="button" className={owner ? iconButton : 'opacity-70 hover:opacity-100'} onClick={onClose} aria-label={closeLabel}><X size={15} /></button>
     </div>
   );
@@ -118,7 +118,7 @@ function OverlayDialog({
   const dialog = (
     // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer; the keyboard path is handled by the dialog's top-right close button
     <div
-      className="fixed inset-0 z-[80] flex items-center justify-center bg-[#17181b]/35 p-4 backdrop-blur-[2px] animate-in fade-in duration-150 motion-reduce:animate-none"
+      className="fixed inset-0 z-80 flex items-center justify-center bg-[#17181b]/35 p-4 backdrop-blur-[2px] animate-in fade-in duration-150 motion-reduce:animate-none"
       onMouseDown={() => { if (!closeDisabled) onClose(); }}
     >
       <section
@@ -1422,7 +1422,7 @@ function RemoteKnowledgeView({ t }) {
       <div className="mx-auto max-w-[1400px] space-y-5">
         <header
           data-testid="remote-knowledge-hero"
-          className="relative flex min-h-[168px] items-center gap-8 overflow-hidden rounded-3xl bg-gradient-to-br from-[#e9f7f4] via-[#e5f4f8] to-[#e5edfb] p-7 dark:bg-gradient-to-br dark:from-[#132b2d] dark:via-[#142a32] dark:to-[#18263a]"
+          className="relative flex min-h-[168px] items-center gap-8 overflow-hidden rounded-3xl bg-linear-to-br from-[#e9f7f4] via-[#e5f4f8] to-[#e5edfb] p-7 dark:bg-linear-to-br dark:from-[#132b2d] dark:via-[#142a32] dark:to-[#18263a]"
         >
           <div
             className="pointer-events-none absolute right-0 top-0 hidden h-full overflow-hidden xl:block"
@@ -1532,7 +1532,7 @@ function RemoteKnowledgeView({ t }) {
             </div>
             <div className="mt-3 grid gap-2 sm:grid-cols-2">
               {pendingJoins.map(item => (
-                <div key={item.requestId} className="flex items-center gap-3 rounded-xl bg-[#F7F9FC] px-3.5 py-3 dark:bg-white/[0.04]">
+                <div key={item.requestId} className="flex items-center gap-3 rounded-xl bg-[#F7F9FC] px-3.5 py-3 dark:bg-white/4">
                   <div className="grid h-9 w-9 place-items-center rounded-xl bg-[#fff2dd] text-[#a76518] dark:bg-[#412d13] dark:text-[#eab66f]"><RefreshCw size={15} /></div>
                   <div className="min-w-0 flex-1">
                     <p className={`truncate text-[13px] font-semibold ${ink}`}>{item.serverName}</p>
@@ -1609,7 +1609,7 @@ function RemoteKnowledgeView({ t }) {
                   {canManage && (
                     <label className={`${quiet} cursor-pointer px-2.5`} title={t.remoteKbShowTrash}>
                       <input data-testid="remote-trash-toggle" className="peer sr-only" type="checkbox" checked={includeTrash} onChange={event => changeTrashVisibility(event.target.checked)} />
-                      <span className="relative h-5 w-8 rounded-full bg-[#d8dce3] transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:bg-[#0B57D0] peer-checked:after:translate-x-3" />
+                      <span className="relative h-5 w-8 rounded-full bg-[#d8dce3] transition-colors after:absolute after:left-0.5 after:top-0.5 after:h-4 after:w-4 after:rounded-full after:bg-white after:shadow-xs after:transition-transform peer-checked:bg-[#0B57D0] peer-checked:after:translate-x-3" />
                       {t.remoteKbShowTrash}
                     </label>
                   )}
@@ -1787,7 +1787,7 @@ function RemoteKnowledgeView({ t }) {
                   <input className={field} value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') search(); }} placeholder={t.remoteKbSearchPlaceholder} />
                   <button type="button" className={primary} onClick={search} disabled={!query.trim() || isBusy('search')}>{isBusy('search') ? <RefreshCw size={14} className="animate-spin" /> : <Search size={14} />}{t.remoteKbSearch}</button>
                 </div>
-                {!!results.length && <div className="mt-4 grid gap-2">{results.map((result, index) => <article key={`${result.documentId}:${result.ord}:${index}`} className="rounded-xl border border-[#ececf1] bg-[#fbfbfd] p-3 dark:border-white/10 dark:bg-white/[0.04]"><div className="flex items-center gap-2"><BookOpen size={13} className="text-[#0B57D0] dark:text-[#A8C7FA]" /><p className={`truncate text-[12px] font-semibold ${ink}`}>{result.documentName}</p></div><p className={`mt-2 whitespace-pre-wrap text-[12px] leading-5 ${muted}`}>{result.text}</p></article>)}</div>}
+                {!!results.length && <div className="mt-4 grid gap-2">{results.map((result, index) => <article key={`${result.documentId}:${result.ord}:${index}`} className="rounded-xl border border-[#ececf1] bg-[#fbfbfd] p-3 dark:border-white/10 dark:bg-white/4"><div className="flex items-center gap-2"><BookOpen size={13} className="text-[#0B57D0] dark:text-[#A8C7FA]" /><p className={`truncate text-[12px] font-semibold ${ink}`}>{result.documentName}</p></div><p className={`mt-2 whitespace-pre-wrap text-[12px] leading-5 ${muted}`}>{result.text}</p></article>)}</div>}
               </section>
             )}
           </main>
@@ -1824,7 +1824,7 @@ function RemoteKnowledgeView({ t }) {
               {hostProgress.phase === 'failed' && (
                 <div data-testid="shared-kb-host-progress-error" className="flex items-start gap-2 rounded-xl bg-[#d63a3a]/8 px-3.5 py-3 text-[12px] leading-5 text-[#b72f2f]">
                   <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-                  <span className="min-w-0 break-words">{hostProgress.error}</span>
+                  <span className="min-w-0 wrap-break-word">{hostProgress.error}</span>
                 </div>
               )}
               {hostProgress.phase === 'complete' && (
@@ -1886,7 +1886,7 @@ function RemoteKnowledgeView({ t }) {
               <>
                 {identityProbe ? (
                   <div data-testid="remote-identity-confirmation" className="space-y-4 animate-in fade-in slide-in-from-right-1 duration-150 motion-reduce:animate-none">
-                    <div className="rounded-2xl border border-[#0B57D0]/20 bg-[#0B57D0]/[0.035] p-4 dark:border-[#A8C7FA]/20 dark:bg-[#A8C7FA]/[0.05]">
+                    <div className="rounded-2xl border border-[#0B57D0]/20 bg-[#0B57D0]/[0.035] p-4 dark:border-[#A8C7FA]/20 dark:bg-[#A8C7FA]/5">
                       <div className="flex items-start gap-3">
                         <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#EAF2FF] text-[#0B57D0] dark:bg-[#172B49] dark:text-[#A8C7FA]"><Server size={18} /></div>
                         <div className="min-w-0 flex-1">
@@ -1913,14 +1913,14 @@ function RemoteKnowledgeView({ t }) {
                         <button type="button" className={iconButton} onClick={discoverNearby} disabled={discoveryStatus === 'discovering'} aria-label={t.remoteKbRefresh} title={t.remoteKbRefresh}><RefreshCw size={14} className={discoveryStatus === 'discovering' ? 'animate-spin' : ''} /></button>
                       </div>
                       {discoveryStatus === 'discovering' ? (
-                        <div data-testid="remote-nearby-discovering" role="status" className={`mt-2 flex items-center gap-2 rounded-xl bg-[#F7F9FC] px-3.5 py-3 text-[12px] dark:bg-white/[0.04] ${muted}`}>
+                        <div data-testid="remote-nearby-discovering" role="status" className={`mt-2 flex items-center gap-2 rounded-xl bg-[#F7F9FC] px-3.5 py-3 text-[12px] dark:bg-white/4 ${muted}`}>
                           <RefreshCw size={14} className="animate-spin text-[#0B57D0] dark:text-[#A8C7FA]" />
                           {t.remoteKbDiscovering}
                         </div>
                       ) : visibleNearbyHosts.length ? (
                         <div data-testid="remote-nearby-list" className="mt-2 space-y-2">
                           {visibleNearbyHosts.map(probe => (
-                            <button key={`${probe.serverId}:${probe.endpoint}`} type="button" className="flex w-full items-center gap-3 rounded-xl border border-[#e3e7ee] px-3.5 py-3 text-left transition-colors hover:border-[#0B57D0]/35 hover:bg-[#F7F9FC] dark:border-white/10 dark:hover:border-[#A8C7FA]/35 dark:hover:bg-white/[0.04]" onClick={() => chooseNearbyHost(probe)}>
+                            <button key={`${probe.serverId}:${probe.endpoint}`} type="button" className="flex w-full items-center gap-3 rounded-xl border border-[#e3e7ee] px-3.5 py-3 text-left transition-colors hover:border-[#0B57D0]/35 hover:bg-[#F7F9FC] dark:border-white/10 dark:hover:border-[#A8C7FA]/35 dark:hover:bg-white/4" onClick={() => chooseNearbyHost(probe)}>
                               <Server size={16} className="shrink-0 text-[#0B57D0] dark:text-[#A8C7FA]" />
                               <span className="min-w-0 flex-1"><span className={`block truncate text-[13px] font-semibold ${ink}`}>{probe.serverName}</span><span className={`mt-0.5 block truncate text-[11px] ${muted}`}>{probe.endpoint}</span></span>
                               <span className={`text-[11px] ${muted}`}>{t.remoteKbVerify}</span>
@@ -1928,7 +1928,7 @@ function RemoteKnowledgeView({ t }) {
                           ))}
                         </div>
                       ) : discoveryStatus !== 'idle' && (
-                        <p data-testid="remote-nearby-empty" className={`mt-2 rounded-xl bg-[#F7F9FC] px-3.5 py-3 text-[12px] dark:bg-white/[0.04] ${muted}`}>{t.remoteKbNearbyEmpty}</p>
+                        <p data-testid="remote-nearby-empty" className={`mt-2 rounded-xl bg-[#F7F9FC] px-3.5 py-3 text-[12px] dark:bg-white/4 ${muted}`}>{t.remoteKbNearbyEmpty}</p>
                       )}
                     </section>
                     <div className="flex items-center gap-3" aria-hidden="true"><span className="h-px flex-1 bg-[#e3e7ee] dark:bg-white/10" /><span className={`text-[11px] ${muted}`}>{t.remoteKbManualConnect}</span><span className="h-px flex-1 bg-[#e3e7ee] dark:bg-white/10" /></div>
@@ -1991,7 +1991,7 @@ function RemoteKnowledgeView({ t }) {
                   aria-controls="remote-owner-people-panel"
                   tabIndex={ownerPanelTab === 'people' ? 0 : -1}
                   data-testid="remote-owner-people-tab"
-                  className={`${ownerTab} ${ownerPanelTab === 'people' ? 'bg-white text-[#0B57D0] shadow-sm dark:bg-[#2A2B2D] dark:text-[#A8C7FA]' : muted}`}
+                  className={`${ownerTab} ${ownerPanelTab === 'people' ? 'bg-white text-[#0B57D0] shadow-xs dark:bg-[#2A2B2D] dark:text-[#A8C7FA]' : muted}`}
                   onClick={() => setOwnerPanelTab('people')}
                   onKeyDown={moveOwnerPanelTab}
                 >
@@ -2006,7 +2006,7 @@ function RemoteKnowledgeView({ t }) {
                   aria-controls="remote-owner-host-panel"
                   tabIndex={ownerPanelTab === 'host' ? 0 : -1}
                   data-testid="remote-owner-host-tab"
-                  className={`${ownerTab} ${ownerPanelTab === 'host' ? 'bg-white text-[#0B57D0] shadow-sm dark:bg-[#2A2B2D] dark:text-[#A8C7FA]' : muted}`}
+                  className={`${ownerTab} ${ownerPanelTab === 'host' ? 'bg-white text-[#0B57D0] shadow-xs dark:bg-[#2A2B2D] dark:text-[#A8C7FA]' : muted}`}
                   onClick={() => setOwnerPanelTab('host')}
                   onKeyDown={moveOwnerPanelTab}
                 >
@@ -2045,7 +2045,7 @@ function RemoteKnowledgeView({ t }) {
                     {!!activeShares.length && (
                       <div className="mt-3 space-y-2">
                         {activeShares.map(item => (
-                          <div key={item.id} className="flex flex-wrap items-center gap-2 rounded-xl bg-[#F7F9FC] px-3 py-2.5 dark:bg-white/[0.04]">
+                          <div key={item.id} className="flex flex-wrap items-center gap-2 rounded-xl bg-[#F7F9FC] px-3 py-2.5 dark:bg-white/4">
                             <Link size={14} className="text-[#0B57D0] dark:text-[#A8C7FA]" />
                             <span className={`min-w-[180px] flex-1 truncate text-[12.5px] ${muted}`}>{new Date(item.expiresAt * 1000).toLocaleString()}</span>
                             {item.autoApproveRead && <span className="text-[12px] text-[#16894a] dark:text-[#7DD3A8]">{t.remoteKbAutoReadShort}</span>}
@@ -2069,7 +2069,7 @@ function RemoteKnowledgeView({ t }) {
                       {pendingOwnerJoinRequests.map(item => {
                         const requestBusy = isBusy(`owner-request-${item.id}`);
                         return (
-                          <div key={item.id} data-testid="remote-owner-join-request" className="flex flex-col gap-2 rounded-xl bg-[#F7F9FC] px-3 py-3 animate-in fade-in slide-in-from-top-1 duration-150 dark:bg-white/[0.04] sm:flex-row sm:items-center">
+                          <div key={item.id} data-testid="remote-owner-join-request" className="flex flex-col gap-2 rounded-xl bg-[#F7F9FC] px-3 py-3 animate-in fade-in slide-in-from-top-1 duration-150 dark:bg-white/4 sm:flex-row sm:items-center">
                             <div className="min-w-0 flex-1"><p className={`truncate text-[13.5px] font-semibold ${ink}`}>{item.deviceName}</p></div>
                             <div className="flex flex-wrap items-center gap-1.5">
                               <button type="button" className={quiet} disabled={requestBusy} onClick={() => resolveJoinRequest(item.id, 'read')}>{t.remoteKbApproveRead}</button>
@@ -2092,7 +2092,7 @@ function RemoteKnowledgeView({ t }) {
                         const current = device.id === selectedConnection?.deviceId;
                         const busy = isBusy(`member-${device.id}`);
                         return (
-                          <div key={device.id} className="flex flex-col gap-2 rounded-xl bg-[#F7F9FC] px-3 py-3 dark:bg-white/[0.04] sm:flex-row sm:items-center">
+                          <div key={device.id} className="flex flex-col gap-2 rounded-xl bg-[#F7F9FC] px-3 py-3 dark:bg-white/4 sm:flex-row sm:items-center">
                             <div className="min-w-[150px] flex-1">
                               <p className={`truncate text-[13.5px] font-semibold ${ink}`}>{device.name}{current ? ` · ${t.remoteKbThisDevice}` : ''}</p>
                               <p className={`mt-1 text-[12px] ${device.revoked ? 'text-[#d63a3a]' : muted}`}>{device.revoked ? t.remoteKbRevoked : device.scope === 'owner' ? t.remoteKbOwner : device.scope === 'manage' ? t.remoteKbManage : t.remoteKbReadOnly}</p>
@@ -2149,7 +2149,7 @@ function RemoteKnowledgeView({ t }) {
                           <button type="button" data-testid="shared-kb-restore" className={`${soft} w-full`} onClick={openRestoreDialog} disabled={isBusy('restore-host')}><Upload size={14} />{t.remoteKbRestoreBackup}</button>
                         </div>
                       </section>
-                      <section className="rounded-2xl border border-[#d63a3a]/20 bg-[#d63a3a]/[0.035] p-4 dark:bg-[#d63a3a]/[0.06] sm:p-5">
+                      <section className="rounded-2xl border border-[#d63a3a]/20 bg-[#d63a3a]/[0.035] p-4 dark:bg-[#d63a3a]/6 sm:p-5">
                         <h3 className="text-[15px] font-bold text-[#b72f2f] dark:text-[#ff8a80]">{t.remoteKbDangerZone}</h3>
                         <p className={`mt-1 text-[13px] leading-5 ${muted}`}>{t.remoteKbDangerZoneDesc}</p>
                         <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:justify-end">
@@ -2197,7 +2197,7 @@ function RemoteKnowledgeView({ t }) {
             closeLabel={t.remoteKbClose}
             closeDisabled={isBusy('restore-host')}
           >
-            <p className={`truncate rounded-xl bg-[#F7F9FC] px-3.5 py-3 text-[12px] dark:bg-white/[0.04] ${muted}`} title={restoreSource}>{restoreSource}</p>
+            <p className={`truncate rounded-xl bg-[#F7F9FC] px-3.5 py-3 text-[12px] dark:bg-white/4 ${muted}`} title={restoreSource}>{restoreSource}</p>
             {/* biome-ignore lint/a11y/noAutofocus: focus the recovery-code input as soon as the dialog opens; focus is the input intent */}
             <textarea autoFocus className={`${field} mt-3 h-24 resize-none py-3 font-mono text-[11px]`} value={restoreCode} onChange={event => setRestoreCode(event.target.value)} placeholder={t.remoteKbRecoveryPlaceholder} />
             <p className={`mt-2 text-[11px] leading-5 ${muted}`}>{restoreCode.trim() ? t.remoteKbMigrationMode : t.remoteKbSameHostMode}</p>
@@ -2349,7 +2349,7 @@ function RemoteKnowledgeView({ t }) {
               <button
                 type="button"
                 data-testid={`${confirmation.testId || 'remote-action-confirm'}-submit`}
-                className={`${confirmation.dangerous /* eslint-disable-line sonarjs/no-nested-template-literals -- the dangerous state layers a red border over the base styles; keep the in-place concatenation */ ? `${danger} border border-[#d63a3a]/25 bg-[#d63a3a]/[0.06]` : primary} w-full sm:w-auto`}
+                className={`${confirmation.dangerous /* eslint-disable-line sonarjs/no-nested-template-literals -- the dangerous state layers a red border over the base styles; keep the in-place concatenation */ ? `${danger} border border-[#d63a3a]/25 bg-[#d63a3a]/6` : primary} w-full sm:w-auto`}
                 onClick={() => finishConfirmation(true)}
               >
                 {confirmation.confirmLabel}

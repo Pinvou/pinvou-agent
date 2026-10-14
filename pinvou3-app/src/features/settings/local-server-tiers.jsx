@@ -163,8 +163,8 @@ export function ReasoningTierPicker({ t, tiers, selected, onSelect, pending, noC
               ? 'h-7 min-w-[52px] px-3 rounded-full text-[13px] font-medium transition-colors bg-[#007AFF] text-white dark:bg-[#0A84FF]'
               : 'h-7 min-w-[48px] px-2.5 rounded-full text-[12px] font-medium transition-colors bg-[#007AFF] text-white')
             : (variant === 'form'
-              ? 'h-7 min-w-[52px] px-3 rounded-full text-[13px] font-medium transition-colors bg-[#E5E5EA] text-[#636366] hover:bg-[#D9D9DE] dark:bg-white/[0.07] dark:text-[#C7C7CC] dark:hover:bg-white/[0.12]'
-              : 'h-7 min-w-[48px] px-2.5 rounded-full text-[12px] font-medium transition-colors bg-black/[0.05] dark:bg-white/[0.08] text-gray-600 dark:text-gray-300 hover:bg-black/[0.09] dark:hover:bg-white/[0.13]')
+              ? 'h-7 min-w-[52px] px-3 rounded-full text-[13px] font-medium transition-colors bg-[#E5E5EA] text-[#636366] hover:bg-[#D9D9DE] dark:bg-white/[0.07] dark:text-[#C7C7CC] dark:hover:bg-white/12'
+              : 'h-7 min-w-[48px] px-2.5 rounded-full text-[12px] font-medium transition-colors bg-black/5 dark:bg-white/8 text-gray-600 dark:text-gray-300 hover:bg-black/9 dark:hover:bg-white/13')
           }
         >{tierLabels[tier] || tier}</button>
       ))}

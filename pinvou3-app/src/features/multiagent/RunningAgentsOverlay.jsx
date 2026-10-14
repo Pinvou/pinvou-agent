@@ -75,7 +75,7 @@ function OverlayAgentRow({ entry, recent, isDark, copy, onOpen }) {
         data-testid={recent ? 'running-agents-entry-done' : 'running-agents-entry'}
         onClick={() => onOpen(entry.agentId, entry.sessionId)}
         className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12.5px] transition-colors ${
-          isDark ? 'hover:bg-white/[0.06]' : 'hover:bg-black/[0.04]'
+          isDark ? 'hover:bg-white/6' : 'hover:bg-black/4'
         }`}
       >
         <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${dotClass[status.dot]}`} />
@@ -282,7 +282,7 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
 
   if (!visible) return null;
 
-  const surface = `rounded-2xl border shadow-sm ${swarmBorder(swarmOn)} ${
+  const surface = `rounded-2xl border shadow-xs ${swarmBorder(swarmOn)} ${
     isDark ? 'bg-[#1E1F20] text-[#E3E3E3]' : 'bg-white text-[#1F1F1F]'
   }`;
 
@@ -295,7 +295,7 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
         aria-label={expanded ? copy.runningAgentsCollapse : copy.runningAgentsExpand}
         title={copy.runningAgentsCount(active.length)}
         onClick={toggleExpanded}
-        className={`flex h-10 max-w-[220px] shrink-0 items-center gap-2 rounded-full border px-3 text-[14px] font-medium shadow-sm transition-colors ${swarmBorder(swarmOn)} ${
+        className={`flex h-10 max-w-[220px] shrink-0 items-center gap-2 rounded-full border px-3 text-[14px] font-medium shadow-xs transition-colors ${swarmBorder(swarmOn)} ${
           isDark
             ? 'bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]'
             : 'bg-white text-[#1F1F1F] hover:bg-[#F0F4F9]'
@@ -306,7 +306,7 @@ export const RunningAgentsOverlay = ({ sessionId, theme, t, swarmOn = false }) =
         <span className={`flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full px-1.5 text-[11px] tabular-nums ${
           active.length > 0
             ? (swarmOn ? 'bg-[#7C3AED] text-white dark:bg-[#A78BFA] dark:text-[#2E1065]' : 'bg-[#0B57D0] text-white dark:bg-[#A8C7FA] dark:text-[#062E6F]')
-            : (isDark ? 'bg-white/10 text-[#E3E3E3]' : 'bg-black/[0.06] text-[#1F1F1F]')
+            : (isDark ? 'bg-white/10 text-[#E3E3E3]' : 'bg-black/6 text-[#1F1F1F]')
         }`}>
           {active.length}
         </span>

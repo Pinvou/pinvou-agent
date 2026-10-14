@@ -212,12 +212,12 @@ export function ReaderApp() {
 
   return (
     <div className="h-screen flex flex-col bg-white dark:bg-[#1E1E20] text-gray-900 dark:text-gray-100">
-      <div className="h-10 shrink-0 flex items-stretch overflow-x-auto custom-scrollbar border-b border-black/[0.05] dark:border-white/[0.06]">
+      <div className="h-10 shrink-0 flex items-stretch overflow-x-auto custom-scrollbar border-b border-black/5 dark:border-white/6">
         {tabs.map(tab => (
           <div
             key={tab.key}
-            className={`group shrink-0 flex items-center gap-1.5 pl-3 pr-1 border-r border-black/[0.05] dark:border-white/[0.06] ${
-              tab.key === activeKey ? 'bg-black/[0.04] dark:bg-white/[0.07]' : 'hover:bg-black/[0.02] dark:hover:bg-white/[0.04]'
+            className={`group shrink-0 flex items-center gap-1.5 pl-3 pr-1 border-r border-black/5 dark:border-white/6 ${
+              tab.key === activeKey ? 'bg-black/4 dark:bg-white/[0.07]' : 'hover:bg-black/2 dark:hover:bg-white/4'
             }`}
           >
             <button
@@ -234,7 +234,7 @@ export function ReaderApp() {
               onClick={() => closeTab(tab.key)}
               aria-label={copy.closeTab}
               title={copy.closeTab}
-              className="w-5 h-5 rounded flex items-center justify-center text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/[0.06] dark:hover:bg-white/[0.08]"
+              className="w-5 h-5 rounded-sm flex items-center justify-center text-gray-400 opacity-0 group-hover:opacity-100 hover:bg-black/6 dark:hover:bg-white/8"
             >
               <X size={11} />
             </button>
@@ -244,7 +244,7 @@ export function ReaderApp() {
 
       {activeTab ? (
         <>
-          <div className="h-11 shrink-0 px-3 flex items-center gap-2 border-b border-black/[0.05] dark:border-white/[0.06]">
+          <div className="h-11 shrink-0 px-3 flex items-center gap-2 border-b border-black/5 dark:border-white/6">
             <div className="min-w-0 flex-1 truncate text-[11px] text-gray-400" title={activeTab.relativePath}>
               {activeTab.relativePath}
             </div>

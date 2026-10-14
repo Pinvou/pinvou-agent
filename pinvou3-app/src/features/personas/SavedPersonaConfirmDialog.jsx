@@ -8,7 +8,7 @@ export function SavedPersonaConfirmDialog({ onClose, onView, savedConfirm, t, th
   return (
     // biome-ignore lint/a11y/useKeyWithClickEvents: keyboard users close the dialog through its real buttons
     // biome-ignore lint/a11y/noStaticElementInteractions: this is a pointer-only backdrop around an accessible dialog card
-    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4" style={{ background:'rgba(0,0,0,.4)' }} onClick={onClose}>
+    <div className="fixed inset-0 z-80 flex items-center justify-center p-4" style={{ background:'rgba(0,0,0,.4)' }} onClick={onClose}>
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by real buttons inside the card */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
       <div onClick={(event) => event.stopPropagation()} className="w-[270px] rounded-[14px] overflow-hidden text-center"

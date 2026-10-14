@@ -62,7 +62,7 @@ function VoiceRecordingPill({ status, mode, message, copy, closing = false, onCa
           onClick={onCancel}
           aria-label={copy.voiceCancel}
           title={copy.voiceCancel}
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#FF7675] to-[#D63031] text-white shadow-[0_8px_16px_-8px_rgba(214,48,49,0.85),inset_0_1px_3px_rgba(255,255,255,0.28)] transition-transform hover:shadow-[0_10px_20px_-10px_rgba(214,48,49,0.9),inset_0_1px_3px_rgba(255,255,255,0.32)] active:scale-90"
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-linear-to-br from-[#FF7675] to-[#D63031] text-white shadow-[0_8px_16px_-8px_rgba(214,48,49,0.85),inset_0_1px_3px_rgba(255,255,255,0.28)] transition-transform hover:shadow-[0_10px_20px_-10px_rgba(214,48,49,0.9),inset_0_1px_3px_rgba(255,255,255,0.32)] active:scale-90"
         >
           <X size={20} strokeWidth={2.6} />
         </button>
@@ -73,7 +73,7 @@ function VoiceRecordingPill({ status, mode, message, copy, closing = false, onCa
           disabled={busy}
           aria-label={copy.voiceStop}
           title={copy.voiceStop}
-          className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#55EFC4] to-[#00B894] text-white shadow-[0_8px_16px_-8px_rgba(0,184,148,0.85),inset_0_1px_3px_rgba(255,255,255,0.3)] transition-transform hover:shadow-[0_10px_20px_-10px_rgba(0,184,148,0.9),inset_0_1px_3px_rgba(255,255,255,0.34)] active:scale-90 ${busy ? 'cursor-wait opacity-60' : ''}`}
+          className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-linear-to-br from-[#55EFC4] to-[#00B894] text-white shadow-[0_8px_16px_-8px_rgba(0,184,148,0.85),inset_0_1px_3px_rgba(255,255,255,0.3)] transition-transform hover:shadow-[0_10px_20px_-10px_rgba(0,184,148,0.9),inset_0_1px_3px_rgba(255,255,255,0.34)] active:scale-90 ${busy ? 'cursor-wait opacity-60' : ''}`}
         >
           <Check size={21} strokeWidth={3} />
         </button>

@@ -53,7 +53,7 @@ const MobileMoreSheet = ({ title, items, onClose }) => {
     // (mobileNavigate closes the panel on navigation; see setMobileMoreOpen(false) in main.jsx).
     // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; keyboard path handled by the buttons inside the panel
     // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, not an interactive container
-    <div data-testid="mobile-more-sheet" className="fixed inset-0 z-[70] flex flex-col justify-end" onClick={onClose}>
+    <div data-testid="mobile-more-sheet" className="fixed inset-0 z-70 flex flex-col justify-end" onClick={onClose}>
       <div className="absolute inset-0 bg-black/40" />
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: panel body only stops propagation to avoid accidental backdrop close; not interactive itself */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: panel body only stops propagation; not an interactive container */}
@@ -66,7 +66,7 @@ const MobileMoreSheet = ({ title, items, onClose }) => {
             <button key={item.key} type="button" data-testid={`mobile-more-${item.key}`} onClick={item.onClick}
               className={`flex flex-col items-center gap-1.5 rounded-2xl px-1 py-3 transition-colors ${item.active
                 ? 'bg-[#D3E3FD]/60 dark:bg-[#A8C7FA]/15'
-                : 'active:bg-black/[0.06] dark:active:bg-white/10'}`}>
+                : 'active:bg-black/6 dark:active:bg-white/10'}`}>
               <span className="relative flex h-11 w-11 items-center justify-center rounded-full bg-[#F0F4F9] text-[#444746] dark:bg-[#333537] dark:text-[#E3E3E3]">
                 {item.icon}
                 {item.dot && <span className="absolute top-0 right-0 w-2.5 h-2.5 rounded-full border-2 border-[#ffffff] bg-[#EA4335] dark:border-[#1E1F20]" />}

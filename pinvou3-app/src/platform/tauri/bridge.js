@@ -1575,10 +1575,12 @@ function copySubscriptionStateObject(source) { return pinvouSharedtauriMain().co
         let nextArray = value.length === previousArray.length ? null : previousArray.slice(0, value.length);
         for (let arrayIndex = 0; arrayIndex < value.length; arrayIndex++) {
           const nextItem = subscriptionStateValue(value[arrayIndex], previousArray[arrayIndex], ancestors);
-          if (!Object.is(nextItem, previousArray[arrayIndex])) {
-            if (!nextArray) nextArray = [...previousArray];
-            nextArray[arrayIndex] = nextItem;
+          if (Object.is(nextItem, previousArray[arrayIndex])) {
+            continue;
           }
+
+          if (!nextArray) nextArray = [...previousArray];
+          nextArray[arrayIndex] = nextItem;
         }
         return nextArray ? Object.freeze(nextArray) : previousArray;
       }
@@ -1596,10 +1598,12 @@ function copySubscriptionStateObject(source) { return pinvouSharedtauriMain().co
       for (let objectIndex = 0; objectIndex < keys.length; objectIndex++) {
         const key = keys[objectIndex];
         const nextValue = subscriptionStateValue(value[key], previousObject && previousObject[key], ancestors);
-        if (!sameShape || !Object.is(nextValue, previousObject[key])) {
-          if (!nextObject) nextObject = copySubscriptionStateObject(previousObject);
-          defineSubscriptionStateProperty(nextObject, key, nextValue);
+        if (!(!sameShape || !Object.is(nextValue, previousObject[key]))) {
+          continue;
         }
+
+        if (!nextObject) nextObject = copySubscriptionStateObject(previousObject);
+        defineSubscriptionStateProperty(nextObject, key, nextValue);
       }
       return nextObject ? Object.freeze(nextObject) : previousObject;
     } finally {
@@ -2051,14 +2055,13 @@ function emitPersonaAt(atOrAfter, isTail) { return pinvouSharedtauriMainN99856()
         addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
       }
       // 本条 assistant 消息用过 plan 工具 → 还原一张只读历史方案卡
-      if (sawPlanTool && (planSnap || todosSnap)) {
-        const snaps = { plan: planSnap, todos: todosSnap };
-        addChatItem({
-          type: "plan_card", plan: planSnap, todos: todosSnap,
-          planMarkdown: composePlanMarkdown(snaps),
-          cardState: "frozen", resolved: true, statusLabel: bt("planHistorical"), time: "",
-        });
-      }
+      if (!sawPlanTool || (!planSnap && !todosSnap)) continue;
+      const snaps = { plan: planSnap, todos: todosSnap };
+      addChatItem({
+        type: "plan_card", plan: planSnap, todos: todosSnap,
+        planMarkdown: composePlanMarkdown(snaps),
+        cardState: "frozen", resolved: true, statusLabel: bt("planHistorical"), time: "",
+      });
     }
     // Replay-time terminal ratchet (parity with the codex native lane): a
     // tool_use that never got a matching tool_result in the persisted

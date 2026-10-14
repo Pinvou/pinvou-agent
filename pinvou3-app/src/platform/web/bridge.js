@@ -1806,10 +1806,12 @@ function copySubscriptionStateObject(source) { return pinvouSharedweb().copySubs
         let nextArray = value.length === previousArray.length ? null : previousArray.slice(0, value.length);
         for (let arrayIndex = 0; arrayIndex < value.length; arrayIndex++) {
           const nextItem = subscriptionStateValue(value[arrayIndex], previousArray[arrayIndex], ancestors);
-          if (!Object.is(nextItem, previousArray[arrayIndex])) {
-            if (!nextArray) nextArray = [...previousArray];
-            nextArray[arrayIndex] = nextItem;
+          if (Object.is(nextItem, previousArray[arrayIndex])) {
+            continue;
           }
+
+          if (!nextArray) nextArray = [...previousArray];
+          nextArray[arrayIndex] = nextItem;
         }
         return nextArray ? Object.freeze(nextArray) : previousArray;
       }
@@ -1827,10 +1829,12 @@ function copySubscriptionStateObject(source) { return pinvouSharedweb().copySubs
       for (let objectIndex = 0; objectIndex < keys.length; objectIndex++) {
         const key = keys[objectIndex];
         const nextValue = subscriptionStateValue(value[key], previousObject && previousObject[key], ancestors);
-        if (!sameShape || !Object.is(nextValue, previousObject[key])) {
-          if (!nextObject) nextObject = copySubscriptionStateObject(previousObject);
-          defineSubscriptionStateProperty(nextObject, key, nextValue);
+        if (!(!sameShape || !Object.is(nextValue, previousObject[key]))) {
+          continue;
         }
+
+        if (!nextObject) nextObject = copySubscriptionStateObject(previousObject);
+        defineSubscriptionStateProperty(nextObject, key, nextValue);
       }
       return nextObject ? Object.freeze(nextObject) : previousObject;
     } finally {
@@ -3009,22 +3013,21 @@ function emitPersonaAt(atOrAfter, isTail) { return pinvouSharedwebN189622().emit
           const c = blocks[ci];
           if (c.type !== "tool_result") continue;
           const tm = toolMeta[c.tool_use_id];
-          if (tm) {
-            // careful hook 拦截 → 还原 🛑 红卡(实时由 tool_end metadata 插,重载从文本反解)
-            const blockedMd = parseCarefulBlocked(toolResultText(c.content));
-            if (blockedMd) {
-              updateToolItem(c.tool_use_id, toolResultDisplayContent(c.content), false); // 被拦=失败态,与实时一致
-              addChatItem({
-                type: "careful_blocked", toolCallId: c.tool_use_id,
-                args: tm.args, metadata: blockedMd, time: "",
-              });
-            } else {
-              // load_skill 同样脱敏：重载历史时也不还原 SKILL.md 全文，展开只见占位。
-              const contentForCard = (tm.name === "load_skill")
-                ? bt("skillContentHidden")
-                : toolResultDisplayContent(c.content);
-              updateToolItem(c.tool_use_id, contentForCard, !c.is_error);
-            }
+          if (!tm) continue;
+          // careful hook 拦截 → 还原 🛑 红卡(实时由 tool_end metadata 插,重载从文本反解)
+          const blockedMd = parseCarefulBlocked(toolResultText(c.content));
+          if (blockedMd) {
+            updateToolItem(c.tool_use_id, toolResultDisplayContent(c.content), false); // 被拦=失败态,与实时一致
+            addChatItem({
+              type: "careful_blocked", toolCallId: c.tool_use_id,
+              args: tm.args, metadata: blockedMd, time: "",
+            });
+          } else {
+            // load_skill 同样脱敏：重载历史时也不还原 SKILL.md 全文，展开只见占位。
+            const contentForCard = (tm.name === "load_skill")
+              ? bt("skillContentHidden")
+              : toolResultDisplayContent(c.content);
+            updateToolItem(c.tool_use_id, contentForCard, !c.is_error);
           }
         }
         continue;
@@ -3142,14 +3145,13 @@ function emitPersonaAt(atOrAfter, isTail) { return pinvouSharedwebN189622().emit
         addChatItem({ type: "assistant", text: textBuf, html: renderMarkdown(textBuf), time: "", streaming: false });
       }
       // 本条 assistant 消息用过 plan 工具 → 还原一张只读历史方案卡
-      if (sawPlanTool && (planSnap || todosSnap)) {
-        const snaps = { plan: planSnap, todos: todosSnap };
-        addChatItem({
-          type: "plan_card", plan: planSnap, todos: todosSnap,
-          planMarkdown: composePlanMarkdown(snaps),
-          cardState: "frozen", resolved: true, statusLabel: bt("planHistorical"), time: "",
-        });
-      }
+      if (!sawPlanTool || (!planSnap && !todosSnap)) continue;
+      const snaps = { plan: planSnap, todos: todosSnap };
+      addChatItem({
+        type: "plan_card", plan: planSnap, todos: todosSnap,
+        planMarkdown: composePlanMarkdown(snaps),
+        cardState: "frozen", resolved: true, statusLabel: bt("planHistorical"), time: "",
+      });
     }
     emitPersonaAt(state.messages.length, true); // 最后一条消息之后发生的卡牌事件(末尾加持/卸下)
   }

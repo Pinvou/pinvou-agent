@@ -228,10 +228,12 @@ export function removeSessionActivity(state, sid) {
 function pruneExpired(state, now) {
   for (const [sid, activity] of state.sessions) {
     const ttl = ACTIVITY_TTL_MS[activity.status];
-    if (!ttl || now - activity.updatedAt > ttl) {
-      state.sessions.delete(sid);
-      if (state.pendingRemoval) state.pendingRemoval.delete(sid);
+    if (!(!ttl || now - activity.updatedAt > ttl)) {
+      continue;
     }
+
+    state.sessions.delete(sid);
+    if (state.pendingRemoval) state.pendingRemoval.delete(sid);
   }
   // 快照宽限期收尾：标记后一直没有任何事件(会话真消失)才真正删卡。
   if (state.pendingRemoval && state.pendingRemoval.size) {

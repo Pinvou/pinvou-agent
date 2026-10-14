@@ -13,11 +13,15 @@ version = 2
 # 真漏洞(anyhow RUSTSEC-2026-0190、crossbeam-epoch RUSTSEC-2026-0204)已通过 cargo update
 # 修掉(anyhow 1.0.104 / crossbeam-epoch 0.9.20),不再命中。
 ignore = [
+    # GTK3 的 RUSTSEC-2024-0415 ignore 已于 2026-10 移除：advisory 不再匹配
+    # 锁定的 gtk 0.18.2（cargo deny 报 advisory-not-detected）。gtk 0.18 仍是
+    # wry 0.57 的强制版本（GTK3 hold 不变），若未来 advisory 重新覆盖锁图，
+    # advisories 检查会直接报错，届时再评估加回。
     # RUSTSEC-2026-0194 (quick-xml quadratic complexity) and
     # RUSTSEC-2026-0195 (NsReader memory exhaustion) no longer match:
     # both advisories are fixed in quick-xml >=0.41.0, and the lockfile
-    # already resolves 0.41.0 (both the plist 1.10.0 and calamine 0.36.1
-    # paths). Without an ignore entry, a future dependency downgrade below
+    # resolves 0.41.0 (plist 被钉在 1.10.0 以继续用 ^0.41;calamine 0.36.1 也走 0.41)。
+    # Without an ignore entry, a future dependency downgrade below
     # 0.41 would trip the advisory and fail CI again — reassess then.
     #
     # RUSTSEC-2026-0367/0368/0369 (zip 8.6.0: SUID/SGID preservation,

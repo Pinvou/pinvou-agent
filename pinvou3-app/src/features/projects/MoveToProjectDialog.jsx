@@ -163,7 +163,7 @@ const MoveToProjectDialog = ({
     // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close; keyboard path is the Escape listener and the cancel button
     <div
       role="presentation"
-      className="fixed inset-0 z-[200] flex items-center justify-center p-4"
+      className="fixed inset-0 z-200 flex items-center justify-center p-4"
       style={{ background: 'rgba(0,0,0,.34)', backdropFilter: 'blur(14px) saturate(140%)', WebkitBackdropFilter: 'blur(14px) saturate(140%)' }}
       onMouseDown={(e) => { backdropPressRef.current = e.target === e.currentTarget; }}
       onMouseUp={(e) => { if (backdropPressRef.current && e.target !== e.currentTarget) backdropPressRef.current = false; }}
@@ -176,7 +176,7 @@ const MoveToProjectDialog = ({
         aria-modal="true"
         aria-label={t.uiProjects.moveToProject}
         onClick={e => e.stopPropagation()}
-        className="w-[360px] max-w-[calc(100vw-48px)] overflow-hidden rounded-[16px] shadow-2xl bg-[rgba(250,250,250,.96)] dark:bg-[rgba(44,44,46,.96)] text-[#000] dark:text-[#F2F2F7]"
+        className="w-[360px] max-w-[calc(100vw-48px)] overflow-hidden rounded-[16px] shadow-2xl bg-[rgba(250,250,250,.96)] dark:bg-[rgba(44,44,46,.96)] text-black dark:text-[#F2F2F7]"
         style={{ fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}
       >
         <div className="px-4 pt-4 pb-2 flex items-center justify-between gap-2">
@@ -204,7 +204,7 @@ const MoveToProjectDialog = ({
                 onChange={e => setQuery(e.target.value)}
                 placeholder={t.uiProjects.searchPlaceholder}
                 aria-label={t.uiProjects.searchPlaceholder}
-                className="w-full bg-transparent border-0 outline-none text-[14px] placeholder:text-[#8A8F94] dark:placeholder:text-[#9AA0A6]"
+                className="w-full bg-transparent border-0 outline-hidden text-[14px] placeholder:text-[#8A8F94] dark:placeholder:text-[#9AA0A6]"
               />
             </div>
           </div>
@@ -217,7 +217,7 @@ const MoveToProjectDialog = ({
               tabIndex={-1}
               role="group"
               aria-label={t.uiProjects.moveConfirmTitle}
-              className="rounded-2xl bg-[#EAECEF] dark:bg-[#303134] px-3.5 py-3 outline-none"
+              className="rounded-2xl bg-[#EAECEF] dark:bg-[#303134] px-3.5 py-3 outline-hidden"
             >
               <div className="text-[13px] font-semibold mb-1">{t.uiProjects.moveConfirmTitle}</div>
               <div className="text-[12px] text-[#5F6368] dark:text-[#C4C7C5] mb-3 break-all">

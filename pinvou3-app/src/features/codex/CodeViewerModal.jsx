@@ -136,7 +136,7 @@ export function CodeViewerModal({
     const cleanup = () => {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
-      window.removeEventListener('blur', onUp);
+      window.removeEventListener('blur-sm', onUp);
       if (frame) window.cancelAnimationFrame(frame);
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
@@ -162,7 +162,7 @@ export function CodeViewerModal({
   }
 
   return createPortal(
-    <div data-testid="code-viewer-modal" className="fixed inset-0 z-[300] flex items-center justify-center">
+    <div data-testid="code-viewer-modal" className="fixed inset-0 z-300 flex items-center justify-center">
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; keyboard path handled by Escape and the title-bar close button */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container */}
       <div className="absolute inset-0 bg-black/30 backdrop-blur-[1px]" onClick={onClose} />
@@ -174,13 +174,13 @@ export function CodeViewerModal({
         style={{ width: size.width, height: size.height }}
         className="relative flex flex-col overflow-hidden rounded-2xl border border-black/10 dark:border-white/10 bg-white dark:bg-[#1E1E20] text-gray-900 dark:text-gray-100 shadow-2xl"
       >
-        <div className="h-12 shrink-0 px-3 flex items-center gap-2 border-b border-black/[0.05] dark:border-white/[0.06]">
+        <div className="h-12 shrink-0 px-3 flex items-center gap-2 border-b border-black/5 dark:border-white/6">
           <FileColoredIcon name={fileName} size={15} />
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <span className="truncate text-[13px] font-medium" title={fileName}>{fileName}</span>
               {highlighted?.label && (
-                <span className="shrink-0 rounded-md bg-black/[0.05] dark:bg-white/[0.08] px-1.5 py-0.5 text-[9px] font-medium text-gray-500 dark:text-gray-300">
+                <span className="shrink-0 rounded-md bg-black/5 dark:bg-white/8 px-1.5 py-0.5 text-[9px] font-medium text-gray-500 dark:text-gray-300">
                   {highlighted.label}
                 </span>
               )}

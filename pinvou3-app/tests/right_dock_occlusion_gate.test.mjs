@@ -18,7 +18,7 @@ const main = read('../src/app/main.jsx');
 test('RightDock occlusion is a publication permit rather than a post-commit notice', () => {
   assert.match(rightDock, /onBeforeOcclusionPublish\(occlusionId, commit\)/);
   assert.match(rightDock, /const publish = \(\) => \{[\s\S]*setPublicationReady\(true\)/);
-  assert.match(rightDock, /return active \? \(!dock \|\| !occlusionId \? true : publicationReady\) : false/);
+  assert.match(rightDock, /return active \? \(dock && occlusionId \? publicationReady : true\) : false/);
   assert.match(rightDock, /const releaseOcclusion = dock\?\.releaseOcclusion/);
   assert.match(rightDock, /releaseOcclusion\(occlusionId\)/);
 });
