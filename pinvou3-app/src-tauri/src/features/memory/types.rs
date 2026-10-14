@@ -285,16 +285,15 @@ pub struct PreferenceFile {
 }
 
 #[derive(Debug, Clone)]
-pub struct TopicMutation<T> {
-    pub value: T,
-    pub cleanup_warning: Option<String>,
-}
-
-#[derive(Debug, Clone)]
 pub struct TopicRead<T> {
     pub value: T,
     pub cleanup_warning: Option<String>,
 }
+
+/// Write-path alias of [`TopicRead`] (same shape): named for the mutation
+/// returns (`update_preference` / `update_work_context`) so call sites keep
+/// their read/write distinction without a second identical struct.
+pub type TopicMutation<T> = TopicRead<T>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct TopicMigrationJournal {
@@ -465,10 +464,10 @@ pub(super) fn normalize_timed_memory_kind(kind: &str) -> String {
     }
 }
 
-pub(super) fn normalize_timed_memory_topic(kind: &str, _topic: &str) -> String {
-    // The topic input is not consumed: every kind folds onto its single
-    // canonical bucket regardless of the value (the former match arms were
-    // self-echoes whose default equaled every listed alternative).
+pub(super) fn normalize_timed_memory_topic(kind: &str) -> String {
+    // The kind alone decides the bucket: every kind folds onto its single
+    // canonical topic regardless of the input value (the former match arms
+    // were self-echoes whose default equaled every listed alternative).
     if kind == "recent_activity" {
         "completed_work".to_string()
     } else {
