@@ -472,6 +472,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       attachIncomplete: "The attachment download is incomplete. Please try again",
       attachNoData: "Attachment download returned no data",
       attachNoProgress: "Attachment download made no progress",
+      artifactNoData: "Artifact download returned no data",
       artifactNoProgress: "Artifact download made no progress",
       newChatFallbackTitle: "New chat",
       echoOtherPrefix: "(Other) ",
@@ -593,6 +594,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       attachIncomplete: "添付ファイルのダウンロードが不完全です。もう一度お試しください",
       attachNoData: "添付ファイルのダウンロードがデータを返しませんでした",
       attachNoProgress: "添付ファイルのダウンロードが進みませんでした",
+      artifactNoData: "成果物のダウンロードがデータを返しませんでした",
       artifactNoProgress: "成果物のダウンロードが進みませんでした",
       newChatFallbackTitle: "新しいチャット",
       echoOtherPrefix: "(その他) ",
@@ -714,6 +716,7 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       attachIncomplete: "附件下载不完整，请重试",
       attachNoData: "附件下载未返回数据",
       attachNoProgress: "附件下载没有进展",
+      artifactNoData: "产物下载未返回数据",
       artifactNoProgress: "产物下载没有进展",
       newChatFallbackTitle: "新对话",
       echoOtherPrefix: "(其他) ",
@@ -5366,7 +5369,7 @@ function openScheduledTaskFolder(automationId) { return pinvouSharedweb().openSc
         limit: 262144,
       });
     }, expectedSize, MAX_WEB_ARTIFACT_DOWNLOAD_BYTES, {
-      noData: "Artifact download returned no data",
+      noData: "artifactNoData",
       chunkInvalid: "artifactChunkInvalid",
       changed: "artifactChanged",
       noProgress: "artifactNoProgress",
