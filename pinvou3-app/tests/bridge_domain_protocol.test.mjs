@@ -139,7 +139,9 @@ const expectedProtocolHashes = {
   // above; recomputed against the merged tree). Verified unchanged by the
   // #576 merge: the dead-code cleanup's markResolved removal lives in the
   // shared payload, not in bridge.js's invoke/listen surface.
-  orchestration: 'fb61de464f7670ac7d42c88e1907360a1ca094058196e4f5d3ab9c7508677ab2',
+  // Recomputed for the lane-merge residual wave: persistMessagesFor (the
+  // save_session_artifacts + rename_session invokes) joined the shared base.
+  orchestration: '921bb6314f6bfaf67b2d52d9b049055382c134aea391b2109b9ae159aa65c014',
   // Recomputed for the shared-helper dedup (see batch note above).
   // Recomputed for the dead-code cleanup: the caller-less openInSystem /
   // openExternalUrl wrappers (open_in_system / open_external_url invokes) were
@@ -374,7 +376,10 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // reconciler, the rerenderFromMessages core, the chat-events DI families and
 // the F-FE13-2 assistant_done timeline builder joined the shared base (the
 // builder ships on the static surface, so no signature moved).
-const expectedSharedBaseHash = '69a2d57e2aebc48130d707cec45b52d4389eff857c1fae82a3663e87e8da65a5';
+// Recomputed for the lane-merge residual waves: the chat tool-guard/relay
+// trios (no signature motion), userMessageDisplayText and persistMessagesFor
+// (save_session_artifacts + rename_session) joined the shared base.
+const expectedSharedBaseHash = 'd46e607a8d88cbb39cbcde8c67c443d9c0d0b42572ce3797038ad256053c3c43';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),
