@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 71 commits, nine maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: EXPECTED_COMMITS above upstream while pinned per EXPECTED_HEAD (71 registered + 14 pending upstream #81/#82/#85/#87 inside PR #653's integration-pin window), nine maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-EXPECTED_HEAD="13ee4dfd2349f8ece3d2b7169031d09189cc9ec7"
-EXPECTED_COMMITS=71
+EXPECTED_HEAD="f7d1cb0a25ab08794cd2b394bbe6f644795ee7d0"
+EXPECTED_COMMITS=85
 # r1 收口锚点：不可变 r1 tag 的收口 commit。层 0 断言它是当前 head 的祖先，
 # 即维护分支自 r1 收口线性前进而非另起分叉（2026-10-02 起处于过渡期：gitlink =
 # 维护分支头，领先钉在 r3 收口 commit 的不可变 tag；tag 钉点与领先关系由
