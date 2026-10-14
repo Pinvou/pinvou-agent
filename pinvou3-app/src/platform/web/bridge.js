@@ -3957,6 +3957,12 @@ function pinvouSharedwebN247496() {
         if (materialized) draftOwner.createdSessionId = materialized;
         return restoreAbortedMaterialization(text, draftOwner);
       }
+      // Round-24 MAJOR (PR #586 review, mirrors the tauri lane): report the
+      // committed materialization through the caller-owned meta out-param —
+      // the composer's scope effect cannot observe a draft→session transition
+      // that lands while ChatView is unmounted, so the send closure records
+      // the ledger mapping itself.
+      if (meta) meta.materializedSessionId = materialized;
     }
     const sid = state.activeSessionId;
     // In-bridge submission gate (mirrors the tauri chat bridge): any future
@@ -4153,7 +4159,11 @@ function prefillComposer(text, append) { return pinvouSharedweb().prefillCompose
 
   // Scoped task-draft restore: resolves by the original ownership (session,
   // created-but-abandoned session, or the operation's voice binding), never
-  // into the unrelated active session. Returns whether the restore landed.
+  // into the unrelated active session. Returns whether the restore landed —
+  // restoreComposerText's own verdict must be honored (round-23 asto minor 1,
+  // mirrors the tauri lane): an evicted/purged background buffer restores
+  // nothing, and reporting success anyway made the caller skip its own
+  // recovery and the text was gone.
   function restoreTaskDraft(text, owner) {
     if (!owner || owner.restored) return false;
     const sid = owner.sessionId || owner.createdSessionId || voiceOperationSessionId(owner.operationId);
@@ -4162,7 +4172,9 @@ function prefillComposer(text, append) { return pinvouSharedweb().prefillCompose
     // parked forever and never adoptable by a retry.
     if (sid) {
       if (owner.operationId) completeVoiceSubmission(owner.operationId, sid, false);
-      restoreComposerText(sid, text);
+      // Honor the verdict: false means the text landed NOWHERE — keep
+      // owner.restored unset so a caller retry is not blocked.
+      if (!restoreComposerText(sid, text)) return false;
     } else if (state.activeSessionId) {
       // Retain one departed draft in memory, never in the unrelated active session.
       if (owner.operationId) completeVoiceSubmission(owner.operationId, null, false);

@@ -308,8 +308,11 @@ test('materialization abort resolves "restored" for a refs-only message (round-1
   assert.equal(verdict, 'restored', 'a refs-only aborted materialization resolves restored');
   assert.equal(state.composerDraft, '', 'nothing is re-prefilled for a refs-only abort');
   // A textful abort keeps the restore-and-verdict shape (round-8 M1's
-  // surviving half): the stripped body goes back under the draft ownership.
-  const { state: textState, api: textApi } = makeHarness({
+  // surviving half): the stripped body goes back under the draft ownership —
+  // but only when the restore actually LANDS (round-23 asto minor 1): with
+  // the created session's background buffer live, the text is written there
+  // and the verdict is "restored".
+  const { state: textState, sessionStates: textStates, api: textApi } = makeHarness({
     ensureSession: async () => {
       textState.activeSessionId = 'OTHER';
       return 'CREATED-BUT-NOT-ACTIVE';
@@ -318,8 +321,65 @@ test('materialization abort resolves "restored" for a refs-only message (round-1
   textState.attachments = [];
   textState.activeSessionId = null;
   textState.draftEpoch = 8;
+  textStates['CREATED-BUT-NOT-ACTIVE'] = { composerDraft: '' };
   const textful = await textApi.sendMessage(buildSessionMentionBlock(REFS) + '把配色用到 PPT 里');
-  assert.equal(textful, 'restored', 'a textful aborted materialization restores and resolves restored');
+  assert.equal(textful, 'restored', 'a textful aborted materialization with a live buffer restores and resolves restored');
+  assert.equal(
+    textStates['CREATED-BUT-NOT-ACTIVE'].composerDraft,
+    '把配色用到 PPT 里',
+    'the stripped body landed in the created session\'s buffer',
+  );
+  // The evicted/purged-buffer window (round-23 asto minor 1): the created
+  // session's background buffer is gone (LRU eviction across 32+ switches, or
+  // a purge inside the create-await window) — restoreSteerText lands NOWHERE,
+  // so restoreTaskDraft must report the miss: a phantom "restored" made the
+  // caller skip its own recovery and the text was silently gone.
+  const { state: goneState, api: goneApi } = makeHarness({
+    ensureSession: async () => {
+      goneState.activeSessionId = 'OTHER';
+      return 'CREATED-BUT-GONE';
+    },
+  });
+  goneState.attachments = [];
+  goneState.activeSessionId = null;
+  goneState.draftEpoch = 9;
+  const gone = await goneApi.sendMessage(buildSessionMentionBlock(REFS) + '把配色用到 PPT 里');
+  assert.equal(gone, false, 'an aborted materialization whose restore landed nowhere resolves false (the caller owns the recovery)');
+});
+
+// Round-24 MAJOR, bridge leg: a COMMITTED materialization reports the new
+// session id through the caller-owned meta object — the send closure's
+// unmount-proof ledger recording keys on it (the abort branch above must NOT
+// set it). Drives the real sendMessage against the real shared helpers.
+test('a committed draft materialization reports the session id on the caller-owned meta (round-24 MAJOR)', async () => {
+  const { state, api } = makeHarness({
+    ensureSession: async () => {
+      state.activeSessionId = 'NEW';
+      return 'NEW';
+    },
+  });
+  state.attachments = [];
+  state.activeSessionId = null;
+  state.draftEpoch = 3;
+  const meta = {};
+  // Whatever the send itself does afterwards (verdict or throw), the report
+  // is written at the materialization, before any downstream failure.
+  await api.sendMessage('正文', meta).catch(() => {});
+  assert.equal(meta.materializedSessionId, 'NEW', 'the committed materialization is reported through the meta out-param');
+  // The abort branch never sets it: no phantom mapping for a draft that is
+  // still alive.
+  const { state: abortState, api: abortApi } = makeHarness({
+    ensureSession: async () => {
+      abortState.activeSessionId = 'OTHER';
+      return 'CREATED-BUT-NOT-ACTIVE';
+    },
+  });
+  abortState.attachments = [];
+  abortState.activeSessionId = null;
+  abortState.draftEpoch = 4;
+  const abortMeta = {};
+  await abortApi.sendMessage('正文', abortMeta).catch(() => {});
+  assert.equal(abortMeta.materializedSessionId, undefined, 'an aborted materialization reports nothing');
 });
 
 // The zap withdraw-window recovery test (round-10 M2) lives in

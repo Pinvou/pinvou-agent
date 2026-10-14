@@ -122,7 +122,11 @@ function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDra
   // created-but-abandoned session, or the operation's voice binding), never
   // into the unrelated active session. A proven same-draft rollback (see
   // sessions.js ensureSession) rebinds the voice association so a manual
-  // retry keeps it. Returns whether the restore landed.
+  // retry keeps it. Returns whether the restore landed — round-23 asto
+  // minor 1: restoreSteerText's own verdict must be honored (a created
+  // session whose background buffer was evicted/purged mid-create restores
+  // nothing); reporting success anyway made the caller skip its own recovery
+  // and the text was gone.
   function restoreTaskDraft(text, owner) {
     if (!owner || owner.restored) return false;
     if (owner.operationId && owner.rollbackFromDraftEpoch !== undefined) {
@@ -135,7 +139,10 @@ function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDra
     // parked forever and never adoptable by a retry.
     if (sid) {
       if (owner.operationId) voice().completeVoiceSubmission(owner.operationId, sid, false);
-      restoreSteerText(sid, text);
+      // Honor the verdict: false means the text landed NOWHERE (evicted or
+      // purged buffer) — keep owner.restored unset so a retry by the caller
+      // (voice lane) is not blocked, and report the miss.
+      if (!restoreSteerText(sid, text)) return false;
     } else if (state.activeSessionId) {
       // Retain one departed draft in memory, never in the unrelated active session.
       if (owner.operationId) voice().completeVoiceSubmission(owner.operationId, null, false);
@@ -698,12 +705,16 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedtauriChat
   // await, so every non-dispatching exit must say so; resolving undefined
   // used to read as "accepted" and silently dropped the draft):
   // - true         dispatched: sent, steered (busy chip) or queued for delivery.
-  // - "restored"   nothing dispatched, but the text is already back in the
-  //                composer (bridge-side restore) — the caller must not
-  //                restore again, it would duplicate the draft.
+  // - "restored"   nothing dispatched, and the bridge-side restore landed —
+  //                the caller must not restore again, it would duplicate the
+  //                draft. A refs-only message strips to "" (nothing
+  //                restorable) but resolves "restored" too: the abort
+  //                semantics are the same (never dispatched, draft alive).
   // - false        nothing dispatched and the text was NOT restored
-  //                (notice-only early returns) — the caller owns putting the
-  //                draft back (handleSend's empty-vs-typed restore).
+  //                (notice-only early returns, or the scoped restore found
+  //                no landing buffer — round-23 asto minor 1) — the caller
+  //                owns putting the draft back (handleSend's empty-vs-typed
+  //                restore, the voice lane's restoreTaskDraft retry).
   // Main-path send failures still throw (surfaceFailure) and the caller
   // restores through its catch.
   // eslint-disable-next-line sonarjs/cognitive-complexity -- single send state machine (ownership guard + first-turn materialization + busy steer); split tracked separately
@@ -758,6 +769,11 @@ function pinvouSharedtauriChatN31666() {
         if (!restoredBody) return "restored";
         return restoreTaskDraft(restoredBody, draftOwner) ? "restored" : false;
       }
+      // Round-24 MAJOR (PR #586 review): report the committed materialization
+      // through the caller-owned meta out-param — the composer's scope effect
+      // cannot observe a draft→session transition that lands while ChatView is
+      // unmounted, so the send closure records the ledger mapping itself.
+      if (meta) meta.materializedSessionId = materialized;
     }
     const sid = state.activeSessionId;
     // An async writeback/task send explicitly carries its operationId: hand it

@@ -59,18 +59,20 @@ const MAX_BLOCK_JSON_LINE_LENGTH = 64 * 1024;
 /** Per-title cap when parsing refs out of stored messages (a huge stored title must not flood chips/cards). */
 const MAX_REF_TITLE_LENGTH = 200;
 /**
- * Session ids are engine-generated slugs (^[A-Za-z0-9_-]+$); a longer id is
- * dirty/crafted data. Capped here at the session-reader's own id limit so an
- * oversized id degrades like a deleted session instead of flowing into
- * labels, aria-labels, React keys, and the rebuilt block (round-13 minor 6).
+ * Session ids are engine-generated slugs; a longer id is dirty/crafted data.
+ * Only the reader's id-length limit is enforced here (the slug charset is the
+ * reader contract's own concern, not this choke point's), so an oversized id
+ * degrades like a deleted session instead of flowing into labels,
+ * aria-labels, React keys, and the rebuilt block (round-13 minor 6).
  */
 const MAX_SESSION_ID_LENGTH = 128;
 
-// Cap at a code-unit boundary but never split an astral character: a
-// trailing lone surrogate serializes to the escaped \udXXX form, which IPC
-// serde passes but leaves as a replacement char in chips — and the Rust
-// titler's lone-surrogate floor fails open to the raw contract header as
-// the auto-title. Drop the unpaired unit instead.
+// Cap at a code-unit boundary but never split an astral character. A
+// trailing lone surrogate must not survive the cap: IPC serde rejects
+// unpaired surrogates at the invoke boundary on both lanes (see the
+// parser-floor note in sessions.rs), so such a title does not gracefully
+// degrade in chips — a send carrying it is rejected outright. Drop the
+// unpaired unit instead so the capped title stays serializable.
 const capRefTitle = (title) => {
   if (title.length <= MAX_REF_TITLE_LENGTH) return title;
   const capped = title.slice(0, MAX_REF_TITLE_LENGTH);

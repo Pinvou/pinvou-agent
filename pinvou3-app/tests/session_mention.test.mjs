@@ -962,7 +962,8 @@ test('composer session drop invokes the guarded add path (behavioral)', () => {
 
 test('mention-menu keydown: the IME guard precedes every preventDefault (behavioral)', () => {
   const fn = extractChatViewFunction('function handleKeyDown(e)');
-  const make = () => {
+  const caretFn = extractChatViewFunction('const mentionCaretInTriggerToken = (composerRef, trigger) => {');
+  const make = (caret) => {
     const calls = { selections: [], dismissed: [], sends: 0, picked: [] };
     const sandbox = {
       chatVoice: null,
@@ -970,14 +971,17 @@ test('mention-menu keydown: the IME guard precedes every preventDefault (behavio
       isImeComposing: (e) => !!e.isComposing,
       mentionCandidates: [{ sessionId: 's1' }, { sessionId: 's2' }],
       mentionIndex: 0,
-      mentionTrigger: { token: '0:登录' },
+      // Trigger token '@登录' starts at index 5 in '参考一下@登录' (length 8):
+      // a caret at 8 sits inside the trailing token, one at 3 does not.
+      mentionTrigger: { token: '5:登录', start: 5 },
+      composerRef: { current: { selectionStart: caret, value: '参考一下@登录' } },
       setMentionSelection: (value) => { calls.selections.push(value); },
       setMentionDismissedToken: (value) => { calls.dismissed.push(value); },
       handleSelectMentionCandidate: (candidate) => { calls.picked.push(candidate); },
       isPlainEnter: (e) => e.key === 'Enter' && !e.shiftKey && !e.isComposing,
       handleSend: () => { calls.sends += 1; },
     };
-    vm.runInNewContext(`${fn}\nthis.handleKeyDown = handleKeyDown;`, sandbox);
+    vm.runInNewContext(`${caretFn}\n${fn}\nthis.handleKeyDown = handleKeyDown;`, sandbox);
     return { sandbox, calls };
   };
   const event = (key, isComposing) => {
@@ -988,7 +992,7 @@ test('mention-menu keydown: the IME guard precedes every preventDefault (behavio
   // preventDefault, no selection move, no dismiss (moving the guard below the
   // ArrowDown branch fails this).
   for (const key of ['ArrowDown', 'ArrowUp', 'Escape', 'Tab', 'Enter']) {
-    const { sandbox, calls } = make();
+    const { sandbox, calls } = make(8);
     const e = event(key, true);
     sandbox.handleKeyDown(e);
     assert.equal(e.prevented, 0, `IME-composing ${key} must not be preventDefaulted`);
@@ -997,15 +1001,30 @@ test('mention-menu keydown: the IME guard precedes every preventDefault (behavio
     assert.equal(calls.picked.length, 0);
   }
   // Outside composition the menu navigation works as before.
-  const { sandbox, calls } = make();
+  const { sandbox, calls } = make(8);
   const down = event('ArrowDown', false);
   sandbox.handleKeyDown(down);
   assert.equal(down.prevented, 1);
-  assert.equal(JSON.stringify(calls.selections), JSON.stringify([{ token: '0:登录', index: 1 }]));
+  assert.equal(JSON.stringify(calls.selections), JSON.stringify([{ token: '5:登录', index: 1 }]));
   const enter = event('Enter', false);
   sandbox.handleKeyDown(enter);
   assert.equal(enter.prevented, 1);
   assert.equal(JSON.stringify(calls.picked), JSON.stringify([{ sessionId: 's1' }]));
+  // Caret-anchored commit (round-23 asto minor 6): with the caret moved
+  // BEFORE the trailing trigger token, Enter must fall through to SEND (the
+  // panel is stale for the edit position — committing would rewrite the
+  // tail), and Tab must do neither.
+  const away = make(3);
+  const awayEnter = event('Enter', false);
+  away.sandbox.handleKeyDown(awayEnter);
+  assert.equal(away.calls.picked.length, 0, 'Enter outside the trailing token must not commit the candidate');
+  assert.equal(away.calls.sends, 1, 'Enter outside the trailing token falls through to send');
+  const awayTab = make(3);
+  const tab = event('Tab', false);
+  awayTab.sandbox.handleKeyDown(tab);
+  assert.equal(tab.prevented, 0, 'Tab outside the trailing token is not swallowed by the panel');
+  assert.equal(awayTab.calls.picked.length, 0);
+  assert.equal(awayTab.calls.sends, 0);
 });
 
 // ── Feature switch (docs/builtin-toolset-contract.md §3.3 four-layer cascade) ──
@@ -1301,10 +1320,13 @@ test('composer chip drafts are wired to the restore/stash store (round-6 minor 8
 test('both relay legs for the switch broadcast are pinned (round-6 minor 7)', () => {
   // Desktop leg: chat-events.js re-dispatches the Tauri event to the shared
   // DOM event (the web leg + the relay allowlist are pinned in
-  // web_access_contract).
+  // web_access_contract). Round-23 asto minor 3: the bare
+  // `pinvou:tools-changed` presence pin was satisfied by the file's own
+  // comment — deleting the actual re-dispatch line stayed green. Pin the
+  // dispatch itself.
   const chatEvents = readFileSync(new URL('../src/platform/tauri/bridge/chat-events.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   assert.match(chatEvents, /listen\("remote_control:tools_changed"/);
-  assert.match(chatEvents, /pinvou:tools-changed/);
+  assert.match(chatEvents, /window\.dispatchEvent\(new CustomEvent\('pinvou:tools-changed'\)\)/);
 });
 
 test('buildSessionMentionBlock caps titles like the parser (round-6 minor 3)', () => {
@@ -1659,6 +1681,10 @@ test('the web-connection recovery re-read and the ref cap are pinned (round-19 m
   assert.match(chatViewSource, /const refreshOnWebConnection = \(event\) => \{/);
   assert.match(chatViewSource, /window\.addEventListener\('pinvou:web-connection', refreshOnWebConnection\);/);
   assert.match(chatViewSource, /window\.removeEventListener\('pinvou:web-connection', refreshOnWebConnection\);/);
+  // Round-23 asto minor 3: the declaration/listener pins alone stay green
+  // with a no-op handler body — pin the guard and the re-read call so the
+  // recovery actually refreshes.
+  assert.match(chatViewSource, /const detail = event && event\.detail;\s*if \(!detail \|\| detail\.desktop_online !== false\) refresh\(\);/);
   // The ref cap literal: the Rust 64 KB JSON-line bound's soundness derives
   // from MAX_SESSION_REFS × capped title — a silent raise must red.
   assert.equal(MAX_SESSION_REFS, 5, 'the ref cap is a product constant; changing it needs the Rust bound re-derived');
@@ -1874,6 +1900,9 @@ test('failure restores are stash-backed across unmount and draft materialization
     const runLaneDrive = async (lane, { verdict, expectLive, expectStashKey, expectNotStashKey }) => {
       const store = recordingDraftStore();
       const live = { refs: [], applied: [] };
+      // Round-23 asto minor 2: capture whether the lane registered the draft
+      // key at dispatch — deleting a lane's .add line must red per lane.
+      let registeredAtDispatch = false;
       const sandbox = {
         mentionDraftKeyRef: { current: 'draft:3' },
         mentionPendingDraftSendsRef: { current: new Set() },
@@ -1895,6 +1924,7 @@ test('failure restores are stash-backed across unmount and draft materialization
         materializationCarry,
         sessionRefs: REFS,
         sendChatMessage: async () => {
+          registeredAtDispatch = sandbox.mentionPendingDraftSendsRef.current.has('draft:3');
           store.stashSessionMentionDraft('draft:3', []);
           recordDraftMaterialization('draft:3', 'session:sess-1');
           sandbox.mentionDraftKeyRef.current = 'session:sess-1';
@@ -1912,6 +1942,7 @@ test('failure restores are stash-backed across unmount and draft materialization
       const drive = lane.build(sandbox);
       try {
         await drive();
+        assert.equal(registeredAtDispatch, true, `${lane.name}: the in-flight draft key is registered at dispatch (round-23 asto minor 2)`);
         assert.deepEqual(
           store.calls.stashed.at(-1),
           [expectStashKey, [...REFS]],
@@ -1972,6 +2003,7 @@ test('failure restores are stash-backed across unmount and draft materialization
         ...scope,
         mentionDraftKeyRef,
         sessionMentionEnabledRef: { current: true },
+        materializationCarry,
         mentionPendingDraftSendsRef: { current: pendingDraftSends },
         recordDraftMaterialization,
         setSessionRefs: (value) => { applied.refs = value; sessionRefsRef.current = value; },
@@ -2053,6 +2085,7 @@ test('failure restores are stash-backed across unmount and draft materialization
           setInputText: () => {},
           ...scope,
           mentionDraftKeyRef: stayKeyRef,
+          materializationCarry,
           sessionMentionEnabledRef: { current: true },
           mentionPendingDraftSendsRef: staySends,
           recordDraftMaterialization,
@@ -2147,6 +2180,7 @@ test('failure restores are stash-backed across unmount and draft materialization
           bs: {},
           setInputText: () => {},
           ...scope,
+          materializationCarry,
           mentionDraftKeyRef: navKeyRef,
           sessionMentionEnabledRef: { current: true },
           mentionPendingDraftSendsRef: navSends,
@@ -2632,6 +2666,7 @@ test('failure restores are stash-backed across unmount and draft materialization
             useEffect: (callback) => { effectBody = callback; },
             bridge: { available: true, chat: { getComposerDraft: () => '正文' } },
             bs: {},
+            materializationCarry,
             setInputText: () => {},
             ...scope,
             mentionDraftKeyRef: keyRef,
@@ -2826,6 +2861,7 @@ test('failure restores are stash-backed across unmount and draft materialization
         useEffect: (callback) => { navEffect = callback; },
         bridge: { available: true, chat: { getComposerDraft: () => '' } },
         bs: {},
+        materializationCarry,
         setInputText: () => {},
         ...scope,
         mentionDraftKeyRef: navKeyRef,
@@ -2859,4 +2895,181 @@ test('failure restores are stash-backed across unmount and draft materialization
       'the draft keeps its chips stashed for the return',
     );
   }
+});
+
+// Round-24 MAJOR (both reviewers' independent probe): a materialization that
+// commits while ChatView is UNMOUNTED (Settings open, send promise running)
+// was never recorded — the scope effect is the ledger's only writer and a
+// fresh mount starts with a null mentionDraftKeyRef and an empty component-
+// local pending set. The failed send then resolved its snapshot through the
+// dead draft key and the chips were orphaned. The fix rides the send closure
+// (unmount-proof): the bridge reports the committed materialization through
+// the caller-owned meta object, sendChatMessage records it into the ledger
+// before the settle tail resolves its stash key, and the mounted scope
+// effect's earlier recording (with its mid-await carry) still wins.
+test('an unmounted-window materialization is recorded by the send closure; the failed send lands under the session key (round-24 MAJOR)', async () => {
+  const effectFn = extractChatViewFunction(`useEffect(() => {
+        const restored = bridge.available`);
+  const handleSendFn = extractChatViewFunction('async function handleSend()');
+  const recordFn = extractChatViewFunction('const recordSendMaterialization = (draftKey, meta) => {');
+  const sendChatMessageFn = extractChatViewFunction('const sendChatMessage = useCallback(async (text, voiceContext) => {');
+  const store = recordingDraftStore();
+  const keyRef = { current: null };
+  const refsRef = { current: [] };
+  const pendingDraftSends = { current: new Set() };
+  let effectBody = null;
+  const runEffect = (scope, bag) => {
+    const sandbox = {
+      useEffect: (callback) => { effectBody = callback; },
+      bridge: { available: true, chat: { getComposerDraft: () => '正文' } },
+      materializationCarry,
+      bs: {},
+      setInputText: () => {},
+      ...scope,
+      mentionDraftKeyRef: bag.keyRef,
+      sessionMentionEnabledRef: { current: true },
+      mentionPendingDraftSendsRef: bag.pending,
+      recordDraftMaterialization,
+      setSessionRefs: (value) => { bag.refs.current = typeof value === 'function' ? value(bag.refs.current) : value; },
+      setMentionDismissedToken: () => {},
+      setMentionSelection: () => {},
+      sessionRefsRef: bag.refs,
+      stashSessionMentionDraft: store.stashSessionMentionDraft,
+      restoreSessionMentionDraft: store.restoreSessionMentionDraft,
+      dedupeSessionRefs,
+      console,
+    };
+    vm.runInNewContext(`${effectFn})`, sandbox);
+    return effectBody();
+  };
+  // Mounted pick phase: the composer scope is draft:3 with chips picked.
+  const draftBag = { keyRef, refs: refsRef, pending: pendingDraftSends };
+  const draftCleanup = runEffect({ activeSessionId: null, draftEpoch: 3 }, draftBag);
+  refsRef.current = [...REFS];
+  let sawPendingAtDispatch = false;
+  const sendSandbox = {
+    mentionDraftKeyRef: keyRef,
+    sessionMentionEnabledRef: { current: true },
+    mentionPendingDraftSendsRef: pendingDraftSends,
+    isMultiAgentReadOnly: false,
+    canSend: true,
+    chatVoice: null,
+    inputText: '正文',
+    inputTextRef: { current: '正文' },
+    constrainChatInput: (value) => ({ text: value, truncated: false }),
+    setInputText: () => {},
+    sessionMentionEnabled: true,
+    materializationCarry,
+    buildSessionMentionBlock,
+    dedupeSessionRefs,
+    stashSessionMentionDraft: store.stashSessionMentionDraft,
+    restoreSessionMentionDraft: store.restoreSessionMentionDraft,
+    resolveMaterializedDraftKey,
+    clearDraftMaterialization,
+    recordDraftMaterialization,
+    sessionRefs: REFS,
+    bridge: { voice: {}, chat: { prefillComposer: () => {} } },
+    personalWorkbenchTemplateIdRef: { current: null },
+    setPersonalWorkbenchTemplateId: () => {},
+    setSessionRefs: (value) => { refsRef.current = typeof value === 'function' ? value(refsRef.current) : value; },
+    // The real sendChatMessage calls this; the stub models the two hops the
+    // production funnel makes around bridge.chat.sendMessage while ChatView
+    // stays unmounted.
+    dispatchChatMessage: async (text, meta) => {
+      // Round-23 asto minor 2 pin: the in-flight registration must exist at
+      // dispatch time (the mounted scope effect keys on it).
+      sawPendingAtDispatch = pendingDraftSends.current.has('draft:3');
+      // The dispatch-time chip clear committed, then ChatView unmounts
+      // (Settings): the scope effect's cleanup stashes the post-dispatch []
+      // under the draft key and nothing observes the bridge-side transition.
+      draftCleanup();
+      // Inside bridge sendMessage: the draft materializes into NEW and the
+      // send then FAILS. The report rides on the caller-owned meta object
+      // (both bridges write it on the committed-materialization path).
+      meta.materializedSessionId = 'NEW';
+      throw new Error('reserve conflict');
+    },
+    useCallback: (callback) => callback,
+    console,
+  };
+  vm.runInNewContext(
+    `${settlePrefix}${recordFn}\n${sendChatMessageFn})\n${handleSendFn}\nthis.handleSend = handleSend;\nthis.recordSendMaterialization = recordSendMaterialization;`,
+    sendSandbox,
+  );
+  await sendSandbox.handleSend();
+  assert.equal(sawPendingAtDispatch, true, 'handleSend registers the in-flight draft key at dispatch (round-23 asto minor 2)');
+  assert.deepEqual(
+    restoreSessionMentionDraft('session:NEW'),
+    [...REFS],
+    'the failed send snapshot lands under the materialized session key even though the view was unmounted',
+  );
+  assert.deepEqual(restoreSessionMentionDraft('draft:3'), [], 'nothing stays stranded under the dead draft key');
+  assert.equal(materializationCarry('draft:3'), null, 'the settle clears the closure-recorded ledger entry');
+  assert.equal(pendingDraftSends.current.size, 0, 'the in-flight registration settles');
+  // The reviewers' probe outcome: a FRESH mount (null ref, empty pending set)
+  // into the materialized session restores the chips.
+  const mountBag = { keyRef: { current: null }, refs: { current: [] }, pending: { current: new Set() } };
+  runEffect({ activeSessionId: 'NEW', draftEpoch: 4 }, mountBag);
+  assert.deepEqual(
+    mountBag.refs.current,
+    [...REFS],
+    'a fresh mount into the materialized session restores the chips (no orphaned references)',
+  );
+  // Mounted double-recording guard: when the scope effect already recorded
+  // the transition (with its mid-await carry), the closure leg must keep it.
+  stashSessionMentionDraft('draft:9', [{ sessionId: 'mid', title: 't' }]);
+  recordDraftMaterialization('draft:9', 'session:S1', [{ sessionId: 'mid', title: 't' }]);
+  sendSandbox.recordSendMaterialization('draft:9', { materializedSessionId: 'S1' });
+  assert.deepEqual(
+    materializationCarry('draft:9').carriedRefs,
+    [{ sessionId: 'mid', title: 't' }],
+    'the closure recording never clobbers the effect entry (its mid-await carry survives)',
+  );
+  // And the closure leg itself records when nothing exists yet (the stash is
+  // the carry source, exactly like the effect's read).
+  stashSessionMentionDraft('draft:10', [{ sessionId: 'late', title: 't' }]);
+  sendSandbox.recordSendMaterialization('draft:10', { materializedSessionId: 'S2' });
+  assert.deepEqual(
+    materializationCarry('draft:10'),
+    { target: 'session:S2', carriedRefs: [{ sessionId: 'late', title: 't' }] },
+    'with no prior entry the closure records the mapping with the stash carry',
+  );
+});
+
+// Round-24 MAJOR source pins: the report must be threaded through every leg
+// the vm drives above stub out — the bridge-side write (both lanes), the
+// dispatchChatMessage write-back onto the caller-owned object, and the scope
+// effect's do-not-clobber guard. Deleting any leg while the behavioral test
+// above stays green (its stubs model the legs) must still red here.
+test('the materialization report is threaded through every leg (round-24 MAJOR source pins)', () => {
+  const chatViewSource = readChatViewSource();
+  const chatSource = readFileSync(new URL('../src/platform/tauri/bridge/chat.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  const webSource = readFileSync(new URL('../src/platform/web/bridge.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  // Bridge legs (tauri behavioral coverage lives in session_mention_restore;
+  // the web lane gets the bounded source pin).
+  assert.match(chatSource, /if \(meta\) meta\.materializedSessionId = materialized;/);
+  assert.match(webSource, /if \(meta\) meta\.materializedSessionId = materialized;/);
+  // dispatchChatMessage's finally write-back: the local meta the bridge
+  // received is not the caller's object — the report must hop back.
+  assert.match(chatViewSource, /voiceMeta\.materializedSessionId = meta\.materializedSessionId;/);
+  // The scope effect's guard: an entry that already points at the transition
+  // target (the closure leg recorded first) must not be re-recorded over.
+  assert.match(chatViewSource, /const recorded = materializationCarry\(previousKey\);\s*\n\s*if \(!recorded \|\| recorded\.target !== key\) \{/);
+  // Web mirror of round-23 asto minor 1: restoreTaskDraft must honor
+  // restoreComposerText's verdict (no vm harness exists for the whole web
+  // bridge — the tauri lane carries the behavioral coverage in
+  // session_mention_restore).
+  assert.match(webSource, /if \(!restoreComposerText\(sid, text\)\) return false;/);
+});
+
+// Round-23 asto minor 4: the sessionRefsRef sync effect is emulated away by
+// every effect-sandbox stub (deleting the production line kept the suite
+// green), yet it is the sole writer of the ref the scope cleanup stashes
+// from — one structural source pin closes it.
+test('the sessionRefsRef sync effect is structurally pinned (round-23 asto minor 4)', () => {
+  assert.match(
+    readChatViewSource(),
+    /useEffect\(\(\) => \{\s*sessionRefsRef\.current = sessionRefs;\s*\}, \[sessionRefs\]\);/,
+    'the ref the scope cleanup stashes from must actually be synced from the state',
+  );
 });

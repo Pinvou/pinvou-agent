@@ -232,6 +232,16 @@ const isPlainEnter = (e) => e.key === 'Enter' && !e.shiftKey && !isImeComposing(
 // suppressed the block, stale pre-toggle chips are cleared instead — they can
 // never ride a send while the feature is off (round-9: the previous
 // setSessionRefs([]) wiped mid-await picks on every accepted send).
+// Caret-anchored commit (round-23 asto minor 6): the mention trigger token
+// is end-of-text anchored, so Enter/Tab may only commit a candidate while
+// the caret sits inside that trailing token — with the caret moved elsewhere
+// the panel is stale for the edit position and a commit would rewrite the
+// tail. An unreadable caret (no element) keeps the legacy commit behavior.
+const mentionCaretInTriggerToken = (composerRef, trigger) => {
+  const el = composerRef.current;
+  const caret = el && typeof el.selectionStart === 'number' ? el.selectionStart : null;
+  return caret === null || caret >= trigger.start;
+};
 const refsSurvivingAcceptance = (refsAtSend, currentRefs, featureOn) => {
   if (!featureOn) return [];
   const sentIds = new Set(refsAtSend.map((ref) => ref && ref.sessionId));
@@ -319,6 +329,28 @@ const makeSettleSessionRefSend = ({ mentionDraftKeyRef, sessionMentionEnabledRef
       [...carriedRefs, ...refsAtSend, ...restoreSessionMentionDraft(stashKey)]));
     if (carry) clearDraftMaterialization(draftKeyAtSend);
   };
+
+// Round-24 MAJOR (both reviewers' independent probe): the scope effect is the
+// ledger's only production writer, and it can only observe a materialization
+// while ChatView is MOUNTED with the draft key in its ref (a fresh mount
+// starts at null and with an empty component-local pending set). A send from
+// draft:N whose materialization commits while the view is unmounted (Settings
+// open, send promise still running) therefore resolves its failure snapshot
+// through the DEAD draft key and the chips are orphaned. The bridge reports
+// the committed materialization through the caller-owned meta object; this
+// helper runs in the send closure (unmount-proof) right after the await, so
+// the settle tail below resolves its stash key through the ledger either way.
+// The mounted scope effect's own recording wins when it already happened (it
+// carries the mid-await picks read at the transition): never clobber it.
+const recordSendMaterialization = (draftKey, meta) => {
+  const sessionId = meta && meta.materializedSessionId;
+  if (!sessionId || !draftKey || !draftKey.startsWith('draft:')) return;
+  if (materializationCarry(draftKey)) return;
+  // Same carry semantics as the effect at the same logical moment: whatever
+  // the draft scope's stash still holds (mid-await picks while the transition
+  // render is pending; nothing once the cleanup ran — the unmounted shape).
+  recordDraftMaterialization(draftKey, `session:${sessionId}`, restoreSessionMentionDraft(draftKey));
+};
 
 // Presentation for the canonical scene registry (scene-registry.js owns the
 // key order and the lane tags); this table only adds the UI label key + icon.
@@ -1969,13 +2001,21 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         if (previousKey && previousKey !== key
           && previousKey.startsWith('draft:') && key.startsWith('session:')
           && mentionPendingDraftSendsRef.current.has(previousKey)) {
-          const carried = restoreSessionMentionDraft(previousKey);
-          // Ownership-separated carry (round-20 zhuowp follow-up): the
-          // carried chips live in the ledger entry, NOT in the target's
-          // stash — the target's own picks (and their cap slots) stay
-          // untouched, and the settle tails are the only consumers.
-          recordDraftMaterialization(previousKey, key, carried);
-          if (carried.length) stashSessionMentionDraft(previousKey, []);
+          // Round-24 MAJOR: when the send closure's unmount-proof recording
+          // already took this transition (recorded.target === key), keep ITS
+          // carry — it read the draft stash while the mid-await picks were
+          // still in it; re-recording here would overwrite them with the
+          // post-cleanup empty stash.
+          const recorded = materializationCarry(previousKey);
+          if (!recorded || recorded.target !== key) {
+            const carried = restoreSessionMentionDraft(previousKey);
+            // Ownership-separated carry (round-20 zhuowp follow-up): the
+            // carried chips live in the ledger entry, NOT in the target's
+            // stash — the target's own picks (and their cap slots) stay
+            // untouched, and the settle tails are the only consumers.
+            recordDraftMaterialization(previousKey, key, carried);
+            if (carried.length) stashSessionMentionDraft(previousKey, []);
+          }
         }
         mentionDraftKeyRef.current = key;
         setSessionRefs(restoreSessionMentionDraft(key));
@@ -2269,6 +2309,15 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         } catch (error) {
           pendingModeScopeMigrationRef.current = null;
           throw error;
+        } finally {
+          // Round-24 MAJOR: the bridge reports a committed draft materialization
+          // on the meta object it received (out-param); meta here is built
+          // locally, so hand the report back on the caller-owned object the
+          // send closure holds — it records the ledger mapping the scope
+          // effect would have recorded had the view stayed mounted.
+          if (meta && meta.materializedSessionId && voiceMeta) {
+            voiceMeta.materializedSessionId = meta.materializedSessionId;
+          }
         }
         // sendMessage resolves true only when something was actually
         // dispatched (sent / steered / queued). false marks notice-only early
@@ -2290,8 +2339,14 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             ? bridge.voice.getVoiceOperationId(activeSessionId || null, 'chat')
             : null);
         if (operationId && bridge.voice?.beginVoiceSubmission) bridge.voice.beginVoiceSubmission(operationId);
+        // Caller-owned out-param plus the dispatch-time scope key: the
+        // recording below is the unmount-proof leg of the materialization
+        // ledger (round-24 MAJOR) — this closure outlives the view.
+        const meta = { voiceOperationId: operationId };
+        const draftKeyAtDispatch = mentionDraftKeyRef.current;
         try {
-          const accepted = await dispatchChatMessage(text, { voiceOperationId: operationId }, voiceContext?.draftOwner);
+          const accepted = await dispatchChatMessage(text, meta, voiceContext?.draftOwner);
+          recordSendMaterialization(draftKeyAtDispatch, meta);
           if ((accepted === false || accepted === 'restored') && operationId
             && bridge.voice?.completeVoiceSubmission) {
             bridge.voice.completeVoiceSubmission(operationId, null, false);
@@ -2300,6 +2355,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           // voice task delivery must treat it as not accepted.
           return accepted;
         } catch (error) {
+          recordSendMaterialization(draftKeyAtDispatch, meta);
           if (operationId && bridge.voice?.completeVoiceSubmission) {
             bridge.voice.completeVoiceSubmission(operationId, null, false);
           }
@@ -3023,7 +3079,8 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             setMentionDismissedToken(mentionTrigger.token);
             return;
           }
-          if ((isPlainEnter(e) || e.key === 'Tab') && mentionCandidates.length > 0) {
+          if ((isPlainEnter(e) || e.key === 'Tab') && mentionCandidates.length > 0
+            && mentionCaretInTriggerToken(composerRef, mentionTrigger)) {
             e.preventDefault();
             handleSelectMentionCandidate(mentionCandidates[mentionIndex] || mentionCandidates[0]);
             return;

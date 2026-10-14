@@ -2056,9 +2056,10 @@ mod web_projection_tests {
     #[test]
     fn rust_strip_call_sites_are_pinned() {
         // Round-16 m2: three Rust surfaces consume the strip with no
-        // behavior-level harness (the JS↔Rust differential covers the
-        // function itself; these pins cover the wiring) — reverting any
-        // call site must turn rust-test red.
+        // behavior-level harness (no executed JS↔Rust differential exists —
+        // the JS suite only drift-pins the verbatim contract consts against
+        // this file's production declarations; these pins cover the wiring
+        // and consts) — reverting any call site must turn rust-test red.
         // CRLF checkouts (round-20 zhuowp): the needles are LF-anchored
         // multi-line strings — normalize the included source so the pins
         // behave identically on Windows checkouts.
