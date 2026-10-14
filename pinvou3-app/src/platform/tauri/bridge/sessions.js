@@ -6,7 +6,7 @@
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry.sessions = function (context) {let pinvouSharedtauriSessionsCache = null;
 function pinvouSharedtauriSessions() {
-  if (!pinvouSharedtauriSessionsCache) pinvouSharedtauriSessionsCache = window.PinvouBridgeShared.create("tauriSessions", { sessionStates, freshBuffer, restoreEvictedSessionDraft, state, userMessageDisplayText, evictedSessionDrafts, MAX_EVICTED_SESSION_DRAFT_CHARS, MAX_EVICTED_SESSION_DRAFTS, sessionBufferTouchClock: { get value() { return sessionBufferTouchClock; }, set value(v) { sessionBufferTouchClock = v; } }, pruneScheduledSessionBuffers, pruneSessionBuffers, scheduledRunSessionOwners, scheduledRunOwnerTouchClock: { get value() { return scheduledRunOwnerTouchClock; }, set value(v) { scheduledRunOwnerTouchClock = v; } }, MAX_SCHEDULED_RUN_SESSION_OWNERS, enterDraft, setScheduledTaskError, notify, addSystemItem, bt, hydratedMessageKey, basename, switchToSessionInternal, openScheduledRunChatOnce, scheduledRunOpenInFlight, loadWorkingSetFrom, invalidateScheduledRecentRunsForSession, purgeSessionBuffer, invoke, personaPlaceholderTitles, refreshHistoryList, sessionSwitchRequestToken: { get value() { return sessionSwitchRequestToken; }, set value(v) { sessionSwitchRequestToken = v; } }, saveWorkingSetTo, loadScheduledTaskRecentRuns });
+  if (!pinvouSharedtauriSessionsCache) pinvouSharedtauriSessionsCache = window.PinvouBridgeShared.create("tauriSessions", { sessionStates, freshBuffer, restoreEvictedSessionDraft, state, userMessageDisplayText, evictedSessionDrafts: { get value() { return evictedSessionDrafts; } }, MAX_EVICTED_SESSION_DRAFT_CHARS: { get value() { return MAX_EVICTED_SESSION_DRAFT_CHARS; } }, MAX_EVICTED_SESSION_DRAFTS: { get value() { return MAX_EVICTED_SESSION_DRAFTS; } }, sessionBufferTouchClock: { get value() { return sessionBufferTouchClock; }, set value(v) { sessionBufferTouchClock = v; } }, pruneScheduledSessionBuffers, pruneSessionBuffers, scheduledRunSessionOwners, scheduledRunOwnerTouchClock: { get value() { return scheduledRunOwnerTouchClock; }, set value(v) { scheduledRunOwnerTouchClock = v; } }, MAX_SCHEDULED_RUN_SESSION_OWNERS, enterDraft, setScheduledTaskError, notify, addSystemItem, bt, hydratedMessageKey, basename, switchToSessionInternal, openScheduledRunChatOnce, scheduledRunOpenInFlight, loadWorkingSetFrom, invalidateScheduledRecentRunsForSession, purgeSessionBuffer, invoke, personaPlaceholderTitles, refreshHistoryList, sessionSwitchRequestToken: { get value() { return sessionSwitchRequestToken; }, set value(v) { sessionSwitchRequestToken = v; } }, saveWorkingSetTo, loadScheduledTaskRecentRuns });
   return pinvouSharedtauriSessionsCache;
 }
 
@@ -47,7 +47,6 @@ function pinvouSharedtauriSessions() {
     const addSystemItem = context.addSystemItem;
     const turnUsageDirty = context.turnUsageDirty;
     const basename = context.basename;
-    const isAbsPath = context.isAbsPath;
     const filterSessionArtifacts = context.filterSessionArtifacts;
     const scheduleShellPoll = context.scheduleShellPoll;
     const bt = context.bt;

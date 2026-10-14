@@ -17,8 +17,6 @@ function pinvouSharedtauriMonitor() {
     const state = context.state;
     const notify = context.notify;
     const invoke = context.invoke;
-    const bt = context.bt;
-    const sessionStates = context.sessionStates;
     let monitorIntervalId = null;
     let monitorPollInFlight = false;
     let gpuUtilHistory = [];
@@ -44,7 +42,6 @@ function numOr0(x) { return pinvouSharedtauriMonitor().numOr0(x); }
   // → 丢弃失效基准，回落到累计值，避免负数。
   // KV 命中率(混合):本地 vLLM 用 /metrics prefix_cache(vllmKvPct);拿不到再用 usage 的
   // cache token 口径(selfKvPct,给云端/D3)。二者都按区间(扣基准)重算。
-function adjustCounters(sp, v) { return pinvouSharedtauriMonitor().adjustCounters(sp, v); }
 
   function clearMonitorBaseline() {
     monitorBaseline = null;

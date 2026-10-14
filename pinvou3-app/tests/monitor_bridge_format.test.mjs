@@ -10,9 +10,12 @@ const read = (...parts) => fs.readFileSync(path.join(root, ...parts), 'utf8');
 // 两份 bridge(tauri 桌面 / web)的 TTFT/TPS 无数据回退必须统一为「—」,
 // 与 MonitorView.jsx 的 MonitorMetricCard(值为 — 时不渲染 unit)配套。
 // 防止某一侧单独回退成字面 "0 s"/"0 tok/s" 造成桌面/网页显示漂移。
+// Wave 1 moved pollMonitor (vllmTtft/vllmTps formatting) into the shared
+// base; both lanes forward to it, so the shared body is the single source to
+// pin (the lane files no longer carry the formatted literals).
 const bridges = {
-  tauri: read('src', 'platform', 'tauri', 'bridge', 'monitor.js'),
-  web: read('src', 'platform', 'web', 'bridge.js'),
+  tauri: read('src', 'shared', 'bridge-shared-helpers.js'),
+  web: read('src', 'shared', 'bridge-shared-helpers.js'),
 };
 
 const TTFT_FALLBACK_PATTERN =

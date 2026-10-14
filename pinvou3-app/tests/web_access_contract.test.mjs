@@ -831,7 +831,12 @@ assert.match(bridge, /MAX_WEB_ARTIFACT_DOWNLOAD_BYTES = 256 \* 1024 \* 1024/);
 assert.match(bridge, /if \(IS_WEB && !hasCapability\("artifactDownload"\)\)/);
 assert.match(bridge, /(?:var|const|let) info = await artifactInfo\(path, resolvedSessionId\)/);
 assert.match(bridge, /if \(expectedSize > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES\)/);
-assert.match(bridge, /if \(bytes\.length > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES - offset\)/);
+// F-XT7-7: the per-part overflow re-check lives in the shared
+// streamBase64PartsToBlob core (maxBytes-parameterized); both download
+// pipelines must route through it.
+assert.match(bridge, /streamBase64PartsToBlob\(function \(offset\)/);
+assert.match(bridge, /if \(bytes\.length > maxBytes - offset\)/);
+assert.match(bridge, /streamBase64PartsToBlob\(function \(offset\) \{\n {6}return invoke\("web_access_read_conversation_attachment_chunk"/);
 assert.match(artifactsPanel, /const canDownloadArtifacts = can\('artifactDownload'\);/);
 assert.ok((artifactsPanel.match(/\(!isWeb \|\| canDownloadArtifacts\)/g) || []).length >= 2,
   'WebUI artifact download buttons must hide when the installed desktop lacks download support');

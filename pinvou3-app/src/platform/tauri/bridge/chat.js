@@ -6,7 +6,7 @@
   const registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__ = window.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry.chat = function (context) {let pinvouSharedtauriChatCache = null;
 function pinvouSharedtauriChat() {
-  if (!pinvouSharedtauriChatCache) pinvouSharedtauriChatCache = window.PinvouBridgeShared.create("tauriChat", { state, sessionStates, messageHasToolBlock, addChatItem, notify, bt, summonPinvou, sendMessage, invoke, pendingAssistantBlocks: { get value() { return context.pendingAssistantBlocks; }, set value(v) { context.pendingAssistantBlocks = v; } }, flushPendingTextBlock });
+  if (!pinvouSharedtauriChatCache) pinvouSharedtauriChatCache = window.PinvouBridgeShared.create("tauriChat", { state, sessionStates, messageHasToolBlock, addChatItem, notify, bt, summonPinvou, sendMessage, invoke, pendingAssistantBlocks: { get value() { return context.pendingAssistantBlocks; }, set value(v) { context.pendingAssistantBlocks = v; } }, flushPendingTextBlock, autoCreateScheduledTaskDraft, runSyncOnSession });
   return pinvouSharedtauriChatCache;
 }
 
@@ -37,7 +37,6 @@ function pinvouSharedtauriChat() {
     const adoptManagedAttachments = context.adoptManagedAttachments || function () { return Promise.resolve(); };
     const discardManagedAttachment = context.discardManagedAttachment || function () { return Promise.resolve(); };
     const userMessageDisplayText = context.userMessageDisplayText;
-    const parseScheduledTaskDraftFromText = context.parseScheduledTaskDraftFromText;
     const autoCreateScheduledTaskDraft = context.autoCreateScheduledTaskDraft;
 
   // Composer 草稿是纯前端短期状态：写入时不 notify，避免每次按键都克隆

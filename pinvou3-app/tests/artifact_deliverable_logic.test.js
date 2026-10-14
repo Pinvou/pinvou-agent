@@ -335,12 +335,16 @@ function evalIsDeliverable(snippet, label) {
     "web exact-path updates must leave the newer same-named card untouched");
 
   const GATE = 'if (dbMutation !== "edit" && isDeliverable(dap)) writtenArtifacts[dap] = true;';
+  // Wave 5 moved the replay prescan into the shared rerenderFromMessagesCore;
+  // the gate text now lives once in the shared base.
+  const shared = fs.readFileSync(path.join(appRoot, "src", "shared", "bridge-shared-helpers.js"), "utf8");
+  assert.ok(shared.includes(GATE), "shared rerender core 回放预扫兜底补卡应带 isDeliverable 门控");
   for (const rel of [
     path.join("src", "platform", "web", "bridge.js"),
     path.join("src", "platform", "tauri", "bridge.js"),
   ]) {
     const src = fs.readFileSync(path.join(appRoot, rel), "utf8");
-    assert.ok(src.includes(GATE), `${rel} 回放预扫兜底补卡应带 isDeliverable 门控`);
+    assert.ok(src.includes("rerenderFromMessagesCore"), `${rel} must replay through the shared core`);
   }
 }
 

@@ -90,18 +90,6 @@ function completeVoiceSubmission(operationId, sessionId, accepted) { return pinv
     setVoiceInputStatus("idle", { message: "", operationId: null });
   }
 
-  // Terminal dedup bookkeeping only (same state machine as the web lane):
-  // it marks the operation ended and consumes a queued terminal after a
-  // rejected admission; a cancel during admission waits for the admission
-  // result — an already-submitted operation is not recorded as cancelled.
-  function trackVoiceTerminal(eventName, session, fields) {
-    if (!session || session.telemetryTerminal) return;
-    if (session.pendingSubmission) {
-      session.pendingTerminal = { eventName, fields };
-      return;
-    }
-    session.telemetryTerminal = true;
-  }
 
   // Clearing the input or cancelling the preview abandons the result of a
   // recorded (but not submitted) operation; these are the only paths that
