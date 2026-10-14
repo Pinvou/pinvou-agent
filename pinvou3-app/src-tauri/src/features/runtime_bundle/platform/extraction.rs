@@ -496,7 +496,7 @@ impl Pinvou3Bundle {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
                 Err(error) => {
                     log::warn!(
-                        "[pinvou3-app] marketplace skill cleanup preserved '{}' (unreadable .installed-from: {error})",
+                        "[pinvou3-app] marketplace skill cleanup preserved '{}' (unreadable {INSTALLED_FROM_MARKER}: {error})",
                         dir.display()
                     );
                     continue;
