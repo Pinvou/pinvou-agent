@@ -6395,3 +6395,77 @@ child group 8.63s); compatibility audit ran them in 3.259s (built child group
 without skips, and passed affected vet, two-file formatting and diff checks.
 All independent processes closed. Client architecture and synchronized-version
 guards passed. Unchanged database/provider/browser integration was not repeated.
+
+## T09 thirty-eighth batch: original Windows fixed-version value observation
+
+The new `artifacts/platform/windowsversion.ObserveFixed` adapter accepts exactly
+one complete owned VS_VERSION_INFO record with explicit positive source-byte
+capacity. It validates the uint16 root length against the whole original source,
+binary type, 52-byte fixed value, complete UTF-16 VS_VERSION_INFO key, zero
+alignment, fixed signature and supported VS_FIXEDFILEINFO structure version 1.0.
+It uses a fixed 92-byte buffer; no caller record projection or default field
+is accepted. Unknown fixed layouts return Unsupported. Any failure returns a
+literal zero FixedValue, and context is checked before/after reads and at return.
+
+The complete original record and exact 52-byte fixed value retain independent
+SHA/size identities. The checked signature constant and remaining words retain
+structure version, all four file/product version components, flags/mask, file OS,
+type/subtype and both file-date words. Nonzero fourth components and uint16 maxima
+are preserved. No product-version normalization, comparison or approved Windows
+application mapping is introduced. FileDate is opaque declaration data and must
+never establish trustworthy time or preparation/retention deadlines.
+
+Children remain uninterpreted original bytes inside Source's complete identity.
+This is a fixed-value observer, not a complete StringFileInfo/VarFileInfo parser,
+translation/company validation, PE resource-tree locator, executable association,
+NSIS or publisher authentication. No raw company names, extracted files,
+executable handoff, Artifact state or admission result is produced. Existing PE,
+signed byte and standalone CLI APIs remain unchanged.
+
+Four mandatory groups cover exact original identities/all fields, complete
+four-part preservation and caller-source/projection isolation; missing/truncated
+root/key/type/value/alignment/signature negatives; unsupported structure, extra
+source bytes, capacities, nil source/context, cancellation and same-original
+restoration. Maximum version components and opaque child bytes are independent
+positive controls. A record's uint16 root-length constraint is intrinsic format
+framing, unrelated to the 32 MiB atomic business-batch capacity.
+
+The actual opt-in fixture is an 880-byte original version record privately read
+from the same frozen Windows system image used earlier. Its original SHA is
+fixed, as is the exact fixed value's SHA. Root independently called actual Windows
+GetFileVersionInfoW and VerQueryValueW against that system image: all original
+52 fixed bytes matched, and numeric evidence was saved privately. This does not
+authenticate the extraction location/resource tree or a Pinvou installer/publisher.
+The image is never executed or installed and no binary/native dump is committed.
+
+Microsoft [VS_VERSIONINFO](https://learn.microsoft.com/en-us/windows/win32/menurc/vs-versioninfo)
+and [VS_FIXEDFILEINFO](https://learn.microsoft.com/en-us/windows/win32/api/verrsrc/ns-verrsrc-vs_fixedfileinfo)
+were read privately to check root framing, binary widths and version word order.
+The initial actual run failed in 1.101s because a manually written expected
+low-order version component was incorrect. Original fixed bytes and the actual
+native API agreed on 5415; root corrected the test literal without changing
+production behavior. The frozen actual five-group rerun passed in 1.194s with
+the fixture group executed. Both initial independent scoped static audits passed
+without required implementation fixes.
+
+Complete default Go tests passed with package parallelism 2: windowsversion four
+mandatory groups plus one fixture skip, 5.911s; verification 24.081s, PE 1.768s,
+Debian 1.753s, compression 9.102s and TAR 2.054s. Fixture/provider/database/browser
+opt-ins were not enabled in that default run. Module verification, whole vet,
+server build, contract pins, changed-file formatting and diff checks passed;
+all root processes closed. After closure, root clarified the signature-checked/
+remaining-words-retained comment only; formatting/diff remained clean.
+
+No dependency, SQL, protocol, application version or deployment change. Complete
+version-child parsing, original PE resource association, signed package composition,
+approved native version/app/publisher mapping, Artifact admission and production
+storage remain later work. Full T09 remains incomplete. Downloads have no total/
+cumulative elapsed or retry-count limit.
+
+Both final independent scoped code/test audits passed without required fixes.
+Dependency audit independently ran all five actual groups in 1.353s;
+compatibility audit ran them in 1.177s. Both enabled the original Windows-record
+fixture group without skips and passed affected vet, two-file formatting and
+diff checks; all independent processes closed. Client architecture and
+synchronized-version guards passed. Unchanged database/provider/browser
+integration and the previously recorded native API probe were not repeated.
