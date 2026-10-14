@@ -6256,3 +6256,64 @@ them in 1.583s. Both enabled the frozen Go/Windows image group without skips and
 passed affected vet, four-file formatting and diff checks; all independent
 processes closed. Client architecture and synchronized-version guards passed.
 Unchanged database/provider/browser integration was not repeated.
+
+## T09 thirty-sixth batch: current signed PE installer byte composition
+
+`Verifier.InspectPEInstaller` preserves the existing current signed Manifest,
+published Root/deny, complete FullPack and exact owned finalInstaller byte guards
+before requiring the signed format declaration to be `nsis`. It then inspects
+physical PE framing on the same Native.Bytes, compares the complete source byte
+identity and checks context before success. Any failure returns a literal zero
+PEInstallerFacts with no earlier package, selected native or physical PE facts.
+Original APIs and the standalone PE observer are unchanged.
+
+The nsis declaration selects this observer; neither a file name nor MZ/PE bytes
+can override a different correctly signed format. This composition does not
+certify actual NSIS package contents, Windows loading, app/file version,
+architecture matching, Authenticode, native publisher or approved Pinvou identity.
+Current signature/byte claims plus physical PE observations remain inputs to
+later native authenticity and admission guards. The final Artifact owner must
+reread current authority and protected immutable identities before granting
+qualification. No published Artifact state or executable handoff is introduced.
+
+Three mandatory groups cover original signed owned installer and section
+identities, source/returned-projection isolation, current deny and restoration,
+cancellation, declared-format refusal and late header/optional-variant/certificate/
+capacity errors. Each isolated malformed-PE case first passes the previous current
+signed native-byte observer, then fails the new framing step with no prior facts.
+A correctly signed Linux/deb claim over physically PE bytes first passes its byte
+guard, then is refused as Unsupported by this nsis-declaration observer.
+
+Two actual opt-in groups bind the same frozen built Go and Windows system PE
+images used in the preceding batch. Reading is bounded by regular-file/exact-size
+prechecks, size+1 reads, close, original SHA and complete byte comparison. Their
+synthetic strong Pinvou signatures declare nsis solely to test current signed
+byte continuity. Neither actual file is certified as an NSIS installer or Pinvou
+application, and no file is executed or installed. Explicit larger test ZIP
+capacities accommodate the 5,933,568-byte image; they are not production upload,
+aggregate heap or preparation policy. The business-batch 32 MiB limit remains
+unrelated to file size.
+
+Root actual selected five-group run passed in 8.896s with both actual fixture
+groups executed. Both independent initial scoped static audits passed without
+required fixes.
+
+Complete default Go tests passed with package parallelism 2: verification
+17.339s, PE 6.177s, Debian 1.741s, compression 3.888s, TAR 1.690s and Debian CLI
+2.366s. Fixture/provider/database/browser opt-ins were not enabled in that
+default run. Module verification, whole vet, server build, pinned contracts,
+changed-file formatting and diff checks passed; all root processes closed.
+
+No dependency, SQL, protocol, application version or deployment change. Actual
+NSIS parsing, approved native identity/version/architecture/publisher matching,
+full authenticity, Artifact admission and production storage remain subsequent
+work. Full T09 remains incomplete. Downloads have no total/cumulative elapsed
+or retry-count limit.
+
+Both final independent scoped code/test audits passed without required fixes.
+Dependency audit independently ran all five selected groups in 3.456s;
+compatibility audit ran them in 3.805s. Both executed the two actual fixture
+groups without skips and passed affected vet, two-file formatting and diff
+checks; all independent processes closed. Client architecture and synchronized-
+version guards passed. Unchanged database/provider/browser integration was not
+repeated.
