@@ -233,6 +233,11 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedtauriSessio
   // 刻意不同。
   function invalidateSessionBuffer(id) {
     if (typeof id !== "string" || !id) return;
+    // 评审 r9 minor 1：暂存未发送草稿再丢缓存（本文件既定原则——淘汰不得
+    // 丢草稿）；保持与 purgeSessionBuffer 的差异：无删除回调、不动其它记账。
+    if (sessionStates[id] && typeof stashEvictedSessionDraft === "function") {
+      stashEvictedSessionDraft(id, sessionStates[id]);
+    }
     delete sessionStates[id];
   }
   function purgeSessionBuffer(id) {
@@ -1207,6 +1212,10 @@ async function restoreArchivedSession(id) { return pinvouSharedtauriSessions().r
       isProtectedScheduledBuffer,
       pruneScheduledSessionBuffers,
       touchSessionBuffer,
+      // r9 B1：必须随返回对象导出——r8 只加了函数定义与共享依赖表、漏了此处，
+      // bridge.js 拿到 undefined、消费端 typeof 守卫静默吞掉整个修复（协议测试
+      // 的 Proxy 桩对 undefined 值键不敏感，只有执行真工厂才能锚定）。
+      invalidateSessionBuffer,
       purgeSessionBuffer,
       registerScheduledRunOwner,
       scheduledRunOwnerVisibleRank,

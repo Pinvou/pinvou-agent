@@ -1897,11 +1897,17 @@ function emitPersonaAt(atOrAfter, isTail) { return pinvouSharedtauriMainN99856()
         // 注释），后端 is_compaction_checkpoint_message 判定不计 turn——重载时
         // 不还原为用户气泡，否则时间线多一个幻影“用户轮”、回退序号被顶 +1。
         if (isCompactionCarrierBlocks(blocks)) continue;
+        // 工具结果载体（评审 r9 M5）：含 tool_result 块的 User 消息不是用户轮
+        // （classify 按 ToolResult-first 判 NotPrompt）——如截图工具回传的
+        // [ToolResult, Text("<image …>"), ImageUrl, Text] 形态。工具卡由下方
+        // toolMeta 回填还原，这里只跳过用户气泡（否则幻影气泡渲染裸标记文本、
+        // 序号被顶 → 调和门隐藏该会话全部回退入口）。
+        const toolResultCarrier = blocks.some(b => b && b.type === "tool_result");
         // Always strip exact internal envelopes: sessions saved before the
         // persistence alignment still carry the engine-baked <turn_meta>
         // block on mid-turn steered messages, and without the filter the
         // hydrated bubble rendered the raw envelope after a restart.
-        const utext = userMessageDisplayText(blocks, true);
+        const utext = toolResultCarrier ? "" : userMessageDisplayText(blocks, true);
         if (utext) {
           // pinvouTransfer 是展示层标记、不在 messages → rerender 从转交固定措辞还原品/悟样式
           const uitem2 = { type: "user", text: utext, time: "", messageIndex: mi };

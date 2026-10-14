@@ -3003,7 +3003,12 @@ function emitPersonaAt(atOrAfter, isTail) { return pinvouSharedwebN189622().emit
         // 压缩载体（评审 M2；与 tauri 车道同款）：后端运行时内部消息，重载时
         // 不还原为用户气泡，避免幻影“用户轮”顶偏回退序号。
         if (isCompactionCarrierBlocks(blocks)) continue;
-        const utext = userMessageDisplayText(blocks, isScheduledRunSession(state.activeSessionId));
+        // 工具结果载体（评审 r9 M5；与 tauri 车道同款）：含 tool_result 块的
+        // User 消息不是用户轮，工具卡由 toolMeta 回填还原，这里跳过用户气泡。
+        const toolResultCarrier = blocks.some(b => b && b.type === "tool_result");
+        const utext = toolResultCarrier
+          ? ""
+          : userMessageDisplayText(blocks, isScheduledRunSession(state.activeSessionId));
         if (utext) {
           // pinvouTransfer 是展示层标记、不在 messages → rerender 从转交固定措辞还原品/悟样式
           const uitem2 = { type: "user", text: utext, time: "", messageIndex: mi };

@@ -939,7 +939,7 @@ pub async fn undo_last_rewind(
     })
     .await
     .map_err(|error| format!("反悔预检任务失败: {error}"))??
-    .ok_or_else(|| "没有可反悔的回退（未回退过，或回退后已产生新轮次）".to_string())?;
+    .ok_or_else(|| "没有可反悔的回退（未回退过、回退后已产生新轮次/对话被编辑，或绑定的回滚点已被最近 20 个检查点淘汰）".to_string())?;
 
     // 1) 恢复代码到本次回退绑定的 PreRestore（仅对话降级的回退无绑定，跳过
     //    本步——degraded 语义承诺绝不动代码）。对称语义：restore 内部会再打
