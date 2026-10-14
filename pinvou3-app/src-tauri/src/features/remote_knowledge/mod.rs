@@ -436,6 +436,44 @@ impl RemoteKnowledgeService {
         Ok(connection)
     }
 
+    /// 写入新凭据并在连接落盘失败时回滚：读旧值 → set 新值 → `persist` →
+    /// 失败则恢复旧值（旧值为空则删除），回滚也失败时在错误里带上回滚失败
+    /// 原因。register/rebind 与配对两条持久化路径共用；`_persistence` 由
+    /// 调用方持有（凭据写入与连接落盘须在同一原子区间，见
+    /// `upsert_owner_connection`）。
+    fn set_credential_with_rollback(
+        &self,
+        reference: &CredentialReference,
+        token: &str,
+        error_prefix: &str,
+        persist: impl FnOnce() -> Result<RemoteConnection, String>,
+        _persistence: &parking_lot::MutexGuard<'_, ()>,
+    ) -> Result<RemoteConnection, String> {
+        let previous_token = self
+            .credentials
+            .get(reference)
+            .map_err(|error| error.user_message())?;
+        self.credentials
+            .set(reference, token)
+            .map_err(|error| error.user_message())?;
+        let result = persist();
+        if let Err(error) = &result {
+            let rollback = if let Some(previous_token) = previous_token {
+                self.credentials.set(reference, &previous_token)
+            } else {
+                self.credentials.delete(reference)
+            };
+            return Err(match rollback {
+                Ok(()) => error.clone(),
+                Err(rollback) => format!(
+                    "{error_prefix}，且凭据回滚失败：{error}；{}",
+                    rollback.user_message()
+                ),
+            });
+        }
+        result
+    }
+
     fn persist_local_owner_connection(
         &self,
         endpoint: String,
@@ -454,29 +492,13 @@ impl RemoteKnowledgeService {
         };
         let _persistence = self.persistence.lock();
         let reference = credential_reference(&connection.server_id);
-        let previous_token = self
-            .credentials
-            .get(&reference)
-            .map_err(|error| error.user_message())?;
-        self.credentials
-            .set(&reference, token)
-            .map_err(|error| error.user_message())?;
-
-        if let Err(error) = self.upsert_owner_connection(connection.clone(), true, &_persistence) {
-            let rollback = if let Some(previous_token) = previous_token {
-                self.credentials.set(&reference, &previous_token)
-            } else {
-                self.credentials.delete(&reference)
-            };
-            return Err(match rollback {
-                Ok(()) => error,
-                Err(rollback) => format!(
-                    "保存本机所有者连接失败，且凭据回滚失败：{error}；{}",
-                    rollback.user_message()
-                ),
-            });
-        }
-        Ok(connection)
+        self.set_credential_with_rollback(
+            &reference,
+            token,
+            "保存本机所有者连接失败",
+            || self.upsert_owner_connection(connection.clone(), true, &_persistence),
+            &_persistence,
+        )
     }
 
     /// Rebinds an already authorized local owner after the bundled host moves
@@ -1042,33 +1064,17 @@ impl RemoteKnowledgeService {
             legacy_insecure_http: false,
         };
         let reference = credential_reference(&connection.server_id);
-        let previous_token = self
-            .credentials
-            .get(&reference)
-            .map_err(|error| error.user_message())?;
-        self.credentials
-            .set(&reference, &paired.token)
-            .map_err(|error| error.user_message())?;
-
         // 复用 register/rebind 的收尾序列（按 server_id 原位替换/追加、按名称
         // 排序、落盘并同步内存副本）。上方 ensure_server_id_not_connected 已
         // 排除既有 server_id，这里恒走 insert_missing 的追加臂；落盘失败仍按
         // 原样回滚刚写入的凭据（错误文案保持本路径原文）。
-        if let Err(error) = self.upsert_owner_connection(connection.clone(), true, &_persistence) {
-            let rollback = if let Some(previous_token) = previous_token {
-                self.credentials.set(&reference, &previous_token)
-            } else {
-                self.credentials.delete(&reference)
-            };
-            return Err(match rollback {
-                Ok(()) => error,
-                Err(rollback) => format!(
-                    "保存远程知识库连接失败，且凭据回滚失败：{error}；{}",
-                    rollback.user_message()
-                ),
-            });
-        }
-        Ok(connection)
+        self.set_credential_with_rollback(
+            &reference,
+            &paired.token,
+            "保存远程知识库连接失败",
+            || self.upsert_owner_connection(connection.clone(), true, &_persistence),
+            &_persistence,
+        )
     }
 
     pub fn remove_connection(&self, server_id: &str) -> Result<(), String> {
