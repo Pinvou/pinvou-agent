@@ -8,6 +8,7 @@
 
 mod common;
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1433,4 +1434,73 @@ fn metadata_lanes_refuse_aux_session_ids_like_the_gui() {
             "{arguments:?}: {error}"
         );
     }
+}
+
+/// FCL8-2 interim drift pin: the CLI's timeline event whitelist
+/// (`is_timeline_event`'s `EVENTS`, a disclosed hand mirror — the foundation
+/// parser is unreachable only by module visibility, tracked as #484's app
+/// half) must equal the foundation `timing::parse_timeline_line` set, which
+/// is the base events plus the benchmark observation events the CLI build
+/// enables. A foundation-side event addition the mirror misses, or a CLI
+/// event the foundation dropped, turns this red instead of silently
+/// shrinking/ghosting `pinvou sessions timeline` output. Set-scanned from
+/// both sources (the same technique backend_contract.rs uses); the app half
+/// replaces this with an import once the parser is re-exported.
+#[test]
+fn timeline_event_whitelist_equals_the_foundation_set() {
+    const CLI_SESSIONS_RS: &str = include_str!("../src/sessions.rs");
+    const FOUNDATION_TIMING_RS: &str =
+        include_str!("../../../../pinvou3-app/src-tauri/src/features/assistant/timing.rs");
+
+    let cli_list = quoted_region(CLI_SESSIONS_RS, "const EVENTS: [&str; 12] = [", "];")
+        .expect("CLI EVENTS table shape");
+    let cli_events: BTreeSet<&str> = string_literals(&cli_list);
+
+    // The foundation admits base events plus (under the CLI's enabled
+    // benchmark-hooks feature) observation events; both `matches!(event, …)`
+    // lists are scanned and unioned.
+    let mut foundation_events: BTreeSet<&str> = BTreeSet::new();
+    for marker in [
+        "let is_base_event = matches!(event,",
+        "let is_observation_event = matches!(",
+    ] {
+        let region = matches_region(FOUNDATION_TIMING_RS, marker)
+            .unwrap_or_else(|| panic!("foundation region missing: {marker}"));
+        foundation_events.extend(string_literals(&region));
+    }
+
+    assert!(
+        !cli_events.is_empty() && !foundation_events.is_empty(),
+        "both whitelists must be non-empty for the pin to mean anything"
+    );
+    assert_eq!(
+        cli_events, foundation_events,
+        "the CLI timeline whitelist drifted from foundation timing::parse_timeline_line"
+    );
+}
+
+/// The text between `marker` and the first `);` after it (a
+/// `matches!(…)`-style region).
+fn matches_region<'a>(source: &'a str, marker: &str) -> Option<&'a str> {
+    let start = source.find(marker)? + marker.len();
+    let end = start + source[start..].find(");")?;
+    Some(&source[start..end])
+}
+
+/// The text between two exact literals (a const-array region).
+fn quoted_region<'a>(source: &'a str, start_marker: &str, end_marker: &str) -> Option<&'a str> {
+    let start = source.find(start_marker)? + start_marker.len();
+    let end = start + source[start..].find(end_marker)?;
+    Some(&source[start..end])
+}
+
+/// Every `"…"` string literal in the region (whitelist tables contain only
+/// plain string literals, so a lazy scan is exact here).
+fn string_literals(region: &str) -> BTreeSet<&str> {
+    region
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .filter(|part| !part.is_empty())
+        .collect()
 }
