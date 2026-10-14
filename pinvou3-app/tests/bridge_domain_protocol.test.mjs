@@ -229,7 +229,12 @@ const expectedProtocolHashes = {
   // Recomputed again for the dead-code sweep: the dead deleteMemoryPreference facade
   // (delete_memory_preference invoke) was removed; deleteMemoryItem('preference', ...)
   // still routes to the same command, so the backend surface is unchanged.
-  memory: '30cab38634446a7bef24d559db799641d115e0f07a22a28540a5fd48a9ff7347',
+  // Recomputed for the lane-merge wave 2: applyMemoryOverview / loadMemoryOverview /
+  // updateMemoryItem / deleteMemoryItem and the F-XT7-6 resolveMemoryCandidate core
+  // (confirm/ignore/never invokes) moved into the shared tauriMemory/web cluster;
+  // memory.js keeps saveMemoryProfilePatch + organizeMemory and the 2-line trio
+  // wrappers. Runtime command surface unchanged.
+  memory: 'ca88a71d9f0f9b15f1df52cf80218694f76b2295add98e65a0d167fc88b627c8',
   // Recomputed for the lane-merge wave 1: pollMonitor (get_monitor_snapshot
   // invoke) moved verbatim into the shared tauriMonitor/web cluster of
   // bridge-shared-helpers.js; monitor.js keeps only pollBackendStatus.
@@ -342,7 +347,9 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // removed (loadEffectiveModelConfig / auxChatReset own those flows).
 // Recomputed for the lane-merge wave 1: the monitor poll cluster
 // (get_monitor_snapshot invoke inside pollMonitor) joined the shared base.
-const expectedSharedBaseHash = 'cae340ab85c2f5da00a0acbbbaea9c58178d1620d56f32127ee9844822f5b00d';
+// Recomputed for the lane-merge wave 2: the memory overview/update/delete
+// invokes and the confirm/ignore/never pending-memory trio joined it.
+const expectedSharedBaseHash = '33d3c323e8ccef981bfe6375d935e833d133d755df0f809d058f4df3251d3596';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),
