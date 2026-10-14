@@ -5913,3 +5913,67 @@ Unchanged database/provider/browser integration was not repeated.
 No dependency, SQL/protocol/application version/deployment or existing behavior
 change. Full T09 remains incomplete. Downloads retain no total/cumulative elapsed
 or retry-count limit.
+
+## T09 thirty-first batch: current signed exact root control-file composition
+
+Debian InspectControl uses the same immutable installer for complete framing,
+decoding and both physical TAR inspections before locating the control record.
+It selects exactly one root declaration named control or ./control, accepting
+ordinary regular and legacy raw-zero regular types. Repeated aliases or identical
+names refuse even when their bytes match; links, directories, FIFO and other
+special declarations cannot supply the record. Nested/absolute paths do not
+become guessed root aliases. No host path is opened, followed or extracted.
+
+The exact observed member offset/size is captured into an owned snapshot and its
+identity compared with the physical TAR member before ParseControl. Positive
+source/memory/field capacities are required before inspection. Capture and parser
+copies each have their explicit logical capacity; this does not certify combined
+heap or aggregate preparation budgets. ControlMembers retains both complete TARs,
+owned selected bytes and lexical observations. Every failure returns zero framing
+and nil members, including later field-count, duplicate or lexical errors.
+
+Verifier InspectControlDebianInstaller first uses the existing current signed
+Manifest, FullPack/native-byte and framing guards, then the same Native.Bytes for
+the complete control inspection, comparing the whole source identity and checking
+context before successful return. Any later failure returns zero earlier package/
+native/framing facts and no captured control/TAR/decoded bytes. Old APIs and their
+behavior are intact; parsed declarations grant no approved app identity, publisher,
+safe installation namespace or Artifact admission.
+
+Three new Debian groups cover root control/./control with legacy-zero/ordinary
+regular declarations, exact file/report identities, projection and caller-source
+mutation isolation, alias/same-name duplicates, missing root, links/hardlinks/
+directories/FIFO and late duplicate-field negatives. Each isolated negative first
+passes the prior complete TAR observer, then returns exact ControlInvalid with no
+previous facts. Separate capture source/memory, lexical field-count and data TAR
+caps refuse, followed by exact original restoration. An actual six-package group
+uses all existing frozen public/Python codec fixtures: selected public control is
+757 bytes, 13 fields; all independent controls are109 bytes, 4 fields, with the
+previously frozen original record identities.
+
+Four new signed groups cover current package denial/restoration, exact original
+installer/control bytes, old signed TAR success before isolated lexical refusal,
+capture/field capacity, cancellation and same-source restore. Actual public hello
+and Python Zstandard compositions bind the same record identities and counts.
+Their signed Pinvou claims are synthetic test byte bindings; no native app/version/
+architecture/publisher certification is implied. Root actual Debian34 passed1.632s
+and verification40 passed16.032s, with all eleven/nine fixture opt-in groups
+executed. Both initial independent scoped static audits passed without required
+fixes. Complete default Go tests passed with package parallelism 2: Debian 23
+groups plus eleven fixture skips, 1.586s; verification 31 groups plus nine fixture
+skips, 19.614s; TAR 8 groups plus one fixture skip, 1.216s; compression 29 groups
+plus one fixture skip, 3.587s. Module verification, whole vet, server build, pinned
+contracts, changed-file formatting/diff and client architecture/version guards
+passed. All root processes closed. Dependency audit independently ran actual
+Debian 34 in 2.142s and verification 40 in 15.601s, with all eleven/nine fixture
+groups without skips, plus affected vet, four-file formatting and diff checks;
+all processes closed. Compatibility audit independently ran actual Debian 34 in
+1.621s and verification 40 in 19.826s, all eleven/nine fixture groups without skips,
+plus affected vet, four-file formatting and diff checks; all processes closed.
+Both final independent scoped code/test audits passed with no remaining required
+fixes. Unchanged database/provider/browser integration was not repeated.
+
+No dependency, SQL/protocol/application version/deployment change. Required-field
+semantics, native matching, publisher certification, Artifact admission and
+production storage remain separate work. Full T09 remains incomplete. Downloads
+retain no total/cumulative elapsed or retry-count limit.
