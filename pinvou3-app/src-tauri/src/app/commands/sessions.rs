@@ -1777,7 +1777,9 @@ mod pinvou_scene_event_tests {
 
 /// 扫描 session workspace 目录,返回实际存在的产物文件绝对路径(过滤隐藏/临时文件)。
 /// 前端切换 session 时用它对账 —— 让产物面板以**磁盘真相**为准,不受跟踪遗漏 /
-/// app 中途重启(内存跟踪丢失)影响。过滤规则与 file_watcher::should_skip 对齐。
+/// app 中途重启(内存跟踪丢失)影响。过滤规则直接复用 file_watcher::should_skip
+/// (单一事实源,含 workflow_audit.jsonl 基建日志——watcher 拦其 artifact:disk
+/// 事件,列表若返回它,同一文件就会"面板有、事件无"地漂移)。
 #[tauri::command]
 pub async fn list_workspace_files(
     session_id: String,
@@ -1811,15 +1813,7 @@ pub(super) fn list_workspace_files_for_session(
                     continue;
                 }
                 let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                if name.is_empty()
-                    || name.starts_with('.')
-                    || name.starts_with("~$")
-                    || name.ends_with('~')
-                    || name.ends_with(".swp")
-                    || name.ends_with(".swo")
-                    || name.ends_with(".tmp")
-                    || name.ends_with(".bak")
-                {
+                if crate::features::files::file_watcher::should_skip(name) {
                     continue;
                 }
                 out.push(path.to_string_lossy().to_string());
@@ -1881,6 +1875,67 @@ mod desktop_saved_session_contract_tests {
         assert!(
             value.get("metadata").is_some(),
             "flatten 后 metadata 必须仍在顶层"
+        );
+        match previous {
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+            // serialized in-process.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+            // serialized in-process.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 产物面板的 workspace 文件列表复用 file_watcher::should_skip 后，watcher
+    /// 拦截的基建日志（workflow_audit.jsonl）也必须从列表消失：否则同一文件
+    /// "面板有、artifact:disk 事件无"，前端对账永远对不齐。
+    #[test]
+    fn workspace_file_list_drops_the_audit_journal_and_temp_files() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-workspace-file-list-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
+        // serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
+        let store = crate::features::sessions::SessionStore::boot_with_scheduled_root(
+            root.join("scheduled"),
+        )
+        .expect("session store");
+        let session = store
+            .create_new("model".to_string(), None, root.clone())
+            .expect("create session");
+        let ledger_root = store
+            .ledger_root(&session.metadata.id)
+            .expect("ledger root");
+        std::fs::create_dir_all(&ledger_root).expect("create ledger root");
+        std::fs::write(ledger_root.join("report.md"), b"hello").expect("write report");
+        std::fs::write(ledger_root.join("draft.tmp"), b"x").expect("write tmp");
+        std::fs::write(ledger_root.join("workflow_audit.jsonl"), b"{}\n")
+            .expect("write audit journal");
+
+        let files =
+            list_workspace_files_for_session(&session.metadata.id, &store).expect("list files");
+
+        assert!(
+            files.iter().any(|file| file.ends_with("report.md")),
+            "a real deliverable must stay listed: {files:?}"
+        );
+        assert!(
+            !files.iter().any(|file| file.ends_with("draft.tmp")),
+            "editor temp files must stay filtered: {files:?}"
+        );
+        assert!(
+            !files
+                .iter()
+                .any(|file| file.ends_with("workflow_audit.jsonl")),
+            "the audit journal is watcher-suppressed infrastructure and must not reach the artifact panel: {files:?}"
         );
         match previous {
             // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
