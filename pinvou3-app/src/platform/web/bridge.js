@@ -3909,6 +3909,7 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
   // - false        nothing dispatched and the text was NOT restored
   //                (notice-only early returns / admission rejected) — the
   //                caller owns putting the draft back.
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- single send state machine mirroring the tauri lane (ownership guard + first-turn materialization + admission); split tracked separately
   async function sendMessage(text, meta, voiceOwner) {let pinvouSharedwebN247496Cache = null;
 function pinvouSharedwebN247496() {
   if (!pinvouSharedwebN247496Cache) pinvouSharedwebN247496Cache = window.PinvouBridgeShared.create("web:247496", { state, sid: { get value() { return sid; } } });
@@ -3955,13 +3956,29 @@ function pinvouSharedwebN247496() {
       // round-2 finding F3; ensureSession itself reports the real reason.)
       if (!materialized || state.activeSessionId !== materialized) {
         if (materialized) draftOwner.createdSessionId = materialized;
+        // Round-27 asto MAJOR 2(a), mirrors the tauri m2(a) write: the
+        // commit-then-navigate tail COMMITS the created session to a
+        // background buffer (the draft epoch is dead) even though
+        // ensureSession returned null — report it so the send closure's
+        // verdict mapping routes the chips to the created session. The web
+        // lane has no rollback tail (desktop-only), so any null-return with
+        // a createdSessionId binding is this shape.
+        if (!materialized && draftOwner.createdSessionId && meta) {
+          meta.materializedSessionId = draftOwner.createdSessionId;
+        }
         return restoreAbortedMaterialization(text, draftOwner);
       }
       // Round-24 MAJOR (PR #586 review, mirrors the tauri lane): report the
       // committed materialization through the caller-owned meta out-param —
       // the composer's scope effect cannot observe a draft→session transition
       // that lands while ChatView is unmounted, so the send closure records
-      // the ledger mapping itself.
+      // the ledger mapping itself. Lane boundary (round-27 asto MAJOR 2(b)):
+      // this covers the legacy-ensureSession first send; the optimistic
+      // web_access_create_session_and_chat first turn returns true BEFORE the
+      // create runs, so its settle precedes any materialization and no
+      // report can exist for it (async failure recovery is the retry-chip
+      // path, not a settle verdict) — disclosed in the PR's Current
+      // limitations.
       if (meta) meta.materializedSessionId = materialized;
     }
     const sid = state.activeSessionId;

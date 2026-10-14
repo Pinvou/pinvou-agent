@@ -1033,7 +1033,9 @@ test('mention-menu keydown: the IME guard precedes every preventDefault (behavio
 // ── Feature switch (docs/builtin-toolset-contract.md §3.3 four-layer cascade) ──
 
 test('registry refresh closure applies the host switch state and keeps state on query failure (behavioral)', async () => {
-  const fn = extractChatViewFunction('const refresh = async () => {');
+  // Round-27 asto m5: the extraction includes the readSeq declaration (the
+  // sequence guard lives just above the closure in the effect body).
+  const fn = extractChatViewFunction('let readSeq = 0;');
   // The refresh closure runs inside the ChatView effect (mounted with
   // alive=true). Hard-wiring the enabled state must fail here: the assertion
   // goes through the real listBuiltinFeatures → isSessionMentionEnabled path.
@@ -1470,7 +1472,7 @@ test('cascade wiring contract: ChatView gates all four layers, stops the block w
   // Round-9: acceptance is STRICT (=== true — "restored" is a non-dispatch)
   // and consumes only the serialized refs via the shared filter.
   assert.match(chatViewSource, /settleSessionRefSend\(refsAtSend, draftKeyAtSend, accepted\);/);
-  assert.match(chatViewSource, /const next = dedupeSessionRefs\(\[\n\s*\.\.\.refsSurvivingAcceptance\(refsAtSend, current, featureOn\),\n\s*\.\.\.carriedKept,\n\s*\]\);/);
+  assert.match(chatViewSource, /const next = dedupeSessionRefs\(\[\n\s*\.\.\.carriedKept,\n\s*\.\.\.refsSurvivingAcceptance\(refsAtSend, current, featureOn\),\n\s*\]\);/);
   // The mention menu keyboard branch bails out during IME composition.
   assert.match(chatViewSource, /if \(isImeComposing\(e\)\) return;/);
   // A refs-only message keeps the send button visible while busy.
@@ -1712,7 +1714,7 @@ test('steer-notice keys exist exactly once per locale in the BT table (round-15 
   // copy must fail instead of silently falling back at runtime.
   const bridgeSource = readFileSync(new URL('../src/platform/tauri/bridge.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   for (const key of [
-    'steerDroppedQueued', 'steerFailedQueued', 'steerFailedUnconfirmed',
+    'steerDropped', 'steerDroppedQueued', 'steerFailedQueued', 'steerFailedUnconfirmed',
     'steerFailedLost', 'steerDroppedDuringEdit', 'steerEditRestored',
     'steerFailedTimedOut', 'steerFailedQueuedTimedOut',
   ]) {
@@ -3091,6 +3093,11 @@ test('the materialization report is threaded through every leg (round-24 MAJOR s
   // the web lane gets the bounded source pin).
   assert.match(chatSource, /if \(meta\) meta\.materializedSessionId = materialized;/);
   assert.match(webSource, /if \(meta\) meta\.materializedSessionId = materialized;/);
+  // Round-27 asto MAJOR 2(a): the commit-then-navigate tails report on BOTH
+  // lanes (the web has no rollback tail, so its condition is the
+  // createdSessionId binding alone).
+  assert.match(chatSource, /if \(!materialized && draftOwner\.createdSessionId\s*\n\s*&& draftOwner\.rollbackFromDraftEpoch === undefined && meta\) \{\s*\n\s*meta\.materializedSessionId = draftOwner\.createdSessionId;/);
+  assert.match(webSource, /if \(!materialized && draftOwner\.createdSessionId && meta\) \{\s*\n\s*meta\.materializedSessionId = draftOwner\.createdSessionId;/);
   // dispatchChatMessage's finally write-back: the local meta the bridge
   // received is not the caller's object — the report must hop back.
   assert.match(chatViewSource, /voiceMeta\.materializedSessionId = meta\.materializedSessionId;/);
@@ -3635,5 +3642,204 @@ test('acceptance filters the carry by the serialized ids and skips the no-op ren
     assert.equal(live.identityKept[0], false, 'a real change produces a new reference');
     clearDraftMaterialization('draft:14');
     stashSessionMentionDraft('session:M27', []);
+  }
+  // Round-27 asto m10: with the feature OFF, acceptance must not wipe the
+  // resolved scope's whole stash — the merged set is empty by construction,
+  // and writing it would delete mid-await picks and pre-existing chips of a
+  // scope the user may not be looking at (OFF is a toggle, not a delete).
+  {
+    const preExisting = { sessionId: 'stashed-x', title: 'x' };
+    stashSessionMentionDraft('session:OFF27', [preExisting]);
+    const sandbox = {
+      mentionDraftKeyRef: { current: 'session:OFF27' },
+      sessionMentionEnabledRef: { current: false },
+      setSessionRefs: () => {},
+      resolveMaterializedDraftKey,
+      clearDraftMaterialization,
+      materializationCarry,
+      recordDraftMaterialization,
+      stashSessionMentionDraft,
+      restoreSessionMentionDraft,
+      dedupeSessionRefs,
+      console,
+    };
+    vm.runInNewContext(`${settlePrefix}this.settle = settleSessionRefSend;`, sandbox);
+    sandbox.settle([A], 'session:OFF27', true);
+    assert.deepEqual(
+      restoreSessionMentionDraft('session:OFF27'),
+      [preExisting],
+      'an OFF acceptance leaves the scope stash intact (the live clear already unarms the chips)',
+    );
+    stashSessionMentionDraft('session:OFF27', []);
+  }
+  // Round-27 asto m1: a >5 combined set keeps the SAME carry-first five
+  // alive and stashed (the mounted and unmounted outcomes agree).
+  {
+    const { sandbox, live } = makeSandbox();
+    const sentMany = Array.from({ length: 4 }, (_, i) => ({ sessionId: `sent-${i}`, title: `s${i}` }));
+    const carriedMany = Array.from({ length: 4 }, (_, i) => ({ sessionId: `carried-${i}`, title: `c${i}` }));
+    recordDraftMaterialization('draft:15', 'session:M28', carriedMany);
+    stashSessionMentionDraft('session:M28', []);
+    sandbox.mentionDraftKeyRef.current = 'session:M28';
+    sandbox.settle(sentMany, 'draft:15', true);
+    const expectedFive = carriedMany.slice(0, 5);
+    assert.deepEqual(live.current, expectedFive, 'the live merge caps carry-first');
+    assert.deepEqual(restoreSessionMentionDraft('session:M28'), expectedFive, 'the stash write caps the same carry-first five');
+    clearDraftMaterialization('draft:15');
+    stashSessionMentionDraft('session:M28', []);
+  }
+});
+
+// Round-27 asto MAJOR 1: the MOUNTED mid-await-navigation ordering. The user
+// clicks an existing session T while the send's own create is in flight; the
+// scope effect records draft:N→session:T (plain navigation misread as the
+// send's materialization), then commit-then-navigate commits the created
+// session S anyway and the bridge reports S. The closure's re-record must
+// replace the stale navigation target while preserving the effect's carried
+// picks — the settle then routes everything under session:S and NOTHING arms
+// live in the unrelated session:T.
+test('mid-await navigation then a committed create re-records the ledger target; nothing arms in the navigated session (round-27 asto MAJOR 1)', async () => {
+  const effectFn = extractChatViewFunction(`useEffect(() => {
+        const restored = bridge.available`);
+  const handleSendFn = extractChatViewFunction('async function handleSend()');
+  const recordFn = extractChatViewFunction('const recordSendMaterialization = (draftKey, meta) => {');
+  const sendChatMessageFn = extractChatViewFunction('const sendChatMessage = useCallback(async (text, voiceContext) => {');
+  const dispatchFn = extractChatViewFunction('const dispatchChatMessage = useCallback(async (text, voiceMeta, voiceOwner) => {');
+  const store = recordingDraftStore();
+  const keyRef = { current: null };
+  const refsRef = { current: [] };
+  const pendingDraftSends = { current: new Set() };
+  const MID_AWAIT_PICK = { sessionId: 'await-27', title: '等待中的挑选' };
+  let effectBody = null;
+  const scrub = () => {
+    for (const key of ['draft:3', 'session:S27', 'session:T27']) {
+      clearDraftMaterialization(key);
+      stashSessionMentionDraft(key, []);
+    }
+  };
+  scrub();
+  const runEffect = (scope) => {
+    const sandbox = {
+      useEffect: (callback) => { effectBody = callback; },
+      bridge: { available: true, chat: { getComposerDraft: () => '正文' } },
+      bs: {},
+      setInputText: () => {},
+      ...scope,
+      mentionDraftKeyRef: keyRef,
+      sessionMentionEnabledRef: { current: true },
+      mentionPendingDraftSendsRef: pendingDraftSends,
+      recordDraftMaterialization,
+      materializationCarry,
+      setSessionRefs: (value) => { refsRef.current = typeof value === 'function' ? value(refsRef.current) : value; },
+      setMentionDismissedToken: () => {},
+      setMentionSelection: () => {},
+      sessionRefsRef: refsRef,
+      stashSessionMentionDraft: store.stashSessionMentionDraft,
+      restoreSessionMentionDraft: store.restoreSessionMentionDraft,
+      dedupeSessionRefs,
+      console,
+    };
+    vm.runInNewContext(`${effectFn})`, sandbox);
+    return effectBody();
+  };
+  const draftCleanup = runEffect({ activeSessionId: null, draftEpoch: 3 });
+  refsRef.current = [...REFS];
+  const liveApplied = [];
+  const sandbox = {
+    mentionDraftKeyRef: keyRef,
+    sessionMentionEnabledRef: { current: true },
+    mentionPendingDraftSendsRef: pendingDraftSends,
+    isMultiAgentReadOnly: false,
+    canSend: true,
+    chatVoice: null,
+    inputText: '正文',
+    inputTextRef: { current: '正文' },
+    constrainChatInput: (value) => ({ text: value, truncated: false }),
+    setInputText: () => {},
+    sessionMentionEnabled: true,
+    buildSessionMentionBlock,
+    dedupeSessionRefs,
+    stashSessionMentionDraft: store.stashSessionMentionDraft,
+    restoreSessionMentionDraft: store.restoreSessionMentionDraft,
+    resolveMaterializedDraftKey,
+    clearDraftMaterialization,
+    materializationCarry,
+    recordDraftMaterialization,
+    sessionRefs: REFS,
+    setSessionRefs: (value) => { refsRef.current = typeof value === 'function' ? value(refsRef.current) : value; liveApplied.push([...refsRef.current]); },
+    personalWorkbenchTemplateIdRef: { current: null },
+    setPersonalWorkbenchTemplateId: () => {},
+    sceneStatusKey: () => 'scene-status-key',
+    setSceneCapabilityStatus: () => {},
+    welcomeOptInAttemptRef: { current: null },
+    runSharedWelcomeOptIn: async () => ({}),
+    welcomeToolIdRef: { current: null },
+    setWelcomeToolId: () => {},
+    t: { uiChatScenes: { attachmentPrompt: '(附件)' }, uiChat: {} },
+    splitSessionMentionBlock,
+    findPersonalWorkbenchTemplateDraft: () => null,
+    hasReadyAttachment: false,
+    visualPosterSceneActive: false,
+    documentWritingSceneActive: false,
+    personalWorkbenchSceneActive: false,
+    dataVisualizationSceneActive: false,
+    pptDesignSceneActive: false,
+    requiredCapabilitiesForMeta: () => null,
+    setSceneStatusForSession: () => {},
+    resolveSendCapabilityStatus: () => null,
+    activeSessionId: null,
+    pendingModeScopeMigrationRef: { current: null },
+    pinvouModeStateRef: { current: null },
+    activeSessionIdRef: { current: null },
+    draftEpochRef: { current: 3 },
+    bridge: {
+      available: true,
+      voice: {},
+      chat: {
+        prefillComposer: () => {},
+        sendMessage: async (text, meta) => {
+          // Mid-await: pick B lands live, then the user navigates to the
+          // EXISTING session T — the mounted effect runs the transition and
+          // records draft:3 → session:T (navigation, misread as the send's
+          // own materialization by the pending-set gate).
+          refsRef.current = [MID_AWAIT_PICK];
+          draftCleanup();
+          runEffect({ activeSessionId: 'T27', draftEpoch: 4 });
+          assert.equal(materializationCarry('draft:3').target, 'session:T27', 'the effect recorded the navigation target first (the stale entry)');
+          // The send's own create then commits anyway (commit-then-navigate):
+          // S is registered as a background buffer, the m2(a) tail reports S,
+          // the stripped body lands in S's buffer, and the send resolves
+          // "restored".
+          meta.materializedSessionId = 'S27';
+          return 'restored';
+        },
+      },
+    },
+    useCallback: (callback) => callback,
+    console,
+  };
+  try {
+    vm.runInNewContext(
+      `${settlePrefix}${recordFn}\n${dispatchFn})\n${sendChatMessageFn})\n${handleSendFn}\nthis.handleSend = handleSend;`,
+      sandbox,
+    );
+    await sandbox.handleSend();
+    assert.equal(keyRef.current, 'session:T27', 'the user is on the navigated session');
+    assert.deepEqual(
+      restoreSessionMentionDraft('session:S27'),
+      [MID_AWAIT_PICK, ...REFS],
+      'the settle routes carry + snapshot under the CREATED session (re-recorded target)',
+    );
+    assert.deepEqual(
+      restoreSessionMentionDraft('session:T27'),
+      [],
+      'nothing is armed or stashed in the unrelated navigated session',
+    );
+    assert.equal(liveApplied.length, 1, 'only the dispatch-time clear touched the live state');
+    assert.deepEqual(liveApplied[0], [], 'no live arming fires on the navigated scope');
+    assert.equal(materializationCarry('draft:3'), null, 'the ledger entry settles');
+    assert.deepEqual(restoreSessionMentionDraft('draft:3'), []);
+  } finally {
+    scrub();
   }
 });

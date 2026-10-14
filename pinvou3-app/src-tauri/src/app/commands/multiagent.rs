@@ -256,10 +256,15 @@ mod tests {
     fn match_source_call_sites_pass_the_unassembled_text() {
         let chat = include_str!("chat.rs");
         assert!(
-            // 原文还必须先剥离会话引用注入块（round-13 MAJOR-1）：块内的固定
-            // 英文契约词（read_session / referenced sessions / instructions）不是
-            // 用户领域词，直入 n-gram 会虚假抬升无关专家卡——与标题/检查点标签
-            // 同一规则。两行分别钉住「剥离后才作匹配源」的绑定与实参传递。
+            // The raw text must strip the session-mention injection block
+            // first (round-13 MAJOR-1): the block's fixed English contract
+            // words (read_session / referenced sessions / instructions) are
+            // not user vocabulary, and feeding them to the n-grams would
+            // spuriously boost unrelated expert cards — same rule as titles
+            // and checkpoint labels (the added comment lines are English per
+            // CONTRIBUTING's comment-language rule, round-27 asto m6). The
+            // two assertions pin the strip-before-matching binding and the
+            // argument hand-off separately.
             chat.contains(
                 "let match_source = super::sessions::strip_session_mention_block(&raw_message);"
             ) && chat.contains("super::multiagent::MatchSource(match_source)"),

@@ -282,17 +282,29 @@ const makeSettleSessionRefSend = ({ mentionDraftKeyRef, sessionMentionEnabledRef
         ? carry.carriedRefs.filter((ref) => ref && !sentIds.has(ref.sessionId))
         : [];
       const acceptanceStashKey = resolveMaterializedDraftKey(draftKeyAtSend);
-      stashSessionMentionDraft(acceptanceStashKey, dedupeSessionRefs([
-        ...carriedKept,
-        ...refsSurvivingAcceptance(refsAtSend, dedupeSessionRefs([...carriedKept, ...restoreSessionMentionDraft(acceptanceStashKey)]), featureOn),
-      ]));
+      // Round-27 asto m10: with the feature OFF the merged set is empty by
+      // construction, and writing it would DELETE the resolved scope's whole
+      // stash — mid-await picks and pre-existing chips of a scope the user
+      // may not even be looking at. OFF is a toggle, not a delete: leave the
+      // stash; the live clear (refsSurvivingAcceptance → []) already keeps
+      // off-state chips unsendable, and re-enable restores them.
+      if (featureOn) {
+        stashSessionMentionDraft(acceptanceStashKey, dedupeSessionRefs([
+          ...carriedKept,
+          ...refsSurvivingAcceptance(refsAtSend, dedupeSessionRefs([...carriedKept, ...restoreSessionMentionDraft(acceptanceStashKey)]), featureOn),
+        ]));
+      }
       const onDispatchScope = resolveMaterializedDraftKey(mentionDraftKeyRef.current)
         === acceptanceStashKey;
       if (onDispatchScope) {
         setSessionRefs(current => {
+          // Round-27 asto m1: carry-first here too — the stash write below
+          // and the failure tail are carry-first, and a >5 combined set kept
+          // different refs alive vs stashed between the mounted and
+          // unmounted outcomes.
           const next = dedupeSessionRefs([
-            ...refsSurvivingAcceptance(refsAtSend, current, featureOn),
             ...carriedKept,
+            ...refsSurvivingAcceptance(refsAtSend, current, featureOn),
           ]);
           // Round-26 asto m7: a plain accepted send with nothing surviving
           // must not schedule an extra render — return the same reference
@@ -369,12 +381,27 @@ const makeSettleSessionRefSend = ({ mentionDraftKeyRef, sessionMentionEnabledRef
 const recordSendMaterialization = (draftKey, meta) => {
   const sessionId = meta && meta.materializedSessionId;
   if (!sessionId || !draftKey || !draftKey.startsWith('draft:')) return;
-  if (materializationCarry(draftKey)) return;
+  const target = `session:${sessionId}`;
+  const existing = materializationCarry(draftKey);
+  if (existing) {
+    // Round-27 asto MAJOR 1: the mounted scope effect may have recorded the
+    // NAVIGATION target — the user clicked an existing session while this
+    // send's own create was still in flight, and commit-then-navigate then
+    // committed the created session anyway. An existence-only guard kept
+    // that stale entry and the settle armed the chips LIVE in the unrelated
+    // session. A wrong-target entry is stale: re-record with the
+    // bridge-reported target while PRESERVING the carriedRefs (the effect
+    // read them from the draft stash before draining it — the stash is empty
+    // now, so a naive overwrite would drop the mid-await picks).
+    if (existing.target === target) return;
+    recordDraftMaterialization(draftKey, target, existing.carriedRefs);
+    return;
+  }
   // Same carry semantics as the effect at the same logical moment: whatever
   // the draft scope's stash still holds (mid-await picks while the transition
   // render is pending; nothing once the cleanup ran — the unmounted shape).
   const carried = restoreSessionMentionDraft(draftKey);
-  recordDraftMaterialization(draftKey, `session:${sessionId}`, carried);
+  recordDraftMaterialization(draftKey, target, carried);
   // Mirror the effect's post-record clear (round-25 asto minor 11): the
   // carried chips live in the ledger entry now; drain the dead draft key's
   // stash entry so nothing double-holds them.
@@ -1236,11 +1263,16 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       sessionMentionEnabledRef.current = sessionMentionEnabled;
       useEffect(() => {
         let alive = true;
+        // Round-27 asto m5: reads have no natural ordering — a pre-toggle
+        // read resolving after a post-toggle one would reinstate stale state
+        // until the next event; only the newest read may commit.
+        let readSeq = 0;
         const refresh = async () => {
           if (!bridge.available || !bridge.settings || typeof bridge.settings.listBuiltinFeatures !== 'function') return;
+          const mySeq = ++readSeq;
           try {
             const features = await bridge.settings.listBuiltinFeatures();
-            if (alive) setSessionMentionEnabled(isSessionMentionEnabled(features));
+            if (alive && mySeq === readSeq) setSessionMentionEnabled(isSessionMentionEnabled(features));
           } catch { /* fail-open: keep the current enabled state */ }
         };
         const refreshOnWebConnection = (event) => {
@@ -2089,6 +2121,18 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // When the feature is off (§3.3 layer 1) the @ trigger yields no
       // session group / candidates.
       const mentionTrigger = sessionMentionTriggerAt(inputText, sessionMentionEnabled);
+      // Round-27 asto m8: the Escape dismissal is sticky per token; once the
+      // trigger itself is gone (a send cleared the composer, the text was
+      // deleted), retyping the identical @token is a fresh intent — reset the
+      // dismissal so the panel reopens instead of flickering closed.
+      const mentionTriggerToken = mentionTrigger ? mentionTrigger.token : null;
+      /* eslint-disable react-hooks/set-state-in-effect -- deliberate one-shot reset: the dismissal token is per-token sticky and only this effect observes the trigger's disappearance (send cleared the composer / text deleted), so the reset must run when that happens, not drift via render-time derivation */
+      useEffect(() => {
+        if (mentionTriggerToken === null && mentionDismissedToken !== null) {
+          setMentionDismissedToken(null);
+        }
+      }, [mentionTriggerToken, mentionDismissedToken]);
+      /* eslint-enable react-hooks/set-state-in-effect */
       // At the ref cap the panel does not open at all: with candidates forced
       // empty it would render a false "no matching sessions" instead of cap
       // feedback.
