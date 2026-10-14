@@ -1768,9 +1768,13 @@ impl Pinvou3Bridge {
     /// min(window/4, 32768), with no window fact falling back to a quarter
     /// of the 128K fallback (→32768); then min-tightened by the endpoint's
     /// self-reported output limit (probe) and the window headroom. Cloud
-    /// presets and coding_plan never declare (SavedModel.max_output_tokens
-    /// defaults to None) and fall back to the base's vendor capability /
-    /// conservative guess.
+    /// presets and coding_plan declare no endpoint tier of their own
+    /// (SavedModel.max_output_tokens defaults to None) but still carry the
+    /// documented-output anchors from
+    /// `core::model_context::resolved_output_limit`: vendor-documented
+    /// fill-gap facts for models the base chain doesn't catalogue, replacing
+    /// the base's 8192 uncatalogued guess (base-catalogued models stay on
+    /// the base's Documented path — the anchor declines for them).
     fn route_limits_for_model(&self, model: &str) -> Option<codewhale_config::route::RouteLimits> {
         let saved = self.effective_model().filter(|saved| saved.model == model);
         let configured_context = saved.and_then(|saved| saved.context_window_tokens);
@@ -1836,7 +1840,14 @@ impl Pinvou3Bridge {
             // Documented-output anchors (core::model_context): cloud models the
             // base catalog has no output row for would otherwise ride the
             // engine's 8192 uncatalogued fail-close, which starves the
-            // Responses wire where reasoning meters as output.
+            // Responses wire where reasoning meters as output — and truncates
+            // CoT-first Chat models such as deepseek-flash mid-turn. The
+            // anchor declines for base-resolved models (fill-gap only), so a
+            // fresher base row is never tightened by this table. A documented
+            // capability fact, same standing as the operator-owned tier and
+            // the base catalogue: NOT clamped by the process-level
+            // max_output_tokens() (24K); users tighten explicitly via
+            // SavedModel.max_output_tokens (configured_output wins above).
             .or_else(|| crate::core::model_context::resolved_output_limit(model))
             // The endpoint's self-reported output limit (the `/v1/models`
             // probe) only min-tightens: when the API rejects over-limit
@@ -6455,6 +6466,99 @@ mod tests {
             Some(65_536),
             "the self-reported limit only tightens, never raises (local 262144→65536 unchanged)"
         );
+    }
+
+    /// Cloud-preset documented-output anchors (2026-10-14 deepseek-flash
+    /// truncation bug): the base output chain only knows the v4 spellings,
+    /// so the current official id deepseek-flash rides the engine's 8192
+    /// uncatalogued fail-close and reasoning-heavy turns die mid-CoT. The
+    /// anchor declares the documented 384K route fact — same standing as
+    /// the operator tier, NOT clamped by the process-level 24K budget —
+    /// while the user's explicit configuration keeps winning and
+    /// operator-owned endpoints keep their tier declaration.
+    #[test]
+    fn cloud_documented_output_anchor_replaces_uncatalogued_guess() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+            "DEEPSEEK_MAX_OUTPUT_TOKENS",
+            "PINVOU3_MAX_OUTPUT_TOKENS",
+        ]);
+        // A. Official DeepSeek preset × deepseek-flash, no explicit
+        // configuration: the documented 384K fact replaces the base's 8192
+        // uncatalogued guess (context 1M via PINVOU_OVERRIDES, so the
+        // window-headroom min keeps 384000; the 24K process budget never
+        // clamps a documented capability fact).
+        let mut cloud = fixture_bridge();
+        set_active_model(
+            &mut cloud,
+            ModelPreset::Deepseek,
+            "deepseek-flash",
+            "https://api.deepseek.com",
+            "sk-deepseek",
+        );
+        let limits = cloud
+            .route_limits_for_model("deepseek-flash")
+            .expect("deepseek-flash must resolve route limits");
+        assert_eq!(limits.context_tokens, Some(1_000_000));
+        assert_eq!(limits.output_tokens, Some(384_000));
+        // glm-5.3-flashx rides the same anchor (official 128K output; the
+        // base exact arm lists glm-5.3-flash but never the flashx wire id).
+        let flashx_limits = cloud
+            .route_limits_for_model("glm-5.3-flashx")
+            .expect("glm-5.3-flashx must resolve route limits");
+        assert_eq!(flashx_limits.output_tokens, Some(131_072));
+        // The Tencent Token Plan spelling of the same V4.1-Flash declares
+        // the same 384K through its own anchor row (no prefix tolerance
+        // carries the bare id). On the combined tree its 1M context rides
+        // the PINVOU_OVERRIDES row from the 2026-10 catalog refresh; the
+        // explicit declaration below stands in for that fact
+        // deterministically. Without the row the id resolves no output
+        // fact anywhere and a context-only declaration takes the quartile
+        // branch on the wire — the same 8192 truncation.
+        let mut tencent = fixture_bridge();
+        set_active_model(
+            &mut tencent,
+            ModelPreset::Deepseek,
+            "deepseek/deepseek-flash",
+            "https://api.deepseek.com",
+            "sk-deepseek",
+        );
+        tencent.prefs.advanced.saved_models[0].context_window_tokens = Some(1_048_576);
+        let tencent_limits = tencent
+            .route_limits_for_model("deepseek/deepseek-flash")
+            .expect("deepseek/deepseek-flash must resolve route limits");
+        assert_eq!(tencent_limits.context_tokens, Some(1_048_576));
+        assert_eq!(tencent_limits.output_tokens, Some(384_000));
+        // B. The user's explicit max_output_tokens keeps winning — and keeps
+        // the process-level 24K min-clamp semantics of explicit configs.
+        cloud.prefs.advanced.saved_models[0].max_output_tokens = Some(8_192);
+        let explicit = cloud
+            .route_limits_for_model("deepseek-flash")
+            .expect("deepseek-flash must resolve route limits");
+        assert_eq!(explicit.output_tokens, Some(8_192));
+        // C. Operator-owned endpoints declare by the window tier when the
+        // tier fires: a custom endpoint serving deepseek-flash with a
+        // declared 1M window takes the >=500K tier (131072), not 384000.
+        // (When the tier yields — declared window <16K, tier value <4096 →
+        // None — the anchor chain does run; the small declared window's
+        // headroom min then clamps the fact, so the anchor still never
+        // outranks an operator window.)
+        let mut local = fixture_bridge();
+        set_active_model(
+            &mut local,
+            ModelPreset::OpenaiCompatible,
+            "deepseek-flash",
+            "http://127.0.0.1:8000/v1",
+            "k",
+        );
+        local.prefs.advanced.saved_models[0].context_window_tokens = Some(1_048_576);
+        let tiered = local
+            .route_limits_for_model("deepseek-flash")
+            .expect("deepseek-flash must resolve route limits");
+        assert_eq!(tiered.output_tokens, Some(131_072));
     }
 
     /// The cloud large-window models actually in use (not probed →

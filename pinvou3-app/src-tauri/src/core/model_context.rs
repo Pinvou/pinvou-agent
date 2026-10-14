@@ -303,15 +303,58 @@ const PINVOU_DOCUMENTED_OUTPUT: &[(&str, u32)] = &[
     // fail-close applies — a cap the Chat wire never metered reasoning
     // against.
     ("gpt-5.4-mini", 128_000),
+    // The current official DeepSeek API id (V4.1-Flash): 1M context, 384K
+    // max output (api-docs.deepseek.com/quick_start/pricing, checked
+    // 2026-10-14). The official create-chat-completion page states the
+    // ceiling exactly as "384K (393216)"; this row registers 384_000 to
+    // match the base's existing v4-row unit convention
+    // (models_dev.bundled.json documents 384000), and both figures sit far
+    // above every effective request ceiling (≤64K), so the rounding is
+    // inert. The base output chain only knows the v4 spellings — the
+    // substring rule requires "v4" and the bundled catalog / exact table
+    // list deepseek-v4-* only — so this id resolves None and the engine's
+    // 8192 uncatalogued fail-close truncates reasoning-heavy turns mid-CoT
+    // (the reported-bug row; the context side rides PINVOU_OVERRIDES at 1M).
+    ("deepseek-flash", 384_000),
+    // The Tencent Token Plan spelling of the same V4.1-Flash — a real
+    // selectable catalog row (原厂直供 first-party direct supply per the
+    // live Tencent 130060 table; the 2026-10 catalog refresh on main also
+    // carries its 1M context in PINVOU_OVERRIDES). model_name_matches has
+    // no vendor-prefix tolerance, so the bare-id row above cannot carry
+    // this spelling, and the base output chain resolves it None just the
+    // same; with only the context fact reaching the wire, the quartile
+    // branch `(window/4).clamp(1, 8192)` re-clamps to 8192 — the same
+    // truncation this table exists to stop, so the row stays symmetric
+    // with the context-side override.
+    ("deepseek/deepseek-flash", 384_000),
+    // GLM-5.3-FlashX: official 128K max output (open.bigmodel.cn / docs.z.ai
+    // 2026-09 — the same figure the base exact table cites for the glm-5.3
+    // family and the PINVOU_KNOWN context row cites for this model). The
+    // base arm is exact equality and lists glm-5.3-flash but never the
+    // flashx wire id, so it resolves None. The dot spelling cannot
+    // suffix-inherit the dash rows under model_name_matches either.
+    ("glm-5.3-flashx", 131_072),
 ];
 
 /// Documented max-output anchors for models the base catalog has no output
 /// row for: a route output fact that keeps uncatalogued flagships from the
-/// engine's conservative 8192 fail-close.
+/// engine's conservative 8192 fail-close. Fill-gap only: when the base chain
+/// already resolves the model's output ceiling (`max_output_tokens_for_model`)
+/// the base's Documented path stands and this returns None — a route fact
+/// here could only wrongly tighten a fresher base row (the base intersects
+/// route caps against documented compatibility caps).
 #[must_use]
 pub fn resolved_output_limit(model: &str) -> Option<u32> {
     let lower = model.trim().to_ascii_lowercase();
     if lower.is_empty() {
+        return None;
+    }
+    // Fill-gap guard. Currently untestable end-to-end: no table row is
+    // base-resolved today, so every `None` assertion in
+    // `documented_output_anchors_fill_gaps_and_yield_to_base_rows` holds by
+    // row-miss, not by this guard — the pin-status note there registers the
+    // condition for adding a real dual-sourced id pin.
+    if deepseek_tui::models::max_output_tokens_for_model(&lower).is_some() {
         return None;
     }
     PINVOU_DOCUMENTED_OUTPUT
@@ -545,6 +588,40 @@ mod tests {
         // Models the base already lists with correct figures are unaffected.
         assert_eq!(resolved_context_window("claude-haiku-4-5"), Some(200_000));
         assert_eq!(resolved_context_window("claude-sonnet-5"), Some(1_000_000));
+    }
+
+    /// Fill-gap output anchors for cloud models the base chain misses
+    /// (2026-10-14 deepseek-flash truncation bug): the current official
+    /// DeepSeek id has no "v4" substring and no exact row anywhere in the
+    /// base output chain, so the base fail-closes it to 8192 and
+    /// reasoning-heavy turns die mid-CoT; the anchor declares the
+    /// documented 384K instead. Base-catalogued ids must resolve None —
+    /// the base's Documented path stands, and a route fact here could only
+    /// wrongly tighten a fresher base row.
+    #[test]
+    fn documented_output_anchors_fill_gaps_and_yield_to_base_rows() {
+        assert_eq!(resolved_output_limit("deepseek-flash"), Some(384_000));
+        // Suffix tolerance carries date/snapshot spellings.
+        assert_eq!(resolved_output_limit("deepseek-flash-1107"), Some(384_000));
+        // The vendor-prefixed Tencent spelling of the same model rides its
+        // own row — no prefix tolerance carries it from the bare id.
+        assert_eq!(
+            resolved_output_limit("deepseek/deepseek-flash"),
+            Some(384_000)
+        );
+        assert_eq!(resolved_output_limit("glm-5.3-flashx"), Some(131_072));
+        // Ids the base resolves stay None here: neither matches a table row
+        // under model_name_matches ("deepseek-v4-flash" does not carry the
+        // "deepseek-flash" row as a dash-suffix prefix; "glm-5.3-flash" is
+        // shorter than the flashx row), so these pins hold by row-miss, not
+        // by the fill-gap guard — the guard itself (a row hit on a
+        // base-resolved id) has no real dual-sourced id to pin today; add
+        // one when the base catalog picks up a table-covered id.
+        assert_eq!(resolved_output_limit("deepseek-v4-flash"), None);
+        assert_eq!(resolved_output_limit("glm-5.3-flash"), None);
+        // Neither-table ids stay undeclared (no invented figures).
+        assert_eq!(resolved_output_limit("glm-5"), None);
+        assert_eq!(resolved_output_limit("some-unregistered-model"), None);
     }
 
     #[test]
