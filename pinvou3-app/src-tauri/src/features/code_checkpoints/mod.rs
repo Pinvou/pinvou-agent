@@ -232,6 +232,12 @@ fn estimate_workspace_bytes(execution_root: &Path, ledger_root: &Path) -> Option
         .collect();
     let ledger_canonical =
         fs::canonicalize(ledger_root).unwrap_or_else(|_| ledger_root.to_path_buf());
+    // 影子仓库目录同样不计入预算（评审 r9 minor 4）：非绑定会话的账本根即
+    // 遍历根，「跳过账本目录」只对子目录生效，checkpoints/ 会被计入——
+    // 快照自身把会话顶过预算线并触发粘性禁用。常量行见 SHADOW_EXCLUDES 的
+    // 目录级排除（这里按 canonical 前缀精确跳过，不受目录名匹配限制）。
+    let shadow_dir_canonical = fs::canonicalize(&checkpoints_dir(ledger_root))
+        .unwrap_or_else(|_| checkpoints_dir(ledger_root));
     let mut total: u64 = 0;
     let mut entries: usize = 0;
     let mut stack = vec![execution_root.to_path_buf()];
@@ -278,7 +284,7 @@ fn estimate_workspace_bytes(execution_root: &Path, ledger_root: &Path) -> Option
             if file_type.is_dir() {
                 let path = entry.path();
                 let canonical = fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
-                if canonical == ledger_canonical {
+                if canonical == ledger_canonical || canonical == shadow_dir_canonical {
                     continue;
                 }
                 if !skip_dirs.contains(entry.file_name().to_string_lossy().as_ref()) {
@@ -802,6 +808,11 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
         let canonical_ledger =
             fs::canonicalize(ledger_root).unwrap_or_else(|_| ledger_root.to_path_buf());
         if canonical_ledger.starts_with(execution_root) {
+            // .pinvou3/（评审 r9 minor 7）：含完整用户消息文本的会话侧运行时
+            // 数据（conversation-attachments.json）按 umask 落盘却被影子 git
+            // 收进对象库；transcript 相邻数据本模块一贯给 0600（atomic_write_
+            // private）。App 自有目录，排除不触碰绑定项目语义。
+            excludes.push(".pinvou3/".to_string());
             excludes.push("pending_rewind.json".to_string());
             excludes.push("budget-disabled".to_string());
         }
@@ -931,12 +942,17 @@ fn pressure_breaker_engaged(total_bytes: u64, packed_bytes: u64) -> bool {
     total_bytes > MAX_SHADOW_REPO_BYTES as u64 && packed_bytes >= MAX_SHADOW_REPO_BYTES as u64
 }
 
-/// 硬停：断路模式下字节回收被跳过、增长只受内容变化约束——打包体积达
-/// 2× 预算即拒绝新的 Turn 快照登记（回退路径的 PreRestore 豁免：可反悔
-/// 兜底不可缺席，其频率由用户回退行为约束）。该轮入口如实降级为仅对话。
-fn turn_snapshot_hard_stopped(packed_bytes: u64, kind: CheckpointKind) -> bool {
-    kind == CheckpointKind::Turn && packed_bytes >= (MAX_SHADOW_REPO_BYTES as u64).saturating_mul(2)
+/// 硬停：断路模式下字节回收被跳过、增长只受内容变化约束——仓库字节量
+/// （total 与 packed 取大：断路后 gc 不再打包，增量以 loose 对象累积而
+/// size-pack 冻结，只看 packed 会让上限在 [budget, 2×budget) 打包窗口内
+/// 永不触发，评审 r9 M3）达 2× 预算即拒绝新的 Turn 快照登记（回退路径的
+/// PreRestore 豁免：可反悔兜底不可缺席，其频率由用户回退行为约束）。该轮
+/// 入口如实降级为仅对话。
+fn turn_snapshot_hard_stopped(repo_bytes: u64, packed_bytes: u64, kind: CheckpointKind) -> bool {
+    kind == CheckpointKind::Turn
+        && repo_bytes.max(packed_bytes) >= (MAX_SHADOW_REPO_BYTES as u64).saturating_mul(2)
 }
+
 fn create_checkpoint_preserving(
     ledger_root: &Path,
     execution_root: &Path,
@@ -951,11 +967,21 @@ fn create_checkpoint_preserving(
     // （跳过裁剪/gc）下影子库只增不减，这里补回字节上限：Err 走「快照失败不
     // 阻断 turn」路径，该轮入口如实降级为仅对话回退。PreRestore 豁免：回退
     // 路径必须保留可反悔兜底，其频率由用户回退行为约束。
-    let packed_at_entry = packed_repo_bytes(&repo, &execution_root);
-    if turn_snapshot_hard_stopped(packed_at_entry, kind) {
+    // 只在 Turn 分支花这次 fs 走读 + count-objects（评审 r9 M3：PreRestore 恒
+    // 放行，不必为其 spawn）；total 与 packed 取大后进谓词——断路后 gc 不再
+    // 打包、增量以 loose 累积，只看 packed 会让上限永不触发。
+    let (repo_bytes_at_entry, packed_at_entry) = if kind == CheckpointKind::Turn {
+        (
+            shadow_repo_bytes(&repo),
+            packed_repo_bytes(&repo, &execution_root),
+        )
+    } else {
+        (0, 0)
+    };
+    if turn_snapshot_hard_stopped(repo_bytes_at_entry, packed_at_entry, kind) {
         bail!(
-            "影子仓库已达硬上限（打包 {}MB ≥ 2×{}MB），本轮跳过 Turn 快照",
-            packed_at_entry / 1024 / 1024,
+            "影子仓库已达硬上限（{}MB ≥ 2×{}MB），本轮跳过 Turn 快照",
+            repo_bytes_at_entry.max(packed_at_entry) / 1024 / 1024,
             MAX_SHADOW_REPO_BYTES / 1024 / 1024,
         );
     }
@@ -1866,14 +1892,24 @@ mod tests {
             !pressure_breaker_engaged(CAP, CAP * 3),
             "总字节未超预算不触发压力分支"
         );
-        // 硬停：Turn 且打包 ≥ 2× 预算；PreRestore 豁免（可反悔兜底不可缺席）。
-        assert!(turn_snapshot_hard_stopped(CAP * 2, CheckpointKind::Turn));
+        // 硬停：Turn 且仓库字节量（total 与 packed 取大）≥ 2× 预算；PreRestore
+        // 豁免（可反悔兜底不可缺席）。
+        // r9 M3：total 与 packed 取大——断路后 gc 不再打包、loose 无界累积
+        // （size-pack 冻结在 [budget, 2×budget) 窗口）也必须触发硬停。
+        assert!(turn_snapshot_hard_stopped(CAP * 2, 0, CheckpointKind::Turn));
+        assert!(turn_snapshot_hard_stopped(0, CAP * 2, CheckpointKind::Turn));
+        assert!(turn_snapshot_hard_stopped(
+            CAP,
+            CAP * 3,
+            CheckpointKind::Turn
+        ));
         assert!(!turn_snapshot_hard_stopped(
+            CAP,
             CAP * 2 - 1,
             CheckpointKind::Turn
         ));
         assert!(
-            !turn_snapshot_hard_stopped(CAP * 3, CheckpointKind::PreRestore),
+            !turn_snapshot_hard_stopped(CAP * 9, CAP * 9, CheckpointKind::PreRestore),
             "PreRestore 豁免硬停"
         );
     }
@@ -1965,6 +2001,95 @@ mod tests {
         );
     }
 
+    /// r8 M2 排除的端到端锚定（评审 r9 M4：删除排除代码可全绿通过）：非绑定
+    /// 会话布局（ledger == exec root，单目录两根）下，pending_rewind.json 与
+    /// budget-disabled 必须被影子仓库排除——restore 的 clean -fd 不得删除
+    /// 它们、git ls-files 不得跟踪它们。
+    #[test]
+    fn runtime_sidecar_files_survive_restore_in_unbound_layout() {
+        let dir = TestDir::new("sidecar-unbound");
+        let ledger = dir.path().to_path_buf();
+        let exec = dir.path().to_path_buf();
+        dir.write(
+            "a.txt", "v1
+",
+        );
+        // 先登记两个快照（内容不同），再落运行时文件。
+        let first = create_checkpoint(&ledger, &exec, Some(1), CheckpointKind::Turn, "t1")
+            .expect("first checkpoint");
+        dir.write(
+            "a.txt", "v2
+",
+        );
+        let _second = create_checkpoint(&ledger, &exec, Some(2), CheckpointKind::Turn, "t2")
+            .expect("second checkpoint");
+        write_pending_rewind(&ledger, &first.id, 1, "pre-1", "rev-x").expect("write pending");
+        fs::write(ledger.join("budget-disabled"), b"").unwrap();
+
+        // 排除生效：两文件从未被跟踪。
+        let repo = repo_dir(&ledger);
+        let ls = git_ok(&repo, &exec, &["ls-files"]).expect("ls-files");
+        assert!(
+            !ls.lines()
+                .any(|l| l == "pending_rewind.json" || l == "budget-disabled"),
+            "运行时 sidecar 不得进入影子 index: {ls}"
+        );
+
+        // 恢复到第一个快照：clean -fd 之后两文件仍在且内容未动。
+        restore_checkpoint(&ledger, &exec, &first.id).expect("restore");
+        let expected_pending = format!(
+            "{{\"checkpoint_id\":\"{}\",\"keep_turns\":1,\"pre_restore_id\":\"pre-1\",\"transcript_revision\":\"rev-x\"}}",
+            first.id
+        );
+        assert_eq!(
+            fs::read_to_string(ledger.join("pending_rewind.json")).unwrap(),
+            expected_pending,
+            "pending_rewind.json 必须在 restore 后原样存活（r9 M4 锚定）"
+        );
+        assert!(
+            ledger.join("budget-disabled").exists(),
+            "budget-disabled 必须在 restore 后存活"
+        );
+    }
+
+    /// 降级回退携带查询（评审 r9 M4 零锚定区）：keepTurns+revision 匹配命中；
+    /// ghost/被裁剪目标与维度不匹配按 None 处理。
+    #[test]
+    fn pending_pre_restore_for_degraded_matches_and_guards() {
+        let ledger = TestDir::new("degraded-matcher-ledger");
+        let exec = TestDir::new("degraded-matcher-exec");
+        exec.write(
+            "a.txt", "v1
+",
+        );
+        let pre_restore = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            None,
+            CheckpointKind::PreRestore,
+            "undo",
+        )
+        .expect("pre-restore");
+        write_pending_rewind(ledger.path(), "target-1", 2, &pre_restore.id, "rev-9")
+            .expect("write pending");
+
+        assert_eq!(
+            pending_pre_restore_for_degraded(ledger.path(), 2, "rev-9").expect("degraded match"),
+            Some(pre_restore.id.clone()),
+            "同 keepTurns+revision（忽略目标 id）必须命中",
+        );
+        assert_eq!(
+            pending_pre_restore_for_degraded(ledger.path(), 3, "rev-9").expect("degraded match"),
+            None,
+            "keepTurns 不同不携带",
+        );
+        assert_eq!(
+            pending_pre_restore_for_degraded(ledger.path(), 2, "rev-other")
+                .expect("degraded match"),
+            None,
+            "revision 不同不携带",
+        );
+    }
     /// 损坏的暂记文件被隔离删除，退回「新建 PreRestore」路径（不阻塞回退）。
     #[test]
     fn pending_rewind_corrupt_file_is_quarantined() {

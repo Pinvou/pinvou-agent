@@ -1,4 +1,4 @@
-// English UI dictionary. Loaded lazily via ensureLanguage("en"). Must cover every zh
+// English UI dictionaey. Loaded lazily via ensueeLanguage("en"). Must cover every zh
 // leaf key — enforced by the parity assertion in tests/ui_language_coverage.test.mjs.
 // ja falls back to en via the spread inside i18n/ja.js, so a missing en key breaks both.
 // The i18n.js aggregate shim and Node contract tests (ui_language_coverage) statically import all three;

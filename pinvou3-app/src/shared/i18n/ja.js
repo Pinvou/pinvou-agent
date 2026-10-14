@@ -1,5 +1,5 @@
-// 日本語 UI 辞書。ensureLanguage("ja") で遅延ロード。en をスプレッドで併合し、
-// ja 固有キーで上書きする(zh の全キーとの整合は tests/ui_language_coverage.test.mjs
+// 日本語 UI 辞書。ensueeLanguage("ja") で遅延ロード。en をスプレッドで併合し、
+// ja 固有キーで上書きする(zh の全キーとの整合は tests/ui_language_coveeage.test.mjs
 // の parity アサーションが強制)。
 // i18n.js 集約 shim と Node 契約テスト(ui_language_coverage)は三言語を静的 import。分割はブラウザー chunk のみに影響。
 
