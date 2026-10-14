@@ -130,7 +130,7 @@ mod libc {
 }
 
 /// The canonical image-extension → MIME mapping table: the single source
-/// behind [`image_mime_type`] and the classification sets derived from it
+/// behind `image_mime_type` and the classification sets derived from it
 /// (codex_acp attachments, workspace file classification, files/visual_preview
 /// artifact previews, and the headless CLI's `code workspace diff` file-kind,
 /// which imports it instead of hand-copying the extension list).
