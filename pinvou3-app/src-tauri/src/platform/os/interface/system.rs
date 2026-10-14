@@ -188,6 +188,12 @@ pub fn make_private_dir(path: &Path) {
     super::super::platform::make_private_dir(path)
 }
 
+/// Fallible variant through the active OS adapter, for callers that fail
+/// closed when the dir cannot be restricted.
+pub fn try_make_private_dir(path: &Path) -> Result<(), std::io::Error> {
+    super::super::platform::try_make_private_dir(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

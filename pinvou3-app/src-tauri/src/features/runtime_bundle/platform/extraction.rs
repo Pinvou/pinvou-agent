@@ -1441,15 +1441,31 @@ impl Pinvou3Bundle {
         let path = paths::aux_session_mcp_json(aux_session_id);
         let config = serde_json::json!({ "servers": servers });
         let json = serde_json::to_string_pretty(&config).ok()?;
-        if std::fs::read_to_string(&path)
+        // The compare is the hardened read (round-5 MAJOR-1): a swap-in FIFO
+        // at the token path would wedge a bare `read_to_string` forever,
+        // blocking the spawn path with no demotion — this file's own
+        // doctrine (`load_mcp_json_for_repair`) fixed that class repo-wide.
+        if crate::platform::filesystem::read_private_data_file(&path)
             .map(|existing| existing == json)
             .unwrap_or(false)
         {
+            // Re-tighten on the skip path (round-5 minor 3): a file planted
+            // by an older writer at 0644 with identical content must not be
+            // served as-is — the 0600 invariant is per-state, not per-write.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            }
             return Some(path);
         }
         let parent = path.parent()?.to_path_buf();
         std::fs::create_dir_all(&parent).ok()?;
-        crate::platform::os::make_private_dir(&parent);
+        // A dir chmod failure must demote (round-5 minor 3): the dir may
+        // stay umask-permissive otherwise while the file reports success.
+        if crate::platform::os::try_make_private_dir(&parent).is_err() {
+            return None;
+        }
         crate::platform::filesystem::atomic_write_private(&path, json.as_bytes()).ok()?;
         Some(path)
     }

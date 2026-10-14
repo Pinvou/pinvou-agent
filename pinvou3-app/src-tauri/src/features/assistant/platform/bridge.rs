@@ -2567,9 +2567,7 @@ impl Pinvou3Bridge {
         //     for an aux engine: a scope escape, ADR-0024 clause 3).
         let mut scoped_aux_mcp_path: Option<std::path::PathBuf> = None;
         if is_aux {
-            use crate::features::assistant::engine_pool::{
-                AUX_SCOPED_READ_TOOL, AuxToolSurface, aux_tool_surface,
-            };
+            use crate::features::assistant::engine_pool::{AuxToolSurface, aux_tool_surface};
             let (instructions, allowed_tools) = match aux_tool_surface(session_id) {
                 AuxToolSurface::ParentScopedRead { ref parent_id } => {
                     // Fail closed: no scoped config file, no scoped tools —
@@ -2592,10 +2590,27 @@ impl Pinvou3Bridge {
                             scoped_aux_mcp_path = Some(path);
                             (
                                 Self::aux_session_instructions(parent_id),
-                                vec![AUX_SCOPED_READ_TOOL.to_string()],
+                                // The single-entry list comes from the one
+                                // seam (round-5 minor 2): spawn, per-turn,
+                                // and tests share `aux_allowed_tools`
+                                // instead of re-deriving it inline.
+                                crate::features::assistant::engine_pool::aux_allowed_tools(
+                                    session_id,
+                                ),
                             )
                         }
-                        None => (Self::AUX_ZERO_TOOL_INSTRUCTIONS.to_string(), Vec::new()),
+                        None => {
+                            // Round-5 minor 1: drop any stale per-aux config
+                            // a previous successful spawn left behind — the
+                            // per-turn probe (`aux_turn_allowed_tools`) keys
+                            // the scoped list on that file's presence, so a
+                            // demoted engine must not leave it readable.
+                            let stale = crate::platform::paths::aux_session_mcp_json(session_id);
+                            if stale.exists() {
+                                let _ = std::fs::remove_file(&stale);
+                            }
+                            (Self::AUX_ZERO_TOOL_INSTRUCTIONS.to_string(), Vec::new())
+                        }
                     }
                 }
                 AuxToolSurface::ZeroTool => {

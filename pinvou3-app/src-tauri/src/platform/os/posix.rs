@@ -100,14 +100,21 @@ pub fn bundled_node() -> Option<PathBuf> {
 
 /// Restricts a sensitive directory to the current user on POSIX systems.
 pub fn make_private_dir(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-
-    if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)) {
+    if let Err(error) = try_make_private_dir(path) {
         eprintln!(
             "[platform] failed to restrict directory permissions for {}: {error}",
             path.display()
         );
     }
+}
+
+/// Fallible variant of [`make_private_dir`] for callers whose privacy
+/// invariant is load-bearing (the per-aux scoped MCP config dir): the
+/// caller demotes/fails closed instead of writing into a permissive dir.
+pub fn try_make_private_dir(path: &Path) -> Result<(), std::io::Error> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
 }
 
 /// 连接器 CLI 命令构造（linux 与 macOS 同策略，收口于此；unsupported.rs 的
