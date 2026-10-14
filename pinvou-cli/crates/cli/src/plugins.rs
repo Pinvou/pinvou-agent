@@ -74,9 +74,10 @@
 //!   ready = both OpenAPI credentials present (ima secret namespace) AND the
 //!   `ima-skills` companion installed, credentials judged first, installed =
 //!   credentials OR skill. The CLI consumes the exported
-//!   `connectors::ima::status_with_store` directly (with the module's
-//!   documented degrade wrapper for a credential-store read failure) — the
-//!   ima row
+//!   `connectors::ima::status_with_store` directly (on a credential-store
+//!   read failure only its credential half degrades to absent — the
+//!   skill-installed half is still computed from the skill store, see
+//!   [`ima_readiness_parts`]) — the ima row
 //!   must not route through `readiness_for`, whose `IMA_CLIENT_ID` /
 //!   `IMA_API_KEY` lookup is the wrong namespace and would report
 //!   `missing_credentials` for a connected ima. CLI-connector live status
@@ -146,7 +147,7 @@ use pinvou3_lib::features::marketplace::{
     store::{BundleSource, BundleStore, MAX_IMPORT_DISPLAY_NAME_CHARS, is_display_unsafe_char},
     sync_deny_all_scopes_after_install,
 };
-use pinvou3_lib::features::status_with_store;
+use pinvou3_lib::features::{IMA_SKILL_ID, status_with_store};
 use pinvou3_lib::platform::credential_store::{
     CredentialReference, CredentialStore, SystemCredentialStore,
 };
@@ -1982,6 +1983,14 @@ const REASON_IMA_SKILL_NOT_INSTALLED: &str = "skill_not_installed";
 /// answer reads as absent, never the reverse — and the reason string keeps
 /// the two apart for scripts. (The GUI's `ima_status` fails its whole
 /// command on a read failure; that is a one-card surface, this is a table.)
+///
+/// The degrade covers the CREDENTIAL inputs only: `status_with_store`
+/// short-circuits on a store read failure (its `credentials` lookup runs
+/// before the skill check), so the Err arm re-derives the `ima-skills`
+/// installed flag from the skill store — the same list check the Ok path
+/// consults — instead of letting the store failure report the companion as
+/// uninstalled (which would flip an installed, credential-connected ima to
+/// `installed: false` on a keychain hiccup).
 fn ima_readiness_parts(credential_store: &SystemCredentialStore) -> (bool, bool, bool) {
     match status_with_store(credential_store) {
         Ok(status) => (status.credentials_present, status.skill_installed, false),
@@ -1991,7 +2000,15 @@ fn ima_readiness_parts(credential_store: &SystemCredentialStore) -> (bool, bool,
                  (reporting the credential as absent): {}",
                 error
             );
-            (false, false, true)
+            // The store error short-circuits `status_with_store` before its
+            // skill check, so the companion's installed flag is re-derived
+            // here (the same list the Ok path consults) instead of the store
+            // failure degrading an installed `ima-skills` to absent.
+            let skill_installed = SkillMarketplaceManager::new()
+                .list_skills()
+                .into_iter()
+                .any(|skill| skill.id == IMA_SKILL_ID && skill.installed);
+            (false, skill_installed, true)
         }
     }
 }
