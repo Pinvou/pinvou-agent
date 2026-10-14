@@ -177,17 +177,32 @@ assert.match(
   "Windows bundled ASR must stay on the CLI path",
 );
 
-const voiceCommand = read("pinvou3-app/src-tauri/src/app/commands/voice.rs");
+// The env override list was single-sourced: the GUI gate delegates to
+// has_asr_cli_override() and the probe loop in features/voice/platform/mod.rs
+// owns the variable table (has_asr_cli_override tests it in commands/tests.rs).
+const voicePlatform = read(
+  "pinvou3-app/src-tauri/src/features/voice/platform/mod.rs",
+);
 for (const envName of [
   "PINVOU3_ASR_CMD",
   "PINVOU3_DEEPSPEECH2_CMD",
   "PADDLESPEECH_BIN",
 ]) {
   assert.match(
-    voiceCommand,
-    new RegExp(`std::env::var\\("${envName}"\\)`),
-    `${envName} must enable explicit CLI fallback`,
+    voicePlatform,
+    new RegExp(`"${envName}"`),
+    `${envName} must stay in the GUI CLI-fallback env table`,
   );
 }
+assert.match(
+  voicePlatform,
+  /std::env::var\(name\)/,
+  "the env table must be read through the single probe loop",
+);
+assert.match(
+  voicePlatform,
+  /pub(?:\(crate\))? fn has_asr_cli_override\(\)/,
+  "the GUI gate must delegate to the shared override predicate",
+);
 
 console.log("macOS phase 2 packaging and ASR contracts: ok");

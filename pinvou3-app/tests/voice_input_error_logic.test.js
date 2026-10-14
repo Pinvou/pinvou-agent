@@ -214,10 +214,16 @@ assert.deepStrictEqual(
   "run_llm",
   "long poster dictation from Alt or mic must run LLM",
 );
-assert.match(rustVoiceSource, /除极短自然句外，默认整理成结构化 Markdown 列表/);
-assert.match(rustVoiceSource, /内容包含目标、用途、功能、字段、截止时间、进度、多个事项、多个条件、步骤、约束或明显需求表达时，必须整理成 Markdown 列表/);
-assert.match(rustVoiceSource, /制作一个个人工作台，用于企业录入工作事项进度，包括截止时间/);
-assert.match(rustVoiceSource, /12月36日下午3点/);
+// The postprocess prompt texts moved into the shared CLI contract module
+// (features/voice/contract.rs); the application path stays in voice.rs.
+const rustVoiceContractSource = fs.readFileSync(
+  path.join(__dirname, "..", "src-tauri", "src", "features", "voice", "contract.rs"),
+  "utf8",
+);
+assert.match(rustVoiceContractSource, /除极短自然句外，默认整理成结构化 Markdown 列表/);
+assert.match(rustVoiceContractSource, /内容包含目标、用途、功能、字段、截止时间、进度、多个事项、多个条件、步骤、约束或明显需求表达时，必须整理成 Markdown 列表/);
+assert.match(rustVoiceContractSource, /制作一个个人工作台，用于企业录入工作事项进度，包括截止时间/);
+assert.match(rustVoiceContractSource, /12月36日下午3点/);
 assert.match(
   rustVoiceSource,
   /\[voice_postprocess\] empty_output[\s\S]{0,800}\(String::new\(\), false\)/,
