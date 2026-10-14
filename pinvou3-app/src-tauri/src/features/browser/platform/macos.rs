@@ -28,13 +28,13 @@ use super::state::{NativeTabLease, WorkspaceControl};
 use super::{
     ACTION_COMMIT_UNKNOWN_FOCUS_RESTORE_FAILED, ACTION_COMMIT_UNKNOWN_INPUT_INTERRUPTION,
     ACTION_COMMIT_UNKNOWN_SCRIPT_INTERRUPTION, ACTION_COMMITTED_FOCUS_RESTORE_FAILED,
-    ACTION_PARTIALLY_COMMITTED, AsyncDispatchState, BrowserCoreEvaluationMode,
+    ACTION_PARTIALLY_COMMITTED, AsyncDispatchState, BROWSER_BROWSER_CORE_GLOBAL,
+    BrowserCoreEvaluationMode,
 };
 
 const EVALUATION_TIMEOUT: Duration = Duration::from_secs(15);
 const BIND_TIMEOUT: Duration = Duration::from_secs(5);
 const BIND_RETRY_INTERVAL: Duration = Duration::from_millis(25);
-const CORE_GLOBAL: &str = "__PINVOU_BROWSER_CORE_V1__";
 
 struct WebviewBinding {
     tab_token: String,
@@ -146,7 +146,7 @@ pub(super) async fn bind_webview(webview: &Webview) -> Result<(), String> {
     }
 
     let deadline = tokio::time::Instant::now() + BIND_TIMEOUT;
-    let script = format!("return {{ ready: globalThis.{CORE_GLOBAL}?.version === 1 }};");
+    let script = format!("return {{ ready: globalThis.{BROWSER_CORE_GLOBAL}?.version === 1 }};");
     loop {
         match evaluate_json(
             webview,

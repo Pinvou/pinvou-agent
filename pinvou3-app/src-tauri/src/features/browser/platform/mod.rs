@@ -7,6 +7,11 @@
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 mod host;
 
+/// Global name the BrowserCore runtime registers on the page (see
+/// `resources/common/bundle/mcp-servers/browser-core-runtime.js`): shared by
+/// the core prelude and the macOS readiness probe so the two cannot drift.
+pub(crate) const BROWSER_CORE_GLOBAL: &str = "__PINVOU_BROWSER_CORE_V1__";
+
 pub(crate) mod state;
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
