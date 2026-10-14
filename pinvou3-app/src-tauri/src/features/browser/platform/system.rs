@@ -10,6 +10,15 @@ use tauri::WebviewBuilder;
 use super::NativeSurfaceCapabilities;
 use super::host::PlatformWebviewConfig;
 
+/// WKWebView's factory user agent omits the `Version/… Safari/…` tokens that
+/// identify a Safari-class browser, so UA-sniffing sites downgrade the embedded
+/// browser (bilibili.com redirects it to a "browser version too low" notice).
+/// Safari's reduced-User-Agent policy freezes every other token in this string;
+/// bump `Version/` only when a Safari major release moves the recognized floor.
+#[cfg(target_os = "macos")]
+const WKWEBVIEW_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+    AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
+
 #[derive(Default)]
 pub(crate) struct SystemWebviewConfig {
     initialized: bool,
@@ -49,7 +58,13 @@ impl PlatformWebviewConfig for SystemWebviewConfig {
         // support a custom path, but Tauri still uses it as the key for an isolated
         // WebContext. The implementation keeps the system-default persistent
         // WKWebsiteDataStore for macOS 11 compatibility; custom identifiers require 14+.
-        Ok(builder.data_directory(data_directory.to_path_buf()))
+        let builder = builder.data_directory(data_directory.to_path_buf());
+        // The "obsolete browser" downgrades are specific to WKWebView, whose
+        // factory user agent drops the Safari/Version tokens; the other ports
+        // keep their system defaults.
+        #[cfg(target_os = "macos")]
+        let builder = builder.user_agent(WKWEBVIEW_BROWSER_USER_AGENT);
+        Ok(builder)
     }
 
     fn reset(&mut self) {
@@ -87,5 +102,20 @@ mod tests {
         const { assert!(!SystemWebviewConfig::ACTIVATION_READY) };
         assert!(config.is_initialized());
         assert!(!config.owns_port(9222));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_user_agent_keeps_the_frozen_safari_tokens() {
+        // Sites that gate on user-agent sniffing downgrade a webview whose UA
+        // lacks the Version/Safari tokens, so the frozen-token shape is the
+        // behavioral contract this constant must preserve.
+        assert!(
+            WKWEBVIEW_BROWSER_USER_AGENT.starts_with(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) "
+            )
+        );
+        assert!(WKWEBVIEW_BROWSER_USER_AGENT.contains(" Version/"));
+        assert!(WKWEBVIEW_BROWSER_USER_AGENT.ends_with(" Safari/605.1.15"));
     }
 }
