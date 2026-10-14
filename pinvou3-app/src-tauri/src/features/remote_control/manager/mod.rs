@@ -2070,6 +2070,48 @@ impl RemoteControlManager {
         prune_rpc_cache(inner);
     }
 
+    /// Shared admission tail of the two Pending branches in `handle_rpc_request`
+    /// (reconstructed-tombstone and fresh-durable): insert the Pending cache
+    /// entry, queue the request id, prune, then map the bridge generation to the
+    /// dispatch action. Both arms were token-identical; this is the single home
+    /// of the idempotency bookkeeping (`settle_complete` is the Complete-insert
+    /// analogue). The cache entry clones `command`/`args`; the dispatch consumes
+    /// the originals — exactly the pre-extraction sharing.
+    fn admit_pending_rpc(
+        inner: &mut Inner,
+        request_id: &str,
+        lease_id: String,
+        command: String,
+        args: Value,
+        fingerprint: String,
+        bridge_generation: Option<String>,
+    ) -> RpcRequestAction {
+        inner.rpc_cache.insert(
+            request_id.to_string(),
+            RpcCacheEntry::Pending(PendingRpc {
+                lease_id,
+                command: command.clone(),
+                args: args.clone(),
+                fingerprint,
+                dispatched_generation: bridge_generation.clone(),
+                acknowledged_generation: None,
+                dispatched_at: Instant::now(),
+            }),
+        );
+        inner.rpc_order.push_back(request_id.to_string());
+        prune_rpc_cache(inner);
+        if let Some(bridge_generation) = bridge_generation {
+            RpcRequestAction::Dispatch(RpcDispatch {
+                request_id: request_id.to_string(),
+                command,
+                args,
+                bridge_generation,
+            })
+        } else {
+            RpcRequestAction::None
+        }
+    }
+
     fn handle_rpc_request(&self, value: &Value) {
         let request_id = value
             .get("client_request_id")
@@ -2252,30 +2294,15 @@ impl RemoteControlManager {
                                     rpc_response(&endpoint_id, &lease_id, &request_id, &completion),
                                 )
                             } else {
-                                inner.rpc_cache.insert(
-                                    request_id.clone(),
-                                    RpcCacheEntry::Pending(PendingRpc {
-                                        lease_id,
-                                        command: command.clone(),
-                                        args: args.clone(),
-                                        fingerprint,
-                                        dispatched_generation: bridge_generation.clone(),
-                                        acknowledged_generation: None,
-                                        dispatched_at: Instant::now(),
-                                    }),
-                                );
-                                inner.rpc_order.push_back(request_id.clone());
-                                prune_rpc_cache(&mut inner);
-                                if let Some(bridge_generation) = bridge_generation {
-                                    RpcRequestAction::Dispatch(RpcDispatch {
-                                        request_id: request_id.clone(),
-                                        command,
-                                        args,
-                                        bridge_generation,
-                                    })
-                                } else {
-                                    RpcRequestAction::None
-                                }
+                                Self::admit_pending_rpc(
+                                    &mut inner,
+                                    &request_id,
+                                    lease_id,
+                                    command,
+                                    args,
+                                    fingerprint,
+                                    bridge_generation,
+                                )
                             }
                         }
                     } else {
@@ -2322,30 +2349,15 @@ impl RemoteControlManager {
                                     )
                                 } else {
                                     inner.rpc_ledger = next_ledger;
-                                    inner.rpc_cache.insert(
-                                        request_id.clone(),
-                                        RpcCacheEntry::Pending(PendingRpc {
-                                            lease_id,
-                                            command: command.clone(),
-                                            args: args.clone(),
-                                            fingerprint,
-                                            dispatched_generation: bridge_generation.clone(),
-                                            acknowledged_generation: None,
-                                            dispatched_at: Instant::now(),
-                                        }),
-                                    );
-                                    inner.rpc_order.push_back(request_id.clone());
-                                    prune_rpc_cache(&mut inner);
-                                    if let Some(bridge_generation) = bridge_generation {
-                                        RpcRequestAction::Dispatch(RpcDispatch {
-                                            request_id: request_id.clone(),
-                                            command,
-                                            args,
-                                            bridge_generation,
-                                        })
-                                    } else {
-                                        RpcRequestAction::None
-                                    }
+                                    Self::admit_pending_rpc(
+                                        &mut inner,
+                                        &request_id,
+                                        lease_id,
+                                        command,
+                                        args,
+                                        fingerprint,
+                                        bridge_generation,
+                                    )
                                 }
                             }
                             Err(error) => {
