@@ -5977,3 +5977,51 @@ No dependency, SQL/protocol/application version/deployment change. Required-fiel
 semantics, native matching, publisher certification, Artifact admission and
 production storage remain separate work. Full T09 remains incomplete. Downloads
 retain no total/cumulative elapsed or retry-count limit.
+
+## T09 thirty-second batch: required identity declarations from original control bytes
+
+ReadIdentity accepts an immutable owned control-file snapshot and explicit
+ControlLimits, reparses it through ParseControl, and requires Package, Version
+and Architecture to each exist as exactly one nonempty logical line. Case-folded
+field lookup and horizontal-whitespace trimming derive three declaration strings;
+the original record, field spelling, lines and complete original byte identity
+remain available. No caller-supplied record projection or field default is used.
+
+Missing/folded required fields, base lexical errors, capacity or cancellation
+failures return zero IdentityDeclarations, nil record fields and no earlier
+partially selected value. Context is checked before successful return. Values
+remain opaque declarations: this batch does not validate field-specific native
+package/version/architecture grammar, compare versions, certify a machine,
+apply an approved app/publisher mapping or grant Artifact validity. Existing
+parser, framing, codecs, TAR and signed-composition APIs are unchanged.
+
+Three new groups cover original case/raw-line preservation, leading-zero version
+text retained without normalization, caller-source/projection mutation isolation,
+each missing/folded field and same-source restoration. Each required-field
+negative first succeeds in the base lexical observer, then returns the precise
+IdentityInvalid result. Late duplicate-field, field capacity, context/nil and
+underlying-error propagation retain no record or value. The actual opt-in group
+uses both previously frozen public/Python control records and independently
+checks their original SHA/size plus all three exact declaration strings. No
+package is installed or executed; those declarations prove no native identity
+or publisher approval.
+
+Root selected identity 3 groups passed 1.260s. Root actual Debian 37 groups passed
+1.627s, with all twelve fixture opt-in groups executed. Both initial independent
+scoped static audits passed without required fixes. Complete default Go tests
+passed with package parallelism 2: Debian 25 groups plus twelve fixture skips,
+1.599s; verification 31 groups plus nine fixture skips, 15.759s; TAR 8 groups plus
+one fixture skip, 1.504s; compression 29 groups plus one fixture skip, 4.273s.
+Module verification, whole vet, server build, pinned contracts, changed-file
+formatting/diff and client architecture/version guards passed; all root processes
+closed. Both final independent scoped code/test audits passed without remaining
+required fixes. Dependency audit independently ran actual Debian 37 in 1.698s;
+compatibility audit ran it in 1.603s. Both executed all twelve fixture groups
+without skips and passed affected vet, two-file formatting and diff checks;
+all independent processes closed. Unchanged database/provider/browser integration
+was not repeated. The copied-source capacities keep
+the previous logical, non-aggregate-heap meaning; no production preparation policy
+is inferred. No dependency, SQL/protocol/application version/deployment change.
+No new complete-installer/signed identity composition or native matching yet.
+Full T09 remains incomplete. Downloads have no total/cumulative elapsed or
+retry-count limit.
