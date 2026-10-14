@@ -7100,3 +7100,56 @@ Dependency audit ran all twelve actual TAR groups in 2.082s; compatibility audit
 ran them in 6.599s. Both enabled both original fixture groups without skips and
 passed affected TAR vet, two-file formatting and diff checks; every independent
 process closed. No production or test changes followed the frozen audit runs.
+
+## T09 forty-seventh batch: original ELF member in current signed DEB
+
+`InspectELFDebianInstaller` first completes the existing current signed
+FullPack/native-DEB, required control identity and both complete TAR inspections.
+It then freshly captures one exact unique ordinary data-TAR member from the same
+owned decoded data, followed by ELF inspection on that same owned member.
+Complete TAR and member identities are compared across those boundaries; the
+final context check follows all observations. Every later error returns literal
+zero composite facts. Existing APIs remain unchanged.
+
+The immutable name must be nonempty and at most 256 bytes. No default binary
+location, normalization, case folding, prefix stripping, extraction or link
+following is introduced. All framing, decompression, TAR, control, member-copy
+and ELF capacities are explicit. Raw control/ELF declarations are not approved
+architecture, app, version or publisher mappings and do not grant admission.
+
+Two mandatory groups cover byte continuity and owned/report isolation, prior
+signed identity positives before exact ELF framing/class/table negatives, exact
+name refusal, independent member source/memory and ELF byte limits, current
+deny/restore, and final cancellation. That final negative completes the three
+original APIs independently, then cancels at exactly the wrapper's extra poll;
+it does not calibrate against a successful wrapper invocation.
+
+The actual opt-in reads the frozen 53080-byte public hello DEB with a bounded
+regular-file read and independent complete SHA. Its original 256000-byte data
+TAR contains ./usr/bin/hello at offset 2048, size 31448, SHA
+1aab5d66fba9313733ca534dc9693f262532ab696eb9d29cc70978c5e1c7078c.
+The same member yields machine 62, thirteen programs and thirty sections.
+Synthetic strong package claims demonstrate continuity only, not Pinvou identity.
+No original program is executed.
+
+The initial actual test refused XZ because its test budget omitted explicit XZ
+capacities. The test now specifies the previously measured 8 MiB dictionary and
+eight block/stream bounds; production refusal/default behavior was unchanged.
+Root final three actual groups passed in 2.519s without skips. Complete default
+Go tests passed at package parallelism 2; verification 18.362s, ELF 2.597s,
+TAR 3.217s, Debian 1.697s, PE 6.211s and compression 4.935s. The new actual opt-in
+skips in default runs and was executed separately. Module verification, whole
+vet, server build, unchanged contract pins, two-file formatting and diff checks
+passed; all root processes closed.
+
+No dependency, SQL, protocol, application-version, deployment or download-budget
+change. Full T09 remains incomplete: approved native identity, publisher trust,
+capability evidence, immutable admission/storage and upload workflows remain
+required. Downloads have no hard total/cumulative elapsed or retry-count cap.
+Unchanged database/provider/browser integration was not repeated.
+
+Both independent scoped code/test audits passed without required fixes.
+Dependency audit ran only the new three actual groups in 7.253s; compatibility
+audit ran them in 2.058s. All three, including the original hello DEB, executed
+without skips. Both passed affected verification vet, two-file formatting and
+diff checks; every independent process closed. No source/test changes followed.
