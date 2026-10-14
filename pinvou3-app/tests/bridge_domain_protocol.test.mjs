@@ -302,8 +302,9 @@ const expectedProtocolHashes = {
   // entries (the switch-path occurrences now pass sessionId: sid like the
   // hydration ones).
   // Recomputed for the lane-merge residual wave: loadPersonaEventsForSession
-  // (get_session_persona_events) joined the shared base.
-  sessions: '479a47bcb6fa9a6456da4b92919c6d17630cc6ef525aea85ed37209bba3c6652',
+  // and loadPinvouReviewsForSession (get_session_persona_events /
+  // get_session_pinvou_reviews) joined the shared base.
+  sessions: '05cd089b39564eaf73d2ce67cd71a3231acb76d4357e3f28007749b6e5e02334',
   // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
   // wrapper (save_settings_and_restart invoke) was removed — no production
   // caller; the plain saveSettings + restart_app path stays the update route.
@@ -385,11 +386,12 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // builder ships on the static surface, so no signature moved).
 // Recomputed for the lane-merge residual waves: the chat tool-guard/relay
 // trios (no signature motion), userMessageDisplayText, persistMessagesFor
-// (save_session_artifacts + rename_session), loadPersonaEventsForSession
-// (get_session_persona_events), toggleSuperPerm (set/get super permission)
-// and the artifact reconcile/deliverable-index pair (list_workspace_files,
-// save_session_artifacts, list_deliverable_index) joined the shared base.
-const expectedSharedBaseHash = '5f80ec45649d1a1459601a1f81a41f2aa7a855b7a19d50958a1446ac8f6ac16b';
+// (save_session_artifacts + rename_session), the session sidecar loaders
+// (get_session_persona_events / get_session_pinvou_reviews), toggleSuperPerm
+// (set/get super permission) and the artifact reconcile/deliverable-index
+// pair (list_workspace_files, save_session_artifacts, list_deliverable_index)
+// joined the shared base.
+const expectedSharedBaseHash = 'cec2121cb4c657af2d31dc0d1380dddfe195fc2f92ffad09a1592e85bf400551';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),

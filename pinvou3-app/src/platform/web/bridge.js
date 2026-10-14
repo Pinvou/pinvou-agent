@@ -866,14 +866,7 @@ function savePinvouSceneEventsForSession(sid, events) { return pinvouSharedweb()
   // to [] exactly as before, just not silently — report like the scene/steered
   // readers so a durable-data defect cannot pose as "no data".
   function loadPersonaEventsForSession(sid) { return pinvouSharedweb().loadPersonaEventsForSession(sid); }
-  async function loadPinvouReviewsForSession(sid) {
-    try {
-      return await invoke("get_session_pinvou_reviews", { sessionId: sid }) || [];
-    } catch (error) {
-      reportSidecarReadFailure("pinvou reviews", sid, error);
-      return [];
-    }
-  }
+  function loadPinvouReviewsForSession(sid) { return pinvouSharedweb().loadPinvouReviewsForSession(sid); }
 function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedweb().recordPinvouSceneForMessage(sid, pos, scene); }
   function recordPinvouSceneForBufferMessage(sid, buffer, pos, scene) {
     scene = normalizePinvouScene(scene);
