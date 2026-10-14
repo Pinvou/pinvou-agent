@@ -5150,3 +5150,33 @@ metadata, app identity/version/architecture, publisher/native trust, protected
 storage, execution rights or Artifact admission are implied. Full T09 is
 incomplete; no SQL/provider/dependency/protocol/application version/deployment
 changes. Download has no total/cumulative elapsed deadline or retry budget.
+
+
+## T09 sixteenth batch: exact stored Debian member snapshots
+
+Added a separate Debian platform API that validates complete package framing,
+then captures the selected control/data stored sequences from the same immutable
+source. Each owned child has its original size/SHA-256 checked against the
+selected AR member. Independent caller-supplied source and memory capacities
+bound both captures. Any failure returns a zero report and no partial pair;
+existing framing and signed-installer observers retain their acceptance.
+
+Root seven Debian groups, including both opt-in observations of the existing
+public package, passed1.025s. Synthetic stored bytes verify independent child
+identity, later duplicate-member isolation, caller buffer isolation, all four
+one-below capture capacities, missing limits, cancellation and restored positive.
+The public fixture verifies exact original selected stored bytes without
+installation or execution. Root full default Go tests passed (Debian5 groups,
+both public-fixture opt-ins skipped,6.038s; verification25 groups21.695s).
+Module verification, whole-repository vet, server build, pinned contract check,
+changed-file formatting and diff checks passed. Client architecture and version
+guards passed. Dependency independent Debian7 including both public-file cases
+passed1.493s; affected vet, formatting and diff passed. Compatibility independent
+Debian7 passed1.735s; affected vet, formatting and diff passed. All root and
+independent test/tool processes closed. Both final documentation reviews passed.
+
+This API does not decompress members, inspect tar/control metadata or scripts,
+certify package app/version/architecture/publisher, grant execution, admit an
+Artifact or define production storage/aggregate preparation policy. Full T09
+remains incomplete. No dependency/provider/SQL/protocol/application version or
+deployment changes. Download has no cumulative deadline or retry budget.
