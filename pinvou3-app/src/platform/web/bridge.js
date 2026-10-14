@@ -10,7 +10,7 @@
 
 let pinvouSharedwebCache = null;
 function pinvouSharedweb() {
-  if (!pinvouSharedwebCache) pinvouSharedwebCache = window.PinvouBridgeShared.create("web", { state, BT_TABLE: { get value() { return BT_TABLE; } }, PINVOU_SCENE_EVENTS_STORAGE_PREFIX: { get value() { return PINVOU_SCENE_EVENTS_STORAGE_PREFIX; } }, invoke, sessionStates: { get value() { return sessionStates; } }, freshBuffer, restoreEvictedSessionDraft, sessionBufferTouchClock: { get value() { return sessionBufferTouchClock; }, set value(v) { sessionBufferTouchClock = v; } }, pruneScheduledSessionBuffers, pruneSessionBuffers, scheduledRunSessionOwners: { get value() { return scheduledRunSessionOwners; } }, scheduledRunOwnerTouchClock: { get value() { return scheduledRunOwnerTouchClock; }, set value(v) { scheduledRunOwnerTouchClock = v; } }, MAX_SCHEDULED_RUN_SESSION_OWNERS: { get value() { return MAX_SCHEDULED_RUN_SESSION_OWNERS; } }, recordAuthoritySyncDiagnostic, runSyncOnSession, notify, SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY, scheduledTaskTemplateSources: { get value() { return scheduledTaskTemplateSources; } }, persistScheduledTaskTemplateSources, scheduledTaskRequestTokens: { get value() { return scheduledTaskRequestTokens; } }, scheduledTaskRefreshInFlight: { get value() { return scheduledTaskRefreshInFlight; }, set value(v) { scheduledTaskRefreshInFlight = v; } }, scheduledRecentRunsRequestToken: { get value() { return scheduledRecentRunsRequestToken; }, set value(v) { scheduledRecentRunsRequestToken = v; } }, scheduledRunEventRefreshTimer: { get value() { return scheduledRunEventRefreshTimer; }, set value(v) { scheduledRunEventRefreshTimer = v; } }, scheduledTaskPendingLoads: { get value() { return scheduledTaskPendingLoads; } }, scheduledTaskSelectionGeneration: { get value() { return scheduledTaskSelectionGeneration; }, set value(v) { scheduledTaskSelectionGeneration = v; } }, createScheduledTask, scheduledRunShortcutRefreshes: { get value() { return scheduledRunShortcutRefreshes; } }, SCHEDULED_LINK_POLL_DEADLINE_MS: { get value() { return SCHEDULED_LINK_POLL_DEADLINE_MS; } }, SCHEDULED_LINK_POLL_FAST_ATTEMPTS: { get value() { return SCHEDULED_LINK_POLL_FAST_ATTEMPTS; } }, SCHEDULED_LINK_POLL_FAST_MS: { get value() { return SCHEDULED_LINK_POLL_FAST_MS; } }, SCHEDULED_LINK_POLL_SLOW_MS: { get value() { return SCHEDULED_LINK_POLL_SLOW_MS; } }, scheduledTaskBackendInput, forgetScheduledTaskTemplateSource, scheduledTaskAutoCreateSeq: { get value() { return scheduledTaskAutoCreateSeq; }, set value(v) { scheduledTaskAutoCreateSeq = v; } }, scheduledTaskAutoCreateInFlight: { get value() { return scheduledTaskAutoCreateInFlight; } }, personaSyncSeq: { get value() { return personaSyncSeq; }, set value(v) { personaSyncSeq = v; } }, messageHasToolBlock, addChatItem, enterDraft, hydratedMessageKey, switchToSessionInternal, openScheduledRunChatOnce, scheduledRunOpenInFlight: { get value() { return scheduledRunOpenInFlight; } }, loadWorkingSetFrom, purgeSessionBuffer, personaPlaceholderTitles: { get value() { return personaPlaceholderTitles; } }, refreshHistoryList, sessionSwitchRequestToken: { get value() { return sessionSwitchRequestToken; }, set value(v) { sessionSwitchRequestToken = v; } }, saveWorkingSetTo, SHELL_TOOL_NAMES: { get value() { return SHELL_TOOL_NAMES; } }, normalizeTerminalTail, latestShellToolIsWaitObserver, shellPollState: { get value() { return shellPollState; } }, DELIVERABLE_EXTS: { get value() { return DELIVERABLE_EXTS; } }, extractArtifactPaths, summonPinvou, parseToolResultPayload, monitorBaseline: { get value() { return monitorBaseline; }, set value(v) { monitorBaseline = v; } }, clearMonitorBaseline, monitorIntervalId: { get value() { return monitorIntervalId; }, set value(v) { monitorIntervalId = v; } }, gpuUtilHistory: { get value() { return gpuUtilHistory; }, set value(v) { gpuUtilHistory = v; } }, monitorPollInFlight: { get value() { return monitorPollInFlight; }, set value(v) { monitorPollInFlight = v; } }, pollMonitor, settingsWriteQueue: { get value() { return settingsWriteQueue; }, set value(v) { settingsWriteQueue = v; } }, modelsLoadSeq: { get value() { return modelsLoadSeq; }, set value(v) { modelsLoadSeq = v; } }, loadSessionModel, setActiveModel, currentDraftModeState, loadMemoryOverview, memoryOverviewSeq: { get value() { return memoryOverviewSeq; }, set value(v) { memoryOverviewSeq = v; } }, setDraftMode, applyAuthoritativeModeState, sendMessage, pushUserEcho, flushAssistantMessageToHistory, dialogOpen, addAttachmentByPath, personaPoolCache: { get value() { return personaPoolCache; }, set value(v) { personaPoolCache = v; } }, deletedPersonaIds: { get value() { return deletedPersonaIds; } }, lastEquippedSid: { get value() { return lastEquippedSid; }, set value(v) { lastEquippedSid = v; } }, mountedCollectionDraftTarget: { get value() { return mountedCollectionDraftTarget; }, set value(v) { mountedCollectionDraftTarget = v; } }, ensureSession, mountedCollectionUpdate: { get value() { return mountedCollectionUpdate; }, set value(v) { mountedCollectionUpdate = v; } }, activeVoiceInput: { get value() { return activeVoiceInput; }, set value(v) { activeVoiceInput = v; } }, stopMediaTracks, VOICE_DEVICE_REQUEST_TIMEOUT_MS: { get value() { return VOICE_DEVICE_REQUEST_TIMEOUT_MS; } }, voiceOperations: { get value() { return voiceOperations; } }, pendingStreamNotifications: { get value() { return pendingStreamNotifications; } }, pendingAssistantText: { get value() { return pendingAssistantText; }, set value(v) { pendingAssistantText = v; } }, pendingAssistantBlocks: { get value() { return pendingAssistantBlocks; }, set value(v) { pendingAssistantBlocks = v; } }, finalizeAssistantStreamBeforeReasoning, flushPendingTextBlock, finishVoiceInput });
+  if (!pinvouSharedwebCache) pinvouSharedwebCache = window.PinvouBridgeShared.create("web", { state, BT_TABLE: { get value() { return BT_TABLE; } }, PINVOU_SCENE_EVENTS_STORAGE_PREFIX: { get value() { return PINVOU_SCENE_EVENTS_STORAGE_PREFIX; } }, invoke, sessionStates: { get value() { return sessionStates; } }, freshBuffer, restoreEvictedSessionDraft, sessionBufferTouchClock: { get value() { return sessionBufferTouchClock; }, set value(v) { sessionBufferTouchClock = v; } }, pruneScheduledSessionBuffers, pruneSessionBuffers, scheduledRunSessionOwners: { get value() { return scheduledRunSessionOwners; } }, scheduledRunOwnerTouchClock: { get value() { return scheduledRunOwnerTouchClock; }, set value(v) { scheduledRunOwnerTouchClock = v; } }, MAX_SCHEDULED_RUN_SESSION_OWNERS: { get value() { return MAX_SCHEDULED_RUN_SESSION_OWNERS; } }, recordAuthoritySyncDiagnostic, runSyncOnSession, notify, SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY, scheduledTaskTemplateSources: { get value() { return scheduledTaskTemplateSources; } }, persistScheduledTaskTemplateSources, scheduledTaskRequestTokens: { get value() { return scheduledTaskRequestTokens; } }, scheduledTaskRefreshInFlight: { get value() { return scheduledTaskRefreshInFlight; }, set value(v) { scheduledTaskRefreshInFlight = v; } }, scheduledRecentRunsRequestToken: { get value() { return scheduledRecentRunsRequestToken; }, set value(v) { scheduledRecentRunsRequestToken = v; } }, scheduledRunEventRefreshTimer: { get value() { return scheduledRunEventRefreshTimer; }, set value(v) { scheduledRunEventRefreshTimer = v; } }, scheduledTaskPendingLoads: { get value() { return scheduledTaskPendingLoads; } }, scheduledTaskSelectionGeneration: { get value() { return scheduledTaskSelectionGeneration; }, set value(v) { scheduledTaskSelectionGeneration = v; } }, createScheduledTask, scheduledRunShortcutRefreshes: { get value() { return scheduledRunShortcutRefreshes; } }, SCHEDULED_LINK_POLL_DEADLINE_MS: { get value() { return SCHEDULED_LINK_POLL_DEADLINE_MS; } }, SCHEDULED_LINK_POLL_FAST_ATTEMPTS: { get value() { return SCHEDULED_LINK_POLL_FAST_ATTEMPTS; } }, SCHEDULED_LINK_POLL_FAST_MS: { get value() { return SCHEDULED_LINK_POLL_FAST_MS; } }, SCHEDULED_LINK_POLL_SLOW_MS: { get value() { return SCHEDULED_LINK_POLL_SLOW_MS; } }, scheduledTaskBackendInput, forgetScheduledTaskTemplateSource, scheduledTaskAutoCreateSeq: { get value() { return scheduledTaskAutoCreateSeq; }, set value(v) { scheduledTaskAutoCreateSeq = v; } }, scheduledTaskAutoCreateInFlight: { get value() { return scheduledTaskAutoCreateInFlight; } }, personaSyncSeq: { get value() { return personaSyncSeq; }, set value(v) { personaSyncSeq = v; } }, messageHasToolBlock, addChatItem, patchItemByIdFor, enterDraft, userMessageDisplayText, evictedSessionDrafts: { get value() { return evictedSessionDrafts; } }, MAX_EVICTED_SESSION_DRAFT_CHARS: { get value() { return MAX_EVICTED_SESSION_DRAFT_CHARS; } }, MAX_EVICTED_SESSION_DRAFTS: { get value() { return MAX_EVICTED_SESSION_DRAFTS; } }, switchToSessionInternal, openScheduledRunChatOnce, scheduledRunOpenInFlight: { get value() { return scheduledRunOpenInFlight; } }, loadWorkingSetFrom, purgeSessionBuffer, personaPlaceholderTitles: { get value() { return personaPlaceholderTitles; } }, refreshHistoryList, sessionSwitchRequestToken: { get value() { return sessionSwitchRequestToken; }, set value(v) { sessionSwitchRequestToken = v; } }, saveWorkingSetTo, SHELL_TOOL_NAMES: { get value() { return SHELL_TOOL_NAMES; } }, normalizeTerminalTail, latestShellToolIsWaitObserver, shellPollState: { get value() { return shellPollState; } }, DELIVERABLE_EXTS: { get value() { return DELIVERABLE_EXTS; } }, extractArtifactPaths, summonPinvou, parseToolResultPayload, monitorBaseline: { get value() { return monitorBaseline; }, set value(v) { monitorBaseline = v; } }, clearMonitorBaseline, monitorIntervalId: { get value() { return monitorIntervalId; }, set value(v) { monitorIntervalId = v; } }, gpuUtilHistory: { get value() { return gpuUtilHistory; }, set value(v) { gpuUtilHistory = v; } }, monitorPollInFlight: { get value() { return monitorPollInFlight; }, set value(v) { monitorPollInFlight = v; } }, pollMonitor, settingsWriteQueue: { get value() { return settingsWriteQueue; }, set value(v) { settingsWriteQueue = v; } }, modelsLoadSeq: { get value() { return modelsLoadSeq; }, set value(v) { modelsLoadSeq = v; } }, loadSessionModel, setActiveModel, currentDraftModeState, loadMemoryOverview, memoryOverviewSeq: { get value() { return memoryOverviewSeq; }, set value(v) { memoryOverviewSeq = v; } }, setDraftMode, applyAuthoritativeModeState, sendMessage, pushUserEcho, flushAssistantMessageToHistory, dialogOpen, addAttachmentByPath, personaPoolCache: { get value() { return personaPoolCache; }, set value(v) { personaPoolCache = v; } }, deletedPersonaIds: { get value() { return deletedPersonaIds; } }, lastEquippedSid: { get value() { return lastEquippedSid; }, set value(v) { lastEquippedSid = v; } }, mountedCollectionDraftTarget: { get value() { return mountedCollectionDraftTarget; }, set value(v) { mountedCollectionDraftTarget = v; } }, ensureSession, mountedCollectionUpdate: { get value() { return mountedCollectionUpdate; }, set value(v) { mountedCollectionUpdate = v; } }, activeVoiceInput: { get value() { return activeVoiceInput; }, set value(v) { activeVoiceInput = v; } }, stopMediaTracks, VOICE_DEVICE_REQUEST_TIMEOUT_MS: { get value() { return VOICE_DEVICE_REQUEST_TIMEOUT_MS; } }, voiceOperations: { get value() { return voiceOperations; } }, pendingStreamNotifications: { get value() { return pendingStreamNotifications; } }, pendingAssistantText: { get value() { return pendingAssistantText; }, set value(v) { pendingAssistantText = v; } }, pendingAssistantBlocks: { get value() { return pendingAssistantBlocks; }, set value(v) { pendingAssistantBlocks = v; } }, finalizeAssistantStreamBeforeReasoning, flushPendingTextBlock, finishVoiceInput });
   return pinvouSharedwebCache;
 }
 
@@ -128,20 +128,8 @@ function pinvouSharedweb() {
   // renderMarkdown 仍会被 ChatView.jsx 的 dangerouslySetInnerHTML 消费，原文返回即 fail-open。
   // 因此 escapeHtml 作为安全原语保留在本文件（不依赖任何外部脚本），仅 marked.parse+sanitize
   // 这段较重的兜底被抽到共享文件。
-  function escapeHtml(s) {
-    return String(s).replaceAll(/[&<>"']/g, function (c) {
-      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
-    });
-  }
-  function renderMarkdown(text) {
-    if (window.PinvouMarkdownRenderer && typeof window.PinvouMarkdownRenderer.renderMarkdown === "function") {
-      return window.PinvouMarkdownRenderer.renderMarkdown(text);
-    }
-    if (window.PinvouMarkdownBridgeFallback && typeof window.PinvouMarkdownBridgeFallback.renderMarkdown === "function") {
-      return window.PinvouMarkdownBridgeFallback.renderMarkdown(text);
-    }
-    return escapeHtml(text || "");
-  }
+function escapeHtml(s) { return pinvouSharedweb().escapeHtml(s); }
+function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
 
 
   // The pet is a separate WebView and must not own a second copy of the main
@@ -816,20 +804,7 @@ function authoritySyncBufferSnapshot(sid, buf) { return pinvouSharedweb().author
   // Returns true when the buffer's non-rehydratable state is safely retained
   // (or empty) and the caller may drop the buffer; false means eviction must
   // be skipped so the draft stays in the live buffer.
-  function stashEvictedSessionDraft(id, buf) {
-    if (!id || !buf) return true;
-    const draft = String(buf.composerDraft || "");
-    if (!draft) {
-      delete evictedSessionDrafts[id]; // input was cleared; a stale stash must not resurrect it
-      return true;
-    }
-    if (draft.length > MAX_EVICTED_SESSION_DRAFT_CHARS) return false;
-    if (!evictedSessionDrafts[id]
-        && Object.keys(evictedSessionDrafts).length >= MAX_EVICTED_SESSION_DRAFTS) return false;
-    delete evictedSessionDrafts[id]; // re-stashing moves the entry to the table tail
-    evictedSessionDrafts[id] = draft;
-    return true;
-  }
+  function stashEvictedSessionDraft(id, buf) { return pinvouSharedweb().stashEvictedSessionDraft(id, buf); }
   function restoreEvictedSessionDraft(id, buf) {
     if (!id || !buf || buf.composerDraft) return;
     const draft = evictedSessionDrafts[id];
@@ -925,38 +900,7 @@ function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedweb()
     savePinvouSceneEventsForSession(sid, events);
   }
 function pinvouSceneForMessagePos(pos) { return pinvouSharedweb().pinvouSceneForMessagePos(pos); }
-  function freshBuffer() {
-    return {
-      messages: [], chatItems: [], composerDraft: "", turnTimeline: [], activeTurnTimelineId: null, personaEvents: [], pinvouReviews: [], pinvouSceneEvents: [], artifacts: [], busy: false, queued: [],
-      loadedFromDisk: false,
-      localTurnOwned: false,
-      remoteTurnActive: false,
-      remoteTerminalSeen: false,
-      remoteAdmissionKeys: [],
-      deferredRemoteUserEvent: null,
-      remoteBaselineMessageCount: null,
-      remoteBaselineTrusted: false,
-      remoteExpectedAssistantKey: "",
-      remoteCommittedRevision: "",
-      sessionRevision: "",
-      planSnapshot: { plan: null, todos: null },
-      modeState: { mode: "yolo" },
-      thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
-      tokens: { input: 0, max: state.tokens.max },
-      activePersona: null, // 卡片池: 该 session 加持的专家面具(挂件用)
-      mountedCollection: null, // 知识库: 该 session 挂载的知识集 id 或 null
-      mountedCollections: [], // 多知识库挂载项 [{ collectionId, enabled }]
-      mountedCollectionsRevision: 0,
-      scheduledRunSession: false,
-      scheduledInitialTurnPhase: null,
-      lastTouched: 0,
-
-      stream: {
-        currentStreamText: "", currentStreamId: 0, pendingAssistantText: "",
-        pendingAssistantBlocks: [], itemIdSeq: 0, toolMeta: {},
-      },
-    };
-  }
+function freshBuffer() { return pinvouSharedweb().freshBuffer(); }
 function getBuffer(id) { return pinvouSharedweb().getBuffer(id); }
 function isProtectedScheduledBuffer(id, buf) { return pinvouSharedweb().isProtectedScheduledBuffer(id, buf); }
   function pruneScheduledSessionBuffers(keepId) {
@@ -2271,51 +2215,10 @@ function reportSessionSwitchFailure(error, errorScope) { return pinvouSharedweb(
     notify();
   }
 
-  function hydratedMessageKey(message, hideInternalEnvelope) {
-    let blocks = message && Array.isArray(message.content) ? message.content : [];
-    if (message && message.role === "user") {
-      const resultIds = blocks.filter(function (block) {
-        return block && block.type === "tool_result" && block.tool_use_id;
-      }).map(function (block) { return block.tool_use_id; }).sort(function (a, b) { return a < b ? -1 : a > b ? 1 : 0; }); // key normalization needs lexicographic order; declare the semantics explicitly
-      if (resultIds.length) return "user:tool_results:" + resultIds.join("|");
-      return "user:text:" + userMessageDisplayText(blocks, hideInternalEnvelope);
-    }
-    if (message && message.role === "assistant") {
-      const toolIds = blocks.filter(function (block) {
-        return block && block.type === "tool_use" && block.id;
-      }).map(function (block) { return block.id; }).sort(function (a, b) { return a < b ? -1 : a > b ? 1 : 0; }); // key normalization needs lexicographic order; declare the semantics explicitly
-      if (toolIds.length) return "assistant:tool_uses:" + toolIds.join("|");
-      blocks = blocks.filter(function (block) { return !block || block.type !== "thinking"; });
-      try { return "assistant:" + JSON.stringify(blocks); } catch { /* on serialization failure, persist the raw text */ }
-    }
-    try { return JSON.stringify(message); } catch { return String(message); }
-  }
-
+function hydratedMessageKey(message, hideInternalEnvelope) { return pinvouSharedweb().hydratedMessageKey(message, hideInternalEnvelope); }
 function mergeHydratedMessages(durableMessages, liveMessages, hideInternalEnvelope) { return pinvouSharedweb().mergeHydratedMessages(durableMessages, liveMessages, hideInternalEnvelope); }
 
-  function mergeHydratedArtifacts(durableArtifacts, liveArtifacts) {
-    const merged = [];
-    const seen = Object.create(null);
-    [...(durableArtifacts || []), ...(liveArtifacts || [])].forEach(function (artifact) {
-      const path = typeof artifact === "string" ? artifact : (artifact && (artifact.path || artifact.storage_path)) || "";
-      const identity = basename(path);
-      if (!path || !identity) return;
-      if (seen[identity] !== undefined) {
-        // The durable transcript commonly stores a relative write_file path while
-        // artifact:disk has already supplied the absolute path. They are the same
-        // presentation object; retain the path that can actually be opened.
-        const existingIndex = seen[identity];
-        if (isAbsPath(path) && !isAbsPath(merged[existingIndex].path)) {
-          merged[existingIndex] = { path, basename: identity };
-        }
-        return;
-      }
-      seen[identity] = merged.length;
-      merged.push({ path, basename: identity });
-    });
-    return merged;
-  }
-
+function mergeHydratedArtifacts(durableArtifacts, liveArtifacts) { return pinvouSharedweb().mergeHydratedArtifacts(durableArtifacts, liveArtifacts); }
 function hydratedChatItemKey(item) { return pinvouSharedweb().hydratedChatItemKey(item); }
 
   function mergeHydratedChatItems(liveChatItems, liveCurrentStreamId) {let pinvouSharedwebN158313Cache = null;
@@ -4374,21 +4277,8 @@ function isPresentArtifactTool(name) { return pinvouSharedweb().isPresentArtifac
   // 模型常给相对路径,直接拿 args.path 渲染会让卡片 path 是相对,点 Open 报「path must be
   // absolute」,且模型可能重试再 present 一次出双卡。取不到 abs_path 才回退原始 path。
   // 兼容两种结果格式:直接 payload {abs_path} / MCP content 数组 {content:[{text}]} 包一层。
-  function parseToolResultPayload(toolResultContent) {
-    try {
-      const raw = typeof toolResultContent === "string" ? toolResultContent : JSON.stringify(toolResultContent || {});
-      const obj = JSON.parse(raw);
-      if (obj && obj.content && obj.content[0] && typeof obj.content[0].text === "string") {
-        try {
-          const inner = JSON.parse(obj.content[0].text);
-          if (inner && typeof inner === "object") return inner;
-        } catch { /* when the inner value is not JSON, use the outer object as-is */ }
-      }
-      return obj;
-    } catch {
-      return null;
-    }
-  }
+function parseToolResultPayload(toolResultContent) { return pinvouSharedweb().parseToolResultPayload(toolResultContent); }
+
 function artifactPathFromToolOutput(toolResultContent) { return pinvouSharedweb().artifactPathFromToolOutput(toolResultContent); }
 function shouldUseToolOutputAsArtifact(name) { return pinvouSharedweb().shouldUseToolOutputAsArtifact(name); }
 function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvouSharedweb().presentArtifactAbsPath(toolResultContent, fallbackPath); }

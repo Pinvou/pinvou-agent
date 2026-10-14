@@ -119,20 +119,8 @@ function pinvouSharedtauriMain() {
   // 最末级 fallback 必须自带 escapeHtml：共享脚本未加载时 renderMarkdown 仍会被
   // dangerouslySetInnerHTML 消费，原文返回即 fail-open。escapeHtml 作为安全原语保留在本文件
   // （不依赖任何外部脚本），仅 marked.parse+sanitize 这段较重的兜底被抽到共享文件。
-  function escapeHtml(s) {
-    return String(s).replaceAll(/[&<>"']/g, function (c) {
-      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
-    });
-  }
-  function renderMarkdown(text) {
-    if (window.PinvouMarkdownRenderer && typeof window.PinvouMarkdownRenderer.renderMarkdown === "function") {
-      return window.PinvouMarkdownRenderer.renderMarkdown(text);
-    }
-    if (window.PinvouMarkdownBridgeFallback && typeof window.PinvouMarkdownBridgeFallback.renderMarkdown === "function") {
-      return window.PinvouMarkdownBridgeFallback.renderMarkdown(text);
-    }
-    return escapeHtml(text || "");
-  }
+function escapeHtml(s) { return pinvouSharedtauriMain().escapeHtml(s); }
+function renderMarkdown(text) { return pinvouSharedtauriMain().renderMarkdown(text); }
 
 
   // The pet is a separate WebView and must not own a second copy of the main
