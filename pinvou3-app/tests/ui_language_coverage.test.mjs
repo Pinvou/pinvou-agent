@@ -243,6 +243,26 @@ for (const language of ['zh', 'en', 'ja']) {
   for (const deadKey of ['confirmTitle', 'impactLabels', 'startDenied', 'stages', 'terminal', 'workerCount', 'advancedEdit', 'planCompileError']) {
     assert.equal(multiAgent[deadKey], undefined, `${language}.uiMultiAgent.${deadKey} is retired and must stay deleted`);
   }
+  // Round-24 minor 9: every uiScheduledTaskTool key pinned like the
+  // uiSessionMention block — the section previously had only the
+  // directional existence check, so a zh-only key deletion stayed green
+  // (the exact drift class this coverage file exists to catch).
+  for (const key of ['listLabel', 'duplicateNote', 'created', 'updated', 'deleted', 'deletedNote', 'pending', 'promptLabel', 'mismatchNote', 'updatedName']) {
+    assert.ok(dict[language].uiScheduledTaskTool[key], `${language}.uiScheduledTaskTool.${key} must exist`);
+  }
+  for (const fnKey of ['limitSuffix', 'nameQuote']) {
+    assert.equal(typeof dict[language].uiScheduledTaskTool[fnKey], 'function', `${language}.uiScheduledTaskTool.${fnKey} must be a function`);
+  }
+  assert.equal(
+    Object.keys(dict[language].uiScheduledTaskTool).length,
+    12,
+    `${language}.uiScheduledTaskTool must hold exactly the 12 pinned keys`,
+  );
+  assert.deepEqual(
+    [...Object.keys(dict[language].uiScheduledTaskTool)].sort((a, b) => a.localeCompare(b)),
+    ['created', 'deleted', 'deletedNote', 'duplicateNote', 'limitSuffix', 'listLabel', 'mismatchNote', 'nameQuote', 'pending', 'promptLabel', 'updated', 'updatedName'],
+    `${language}.uiScheduledTaskTool must be the same key set in every locale`,
+  );
   // agentCard spawning-era keys: 'spawning' died with the inline expert card
   // (the aggregate count row only speaks in past-tense totals).
   assert.equal(multiAgent.agentCard.spawning, undefined, `${language}.uiMultiAgent.agentCard.spawning is retired and must stay deleted`);
