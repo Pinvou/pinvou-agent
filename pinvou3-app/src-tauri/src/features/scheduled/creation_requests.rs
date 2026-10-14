@@ -2072,11 +2072,9 @@ mod tests {
     // kept the whole suite green. The removal is blocked with a read-only
     // spool directory (POSIX semantics; the marker lives in `.done/`,
     // which stays writable), so the failure is deterministic.
-    #[cfg(unix)]
-    // Round-22 M1-pin (and minor 2's disposition): a creator that PANICS
-    // per call — a per-record panicking record must burn its own budget
-    // (not starve later-sorted records) and quarantine at exhaustion like
-    // any persistent failure.
+    // Round-22 M1-pin: a creator that PANICS per call — a per-record
+    // panicking record must burn its own budget (not starve later-sorted
+    // records) and quarantine at exhaustion like any persistent failure.
     struct PanickingCreator;
 
     impl TaskCreator for PanickingCreator {
@@ -2138,6 +2136,9 @@ mod tests {
         );
     }
 
+    // Round-22 M1-pin: POSIX-only (read-only directory chmod blocks the
+    // unlink deterministically; Windows has no equivalent one-liner).
+    #[cfg(unix)]
     #[tokio::test]
     async fn done_arm_keeps_the_budget_when_removal_fails() {
         let _home = TempHome::new();
