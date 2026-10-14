@@ -2293,6 +2293,9 @@ impl AppEngine {
                 system_prompt_override: false,
                 model: self.bridge.model(),
                 workspace: self.workspace.clone(),
+                // CodeWhale #54 multi-root 基建：空集经底座 normalize 后等价
+                // 单根（workspace 置于位置 0），保持既有行为。
+                workspace_roots: Vec::new(),
                 mode: AppMode::Agent,
             })
             .await?;
