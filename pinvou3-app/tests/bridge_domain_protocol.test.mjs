@@ -230,7 +230,10 @@ const expectedProtocolHashes = {
   // (delete_memory_preference invoke) was removed; deleteMemoryItem('preference', ...)
   // still routes to the same command, so the backend surface is unchanged.
   memory: '30cab38634446a7bef24d559db799641d115e0f07a22a28540a5fd48a9ff7347',
-  monitor: '01bf9a7c9b9b3f313cf49e975e6503627ff373caed0f4b3be07a6a98492a7c43',
+  // Recomputed for the lane-merge wave 1: pollMonitor (get_monitor_snapshot
+  // invoke) moved verbatim into the shared tauriMonitor/web cluster of
+  // bridge-shared-helpers.js; monitor.js keeps only pollBackendStatus.
+  monitor: 'e63e8d5d4edf813640e08c9951a12abdbc3cad4991763d3dd956e883e277fb1c',
   // Recomputed for the shared-helper dedup (see batch note above).
   personas: 'c168ac5ede23cb76ef6a93b5323ca4837b4d97395d5e5ca9c2eabf4eb40dd01f',
   // Recomputed for the voice error-code relay: web_access_rpc_respond gains
@@ -337,7 +340,9 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // Recomputed for the dead-code sweep: the zero-caller raw
 // getEffectiveModelConfig, compactNow, and auxChat.discard facades were
 // removed (loadEffectiveModelConfig / auxChatReset own those flows).
-const expectedSharedBaseHash = '61a9f632cc8ad71d41ef914ca7718d7901ccdaa7f2e7801a3eeadf204282c4a1';
+// Recomputed for the lane-merge wave 1: the monitor poll cluster
+// (get_monitor_snapshot invoke inside pollMonitor) joined the shared base.
+const expectedSharedBaseHash = 'cae340ab85c2f5da00a0acbbbaea9c58178d1620d56f32127ee9844822f5b00d';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),
