@@ -5048,3 +5048,57 @@ remaining mandatory finding. All processes are closed. Both independent final do
 No SQL/provider/dependency/protocol/application version or deployment changes.
 Full T09 remains incomplete. Download retains no total/cumulative elapsed
 deadline or retry budget.
+
+
+## T09 fourteenth batch - Debian outer required-member framing (2026-10-14)
+
+The isolated artifacts/platform/debian adapter follows the public deb(5)
+outer-format contract:
+https://manpages.debian.org/bookworm/dpkg-dev/deb.5.en.html.
+Existing complete physical AR validation runs first, including every extension.
+The first member must be debian-binary with a bounded newline-terminated ASCII
+major.minor first record; major2 is supported, minor revisions and additional
+version-record lines are ignored. Required control then data members accept the
+documented compression labels (control plain/gz/xz/zst; data additionally
+bz2/lzma). Underscore extensions before required members and arbitrary members
+after required data are retained separately. Exact selected control/data spans
+cannot be replaced by later same-name decoys. Every failure returns zero report.
+No compression/tar/control metadata, app version, architecture, publisher or
+native authenticity is verified by this observer.
+
+AR source/count limits and separate positive version-record raw-memory capacity
+are explicit. Version reads use bounded32KiB chunks with cancellation polling
+and final polling. The complete original source and selected member identities
+are retained, with no reencoding or file writes. Limits do not prescribe
+aggregate heap/preparation or production policy.
+
+Root initial synthetic grammar3 passed1.208s with real-package opt-in skipped.
+All24 control/data compression-label combinations, future minor/extra lines,
+before/between/after extensions, post-data control decoy, malformed/unsupported
+version/order/unknown required member, missing/later-corrupt physical frames,
+exact/below version capacity and nil/context/source controls passed.
+
+For actual format evidence, a public hello2.10-3 amd64 package was downloaded
+from the public Debian HTTPS repository into a private temporary fixture; it was
+only read, with no package installation or execution. Size53080 and observed
+SHA-2562e6e2f1a0007dc43bc91c273fd36e91e40a4f1c2765a03eca68b70a42103878a
+were retained independently. Real-package opt-in plus three grammar groups passed
+1.052s; physical AR regression4=1.220s passed with real-AR-tool opt-in still
+explicitly skipped. The actual-file test was then bounded before allocation
+and limited during reading; rebuilt root actual Debian4 passed1.086s.
+Root full default Go tests passed (Debian3=5.989s/AR4=6.050s/
+verification22=20.422s and all existing regressions), full vet/module verification/
+server build/pinned contracts/changed-source format/diff and client
+architecture/version/diff passed. Dependency independently passed Debian4 with
+actual existing fixture1.166s/AR4=1.116s and affected vet/format/diff; compatibility
+independently passed Debian4 with actual existing fixture1.140s/AR4=1.081s and
+affected vet/format/diff. Both only read the existing public fixture and separately
+confirmed exact size/observed SHA; real-AR-tool opt-in remains explicitly skipped.
+Both frozen scoped code/test reviews found no mandatory issue and all processes
+are closed. Both independent final documentation reviews passed before commit.
+This is actual outer-framing evidence, not repository release-signature,
+package publisher, full tar/control/native installation or Pinvou certification.
+
+No SQL/provider/dependency/protocol/application version or deployment changes.
+Existing APIs are unchanged; full T09 remains incomplete. Downloads retain no
+total/cumulative elapsed deadline or retry budget.
