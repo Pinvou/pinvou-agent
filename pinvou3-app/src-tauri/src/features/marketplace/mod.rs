@@ -536,6 +536,37 @@ fn recover_marketplace_transaction() -> Result<(), String> {
     remove_file_with_retry(&journal)
 }
 
+/// 「市场写锁 → 事务锁 → 日志恢复」前导的单一实现（原 install_inner /
+/// uninstall_leased / repair_installed_python_tools[_with_python] /
+/// reconcile_installed_mcp_entries 五处逐字重复的前导）。
+///
+/// 锁序（round-52 review M1）：先持跨进程市场写锁，再进事务锁。临界区内的
+/// release_package / 技能卸载 / 回收搬移都会重入市场写锁；若允许
+/// 「事务锁 → 市场锁」的反向获取，会与 import 路径「市场锁 → 事务锁」
+/// （plugin_import.rs 的临界区横跨 install_upload）构成 ABBA：持锁线程
+/// 等事务、事务线程等锁，两个 GUI 线程永久互等。import 路径进入这些入口
+/// 时已持锁，[`MarketplaceWriteLock::acquire`] 按持有深度同线程 join；
+/// 独立调用路径在此真实获取。字段顺序即释放顺序：事务锁先放、市场写锁
+/// 后放，与原手写局部变量的作用域反序 drop 完全一致。
+struct MarketplaceWriteTxn {
+    _market_write_lock: plugin_import::MarketplaceWriteLock,
+    _transaction_guard: std::sync::MutexGuard<'static, ()>,
+}
+
+impl MarketplaceWriteTxn {
+    fn begin() -> Result<Self, String> {
+        let _market_write_lock = plugin_import::MarketplaceWriteLock::acquire_map_err()?;
+        let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        recover_marketplace_transaction()?;
+        Ok(Self {
+            _market_write_lock,
+            _transaction_guard,
+        })
+    }
+}
+
 struct MarketplaceStateTransaction {
     snapshot: MarketplaceStateSnapshot,
     finished: bool,
@@ -1411,17 +1442,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // test seam: only install_with_python (cfg(test)) passes Some
         python_override: Option<&str>,
     ) -> Result<(), String> {
-        // 锁序（round-52 review M1）：先持跨进程市场写锁、再进事务锁。本临界区
-        // 内的 release_package / 技能卸载 / 回收搬移都会重入市场写锁；若允许
-        // 「事务锁 → 市场锁」的反向获取，会与 import 路径「市场锁 → 事务锁」
-        // （plugin_import.rs 的临界区横跨 install_upload）构成 ABBA：持锁线程
-        // 等事务、事务线程等锁，两个 GUI 线程永久互等。import 路径进入本函数
-        // 时已持锁，这里按持有深度同线程 join；独立安装路径在此真实获取。
-        let _market_write_lock = plugin_import::MarketplaceWriteLock::acquire_map_err()?;
-        let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        recover_marketplace_transaction()?;
+        let _write_txn = MarketplaceWriteTxn::begin()?;
         // A corrupt mcp.json must fail the install with the actionable refusal
         // (backup + fix-or-remove guidance, the same message every writer
         // refuses with) instead of the plaintext migration's bare parse error.
@@ -1626,15 +1647,10 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         // 同 id 并发卸载时后到者等先到者卸完再重读登记，看到的是「已回收」终态，
         // 回收失败回滚不会把先删的记录复活成幽灵 installed；顺带串行化跨 id 的
         // installed.json / mcp.json 读-改-写。
-        // 锁序（round-52 review M1/M2）：先持跨进程市场写锁再取事务锁——卸载
-        // 临界区经 companion 清理会进入技能卸载与回收搬移（两者都重入市场写
-        // 锁），且卸载自身对 bundles/<id> 的 remove_dir_all 与 installed.json
-        // 事务也属于市场写面；反向获取构成 ABBA（见 install_inner 的锁序注释）。
-        let _market_write_lock = plugin_import::MarketplaceWriteLock::acquire_map_err()?;
-        let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        recover_marketplace_transaction()?;
+        // 卸载临界区经 companion 清理会进入技能卸载与回收搬移（两者都重入市场
+        // 写锁），且卸载自身对 bundles/<id> 的 remove_dir_all 与 installed.json
+        // 事务也属于市场写面（锁序见 MarketplaceWriteTxn）。
+        let _write_txn = MarketplaceWriteTxn::begin()?;
 
         // 登记快照先读（在拆任何供给面之前）：来源判定必须先于 remove —— 先删登记
         // 再查恒为 false（三轮评审：上传包目录被误删的数据丢失 bug）。fail-closed：
@@ -2218,14 +2234,10 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// Transient failures preserve the committed registration for automatic startup retry. Only a
     /// permanently invalid trusted lock is downgraded, and every state transition is transactional.
     pub fn repair_installed_python_tools(&self) -> Result<Vec<String>, String> {
-        // 锁序（round-52 review M1）：修复/降级路径会经 recycle_package（回收
-        // 搬移）与 ensure_package_released（release_package）重入市场写锁，
-        // 先持锁再取事务锁，同 install_inner（反序构成 ABBA）。
-        let _market_write_lock = plugin_import::MarketplaceWriteLock::acquire_map_err()?;
-        let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        recover_marketplace_transaction()?;
+        // 修复/降级路径会经 recycle_package（回收搬移）与
+        // ensure_package_released（release_package）重入市场写锁
+        // （锁序见 MarketplaceWriteTxn）。
+        let _write_txn = MarketplaceWriteTxn::begin()?;
         self.repair_installed_python_tools_locked(None)
     }
 
@@ -2346,11 +2358,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
         &self,
         python_command: &str,
     ) -> Result<Vec<String>, String> {
-        let _market_write_lock = plugin_import::MarketplaceWriteLock::acquire_map_err()?;
-        let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        recover_marketplace_transaction()?;
+        let _write_txn = MarketplaceWriteTxn::begin()?;
         self.repair_installed_python_tools_locked(Some(python_command))
     }
 
@@ -2394,14 +2402,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     /// Python dependency repair so a restored entry can be upgraded to the
     /// managed-runtime form in the same startup.
     pub fn reconcile_installed_mcp_entries(&self) -> Result<Vec<String>, String> {
-        // 锁序（round-52 review M1）：回归路径经 rebuild_local_mcp_entry →
-        // ensure_package_released → release_package 重入市场写锁，先持锁再取
-        // 事务锁，同 install_inner（反序构成 ABBA）。
-        let _market_write_lock = plugin_import::MarketplaceWriteLock::acquire_map_err()?;
-        let _transaction_guard = MARKETPLACE_TRANSACTION_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        recover_marketplace_transaction()?;
+        // 回归路径经 rebuild_local_mcp_entry → ensure_package_released →
+        // release_package 重入市场写锁（锁序见 MarketplaceWriteTxn）。
+        let _write_txn = MarketplaceWriteTxn::begin()?;
         let mut actions = Vec::new();
         // An unparseable mcp.json is backed up and left untouched this boot:
         // the snapshot would read every entry as missing and the restores
