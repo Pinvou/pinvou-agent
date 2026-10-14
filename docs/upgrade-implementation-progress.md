@@ -5470,3 +5470,46 @@ No Debian LZMA dispatch, tar/control interpretation, publisher/app certification
 execution rights, Artifact admission, production storage/provider/protocol/SQL
 migration/application version/deployment change is implied. Full T09 remains
 incomplete; downloads retain no cumulative elapsed or retry limit.
+
+
+## T09 twenty-third batch: Debian LZMA data-member dispatch
+
+Debian decoded-member inspection now dispatches only data.tar.lzma to the
+previous bounded classic LZMA-alone adapter. DecodeLimits adds an explicit
+LZMADictionaryBytes field required only for that codec; old plain/gzip/bzip2
+callers retain their existing zero-value behavior. Stored and expanded capacities
+remain independent; selected original member identities remain in Report.
+Failures after earlier control success return neither report nor decoded pair.
+
+The frozen independent Python package has10588 bytes, SHA-256
+2aa4a71a063e4e826aedb0fd71f668738e41914ccdc33816ec7edbac35b743d8.
+Its data LZMA stream uses a4096-byte dictionary and155 stored bytes; control/data
+expanded10240-byte identities match the independently generated prior tar sources.
+No package was installed or executed. Inline mandatory controls exercise mixed
+plain/gzip control, exact owned bytes, expanded source/memory limits, missing or
+excessive explicit dictionary, raw tail rejection after old stored observation
+succeeds, and restoration of the original immutable package.
+
+Root Debian16 groups including five existing/new independent package opt-ins
+passed2.970s. A new actual current signed composition case wraps the same frozen
+LZMA installer with exact strong synthetic hashes. It checks original/expanded
+identities, missing dictionary refusal with zero earlier facts, and restoration.
+Synthetic Pinvou claims do not attest its native app/version/architecture/publisher.
+Root actual verification30 including all three existing/new package fixture
+opt-ins passed50.996s. Complete default Go tests passed with package parallelism2
+(Debian11 mandatory groups plus five fixture skips,1.167s; compression14 groups plus
+one skip,3.360s; verification27 groups plus three skips,16.311s). Module verification,
+whole-repository vet, server build, pinned contract bytes, changed-file formatting/
+diff and client architecture/version guards passed; all root processes closed.
+Both independent static audits passed. Dependency independent Debian16 including
+all five package opt-ins passed1.254s; verification30 including all three package
+fixture opt-ins passed15.274s. Affected vet, formatting and diff passed; all
+processes closed. Compatibility independent Debian16 including all five package
+opt-ins passed1.549s; verification30 including all three package fixture opt-ins
+passed84.945s. Affected vet, formatting and diff passed; all processes closed.
+Both independent scoped audits and final documentation reviews passed.
+
+This observes expanded byte sequences only; tar/control interpretation, native identity/publisher certification,
+XZ/Zstandard, Artifact admission and protected storage remain unfinished. No new
+dependency, SQL/protocol/application version or deployment change. Full T09 remains
+incomplete; downloads have no cumulative elapsed or retry limit.
