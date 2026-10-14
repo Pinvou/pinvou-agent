@@ -6,10 +6,10 @@
 //! thin shell over feature/platform helpers, several of which are
 //! `pub(crate)`; this module mirrors exactly those rules over the same
 //! `pinvou3_lib` paths:
-//! - list → mirror of `features::deliverables::list_deliverable_index_impl`
-//!   (crate-private): same `sessions_root()` scan, same deliverable
-//!   extension whitelist, same category mapping, same newest-mtime-wins
-//!   dedupe and ordering. Session existence uses
+//! - list → the shared `features::deliverables::deliverable_index`
+//!   (see the scan-policy contract on `deliverable_index` below; the GUI
+//!   command's `list_deliverable_index_impl` is a thin shell over the same
+//!   implementation). Session existence uses
 //!   `pinvou3_lib::features::sessions::SessionStore`.
 //! - read/write → the GUI `write_artifact_text` rules (canonical path must
 //!   stay inside `sessions_root()/<session-id>/{artifacts,workspace}`,
