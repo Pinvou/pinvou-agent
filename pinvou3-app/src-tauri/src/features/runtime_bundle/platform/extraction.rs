@@ -1750,46 +1750,35 @@ mod tests {
     #[test]
     fn write_mcp_servers_never_releases_over_upload_records() {
         use crate::features::marketplace::store::{BundleRecord, BundleSource};
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let tmp = std::env::temp_dir().join(format!(
-            "pinvou3-g1-wiring-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        let bundle = super::Pinvou3Bundle::paths();
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-write_mcp_servers_never_releases_over_upload_records",
+            || {
+                let bundle = super::Pinvou3Bundle::paths();
 
-        // Installed Upload record colliding with the embedded spec id "weather".
-        crate::features::marketplace::store::BundleStore::new()
-            .upsert(BundleRecord::installed_now(
-                "weather".to_string(),
-                BundleSource::Upload("weather.zip".to_string()),
-            ))
-            .unwrap();
-        // User content in the package dir — must survive write_mcp_servers.
-        let pkg_mcp = crate::platform::paths::bundles_root()
-            .join("weather")
-            .join("mcp");
-        std::fs::create_dir_all(&pkg_mcp).unwrap();
-        std::fs::write(pkg_mcp.join("server.py"), "USER CODE").unwrap();
-        std::fs::write(pkg_mcp.join("manifest.json"), "{}").unwrap();
+                // Installed Upload record colliding with the embedded spec id "weather".
+                crate::features::marketplace::store::BundleStore::new()
+                    .upsert(BundleRecord::installed_now(
+                        "weather".to_string(),
+                        BundleSource::Upload("weather.zip".to_string()),
+                    ))
+                    .unwrap();
+                // User content in the package dir — must survive write_mcp_servers.
+                let pkg_mcp = crate::platform::paths::bundles_root()
+                    .join("weather")
+                    .join("mcp");
+                std::fs::create_dir_all(&pkg_mcp).unwrap();
+                std::fs::write(pkg_mcp.join("server.py"), "USER CODE").unwrap();
+                std::fs::write(pkg_mcp.join("manifest.json"), "{}").unwrap();
 
-        bundle.write_mcp_servers(false).unwrap();
+                bundle.write_mcp_servers(false).unwrap();
 
-        assert_eq!(
-            std::fs::read_to_string(pkg_mcp.join("server.py")).unwrap(),
-            "USER CODE",
-            "上传包目录不得被内嵌重释放覆盖"
+                assert_eq!(
+                    std::fs::read_to_string(pkg_mcp.join("server.py")).unwrap(),
+                    "USER CODE",
+                    "上传包目录不得被内嵌重释放覆盖"
+                );
+            },
         );
-
-        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
-        unsafe { std::env::remove_var("PINVOU3_HOME") };
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// ADR-0024 per-aux scoped config (B2/B3): exactly one server entry —
@@ -2146,86 +2135,76 @@ mod tests {
     /// this test red.
     #[test]
     fn startup_maintenance_restores_missing_entry_before_python_repair() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        // Restores the host's PINVOU3_HOME (present or absent) on drop, panic paths included.
-        let _env = crate::platform::paths::tests::EnvVarGuard::capture(&["PINVOU3_HOME"]);
-        let tmp = std::env::temp_dir().join(format!(
-            "pinvou3-mcp-maintenance-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-startup_maintenance_restores_missing_entry_before_python_repair",
+            || {
+                // Seed one installed local tool (disk manifest, absolute existing command)
+                // whose mcp.json entry is missing entirely.
+                let marketplace_dir = crate::platform::paths::pinvou3_home().join("marketplace");
+                std::fs::create_dir_all(&marketplace_dir).unwrap();
+                std::fs::write(marketplace_dir.join("installed.json"), r#"["maint-x"]"#).unwrap();
+                let manifest = serde_json::json!({
+                    "id":"maint-x","name":"MaintX","description":"d","version":"1","icon":"x","category":"c",
+                    "mcp_tools":[],"command":std::env::current_exe().unwrap().to_string_lossy(),"args":[]
+                });
+                std::fs::create_dir_all(
+                    crate::features::marketplace::mcp_catalog::package_mcp_dir("maint-x"),
+                )
+                .unwrap();
+                std::fs::write(
+                    crate::features::marketplace::mcp_catalog::package_mcp_dir("maint-x")
+                        .join("manifest.json"),
+                    serde_json::to_string_pretty(&manifest).unwrap(),
+                )
+                .unwrap();
 
-        // Seed one installed local tool (disk manifest, absolute existing command)
-        // whose mcp.json entry is missing entirely.
-        let marketplace_dir = crate::platform::paths::pinvou3_home().join("marketplace");
-        std::fs::create_dir_all(&marketplace_dir).unwrap();
-        std::fs::write(marketplace_dir.join("installed.json"), r#"["maint-x"]"#).unwrap();
-        let manifest = serde_json::json!({
-            "id":"maint-x","name":"MaintX","description":"d","version":"1","icon":"x","category":"c",
-            "mcp_tools":[],"command":std::env::current_exe().unwrap().to_string_lossy(),"args":[]
-        });
-        std::fs::create_dir_all(crate::features::marketplace::mcp_catalog::package_mcp_dir(
-            "maint-x",
-        ))
-        .unwrap();
-        std::fs::write(
-            crate::features::marketplace::mcp_catalog::package_mcp_dir("maint-x")
-                .join("manifest.json"),
-            serde_json::to_string_pretty(&manifest).unwrap(),
-        )
-        .unwrap();
-
-        let manager = crate::features::marketplace::MarketplaceManager::with_store(
-            crate::platform::credential_store::MemoryCredentialStore::default(),
-        );
-        let bundle = super::Pinvou3Bundle::paths();
-        assert!(!bundle.mcp_json.exists(), "precondition: no mcp.json yet");
-
-        let entry_seen_at_repair = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let repair_probe = entry_seen_at_repair.clone();
-        let mcp_json = bundle.mcp_json.clone();
-        let actions = bundle
-            .run_mcp_startup_maintenance(&manager, move |_manager| {
-                repair_probe.store(
-                    std::fs::read_to_string(&mcp_json)
-                        .map(|content| content.contains("maint-x"))
-                        .unwrap_or(false),
-                    std::sync::atomic::Ordering::SeqCst,
+                let manager = crate::features::marketplace::MarketplaceManager::with_store(
+                    crate::platform::credential_store::MemoryCredentialStore::default(),
                 );
-                Ok(Vec::new())
-            })
-            .unwrap();
+                let bundle = super::Pinvou3Bundle::paths();
+                assert!(!bundle.mcp_json.exists(), "precondition: no mcp.json yet");
 
-        assert!(
-            actions
-                .iter()
-                .any(|action| action.contains("restored missing mcp.json entry")),
-            "the reconcile call inside startup maintenance must restore the entry: {actions:?}"
-        );
-        assert!(
-            entry_seen_at_repair.load(std::sync::atomic::Ordering::SeqCst),
-            "the reconcile must run before the python repair sees mcp.json"
-        );
-        let mcp: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap()).unwrap();
-        assert_eq!(
-            mcp["servers"]["maint-x"]["command"],
-            serde_json::Value::String(
-                std::env::current_exe()
-                    .unwrap()
-                    .to_string_lossy()
-                    .into_owned()
-            ),
-            "the missing entry must be restored by the end of startup maintenance"
-        );
+                let entry_seen_at_repair =
+                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let repair_probe = entry_seen_at_repair.clone();
+                let mcp_json = bundle.mcp_json.clone();
+                let actions = bundle
+                    .run_mcp_startup_maintenance(&manager, move |_manager| {
+                        repair_probe.store(
+                            std::fs::read_to_string(&mcp_json)
+                                .map(|content| content.contains("maint-x"))
+                                .unwrap_or(false),
+                            std::sync::atomic::Ordering::SeqCst,
+                        );
+                        Ok(Vec::new())
+                    })
+                    .unwrap();
 
-        let _ = std::fs::remove_dir_all(&tmp);
+                assert!(
+                    actions
+                        .iter()
+                        .any(|action| action.contains("restored missing mcp.json entry")),
+                    "the reconcile call inside startup maintenance must restore the entry: {actions:?}"
+                );
+                assert!(
+                    entry_seen_at_repair.load(std::sync::atomic::Ordering::SeqCst),
+                    "the reconcile must run before the python repair sees mcp.json"
+                );
+                let mcp: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap())
+                        .unwrap();
+                assert_eq!(
+                    mcp["servers"]["maint-x"]["command"],
+                    serde_json::Value::String(
+                        std::env::current_exe()
+                            .unwrap()
+                            .to_string_lossy()
+                            .into_owned()
+                    ),
+                    "the missing entry must be restored by the end of startup maintenance"
+                );
+            },
+        );
     }
 
     /// The corrupt-file contract must hold across the WHOLE startup maintenance
@@ -2237,102 +2216,93 @@ mod tests {
     /// the upsert.
     #[test]
     fn startup_maintenance_preserves_corrupt_mcp_json_bytes() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let _env = crate::platform::paths::tests::EnvVarGuard::capture(&["PINVOU3_HOME"]);
-        let tmp = std::env::temp_dir().join(format!(
-            "pinvou3-mcp-corrupt-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-
-        let manager = crate::features::marketplace::MarketplaceManager::with_store(
-            crate::platform::credential_store::MemoryCredentialStore::default(),
-        );
-        let bundle = super::Pinvou3Bundle::paths();
-        std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
-        // Corrupt by truncation: two hand-added custom entries, no closing brace.
-        let corrupt = r#"{
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-startup_maintenance_preserves_corrupt_mcp_json_bytes",
+            || {
+                let manager = crate::features::marketplace::MarketplaceManager::with_store(
+                    crate::platform::credential_store::MemoryCredentialStore::default(),
+                );
+                let bundle = super::Pinvou3Bundle::paths();
+                std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
+                // Corrupt by truncation: two hand-added custom entries, no closing brace.
+                let corrupt = r#"{
   "servers": {
     "my-custom-tool": {"command": "/usr/local/bin/my-tool", "args": ["--serve"]},
     "another-custom": {"command": "echo", "args": ["hi"]}"#;
-        std::fs::write(&bundle.mcp_json, corrupt).unwrap();
+                std::fs::write(&bundle.mcp_json, corrupt).unwrap();
 
-        let run = || bundle.run_mcp_startup_maintenance(&manager, |_manager| Ok(Vec::new()));
-        let actions = run().unwrap();
+                let run =
+                    || bundle.run_mcp_startup_maintenance(&manager, |_manager| Ok(Vec::new()));
+                let actions = run().unwrap();
 
-        assert!(
-            actions
-                .iter()
-                .any(|action| action.contains("unparseable") && action.contains("backed up")),
-            "the reconcile must report the skipped boot: {actions:?}"
-        );
-        assert_eq!(
-            std::fs::read(&bundle.mcp_json).unwrap(),
-            corrupt.as_bytes(),
-            "the corrupt file must stay byte-identical through the whole maintenance chain"
-        );
-        let backups: Vec<_> = std::fs::read_dir(bundle.mcp_json.parent().unwrap())
-            .unwrap()
-            .flatten()
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("mcp.json.corrupt.")
-            })
-            .collect();
-        assert_eq!(backups.len(), 1, "exactly one backup must exist");
-        assert_eq!(
-            std::fs::read(backups[0].path()).unwrap(),
-            corrupt.as_bytes(),
-            "the backup must hold the original bytes"
-        );
+                assert!(
+                    actions.iter().any(
+                        |action| action.contains("unparseable") && action.contains("backed up")
+                    ),
+                    "the reconcile must report the skipped boot: {actions:?}"
+                );
+                assert_eq!(
+                    std::fs::read(&bundle.mcp_json).unwrap(),
+                    corrupt.as_bytes(),
+                    "the corrupt file must stay byte-identical through the whole maintenance chain"
+                );
+                let backups: Vec<_> = std::fs::read_dir(bundle.mcp_json.parent().unwrap())
+                    .unwrap()
+                    .flatten()
+                    .filter(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with("mcp.json.corrupt.")
+                    })
+                    .collect();
+                assert_eq!(backups.len(), 1, "exactly one backup must exist");
+                assert_eq!(
+                    std::fs::read(backups[0].path()).unwrap(),
+                    corrupt.as_bytes(),
+                    "the backup must hold the original bytes"
+                );
 
-        // A persistent parse failure repeats the boot: no second backup, no rewrite.
-        let actions = run().unwrap();
-        assert!(actions.iter().any(|action| action.contains("unparseable")));
-        assert_eq!(std::fs::read(&bundle.mcp_json).unwrap(), corrupt.as_bytes());
-        let backups: Vec<_> = std::fs::read_dir(bundle.mcp_json.parent().unwrap())
-            .unwrap()
-            .flatten()
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("mcp.json.corrupt.")
-            })
-            .collect();
-        assert_eq!(
-            backups.len(),
-            1,
-            "an identical corrupt file must not mint a second backup"
-        );
+                // A persistent parse failure repeats the boot: no second backup, no rewrite.
+                let actions = run().unwrap();
+                assert!(actions.iter().any(|action| action.contains("unparseable")));
+                assert_eq!(std::fs::read(&bundle.mcp_json).unwrap(), corrupt.as_bytes());
+                let backups: Vec<_> = std::fs::read_dir(bundle.mcp_json.parent().unwrap())
+                    .unwrap()
+                    .flatten()
+                    .filter(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with("mcp.json.corrupt.")
+                    })
+                    .collect();
+                assert_eq!(
+                    backups.len(),
+                    1,
+                    "an identical corrupt file must not mint a second backup"
+                );
 
-        // Once the user repairs the file, the builtin upsert works again.
-        std::fs::write(
-            &bundle.mcp_json,
-            r#"{"servers":{"my-custom-tool":{"command":"node","args":["/opt/t/run.js"]}}}"#,
-        )
-        .unwrap();
-        run().unwrap();
-        let mcp: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap()).unwrap();
-        assert!(
-            mcp["servers"].get("pinvou3").is_some(),
-            "a repaired file gets the builtin upsert again: {mcp}"
+                // Once the user repairs the file, the builtin upsert works again.
+                std::fs::write(
+                    &bundle.mcp_json,
+                    r#"{"servers":{"my-custom-tool":{"command":"node","args":["/opt/t/run.js"]}}}"#,
+                )
+                .unwrap();
+                run().unwrap();
+                let mcp: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&bundle.mcp_json).unwrap())
+                        .unwrap();
+                assert!(
+                    mcp["servers"].get("pinvou3").is_some(),
+                    "a repaired file gets the builtin upsert again: {mcp}"
+                );
+                assert!(
+                    mcp["servers"].get("my-custom-tool").is_some(),
+                    "the upsert must keep the user's entries"
+                );
+            },
         );
-        assert!(
-            mcp["servers"].get("my-custom-tool").is_some(),
-            "the upsert must keep the user's entries"
-        );
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// Boot wiring smoke (review round-4 minor 7): the boot chain must seed
@@ -2340,72 +2310,61 @@ mod tests {
     /// file — deleting either wiring line at the call site turns this red.
     #[test]
     fn ensure_extracted_seeds_default_builtin_and_replays_feature_state() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let _env = crate::platform::paths::tests::EnvVarGuard::capture(&["PINVOU3_HOME"]);
-        let tmp = std::env::temp_dir().join(format!(
-            "pinvou3-boot-seed-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-ensure_extracted_seeds_default_builtin_and_replays_feature_state",
+            || {
+                // Seed the bundle VERSION so the boot skips re-extraction and returns
+                // right after the maintenance block (the code path every normal boot
+                // with an unchanged bundle takes) — where the default-install seed and
+                // the feature-state replay live.
+                std::fs::create_dir_all(
+                    super::paths::bundle_version_file()
+                        .parent()
+                        .expect("bundle version file parent"),
+                )
+                .unwrap();
+                std::fs::write(super::paths::bundle_version_file(), super::BUNDLE_VERSION).unwrap();
 
-        // Seed the bundle VERSION so the boot skips re-extraction and returns
-        // right after the maintenance block (the code path every normal boot
-        // with an unchanged bundle takes) — where the default-install seed and
-        // the feature-state replay live.
-        std::fs::create_dir_all(
-            super::paths::bundle_version_file()
-                .parent()
-                .expect("bundle version file parent"),
-        )
-        .unwrap();
-        std::fs::write(super::paths::bundle_version_file(), super::BUNDLE_VERSION).unwrap();
+                let bundle = super::Pinvou3Bundle::paths();
+                std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
+                let manager = crate::features::marketplace::MarketplaceManager::with_store(
+                    crate::platform::credential_store::MemoryCredentialStore::default(),
+                );
+                bundle
+                    .ensure_extracted_with_marketplace(&manager, |_manager| Ok(Vec::new()))
+                    .unwrap();
+                // Seed: the default-installed builtin has a store record.
+                let store: serde_json::Value = serde_json::from_str(
+                    &std::fs::read_to_string(
+                        crate::platform::paths::pinvou3_home()
+                            .join("marketplace")
+                            .join("bundles.json"),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+                let ids: Vec<&str> = store["records"]
+                    .as_array()
+                    .expect("bundles.json records")
+                    .iter()
+                    .filter(|r| r["installed"] == true)
+                    .filter_map(|r| r["id"].as_str())
+                    .collect();
+                assert!(
+                    ids.contains(&"session-reader"),
+                    "the boot seed must register the default-installed builtin: {ids:?}"
+                );
 
-        let bundle = super::Pinvou3Bundle::paths();
-        std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
-        let manager = crate::features::marketplace::MarketplaceManager::with_store(
-            crate::platform::credential_store::MemoryCredentialStore::default(),
+                // Replay: the feature-switch state file exists after boot.
+                assert!(
+                    crate::platform::paths::pinvou3_home()
+                        .join("marketplace")
+                        .join("builtin_features.json")
+                        .is_file(),
+                    "the boot replay must write the feature-switch state file"
+                );
+            },
         );
-        bundle
-            .ensure_extracted_with_marketplace(&manager, |_manager| Ok(Vec::new()))
-            .unwrap();
-        // Seed: the default-installed builtin has a store record.
-        let store: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(
-                crate::platform::paths::pinvou3_home()
-                    .join("marketplace")
-                    .join("bundles.json"),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let ids: Vec<&str> = store["records"]
-            .as_array()
-            .expect("bundles.json records")
-            .iter()
-            .filter(|r| r["installed"] == true)
-            .filter_map(|r| r["id"].as_str())
-            .collect();
-        assert!(
-            ids.contains(&"session-reader"),
-            "the boot seed must register the default-installed builtin: {ids:?}"
-        );
-
-        // Replay: the feature-switch state file exists after boot.
-        assert!(
-            crate::platform::paths::pinvou3_home()
-                .join("marketplace")
-                .join("builtin_features.json")
-                .is_file(),
-            "the boot replay must write the feature-switch state file"
-        );
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// The preservation contract must hold through the REAL boot chain, not
@@ -2418,81 +2377,70 @@ mod tests {
     /// the whole chain, and the engine builtin keys stay untouched.
     #[test]
     fn ensure_extracted_preserves_corrupt_mcp_json_bytes() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let _env = crate::platform::paths::tests::EnvVarGuard::capture(&["PINVOU3_HOME"]);
-        let tmp = std::env::temp_dir().join(format!(
-            "pinvou3-boot-corrupt-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-ensure_extracted_preserves_corrupt_mcp_json_bytes",
+            || {
+                // A retired preset tool still present in the registry: the cleanup's
+                // uninstall path runs against the corrupt file (probe returns true).
+                let marketplace_dir = crate::platform::paths::pinvou3_home().join("marketplace");
+                std::fs::create_dir_all(&marketplace_dir).unwrap();
+                std::fs::write(
+                    marketplace_dir.join("installed.json"),
+                    r#"["data_analysis"]"#,
+                )
+                .unwrap();
 
-        // A retired preset tool still present in the registry: the cleanup's
-        // uninstall path runs against the corrupt file (probe returns true).
-        let marketplace_dir = crate::platform::paths::pinvou3_home().join("marketplace");
-        std::fs::create_dir_all(&marketplace_dir).unwrap();
-        std::fs::write(
-            marketplace_dir.join("installed.json"),
-            r#"["data_analysis"]"#,
-        )
-        .unwrap();
-
-        let bundle = super::Pinvou3Bundle::paths();
-        std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
-        let corrupt = r#"{
+                let bundle = super::Pinvou3Bundle::paths();
+                std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
+                let corrupt = r#"{
   "servers": {
     "my-custom-tool": {"command": "/usr/local/bin/my-tool", "args": ["--serve"], "enabled": false}
   }"#;
-        std::fs::write(&bundle.mcp_json, corrupt).unwrap();
-        // Seed the bundle VERSION so the boot skips re-extraction and returns
-        // right after the maintenance block (the code path every normal boot
-        // with an unchanged bundle takes).
-        std::fs::write(super::paths::bundle_version_file(), super::BUNDLE_VERSION).unwrap();
+                std::fs::write(&bundle.mcp_json, corrupt).unwrap();
+                // Seed the bundle VERSION so the boot skips re-extraction and returns
+                // right after the maintenance block (the code path every normal boot
+                // with an unchanged bundle takes).
+                std::fs::write(super::paths::bundle_version_file(), super::BUNDLE_VERSION).unwrap();
 
-        let manager = crate::features::marketplace::MarketplaceManager::with_store(
-            crate::platform::credential_store::MemoryCredentialStore::default(),
-        );
-        bundle
-            .ensure_extracted_with_marketplace(&manager, |_manager| Ok(Vec::new()))
-            .unwrap();
+                let manager = crate::features::marketplace::MarketplaceManager::with_store(
+                    crate::platform::credential_store::MemoryCredentialStore::default(),
+                );
+                bundle
+                    .ensure_extracted_with_marketplace(&manager, |_manager| Ok(Vec::new()))
+                    .unwrap();
 
-        assert_eq!(
-            std::fs::read(&bundle.mcp_json).unwrap(),
-            corrupt.as_bytes(),
-            "the corrupt file must stay byte-identical through the real boot chain"
+                assert_eq!(
+                    std::fs::read(&bundle.mcp_json).unwrap(),
+                    corrupt.as_bytes(),
+                    "the corrupt file must stay byte-identical through the real boot chain"
+                );
+                let backups: Vec<_> = std::fs::read_dir(bundle.mcp_json.parent().unwrap())
+                    .unwrap()
+                    .flatten()
+                    .filter(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with("mcp.json.corrupt.")
+                    })
+                    .collect();
+                assert_eq!(backups.len(), 1, "exactly one backup must exist");
+                assert_eq!(
+                    std::fs::read(backups[0].path()).unwrap(),
+                    corrupt.as_bytes(),
+                    "the backup must hold the original bytes"
+                );
+                let installed: serde_json::Value = serde_json::from_str(
+                    &std::fs::read_to_string(marketplace_dir.join("installed.json")).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    installed,
+                    serde_json::json!(["data_analysis"]),
+                    "the rolled-back uninstall must leave the registry unchanged"
+                );
+            },
         );
-        let backups: Vec<_> = std::fs::read_dir(bundle.mcp_json.parent().unwrap())
-            .unwrap()
-            .flatten()
-            .filter(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("mcp.json.corrupt.")
-            })
-            .collect();
-        assert_eq!(backups.len(), 1, "exactly one backup must exist");
-        assert_eq!(
-            std::fs::read(backups[0].path()).unwrap(),
-            corrupt.as_bytes(),
-            "the backup must hold the original bytes"
-        );
-        let installed: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(marketplace_dir.join("installed.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            installed,
-            serde_json::json!(["data_analysis"]),
-            "the rolled-back uninstall must leave the registry unchanged"
-        );
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// #522 回归:禁用/隐藏残留可能只存在于 scope 收敛后的单一 disabled_bundles.json
@@ -2860,49 +2808,39 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn cleanup_removed_marketplace_skills_preserves_dir_when_marker_read_refused() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let _env = crate::platform::paths::tests::EnvVarGuard::capture(&["PINVOU3_HOME"]);
-        let tmp = std::env::temp_dir().join(format!(
-            "pinvou3-cleanup-refused-marker-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
-        let bundle = super::Pinvou3Bundle::paths();
-        std::fs::create_dir_all(&bundle.skills_dir).unwrap();
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-bundle-cleanup_removed_marketplace_skills_preserves_dir_when_marker_read_refused",
+            || {
+                let bundle = super::Pinvou3Bundle::paths();
+                std::fs::create_dir_all(&bundle.skills_dir).unwrap();
 
-        // Symlink 腿：marker 指向别处的 upload: 记录，目录内有用户内容。
-        let uploaded = bundle.skills_dir.join("brainstorming");
-        std::fs::create_dir_all(&uploaded).unwrap();
-        std::fs::write(uploaded.join("SKILL.md"), "# user-uploaded skill\n").unwrap();
-        let victim = tmp.join("elsewhere-marker.txt");
-        std::fs::write(&victim, "upload:my.zip").unwrap();
-        std::os::unix::fs::symlink(&victim, uploaded.join(".installed-from")).unwrap();
+                // Symlink 腿：marker 指向别处的 upload: 记录，目录内有用户内容。
+                let uploaded = bundle.skills_dir.join("brainstorming");
+                std::fs::create_dir_all(&uploaded).unwrap();
+                std::fs::write(uploaded.join("SKILL.md"), "# user-uploaded skill\n").unwrap();
+                let victim = crate::platform::paths::pinvou3_home().join("elsewhere-marker.txt");
+                std::fs::write(&victim, "upload:my.zip").unwrap();
+                std::os::unix::fs::symlink(&victim, uploaded.join(".installed-from")).unwrap();
 
-        // FIFO 腿：非 regular 标记同样必须保留目录（硬化读无阻塞拒绝，不会挂起）。
-        let fua = bundle.skills_dir.join("pua");
-        std::fs::create_dir_all(&fua).unwrap();
-        std::fs::write(fua.join("SKILL.md"), "# user content\n").unwrap();
-        crate::platform::paths::tests::plant_fifo(&fua.join(".installed-from"));
+                // FIFO 腿：非 regular 标记同样必须保留目录（硬化读无阻塞拒绝，不会挂起）。
+                let fua = bundle.skills_dir.join("pua");
+                std::fs::create_dir_all(&fua).unwrap();
+                std::fs::write(fua.join("SKILL.md"), "# user content\n").unwrap();
+                crate::platform::paths::tests::plant_fifo(&fua.join(".installed-from"));
 
-        bundle.cleanup_removed_marketplace_skills().unwrap();
+                bundle.cleanup_removed_marketplace_skills().unwrap();
 
-        assert!(
-            uploaded.exists(),
-            "marker 读取被拒时必须保留目录，不得误删用户内容"
+                assert!(
+                    uploaded.exists(),
+                    "marker 读取被拒时必须保留目录，不得误删用户内容"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(uploaded.join("SKILL.md")).unwrap(),
+                    "# user-uploaded skill\n",
+                    "保留的目录内容必须原样"
+                );
+                assert!(fua.exists(), "FIFO 标记同样必须保留目录");
+            },
         );
-        assert_eq!(
-            std::fs::read_to_string(uploaded.join("SKILL.md")).unwrap(),
-            "# user-uploaded skill\n",
-            "保留的目录内容必须原样"
-        );
-        assert!(fua.exists(), "FIFO 标记同样必须保留目录");
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

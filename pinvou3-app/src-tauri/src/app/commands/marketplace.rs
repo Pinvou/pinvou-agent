@@ -1416,7 +1416,7 @@ pub struct BundleReadinessResult {
     pub ready: bool,
     /// Action dispatch (§3.1): the action set is derived server-side from the
     /// current state. serde default keeps the contract purely additive; the
-    /// frontend switch to the action renderer lands in a later PR.
+    /// frontend action renderer consumes this (ToolStoreView `actionsOf`).
     #[serde(default)]
     pub actions: Vec<crate::features::marketplace::actions::BundleAction>,
     /// 包功能事实全量（§3.1：description/version/category/config_fields 等，
@@ -1601,13 +1601,6 @@ mod tests {
     use super::*;
     use crate::platform::test_support::write_test_zip;
 
-    /// Temp-home harness for the DenyAll transaction-boundary regressions:
-    /// serializes on ENV_LOCK like the other PINVOU3_HOME mutators.
-    fn with_temp_home<F: FnOnce()>(f: F) {
-        // Delegates to the shared RAII helper (see its doc for the unwind-restore rationale).
-        crate::platform::test_support::with_temp_home("pinvou3-gate-rb", f);
-    }
-
     /// The OAuth status read must refuse a planted
     /// mcp.json FIFO through the hardened private-data read instead of
     /// blocking `open()` forever (the async status command would pin a Tokio
@@ -1617,7 +1610,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn oauth_status_read_refuses_a_planted_fifo_without_hanging() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-gate-rb", || {
             let mcp_path = crate::platform::paths::mcp_config_path();
             std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
             crate::platform::paths::tests::plant_fifo(&mcp_path);
@@ -1644,7 +1637,7 @@ mod tests {
     /// the seed id must survive both strips.
     #[test]
     fn uninstall_upload_recycle_strips_owner_and_companion_entries_in_lock() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-gate-rb", || {
             // Combo on disk + Upload record + Upload install record (the
             // shared upload-combo fixture).
             seed_upload_combo("up-lock", "up-lock-skill");
@@ -1746,7 +1739,7 @@ mod tests {
     /// pattern) and the persisted deny state must not gain the skill.
     #[test]
     fn install_skill_refused_before_landing_when_deny_sync_fails() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-gate-rb", || {
             init_code_scope_then_break_lock();
 
             let error = install_marketplace_skill_sync("pptx").unwrap_err();
@@ -1786,7 +1779,7 @@ mod tests {
     /// both on success and (with no recovery path) on any post-gate failure.
     #[test]
     fn reinstall_preset_skill_preserves_consent_state() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-gate-rb", || {
             let skills =
                 crate::features::marketplace::skill_marketplace::SkillMarketplaceManager::new();
             skills
@@ -1831,7 +1824,7 @@ mod tests {
     /// refused.
     #[test]
     fn install_tool_sync_refused_before_anything_lands() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-gate-rb", || {
             init_code_scope_then_break_lock();
 
             let error = install_marketplace_tool_sync("weather", &Default::default()).unwrap_err();
@@ -1868,7 +1861,7 @@ mod tests {
     /// gone the id self-maps and the gate registers deny-first.
     #[test]
     fn install_gates_refuse_companion_claimed_ids() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-gate-rb", || {
             let manifest_dir = crate::platform::paths::bundles_root().join("evil/mcp");
             std::fs::create_dir_all(&manifest_dir).unwrap();
             std::fs::write(
@@ -1935,7 +1928,7 @@ mod tests {
     /// catalog's own, and the persisted consent state is untouched.
     #[test]
     fn install_unknown_ids_write_no_consent_state() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-gate-rb", || {
             init_code_scope_then_break_lock();
 
             let tool_error =
@@ -1983,7 +1976,7 @@ mod tests {
     /// staging step would stay green.
     #[test]
     fn import_fresh_refused_before_landing() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-gate-rb", || {
             init_code_scope_then_break_lock();
 
             let plugin_json = r#"{"manifest_version":1,"id":"gate-fresh-plugin","name":"p","components":{"skills":[{"id":"gate-fresh-skill","dir":"skills/gate-fresh-skill"}]}}"#;
@@ -2027,7 +2020,7 @@ mod tests {
     /// names, and every component name against both vocabularies.
     #[test]
     fn import_rejects_preset_market_id_collisions() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-gate-rb", || {
             let build_zip = |id: &str, skill_id: &str| {
                 let skill_entry = format!("skills/{skill_id}/SKILL.md");
                 write_test_zip(
@@ -2092,7 +2085,7 @@ mod tests {
     /// re-import round-trip contract.
     #[test]
     fn import_rejects_owner_claimed_package_ids() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-gate-rb", || {
             // Seed the gongwen claimant directly as an installed store record
             // instead of running the real preset install: the fold
             // (`skill_owner_package` → `bundle_installed`) consults the
@@ -2165,7 +2158,7 @@ mod tests {
     /// builtin connector id list.
     #[test]
     fn import_rejects_case_variant_connector_ids() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-gate-rb", || {
             init_code_scope();
 
             let manifest = r#"{"id":"Dingtalk","name":"Dingtalk Plus","description":"d","version":"1.0.0","icon":"","category":"office","mcp_tools":["send_message"],"command":"python","args":["server.py"]}"#;
@@ -2209,7 +2202,7 @@ mod tests {
     /// claimed component via read-time normalization.
     #[test]
     fn import_registers_standalone_components_deny_first() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-gate-rb", || {
             // Initialize the code scope so the DenyAll gate has somewhere to
             // write; the seed id keeps the assertion discriminating.
             init_code_scope();
@@ -2297,7 +2290,7 @@ mod tests {
     /// fallback): any landing changes it, any refusal leaves it untouched.
     #[test]
     fn import_skill_md_refused_before_landing() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-gate-rb", || {
             init_code_scope_then_break_lock();
 
             let bundles_root = crate::platform::paths::bundles_root();
@@ -2351,7 +2344,7 @@ mod tests {
     /// conflicting write) and risks clobbering the user's real key.
     #[test]
     fn existing_tool_reinstall_preserves_consent_state() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-gate-rb", || {
             let mgr = crate::features::marketplace::MarketplaceManager::with_store(
                 crate::platform::credential_store::MemoryCredentialStore::default(),
             );
@@ -2400,7 +2393,7 @@ mod tests {
     /// its enabled state stay intact.
     #[test]
     fn reimport_conflict_preserves_consent_state() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-gate-rb", || {
             let plugin_json = r#"{"manifest_version":1,"id":"gate-rb-plugin","name":"p","components":{"skills":[{"id":"gate-rb-skill2","dir":"skills/gate-rb-skill2"}]}}"#;
             let zip_for = |skill_body: &str| {
                 write_test_zip(

@@ -460,12 +460,6 @@ mod tests {
     use super::*;
     use crate::platform::credential_store::MemoryCredentialStore;
 
-    /// Temp-home harness for the connect regressions. Delegates to the
-    /// shared RAII helper (see its doc for the unwind-restore rationale).
-    fn with_temp_home<F: FnOnce()>(f: F) {
-        crate::platform::test_support::with_temp_home("pinvou3-ima-connect", f);
-    }
-
     /// Initialize the code scope with the given deny ids while the scope lock
     /// still works (the DenyAll sync then requires a real write). Routes onto
     /// the canonical seed helper in scope.rs.
@@ -489,7 +483,7 @@ mod tests {
     /// touched or any skill content lands.
     #[test]
     fn connect_refused_sync_aborts_before_anything_lands() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-ima-connect", || {
             let store = MemoryCredentialStore::default();
 
             // Initialize the code scope (makes the DenyAll sync a required
@@ -530,7 +524,7 @@ mod tests {
     /// it disabled with no recovery path.
     #[test]
     fn ima_reconnect_of_installed_skill_preserves_consent_state() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-ima-connect", || {
             let store = MemoryCredentialStore::default();
             store.set(&client_id_ref(), "client-v1").unwrap();
             store.set(&api_key_ref(), "key-v1").unwrap();
@@ -648,7 +642,7 @@ mod tests {
     /// reachable without touching the real system credential vault.
     #[test]
     fn ima_logout_vacuous_and_failed_uninstall_keeps_deny_entries() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-ima-connect", || {
             // Phase 1: vacuous uninstall.
             init_code_scope(&[IMA_SKILL_ID]);
 
@@ -691,7 +685,7 @@ mod tests {
     /// the credentials round-trip.
     #[test]
     fn fresh_connect_lands_deny_entry_and_credentials() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-ima-connect", || {
             init_code_scope(&["seed-bundle"]);
 
             let store = MemoryCredentialStore::default();
