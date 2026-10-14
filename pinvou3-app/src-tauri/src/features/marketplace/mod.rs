@@ -546,11 +546,14 @@ fn recover_marketplace_transaction() -> Result<(), String> {
 /// （plugin_import.rs 的临界区横跨 install_upload）构成 ABBA：持锁线程
 /// 等事务、事务线程等锁，两个 GUI 线程永久互等。import 路径进入这些入口
 /// 时已持锁，[`MarketplaceWriteLock::acquire`] 按持有深度同线程 join；
-/// 独立调用路径在此真实获取。字段顺序即释放顺序：事务锁先放、市场写锁
-/// 后放，与原手写局部变量的作用域反序 drop 完全一致。
+/// 独立调用路径在此真实获取。释放顺序与获取顺序相反：Rust 按声明顺序
+/// drop 结构体字段，故事务锁必须声明在前（先放）、市场写锁在后（后放），
+/// 与原手写局部变量的作用域反序 drop 完全一致。
 struct MarketplaceWriteTxn {
-    _market_write_lock: plugin_import::MarketplaceWriteLock,
+    /// 声明在前 = 先 drop：事务锁先于市场写锁释放（不变量见上，勿调换顺序）。
     _transaction_guard: std::sync::MutexGuard<'static, ()>,
+    /// 声明在后 = 后 drop：跨进程市场写锁最后释放。
+    _market_write_lock: plugin_import::MarketplaceWriteLock,
 }
 
 impl MarketplaceWriteTxn {
@@ -561,8 +564,8 @@ impl MarketplaceWriteTxn {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         recover_marketplace_transaction()?;
         Ok(Self {
-            _market_write_lock,
             _transaction_guard,
+            _market_write_lock,
         })
     }
 }
