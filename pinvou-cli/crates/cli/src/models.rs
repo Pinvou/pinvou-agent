@@ -2570,16 +2570,21 @@ fn probe_candidates(base_url: &str, bearer: Option<&str>) -> ProbeCandidateHits 
     })
 }
 
-/// The signature-exclusivity priority of the GUI's `select_local_server_kind`:
-/// DMR port gate > Ollama > LM Studio > KoboldCpp > llama.cpp > SGLang >
-/// LMDeploy > vLLM > generic. Pure, so the order is pinned by a test instead
-/// of by a live server.
+/// The signature-exclusivity priority of the GUI's `select_local_server_kind`
+/// (demoted-Ollama order, GUI #686): DMR port gate > LM Studio > KoboldCpp >
+/// llama.cpp > SGLang > LMDeploy > vLLM > Ollama > generic. Pure, so the
+/// order is pinned by a test instead of by a live server.
+///
+/// Ollama is deliberately LAST among the specific signatures: `/api/tags` is
+/// the weakest signature — wrapped deployments (model-store containers, DMR)
+/// expose an Ollama-compatible shim on top of the real engine, and a
+/// first-place Ollama branch would shadow every one of them (a sglang/vLLM
+/// deployment behind such a shim would be misrouted onto the ollama wire). A
+/// genuine Ollama server answers none of the stronger signatures, so the
+/// demotion does not change its classification.
 fn select_local_server_kind_from_hits(hits: &ProbeCandidateHits) -> &'static str {
     if hits.docker_mgmt_shape {
         return "dockermodelrunner";
-    }
-    if hits.ollama {
-        return "ollama";
     }
     if hits.lmstudio_v0 {
         return "lmstudio";
@@ -2600,6 +2605,9 @@ fn select_local_server_kind_from_hits(hits: &ProbeCandidateHits) -> &'static str
         if v1_models_owned_by_matches(v1_models, "vllm") {
             return "vllm";
         }
+    }
+    if hits.ollama {
+        return "ollama";
     }
     // Only reached when nothing matched. An authenticated endpoint answers
     // every signature probe with a challenge, so `generic` here would be a
@@ -4181,12 +4189,13 @@ mod tests {
     }
 
     /// Pins the signature-exclusivity priority the GUI's
-    /// `select_local_server_kind` implements. Parallelizing the candidate
-    /// probes ([`probe_candidates`]) means every candidate now runs even when
-    /// an earlier one hit, so the ORDER is the only thing left deciding the
-    /// answer — if it drifts, a host that matches two signatures silently
-    /// changes kind. Each case below sets one hit plus every LOWER-priority
-    /// hit, so it fails if the entry is demoted below any of them.
+    /// `select_local_server_kind` implements (demoted-Ollama order, GUI #686).
+    /// Parallelizing the candidate probes ([`probe_candidates`]) means every
+    /// candidate now runs even when an earlier one hit, so the ORDER is the
+    /// only thing left deciding the answer — if it drifts, a host that matches
+    /// two signatures silently changes kind. Each case below sets one hit plus
+    /// every LOWER-priority hit, so it fails if the entry is demoted below any
+    /// of them.
     #[test]
     fn local_server_kind_priority_order_is_pinned() {
         let vllm_body = || {
@@ -4216,7 +4225,7 @@ mod tests {
         );
         let cases: &[(&str, ProbeCandidateHits)] = &[
             (
-                "ollama",
+                "lmstudio",
                 ProbeCandidateHits {
                     ollama: true,
                     lmstudio_v0: true,
@@ -4228,19 +4237,9 @@ mod tests {
                 },
             ),
             (
-                "lmstudio",
-                ProbeCandidateHits {
-                    lmstudio_v0: true,
-                    koboldcpp: true,
-                    llamacpp: true,
-                    sglang: true,
-                    v1_models: vllm_body(),
-                    ..Default::default()
-                },
-            ),
-            (
                 "koboldcpp",
                 ProbeCandidateHits {
+                    ollama: true,
                     koboldcpp: true,
                     llamacpp: true,
                     sglang: true,
@@ -4251,6 +4250,7 @@ mod tests {
             (
                 "llamacpp",
                 ProbeCandidateHits {
+                    ollama: true,
                     llamacpp: true,
                     sglang: true,
                     v1_models: vllm_body(),
@@ -4260,6 +4260,7 @@ mod tests {
             (
                 "sglang",
                 ProbeCandidateHits {
+                    ollama: true,
                     sglang: true,
                     v1_models: vllm_body(),
                     ..Default::default()
@@ -4270,6 +4271,7 @@ mod tests {
             (
                 "lmdeploy",
                 ProbeCandidateHits {
+                    ollama: true,
                     v1_models: V1ModelsProbe::Body(serde_json::json!({
                         "data": [
                             { "id": "a", "owned_by": "lmdeploy" },
@@ -4282,7 +4284,18 @@ mod tests {
             (
                 "vllm",
                 ProbeCandidateHits {
+                    ollama: true,
                     v1_models: vllm_body(),
+                    ..Default::default()
+                },
+            ),
+            // Ollama is deliberately LAST among the specific signatures: the
+            // /api/tags shim of a wrapped deployment must not shadow a stronger
+            // engine, and a bare /api/tags hit only wins when it is alone.
+            (
+                "ollama",
+                ProbeCandidateHits {
+                    ollama: true,
                     ..Default::default()
                 },
             ),
@@ -4301,6 +4314,43 @@ mod tests {
                 ..Default::default()
             }),
             "lmdeploy"
+        );
+    }
+
+    /// GUI #686 parity pin: model-store containers wrap the real engine behind
+    /// an Ollama-compatible `/api/tags` shim, so a stronger signature (SGLang's
+    /// `/get_server_info`, vLLM's owned_by) must win over the shim — otherwise
+    /// the deployment is silently routed onto the ollama wire (boolean-only
+    /// wire, reasoning_content inlined into answer text). A bare `/api/tags`
+    /// hit with no stronger signature stays Ollama.
+    #[test]
+    fn local_server_kind_stronger_signatures_win_over_ollama_shim() {
+        let shimmed = || ProbeCandidateHits {
+            ollama: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            select_local_server_kind_from_hits(&ProbeCandidateHits {
+                sglang: true,
+                ..shimmed()
+            }),
+            "sglang",
+            "an /api/tags shim must not shadow the sglang /get_server_info signature"
+        );
+        assert_eq!(
+            select_local_server_kind_from_hits(&ProbeCandidateHits {
+                v1_models: V1ModelsProbe::Body(serde_json::json!({
+                    "data": [{ "id": "m", "owned_by": "vllm" }]
+                })),
+                ..shimmed()
+            }),
+            "vllm",
+            "an /api/tags shim must not shadow the vLLM owned_by signature"
+        );
+        assert_eq!(
+            select_local_server_kind_from_hits(&shimmed()),
+            "ollama",
+            "a bare /api/tags hit with no stronger signature stays Ollama"
         );
     }
 
