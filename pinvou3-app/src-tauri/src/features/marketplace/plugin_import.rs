@@ -1653,7 +1653,7 @@ pub fn import_plugin_package_gated(
     // conflict-check → rename window (lock order: import_lock → market
     // file lock → store file lock, identical at every market mutator).
     let _market_lock = MarketplaceWriteLock::acquire_map_err()?;
-    // Re-check the fold divergence under the import lock: the
+    // Re-check the fold divergence under the import and market locks: the
     // first check ran before the consent gate, and a claimant (preset skill
     // install, CLI companion, ima connect) completing in between would fold
     // this id onto the claimant — the gate registers (or skips on) the
