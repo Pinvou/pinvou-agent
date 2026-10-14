@@ -1000,7 +1000,10 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
         recorded, _err = _read_result_marker(done_marker)
         if isinstance(recorded, dict) and recorded.get("ok") is False:
             entry_marker_was_failure = True
-        elif isinstance(recorded, dict) and recorded.get("ok"):
+        elif isinstance(recorded, dict) and recorded.get("ok") is True:
+            # Round-22 M2: LITERAL true only — ok:1/"true" are forged-marker
+            # shapes; the watcher binds `== Some(true)` the same way, so both
+            # sides refuse non-literal markers together.
             # Round-8 minor 6: terminal ONLY with a digest binding — the
             # watcher's suppression gate requires request_digest, and a
             # digest-less ok:true makes this side answer duplicate while
@@ -1103,7 +1106,8 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
             from_terminal_entry = False
             marker, marker_error = _read_result_marker(done_marker)
         if marker is not None:
-            if marker.get("ok"):
+            if marker.get("ok") is True:
+                # Round-22 M2: literal true only (see the entry check).
                 # Round-9 M1: a keyed poll accepts an ok:true marker ONLY
                 # with a digest binding that matches THIS call's payload —
                 # the entry check got the rule in round-8, the poll loop
