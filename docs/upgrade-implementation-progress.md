@@ -5180,3 +5180,53 @@ certify package app/version/architecture/publisher, grant execution, admit an
 Artifact or define production storage/aggregate preparation policy. Full T09
 remains incomplete. No dependency/provider/SQL/protocol/application version or
 deployment changes. Download has no cumulative deadline or retry budget.
+
+
+## T09 seventeenth batch: bounded gzip decoding of owned bytes
+
+Added an explicit gzip platform adapter for immutable stored snapshots. It checks
+stored-source capacity, validates all concatenated members/checksums/trailers and
+complete EOF in a fixed-buffer first pass, then captures the exact expanded length
+from the same source in a second pass. Caller-supplied expanded source and memory
+capacities bound snapshot bytes; fixed decoder workspace is separate. No duplicate
+expanded buffer is accumulated, no path is reopened, and every failure returns no
+snapshot. Snapshot byte capacity is not a total heap budget. Cancellation is
+checked through bounded source reads and both passes; synchronous decoder work
+between these checks cannot be interrupted inside the SDK.
+No cumulative download deadline or retry budget is introduced.
+
+Root four groups including the independently generated Python gzip fixture
+passed1.307s. Tests cover concatenation/empty members, exact raw identity and
+owned-buffer isolation, independent capacity failures, checksum/size trailer/
+truncation/later-member/trailing corruption, cancellation and restored positive.
+An actual33 MiB expanded result passes with its explicit artifact capacity;
+business batch32 MiB is not an artifact limit. The frozen independent fixture is
+278 stored bytes (SHA-256 809c54939b6324cda731e7e9a3eff6c402e25c90b878ba46fe9720a423d48b48)
+and65580 expanded bytes (SHA-256 e64dac4b42e2d73604d318be7ca45eb0f4d0a15e2daaefba00d7fc156ff6ae28).
+The fixture was generated separately by Python, not by this Go decoder.
+Initial complete Go checks passed (default compression3 groups6.800s,
+Python opt-in skipped; verification25 groups17.407s), module verification, vet,
+server build, pinned contracts, formatting/diff and client guards passed.
+Dependency static review found that Go gzip accepts RFC1952 reserved header bits.
+A single-bit root negative reproduced the issue (FAIL0.895s). The repair keeps a
+shared ByteReader and explicitly validates each member header before a
+non-multistream SDK reader checks its body/trailer; no following header is lost
+to SDK read-ahead. Root repaired five groups including Python passed3.429s,
+with all three reserved bits refused in first/later members and lawful
+concatenation restored. Root final six groups including Python passed5.987s:
+all legal FEXTRA/FNAME/FCOMMENT/FHCRC bits stay compatible; single-variable first/
+later header CRC corruption refuses and exact lawful concatenation restores.
+Final full default Go tests passed (compression5 groups, Python opt-in skipped,
+6.627s; verification25 groups33.169s). Module verification, whole-repository vet,
+server build, pinned contracts, formatting/diff and client architecture/version
+guards passed. Dependency independent repaired six groups including Python
+passed1.950s (33 MiB .34s); affected vet, formatting and diff passed, all processes
+closed. Compatibility independent six groups passed1.685s (33 MiB .33s); final
+checks (affected vet, formatting and diff) passed; all processes closed.
+Both final documentation reviews passed.
+
+This adapter does not interpret tar/control metadata, names or scripts, certify
+app/version/architecture/publisher, provide native authentication, admit Artifacts
+or select a production preparation policy. Debian member dispatch and other codecs
+remain separate work. Full T09 remains incomplete. No dependency/provider/SQL/
+protocol/application version/deployment changes or package execution.
