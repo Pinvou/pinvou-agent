@@ -5326,3 +5326,42 @@ Artifacts. Synchronous SDK work between read polls is not internally interruptib
 snapshot byte limits are not a total heap or preparation policy. No dependencies,
 provider/SQL/protocol/application version/deployment changes. Full T09 remains
 incomplete; real application/native certification is not supplied by these vectors.
+
+
+## T09 twentieth batch: Debian bzip2 data-member decoding
+
+Extended the explicit Debian member dispatcher to data.tar.bz2, using the
+complete bounded SDK bzip2 adapter. Control decoding retains its existing plain/
+gzip paths; other recognized codecs still return unsupported. Stored and
+expanded control/data identity/capacity boundaries and every failed zero-report/
+nil-pair result remain intact; no caller-selected path or guessed encoding.
+
+Root Debian13 groups including all four actual-fixture opt-ins passed1.432s.
+New controls exercise both plain/gzip control with independent concatenated
+Python bzip2 data, later same-name decoys, owned buffer isolation, separate data
+source/memory capacities, and post-payload final file CRC failure. The corrupted
+stored sequence first passes the old byte observer; decoded data then refuses
+with exact Bzip2Invalid and neither earlier control nor framing. The same original
+supported source restores exact expanded identity.
+
+An independent Python USTAR/AR package with plain control and bzip2 data is only
+read, never installed/executed. Its10570 original bytes have SHA-256
+f54ccbd8c327a98960af0562ba465c25a184c4a27dd06c42409ae7570fac78a3;
+control/data expand to10240 bytes each, with the same frozen independent tar byte
+identities as the previous Python gzip fixture. No tar or control interpretation
+is claimed. Root complete default Go tests passed with package parallelism2:
+Debian9 groups (four actual opt-ins skipped)2.063s, compression9 groups4.383s,
+verification25 groups18.547s. Module verification, whole-repository vet, server
+build, pinned contracts, changed-file formatting/diff and client architecture/
+version guards passed. Dependency independent actual Debian13 passed3.778s,
+compression10 including Python passed7.765s (33 MiB bzip2 .61s/gzip .41s);
+affected vet, formatting and diff passed, all processes closed. Compatibility
+independent actual Debian13 passed3.007s, compression10 including Python
+passed4.151s (33 MiB bzip2 .73s/gzip .40s); affected vet, formatting and diff
+passed, all processes closed. Both final documentation reviews passed.
+
+No app/version/architecture/publisher/native authenticity, execution rights or
+Artifact admission is supplied. Other codecs, tar/control validation, protected
+storage and aggregate preparation policy remain separate unfinished work.
+No dependency/provider/SQL/protocol/application version/deployment changes.
+Full T09 stays incomplete; download has no cumulative deadline or retry budget.
