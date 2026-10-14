@@ -43,22 +43,7 @@ function pinvouSharedtauriInteraction() {
 
   // ── Super permission ─────────────────────────────────────────────
 async function refreshSuperPerm() { return pinvouSharedtauriInteraction().refreshSuperPerm(); }
-  async function toggleSuperPerm() {
-    const target = !state.superPermEnabled;
-    try {
-      state.superPermEnabled = !!(await invoke("set_super_permission", { enabled: target }));
-      addSystemItem(state.superPermEnabled
-        ? bt("superOn")
-        : bt("superOff"));
-      notify();
-      return { ok: state.superPermEnabled === target, enabled: state.superPermEnabled };
-    } catch (e) {
-      addSystemItem("⚠️ " + e);
-      try { state.superPermEnabled = !!(await invoke("get_super_permission_status")); } catch { /* treat query failure as not enabled */ }
-      notify();
-      return { ok: false, enabled: state.superPermEnabled, error: String(e) };
-    }
-  }
+async function toggleSuperPerm() { return pinvouSharedtauriInteraction().toggleSuperPerm(); }
 
   // ── Mode state ───────────────────────────────────────────────────
   // 会话级读取。必须防住的竞态：

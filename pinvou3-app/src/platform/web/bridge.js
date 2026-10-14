@@ -10,7 +10,7 @@
 
 let pinvouSharedwebCache = null;
 function pinvouSharedweb() {
-  if (!pinvouSharedwebCache) pinvouSharedwebCache = window.PinvouBridgeShared.create("web", { state, BT_TABLE: { get value() { return BT_TABLE; } }, PINVOU_SCENE_EVENTS_STORAGE_PREFIX: { get value() { return PINVOU_SCENE_EVENTS_STORAGE_PREFIX; } }, invoke, sessionStates: { get value() { return sessionStates; } }, freshBuffer, restoreEvictedSessionDraft, sessionBufferTouchClock: { get value() { return sessionBufferTouchClock; }, set value(v) { sessionBufferTouchClock = v; } }, pruneScheduledSessionBuffers, pruneSessionBuffers, scheduledRunSessionOwners: { get value() { return scheduledRunSessionOwners; } }, scheduledRunOwnerTouchClock: { get value() { return scheduledRunOwnerTouchClock; }, set value(v) { scheduledRunOwnerTouchClock = v; } }, MAX_SCHEDULED_RUN_SESSION_OWNERS: { get value() { return MAX_SCHEDULED_RUN_SESSION_OWNERS; } }, recordAuthoritySyncDiagnostic, runSyncOnSession, notify, SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY, scheduledTaskTemplateSources: { get value() { return scheduledTaskTemplateSources; } }, persistScheduledTaskTemplateSources, scheduledTaskRequestTokens: { get value() { return scheduledTaskRequestTokens; } }, scheduledTaskRefreshInFlight: { get value() { return scheduledTaskRefreshInFlight; }, set value(v) { scheduledTaskRefreshInFlight = v; } }, scheduledRecentRunsRequestToken: { get value() { return scheduledRecentRunsRequestToken; }, set value(v) { scheduledRecentRunsRequestToken = v; } }, scheduledRunEventRefreshTimer: { get value() { return scheduledRunEventRefreshTimer; }, set value(v) { scheduledRunEventRefreshTimer = v; } }, scheduledTaskPendingLoads: { get value() { return scheduledTaskPendingLoads; } }, scheduledTaskSelectionGeneration: { get value() { return scheduledTaskSelectionGeneration; }, set value(v) { scheduledTaskSelectionGeneration = v; } }, createScheduledTask, scheduledRunShortcutRefreshes: { get value() { return scheduledRunShortcutRefreshes; } }, SCHEDULED_LINK_POLL_DEADLINE_MS: { get value() { return SCHEDULED_LINK_POLL_DEADLINE_MS; } }, SCHEDULED_LINK_POLL_FAST_ATTEMPTS: { get value() { return SCHEDULED_LINK_POLL_FAST_ATTEMPTS; } }, SCHEDULED_LINK_POLL_FAST_MS: { get value() { return SCHEDULED_LINK_POLL_FAST_MS; } }, SCHEDULED_LINK_POLL_SLOW_MS: { get value() { return SCHEDULED_LINK_POLL_SLOW_MS; } }, scheduledTaskBackendInput, forgetScheduledTaskTemplateSource, scheduledTaskAutoCreateSeq: { get value() { return scheduledTaskAutoCreateSeq; }, set value(v) { scheduledTaskAutoCreateSeq = v; } }, scheduledTaskAutoCreateInFlight: { get value() { return scheduledTaskAutoCreateInFlight; } }, personaSyncSeq: { get value() { return personaSyncSeq; }, set value(v) { personaSyncSeq = v; } }, addChatItem, candidateCardPatcher: patchItemByIdFor, enterDraft, evictedSessionDrafts: { get value() { return evictedSessionDrafts; } }, MAX_EVICTED_SESSION_DRAFT_CHARS: { get value() { return MAX_EVICTED_SESSION_DRAFT_CHARS; } }, MAX_EVICTED_SESSION_DRAFTS: { get value() { return MAX_EVICTED_SESSION_DRAFTS; } }, switchToSessionInternal, openScheduledRunChatOnce, scheduledRunOpenInFlight: { get value() { return scheduledRunOpenInFlight; } }, purgeSessionBuffer, personaPlaceholderTitles: { get value() { return personaPlaceholderTitles; } }, refreshHistoryList, sessionSwitchRequestToken: { get value() { return sessionSwitchRequestToken; }, set value(v) { sessionSwitchRequestToken = v; } }, reportSidecarReadFailure, historyRefreshTimer: { get value() { return historyRefreshTimer; }, set value(v) { historyRefreshTimer = v; } }, historyRefreshPending: { get value() { return historyRefreshPending; }, set value(v) { historyRefreshPending = v; } }, currentStreamText: { get value() { return currentStreamText; }, set value(v) { currentStreamText = v; } }, currentStreamId: { get value() { return currentStreamId; }, set value(v) { currentStreamId = v; } }, toolMeta: { get value() { return toolMeta; }, set value(v) { toolMeta = v; } }, SHELL_TOOL_NAMES: { get value() { return SHELL_TOOL_NAMES; } }, normalizeTerminalTail, latestShellToolIsWaitObserver, shellPollState: { get value() { return shellPollState; } }, DELIVERABLE_EXTS: { get value() { return DELIVERABLE_EXTS; } }, extractArtifactPaths, summonPinvou, parseToolResultPayload, monitorBaseline: { get value() { return monitorBaseline; }, set value(v) { monitorBaseline = v; } }, clearMonitorBaseline, monitorIntervalId: { get value() { return monitorIntervalId; }, set value(v) { monitorIntervalId = v; } }, gpuUtilHistory: { get value() { return gpuUtilHistory; }, set value(v) { gpuUtilHistory = v; } }, monitorPollInFlight: { get value() { return monitorPollInFlight; }, set value(v) { monitorPollInFlight = v; } }, pollMonitor, settingsWriteQueue: { get value() { return settingsWriteQueue; }, set value(v) { settingsWriteQueue = v; } }, modelsLoadSeq: { get value() { return modelsLoadSeq; }, set value(v) { modelsLoadSeq = v; } }, loadSessionModel, setActiveModel, currentDraftModeState, loadMemoryOverview, memoryOverviewSeq: { get value() { return memoryOverviewSeq; }, set value(v) { memoryOverviewSeq = v; } }, setDraftMode, applyAuthoritativeModeState, sendMessage, pushUserEcho, dialogOpen, addAttachmentByPath, personaPoolCache: { get value() { return personaPoolCache; }, set value(v) { personaPoolCache = v; } }, deletedPersonaIds: { get value() { return deletedPersonaIds; } }, lastEquippedSid: { get value() { return lastEquippedSid; }, set value(v) { lastEquippedSid = v; } }, mountedCollectionDraftTarget: { get value() { return mountedCollectionDraftTarget; }, set value(v) { mountedCollectionDraftTarget = v; } }, ensureSession, mountedCollectionUpdate: { get value() { return mountedCollectionUpdate; }, set value(v) { mountedCollectionUpdate = v; } }, activeVoiceInput: { get value() { return activeVoiceInput; }, set value(v) { activeVoiceInput = v; } }, stopMediaTracks, VOICE_DEVICE_REQUEST_TIMEOUT_MS: { get value() { return VOICE_DEVICE_REQUEST_TIMEOUT_MS; } }, voiceOperations: { get value() { return voiceOperations; } }, pendingStreamNotifications: { get value() { return pendingStreamNotifications; } }, pendingAssistantText: { get value() { return pendingAssistantText; }, set value(v) { pendingAssistantText = v; } }, pendingAssistantBlocks: { get value() { return pendingAssistantBlocks; }, set value(v) { pendingAssistantBlocks = v; } }, finalizeAssistantStreamBeforeReasoning, flushPendingTextBlock, finishVoiceInput, ensureSessionBufferLoaded, reconcileRemoteTurn, doSendFor, flushQueued, itemIdSeq: { get value() { return itemIdSeq; }, set value(v) { itemIdSeq = v; } } });
+  if (!pinvouSharedwebCache) pinvouSharedwebCache = window.PinvouBridgeShared.create("web", { state, BT_TABLE: { get value() { return BT_TABLE; } }, PINVOU_SCENE_EVENTS_STORAGE_PREFIX: { get value() { return PINVOU_SCENE_EVENTS_STORAGE_PREFIX; } }, invoke, sessionStates: { get value() { return sessionStates; } }, freshBuffer, restoreEvictedSessionDraft, sessionBufferTouchClock: { get value() { return sessionBufferTouchClock; }, set value(v) { sessionBufferTouchClock = v; } }, pruneScheduledSessionBuffers, pruneSessionBuffers, scheduledRunSessionOwners: { get value() { return scheduledRunSessionOwners; } }, scheduledRunOwnerTouchClock: { get value() { return scheduledRunOwnerTouchClock; }, set value(v) { scheduledRunOwnerTouchClock = v; } }, MAX_SCHEDULED_RUN_SESSION_OWNERS: { get value() { return MAX_SCHEDULED_RUN_SESSION_OWNERS; } }, recordAuthoritySyncDiagnostic, runSyncOnSession, notify, SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY, scheduledTaskTemplateSources: { get value() { return scheduledTaskTemplateSources; } }, persistScheduledTaskTemplateSources, scheduledTaskRequestTokens: { get value() { return scheduledTaskRequestTokens; } }, scheduledTaskRefreshInFlight: { get value() { return scheduledTaskRefreshInFlight; }, set value(v) { scheduledTaskRefreshInFlight = v; } }, scheduledRecentRunsRequestToken: { get value() { return scheduledRecentRunsRequestToken; }, set value(v) { scheduledRecentRunsRequestToken = v; } }, scheduledRunEventRefreshTimer: { get value() { return scheduledRunEventRefreshTimer; }, set value(v) { scheduledRunEventRefreshTimer = v; } }, scheduledTaskPendingLoads: { get value() { return scheduledTaskPendingLoads; } }, scheduledTaskSelectionGeneration: { get value() { return scheduledTaskSelectionGeneration; }, set value(v) { scheduledTaskSelectionGeneration = v; } }, createScheduledTask, scheduledRunShortcutRefreshes: { get value() { return scheduledRunShortcutRefreshes; } }, SCHEDULED_LINK_POLL_DEADLINE_MS: { get value() { return SCHEDULED_LINK_POLL_DEADLINE_MS; } }, SCHEDULED_LINK_POLL_FAST_ATTEMPTS: { get value() { return SCHEDULED_LINK_POLL_FAST_ATTEMPTS; } }, SCHEDULED_LINK_POLL_FAST_MS: { get value() { return SCHEDULED_LINK_POLL_FAST_MS; } }, SCHEDULED_LINK_POLL_SLOW_MS: { get value() { return SCHEDULED_LINK_POLL_SLOW_MS; } }, scheduledTaskBackendInput, forgetScheduledTaskTemplateSource, scheduledTaskAutoCreateSeq: { get value() { return scheduledTaskAutoCreateSeq; }, set value(v) { scheduledTaskAutoCreateSeq = v; } }, scheduledTaskAutoCreateInFlight: { get value() { return scheduledTaskAutoCreateInFlight; } }, personaSyncSeq: { get value() { return personaSyncSeq; }, set value(v) { personaSyncSeq = v; } }, addChatItem, candidateCardPatcher: patchItemByIdFor, enterDraft, evictedSessionDrafts: { get value() { return evictedSessionDrafts; } }, MAX_EVICTED_SESSION_DRAFT_CHARS: { get value() { return MAX_EVICTED_SESSION_DRAFT_CHARS; } }, MAX_EVICTED_SESSION_DRAFTS: { get value() { return MAX_EVICTED_SESSION_DRAFTS; } }, switchToSessionInternal, openScheduledRunChatOnce, scheduledRunOpenInFlight: { get value() { return scheduledRunOpenInFlight; } }, purgeSessionBuffer, personaPlaceholderTitles: { get value() { return personaPlaceholderTitles; } }, refreshHistoryList, sessionSwitchRequestToken: { get value() { return sessionSwitchRequestToken; }, set value(v) { sessionSwitchRequestToken = v; } }, reportSidecarReadFailure, historyRefreshTimer: { get value() { return historyRefreshTimer; }, set value(v) { historyRefreshTimer = v; } }, historyRefreshPending: { get value() { return historyRefreshPending; }, set value(v) { historyRefreshPending = v; } }, currentStreamText: { get value() { return currentStreamText; }, set value(v) { currentStreamText = v; } }, currentStreamId: { get value() { return currentStreamId; }, set value(v) { currentStreamId = v; } }, toolMeta: { get value() { return toolMeta; }, set value(v) { toolMeta = v; } }, SHELL_TOOL_NAMES: { get value() { return SHELL_TOOL_NAMES; } }, normalizeTerminalTail, latestShellToolIsWaitObserver, shellPollState: { get value() { return shellPollState; } }, DELIVERABLE_EXTS: { get value() { return DELIVERABLE_EXTS; } }, artifactInfo, summonPinvou, parseToolResultPayload, monitorBaseline: { get value() { return monitorBaseline; }, set value(v) { monitorBaseline = v; } }, clearMonitorBaseline, monitorIntervalId: { get value() { return monitorIntervalId; }, set value(v) { monitorIntervalId = v; } }, gpuUtilHistory: { get value() { return gpuUtilHistory; }, set value(v) { gpuUtilHistory = v; } }, monitorPollInFlight: { get value() { return monitorPollInFlight; }, set value(v) { monitorPollInFlight = v; } }, pollMonitor, settingsWriteQueue: { get value() { return settingsWriteQueue; }, set value(v) { settingsWriteQueue = v; } }, modelsLoadSeq: { get value() { return modelsLoadSeq; }, set value(v) { modelsLoadSeq = v; } }, loadSessionModel, setActiveModel, currentDraftModeState, loadMemoryOverview, memoryOverviewSeq: { get value() { return memoryOverviewSeq; }, set value(v) { memoryOverviewSeq = v; } }, setDraftMode, applyAuthoritativeModeState, sendMessage, pushUserEcho, dialogOpen, addAttachmentByPath, personaPoolCache: { get value() { return personaPoolCache; }, set value(v) { personaPoolCache = v; } }, deletedPersonaIds: { get value() { return deletedPersonaIds; } }, lastEquippedSid: { get value() { return lastEquippedSid; }, set value(v) { lastEquippedSid = v; } }, mountedCollectionDraftTarget: { get value() { return mountedCollectionDraftTarget; }, set value(v) { mountedCollectionDraftTarget = v; } }, ensureSession, mountedCollectionUpdate: { get value() { return mountedCollectionUpdate; }, set value(v) { mountedCollectionUpdate = v; } }, activeVoiceInput: { get value() { return activeVoiceInput; }, set value(v) { activeVoiceInput = v; } }, stopMediaTracks, VOICE_DEVICE_REQUEST_TIMEOUT_MS: { get value() { return VOICE_DEVICE_REQUEST_TIMEOUT_MS; } }, voiceOperations: { get value() { return voiceOperations; } }, pendingStreamNotifications: { get value() { return pendingStreamNotifications; } }, pendingAssistantText: { get value() { return pendingAssistantText; }, set value(v) { pendingAssistantText = v; } }, pendingAssistantBlocks: { get value() { return pendingAssistantBlocks; }, set value(v) { pendingAssistantBlocks = v; } }, finalizeAssistantStreamBeforeReasoning, flushPendingTextBlock, finishVoiceInput, ensureSessionBufferLoaded, reconcileRemoteTurn, doSendFor, flushQueued, itemIdSeq: { get value() { return itemIdSeq; }, set value(v) { itemIdSeq = v; } } });
   return pinvouSharedwebCache;
 }
 
@@ -2520,17 +2520,7 @@ function emitPersonaAt(atOrAfter, isTail) { return pinvouSharedwebN189622().emit
     }, opts);
   }
 
-  function updateToolItem(toolId, output, success) {
-    for (let i = 0; i < state.chatItems.length; i++) {
-      if (state.chatItems[i].type === "tool" && state.chatItems[i].toolId === toolId) {
-        state.chatItems[i].output = output;
-        state.chatItems[i].success = success;
-        state.chatItems[i].state = success ? "done" : "failed";
-        return state.chatItems[i];
-      }
-    }
-    return null;
-  }
+  function updateToolItem(toolId, output, success) { return pinvouSharedweb().updateToolItem(toolId, output, success); }
 
   // keep in sync with tauri/bridge/terminal.js
   const SHELL_TOOL_NAMES = ["bash", "exec_shell", "exec_shell_wait", "exec_wait", "task_shell_start", "task_shell_wait", "shell", "Bash"];
@@ -2622,9 +2612,6 @@ function hasUnresolvedItem(type) { return pinvouSharedweb().hasUnresolvedItem(ty
 function basename(p) { return pinvouSharedweb().basename(p); }
 function isAbsPath(p) { return pinvouSharedweb().isAbsPath(p); }
 function normalizedPath(p) { return pinvouSharedweb().normalizedPath(p); }
-function rebaseArtifactPathsForRebind(sid, paths) { return pinvouSharedweb().rebaseArtifactPathsForRebind(sid, paths); }
-function sessionRecentlyRebound(sid) { return pinvouSharedweb().sessionRecentlyRebound(sid); }
-function pathIsRebindStale(sid, path) { return pinvouSharedweb().pathIsRebindStale(sid, path); }
 function noteArtifactChange(path, event, sessionId) { return pinvouSharedweb().noteArtifactChange(path, event, sessionId); }
 function isSharedMcpArtifactPath(path) { return pinvouSharedweb().isSharedMcpArtifactPath(path); }
 function artifactBelongsToSession(path, sid) { return pinvouSharedweb().artifactBelongsToSession(path, sid); }
@@ -2675,64 +2662,8 @@ function findPresentedArtifact(path) { return pinvouSharedweb().findPresentedArt
 function updatePresentedArtifact(card) { return pinvouSharedweb().updatePresentedArtifact(card); }
   // 切换 session 时对账:扫 workspace 磁盘,把实际存在、但跟踪列表里没有的文件补进来。
   // 修「文件已生成在盘上、却因 app 中途重启/跟踪遗漏而不在产物面板」(以磁盘为准)。
-  async function reconcileArtifacts(sid) {
-    if (!sid) return;
-    if (isScheduledRunSession(sid)) return;
-    try {
-      const files = await invoke("list_workspace_files", { sessionId: sid });
-      if (sid !== state.activeSessionId) return; // 已切走,放弃(避免写错 session)
-      const byName = {};
-      state.artifacts.forEach(function (a) { byName[basename(a.path)] = a; });
-      let added = false;
-      files.forEach(function (p) {
-        const bn = basename(p);
-        const ex = byName[bn];
-        // 已 present_artifact 过的成品在 saved.artifacts(ex 命中);扫盘只「新增」成品型文件,
-        // 不再把所有过程文件全扫进面板(修「飞书 CLI scratch 全暴露成产物」)。
-        if (!ex) {
-          if (!isDeliverable(p)) return;
-          const na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true;
-        }
-        // Relative→absolute opens reliably; an absolute stale entry may
-        // take over the same-basename live workspace file ONLY inside the
-        // sessionRecentlyRebound window AND only when the stored entry is
-        // real stale rebind geometry (pathIsRebindStale — round-24 minor 3,
-        // the tauri artifact-tracker's identical heal arm: the mark alone
-        // let an unrelated live absolute entry whose basename collides be
-        // taken over and the wrong path persisted; review #463 round-20
-        // minor 9 records the never-called-condition history).
-        else if (isAbsPath(p) && (!isAbsPath(ex.path) || (normalizedPath(ex.path) !== normalizedPath(p) && sessionRecentlyRebound(sid) && pathIsRebindStale(sid, ex.path)))) { ex.path = p; added = true; }
-      });
-      if (added) {
-        notify();
-        try { await invoke("save_session_artifacts", { id: sid, paths: rebaseArtifactPathsForRebind(sid, state.artifacts.map(function (a) { return a.path; })) }); } catch { /* persistence failure must not block frontend updates */ }
-      }
-    } catch { /* workspace 不存在(新 session)等,忽略 */ }
-  }
-function pushArtifactPath(paths, path) { return pinvouSharedweb().pushArtifactPath(paths, path); }
-  function extractArtifactPaths(args) {
-    if (!args) return [];
-    if (typeof args === "string") {
-      try { args = JSON.parse(args); } catch { return []; }
-    }
-    const paths = [];
-    pushArtifactPath(paths, args.path || args.file_path || args.filename);
-    [args.replace, args.changes].forEach(function (changes) {
-      if (!Array.isArray(changes)) return;
-      changes.forEach(function (change) {
-        if (change && typeof change === "object") pushArtifactPath(paths, change.path || change.file_path || change.filename);
-      });
-    });
-    String(args.patch || "").split(/\r?\n/).forEach(function (line) {
-      // eslint-disable-next-line sonarjs/super-linear-regex -- input is split by line and line length is bounded by the patch header, so the backtracking upper bound is negligible
-      const custom = /^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$/.exec(line);
-      if (custom) { pushArtifactPath(paths, custom[1]); return; }
-      // eslint-disable-next-line sonarjs/super-linear-regex -- input is split by line and line length is bounded by the patch header, so the backtracking upper bound is negligible
-      const unified = /^\+\+\+\s+(?:b\/)?(.+?)\s*$/.exec(line);
-      if (unified && unified[1] !== "/dev/null") pushArtifactPath(paths, unified[1]);
-    });
-    return paths;
-  }
+  async function reconcileArtifacts(sid) { return pinvouSharedweb().reconcileArtifacts(sid); }
+  function extractArtifactPaths(args) { return pinvouSharedweb().extractArtifactPaths(args); }
 
 function fileMutationAction(name, args) { return pinvouSharedweb().fileMutationAction(name, args); }
 
@@ -4812,22 +4743,7 @@ async function testImageInputCapability(model, baseUrl, apiKey, modelId) { retur
   }
   // ── Super permission ─────────────────────────────────────────────
 async function refreshSuperPerm() { return pinvouSharedweb().refreshSuperPerm(); }
-  async function toggleSuperPerm() {
-    const target = !state.superPermEnabled;
-    try {
-      state.superPermEnabled = !!(await invoke("set_super_permission", { enabled: target }));
-      addSystemItem(state.superPermEnabled
-        ? bt("superOn")
-        : bt("superOff"));
-      notify();
-      return { ok: state.superPermEnabled === target, enabled: state.superPermEnabled };
-    } catch (e) {
-      addSystemItem("⚠️ " + e);
-      try { state.superPermEnabled = !!(await invoke("get_super_permission_status")); } catch { /* on query failure, treat as not enabled */ }
-      notify();
-      return { ok: false, enabled: state.superPermEnabled, error: String(e) };
-    }
-  }
+  async function toggleSuperPerm() { return pinvouSharedweb().toggleSuperPerm(); }
 
   // ── Mode state ───────────────────────────────────────────────────
   // 会话级读取：await 挂起期间用户可能已切走，响应返回后必须校验发起时的
@@ -5338,45 +5254,9 @@ function openScheduledTaskFolder(automationId) { return pinvouSharedweb().openSc
       return Promise.reject(new Error("invalid external link"));
     }
   }
-function deliverableCategory(path) { return pinvouSharedweb().deliverableCategory(path); }
-function sessionTitleById(sid) { return pinvouSharedweb().sessionTitleById(sid); }
-function currentMemoryArtifacts() { return pinvouSharedweb().currentMemoryArtifacts(); }
   // 跨会话产出物索引:磁盘 session JSON 为主,再合并当前内存工作集。
   // 新产物在 chat:done/save_session_artifacts 前也能立刻出现在「产出物」一级入口。
-  async function listDeliverableIndex() {
-    const disk = await invoke("list_deliverable_index").catch(function () { return []; });
-    const byPath = {};
-    (disk || []).forEach(function (x) { if (x && x.path) byPath[x.path] = x; });
-    const mem = currentMemoryArtifacts().filter(function (x) { return x.path && !byPath[x.path]; });
-    const hydrated = await Promise.all(mem.map(async function (x) {
-      let path = x.path;
-      if (!isAbsPath(path) && x.sessionId) {
-        try {
-          const ws = await invoke("list_workspace_files", { sessionId: x.sessionId });
-          const bn = basename(path);
-          const resolved = (ws || []).find(function (p) { return basename(p) === bn; });
-          if (resolved) path = resolved;
-        } catch { /* on parse failure, keep the original path */ }
-      }
-      let info = null;
-      try { info = await artifactInfo(path, x.sessionId); } catch { /* missing info degrades to no-details */ }
-      const ext = (String(path).split(".").pop() || "").toLowerCase();
-      return {
-        name: x.name || basename(path),
-        path,
-        ext,
-        category: deliverableCategory(path),
-        sessionId: x.sessionId || "",
-        source: x.source || sessionTitleById(x.sessionId) || "",
-        mtime: info && info.modified ? info.modified : 0,
-        size: info && info.size ? info.size : 0,
-      };
-    }));
-    hydrated.forEach(function (x) { if (x && x.path) byPath[x.path] = x; });
-    return Object.keys(byPath).map(function (p) { return byPath[p]; }).sort(function (a, b) {
-      return (b.mtime || 0) - (a.mtime || 0) || String(a.name || "").localeCompare(String(b.name || ""));
-    });
-  }
+  async function listDeliverableIndex() { return pinvouSharedweb().listDeliverableIndex(); }
   // 外部打开产物：HTML 走 Tauri 独立窗口（绕沙箱），其他走系统应用。
   // sessionId = 卡片携带的产物所属 session。后端 resolve_artifact_path 用它(而非全局
   // active_id)解析相对路径 —— 切回「有 buffer」的会话后端 active 不更新,只有卡片自带

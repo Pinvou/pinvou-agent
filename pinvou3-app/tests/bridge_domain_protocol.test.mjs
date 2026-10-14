@@ -154,7 +154,10 @@ const expectedProtocolHashes = {
   // addPasteImageFromClipboard invoke wrapping the paste_clipboard_image
   // command (the native layer reads the WebKitGTK-invisible clipboard image
   // and saves it server-side; web lane intentionally has no such backend).
-  artifacts: '550566a1213eca4d379c2ffe48a0e09c5a60128dd7c7cc8d432f9c7e817974e1',
+  // Recomputed for the lane-merge residual wave: listDeliverableIndex
+  // (list_deliverable_index, list_workspace_files) and reconcileArtifacts
+  // (list_workspace_files, save_session_artifacts) joined the shared base.
+  artifacts: 'a0f801d8ec9ceece9c4b542a7ce2706aafeec8a8511a4cf3904f77151005f4a2',
   // Recomputed for #308 follow-ups: prefillComposer(text, append) recovery
   // entry + comment translations touching `invoke(` mentions (the extractor
   // scans raw source, so comment wording is part of the digest). Recomputed
@@ -231,7 +234,9 @@ const expectedProtocolHashes = {
   // { sessionId: state.activeSessionId } to { sessionId: sid } — same
   // command surface, no new invoke or listen entries.
   // Recomputed for the shared-helper dedup (see batch note above).
-  interaction: '9b330edc21e6db76559a368cc54fd22b930c6e3fc0f714141aaa763dcb5fd0c9',
+  // Recomputed for the lane-merge residual wave: toggleSuperPerm
+  // (set_super_permission, get_super_permission_status) joined the shared base.
+  interaction: 'a4c231e1119499eae66fe3e0e36d9604393b85468398a062b1e271e5e2f19b20',
   // Recomputed for the shared-helper dedup (see batch note above).
   knowledge: 'f9e241acb18d04c8d5d7d71b18d3d0350c3264bbc50e896b0f21b0e036286868',
   // memory recomputed for the memory-maintenance feature: organize_memory +
@@ -380,9 +385,11 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // builder ships on the static surface, so no signature moved).
 // Recomputed for the lane-merge residual waves: the chat tool-guard/relay
 // trios (no signature motion), userMessageDisplayText, persistMessagesFor
-// (save_session_artifacts + rename_session) and loadPersonaEventsForSession
-// (get_session_persona_events) joined the shared base.
-const expectedSharedBaseHash = 'f8e6ddd21380bcd6b72dfdb4ca234e76f65a040a5760ba22b3aeae07f14bd2ea';
+// (save_session_artifacts + rename_session), loadPersonaEventsForSession
+// (get_session_persona_events), toggleSuperPerm (set/get super permission)
+// and the artifact reconcile/deliverable-index pair (list_workspace_files,
+// save_session_artifacts, list_deliverable_index) joined the shared base.
+const expectedSharedBaseHash = '5f80ec45649d1a1459601a1f81a41f2aa7a855b7a19d50958a1446ac8f6ac16b';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),
