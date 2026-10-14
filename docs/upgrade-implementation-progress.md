@@ -6080,3 +6080,89 @@ No dependency, SQL/protocol/application version/deployment change. Native matchi
 field-specific grammar, publisher certification, Artifact admission and production
 storage remain separate work. Full T09 remains incomplete. Downloads retain no
 total/cumulative elapsed or retry-count limit.
+
+## T09 thirty-fourth batch: isolated complete Debian inspection command
+
+`cmd/upgrade-debian-inspect` opens a supported regular descriptor through the
+existing explicit OS source adapter, captures an exact bounded immutable process
+snapshot, then performs complete Debian framing, codec, both TAR, unique regular
+root control and required-declaration inspection. It outputs one JSON summary
+only after all checks succeed. The summary includes whole installer, stored
+control/data, expanded TAR and original control-record byte identities, exact
+TAR member counts, format version and Package/Version/Architecture declarations.
+It omits archive paths and unrelated control fields. These are unsigned byte and
+declaration observations, not approved native identity or publisher claims.
+
+All 26 capacity arguments are required positive values; no production capacity
+defaults are inferred. Each used codec enforces its existing specific limits.
+Snapshot/record capacities are logical bytes, not an aggregate process heap or
+preparation budget. The 32 MiB atomic business-batch limit does not cap files.
+For the small frozen inspection fixtures only, a complete invocation is:
+
+```sh
+go run ./cmd/upgrade-debian-inspect \
+  --package-bytes 2097152 --package-memory-bytes 2097152 --version-bytes 16 \
+  --stored-control-bytes 2097152 --stored-control-memory-bytes 2097152 \
+  --stored-data-bytes 2097152 --stored-data-memory-bytes 2097152 \
+  --expanded-control-bytes 2097152 --expanded-control-memory-bytes 2097152 \
+  --expanded-data-bytes 2097152 --expanded-data-memory-bytes 2097152 \
+  --lzma-dictionary-bytes 4096 --xz-dictionary-bytes 8388608 \
+  --xz-blocks 8 --xz-streams 8 --zstandard-window-bytes 1024 \
+  --control-tar-bytes 2097152 --control-tar-member-bytes 2097152 \
+  --data-tar-bytes 2097152 --data-tar-member-bytes 2097152 \
+  --control-record-bytes 1024 --control-record-memory-bytes 1024 \
+  --ar-members 10 --control-tar-members 1000 --data-tar-members 1000 \
+  --control-record-fields 20 fixture.deb
+```
+
+Exit codes are 0 for a complete report/help, 2 for invalid arguments, and 1 for
+source, inspection, cancellation or output failure. Argument/source/provider
+details are omitted from fixed diagnostics. Short writes, including an initial
+short help write followed by a successful writer, cannot report success.
+An output-device failure can physically leave a truncated stream, but returns
+failure; callers must require exit 0 and complete JSON. Underlying codec numeric
+diagnostic limitations remain as documented in the standalone codec batch.
+
+Existing source-profile boundaries remain: Windows checks the final disk handle
+and supported local volume without following a final reparse point; Unix refuses
+a final symlink and blocking FIFO but does not attest remote-mount locality.
+Unsupported hosts refuse. Owned captured bytes resist later path replacement;
+capture does not attest that an arbitrary concurrent same-size source write
+never occurred. This is not protected staging, privileged final handoff or an
+installation command. No files are extracted and no package scripts are executed.
+
+Six command groups cover all 26 missing/zero/negative arguments, help, actual
+regular source and replacement isolation, source/copy/field capacities, late
+missing identity fields, cancellation and same-source restoration, fixed errors
+and short-output refusal. Actual opt-in cases use all six frozen public/Python
+packages, independently checking every stored and expanded byte identity, original
+control identity, exact member counts and all three declarations. The built CLI
+E2E runs five child invocations: synthetic success, invalid arguments, late
+required-field failure, actual public hello and actual Python Zstandard success.
+The 60-second child allowance is test-only and sets no production download limit.
+
+Root default command tests passed four mandatory groups in 1.286s with two
+explicit opt-in skips. Initial actual command/E2E passed all six groups in 3.772s.
+Root self-review then strengthened every reported stored/expanded byte identity
+and exact count assertion; the frozen actual six-group rerun passed in 2.538s
+without skips. Both independent static audits passed that final code/test delta.
+Complete default Go tests passed with package parallelism 2: CLI 6.151s, Debian
+1.734s, verification 20.217s, compression 4.197s and TAR 1.755s; fixture/provider/
+database/browser opt-ins were not enabled in that default run. Module verification,
+whole vet, server build, private inspector build, contract pins and changed-file
+formatting/diff passed. All root build/test processes closed.
+
+No dependency, SQL, protocol, application version or deployment change. Current
+Root/signed Manifest inspection remains in the existing verifier API and is not
+granted by this standalone command. Field-specific grammar, native app/architecture
+mapping, publisher authentication, Artifact admission and production storage remain
+subsequent work. Full T09 remains incomplete. Downloads have no total/cumulative
+elapsed or retry-count limit.
+
+Both final independent scoped code/test audits passed without required fixes.
+Dependency audit ran all six actual CLI groups in 6.598s (built-child group 3.93s);
+compatibility audit ran them in 3.416s (built-child group 1.86s). Each enabled all
+six native fixtures and all five actual child invocations without skips, and
+passed affected vet, two-file formatting and diff checks. All independent
+processes closed. Client architecture and synchronized-version guards passed.
+Unchanged database/provider/browser integration was not repeated.
