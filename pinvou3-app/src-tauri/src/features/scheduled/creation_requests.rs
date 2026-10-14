@@ -1005,7 +1005,12 @@ fn result_marker_suppresses(path: &Path, expected_digest: &str) -> bool {
     };
     match serde_json::from_slice::<serde_json::Value>(&bytes) {
         Ok(value) => {
-            if value.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
+            // Round-21 minor 1: require a LITERAL ok:true — the function's
+            // own doc ("Only a parseable ok:true marker … suppresses") and
+            // the receipt probe's `== Some(true)` both bind the truthiness:
+            // ok:absent/"true"/1 used to suppress while the server's
+            // truthiness check kept answering, splitting the outcome.
+            if value.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
                 return false;
             }
             match value
@@ -1279,7 +1284,25 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
         if retries.parked.contains(&name) {
             continue;
         }
-        match process_spool_file(path.as_path(), creator, sessions, notifier).await {
+        // Round-21 M1 (the messaging sibling's round-8 M2 shape): the panic
+        // guard is PER RECORD. The poll-level catch left a deterministic
+        // panic at a fixed sorted position starving every later-sorted
+        // record forever — silent, restart-surviving, and the record never
+        // accrued budget (no quarantine, no failure marker, no audit). A
+        // panicking record now burns its own budget and is quarantined
+        // after MAX attempts, like any other persistent failure.
+        let outcome = futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
+            process_spool_file(path.as_path(), creator, sessions, notifier),
+        ))
+        .await;
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(panic) => {
+                log::error!("[scheduled-creation] processing {name} panicked: {panic:?}");
+                Processed::Retry(anyhow::anyhow!("processing panicked: {panic:?}"))
+            }
+        };
+        match outcome {
             Processed::Done(applied_digest) => {
                 // Round-16 MAJOR-1: the budget clears only after the record
                 // actually left the spool. This arm used to clear it up
@@ -1414,10 +1437,13 @@ impl ScheduledTaskState {
                     prune_stale_state();
                     last_prune = tokio::time::Instant::now();
                 }
-                // Round-6 minor 4: the messaging sibling's panic isolation —
-                // one poisoned record must not kill the drain for the app
-                // lifetime (every later tool call would burn its 5s window
-                // on a dead loop). The state refs are bound outside the
+                // Round-6 minor 4 / round-21 M1: the panic isolation now
+                // lives PER RECORD inside process_pending_spool (the
+                // messaging sibling's round-8 M2 shape — the whole-poll
+                // catch starved every later-sorted record of a
+                // deterministic panicking record). This outer catch remains
+                // as defense for panics outside the per-record path (prune,
+                // loop bookkeeping). The state refs are bound outside the
                 // future so the catch_unwind wrapper stays simple.
                 let creator = StateCreator(&state);
                 let notifier = EventNotifier(&app);
@@ -2723,6 +2749,22 @@ mod tests {
         // times out to pending and the model sees the truth eventually).
         std::fs::write(&marker, b"not json{").unwrap();
         assert!(!result_marker_suppresses(&marker, "d1"));
+        // Round-21 minor 1: the suppression-matrix cells for non-literal
+        // ok values — a marker with a MATCHING digest but ok absent,
+        // ok:"true" (string), or ok:1 must NOT suppress (the receipt
+        // probe binds `== Some(true)`; the old truthiness shape split the
+        // outcome between watcher and server).
+        for bad_ok in [
+            serde_json::json!({"task_id": "t", "request_digest": "d1"}),
+            serde_json::json!({"ok": "true", "task_id": "t", "request_digest": "d1"}),
+            serde_json::json!({"ok": 1, "task_id": "t", "request_digest": "d1"}),
+        ] {
+            std::fs::write(&marker, bad_ok.to_string()).unwrap();
+            assert!(
+                !result_marker_suppresses(&marker, "d1"),
+                "non-literal ok must not suppress: {bad_ok}"
+            );
+        }
         // Round-8 M3-2: the OVERSIZE arm — valid JSON over the 64 KiB cap
         // with the right digest still refuses (only the cap can refuse
         // this payload; the round-7 test never covered oversize).
@@ -3081,5 +3123,42 @@ mod tests {
             payload.to_string(),
             "the marker must be exactly the payload (no stale tail)"
         );
+    }
+
+    // Round-21 M2 (reader-present variant): a FIFO at the tmp path WITH a
+    // reader held open — the shape that motivated round-18 MAJOR-1's
+    // silent-loss half (a write-only open succeeds when a reader exists).
+    // The gate refuses at fstat; the payload must not vanish into the
+    // pipe buffer and the rename must not publish the FIFO.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fifo_with_reader_at_the_marker_tmp_path_is_refused() {
+        use std::io::Read as _;
+        let _home = TempHome::new();
+        std::fs::create_dir_all(done_dir()).unwrap();
+        let marker = done_dir().join("victim.json");
+        let tmp = marker.with_extension("json.tmp");
+        let fifo_path = std::ffi::CString::new(tmp.as_os_str().to_str().unwrap()).unwrap();
+        assert_eq!(
+            unsafe { libc::mkfifo(fifo_path.as_ptr(), libc::S_IFIFO | 0o644) },
+            0,
+            "fixture: the FIFO must be created"
+        );
+        // A reader holding the FIFO: a gated write-only open would
+        // otherwise succeed into the pipe buffer (round-18's silent-loss
+        // shape). The reader drops after 300 ms; the gate fails the open
+        // immediately either way.
+        let reader_path = tmp.clone();
+        std::thread::spawn(move || {
+            if let Ok(mut f) = std::fs::File::open(&reader_path) {
+                let mut sink = [0u8; 16];
+                let _ = f.read(&mut sink);
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let result = write_done_marker(&marker, &serde_json::json!({"ok": true}));
+        assert!(result.is_err(), "the planted FIFO must be refused");
+        assert!(!marker.exists(), "the rename must not publish the FIFO");
     }
 }
