@@ -4,7 +4,10 @@
 //! Visibility disclosure: most of the `pinvou3_lib::features::voice` surface
 //! (status, engine transcription, platform adapters) is `pub(crate)` to the
 //! app crate, so the CLI *mirrors* its semantics over the exact same paths
-//! and environment variables instead of calling it:
+//! and environment variables instead of calling it. The byte-identical subset
+//! (model spec/dir/engine name, postprocess prompts and budgets, output
+//! sanitizer, kimi gate, download band) is imported from the pub
+//! `features::voice::contract` module instead of mirrored:
 //! - data root `$PINVOU3_HOME/asr` (`features::voice::voice_asr::asr_dir`),
 //!   engine binary per platform adapter (`sense-voice-main` on Linux,
 //!   `pinvou-asr` elsewhere), model `sense-voice-small-q4_k.gguf` (Linux/
@@ -52,16 +55,17 @@
 //! active model credentials, so it runs through the windowless product host
 //! (`run_windowless_host`, requires a display / xvfb like `agent run`) and
 //! then issues the same OpenAI-compatible (or Anthropic Messages) HTTP
-//! request with the mirrored prompt constants. The prompts are private to
-//! `app/commands/voice.rs` and are duplicated here verbatim; if they drift
-//! upstream this module must be updated in the same pull request. The user
-//! message is assembled section for section like
+//! request with the app's prompt constants, imported verbatim from
+//! `pinvou3_lib::features::voice::contract` (a hand copy whose drift guard
+//! demanded a same-PR update; the import makes that a compile-time
+//! dependency). The user message is assembled by the shared
 //! `voice_postprocess_user_content`, including the `DRAFT_TEXT` block the
 //! edit prompt's rule 10 promises — `--draft` / `--draft-file` carry what the
 //! GUI sends as `draft_text`, and `--mode edit` (whose whole job is rewriting
 //! that draft) refuses without one. Only the `ASR_RAW` section has no CLI
 //! equivalent: `--text` is already the corrected ASR text and the CLI applies
-//! no rule corrections of its own, so there is no before/after pair to send.
+//! no rule corrections of its own, so the import passes `None` and there is
+//! no before/after pair to send.
 //! The per-attempt timeout budget is measured from *after* the host is up, so it
 //! bounds the model round-trip like the GUI's does rather than the tokio /
 //! Tauri / `SessionStore` boot; `POSTPROCESS_TOTAL_BUDGET` is the separate
@@ -90,7 +94,12 @@ use std::time::{Duration, Instant};
 
 use crate::support::{family_lock, file_is_sha256, render, success};
 use crate::{CliError, CliOutcome, OutputMode};
-use pinvou3_lib::platform::paths::pinvou3_home;
+use pinvou3_lib::features::voice::contract::{
+    asr_dir, asr_download_max_bytes, current_model_spec, engine_binary_name,
+    kimi_supports_disabled_thinking, sanitize_voice_postprocess_output,
+    truncate_voice_postprocess_input, voice_postprocess_max_tokens, voice_postprocess_prompt,
+    voice_postprocess_retry_prompt, voice_postprocess_timeout, voice_postprocess_user_content,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VoiceCommand {
@@ -326,71 +335,6 @@ pub fn execute(command: VoiceCommand, output: OutputMode) -> Result<CliOutcome, 
 
 // ─────────────────────────── ASR platform mirror ───────────────────────────
 
-/// Same fields as `features::voice::voice_asr::AsrModelSpec` (the struct is
-/// `pub` but its module is `pub(crate)` and `features::voice::platform` is a
-/// private module, so neither the type nor the per-platform specs can be
-/// imported from here — verified, not assumed).
-///
-/// DRIFT GUARD — the constants below are a hand copy of, and must be bumped
-/// in the same pull request as:
-/// * `pinvou3-app/src-tauri/src/features/voice/platform/mod.rs`
-///   (`ASR_MODEL_URL` / `ASR_MODEL_MIRROR_URL` / `ASR_MODEL_SIZE` /
-///   `ASR_MODEL_SHA256`, the Linux/macOS `sense-voice-small-q4_k.gguf`), and
-/// * `pinvou3-app/src-tauri/src/features/voice/platform/windows.rs`
-///   (the same four names, the `sensevoice-small-q8.gguf` build).
-///
-/// A model bump that touches only the app leaves the CLI pinning a stale
-/// sha256, and `model_available` would then reject the model the desktop app
-/// just installed — silently, as "model: false".
-struct AsrModelSpec {
-    filename: &'static str,
-    expected_size: u64,
-    sha256: &'static str,
-    primary_url: &'static str,
-    mirror_url: &'static str,
-}
-
-fn asr_dir() -> PathBuf {
-    pinvou3_home().join("asr")
-}
-
-// `cfg!` is a bool literal, so one unconditioned fn compiles on every target
-// (the same verdicts the previous `#[cfg]`-split copies produced): the
-// SenseVoice.cpp engine on Linux, the external-protocol CLI elsewhere.
-fn engine_binary_name() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "pinvou-asr.exe"
-    } else if cfg!(target_os = "linux") {
-        "sense-voice-main"
-    } else {
-        "pinvou-asr"
-    }
-}
-
-// `cfg!` is a bool literal, so one unconditioned fn compiles on every target:
-// q4 on Linux/macOS, q8 on Windows — the same verdicts the previous
-// `#[cfg]`-split copies produced.
-fn model_spec() -> AsrModelSpec {
-    if cfg!(target_os = "windows") {
-        // Windows ships the q8 model in the MSI (`platform/windows.rs`).
-        AsrModelSpec {
-            filename: "sensevoice-small-q8.gguf",
-            expected_size: 254_208_320,
-            sha256: "4ae45c94422de949b387e2e0fb10d7e14e4c42c69db30c3444ecc7d4b844b7c5",
-            primary_url: "https://www.modelscope.cn/models/FunAudioLLM/SenseVoiceSmall-GGUF/resolve/master/sensevoice-small-q8.gguf",
-            mirror_url: "https://huggingface.co/FunAudioLLM/SenseVoiceSmall-GGUF/resolve/main/sensevoice-small-q8.gguf",
-        }
-    } else {
-        AsrModelSpec {
-            filename: "sense-voice-small-q4_k.gguf",
-            expected_size: 182_278_688,
-            sha256: "c8e7bf77acd860c5b83d2106da44aa7b985026ef4e7dbf5236c7f0f4001d9e9b",
-            primary_url: "https://www.modelscope.cn/models/lovemefan/SenseVoiceGGUF/resolve/master/sense-voice-small-q4_k.gguf",
-            mirror_url: "https://huggingface.co/lovemefan/sense-voice-gguf/resolve/main/sense-voice-small-q4_k.gguf",
-        }
-    }
-}
-
 /// CLI mirror of `voice_asr::engine_path` without the bundled-resource
 /// fallback: the packaged resource dir is injected through an AppHandle at
 /// app startup, which a CLI process never has.
@@ -400,7 +344,7 @@ fn engine_path() -> Option<PathBuf> {
 }
 
 fn model_path() -> PathBuf {
-    asr_dir().join(model_spec().filename)
+    asr_dir().join(current_model_spec().filename)
 }
 
 /// Availability probe, mirroring the app's `model_file_verified`: the
@@ -417,7 +361,7 @@ fn model_path() -> PathBuf {
 /// to share size and mtime would otherwise read each other's verdict out of
 /// this process-global memo.
 fn model_available() -> bool {
-    let spec = model_spec();
+    let spec = current_model_spec();
     let path = asr_dir().join(spec.filename);
     model_available_verified(&path, spec.expected_size, spec.sha256)
 }
@@ -979,11 +923,11 @@ fn asr_install_human(steps: &[String], engine: bool, ffmpeg: bool, model: bool) 
 }
 
 fn download_asr_model() -> Result<PathBuf, CliError> {
-    let spec = model_spec();
+    let spec = current_model_spec();
     let dest = asr_dir().join(spec.filename);
-    // The app twin computes this band from the spec at request-build time
-    // (`spec.expected_size.max(16 * 1024 * 1024) * 2`, voice_asr.rs); same
-    // arithmetic, same input, so the two size gates cannot disagree.
+    // The band is the app's own helper (`voice_asr::asr_download_max_bytes`),
+    // imported through the contract module, so the two size gates cannot
+    // disagree by construction.
     let max_bytes = asr_download_max_bytes(spec.expected_size);
     std::fs::create_dir_all(asr_dir()).map_err(|error| {
         CliError::failed(format!("voice asr-install: cannot create asr dir: {error}"))
@@ -1214,18 +1158,6 @@ fn download_to(
     std::fs::rename(&part, dest)
         .map_err(|error| CliError::failed(format!("voice asr-install: finish: {error}")))?;
     Ok(())
-}
-
-/// Per-spec download cap, the app twin's exact arithmetic
-/// (`features/voice/voice_asr.rs`, `download_asr_model`: `spec.expected_size
-/// .max(16 * 1024 * 1024) * 2`) — the expected model size with a 16 MiB
-/// floor, doubled, so the band scales with the spec instead of a flat cap
-/// silently over- or under-fitting a future model bump. DRIFT GUARD: the
-/// formula is a hand copy of the app line and must be bumped in the same
-/// pull request as it (the app helper is `pub(crate)` and the constant is
-/// computed inline, so it cannot be imported — verified, not assumed).
-fn asr_download_max_bytes(expected_size: u64) -> u64 {
-    expected_size.max(16 * 1024 * 1024) * 2
 }
 
 // ─────────────────────────── transcribe ────────────────────────────────────
@@ -1900,144 +1832,6 @@ fn extract_transcript(stdout: &str, stderr: &str) -> Option<String> {
 
 // ─────────────────────────── postprocess ───────────────────────────────────
 
-/// System prompts mirrored verbatim from `app/commands/voice.rs`
-/// (`voice_postprocess_prompt`).
-fn postprocess_prompt(mode: PostprocessMode) -> &'static str {
-    match mode {
-        PostprocessMode::Edit => {
-            r#"你是 Pinvou 的语音编辑器。你的唯一职责是根据用户的语音修改指令，改写“当前输入框已有文本”。
-
-强规则：
-1. 不回答问题，不执行任务，只输出修改后的完整输入框文本。
-2. ASR 文本是修改指令，不是要追加到正文里的内容，除非用户明确说“加上/追加/补充”。
-3. 必须保留原文中未被修改指令涉及的信息。
-4. 不新增用户没说过的事实、时间、数量、条件、工具或结论。
-5. 用户要求改成要点、列表或几条时，可以重排为 Markdown 列表。
-6. 用户要求删除某条时，只删除明确指定的内容。
-7. 用户要求替换实体时，只做对应替换。
-8. 如果修改指令为空、纯噪声或无法理解，输出原文。
-9. 只输出最终文本，不解释，不包裹代码块。
-10. 输入用 <<<…>>> 定界符分段：DRAFT_TEXT 是输入框正文，ASR_TEXT 是规则纠错后的修改指令，ASR_RAW（如有）是原始识别；纠错可能有误，可参考原始识别恢复被误纠的内容。
-
-示例：
-当前输入框已有文本：
-帮我整理会议纪要，提取风险和待办，明天发给团队。
-
-ASR 文本：
-把它改成三条要点。
-
-最终文本：
-- 整理会议纪要。
-- 提取风险和待办。
-- 明天发给团队。"#
-        }
-        PostprocessMode::Task => {
-            r#"你是 Pinvou 的语音任务纠错器。你的唯一职责是把 ASR 文本纠正为用户原本想交给 Agent 执行的任务。
-
-强规则：
-1. 不回答问题，不执行任务。
-2. 不新增用户没说过的目标、工具、格式、数量、时间、条件。
-3. 必须保留任务槽位：动作、对象、时间、数量、格式、限制条件、输出形态。
-4. 不把输出形态改掉：用户说图表就保留图表，不要改成表格；用户说输入框就不要发送。
-5. 正常查询、比较、搜索、整理、生成、做、把、帮我等句子都必须保留原请求，不能输出空字符串。
-6. 禁止截断句子；如果不确定，只做最小纠错并保留原句结构。
-7. 英文实体、模型名、产品名和 API 名称要尽量标准化：GPT-5、Claude Sonnet、DeepSeek V3、REST API、PDF、Pinvou。
-8. 只有整句去掉标点后只剩“嗯/啊/呃/额/那个/就是/文”等口头禅或噪声占位，才输出空字符串。
-9. 优先纠正上下文中明显 ASR 错词：
-   - 行情/价格查询里的“进价/惊吓”通常应修为“金价”
-   - 数据分析可视化里的“图标”通常应修为“图表”
-   - “屁屁提/PPTT”通常应修为“PPT”
-   - “销售暑假”通常应修为“销售数据”
-   - “截止事件”通常应修为“截止时间”
-   - “负责任”通常应修为“负责人”
-   - “风险电”通常应修为“风险点”
-   - “表哥”通常应修为“表格”
-   - “四零一/talken/过期处里”通常应修为“401/token/过期处理”
-   - “批地爱福/pDF”通常应修为“PDF”
-   - “g p t five/GP杠5”通常应修为“GPT-5”，“closonic/克劳德 sonnet”通常应修为“Claude Sonnet”
-   - “deeps V3/deep seek v three”通常应修为“DeepSeek V3”
-   - 搜索“爱新闻/AI新闻”通常应修为“AI 新闻”
-10. 对明显口语断裂做最小顺句，例如“有长方形，的需要联网下的图片”应整理为“是长方形，需要联网下载图片”。
-11. 去掉口头禅、重复词和误识别语气词。
-12. 只输出最终任务文本，不解释，不使用 Markdown。
-13. 输入用 <<<…>>> 定界符分段：ASR_TEXT 是规则纠错后文本，ASR_RAW（如有）是原始识别；纠错可能有误，可参考原始识别恢复被误纠的实体。DRAFT_TEXT（如有）是用户输入框在本次语音前已有的文本，仅作上下文参考、不属于本次语音内容：不得把 DRAFT_TEXT 当作新的任务目标，也不要把它重复进输出。
-
-示例：
-ASR 文本：查一下今日进价并生成数据分析图标。
-最终文本：查一下今日金价并生成数据分析图表。
-ASR 文本：比较GP杠5mini和deeps V3的调用成本。
-最终文本：比较 GPT-5 mini 和 DeepSeek V3 的调用成本。
-ASR 文本：嗯，做一张海报，这个海报有长方形，的需要联网下的图片。用于公司的下午茶需要有一些文字的内容。
-最终文本：做一张用于公司下午茶的长方形海报，需要联网下载图片，并包含文案内容。
-ASR 文本：文。
-最终文本："#
-        }
-        PostprocessMode::Dictation => {
-            r#"你是 Pinvou 的语音听写整理器。你的唯一职责是把 ASR 文本纠正并整理为用户原本想输入到文本框里的内容。
-
-强规则：
-1. 不回答问题，不执行任务。
-2. 不新增用户没说过的目标、工具、格式、数量、时间、条件。
-3. 先去掉口头禅、重复词和误识别语气词，再修明显 ASR 错词。
-4. 只有极短、单一、无需拆解的自然句，才输出一条自然句。
-5. 除极短自然句外，默认整理成结构化 Markdown 列表。
-6. 内容包含目标、用途、功能、字段、截止时间、进度、多个事项、多个条件、步骤、约束或明显需求表达时，必须整理成 Markdown 列表。
-7. 整理成列表时必须保留动作、对象、时间、地点、数量、格式、限制条件和输出形态。
-8. 正常查询、比较、搜索、整理、生成、做、把、帮我等句子都必须保留原请求，不能输出空字符串。
-9. 只有整句去掉标点后只剩“嗯/啊/呃/额/那个/就是/文”等口头禅或噪声占位，才输出空字符串。
-10. 日期、时间、地点按用户原话保留；即使看起来不合理，也不能擅自修正或删除。
-11. 优先纠正上下文中明显 ASR 错词：
-   - 行情/价格查询里的“进价/惊吓”通常应修为“金价”
-   - 数据分析可视化里的“图标”通常应修为“图表”
-   - “屁屁提/PPTT”通常应修为“PPT”
-   - “销售暑假”通常应修为“销售数据”
-   - “截止事件”通常应修为“截止时间”
-   - “负责任”通常应修为“负责人”
-   - “风险电”通常应修为“风险点”
-   - “g p t five”通常应修为“GPT-5”，“克劳德 sonnet”通常应修为“Claude Sonnet”
-   - 搜索“爱新闻”通常应修为“AI 新闻”
-12. 只输出最终文本，不解释。
-13. 输入用 <<<…>>> 定界符分段：ASR_TEXT 是规则纠错后文本，ASR_RAW（如有）是原始识别；纠错可能有误，可参考原始识别恢复被误纠的实体。DRAFT_TEXT（如有）是用户输入框在本次语音前已有的文本，仅作上下文参考、不属于本次语音内容：不得把 DRAFT_TEXT 当作新的任务目标，也不要把它重复进输出。
-
-示例：
-ASR 文本：今天天气怎么样？
-最终文本：今天天气怎么样？
-ASR 文本：嗯。
-最终文本：
-ASR 文本：搜索一下今天的爱新闻，按重要性排序。
-最终文本：搜索一下今天的 AI 新闻，按重要性排序。
-ASR 文本：制作一个个人工作台，用于企业录入工作事项进度，包括截止时间。
-最终文本：
-- 制作一个个人工作台。
-- 用途：用于企业录入工作事项进度。
-- 需要包含截止时间。
-ASR 文本：一张用于公司年会的海报，时间是下午3点，12月36日需要联网下载一张图片，然后这个图片要尽量的好看呃，突出员工协作。这个海报是长方形的，上面需要有一点点文字，然后是红色背景。
-最终文本：
-- 制作一张用于公司年会的长方形海报。
-- 时间：12月36日下午3点。
-- 需要联网下载一张图片。
-- 图片尽量好看，并突出员工协作。
-- 海报需要红色背景。
-- 海报上需要包含少量文字。"#
-        }
-    }
-}
-
-/// Retry prompts mirrored from `voice_postprocess_retry_prompt`.
-fn postprocess_retry_prompt(mode: PostprocessMode) -> &'static str {
-    match mode {
-        PostprocessMode::Edit => {
-            "你是语音编辑器。当前输入框已有文本是正文，ASR 文本是修改指令，不是要追加的正文。必须根据 ASR 指令修改正文，并只输出修改后的完整正文。除非 ASR 是纯口头禅、纯噪声或完全无法理解，否则禁止原样输出当前输入框已有文本。禁止解释，禁止空输出。"
-        }
-        PostprocessMode::Task => {
-            "你是语音任务纠错器。把 ASR 纠正为用户要交给 Agent 执行的任务。保留所有时间、地点、格式和限制条件。禁止新增事实。输入中如有 <<<DRAFT_TEXT>>> 段，那是输入框已有文本，仅作上下文参考，不要当作新的任务目标，也不要重复进输出。必须只输出最终任务文本，禁止空输出；除非 ASR 是纯口头禅或纯噪声。"
-        }
-        PostprocessMode::Dictation => {
-            "你是语音听写整理器。把 ASR 纠正并整理为用户想输入的文本。只有极短、单一、无需拆解的自然句才输出自然句；除此以外默认整理成结构化 Markdown 列表。内容包含目标、用途、功能、字段、截止时间、进度、多个事项、多个条件、步骤、约束或明显需求表达时，必须结构化。保留所有时间、地点、格式和限制条件。禁止新增事实。输入中如有 <<<DRAFT_TEXT>>> 段，那是输入框已有文本，仅作上下文参考，不要当作新的听写内容，也不要重复进输出。必须只输出最终文本，禁止空输出；除非 ASR 是纯口头禅或纯噪声。"
-        }
-    }
-}
-
 /// Anthropic Messages body for voice postprocess — field set mirrors the
 /// GUI's `voice_postprocess_request_body` / core `anthropic_messages_request`
 /// wire: model/max_tokens/system/messages and **no `temperature`**. A
@@ -2076,124 +1870,6 @@ fn postprocess_chat_body(
         "max_tokens": max_tokens,
         "stream": false
     })
-}
-
-/// Retry bump mirror of the GUI's `voice_postprocess_max_tokens`: the same
-/// per-mode base and +512 on the retry pass, so a token-budget change in the
-/// GUI surfaces here as a body mismatch instead of silent drift.
-fn postprocess_max_tokens(mode: PostprocessMode, retry: bool) -> u32 {
-    let base = match mode {
-        PostprocessMode::Edit => 2048,
-        PostprocessMode::Task | PostprocessMode::Dictation => 768,
-    };
-    if retry { base + 512 } else { base }
-}
-
-/// Mirror of `voice_postprocess_timeout`.
-fn postprocess_timeout(mode: PostprocessMode, raw_text: &str) -> Duration {
-    match mode {
-        PostprocessMode::Task => return Duration::from_millis(8000),
-        PostprocessMode::Edit => return Duration::from_millis(12000),
-        PostprocessMode::Dictation => {}
-    }
-    let compact_len = raw_text
-        .chars()
-        .filter(|ch| {
-            !ch.is_whitespace() && !"。！？!?，,、；;：:\"'“”‘’（）()【】[]….-—".contains(*ch)
-        })
-        .count();
-    if compact_len <= 18 {
-        Duration::from_millis(3000)
-    } else {
-        Duration::from_millis(5000)
-    }
-}
-
-/// Input truncation cap (`VOICE_POSTPROCESS_MAX_INPUT_CHARS`).
-const POSTPROCESS_MAX_INPUT_CHARS: usize = 4000;
-
-fn truncate_postprocess_input(text: &str) -> String {
-    text.chars().take(POSTPROCESS_MAX_INPUT_CHARS).collect()
-}
-
-/// Mirror of `voice_postprocess_user_content`, section for section and
-/// delimiter for delimiter. The CLI surface has no raw-ASR section
-/// (`--text`/`--text-file` is the corrected ASR text and the CLI applies no
-/// deterministic rule corrections of its own, so there is no "before/after"
-/// pair to send), but the draft IS transmitted: `--draft`/`--draft-file`
-/// feeds the same `DRAFT_TEXT` block the GUI builds from `draft_text`, which
-/// the edit prompt's rule 10 promises.
-fn postprocess_user_content(corrected_text: &str, draft_text: Option<&str>) -> String {
-    let mut sections = Vec::new();
-    // Ordered exactly like the app: draft first, then the ASR instruction —
-    // the prompts' examples read in that order.
-    let draft = draft_text.unwrap_or("").trim();
-    if !draft.is_empty() {
-        sections.push(format!(
-            "当前输入框已有文本：\n<<<DRAFT_TEXT>>>\n{draft}\n<<<END>>>"
-        ));
-    }
-    sections.push(format!(
-        "ASR 文本（规则纠错后）：\n<<<ASR_TEXT>>>\n{}\n<<<END>>>",
-        corrected_text.trim()
-    ));
-    sections.push(
-        "无论系统提示中的规则如何，输出必须使用 ASR 文本（及已有文本）原本的语言，不要翻译成其他语言。"
-            .to_owned(),
-    );
-    sections.join("\n\n")
-}
-
-/// Output sanitizer mirrors `sanitize_voice_postprocess_output`:
-/// strip a leading `<think>` block, one wrapping quote pair per quote kind,
-/// and one fully-wrapping markdown fence.
-fn sanitize_postprocess_output(text: &str) -> String {
-    let without_thinking = strip_leading_thinking_block(text);
-    let cleaned = strip_wrapping_quote(
-        strip_wrapping_quote(without_thinking.trim().trim_matches('\u{feff}').trim(), '"'),
-        '\'',
-    )
-    .trim();
-    strip_markdown_fence(cleaned).trim().to_owned()
-}
-
-fn strip_leading_thinking_block(text: &str) -> &str {
-    let trimmed = text.trim_start_matches(|c: char| c.is_whitespace() || c == '\u{feff}');
-    let Some(rest) = trimmed.strip_prefix("<think>") else {
-        return text;
-    };
-    match rest.find("</think>") {
-        Some(end) => rest[end + "</think>".len()..]
-            .trim_start_matches(|c: char| c.is_whitespace() || c == '\u{feff}'),
-        None => "",
-    }
-}
-
-fn strip_wrapping_quote(text: &str, quote: char) -> &str {
-    if text.chars().count() == 1 {
-        return text;
-    }
-    let Some(inner) = text.strip_prefix(quote) else {
-        return text;
-    };
-    let Some(stripped) = inner.strip_suffix(quote) else {
-        return text;
-    };
-    stripped
-}
-
-fn strip_markdown_fence(text: &str) -> &str {
-    let Some(inner) = text.strip_prefix("```") else {
-        return text;
-    };
-    let Some(newline) = inner.find('\n') else {
-        return text;
-    };
-    let body = &inner[newline + 1..];
-    match body.trim_end().strip_suffix("```") {
-        Some(stripped) => stripped.trim(),
-        None => text,
-    }
 }
 
 /// Only the error class survives a reqwest failure: its Display carries the
@@ -2329,7 +2005,7 @@ fn postprocess(
     // (`truncate_voice_postprocess_input` is applied to the draft there too).
     let draft_input = read_source(draft, draft_file, "draft")?;
     let draft_text = draft_input
-        .map(|draft| truncate_postprocess_input(draft.trim()))
+        .map(|draft| truncate_voice_postprocess_input(draft.trim()))
         .filter(|draft| !draft.is_empty());
     // The parser guarantees an edit call carries a draft option, but a file
     // whose whole content is whitespace resolves to nothing — and an edit
@@ -2341,7 +2017,7 @@ fn postprocess(
              rewrite)",
         ));
     }
-    let raw_text = truncate_postprocess_input(raw_input.trim());
+    let raw_text = truncate_voice_postprocess_input(raw_input.trim());
     if raw_text.is_empty() {
         // Mirror of the GUI early return: pure-noise input short-circuits to
         // an empty result without touching the model.
@@ -2369,7 +2045,7 @@ fn postprocess(
     // Overall bound, taken before the host boot; the model-call budget below
     // is taken after it (see `POSTPROCESS_TOTAL_BUDGET`).
     let boot_started = Instant::now();
-    let budget = postprocess_timeout(mode, &raw_text);
+    let budget = voice_postprocess_timeout(mode.as_str(), &raw_text);
     let mode_str = mode.as_str();
     // The host's work closure must resolve to `anyhow::Result`; the CLI-side
     // `CliError` (a std Error) converts into it, so this module never names
@@ -2512,11 +2188,13 @@ fn call_postprocess_model(
         .map(|model| model.preset)
         .unwrap_or_else(|| bridge.prefs.advanced.model_preset.unwrap_or_default());
     let system = if retry {
-        postprocess_retry_prompt(mode)
+        voice_postprocess_retry_prompt(mode.as_str())
     } else {
-        postprocess_prompt(mode)
+        voice_postprocess_prompt(mode.as_str())
     };
-    let user = postprocess_user_content(raw_text, draft_text);
+    // The CLI applies no rule corrections, so there is no raw/corrected pair:
+    // the ASR_RAW section stays CLI-absent (disclosed in the module header).
+    let user = voice_postprocess_user_content(raw_text, None, draft_text);
     let model_name = model_name.to_owned();
 
     let (tx, rx) = std::sync::mpsc::channel();
@@ -2529,7 +2207,7 @@ fn call_postprocess_model(
             system,
             user,
             model_name,
-            postprocess_max_tokens(mode, retry),
+            voice_postprocess_max_tokens(mode.as_str(), retry),
             timeout,
         ));
     });
@@ -2644,7 +2322,7 @@ fn postprocess_http_exchange(
         // practice — `AnthropicCompletion` is not re-exported through any
         // module this crate can name).
         let truncated = anthropic_stop_reason_says_truncated(&value);
-        return Ok((sanitize_postprocess_output(&text), truncated));
+        return Ok((sanitize_voice_postprocess_output(&text), truncated));
     }
 
     let mut body = postprocess_chat_body(&model_name, system, &user, max_tokens);
@@ -2689,7 +2367,7 @@ fn postprocess_http_exchange(
         .and_then(|choice| choice.get("finish_reason"))
         .and_then(|reason| reason.as_str())
         == Some("length");
-    Ok((sanitize_postprocess_output(&content), truncated))
+    Ok((sanitize_voice_postprocess_output(&content), truncated))
 }
 
 /// Truncation detection for the Anthropic Messages preset, mirroring
@@ -2776,18 +2454,6 @@ fn apply_postprocess_reasoning_controls(
     if lower.contains("deepseek") {
         body["thinking"] = serde_json::json!({ "type": "disabled" });
     }
-}
-
-/// Mirror of the app's
-/// `core::reasoning_dialect::kimi_supports_disabled_thinking` (`mod core` is
-/// private to the app crate, so the helper is replicated here and must track
-/// it): kimi-k2.5 / kimi-k2.6 accept disabled thinking; the thinking variants
-/// and k2.7 do not.
-fn kimi_supports_disabled_thinking(model: &str) -> bool {
-    let model = model.to_ascii_lowercase();
-    (model.contains("kimi-k2.5") || model.contains("kimi-k2.6"))
-        && !model.contains("thinking")
-        && !model.contains("k2.7")
 }
 
 #[cfg(test)]
@@ -2945,7 +2611,8 @@ mod review_fix_tests {
     /// order (`voice_postprocess_user_content`).
     #[test]
     fn postprocess_user_content_emits_the_draft_section_the_prompt_promises() {
-        let with_draft = postprocess_user_content("把它改成三条要点。", Some("  整理会议纪要。 "));
+        let with_draft =
+            voice_postprocess_user_content("把它改成三条要点。", None, Some("  整理会议纪要。 "));
         let draft_at = with_draft
             .find("<<<DRAFT_TEXT>>>")
             .expect("the draft section must be present");
@@ -2961,7 +2628,7 @@ mod review_fix_tests {
         // an empty DRAFT_TEXT block would be a section the model must reason
         // about for nothing.
         for absent in [None, Some(""), Some("   \n ")] {
-            let without = postprocess_user_content("查一下今日金价", absent);
+            let without = voice_postprocess_user_content("查一下今日金价", None, absent);
             assert!(
                 !without.contains("DRAFT_TEXT"),
                 "an empty draft must emit no section: {without}"
@@ -3146,7 +2813,8 @@ mod tests {
         anthropic_stop_reason_says_truncated, apply_postprocess_reasoning_controls,
         asr_download_max_bytes, asr_preflight, asr_timeout_secs, download_to, execute,
         native_engine_timeout_secs, postprocess_anthropic_body, postprocess_chat_body,
-        postprocess_http_exchange, postprocess_max_tokens, postprocess_prompt, transcribe_with,
+        postprocess_http_exchange, transcribe_with, voice_postprocess_max_tokens,
+        voice_postprocess_prompt,
     };
 
     /// Serves `body` exactly once on a loopback `std::net::TcpListener` (no
@@ -3453,10 +3121,10 @@ content-length: {}\r\n\r\n{}",
             String::new(),
             String::new(),
             pinvou3_lib::platform::prefs::ModelPreset::Anthropic,
-            postprocess_prompt(PostprocessMode::Task),
+            voice_postprocess_prompt("task"),
             "user".to_owned(),
             "model".to_owned(),
-            postprocess_max_tokens(PostprocessMode::Task, false),
+            voice_postprocess_max_tokens("task", false),
             Duration::from_secs(10),
         )
         .expect("the mock exchange must succeed");
@@ -3616,10 +3284,10 @@ content-length: {}\r\n\r\n{}",
             String::new(),
             "openai_compatible".to_owned(),
             pinvou3_lib::platform::prefs::ModelPreset::Minimax,
-            postprocess_prompt(PostprocessMode::Task),
+            voice_postprocess_prompt("task"),
             "user".to_owned(),
             "model".to_owned(),
-            postprocess_max_tokens(PostprocessMode::Task, false),
+            voice_postprocess_max_tokens("task", false),
             Duration::from_secs(10),
         )
         .expect("the mock exchange must succeed");
