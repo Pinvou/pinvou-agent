@@ -467,17 +467,18 @@ function enforceLazyChunks() {
 }
 
 // Startup budget: 500_000 kept both desktop and web under Vite's 500 kB
-// warning boundary until the app-automations builtin (PR #628) pushed the
-// main entry to 500_140 B on desktop / 502_578 B on web. Lazy-splitting
-// everything deferrable (the result card and its parser moved to the
-// on-demand scheduled-task-card chunk) brought the residual to 498_090 B on
-// desktop and 500_532 B on web — the remaining weight is the timeline-header
-// summary surface, whose synchronous rendering is pinned reviewed behavior.
-// The +1_000 raise covers exactly that measured web residual (accepted with
-// conditions in review round 16); main may now emit Vite's informational
-// chunk-size warning on web, while this gate remains the hard limit.
-// Raising further requires the same measured evidence plus an explicit
-// review decision.
+// Startup budget history (PR #628): the automations builtin pushed the
+// main entry to 500_140 B on desktop / 502_578 B on web; the round-18 lazy
+// split (the result card + parser into the on-demand scheduled-task-card
+// chunk) brought the residual to 498_090 B desktop / 500_532 B web; the
+// parent re-stack onto the reviewer-choreographed base re-measured web at
+// 501_357 B — the remaining weight is the timeline-header summary surface,
+// whose synchronous rendering is pinned reviewed behavior. The raises
+// (500_000 -> 501_000 in round 18, -> 502_000 in round 22) cover those
+// measured residuals, each accepted with conditions in review; main may
+// emit Vite's informational chunk-size warning on web, while this gate
+// remains the hard limit. Raising further requires the same measured
+// evidence plus an explicit review decision.
 export const MAIN_ENTRY_BUDGET_BYTES = 502_000;
 
 export function assertMainEntryBudget(bundle, budgetBytes = MAIN_ENTRY_BUDGET_BYTES) {
