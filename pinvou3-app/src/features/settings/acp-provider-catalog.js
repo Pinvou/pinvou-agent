@@ -3,12 +3,12 @@
 // base_url 为准。
 //
 // The model lists were checked against each vendor's official access docs
-// on 2026-09-11 and re-verified on 2026-09-28 (per-vendor inline comments
-// keep their own check dates); the anthropic / openai / minimax entries were
-// re-checked again on 2026-10-13 (platform.claude.com /
+// on 2026-09-11 and re-verified on 2026-09-28 (platform.claude.com /
 // developers.openai.com / api-docs.deepseek.com / platform.kimi.com /
 // docs.bigmodel.cn / help.aliyun.com(model-studio) / platform.minimax.io /
-// docs.x.ai). Presets only provide the base URL and protocol; the model is
+// docs.x.ai); per-vendor inline comments keep their own check dates, and
+// only the anthropic / openai / minimax entries were re-checked again on
+// 2026-10-13. Presets only provide the base URL and protocol; the model is
 // filled in by the user (see ProviderFormModal: picking a preset does not
 // auto-fill the model). Lists are append-only: relay stations may
 // still proxy older models, and tests/acp_providers_ui_smoke.js depends on
@@ -28,15 +28,16 @@
 export const ACP_PROVIDER_PRESETS = [
   // claude-opus-5-5 (2026-09-22) prepended as the official default
   // recommendation ("start with Claude Opus 5.5 for most workloads");
-  // no entry below is ever removed (the contract test pins membership).
+  // no entry below is ever removed (the contract test pins the required
+  // subset of these ids).
   // sonnet-5-5 (2026-09-28) / haiku-5-5 (2026-10-07) were inserted as the
   // newest tiers.
   { key: 'anthropic', nameKey: 'presetAnthropic', name: 'Anthropic 官方', baseUrl: 'https://api.anthropic.com', baseUrlAnthropic: 'https://api.anthropic.com', wireApi: 'anthropic', models: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-fable-5', 'claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'] },
   // gpt-6.1-sol (2026-09-29 model data, announced at DevDay the same day)
-  // prepended as the new
-  // near-Astra flagship; gpt-6-sol / gpt-6-luna (GPT-6 family expansion,
-  // September 2026) stay; gpt-5.3-codex stays valid for Responses-only ACP
-  // hosts.
+  // prepended as the new near-Astra flagship; gpt-6-sol / gpt-6-luna
+  // (GPT-6 family expansion, September 2026) stay. gpt-5.3-codex stays
+  // valid for Responses-only ACP hosts (watch item: deprecated on
+  // 2026-10-01, shutdown 2027-04-01 per the OpenAI deprecations page).
   { key: 'openai', nameKey: 'presetOpenai', name: 'OpenAI 官方', baseUrl: 'https://api.openai.com/v1', wireApi: 'openai', models: ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.3-codex', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.2'] },
   { key: 'moonshot', nameKey: 'presetMoonshot', name: 'Moonshot Kimi', baseUrl: 'https://api.moonshot.cn/v1', baseUrlAnthropic: 'https://api.moonshot.cn/anthropic', wireApi: 'kimi', models: ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6', 'kimi-k2.7-code-highspeed'], models1m: ['kimi-k3[1m]'] },
   // 注意：models 为**发送给 API 的模型 ID**（官方配置中 models."kimi-code/k3"
@@ -74,7 +75,8 @@ export const ACP_PROVIDER_PRESETS = [
 
 // Official on-list model suggestions for the form's model field (datalist;
 // other model names can be typed freely).
-// As listed in each vendor's official docs as of 2026-10-13 (new tiers are
+// As listed in each vendor's official docs as of 2026-09-28 (anthropic /
+// openai / minimax re-verified 2026-10-13; new tiers are
 // added at the top of their vendor group):
 export const ACP_MODEL_PRESETS = [
   // Anthropic (platform.claude.com; opus-5-5 (2026-09-22) is the official

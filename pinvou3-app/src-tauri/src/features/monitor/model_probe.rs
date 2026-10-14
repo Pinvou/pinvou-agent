@@ -1835,6 +1835,13 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             (ModelPreset::Openai, "gpt-6-sol", 1_050_000),
             (ModelPreset::Openai, "gpt-6-luna", 1_050_000),
             (ModelPreset::Gemini, "gemini-3.8-flash", 1_048_576),
+            // The 2026-10-13 GA flagship joins the catalog: the base gemini
+            // exact rows stop at 3.7/3.1 (no gemini-4 row), so the
+            // core::model_context override table fills it in — official
+            // unified 1M context (ai.google.dev gemini-4-argon model page,
+            // checked 2026-10-14); listed here so the settings-page row is
+            // covered by this charter too.
+            (ModelPreset::Gemini, "gemini-4-argon", 1_048_576),
             // Anthropic models covered by the base catalog (haiku 200K) and the
             // PINVOU_OVERRIDES entries (opus-5 / fable-5-1 both 1M) go through
             // resolved_context_window; preset fallbacks are covered by the prefs

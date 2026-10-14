@@ -35,7 +35,10 @@ import xaiIcon from '../../brand-icons/xai.svg';
 // - gemini: gemini-3.8-flash launched on 2026-09-02 and is still the current
 //   Flash flagship (ai.google.dev changelog re-verified 2026-10-13; the Oct 8
 //   entry deprecated gemini-3.7-flash / gemini-3.5-flash with auto-routing to
-//   3.8-flash / 3.6-flash — see the gemini group).
+//   3.8-flash / 3.6-flash). Gemini 4 Argon (gemini-4-argon) went GA on
+//   2026-10-13 as the new overall flagship and joins the gemini group above
+//   the Flash rows; the preset default stays the Flash mainline — see the
+//   gemini group.
 // - xai: grok-4.7 still holds the official "coding/agent recommended" slot
 //   (docs.x.ai models page re-verified 2026-10-13: "For everything else,
 //   including code, use Grok 4.7"); no newer model exists on the public API.
@@ -325,7 +328,10 @@ const MODEL_CATALOG = {
       // retirement
       // notice as of 2026-10-13; MiniMax's platform-level M2.5/M2.7
       // retirement — new-user cutoff 2026-10-19, offline 2026-11-18 — is a
-      // watch item for this gateway). The old "high-load" flag on
+      // watch item for this gateway). A second watch item: the
+      // deepseek/deepseek-v4-flash-0731 legacyAlias goes offline 2026-10-31
+      // per announce 2496 (2026-09-30; post-paid + Token Plan enterprise
+      // users auto-switch to the DeepSeek latest). The old "high-load" flag on
       // hy4-preview is gone from the current 130060 table, so the note is
       // dropped. DeepSeek rows are first-party direct supply without SLA,
       // per 130060.
@@ -720,7 +726,7 @@ const MODEL_CATALOG = {
       // tier closed to new purchases 2026-03-20) separate from the Token
       // Plan, usable only inside AI coding tools. Keys are also sk-sp-
       // prefixed. The endpoint serves exact-version ids only; the rows
-      // mirror the mirrored entries of the current page — the page
+      // mirror the recommended entries of the current page — the page
       // recommends qwen3.7-plus / qwen3.6-plus / kimi-k2.5 / glm-5 /
       // MiniMax-M2.5 and lists qwen3.5-plus under "more models";
       // kimi-k2.5 stays unmirrored because Moonshot retired it
@@ -796,7 +802,12 @@ const MODEL_CATALOG = {
       // official page verbatim (Doubao/Kimi/GLM/DeepSeek/MiniMax included).
       // The same page also documents an Anthropic-compatible
       // https://ark.cn-beijing.volces.com/api/coding endpoint, unused by
-      // this repo's OpenAI route.
+      // this repo's OpenAI route. 2026-10-14: kimi-k2.7-code started
+      // deprecating 2026-10-13 10:00 (UTC+8; closed to new plan users),
+      // service offline 2026-10-28 14:00 (UTC+8) per the Ark Agent/Coding
+      // Plan deprecation notice (docs 2578680 / 2578687, migrate to
+      // kimi-k3) — the row stays annotated for existing subscribers, same
+      // treatment as the MiniMax M2.x rows.
       items: [
         { model: 'ark-code-latest', title: 'ark-code-latest', desc: 'Coding Plan 自动模型' },
         { model: 'doubao-seed-evolving', title: 'doubao-seed-evolving', desc: '最新推荐，统一模型 ID 自动升级' },
@@ -805,7 +816,7 @@ const MODEL_CATALOG = {
         { model: 'doubao-seed-2.0-mini', title: 'doubao-seed-2.0-mini', desc: '轻量模型' },
         { model: 'kimi-k3', title: 'kimi-k3', desc: 'Kimi 最新旗舰' },
         { model: 'kimi-k2.8-preview', title: 'kimi-k2.8-preview', desc: '代码场景' },
-        { model: 'kimi-k2.7-code', title: 'kimi-k2.7-code', desc: '代码场景' },
+        { model: 'kimi-k2.7-code', title: 'kimi-k2.7-code', desc: '编码模型，官方将于 2026-10-28 下线' },
         { model: 'glm-5.3', legacyAliases: ['glm-latest'], title: 'glm-5.3', desc: '旗舰推理与编码' },
         { model: 'glm-5.3-flash', title: 'glm-5.3-flash', desc: '多模态高性价比' },
         { model: 'deepseek-v4.1-flash', title: 'deepseek-v4.1-flash', desc: '快速响应' },
@@ -841,9 +852,10 @@ const MODEL_CATALOG = {
       // prefix of openai_responses_wire_model. astra stays the strongest
       // tier; gpt-6-sol / gpt-6-luna are demoted but stay listed (no GPT-6
       // retirement on Azure's schedule; the gpt-5.6 rows are scheduled
-      // 2028-01-11). The 5.6 family and gpt-5.5 / gpt-5.4-mini are on sale
-      // and not deprecated (5.6-sol promo pricing documented through at
-      // least 2026-11-21). gpt-5.3-codex remains Responses-only and is not
+      // 2028-01-11). The 5.6 family and gpt-5.5 / gpt-5.4-mini are not
+      // deprecated (5.6-sol's promotional pricing is documented through at
+      // least 2026-11-21; no promo notes exist for the other ids).
+      // gpt-5.3-codex remains Responses-only and is not
       // listed (its home is the Codex ACP lane). Hand-typed ids outside the
       // catalog families keep the Chat wire (bridge
       // openai_responses_wire_model), so legacy chat-only ids stay usable;
@@ -902,7 +914,11 @@ const MODEL_CATALOG = {
       // base bundled offline seed recording them as text-only is stale;
       // the official docs win). From the 4.6 generation on, IDs without a
       // date are fixed snapshots (claude-haiku-4-5 predates that and stays
-      // an alias).
+      // an alias). Deliberately not listed: claude-mythos-5-1 /
+      // claude-mythos-5 are Active first-party per the deprecations table,
+      // but trusted-access-only (anthropic.com/claude/mythos) and absent
+      // from the models-overview recommended lineup, so a preset row would
+      // imply servability the docs don't grant.
       items: [
         { model: 'claude-opus-5-5', imageCapable: true, title: 'claude-opus-5-5', desc: '官方默认推荐，复杂 Agent 编码' },
         { model: 'claude-sonnet-5-5', imageCapable: true, title: 'claude-sonnet-5-5', desc: '新均衡款，较 Sonnet 5 快 30%+，至多省 30%' },
@@ -925,30 +941,36 @@ const MODEL_CATALOG = {
       providerKind: PROVIDER_KIND_OFFICIAL_API,
       vendor: 'gemini',
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-      // Official figures re-checked 2026-10-13 (ai.google.dev changelog /
-      // deprecations pages): gemini-3.8-flash
-      // (2026-09-02) is still the latest Flash. The Oct 8 changelog entry
-      // deprecated gemini-3.7-flash ("deprecated and has been replaced by
-      // gemini-3.8-flash. All requests to gemini-3.7-flash are
-      // automatically routed to gemini-3.8-flash") and gemini-3.5-flash
-      // ("deprecated and has been replaced by gemini-3.6-flash. All requests
-      // to gemini-3.5-flash are automatically routed to gemini-3.6-flash"),
-      // neither with a shutdown date —
-      // both rows stay with the auto-route note. gemini-3.6-flash and
-      // gemini-3.5-flash-lite are Stable on the Gemini API (watch item:
-      // Vertex-side docs list a 2026-11-19 retirement for gemini-3.6-flash
-      // with 3.8-flash as successor — the Gemini API deprecations page
-      // announces no shutdown date); gemini-3.1-pro-preview remains
-      // the flagship Pro with a non-GA id (gemini-3-pro-preview was
-      // retired on 2026-03-09). Thinking cannot be turned off for the
+      // Official figures re-checked 2026-10-13/14 (ai.google.dev changelog /
+      // deprecations / model pages): Gemini 4 Argon (gemini-4-argon) went GA
+      // on 2026-10-13 as the new overall flagship ("our most capable model
+      // built for complex coding, agentic, math, and science tasks"; model
+      // page: unified 1M context, inputs text/image/video/audio/PDF, output
+      // 65,536 sync / up to 1M with long decoding, effort low/medium/high).
+      // gemini-3.8-flash (2026-09-02) stays the preset default: the slot is
+      // the Flash mainline, with Argon the Pro-class flagship above it. The
+      // Oct 8 changelog entry deprecated gemini-3.7-flash ("deprecated and
+      // has been replaced by gemini-3.8-flash. API requests to
+      // gemini-3.7-flash are automatically routed to gemini-3.8-flash") and
+      // gemini-3.5-flash ("... replaced by gemini-3.6-flash. API requests to
+      // gemini-3.5-flash are automatically routed to gemini-3.6-flash"),
+      // neither with a shutdown date — both rows stay with the auto-route
+      // note. gemini-3.6-flash and gemini-3.5-flash-lite are Stable on the
+      // Gemini API (watch item: Vertex-side docs list retirements —
+      // 2026-11-19 for gemini-3.6-flash and 2027-01-28 for gemini-3.7-flash,
+      // successors 3.8-flash — while the Gemini API deprecations page
+      // announces no shutdown dates); gemini-3.1-pro-preview demotes to the
+      // previous flagship preview (gemini-3-pro-preview was retired on
+      // 2026-03-09). Thinking cannot be turned off for the
       // Gemini 3 family on the OpenAI-compatible layer.
       items: [
+        { model: 'gemini-4-argon', imageCapable: true, title: 'gemini-4-argon', desc: '最新旗舰，复杂编码与推理' },
         { model: 'gemini-3.8-flash', imageCapable: true, title: 'gemini-3.8-flash', desc: '最新 Flash，均衡高性价比' },
         { model: 'gemini-3.7-flash', imageCapable: true, title: 'gemini-3.7-flash', desc: '已弃用，请求自动路由至 3.8-flash' },
         { model: 'gemini-3.6-flash', imageCapable: true, title: 'gemini-3.6-flash', desc: '上代稳定 Flash，仍在服务' },
         { model: 'gemini-3.5-flash', imageCapable: true, title: 'gemini-3.5-flash', desc: '已弃用，请求自动路由至 3.6-flash' },
         { model: 'gemini-3.5-flash-lite', imageCapable: true, title: 'gemini-3.5-flash-lite', desc: '快速经济' },
-        { model: 'gemini-3.1-pro-preview', imageCapable: true, title: 'gemini-3.1-pro-preview', desc: '旗舰推理（预览）' },
+        { model: 'gemini-3.1-pro-preview', imageCapable: true, title: 'gemini-3.1-pro-preview', desc: '上代旗舰推理（预览）' },
         { model: '', title: '自定义 Gemini 模型', desc: '手动填写模型 ID', custom: true },
       ],
     },
@@ -1186,7 +1208,9 @@ function catalogItemMatchesModel(item, model) {
 // Unknown). When adding catalog entries, decide in the same change whether an
 // annotation is needed.
 // Existing annotations were verified online entry by entry against each
-// vendor's official docs on 2026-09-11: the whole current Claude family, all
+// vendor's official docs on 2026-09-11 (snapshot rows that joined on
+// 2026-09-28 — e.g. the Doubao -260915 pair — re-verified in that refresh):
+// the whole current Claude family, all
 // of Gemini, every Grok catalog row (including grok-4.5 / grok-4.20-0309-*,
 // whose detail pages state
 // text, image → text), the GPT-5.x/6 rows, kimi-k3 / k2.7-code / k2.6 and the
@@ -1198,9 +1222,13 @@ function catalogItemMatchesModel(item, model) {
 // (mimo-v2.5-pro: one en-US model-list rendering showed a Full-modal
 // Understanding cell that the zh-CN primary list lacks — see the mimo
 // group comment),
-// annotated false. 2026-10-13 addition: claude-sonnet-5-5 (screenshot-driven
-// benchmark play on its announcement page) and claude-haiku-5-5 (Visual
-// reasoning benchmark) are annotated true on the same public-fact basis.
+// annotated false. Later additions carry their own dated basis:
+// gpt-6.1-sol (2026-10-13; model page lists input modalities text and
+// image), claude-sonnet-5-5 (screenshot-driven
+// benchmark play on its announcement page), claude-haiku-5-5 (Visual
+// reasoning benchmark), and gemini-4-argon (GA 2026-10-13; model page
+// lists text/image/video/audio/PDF inputs) — all annotated true on the
+// same public-fact basis.
 // Returns the first explicit annotation (true/false) in scan order; an
 // unannotated hit does not short-circuit the scan;
 // returns null on no hit or when no hit carries an annotation (the "auto"

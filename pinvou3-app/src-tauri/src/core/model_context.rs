@@ -102,6 +102,11 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // monitor page's Gemini 1M fallback. Official input limit is 1,048,576
     // (ai.google.dev gemini-3.8-flash page, 2026-09-11).
     ("gemini-3.8-flash", 1_048_576),
+    // gemini-4-argon (catalog row since 2026-10-14, GA 2026-10-13) also has
+    // no base row and would diverge the same way. Official unified 1M
+    // context (1,048,576; ai.google.dev gemini-4-argon model page, checked
+    // 2026-10-14), the same figure the whole Gemini family carries.
+    ("gemini-4-argon", 1_048_576),
     // The catalog desc says 256K; the base known table only has bare
     // "grok-build" → 512K (exact equality misses the -0.1 wire id), so the
     // engine resolves None and falls to 128K. Official figure is 256K
@@ -476,6 +481,12 @@ mod tests {
         // base gpt-6-family row), so removing the row would turn the monitor
         // `preset_default_models_resolve_engine_context_window` red too.
         assert_eq!(resolved_context_window("gpt-6.1-sol"), Some(1_050_000));
+        // gemini-4-argon (GA 2026-10-13, catalog row since 2026-10-14) rides
+        // the same anchor logic as gemini-3.8-flash: no base row exists (the
+        // base gemini rows stop at 3.7/3.1), and the monitor's Gemini
+        // fallback coincides at 1M, so only this shared-entry pin catches a
+        // removal.
+        assert_eq!(resolved_context_window("gemini-4-argon"), Some(1_048_576));
         // Documented output anchors: the gpt-6 family has no base output row,
         // so without this fact the engine fail-closes the Responses route to
         // the 8192 guess while reasoning meters as output. Suffix tolerance

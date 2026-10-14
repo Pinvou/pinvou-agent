@@ -124,7 +124,7 @@ test('z.ai coding catalog rows move to the official lowercase spelling; legacy u
   const mkZaiPaas = model => mk({ preset: 'glm', provider_kind: 'official_api', vendor: 'glm', base_url: 'https://api.z.ai/api/paas/v4', model });
   assert.strictEqual(isPresetModel(mkZaiPaas('GLM-5-Turbo')), false, 'the z.ai paas GLM-5-Turbo row is deleted; falls back to custom');
 });
-test('Tencent Coding Plan catalog hits with legacy alias compatibility (official 2026-10-13 model table)', () => {
+test('Tencent Coding Plan collapses to tc-code-latest; retired ids fall back to custom (announce 2469)', () => {
   // The live 130092 table still displays glm-5 with its now-past-due
   // retirement notice; announce 2469 (GLM-5 / GLM-5-Turbo / GLM-5.1 offline
   // Beijing time 2026-10-09 00:00, Coding Plan users auto-switch to Auto) is
@@ -322,17 +322,33 @@ test('2026-10-13 catalog refresh lands in their provider groups (preset recognit
   assert.strictEqual(isPresetModel(mkCloud('anthropic', 'anthropic', 'https://api.anthropic.com/v1', 'claude-haiku-5-5')), true);
   assert.strictEqual(catalogImageCapableForModel('claude-sonnet-5-5'), true);
   assert.strictEqual(catalogImageCapableForModel('claude-haiku-5-5'), true);
+  // Gemini: Gemini 4 Argon went GA 2026-10-13 as the new overall flagship
+  // and joins above the Flash rows; the preset default stays the Flash
+  // mainline (gemini-3.8-flash, locked below).
+  assert.strictEqual(isPresetModel(mkCloud('gemini', 'gemini', 'https://generativelanguage.googleapis.com/v1beta/openai', 'gemini-4-argon')), true);
+  assert.strictEqual(catalogImageCapableForModel('gemini-4-argon'), true);
   // Tencent Coding Plan collapses to tc-code-latest (announce 2469); the
-  // Token Plan mirrors the live table's additions.
+  // Token Plan mirrors the live table's additions. The gateway ids' FE image
+  // annotations match the Rust table (group comment): the cross-group
+  // bare-id scan resolves mimo-v2.6-flash via the mimo group's annotated
+  // row, while deepseek/deepseek-flash is exact-id only and stays
+  // unannotated (null).
   assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'tencent', base_url: 'https://api.lkeap.cloud.tencent.com/plan/v3', model: 'deepseek/deepseek-flash' })), true);
   assert.strictEqual(isPresetModel(mk({ preset: 'openai_compatible', provider_kind: 'coding_plan', vendor: 'tencent', base_url: 'https://api.lkeap.cloud.tencent.com/plan/v3', model: 'mimo-v2.6-flash' })), true);
+  assert.strictEqual(catalogImageCapableForModel('mimo-v2.6-flash'), true);
+  assert.strictEqual(catalogImageCapableForModel('deepseek/deepseek-flash'), null);
   // Alibaba Coding Plan re-synced to the official 2026-10-10 page:
   // qwen3.5-plus joins; qwen3-coder-plus / qwen3-coder-next / glm-4.7 are
   // no longer listed and their rows are removed (configs fall to custom,
-  // endpoint classification is URL-based and unaffected).
+  // endpoint classification is URL-based and unaffected). The kept rows stay
+  // pinned positive — the glm-5 row here is now the only bare glm-5 row in
+  // the whole catalog, so an accidental drop must turn red.
   const alibabaCoding = 'https://coding.dashscope.aliyuncs.com/v1';
   const mkAlibabaPlan = model => mk({ preset: 'qwen', provider_kind: 'coding_plan', vendor: 'qwen', base_url: alibabaCoding, model });
   assert.strictEqual(isPresetModel(mkAlibabaPlan('qwen3.5-plus')), true);
+  assert.strictEqual(isPresetModel(mkAlibabaPlan('qwen3.6-plus')), true);
+  assert.strictEqual(isPresetModel(mkAlibabaPlan('glm-5')), true, 'the only remaining bare glm-5 catalog row');
+  assert.strictEqual(isPresetModel(mkAlibabaPlan('MiniMax-M2.5')), true);
   assert.strictEqual(isPresetModel(mkAlibabaPlan('qwen3-coder-plus')), false);
   assert.strictEqual(isPresetModel(mkAlibabaPlan('qwen3-coder-next')), false);
   assert.strictEqual(isPresetModel(mkAlibabaPlan('glm-4.7')), false);
