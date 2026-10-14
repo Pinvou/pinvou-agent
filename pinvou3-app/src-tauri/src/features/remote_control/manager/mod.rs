@@ -61,12 +61,16 @@ use rpc::{
 use transfer::{
     append_web_attachment_upload_chunk, clear_web_attachments, discard_web_attachment_upload,
     ensure_web_session_download_capacity, finish_web_attachment_reservation_inner,
-    is_owned_session_download_id, open_web_session_downloads_base,
-    prune_expired_web_session_transfers, read_web_session_download_chunk,
-    remove_web_attachment_upload_dir, request_web_attachment_discard,
-    sweep_stale_web_session_downloads, take_web_session_download,
+    open_web_session_downloads_base, prune_expired_web_session_transfers,
+    read_web_session_download_chunk, remove_web_attachment_upload_dir,
+    request_web_attachment_discard, sweep_stale_web_session_downloads, take_web_session_download,
 };
-pub(crate) use transfer::{sweep_stale_web_attachment_uploads, web_attachment_uploads_base};
+// The download-id ownership rule is the mint-side contract (`begin_web_session_download`
+// issues ids through it); the command-layer cancel gate re-uses it so the two
+// cannot drift again.
+pub(crate) use transfer::{
+    is_owned_session_download_id, sweep_stale_web_attachment_uploads, web_attachment_uploads_base,
+};
 use workspace_grants::{
     WebWorkspaceGrantReservation, WebWorkspaceGrantStore, WebWorkspaceIdentity,
     require_host_workspace_authorization,
