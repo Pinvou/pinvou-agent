@@ -43,6 +43,10 @@ const SEARCH_KEY_PROVIDERS = ['metaso', 'bocha', 'baidu', 'tavily'];
 // (zh-primary users never load the en/ja chunks).
 export const DEFAULT_CHAT_TITLES = new Set(['新对话', 'New chat', '新しいチャット']);
 
+// F12-3：默认标题哨兵判定与集合同源导出（main.jsx 侧副本因 #484 冻结暂保留，
+// 对话管理页等模块侧消费方统一走这里，避免逐文件重实现）。
+export const isDefaultChatTitle = (title) => DEFAULT_CHAT_TITLES.has(title);
+
 // 惰性语言词典装载。模式对齐 shared/syntax-highlighter.js 的 LAZY_LANGUAGE_LOADERS:
 // 载入表冻结、在途去重、失败清挂起(下次触发可重试)。ja chunk 静态依赖 en chunk
 // (兜底 spread 在模块内完成),由打包器拆成共享 chunk,无需在此处理顺序。

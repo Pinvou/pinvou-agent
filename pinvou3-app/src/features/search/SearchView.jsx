@@ -13,7 +13,7 @@ import {
 import { formatDateGroupLabel, formatSessionDate, localDateKey } from '../../shared/date-utils.js';
 import { sessionRoute } from '../../shared/session-management.js';
 import { compareSessionsByRecentUpdate, filterSessionsByTab, groupSessionsByLocalDate, sessionListComparator } from '../../shared/session-list-pipeline.js';
-import { DEFAULT_CHAT_TITLES } from '../../shared/i18n.js';
+import { isDefaultChatTitle } from '../../shared/i18n.js';
 
 // 对话管理页:上方搜索框,工具行「对话|已收纳」切换 + 批量管理,左侧日期栏,右侧对话列表。
 // 已收纳与在线对话共用同一套日期分组/搜索/多选管线,仅数据源与行操作不同
@@ -22,11 +22,6 @@ import { DEFAULT_CHAT_TITLES } from '../../shared/i18n.js';
 // 左侧只保留有匹配的日期,点击日期平滑滚动到右侧对应分组。
 // Stable empty-array default: an inline [] is a new reference on every render, which makes memoized children re-render repeatedly.
 const EMPTY_ARCHIVED = [];
-
-// 与 main.jsx 的 isDefaultChatTitle 同口径:后端默认标题是三语哨兵
-// (shared/i18n.js DEFAULT_CHAT_TITLES),展示层统一映射为当前语言的 t.newChat,
-// 避免非中文界面显示硬编码的中文标题。
-const isDefaultChatTitle = (title) => DEFAULT_CHAT_TITLES.has(title);
 
 // Round checkbox for bulk multi-select: the in-row check (large) and select-all (small) share one stroke/fill style set
 const CircleCheck = ({ checked, size }) => (
