@@ -10,7 +10,7 @@
 
 let pinvouSharedwebCache = null;
 function pinvouSharedweb() {
-  if (!pinvouSharedwebCache) pinvouSharedwebCache = window.PinvouBridgeShared.create("web", { state, BT_TABLE: { get value() { return BT_TABLE; } }, PINVOU_SCENE_EVENTS_STORAGE_PREFIX: { get value() { return PINVOU_SCENE_EVENTS_STORAGE_PREFIX; } }, invoke, sessionStates: { get value() { return sessionStates; } }, freshBuffer, restoreEvictedSessionDraft, sessionBufferTouchClock: { get value() { return sessionBufferTouchClock; }, set value(v) { sessionBufferTouchClock = v; } }, pruneScheduledSessionBuffers, pruneSessionBuffers, scheduledRunSessionOwners: { get value() { return scheduledRunSessionOwners; } }, scheduledRunOwnerTouchClock: { get value() { return scheduledRunOwnerTouchClock; }, set value(v) { scheduledRunOwnerTouchClock = v; } }, MAX_SCHEDULED_RUN_SESSION_OWNERS: { get value() { return MAX_SCHEDULED_RUN_SESSION_OWNERS; } }, recordAuthoritySyncDiagnostic, runSyncOnSession, notify, SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY, scheduledTaskTemplateSources: { get value() { return scheduledTaskTemplateSources; } }, persistScheduledTaskTemplateSources, scheduledTaskRequestTokens: { get value() { return scheduledTaskRequestTokens; } }, scheduledTaskRefreshInFlight: { get value() { return scheduledTaskRefreshInFlight; }, set value(v) { scheduledTaskRefreshInFlight = v; } }, scheduledRecentRunsRequestToken: { get value() { return scheduledRecentRunsRequestToken; }, set value(v) { scheduledRecentRunsRequestToken = v; } }, scheduledRunEventRefreshTimer: { get value() { return scheduledRunEventRefreshTimer; }, set value(v) { scheduledRunEventRefreshTimer = v; } }, scheduledTaskPendingLoads: { get value() { return scheduledTaskPendingLoads; } }, scheduledTaskSelectionGeneration: { get value() { return scheduledTaskSelectionGeneration; }, set value(v) { scheduledTaskSelectionGeneration = v; } }, createScheduledTask, scheduledRunShortcutRefreshes: { get value() { return scheduledRunShortcutRefreshes; } }, SCHEDULED_LINK_POLL_DEADLINE_MS: { get value() { return SCHEDULED_LINK_POLL_DEADLINE_MS; } }, SCHEDULED_LINK_POLL_FAST_ATTEMPTS: { get value() { return SCHEDULED_LINK_POLL_FAST_ATTEMPTS; } }, SCHEDULED_LINK_POLL_FAST_MS: { get value() { return SCHEDULED_LINK_POLL_FAST_MS; } }, SCHEDULED_LINK_POLL_SLOW_MS: { get value() { return SCHEDULED_LINK_POLL_SLOW_MS; } }, scheduledTaskBackendInput, forgetScheduledTaskTemplateSource, scheduledTaskAutoCreateSeq: { get value() { return scheduledTaskAutoCreateSeq; }, set value(v) { scheduledTaskAutoCreateSeq = v; } }, messageHasToolBlock, addChatItem, enterDraft, hydratedMessageKey, switchToSessionInternal, openScheduledRunChatOnce, scheduledRunOpenInFlight: { get value() { return scheduledRunOpenInFlight; } }, loadWorkingSetFrom, purgeSessionBuffer, personaPlaceholderTitles: { get value() { return personaPlaceholderTitles; } }, refreshHistoryList, sessionSwitchRequestToken: { get value() { return sessionSwitchRequestToken; }, set value(v) { sessionSwitchRequestToken = v; } }, saveWorkingSetTo, SHELL_TOOL_NAMES: { get value() { return SHELL_TOOL_NAMES; } }, normalizeTerminalTail, latestShellToolIsWaitObserver, shellPollState: { get value() { return shellPollState; } }, DELIVERABLE_EXTS: { get value() { return DELIVERABLE_EXTS; } }, extractArtifactPaths, summonPinvou, parseToolResultPayload, monitorBaseline: { get value() { return monitorBaseline; }, set value(v) { monitorBaseline = v; } }, clearMonitorBaseline, monitorIntervalId: { get value() { return monitorIntervalId; }, set value(v) { monitorIntervalId = v; } }, gpuUtilHistory: { get value() { return gpuUtilHistory; }, set value(v) { gpuUtilHistory = v; } }, pollMonitor, settingsWriteQueue: { get value() { return settingsWriteQueue; }, set value(v) { settingsWriteQueue = v; } }, modelsLoadSeq: { get value() { return modelsLoadSeq; }, set value(v) { modelsLoadSeq = v; } }, loadSessionModel, setActiveModel, currentDraftModeState, loadMemoryOverview, memoryOverviewSeq: { get value() { return memoryOverviewSeq; }, set value(v) { memoryOverviewSeq = v; } }, setDraftMode, applyAuthoritativeModeState, sendMessage, pushUserEcho, flushAssistantMessageToHistory, dialogOpen, addAttachmentByPath, personaPoolCache: { get value() { return personaPoolCache; }, set value(v) { personaPoolCache = v; } }, deletedPersonaIds: { get value() { return deletedPersonaIds; } }, lastEquippedSid: { get value() { return lastEquippedSid; }, set value(v) { lastEquippedSid = v; } }, mountedCollectionDraftTarget: { get value() { return mountedCollectionDraftTarget; }, set value(v) { mountedCollectionDraftTarget = v; } }, ensureSession, mountedCollectionUpdate: { get value() { return mountedCollectionUpdate; }, set value(v) { mountedCollectionUpdate = v; } }, activeVoiceInput: { get value() { return activeVoiceInput; }, set value(v) { activeVoiceInput = v; } }, stopMediaTracks, VOICE_DEVICE_REQUEST_TIMEOUT_MS: { get value() { return VOICE_DEVICE_REQUEST_TIMEOUT_MS; } }, finishVoiceInput });
+  if (!pinvouSharedwebCache) pinvouSharedwebCache = window.PinvouBridgeShared.create("web", { state, BT_TABLE: { get value() { return BT_TABLE; } }, PINVOU_SCENE_EVENTS_STORAGE_PREFIX: { get value() { return PINVOU_SCENE_EVENTS_STORAGE_PREFIX; } }, invoke, sessionStates: { get value() { return sessionStates; } }, freshBuffer, restoreEvictedSessionDraft, sessionBufferTouchClock: { get value() { return sessionBufferTouchClock; }, set value(v) { sessionBufferTouchClock = v; } }, pruneScheduledSessionBuffers, pruneSessionBuffers, scheduledRunSessionOwners: { get value() { return scheduledRunSessionOwners; } }, scheduledRunOwnerTouchClock: { get value() { return scheduledRunOwnerTouchClock; }, set value(v) { scheduledRunOwnerTouchClock = v; } }, MAX_SCHEDULED_RUN_SESSION_OWNERS: { get value() { return MAX_SCHEDULED_RUN_SESSION_OWNERS; } }, recordAuthoritySyncDiagnostic, runSyncOnSession, notify, SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY, scheduledTaskTemplateSources: { get value() { return scheduledTaskTemplateSources; } }, persistScheduledTaskTemplateSources, scheduledTaskRequestTokens: { get value() { return scheduledTaskRequestTokens; } }, scheduledTaskRefreshInFlight: { get value() { return scheduledTaskRefreshInFlight; }, set value(v) { scheduledTaskRefreshInFlight = v; } }, scheduledRecentRunsRequestToken: { get value() { return scheduledRecentRunsRequestToken; }, set value(v) { scheduledRecentRunsRequestToken = v; } }, scheduledRunEventRefreshTimer: { get value() { return scheduledRunEventRefreshTimer; }, set value(v) { scheduledRunEventRefreshTimer = v; } }, scheduledTaskPendingLoads: { get value() { return scheduledTaskPendingLoads; } }, scheduledTaskSelectionGeneration: { get value() { return scheduledTaskSelectionGeneration; }, set value(v) { scheduledTaskSelectionGeneration = v; } }, createScheduledTask, scheduledRunShortcutRefreshes: { get value() { return scheduledRunShortcutRefreshes; } }, SCHEDULED_LINK_POLL_DEADLINE_MS: { get value() { return SCHEDULED_LINK_POLL_DEADLINE_MS; } }, SCHEDULED_LINK_POLL_FAST_ATTEMPTS: { get value() { return SCHEDULED_LINK_POLL_FAST_ATTEMPTS; } }, SCHEDULED_LINK_POLL_FAST_MS: { get value() { return SCHEDULED_LINK_POLL_FAST_MS; } }, SCHEDULED_LINK_POLL_SLOW_MS: { get value() { return SCHEDULED_LINK_POLL_SLOW_MS; } }, scheduledTaskBackendInput, forgetScheduledTaskTemplateSource, scheduledTaskAutoCreateSeq: { get value() { return scheduledTaskAutoCreateSeq; }, set value(v) { scheduledTaskAutoCreateSeq = v; } }, messageHasToolBlock, addChatItem, enterDraft, hydratedMessageKey, switchToSessionInternal, openScheduledRunChatOnce, scheduledRunOpenInFlight: { get value() { return scheduledRunOpenInFlight; } }, loadWorkingSetFrom, purgeSessionBuffer, personaPlaceholderTitles: { get value() { return personaPlaceholderTitles; } }, refreshHistoryList, sessionSwitchRequestToken: { get value() { return sessionSwitchRequestToken; }, set value(v) { sessionSwitchRequestToken = v; } }, saveWorkingSetTo, SHELL_TOOL_NAMES: { get value() { return SHELL_TOOL_NAMES; } }, normalizeTerminalTail, latestShellToolIsWaitObserver, shellPollState: { get value() { return shellPollState; } }, DELIVERABLE_EXTS: { get value() { return DELIVERABLE_EXTS; } }, extractArtifactPaths, summonPinvou, parseToolResultPayload, monitorBaseline: { get value() { return monitorBaseline; }, set value(v) { monitorBaseline = v; } }, clearMonitorBaseline, monitorIntervalId: { get value() { return monitorIntervalId; }, set value(v) { monitorIntervalId = v; } }, gpuUtilHistory: { get value() { return gpuUtilHistory; }, set value(v) { gpuUtilHistory = v; } }, monitorPollInFlight: { get value() { return monitorPollInFlight; }, set value(v) { monitorPollInFlight = v; } }, pollMonitor, settingsWriteQueue: { get value() { return settingsWriteQueue; }, set value(v) { settingsWriteQueue = v; } }, modelsLoadSeq: { get value() { return modelsLoadSeq; }, set value(v) { modelsLoadSeq = v; } }, loadSessionModel, setActiveModel, currentDraftModeState, loadMemoryOverview, memoryOverviewSeq: { get value() { return memoryOverviewSeq; }, set value(v) { memoryOverviewSeq = v; } }, setDraftMode, applyAuthoritativeModeState, sendMessage, pushUserEcho, flushAssistantMessageToHistory, dialogOpen, addAttachmentByPath, personaPoolCache: { get value() { return personaPoolCache; }, set value(v) { personaPoolCache = v; } }, deletedPersonaIds: { get value() { return deletedPersonaIds; } }, lastEquippedSid: { get value() { return lastEquippedSid; }, set value(v) { lastEquippedSid = v; } }, mountedCollectionDraftTarget: { get value() { return mountedCollectionDraftTarget; }, set value(v) { mountedCollectionDraftTarget = v; } }, ensureSession, mountedCollectionUpdate: { get value() { return mountedCollectionUpdate; }, set value(v) { mountedCollectionUpdate = v; } }, activeVoiceInput: { get value() { return activeVoiceInput; }, set value(v) { activeVoiceInput = v; } }, stopMediaTracks, VOICE_DEVICE_REQUEST_TIMEOUT_MS: { get value() { return VOICE_DEVICE_REQUEST_TIMEOUT_MS; } }, finishVoiceInput });
   return pinvouSharedwebCache;
 }
 
@@ -461,7 +461,7 @@ function pinvouSharedweb() {
       kbPickFolderTitle: "Choose a folder to import into the knowledge base",
       rebindPickFolderTitle: "Choose the folder to rebind this project to",
       metricUnavailable: "Not provided",
-      betaTag: " (Beta)",
+      betaVersionSuffix: " (Beta)",
       memoryWriteFailed: "Failed to write memory: ",
       memoryIgnoreFailed: "Failed to ignore memory: ",
       memoryNeverFailed: "Failed to update the never-ask setting: ",
@@ -582,7 +582,7 @@ function pinvouSharedweb() {
       kbPickFolderTitle: "知識ベースにインポートするフォルダーを選択",
       rebindPickFolderTitle: "このプロジェクトの再バインド先フォルダーを選択",
       metricUnavailable: "未提供",
-      betaTag: " (ベータ版)",
+      betaVersionSuffix: " (ベータ版)",
       memoryWriteFailed: "メモリの書き込みに失敗：",
       memoryIgnoreFailed: "メモリの無視に失敗：",
       memoryNeverFailed: "「今後表示しない」の設定に失敗：",
@@ -703,7 +703,7 @@ function pinvouSharedweb() {
       kbPickFolderTitle: "选择要导入知识库的文件夹",
       rebindPickFolderTitle: "选择重绑定项目的新文件夹",
       metricUnavailable: "未提供",
-      betaTag: " (内测版)",
+      betaVersionSuffix: " (内测版)",
       memoryWriteFailed: "记忆写入失败：",
       memoryIgnoreFailed: "忽略记忆失败：",
       memoryNeverFailed: "设置不再提示失败：",
@@ -5529,32 +5529,12 @@ function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvou
   });
 
   // ── Monitor ──────────────────────────────────────────────────────
-  // The shared format-utils script is loaded statically; the inline fallbacks
-  // are verbatim copies of its bodies so the monitor never falls back to raw
-  // numbers when the shared script is missing.
-  const PinvouFU = window.PinvouFormatUtils || {};
-  const fmtMiB = PinvouFU.fmtMiB || function (mib) {
-    if (mib == null) return "—";
-    return mib >= 1024 ? (mib / 1024).toFixed(1) + " GB" : mib + " MB";
-  };
-  const fmtKiB = PinvouFU.fmtKiB || function (kib) {
-    if (kib == null) return "—";
-    if (kib >= 1024 * 1024) return (kib / 1024 / 1024).toFixed(1) + " GB";
-    if (kib >= 1024) return (kib / 1024).toFixed(0) + " MB";
-    return kib + " KB";
-  };
-  const fmtDuration = PinvouFU.fmtDuration || function (secs) { return secs == null ? "—" : String(secs); };
-  const fmtTok = PinvouFU.fmtTok || function (n) { return n == null ? "—" : String(n); };
-
+  // pollMonitor/appQueueSnapshot/monitorFmtEqual 与格式化 fallback 统一在
+  // shared/bridge-shared-helpers.js 的 tauriMonitor/web cluster（betaVersionSuffix
+  // 键两侧同值同名）；此处仅保留 lane 内转发的公开入口。
 
 function numOr0(x) { return pinvouSharedweb().numOr0(x); }
 
-  // 用基准点把累计 counter 换算成「自清除以来」的区间值。sp=app 自测(snap.self_perf,
-  // TTFT/TPS/tokens 全从这);v=vllm(仅 KV 的本地 prefix_cache 分支要它)。无基准 → 直接
-  // 用进程生命周期累计值。任一 counter 倒退（< 基准：app 或 vLLM 重启、counter 归零）
-  // → 丢弃失效基准，回落到累计值，避免负数。
-  // KV 命中率(混合):本地 vLLM 用 /metrics prefix_cache(vllmKvPct);拿不到再用 usage 的
-  // cache token 口径(selfKvPct,给云端/D3)。二者都按区间(扣基准)重算。
 function adjustCounters(sp, v) { return pinvouSharedweb().adjustCounters(sp, v); }
 
   function clearMonitorBaseline() {
@@ -5586,170 +5566,7 @@ function adjustCounters(sp, v) { return pinvouSharedweb().adjustCounters(sp, v);
     return true;
   }
 
-  function appQueueSnapshot() {
-    let waiting = state.queued ? state.queued.length : 0;
-    const busyMap = {};
-    for (const id in sessionStates) {
-      // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 floor: Object.hasOwn is unavailable; this call is already the safe form
-      if (!Object.prototype.hasOwnProperty.call(sessionStates, id)) continue;
-      if (id === state.activeSessionId) continue;
-      const buf = sessionStates[id] || {};
-      if (buf.busy) busyMap[id] = true;
-      if (Array.isArray(buf.queued)) waiting += buf.queued.length;
-    }
-    if (state.activeSessionId && state.busy) busyMap[state.activeSessionId] = true;
-    const running = Object.keys(busyMap).length;
-    return { running, waiting };
-  }
-
-  // MonitorView only consumes state.monitor._fmt (plus one level of vllmRaw
-  // nesting), so shallow equality means display equivalence. The poll runs
-  // once per second; when a snapshot is display-equivalent, skip the
-  // assignment + notify to avoid a full App re-render every second while the
-  // monitor page is open. Numeric values jitter naturally (cpu/gpu
-  // percentages etc.), so comparisons allow a 0.5 tolerance (prefer one
-  // extra notify over ever getting stuck); counters are mostly strings after
-  // toFixed/round and compare exactly. The page clock is driven by
-  // MonitorView's local 1s timer and does not depend on any poll-tick marker.
-  function monitorFmtEqual(prev, next) {
-    if (prev === next) return true;
-    if (!prev || !next) return false;
-    const numEq = function (a, b) {
-      if (a === b) return true;
-      return typeof a === "number" && typeof b === "number"
-        && Number.isFinite(a) && Number.isFinite(b)
-        && Math.abs(a - b) <= 0.5;
-    };
-    const keys = Object.keys(next);
-    if (keys.length !== Object.keys(prev).length) return false;
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i];
-      const a = prev[key];
-      const b = next[key];
-      if (a && b && typeof a === "object" && typeof b === "object") {
-        const inner = Object.keys(b);
-        if (inner.length !== Object.keys(a).length) return false;
-        let same = true;
-        for (let j = 0; j < inner.length; j++) {
-          if (!numEq(a[inner[j]], b[inner[j]])) { same = false; break; }
-        }
-        if (!same) return false;
-        continue;
-      }
-      if (!numEq(a, b)) return false;
-    }
-    return true;
-  }
-
-  // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
-  async function pollMonitor() {
-    if (monitorPollInFlight) return;
-    monitorPollInFlight = true;
-    try {
-      const snap = await invoke("get_monitor_snapshot");
-      // The previous round errored → this round must notify once so the
-      // "read failed" banner switches back to the normal panel.
-      const hadMonitorError = !!state.monitorError;
-      state.monitorError = null;
-      // GPU util sliding window
-      if (snap.gpu) {
-        gpuUtilHistory.push(snap.gpu.utilization_pct);
-        if (gpuUtilHistory.length > 5) gpuUtilHistory.shift();
-        snap.gpu._utilMax = Math.max(...[0, ...gpuUtilHistory]);
-      }
-      // 监控页「后 4 项」累计指标：TTFT/TPS/tokens 来自 app 侧自测(snap.self_perf,
-      // 任何后端都有);KV 混合(本地 vLLM prefix_cache 优先,否则 usage 口径)。
-      // 按「清除统计」基准点换算成区间值后再格式化。
-      const sadj = adjustCounters(snap.self_perf, snap.vllm);
-      // KV 显示值:本地 vLLM 的 /metrics prefix_cache 优先,拿不到用 usage cache 口径(云端)。
-      const kvShown = sadj ? (sadj.vllmKvPct == null ? (sadj.selfKvPct == null ? null : sadj.selfKvPct)
-        : sadj.vllmKvPct) : null;
-      // Format values for display
-      const vllm = snap.vllm || null;
-      const metricsApplicable = vllm ? vllm.metrics_applicable !== false : false;
-      const metricUnavailableText = bt("metricUnavailable");
-      const targetKind = vllm && vllm.target_kind ? vllm.target_kind : "invalid";
-      const vllmDisplayModel = vllm ? (vllm.model || vllm.configured_model || "—") : "—";
-      const healthStatus = vllm && vllm.health_status ? vllm.health_status : (vllm ? "verified" : "offline");
-      const appQueue = appQueueSnapshot();
-      const cpu = snap.cpu || null;
-      const cpuUsage = cpu && typeof cpu.total_usage_pct === "number" && Number.isFinite(cpu.total_usage_pct)
-        ? Math.round(Math.max(0, Math.min(100, cpu.total_usage_pct)))
-        : null;
-      const computeName = snap.gpu ? snap.gpu.name : (cpu && cpu.name ? cpu.name : bt("gpuUnavailable"));
-      snap._fmt = {
-        gpuName: computeName,
-        cpuName: cpu && cpu.name ? cpu.name : "",
-        cpuAvailable: !!cpu,
-        computeAvailable: !!(snap.gpu || cpu),
-        computeName,
-        gpuVramPct: snap.gpu && snap.gpu.vram_total_mib > 0
-          ? Math.round(snap.gpu.vram_used_mib / snap.gpu.vram_total_mib * 100) : 0,
-        gpuUtilPct: snap.gpu ? snap.gpu._utilMax : 0,
-        processorUtilPct: cpuUsage == null
-          ? (snap.gpu && snap.gpu.processor_utilization_pct != null ? snap.gpu.processor_utilization_pct : 0)
-          : cpuUsage,
-        gpuSharedMemory: snap.gpu && snap.gpu.shared_memory_used_mib != null ? fmtMiB(snap.gpu.shared_memory_used_mib) : "—",
-        gpuTemp: snap.gpu && snap.gpu.temperature_c != null ? snap.gpu.temperature_c + "°C" : null,
-        gpuPower: snap.gpu && snap.gpu.power_w != null ? snap.gpu.power_w.toFixed(1) + " W" : null,
-        gpuAvailable: !!snap.gpu,
-        gpuHasVram: !!(snap.gpu && snap.gpu.vram_total_mib > 0),
-        ramTotal: snap.ram ? fmtKiB(snap.ram.total_kib) : "—",
-        ramPct: snap.ram && snap.ram.total_kib > 0 ? Math.round(snap.ram.used_kib / snap.ram.total_kib * 100) : 0,
-        ramUsedGiB: snap.ram ? (snap.ram.used_kib / 1024 / 1024).toFixed(1) : "—",
-        swapUsed: snap.ram ? fmtKiB(snap.ram.swap_used_kib) : "—",
-        swapTotal: snap.ram ? fmtKiB(snap.ram.swap_total_kib) : "—",
-        swapPct: snap.ram && snap.ram.swap_total_kib > 0 ? Math.round(snap.ram.swap_used_kib / snap.ram.swap_total_kib * 100) : 0,
-        vllmModel: vllmDisplayModel,
-        vllmHealthStatus: healthStatus,
-        vllmOnline: vllm ? (healthStatus === "verified" && (vllm.status === "ready" || vllm.status === "busy")) : false,
-        // 云端(remote)不做健康探测(无 auth 的 /v1/models 必 401)→ 不显示 OFFLINE。
-        // 暴露原始 kind 供前端判定(别比本地化 label)。
-        vllmIsRemote: targetKind === "remote",
-        vllmMaxLen: vllm ? (metricsApplicable ? (vllm.max_model_len || "—") : (vllm.max_model_len || metricUnavailableText)) : "—",
-        // 本地推理引擎(target_kind=local)且探测窗口 < 128k(131072):监控卡给告警。
-        // 云端(remote)/v1/models 不返回 max_model_len,自然不触发。传原始值供前端拼文案。
-        vllmQueue: appQueue.running + " / " + appQueue.waiting,
-        // TTFT/TPS/tokens 一律用 app 侧自测——任何后端(vLLM/LM Studio/Ollama/云端)都有值,
-        // 不再受 metricsApplicable 门控。KV 见 kvShown(本地 prefix_cache / 云端 usage 口径),
-        // 拿不到则 "—"。队列仍归 vLLM(见 vllmQueue)。
-        vllmKv: kvShown == null ? "0%" : kvShown.toFixed(1) + "%",
-        vllmKvHasData: kvShown != null,
-        vllmTtft: sadj && sadj.ttft_count > 0
-          ? (sadj.ttft_sum_s / sadj.ttft_count).toFixed(2) + " s" : "—",
-        vllmTps: sadj && sadj.tps_time_s > 0
-          ? (sadj.tps_tokens / sadj.tps_time_s).toFixed(1) + " tok/s" : "—",
-        vllmTokTotal: sadj
-          ? fmtTok(sadj.gen) + " / " + fmtTok(sadj.prompt) : "—",
-        // 区间原始数值（已扣基准），供前端「长按清除」的数字归零插值动画用。
-        vllmRaw: sadj ? {
-          kvPct: kvShown,
-          ttftS: sadj.ttft_count > 0 ? sadj.ttft_sum_s / sadj.ttft_count : null,
-          tps: sadj.tps_time_s > 0 ? sadj.tps_tokens / sadj.tps_time_s : null,
-          gen: sadj.gen == null ? null : sadj.gen,
-          prompt: sadj.prompt == null ? null : sadj.prompt,
-        } : null,
-        appVersion: snap.app ? snap.app.pinvou3_version + bt("betaTag") : "—",
-        uptime: snap.app ? fmtDuration(snap.app.session_uptime_secs) : "—",
-      };
-      if (snap.vllm && snap.vllm.max_model_len) {
-        state.tokens.max = snap.vllm.max_model_len;
-      }
-      // Display-equivalent snapshots neither overwrite state.monitor nor
-      // notify (must send on the first frame or after an errored round).
-      const prevFmt = state.monitor && state.monitor._fmt;
-      if (hadMonitorError || !prevFmt || !monitorFmtEqual(prevFmt, snap._fmt)) {
-        state.monitor = snap;
-        notify();
-      }
-    } catch (e) {
-      state.monitorError = e && e.message ? e.message : String(e || "monitor poll failed");
-      console.warn("monitor poll failed", e);
-      notify();
-    } finally {
-      monitorPollInFlight = false;
-    }
-  }
+async function pollMonitor() { return pinvouSharedweb().pollMonitor(); }
 
 function startMonitorPolling() { return pinvouSharedweb().startMonitorPolling(); }
 function stopMonitorPolling() { return pinvouSharedweb().stopMonitorPolling(); }
