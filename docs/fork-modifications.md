@@ -29,11 +29,6 @@
 - All shell-specific guidance now lives in named constants, including cmd, fish, and the shared fallback. A before/after comparison across 14 shell cases confirmed identical output after constant extraction.
 - Following the 40-call curl ablation, remove the tool-level curl alias reminder only. Preserve the other PowerShell guidance and application instructions used in that experiment; both arms achieved 19/20 correct executions with no shell mismatch errors.
 
-## Web JSONPath upstream backport (integrated; historical candidate evidence, #756)
-
-- [上游 #7046](https://github.com/codewhale-hq/Codewhale/pull/7046) 于 2026-10-22 以 `b9619942905ac4b62752a579ca8937467d0486fc` 合入。`4164aa6fd` 在公开维护提交 `083cebfd9` 上通过 `git cherry-pick -x` 保留原补丁、消息及贡献者署名；包含该 pick 的候选分支 tip `4bf5e0894` 保留在 `integration/jsonpath-upstream-7046`，用于历史溯源。实际维护分支通过 CodeWhale#117 的 squash `ea9fdc90f` 集成，父仓已由 #750 消费此基线。此项属于既有 T2，不新增 fork 主题。
-- 边界：本次回移只对齐上游 Web schema 文案和真实 parser 契约，不改变 parser、网络策略或执行。更完整的双引号键/非负索引/ASCII 点字段/对象通配符说明及既有带引号键内 `]` 扫描限制留作后续；当前状态、计数和测试由既有基线登记负责。
-
 ## T3 增补：技能索引幻影工具修复（#56 已合入为 `72e98fd89`）
 
 - 状态：[Pinvou/CodeWhale#56](https://github.com/Pinvou/CodeWhale/pull/56) 已合入为 squash `72e98fd89`（2026-09-17），并随 2026-09-17 批次把公开 `pinvou3-clean` 推进至 `92427bd8d`（候选分支原 `ae7e3fb36` 之上共 8 个提交：事故现场 `c34c3a430`、同类清扫 `f81528358`、两段式激活收口 `a2e21fcf9`、拼车剥离 `18f7c7b15`、复审去重与守护加固 `9f46ac5f0`、复审第五轮收口 `be2b2fe92`、复审第六轮同类收口 `4eb487cd3`、复审第七轮一致性收口 `dc1f391d6`）；父仓侧白名单/常载与指令适配随父仓 PR #490。候选期 `CANDIDATE_HEAD` 登记随落地回收，父仓 gitlink 恢复指向公开维护分支头，`verify-public-submodule.sh` 恢复绿。
@@ -61,21 +56,21 @@
 
 - 每次普通 shell 执行都会叠加 hook/task 环境（包括空映射）。旧 `CommandSpec::with_env` 会替换整个构造器映射，丢弃 `PYTHONIOENCODING=utf-8`，导致 Python 回退到 Windows 本地编码，而 PowerShell 和工具输出读取器仍期望 UTF-8。修复改为合并叠加值，并按 Windows 大小写不敏感规则处理显式覆盖；环境清理器、显式覆盖值及 Python 文件/默认文本编码策略不变。
 - 共用 shell 构造器覆盖前台、后台/PTY、交互式和编码 PowerShell 重试。既有直接 `CommandSpec::program` 消费方（只读命令的直接 argv 路径及 `codew sandbox run`）从未设置此 shell 默认值，不在本修复的覆盖声明内。
-- 已合入：当前 gitlink 为公开维护头 `f1eb10efc`，包含 #115–#122 与 #114/#125；原候选提交的测试证据仍按下述执行边界保留。
+- 已合入：当前 gitlink 为公开维护头 `ea9fdc90f1`，包含 #115/#116/#117；原候选提交的测试证据仍按下述执行边界保留。
 - 父仓祖先门禁回归同时隔离 fixture Git 命令与门禁子进程的继承 `GIT_*` 变量；污染环境指向独立临时仓库时，三种真实拓扑条件仍得到预期结果，外部仓库、工作区和索引逐字节不变。明确断言拓扑/指纹分界，避免静默跳过新插入的层。
 - 默认 Windows 子进程环境回归持有进程环境锁，在空/无关叠加测试前设置 GBK 哨兵，防止继承 UTF-8 设置而掩盖缺陷。探测使用实际 shell 语法，仅 PowerShell 执行编码命令，并强制 30 秒超时及子进程清理。此前作者在外层 `PYTHONIOENCODING=utf-8` 下恢复旧替换逻辑，强化回归失败（0 通过、1 失败），恢复最终源码后通过。
 - 原生端到端回归覆盖实际小写 `bash` 工具和后台 ShellManager，在 GBK 父环境下检查 Python stdout/stderr 及 64 KiB 前置输出。需 PATH 中的 Windows Python 和 PowerShell dispatcher；从 PowerShell 或 cmd 运行且取消 `SHELL` 设置。显式命令：`cargo test -p codewhale-tui --lib --locked forkguard_windows_python_stdio -- --ignored --test-threads=1`，可用 `CODEWHALE_TEST_PYTHON` 选择解释器。
 - 既有作者本地 Windows 验证：`cargo test -p codewhale-tui --lib --locked sandbox::tests -- --test-threads=1` 通过 23 项（19 项 `sandbox::tests::*` + 4 项 `repl::sandbox::tests::*`；Linux 因 cfg 差异选择 26 项）。两个显式工具测试分别用系统 Python 3.14 和捆绑 Python 3.13.14 通过（共四次），另一个 Git Bash 环境探测通过一次。此前恢复原构造器时，两个工具测试在两种解释器下均失败，表现为 Python 中文乱码而 PowerShell 中文正常。格式、架构和快速指纹检查通过。这些是既有作者证据，不代表后续文档修订重新执行了原生测试。
 - 父仓 Windows regression 步骤新增执行默认值合并、shell 默认值接线及大小写覆盖三个确定性筛选器；每个筛选器都要求至少执行一项测试。`91e262ba2` 的远端 [Windows regression job](https://github.com/Pinvou/pinvou-agent/actions/runs/39761405525/job/119767350755) 已实际执行并通过这三个筛选器；该证据对应这个旧头及不变的底座，不代替后续提交的 CI。两个需 Python 的显式测试仍为作者本地证据。`pinvou3-clean` CI 仅 Ubuntu，不运行 Windows 限定回归。Linux 上的 `windows_shell_default_env_forces_python_pipe_stdio_utf8` 只验证 helper 返回值，不验证构造器接线；Windows 大小写覆盖逻辑也需原生 Windows 回归。上游 codewhale-hq/Codewhale#7041 是未来上游 Windows CI 的贡献路径，不证明该 CI 已执行。未验证客户设备、PowerShell 7 或安装包发布。
 
-## 0. 当前状态（2026-10-28）
+## 0. 当前状态（2026-10-23）
 
-- 当前公开维护头与父仓 gitlink：`f1eb10efcfe2468fde42d1724d7f5f19d54b904c`（2026-10-28）。#114 已合入为 `fe90f72f9`，#125 为 `f1eb10efc`；本轮仅更新父仓引用，没有推进维护分支。
-- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 86 个提交，r1 `1fafee7e2` 之上 71 个；84 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
+- 当前公开维护头与父仓 gitlink：`ea9fdc90f1c90335554833195eeeb847c83d82dd`（2026-10-23）。CodeWhale#115 已 squash 为 `7d26369934`，#116 已 squash 为 `e9a7f48da1`；本轮仅更新父仓引用，没有推进维护分支。 #117 已由远端于 2026-10-23 合入为 `ea9fdc90f`。
+- 实测历史：上游 v0.9.12 `dcd4c200f` 之上 79 个提交，r1 `1fafee7e2` 之上 64 个；77 个带 DCO sign-off。未签名的 squash 为 #107 `f27672935` 与本次 #116 `e9a7f48da1`，不能继续声称只有一个未签名提交。保留已发布历史，不改写维护分支。
 - 不可变 tag `pinvou-v0.9.12-r3` 仍在 `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`；r1 仍在 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`。公开门禁仍要求 gitlink 等于维护头并验证 r3 标签，未放宽任何条件。
-- 实测 drift：525 files, +91397/-39288，净增 52109；255 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
+- 实测 drift：504 files, +86011/-37667，净增 48344；231 个独立 `forkguard_*` 行为名（登记下限仍为 64）。原生 Windows 证据仅适用于原记录的执行提交，不扩展为本次集成树已执行；当前父仓 CI 和最终集成树审核仍须独立确认。
 
-### 2026-10-23 批次维护集成（#115/#116/#117）
+### 本次维护集成
 
 - 父仓适配（沿用既有登记）：v0.9.12 EngineConfig、Agent/Plan 模式、逐轮 reasoning/安全、ExtraTools、owner 事件隔离、Automation v3/v4 数据兼容、rusqlite 0.40.2、Shell 任务来源对账；消费方 PR #396（execpolicy）、#408（轮次取消）、#444（蜂群）、#468（computer-use）、#472（一键导出）依赖已登记底座能力
 
@@ -83,6 +78,15 @@
 - #116 选择性前移上游 `2ae7460e4` 的 `is_error` 映射；该映射不在 v0.9.12 基线内，上游同一提交的取消 metadata 与 shell receipt 改动未纳入。成功返回但 `success=false` 的结果以及中断且未执行的标记记为失败，正文保留；原有执行错误、成功及 schema 加载但未执行的成功语义不变。
 - 影响面为持久化历史的 `is_error`、恢复后 Anthropic 请求中的失败标志、CLI failure 计数、会话选择器预览、runtime API 会话 JSON/工具回执，以及 Pinvou 应用恢复工具卡片时由 `!is_error` 回填的成功状态（`bridge-shared-helpers.js`）。实时工具卡片与 ACP Failed 状态原已依据 `ToolResult.success`，不因这次历史标志映射而改变；CodeWhale TUI 恢复历史的渲染器不生成 ToolResult 卡片。子 Agent 记录器（`tools/subagent/mod.rs`）与 TUI `SyncSession` 镜像（`tui/ui/event_loop.rs`）原有的标志丢失仍是后续项，不声称 #116 已覆盖。
 - 指纹同时登记 Windows 默认值/构造器/显式覆盖/原生工具测试及 `forkguard_tool_failure_flag_survives_recording_and_round_trip`。底座合入不等于客户环境或发布验证通过。
+
+### 父仓 chop：消费引擎新公共原语（父仓适配，本 PR）
+
+上游集成批次（head `upstream/integration` = `pinjou3-clean` + 4 = `422a60f26`，待上游经 PR #81/#82/#85/#87 合并）后，父仓把四处与底座注释对齐/双份维护的适配改为消费引擎原语：
+
+- 指纹常量：`scripts/fork-guard.sh` 登记头 `44921cf02` → `422a60f26`、`EXPECTED_COMMITS` 50 → 54。
+- 技能安装安全面（#81 `is_safe_path`/`validate_skill_name_segment`/`InstalledFromMarker`/`INSTALLED_FROM_MARKER`/`add_entry_size` pub）：`features/marketplace/plugin_import.rs::checked_zip_entry_path` 的头部声明大小累计闸改调 `deepseek_tui::skills::install::add_entry_size`（逐点等价回归 `forkguard_declared_size_cap_delegates_to_engine_add_entry_size` 钉住边界与饱和语义）；`skill_marketplace.rs` 的本地 `.installed-from` 常量改引引擎公共常量（`forkguard_installed_from_marker_delegates_to_engine_constant`）。穿越判定保留 zip crate `enclosed_name` sanitizer、symlink 判定保留 unix 位面——前者归一化输出承重（喂 `skill_md_rank` 等下游布局逻辑）且语义是「净化放行」，与引擎拒绝谓词不可逐点互换，verdict 差异由 `forkguard_zip_gate_keeps_zip_sanitizer_verdicts_over_engine_reject_predicate` 登记；`is_safe_skill_name` 是 app 专属更严白名单（`[a-zA-Z0-9_-]{1,64}`，底座验证器更宽），非对齐副本、保留。
+- 敏感路径清单单源（#87 `sensitive_paths` 模块）：`platform/path_policy.rs` 的 `BLOCKED_COMPONENTS`/`BLOCKED_PREFIXES` 编译期锚定在引擎清单上（`const` 断言逐项校验子集关系，引擎改名/删除即编译失败强制同步；app 专属 `id_*` 组件面以互斥断言单列）；引擎残差与登记理由写进常量文档与 `forkguard_blocked_lists_are_the_anchored_subset_of_engine_inventory` 运行期钉。`features/assistant/safety_deny_rules.rs` 的 `SENSITIVE_DIR_NAMES` 与引擎 `SENSITIVE_DIRECTORY_NAMES` 内容与顺序逐项一致，直接改派生常量；`SENSITIVE_CHILD_FILES`/`SENSITIVE_NAME_DIRS`/`SENSITIVE_ABS_FILES` 同样编译期锚定（`forkguard_deny_inventory_anchored_to_engine_sensitive_paths` 钉残差集）。拒绝语料保持字节不变：`rule_snapshot_is_stable` 钉数 8729 与全部分族断言原样通过。
+- automation run 归档（#85 `list_archived_runs`）：**不 chop**。引擎归档按 automation id 存 run 记录、无 task 元数据；app 的 scheduled 历史 sidecar 是 UI 契约（task 展示名/model 快照 + `deleted_at`、单 JSON 全量列出），契约差异已在 `ArchivedScheduledTaskSnapshot` 文档注明，委托另行登记。
 
 ### 轮次绑定取消：宿主 stop 按轮身份分派（父仓适配，本 PR）
 
@@ -96,8 +100,6 @@
 旧 r13 相对 v0.9.5 修改 110 个文件。与 v0.9.12 对照时，104 个旧修改文件也被上游改动，直接三方移植预计产生 57 个冲突文件。与此同时，上游已经吸收或重构了大量旧 patch，包括会话快照/恢复、编辑上一轮、压缩后 token、provider/model 路由、原生搜索、Windows UTF-8 Shell、JSON schema 修复与任务基础设施。
 
 因此本次从官方 `v0.9.12` tag 直接建立新分支，只重表达仍然缺失且必须位于底座生命周期内的语义；没有 merge 或 cherry-pick 旧 r13 冲突树。
-| `f1eb10efc` | T3：统一有界发现与精确名称技能指引；迁移 v11 捆绑发现技能并保留用户编辑（#125） |
-| `fe90f72f9` | T2：复用可证明的流式工具入参后缀；不确定片段保留原回退（#114） |
 
 ## 2. 旧 r13 逐项处置
 
@@ -181,17 +183,9 @@
 | `0bc868ff0` | T4 修复 | drain-cap 测试的四个名字（`drain_pipe`/`DRAIN_CAPTURE_CAP`/`DRAIN_CAP_TRUNCATED_NOTE`/`Arc`/`Mutex`）不再经 tests mod 的 unix 门控 glob（#77 同形）解析，改为显式导入：测试本身平台无关（tokio duplex），Windows lib test 编译此前 7 处 E0425/E0433（#95） |
 | `906ffa979` | T5 修复 | Windows 硬链接计数改走稳定句柄 API：`number_of_links` 仍 unstable（`windows_by_handle`），父仓 Windows 腿 E0658；以 `GetFileInformationByHandle` 读取（与 Runtime store 身份检查同机制），无法打开/查询按单链接放行、由归档写入端的流式读取大声暴露真实问题；unix/fallback 臂仅增加未用 path 参数保持单一调用点（#94） |
 | `7624cd3db` | T4 特性 | human-wait 墙钟暂停（自主 #75 剥离，按 12-agent 对抗复审重建）：可交付决策面（runtime API 的 `decide_approval`/`submit_user_input`）上的审批/用户输入等待窗暂停任务墙钟并让 idle 时钟窗闭后全新重计，TUI 私有任务运行时无投递通道故不武装该窗、墙钟照常到期；聚合 24h fail-safe 上限跨整任务求和，超限以 `HumanWaitTimeout` 终态；parked 轮询自 200ms 捕获节奏倍退至 2s 上限、决策到达广播提前唤醒；逐 claim 突变验证红绿互钉（#78） |
-| `f27672935` | T1 修复 | 同 wire model/protocol 的 model-aware 请求及 subagent/fleet rebind 保留宿主冻结 route limits，避免无宿主 overrides 的静态重解析将声明输出额度降回未知模型 8192 默认钳制；跨模型/协议继续重建（#107，公开提交未含 DCO trailer） |
 | `7d2636993` | T2 fix | Preserve shell defaults when task environment overlays are merged; explicit Windows names override case-insensitively. CodeWhale#115 adds generic overlay and Windows foreground/background Python stdio regressions; child-env sanitization and public signatures are unchanged. |
 | `e9a7f48da` | T2 fix | Preserve failed tool results as `is_error:true` during history recording. Existing upstream round-trip regression covers HTTP/tool errors, success and schema-loaded non-execution. CodeWhale#116; no public signature/dependency change. |
 | `ea9fdc90f` | T2 help/contract | Document the already supported Web JSONPath subset; one schema-description string changes, with a resultful parser-contract regression. No execution/parser/API/dependency change (CodeWhale#117). |
-| `a96fdec8e` | T2 修复 | 恢复可取回的完整工具输出：回移上游 #6619（`3e39820f5`，Hmbown）的 recoverable output-budget 切片——header 重的 Web 响应保留答案或可用 full-output 引用，route budget 在 engine/Web/provider wire/TUI 间共享；适配 fork 两条执行路径、保留有界 child 摘要与 legacy ownership 取回、拒绝冲突的 full-output 回放、区分正文证据与响应 envelope（#118） |
-| `5861912a3` | T1 修复 | 子智能体会话名生命周期与 wait 超时面：会话名仅由活 child（running 或带可唤醒 checkpoint 的 interrupted）持有，settled（completed/failed/cancelled/budget-exhausted）即释放，同名重试解析到重试而非读到歧义；`action=wait` 重新广告 `timeout_secs`（范围与文案钉到运行时常量，`timeout` 别名保持可解析）；spawn 拒绝文案按 holder 状态给出可操作建议，roster/`type` 枚举/工具描述如实披露各角色 scope 认领规则（#119） |
-| `f12299e69` | deps | CodeWhale 自带 `web/` 与 `telemetry-ingest/` npm lock 的安全刷新（next 16.4.3、vite、vitest），父仓不消费这两个目录（#120） |
-| `c2fdfd3e2` | CI 同步 | CodeWhale 自身 CI：恢复 `pinvou3-clean` PR 的 telemetry-ingest 车道（#121） |
-| `6e1ee88ee` | deps | CodeWhale 依赖 round-3：lock 刷新修 RUSTSEC-2026-0381/0382/0383 与 yanked clipboard-win；`codewhale-tui` 的 oauth2 改 `default-features = false`（HTTP 全走自带 reqwest，锁内 reqwest/rand 各收敛到单版本）；`codewhale-secrets` 从 keyring 3 迁移到 keyring 4.2（v1 `Entry`/`Error` API 不变；Linux 侧 keyring 4 无 keyutils-persistent 复合 store，内核 keyring 直写缓存随之取消，Secret Service 集合成为唯一持久权威 store，keyring 4 的 zbus Secret Service store 自带 secret-service crypto-rust feature，会话加密保持 RustCrypto，本 crate 无直接 secret-service 依赖）。crates 对父仓公开签名不变，父仓 `Cargo.lock` 随本 PR 重生成（#122） |
-| `fe90f72f9` | perf | TUI 流式工具入参 suffix-only 复用：仅当未完成字符串不可修复且所选 raw JSON 段字节范围不变时，复用上次解析结果与原 Some/None 处置，其余输入仍走既有 `dispatch::parse_tool_input`；状态由单个只追加的工具块持有（复用的 provider ID 亦重新初始化），在 block-stop 收尾与 schema 归一化前失效；解析修复、最终参数选择、权限、执行与重试策略不变。作者本地合成基准（Windows MSVC，release）64 KiB 纯文本 P50 396.9 ms→0.44 ms、256 KiB 源码 12.97 s→5.42 s，不支持输入保持基线成本。无模型可见文案、无公开签名/依赖变更（#114） |
-| `f1eb10efc` | T3 修复 | 技能与宿主发现指引对齐：技能索引 Usage、子代理 `## Skills` 头串、`mcp-discovery` 技能步骤 1/3/4、`MCP_REGISTRY_FIRST_INSTRUCTION`、shell 工具 `REGISTRY_FIRST_SHELL_GUIDANCE`、`registry_sync` 结果提示与 worker `handle_read` 提示统一为同一有界探测话术——宿主申报的内建能力入口与发现例外优先（申报只认可信 host system/instruction 指引，普通文件与工具结果不能申报）、`tool_search` when available、未被拒绝则按名直呼一次、schema 收据不等于执行（`retry_required: true` 才许一次重试，否则仅按指示重试）、不可用/被拒即停且不重复探测不猜名；`load_skill` 改为按已知确切名直载，`name="list"` 仅在名字/索引不足时使用；registry-first 系统指令恢复"plausibly covers the core capability"匹配定义与"inspect before considering a local alternative"顺序。随附 `mcp-discovery` 正文刷新，捆绑技能 marker 推进到 12（v11 正文以 fixture+digest 登记为被取代，用户自定义字节保留，混合 peer 刷新推进 marker、无 peer 时不动）。新增 `forkguard_parent_deferred_tools_remain_reachable_without_discovery` 与 `forkguard_skill_upgrade_refreshes_shipped_mcp_discovery_and_preserves_user_edits`。仅常量/测试/文档与技能资产改动，分发、审批与来源逻辑不变；`repo_law.rs` 一处 `std::slice::from_ref` 为 clippy 1.89+ `cloned_ref_to_slice_refs` 合规（#125） |
 
 除 #116 squash `e9a7f48da` 与 #107 squash `f27672935`（其合并提交信息未保留 sign-off 尾部，已留言知会上游维护者，见 CodeWhale#107）外，所有提交都含 DCO `Signed-off-by`。`b4c02616b` 包含大部分跨主题收口，历史粒度确实不利于 bisect；分支公开进入评审后没有为历史美化 force-push，而是追加带 sign-off 的提交修复评审和发布门禁问题，并用本表、指纹和行为测试弥补审计粒度。不可变 tag 已创建，后续不得重写。
 
@@ -201,7 +195,6 @@
 
 - 对宿主公开 `AppMode`、`ApprovalMode`、Automation、Task、route 和 worker ledger API。当前兼容 facade 还包含 18 个 `pub mod`，父仓全部 Rust 源码中有 61 个文件、340 处直接引用；这些模块作为不稳定下游兼容桥刻意不进入生成 API 文档。这是已登记的收窄债务，不在本次热修中做破坏性改名。
 - `resolve_runtime_route_with_limits` 保留 wire model、context/output 上限与 embedding alias。
-- #107 的 `client.rs` 保留同模型请求及同 wire model/protocol rebind 的冻结宿主额度；跨模型仍重解析，协议改变仍走既有重建路径。本轮随集成分支继承已合入的底座修复，gitlink 无独有增量，不修改底座源码、配置或依赖；保留已有下列两条结果式测试和对应指纹，不新增底座测试。
 - `EngineConfig.session_id` 在 Engine spawn 前绑定，所有子智能体/工作流事件带 owner session 并由宿主按 owner 过滤。
 - `EngineHandle::steer` 返回 opaque id；`withdraw_steer` 区分已撤回与非 pending；中断、停止、压缩、换会话和 Engine drop 都使每个 id 恰好进入 committed/dropped 终态。
 - `CancelSubAgents` 对当前 session 的子智能体做幂等批量取消。
@@ -212,8 +205,6 @@
 ### 关键测试
 
 - `forkguard_embedding_route_limits_preserve_wire_alias`
-- `client::tests::model_aware_same_model_request_keeps_host_declared_route_limits`
-- `client::tests::rebinding_the_same_model_keeps_host_declared_route_limits`
 - `forkguard_steer_lifecycle_withdrawal_is_bounded_and_prevents_commit`
 - `forkguard_steer_lifecycle_late_withdraw_reconciles_committed_state`
 - `forkguard_steer_channel_commits_live_and_drops_withdrawn_input_in_turn_loop`
@@ -373,12 +364,10 @@
 - Shell 任务对账优先使用快照与完成事件携带的稳定 `origin_tool_call_id`（上游 v0.9.12 行为，Hmbown/CodeWhale #5869）：host monitor 与 Tauri/Web 桥优先回写来源工具卡，仅对无来源旧任务按命令文本回退；来源卡被压缩或重载清除的已识别终态根任务不追加到当前时间线尾部，运行中任务保持合成状态卡可见（`shell_task_projection.test.mjs`、`forkguard_shell_monitor_assigns_identical_commands_by_stable_origin`）。
 - 来源范围语义：shell 任务的 `origin_tool_call_id` 是产生它的唯一 root 轮内工具调用；子智能体任务只携带 `owner_agent_id`、来源为空，走无来源对账路径。只读 `multi_tool_use.parallel` 子调用虽共享包装调用的来源，但 shell 工具带 `ExecutesCode`、不能进入只读并行，该共享对 shell 任务不会发生。消费方必须保留 owner 区分，且不得让一个任务抢占已绑定另一任务的卡片。
 - 持锁副作用 await 上界：会话 turn gate 持有期间的四类副作用 await 以 `TURN_GATE_AWAIT_TIMEOUT`（5s）为上界（issue #255）——取消阶段二级联 send、shell 清理 join、回收 shutdown send 与 shell reclaim finalize。超时放弃该次副作用并记日志：被放弃的级联 send 因 tokio mpsc send 的取消安全语义未入队，且所有持锁发送方与下一轮 `SendMessage` 串行于同一把 turn gate，不会迟到误杀经 gate 提交的新轮（引擎自治轮不经 gate 启动、由 forwarder 在 `TurnStarted` 时认领，属既有窗口）；超时的 reclaim finalize 转入后台继续收尾并保守预置 cleanup_failed，不会永久卡死会话的 active scope（rebind 与 delete 重置 registry 可解）；panic 的 finalize 如实判为「未结算」并以一次全新的 detached 收尾重试替代（finalize 幂等），终态绝不因收尾中途死亡而谎报已验证的干净 shell 状态——detached 收尾落定前，会话的下一发可能以 scope 未关瞬态失败、落定后重发即成功（rebind 与 delete 会重置 registry，天然免疫）。清理调用不再经 turn gate 串行，重叠的击杀梯次与后台 worker 清扫一律由 registry 级 cleanup gate 串行——否则并发的 `cleanup_scope_once` 会对 `PendingKill.attempts` 双计数、在任务尚在退出时耗尽 `MAX_KILL_ATTEMPTS` 永久停止重试。回收 shutdown send 超时后，未送达的收尾 op 由不持 gate 的 detached 任务按原 FIFO 顺序重试补投（每个 op 以 60s 为上界）：engine 自持有 tx_op 克隆、entry 摘除不会关闭其 ops 通道，run loop 只能经正常 `Shutdown` 路径退出，不补投则引擎任务存活到进程退出；重试亦超时则放弃并记日志，此时引擎任务滞留是持续卡死本身的结果，delete/evict 已先行返回时，滞留引擎迟到的终态落盘会在已删除的会话目录下留下孤儿文件（无害：会话列表只读顶层 `<id>.json`，不会出现幽灵会话）。提交侧的持锁等待亦已上界（issue #525，#255 残余的发送半边）：用户/评测/重发消息的提交 send 以 `TURN_GATE_AWAIT_TIMEOUT` 为上界，超时即以干净错误令预约失败（tokio 有界 reserve/send 的取消安全语义保证超时的 op 未入队、轮次确定未启动；transcript 规则随预约 Drop 回滚，已准备的 shell scope 由其自身 Drop 弃置），向已卡死引擎发新消息不再经 gate 重新阻塞 evict/delete；spawn 失败拆除的 Shutdown send 同受上界，未送达的 op 交由不持 gate 的 detached 重试补投；reclaim 终态落盘 join 受上界，超时终态如实预置 Failed（未经核实的落盘不得谎报干净，detached 落盘仍可稍后落定）；forwarder abort-join 受上界，超时 detach 放任（forwarder 不持 gate/pool/会话表状态，无法再阻塞 evict/delete）。仍无界的持锁等待不止 scheduled 轮的整轮 gate 持有与其无界 send（既有设计，#525 明示不在范围内）：冷 spawn 时在 gate 下物化会话 skill 的 spawn_blocking join、以及每次提交经 `prepare_turn` 读取 shell 基线任务清单的 spawn_blocking join 同样不经引擎通道，暂依赖磁盘/互斥锁健康假设（后者仅对锁健康敏感），后续可按同一上界收口。行为测试 `forkguard_cancel_holds_turn_lock_boundedly`、`forkguard_bounded_join_reports_panicked_task_as_not_settled`、`forkguard_bounded_join_detaches_task_that_outlives_budget`、`forkguard_reclaim_shutdown_sends_bounded_and_retried`、`forkguard_reclaim_shutdown_retry_gives_up_within_patience`、`forkguard_reclaim_cleanup_failed_preset_clears_on_success`、`forkguard_background_cleanup_sweep_takes_cleanup_gate`、`forkguard_reserved_submit_send_fails_cleanly_on_wedged_engine`、`forkguard_spawn_failure_teardown_shutdown_bounded_and_retried`、`forkguard_reclaimed_persistence_join_detaches_task_that_outlives_budget` 由 fork-guard 第 3 层执行。
-- 转写提交生命周期（对齐官方 fork 的 transcript-commit 修复的本仓移植版，详见 `docs/chat-transcript-commit-lifecycle.md`）：普通对话的引擎快照写入与乐观准入显示消息回退写入，连同版本计算和 `chat:transcript_committed` 提交通知，都在 `SessionStore::persist_chat_engine_state_with_commit` / `persist_admitted_chat_display_with_commit` 的同一 `scheduled_mutation` 事务内完成，中止等待中的 forwarder 不会再拆散落盘与标记；每个引擎代际持有独立的 `AppEngine::transcript_writer_active` 存活标记，回收与失败 spawn 拆除都先 `store(false)`（Release）再 Shutdown send / `forwarder.abort()`，被拒写入方在 mutation 锁内得到 `Ok(None)` 静默跳过；冷 spawn 的基线读经 `SessionStore::load_for_engine_spawn` 在同一门下进行，保证排在新代际接替之前。次序由 `forkguard_failed_spawn_teardown_retires_writers_before_abort`（fork-guard 第 3 层执行）与 `transcript_persist_pins`、`transcript_commit_tests` 锁定。
-- 可链 panic 钩子的载荷脱敏作用域（对齐官方 fork 的 chainable panic-hook 设计的本仓移植版，`core::panic_hooks::chain`）：`features/computer_use/backend.rs` 的脱敏作用域改经互斥串行化的注册器安装——进程钩子只安装一次，经不可变快照分发（后注册的属主作用域优先：逆注册顺序、首个返回 `true` 的处理器获胜，否则回落到安装前的钩子），后续注册既不会在活动作用域上打开 default-hook 窗口，也不会静默替换前一作用域。仅存的首装 take/set 窗口在属主 worker 线程上的任何请求（即任何可脱敏载荷）出现之前运行。由 `late_registration_preserves_active_redaction_without_a_default_hook_gap`（在途注册窗口、逆序分发、无属主回落）与 `worker_thread_panics_are_redacted_and_other_panics_forwarded` 锁定，二者均已登记为 fork-guard 的 APP 指纹。
 
 ## 12. 软上限评估与后续减量
 
-本节为 2026-09-27（#549）登记时点的快照评估：当时净增 17336 行，超过 1500 行软上限；当前实测净增见 §0 的 drift 登记。`engine.rs`、`turn_loop.rs` 和 `engine/tests.rs` 也超过单文件 200 行提示线。原因是状态机、最终分发安全、“完整专家人设仅进入被选子智能体”的 spawn 边界、bundle Skills 排除 ambient 文件源的权限边界，以及评审要求的结果式生命周期/评测回归必须和 v0.9.12 原生 Engine 同步，拆成 app 侧镜像会形成更危险的双状态源。当时 Rust/Clippy/rustdoc 兼容只包含等价重写、`Default` 补全、窄 lint 说明、文档可达性修复和无调用测试 helper 清理，不改变公开函数签名或新增运行语义。
+当前净增 17336 行，超过 1500 行软上限；`engine.rs`、`turn_loop.rs` 和 `engine/tests.rs` 也超过单文件 200 行提示线。原因是状态机、最终分发安全、“完整专家人设仅进入被选子智能体”的 spawn 边界、bundle Skills 排除 ambient 文件源的权限边界，以及评审要求的结果式生命周期/评测回归必须和 v0.9.12 原生 Engine 同步，拆成 app 侧镜像会形成更危险的双状态源。当前 Rust/Clippy/rustdoc 兼容只包含等价重写、`Default` 补全、窄 lint 说明、文档可达性修复和无调用测试 helper 清理，不改变公开函数签名或新增运行语义。
 
 后续减量顺序：
 
@@ -420,284 +409,3 @@ Recount at this head:78 registered commits,76 with a signoff; #116's squash mess
 The public verifier advanced to `ea9fdc90f` (CodeWhale#117) between the parent and child pushes. The entire production delta from `e9a7f48da` is one Web `fields.description` string; execution, parsing, public signatures, dependencies and persisted schema are unchanged. The added resultful test drives advertised selectors through the real parser and verifies unsupported recursive descent/filters. The new fingerprint is under existing T2; no new fork patch/topic is introduced. Recount79 registered/77 signed commits; #107/#116 remain the only missing-footer exceptions.
 
 The preceding e9 execution regressions are retained as such. This help-only update is checked through current consumer compilation, Clippy and the current foundation schema/fork contracts; retained prior full-suite counts must not be presented as fresh runs at this documentation-only head.
-
-## 2026-10-26 consumed baseline: tool-output recovery, subagent name lifecycle, deps round-3 (T2/T1)
-
-The public maintenance branch advanced by five reviewed squashes — #118 `a96fdec8e`, #119 `5861912a3`, #120 `f12299e69`, #121 `c2fdfd3e2`, #122 `6e1ee88ee` — and this parent consumes them with reference and lock updates only; it creates no new fork topic.
-
-- #118 (T2) backports the recoverable output-budget slice of upstream #6619 (`3e39820f`, Hmbown): header-heavy Web responses keep their answers or a usable full-output ref, the route budget is shared across engine/Web/provider wire/TUI, conflicting full-output replays are rejected, and body evidence is distinguished from response envelopes. The parent-side consumer work for this slice is tracked separately and is not part of this bump.
-- #119 (T1) releases session names when their child settles (completed/failed/cancelled/budget-exhausted), resolves a retried name to the live holder then the newest settled record, re-advertises `timeout_secs` for `action=wait` with the `timeout` alias still parse-accepted, and aligns spawn-refusal guidance and roster/tool text with the actual scope-claim rules. The subagent worker-ledger surface consumed by the parent keeps its shape; the roster gains no new field (the 14-field surface count was already current).
-- #120/#121 are CodeWhale-internal (its own `web/`/`telemetry-ingest/` npm locks and its CI lane); the parent consumes neither directory.
-- #122 (deps) fixes RUSTSEC-2026-0381/0382/0383 via an in-range lock refresh, drops oauth2's bundled reqwest client from `codewhale-tui` (`default-features = false`; all HTTP still goes through the tui's own client), and migrates `codewhale-secrets` from keyring 3 to keyring 4.2. The v1 `Entry`/`Error` API is unchanged, so no parent adapter is needed; on Linux the keyutils-persistent write-through cache is dropped and the Secret Service collection becomes the single durable store (keyring 4's zbus Secret Service store enables secret-service's crypto-rust feature itself, so session encryption stays RustCrypto with no direct secret-service dependency in the crate). The parent `Cargo.lock` is regenerated in the same PR because the oauth2 feature set and the keyring major both move inside the parent's dependency graph.
-
-Recount: 84 registered commits above v0.9.12, 82 with a sign-off; #107 `f27672935` and #116 `e9a7f48da1` remain the only missing-footer exceptions. Measured drift at this head: 520 files, +89901/-39349, net +50552; 253 distinct `forkguard_*` names (floor 64). The immutable r3 closure tag remains `61cb769be`. CodeWhale-side review receipts for #118/#119/#122 live in their CodeWhale PRs; this register records the consumed public state and does not re-claim those execution boundaries for the parent tree beyond the parent gates run in this PR.
-
-### #118 已集成输出恢复的范围与守护（#757）
-
-- 本节描述父仓 #796 已消费的公开 #118 squash `a96fdec8e`（由当前 `6e1ee88ee` 包含），不是候选引用升级。只恢复到达引擎的返回正文；生产端上限继续保留：`git.rs`/`git_history.rs` 各为 40,000 字符，`test_runner.rs` 每流 40,000 字符，`verifier.rs` 每 gate 的 stdout/stderr 各为 16,000 字符，`shell_output.rs` 的 `MAX_OUTPUT_SIZE` 为 30,000 字节；`tasks.rs` 构造 gate DTO 前将每流 summary 限制为 900 字符。无 active task 时 `log_path` 为空，不保存完整命令日志；引擎 artifact 只保全返回 DTO，不能恢复生产端此前丢弃的尾部。有 `log_path` 时，该路径才是单独的命令日志。
-- 已集成的不可变 artifact 私有创建覆盖全引擎保全路径，不限于 Web：Unix 临时 inode 在写入正文和通过硬链接发布之前以 `0600` 创建（umask 仍可进一步收紧）；不追溯修改既有文件权限，Windows 沿用继承 ACL。本 PR 记录现有行为，不新增权限变更。
-- 已集成实现有意保留的上游差异：`evidence_available` 预览仅在当前路由预算内原样透传，超限时复用原引用重新缩放，上游 `3e39820f5` 为无条件透传；子代理逐行摘要（含 route/handle 投影）保留固定边界；`run_verifiers` 最多保留 12 项 gate、每项 600 字符 detail，不采用上游缩放，也不输出 parsed 级或逐 gate 的 `log_path`；`run_tests` 按剩余预算分配输出流，不设上游逐流 600 字符下限。既有 `task_gate_run` 的 `log_path` 保留。
-- 原生搜索回答链仍为 2,048/4,096 token 上限，本切片未增加 provider length-stop 标记。Responses 新执行使用引擎视图，但没有新增旧历史 wire 兜底；Chat Completions 旧历史兜底与路由无关。历史 `tool_result_max_bytes` 配置在内联预算中按 Unicode 标量解释，不是 UTF-8 字节上限；兼容迁移尚未完成。
-- 后续边界分别由 #769（可选检索摘要校验）、#770（极小预算尾行、字符/字节及恢复后 route/wire）、#771（artifact 配额、transcript 重复、保留/七天检索到期）、#772（生产端上限、planner 可达性、上游差异，以及 composer-bang 保存失败、相对路径大小观测、旧行数回退和 /status 指标）跟踪；没有把这些后续项冒称已完成。native_memory、handle、lsp 和子代理协调在引擎前丢弃的尾部也不能恢复；完整首次 fetch 信封不保证后续路由缩小时所有 Web 信封重新发布引用。
-- 本 PR 只在父仓 main 已有指纹之外补充 24 项 T2 检查；旧候选新增的 26 项中已有两项进入父仓 main，其余仍能匹配当前公开树。它们覆盖结构化结果遗漏、恢复提示、真实 gate/子代理 DTO、完整 fetch 信封、不可变 artifact、检索激活及串行/并行/聚合派发合同；不改生产代码、gitlink、维护计数、已有谓词或执行层。既有底座原生测试/变异证据仍只属于其原提交；本轮指纹检查不等于重新执行这些原生测试，也不构成发布验证。
-- 历史变异验证工作流保留在 CodeWhale 的验证专用分支 `validation/returned-result-20261024`，提交为 `b4eb108335a99556429b11191b9a2dabadbd23c8`（六项指定测试 × 正常分支及三个反例）。它相对当时源码提交只改验证工作流，不属于已合入的生产 CI，也不在本 PR 引入；本次核实该公开分支仍指向此提交，不将旧执行回执扩展为当前底座重新执行。
-
-> Historical candidate review record (pre-integration). The counts and heads below
-> belong to their dated checkpoints. They are superseded for current consumption by
-> the [2026-10-28 consumed baseline](#current-consumed-baseline) below (`f1eb10efc`, CodeWhale#125 merged).
-> The former draft/dependency instructions no longer apply.
-
-## 2026-10-23 local prompt candidate (T3; unpublished)
-
-The prompt-optimization worktree now consumes the registered `6e1ee88ee` gitlink
-and keeps the published topology intact; prior frozen measurements used `ea9fdc90f`. Its local CodeWhale diff updates model guidance only:
-known Skills load by exact name; missing tools require discovery and an honest
-unavailable fallback; transcript hints no longer recommend calling absent tools.
-Registry-first guidance and the bundled discovery Skill now respect a host's
-explicit built-in entry points before applying the Registry default. Ordinary
-repository work and the existing external-capability discovery flow are retained.
-No tool registry, allowlist, approval rule, Skill source validation, or execution
-loop is changed. The existing Skill-index, child-catalog, transcript-hint and
-Registry instruction tests cover the guidance; corresponding fingerprints track
-these contracts. This is a local candidate, not a published fork baseline.
-
-Author: Codex; model: GPT-6 (exact variant and reasoning level unavailable).
-
-The same candidate advances the bundled Skill catalog from generation 11 to 12
-and records the exact superseded discovery-body digest. Existing unmodified
-installs receive the host-aware discovery guidance; user edits and intentional
-deletions retain the installer's existing protection. A regression fixture and
-upgrade test cover the old shipped body and a user-customized body. This install
-migration does not alter the prompt text used by the frozen fresh-home model
-comparison. Author: Codex; model: GPT-6 (exact variant and reasoning level unavailable).
-
-## 2026-10-27 prompt guidance review candidate (T3; CodeWhale#125)
-
-The parent review gitlink is `50a42c38edf81e45019403d33ac05ef87da77555`; public maintenance then remained
-`6e1ee88ee8f8ea28eec7be3d8add3a591468412a`. This adds one DCO-signed commit
-(14 files, +173/-47) in T3. It advances bundled Skills from generation 11 to 12,
-records the exact old discovery-body digest, and keeps existing user-edit/deletion
-protection. An old-body fixture and installer regression fail without the fix
-and pass restored. The one-line `repo_law.rs` borrow cleanup is test-only, made
-after model timing to satisfy all-target Clippy; its existing behavior test passes.
-
-Upstream already implements [exact-name Skill guidance](https://github.com/codewhale-hq/Codewhale/blob/7fe0cc2b4f41e45a71e833ffa302d60c4dc52613/crates/tui/src/skills/mod.rs#L1996)
-and [available-capability-first discovery](https://github.com/codewhale-hq/Codewhale/blob/7fe0cc2b4f41e45a71e833ffa302d60c4dc52613/crates/tui/src/core/engine.rs#L149);
-this is a narrow maintenance adaptation, not a duplicate upstream proposal.
-Model comparisons use the combined Pinvou candidate and cannot isolate this
-foundation patch. See [V2.4.5 evaluation](prompt-optimization-evaluation/report-v2.4.5.md)
-and [verification provenance](prompt-optimization-evaluation/verification-v2.4.5.json).
-The public-head verifier is unchanged and is expected to reject this pending
-review gitlink. After foundation integration, update the parent to the actual
-squash SHA, recount/fingerprint it, and rerun the gates before marking ready.
-
-Author: Codex (OpenAI); model: GPT-6 (exact variant/reasoning level unavailable).
-
-### Parent adaptations for the prompt review candidate
-
-The existing T3 candidate also has application-side adaptations: eager ordinary-mode
-artifact presentation with code-mode denial still winning, unattended question-tool
-exclusion, and target-root rule discovery with pinned scope labels. Behavior checks:
-`artifact_delivery_is_loaded_without_widening_code_mode_tools`,
-`unattended_shield_tests::unattended_turn_denies_scheduled_task_write_family` (and the existing
-unattended shield tests), and
-`project_rules_keep_additional_roots_for_on_demand_discovery`. The latter also
-checks that an unbound session does not receive a rule-scope label. These app
-changes reuse foundation policy/session mechanisms; they do not add a turn loop.
-
-Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
-
-## 2026-10-27 review revision R1 (T3; CodeWhale#125)
-
-R1 review gitlink: `e4ef5570bc26e73df8b82c4ffca7200da3c8765b`; public maintenance then stayed `6e1ee88ee`.
-The two review commits total 17 files, +296/-49. Candidate topology is 86 commits
-above v0.9.12, 71 above r1, 84 signed; only the two registered historical squashes
-lack a footer. Drift: 522 files, +90219/-39420, net +50799; 255 distinct guard names.
-
-R1 restores a bounded documented-name probe when discovery is unavailable and
-access has not been denied. It preserves the exact-allowlist embedding path and
-again agrees with the existing Goal-family fallback. Schema receipts do not
-establish execution/transcript evidence. The new
-`forkguard_parent_deferred_tools_remain_reachable_without_discovery` exercises
-real catalog narrowing/hydration and denial controls. Host declaration channels
-and the standalone default are documented; Registry-result guidance now respects
-the same carve-out. Historical bundled-body coverage and peer-marker limits are
-documented without a blanket overwrite. No dispatch/approval loop is changed.
-
-The parent fixes browser error-code and evidence-authority wording, strict Plan
-and unattended constraints, and additional-root labels. The original model matrix
-remains the immutable pre-review V2.4.5 measurement, not a score for R1. See
-[review verification](prompt-optimization-evaluation/review-r1-verification.json).
-At this checkpoint the app PR remained draft pending the actual maintenance squash.
-The consumed baseline below records the subsequent repin and public-head verification.
-
-Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
-
-
-## 2026-10-28 review revision R2 (T3; CodeWhale#125)
-
-Historical review gitlink: `643e5e1b3ea6667f5c2ceb8eb70b06241c6cdda6`; public maintenance then remained
-`6e1ee88ee`. The three review commits total 18 files, +376/-60. Recounted
-candidate history: 87 commits above v0.9.12, 72 above r1, 85 signed; only
-the registered #107/#116 squashes lack a footer. Drift: 522 files,
-+90147/-39279, net +50868; 255 distinct guard names.
-
-The bundled discovery Skill now applies discovery, one permitted exact-name
-probe, and schema-receipt/refusal rules in steps 1, 3 and 4. Shell and Registry
-result guidance agree. A receipt with `retry_required: true` explicitly licenses
-one retry with its schema; it is not execution or transcript evidence. The
-primary instruction restores must-call wording, local/custom/manual execution
-coverage, scored snapshot and full-catalog boundaries. The tool description
-now agrees with exact-name-first Skill loading. Goal-family wording remains
-outside this alignment and is disclosed without claiming the new probe bounds.
-
-The denial regression removes only the two deferred targets and verifies eager
-`read` remains permitted and active. Existing Skill/Registry/shell pins cover the
-restored guidance. The unreleased generation stays 12, and the exact generation-11
-fixture/digest and customized-body protections are unchanged. Historical R1 and
-V2.4.5 sources/measurements remain frozen; no fresh live-model score is claimed.
-
-Fresh checks and source boundaries are recorded in
-[review-r2-verification.json](prompt-optimization-evaluation/review-r2-verification.json)
-and [source-manifest-review-r2.json](prompt-optimization-evaluation/source-manifest-review-r2.json).
-At this checkpoint the unchanged public verifier still required an actual maintenance
-squash. That repin and verification are recorded in the consumed baseline below.
-
-Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
-
-## 2026-10-28 review revision R3 (application guards and evidence)
-
-The foundation review gitlink remains `643e5e1b3`; no foundation behavior or
-inventory changes in this revision. Correct the R1 historical drift to 522 files,
-+90219/-39420, net +50799; R2 remains +90147/-39279, net +50868. Restore the
-English historical local-candidate section and synchronize the current-state date.
-
-The parent restores stable read-before-edit, write-verification and foreground
-bash guidance, distinguishes user home from the primary execution root, and pins
-the guidance in bundle/Node contracts. Browser error documentation now requires
-production error constructions rather than test-fixture literals. Symlink-rule
-controls reject both the link and its resolved target and retain a primary-file
-positive control. The opt-in evaluation example rejects empty home configuration
-and malformed mode/root options; its isolation guard is runtime-only. All eight
-exact digest paths receive real positive/negative Gitleaks controls; the allowance
-is unchanged. Report indexes, alias-diagnostic boundaries, current artifact hashes
-and review history are reconciled without changing frozen model data/manifests.
-
-See [R3 verification](prompt-optimization-evaluation/review-r3-verification.json)
-and [R3 source manifest](prompt-optimization-evaluation/source-manifest-review-r3.json)
-for fresh checks and their limits. Prior measured scores are not R3 results.
-At this checkpoint CodeWhale#125 was open and the app stayed draft. The actual
-maintenance squash has since been consumed and public verification passes, as recorded below.
-
-Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
-
-## 2026-10-28 approval-review follow-up R4 (T3; CodeWhale#125)
-
-The approval [at `643e5e1b3`](https://github.com/Pinvou/CodeWhale/pull/125#pullrequestreview-5677804087)
-confirmed all prior requested changes. The small follow-up candidate is `0af53af6c0648b544e4b79194acc9e4f408ef7a4`;
-public `pinvou3-clean` then remained `6e1ee88ee`. It restores the system-level core-capability
-match definition and inspect-before-local ordering, qualifies discovery on availability,
-clarifies shell query/receipt flow, and independently pins host declarations and the
-exact-name-first tool description. The installer is unchanged; its existing regression
-now also covers a preserved custom body beside an unchanged peer whose refresh advances
-the marker. The disclosed historical-body, Goal-wording and strict release-Clippy
-exclusions remain outside this follow-up.
-
-Candidate history: 88 commits above v0.9.12, 73 above r1, 86 signed;
-the same two historical squashes lack footers. Drift: 522 files, +90186/-39279,
-net +50907; 255 distinct guard names. Fresh checks and deletion controls are in
-[R4 verification](prompt-optimization-evaluation/review-r4-verification.json), with a
-separate [R4 source manifest](prompt-optimization-evaluation/source-manifest-review-r4.json).
-No new model result or fresh full application/native-platform regression is claimed.
-At this checkpoint the app stayed draft pending integration. The consumed-baseline
-record below supersedes that dependency; the actual squash is now pinned and verified.
-
-Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
-
-<a id="current-consumed-baseline"></a>
-
-## 2026-10-28 消费基线：流式工具入参复用与发现指引对齐（T2/T3）
-
-公开维护分支以两次评审 squash 前进——#114 `fe90f72f9`、#125 `f1eb10efc`——父仓仅以引用与登记更新消费；不新增 fork 主题，也不改父仓 `Cargo.lock`（两次 squash 均不改 fork 的 `Cargo.toml`/lock，crates 对父仓公开签名不变）。
-
-- #114（T2）为流式工具入参引入 suffix-only 复用：每次 JSON delta 只做后缀证明，在未完成字符串不可修复且所选 raw 段字节范围稳定时复用上次解析结果；其余不确定/不支持输入保持既有解析路径。作者本地合成基准为 64 KiB 纯文本 P50 396.9 ms→0.44 ms 等参数处理收益；非整轮或模型延迟声明。
-- #125（T3）把七处发现/技能指引统一为同一有界探测话术（宿主申报优先 → `tool_search` when available → 未拒绝按名直呼一次 → schema 收据不等于执行 → 不可用/被拒即停），`load_skill` 改为按已知确切名直载；随附 `mcp-discovery` 正文刷新（marker 推进到 12，v11 登记为被取代，用户自定义字节保留）。`pub(crate)`/`pub(super)` 面与公开签名不变，父仓无需适配代码。
-- 父仓登记：`fork-guard.sh` 的 8 条 T3 文案指纹随 #125 真实措辞重钉（技能索引 Usage ×2、子代理 `## Skills` 头串、mcp-discovery 步骤 1/3、registry-first 指令 ×2、worker `handle_read` 提示），并新增 2 条 T3 可执行回归指纹（父级 deferred 工具可达、技能升级刷新保留用户编辑）与 2 条 #114 T2 指纹（suffix-only 模块意图、交错工具端到端回归）。
-
-重算：上游 v0.9.12 `dcd4c200f` 之上 86 个登记提交，84 个带 sign-off；#107 `f27672935` 与 #116 `e9a7f48da1` 仍是仅有的缺 footer 例外。本头实测 drift：525 files, +91397/-39288，净增 52109；255 个独立 `forkguard_*` 行为名（下限 64）。不可变 r3 收口 tag 仍为 `61cb769be`。#114/#125 的 CodeWhale 侧评审证据在各自 CodeWhale PR；本登记只记录消费的公开状态，不在父仓树上重新声称那些执行边界，超出本 PR 父仓门禁的执行一概不声称。
-
-## 2026-10-29 review revision R5 (evaluation correctness and integrated state)
-
-The consumed foundation remains `f1eb10efc`; its candidate/squash patch identity
-and all 164 unaffected parent-file patches were independently verified before
-following the maintainer's `1aac7942c` replay. No foundation source changes.
-Current public verification and fork inventory replace the old candidate dependency.
-
-The app pins eager ordinary-mode delivery with code denial, unattended exclusion,
-bound-root discovery including an empty primary rule chain, canonical Plan submission
-and exact browser error-code boundaries. The scope label remains fixed at spawn.
-The evaluator shares ID-paired settled presentation events and exact numeric tokens;
-new rows carry a grader revision covering the delegated source chain. Existing
-suite-specific acceptance/browser policies remain versioned rather than silently
-regrading historical rows. Bytecode-cache exceptions use path components.
-
-Current CI runs the exact digest allowance controls and provider-free namespace
-acceptance explicitly. Report binaries/figures are retained, with generated assets
-excluded from textual diffs. Frozen model receipts, scores and grader copies retain
-their original source boundary; there are no new model results. See
-[R5 verification](prompt-optimization-evaluation/review-r5-verification.json) and
-[R5 sources](prompt-optimization-evaluation/source-manifest-review-r5.json).
-
-Author: Codex (OpenAI) / GPT-6 (exact variant/reasoning level unavailable).
-
-## PR799 review R6 follow-up (2026-10-29)
-
-Foundation inventory and gitlink remain at consumed public squash `f1eb10efc`;
-this follow-up changes only the parent application, evaluation tools and CI.
-
-- Secret-scan explicitly prepares Python 3.x before importing the exact digest
-  controls (`tomllib` requires Python 3.11+). The CLI regression lane executes
-  the `prompt_eval` example's two unit tests explicitly. Namespace preparation
-  precedes discovery and retries package downloads; exhausted failures remain red.
-- Grader identity includes lateral `prompt_eval_*` imports and the selected runner
-  adapter. Resume validates existing rows before tail repair or manifest creation.
-  Both aggregators and adjudication reject mixed revisions and legacy/current
-  mixtures; wholly legacy frozen corpora remain readable.
-- Numeric controls reject alternative totals and code-consult substrings, allow
-  whole-number decimal notation, and retain disclosed semantic-review limits.
-  Ambiguous overlapping IDs remain unsettled; missing turn prompts and deleted
-  preservation sentinels fail checks rather than crashing the auditor.
-- Restore explicit protected-directory, unavailable-browser, scheduling-lifetime,
-  memory-UI and authorization wording. Align five shipped Skill files with ordinary
-  presenter exposure when the backend is healthy. No permission, dispatch, engine
-  loader, foundation or frozen-score behavior is changed.
-- Three additional APP fingerprints pin the restored authorization and browser
-  boundaries. The short zh/en commit inventories now both list #114/#125; the
-  detailed Chinese section 3 already listed both squashes before R6.
-
-Current verification and source boundaries are recorded in
-[prompt-optimization-evaluation/review-r6-verification.json](prompt-optimization-evaluation/review-r6-verification.json)
-and [source-manifest-review-r6.json](prompt-optimization-evaluation/source-manifest-review-r6.json).
-Earlier receipts retain their original sources and execution counts. No fresh
-model run, per-request token measurement or native-platform CI result is implied.
-
-## PR799 approved-review follow-up R7 (2026-10-30)
-
-The provenance unit fixture stubs namespace command construction and restores
-shared grader imports, including the prepare wrapper, on success or failure.
-The real Linux namespace opt-in remains separate. Forward/reverse fixture order
-and a bwrap-unavailable control cover the two approved-review infrastructure nits.
-
-The evidence README distinguishes the approved R6 checkpoint from the historical
-replay, parallel scoring branches, receipt-derived request counts from proxy-side
-attempt totals, and the separate scheduled-origin follow-up. The visual-design
-Skill explicitly describes healthy ordinary-mode presenter exposure and retains
-the Code-mode deny boundary. The presenter receipt verifies existence/size and
-handoff, not content correctness or a visible native card.
-
-Foundation gitlink/inventory and the 283 fingerprint entries / 255 distinct
-foundation guard names are unchanged in R7. The PR's overall additions are 8 APP
-and 11 T3 entries; R6's three APP entries were a per-round count. Evidence-retention
-policy remains a maintainer decision; no new retention threshold is inferred.
-See [R7 verification](prompt-optimization-evaluation/review-r7-verification.json)
-and [R7 sources](prompt-optimization-evaluation/source-manifest-review-r7.json).
