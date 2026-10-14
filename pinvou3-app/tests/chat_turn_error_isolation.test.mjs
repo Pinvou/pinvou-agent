@@ -16,6 +16,7 @@ const webTurnTerminalSource = read('src', 'platform', 'web', 'bridge', 'turn-ter
 const chatViewSource = read('src', 'features', 'chat', 'ChatView.jsx');
 const modelServiceErrorsSource = read('src', 'shared', 'model-service-errors.js');
 const bridgeMessagesSource = read('src', 'shared', 'bridge-messages.js');
+const bridgeSharedSource = read('src', 'shared', 'bridge-shared-helpers.js');
 const { conversationItemsForMode } = await import(
   '../src/features/conversation/deepseek-conversation.js'
 );
@@ -871,6 +872,14 @@ assert.equal('errorCode' in uncodedState.chatItems[0].userError, false, 'no code
 const terminalSandbox = { window: {}, Date };
 vm.runInNewContext(modelServiceErrorsSource, terminalSandbox, { filename: 'model-service-errors.js' });
 vm.runInNewContext(bridgeMessagesSource, terminalSandbox, { filename: 'bridge-messages.js' });
+// F-FE13-2 moved the assistant_done builder into the shared base
+// (window.PinvouBridgeShared.buildAssistantDoneTimelineRecord); load it the
+// same way index.html does before turn-terminal.js.
+vm.runInNewContext(
+  read('src', 'shared', 'bridge-shared-helpers.js'),
+  terminalSandbox,
+  { filename: 'bridge-shared-helpers.js' },
+);
 vm.runInNewContext(webTurnTerminalSource, terminalSandbox, { filename: 'turn-terminal.js' });
 const timelineState = {
   activeTurnTimelineId: 'turn-1',
@@ -1014,8 +1023,10 @@ assert.match(
 );
 assert.match(chatEventsSource, /turnErrorNotice && item\.text === notice/);
 assert.match(chatEventsSource, /addSystemItem\(notice, \{ turnErrorNotice: true \}\)/);
+// Wave 5 moved the hydration live-card filter into the shared base
+// (liveChatItemKeptForHydration); pin the shared body instead of the lane call site.
 assert.match(
-  desktopBridgeSource,
+  bridgeSharedSource,
   /if \(item\.turnErrorNotice && !item\.legacyConversationOnly\) return false/,
 );
 // Swarm rework: the projection input first goes through the spawn aggregation
@@ -1058,7 +1069,7 @@ assert.match(chatEventsSource, /sweepUnpairedToolMeta\(\);/);
 
 assert.match(webBridgeSource, /turnErrorNotice && item\.text === notice/);
 assert.match(
-  webBridgeSource,
+  bridgeSharedSource,
   /if \(item\.turnErrorNotice && !item\.legacyConversationOnly\) return false/,
 );
 assert.match(

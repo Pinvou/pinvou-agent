@@ -217,7 +217,13 @@ const expectedProtocolHashes = {
   // Recomputed for the lane-merge wave 4: summonPinvou (summon_pinvou invoke)
   // and resolvePinvouReview moved into the shared tauriChat/web cluster;
   // chat.js keeps the transport-legit send path. Command surface unchanged.
-  chat: '458f04051ca8f057e2fcac404462f33398e31ec6013078b0646d8dd9aa5423a5',
+  // Recomputed for the FFE4-1 dispatch-helper unification: the
+  // remote_control:tools_changed listener now dispatches through
+  // window.PinvouToolStoreEvents.notifyComposerToolsChanged (shared
+  // tool-store-events.js), and the wave-5 chat-events DI pairs
+  // (recordTurnStarted/stream-notify/reasoning/flush families) moved into
+  // the shared tauriChatEvents/web cluster with unchanged event surface.
+  chat: '148c3fc1947008cdb2c8f8bc2c8c8e112ffaa3c55be521163f7ba9bd6897e5a0',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
@@ -371,6 +377,10 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // the personas equip flow joined it.
 // Recomputed for the lane-merge wave 4: the voice-operation state machine
 // block, encodeWav, and the Pinvou summon/resolve review flow joined it.
+// Recomputed for the lane-merge wave 5: the subscription-state value
+// reconciler, the rerenderFromMessages core, the chat-events DI families and
+// the F-FE13-2 assistant_done timeline builder joined the shared base (the
+// builder ships on the static surface, so no signature moved).
 const expectedSharedBaseHash = '69a2d57e2aebc48130d707cec45b52d4389eff857c1fae82a3663e87e8da65a5';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [

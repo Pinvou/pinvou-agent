@@ -29,7 +29,7 @@ const read = (relative) =>
 
 function parseSliceFields(source) {
   const match = source.match(/const STATE_SLICE_FIELDS = \{([\s\S]*?)\n {2}\};/);
-  assert.ok(match, 'STATE_SLICE_FIELDS not found in bridge.js');
+  assert.ok(match, 'STATE_SLICE_FIELDS not found in shared/bridge-shared-helpers.js');
   const domains = {};
   for (const entry of match[1].matchAll(/(\w+): \[([^\]]*)\]/g)) {
     domains[entry[1]] = entry[2]
@@ -49,9 +49,26 @@ function parseAppDomains(source) {
     .filter(Boolean);
 }
 
+// FE14 wave 5：STATE_SLICE_FIELDS 收敛为 shared/bridge-shared-helpers.js 的单一
+// 常量（root.PinvouBridgeShared.STATE_SLICE_FIELDS），两条 lane 都只消费它。
+// 这里锁定：共享表与 app 订阅列表同步、两条 lane 确实消费共享表、且 lane 文件
+// 不再各自维护会漂移的本地副本。
 test('STATE_SLICE_FIELDS domains and app subscription domains match', () => {
-  const sliceDomains = Object.keys(parseSliceFields(read('platform/tauri/bridge.js')));
+  const shared = read('shared/bridge-shared-helpers.js');
+  const tauriBridge = read('platform/tauri/bridge.js');
+  const webAdapter = read('platform/web/bridge/domain-adapter.js');
+  const sliceDomains = Object.keys(parseSliceFields(shared));
   const appDomains = parseAppDomains(read('app/main.jsx'));
+  assert.ok(
+    tauriBridge.includes('window.PinvouBridgeShared.STATE_SLICE_FIELDS') &&
+      !/const STATE_SLICE_FIELDS = \{/.test(tauriBridge),
+    'tauri bridge.js must consume the shared STATE_SLICE_FIELDS (no local copy)',
+  );
+  assert.ok(
+    webAdapter.includes('window.PinvouBridgeShared.STATE_SLICE_FIELDS') &&
+      !/const fields = \{/.test(webAdapter),
+    'web domain-adapter.js must consume the shared STATE_SLICE_FIELDS (no local copy)',
+  );
   assert.deepEqual(
     [...appDomains].sort((a, b) => a.localeCompare(b)),
     [...sliceDomains].sort((a, b) => a.localeCompare(b)),
@@ -61,7 +78,7 @@ test('STATE_SLICE_FIELDS domains and app subscription domains match', () => {
 
 test('projects domain is fully wired (feature -> slice -> app)', () => {
   const feature = read('platform/tauri/bridge/projects.js');
-  const sliceFields = parseSliceFields(read('platform/tauri/bridge.js'));
+  const sliceFields = parseSliceFields(read('shared/bridge-shared-helpers.js'));
   const appDomains = parseAppDomains(read('app/main.jsx'));
 
   assert.ok(
@@ -87,11 +104,12 @@ test('projects domain is fully wired (feature -> slice -> app)', () => {
 // Web 端的 fields 注册表与桌面订阅列表必须同步:否则 web 启动期
 // getMany(APP_BRIDGE_STATE_DOMAINS) 抛 "Unknown Tauri bridge state slice",
 // 整个 WebUI 冒烟超时(#448 的根因,栈内所有 PR 的 frontend-test 全红)。
+// FE14 wave 5 之后 web 不再有本地 fields 表：直接消费共享注册表，
+// 因此 web 覆盖面 == 桌面切片声明面（同一对象），这里保留覆盖断言作为
+// 共享表自身的回归守卫（防止共享表漏掉某个订阅域）。
 function parseWebFields(source) {
-  // fields 表以两空格缩进的 `};` 收尾;锚到四空格会越表捕获进 stablePick,
-  // 那段将来一旦出现「对象字面量+数组」就会混入幻影条目(finding 30)。
-  const match = source.match(/const fields = \{([\s\S]*?)\n {2}\};/);
-  assert.ok(match, 'fields registry not found in web domain-adapter.js');
+  const match = source.match(/const STATE_SLICE_FIELDS = \{([\s\S]*?)\n {2}\};/);
+  assert.ok(match, 'STATE_SLICE_FIELDS not found in shared/bridge-shared-helpers.js');
   const domains = {};
   for (const entry of match[1].matchAll(/(\w+): \[([^\]]*)\]/g)) {
     domains[entry[1]] = entry[2]
@@ -103,9 +121,9 @@ function parseWebFields(source) {
 }
 
 test('web domain-adapter fields registry covers every subscribed domain', () => {
-  const webFields = parseWebFields(read('platform/web/bridge/domain-adapter.js'));
+  const webFields = parseWebFields(read('shared/bridge-shared-helpers.js'));
   const appDomains = parseAppDomains(read('app/main.jsx'));
-  const sliceFields = parseSliceFields(read('platform/tauri/bridge.js'));
+  const sliceFields = parseSliceFields(read('shared/bridge-shared-helpers.js'));
   const webBridge = read('platform/web/bridge.js');
   const missing = appDomains.filter((domain) => !webFields[domain]);
   assert.deepEqual(
