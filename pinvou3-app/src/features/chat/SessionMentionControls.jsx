@@ -72,11 +72,11 @@ export function SessionMentionMenu({ candidates, selectedIndex, onSelect, onHove
   }, [selectedIndex]);
   return (
     <div id="session-mention-listbox" data-testid="session-mention-menu" role="listbox" aria-label={copy.menuTitle}>
-      <div className="px-3 py-2 text-[12px] font-medium text-[#85888D] dark:text-[#9AA0A6]">
+      <div role="presentation" className="px-3 py-2 text-[12px] font-medium text-[#85888D] dark:text-[#9AA0A6]">
         {copy.menuTitle}
       </div>
       {candidates.length === 0 ? (
-        <div className="px-3 pb-2 text-[12px] text-[#85888D] dark:text-[#9AA0A6]">
+        <div role="presentation" className="px-3 pb-2 text-[12px] text-[#85888D] dark:text-[#9AA0A6]">
           {copy.menuEmpty}
         </div>
       ) : (
@@ -120,7 +120,11 @@ export function SessionMentionCards({ refs, knownSessionIds, onOpenSession, copy
   return (
     <div data-testid="session-mention-cards" className="flex max-w-full flex-wrap justify-end gap-1.5 mb-1.5">
       {refs.map((ref, index) => {
-        const known = !disabled && (!knownSessionIds || knownSessionIds.has(ref.sessionId));
+        // An EMPTY id set is the hydration window (both session lists
+        // momentarily blank), not proof of deletion — treat it as unknown
+        // (round-28 asto should-fix 6) so the "deleted" label never flashes.
+        const known = !disabled && (!knownSessionIds
+          || knownSessionIds.size === 0 || knownSessionIds.has(ref.sessionId));
         const label = ref.title || ref.sessionId;
         const base =
           'max-w-[240px] rounded-xl px-3 py-1.5 inline-flex items-center gap-1.5 text-[12px] border ';

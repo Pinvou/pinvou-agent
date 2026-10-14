@@ -314,7 +314,7 @@ const materializedDraftKeys = new Map();
  * the carried refs into the resolved session key; an aborted one returns
  * them to the draft.
  */
-export function recordDraftMaterialization(draftKey, sessionKey, carriedRefs = []) {
+export function recordDraftMaterialization(draftKey, sessionKey, carriedRefs = [], reported = false) {
   if (!draftKey || !sessionKey || !draftKey.startsWith('draft:') || !sessionKey.startsWith('session:')) return;
   if (!materializedDraftKeys.has(draftKey) && materializedDraftKeys.size >= MENTION_DRAFT_CACHE_LIMIT) {
     materializedDraftKeys.delete(materializedDraftKeys.keys().next().value);
@@ -322,6 +322,7 @@ export function recordDraftMaterialization(draftKey, sessionKey, carriedRefs = [
   materializedDraftKeys.set(draftKey, {
     sessionKey,
     carriedRefs: dedupeSessionRefs(Array.isArray(carriedRefs) ? carriedRefs : []),
+    reported: !!reported,
   });
 }
 /** Resolve a stash key through the materialization ledger (identity for unmapped keys). */
@@ -331,13 +332,27 @@ export function resolveMaterializedDraftKey(key) {
 }
 /**
  * The recorded migration's provenance: the target key and the refs carried
- * from the draft (round-20 zhuowp). Returns null when the key has no live
- * entry.
+ * from the draft (round-20 zhuowp), plus whether a BRIDGE REPORT backs the
+ * entry (round-28 asto MAJOR): the scope effect records navigation targets
+ * provisionally (any in-flight send makes a draft:→session: transition look
+ * like its own materialization), while the send closure records only
+ * bridge-reported ones. Returns null when the key has no live entry.
  */
 export function materializationCarry(key) {
   const entry = materializedDraftKeys.get(key);
   if (!entry) return null;
-  return { target: entry.sessionKey, carriedRefs: [...entry.carriedRefs] };
+  return { target: entry.sessionKey, carriedRefs: [...entry.carriedRefs], reported: !!entry.reported };
+}
+
+/**
+ * Whether the key's live entry is backed by a bridge materialization report
+ * (round-28 asto MAJOR): a failure/throw settle that resolves through an
+ * UNREPORTED entry is consuming the scope effect's stale navigation record —
+ * the draft is still alive and the restored arm's protection applies.
+ */
+export function isReportedMaterialization(key) {
+  const entry = materializedDraftKeys.get(key);
+  return !entry || !!entry.reported;
 }
 
 /**

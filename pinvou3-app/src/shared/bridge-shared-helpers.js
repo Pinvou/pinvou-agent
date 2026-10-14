@@ -2191,7 +2191,7 @@
       window.__PINVOU_SESSION_MENTION__.splitSessionMentionBlock;
   }
 
-  // web+tauriChat 共享. Composer restores (steer-failure, session-switch
+  // Shared by web + tauriChat. Composer restores (steer-failure, session-switch
   // mid-send, materialize abort) hand text back to the user: the
   // session-mention injection block is a machine contract and the chips were
   // consumed by the send attempt, so the block is stripped on restore instead
@@ -2212,7 +2212,7 @@
     return split && split.matched ? split.text.trim() : raw;
   }
 
-  // web+tauriChat 共享. Block-aware part of queuedPayloadEnvelope: splits
+  // Shared by web + tauriChat. Block-aware part of queuedPayloadEnvelope: splits
   // <block><body> user text against a payload that really carries the block
   // at its head. Returns null when the shape does not apply (no parser,
   // no refs, refs-only text, prefixed payload, ambiguous body anchor).

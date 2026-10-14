@@ -253,8 +253,11 @@ pub(crate) fn strip_session_mention_block(text: &str) -> &str {
     // minor 4): the escaped lone surrogate is rejected by Tauri's IPC JSON
     // at the command boundary, so it cannot arrive through a real send;
     // extreme float exponents and 129-deep nesting CAN arrive as pasted
-    // user text (attacker-is-the-user, cosmetic title divergence only —
-    // real blocks are one flat ref array). Divergence direction: on these
+    // user text (attacker-is-the-user, cosmetic divergence only — the same
+    // forged line also reaches checkpoint labels and long-memory recording
+    // through the JS side's strips, so the divergence is display- and
+    // bookkeeping-side, not title-only; round-28 should-fix 5. Real blocks
+    // are one flat ref array). Divergence direction: on these
     // inputs the JS side STRIPS (matched) while this side keeps the raw
     // text — one-way, dirty-data-only.
     let Ok(value) = serde_json::from_str::<serde_json::Value>(json_line) else {
@@ -2080,6 +2083,10 @@ mod web_projection_tests {
             "the native auto-title path must route through first_send_title_source (round-17 m8)"
         );
         let codex = include_str!("codex.rs").replace("\r\n", "\n");
+        assert!(
+            codex.contains("first_send_title_source("),
+            "the ACP first-send titler must route through first_send_title_source - a rewrite branching on the raw message must not pass the argument-shape pins alone (round-28 should-fix 5)"
+        );
         assert!(
             codex.contains(".or_else(|| workspace_references.first().map(String::as_str)),"),
             "the ACP first-send fallback must stay conditional — no unconditional 附件 floor (round-15 m6)"

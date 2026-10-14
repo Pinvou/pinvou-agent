@@ -256,6 +256,19 @@ const refsSurvivingAcceptance = (refsAtSend, currentRefs, featureOn) => {
 // code the component runs.
 const makeSettleSessionRefSend = ({ mentionDraftKeyRef, sessionMentionEnabledRef, setSessionRefs }) =>
   (refsAtSend, draftKeyAtSend, verdict) => {
+    // Round-28 asto MAJOR: an entry with no bridge report behind it is the
+    // scope effect's plain-navigation misrecord (any in-flight send made a
+    // draft:→session: transition look like its own materialization). A
+    // failure/throw with no report means no materialization EVER happened —
+    // the draft is still alive, so the 'restored' arm's protection applies:
+    // consume the stale entry there instead of arming the chips live in the
+    // navigated session. Sound because every committed materialization
+    // reports before any later failure exit (chat.js: the write precedes the
+    // false/throw paths), so "no report + failure" always implies stale
+    // navigation.
+    if (verdict !== true && materializationCarry(draftKeyAtSend)?.reported === false) {
+      verdict = 'restored';
+    }
     // Settle-time feature state (round-19 minor 2): the send closures
     // capture the dispatch-time render value, but a mid-await re-enable
     // plus a fresh pick must not be wiped by the stale OFF gate.
@@ -292,6 +305,16 @@ const makeSettleSessionRefSend = ({ mentionDraftKeyRef, sessionMentionEnabledRef
         stashSessionMentionDraft(acceptanceStashKey, dedupeSessionRefs([
           ...carriedKept,
           ...refsSurvivingAcceptance(refsAtSend, dedupeSessionRefs([...carriedKept, ...restoreSessionMentionDraft(acceptanceStashKey)]), featureOn),
+        ]));
+      } else if (carry) {
+        // Round-28 asto should-fix 1: an OFF acceptance must not DESTROY the
+        // carry either — carriedKept is force-empty under the gate and the
+        // ledger clear below would delete the picks outright. Park the carry
+        // in the resolved scope's stash: the toggle hides the chips, it does
+        // not delete them (they return on re-enable, like the stash).
+        stashSessionMentionDraft(acceptanceStashKey, dedupeSessionRefs([
+          ...carry.carriedRefs,
+          ...restoreSessionMentionDraft(acceptanceStashKey),
         ]));
       }
       const onDispatchScope = resolveMaterializedDraftKey(mentionDraftKeyRef.current)
@@ -393,15 +416,20 @@ const recordSendMaterialization = (draftKey, meta) => {
     // bridge-reported target while PRESERVING the carriedRefs (the effect
     // read them from the draft stash before draining it — the stash is empty
     // now, so a naive overwrite would drop the mid-await picks).
-    if (existing.target === target) return;
-    recordDraftMaterialization(draftKey, target, existing.carriedRefs);
+    if (existing.target === target) {
+      // The effect happened to record the true target: the report confirms
+      // it (the settle's stale-navigation discriminator keys on this).
+      recordDraftMaterialization(draftKey, target, existing.carriedRefs, true);
+      return;
+    }
+    recordDraftMaterialization(draftKey, target, existing.carriedRefs, true);
     return;
   }
   // Same carry semantics as the effect at the same logical moment: whatever
   // the draft scope's stash still holds (mid-await picks while the transition
   // render is pending; nothing once the cleanup ran — the unmounted shape).
   const carried = restoreSessionMentionDraft(draftKey);
-  recordDraftMaterialization(draftKey, target, carried);
+  recordDraftMaterialization(draftKey, target, carried, true);
   // Mirror the effect's post-record clear (round-25 asto minor 11): the
   // carried chips live in the ledger entry now; drain the dead draft key's
   // stash entry so nothing double-holds them.
