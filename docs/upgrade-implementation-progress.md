@@ -6547,3 +6547,79 @@ groups without skips and passed affected vet, three-file formatting and diff
 checks; all independent processes closed. Client architecture and synchronized-
 version guards passed. Unchanged database/provider/browser integration and the
 previously recorded native API probe were not repeated.
+
+## T09 fortieth batch: exact declared-path value capture
+
+`windowsversion.CaptureValue` accepts the original owned version record, explicit
+physical-block and value-capture capacities, and an exact declaration-key path
+below the root. It does not accept a caller-supplied parsed tree. An intrinsically
+impossible selector is refused before copying: the source must fit the format's
+uint16 root length, and each nested block requires physical bytes. The selector
+is copied before context/source callbacks can change caller storage. No path is
+a host path; case folding, native Windows key-lookup and field defaults are absent.
+
+The complete same-owned record is freshly checked by InspectBlocks before exact
+sibling keys are selected. Zero/multiple matches refuse. The selected original
+value span is captured into a separate immutable snapshot under explicit positive
+source/memory capacities. Its identity must equal the freshly observed Value ID,
+and context is checked before success. Later failure returns literal zero
+CapturedValue without earlier fixed values, record/tree, selector or value bytes.
+An explicitly empty value retains a real owned empty-byte snapshot; no text or
+identity default is inserted.
+
+The result binds complete original record, exact declaration path, selected block
+and original raw value bytes. These are byte observations, not decoded CompanyName/
+FileVersion/Translation semantics, native case equivalence, approved app/version/
+publisher identity, PE resource association or authenticated executable handoff.
+Existing fixed/block observers and signed package/PE/CLI APIs are unchanged.
+Copy/structure/value capacities retain their logical meaning, not aggregate heap
+or preparation budgets, and the 32 MiB business-batch limit does not cap artifacts.
+
+Three mandatory groups cover exact selected identities/raw bytes, independent
+caller-source/tree/path mutation, synchronous context-callback selector mutation,
+intrinsically impossible long-path refusal before inspection, missing/case-variant/
+deep paths, exact duplicate original keys, value source/memory capacities,
+cancellation and same-source restoration. Each late capture-capacity negative
+first succeeds in complete physical block inspection, then returns no earlier
+record. An explicitly empty value is captured without defaults.
+
+The new actual opt-in uses the same fixed 880-byte original Windows version record
+and captures FileVersion and Translation as raw bytes. Regular/exact-size checks,
+bounded read, close and original whole-record SHA precede inspection. Independent
+audit found that the initial expected raw span came from the returned offset,
+which could miss an incorrect field selection with the same value type. Root
+replaced it with independently measured fixed Path/Key, block offset/size/identity,
+value offset/size/SHA and type assertions; expected bytes now use only those frozen
+original spans. FileVersion is independently fixed at block 284/110 and value
+316/78; Translation at block 844/36 and value 876/4. No text/native lookup or
+publisher approval is inferred from these spans.
+
+Root initial actual fourteen-group run passed in 1.217s. Root self-review froze
+the selector before callbacks and added its mutation control (1.181s), then bounded
+intrinsically impossible selector copies (1.161s). After the audit's actual-selection
+P2 repair, final actual fourteen groups passed in 1.237s; all three original-record
+fixture groups executed without skips. Both independent static audits passed that
+frozen repair with no remaining required fixes.
+
+Complete default Go tests passed with package parallelism 2: windowsversion eleven
+mandatory groups plus three fixture skips, 1.749s; verification 16.991s, PE 1.589s,
+Debian 2.143s, compression 3.848s and TAR 1.988s. Fixture/provider/database/browser
+opt-ins were not enabled in that default run. Module verification, whole vet,
+server build, contract pins, changed-file formatting and diff checks passed;
+all root processes closed. The later actual-selection test-only repair received
+the actual fourteen-group rerun plus affected vet/formatting/diff; production
+behavior remained unchanged and no redundant whole-suite rerun was performed.
+
+No dependency, SQL, protocol, application version or deployment change. Semantic
+text/translation/native lookup policy, original PE resource association, approved
+app/version/publisher mapping, Artifact admission and production storage remain
+later work. Full T09 remains incomplete. Downloads have no total/cumulative
+elapsed or retry-count limit.
+
+Both final independent scoped code/test audits passed without required fixes.
+Dependency audit independently ran all fourteen actual windowsversion groups in
+1.245s; compatibility audit ran them in 1.396s. Both enabled all three original-
+record fixture groups without skips and passed affected vet, two-file formatting
+and diff checks; all independent processes closed. Client architecture and
+synchronized-version guards passed. Unchanged database/provider/browser integration
+and the previously recorded native API probe were not repeated.
