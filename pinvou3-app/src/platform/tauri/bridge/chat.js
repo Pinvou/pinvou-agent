@@ -686,8 +686,15 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedtauriChat
       // Route by what actually happened: restored → the input holds the
       // stripped body; not restored (refs-only strip, occupied composer,
       // session switched) → the chip stays queued and is re-sent by
-      // flushQueued — both variants below are truthful on every path.
-      const steerFailedKey = steerFailureNoticeRestored ? "steerFailed" : "steerFailedQueued";
+      // flushQueued — both variants below are truthful on every path. The
+      // 25s-timeout rejection keeps the reason clause accurate (round-25
+      // asto minor 5): the engine is typically alive-but-wedged there, so
+      // the "session unavailable or engine not running" cause gets its own
+      // timed-out variants instead of misattributing the failure.
+      const steerTimedOut = String(err && err.message) === "steer_chat timed out";
+      const steerFailedKey = steerTimedOut
+        ? (steerFailureNoticeRestored ? "steerFailedTimedOut" : "steerFailedQueuedTimedOut")
+        : (steerFailureNoticeRestored ? "steerFailed" : "steerFailedQueued");
       runSyncOnSession(sid, function () {
         addSystemItem("⚠️ " + bt(steerFailedKey));
       });

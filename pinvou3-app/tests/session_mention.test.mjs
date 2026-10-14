@@ -1369,6 +1369,20 @@ test('Rust mirror still carries the verbatim block contract (drift pin)', () => 
   // includes() over the whole file stays green when only the production
   // constants drift.
   const productionRs = sessionsRs.split('#[cfg(test)]')[0];
+  // Round-25 asto minor 3: the JS/Rust 64 KB JSON-line caps guard the same
+  // JSON.parse/serde_json parser-floor asymmetry (the JS length pre-check and
+  // the Rust encode_utf16().count() bound) — they must drift together or one
+  // side silently accepts a line the other parses.
+  assert.match(
+    productionRs,
+    /const MAX_BLOCK_JSON_LINE_CHARS: usize = 64 \* 1024;/,
+    'the Rust 64 KB JSON-line cap must stay in lockstep with the JS parser pre-check',
+  );
+  assert.match(
+    readFileSync(new URL('../src/features/chat/session-mention.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n'),
+    /const MAX_BLOCK_JSON_LINE_LENGTH = 64 \* 1024;/,
+    'the JS 64 KB JSON-line cap must stay in lockstep with the Rust bound',
+  );
   assert.ok(
     productionRs.includes(`const SESSION_MENTION_BLOCK_HEADER: &str = ${JSON.stringify(header)};`),
     'Rust production SESSION_MENTION_BLOCK_HEADER must match the JS header verbatim',
@@ -1697,6 +1711,7 @@ test('steer-notice keys exist exactly once per locale in the BT table (round-15 
   for (const key of [
     'steerDroppedQueued', 'steerFailedQueued', 'steerFailedUnconfirmed',
     'steerFailedLost', 'steerDroppedDuringEdit', 'steerEditRestored',
+    'steerFailedTimedOut', 'steerFailedQueuedTimedOut',
   ]) {
     const occurrences = bridgeSource.split(`\n      ${key}:`).length - 1;
     assert.equal(occurrences, 3, `${key} must appear exactly once per locale (en/ja/zh), got ${occurrences}`);
@@ -3016,24 +3031,48 @@ test('an unmounted-window materialization is recorded by the send closure; the f
     'a fresh mount into the materialized session restores the chips (no orphaned references)',
   );
   // Mounted double-recording guard: when the scope effect already recorded
-  // the transition (with its mid-await carry), the closure leg must keep it.
-  stashSessionMentionDraft('draft:9', [{ sessionId: 'mid', title: 't' }]);
-  recordDraftMaterialization('draft:9', 'session:S1', [{ sessionId: 'mid', title: 't' }]);
-  sendSandbox.recordSendMaterialization('draft:9', { materializedSessionId: 'S1' });
-  assert.deepEqual(
-    materializationCarry('draft:9').carriedRefs,
-    [{ sessionId: 'mid', title: 't' }],
-    'the closure recording never clobbers the effect entry (its mid-await carry survives)',
-  );
-  // And the closure leg itself records when nothing exists yet (the stash is
-  // the carry source, exactly like the effect's read).
-  stashSessionMentionDraft('draft:10', [{ sessionId: 'late', title: 't' }]);
-  sendSandbox.recordSendMaterialization('draft:10', { materializedSessionId: 'S2' });
-  assert.deepEqual(
-    materializationCarry('draft:10'),
-    { target: 'session:S2', carriedRefs: [{ sessionId: 'late', title: 't' }] },
-    'with no prior entry the closure records the mapping with the stash carry',
-  );
+  // the transition, the closure leg must keep it. Round-25 asto MAJOR 2: the
+  // drive must model production's POST-carry state — the effect drained the
+  // draft stash into the ledger entry — so a guard-less re-record reads an
+  // EMPTY stash and the entry's carried picks observably vanish (the previous
+  // plant kept [mid] in the stash, making guard-present and guard-deleted
+  // byte-identical).
+  const scrubRound24Keys = () => {
+    for (const key of ['draft:3', 'draft:9', 'draft:10', 'session:NEW', 'session:S1', 'session:S2']) {
+      clearDraftMaterialization(key);
+      stashSessionMentionDraft(key, []);
+    }
+  };
+  scrubRound24Keys();
+  try {
+    stashSessionMentionDraft('draft:9', [{ sessionId: 'mid', title: 't' }]);
+    recordDraftMaterialization('draft:9', 'session:S1', [{ sessionId: 'mid', title: 't' }]);
+    stashSessionMentionDraft('draft:9', []);
+    sendSandbox.recordSendMaterialization('draft:9', { materializedSessionId: 'S1' });
+    assert.deepEqual(
+      materializationCarry('draft:9').carriedRefs,
+      [{ sessionId: 'mid', title: 't' }],
+      'the closure recording never clobbers the effect entry (its mid-await carry survives)',
+    );
+    // And the closure leg itself records when nothing exists yet (the stash is
+    // the carry source, exactly like the effect's read) — and drains the dead
+    // draft stash afterwards, mirroring the effect's post-record clear
+    // (round-25 asto minor 11).
+    stashSessionMentionDraft('draft:10', [{ sessionId: 'late', title: 't' }]);
+    sendSandbox.recordSendMaterialization('draft:10', { materializedSessionId: 'S2' });
+    assert.deepEqual(
+      materializationCarry('draft:10'),
+      { target: 'session:S2', carriedRefs: [{ sessionId: 'late', title: 't' }] },
+      'with no prior entry the closure records the mapping with the stash carry',
+    );
+    assert.deepEqual(
+      restoreSessionMentionDraft('draft:10'),
+      [],
+      'the closure leg drains the dead draft stash after recording the carry',
+    );
+  } finally {
+    scrubRound24Keys();
+  }
 });
 
 // Round-24 MAJOR source pins: the report must be threaded through every leg
@@ -3072,4 +3111,308 @@ test('the sessionRefsRef sync effect is structurally pinned (round-23 asto minor
     /useEffect\(\(\) => \{\s*sessionRefsRef\.current = sessionRefs;\s*\}, \[sessionRefs\]\);/,
     'the ref the scope cleanup stashes from must actually be synced from the state',
   );
+});
+
+// ── Round-25 (asto): full-funnel plain-lane drives + discriminating pins ──
+
+// Round-25 asto MAJOR 1: the plain (non-scene, non-voice) send lane used to
+// hand bridge.chat.sendMessage an UNDEFINED meta — the scene branches were
+// its only assignment — so the round-24 materialization report chain was dead
+// code exactly where it was needed most. These drives run the REAL
+// dispatchChatMessage → REAL sendChatMessage → REAL handleSend chain and stub
+// only bridge.chat.sendMessage, so the funnel's meta handling (the `meta ||
+// {}` normalization, the report write, the finally hand-back, the closure
+// recording on BOTH the resolve and rethrow legs) is executed, not asserted.
+test('the plain send lane carries a real meta object through the whole funnel: throw, false, and restored-after-commit (round-25 asto MAJOR 1/3, MAJOR 2 try leg)', async () => {
+  const effectFn = extractChatViewFunction(`useEffect(() => {
+        const restored = bridge.available`);
+  const handleSendFn = extractChatViewFunction('async function handleSend()');
+  const recordFn = extractChatViewFunction('const recordSendMaterialization = (draftKey, meta) => {');
+  const sendChatMessageFn = extractChatViewFunction('const sendChatMessage = useCallback(async (text, voiceContext) => {');
+  const dispatchFn = extractChatViewFunction('const dispatchChatMessage = useCallback(async (text, voiceMeta, voiceOwner) => {');
+  const scrubKeys = () => {
+    for (const key of ['draft:3', 'session:NEW']) {
+      clearDraftMaterialization(key);
+      stashSessionMentionDraft(key, []);
+    }
+  };
+  const makeFunnel = (verdict, reportSession) => {
+    scrubKeys();
+    const store = recordingDraftStore();
+    const keyRef = { current: null };
+    const refsRef = { current: [] };
+    const pendingDraftSends = { current: new Set() };
+    const observed = { plainMetaObject: null, outgoing: '', prefills: [], textRestores: [] };
+    let effectBody = null;
+    const runEffect = (scope, bag = { keyRef, refs: refsRef, pending: pendingDraftSends }) => {
+      const sandbox = {
+        useEffect: (callback) => { effectBody = callback; },
+        bridge: { available: true, chat: { getComposerDraft: () => '正文' } },
+        bs: {},
+        setInputText: () => {},
+        ...scope,
+        mentionDraftKeyRef: bag.keyRef,
+        sessionMentionEnabledRef: { current: true },
+        mentionPendingDraftSendsRef: bag.pending,
+        recordDraftMaterialization,
+        materializationCarry,
+        setSessionRefs: (value) => { bag.refs.current = typeof value === 'function' ? value(bag.refs.current) : value; },
+        setMentionDismissedToken: () => {},
+        setMentionSelection: () => {},
+        sessionRefsRef: bag.refs,
+        stashSessionMentionDraft: store.stashSessionMentionDraft,
+        restoreSessionMentionDraft: store.restoreSessionMentionDraft,
+        dedupeSessionRefs,
+        console,
+      };
+      vm.runInNewContext(`${effectFn})`, sandbox);
+      return effectBody();
+    };
+    const draftCleanup = runEffect({ activeSessionId: null, draftEpoch: 3 });
+    refsRef.current = [...REFS];
+    const sandbox = {
+      // settle tail + closure recording + both funnel layers
+      mentionDraftKeyRef: keyRef,
+      sessionMentionEnabledRef: { current: true },
+      mentionPendingDraftSendsRef: pendingDraftSends,
+      isMultiAgentReadOnly: false,
+      canSend: true,
+      chatVoice: null,
+      inputText: '正文',
+      inputTextRef: { current: '正文' },
+      constrainChatInput: (value) => ({ text: value, truncated: false }),
+      setInputText: (value) => { observed.textRestores.push(value); },
+      sessionMentionEnabled: true,
+      buildSessionMentionBlock,
+      dedupeSessionRefs,
+      stashSessionMentionDraft: store.stashSessionMentionDraft,
+      restoreSessionMentionDraft: store.restoreSessionMentionDraft,
+      resolveMaterializedDraftKey,
+      clearDraftMaterialization,
+      materializationCarry,
+      recordDraftMaterialization,
+      sessionRefs: REFS,
+      setSessionRefs: (value) => { refsRef.current = typeof value === 'function' ? value(refsRef.current) : value; },
+      personalWorkbenchTemplateIdRef: { current: null },
+      setPersonalWorkbenchTemplateId: () => {},
+      // dispatchChatMessage's plain-path surface
+      sceneStatusKey: () => 'scene-status-key',
+      setSceneCapabilityStatus: () => {},
+      t: { uiChatScenes: { attachmentPrompt: '(附件)' }, uiChat: {} },
+      welcomeOptInAttemptRef: { current: null },
+      runSharedWelcomeOptIn: async () => ({}),
+      welcomeToolIdRef: { current: null },
+      setWelcomeToolId: () => {},
+      splitSessionMentionBlock,
+      findPersonalWorkbenchTemplateDraft: () => null,
+      hasReadyAttachment: false,
+      visualPosterSceneActive: false,
+      documentWritingSceneActive: false,
+      personalWorkbenchSceneActive: false,
+      dataVisualizationSceneActive: false,
+      pptDesignSceneActive: false,
+      requiredCapabilitiesForMeta: () => null,
+      setSceneStatusForSession: () => {},
+      resolveSendCapabilityStatus: () => null,
+      activeSessionId: null,
+      pendingModeScopeMigrationRef: { current: null },
+      pinvouModeStateRef: { current: null },
+      activeSessionIdRef: { current: null },
+      draftEpochRef: { current: 3 },
+      bridge: {
+        available: true,
+        voice: {},
+        chat: {
+          prefillComposer: (text) => { observed.prefills.push(text); },
+          sendMessage: async (text, meta) => {
+            observed.plainMetaObject = !!meta;
+            observed.outgoing = text;
+            if (reportSession) meta.materializedSessionId = reportSession;
+            if (verdict === 'throw') throw new Error('reserve conflict');
+            return verdict;
+          },
+        },
+      },
+      useCallback: (callback) => callback,
+      console,
+    };
+    vm.runInNewContext(
+      `${settlePrefix}${recordFn}\n${dispatchFn})\n${sendChatMessageFn})\n${handleSendFn}\nthis.handleSend = handleSend;`,
+      sandbox,
+    );
+    return { sandbox, store, keyRef, refsRef, pendingDraftSends, observed, runEffect, draftCleanup };
+  };
+
+  // (1) MAJOR 1, catch leg: materialization mid-send while unmounted, then a
+  // post-dispatch throw. The report must survive the whole funnel.
+  {
+    const funnel = makeFunnel('throw', 'NEW');
+    funnel.draftCleanup(); // the unmount cleanup stashes the post-dispatch []
+    await funnel.sandbox.handleSend();
+    assert.equal(funnel.observed.plainMetaObject, true, 'the plain lane hands the bridge a real meta object');
+    assert.ok(funnel.observed.outgoing.startsWith('## Referenced chats'), 'the outgoing text carries the injection block');
+    assert.ok(funnel.observed.outgoing.endsWith('正文'), `the body rides the outgoing text (got: ${JSON.stringify(funnel.observed.outgoing.slice(-8))})`);
+    assert.deepEqual(
+      funnel.store.calls.stashed.filter(([key]) => key === 'session:NEW').at(-1),
+      ['session:NEW', [...REFS]],
+      'the failed plain-lane send lands under the materialized session key',
+    );
+    assert.deepEqual(restoreSessionMentionDraft('draft:3'), [], 'nothing strands under the dead draft key');
+    assert.equal(materializationCarry('draft:3'), null, 'the settle clears the entry');
+    assert.equal(funnel.pendingDraftSends.current.size, 0, 'the registration drains');
+    const mountBag = { keyRef: { current: null }, refs: { current: [] }, pending: { current: new Set() } };
+    funnel.runEffect({ activeSessionId: 'NEW', draftEpoch: 4 }, mountBag);
+    assert.deepEqual(mountBag.refs.current, [...REFS], 'a fresh mount restores the chips');
+    scrubKeys();
+  }
+
+  // (2) MAJOR 2 try leg: a notice-only false AFTER the commit resolves through
+  // sendChatMessage's RESOLVE path — the try-leg recording is the operative
+  // one there (deleting it re-opens the loss shape on the success path).
+  {
+    const funnel = makeFunnel(false, 'NEW');
+    funnel.draftCleanup();
+    await funnel.sandbox.handleSend();
+    assert.equal(funnel.observed.plainMetaObject, true);
+    assert.deepEqual(
+      funnel.store.calls.stashed.filter(([key]) => key === 'session:NEW').at(-1),
+      ['session:NEW', [...REFS]],
+      'the try-leg recording routes the false-verdict snapshot under the session key',
+    );
+    assert.deepEqual(restoreSessionMentionDraft('draft:3'), []);
+    // handleSend owns the text back on false (empty-vs-typed restore)
+    assert.ok(funnel.observed.prefills.includes('正文'), 'the caller-owned text recovery fires on false');
+    scrubKeys();
+  }
+
+  // (3) MAJOR 3: "restored" AFTER a committed materialization (the textful
+  // abandonToOwnSession window) — the text is in the materialized session's
+  // buffer and the draft epoch is dead, so the chips must follow the session
+  // key (verdict mapped to "restored-materialized"), and the caller must NOT
+  // put the text back again.
+  {
+    const funnel = makeFunnel('restored', 'NEW');
+    funnel.draftCleanup();
+    await funnel.sandbox.handleSend();
+    assert.equal(funnel.observed.plainMetaObject, true);
+    assert.deepEqual(
+      funnel.store.calls.stashed.filter(([key]) => key === 'session:NEW').at(-1),
+      ['session:NEW', [...REFS]],
+      'restored-after-commit routes the chips under the materialized session key',
+    );
+    assert.deepEqual(restoreSessionMentionDraft('draft:3'), [], 'the restored arm\'s dead-draft routing must not fire');
+    assert.equal(materializationCarry('draft:3'), null, 'the entry settles');
+    assert.ok(!funnel.observed.textRestores.includes('正文'), 'no composer re-restore: the bridge already placed the text');
+    assert.equal(funnel.observed.prefills.length, 0, 'no prefill either');
+    scrubKeys();
+  }
+});
+
+// Round-25 asto MAJOR 2(c): a BEHAVIORAL drive for the scope effect's
+// no-clobber guard — the real effect runs a draft:→session: transition while
+// an entry already points at the target (production's post-carry state: the
+// stash was drained into the ledger). Guard-present keeps the carry;
+// guard-deleted re-records with the drained stash and the picks vanish.
+test('the scope effect keeps an existing same-target ledger entry intact (round-25 asto MAJOR 2c)', () => {
+  const effectFn = extractChatViewFunction(`useEffect(() => {
+        const restored = bridge.available`);
+  const store = recordingDraftStore();
+  const keyRef = { current: 'draft:11' };
+  const refsRef = { current: [] };
+  const pending = { current: new Set(['draft:11']) };
+  let effectBody = null;
+  const pick = [{ sessionId: 'mid', title: 't' }];
+  stashSessionMentionDraft('draft:11', pick);
+  recordDraftMaterialization('draft:11', 'session:SAME', pick);
+  stashSessionMentionDraft('draft:11', []);
+  try {
+    const sandbox = {
+      useEffect: (callback) => { effectBody = callback; },
+      bridge: { available: true, chat: { getComposerDraft: () => '正文' } },
+      bs: {},
+      setInputText: () => {},
+      activeSessionId: 'SAME',
+      draftEpoch: 12,
+      mentionDraftKeyRef: keyRef,
+      sessionMentionEnabledRef: { current: true },
+      mentionPendingDraftSendsRef: pending,
+      recordDraftMaterialization,
+      materializationCarry,
+      setSessionRefs: () => {},
+      setMentionDismissedToken: () => {},
+      setMentionSelection: () => {},
+      sessionRefsRef: refsRef,
+      stashSessionMentionDraft: store.stashSessionMentionDraft,
+      restoreSessionMentionDraft: store.restoreSessionMentionDraft,
+      dedupeSessionRefs,
+      console,
+    };
+    vm.runInNewContext(`${effectFn})`, sandbox);
+    effectBody();
+    assert.deepEqual(
+      materializationCarry('draft:11').carriedRefs,
+      pick,
+      'the effect must not re-record over an entry that already points at the transition target',
+    );
+    assert.equal(keyRef.current, 'session:SAME', 'the scope still moves');
+  } finally {
+    clearDraftMaterialization('draft:11');
+    stashSessionMentionDraft('draft:11', []);
+    stashSessionMentionDraft('session:SAME', []);
+  }
+});
+
+// Round-25 asto minor 2: the refs-only send-button gate had only a
+// comment-satisfiable regex — drive the real canSend expression instead
+// (the extraction is dynamic, so deleting the `|| hasSessionRefs` term reds).
+test('canSend keeps a refs-only composer sendable (behavioral, round-25 asto minor 2)', () => {
+  const source = readChatViewSource();
+  const marker = 'const canSend = !isMultiAgentReadOnly';
+  const start = source.indexOf(marker);
+  assert.notEqual(start, -1, 'canSend expression not found');
+  const expr = source.slice(start, source.indexOf(';', start) + 1);
+  const evalWith = (members) => {
+    const sandbox = { isMultiAgentReadOnly: false, firstTurnPending: false, hasDraftText: false, hasReadyAttachment: false, ...members };
+    vm.runInNewContext(`${expr}\nthis.canSend = canSend;`, sandbox);
+    return sandbox.canSend;
+  };
+  assert.equal(evalWith({ hasSessionRefs: true }), true, 'a refs-only composer stays sendable');
+  assert.equal(evalWith({ hasSessionRefs: false }), false, 'an empty composer is not sendable');
+  assert.equal(evalWith({ isMultiAgentReadOnly: true, hasSessionRefs: true }), false, 'read-only wins');
+  assert.equal(evalWith({ firstTurnPending: true, hasSessionRefs: true }), false, 'a pending first turn blocks');
+});
+
+// Round-25 asto minor 2: the @-panel add path was source-only — drive the
+// real handleSelectMentionCandidate body (accept/duplicate/switch-gate).
+test('handleSelectMentionCandidate accepts, rejects duplicates, and gates on the feature switch (behavioral, round-25 asto minor 2)', () => {
+  const fn = extractChatViewFunction('const handleSelectMentionCandidate = useCallback((candidate) => {');
+  const make = (enabled, currentRefs) => {
+    const calls = { set: [], dismissed: [], input: [] };
+    const sandbox = {
+      sessionMentionEnabled: enabled,
+      sessionRefs: currentRefs,
+      dedupeSessionRefs,
+      setSessionRefs: (value) => { calls.set.push(typeof value === 'function' ? value(currentRefs) : value); },
+      setMentionDismissedToken: (value) => { calls.dismissed.push(value); },
+      setInputText: (value) => { calls.input.push(typeof value === 'function' ? value('参考 @登录') : value); },
+      sessionMentionTriggerAt,
+      composerRef: { current: null },
+      window: { requestAnimationFrame: (cb) => cb() },
+      useCallback: (callback) => callback,
+    };
+    vm.runInNewContext(`${fn})\nthis.handleSelectMentionCandidate = handleSelectMentionCandidate;`, sandbox);
+    return { sandbox, calls };
+  };
+  const accepted = make(true, []);
+  accepted.sandbox.handleSelectMentionCandidate({ sessionId: 's1', title: 't' });
+  assert.deepEqual(accepted.calls.set.at(-1), [{ sessionId: 's1', title: 't' }], 'the pick merges through the choke point');
+  assert.equal(accepted.calls.dismissed[0], null, 'the dismissal resets');
+  assert.deepEqual(accepted.calls.input, ['参考 '], 'the typed trigger text is consumed');
+  const duplicate = make(true, [{ sessionId: 's1', title: 't' }]);
+  duplicate.sandbox.handleSelectMentionCandidate({ sessionId: 's1', title: 't' });
+  assert.equal(duplicate.calls.set.length, 0, 'a duplicate pick is a no-op');
+  assert.equal(duplicate.calls.input.length, 0, 'the typed query is kept for a rejected pick');
+  const disabled = make(false, []);
+  disabled.sandbox.handleSelectMentionCandidate({ sessionId: 's1', title: 't' });
+  assert.equal(disabled.calls.set.length, 0, 'the feature switch gates the add path');
 });

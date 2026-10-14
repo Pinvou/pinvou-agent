@@ -22,8 +22,9 @@
  * done automatically by the backend feature registry with union semantics —
  * read_session/list_sessions leave the model-visible set only when every
  * owning feature is off, and the frontend must not reimplement that; layer 4
- * (degradation of existing entry points) is consumed in
- * SessionMentionControls from isSessionMentionEnabled.
+ * (degradation of existing entry points) renders in SessionMentionControls
+ * from its props; the isSessionMentionEnabled judgement itself runs in
+ * ChatView, which owns the registry state.
  */
 
 /** Maximum number of sessions a single message may reference (keeps the block bounded). */

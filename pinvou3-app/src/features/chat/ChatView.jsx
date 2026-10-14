@@ -304,10 +304,14 @@ const makeSettleSessionRefSend = ({ mentionDraftKeyRef, sessionMentionEnabledRef
         setSessionRefs(current => dedupeSessionRefs([...carriedRefs, ...refsAtSend, ...current]));
       }
     } else {
-      // Failure / non-dispatch after a REAL materialization: the snapshot
-      // restores through the ledger-resolved session key, the carry merges
-      // alongside it (cap priority: the carry first — it has no other
-      // recovery path; refsAtSend ride with the restored text).
+      // Failure / non-dispatch after a REAL materialization — including the
+      // round-25 asto MAJOR 3 shape: a textful abandonToOwnSession AFTER the
+      // commit resolves "restored-materialized" (text already in the
+      // materialized session's buffer, draft epoch dead), so its chips route
+      // here too. The snapshot restores through the ledger-resolved session
+      // key, the carry merges alongside it (cap priority: the carry first —
+      // it has no other recovery path; refsAtSend ride with the restored
+      // text).
       stashKey = resolveMaterializedDraftKey(draftKeyAtSend);
       carriedRefs = carry && carry.target === stashKey ? carry.carriedRefs : [];
     }
@@ -349,7 +353,12 @@ const recordSendMaterialization = (draftKey, meta) => {
   // Same carry semantics as the effect at the same logical moment: whatever
   // the draft scope's stash still holds (mid-await picks while the transition
   // render is pending; nothing once the cleanup ran — the unmounted shape).
-  recordDraftMaterialization(draftKey, `session:${sessionId}`, restoreSessionMentionDraft(draftKey));
+  const carried = restoreSessionMentionDraft(draftKey);
+  recordDraftMaterialization(draftKey, `session:${sessionId}`, carried);
+  // Mirror the effect's post-record clear (round-25 asto minor 11): the
+  // carried chips live in the ledger entry now; drain the dead draft key's
+  // stash entry so nothing double-holds them.
+  if (carried.length) stashSessionMentionDraft(draftKey, []);
 };
 
 // Presentation for the canonical scene registry (scene-registry.js owns the
@@ -2304,6 +2313,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           return false;
         }
         let dispatchResult;
+        // Round-25 asto MAJOR 1: on the plain (non-scene, non-voice) lane `meta`
+        // is still undefined here — the scene branches above are its only
+        // assignments and the voice merge never fires with a null operation id
+        // — so the bridge's materialization report had nowhere to land and the
+        // round-24 closure leg was dead code on the default send path. Always
+        // hand the bridge a real out-param object.
+        meta = meta || {};
         try {
           dispatchResult = await bridge.chat.sendMessage(visibleOutgoing, meta, voiceOwner);
         } catch (error) {
@@ -2315,7 +2331,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           // locally, so hand the report back on the caller-owned object the
           // send closure holds — it records the ledger mapping the scope
           // effect would have recorded had the view stayed mounted.
-          if (meta && meta.materializedSessionId && voiceMeta) {
+          if (meta.materializedSessionId && voiceMeta) {
             voiceMeta.materializedSessionId = meta.materializedSessionId;
           }
         }
@@ -2345,14 +2361,25 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         const meta = { voiceOperationId: operationId };
         const draftKeyAtDispatch = mentionDraftKeyRef.current;
         try {
-          const accepted = await dispatchChatMessage(text, meta, voiceContext?.draftOwner);
+          const dispatched = await dispatchChatMessage(text, meta, voiceContext?.draftOwner);
           recordSendMaterialization(draftKeyAtDispatch, meta);
-          if ((accepted === false || accepted === 'restored') && operationId
+          // Round-25 asto MAJOR 3: "restored" after a COMMITTED materialization
+          // (the textful abandonToOwnSession window during the attachment-
+          // adoption await) hands the text to the materialized session's
+          // buffer — the draft epoch is dead, so the chips must route through
+          // the ledger like any real-materialization non-dispatch instead of
+          // staying on the restored arm's dead draft key. The meta report
+          // distinguishes this from the aborted-materialization "restored"
+          // (draft still alive, mapping provisional, must be cleared).
+          const accepted = dispatched === 'restored' && meta.materializedSessionId
+            ? 'restored-materialized' : dispatched;
+          if ([false, 'restored', 'restored-materialized'].includes(accepted) && operationId
             && bridge.voice?.completeVoiceSubmission) {
             bridge.voice.completeVoiceSubmission(operationId, null, false);
           }
-          // Preserve "restored": ordinary send must not restore twice, while
-          // voice task delivery must treat it as not accepted.
+          // Preserve "restored"/"restored-materialized": ordinary sends must
+          // not restore the text again (the bridge already placed it), while
+          // voice task delivery must treat both as not accepted.
           return accepted;
         } catch (error) {
           recordSendMaterialization(draftKeyAtDispatch, meta);
@@ -3192,9 +3219,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             if (result === false && bridge.chat.restoreTaskDraft) {
               bridge.chat.restoreTaskDraft(constrained.text, owner);
             }
-            // Voice task delivery treats "restored" as not accepted (the text
-            // is back, not sent); ordinary callers map it through to false.
-            return result === 'restored' ? false : result;
+            // Voice task delivery treats "restored" and "restored-materialized"
+            // as not accepted (the text is back somewhere, not sent); ordinary
+            // callers map them through to false.
+            return result === 'restored' || result === 'restored-materialized' ? false : result;
           } catch (error) {
             settleSessionRefSend(refsAtSend, draftKeyAtSend);
             if (bridge.chat.restoreTaskDraft) bridge.chat.restoreTaskDraft(constrained.text, owner);

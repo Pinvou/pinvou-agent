@@ -441,8 +441,8 @@ test("chatview: the task lane consumes only its own draft and maps restored to n
   );
   assert.match(
     chatViewSource,
-    /return result === 'restored' \? false : result;/,
-    "a restored delivery must read as not accepted, without restoring twice",
+    /return result === 'restored' \|\| result === 'restored-materialized' \? false : result;/,
+    "a restored delivery (including restored-after-commit, round-25 asto MAJOR 3) must read as not accepted, without restoring twice",
   );
   assert.match(
     chatViewSource,

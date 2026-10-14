@@ -127,6 +127,12 @@ export function SessionMentionCards({ refs, knownSessionIds, onOpenSession, copy
         const active =
           'border-black/[0.08] bg-black/[0.03] text-[#444746] hover:bg-black/[0.06] ' +
           'dark:border-white/10 dark:bg-white/[0.06] dark:text-[#C4C7C5] dark:hover:bg-white/10';
+        // Alive-but-not-interactive (round-25 asto minor 9): the same colors as
+        // active WITHOUT the hover variants — a hover affordance on a card that
+        // cannot navigate invites the click it cannot serve.
+        const alive =
+          'border-black/[0.08] bg-black/[0.03] text-[#444746] ' +
+          'dark:border-white/10 dark:bg-white/[0.06] dark:text-[#C4C7C5]';
         const dead = 'border-black/[0.06] text-[#9AA0A6] dark:border-white/5 dark:text-[#80868B]';
         const inner = (
           <>
@@ -163,9 +169,10 @@ export function SessionMentionCards({ refs, knownSessionIds, onOpenSession, copy
               ? `${ref.title || ref.sessionId} — ${disabledNotice}`
               : (known ? undefined : `${ref.title || ref.sessionId} — ${copy.cardUnavailable}`)}
             // Alive but without a navigation callback (non-main-timeline
-            // contexts): keep the normal colors, only unclickable — the dead
-            // grey is reserved for deleted sessions and the feature-off state.
-            className={base + (known ? active : dead)}
+            // contexts): keep the normal colors minus the hover affordance —
+            // the dead grey is reserved for deleted sessions and the
+            // feature-off state.
+            className={base + (known ? alive : dead)}
           >
             {inner}
           </span>

@@ -249,11 +249,14 @@ pub(crate) fn strip_session_mention_block(text: &str) -> &str {
     // exponents, and nesting depth (serde_json refuses arrays nested deeper
     // at 128 levels, which JSON.parse accepts), so a hand-forged block
     // carrying such content is `matched` on the JS side but fail-open
-    // passthrough here. Unreachable through the real send path (Tauri's IPC
-    // JSON rejects the escaped lone surrogate at the command boundary; real
-    // blocks are one flat ref array). Divergence direction: on these
+    // passthrough here. Reachability is scoping-dependent (round-25 asto
+    // minor 4): the escaped lone surrogate is rejected by Tauri's IPC JSON
+    // at the command boundary, so it cannot arrive through a real send;
+    // extreme float exponents and 129-deep nesting CAN arrive as pasted
+    // user text (attacker-is-the-user, cosmetic title divergence only —
+    // real blocks are one flat ref array). Divergence direction: on these
     // inputs the JS side STRIPS (matched) while this side keeps the raw
-    // text — one-way, dirty-data-only, and unreachable through real sends.
+    // text — one-way, dirty-data-only.
     let Ok(value) = serde_json::from_str::<serde_json::Value>(json_line) else {
         return text;
     };

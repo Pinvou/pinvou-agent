@@ -389,3 +389,28 @@ test('a committed draft materialization reports the session id on the caller-own
 // mention-specific shape it covered here (a refs-only message restoring
 // nothing → the lost variant) stays covered there through the
 // attachment-only chip case.
+
+// Round-25 asto minor 5: the 25s-timeout rejection is a distinct failure mode
+// (engine alive-but-wedged) — the notice must not blame "session unavailable
+// or engine not running" there, and the timed-out variants exist in all three
+// locales (the count-3 guard in session_mention.test.mjs pins the BT table).
+test('onSteerFailure: the 25s timeout routes the timed-out notice variants instead of the unavailable-engine cause', () => {
+  const { state, notices, api } = makeHarness();
+  const restored = steerItem(BLOCK_AND_BODY);
+  state.queued = [restored];
+  state.composerDraft = '';
+  api.onSteerFailure(restored, 'A', { snapshot: null }, BLOCK_AND_BODY, new Error('steer_chat timed out'));
+  assert.equal(state.queued.length, 0, 'the restore itself is unaffected by the cause');
+  assert.ok(notices().includes('⚠️ steerFailedTimedOut'), `got: ${JSON.stringify(notices())}`);
+  const occupied = steerItem(BLOCK_AND_BODY);
+  state.queued = [occupied];
+  state.composerDraft = '用户正在输入';
+  api.onSteerFailure(occupied, 'A', { snapshot: null }, BLOCK_AND_BODY, new Error('steer_chat timed out'));
+  assert.ok(notices().includes('⚠️ steerFailedQueuedTimedOut'), `got: ${JSON.stringify(notices())}`);
+  // The generic cause keeps its own variants on non-timeout rejections.
+  const plain = steerItem(BLOCK_AND_BODY);
+  state.queued = [plain];
+  state.composerDraft = '';
+  api.onSteerFailure(plain, 'A', { snapshot: null }, BLOCK_AND_BODY, new Error('engine not running'));
+  assert.ok(notices().includes('⚠️ steerFailed'), `got: ${JSON.stringify(notices())}`);
+});
