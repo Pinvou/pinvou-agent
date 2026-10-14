@@ -278,7 +278,6 @@ for (const [label, variant] of [
   ['ordered-list continuation', `10. item\n    \`\`\`persona-card\n    ${personaPayload}\n    \`\`\``],
   ['unordered-list continuation', `- item\n    \`\`\`persona-card\n    ${personaPayload}\n    \`\`\``],
   ['list paragraph then fence', `- item\n  more context\n  \`\`\`persona-card\n  ${personaPayload}\n  \`\`\``],
-  ['list blockquote then fence', `- item\n> note\n    \`\`\`persona-card\n    ${personaPayload}\n    \`\`\``],
   ['tab-indented list continuation', `- item\n\t\`\`\`persona-card\n\t${personaPayload}\n\t\`\`\``],
   ['nested-list continuation', `- outer\n  1. inner\n     \`\`\`persona-card\n     ${personaPayload}\n     \`\`\``],
   ['nested-list tab continuation', `- outer\n  1. inner\n  \t\`\`\`persona-card\n  \t${personaPayload}\n  \t\`\`\``],
@@ -300,6 +299,12 @@ for (const [label, variant] of [
   ['HTML block ends list', `- item\n<div>block</div>\n    \`\`\`persona-card\n    ${personaPayload}\n    \`\`\``],
   ['HTML block owns apparent fence', `- item\n<div>block</div>\n  \`\`\`persona-card\n  ${personaPayload}\n  \`\`\``],
   ['table block owns apparent fence', `- item\n<table><tr><td>block</td></tr></table>\n   \`\`\`persona-card\n   ${personaPayload}\n   \`\`\``],
+  // marked ≥17 tokenizes lists per CommonMark: after `- item`, the `> note`
+  // blockquote's indented fence lines are a lazy paragraph continuation, so
+  // the backticks stay inline code (marked 14 mis-nested the blockquote inside
+  // the list item and parsed a fence). Renderer and copy still agree — the
+  // payload shows as literal text on both paths.
+  ['list blockquote then fence', `- item\n> note\n    \`\`\`persona-card\n    ${personaPayload}\n    \`\`\``],
 ]) {
   const rendered = renderMarkdownMarkup(variant);
   const copied = assistantMarkdownCopyText(variant);
@@ -415,7 +420,7 @@ assert.match(chatView, /allowScheduledTaskDraft=\{isScheduledTaskCreationChat\} 
 assert.match(chatView, /allowScheduledTaskDraft: isScheduledTaskCreationChat/);
 assert.doesNotMatch(chatView, /data-assistant-copy-source/);
 assert.match(actions, /data-testid="assistant-message-footer"/);
-assert.match(actions, /className="!mt-0 flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1 pt-2"/);
+assert.match(actions, /className="mt-0! flex min-h-8 flex-wrap items-center gap-x-2 gap-y-1 pt-2"/);
 assert.match(actions, /data-testid="assistant-message-actions"/);
 assert.match(actions, /copyClipboardText\(value\)/);
 assert.match(actions, /aria-live="polite"/);

@@ -178,24 +178,23 @@ function walkTokenSequence(tokens, parentText, parentMap, source, fences) {
       continue;
     }
 
-    if (token.type === 'list' && Array.isArray(token.items)) {
-      let itemCursor = 0;
-      for (const item of token.items) {
-        if (!item?.raw || !item.text) continue;
-        const itemMatch = matchTokenText(item.raw, match.text, itemCursor);
-        if (!itemMatch) continue;
-        itemCursor = itemMatch.map[itemMatch.map.length - 1] + 1;
-        const itemFrameMap = tokenSourceMap(itemMatch, frameMap);
-        const textMatch = matchTokenText(item.text, itemMatch.text, 0);
-        if (textMatch) {
-          walkTokenSequence(
-            item.tokens,
-            textMatch.text,
-            tokenSourceMap(textMatch, itemFrameMap),
-            source,
-            fences,
-          );
-        }
+    if (token.type !== 'list' || !Array.isArray(token.items)) continue;
+    let itemCursor = 0;
+    for (const item of token.items) {
+      if (!item?.raw || !item.text) continue;
+      const itemMatch = matchTokenText(item.raw, match.text, itemCursor);
+      if (!itemMatch) continue;
+      itemCursor = itemMatch.map[itemMatch.map.length - 1] + 1;
+      const itemFrameMap = tokenSourceMap(itemMatch, frameMap);
+      const textMatch = matchTokenText(item.text, itemMatch.text, 0);
+      if (textMatch) {
+        walkTokenSequence(
+          item.tokens,
+          textMatch.text,
+          tokenSourceMap(textMatch, itemFrameMap),
+          source,
+          fences,
+        );
       }
     }
   }

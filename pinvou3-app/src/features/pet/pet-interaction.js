@@ -98,10 +98,12 @@ function connectedMonitorArea(monitors, seed) {
       const next = areas[candidate];
       const horizontalGap = Math.max(current.l - next.r, next.l - current.r, 0);
       const verticalGap = Math.max(current.t - next.b, next.t - current.b, 0);
-      if (horizontalGap <= 1 && verticalGap <= 1) {
-        selected.add(candidate);
-        queue.push(candidate);
+      if (!(horizontalGap <= 1 && verticalGap <= 1)) {
+        continue;
       }
+
+      selected.add(candidate);
+      queue.push(candidate);
     }
   }
   const group = [...selected].map((index) => areas[index]);

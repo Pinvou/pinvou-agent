@@ -12,7 +12,7 @@ test('shared knowledge dialogs portal their full-viewport overlay to document.bo
     remoteKnowledgeSource,
     /return typeof document === 'undefined' \? dialog : createPortal\(dialog, document\.body\);/,
   );
-  assert.match(remoteKnowledgeSource, /className="fixed inset-0 z-\[80\]/);
+  assert.match(remoteKnowledgeSource, /className="fixed inset-0 z-80/);
   assert.match(remoteKnowledgeSource, /role="dialog"[\s\S]*?aria-modal="true"/);
   assert.match(remoteKnowledgeSource, /onMouseDown=\{event => event\.stopPropagation\(\)\}/);
 });

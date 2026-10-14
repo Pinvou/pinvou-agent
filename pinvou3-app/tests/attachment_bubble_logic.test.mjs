@@ -190,7 +190,7 @@ for (const relativePath of [
 }
 assert.match(
   chatViewSource,
-  /\{bodyText && <div className=\{`min-w-0 max-w-full break-words/,
+  /\{bodyText && <div className=\{`min-w-0 max-w-full wrap-break-word/,
   'attachment-only messages must not render an empty text bubble',
 );
 assert.match(

@@ -51,17 +51,17 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
           {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
           <div ref={panelRef} onClick={(e)=>e.stopPropagation()}
-            className="w-full h-[88vh] md:h-auto md:max-h-[84vh] md:max-w-[560px] flex flex-col rounded-t-[14px] md:rounded-[14px] overflow-hidden bg-[#F2F2F7] dark:bg-[#1C1C1E] text-[#000] dark:text-[#fff]">
+            className="w-full h-[88vh] md:h-auto md:max-h-[84vh] md:max-w-[560px] flex flex-col rounded-t-[14px] md:rounded-[14px] overflow-hidden bg-[#F2F2F7] dark:bg-[#1C1C1E] text-black dark:text-white">
             {/* 顶部:头像 + 名称/部门 + 关闭 */}
-            <div className="flex items-center gap-4 px-5 pt-5 pb-4 shrink-0 bg-[#fff] dark:bg-[#000]">
+            <div className="flex items-center gap-4 px-5 pt-5 pb-4 shrink-0 bg-white dark:bg-black">
               <AppIcon card={card} />
               <div className="min-w-0 flex-1">
-                <h2 className="text-[20px] font-semibold truncate text-[#000] dark:text-[#fff]">{cd.name}</h2>
+                <h2 className="text-[20px] font-semibold truncate text-black dark:text-white">{cd.name}</h2>
                 <p className="text-[13px] mt-0.5" style={{ color:'#8E8E93' }}>{deptLabelFor(t, card.dept)}{card.source==='user'?' · ' + t.cpBadgeUser:''}</p>
               </div>
               <button type="button" onClick={onClose} className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center bg-[#F2F2F7] dark:bg-[#2C2C2E]" style={{ color:'#8E8E93' }}><X size={16}/></button>
             </div>
-            {cd.description ? <div className="px-5 py-3 text-[14px] shrink-0 text-[#3C3C43] dark:text-[#C7C7CC] bg-[#fff] dark:bg-[#000] border-t border-[rgba(198,198,200,.4)] dark:border-[#1C1C1E]">{cd.description}</div> : null}
+            {cd.description ? <div className="px-5 py-3 text-[14px] shrink-0 text-[#3C3C43] dark:text-[#C7C7CC] bg-white dark:bg-black border-t border-[rgba(198,198,200,.4)] dark:border-[#1C1C1E]">{cd.description}</div> : null}
             {/* 完整人设 */}
             <div className="flex-1 overflow-y-auto custom-scrollbar px-5 py-4 min-h-0">
               <p className="text-[12px] uppercase mb-2" style={{ color:'#8E8E93' }}>{t.cpFullBody}</p>
@@ -71,7 +71,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
             </div>
             {/* 加持/取消 */}
             <div className="p-4 shrink-0 border-t border-[rgba(198,198,200,.5)] dark:border-[#38383A]">
-              <button type="button" onClick={()=>onEquip(card)} className={"w-full py-3 rounded-[12px] text-[16px] font-semibold transition-colors " + (equipped ? 'bg-[#E5E5EA] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff]' : 'bg-[#0A84FF] dark:bg-[#007AFF] text-[#fff]')}>
+              <button type="button" onClick={()=>onEquip(card)} className={"w-full py-3 rounded-[12px] text-[16px] font-semibold transition-colors " + (equipped ? 'bg-[#E5E5EA] dark:bg-[#2C2C2E] text-black dark:text-white' : 'bg-[#0A84FF] dark:bg-[#007AFF] text-[#fff]')}>
                 {equipped ? t.cpDetailUnequip : t.cpEquipShort}
               </button>
             </div>
@@ -114,11 +114,11 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
       return (
         // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is handled by the nav-bar cancel button
         // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, a non-interactive container
-        <div className="fixed inset-0 z-[60] flex items-end md:items-center justify-center md:p-4"
+        <div className="fixed inset-0 z-60 flex items-end md:items-center justify-center md:p-4"
           style={{ ...BACKDROP_STYLE, fontFamily: IOS_FONT_STACK }} onClick={onClose}>
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
           {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
-          <div onClick={(e)=>e.stopPropagation()} className="w-full h-[90vh] md:h-auto md:max-h-[85vh] md:max-w-md flex flex-col rounded-t-[14px] md:rounded-[14px] overflow-hidden bg-[#F2F2F7] dark:bg-[#1C1C1E] text-[#000] dark:text-[#fff]">
+          <div onClick={(e)=>e.stopPropagation()} className="w-full h-[90vh] md:h-auto md:max-h-[85vh] md:max-w-md flex flex-col rounded-t-[14px] md:rounded-[14px] overflow-hidden bg-[#F2F2F7] dark:bg-[#1C1C1E] text-black dark:text-white">
             {/* 导航栏 */}
             <div className="flex justify-between items-center px-4 h-14 shrink-0 border-b border-[rgba(198,198,200,.5)] dark:border-[#38383A]">
               <button type="button" onClick={onClose} className="text-[17px] text-[#007AFF] dark:text-[#0A84FF]">{t.cpCancel}</button>
@@ -129,7 +129,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
             <div className="flex-1 overflow-y-auto p-4 space-y-6">
               {err ? <div className="text-[13px] px-2" style={{ color:'#FF3B30' }}>{err}</div> : null}
               {/* 名称 + 部门 */}
-              <div className="rounded-[10px] overflow-hidden bg-[#fff] dark:bg-[#000]">
+              <div className="rounded-[10px] overflow-hidden bg-white dark:bg-black">
                 <div className="flex items-center px-4 py-3 border-b border-[rgba(198,198,200,.5)] dark:border-[#38383A]">
                   <span className="min-w-20 text-[17px] shrink-0">{t.cpFieldName}</span>
                   <input value={name} onChange={e=>setName(e.target.value)} placeholder={t.cpReqPh} className="flex-1 text-[17px] bg-transparent outline-none text-[#000] dark:text-[#fff]" />
@@ -142,24 +142,24 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
                 </div>
               </div>
               {/* 描述 */}
-              <div className="rounded-[10px] overflow-hidden bg-[#fff] dark:bg-[#000]">
+              <div className="rounded-[10px] overflow-hidden bg-white dark:bg-black">
                 <div className="px-4 py-3">
-                  <textarea rows={3} value={description} onChange={e=>setDescription(e.target.value)} placeholder={t.cpFieldDescPh} className="w-full text-[17px] bg-transparent outline-none resize-none text-[#000] dark:text-[#fff]" />
+                  <textarea rows={3} value={description} onChange={e=>setDescription(e.target.value)} placeholder={t.cpFieldDescPh} className="w-full text-[17px] bg-transparent outline-hidden resize-none text-black dark:text-white" />
                 </div>
               </div>
               {/* 系统人设 (必填) */}
               <div>
                 <p className="text-[13px] ml-4 mb-1.5 uppercase" style={{ color:'#8E8E93' }}>{t.cpFieldBody} *  ·  {t.cpMarkdownHint}</p>
-                <div className="rounded-[10px] overflow-hidden bg-[#fff] dark:bg-[#000]">
+                <div className="rounded-[10px] overflow-hidden bg-white dark:bg-black">
                   <div className="px-4 py-3">
-                    <textarea rows={7} value={body} onChange={e=>setBody(e.target.value)} placeholder={t.cpBodyPh} className="w-full text-[15px] font-mono leading-relaxed bg-transparent outline-none resize-none custom-scrollbar text-[#000] dark:text-[#fff]" style={{ maxHeight:'40vh' }} />
+                    <textarea rows={7} value={body} onChange={e=>setBody(e.target.value)} placeholder={t.cpBodyPh} className="w-full text-[15px] font-mono leading-relaxed bg-transparent outline-hidden resize-none custom-scrollbar text-black dark:text-white" style={{ maxHeight:'40vh' }} />
                   </div>
                 </div>
               </div>
               {/* 删除(编辑态) */}
               {isEdit ? (
                 <button type="button" onClick={()=>{ if(confirmDel){ bridge.personas.deletePersona(init.id).then(()=>{ if(onDeleted) { onDeleted(init); } onClose(); }).catch(() => { setErr(t.cpToastDelFailed); }); } else { setConfirmDel(true); } }}
-                  className="w-full rounded-[10px] py-3 text-[17px] transition-colors bg-[#fff] dark:bg-[#000]" style={{ color:'#FF3B30' }}>
+                  className="w-full rounded-[10px] py-3 text-[17px] transition-colors bg-white dark:bg-black" style={{ color:'#FF3B30' }}>
                   {confirmDel ? t.cpDelThisConfirm : t.cpDeleteThis}
                 </button>
               ) : null}
@@ -285,7 +285,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
       function openCtx(card, e){ if (card.source !== 'user') { return; } e.preventDefault(); e.stopPropagation(); setCtx({ card, x: e.clientX, y: e.clientY }); }
 
       return (
-        <div className="flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden animate-in fade-in duration-300 bg-[#fff] dark:bg-[#131314]"
+        <div className="flex-1 flex flex-col w-full h-full relative z-10 overflow-hidden animate-in fade-in duration-300 bg-white dark:bg-[#131314]"
           style={{ fontFamily: IOS_FONT_STACK }}>
           <div className="relative z-10 flex-1 min-h-0 overflow-y-auto p-4 custom-scrollbar sm:p-6 lg:p-10">
             <div className="max-w-[1400px] mx-auto">
@@ -329,18 +329,18 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
 
                 {/* 分类药丸 + 左右滚动箭头 */}
                 <div className="relative pt-2 pb-4 group">
-                  {showL ? <button type="button" onClick={() => scrollPills(-220)} className="absolute left-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full flex items-center justify-center border opacity-0 group-hover:opacity-100 transition shadow-sm bg-[#fff] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff] border-[rgba(198,198,200,.6)] dark:border-[#38383A]"><ChevronLeft size={18} /></button> : null}
+                  {showL ? <button type="button" onClick={() => scrollPills(-220)} className="absolute left-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full flex items-center justify-center border opacity-0 group-hover:opacity-100 transition shadow-sm bg-white dark:bg-[#2C2C2E] text-black dark:text-white border-[rgba(198,198,200,.6)] dark:border-[#38383A]"><ChevronLeft size={18} /></button> : null}
                   <div ref={scrollRef} className="flex overflow-x-auto gap-2 no-scrollbar scroll-smooth">
                     {[ALL_DEPT, ...DEPT_ORDER.filter(k => counts[k])].map(k => {
                       const isAll = k === ALL_DEPT; const on = isAll ? activeDept === ALL_DEPT : activeDept === k;
                       return (
-                        <button type="button" key={k} onClick={() => setActiveDept(k)} className={"h-9 whitespace-nowrap shrink-0 text-[13px] px-3.5 rounded-full font-semibold transition-colors " + (on ? 'bg-[#3A3A3C] dark:bg-[#fff] text-[#fff] dark:text-[#000]' : 'bg-[#F2F2F7] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff]')}>
+                        <button type="button" key={k} onClick={() => setActiveDept(k)} className={"h-9 whitespace-nowrap shrink-0 text-[13px] px-3.5 rounded-full font-semibold transition-colors " + (on ? 'bg-[#3A3A3C] dark:bg-white text-[#fff] dark:text-black' : 'bg-[#F2F2F7] dark:bg-[#2C2C2E] text-black dark:text-white')}>
                           {isAll ? t.cpAll : deptLabelFor(t, k)}
                         </button>
                       );
                     })}
                   </div>
-                  {showR ? <button type="button" onClick={() => scrollPills(220)} className="absolute right-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full flex items-center justify-center border opacity-0 group-hover:opacity-100 transition shadow-sm bg-[#fff] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff] border-[rgba(198,198,200,.6)] dark:border-[#38383A]"><ChevronRight size={18} /></button> : null}
+                  {showR ? <button type="button" onClick={() => scrollPills(220)} className="absolute right-0 top-1/2 -translate-y-1/2 z-10 w-8 h-8 rounded-full flex items-center justify-center border opacity-0 group-hover:opacity-100 transition shadow-sm bg-white dark:bg-[#2C2C2E] text-black dark:text-white border-[rgba(198,198,200,.6)] dark:border-[#38383A]"><ChevronRight size={18} /></button> : null}
                 </div>
 
                 {/* 列表 */}
@@ -360,7 +360,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
                             <div className="flex items-center gap-4">
                               <AppIcon card={c} />
                               <div className="flex-1 min-w-0">
-                                <h2 className="text-[17px] font-semibold tracking-tight truncate mb-0.5 text-[#000] dark:text-[#fff]">{cd.name}</h2>
+                                <h2 className="text-[17px] font-semibold tracking-tight truncate mb-0.5 text-black dark:text-white">{cd.name}</h2>
                                 <p className="text-[13px] truncate text-[rgba(60,60,67,.6)] dark:text-[rgba(235,235,245,.6)]">{deptLabelFor(t, c.dept)}{isUser ? ' · ' + t.cpBadgeUser : ''}</p>
                               </div>
                               {isUser ? <button type="button" onClick={(e) => openCtx(c, e)} title={t.cpEdit} className="shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-[18px] opacity-0 group-hover:opacity-100 transition-opacity" style={{ color: '#8E8E93' }}>⋯</button> : null}
@@ -375,7 +375,7 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
                     </div>
                   ) : (
                     <div className="py-24 text-center">
-                      <p className="text-[17px] font-semibold text-[#000] dark:text-[#fff]">{t.cpNoMatch}</p>
+                      <p className="text-[17px] font-semibold text-black dark:text-white">{t.cpNoMatch}</p>
                       <p className="text-[15px] mt-1" style={{ color: '#8E8E93' }}>{t.cpEmptyHint}</p>
                     </div>
                   )}
@@ -394,10 +394,10 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
           {ctx ? (
             // biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; the keyboard path is handled by the real buttons inside the menu
             // biome-ignore lint/a11y/noStaticElementInteractions: context-menu positioning container; menu items are real buttons
-            <div className="fixed z-[100] min-w-[128px] rounded-[10px] overflow-hidden border text-[14px] bg-[#fff] dark:bg-[#2C2C2E] border-[rgba(0,0,0,.08)] dark:border-[#38383A]"
+            <div className="fixed z-[100] min-w-[128px] rounded-[10px] overflow-hidden border text-[14px] bg-white dark:bg-[#2C2C2E] border-[rgba(0,0,0,.08)] dark:border-[#38383A]"
               style={{ left: Math.min(ctx.x, (typeof window === 'undefined' ? 9999 : window.innerWidth) - 150), top: Math.min(ctx.y, (typeof window === 'undefined' ? 9999 : window.innerHeight) - 100), boxShadow: '0 10px 40px rgba(0,0,0,.25)' }}
               onClick={(e) => e.stopPropagation()}>
-              <button type="button" onClick={() => { editCard(ctx.card); setCtx(null); }} className="w-full text-left px-4 py-2.5 text-[#000] dark:text-[#fff]">{t.cpMenuEdit}</button>
+              <button type="button" onClick={() => { editCard(ctx.card); setCtx(null); }} className="w-full text-left px-4 py-2.5 text-black dark:text-white">{t.cpMenuEdit}</button>
               <div className="h-px bg-[rgba(0,0,0,.06)] dark:bg-[#38383A]" />
               <button type="button" onClick={() => { doDelete(ctx.card); setCtx(null); }} className="w-full text-left px-4 py-2.5" style={{ color: '#FF3B30' }}>{t.cpDelete}</button>
             </div>
@@ -425,23 +425,23 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
               {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling handling */}
               {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer, a non-interactive container */}
               <div onClick={(e)=>e.stopPropagation()} className="w-full md:max-w-sm flex flex-col gap-2 p-3 md:p-0">
-                <div className="rounded-[14px] overflow-hidden bg-[#fff] dark:bg-[#1C1C1E]">
+                <div className="rounded-[14px] overflow-hidden bg-white dark:bg-[#1C1C1E]">
                   <button type="button" onClick={()=>{ setChooser(false); if (onAICreate) onAICreate(); }} className="w-full flex items-center gap-3 px-4 py-4 text-left border-b border-[rgba(198,198,200,.5)] dark:border-[#38383A]">
                     <div className="w-10 h-10 rounded-[12px] flex items-center justify-center shrink-0 bg-[#007AFF] dark:bg-[#0A84FF]"><Sparkles size={20} style={{ color:'#fff' }} /></div>
                     <div className="min-w-0">
-                      <div className="text-[16px] font-semibold flex items-center gap-2 text-[#000] dark:text-[#fff]">{t.cpAICreate} <span className="text-[10px] px-1.5 py-0.5 rounded bg-[rgba(0,122,255,.12)] dark:bg-[rgba(10,132,255,.2)] text-[#007AFF] dark:text-[#0A84FF]">{t.chooserRecommend}</span></div>
+                      <div className="text-[16px] font-semibold flex items-center gap-2 text-black dark:text-white">{t.cpAICreate} <span className="text-[10px] px-1.5 py-0.5 rounded bg-[rgba(0,122,255,.12)] dark:bg-[rgba(10,132,255,.2)] text-[#007AFF] dark:text-[#0A84FF]">{t.chooserRecommend}</span></div>
                       <div className="text-[13px] mt-0.5 text-[rgba(60,60,67,.6)] dark:text-[rgba(235,235,245,.6)]">{t.chooserAIDesc}</div>
                     </div>
                   </button>
                   <button type="button" onClick={()=>{ setChooser(false); setEditor({ initial: null }); }} className="w-full flex items-center gap-3 px-4 py-4 text-left">
                     <div className="w-10 h-10 rounded-[12px] flex items-center justify-center shrink-0 bg-[#F2F2F7] dark:bg-[#2C2C2E] text-[#007AFF] dark:text-[#0A84FF]"><Plus size={20} /></div>
                     <div className="min-w-0">
-                      <div className="text-[16px] font-semibold text-[#000] dark:text-[#fff]">{t.chooserManualTitle}</div>
+                      <div className="text-[16px] font-semibold text-black dark:text-white">{t.chooserManualTitle}</div>
                       <div className="text-[13px] mt-0.5 text-[rgba(60,60,67,.6)] dark:text-[rgba(235,235,245,.6)]">{t.chooserManualDesc}</div>
                     </div>
                   </button>
                 </div>
-                <button type="button" onClick={()=>setChooser(false)} className="w-full rounded-[14px] py-3.5 text-[17px] font-semibold bg-[#fff] dark:bg-[#2C2C2E] text-[#007AFF] dark:text-[#0A84FF]">{t.cpCancel}</button>
+                <button type="button" onClick={()=>setChooser(false)} className="w-full rounded-[14px] py-3.5 text-[17px] font-semibold bg-white dark:bg-[#2C2C2E] text-[#007AFF] dark:text-[#0A84FF]">{t.cpCancel}</button>
               </div>
             </div>
           ), document.body) : null}

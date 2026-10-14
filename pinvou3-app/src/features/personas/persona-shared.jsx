@@ -58,7 +58,7 @@ export const AppIcon = ({ card, cls = 'w-14 h-14 rounded-[14px]', fb = 26 }) => 
       if (!persona) return null;
       const cd = personaText(persona, t);
       return (
-        <div className="absolute top-0 left-6 z-[15]" style={{ width:150, fontFamily: IOS_FONT_STACK }}>
+        <div className="absolute top-0 left-6 z-15" style={{ width:150, fontFamily: IOS_FONT_STACK }}>
           <div className="flex flex-col items-center">
             {/* 挂绳 + 扣环 */}
             {/* isDark dynamic-value: 保留 (linear-gradient 无法纯 className 化) */}
@@ -68,15 +68,15 @@ export const AppIcon = ({ card, cls = 'w-14 h-14 rounded-[14px]', fb = 26 }) => 
             {/* biome-ignore lint/a11y/useKeyWithClickEvents: swap hot-zone click is a mouse shortcut; the keyboard path is served by controls inside the card-pool popover */}
             {/* biome-ignore lint/a11y/noStaticElementInteractions: swap hot zone; not a standalone interactive control */}
             <div onClick={onOpenPicker} title={t.cpLanyardSwap}
-              className="relative rounded-[14px] p-3 w-[150px] cursor-pointer transition-transform hover:-translate-y-0.5 bg-[#fff] dark:bg-[#1C1C1E] border border-[rgba(0,0,0,.06)] dark:border-[#2c2c2e]"
+              className="relative rounded-[14px] p-3 w-[150px] cursor-pointer transition-transform hover:-translate-y-0.5 bg-white dark:bg-[#1C1C1E] border border-[rgba(0,0,0,.06)] dark:border-[#2c2c2e]"
               style={{ boxShadow:'0 8px 24px -8px rgba(0,0,0,.3)' }}>
               <button type="button" onClick={(e)=>{ e.stopPropagation(); onRemove(); }} title={t.cpLanyardRemove}
-                className="absolute -top-2 -right-2 w-5 h-5 rounded-full flex items-center justify-center text-[11px] leading-none bg-[#fff] dark:bg-[#2C2C2E] border border-[rgba(0,0,0,.1)] dark:border-[#48484a]"
+                className="absolute -top-2 -right-2 w-5 h-5 rounded-full flex items-center justify-center text-[11px] leading-none bg-white dark:bg-[#2C2C2E] border border-[rgba(0,0,0,.1)] dark:border-[#48484a]"
                 style={{ color:'#8E8E93', boxShadow:'0 2px 6px rgba(0,0,0,.15)' }}>✕</button>
               <div className="flex flex-col items-center text-center gap-2">
                 <AppIcon card={persona} cls="w-12 h-12 rounded-[14px]" fb={22} />
                 <div className="w-full min-w-0">
-                  <div className="text-[13px] font-semibold leading-tight truncate text-[#000] dark:text-[#fff]">{cd.name}</div>
+                  <div className="text-[13px] font-semibold leading-tight truncate text-black dark:text-white">{cd.name}</div>
                   <div className="text-[11px] mt-0.5 truncate text-[rgba(60,60,67,.6)] dark:text-[rgba(235,235,245,.6)]">{deptLabelFor(t, persona.dept)}</div>
                 </div>
               </div>

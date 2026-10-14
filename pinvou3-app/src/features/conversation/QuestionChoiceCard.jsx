@@ -40,9 +40,9 @@ function initialState(questions, initialAnswers, otherAnswerLabel) {
     // （如中文“其他”）不再命中英文预设；此时不应回退到 value 匹配，否则撞值的“其他”答案会被
     // 误判为预设（评审第五轮 P2）。仅当 label 缺失时才按 value 回退，兼容 label 缺失的历史数据。
     const findOption = answer => (
-      answer.label != null && answer.label !== ''
-        ? options.find(option => option.label === answer.label)
-        : options.find(option => option.value === answer.value)
+      answer.label == null || answer.label === ''
+        ? options.find(option => option.value === answer.value)
+        : options.find(option => option.label === answer.label)
     );
     const matchesOption = answer => Boolean(findOption(answer));
     const optionValues = answers
@@ -190,7 +190,7 @@ export function QuestionChoiceCard({
   }
 
   return (
-    <div className="rounded-2xl border border-blue-500/20 bg-blue-500/[0.045] p-4">
+    <div className="rounded-2xl border border-blue-500/20 bg-blue-500/4.5 p-4">
       <div className="flex items-start gap-3">
         <MessageCircle size={18} className="mt-0.5 shrink-0 text-blue-500" />
         <div className="min-w-0 flex-1">
@@ -233,8 +233,8 @@ export function QuestionChoiceCard({
                             }}
                             className={`rounded-xl border px-3 py-2.5 cursor-pointer transition-colors ${
                               active
-                                ? 'border-blue-500/55 bg-blue-500/[0.08]'
-                                : 'border-black/[0.08] dark:border-white/10 hover:bg-black/[0.025] dark:hover:bg-white/[0.04]'
+                                ? 'border-blue-500/55 bg-blue-500/8'
+                                : 'border-black/8 dark:border-white/10 hover:bg-black/2.5 dark:hover:bg-white/4'
                             }`}>
                             <span className="flex items-start gap-2">
                               <input
@@ -292,7 +292,7 @@ export function QuestionChoiceCard({
                         );
                       }}
                       placeholder={question.placeholder || inputPlaceholder}
-                      className="mt-2 w-full rounded-xl border border-black/[0.08] dark:border-white/10 bg-white/80 dark:bg-white/[0.04] px-3 py-2 text-[12px] outline-none focus:border-blue-500/50"
+                      className="mt-2 w-full rounded-xl border border-black/8 dark:border-white/10 bg-white/80 dark:bg-white/4 px-3 py-2 text-[12px] outline-hidden focus:border-blue-500/50"
                     />
                   )}
                   {question.allowOther && (
@@ -301,7 +301,7 @@ export function QuestionChoiceCard({
                       value={other[question.id] || ''}
                       onChange={event => changeOther(question, event.target.value)}
                       placeholder={question.otherPlaceholder || otherPlaceholder}
-                      className="mt-2 w-full rounded-xl border border-black/[0.08] dark:border-white/10 bg-white/80 dark:bg-white/[0.04] px-3 py-2 text-[12px] outline-none focus:border-blue-500/50"
+                      className="mt-2 w-full rounded-xl border border-black/8 dark:border-white/10 bg-white/80 dark:bg-white/4 px-3 py-2 text-[12px] outline-hidden focus:border-blue-500/50"
                     />
                   )}
                 </fieldset>
@@ -323,7 +323,7 @@ export function QuestionChoiceCard({
                   type="button"
                   disabled={submitting}
                   onClick={onCancel}
-                  className="px-3 py-1.5 rounded-xl text-[12px] text-gray-500 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-45"
+                  className="px-3 py-1.5 rounded-xl text-[12px] text-gray-500 hover:bg-black/5 dark:hover:bg-white/[0.07] disabled:opacity-45"
                 >
                   {cancelLabel}
                 </button>

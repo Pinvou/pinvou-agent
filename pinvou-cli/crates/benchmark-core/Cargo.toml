@@ -15,7 +15,7 @@ tokio = { workspace = true, features = ["time"] }
 rand.workspace = true
 sha2.workspace = true
 zeroize = "1.9.0"
-fs2.workspace = true
+fs4.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Threading"] }

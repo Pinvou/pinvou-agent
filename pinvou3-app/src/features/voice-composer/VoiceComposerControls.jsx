@@ -22,7 +22,7 @@ function VoiceComposerPillLayer({ voiceInput, voiceMode, copy, onCancel, onConfi
   // screen before completion rather than a terminal status.
   const shown = shouldShow ? voiceInput : (presence.snapshot || voiceInput);
   return (
-    <div className="pointer-events-none absolute inset-x-0 top-1/2 z-[3] flex -translate-y-1/2 justify-center px-4">
+    <div className="pointer-events-none absolute inset-x-0 top-1/2 z-3 flex -translate-y-1/2 justify-center px-4">
       <VoiceRecordingPill
         status={shown.status}
         mode={voiceMode}
@@ -138,7 +138,7 @@ function VoiceEditPreview({ preview, copy, onApply, onApplyAndSend, onCancel }) 
   return (
     <div
       data-testid="voice-edit-preview"
-      className="mb-2 rounded-2xl border border-[#DADCE0] bg-[#F8FAFD] p-3 text-[12px] text-[#202124] shadow-sm dark:border-white/10 dark:bg-[#202124] dark:text-[#E8EAED]"
+      className="mb-2 rounded-2xl border border-[#DADCE0] bg-[#F8FAFD] p-3 text-[12px] text-[#202124] shadow-xs dark:border-white/10 dark:bg-[#202124] dark:text-[#E8EAED]"
     >
       <div className="mb-2 flex items-center justify-between gap-2">
         <div className="font-medium">{title}</div>
@@ -155,11 +155,11 @@ function VoiceEditPreview({ preview, copy, onApply, onApplyAndSend, onCancel }) 
       <div className="grid gap-2 sm:grid-cols-2">
         <div className="min-w-0 rounded-xl bg-white px-2.5 py-2 dark:bg-[#17181A]">
           <div className="mb-1 text-[10px] font-medium uppercase text-[#80868B]">{copy.voiceEditOriginal}</div>
-          <div className="max-h-24 overflow-y-auto whitespace-pre-wrap break-words leading-5">{original}</div>
+          <div className="max-h-24 overflow-y-auto whitespace-pre-wrap wrap-break-word leading-5">{original}</div>
         </div>
         <div className="min-w-0 rounded-xl bg-white px-2.5 py-2 ring-1 ring-[#A8C7FA] dark:bg-[#17181A] dark:ring-[#3B6EA8]">
           <div className="mb-1 text-[10px] font-medium uppercase text-[#1A73E8] dark:text-[#A8C7FA]">{copy.voiceEditResult}</div>
-          <div className="max-h-24 overflow-y-auto whitespace-pre-wrap break-words leading-5">{next}</div>
+          <div className="max-h-24 overflow-y-auto whitespace-pre-wrap wrap-break-word leading-5">{next}</div>
         </div>
       </div>
       <div className="mt-2 flex flex-wrap justify-end gap-2">

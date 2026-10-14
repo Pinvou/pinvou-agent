@@ -23,7 +23,7 @@ export function AttachmentDropOverlay({
         data-testid="attachment-drop-overlay"
         data-variant="web"
         aria-hidden={!publishedActive}
-        className={`pointer-events-none fixed inset-0 z-[2147483646] flex items-center justify-center transition-opacity duration-150 ${
+        className={`pointer-events-none fixed inset-0 z-2147483646 flex items-center justify-center transition-opacity duration-150 ${
           publishedActive ? 'visible opacity-100' : 'invisible opacity-0'
         }`}
       >
@@ -33,10 +33,10 @@ export function AttachmentDropOverlay({
         />
         <div className={`relative -translate-y-4 text-center ${dark ? 'text-white' : 'text-[#171717]'}`}>
           <div className="relative mx-auto mb-5 h-[82px] w-[116px]">
-            <span className="absolute left-1 top-5 flex h-12 w-12 -rotate-[12deg] items-center justify-center rounded-[13px] bg-[#A7B9FF] text-white shadow-sm">
+            <span className="absolute left-1 top-5 flex h-12 w-12 -rotate-12 items-center justify-center rounded-[13px] bg-[#A7B9FF] text-white shadow-xs">
               <Code size={24} />
             </span>
-            <span className="absolute right-1 top-0 flex h-14 w-12 rotate-[16deg] items-center justify-center rounded-[10px] bg-[#7386F8] text-white shadow-sm">
+            <span className="absolute right-1 top-0 flex h-14 w-12 rotate-16 items-center justify-center rounded-[10px] bg-[#7386F8] text-white shadow-xs">
               <FileText size={25} />
             </span>
             <span className="absolute bottom-0 left-[36px] flex h-12 w-14 items-center justify-center rounded-[13px] bg-[#4545F5] text-white shadow-md ring-4 ring-white dark:ring-[#171719]">
@@ -58,7 +58,7 @@ export function AttachmentDropOverlay({
       data-testid="attachment-drop-overlay"
       data-variant="desktop"
       aria-hidden={!publishedActive}
-      className={`pointer-events-none absolute inset-0 z-[60] flex items-center justify-center transition-opacity duration-150 ${
+      className={`pointer-events-none absolute inset-0 z-60 flex items-center justify-center transition-opacity duration-150 ${
         publishedActive ? 'visible opacity-100' : 'invisible opacity-0'
       }`}
     >
@@ -66,7 +66,7 @@ export function AttachmentDropOverlay({
         className="absolute inset-0"
         style={{ backgroundColor: dark ? 'rgba(16, 36, 58, 0.80)' : 'rgba(232, 243, 253, 0.80)' }}
       />
-      <div className={`relative -translate-y-1 rounded-[9px] border px-3 py-1 text-[13px] font-medium leading-[18px] shadow-sm ${
+      <div className={`relative -translate-y-1 rounded-[9px] border px-3 py-1 text-[13px] font-medium leading-[18px] shadow-xs ${
         dark
           ? 'border-[#49627A]/60 bg-[#233B51] text-[#E5EDF5]'
           : 'border-[#C9DDEA] bg-[#DDECF7] text-[#30363B]'

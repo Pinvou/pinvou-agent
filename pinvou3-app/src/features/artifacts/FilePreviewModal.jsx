@@ -41,7 +41,7 @@ const FilePreviewModal = ({ path, sessionId, onClose, t }) => {
     : null;
 
   return (
-    <div className="absolute inset-0 z-[60] flex items-center justify-center pointer-events-auto">
+    <div className="absolute inset-0 z-60 flex items-center justify-center pointer-events-auto">
       {/* Modal backdrop click-to-close layer; the keyboard path is handled by the title-bar ✕ close button (the real <button type="button"> below). */}
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; keyboard path handled by the title-bar close button */}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container */}
@@ -50,7 +50,7 @@ const FilePreviewModal = ({ path, sessionId, onClose, t }) => {
         <div className="flex items-center justify-between px-4 py-3 border-b border-black/10 dark:border-white/10">
           <span className="text-[14px] font-medium truncate text-[#1F1F1F] dark:text-[#E3E3E3]" title={path}>{name}</span>
           <div className="flex items-center gap-2">
-            {canOpen && <button type="button" onClick={open} className="px-2 py-1 text-[12px] rounded text-[#444746] dark:text-[#C4C7C5] hover:bg-[#F0F4F9] dark:hover:bg-[#333537]">{isWeb ? labels.download : labels.openExternal}</button>}
+            {canOpen && <button type="button" onClick={open} className="px-2 py-1 text-[12px] rounded-sm text-[#444746] dark:text-[#C4C7C5] hover:bg-[#F0F4F9] dark:hover:bg-[#333537]">{isWeb ? labels.download : labels.openExternal}</button>}
             <button type="button" onClick={onClose} className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-[#F0F4F9] dark:hover:bg-[#333537] text-[#444746] dark:text-[#C4C7C5]">✕</button>
           </div>
         </div>
@@ -60,7 +60,7 @@ const FilePreviewModal = ({ path, sessionId, onClose, t }) => {
             : preview.error ? <div className="text-[13px] text-[#F28B82]">{labels.readFailed(preview.error)}</div>
             : preview.kind === 'md' ? <div className="msg-md text-[14px] leading-relaxed light-code dark-code text-[#1F1F1F] dark:text-[#E3E3E3]" dangerouslySetInnerHTML={{ __html: mdHtml }} />
             : preview.kind === 'html' ? <ScaledHtmlPreview html={preview.text || ''} title={name} onOpenExternal={(url) => bridge.artifacts.openUserExternalUrl(url)} />
-            : ['json', 'text'].includes(preview.kind) ? <pre className="text-[12px] whitespace-pre-wrap break-words font-mono leading-relaxed text-[#444746] dark:text-[#C4C7C5]">{preview.text}</pre>
+            : ['json', 'text'].includes(preview.kind) ? <pre className="text-[12px] whitespace-pre-wrap wrap-break-word font-mono leading-relaxed text-[#444746] dark:text-[#C4C7C5]">{preview.text}</pre>
             : preview.kind === 'image' ? (preview.imageError ? <div className="text-[13px] text-[#F28B82]">{labels.imageReadFailed(preview.imageError)}</div> : <img className="max-w-full max-h-[70vh] object-contain mx-auto rounded-lg" src={preview.dataUrl} alt={name} />)
             : preview.visual?.mode === 'html' ? <div className="flex flex-col gap-2">{visualWarning && <div className="flex items-center gap-2 text-[12px] text-[#E37400] dark:text-[#FDD663]"><span>⚠️ {visualWarning}</span></div>}<iframe sandbox="allow-same-origin" title={name} className="w-full min-h-[68vh] border-0 block bg-white [color-scheme:light]" style={{ colorScheme: 'light' }} srcDoc={(preview.visual.html || '') + OFFICE_HTML_STYLE} /></div>
             : preview.visual?.mode === 'images' ? <div className="flex flex-col items-center gap-3">{visualWarning && <div className="self-start flex items-center gap-2 text-[12px] text-[#E37400] dark:text-[#FDD663]"><span>⚠️ {visualWarning}</span></div>}{(preview.visual.images || []).map((src, index) => <img key={src} src={src} className="max-w-full h-auto rounded-lg shadow-sm" alt={`page-${index + 1}`} />)}</div>

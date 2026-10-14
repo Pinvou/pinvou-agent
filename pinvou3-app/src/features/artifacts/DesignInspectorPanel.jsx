@@ -147,9 +147,9 @@ const DesignInspectorPanel = ({ t, selectedElement, changes = EMPTY_CHANGES, onA
   }, [selectedElementId, style.fontFamily]);
 
   const panelCls = 'flex h-full w-full flex-col overflow-hidden bg-[#F5F5F7] text-[#1D1D1F] dark:bg-[#1C1C1E] dark:text-[#F5F5F7]';
-  const inputCls = 'h-9 min-w-0 rounded-[12px] border px-3 text-[13px] outline-none transition-colors border-black/[0.08] bg-white text-[#1D1D1F] focus:border-[#007AFF]/50 dark:border-white/10 dark:bg-[#2C2C2E] dark:text-[#F5F5F7] dark:focus:border-[#0A84FF]/60';
+  const inputCls = 'h-9 min-w-0 rounded-[12px] border px-3 text-[13px] outline-hidden transition-colors border-black/8 bg-white text-[#1D1D1F] focus:border-[#007AFF]/50 dark:border-white/10 dark:bg-[#2C2C2E] dark:text-[#F5F5F7] dark:focus:border-[#0A84FF]/60';
   const labelCls = 'text-[12px] font-medium text-[#6E6E73] dark:text-[#A1A1AA]';
-  const sectionCls = 'mt-3 rounded-[18px] border shadow-sm border-black/[0.06] bg-white shadow-black/[0.03] dark:border-white/[0.08] dark:bg-[#2C2C2E] dark:shadow-black/10';
+  const sectionCls = 'mt-3 rounded-[18px] border shadow-xs border-black/6 bg-white shadow-black/3 dark:border-white/8 dark:bg-[#2C2C2E] dark:shadow-black/10';
   const sectionTitleCls = 'px-3.5 pt-3 text-[13px] font-semibold text-[#1D1D1F] dark:text-[#F5F5F7]';
   const rowGridCls = 'grid grid-cols-2 gap-2.5 p-3.5';
   const selectCls = `${inputCls} appearance-none`;
@@ -289,7 +289,7 @@ const DesignInspectorPanel = ({ t, selectedElement, changes = EMPTY_CHANGES, onA
         type="button"
         data-testid={testId ? `${testId}-button` : undefined}
         onClick={() => open ? setColorMenu(null) : openColorMenu(property, fallback, options.allowClear !== false)}
-        className="flex h-9 w-14 shrink-0 items-center justify-center rounded-[13px] border transition-colors border-black/[0.08] bg-white hover:bg-[#F5F5F7] dark:border-white/10 dark:bg-[#2C2C2E] dark:hover:bg-[#3A3A3C]"
+        className="flex h-9 w-14 shrink-0 items-center justify-center rounded-[13px] border transition-colors border-black/8 bg-white hover:bg-[#F5F5F7] dark:border-white/10 dark:bg-[#2C2C2E] dark:hover:bg-[#3A3A3C]"
         aria-haspopup="dialog"
         aria-expanded={open ? 'true' : 'false'}
       >
@@ -298,7 +298,7 @@ const DesignInspectorPanel = ({ t, selectedElement, changes = EMPTY_CHANGES, onA
       {open && (
         <div
           data-testid="design-color-popover"
-          className="absolute right-0 top-11 z-40 w-[236px] rounded-[18px] border p-3 shadow-2xl border-black/[0.08] bg-white text-[#1D1D1F] dark:border-white/10 dark:bg-[#2C2C2E] dark:text-[#F5F5F7]"
+          className="absolute right-0 top-11 z-40 w-[236px] rounded-[18px] border p-3 shadow-2xl border-black/8 bg-white text-[#1D1D1F] dark:border-white/10 dark:bg-[#2C2C2E] dark:text-[#F5F5F7]"
         >
           <div className="flex items-center gap-3">
             <div className="h-12 w-12 rounded-full border border-black/10 shadow-inner" style={{ background: current }} />
@@ -349,7 +349,7 @@ const DesignInspectorPanel = ({ t, selectedElement, changes = EMPTY_CHANGES, onA
               className={`h-8 rounded-full px-3 text-[12px] font-medium transition-colors ${
                 options.allowClear === false
                   ? 'cursor-not-allowed opacity-40'
-                  : 'bg-black/[0.05] hover:bg-black/[0.08] dark:bg-white/[0.08] dark:hover:bg-white/[0.12]'
+                  : 'bg-black/5 hover:bg-black/8 dark:bg-white/8 dark:hover:bg-white/12'
               }`}
             >
               {L.diClear}
@@ -420,14 +420,14 @@ const DesignInspectorPanel = ({ t, selectedElement, changes = EMPTY_CHANGES, onA
               type="button"
               onClick={onClearChanges}
               data-testid="design-clear-changes"
-              className="shrink-0 h-8 px-3 rounded-full text-[12px] font-semibold transition-colors bg-black/[0.05] hover:bg-black/[0.08] text-[#3C3C43] dark:bg-white/[0.08] dark:hover:bg-white/[0.12] dark:text-[#F5F5F7]"
+              className="shrink-0 h-8 px-3 rounded-full text-[12px] font-semibold transition-colors bg-black/5 hover:bg-black/8 text-[#3C3C43] dark:bg-white/8 dark:hover:bg-white/12 dark:text-[#F5F5F7]"
             >
               {L.diClearChanges}
             </button>
           )}
         </div>
         {detailsOpen && (
-          <div data-testid="design-selected-details" className="mt-2 rounded-[10px] p-2 text-[11px] leading-relaxed bg-black/[0.035] text-[#757575] dark:bg-white/[0.04] dark:text-[#A8A8A8]">
+          <div data-testid="design-selected-details" className="mt-2 rounded-[10px] p-2 text-[11px] leading-relaxed bg-black/[0.035] text-[#757575] dark:bg-white/4 dark:text-[#A8A8A8]">
             <div className="font-semibold">{shortElementLabel(selectedElement)}</div>
             <div className="mt-1 break-all">{selectedElement.selector || selectedElement.className || L.diNoLocation}</div>
           </div>
@@ -621,7 +621,7 @@ const DesignInspectorPanel = ({ t, selectedElement, changes = EMPTY_CHANGES, onA
             {changesExpanded && (
               <div className="mt-1 max-h-48 overflow-y-auto space-y-2">
                 {Object.values(groupedChanges).slice(-8).map((group) => (
-                  <div key={group.key} className="rounded-[8px] p-2 bg-white dark:bg-white/[0.04]">
+                  <div key={group.key} className="rounded-[8px] p-2 bg-white dark:bg-white/4">
                     <div className="mb-1 truncate font-semibold">{group.label} · {group.items.length}</div>
                     {group.items.slice(-6).map((change) => (
                       <div key={change.id} className="truncate">

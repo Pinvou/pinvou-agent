@@ -77,7 +77,7 @@ export function ConversationAttachmentBubble({
       y: Math.max(6, Math.min(event.clientY, window.innerHeight - height - 6)),
     });
   };
-  const menuItemClass = `flex h-9 w-full items-center gap-2.5 px-3 text-left text-[13px] transition-colors text-[#1F1F1F] hover:bg-black/[0.06] dark:text-[#E3E3E3] dark:hover:bg-white/10`;
+  const menuItemClass = `flex h-9 w-full items-center gap-2.5 px-3 text-left text-[13px] transition-colors text-[#1F1F1F] hover:bg-black/6 dark:text-[#E3E3E3] dark:hover:bg-white/10`;
 
   return (
     <>
@@ -87,9 +87,9 @@ export function ConversationAttachmentBubble({
         data-testid="conversation-attachment"
         onClick={openAttachment}
         onContextMenu={openContextMenu}
-        className={`inline-flex max-w-[280px] cursor-pointer items-center gap-2 rounded-[14px] border px-2 py-1.5 text-[12px] leading-4 shadow-sm transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0A84FF]/60 border-black/[0.08] bg-white text-[#1F1F1F] hover:bg-[#F3F6FB] dark:border-white/10 dark:bg-[#2A2B2E] dark:text-[#E3E3E3] dark:hover:bg-[#34363A]`}
+        className={`inline-flex max-w-[280px] cursor-pointer items-center gap-2 rounded-[14px] border px-2 py-1.5 text-[12px] leading-4 shadow-xs transition-colors focus:outline-hidden focus-visible:ring-2 focus-visible:ring-[#0A84FF]/60 border-black/8 bg-white text-[#1F1F1F] hover:bg-[#F3F6FB] dark:border-white/10 dark:bg-[#2A2B2E] dark:text-[#E3E3E3] dark:hover:bg-[#34363A]`}
       >
-        <span className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] bg-black/[0.04] dark:bg-white/[0.08]`}>
+        <span className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-[7px] bg-black/4 dark:bg-white/8`}>
           <FileTypeIcon name={name} className="h-5 w-5" />
         </span>
         <span className="truncate font-medium">{name}</span>
@@ -99,7 +99,7 @@ export function ConversationAttachmentBubble({
           role="menu"
           data-conversation-attachment-menu
           data-testid="conversation-attachment-menu"
-          className={`w-[216px] overflow-hidden rounded-[12px] border py-1 shadow-xl backdrop-blur border-black/10 bg-white dark:border-white/10 dark:bg-[#2B2C2F]`}
+          className={`w-[216px] overflow-hidden rounded-[12px] border py-1 shadow-xl backdrop-blur-sm border-black/10 bg-white dark:border-white/10 dark:bg-[#2B2C2F]`}
           style={{ position: 'fixed', zIndex: 9999, left: menu.x, top: menu.y }}
           onMouseDown={event => event.stopPropagation()}
           onContextMenu={event => event.preventDefault()}

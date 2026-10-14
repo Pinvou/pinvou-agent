@@ -128,7 +128,9 @@ function createToggleWriteGate() {
 // from the package-id space so an identically named package cannot collide with it.
 const TOGGLE_WRITE_KEY_PROJECT_SKILLS = '__project_skills__';
 
-/** Builtin skills whose availability is session-mode-controlled (backend
+/**
+ * Builtin skills whose availability is session-mode-controlled (backend
  * MODE_TABLE delta): the builtin page's audit badge must agree with the
- * store card for these instead of claiming "always on". */
+ * store card for these instead of claiming "always on".
+ */
 export { buildComposerToolMenuState, createToggleWriteGate, TOGGLE_WRITE_KEY_PROJECT_SKILLS };
