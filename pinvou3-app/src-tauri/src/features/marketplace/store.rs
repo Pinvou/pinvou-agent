@@ -28,6 +28,8 @@ use crate::platform::connector_lock;
 use crate::platform::filesystem::read_private_data_file;
 use crate::platform::paths;
 
+use deepseek_tui::skills::install::INSTALLED_FROM_MARKER;
+
 /// bundles.json 当前 schema 版本。后续 schema 演进时递增并在读路径做迁移。
 const SCHEMA_VERSION: u32 = 1;
 
@@ -824,7 +826,7 @@ fn legacy_skill_records() -> Result<Vec<BundleRecord>, String> {
         // directories and non-regular entries, so a planted FIFO now
         // ABORTS the one-shot import fail-closed instead of silently
         // skipping (and latching the gate over a skipped mirror).
-        let marker_path = dir.join(".installed-from");
+        let marker_path = dir.join(INSTALLED_FROM_MARKER);
         let marker = match read_private_data_file(&marker_path) {
             Ok(marker) => marker,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
