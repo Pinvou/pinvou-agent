@@ -58,7 +58,7 @@ function CompactToolRow({ item, conversationCopy }) {
     ? c.inProgress
     : state === 'failed' ? c.failed : c.executionFinished;
   return (
-    <div className="rounded-xl border border-black/5 dark:border-white/[0.07] bg-white/45 dark:bg-white/1.5">
+    <div className="rounded-xl border border-black/[0.05] dark:border-white/[0.07] bg-white/45 dark:bg-white/[0.015]">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
@@ -73,14 +73,14 @@ function CompactToolRow({ item, conversationCopy }) {
         <span className="shrink-0 text-[10px] text-gray-400">{label} · {stateText}{extra}</span>
       </button>
       {open && (
-        <div className="px-2.5 pb-2.5 border-t border-black/5 dark:border-white/6 space-y-1.5">
+        <div className="px-2.5 pb-2.5 border-t border-black/[0.05] dark:border-white/[0.06] space-y-1.5">
           {tool.rawInput != null && (
-            <pre className="custom-scrollbar mt-2 max-h-40 overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg bg-black/3 dark:bg-white/4 p-2 text-[10.5px] leading-4 text-gray-600 dark:text-gray-300">
+            <pre className="custom-scrollbar mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/[0.03] dark:bg-white/[0.04] p-2 text-[10.5px] leading-4 text-gray-600 dark:text-gray-300">
               {typeof tool.rawInput === 'string' ? tool.rawInput : JSON.stringify(tool.rawInput, null, 2)}
             </pre>
           )}
           {tool.rawOutput != null && (
-            <pre className="custom-scrollbar max-h-48 overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg bg-black/3 dark:bg-white/4 p-2 text-[10.5px] leading-4 text-gray-600 dark:text-gray-300">
+            <pre className="custom-scrollbar max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/[0.03] dark:bg-white/[0.04] p-2 text-[10.5px] leading-4 text-gray-600 dark:text-gray-300">
               {typeof tool.rawOutput === 'string' ? tool.rawOutput : JSON.stringify(tool.rawOutput, null, 2)}
             </pre>
           )}
@@ -314,16 +314,16 @@ export function SubagentTranscriptPanel({
     <RightDockPanel
       panelId="subagent-transcript"
       activationKey={selectionRequestId}
-      className="border-l border-black/6 bg-white/92 backdrop-blur-xl dark:border-white/[0.07] dark:bg-[#17181A]/96"
+      className="border-l border-black/[0.06] bg-white/92 backdrop-blur-xl dark:border-white/[0.07] dark:bg-[#17181A]/96"
       dataTestId="subagent-transcript-panel"
     >
-      <div className="h-14 shrink-0 px-3 flex items-center gap-2 border-b border-black/5 dark:border-white/6">
+      <div className="h-14 shrink-0 px-3 flex items-center gap-2 border-b border-black/[0.05] dark:border-white/[0.06]">
         {selectedAgentId ? (
           <>
             <button
               type="button"
               onClick={() => setSelectedAgentId(null)}
-              className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/5 dark:hover:bg-white/[0.07]"
+              className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
               aria-label={copy.backToAgents}
             >
               <ArrowLeft size={14} />
@@ -365,7 +365,7 @@ export function SubagentTranscriptPanel({
         <button
           type="button"
           onClick={onClose}
-          className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/5 dark:hover:bg-white/[0.07]"
+          className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
           aria-label={copy.close}
         >
           <X size={14} />
@@ -375,7 +375,7 @@ export function SubagentTranscriptPanel({
       {selectedAgentId ? (
         <div className="custom-scrollbar flex-1 min-h-0 overflow-y-auto px-4 py-4">
           {terminalWithoutTranscript ? (
-            <div className={`whitespace-pre-wrap wrap-break-word text-[12px] ${
+            <div className={`whitespace-pre-wrap break-words text-[12px] ${
               agent && agent.failed
                 ? 'text-red-600 dark:text-red-400'
                 : 'text-amber-600 dark:text-amber-400'
@@ -403,7 +403,7 @@ export function SubagentTranscriptPanel({
                 <button
                   type="button"
                   onClick={() => setVisibleTranscriptItems((count) => count + TRANSCRIPT_WINDOW_STEP)}
-                  className="mb-3 w-full rounded-lg border border-black/6 px-3 py-2 text-[11px] text-gray-500 hover:bg-black/3 dark:border-white/8 dark:text-gray-400 dark:hover:bg-white/4"
+                  className="mb-3 w-full rounded-lg border border-black/[0.06] px-3 py-2 text-[11px] text-gray-500 hover:bg-black/[0.03] dark:border-white/[0.08] dark:text-gray-400 dark:hover:bg-white/[0.04]"
                 >
                   {copy.showEarlierTranscript(Math.min(
                     TRANSCRIPT_WINDOW_STEP,
@@ -464,7 +464,7 @@ export function SubagentTranscriptPanel({
                   <button
                     type="button"
                     onClick={() => toggleAgentChildren(entry.agent_id)}
-                    className="flex h-7 w-6 shrink-0 items-center justify-center rounded-md text-gray-400 hover:bg-black/5 dark:hover:bg-white/[0.07]"
+                    className="flex h-7 w-6 shrink-0 items-center justify-center rounded-md text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
                     aria-label={expanded ? copy.collapseChildren(name) : copy.expandChildren(name)}
                     title={expanded ? copy.collapseChildren(name) : copy.expandChildren(name)}
                   >
@@ -476,7 +476,7 @@ export function SubagentTranscriptPanel({
                 <button
                   type="button"
                   onClick={() => setSelectedAgentId(entry.agent_id)}
-                  className="flex min-w-0 flex-1 items-center gap-2.5 rounded-[12px] px-2 py-2 text-left hover:bg-black/4 dark:hover:bg-white/6"
+                  className="flex min-w-0 flex-1 items-center gap-2.5 rounded-[12px] px-2 py-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]"
                 >
                   <AppIcon
                     card={{ id: identity.avatarKey, name: subtitle || name, dept: identity.personaDept }}
@@ -487,7 +487,7 @@ export function SubagentTranscriptPanel({
                     <span className="flex min-w-0 items-center gap-1.5">
                       <span className="truncate text-[12.5px] font-semibold">{name}</span>
                       {childCount > 0 && (
-                        <span className="shrink-0 rounded-full bg-black/[0.035] px-1.5 py-px text-[9px] text-gray-400 dark:bg-white/6">
+                        <span className="shrink-0 rounded-full bg-black/[0.035] px-1.5 py-px text-[9px] text-gray-400 dark:bg-white/[0.06]">
                           {copy.childAgentCount(childCount)}
                         </span>
                       )}

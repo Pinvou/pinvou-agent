@@ -91,7 +91,7 @@ function VoiceShortcutIntroModal({
   return createPortal(
     // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop press-to-dismiss; the keyboard path is the capture-phase Escape listener and the in-dialog buttons
     <div
-      className="fixed inset-0 z-1200 flex items-center justify-center bg-black/35 px-4 py-6 backdrop-blur-md"
+      className="fixed inset-0 z-[1200] flex items-center justify-center bg-black/35 px-4 py-6 backdrop-blur-md"
       role="dialog"
       aria-modal="true"
       aria-labelledby="voice-shortcut-intro-title"
@@ -132,7 +132,7 @@ function VoiceShortcutIntroModal({
           <div className={`grid grid-cols-1 gap-4 md:gap-5 ${editSupported ? 'md:grid-cols-2' : 'md:max-w-[520px] md:mx-auto'}`}>
             {INTRO_MODE_CARDS.filter((card) => !card.requiresEditSupport || editSupported).map((card) => (
               <div key={card.key} className={`flex min-h-[360px] flex-col overflow-hidden rounded-[28px] ${card.cardClass}`}>
-                <div className="m-3 flex shrink-0 items-start justify-between rounded-[24px] bg-white/85 p-5 shadow-xs backdrop-blur-xl">
+                <div className="m-3 flex shrink-0 items-start justify-between rounded-[24px] bg-white/85 p-5 shadow-sm backdrop-blur-xl">
                   <div>
                     <div className="mb-1 text-[13px] font-semibold text-slate-500">{copy[card.labelKey]}</div>
                     <div className={`text-[38px] font-extrabold leading-none tracking-tight ${card.keyClass}`}>Alt</div>
@@ -190,7 +190,7 @@ function VoiceShortcutIntroModal({
                   onClose();
                 }
               }}
-              className="rounded-full bg-[#0B57D0] px-5 py-2 text-[13px] font-semibold text-white shadow-xs hover:bg-[#1967D2]"
+              className="rounded-full bg-[#0B57D0] px-5 py-2 text-[13px] font-semibold text-white shadow-sm hover:bg-[#1967D2]"
             >
               {resolvedPrimaryLabel}
             </button>

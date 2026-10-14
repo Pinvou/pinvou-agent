@@ -46,11 +46,11 @@ export function WebConnectionStatus({ theme, t }) {
 
   if (BLOCKING.has(connection.status)) {
     return (
-      <div className="fixed inset-0 z-200 flex items-center justify-center bg-black/55 p-5 backdrop-blur-xs">
+      <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/55 p-5 backdrop-blur-sm">
         {card}
       </div>
     );
   }
 
-  return <div className="pointer-events-none fixed inset-x-0 top-3 z-190 flex justify-center px-3">{card}</div>;
+  return <div className="pointer-events-none fixed inset-x-0 top-3 z-[190] flex justify-center px-3">{card}</div>;
 }

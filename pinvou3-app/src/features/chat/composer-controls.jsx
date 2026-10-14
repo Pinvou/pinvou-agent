@@ -225,7 +225,7 @@ const ComposerKbSelector = ({
           ? (compact ? 'bg-transparent text-[#1A73E8] dark:text-[#A8C7FA] border-transparent' : 'bg-[#007AFF]/10 dark:bg-[#0A84FF]/18 text-[#007AFF] dark:text-[#5AC8FA] border-[#007AFF]/20 dark:border-[#0A84FF]/25')
           : triggerBlocked
             ? 'bg-transparent text-gray-400 dark:text-gray-600 border-transparent opacity-70'
-            : (compact ? 'bg-transparent hover:bg-black/5 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-transparent' : 'bg-black/4.5 dark:bg-white/5.5 hover:bg-black/[0.07] dark:hover:bg-white/9 text-gray-700 dark:text-gray-200 border-black/4.5 dark:border-white/6')}`}>
+            : (compact ? 'bg-transparent hover:bg-black/5 dark:hover:bg-white/10 text-gray-700 dark:text-gray-200 border-transparent' : 'bg-black/[0.045] dark:bg-white/[0.055] hover:bg-black/[0.07] dark:hover:bg-white/[0.09] text-gray-700 dark:text-gray-200 border-black/[0.045] dark:border-white/[0.06]')}`}>
         <BookOpen size={compact ? 18 : 13} className="opacity-70 shrink-0" />
         {!compact && <span className="max-w-[116px] truncate">{active ? mountedName : t.kbMount}</span>}
         {!compact && <ChevronDown size={13} className="opacity-50 shrink-0" />}
@@ -260,7 +260,7 @@ const ComposerKbSelector = ({
                     {entry
                       ? (entry.enabled
                         ? <Check size={15} className="shrink-0 text-[#007AFF] group-hover:text-white" />
-                        : <span className="shrink-0 w-3.5 h-3.5 rounded-sm border border-gray-300 dark:border-gray-600 group-hover:border-white/80" />)
+                        : <span className="shrink-0 w-3.5 h-3.5 rounded border border-gray-300 dark:border-gray-600 group-hover:border-white/80" />)
                       : <span className="text-[11px] text-gray-400 group-hover:text-white/80 shrink-0">{c.docCount}</span>}
                   </button>
                   {entry && (

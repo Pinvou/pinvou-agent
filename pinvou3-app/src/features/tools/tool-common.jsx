@@ -44,23 +44,23 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
 
       return (
         <div className="flex justify-start" style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
-          <div className="w-full bg-white dark:bg-[#1E1E1E] rounded-[24px] shadow-[0_8px_30px_rgba(0,0,0,0.04)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.2)] border border-black/4 dark:border-white/6 p-3 flex flex-col transition-all duration-300">
+          <div className="w-full bg-white dark:bg-[#1E1E1E] rounded-[24px] shadow-[0_8px_30px_rgba(0,0,0,0.04)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.2)] border border-black/[0.04] dark:border-white/[0.06] p-3 flex flex-col transition-all duration-300">
 
             {/* 封面区域 */}
             {hasCover ? (
               // biome-ignore lint/a11y/useKeyWithClickEvents: cover click is a mouse shortcut; the keyboard path is the title-row open button (aria-label=open)
               // biome-ignore lint/a11y/noStaticElementInteractions: cover click hit-area extension layer, not a standalone interactive control
-              <div className={`relative group/cover rounded-[16px] overflow-hidden bg-gray-100 dark:bg-[#2C2C2E] border border-black/2 dark:border-white/2 ${canOpenArtifact ? 'cursor-pointer' : ''}`} onClick={canOpenArtifact ? open : undefined}>
-                <div className="w-full aspect-video relative">
+              <div className={`relative group/cover rounded-[16px] overflow-hidden bg-gray-100 dark:bg-[#2C2C2E] border border-black/[0.02] dark:border-white/[0.02] ${canOpenArtifact ? 'cursor-pointer' : ''}`} onClick={canOpenArtifact ? open : undefined}>
+                <div className="w-full aspect-[16/9] relative">
                   <img src={coverUrl} alt={tc(t).coverAlt} className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover/cover:scale-[1.02]" />
                 </div>
-                <div className="absolute top-3 right-3 px-2.5 py-1 rounded-[6px] bg-white/95 dark:bg-[#2C2C2E]/95 text-[#111] dark:text-[#eee] text-[11px] font-bold uppercase tracking-widest shadow-xs">
+                <div className="absolute top-3 right-3 px-2.5 py-1 rounded-[6px] bg-white/95 dark:bg-[#2C2C2E]/95 text-[#111] dark:text-[#eee] text-[11px] font-bold uppercase tracking-widest shadow-sm">
                   {fmt.label}
                 </div>
               </div>
             ) : (
               <div className="px-3 pt-3 pb-2 flex items-center space-x-3">
-                <div className="w-10 h-10 rounded-[8px] flex items-center justify-center shrink-0 bg-black/4 dark:bg-white/8">
+                <div className="w-10 h-10 rounded-[8px] flex items-center justify-center shrink-0 bg-black/[0.04] dark:bg-white/[0.08]">
                   <FileTypeIcon kind={kind} className="w-6 h-6" />
                 </div>
                 <span className="text-[13px] font-semibold text-[#888] dark:text-[#999] uppercase tracking-wider">
@@ -76,7 +76,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
               <h2 className="text-[20px] font-semibold tracking-tight text-[#111] dark:text-[#eee] leading-snug truncate group-hover/header:text-[#007AFF] transition-colors">
                 {title}
               </h2>
-              {canOpenArtifact && <button type="button" onClick={(e) => { e.stopPropagation(); open(); }} className="shrink-0 flex items-center justify-center w-9 h-9 rounded-full bg-gray-100 dark:bg-white/5 group-hover/header:bg-gray-200 dark:group-hover/header:bg-white/10 text-[#007AFF] dark:text-[#0A84FF] transition-colors active:scale-95" aria-label={tc(t).open}>
+              {canOpenArtifact && <button type="button" onClick={(e) => { e.stopPropagation(); open(); }} className="flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-full bg-gray-100 dark:bg-white/5 group-hover/header:bg-gray-200 dark:group-hover/header:bg-white/10 text-[#007AFF] dark:text-[#0A84FF] transition-colors active:scale-95" aria-label={tc(t).open}>
                 <AcArrowUpRight className="w-[18px] h-[18px]" />
               </button>}
             </div>
@@ -99,7 +99,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
             )}
 
             {/* 底部路径 */}
-            <div className="mx-3 mt-1 mb-2 pt-3 border-t border-gray-100 dark:border-white/5">
+            <div className="mx-3 mt-1 mb-2 pt-3 border-t border-gray-100 dark:border-white/[0.05]">
               <div className="flex items-center gap-1.5 text-[12px] text-[#999] dark:text-[#777]">
                 <AcFolder className="w-3.5 h-3.5 shrink-0" />
                 <span className="truncate" title={path}>{path}</span>
@@ -378,14 +378,14 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
                     <span className="truncate font-mono">{file.newPath || file.oldPath || ''}</span>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
-                    <span className={`px-1.5 py-0.5 rounded-sm ${addText} ${addBg}`}>+{fst.add}</span>
-                    <span className={`px-1.5 py-0.5 rounded-sm ${delText} ${delBg}`}>−{fst.del}</span>
+                    <span className={`px-1.5 py-0.5 rounded ${addText} ${addBg}`}>+{fst.add}</span>
+                    <span className={`px-1.5 py-0.5 rounded ${delText} ${delBg}`}>−{fst.del}</span>
                     <button
                       type="button"
                       onClick={() => setExpanded((v) => !v)}
                       title={expanded ? T.diffCollapse : T.diffExpand}
                       aria-label={expanded ? T.diffCollapseAria : T.diffExpand}
-                      className={`px-1 py-0.5 rounded-sm ${mutedText} hover:bg-black/5 dark:hover:bg-white/10`}
+                      className={`px-1 py-0.5 rounded ${mutedText} hover:bg-black/5 dark:hover:bg-white/10`}
                     >
                       <ChevronDown size={12} className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />
                     </button>
@@ -414,8 +414,8 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
                             data-new-no={newStr}
                             className={`flex items-start ${bg} text-[12px] leading-[1.55]`}
                           >
-                            <span className={`select-none text-right pr-2 pl-2 w-14 shrink-0 ${mutedText}`}>{oldStr}</span>
-                            <span className={`select-none text-right pr-2 w-14 shrink-0 ${mutedText}`}>{newStr}</span>
+                            <span className={`select-none text-right pr-2 pl-2 w-[3.5rem] shrink-0 ${mutedText}`}>{oldStr}</span>
+                            <span className={`select-none text-right pr-2 w-[3.5rem] shrink-0 ${mutedText}`}>{newStr}</span>
                             <span className={`select-none w-4 shrink-0 ${txt}`}>{marker}</span>
                             <span className={`flex-1 pr-3 ${txt}`} style={noStyle}>{l.text || ' '}</span>
                           </div>
@@ -668,8 +668,8 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
       const isPositive = changePercent >= 0;
       const mainColor = isPositive ? 'text-[#eb4335]' : 'text-[#34a853]';
       const bgGradient = isPositive
-        ? 'bg-linear-to-br from-red-50 to-white dark:from-red-950/30 dark:to-[#1C1C1E]'
-        : 'bg-linear-to-br from-green-50 to-white dark:from-green-950/30 dark:to-[#1C1C1E]';
+        ? 'bg-gradient-to-br from-red-50 to-white dark:from-red-950/30 dark:to-[#1C1C1E]'
+        : 'bg-gradient-to-br from-green-50 to-white dark:from-green-950/30 dark:to-[#1C1C1E]';
       const badgeColor = isPositive
         ? 'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400'
         : 'bg-green-100 text-green-600 dark:bg-green-900/40 dark:text-green-400';
@@ -689,13 +689,13 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
               <div className="flex items-baseline space-x-4">
                 <span className={`text-[3.5rem] leading-none font-black tracking-tighter font-mono ${mainColor}`} style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(price)}</span>
                 <div className="flex flex-col justify-end pb-1 space-y-0.5">
-                  <span className={`text-sm font-bold font-mono px-1.5 py-0.5 rounded-sm ${badgeColor}`}>{isPositive ? '+' : ''}{changePercent == null || Number.isNaN(changePercent) ? '--' : changePercent.toFixed(2)}%</span>
+                  <span className={`text-sm font-bold font-mono px-1.5 py-0.5 rounded ${badgeColor}`}>{isPositive ? '+' : ''}{changePercent == null || Number.isNaN(changePercent) ? '--' : changePercent.toFixed(2)}%</span>
                 </div>
               </div>
               <TrendIcon className={`w-12 h-12 mb-2 opacity-15 ${mainColor}`} />
             </div>
           </div>
-          <div className={`h-px bg-linear-to-r from-transparent via-current to-transparent text-slate-200 dark:text-white/10`}></div>
+          <div className={`h-px bg-gradient-to-r from-transparent via-current to-transparent text-slate-200 dark:text-white/10`}></div>
           <div className={`p-6 bg-white dark:bg-[#1C1C1E]`}>
             <div className="grid grid-cols-3 gap-y-4 gap-x-4">
               {[
@@ -722,7 +722,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
     // 注:pptx 不在此——它是「PPT 生成」MCP 的同名 companion 技能,卡片由后端
     // list_marketplace_skills 数据合成(见 ToolStoreView 的 companionSkillCards)。
     const tsSkillsData = [
-      { id: 's5', title: '视觉设计', subtitle: '设计系统直出网页 / banner / 海报 / 简历', category: 'other', type: 'Skill', version: '内置', latency: '本地', desc: '内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', icon: Palette, color: 'bg-linear-to-b from-pink-400 to-fuchsia-600', installed: true, authRequired: false, builtin: true,
+      { id: 's5', title: '视觉设计', subtitle: '设计系统直出网页 / banner / 海报 / 简历', category: 'other', type: 'Skill', version: '内置', latency: '本地', desc: '内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', icon: Palette, color: 'bg-gradient-to-b from-pink-400 to-fuchsia-600', installed: true, authRequired: false, builtin: true,
       // The audit badge keys mode control off backendId: this legacy entry's
       // real backend skill id (visual-design) must reach the builtin page so
       // its badge agrees with the store card (review round-5 M3).
@@ -930,7 +930,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
       return (
         <div data-testid="builtin-plugin-card" data-tool-id={tool.backendId || ''}
           className="flex items-start gap-4 py-3 px-3 border-b border-slate-100 dark:border-white/5 last:border-0">
-          <div className={`h-16 w-16 shrink-0 rounded-[16px] border border-black/5 shadow-xs dark:border-white/5 flex items-center justify-center text-white ${tool.color || 'bg-linear-to-b from-slate-400 to-slate-600'}`}>
+          <div className={`h-16 w-16 flex-shrink-0 rounded-[16px] border border-black/5 shadow-sm dark:border-white/5 flex items-center justify-center text-white ${tool.color || 'bg-gradient-to-b from-slate-400 to-slate-600'}`}>
             <Icon size={30} strokeWidth={1.5} />
           </div>
           <div className="flex-1 min-w-0 flex flex-col gap-1.5 py-1">
@@ -951,7 +951,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
                 <span className={labelCls}>{C.toolsLabel}</span>
                 <div className="flex flex-wrap gap-1.5">
                   {mcpTools.map(name => (
-                    <span key={name} title={name} className="text-[11px] font-mono px-1.5 py-0.5 rounded-sm bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">{builtinToolShortName(name, tool.backendId)}</span>
+                    <span key={name} title={name} className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">{builtinToolShortName(name, tool.backendId)}</span>
                   ))}
                 </div>
               </div>
@@ -960,7 +960,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
               <div className={rowCls}>
                 <span className={labelCls}>{C.securityLabel}</span>
                 <span className="inline-flex items-center gap-1.5 leading-5">
-                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-sm uppercase tracking-wide bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400" title={levelDesc || undefined}>{tool.securityLevel}</span>
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400" title={levelDesc || undefined}>{tool.securityLevel}</span>
                   {levelDesc && <span className="text-slate-500 dark:text-slate-400">{levelDesc}</span>}
                 </span>
               </div>
@@ -976,7 +976,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
                 <span className={labelCls}>{C.dataAccessLabel}</span>
                 <div className="flex flex-wrap gap-1.5">
                   {dataAccess.map(scope => (
-                    <span key={scope} title={scope} className="text-[11px] px-1.5 py-0.5 rounded-sm bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">{(C.dataAccess && C.dataAccess[scope]) || scope}</span>
+                    <span key={scope} title={scope} className="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">{(C.dataAccess && C.dataAccess[scope]) || scope}</span>
                   ))}
                 </div>
               </div>

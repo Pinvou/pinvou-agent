@@ -23,7 +23,7 @@ const ConfirmDialogShell = ({ theme, t, labelledById, title, message, detail, ac
     // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer; the keyboard path is handled by the Escape listener and the cancel button
     <div
       role="presentation"
-      className="fixed inset-0 z-200 flex items-center justify-center p-4"
+      className="fixed inset-0 z-[200] flex items-center justify-center p-4"
       style={{
         background: 'rgba(0,0,0,.34)',
         backdropFilter: 'blur(14px) saturate(140%)',
@@ -37,7 +37,7 @@ const ConfirmDialogShell = ({ theme, t, labelledById, title, message, detail, ac
         role="alertdialog"
         aria-modal="true"
         aria-labelledby={labelledById}
-        className="w-[320px] max-w-[calc(100vw-48px)] overflow-hidden rounded-[16px] shadow-2xl bg-[rgba(250,250,250,.96)] dark:bg-[rgba(44,44,46,.96)] text-black dark:text-[#F2F2F7]"
+        className="w-[320px] max-w-[calc(100vw-48px)] overflow-hidden rounded-[16px] shadow-2xl bg-[rgba(250,250,250,.96)] dark:bg-[rgba(44,44,46,.96)] text-[#000] dark:text-[#F2F2F7]"
         style={{
           // isDark stays for the dynamic boxShadow value.
           boxShadow: isDark ? '0 24px 60px rgba(0,0,0,.55)' : '0 24px 60px rgba(0,0,0,.22)'
@@ -104,7 +104,7 @@ export const ArchivedDeleteConfirmDialog = ({ theme, t, onCancel, onConfirm }) =
 export const ArchiveToast = ({ t, onClose, onView }) => {
   return (
     <div
-      className="fixed left-1/2 top-6 z-210 -translate-x-1/2 px-2 py-2 rounded-[18px] flex items-center gap-1 shadow-2xl bg-[rgba(250,250,250,.94)] dark:bg-[rgba(44,44,46,.94)] text-[#1C1C1E] dark:text-[#F2F2F7] border border-[rgba(0,0,0,.08)] dark:border-[rgba(255,255,255,.10)]"
+      className="fixed left-1/2 top-6 z-[210] -translate-x-1/2 px-2 py-2 rounded-[18px] flex items-center gap-1 shadow-2xl bg-[rgba(250,250,250,.94)] dark:bg-[rgba(44,44,46,.94)] text-[#1C1C1E] dark:text-[#F2F2F7] border border-[rgba(0,0,0,.08)] dark:border-[rgba(255,255,255,.10)]"
       style={{
         backdropFilter: 'blur(18px) saturate(150%)',
         WebkitBackdropFilter: 'blur(18px) saturate(150%)',

@@ -161,7 +161,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         <div className="relative min-w-0">
           <button type="button" ref={triggerRef} onClick={() => { if (!busy && canSwitchModels) setOpen(o => !o); }} disabled={busy || !canSwitchModels}
             title={(current ? selectorMainLabel(current, t) : t.modelNonePick) + (busy ? ' · ' + t.modelSwitchBusy : '')}
-            className={`relative shrink-0 flex items-center justify-center ${multiAgentOn ? 'text-[#6d28d9] dark:text-[#c4b5fd]' : 'text-gray-700 dark:text-gray-200'} transition-colors border disabled:opacity-50 ${compact ? 'w-9 h-9 rounded-full bg-transparent hover:bg-black/5 dark:hover:bg-white/10 border-transparent' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] font-semibold min-w-0 max-w-full bg-black/4.5 dark:bg-white/5.5 hover:bg-black/[0.07] dark:hover:bg-white/9 border-black/4.5 dark:border-white/6'}`}>
+            className={`relative shrink-0 flex items-center justify-center ${multiAgentOn ? 'text-[#6d28d9] dark:text-[#c4b5fd]' : 'text-gray-700 dark:text-gray-200'} transition-colors border disabled:opacity-50 ${compact ? 'w-9 h-9 rounded-full bg-transparent hover:bg-black/5 dark:hover:bg-white/10 border-transparent' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] font-semibold min-w-0 max-w-full bg-black/[0.045] dark:bg-white/[0.055] hover:bg-black/[0.07] dark:hover:bg-white/[0.09] border-black/[0.045] dark:border-white/[0.06]'}`}>
             {compact ? (
               <>
                 <Cpu size={18} className="opacity-80" />
@@ -237,14 +237,14 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
                       className={`w-full flex items-center justify-between px-3 py-2.5 text-[13px] rounded-xl ${
                         multiAgentOn
                           ? 'pinvou-ultra-row'
-                          : 'text-gray-700 dark:text-gray-200 hover:bg-black/4.5 dark:hover:bg-white/[0.07]'
+                          : 'text-gray-700 dark:text-gray-200 hover:bg-black/[0.045] dark:hover:bg-white/[0.07]'
                       } ${multiAgentRevealing ? 'pinvou-ultra-row-reveal' : ''}`}>
                       <span className="flex items-center gap-2.5 min-w-0">
                         <Users size={15} className={`shrink-0 ${multiAgentOn ? 'text-current' : 'text-gray-400'}`} />
                         <span className={`truncate ${multiAgentOn ? 'font-medium' : ''}`}>{multiAgentCopy.toggleLabel || ''}</span>
                       </span>
                       <span aria-hidden="true" className={`relative shrink-0 w-8 h-[18px] rounded-full transition-colors ${multiAgentOn ? 'bg-white/30' : 'bg-black/20 dark:bg-white/25'}`}>
-                        <span className={`absolute top-[2px] left-0 w-[14px] h-[14px] rounded-full bg-white shadow-sm transition-transform ${multiAgentOn ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
+                        <span className={`absolute top-[2px] left-0 w-[14px] h-[14px] rounded-full bg-white shadow transition-transform ${multiAgentOn ? 'translate-x-[16px]' : 'translate-x-[2px]'}`} />
                       </span>
                     </button>
                   </>
@@ -648,7 +648,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
           </span>
           <button type="button" disabled aria-label={row.id} title={t.composerReadonlySwitch}
             className={`relative inline-flex h-5 w-[34px] shrink-0 items-center rounded-full transition-colors cursor-not-allowed bg-[#34C759]/60`}>
-            <span className="inline-block h-4 w-4 rounded-full bg-white shadow-sm translate-x-[16px]" />
+            <span className="inline-block h-4 w-4 rounded-full bg-white shadow translate-x-[16px]" />
           </button>
         </div>
       );
@@ -662,7 +662,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
               onClick={() => setOpen(o => !o)}
               title={t.composerTools}
               aria-expanded={open}
-              className="inline-flex h-8 min-w-0 max-w-[220px] items-center gap-1.5 overflow-hidden rounded-xl border px-2.5 transition-all cursor-pointer hover:-translate-y-px hover:shadow-xs focus-within:border-[#007AFF]/45 focus-within:ring-2 focus-within:ring-[#007AFF]/10 border-black/[0.07] bg-black/2.5 text-[#1F1F1F] dark:border-white/9 dark:bg-white/5.5 dark:text-[#E8EAED]"
+              className="inline-flex h-8 min-w-0 max-w-[220px] items-center gap-1.5 overflow-hidden rounded-xl border px-2.5 transition-all cursor-pointer hover:-translate-y-px hover:shadow-sm focus-within:border-[#007AFF]/45 focus-within:ring-2 focus-within:ring-[#007AFF]/10 border-black/[0.07] bg-black/[0.025] text-[#1F1F1F] dark:border-white/[0.09] dark:bg-white/[0.055] dark:text-[#E8EAED]"
             >
               <span className="pointer-events-none min-w-0 truncate text-[11px] font-semibold">
                 {t.composerTools}
@@ -678,7 +678,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
             </button>
           ) : (
           <button type="button" ref={triggerRef} data-testid={triggerTestId || 'composer-tool-menu-trigger'} onClick={() => setOpen(o => !o)} title={t.composerTools}
-            className={`relative shrink-0 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-colors border ${compact ? 'w-9 h-9 rounded-full bg-transparent hover:bg-black/5 dark:hover:bg-white/10 border-transparent' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] font-semibold whitespace-nowrap bg-black/4.5 dark:bg-white/5.5 hover:bg-black/[0.07] dark:hover:bg-white/9 border-black/4.5 dark:border-white/6'}`}>
+            className={`relative shrink-0 flex items-center justify-center text-gray-700 dark:text-gray-200 transition-colors border ${compact ? 'w-9 h-9 rounded-full bg-transparent hover:bg-black/5 dark:hover:bg-white/10 border-transparent' : 'h-8 gap-1.5 rounded-[12px] px-2.5 text-[12px] font-semibold whitespace-nowrap bg-black/[0.045] dark:bg-white/[0.055] hover:bg-black/[0.07] dark:hover:bg-white/[0.09] border-black/[0.045] dark:border-white/[0.06]'}`}>
             <Wrench size={compact ? 18 : 13} className="opacity-80" />
             {!compact && t.composerTools}
             {enabledCount > 0 && (compact
@@ -741,7 +741,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
           {projectSkillsHelp && createPortal(
             // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; the keyboard path is covered by the dialog's top-right close button
             // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
-            <div className="fixed inset-0 z-90 flex items-center justify-center p-4 bg-black/45" onClick={() => setProjectSkillsHelp(false)}>
+            <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/45" onClick={() => setProjectSkillsHelp(false)}>
               {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events don't need bubbling here */}
               {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
               <div onClick={e => e.stopPropagation()} className="relative w-full max-w-[380px] rounded-[22px] shadow-2xl p-5 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E3E3E3]">

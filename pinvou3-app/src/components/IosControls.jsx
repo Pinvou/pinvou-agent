@@ -26,7 +26,7 @@ function IosSearchField({
         placeholder={placeholder}
         onChange={onChange}
         onKeyDown={onKeyDown}
-        className={`h-full w-full rounded-[14px] border-none bg-[rgba(118,118,128,.12)] dark:bg-[rgba(118,118,128,.24)] text-black dark:text-white pl-10 pr-10 font-normal outline-hidden placeholder:text-[#8E8E93] disabled:cursor-default ${compact ? 'text-[13px]' : 'text-[16px]'} ${inputClassName}`}
+        className={`h-full w-full rounded-[14px] border-none bg-[rgba(118,118,128,.12)] dark:bg-[rgba(118,118,128,.24)] text-[#000] dark:text-[#fff] pl-10 pr-10 font-normal outline-none placeholder:text-[#8E8E93] disabled:cursor-default ${compact ? 'text-[13px]' : 'text-[16px]'} ${inputClassName}`}
       />
       <div className="absolute right-3 top-1/2 flex -translate-y-1/2 items-center gap-1.5">
         {value ? (
@@ -72,7 +72,7 @@ function IosSegmentedControl({ value, onChange, segments, isDark, className = ''
       >
         <span
           aria-hidden="true"
-          className={`absolute bottom-1 top-1 ${plateRadiusClass} transition-transform duration-200 ease-out bg-white dark:bg-[#3A3A3C]`}
+          className={`absolute bottom-1 top-1 ${plateRadiusClass} transition-transform duration-200 ease-out bg-[#fff] dark:bg-[#3A3A3C]`}
           style={{
             left: '4px',
             width: `calc((100% - 8px) / ${segmentCount})`,
@@ -91,13 +91,13 @@ function IosSegmentedControl({ value, onChange, segments, isDark, className = ''
               data-testid={testId}
               aria-pressed={selected}
               onClick={() => onChange && onChange(key)}
-              className={`relative z-10 inline-flex items-center justify-center font-semibold transition-colors duration-200 ${buttonClass} ` + (selected ? 'text-[#1D1D1F] dark:text-white' : 'text-[rgba(60,60,67,.60)] dark:text-[rgba(235,235,245,.60)]')}
+              className={`relative z-10 inline-flex items-center justify-center font-semibold transition-colors duration-200 ${buttonClass} ` + (selected ? 'text-[#1D1D1F] dark:text-[#fff]' : 'text-[rgba(60,60,67,.60)] dark:text-[rgba(235,235,245,.60)]')}
             >
               {Icon ? <Icon size={iconSize} /> : null}
               {label ? <span>{label}</span> : null}
               {count == null ? null : (
                 <span
-                  className="ml-0.5 min-w-5 rounded-full px-1.5 py-0.5 text-center text-[11px] font-bold leading-none bg-[#007AFF] dark:bg-[#0A84FF] text-white"
+                  className="ml-0.5 min-w-5 rounded-full px-1.5 py-0.5 text-center text-[11px] font-bold leading-none bg-[#007AFF] dark:bg-[#0A84FF] text-[#fff]"
                 >
                   {count}
                 </span>

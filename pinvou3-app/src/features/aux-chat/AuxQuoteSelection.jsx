@@ -221,7 +221,7 @@ export function AuxQuoteSelection({ containerRef, sessionId, copy, onQuote }) {
       title={popover.error || copy.quoteAction}
       onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
       onClick={(event) => { event.preventDefault(); event.stopPropagation(); handleQuote(); }}
-      className={`absolute z-40 h-8 max-w-[280px] truncate rounded-[10px] px-3 flex items-center gap-1.5 text-[12px] font-medium shadow-lg backdrop-blur-sm transition-colors ${
+      className={`absolute z-40 h-8 max-w-[280px] truncate rounded-[10px] px-3 flex items-center gap-1.5 text-[12px] font-medium shadow-lg backdrop-blur transition-colors ${
         popover.error
           ? 'bg-white text-red-600 border border-red-500/30 dark:bg-[#2B2C2F] dark:text-red-300 dark:border-red-400/30'
           : 'bg-white text-[#1F1F1F] hover:bg-[#F8FAFF] border border-black/10 dark:bg-[#2B2C2F] dark:text-[#E3E3E3] dark:hover:bg-[#34363A] dark:border-white/10'

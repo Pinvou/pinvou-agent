@@ -88,7 +88,7 @@ const ProjectGroupHeader = ({
     <div
       onPointerDown={e => e.stopPropagation()}
       data-testid="sidebar-project-group-menu"
-      className="fixed z-1000 overflow-hidden rounded-xl py-1 shadow-xl ring-1 bg-white ring-black/10 dark:bg-[#202124] dark:ring-white/10"
+      className="fixed z-[1000] overflow-hidden rounded-xl py-1 shadow-xl ring-1 bg-white ring-black/10 dark:bg-[#202124] dark:ring-white/10"
       style={menuStyle}
     >
       {kind === 'folder' && onConvert && (
@@ -146,7 +146,7 @@ const ProjectGroupHeader = ({
             }
           }}
           placeholder={t.uiProjects.projectNamePlaceholder}
-          className="w-full h-6 px-3 rounded-full text-[12px] outline-hidden bg-white text-[#1F1F1F] ring-1 ring-[#0B57D0] dark:bg-[#131314] dark:text-[#E3E3E3] dark:ring-[#A8C7FA]"
+          className="w-full h-6 px-3 rounded-full text-[12px] outline-none bg-white text-[#1F1F1F] ring-1 ring-[#0B57D0] dark:bg-[#131314] dark:text-[#E3E3E3] dark:ring-[#A8C7FA]"
         />
       </div>
     );
@@ -224,7 +224,7 @@ const ProjectGroupHeader = ({
           aria-label={`${t.uiProjects.folderUnavailable} · ${t.uiProjects.rebindFolder} · ${unavailableRoot}`}
           disabled={busy}
           onClick={(e) => { e.stopPropagation(); onRebind && onRebind(unavailableRoot, e.currentTarget.parentElement); }}
-          className="mr-2 shrink-0 max-w-36 truncate rounded-full bg-[#FCE8E6] dark:bg-[#3C2A29] px-2 py-0.5 text-[11px] text-[#C5221F] dark:text-[#F28B82] hover:opacity-80 disabled:opacity-50"
+          className="mr-2 shrink-0 max-w-[9rem] truncate rounded-full bg-[#FCE8E6] dark:bg-[#3C2A29] px-2 py-0.5 text-[11px] text-[#C5221F] dark:text-[#F28B82] hover:opacity-80 disabled:opacity-50"
         >
           {t.uiProjects.folderUnavailable} · {t.uiProjects.rebindFolder}
         </button>

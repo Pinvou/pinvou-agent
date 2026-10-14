@@ -3260,7 +3260,7 @@ const NAV_PREFETCH = {
             // Layer sits above modal overlays (picker backdrop is z-[200]) so a
             // failure raised under an open dialog stays visible; a filesystem
             // path in the message must not push the pill past the viewport.
-            <div className="fixed left-1/2 bottom-8 z-210 -translate-x-1/2 max-w-[80vw] truncate rounded-full bg-black/80 px-4 py-2 text-[13px] font-medium text-white shadow-2xl">
+            <div className="fixed left-1/2 bottom-8 z-[210] -translate-x-1/2 max-w-[80vw] truncate rounded-full bg-black/80 px-4 py-2 text-[13px] font-medium text-white shadow-2xl">
               {settingsToast}
             </div>,
             document.body
@@ -3788,7 +3788,7 @@ const NAV_PREFETCH = {
                 // height:0, which would turn the 6px strip into a zero-area
                 // element that pointer hit-testing can never reach (the
                 // top-0/bottom-0 stretch only applies when height is auto).
-                className={`absolute top-0 bottom-0 right-0 h-full w-[6px] border-0 cursor-col-resize z-50 touch-none transition-colors focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#0B57D0] ${
+                className={`absolute top-0 bottom-0 right-0 h-full w-[6px] border-0 cursor-col-resize z-50 touch-none transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#0B57D0] ${
                   sidebarResizing
                     ? 'bg-[#0B57D0]/40'
                     : (activeTheme === 'dark' ? 'hover:bg-[#A8C7FA]/30' : 'hover:bg-[#0B57D0]/25')
@@ -3806,9 +3806,9 @@ const NAV_PREFETCH = {
               || currentView === 'codex'
               || (currentView === 'scheduled' && bs && bs.scheduledRunContext)) && (
               activeTheme === 'light' ? (
-                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[1200px] h-[800px] bg-[radial-gradient(ellipse_at_center,rgba(232,240,254,0.8)_0%,transparent_60%)] pointer-events-none z-0"></div>
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[1200px] h-[800px] bg-[radial-gradient(ellipse_at_center,_rgba(232,240,254,0.8)_0%,_transparent_60%)] pointer-events-none z-0"></div>
               ) : (
-                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 translate-y-[-40%] w-[1400px] h-[900px] bg-[radial-gradient(ellipse_at_center,rgba(168,199,250,0.25)_0%,transparent_60%)] pointer-events-none z-0"></div>
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-[40%] w-[1400px] h-[900px] bg-[radial-gradient(ellipse_at_center,_rgba(168,199,250,0.25)_0%,_transparent_60%)] pointer-events-none z-0"></div>
               )
             )}
 
@@ -3978,7 +3978,7 @@ const NAV_PREFETCH = {
               // inside this outer backdrop, so React.lazy's cached rejection
               // can never leave the composer interactable.
               <div
-                className="fixed inset-0 z-57 flex items-center justify-center overflow-auto p-6"
+                className="fixed inset-0 z-[57] flex items-center justify-center overflow-auto p-6"
                 style={{ background: 'rgba(0,0,0,.5)' }}
                 aria-busy="true"
               >
@@ -4029,7 +4029,7 @@ const NAV_PREFETCH = {
                     />
                     <button
                       type="button"
-                      className={`rounded-sm p-1 ${activeTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}
+                      className={`rounded p-1 ${activeTheme === 'dark' ? 'hover:bg-white/10' : 'hover:bg-black/5'}`}
                       title={t.browserPaneClose}
                       aria-label={t.browserPaneClose}
                       onClick={() => {

@@ -77,7 +77,7 @@ const AgentSpawnCountRow = ({ count, failed = 0, running = 0, sessionId, t, inte
       onClick={clickable ? () => dispatchOpenSubagent(null, sessionId) : undefined}
       title={clickable ? copy.spawnedAgentsRowHint : undefined}
       className={`my-1 flex max-w-[520px] items-center gap-2 rounded-full px-2 py-1 text-[11.5px] text-[#8E8E93] ${
-        clickable ? 'cursor-pointer hover:bg-black/4 dark:hover:bg-white/6' : 'cursor-default'
+        clickable ? 'cursor-pointer hover:bg-black/[0.04] dark:hover:bg-white/[0.06]' : 'cursor-default'
       }`}
     >
       <span
@@ -360,7 +360,7 @@ const ToolOutput = ({ item, t }) => {
           ? 'text-red-500 bg-red-500/10'
           : isRunning
             ? 'text-blue-500 bg-blue-500/10'
-            : 'text-gray-500 bg-black/4 dark:bg-white/6';
+            : 'text-gray-500 bg-black/[0.04] dark:bg-white/[0.06]';
         const summaryPrefix = summary ? `${summary} · ` : '';
         const meta = `${summaryPrefix}${timelineStatusText}`;
         const toggleExpanded = () => setExpanded(value => !value);
@@ -369,8 +369,8 @@ const ToolOutput = ({ item, t }) => {
             data-tool-card-variant="timeline"
             data-tool-name={item.name}
             className={`rounded-xl border ${
-              isFailed ? 'border-red-500/20' : 'border-black/5 dark:border-white/[0.07]'
-            } bg-white/45 dark:bg-white/1.5`}
+              isFailed ? 'border-red-500/20' : 'border-black/[0.05] dark:border-white/[0.07]'
+            } bg-white/45 dark:bg-white/[0.015]`}
           >
             {/* biome-ignore lint/a11y/useSemanticElements: the tool card collapse header hosts a multi-child layout; a button would break existing styles */}
             <div
@@ -383,7 +383,7 @@ const ToolOutput = ({ item, t }) => {
                   toggleExpanded();
                 }
               }}
-              className="w-full min-h-10 px-2.5 py-2 flex items-center gap-2.5 text-left rounded-xl cursor-pointer hover:bg-black/2.5 dark:hover:bg-white/[0.035]"
+              className="w-full min-h-10 px-2.5 py-2 flex items-center gap-2.5 text-left rounded-xl cursor-pointer hover:bg-black/[0.025] dark:hover:bg-white/[0.035]"
             >
               <span className={`w-6 h-6 shrink-0 rounded-lg flex items-center justify-center ${tone}`}>
                 <Wrench size={13} />
@@ -528,7 +528,7 @@ const ToolOutput = ({ item, t }) => {
       return (
         <div className={cardBoxCls('border-[#E37400]/20 dark:border-[#FDD663]/30')}>
           <div className={`text-[13px] leading-relaxed mb-3 text-[#1F1F1F] dark:text-[#E3E3E3]`}>
-            {t.stuckPlanPre} <code className="px-1 rounded-sm bg-black/20">{item.toolName || t.uiToolRender.toolUnknown}</code> {t.stuckPlanPost}
+            {t.stuckPlanPre} <code className="px-1 rounded bg-black/20">{item.toolName || t.uiToolRender.toolUnknown}</code> {t.stuckPlanPost}
           </div>
           {done ? (
             <div className={`text-[13px] text-[#444746] dark:text-[#C4C7C5]`}>{item.statusLabel || t.handled}</div>

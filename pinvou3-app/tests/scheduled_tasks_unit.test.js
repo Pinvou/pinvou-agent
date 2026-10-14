@@ -426,8 +426,8 @@ assert.ok(
     /data-testid="scheduled-detail-settings" className=\{`overflow-visible rounded-\[16px\] \$\{iosInsetSurface\}`\}/.test(indexHtml) &&
     /data-testid="scheduled-detail-actions-group" className=\{`overflow-hidden rounded-\[16px\] \$\{iosInsetSurface\}`\}/.test(indexHtml) &&
     /data-testid="scheduled-run-history-list" className=\{`overflow-hidden rounded-\[12px\] \$\{iosHistorySurface\}`\}/.test(indexHtml) &&
-    /fixed z-1000[\s\S]{0,120}rounded-\[12px\] border/.test(indexHtml) &&
-    /fixed z-1000[\s\S]{0,120}rounded-\[14px\] border/.test(indexHtml) &&
+    /fixed z-\[1000\][\s\S]{0,120}rounded-\[12px\] border/.test(indexHtml) &&
+    /fixed z-\[1000\][\s\S]{0,120}rounded-\[14px\] border/.test(indexHtml) &&
     /data-testid="scheduled-detail-delete-confirmation"[\s\S]{0,260}rounded-\[14px\] border/.test(indexHtml),
   'embedded scheduled task form groups should not have outer borders, while floating surfaces keep borders'
 );

@@ -1289,7 +1289,7 @@ export function BrowserView({
           <Globe size={14} style={{ opacity: 0.5 }} />
           <input
             ref={urlInputRef}
-            className="w-full bg-transparent text-[13px] outline-hidden"
+            className="w-full bg-transparent text-[13px] outline-none"
             style={{ color: isDark ? '#E8E8E8' : '#222' }}
             placeholder={t.browserUrlPlaceholder}
             value={urlInput}
@@ -1331,7 +1331,7 @@ export function BrowserView({
             errorEventEpochRef.current += 1;
             setError('');
           }}
-          className="mx-2 my-1 shrink-0 rounded-md px-3 py-2 text-left text-[12px] shadow-xs"
+          className="mx-2 my-1 shrink-0 rounded-md px-3 py-2 text-left text-[12px] shadow-sm"
           style={{
             background: isDark ? '#2A1B1B' : '#FDECEC',
             border: `1px solid ${isDark ? '#5C2B2B' : '#F2B8B5'}`,
@@ -1346,7 +1346,7 @@ export function BrowserView({
         <div
           data-testid="browser-persistence-warning"
           role="status"
-          className="mx-2 my-1 shrink-0 rounded-md px-3 py-2 text-left text-[12px] shadow-xs"
+          className="mx-2 my-1 shrink-0 rounded-md px-3 py-2 text-left text-[12px] shadow-sm"
           style={{
             background: isDark ? '#2E2818' : '#FFF7D6',
             border: `1px solid ${isDark ? '#66572A' : '#E8CF72'}`,
@@ -1360,7 +1360,7 @@ export function BrowserView({
               data-testid="browser-persistence-warning-dismiss"
               title={t.winClose}
               aria-label={t.winClose}
-              className="shrink-0 rounded-sm p-0.5 transition-colors hover:bg-black/10 dark:hover:bg-white/10"
+              className="shrink-0 rounded p-0.5 transition-colors hover:bg-black/10 dark:hover:bg-white/10"
               onClick={() => dispatchPersistenceWarning({ type: 'dismiss' })}
             >
               <XIcon size={13} />
@@ -1405,7 +1405,7 @@ export function BrowserView({
           <button
             type="button"
             data-testid="browser-new-tab-page"
-            className="flex h-full w-full flex-col items-center justify-center text-center outline-hidden"
+            className="flex h-full w-full flex-col items-center justify-center text-center outline-none"
             style={{
               color: isDark ? '#D7D7D7' : '#313131',
               background: isDark ? '#101113' : '#FFFFFF',
