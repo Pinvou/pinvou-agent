@@ -18,7 +18,7 @@ use objc2_app_kit::{
     NSPageUpFunctionKey, NSResponder, NSRightArrowFunctionKey, NSStandardKeyBindingResponding,
     NSUpArrowFunctionKey, NSView, NSWindow,
 };
-use objc2_foundation::{NSError, NSPoint, NSString};
+use objc2_foundation::{NSBundle, NSError, NSPoint, NSString};
 use objc2_web_kit::{WKContentWorld, WKWebView};
 use parking_lot::Mutex;
 use serde_json::Value;
@@ -54,6 +54,52 @@ fn input_gate() -> &'static tokio::sync::Mutex<()> {
 
 pub(super) fn backend_available() -> bool {
     true
+}
+
+/// Last-resort Safari major when the installed version cannot be read. It is
+/// deliberately conservative: Safari 16 is the last major shipped to the oldest
+/// supported macOS (11), so the fallback never overstates the WebKit engine
+/// that actually powers WKWebView.
+const FALLBACK_SAFARI_MAJOR: u32 = 16;
+
+static INSTALLED_SAFARI_MAJOR: OnceLock<Option<u32>> = OnceLock::new();
+
+/// WKWebView's factory user agent omits the `Version/… Safari/…` tokens that
+/// identify a Safari-class browser, so UA-sniffing sites downgrade the embedded
+/// browser (bilibili.com redirects it to a "browser version too low" notice).
+/// Safari's reduced-User-Agent policy freezes every token except the `Version/`
+/// major, which is taken from the installed Safari: Safari updates deliver the
+/// system WebKit framework that WKWebView actually runs, so the installed major
+/// is the honest capability claim on every supported macOS.
+pub(super) fn wkwebview_user_agent() -> String {
+    let major = INSTALLED_SAFARI_MAJOR
+        .get_or_init(read_installed_safari_major)
+        .unwrap_or(FALLBACK_SAFARI_MAJOR);
+    compose_wkwebview_user_agent(major)
+}
+
+fn compose_wkwebview_user_agent(safari_major: u32) -> String {
+    format!(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+         AppleWebKit/605.1.15 (KHTML, like Gecko) Version/{safari_major}.0 Safari/605.1.15"
+    )
+}
+
+/// Safari ships at a fixed path on every supported macOS, and reading bundle
+/// metadata never loads code from that bundle.
+fn read_installed_safari_major() -> Option<u32> {
+    let path = NSString::from_str("/Applications/Safari.app");
+    let bundle = NSBundle::bundleWithPath(&path)?;
+    let key = NSString::from_str("CFBundleShortVersionString");
+    let version = bundle
+        .objectForInfoDictionaryKey(&key)?
+        .downcast_ref::<NSString>()?
+        .to_string();
+    safari_major_from_bundle_version(&version)
+}
+
+fn safari_major_from_bundle_version(version: &str) -> Option<u32> {
+    version.split('.').next()?.parse().ok()
 }
 
 /// Register the host-owned Tauri label and its expected tab identity in Rust
@@ -1184,6 +1230,38 @@ mod tests {
     use super::*;
     use crate::features::browser::platform::state::NativeControlOwner;
     use serde_json::json;
+
+    #[test]
+    fn wkwebview_user_agent_keeps_the_frozen_safari_tokens() {
+        let user_agent = wkwebview_user_agent();
+        assert!(user_agent.starts_with("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "));
+        assert!(user_agent.contains("AppleWebKit/605.1.15 (KHTML, like Gecko) Version/"));
+        assert!(user_agent.ends_with(".0 Safari/605.1.15"));
+    }
+
+    #[test]
+    fn wkwebview_user_agent_reports_the_composed_safari_major() {
+        assert_eq!(
+            compose_wkwebview_user_agent(18),
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+             AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
+        );
+        // The fallback major must keep the same frozen shape so a missing
+        // Safari never weakens the user agent.
+        assert!(
+            compose_wkwebview_user_agent(FALLBACK_SAFARI_MAJOR).ends_with(".0 Safari/605.1.15")
+        );
+    }
+
+    #[test]
+    fn safari_major_parses_only_a_leading_integer() {
+        assert_eq!(safari_major_from_bundle_version("26.1.1"), Some(26));
+        assert_eq!(safari_major_from_bundle_version("17.0"), Some(17));
+        assert_eq!(safari_major_from_bundle_version("17"), Some(17));
+        assert_eq!(safari_major_from_bundle_version(""), None);
+        assert_eq!(safari_major_from_bundle_version("20e1"), None);
+        assert_eq!(safari_major_from_bundle_version("abc.2"), None);
+    }
 
     #[test]
     fn json_wrapper_awaits_and_serializes_the_result() {
