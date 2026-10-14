@@ -10,7 +10,7 @@
 
 let pinvouSharedtauriMainCache = null;
 function pinvouSharedtauriMain() {
-  if (!pinvouSharedtauriMainCache) pinvouSharedtauriMainCache = window.PinvouBridgeShared.create("tauriMain", { state, BT_TABLE, PINVOU_SCENE_EVENTS_STORAGE_PREFIX, invoke, startThinking, recordAuthoritySyncDiagnostic, getBuffer, runSyncOnSession, notify, addChatItem, extractArtifactPaths, scheduledRunSessionOwners, sessionStates });
+  if (!pinvouSharedtauriMainCache) pinvouSharedtauriMainCache = window.PinvouBridgeShared.create("tauriMain", { state, BT_TABLE, PINVOU_SCENE_EVENTS_STORAGE_PREFIX, invoke, startThinking, recordAuthoritySyncDiagnostic, getBuffer, runSyncOnSession, notify, addChatItem, extractArtifactPaths, scheduledRunSessionOwners, sessionStates, isDeliverable, personaPlaceholderTitles });
   return pinvouSharedtauriMainCache;
 }
 
@@ -947,6 +947,7 @@ function recordPinvouSceneForMessage(sid, pos, scene) { return pinvouSharedtauri
     ensureSessionBufferLoaded: function (...args) { return ensureSessionBufferLoaded(...args); },
     ensureSession: function (...args) { return ensureSession(...args); },
     getBuffer: function (...args) { return getBuffer(...args); },
+    touchSessionBuffer: function (...args) { return touchSessionBuffer(...args); },
     recordPinvouSceneForMessage,
     recordSteeredMessages,
     reconcileRemoteTurn: function (...args) { return reconcileRemoteTurn(...args); },
@@ -1733,6 +1734,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     // 避免 live/restore 两处守卫实现漂移。
     isInternalRuntimeUserMessage: isInternalRuntimeEnvelopeText,
     applyAuthoritativeModeState,
+    autoCreateScheduledTaskDraft: function (...args) { return autoCreateScheduledTaskDraft(...args); },
     addChatItem, addSystemItem,
     addAuthoritySyncNotice, timeStr,
     toolCallAlreadyStarted,
