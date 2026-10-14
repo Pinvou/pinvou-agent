@@ -1214,6 +1214,17 @@ fn parses_local_asr_output_shapes() {
     );
 }
 
+// Moved here from voice.rs: `has_explicit_asr_cli_fallback` now reuses the
+// platform probe's variable list (`features::voice::has_asr_cli_override`),
+// so this helper has no production caller left; the test below keeps pinning
+// its "any non-empty value counts as configured" semantics.
+fn has_nonempty_asr_cli_config(values: &[Option<&str>]) -> bool {
+    values
+        .iter()
+        .flatten()
+        .any(|value| !value.trim().is_empty())
+}
+
 #[test]
 fn explicit_asr_cli_fallback_accepts_all_supported_env_names() {
     assert!(!has_nonempty_asr_cli_config(&[None, None, None]));
