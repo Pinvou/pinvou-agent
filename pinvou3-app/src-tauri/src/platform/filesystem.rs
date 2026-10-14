@@ -129,26 +129,34 @@ mod libc {
     }
 }
 
+/// The canonical image-extension → MIME mapping table: the single source
+/// behind [`image_mime_type`] and the classification sets derived from it
+/// (codex_acp attachments, workspace file classification, files/visual_preview
+/// artifact previews, and the headless CLI's `code workspace diff` file-kind,
+/// which imports it instead of hand-copying the extension list).
+pub const IMAGE_MIME_TABLE: &[(&str, &str)] = &[
+    ("png", "image/png"),
+    ("jpg", "image/jpeg"),
+    ("jpeg", "image/jpeg"),
+    ("gif", "image/gif"),
+    ("webp", "image/webp"),
+    ("svg", "image/svg+xml"),
+    ("bmp", "image/bmp"),
+];
+
 /// Extension-based image MIME lookup shared by every feature that embeds or
-/// previews image files (codex_acp attachments, workspace file classification,
-/// files/visual_preview artifact previews). Returns `None` for extensions
-/// outside the table so callers decide their own fallback or rejection.
+/// previews image files. Returns `None` for extensions outside
+/// [`IMAGE_MIME_TABLE`] so callers decide their own fallback or rejection.
 pub(crate) fn image_mime_type(path: &Path) -> Option<&'static str> {
-    match path
+    let extension = path
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "png" => Some("image/png"),
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "gif" => Some("image/gif"),
-        "webp" => Some("image/webp"),
-        "svg" => Some("image/svg+xml"),
-        "bmp" => Some("image/bmp"),
-        _ => None,
-    }
+        .to_ascii_lowercase();
+    IMAGE_MIME_TABLE
+        .iter()
+        .find(|(table_ext, _)| *table_ext == extension)
+        .map(|(_, mime)| *mime)
 }
 
 /// Return whether a path is a regular file the current platform can execute.

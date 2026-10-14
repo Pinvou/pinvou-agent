@@ -1035,30 +1035,18 @@ fn require_session_id(value: Option<&String>) -> Result<String, CliError> {
     Ok(id)
 }
 
-/// Credential-marker vocabulary from the GUI's login sanitizer
-/// (`features/codex_acp/login.rs::sanitize_kimi_login_failure_detail`): any
-/// of these in a login transcript means credential material may be present
-/// in a shape `redact_secret` cannot see — a JWT (`eyJ…`) carries no
-/// redactable prefix — and the GUI refuses to surface such detail at all.
-/// Round-40 review: the human-mode echo applies the same posture and
-/// withholds the dump instead of printing it partially scrubbed.
-const LOGIN_ECHO_WITHHOLD_MARKERS: [&str; 10] = [
-    "access_token",
-    "refresh_token",
-    "authorization:",
-    "bearer ",
-    "api_key",
-    "api-key",
-    "secret=",
-    "cookie:",
-    "user_code=",
-    "device_code=",
-];
-
+/// Round-40 review: the human-mode echo applies the GUI's withhold posture —
+/// the imported `KIMI_CREDENTIAL_MARKERS` are the GUI login sanitizer's own
+/// vocabulary (any of them in a login transcript means credential material
+/// may be present in a shape `redact_secret` cannot see — a JWT (`eyJ…`)
+/// carries no redactable prefix — and the GUI refuses to surface such detail
+/// at all), so the CLI withholds the dump instead of printing it partially
+/// scrubbed. The list itself is imported, not mirrored: an app-side marker
+/// tightens both surfaces at once.
 fn login_echo_withheld(combined: &str) -> bool {
     let normalized = combined.to_ascii_lowercase();
-    LOGIN_ECHO_WITHHOLD_MARKERS
-        .iter()
+    pinvou3_lib::features::codex_acp::KIMI_CREDENTIAL_MARKERS
+        .into_iter()
         .any(|marker| normalized.contains(marker))
 }
 
@@ -4406,10 +4394,13 @@ fn file_kind(path: &Path) -> &'static str {
         .and_then(|value| value.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    if matches!(
-        extension.as_str(),
-        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg"
-    ) {
+    // Derived from the app's canonical MIME table so an app-side addition
+    // moves the CLI's classification with it (was a hand-copied extension
+    // list; see platform::filesystem::IMAGE_MIME_TABLE).
+    if pinvou3_lib::platform::IMAGE_MIME_TABLE
+        .iter()
+        .any(|(image_ext, _)| *image_ext == extension)
+    {
         return "image";
     }
     if matches!(
