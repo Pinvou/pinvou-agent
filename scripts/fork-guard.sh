@@ -223,6 +223,7 @@ fingerprints=(
 
   "APP|spawn 前安装 Engine session id   |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|cfg.session_id = Some(session_id.to_string());"
   "APP|产品白名单复用原生 allowed_tools |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|allowed_tools: Some(crate::features::assistant::tool_policy::allowed_tool_names())"
+  "APP|宿主申报输出事实抵达钢丝回归        |pinvou3-app/src-tauri/src/features/assistant/route_wire_cap_tests.rs|fn host_declared_output_fact_reaches_the_wire_for_both_wire_policies"
   "APP|会话工具开关走动态禁用整形        |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|pub fn shape_disallowed_tools("
   "APP|subagent ledger root 透传       |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|cfg.subagent_state_root = Some(roots.ledger);"
   "APP|逐轮精确安全策略下发               |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|turn_tool_security: Some(Arc::new(turn_tool_security))"

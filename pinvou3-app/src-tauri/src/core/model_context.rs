@@ -349,6 +349,11 @@ pub fn resolved_output_limit(model: &str) -> Option<u32> {
     if lower.is_empty() {
         return None;
     }
+    // Fill-gap guard. Currently untestable end-to-end: no table row is
+    // base-resolved today, so every `None` assertion in
+    // `documented_output_anchors_fill_gaps_and_yield_to_base_rows` holds by
+    // row-miss, not by this guard — the pin-status note there registers the
+    // condition for adding a real dual-sourced id pin.
     if deepseek_tui::models::max_output_tokens_for_model(&lower).is_some() {
         return None;
     }

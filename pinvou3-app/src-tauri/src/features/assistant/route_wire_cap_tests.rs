@@ -12,6 +12,11 @@
 //! Op::SendMessage → 底座出站 → HTTP），断言钢丝请求体的 `max_tokens`：
 //! 两个 wire-policy 家族（Deepseek=model-aware、Zai=固定 wire）都必须落在
 //! `min(底座自动请求默认 64000, 申报值)`，而不是 8192。
+//!
+//! 密闭性边界：fill-gap/锚点断言经底座 `active_catalog()`（进程级
+//! OnceLock）读取真实 `~/.codewhale/catalog` 磁盘缓存且不可重指——若
+//! 开发者本机缓存恰有同名精确行，fill-gap 让位语义会使锚点断言翻红
+//! （生产语义反而是对的：更新鲜的底座值胜出）；CI/clean 机无虞。
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};
