@@ -5411,3 +5411,62 @@ architecture/publisher, grant execution or admit Artifacts. Other codec support,
 protected storage and aggregate preparation policy remain unfinished. No provider/
 dependency/SQL migration/protocol/application version/deployment changes. Full T09
 remains incomplete; downloads have no cumulative elapsed or retry limit.
+
+
+## T09 twenty-second batch: explicit bounded LZMA-alone decoding
+
+Added a separate single-stream LZMA-alone adapter. It requires positive original/
+expanded capacities and an explicit dictionary bound (at least4096 bytes, within
+host-int/format limits); no large library default is used. Immutable13-byte header
+preflight refuses excessive dictionaries and known expanded lengths before decoder
+allocation. Fixed properties are validated. Complete decoded EOF must also prove
+original stored EOF through the same buffered ByteReader; trailing or concatenated
+input returns no snapshot. Shared private two-pass capture keeps exact expanded
+identity and no duplicate expanded buffer. Cancellation is checked between bounded
+reads; synchronous decoder work itself is not internally interruptible.
+
+Adopted pure-Go github.com/ulikunitz/xz v0.5.17 only for its classic LZMA reader,
+whose configured dictionary capacity is a hard maximum. The XZ reader's dictionary
+parameter can be increased by its header and is not used. Only one direct dependency
+and its two module checksums changed; existing versions stayed fixed. The original
+BSD license is retained in compression/third_party/ulikunitz-xz.LICENSE for binary
+redistribution materials. No private executable or external decoder is launched.
+
+Private independent Python/LZMA evaluation confirmed unknown and known lengths,
+full source EOF, dictionary refusal, truncated refusal and observable unread tail.
+Root compression14 groups including existing Python gzip passed7.541s (33 MiB
+LZMA .68s/bzip2 .45s/gzip .24s). Four new groups use frozen independent Python
+vectors to check known/unknown length, empty stream, owned-buffer isolation,
+separate source/expanded/dictionary limits, property/truncation/tail/concatenation
+refusal, context failure and restored originals. A4970-byte vector expands to33 MiB
+under explicit artifact capacity, unrelated to business-batch32 MiB.
+The normal138-byte vector has SHA-256
+08ad9a7f38d1a361460f846d644aaaa2aa7ef73b45b665711ea5a6be9ed17932;
+its77862 expanded bytes have SHA-256
+438a9f2d9e86aa2530b3f1bbaf231ddd76bc1a58537436621193d11371dcf9b2.
+Both independent static reviews found a32-bit allocation boundary defect: the
+library allocates dictionary capacity plus one sentinel byte. The extracted
+nonallocating32/64-bit boundary regression first failed2.274s against the original
+predicate. The repaired host bound reserves that byte while keeping the64-bit
+format maximum unchanged. Root compression15 groups including the existing
+Python gzip fixture passed8.941s (33 MiB LZMA1.18s/bzip2 .70s/gzip .35s).
+Complete default Go tests passed with package parallelism2 (compression14
+mandatory groups plus one fixture skip,7.924s; verification27 groups plus two
+fixture skips,37.216s). Module verification, whole-repository vet, server build,
+pinned contract bytes, changed-file formatting/diff and client architecture/version
+guards passed; all root processes closed. Dependency independent compression15
+including Python gzip passed8.314s (33 MiB LZMA 1.51s/bzip2 1.44s/gzip .56s).
+Affected vet, formatting/diff, module verification and retained upstream license
+byte comparison passed; all processes closed. Compatibility independent
+compression15 including Python gzip passed6.136s (33 MiB LZMA 1.95s/bzip2 1.10s/
+gzip .45s); affected vet, formatting/diff, module verification and license byte
+comparison passed, all processes closed. Both independent scoped audits passed;
+both final documentation consistency reviews passed.
+
+LZMA-alone has no checksum or magic signature: observed bytes are not native
+identity or authentication. Probability-model/fixed workspace is separate from
+snapshot/dictionary bounds and is not a total heap/preparation certification.
+No Debian LZMA dispatch, tar/control interpretation, publisher/app certification,
+execution rights, Artifact admission, production storage/provider/protocol/SQL
+migration/application version/deployment change is implied. Full T09 remains
+incomplete; downloads retain no cumulative elapsed or retry limit.
