@@ -8,6 +8,8 @@ import { readFileSync, existsSync } from 'node:fs';
 import { dict } from './helpers/i18n-all.js';
 
 const source = relative => readFileSync(new URL(`../src/${relative}`, import.meta.url), 'utf8');
+const tauriBridge = source('platform/tauri/bridge.js');
+const webBridge = source('platform/web/bridge.js');
 const chatView = source('features/chat/ChatView.jsx');
 const codexView = source('features/codex/CodexAcpView.jsx');
 const controller = source('features/conversation/useRewindController.js');
@@ -37,6 +39,12 @@ const rewindChip = source('features/conversation/RewindChip.jsx');
 // ── ChatView 接线：共享模块 + 时间线入口 + 弹窗 ──────────────────────
 // 共享模块导入（搬家后唯一来源是 features/conversation）。
 assert.match(chatView, /from '\.\.\/conversation\/useRewindController\.js'/, 'ChatView 必须使用共享编排 hook');
+// 评审 r9 M5：两车道重载投影必须跳过含 tool_result 的 User 消息的用户气泡
+// （后端按 ToolResult-first 判 NotPrompt；工具卡由 toolMeta 回填还原）——
+// 否则截图类工具回传的 [ToolResult, Text, ImageUrl, Text] 渲染幻影气泡并顶
+// 偏序号，调和门随之隐藏该会话全部入口。
+assert.match(tauriBridge, /toolResultCarrier[\s\S]{0,600}userMessageDisplayText/, 'tauri 重载：tool_result 载体必须跳过用户气泡');
+assert.match(webBridge, /toolResultCarrier[\s\S]{0,600}userMessageDisplayText/, 'web 重载：tool_result 载体必须跳过用户气泡');
 // 评审 r7 M3(d)：回退后重载必须走 force-durable-load 的 switchToSessionInternal
 // （换 plain switchToSession 的同 id 快路径会把截断前的陈旧时间线当成功上屏，
 // 全部套件对此静默）。

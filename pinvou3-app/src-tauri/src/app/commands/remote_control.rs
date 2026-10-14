@@ -1521,6 +1521,7 @@ async fn web_access_chat_for_session(
                 restrict_tools,
                 turn_reservation,
                 pool,
+                acp_pool,
                 store,
                 app,
             ))

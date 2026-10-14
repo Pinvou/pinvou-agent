@@ -72,6 +72,7 @@ pub async fn chat(
         restrict_tools,
         reservation,
         &pool,
+        &acp_pool,
         &store,
         &app,
     )
@@ -87,11 +88,17 @@ pub(crate) async fn chat_with_reservation(
     restrict_tools: Option<bool>,
     reservation: TurnReservation,
     pool: &EnginePool,
+    acp_pool: &crate::features::codex_acp::AcpPool,
     store: &SessionStore,
     app: &AppHandle,
 ) -> Result<(), String> {
     if message.trim().is_empty() && attachments.as_ref().is_none_or(|a| a.is_empty()) {
         return Err("empty message".to_string());
+    }
+    // 车道不变量自持（评审 r9 minor 10）：此前 ACP 拒绝只活在两个调用方，
+    // 第三个调用方会静默重开车道；缝内自查后调用点的外置门成为纵深冗余。
+    if acp_pool.is_acp(&sid) {
+        return Err(ACP_CHAT_LANE_REJECTED.to_string());
     }
     // 默认标题会话用首条消息自动命名（原生代码会话与 ACP 同一语义）。
     // 命名失败不阻断发送——标题是展示层信息，正文投递才是关键路径。

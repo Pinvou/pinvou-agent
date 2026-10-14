@@ -200,7 +200,15 @@ export function useRewindController({
       // 侧有 refresh 重查 rewind_undo_state
       // 的自愈兜底。而「重载失败+用户取消重试」路径不补发是有意的：彼时屏上
       // 仍是截断前的陈旧时间线，补发「已回退」反而误导。
-      if (!currentOwnsSession(sessionId)) return;
+      // 跨会话竞态（评审 r9 M2）：await 期间切走可能在两个时点发生——wrapper
+      // 入口已切走（上面已失效缓存）之外，重载在途被会话切换 token 守卫中止
+      // 也会走到这里：彼时缓冲仍是回退前的陈旧快照，同样失效（若重载其实已
+      // 提交，切回多付一次 durable load 的代价，无害）。
+      if (!currentOwnsSession(sessionId)) {
+        const { invalidateSkippedBuffer: invalidate } = depsRef.current;
+        if (typeof invalidate === 'function') invalidate(sessionId);
+        return;
+      }
       if (reloadError) {
         // 回退已在后端生效：把成功结果随目标暂存（pendingNotice），重试只补
         // 重载、成功后补发提示——避免整条流走完时间线却没有「已回退」确认项。
@@ -263,14 +271,27 @@ export function useRewindController({
         await currentInvoke('undo_last_rewind', { sessionId });
       }
       const { error: reloadError } = await reloadSessionAfterRewind({
-        // reload 前置归属检查（评审 M4）：同 confirmRewind。
-        reload: () => (currentOwnsSession(sessionId)
-          ? currentReload(sessionId)
-          : Promise.resolve(null)),
+        // reload 前置归属检查（评审 M4）：同 confirmRewind——切走则跳过并失效
+        // 被跳过会话的缓存 buffer（评审 r9 M1：undo 同样改写磁盘 transcript，
+        // 陈旧缓存（截断后时间线）同样会被切回快路径复用，与 rewind 同类反向）。
+        reload: () => {
+          if (currentOwnsSession(sessionId)) return currentReload(sessionId);
+          const { invalidateSkippedBuffer: invalidate } = depsRef.current;
+          if (typeof invalidate === 'function') invalidate(sessionId);
+          return Promise.resolve(null);
+        },
         bumpTick: currentBumpTick,
       });
       // 跨会话竞态：await 期间会话被程序化切换时不再写原会话的 UI 状态。
-      if (!currentOwnsSession(sessionId)) return;
+      // 跨会话竞态（评审 r9 M2）：await 期间切走可能在两个时点发生——wrapper
+      // 入口已切走（上面已失效缓存）之外，重载在途被会话切换 token 守卫中止
+      // 也会走到这里：彼时缓冲仍是回退前的陈旧快照，同样失效（若重载其实已
+      // 提交，切回多付一次 durable load 的代价，无害）。
+      if (!currentOwnsSession(sessionId)) {
+        const { invalidateSkippedBuffer: invalidate } = depsRef.current;
+        if (typeof invalidate === 'function') invalidate(sessionId);
+        return;
+      }
       if (reloadError) {
         setRewindUndoEntry({ ...entry, reloadFailed: true });
         setRewindUndoError(reloadError);

@@ -112,6 +112,19 @@ function loadSessionsFeature(overrides) {
 
 // ── ensureSession：再进草稿不劫持 ──────────────────────────
 
+test('invalidateSessionBuffer：真工厂导出为可调用函数且只丢缓存（r9 B1 回归锚定）', () => {
+  // r8 事故：函数加了定义与共享依赖表、漏了工厂返回对象——bridge 拿到
+  // undefined、typeof 守卫静默吞掉整个修复。协议套件的 Proxy 桩对 undefined
+  // 值键不敏感，必须执行真工厂断言导出值本身。
+  const { api, sessionStates } = loadSessionsFeature();
+  assert.equal(typeof api.invalidateSessionBuffer, 'function',
+    'sessions 工厂必须导出可调用的 invalidateSessionBuffer（r9 B1）');
+  sessionStates['s-stale'] = { loadedFromDisk: true, messages: [1], chatItems: [] };
+  api.invalidateSessionBuffer('s-stale');
+  assert.equal(sessionStates['s-stale'], undefined, '被跳过会话的缓存 buffer 必须被丢弃');
+  api.invalidateSessionBuffer('');
+  api.invalidateSessionBuffer(null);
+});
 test('ensureSession：create_session 等待期间再进草稿 → 不物化、返回 null', async () => {
   const rt = loadSessionsFeature();
   const create = rt.defer('create_session');
