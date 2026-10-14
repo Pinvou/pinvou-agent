@@ -151,21 +151,7 @@ function isPresentArtifactTool(name) { return pinvouSharedtauriArtifactTracker()
   // 模型常给相对路径,直接拿 args.path 渲染会让卡片 path 是相对,点 Open 报「path must be
   // absolute」,且模型可能重试再 present 一次出双卡。取不到 abs_path 才回退原始 path。
   // 兼容两种结果格式:直接 payload {abs_path} / MCP content 数组 {content:[{text}]} 包一层。
-  function parseToolResultPayload(toolResultContent) {
-    try {
-      const raw = typeof toolResultContent === "string" ? toolResultContent : JSON.stringify(toolResultContent || {});
-      const obj = JSON.parse(raw);
-      if (obj && obj.content && obj.content[0] && typeof obj.content[0].text === "string") {
-        try {
-          const inner = JSON.parse(obj.content[0].text);
-          if (inner && typeof inner === "object") return inner;
-        } catch { /* use the outer object when the inner value is not JSON */ }
-      }
-      return obj;
-    } catch {
-      return null;
-    }
-  }
+function parseToolResultPayload(toolResultContent) { return pinvouSharedtauriArtifactTracker().parseToolResultPayload(toolResultContent); }
 function artifactPathFromToolOutput(toolResultContent) { return pinvouSharedtauriArtifactTracker().artifactPathFromToolOutput(toolResultContent); }
 function shouldUseToolOutputAsArtifact(name) { return pinvouSharedtauriArtifactTracker().shouldUseToolOutputAsArtifact(name); }
 function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvouSharedtauriArtifactTracker().presentArtifactAbsPath(toolResultContent, fallbackPath); }
