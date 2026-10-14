@@ -1162,17 +1162,6 @@ impl RemoteKnowledgeService {
         self.client_for(server_id)?.restore_collection(id).await
     }
 
-    pub async fn documents(
-        &self,
-        server_id: &str,
-        collection_id: i64,
-        include_deleted: bool,
-    ) -> Result<Vec<Document>, String> {
-        self.client_for(server_id)?
-            .documents(collection_id, include_deleted)
-            .await
-    }
-
     pub async fn documents_page(
         &self,
         server_id: &str,
