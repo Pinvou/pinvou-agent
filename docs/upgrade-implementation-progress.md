@@ -4931,3 +4931,64 @@ code/test reviews passed; all processes are closed. Both independent final docum
 changes. Full T09 remains incomplete; unchanged DB/provider/browser/deployment
 opt-ins are not claimed. Download retains no total/cumulative elapsed deadline
 or retry budget.
+
+
+## T09 twelfth batch - exact owned native member candidates (2026-10-14)
+
+InspectNativeBytes accepts a closed signed role selection: finalInstaller,
+helper, launcher or helperArtifact with its exact helper ID. Helper IDs on other
+roles and caller path/unknown role selectors fail. Existing current signed
+Manifest verification and independently owned exact FullPack run first. Only
+exact size/SHA direct FullPack inventory members can supply the chosen signed
+five-field identity. The returned owned snapshot has independent reads and no
+host path; candidate byte aliases retain the same identity. All resource checks
+remain applicable. Any failure returns zero Facts and no candidate.
+
+The initial four native groups passed4.084s, including all roles/five fields,
+caller/read-buffer mutation isolation, independent exact/below FullPack/member
+capture capacities, cancellation/current deny/restore and actual33MiB native
+members under Store/Deflate. This file size is not the32MiB atomic business limit.
+Initial real PostgreSQL2 groups passed20.032s (12.15s/5.69s), adding all four
+selected byte candidates against the actual protected SERIALIZABLE source, raw
+size/SHA and signed/current facts, plus current deny/restore. Owner SQL changes
+remain adversarial controls, not approved deny/admission commands.
+
+Both independent static reviews found the same P2: the initial byte selector
+called the existing non-container OuterFile on the first matching identity, so
+a valid ZIP direct candidate or ZIP-first equal alias was wrongly refused.
+A new regression first passed old InspectFullPack on that same actual signed
+upload, then reproduced capture-input-invalid (1.491s). The root repaired this
+with a narrow InspectOuterMember/OuterMember port accepting any safe direct
+logical member, including prefixed ZIP. Complete recursive scanning and retained
+ZIP capture live-nested-memory accounting remain; existing non-container and
+bare-root selector APIs keep their acceptance.
+
+ZIP-only and both ZIP/non-ZIP alias orders now retain exact raw ZIP bytes and
+all five signed fields. Nested-only identity remains refused by old FullPack and
+the new candidate port. Archive controls first pass uncaptured sibling inspection
+under lower live memory, then refuse retained capture and restore exact aggregate
+capacity; corrupt later/selected ZIP, nested decoy, unsafe name, cancellation and
+old selector compatibility pass. Owned prefixed ZIP Store/Deflate, exact raw
+identity, old OuterFile refusal and independent memory/ctx controls pass.
+After repair, complete archive=1.235s/extraction=2.858s/verification22=17.656s
+passed. Repaired actual PostgreSQL2 groups passed16.361s (8.21s/5.83s).
+Root full default Go suite then passed, including archive5.142s/extraction6.130s/
+verification22=22.457s and all existing regressions. Full vet/module verification/
+server build/pinned contracts/changed-source format/diff passed; client
+architecture/version/diff passed. Both independent second static scoped reviews
+closed the P2 and found no additional mandatory issue. Independent frozen
+execution also passed: dependency archive2.109s/extraction2.990s/
+verification22=14.251s and actual PostgreSQL2 groups15.412s (7.44s/5.69s);
+compatibility archive1.350s/extraction2.827s/verification22=14.888s and actual
+PostgreSQL2 groups15.523s (7.83s/4.67s). Both passed affected vet/format/diff
+and the complete repaired scoped code/test review. All processes are closed
+and private credentials were not printed. Both independent final documentation reviews passed before commit.
+
+These are signed byte candidates, including intentionally non-native ZIP
+fixtures, not OS format/identity/publisher authenticity, protected staging,
+writer retirement, execution authority or Artifact admission. FullPack/member/
+source/inventory/live nested buffers have separate finite capacities; callers
+must establish aggregate memory/preparation policy. No production defaults,
+SQL/provider/dependency/protocol/application version or deployment changes.
+Full T09 remains incomplete; download has no total/cumulative elapsed deadline
+or retry budget.
