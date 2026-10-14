@@ -4835,3 +4835,55 @@ Both independent final documentation reviews passed before commit. No production
 protocol or application version changes. Full T09 is incomplete; unrelated
 provider/browser/deployment opt-ins are not claimed. Download has no
 total/cumulative elapsed deadline or retry budget.
+
+
+## T09 tenth batch - bounded original provenance JSONL syntax (2026-10-14)
+
+The service adds a strict JSON object-per-line observer on an owned provenance
+snapshot, with explicit positive finite original byte, raw line byte (including
+LF/CRLF terminator) and record capacities. It accepts LF/CRLF and an unterminated
+final object. Empty input, blank lines, BOM, duplicate keys, ambiguous Unicode,
+non-object roots and malformed later records return no report. The fixed32KiB
+reader and one preallocated bounded raw line retain only one parsed record at a
+time; existing per-object strict JSON depth/string/member/binary64 rules remain.
+Limits describe raw capacities, not an exact total heap/preparation budget.
+Original whole-source size/SHA and count are returned without normalization.
+Cancellation is checked between bounded reads and before returning; a bounded
+strict parse is synchronous and cannot be interrupted inside its library call.
+
+InspectProvenanceJSONL composes this syntax with existing current signed package,
+actual full archive/native byte presence, exact paired evidence, supported SBOM
+Schema and primary installer SHA-256 binding. Every failure returns zero package,
+no evidence pair and zero JSONL report. Existing APIs retain their acceptance.
+No in-toto/DSSE/SLSA version/profile, provenance signature, subject/source/pipeline
+or allow-list validation is implied. Synthetic object payloads deliberately prove
+syntax only; the unresolved statement/attestation profile remains deferred.
+
+Root grammar3=1.653s and complete verification17=11.813s passed. Grammar controls
+include raw CRLF/LF/no-finalLF identities, a fragmented line over1MiB, malformed
+later records, duplicate keys, Unicode/shape/depth/string rejection, independent
+exact/below capacities, empty/invalid snapshot, cancellation and restored positives.
+Signed-composition negatives first pass the same complete SBOM binding observer,
+then fail precise JSONL syntax with zero earlier facts; capacities/current
+deny/restore also pass. The actual protected PostgreSQL2 groups passed13.857s
+(6.31s/5.26s), including original raw/count/current-read retention, signed-binding
+positive before duplicate-key syntax refusal, restore and current deny/restore.
+The fixture helper takes explicit provenance bytes and signs their actual size/
+SHA; old cases pass the original unchanged bytes. Owner SQL mutations remain
+adversarial read-current controls, not approved deny or admission commands.
+Private connections were kept in process environment and were not printed.
+
+Root full default Go suite passed, including grammar3=5.928s/
+verification17=16.754s and all existing regressions. Full vet/module verification/
+server build/pinned contracts/changed-source format/diff passed. Client
+architecture/version/diff passed. Dependency independently passed grammar3=1.647s/
+verification17=10.949s and actual PostgreSQL2 groups14.187s (6.90s/5.11s),
+affected vet/format/diff and complete scoped review. Compatibility independently
+passed grammar3=1.680s/verification17=14.914s and actual PostgreSQL2 groups13.407s
+(6.25s/4.85s), affected vet/format/diff and complete scoped review.
+Both frozen independent code/test reviews found no mandatory issue; all processes
+are closed and credentials were not printed. Both independent final documentation reviews passed before commit.
+No production SQL/provider/dependency/protocol/application version or deployment
+changes. Full T09 remains incomplete; unrelated provider/browser/deployment
+opt-ins are not claimed. Download has no total/cumulative elapsed deadline or
+retry budget.
