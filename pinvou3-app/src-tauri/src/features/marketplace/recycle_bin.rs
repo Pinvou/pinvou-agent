@@ -134,6 +134,14 @@ impl Default for RecycleBin {
     }
 }
 
+/// 回收站根目录（~/.pinvou3/marketplace/recycle-bin）的唯一 derivation 点：
+/// 写入侧 [`RecycleBin::new`] 的 `root` 与读取侧 pack-row shield
+/// （[`RecycleBin::held_dir`]，scope.rs）命名/识别的是同一目录，任一侧字面
+/// 单独改动都会让 shield 静默失配、把待恢复包的 consent 行重新认主。
+fn recycle_bin_root() -> PathBuf {
+    paths::pinvou3_home().join("marketplace").join("recycle-bin")
+}
+
 impl RecycleBin {
     /// The staged pack dir for `id` while it sits in the recycle bin — the
     /// read-path pack-row shield (round-24 MAJOR 1) needs to recognize a
@@ -141,16 +149,13 @@ impl RecycleBin {
     /// installed one, so its consent row is not re-owned while it awaits
     /// restore.
     pub(crate) fn held_dir(id: &str) -> PathBuf {
-        paths::pinvou3_home()
-            .join("marketplace")
-            .join("recycle-bin")
-            .join(id)
+        recycle_bin_root().join(id)
     }
 
     pub fn new() -> Self {
         let marketplace = paths::pinvou3_home().join("marketplace");
         Self {
-            root: marketplace.join("recycle-bin"),
+            root: recycle_bin_root(),
             file: marketplace.join("recycle-bin.json"),
             bundles_root: paths::bundles_root(),
         }
