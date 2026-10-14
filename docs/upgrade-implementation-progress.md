@@ -6700,3 +6700,83 @@ native app/version/publisher mapping, Artifact admission and durable production
 storage remain later work. Downloads have no hard total/cumulative elapsed or
 retry-count limit. Unchanged database/provider/browser integration and the earlier
 native API probe were not repeated.
+
+## T09 forty-second batch: complete original PE resource-tree observation
+
+`pe.InspectResourceTree` freshly captures the same owned image's Resource
+directory through CaptureResources, then traverses every declared directory and
+leaf using an explicit work stack. It takes no caller-supplied image/resource/tree
+projection. Directory and entry offsets are relative to the original Resource
+directory; leaf addresses are image RVAs. Leaf data may be outside the metadata
+region, but every nonempty leaf must have the same unique complete original
+file backing as the earlier resource observer. Empty data retains its declared
+RVA plus the empty-byte identity; its observed file offset is zero.
+
+Three required positive capacities bound total entries, directory depth with
+root at one, and UTF-16 code units per individual name. Physical span bounds and
+entry counts precede child allocation; names have intrinsic uint16 lengths and
+are bounded before copying. Iterative traversal does not assume the customary
+Type/Name/Language depth and does not grow the call stack on nested input. These
+are logical structure capacities: copied paths and repeated shared-leaf hashing
+do not prove aggregate heap or one-scan work bounds. No artifact size policy is
+inherited from the 32 MiB atomic business-batch limit.
+
+Names precede numeric IDs as declared. Name strings require original word
+alignment and valid UTF-16 surrogate pairs; comparison uses case-sensitive
+original UTF-16 code-unit order. Numeric IDs preserve the full non-name value.
+Each partition is strictly increasing, rejecting duplicate/descending siblings.
+An explicit named flag distinguishes empty names from numeric IDs. No case
+folding or filesystem path interpretation occurs. Directory reserved flags and
+data-entry reserved words must be zero. Other timestamp/version/code-page
+declarations remain opaque; timestamps are not trusted time.
+
+Each directory retains its exact original header-plus-entry-table identity.
+Every leaf retains its exact declaration path, data-entry identity, original RVA,
+image file offset and complete data identity. Shared names/data entries/payloads
+are allowed; repeated directory nodes, including cycles, return Unsupported in
+this tree-only profile. Unknown payloads remain opaque. Any later malformed
+table/name/data, backing, capacity or cancellation error returns literal zero
+ResourceTree, including all earlier image/resource/directory/leaf facts.
+
+Four new top-level groups cover exact synthetic named and three-level numeric
+paths, independent metadata/data identities, opaque declarations, data outside
+the Resource metadata region, empty/shared data, caller mutation and same-owned
+restoration, UTF-16 order across supplementary characters, distinct case/empty
+names, duplicate/descending IDs/names, partition mistakes, unpaired surrogates,
+alignment/bounds/reserved failures, shared/cyclic directories, late unbacked/RVA
+domain failures, per-name/entry/depth capacities, pre-cancellation and a 1500-
+directory iterative positive with a one-short depth refusal. Framing negatives
+first succeed through the unchanged original Resource capture.
+
+The actual opt-in uses the same fixed original Windows image, bounded regular-
+file reading and independently measured complete counts: 39 directories, 69
+entries and 31 leaves. The unique [16,1,1033] resource has data-entry offset 1640,
+image RVA 359704, original file offset 351512 and declared size 884; original
+entry/data SHA assertions are independent of returned offsets. The contained
+version root declares 880 bytes followed by four original zero bytes. This
+observer retains the entire 884-byte resource and does not silently treat it as
+the standalone 880-byte version-record observer input. No image is executed.
+
+Root actual fifteen-group run passed in 1.667s. After adding original UTF-16
+ascending/case/empty positives plus shared-leaf and shared-directory controls,
+all fifteen passed in 1.636s. All three actual fixture groups executed without
+skips. Complete default Go tests passed at package parallelism 2: PE twelve
+mandatory groups and three fixture skips, 1.675s; verification 15.857s, Debian
+6.155s, windowsversion 0.888s, compression 3.997s and TAR 1.156s. Module
+verification, whole vet, server build, unchanged contract pins, two-file
+formatting and diff checks passed; every root process closed.
+
+No dependency, SQL, protocol, application-version, deployment or download-budget
+change. This is original physical resource association, not selected resource
+capture, semantic version parsing, Windows loading, NSIS installation format,
+approved app/version/architecture, Authenticode/publisher trust or Artifact
+admission. Existing APIs remain unchanged and full T09 remains incomplete.
+Downloads retain no total/cumulative elapsed or retry-count cap. Unchanged
+database/provider/browser integration and the earlier native API probe were
+not repeated.
+
+Both final independent scoped code/test audits passed without required fixes.
+Dependency audit ran all fifteen actual PE groups in 2.159s; compatibility audit
+ran them in 1.544s. Both enabled all three original-image fixture groups without
+skips and passed affected vet, two-file formatting and diff checks; all independent
+processes closed.
