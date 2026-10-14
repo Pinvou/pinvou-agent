@@ -137,6 +137,11 @@ pub(crate) const fn inventory_has_joined(inventory: &[&str], prefix: &str, suffi
 /// 没有裸文件名条目，而 Wave 3 动机正是 `~/keys/id_rsa` 这类任意目录下的
 /// 密钥文件。与引擎清单保持互斥（const 断言）——引擎若将来登记裸 `id_*`，
 /// 这里应并入引擎派生面。
+///
+/// 已知演进（#87 现审头）：底座已引入组件面 `SENSITIVE_COMPONENT_NAMES`
+/// （含裸 `id_*` 与 `.dws`/`.tmeet`）。上游合并后本清单应改为从该面派生
+/// （本清单 ⊆ 该面 ∪ 既有登记残差），并退役下方互斥断言——断言只查两个
+/// 旧清单，组件面合入不会触发它，故在此预登记迁移点。
 const APP_ONLY_COMPONENTS: &[&str] = &["id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"];
 
 const fn all_components_in_engine_inventory(entries: &[&str]) -> bool {
@@ -390,7 +395,7 @@ mod tests {
             ".netrc",
             ".git-credentials",
         ];
-        for residual in dir_residual.into_iter().chain(file_residual) {
+        for residual in dir_residual.iter().chain(file_residual.iter()) {
             assert!(
                 !BLOCKED_COMPONENTS.contains(&residual),
                 "{residual} 若要登记进组件黑名单，须同步更新本残差登记与 const 断言"
@@ -415,6 +420,31 @@ mod tests {
                 "{residual} 若要登记，须同步更新本残差登记"
             );
             assert!(SENSITIVE_ABSOLUTE_PREFIXES.contains(&residual));
+        }
+
+        // 引擎覆盖方向：每个引擎条目必须被采纳或登记为残差。仅靠子集/互斥
+        // 断言时，引擎新增条目会静默漏过（正是单源化要暴露的漂移类）；本方
+        // 向强制引擎新增在本表显式登记（或采纳），三个面各一。
+        for engine_dir in SENSITIVE_DIRECTORY_NAMES {
+            assert!(
+                BLOCKED_COMPONENTS.contains(engine_dir) || dir_residual.contains(engine_dir),
+                "引擎目录 {engine_dir} 未被采纳也不在残差登记中"
+            );
+        }
+        for engine_file in SENSITIVE_FILE_NAMES {
+            assert!(
+                BLOCKED_COMPONENTS.contains(engine_file) || file_residual.contains(engine_file),
+                "引擎文件 {engine_file} 未被采纳也不在残差登记中"
+            );
+        }
+        for engine_prefix in SENSITIVE_ABSOLUTE_PREFIXES {
+            let subsumed = BLOCKED_PREFIXES
+                .iter()
+                .any(|p| engine_prefix.starts_with(*p));
+            assert!(
+                BLOCKED_PREFIXES.contains(engine_prefix) || subsumed,
+                "引擎前缀 {engine_prefix} 未被采纳也不被 starts_with 覆盖"
+            );
         }
     }
 }
