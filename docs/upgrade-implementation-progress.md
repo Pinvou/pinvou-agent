@@ -5623,3 +5623,62 @@ Tar/control interpretation, native installer certification, Zstandard, Artifact
 admission, production storage and aggregate preparation evidence remain unfinished.
 No new dependency/SQL/protocol/application version/deployment change. Full T09
 remains incomplete; downloads have no cumulative elapsed or retry limit.
+
+
+## T09 twenty-sixth batch: bounded Zstandard frame decoding
+
+Added a separate complete-stream Zstandard adapter with explicit stored/expanded
+capacities and window size. Both SDK MaxWindow and streaming MaxMemory use the
+same explicit bound, including the SingleSegment content-size path. No large SDK
+default is invoked. The host-int guard checks the actual pinned history-ring span
+window+2*(min(window,128KiB)+16) before conversion/allocation. Block/model workspace
+is separate and these limits do not certify total heap or preparation budgets.
+
+The adapter uses synchronous concurrency1, low-memory mode, disabled whole-reader
+DecodeAll shortcuts and enabled checksums. True Decoder Close runs on both passes
+and all failure paths. Empty raw sources are refused, while complete empty/skippable
+frames and concatenations are observed through original EOF. Known window/decoder
+size errors conservatively return Limit; that SDK error can also indicate invalid
+internal references/block sizes, so the classification does not prove caller
+capacity alone was inadequate. Missing external dictionary returns Unsupported;
+other errors return a fixed invalid classification. No external dictionary is
+registered. Cancellation is polled around bounded reads. The SDK has some
+diagnostic printing paths; this adapter does not claim complete stderr silence.
+
+Adopted github.com/klauspost/compress v1.20.3 only for its Go Zstandard decoder;
+one direct module and two sums changed, with no existing version drift. Its Go1.25
+minimum is compatible with the pinned Go1.27.2 SDK. The full upstream module LICENSE
+and actual zstd/internal/xxhash MIT license are retained byte-for-byte. No SDK fork
+or executable decoder is used.
+
+Private independent Python3.14/libzstd vectors verified small unknown-size windows,
+SingleSegment refusal/restoration, empty/skippable/concatenated source EOF, truncated
+refusal and checksum errors. Five new mandatory groups cover owned-buffer isolation,
+stored/expanded/window caps including a later SingleSegment, raw-empty refusal,
+tail lengths1/2/3/4, context failure/restoration and eight nonallocating32/64-bit
+allocation boundaries. An isolated nonzero Dictionary_ID first proves the SDK's
+exact UnknownDictionary refusal, then adapter Unsupported/nil and original restore.
+The SDK WriterTo path emits full decoded payload before a terminal CRC error; the
+adapter's Read path retains no snapshot on that error. The initial test assumed
+Read emitted the final block before CRC; its proof was corrected to WriterTo
+after observing the actual SDK contracts. A1075-byte unknown-size
+vector expands to33 MiB with a1 MiB window and explicit artifact capacities,
+separate from business-batch32 MiB. Root compression30 including existing actual
+Python gzip passed3.623s (33 MiB Zstandard .24s/XZ .70s/LZMA .66s/bzip2 .46s/
+gzip .24s). Complete default Go tests passed with package parallelism2
+(compression29 mandatory groups plus one fixture skip,4.903s; Debian13 groups plus
+seven fixture skips,1.195s; verification27 groups plus four fixture skips,14.063s).
+Module verification, whole-repository vet, server build, pinned contracts,
+changed-file formatting/diff and client architecture/version guards passed; all
+root processes closed. Both final independent scoped audits passed with no
+remaining required fixes. Dependency audit ran compression30 including actual
+Python gzip in3.637s and actual Debian20 with all seven fixture opt-ins in1.417s;
+compatibility audit ran the same groups in3.713s and1.352s. Each independently
+passed affected vet, formatting/diff, module verification, exact dependency delta
+and byte-for-byte retained-license checks. All independent processes closed.
+Unchanged database/provider/browser integration was not repeated.
+
+No Debian Zstandard dispatch, tar/control interpretation, native identity/publisher
+certification, Artifact admission, production storage, SQL/protocol/application
+version/deployment change. Full T09 remains incomplete; downloads have no
+cumulative elapsed or retry limit.
