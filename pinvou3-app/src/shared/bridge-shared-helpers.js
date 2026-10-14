@@ -3,7 +3,8 @@
  *
  * 背景：platform/{web,tauri}/bridge*.js 是以 <script src> 加载的普通脚本（非 ES module）。
  * 此前数百个逐字相同（byte-identical）的桥接工具函数在两条 lane 里各存一份，维护时必须双改；
- * 现已合并：246 个共享函数只在 sharedBridgeBase 定义一次（正文取自原 web 侧逐字镜像），
+ * 现已合并：308 个共享函数只在 sharedBridgeBase 定义一次（正文取自某一侧原
+ * 镜像，或由两侧正文按 lane 差异参数化合并，如 rerenderFromMessagesCore），
  * 每个 cluster 只是薄包装：
  *   - web / tauriMain: 两条 lane 主 IIFE 的共享函数；
  *   - tauri<X>:        tauri/bridge/<feature>.js feature 工厂的共享函数；
@@ -14,7 +15,8 @@
      统一补齐为只读单元格，合并后的函数体统一按 .value 读取，lane 侧 deps 字面量零改动；
  *   - FORWARDER_DEP_NAMES：部分 lane 会把其它 cluster 的共享函数以同名 deps（lane 内转发函数）传入；
  *     有传入时优先使用传入值，保持与合并前完全一致的跨 cluster 解析路径。
- * 每个 cluster 的导出名单与合并前逐一同名同序，导出的函数正文与某一侧原镜像逐字一致。
+ * 每个 cluster 的导出名单与合并前逐一同名同序；除上述参数化合并的函数外，
+ * 导出的函数正文与某一侧原镜像逐字一致。
  * 与 markdown-bridge-fallback.js 相同：必须随 index.html 在两条 bridge 之前以普通脚本加载。
  */
 (function (root) {
@@ -114,6 +116,7 @@
   }
 
   // web+tauriMain 共享
+  // biome-ignore lint/suspicious/noFunctionAssign: forwarder-dep routing reassigns the shared impl when the lane passes its own (see FORWARDER_DEP_NAMES)
   function isDefaultChatTitle(title) {
     return [BT_TABLE.value.zh.newChatFallbackTitle, BT_TABLE.value.en.newChatFallbackTitle, BT_TABLE.value.ja.newChatFallbackTitle]
       .includes(title);
@@ -501,6 +504,7 @@
   }
 
   // web+tauriMain 共享
+  // biome-ignore lint/suspicious/noFunctionAssign: forwarder-dep routing reassigns the shared impl when the lane passes its own (see FORWARDER_DEP_NAMES)
   function isScheduledRunSession(sid) {
     return !!sid && (
       sid.indexOf("sched-") === 0 ||
@@ -1046,6 +1050,7 @@
   // autoOpenId 全局 last-writer：两会话并发创建时后完成者覆盖，且
   // startScheduledTaskChat 清空后陈旧 completion 会复活 auto-open（审计 f）。
   // 全局单调创建序号，仅最新意图可写。
+  // biome-ignore lint/suspicious/noFunctionAssign: forwarder-dep routing reassigns the shared impl when the lane passes its own (see FORWARDER_DEP_NAMES)
   function autoCreateScheduledTaskDraft(draft, creationSessionId) {
     if (!draft || !creationSessionId || scheduledTaskAutoCreateInFlight.value[creationSessionId]) return;
     const lockedDraft = lockScheduledTaskDraftModel(draft);
@@ -2167,6 +2172,7 @@
   // web+tauriMain 共享（FE14 残余批：原 tauri bridge.js / web bridge.js 逐字镜像；
   // 信封判定直接取 window.PinvouBridgeMessages.isInternalRuntimeUserMessage——
   // 两侧原别名 isInternalRuntimeEnvelopeText / isInternalRuntimeUserMessage 同指此判定）
+  // biome-ignore lint/suspicious/noFunctionAssign: forwarder-dep routing reassigns the shared impl when the lane passes its own (see FORWARDER_DEP_NAMES)
   function userMessageDisplayText(blocks, hideInternalEnvelope) {
     const textParts = (Array.isArray(blocks) ? blocks : [])
       .filter(function (block) { return block && block.type === "text"; })
@@ -5001,6 +5007,7 @@
   }
 
   // web+tauriChatEvents 共享
+  // biome-ignore lint/suspicious/noFunctionAssign: forwarder-dep routing reassigns the shared impl when the lane passes its own (see FORWARDER_DEP_NAMES)
   function flushAssistantMessageToHistory() {
     flushPendingTextBlock();
     if (pendingAssistantBlocks.value.length) {
