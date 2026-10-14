@@ -5102,3 +5102,51 @@ package publisher, full tar/control/native installation or Pinvou certification.
 No SQL/provider/dependency/protocol/application version or deployment changes.
 Existing APIs are unchanged; full T09 remains incomplete. Downloads retain no
 total/cumulative elapsed deadline or retry budget.
+
+
+## T09 fifteenth batch - current signed Debian installer composition (2026-10-14)
+
+InspectDebianInstaller combines the existing current signed Manifest, fully
+inspected owned FullPack and exact final-installer member snapshot with observed
+physical AR/Debian outer framing. It requires the signed installer format deb
+and confirms the framing source is the same observed native byte identity.
+Non-deb declarations return explicit unsupported; every failure returns zero
+package/native/framing result, even after earlier byte inspection succeeded.
+Existing APIs and their byte-only acceptance stay unchanged.
+
+Root new four groups including actual public-file composition passed2.862s.
+Strong signed synthetic framed bytes preserve original raw identity/current reads,
+major2 minor compatibility and exact selected bytes. Non-AR, unsupported major
+and malformed version negatives first pass the same old signed-native byte stage,
+then fail precise framing without earlier results and restore supported positives.
+Independent version capacity, cancellation/current deny/restore pass. A properly
+scoped strong Windows declaration first passes its independent byte observer
+before this Debian observer returns unsupported; no OS execution is involved.
+The real public Debian fixture is bounded before/during test reading and wrapped
+in a synthetic signed Package with exact native/full-package hashes. The
+synthetic Pinvou app/version/publisher claims deliberately do not certify that
+public package's app identity/version/architecture/publisher.
+
+Actual protected PostgreSQL2 groups passed12.333s (6.35s/4.46s). Additional strong
+signed owned upload contains observed framed native bytes through the actual
+SERIALIZABLE runtime source. Its exact original native size/SHA and current
+Root read-set facts are retained. The original byte-only non-AR installer first
+passes its existing observer, then framing refuses; a supported framed positive
+is restored. Current canonical indexed package deny refuses the same previously
+accepted framed source and exact genesis restoration restores it. Owner SQL
+changes remain adversarial read-current controls, not approved commands/admission;
+private connection values were kept only in child process environment.
+
+Root complete default Go tests passed (verification25 groups26.290s, public
+fixture opt-in skipped); module verification, whole-repository vet, server build,
+pinned contract check, changed-file formatting and diff checks passed. Client
+architecture and version guards passed; no client application code changed.
+Dependency independent verification26 including the public fixture passed13.948s
+and actual PostgreSQL2 passed14.240s (7.18s/4.78s). Compatibility independent
+verification26 passed18.858s and actual PostgreSQL2 passed12.965s (6.29s/4.49s).
+Both scoped reviews found no required code/test repair; both final documentation
+reviews passed. No compression/tar/control
+metadata, app identity/version/architecture, publisher/native trust, protected
+storage, execution rights or Artifact admission are implied. Full T09 is
+incomplete; no SQL/provider/dependency/protocol/application version/deployment
+changes. Download has no total/cumulative elapsed deadline or retry budget.
