@@ -8339,6 +8339,7 @@ mod tests {
         // which also matches the base's Chat reasoning family — responses
         // wins) and nothing else.
         for model in [
+            "gpt-6.1-sol",
             "gpt-6-sol",
             "gpt-6-luna",
             "gpt-6-astra",

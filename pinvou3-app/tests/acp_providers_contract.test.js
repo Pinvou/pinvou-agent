@@ -625,8 +625,8 @@ assert.doesNotMatch(
 // relay-station users lose the official model suggestions. Removing any entry
 // counts as an intentional shrink and must explicitly update this list.
 const ACP_REQUIRED_MODELS = {
-  anthropic: ['claude-fable-5-1', 'claude-haiku-4-5'],
-  openai: ['gpt-6-astra', 'gpt-5.6-terra'],
+  anthropic: ['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-haiku-4-5'],
+  openai: ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-5.6-terra'],
   moonshot: ['kimi-k3', 'kimi-k2.7-code'],
   'kimi-code': ['k3', 'k3-256k'],
   deepseek: ['deepseek-flash', 'deepseek-v4-flash'],
@@ -655,7 +655,8 @@ for (const [presetKey, required] of Object.entries(ACP_REQUIRED_MODELS)) {
 assert.ok(CATALOG.includes('export const ACP_MODEL_PRESETS'), 'the ACP catalog should contain the flat suggestions table ACP_MODEL_PRESETS');
 const FLAT_MODELS_SECTION = CATALOG.slice(CATALOG.indexOf('export const ACP_MODEL_PRESETS'));
 for (const id of [
-  'claude-fable-5-1', 'gpt-6-astra', 'deepseek-flash', 'kimi-k3', 'glm-5.3',
+  'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5',
+  'claude-fable-5-1', 'gpt-6.1-sol', 'gpt-6-astra', 'deepseek-flash', 'kimi-k3', 'glm-5.3',
   'qwen3.8-max', 'MiniMax-M3', 'grok-4.6', 'grok-4.20-reasoning',
   'grok-4.20-0309-reasoning', 'grok-4.20-0309-non-reasoning', 'grok-build-0.1',
 ]) {

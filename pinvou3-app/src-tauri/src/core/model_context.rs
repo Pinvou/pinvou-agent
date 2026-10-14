@@ -39,6 +39,13 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // (api-docs.deepseek.com/quick_start/pricing, checked 2026-09-11).
     // So it must live in this override table rather than PINVOU_KNOWN.
     ("deepseek-flash", 1_000_000),
+    // The Tencent Token Plan gateway row (since 2026-10-13) uses the
+    // vendor-prefixed spelling; model_name_matches has no vendor-prefix
+    // tolerance and the "v4" heuristic needs a substring this id lacks, so
+    // without this row the prefixed spelling falls to the same 128K legacy
+    // heuristic. Same underlying V4.1-Flash, same official 1M figure
+    // (first-party direct supply per the live Tencent 130060 table).
+    ("deepseek/deepseek-flash", 1_000_000),
     // The base known table still records grok-4.20-0309-* as 2M (stale rows in
     // crates/tui/src/models.rs); the docs.x.ai model detail page was re-checked
     // as 1M on 2026-09-11. The known-table hit happens before the prefs
@@ -61,6 +68,24 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // (platform.claude.com models overview, 2026-09-11).
     // model_name_matches also tolerates future -date/snapshot suffixes.
     ("claude-fable-5-1", 1_000_000),
+    // claude-sonnet-5-5 (catalog row since 2026-10-13) has no base row — the
+    // exact known table stops at claude-sonnet-5 — and would fall to the
+    // "unknown-name claude wildcard 200K" fallback, while the whole 5.5
+    // generation (fable/opus/sonnet/haiku) is officially 1M context / 128K
+    // output (platform.claude.com models-overview comparison table; the
+    // Anthropic preset fallback meters non-haiku at 1M). Same trap
+    // claude-fable-5-1 hit; model_name_matches also tolerates future
+    // -date/snapshot suffixes.
+    ("claude-sonnet-5-5", 1_000_000),
+    // claude-haiku-5-5 (same refresh) also rides the engine wildcard to
+    // 200K (that wildcard pins every unknown claude name at 200K), and the
+    // prefs Anthropic fallback would likewise meter it by its haiku
+    // substring — a 200K premise that holds only for the 4.x generation:
+    // the Haiku 5.5 model page states "a 1M token context
+    // window, and up to 128k output tokens" (platform.claude.com, checked
+    // 2026-10-13). Anchor the official 1M so neither layer can state a
+    // 5×-understated window (claude-opus-5 explicit-anchor precedent).
+    ("claude-haiku-5-5", 1_000_000),
     // No gpt-6-family row exists anywhere in the base chain (bundled catalog /
     // known table / heuristics / claude wildcard), so resolved returns None:
     // the engine side falls to 128K while the monitor page still has the Openai
@@ -77,6 +102,11 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // monitor page's Gemini 1M fallback. Official input limit is 1,048,576
     // (ai.google.dev gemini-3.8-flash page, 2026-09-11).
     ("gemini-3.8-flash", 1_048_576),
+    // gemini-4-argon (catalog row since 2026-10-14, GA 2026-10-13) also has
+    // no base row and would diverge the same way. Official unified 1M
+    // context (1,048,576; ai.google.dev gemini-4-argon model page, checked
+    // 2026-10-14), the same figure the whole Gemini family carries.
+    ("gemini-4-argon", 1_048_576),
     // The catalog desc says 256K; the base known table only has bare
     // "grok-build" → 512K (exact equality misses the -0.1 wire id), so the
     // engine resolves None and falls to 128K. Official figure is 256K
@@ -98,6 +128,15 @@ const PINVOU_OVERRIDES: &[(&str, u32)] = &[
     // astra's "Responses-only tool calling" note gains these two siblings.
     ("gpt-6-sol", 1_050_000),
     ("gpt-6-luna", 1_050_000),
+    // No gpt-6-family row exists in the base chain for this id either, so
+    // without it the engine falls to 128K and diverges from the monitor
+    // page's Openai preset fallback. Official context is 1,050,000 per the
+    // Azure Foundry capability table (gpt-6.1-sol, 2026-09-29; page updated
+    // 2026-10-08). Openai preset default since 2026-10-13, so this row is
+    // load-bearing for `resolved_context_window(default_model())` (the
+    // engine-side resolution has no prefs fallback — see the monitor
+    // `preset_default_models_resolve_engine_context_window` test).
+    ("gpt-6.1-sol", 1_050_000),
 ];
 
 /// pinvou3 supplemental table: applies only when the base chain (catalog /
@@ -113,6 +152,12 @@ const PINVOU_KNOWN: &[(&str, u32)] = &[
     ("qwen3.7-plus", 1_000_000),
     ("qwen3.7-max", 1_000_000),
     ("qwen3.7-flash", 1_000_000),
+    // qwen3.5-plus (Alibaba Coding Plan catalog row since 2026-10-13) is
+    // likewise officially 1M (help.aliyun.com/zh/model-studio/
+    // text-generation-model); without it the engine falls to 128K while the
+    // monitor page's Qwen preset fallback shows 131,072 — both short of the
+    // official figure and divergent from each other.
+    ("qwen3.5-plus", 1_000_000),
     // qwen3.8-max is GA: officially a 1M context (983,616 is the thinking-mode
     // max input, not the context window); the `-preview` suffix is tolerated
     // by model_name_matches.
@@ -235,6 +280,19 @@ const PINVOU_DOCUMENTED_OUTPUT: &[(&str, u32)] = &[
     ("gpt-6-sol", 128_000),
     ("gpt-6-luna", 128_000),
     ("gpt-6-astra", 128_000),
+    // gpt-6.1-sol: officially documented Max Output Tokens 128,000 on the
+    // same Azure capability table as above (page updated 2026-10-08) — a
+    // first-party official figure, unlike the corroborated gpt-6 rows above.
+    ("gpt-6.1-sol", 128_000),
+    // claude-sonnet-5-5 / claude-haiku-5-5: Max Output 128K for the whole
+    // 5.5 generation per the models-overview comparison table (checked
+    // 2026-10-13; the exact-match base output table stops at claude-sonnet-5
+    // / claude-haiku-4-5). Without these rows the route output fact stays
+    // Unverified at the 64K automatic-request floor; the intersection keeps
+    // the effective cap at 64K — this anchors the documented fact and its
+    // provenance.
+    ("claude-sonnet-5-5", 128_000),
+    ("claude-haiku-5-5", 128_000),
     // gpt-5.4-mini: 128,000 max output tokens — the figure on the official
     // model page (developers.openai.com/api/docs/models/gpt-5.4-mini, per
     // the 2026-09-29 search index; the page itself is bot-shielded from the
@@ -330,6 +388,9 @@ mod tests {
             ("qwen3.7-plus", 1_000_000),
             ("qwen3.7-max", 1_000_000),
             ("qwen3.7-flash", 1_000_000),
+            // Alibaba Coding Plan row since 2026-10-13; officially 1M (see
+            // the PINVOU_KNOWN comment).
+            ("qwen3.5-plus", 1_000_000),
             ("qwen3.6-flash", 1_000_000),
             ("qwen3.8-max", 1_000_000),
             ("qwen3.8-max-preview", 1_000_000),
@@ -370,8 +431,14 @@ mod tests {
         assert_eq!(resolved_context_window("claude-opus-5"), Some(1_000_000));
         // The base falls back to legacy 128K for deepseek names without "v4";
         // V4.1-Flash is officially 1M and must be corrected first by the
-        // override table (see the PINVOU_OVERRIDES comment).
+        // override table (see the PINVOU_OVERRIDES comment). The
+        // vendor-prefixed Tencent gateway spelling matches no other entry
+        // (no vendor-prefix tolerance), hence its own row.
         assert_eq!(resolved_context_window("deepseek-flash"), Some(1_000_000));
+        assert_eq!(
+            resolved_context_window("deepseek/deepseek-flash"),
+            Some(1_000_000)
+        );
         // The base known table still records grok-4.20-0309-* as 2M (behind the
         // docs.x.ai 2026-09 figure), so the override table must correct it
         // first; the base does not list fable-5-1 exactly, otherwise it would
@@ -410,6 +477,16 @@ mod tests {
         // astra (no base gpt-6 row exists anywhere).
         assert_eq!(resolved_context_window("gpt-6-sol"), Some(1_050_000));
         assert_eq!(resolved_context_window("gpt-6-luna"), Some(1_050_000));
+        // The Openai preset default since 2026-10-13: same anchor logic (no
+        // base gpt-6-family row), so removing the row would turn the monitor
+        // `preset_default_models_resolve_engine_context_window` red too.
+        assert_eq!(resolved_context_window("gpt-6.1-sol"), Some(1_050_000));
+        // gemini-4-argon (GA 2026-10-13, catalog row since 2026-10-14) rides
+        // the same anchor logic as gemini-3.8-flash: no base row exists (the
+        // base gemini rows stop at 3.7/3.1), and the monitor's Gemini
+        // fallback coincides at 1M, so only this shared-entry pin catches a
+        // removal.
+        assert_eq!(resolved_context_window("gemini-4-argon"), Some(1_048_576));
         // Documented output anchors: the gpt-6 family has no base output row,
         // so without this fact the engine fail-closes the Responses route to
         // the 8192 guess while reasoning meters as output. Suffix tolerance
@@ -419,6 +496,10 @@ mod tests {
         assert_eq!(resolved_output_limit("gpt-6-luna"), Some(128_000));
         assert_eq!(resolved_output_limit("gpt-6-astra"), Some(128_000));
         assert_eq!(resolved_output_limit("gpt-6-sol-2026-05-01"), Some(128_000));
+        // The Openai preset default since 2026-10-13: first-party official
+        // 128,000 (Azure capability table), riding the same Responses-wire
+        // reasoning-as-output concern as the gpt-6 rows above.
+        assert_eq!(resolved_output_limit("gpt-6.1-sol"), Some(128_000));
         // gpt-5.4-mini rides the Responses wire too (prefix predicate) and has
         // no base output row; without the anchor it fail-closes to 8192 while
         // reasoning meters as output on that wire.
@@ -434,6 +515,24 @@ mod tests {
         // claude-opus-5 anchor's 1M via suffix tolerance (official models
         // overview: opus-5-5 is 1M context).
         assert_eq!(resolved_context_window("claude-opus-5-5"), Some(1_000_000));
+        // The 2026-10-13 catalog additions: sonnet-5-5 has no exact base row
+        // and would hit the unknown-claude wildcard 200K without its anchor;
+        // haiku-5-5 rides the same wildcard (every unknown claude name →
+        // 200K; the prefs fallback likewise meters haiku at 200K), a premise
+        // that holds only for the 4.x generation — the Haiku 5.5 page
+        // documents 1M context / 128K output, so both anchors carry the
+        // official 1M (whole 5.5 generation per the models-overview
+        // comparison table).
+        assert_eq!(
+            resolved_context_window("claude-sonnet-5-5"),
+            Some(1_000_000)
+        );
+        assert_eq!(resolved_context_window("claude-haiku-5-5"), Some(1_000_000));
+        // The new claude ids have no exact base output row either (the base
+        // output table stops at claude-sonnet-5 / claude-haiku-4-5), so the
+        // documented 128K output anchors apply.
+        assert_eq!(resolved_output_limit("claude-sonnet-5-5"), Some(128_000));
+        assert_eq!(resolved_output_limit("claude-haiku-5-5"), Some(128_000));
         // Bare kimi-for-coding serves K2.8 Preview (1M on every tier); the
         // base still records the stale plan-dependent 256K, so the override
         // must correct it — while the highspeed variant keeps its official
