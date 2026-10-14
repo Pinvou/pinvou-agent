@@ -5513,3 +5513,63 @@ This observes expanded byte sequences only; tar/control interpretation, native i
 XZ/Zstandard, Artifact admission and protected storage remain unfinished. No new
 dependency, SQL/protocol/application version or deployment change. Full T09 remains
 incomplete; downloads have no cumulative elapsed or retry limit.
+
+
+## T09 twenty-fourth batch: bounded XZ container and LZMA2 chunk inspection
+
+Added a complete-stream XZ adapter with explicit stored/expanded byte capacities,
+dictionary capacity and total block/stream counts. It supports a single LZMA2
+filter per block and None/CRC32/CRC64/SHA256 checks, multiple blocks/streams, empty
+streams and aligned zero padding. Each actually reached block header is checked
+before fixed dictionary allocation through the existing pinned Reader2 adapter;
+the top-level library XZ dictionary parameter is a minimum and is not used.
+Header/block CRC, reserved flags, canonical VLI, dictionary properties, optional
+declared versus observed sizes, actual EOS, block checks, ordered Index tuples,
+Index CRC, footer flags/backward size/magic and original EOF all remain binding.
+Unknown filter/check families return explicit Unsupported. Index tuples use a
+constant-workspace SHA-256 commitment to their canonical ordered encodings,
+rather than trusting Index offsets or allocating a caller-sized record list.
+Shared closed codec error classification preserves Limit/Unsupported while old
+codec structural errors retain their existing fixed invalid classifications.
+
+Independent review found two real internal chunk-length defects in the initial
+adapter: a single compressed-size increment was accepted despite liblzma refusal
+(Go regression FAIL 1.276s), and a two-chunk compensating realignment defeated the
+first raw-EOS observer (Go regression FAIL 1.340s). The repair independently tracks
+raw payload spans and limits each SDK output Read to its current chunk's declared
+expanded remainder. At each exact output boundary, declared raw bytes must already
+be fully consumed before the SDK may read another chunk header. A one-byte first
+read handles transitions, including a next chunk of length one, while preserving
+the SDK's dictionary/properties/state. Complete raw EOS and SDK EOS must both hold.
+LZMA2's lc+lp<=4 rule is checked before property-model creation; classic LZMA's
+separate property rules are unchanged.
+
+Frozen Python/liblzma vectors independently verify all four checks, multiple
+blocks, aligned concatenated streams, declared sizes, uncompressed/mixed chunks,
+one-byte next chunks and lc+lp4. The lc+lp5 vector and both malformed chunk-length
+vectors are rejected by independent liblzma while the old SDK accepts their decoded
+bytes, isolating the new guards. Complete-payload terminal checks, repaired-CRC
+header/Index/footer negatives, canonical VLI, capacity/context failures and original
+restoration are exercised. A5164-byte vector expands to33 MiB under explicit
+artifact capacity, separate from business-batch32 MiB. Root final compression25
+including existing Python gzip passed3.598s (33 MiB XZ .81s/LZMA .80s/bzip2 .54s/
+gzip .29s). Complete default Go tests passed with package parallelism2
+(compression24 mandatory groups plus one fixture skip,8.336s; Debian11 groups plus
+five fixture skips,5.997s; verification27 groups plus three fixture skips,14.256s).
+Module verification, whole-repository vet, server build, pinned contracts,
+changed-file formatting/diff and client architecture/version guards passed; all
+root processes closed. Both repaired independent static reviews passed.
+Dependency independent compression25 including Python gzip passed3.741s (33 MiB
+XZ .86s/LZMA .77s/bzip2 .49s/gzip .27s); actual Debian16 consumer regression with
+all five fixture opt-ins passed1.251s. Affected vet, formatting and diff passed;
+all processes closed. Compatibility independent compression25 including Python
+gzip passed3.187s (33 MiB XZ .69s/LZMA .65s/bzip2 .46s/gzip .25s); actual Debian16
+consumer regression with all five fixture opt-ins passed1.089s. Affected vet,
+formatting and diff passed; all processes closed. Both repaired independent scoped
+audits and both final documentation reviews passed.
+
+No new dependency, executable decoder, SDK fork, native installer authentication,
+Debian XZ dispatch, tar/control interpretation, Artifact admission or deployment.
+Decoder/model workspace is separate from snapshot/dictionary/count limits and
+does not certify total heap or aggregate preparation budgets. Full T09 remains
+incomplete; downloads have no cumulative elapsed or retry limit.
