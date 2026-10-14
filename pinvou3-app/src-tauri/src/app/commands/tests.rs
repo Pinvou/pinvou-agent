@@ -3263,14 +3263,16 @@ fn web_settings_deferred_delete_serializes_with_a_concurrent_replacement() {
     });
 }
 
-/// Round-54 audit A5 wiring pin: the settings transaction holds the
-/// cross-process settings.json.lock across keychain I/O (a CLI `models`
-/// command parked at a keychain prompt can hold it for minutes), so these
-/// command bodies must reach it only through a blocking-worker join.
-/// Unwrapping a join back onto the runtime — or converting the voice
-/// command back to sync, which puts the transaction on the main thread —
-/// drops that file's marker and fails the pin. Comment lines are stripped
-/// so prose cannot satisfy it.
+/// Round-54 audit A5 wiring pin (round-1 review m5: per-command labels and
+/// ordering, not file-level markers — the file-granular form was
+/// satisfiable by unrelated joins, e.g. interaction.rs's spawn_blocking
+/// check passed on the pre-existing set_super_permission join while
+/// accept_plan's was unwrapped, and a NEW bare command in a pinned file
+/// stayed green): the settings transaction holds the cross-process
+/// settings.json.lock across keychain I/O (a CLI `models` command parked
+/// at a keychain prompt can hold it for minutes), so these command bodies
+/// must reach it only through a blocking-worker join. Comment lines are
+/// stripped so prose cannot satisfy it.
 #[test]
 fn settings_transaction_commands_join_off_the_runtime() {
     fn code(source: &str) -> String {
@@ -3280,29 +3282,49 @@ fn settings_transaction_commands_join_off_the_runtime() {
             .collect::<Vec<_>>()
             .join("\n")
     }
-    // interaction.rs: confirm_code_yolo + set_mode_default join through the
-    // shared helper; accept_plan's commit pair joins through spawn_blocking.
+    // Per-command needles: each settings-transaction command names itself
+    // in its join label (the settings family's convention), and
+    // accept_plan's commit joins through spawn_blocking with the claim
+    // moved into the closure.
     let interaction = code(include_str!("interaction.rs"));
-    assert!(
-        interaction.contains("join_blocking("),
-        "interaction.rs must join confirm_code_yolo/set_mode_default onto a blocking worker"
-    );
-    assert!(
-        interaction.contains("spawn_blocking"),
-        "accept_plan's commit must run on a blocking worker"
-    );
-    for (source, name) in [
-        (include_str!("voice.rs"), "voice.rs"),
-        (include_str!("computer_use.rs"), "computer_use.rs"),
+    for needle in [
+        "join_blocking(\"confirm_code_yolo\"",
+        "join_blocking(\"set_mode_default\"",
     ] {
         assert!(
-            code(source).contains("join_blocking("),
-            "{name} must join the settings transaction onto a blocking worker"
+            interaction.contains(needle),
+            "interaction.rs lost its per-command join: {needle}"
         );
     }
-    let pet_window = code(include_str!("../../features/pet/pet_window.rs"));
     assert!(
-        pet_window.contains("spawn_blocking"),
-        "set_pet_enabled must run the settings transaction on a blocking worker"
+        interaction.contains("spawn_blocking(move || plan_claim.commit())"),
+        "accept_plan's commit must run on a blocking worker"
+    );
+    for (source, label, name) in [
+        (
+            include_str!("voice.rs"),
+            "join_blocking(\"set_voice_shortcut_enabled\"",
+            "voice.rs",
+        ),
+        (
+            include_str!("computer_use.rs"),
+            "join_blocking(\"computer_use_set_enabled\"",
+            "computer_use.rs",
+        ),
+    ] {
+        assert!(
+            code(source).contains(label),
+            "{name} lost its per-command join: {label}"
+        );
+    }
+    // pet_window: the transaction must sit INSIDE the blocking closure —
+    // ordering, not mere presence (a bare spawn_blocking elsewhere in the
+    // file must not satisfy the pin).
+    let pet_window = code(include_str!("../../features/pet/pet_window.rs"));
+    let spawn_at = pet_window.find("spawn_blocking");
+    let txn_at = pet_window.find("update_transaction");
+    assert!(
+        matches!((spawn_at, txn_at), (Some(spawn), Some(txn)) if spawn < txn),
+        "set_pet_enabled must run the settings transaction inside its blocking worker"
     );
 }
