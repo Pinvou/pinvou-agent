@@ -126,7 +126,7 @@ function hasStoredCredential(record) {
             key={o.key}
             onClick={() => onChange(o.key)}
             className={`min-w-[72px] px-4 py-2 rounded-full text-[14px] font-medium transition-colors max-sm:min-w-0 max-sm:flex-1 max-sm:px-2 ${
-              value === o.key ? ('bg-white text-[#0B57D0] shadow-xs dark:bg-[#A8C7FA] dark:text-[#041E49]') : ''
+              value === o.key ? ('bg-white text-[#0B57D0] shadow-sm dark:bg-[#A8C7FA] dark:text-[#041E49]') : ''
             }`}
           >{o.label}</button>
         ))}
@@ -138,7 +138,7 @@ function hasStoredCredential(record) {
       const modelId = String(model || '').toLowerCase();
       if (preset === 'local_vllm' && modelId.includes('qwen')) {
         return (
-          <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden bg-white border border-black/8 dark:border-transparent`}>
+          <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden bg-white border border-black/[0.08] dark:border-transparent`}>
             <img src={qwenIcon} alt="" className={`${compact ? 'h-6 w-6' : 'h-7 w-7'} object-contain`} />
           </span>
         );
@@ -148,7 +148,7 @@ function hasStoredCredential(record) {
         if (src) {
           const darkBacked = vendor === 'kimi';
           return (
-            <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden ${darkBacked ? 'bg-[#111827]' : ('bg-white border border-black/8 dark:border-transparent')}`}>
+            <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden ${darkBacked ? 'bg-[#111827]' : ('bg-white border border-black/[0.08] dark:border-transparent')}`}>
               <img src={src} alt="" className={`${compact ? 'h-6 w-6' : 'h-7 w-7'} object-contain`} />
             </span>
           );
@@ -170,7 +170,7 @@ function hasStoredCredential(record) {
       if (!src) return null;
       const darkBacked = preset === 'kimi';
       return (
-        <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden ${darkBacked ? 'bg-[#111827]' : ('bg-white border border-black/8 dark:border-transparent')}`}>
+        <span className={`${compact ? 'h-8 w-8 rounded-[9px]' : 'h-9 w-9 rounded-[10px]'} shrink-0 flex items-center justify-center overflow-hidden ${darkBacked ? 'bg-[#111827]' : ('bg-white border border-black/[0.08] dark:border-transparent')}`}>
           <img src={src} alt="" className={`${compact ? 'h-6 w-6' : 'h-7 w-7'} object-contain`} />
         </span>
       );
@@ -227,7 +227,7 @@ function hasStoredCredential(record) {
       return (
         // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the modal close button
         // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
-        <div className="fixed inset-0 z-90 flex items-center justify-center p-4 bg-black/45" onClick={onClose}>
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4 bg-black/45" onClick={onClose}>
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
           {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
           <div onClick={e => e.stopPropagation()} className={`relative w-full max-w-[420px] rounded-[22px] shadow-2xl p-5 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E3E3E3]`}>
@@ -260,7 +260,7 @@ function hasStoredCredential(record) {
               <div className={`w-full rounded-[14px] border px-4 py-4 border-black/10 bg-[#F8F9FA] dark:border-white/10 dark:bg-white/5`}>
                 {webAccess.qr_data_url && (
                   <div className="flex flex-col items-center mb-4">
-                    <div className="p-3 rounded-[16px] bg-white shadow-xs">
+                    <div className="p-3 rounded-[16px] bg-white shadow-sm">
                       <img src={webAccess.qr_data_url} alt={remoteCopy.qrAlt} className="block w-[220px] h-[220px]" />
                     </div>
                     <div className={`mt-2 text-[12px] text-[#5F6368] dark:text-[#AEB4BC]`}>{remoteCopy.qrHint}</div>
@@ -748,7 +748,7 @@ function hasStoredCredential(record) {
       const catalogSectionTitleClass = `px-1 mb-2 text-[12px] leading-4 font-semibold text-[#8A8A8E] dark:text-[#8E8E93]`;
       const catalogGroupClass = `overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`;
       const formGroup = `overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`;
-      const formDivider = 'border-black/10 dark:border-white/10';
+      const formDivider = 'border-black/[0.10] dark:border-white/[0.10]';
       // Custom-entry description for the provider model picker and the catalog
       // picker: both key off the same group fields (key/providerKind/preset).
       const customModelDescFor = (group, copy) => (group && group.key === 'tencent_token_plan'
@@ -806,7 +806,7 @@ function hasStoredCredential(record) {
                       type="button"
                       key={item.custom ? '__custom__' : item.model}
                       onClick={() => chooseModel(item)}
-                      className={`w-full min-h-[50px] flex items-center gap-3 pl-7 pr-4 py-2.5 text-left border-b last:border-b-0 border-black/8 hover:bg-black/[0.035] dark:border-white/8 dark:hover:bg-white/6`}
+                      className={`w-full min-h-[50px] flex items-center gap-3 pl-7 pr-4 py-2.5 text-left border-b last:border-b-0 border-black/[0.08] hover:bg-black/[0.035] dark:border-white/[0.08] dark:hover:bg-white/[0.06]`}
                     >
                       <span className="min-w-0 flex-1">
                         <span className={`block text-[14px] leading-5 truncate ${active ? ('text-[#007AFF] dark:text-[#64B5F6]') : ('text-[#1C1C1E] dark:text-[#F2F2F7]')}`}>{item.custom ? ((activeProvider && settingsCopy.customModelTitles[activeProvider.key]) || settingsCopy.customModelTitle(selectedProvider)) : (item.title || item.model || `${settingsCopy.customModel} ID`)}</span>
@@ -842,7 +842,7 @@ function hasStoredCredential(record) {
             data-testid={testId}
             inputMode={inputMode}
             spellCheck={spellCheck}
-            className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-hidden text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366] ${readOnly ? 'cursor-default' : ''}`}
+            className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366] ${readOnly ? 'cursor-default' : ''}`}
           />
           {trailing}
         </div>
@@ -862,7 +862,7 @@ function hasStoredCredential(record) {
             value={apiKey} onChange={e => { setApiKey(e.target.value); if (e.target.value.trim()) setKeyAction('replace'); }}
             style={showKey ? undefined : { WebkitTextSecurity: 'disc' }}
             placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
-            className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-hidden text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366]`} />
+            className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366]`} />
           <button type="button" onClick={toggleApiKeyVisibility} className="shrink-0 text-[14px] text-[#007AFF]">{showKey ? settingsCopy.hide : settingsCopy.show}</button>
         </div>
       );
@@ -885,7 +885,7 @@ function hasStoredCredential(record) {
                         type="button"
                         key={group.key}
                         onClick={() => applyCatalogItem(group, first)}
-                        className={`w-full min-h-[58px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 border-black/10 hover:bg-black/[0.035] dark:border-white/10 dark:hover:bg-white/6`}
+                        className={`w-full min-h-[58px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 border-black/[0.10] hover:bg-black/[0.035] dark:border-white/[0.10] dark:hover:bg-white/[0.06]`}
                       >
                         <ProviderIcon preset={group.preset} vendor={group.vendor} providerKind={group.providerKind} compact />
                         <span className="min-w-0 flex-1">
@@ -919,7 +919,7 @@ function hasStoredCredential(record) {
                       type="button"
                       key={`${group.key}-${itemTitle}`}
                       onClick={() => applyCatalogItem(group, item)}
-                      className={`w-full min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 ${active ? 'bg-[#007AFF]/10' : ''} border-black/10 hover:bg-black/[0.035] dark:border-white/10 dark:hover:bg-white/6`}
+                      className={`w-full min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 ${active ? 'bg-[#007AFF]/10' : ''} border-black/[0.10] hover:bg-black/[0.035] dark:border-white/[0.10] dark:hover:bg-white/[0.06]`}
                     >
                       <ProviderIcon preset={group.preset} vendor={group.vendor} providerKind={group.providerKind} compact />
                       <span className="min-w-0 flex-1">
@@ -943,7 +943,7 @@ function hasStoredCredential(record) {
           <div className="space-y-4">
             <section>
               <div className={catalogGroupClass}>
-                <div className={`min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 border-black/10 dark:border-white/10`}>
+                <div className={`min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 border-black/[0.10] dark:border-white/[0.10]`}>
                   <ProviderIcon preset="local_vllm" compact />
                   <span className="min-w-0 flex-1">
                     <span className={`block text-[15px] leading-5 font-normal truncate text-[#1C1C1E] dark:text-[#F2F2F7]`}>{settingsCopy.autoDetectLocalModel}</span>
@@ -961,28 +961,28 @@ function hasStoredCredential(record) {
                     disabled={localDetecting}
                     inputMode="numeric"
                     spellCheck={false}
-                    className={`shrink-0 w-[72px] min-h-8 px-2.5 rounded-lg text-right text-[13px] leading-[32px] outline-hidden bg-black/4 text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:bg-white/8 dark:text-[#F2F2F7] dark:placeholder:text-[#636366] disabled:opacity-45`}
+                    className={`shrink-0 w-[72px] min-h-8 px-2.5 rounded-lg text-right text-[13px] leading-[32px] outline-none bg-black/[0.04] text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:bg-white/[0.08] dark:text-[#F2F2F7] dark:placeholder:text-[#636366] disabled:opacity-45`}
                   />
                   <button type="button" disabled={localDetecting} onClick={handleLocalDetect}
                     className={`${actionClass} disabled:opacity-45`}>{localDetecting ? t.detectingLocalVllm : (localDetectResult ? settingsCopy.redetect : settingsCopy.detect)}</button>
                 </div>
                 {localPortError && (
-                  <div className={`px-3.5 py-3 text-[12px] leading-5 border-b last:border-b-0 border-black/10 text-[#C5221F] dark:border-white/10 dark:text-[#F28B82]`}>{localPortError}</div>
+                  <div className={`px-3.5 py-3 text-[12px] leading-5 border-b last:border-b-0 border-black/[0.10] text-[#C5221F] dark:border-white/[0.10] dark:text-[#F28B82]`}>{localPortError}</div>
                 )}
                 {localDetectResult && localDetectResult.error && (
-                  <div className={`px-3.5 py-3 text-[12px] leading-5 border-b last:border-b-0 border-black/10 text-[#C5221F] dark:border-white/10 dark:text-[#F28B82]`}>{localDetectResult.error}</div>
+                  <div className={`px-3.5 py-3 text-[12px] leading-5 border-b last:border-b-0 border-black/[0.10] text-[#C5221F] dark:border-white/[0.10] dark:text-[#F28B82]`}>{localDetectResult.error}</div>
                 )}
                 {localDetectResult && !localDetectResult.error && rows.length === 0 && (
-                  <div className={`px-3.5 py-3 text-[13px] leading-5 border-b last:border-b-0 border-black/10 text-[#8A8A8E] dark:border-white/10 dark:text-[#98989D]`}>{settingsCopy.noRunningLocalModel}</div>
+                  <div className={`px-3.5 py-3 text-[13px] leading-5 border-b last:border-b-0 border-black/[0.10] text-[#8A8A8E] dark:border-white/[0.10] dark:text-[#98989D]`}>{settingsCopy.noRunningLocalModel}</div>
                 )}
                 {rows.map(row => (
-                  <div key={row.key} className={`min-h-[58px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 border-black/10 dark:border-white/10`}>
+                  <div key={row.key} className={`min-h-[58px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 border-black/[0.10] dark:border-white/[0.10]`}>
                     <ProviderIcon preset="local_vllm" compact />
                     <span className="min-w-0 flex-1">
                       <span className={`flex items-center gap-1.5 text-[15px] leading-5 font-normal text-[#1C1C1E] dark:text-[#F2F2F7]`}>
                         <span className="truncate">{row.model}</span>
                         {row.loaded === false && (
-                          <span className={`shrink-0 text-[12px] px-2 py-0.5 rounded-md bg-[#E5E5EA] text-[#636366] dark:bg-white/8 dark:text-[#C7C7CC]`}>{settingsCopy.modelNotLoadedTag}</span>
+                          <span className={`shrink-0 text-[12px] px-2 py-0.5 rounded-md bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]`}>{settingsCopy.modelNotLoadedTag}</span>
                         )}
                       </span>
                       <span className={`block mt-0.5 text-[12px] leading-[17px] truncate ${mutedText}`}>
@@ -998,7 +998,7 @@ function hasStoredCredential(record) {
             <section>
               <div className={catalogGroupClass}>
                 <button type="button" onClick={startManualLocalModel}
-                  className={`w-full min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.035] dark:hover:bg-white/6`}>
+                  className={`w-full min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.035] dark:hover:bg-white/[0.06]`}>
                   <ProviderIcon preset="local_vllm" compact />
                   <span className="min-w-0 flex-1">
                     <span className={`block text-[15px] leading-5 font-normal truncate text-[#1C1C1E] dark:text-[#F2F2F7]`}>{settingsCopy.manualLocalModel}</span>
@@ -1054,7 +1054,7 @@ function hasStoredCredential(record) {
                     key={option.key || '__none__'}
                     onClick={() => onChoose(option.key)}
                     disabled={probingKey ? !probing : false}
-                    className={`w-full min-h-[50px] flex items-center gap-3 pl-7 pr-4 py-2.5 text-left border-b last:border-b-0 ${isDark ? 'border-white/8 hover:bg-white/6' : 'border-black/8 hover:bg-black/[0.035]'} ${probing ? 'opacity-70' : ''}`}
+                    className={`w-full min-h-[50px] flex items-center gap-3 pl-7 pr-4 py-2.5 text-left border-b last:border-b-0 ${isDark ? 'border-white/[0.08] hover:bg-white/[0.06]' : 'border-black/[0.08] hover:bg-black/[0.035]'} ${probing ? 'opacity-70' : ''}`}
                   >
                     <span className={`min-w-0 flex-1 text-[14px] leading-5 truncate ${active ? (isDark ? 'text-[#64B5F6]' : 'text-[#007AFF]') : (isDark ? 'text-[#F2F2F7]' : 'text-[#1C1C1E]')}`}>{option.label}</span>
                     {probing ? (
@@ -1067,7 +1067,7 @@ function hasStoredCredential(record) {
                 );
               })}
               {probeError && (
-                <div data-testid={`${testId}-probe-error`} className={`px-7 py-2.5 text-[12px] leading-4 border-b last:border-b-0 ${isDark ? 'text-[#FFD60A] border-white/8' : 'text-[#B25E00] border-black/8'}`}>{probeError}</div>
+                <div data-testid={`${testId}-probe-error`} className={`px-7 py-2.5 text-[12px] leading-4 border-b last:border-b-0 ${isDark ? 'text-[#FFD60A] border-white/[0.08]' : 'text-[#B25E00] border-black/[0.08]'}`}>{probeError}</div>
               )}
             </div>
           )}
@@ -1153,7 +1153,7 @@ function hasStoredCredential(record) {
       };
       if (initial.__new && pickerOpen) {
         return (
-          <div data-testid="model-form-backdrop" className="fixed inset-0 z-100 flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150">
+          <div data-testid="model-form-backdrop" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150">
             {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling; cancel button in the modal header */}
             <div data-testid="model-form-dialog" role="dialog" aria-modal="true"
               onClick={e => e.stopPropagation()}
@@ -1164,12 +1164,12 @@ function hasStoredCredential(record) {
                   overflow-y-auto 同元素」的组合建立滚动区，模型列表下半部分
                   无法滚动选择。内层 flex 滚动区在所有内核行为一致。 */}
               <div data-testid="model-form-scroll" className="min-h-0 flex-1 overflow-y-auto overscroll-contain custom-scrollbar">
-              <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b border-black/10 dark:border-white/10`}>
+              <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b border-black/[0.10] dark:border-white/[0.10]`}>
                 <div>
                   <h2 className="text-[20px] leading-6 font-semibold">{t.modelFormAddTitle}</h2>
                   <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{settingsCopy.chooseModelDesc}</p>
                 </div>
-                <button type="button" data-testid="model-form-cancel" onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center bg-[#E5E5EA] text-[#636366] dark:bg-white/8 dark:text-[#C7C7CC]`}><X size={18} /></button>
+                <button type="button" data-testid="model-form-cancel" onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]`}><X size={18} /></button>
               </div>
               <div className="px-5 pt-4">
                 <div className={`p-1 rounded-full grid grid-cols-2 gap-1 bg-[#F2F2F7] dark:bg-[#2C2C2E]`}>
@@ -1178,7 +1178,7 @@ function hasStoredCredential(record) {
                     { key: 'local', label: settingsCopy.localModels },
                   ].map(tab => (
                     <button key={tab.key} type="button" onClick={() => setPickerTab(tab.key)}
-                      className={`h-9 rounded-full text-[14px] font-medium transition-colors ${pickerTab === tab.key ? ('bg-white text-[#007AFF] shadow-xs dark:bg-[#3A3A3C] dark:text-[#F2F2F7]') : ('text-[#636366] dark:text-[#C7C7CC]')}`}>
+                      className={`h-9 rounded-full text-[14px] font-medium transition-colors ${pickerTab === tab.key ? ('bg-white text-[#007AFF] shadow-sm dark:bg-[#3A3A3C] dark:text-[#F2F2F7]') : ('text-[#636366] dark:text-[#C7C7CC]')}`}>
                       {tab.label}
                     </button>
                   ))}
@@ -1191,7 +1191,7 @@ function hasStoredCredential(record) {
         );
       }
       return (
-        <div data-testid="model-form-backdrop" className="fixed inset-0 z-100 flex items-center justify-center bg-black/50 animate-in fade-in duration-150">
+        <div data-testid="model-form-backdrop" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150">
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling; cancel button in the modal header */}
           <div data-testid="model-form-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()}
             className={`w-[430px] max-w-[90vw] max-h-[76vh] flex flex-col overflow-hidden rounded-[22px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}>
@@ -1203,10 +1203,10 @@ function hasStoredCredential(record) {
       {/* eslint-disable-next-line sonarjs/no-nested-template-literals -- nested templates map 1:1 to the i18n copy structure; flattening hurts readability */}
                 <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{isLocalPreset ? selectedModelLabel : `${isCodingPlan ? `Coding Plan · ${settingsCopy.toolCalling}` : selectedProvider + ' · ' + selectedModelLabel}`}</p>
               </div>
-              <button type="button" data-testid="model-form-cancel" onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center bg-[#E5E5EA] text-[#636366] dark:bg-white/8 dark:text-[#C7C7CC]`}><X size={18} /></button>
+              <button type="button" data-testid="model-form-cancel" onClick={onCancel} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]`}><X size={18} /></button>
             </div>
             <div className="space-y-4 px-5 py-4">
-              <div className={`overflow-hidden rounded-[18px] border border-black/8 bg-white dark:border-white/10 dark:bg-[#2C2C2E]`}>
+              <div className={`overflow-hidden rounded-[18px] border border-black/[0.08] bg-white dark:border-white/[0.10] dark:bg-[#2C2C2E]`}>
                 {isLocalPreset ? (
                   <div className="w-full min-h-[62px] px-4 py-3 flex items-center gap-3 text-left">
                     <ProviderIcon preset={preset} vendor={vendor} providerKind={providerKind} compact />
@@ -1219,7 +1219,7 @@ function hasStoredCredential(record) {
                   <button
                     type="button"
                     onClick={() => setPickerOpen(v => !v)}
-                    className={`w-full min-h-[62px] px-4 py-3 flex items-center gap-3 text-left hover:bg-black/[0.035] dark:hover:bg-white/5`}
+                    className={`w-full min-h-[62px] px-4 py-3 flex items-center gap-3 text-left hover:bg-black/[0.035] dark:hover:bg-white/[0.05]`}
                   >
                     <ProviderIcon preset={preset} vendor={vendor} providerKind={providerKind} compact />
                     <span className="min-w-0 flex-1">
@@ -1230,7 +1230,7 @@ function hasStoredCredential(record) {
                   </button>
                 )}
                 {pickerOpen && !isLocalPreset && (
-                  <div className={`border-t px-4 py-4 border-black/12 dark:border-white/10`}>
+                  <div className={`border-t px-4 py-4 border-black/[0.12] dark:border-white/[0.10]`}>
                     {renderCatalogPicker()}
                   </div>
                 )}
@@ -1292,7 +1292,7 @@ function hasStoredCredential(record) {
                         <button type="button" onClick={() => setLocalKeyEnabled(v => !v)}
                           className={`ml-auto h-8 min-w-[52px] rounded-full px-1 flex items-center transition-colors ${localKeyEnabled ? 'bg-[#007AFF]' : ('bg-[#D1D1D6] dark:bg-[#3A3A3C]')}`}
                           aria-pressed={localKeyEnabled}>
-                          <span className={`block h-6 w-6 rounded-full bg-white shadow-xs transition-transform ${localKeyEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                          <span className={`block h-6 w-6 rounded-full bg-white shadow-sm transition-transform ${localKeyEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
                         </button>
                       </div>
                     )}
@@ -1347,7 +1347,7 @@ function hasStoredCredential(record) {
               </div>
             )}
             <div className={`flex justify-end gap-2 px-5 py-4 border-t ${formDivider}`}>
-              <button type="button" data-testid="model-form-cancel" onClick={onCancel} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors text-[#007AFF] hover:bg-black/4 dark:text-[#0A84FF] dark:hover:bg-white/6`}>{t.cpCancel}</button>
+              <button type="button" data-testid="model-form-cancel" onClick={onCancel} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors text-[#007AFF] hover:bg-black/[0.04] dark:text-[#0A84FF] dark:hover:bg-white/[0.06]`}>{t.cpCancel}</button>
               <button type="button" data-testid="model-form-save" onClick={() => doSave()} disabled={!canSave || savingModel}
                 className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold transition-colors disabled:opacity-35">
                 {savingModel ? settingsCopy.saving : t.modelSaveBtn}
@@ -1378,8 +1378,8 @@ function hasStoredCredential(record) {
         type={onClick ? 'button' : undefined}
         onClick={onClick}
         className={`w-full min-h-[58px] flex flex-wrap items-center gap-3 px-4 py-2.5 text-left border-b last:border-b-0 max-sm:flex-col max-sm:items-stretch ${
-          'border-black/12 text-[#1C1C1E] dark:border-white/10 dark:text-[#F2F2F7]'
-        } ${onClick ? ('hover:bg-black/[0.035] dark:hover:bg-white/5') : ''}`}
+          'border-black/[0.12] text-[#1C1C1E] dark:border-white/[0.10] dark:text-[#F2F2F7]'
+        } ${onClick ? ('hover:bg-black/[0.035] dark:hover:bg-white/[0.05]') : ''}`}
       >
         <div className="flex-1 min-w-[120px] max-sm:min-w-0">
           <div className={`text-[15px] leading-5 font-normal whitespace-nowrap ${danger ? 'text-[#FF3B30]' : ''}`}>{label}</div>
@@ -1401,17 +1401,17 @@ function hasStoredCredential(record) {
         className={`w-full h-10 px-3 rounded-[14px] flex items-center gap-2.5 text-[14px] transition-colors max-sm:w-auto max-sm:shrink-0 ${
           active
             ? ('bg-[#D8EAFE] text-[#007AFF] dark:bg-[#173A5E] dark:text-[#64B5F6]')
-            : ('text-[#1C1C1E] hover:bg-black/4 dark:text-[#F2F2F7] dark:hover:bg-white/6')
+            : ('text-[#1C1C1E] hover:bg-black/[0.04] dark:text-[#F2F2F7] dark:hover:bg-white/[0.06]')
         }`}
       >
-        <span className={`w-7 h-7 rounded-[9px] flex items-center justify-center ${active ? 'bg-[#007AFF]/10' : ('bg-black/5 dark:bg-white/8')}`}>{icon}</span>
+        <span className={`w-7 h-7 rounded-[9px] flex items-center justify-center ${active ? 'bg-[#007AFF]/10' : ('bg-black/[0.05] dark:bg-white/[0.08]')}`}>{icon}</span>
         <span className="font-semibold truncate">{label}</span>
         {dot && <span className="ml-auto w-2.5 h-2.5 rounded-full bg-[#FF3B30]" />}
       </button>
     );
     /** @param {{ children: import('react').ReactNode }} props - Grouped rows. */
     const Group = ({ children }) => (
-      <div className={`overflow-hidden rounded-[18px] border bg-white border-black/3 dark:bg-[#2C2C2E] dark:border-white/4`}>{children}</div>
+      <div className={`overflow-hidden rounded-[18px] border bg-white border-black/[0.03] dark:bg-[#2C2C2E] dark:border-white/[0.04]`}>{children}</div>
     );
     /** @param {{ children: import('react').ReactNode }} props - Small section heading. */
     const SectionTitle = ({ children }) => (
@@ -1448,17 +1448,17 @@ function hasStoredCredential(record) {
       return (
         // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the close button at the modal top-right
         // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
-        <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/50 animate-in fade-in duration-150" onClick={onClose}>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150" onClick={onClose}>
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
           {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
           <div onClick={e => e.stopPropagation()}
             className={`w-[430px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}>
-            <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b border-black/10 dark:border-white/10`}>
+            <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b border-black/[0.10] dark:border-white/[0.10]`}>
               <div>
                 <h2 className="text-[20px] leading-6 font-semibold">{settingsCopy.editSearch}</h2>
                 <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{option ? option.label : provider}</p>
               </div>
-              <button type="button" onClick={onClose} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center bg-[#E5E5EA] text-[#636366] dark:bg-white/8 dark:text-[#C7C7CC]`}><X size={18} /></button>
+              <button type="button" onClick={onClose} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]`}><X size={18} /></button>
             </div>
             <div className="space-y-4 px-5 py-4">
               <section>
@@ -1472,14 +1472,14 @@ function hasStoredCredential(record) {
                     autoFocus
                     placeholder={hasSavedKey ? '••••••••' : settingsCopy.apiKeyPlaceholder}
                     style={showSearchKey ? undefined : { WebkitTextSecurity: 'disc' }}
-                    className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-hidden placeholder:text-[#8A8A8E] dark:placeholder:text-[#636366]`} />
+                    className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none placeholder:text-[#8A8A8E] dark:placeholder:text-[#636366]`} />
                   <button type="button" onClick={() => setShowSearchKey(v => !v)} className="shrink-0 text-[14px] text-[#007AFF]">{showSearchKey ? settingsCopy.hide : settingsCopy.show}</button>
                   </div>
                 </div>
               </section>
             </div>
-            <div className={`flex justify-end gap-2 px-5 py-4 border-t border-black/10 dark:border-white/10`}>
-              <button type="button" onClick={onClose} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors text-[#007AFF] hover:bg-black/4 dark:text-[#0A84FF] dark:hover:bg-white/6`}>{settingsCopy.cancel}</button>
+            <div className={`flex justify-end gap-2 px-5 py-4 border-t border-black/[0.10] dark:border-white/[0.10]`}>
+              <button type="button" onClick={onClose} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors text-[#007AFF] hover:bg-black/[0.04] dark:text-[#0A84FF] dark:hover:bg-white/[0.06]`}>{settingsCopy.cancel}</button>
               <button type="button" onClick={() => {
                 if (!canSaveSearch) return;
                 if (isNew) onAddSearchProvider && onAddSearchProvider(provider);
@@ -1494,20 +1494,20 @@ function hasStoredCredential(record) {
     };
     /** @param {{ type: string, settingsCopy: { restartSearchTitle: string, restartLanguageTitle: string, restartSearchDesc: string, restartLanguageDesc: string, later: string, restartNow: string }, onSaveSearchConfig?: () => unknown, onConfirmSearchConfig: () => unknown, setRestartDialog: (next: string | null) => void }} props - Restart prompt state and actions. */
     const RestartDialog = ({ type, settingsCopy, onSaveSearchConfig, onConfirmSearchConfig, setRestartDialog }) => (
-      <div className="fixed inset-0 z-110 flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
+      <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
         <div className={`w-[340px] overflow-hidden rounded-[18px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
           <div className="px-6 pt-6 pb-5 text-center">
             <h3 className="text-[18px] font-semibold">{type === 'search' ? settingsCopy.restartSearchTitle : settingsCopy.restartLanguageTitle}</h3>
             <p className={`mt-2 text-[14px] leading-5 text-[#8A8A8E] dark:text-[#98989D]`}>{type === 'search' ? settingsCopy.restartSearchDesc : settingsCopy.restartLanguageDesc}</p>
           </div>
-          <div className={`grid grid-cols-2 border-t border-black/12 dark:border-white/12`}>
+          <div className={`grid grid-cols-2 border-t border-black/[0.12] dark:border-white/[0.12]`}>
             <button type="button" onClick={async () => {
               if (type === 'search' && onSaveSearchConfig) {
                 const saved = await onSaveSearchConfig();
                 if (saved === false) return;
               }
               setRestartDialog(null);
-            }} className={`h-12 text-[17px] font-semibold border-r border-black/12 text-[#007AFF] dark:border-white/12 dark:text-[#0A84FF]`}>{settingsCopy.later}</button>
+            }} className={`h-12 text-[17px] font-semibold border-r border-black/[0.12] text-[#007AFF] dark:border-white/[0.12] dark:text-[#0A84FF]`}>{settingsCopy.later}</button>
             <button type="button" onClick={() => { setRestartDialog(null); type === 'search' ? onConfirmSearchConfig() : (bridge.available && bridge.updater.restartApp?.()); }} className="h-12 text-[17px] font-semibold text-[#007AFF]">{settingsCopy.restartNow}</button>
           </div>
         </div>
@@ -1517,14 +1517,14 @@ function hasStoredCredential(record) {
     // Four isomorphic sites: model delete / search source delete / memory delete / feedback close; RestartDialog (two-column grid, wider) is not one of them.
     // Optional testid/confirmTestId mount the test pins the memory-delete and feedback-close dialogs need; desc is omitted where the dialog carries no description row.
     const SheetConfirmDialog = ({ title, desc, confirmLabel, cancelLabel, onConfirm, onCancel, testid, confirmTestId }) => (
-      <div data-testid={testid} className="fixed inset-0 z-110 flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
+      <div data-testid={testid} className="fixed inset-0 z-[110] flex items-center justify-center bg-black/35 backdrop-blur-md px-4">
         <div className={`w-[270px] overflow-hidden rounded-[14px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7]`}>
           <div className="px-5 pt-5 pb-4 text-center">
             <h3 className="text-[17px] leading-6 font-semibold">{title}</h3>
             {desc && <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{desc}</p>}
           </div>
-          <div className={`border-t border-black/12 dark:border-white/12`}>
-            <button type="button" data-testid={confirmTestId} onClick={onConfirm} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/12 dark:border-white/12`}>{confirmLabel}</button>
+          <div className={`border-t border-black/[0.12] dark:border-white/[0.12]`}>
+            <button type="button" data-testid={confirmTestId} onClick={onConfirm} className={`w-full h-12 text-[17px] font-semibold text-[#FF3B30] border-b border-black/[0.12] dark:border-white/[0.12]`}>{confirmLabel}</button>
             <button type="button" onClick={onCancel} className="w-full h-12 text-[17px] font-semibold text-[#007AFF]">{cancelLabel}</button>
           </div>
         </div>
@@ -2367,7 +2367,7 @@ function hasStoredCredential(record) {
         const alias = m.preset === 'local_vllm' ? '' : String(m.alias || '').trim();
         const title = alias || m.model || m.name;
         return (
-          <div key={m.id} className={`min-h-[60px] grid grid-cols-[24px_32px_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 border-b last:border-b-0 border-black/12 dark:border-white/10`}>
+          <div key={m.id} className={`min-h-[60px] grid grid-cols-[24px_32px_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 border-b last:border-b-0 border-black/[0.12] dark:border-white/[0.10]`}>
             <button type="button" onClick={() => !isActive && onSetActiveModel(m.id)} className="shrink-0" title={t.setActiveModel}>
               <RadioDot active={isActive} />
             </button>
@@ -2405,7 +2405,7 @@ function hasStoredCredential(record) {
               title={t.uiSettings.voiceShortcutHelp}
               onClick={handleVoiceShortcutInfoOpen}
               className={`inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full text-[12px] font-semibold leading-none transition-colors ${
-                'bg-[#E5E5EA] text-[#6E6E73] hover:bg-[#D1D1D6] active:bg-[#C7C7CC] dark:bg-white/10 dark:text-[#C7C7CC] dark:hover:bg-white/16 dark:active:bg-white/20'
+                'bg-[#E5E5EA] text-[#6E6E73] hover:bg-[#D1D1D6] active:bg-[#C7C7CC] dark:bg-white/[0.10] dark:text-[#C7C7CC] dark:hover:bg-white/[0.16] dark:active:bg-white/[0.20]'
               }`}
             >
               ?
@@ -2486,7 +2486,7 @@ function hasStoredCredential(record) {
             <div className={`px-3 mb-2 text-[12px] font-semibold text-[#8A8A8E] dark:text-[#8E8E93]`}>{t.uiSettings.desktopAssistant}</div>
             <div className={`overflow-hidden rounded-[18px] bg-white dark:bg-[#2C2C2E]`}>
               <div className={`w-full min-h-[58px] flex flex-wrap items-center gap-3 px-4 py-2.5 text-left border-b ${
-                'border-black/12 text-[#1C1C1E] dark:border-white/10 dark:text-[#F2F2F7]'
+                'border-black/[0.12] text-[#1C1C1E] dark:border-white/[0.10] dark:text-[#F2F2F7]'
               } ${petEnabled ? '' : 'last:border-b-0'}`}>
                 <div className="flex-1 min-w-[120px]">
                   <div className="text-[15px] leading-5 font-normal whitespace-nowrap">{t.uiSettings.pet}</div>
@@ -2495,7 +2495,7 @@ function hasStoredCredential(record) {
                 <IOSSwitch checked={petEnabled} onChange={onPetEnabledChange} />
               </div>
               {petEnabled && (
-                <div className={`px-4 pb-4 border-t border-black/12 dark:border-white/10`}>
+                <div className={`px-4 pb-4 border-t border-black/[0.12] dark:border-white/[0.10]`}>
                   <PetSettingsSection
                     enabled={petEnabled}
                     selectedPetId={selectedPetId}
@@ -2515,13 +2515,13 @@ function hasStoredCredential(record) {
           {acpProvidersTabVisible && (
             // 左上角小胶囊切换：模型 / ACP 管理（替代原列表上方「模型」小字标题；
             // 原侧栏「Provider 管理」分节并入为子页）
-            <div data-testid="settings-model-tabs" className="mb-3 inline-flex items-center gap-0.5 p-0.5 rounded-full bg-black/5 dark:bg-white/[0.07]">
+            <div data-testid="settings-model-tabs" className="mb-3 inline-flex items-center gap-0.5 p-0.5 rounded-full bg-black/[0.05] dark:bg-white/[0.07]">
               {[
                 { key: 'models', label: t.uiSettings.model },
                 { key: 'acp', label: t.uiSettings.providers },
               ].map(tab => (
                 <button key={tab.key} type="button" data-testid={`settings-model-tab-${tab.key}`} onClick={() => setModelTab(tab.key)}
-                  className={`h-7 px-3 rounded-full text-[12px] font-semibold transition-colors ${modelTab === tab.key ? ('bg-white text-[#007AFF] shadow-xs dark:bg-[#3A3A3C] dark:text-[#F2F2F7]') : ('text-[#8A8A8E] hover:text-[#636366] dark:text-[#8E8E93] dark:hover:text-[#C7C7CC]')}`}>
+                  className={`h-7 px-3 rounded-full text-[12px] font-semibold transition-colors ${modelTab === tab.key ? ('bg-white text-[#007AFF] shadow-sm dark:bg-[#3A3A3C] dark:text-[#F2F2F7]') : ('text-[#8A8A8E] hover:text-[#636366] dark:text-[#8E8E93] dark:hover:text-[#C7C7CC]')}`}>
                   {tab.label}
                 </button>
               ))}
@@ -2548,7 +2548,7 @@ function hasStoredCredential(record) {
                     )}
                     {custom.length > 0 && (
                       <>
-                        <div className={`px-4 pt-2 pb-1 text-[12px] font-semibold text-[#8A8A8E] dark:text-[#8E8E93]${preset.length > 0 ? ' border-t border-black/12 dark:border-white/10' : ''}`}>{t.modelGroupCustom}</div>
+                        <div className={`px-4 pt-2 pb-1 text-[12px] font-semibold text-[#8A8A8E] dark:text-[#8E8E93]${preset.length > 0 ? ' border-t border-black/[0.12] dark:border-white/[0.10]' : ''}`}>{t.modelGroupCustom}</div>
                         {renderModelRows(custom, userModels.length)}
                       </>
                     )}
@@ -2556,7 +2556,7 @@ function hasStoredCredential(record) {
                 );
               })()}
               <button type="button" data-testid="settings-model-add" onClick={() => setEditingModel(newModelDraft('deepseek'))}
-                className={`w-full min-h-[52px] flex items-center justify-center gap-2 px-4 text-[16px] font-normal border-t border-black/12 text-[#007AFF] hover:bg-black/[0.035] dark:border-white/10 dark:text-[#0A84FF] dark:hover:bg-white/5`}>
+                className={`w-full min-h-[52px] flex items-center justify-center gap-2 px-4 text-[16px] font-normal border-t border-black/[0.12] text-[#007AFF] hover:bg-black/[0.035] dark:border-white/[0.10] dark:text-[#0A84FF] dark:hover:bg-white/[0.05]`}>
                 <Plus size={18} />
                 <span>{settingsCopy.addModel}</span>
               </button>
@@ -2574,7 +2574,7 @@ function hasStoredCredential(record) {
             <Group>
             {enabledSearchList.map(item => {
               return (
-                <div key={item.key} className={`min-h-[60px] grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-[14px] px-4 py-3 border-b last:border-b-0 border-black/12 dark:border-white/10`}>
+                <div key={item.key} className={`min-h-[60px] grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-[14px] px-4 py-3 border-b last:border-b-0 border-black/[0.12] dark:border-white/[0.10]`}>
                   <button type="button" onClick={() => { setSearchProvider(item.key); setRestartDialog('search'); }} className="shrink-0" title={settingsCopy.setDefault}>
                     <RadioDot active={searchProvider === item.key} />
                   </button>
@@ -2593,7 +2593,7 @@ function hasStoredCredential(record) {
               );
             })}
             <button type="button" onClick={() => setSearchPickerOpen(true)}
-              className={`w-full min-h-[52px] flex items-center justify-center gap-2 px-4 text-[16px] font-normal border-t border-black/12 text-[#007AFF] hover:bg-black/[0.035] dark:border-white/10 dark:text-[#0A84FF] dark:hover:bg-white/5`}>
+              className={`w-full min-h-[52px] flex items-center justify-center gap-2 px-4 text-[16px] font-normal border-t border-black/[0.12] text-[#007AFF] hover:bg-black/[0.035] dark:border-white/[0.10] dark:text-[#0A84FF] dark:hover:bg-white/[0.05]`}>
               <Plus size={18} />
               <span>{settingsCopy.addSearch}</span>
             </button>
@@ -2604,9 +2604,9 @@ function hasStoredCredential(record) {
       const renderMemoryList = (items, empty) => items.length ? items.map(item => {
         const text = item.text || item.content || settingsCopy.unnamedMemory;
         return (
-          <div key={`${item.kind}-${item.id}`} className={`min-h-[92px] flex items-start gap-4 px-4 py-3.5 border-b last:border-b-0 border-black/12 dark:border-white/10`}>
+          <div key={`${item.kind}-${item.id}`} className={`min-h-[92px] flex items-start gap-4 px-4 py-3.5 border-b last:border-b-0 border-black/[0.12] dark:border-white/[0.10]`}>
             <div className="min-w-0 flex-1">
-              <div className={`text-[15px] leading-6 whitespace-pre-wrap wrap-break-word line-clamp-3 text-[#1C1C1E] dark:text-[#F2F2F7]`}>{text}</div>
+              <div className={`text-[15px] leading-6 whitespace-pre-wrap break-words line-clamp-3 text-[#1C1C1E] dark:text-[#F2F2F7]`}>{text}</div>
             </div>
             <div className="shrink-0 mt-0.5 flex items-center gap-2">
               <button type="button" onClick={() => openMemoryItemViewer(item)} className={`text-[14px] px-3 py-1.5 rounded-full ${actionButton('blue')}`}>{settingsCopy.view}</button>
@@ -2717,7 +2717,7 @@ function hasStoredCredential(record) {
             </IOSRow>
             </IOSSection>
             {updateError && (
-              <div className="px-3 -mt-3 mb-4 text-[12px] leading-5 text-[#EA4335] wrap-break-word">{String(updateError)}</div>
+              <div className="px-3 -mt-3 mb-4 text-[12px] leading-5 text-[#EA4335] break-words">{String(updateError)}</div>
             )}
             <section className="mb-6">
               <div className={`px-3 mb-2 text-[12px] font-semibold text-[#8A8A8E] dark:text-[#8E8E93]`}>{t.uiSettings.releaseNotes}</div>
@@ -2763,7 +2763,7 @@ function hasStoredCredential(record) {
                   <button type="button"
                     onClick={() => bridge.available && bridge.dependencies.checkDependencies()}
                     disabled={!bridge.available || busy}
-                    className={`h-9 px-4 rounded-full text-[14px] font-semibold disabled:opacity-50 bg-[#E5E5EA] text-[#007AFF] dark:bg-white/8 dark:text-[#0A84FF]`}
+                    className={`h-9 px-4 rounded-full text-[14px] font-semibold disabled:opacity-50 bg-[#E5E5EA] text-[#007AFF] dark:bg-white/[0.08] dark:text-[#0A84FF]`}
                   >{checking ? t.depChecking : t.depRecheck}</button>
                 </IOSRow>
                 {missing.map(dep => (
@@ -2827,7 +2827,7 @@ function hasStoredCredential(record) {
         // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the close button inside the settings window
         // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
         <div
-          className="fixed inset-0 z-80 flex items-center justify-center px-3 py-3 sm:px-5 sm:py-5 bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
+          className="fixed inset-0 z-[80] flex items-center justify-center px-3 py-3 sm:px-5 sm:py-5 bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
           onClick={(event) => {
             if (event.target === event.currentTarget && onCloseSettings) {
               onCloseSettings();
@@ -2844,10 +2844,10 @@ function hasStoredCredential(record) {
           >
             {/* 窄屏:Tab 条与关闭键同排,X 在滚动区外侧,Tab 滚动不会穿到它底下;
                 桌面:包裹层 display:contents 不参与布局,维持左栏 + 悬浮 X 不变 */}
-            <div className={`sm:contents max-sm:flex max-sm:items-center max-sm:shrink-0 max-sm:border-b border-black/12 dark:border-white/12`}>
+            <div className={`sm:contents max-sm:flex max-sm:items-center max-sm:shrink-0 max-sm:border-b border-black/[0.12] dark:border-white/[0.12]`}>
             <aside
               data-testid="settings-nav"
-              className={`w-full sm:w-[clamp(150px,24vw,210px)] shrink-0 max-sm:flex-1 max-sm:min-w-0 overflow-x-auto sm:overflow-x-hidden sm:overflow-y-auto custom-scrollbar max-sm-hide-scrollbar sm:border-r px-3 sm:px-4 py-3 sm:py-7 max-sm:flex max-sm:items-center max-sm:gap-2 border-black/12 dark:border-white/12`}
+              className={`w-full sm:w-[clamp(150px,24vw,210px)] shrink-0 max-sm:flex-1 max-sm:min-w-0 overflow-x-auto sm:overflow-x-hidden sm:overflow-y-auto custom-scrollbar max-sm-hide-scrollbar sm:border-r px-3 sm:px-4 py-3 sm:py-7 max-sm:flex max-sm:items-center max-sm:gap-2 border-black/[0.12] dark:border-white/[0.12]`}
             >
               <div className={`mb-4 px-1 text-[12px] font-semibold max-sm:hidden text-[#8A8A8E] dark:text-[#8E8E93]`}>{t.uiSettings.common}</div>
               <div className="space-y-2 max-sm:flex max-sm:space-y-0 max-sm:gap-2">
@@ -2865,7 +2865,7 @@ function hasStoredCredential(record) {
               </div>
             </aside>
             {onCloseSettings && (
-              <button type="button" data-testid="settings-close" onClick={onCloseSettings} aria-label={settingsCopy.closeSettings} className={`sm:absolute sm:right-5 sm:top-5 z-20 h-9 w-9 shrink-0 max-sm:mr-3 rounded-full flex items-center justify-center bg-[#E5E5EA] text-[#636366] dark:bg-white/8 dark:text-[#C7C7CC]`}>
+              <button type="button" data-testid="settings-close" onClick={onCloseSettings} aria-label={settingsCopy.closeSettings} className={`sm:absolute sm:right-5 sm:top-5 z-20 h-9 w-9 shrink-0 max-sm:mr-3 rounded-full flex items-center justify-center bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]`}>
                 <X size={18} />
               </button>
             )}
@@ -2900,17 +2900,17 @@ function hasStoredCredential(record) {
           {searchPickerOpen && (
             // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the in-modal cancel button
             // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
-            <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150" onClick={() => setSearchPickerOpen(false)}>
+            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150" onClick={() => setSearchPickerOpen(false)}>
               {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
               {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
               <div onClick={e => e.stopPropagation()}
                 className={`w-[440px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}>
-                <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b border-black/10 dark:border-white/10`}>
+                <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b border-black/[0.10] dark:border-white/[0.10]`}>
                   <div>
                     <h2 className="text-[20px] leading-6 font-semibold">{settingsCopy.addSearch}</h2>
                     <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{settingsCopy.addSearchDesc}</p>
                   </div>
-                  <button type="button" onClick={() => setSearchPickerOpen(false)} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center bg-[#E5E5EA] text-[#636366] dark:bg-white/8 dark:text-[#C7C7CC]`}><X size={18} /></button>
+                  <button type="button" onClick={() => setSearchPickerOpen(false)} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]`}><X size={18} /></button>
                 </div>
                 <div className="px-5 py-4">
                   <div className={`overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`}>
@@ -2925,7 +2925,7 @@ function hasStoredCredential(record) {
                             setEditingSearch(item.key);
                           }
                         }}
-                        className={`w-full min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 border-black/10 hover:bg-black/[0.035] dark:border-white/10 dark:hover:bg-white/6`}>
+                        className={`w-full min-h-[56px] px-3.5 py-2.5 flex items-center gap-3 text-left border-b last:border-b-0 border-black/[0.10] hover:bg-black/[0.035] dark:border-white/[0.10] dark:hover:bg-white/[0.06]`}>
                         <span className="min-w-0 flex-1">
                           <span className={`block text-[15px] leading-5 font-normal truncate text-[#1C1C1E] dark:text-[#F2F2F7]`}>{item.label}</span>
                           <span className={`block mt-0.5 text-[12px] leading-[17px] truncate text-[#8A8A8E] dark:text-[#98989D]`}>{item.desc}</span>
@@ -2942,16 +2942,16 @@ function hasStoredCredential(record) {
           {memoryEditor && (
             // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the close button at the modal top-right
             // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
-            <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/45 px-4" onClick={() => { if (!memorySaving) setMemoryEditor(null); }}>
+            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4" onClick={() => { if (!memorySaving) setMemoryEditor(null); }}>
               {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
               {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
               <div onClick={e => e.stopPropagation()} className={`w-full max-w-[500px] rounded-[24px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}>
-                <div className={`px-6 py-4 flex items-start justify-between border-b border-black/12 dark:border-white/12`}>
+                <div className={`px-6 py-4 flex items-start justify-between border-b border-black/[0.12] dark:border-white/[0.12]`}>
                   <div>
                     <h2 className="text-[22px] leading-7 font-semibold">{memoryEditor.title}</h2>
                     <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{memoryEditor.subtitle}</p>
                   </div>
-                  <button type="button" onClick={() => setMemoryEditor(null)} disabled={memorySaving} className={`h-10 w-10 rounded-full flex items-center justify-center bg-[#E5E5EA] dark:bg-white/8 disabled:opacity-40`}><X size={20} /></button>
+                  <button type="button" onClick={() => setMemoryEditor(null)} disabled={memorySaving} className={`h-10 w-10 rounded-full flex items-center justify-center bg-[#E5E5EA] dark:bg-white/[0.08] disabled:opacity-40`}><X size={20} /></button>
                 </div>
                 <div className="px-6 py-5">
                   {/* biome-ignore lint/a11y/noLabelWithoutControl: the label actually wraps the input control (textarea/input inside a ternary branch); static analysis cannot see it */}
@@ -2962,14 +2962,14 @@ function hasStoredCredential(record) {
                         value={memoryEditor.value}
                         onChange={e => setMemoryEditor(prev => ({ ...prev, value: e.target.value }))}
                         rows={5}
-                        className={`w-full rounded-[16px] px-4 py-3 text-[15px] leading-6 outline-hidden resize-none bg-[#F2F2F7] text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366]`}
+                        className={`w-full rounded-[16px] px-4 py-3 text-[15px] leading-6 outline-none resize-none bg-[#F2F2F7] text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366]`}
                       />
                     ) : (
                       <input
                         data-testid="memory-editor-input"
                         value={memoryEditor.value}
                         onChange={e => setMemoryEditor(prev => ({ ...prev, value: e.target.value }))}
-                        className={`w-full rounded-[16px] px-4 py-3 text-[15px] outline-hidden bg-[#F2F2F7] text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366]`}
+                        className={`w-full rounded-[16px] px-4 py-3 text-[15px] outline-none bg-[#F2F2F7] text-[#1C1C1E] placeholder:text-[#8A8A8E] dark:bg-[#2C2C2E] dark:text-[#F2F2F7] dark:placeholder:text-[#636366]`}
                       />
                     )}
                   </label>
@@ -2986,7 +2986,7 @@ function hasStoredCredential(record) {
           {feedbackOpen && (
             // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the in-modal close button
             // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
-            <div className="fixed inset-0 z-100 flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150" onClick={closeFeedback}>
+            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 px-4 animate-in fade-in duration-150" onClick={closeFeedback}>
               {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling */}
               {/* biome-ignore lint/a11y/noStaticElementInteractions: click-bubbling stop layer; non-interactive container */}
               <div
@@ -2994,12 +2994,12 @@ function hasStoredCredential(record) {
                 data-feedback-dialog="true"
                 className={`w-[430px] max-w-[90vw] max-h-[76vh] overflow-y-auto rounded-[22px] shadow-2xl custom-scrollbar bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}
               >
-                <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b border-black/10 dark:border-white/10`}>
+                <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b border-black/[0.10] dark:border-white/[0.10]`}>
                   <div className="min-w-0">
                     <h2 className="text-[20px] leading-6 font-semibold">{t.feedbackDialogTitle}</h2>
                     <p className={`mt-1 text-[13px] leading-[18px] text-[#8A8A8E] dark:text-[#98989D]`}>{t.feedbackDesc}</p>
                   </div>
-                  <button type="button" onClick={closeFeedback} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center bg-[#E5E5EA] text-[#636366] dark:bg-white/8 dark:text-[#C7C7CC]`}><X size={18} /></button>
+                  <button type="button" onClick={closeFeedback} className={`h-9 w-9 shrink-0 rounded-full flex items-center justify-center bg-[#E5E5EA] text-[#636366] dark:bg-white/[0.08] dark:text-[#C7C7CC]`}><X size={18} /></button>
                 </div>
                 <div className="space-y-4 px-5 py-4">
                   <section>
@@ -3013,24 +3013,24 @@ function hasStoredCredential(record) {
                   </section>
                   <section>
                     <div className={`overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`}>
-                      <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b border-black/10 dark:border-white/10`}>
+                      <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b border-black/[0.10] dark:border-white/[0.10]`}>
                         {/* biome-ignore lint/a11y/noLabelWithoutControl: field label and input are siblings; the label has no htmlFor association, switching to span would deviate from the existing structure */}
                         <label className="shrink-0 text-[14px] leading-5">{t.feedbackSubject}</label>
                         <input value={feedbackDraft.title} maxLength={120} onChange={e => setFeedbackDraft(prev => ({ ...prev, title: e.target.value }))}
                         placeholder={t.feedbackSubjectPh}
-                        className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-hidden placeholder:text-[#8A8A8E] dark:placeholder:text-[#636366]`} />
+                        className={`min-w-0 flex-1 bg-transparent text-right text-[14px] leading-5 outline-none placeholder:text-[#8A8A8E] dark:placeholder:text-[#636366]`} />
                       </div>
                       <div className="px-4 py-3">
                         <div className="mb-2 text-[14px] leading-5">{t.feedbackBody}</div>
                         <textarea value={feedbackDraft.description} maxLength={5000} onChange={e => setFeedbackDraft(prev => ({ ...prev, description: e.target.value }))}
                         placeholder={t.feedbackBodyPh} rows={5}
-                        className={`w-full resize-none bg-transparent text-[14px] leading-6 outline-hidden placeholder:text-[#8A8A8E] dark:placeholder:text-[#636366]`} />
+                        className={`w-full resize-none bg-transparent text-[14px] leading-6 outline-none placeholder:text-[#8A8A8E] dark:placeholder:text-[#636366]`} />
                       </div>
                     </div>
                   </section>
                   <section>
                     <div className={`overflow-hidden rounded-[16px] bg-[#F2F2F7] dark:bg-[#2C2C2E]`}>
-                      <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b ${feedbackDraft.attachments.length > 0 ? ('border-black/10 dark:border-white/10') : 'border-transparent'}`}>
+                      <div className={`min-h-[54px] flex items-center gap-3 px-4 py-2.5 border-b ${feedbackDraft.attachments.length > 0 ? ('border-black/[0.10] dark:border-white/[0.10]') : 'border-transparent'}`}>
                         <div className="min-w-0 flex-1">
                           <div className="text-[14px] leading-5">{t.feedbackAttachments}</div>
                           <div className={`mt-0.5 text-[12px] leading-[17px] truncate text-[#8A8A8E] dark:text-[#98989D]`}>
@@ -3042,7 +3042,7 @@ function hasStoredCredential(record) {
                       {feedbackDraft.attachments.length > 0 && (
                         <div>
                         {feedbackDraft.attachments.map((a, idx) => (
-                          <div key={`${a.path}-${idx}`} className={`min-h-[48px] flex items-center justify-between gap-3 px-4 py-2.5 border-b last:border-b-0 border-black/10 dark:border-white/10`}>
+                          <div key={`${a.path}-${idx}`} className={`min-h-[48px] flex items-center justify-between gap-3 px-4 py-2.5 border-b last:border-b-0 border-black/[0.10] dark:border-white/[0.10]`}>
                             <span className={`min-w-0 truncate text-[13px] text-[#636366] dark:text-[#C7C7CC]`}>{a.name}</span>
                             <button type="button" onClick={() => setFeedbackDraft(prev => ({ ...prev, attachments: prev.attachments.filter((_, i) => i !== idx) }))} className="shrink-0 text-[14px] text-[#FF3B30]">{t.cpDelete}</button>
                           </div>
@@ -3061,10 +3061,10 @@ function hasStoredCredential(record) {
                     </div>
                   )}
                 </div>
-                <div className={`flex justify-end gap-2 px-5 py-4 border-t border-black/10 dark:border-white/10`}>
-                    <button type="button" onClick={closeFeedback} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors text-[#007AFF] hover:bg-black/4 dark:text-[#0A84FF] dark:hover:bg-white/6`}>{t.cancel}</button>
+                <div className={`flex justify-end gap-2 px-5 py-4 border-t border-black/[0.10] dark:border-white/[0.10]`}>
+                    <button type="button" onClick={closeFeedback} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors text-[#007AFF] hover:bg-black/[0.04] dark:text-[#0A84FF] dark:hover:bg-white/[0.06]`}>{t.cancel}</button>
                     {feedbackStatus.state === 'failed_retryable' && (
-                      <button type="button" onClick={submitFeedbackDraft} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors text-[#007AFF] hover:bg-black/4 dark:text-[#0A84FF] dark:hover:bg-white/6`}>{t.feedbackRetry}</button>
+                      <button type="button" onClick={submitFeedbackDraft} className={`h-10 px-4 rounded-full text-[15px] font-normal transition-colors text-[#007AFF] hover:bg-black/[0.04] dark:text-[#0A84FF] dark:hover:bg-white/[0.06]`}>{t.feedbackRetry}</button>
                     )}
                     <button type="button" onClick={submitFeedbackDraft} disabled={feedbackStatus.state === 'submitting'} className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold disabled:opacity-35">
                       {feedbackStatus.state === 'submitting' ? t.feedbackSubmitting : t.feedbackSubmit}
@@ -3086,7 +3086,7 @@ function hasStoredCredential(record) {
             />
           )}
           {feedbackNotice && (
-            <div className="fixed left-1/2 bottom-8 z-130 -translate-x-1/2 px-4 py-2.5 rounded-full bg-black/80 text-white text-[14px] shadow-xl backdrop-blur-md">
+            <div className="fixed left-1/2 bottom-8 z-[130] -translate-x-1/2 px-4 py-2.5 rounded-full bg-black/80 text-white text-[14px] shadow-xl backdrop-blur-md">
               {feedbackNotice}
             </div>
           )}

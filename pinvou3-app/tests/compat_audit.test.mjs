@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import postcss from 'postcss';
-import tailwindcssPostcss from '@tailwindcss/postcss';
+import tailwindcss from 'tailwindcss';
 
 import { auditDistPresenceProblems, runAudit } from '../scripts/audit-compat.mjs';
 import { staticRuntimeScripts } from '../vite.config.mjs';
@@ -112,8 +112,11 @@ test('the auditor flags violations under minifier-shaped syntax (complete walker
 
 test('build-time tailwind emits inset utilities as physical properties for Safari 14.0', async () => {
   const result = await postcss([
-    tailwindcssPostcss({ base: appRoot }),
-  ]).process('@import "tailwindcss";\n@source inline("fixed inset-0");', { from: undefined });
+    tailwindcss({
+      content: [{ raw: '<div class="fixed inset-0"></div>', extension: 'html' }],
+      corePlugins: { preflight: false },
+    }),
+  ]).process('@tailwind utilities;', { from: undefined });
   const compiled = transformCss({
     filename: 'tailwind.css',
     code: Buffer.from(result.css),

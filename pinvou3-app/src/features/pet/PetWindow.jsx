@@ -1076,7 +1076,7 @@ export default function PetWindow({
     return () => {
       window.removeEventListener('pointerdown', onPointerDownAway, true);
       window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('blur-sm', close);
+      window.removeEventListener('blur', close);
     };
   }, [ctxMenu]);
 

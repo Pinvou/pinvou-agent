@@ -42,15 +42,15 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
       .replaceAll(/\s+/g, ' ')
       .trim();
     const MonitorBrandIcon = ({ src, className = '' }) => src ? (
-      <span className={`inline-flex items-center justify-center rounded-xl bg-white shadow-[0_6px_18px_rgba(15,23,42,0.12)] ring-1 ring-black/5 dark:bg-white dark:ring-white/8 ${className}`}>
+      <span className={`inline-flex items-center justify-center rounded-xl bg-white shadow-[0_6px_18px_rgba(15,23,42,0.12)] ring-1 ring-black/[0.05] dark:bg-white dark:ring-white/[0.08] ${className}`}>
         <img src={src} alt="" loading="lazy" decoding="async" className="w-[72%] h-[72%] object-contain" />
       </span>
     ) : null;
     const MonitorCard = ({ children, className = '', highlight = false }) => (
-      <div className={`group relative rounded-[36px] p-7 overflow-hidden transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${highlight ? 'bg-white/88 dark:bg-[#1F1F23]' : 'bg-white/78 dark:bg-[#1C1C1E]'} backdrop-blur-[80px] backdrop-saturate-200 shadow-[0_16px_44px_rgba(15,23,42,0.10),0_2px_8px_rgba(15,23,42,0.05)] dark:shadow-[0_38px_96px_rgba(0,0,0,0.74),0_14px_34px_rgba(0,0,0,0.58),inset_0_1px_0_rgba(255,255,255,0.08)] hover:-translate-y-1 hover:scale-[1.006] hover:shadow-[0_24px_64px_rgba(15,23,42,0.14),0_4px_14px_rgba(15,23,42,0.07)] dark:hover:bg-[#242428]! dark:hover:shadow-[0_52px_128px_rgba(0,0,0,0.82),0_18px_42px_rgba(0,0,0,0.64),inset_0_1px_0_rgba(255,255,255,0.1)] ${className}`}>
-        <div className="absolute inset-0 rounded-[36px] pointer-events-none border border-black/6 dark:border-white/5.5 transition-colors duration-500 group-hover:border-black/8 dark:group-hover:border-white/9" />
+      <div className={`group relative rounded-[36px] p-7 overflow-hidden transition-all duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] ${highlight ? 'bg-white/88 dark:bg-[#1F1F23]' : 'bg-white/78 dark:bg-[#1C1C1E]'} backdrop-blur-[80px] backdrop-saturate-[200%] shadow-[0_16px_44px_rgba(15,23,42,0.10),0_2px_8px_rgba(15,23,42,0.05)] dark:shadow-[0_38px_96px_rgba(0,0,0,0.74),0_14px_34px_rgba(0,0,0,0.58),inset_0_1px_0_rgba(255,255,255,0.08)] hover:-translate-y-1 hover:scale-[1.006] hover:shadow-[0_24px_64px_rgba(15,23,42,0.14),0_4px_14px_rgba(15,23,42,0.07)] dark:hover:!bg-[#242428] dark:hover:shadow-[0_52px_128px_rgba(0,0,0,0.82),0_18px_42px_rgba(0,0,0,0.64),inset_0_1px_0_rgba(255,255,255,0.1)] ${className}`}>
+        <div className="absolute inset-0 rounded-[36px] pointer-events-none border border-black/[0.06] dark:border-white/[0.055] transition-colors duration-500 group-hover:border-black/[0.08] dark:group-hover:border-white/[0.09]" />
         <div className="absolute inset-0 rounded-[36px] pointer-events-none ring-1 ring-inset ring-white/70 dark:ring-white/[0.035]" />
-        <div className="absolute inset-x-6 top-0 h-px bg-white/0 dark:bg-white/9 pointer-events-none" />
+        <div className="absolute inset-x-6 top-0 h-px bg-white/0 dark:bg-white/[0.09] pointer-events-none" />
         {highlight && <div className="absolute -top-24 -right-24 w-48 h-48 bg-[#0A84FF]/10 rounded-full blur-[60px] pointer-events-none" />}
         <div className="relative z-10 flex flex-col h-full">{children}</div>
       </div>
@@ -58,7 +58,7 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
     const MonitorSectionHeader = ({ icon: Icon, title, value }) => (
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-2.5 text-black/50 dark:text-white/50 transition-colors duration-500">
-          <div className="p-1.5 bg-black/4 dark:bg-white/6 rounded-full"><Icon size={16} strokeWidth={2} /></div>
+          <div className="p-1.5 bg-black/[0.04] dark:bg-white/[0.06] rounded-full"><Icon size={16} strokeWidth={2} /></div>
           <span className="text-[12px] font-bold tracking-[0.04em]">{title}</span>
         </div>
         {value && <span className="text-[14px] font-semibold tracking-tight text-black/80 dark:text-white/80">{value}</span>}
@@ -67,14 +67,14 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
     const MonitorComputeHeader = ({ icon: Icon, title, device, brandIcon }) => (
       <div className="mb-6 space-y-3">
         <div className="flex items-center gap-2.5 text-black/50 dark:text-white/50">
-          <div className="w-8 h-8 flex-none flex items-center justify-center rounded-full bg-black/4.5 dark:bg-white/[0.07]">
+          <div className="w-8 h-8 flex-none flex items-center justify-center rounded-full bg-black/[0.045] dark:bg-white/[0.07]">
             <Icon size={17} strokeWidth={2} />
           </div>
           <span className="text-[12px] font-bold tracking-[0.04em] whitespace-nowrap">{title}</span>
         </div>
         <div className="min-w-0 flex items-center gap-2.5 pl-10">
           {brandIcon && <MonitorBrandIcon src={brandIcon} className="w-10 h-10 flex-none rounded-[12px]" />}
-          <span className="min-w-0 text-[18px] leading-[1.15] font-bold tracking-[-0.01em] text-black/82 dark:text-white/86 wrap-break-word">
+          <span className="min-w-0 text-[18px] leading-[1.15] font-bold tracking-[-0.01em] text-black/82 dark:text-white/86 break-words">
             {device}
           </span>
         </div>
@@ -95,8 +95,8 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
             </div>
           </div>
           <div className="relative flex gap-[3px] h-3">
-            <div className="absolute left-0 right-0 h-3 flex gap-[3px] -z-10 opacity-10 dark:opacity-20">{Array.from({ length: segments }).map((_, i) => <div key={`bg-${i}`} className="flex-1 bg-black dark:bg-white rounded-xs" />)}</div>
-            {Array.from({ length: segments }).map((_, i) => <div key={i} className="flex-1 rounded-xs transition-colors duration-500" style={{ backgroundColor: i < activeSegments ? color : '', opacity: i < activeSegments ? 1 : 0, boxShadow: i < activeSegments ? `0 0 8px ${color}40` : 'none' }} />)}
+            <div className="absolute left-0 right-0 h-3 flex gap-[3px] -z-10 opacity-10 dark:opacity-20">{Array.from({ length: segments }).map((_, i) => <div key={`bg-${i}`} className="flex-1 bg-black dark:bg-white rounded-sm" />)}</div>
+            {Array.from({ length: segments }).map((_, i) => <div key={i} className="flex-1 rounded-sm transition-colors duration-500" style={{ backgroundColor: i < activeSegments ? color : '', opacity: i < activeSegments ? 1 : 0, boxShadow: i < activeSegments ? `0 0 8px ${color}40` : 'none' }} />)}
           </div>
         </div>
       );
@@ -143,7 +143,7 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
               <linearGradient id={`mon-stroke-${id}`} x1="0" x2="1" y1="0" y2="0"><stop offset="0%" stopColor={color} stopOpacity="0.45" /><stop offset="65%" stopColor={color} stopOpacity="1" /><stop offset="100%" stopColor={color} stopOpacity="1" /></linearGradient>
             </defs>
             {[24, 50, 76].map((y) => <line key={y} x1="0" x2="100" y1={y} y2={y} stroke="currentColor" strokeWidth="0.7" className="text-black/10 dark:text-white/10" vectorEffect="non-scaling-stroke" />)}
-            {coords.slice(1, -1).map((point) => <line key={point.x} x1={point.x} x2={point.x} y1="16" y2="96" stroke="currentColor" strokeWidth="0.45" className="text-black/6 dark:text-white/[0.07]" vectorEffect="non-scaling-stroke" />)}
+            {coords.slice(1, -1).map((point) => <line key={point.x} x1={point.x} x2={point.x} y1="16" y2="96" stroke="currentColor" strokeWidth="0.45" className="text-black/[0.06] dark:text-white/[0.07]" vectorEffect="non-scaling-stroke" />)}
             <path d={areaPath} fill={`url(#mon-grad-${id})`} opacity={hasData ? 1 : 0.38} />
             <path d={linePath} fill="none" stroke={color} strokeWidth="7" strokeLinecap="round" strokeLinejoin="round" opacity={hasData ? 0.16 : 0.08} className="blur-[1px]" vectorEffect="non-scaling-stroke" />
             <path d={linePath} fill="none" stroke={`url(#mon-stroke-${id})`} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" opacity={hasData ? 1 : 0.42} vectorEffect="non-scaling-stroke" />
@@ -155,7 +155,7 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
       );
     };
     const MonitorMetricCard = ({ label, value, unit, hint, color, data }) => (
-      <div className="bg-white/58 dark:bg-[#2C2C2E] rounded-3xl p-5 border border-black/5.5 dark:border-white/5.5 shadow-[0_10px_28px_rgba(15,23,42,0.06)] dark:shadow-[0_20px_48px_rgba(0,0,0,0.48),0_7px_18px_rgba(0,0,0,0.36)] flex flex-col justify-between transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/85 hover:shadow-[0_14px_36px_rgba(15,23,42,0.09)] dark:hover:bg-[#3A3A3C]! dark:hover:shadow-[0_16px_38px_rgba(0,0,0,0.34)]">
+      <div className="bg-white/58 dark:bg-[#2C2C2E] rounded-3xl p-5 border border-black/[0.055] dark:border-white/[0.055] shadow-[0_10px_28px_rgba(15,23,42,0.06)] dark:shadow-[0_20px_48px_rgba(0,0,0,0.48),0_7px_18px_rgba(0,0,0,0.36)] flex flex-col justify-between transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/85 hover:shadow-[0_14px_36px_rgba(15,23,42,0.09)] dark:hover:!bg-[#3A3A3C] dark:hover:shadow-[0_16px_38px_rgba(0,0,0,0.34)]">
         <div>
           <span className="text-[13px] font-bold tracking-[0.02em] text-black/58 dark:text-white/62">{label}</span>
           <div className="text-[32px] font-bold tracking-[-0.03em] mt-1">{value}{unit && String(value) !== '—' && <span className="text-[14px] text-black/40 dark:text-white/40 ml-1">{unit}</span>}</div>
@@ -391,7 +391,7 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
                 <div>
                   <h1 className="text-[26px] font-normal tracking-tight text-black/90 dark:text-white/90 max-sm:hidden">{t.sysStatus}</h1>
                   {(!monitorBridgeReady || monitorError) && (
-                    <div className="mt-2 flex items-center gap-2.5 bg-black/4 dark:bg-white/6 px-3 py-1.5 rounded-full w-fit">
+                    <div className="mt-2 flex items-center gap-2.5 bg-black/[0.04] dark:bg-white/[0.06] px-3 py-1.5 rounded-full w-fit">
                       <span className="relative flex h-2 w-2">
                         <span className="absolute h-full w-full rounded-full bg-[#8E8E93] opacity-60" />
                         <span className="relative h-2 w-2 rounded-full bg-[#8E8E93]" />
@@ -401,7 +401,7 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
                   )}
                 </div>
 
-                <div className="flex items-center gap-1.5 bg-white/60 dark:bg-[#1C1C1E] backdrop-blur-2xl rounded-full p-1.5 shadow-[0_4px_20px_rgb(0,0,0,0.04)] dark:shadow-[0_18px_46px_rgba(0,0,0,0.5)] ring-1 ring-black/3 dark:ring-white/5.5">
+                <div className="flex items-center gap-1.5 bg-white/60 dark:bg-[#1C1C1E] backdrop-blur-[40px] rounded-full p-1.5 shadow-[0_4px_20px_rgb(0,0,0,0.04)] dark:shadow-[0_18px_46px_rgba(0,0,0,0.5)] ring-1 ring-black/[0.03] dark:ring-white/[0.055]">
                   <div className="flex items-center gap-2 px-4 text-[14px] font-semibold font-mono tracking-wider text-black/70 dark:text-white/70">
                     <Clock size={16} className="text-black/40 dark:text-white/40" /> {new Date(clockNow).toLocaleTimeString(MONITOR_CLOCK_LOCALE[t.langTag] || 'zh-CN', { hour12: false })}
                   </div>
@@ -464,16 +464,16 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
                       </div>
                     </div>
                     <div className="space-y-3 mb-6">
-                      <div className="flex items-center justify-between rounded-2xl bg-white/65 dark:bg-[#2C2C2E] px-4 py-3 border border-black/5.5 dark:border-white/5.5 shadow-[0_8px_22px_rgba(15,23,42,0.06)] dark:shadow-[0_18px_44px_rgba(0,0,0,0.46),0_6px_16px_rgba(0,0,0,0.34)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/90 hover:shadow-[0_12px_30px_rgba(15,23,42,0.09)] dark:hover:bg-[#3A3A3C]! dark:hover:shadow-[0_14px_34px_rgba(0,0,0,0.34)]">
+                      <div className="flex items-center justify-between rounded-2xl bg-white/65 dark:bg-[#2C2C2E] px-4 py-3 border border-black/[0.055] dark:border-white/[0.055] shadow-[0_8px_22px_rgba(15,23,42,0.06)] dark:shadow-[0_18px_44px_rgba(0,0,0,0.46),0_6px_16px_rgba(0,0,0,0.34)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/90 hover:shadow-[0_12px_30px_rgba(15,23,42,0.09)] dark:hover:!bg-[#3A3A3C] dark:hover:shadow-[0_14px_34px_rgba(0,0,0,0.34)]">
                         <span className="text-[11px] font-bold tracking-[0.04em] text-black/45 dark:text-white/45">{t.curVer}</span>
                         <span className="text-[13px] font-bold font-mono text-black/70 dark:text-white/70">{appVersion}</span>
                       </div>
-                      <div className="flex items-center justify-between rounded-2xl bg-white/65 dark:bg-[#2C2C2E] px-4 py-3 border border-black/5.5 dark:border-white/5.5 shadow-[0_8px_22px_rgba(15,23,42,0.06)] dark:shadow-[0_18px_44px_rgba(0,0,0,0.46),0_6px_16px_rgba(0,0,0,0.34)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/90 hover:shadow-[0_12px_30px_rgba(15,23,42,0.09)] dark:hover:bg-[#3A3A3C]! dark:hover:shadow-[0_14px_34px_rgba(0,0,0,0.34)]">
+                      <div className="flex items-center justify-between rounded-2xl bg-white/65 dark:bg-[#2C2C2E] px-4 py-3 border border-black/[0.055] dark:border-white/[0.055] shadow-[0_8px_22px_rgba(15,23,42,0.06)] dark:shadow-[0_18px_44px_rgba(0,0,0,0.46),0_6px_16px_rgba(0,0,0,0.34)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/90 hover:shadow-[0_12px_30px_rgba(15,23,42,0.09)] dark:hover:!bg-[#3A3A3C] dark:hover:shadow-[0_14px_34px_rgba(0,0,0,0.34)]">
                         <span className="text-[11px] font-bold tracking-[0.04em] text-black/45 dark:text-white/45">{t.uptime}</span>
                         <span className="text-[13px] font-bold font-mono text-black/70 dark:text-white/70">{uptime}</span>
                       </div>
                     </div>
-                    <div className="mt-auto bg-white/55 dark:bg-[#2C2C2E] rounded-3xl p-4 border border-black/5.5 dark:border-white/5.5 shadow-[0_10px_28px_rgba(15,23,42,0.06)] dark:shadow-[0_20px_48px_rgba(0,0,0,0.48),0_7px_18px_rgba(0,0,0,0.36)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/80 dark:hover:bg-[#3A3A3C]!">
+                    <div className="mt-auto bg-white/55 dark:bg-[#2C2C2E] rounded-3xl p-4 border border-black/[0.055] dark:border-white/[0.055] shadow-[0_10px_28px_rgba(15,23,42,0.06)] dark:shadow-[0_20px_48px_rgba(0,0,0,0.48),0_7px_18px_rgba(0,0,0,0.36)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/80 dark:hover:!bg-[#3A3A3C]">
                       <span className="text-[10px] font-bold tracking-[0.04em] text-black/50 dark:text-white/50 block mb-3 px-2">{t.uiMonitor.activity}</span>
                       <MonitorActivityBars color={monitorColors.blue} data={history.activity} />
                     </div>
@@ -490,7 +490,7 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
-                      <span className="px-3.5 py-2 rounded-full bg-black/4 dark:bg-[#2C2C2E] text-[12px] font-bold tracking-[0.04em] text-black/55 dark:text-white/60 border border-black/4 dark:border-white/5.5">{runModeText}</span>
+                      <span className="px-3.5 py-2 rounded-full bg-black/[0.04] dark:bg-[#2C2C2E] text-[12px] font-bold tracking-[0.04em] text-black/55 dark:text-white/60 border border-black/[0.04] dark:border-white/[0.055]">{runModeText}</span>
                       <span className="bg-black/5 dark:bg-[#2C2C2E] hover:bg-black/10 dark:hover:bg-[#3A3A3C] px-4 py-2 rounded-full text-[12px] font-bold tracking-[0.04em] transition-colors">{statusText}</span>
                       <button type="button"
                         onMouseDown={handleModelClearStart}
@@ -519,7 +519,7 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
                   </div>
 
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div className="rounded-3xl bg-white/62 dark:bg-[#2C2C2E] px-5 py-5 border border-black/5.5 dark:border-white/5.5 shadow-[0_8px_24px_rgba(15,23,42,0.06)] dark:shadow-[0_18px_44px_rgba(0,0,0,0.46),0_6px_16px_rgba(0,0,0,0.34)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/90 hover:shadow-[0_12px_32px_rgba(15,23,42,0.09)] dark:hover:bg-[#3A3A3C]! dark:hover:shadow-[0_14px_34px_rgba(0,0,0,0.34)]">
+                      <div className="rounded-3xl bg-white/62 dark:bg-[#2C2C2E] px-5 py-5 border border-black/[0.055] dark:border-white/[0.055] shadow-[0_8px_24px_rgba(15,23,42,0.06)] dark:shadow-[0_18px_44px_rgba(0,0,0,0.46),0_6px_16px_rgba(0,0,0,0.34)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/90 hover:shadow-[0_12px_32px_rgba(15,23,42,0.09)] dark:hover:!bg-[#3A3A3C] dark:hover:shadow-[0_14px_34px_rgba(0,0,0,0.34)]">
                         <div className="flex items-start justify-between gap-4">
                           <div>
                             <div className="flex items-center gap-2">
@@ -531,7 +531,7 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
                           <div className="text-[30px] leading-none font-bold tracking-[-0.03em]">{tokenPair.input}</div>
                         </div>
                       </div>
-                      <div className="rounded-3xl bg-white/62 dark:bg-[#2C2C2E] px-5 py-5 border border-black/5.5 dark:border-white/5.5 shadow-[0_8px_24px_rgba(15,23,42,0.06)] dark:shadow-[0_18px_44px_rgba(0,0,0,0.46),0_6px_16px_rgba(0,0,0,0.34)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/90 hover:shadow-[0_12px_32px_rgba(15,23,42,0.09)] dark:hover:bg-[#3A3A3C]! dark:hover:shadow-[0_14px_34px_rgba(0,0,0,0.34)]">
+                      <div className="rounded-3xl bg-white/62 dark:bg-[#2C2C2E] px-5 py-5 border border-black/[0.055] dark:border-white/[0.055] shadow-[0_8px_24px_rgba(15,23,42,0.06)] dark:shadow-[0_18px_44px_rgba(0,0,0,0.46),0_6px_16px_rgba(0,0,0,0.34)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-white/90 hover:shadow-[0_12px_32px_rgba(15,23,42,0.09)] dark:hover:!bg-[#3A3A3C] dark:hover:shadow-[0_14px_34px_rgba(0,0,0,0.34)]">
                         <div className="flex items-start justify-between gap-4">
                           <div>
                             <div className="flex items-center gap-2">

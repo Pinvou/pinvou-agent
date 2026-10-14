@@ -201,7 +201,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
         : null;
       const menu = open && effectiveMenuStyle && typeof document !== 'undefined' ? createPortal(
         <div ref={menuRef} role="listbox" aria-label={ariaLabel} aria-multiselectable={multiple || undefined}
-          className={`fixed z-1000 overflow-y-auto custom-scrollbar rounded-[12px] border p-1.5 border-[#DFE1E5] bg-white dark:border-[#3A3B3E] dark:bg-[#242528]`}
+          className={`fixed z-[1000] overflow-y-auto custom-scrollbar rounded-[12px] border p-1.5 border-[#DFE1E5] bg-white dark:border-[#3A3B3E] dark:bg-[#242528]`}
           style={{ ...effectiveMenuStyle, // isDark dynamic-value: 保留 — boxShadow 复杂多停 + effectiveMenuStyle 运行时定位
             boxShadow: isDark ? '0 12px 30px rgba(0,0,0,.34)' : '0 12px 30px rgba(60,64,67,.18)' }}>
           {(options || []).map(option => {
@@ -250,7 +250,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
           <button type="button" value={serializedValue} data-testid={testId}
             aria-label={ariaLabel} aria-haspopup="listbox" aria-expanded={open}
             onClick={(event) => open ? closeMenu() : openMenu(event.currentTarget)}
-            className={`h-8 max-w-[260px] rounded-[9px] pl-3 pr-2 inline-flex items-center justify-end gap-2 text-[14px] font-medium transition-colors outline-hidden focus-visible:ring-2 focus-visible:ring-[#0B57D0]/40 text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#2B2C2F]`}>
+            className={`h-8 max-w-[260px] rounded-[9px] pl-3 pr-2 inline-flex items-center justify-end gap-2 text-[14px] font-medium transition-colors outline-none focus-visible:ring-2 focus-visible:ring-[#0B57D0]/40 text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#2B2C2F]`}>
             <span className="truncate">{displayLabel || emptyLabel}</span>
             <ChevronDown size={15} className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''} text-[#73777D] dark:text-[#9AA0A6]`} />
           </button>
@@ -347,10 +347,10 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
       const surface = isDark ? '#242528' : '#FFFFFF';
       const wheel = open && menuStyle && typeof document !== 'undefined' ? createPortal(
         <div ref={menuRef} data-testid={`${testId}-wheel`} role="dialog" aria-label={ariaLabel}
-          className={`fixed z-1000 flex items-stretch gap-0.5 rounded-[14px] border px-2.5 py-2 border-[#DFE1E5] bg-[#FFFFFF] dark:border-[#3A3B3E] dark:bg-[#242528]`}
+          className={`fixed z-[1000] flex items-stretch gap-0.5 rounded-[14px] border px-2.5 py-2 border-[#DFE1E5] bg-[#FFFFFF] dark:border-[#3A3B3E] dark:bg-[#242528]`}
           style={{ ...menuStyle, boxShadow: isDark ? '0 12px 30px rgba(0,0,0,.34)' : '0 12px 30px rgba(60,64,67,.18)' }}>
           <style>{'[data-wheel-col]::-webkit-scrollbar{display:none}'}</style>
-          <div aria-hidden="true" className={`pointer-events-none absolute inset-x-2 z-0 rounded-[9px] bg-black/5 dark:bg-white/8`}
+          <div aria-hidden="true" className={`pointer-events-none absolute inset-x-2 z-0 rounded-[9px] bg-black/[0.05] dark:bg-white/[0.08]`}
             style={{ top: 8 + (WHEEL_VISIBLE_H - WHEEL_ITEM_H) / 2, height: WHEEL_ITEM_H }} />
           <div aria-hidden="true" className="pointer-events-none absolute inset-x-1 top-1 z-10 h-11 rounded-t-[12px]"
             style={{ background: `linear-gradient(${surface}, transparent)` }} />
@@ -373,7 +373,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
               if (!valid) onChange('08:00');
               setOpen(current => !current);
             }}
-            className={`w-[88px] cursor-pointer bg-transparent text-right font-medium outline-hidden placeholder:text-gray-400 text-[#1F1F1F] dark:text-[#E3E3E3]`} />
+            className={`w-[88px] cursor-pointer bg-transparent text-right font-medium outline-none placeholder:text-gray-400 text-[#1F1F1F] dark:text-[#E3E3E3]`} />
           {wheel}
         </span>
       );
@@ -385,9 +385,9 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
     // Per-site differences (min-height, max-width, footer layout) stay at the call sites; the header close button stays per-site
     // because tests pin its data-testid literal — not componentized.
     const dialogFieldLabelClass = `mb-1.5 block text-[13px] font-medium ${mutedValue}`;
-    const dialogInputClass = 'w-full rounded-[14px] px-4 py-3 text-[15px] outline-hidden transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B] dark:bg-[#2C2C2E] dark:text-white dark:placeholder:text-[#EBEBF5]/30';
-    const dialogTextareaClass = 'w-full resize-none rounded-[14px] px-4 py-3 text-[15px] leading-6 outline-hidden transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B] dark:bg-[#2C2C2E] dark:text-white dark:placeholder:text-[#EBEBF5]/30';
-    const dialogOverlayClass = 'fixed inset-0 z-200 flex items-center justify-center bg-black/45 px-4 py-6 backdrop-blur-[6px]';
+    const dialogInputClass = 'w-full rounded-[14px] px-4 py-3 text-[15px] outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B] dark:bg-[#2C2C2E] dark:text-white dark:placeholder:text-[#EBEBF5]/30';
+    const dialogTextareaClass = 'w-full resize-none rounded-[14px] px-4 py-3 text-[15px] leading-6 outline-none transition-shadow focus:ring-2 focus:ring-[#007AFF]/50 bg-[#F2F2F7] text-[#1D1D1F] placeholder:text-[#86868B] dark:bg-[#2C2C2E] dark:text-white dark:placeholder:text-[#EBEBF5]/30';
+    const dialogOverlayClass = 'fixed inset-0 z-[200] flex items-center justify-center bg-black/45 px-4 py-6 backdrop-blur-[6px]';
     const dialogBodyClass = 'min-h-0 flex-1 space-y-5 overflow-y-auto px-6 pb-5 custom-scrollbar';
     const dialogPanelClass = (maxWidth) => `mx-4 flex max-h-[calc(100vh-48px)] w-full ${maxWidth} flex-col overflow-hidden rounded-[28px] shadow-[0_18px_60px_rgba(0,0,0,0.22)] bg-white dark:bg-[#1C1C1E]`;
     // 两个对话框页脚共用同一分隔线样式（与组件内 iosSeparator 常量同值）：常量串，
@@ -403,7 +403,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
           disabled={!!busyAction}
           aria-pressed={checked}
           aria-label={checked ? scheduledCopy.pause(task.name) : scheduledCopy.resume(task.name)}
-          className={`relative flex h-6 w-11 shrink-0 items-center rounded-full p-px transition-colors duration-300 disabled:opacity-50 ${
+          className={`relative flex h-6 w-11 shrink-0 items-center rounded-full p-[1px] transition-colors duration-300 disabled:opacity-50 ${
             checked ? 'bg-[#34C759]' : 'bg-[#D8DADD] dark:bg-[#4A4B50]'
           }`}
         >
@@ -427,7 +427,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
             aria-pressed={taskFilter === value}
             className={`h-7 min-w-[72px] rounded-[6.5px] px-3 text-[13px] font-medium transition-colors ${
               taskFilter === value
-                ? 'bg-white text-black shadow-xs dark:bg-[#636366] dark:text-white'
+                ? 'bg-white text-black shadow-sm dark:bg-[#636366] dark:text-white'
                 : `${mutedValue}`
             }`}>
             {label}
@@ -1171,7 +1171,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
             <div className={`flex shrink-0 justify-end gap-3 ${dialogFooterSurface}`}>
               <button type="submit" data-testid="scheduled-create-submit"
                 disabled={!!busyAction || !String(createForm.name || '').trim() || !String(createForm.prompt || '').trim()}
-                className="h-11 rounded-full bg-[#007AFF] px-6 text-[15px] font-medium text-white shadow-xs transition-colors hover:bg-[#0066D6] disabled:opacity-40">
+                className="h-11 rounded-full bg-[#007AFF] px-6 text-[15px] font-medium text-white shadow-sm transition-colors hover:bg-[#0066D6] disabled:opacity-40">
                 {scheduledCopy.saveTask}
               </button>
             </div>
@@ -1203,17 +1203,17 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
                     className="absolute inset-0 h-full w-full object-cover transition-transform duration-700 group-hover:scale-105"
                     loading="lazy"
                   />
-                  <span className="absolute inset-0 bg-linear-to-t from-black/80 via-black/20 to-transparent" />
-                  <span className="absolute right-4 top-4 flex h-8 w-8 items-center justify-center rounded-full border border-white/20 bg-white/20 text-white opacity-0 shadow-xs backdrop-blur-md transition-opacity duration-300 group-hover:opacity-100">
+                  <span className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
+                  <span className="absolute right-4 top-4 flex h-8 w-8 items-center justify-center rounded-full border border-white/20 bg-white/20 text-white opacity-0 shadow-sm backdrop-blur-md transition-opacity duration-300 group-hover:opacity-100">
                     <ChevronRight size={17} className="-rotate-45" />
                   </span>
                   <span className="absolute inset-x-0 bottom-0 flex flex-col justify-end p-5">
                     <span className="mb-1.5 block text-[19px] font-bold leading-6 text-white drop-shadow-md">{template.name}</span>
-                    <span className="mb-4 line-clamp-2 text-[13px] leading-5 text-gray-200 drop-shadow-sm">
+                    <span className="mb-4 line-clamp-2 text-[13px] leading-5 text-gray-200 drop-shadow">
                         {template.description}
                     </span>
                     <span className="flex">
-                      <span className="inline-flex items-center rounded-full border border-white/10 bg-white/20 px-3 py-1.5 text-[11px] font-medium text-white shadow-xs backdrop-blur-md">
+                      <span className="inline-flex items-center rounded-full border border-white/10 bg-white/20 px-3 py-1.5 text-[11px] font-medium text-white shadow-sm backdrop-blur-md">
                         <Clock size={12} className="mr-1.5" />
                         {template.schedule}
                       </span>
@@ -1480,7 +1480,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
                 <button type="button" data-testid="scheduled-detail-save"
                   disabled={!!busyAction || !detailFormIsValid}
                   onClick={saveDetailAndClose}
-                  className="h-11 rounded-full bg-[#007AFF] px-6 text-[15px] font-medium text-white shadow-xs transition-colors hover:bg-[#0066D6] disabled:opacity-40">
+                  className="h-11 rounded-full bg-[#007AFF] px-6 text-[15px] font-medium text-white shadow-sm transition-colors hover:bg-[#0066D6] disabled:opacity-40">
                   {scheduledCopy.save}
                 </button>
               </div>
@@ -1501,14 +1501,14 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
                   <button type="button"
                     onClick={startChatCreation}
                     data-testid="scheduled-create-from-chat"
-                    className={`inline-flex h-9 items-center rounded-full px-4 text-[13px] font-semibold shadow-xs transition-colors bg-[#E9E9EB] text-[#1D1D1F] hover:bg-[#DADADD] dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]`}>
+                    className={`inline-flex h-9 items-center rounded-full px-4 text-[13px] font-semibold shadow-sm transition-colors bg-[#E9E9EB] text-[#1D1D1F] hover:bg-[#DADADD] dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]`}>
                     <MessageCircle size={14} className="mr-2 opacity-70" />
                     {scheduledCopy.createFromChat}
                   </button>
                   <button type="button"
                     onClick={startBlankTask}
                     data-testid="scheduled-create-menu"
-                    className="inline-flex h-9 items-center rounded-full bg-[#007AFF] px-4 text-[13px] font-semibold text-white shadow-xs transition-colors hover:bg-[#0066D6]">
+                    className="inline-flex h-9 items-center rounded-full bg-[#007AFF] px-4 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-[#0066D6]">
                     <Plus size={14} className="mr-2" />
                     {scheduledCopy.newTask}
                   </button>
@@ -1527,7 +1527,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
           {CreateTaskDialog()}
 
           {deleteConfirmTask && renderModal(
-            <div className="fixed inset-0 z-300 flex items-center justify-center px-4">
+            <div className="fixed inset-0 z-[300] flex items-center justify-center px-4">
               {/* biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; the keyboard path is covered by the dialog's cancel button */}
               {/* biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container */}
               <div className="absolute inset-0 bg-black/28 backdrop-blur-[1px]" onClick={(event) => cancelDeleteTask(event)} />

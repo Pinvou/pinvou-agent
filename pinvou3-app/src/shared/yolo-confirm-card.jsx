@@ -45,7 +45,7 @@ export function YoloConfirmCard({ theme, copy, error, busy, onConfirm, onCancel 
     return () => window.removeEventListener('keydown', onKey);
   }, [busy, onCancel]);
   // Portal to <body>: this card renders inside the composer container, whose
-  // backdrop-blur-sm becomes the containing block for `position: fixed`. Without
+  // backdrop-blur becomes the containing block for `position: fixed`. Without
   // the portal the full-screen modal would only cover the composer area and
   // click-the-backdrop-to-cancel would stop working too.
   return createPortal(
@@ -63,8 +63,8 @@ export function YoloConfirmCard({ theme, copy, error, busy, onConfirm, onCancel 
         aria-modal="true"
         aria-labelledby="native-yolo-confirm-title"
         tabIndex={-1}
-        className={`relative w-full max-w-[420px] rounded-2xl border p-4 shadow-xl backdrop-blur-xl outline-hidden ${
-          isDark ? 'border-white/10 bg-[#202124]/95' : 'border-black/8 bg-white/95'
+        className={`relative w-full max-w-[420px] rounded-2xl border p-4 shadow-xl backdrop-blur-xl outline-none ${
+          isDark ? 'border-white/10 bg-[#202124]/95' : 'border-black/[0.08] bg-white/95'
         }`}>
         <div id="native-yolo-confirm-title" className={`text-[14px] font-semibold ${isDark ? 'text-[#E3E3E3]' : 'text-[#1F1F1F]'}`}>
           {copy.title}

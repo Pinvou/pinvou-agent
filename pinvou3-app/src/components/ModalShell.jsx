@@ -1,5 +1,5 @@
 // Shared centered-dialog shell: portal to <body> (same as the shared YoloConfirmCard — keeps
-// a composer container's backdrop-blur-sm from becoming the containing block for fixed descendants),
+// a composer container's backdrop-blur from becoming the containing block for fixed descendants),
 // focus capture/restore (useDialogFocusRestore), Escape to close (disabled while busy), and
 // backdrop buttons disabled together with busy (an in-flight confirmation cannot be dismissed by
 // clicking the backdrop). The panel is pinned `relative` so it always stacks above the

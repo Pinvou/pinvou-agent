@@ -578,13 +578,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       }, [enabled]);
     };
 
-    // z-200 modal backdrop: translucent black + background blur; clicking closes the dialog when onClose is
+    // z-[200] modal backdrop: translucent black + background blur; clicking closes the dialog when onClose is
     // passed (otherwise inert, e.g. config dialog/Obsidian guide). Content-layer semantics (stopPropagation,
     // Escape guard) stay inside each dialog; the backdrop only paints and optionally closes on click.
     const ModalBackdrop = ({ onClose, onKeyDown, children }) => (
       // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container
       <div
-        className="fixed inset-0 z-200 flex items-center justify-center bg-black/40 backdrop-blur-xs"
+        className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 backdrop-blur-sm"
         onClick={onClose}
         onKeyDown={onKeyDown}
       >
@@ -593,13 +593,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
     );
 
     // iOS 风格弹窗（安装/卸载后提示需新建会话生效）
-    // z-210: sharing z-200 with the QR modal and other body portals would
+    // z-[210]: sharing z-[200] with the QR modal and other body portals would
     // degrade stacking to mount order (the alert only paints on top because it
     // mounts later); one explicit level up keeps the error alert always visible.
     const TsAlert = ({ alert, onDismiss, onNewChat, onCancelLoading, copy }) => {
       if (!alert.visible && !alert.loading) return null;
       return (
-        <div className="fixed inset-0 z-210 flex items-center justify-center bg-black/40 backdrop-blur-xs">
+        <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/40 backdrop-blur-sm">
           <div
             className="w-[280px] rounded-[20px] overflow-hidden shadow-2xl transition-transform duration-200 scale-100 bg-white/95 backdrop-blur-xl dark:bg-[#2C2C2E]"
             style={{ animation: 'tsAlertIn .2s ease-out' }}
@@ -716,7 +716,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                     placeholder={field.placeholder || "sk-..."}
                     value={values[field.key] || ''}
                     onChange={e => setValues(v => ({ ...v, [field.key]: e.target.value }))}
-                    className="w-full px-3 py-2 rounded-lg text-[14px] outline-hidden transition-colors border bg-slate-50 border-slate-200 text-slate-900 placeholder-slate-400 focus:border-[#007AFF] dark:bg-[#1C1C1E] dark:border-[#3A3A3C] dark:text-white dark:placeholder-slate-500 dark:focus:border-[#0A84FF]"
+                    className="w-full px-3 py-2 rounded-lg text-[14px] outline-none transition-colors border bg-slate-50 border-slate-200 text-slate-900 placeholder-slate-400 focus:border-[#007AFF] dark:bg-[#1C1C1E] dark:border-[#3A3A3C] dark:text-white dark:placeholder-slate-500 dark:focus:border-[#0A84FF]"
                   />
                   {field.helpText && (
                     <div className={`text-[11px] mt-1 leading-snug text-slate-400 dark:text-slate-500`}>
@@ -772,7 +772,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
       const [error, setError] = useState(null);
       // 保存进行中：防重复点击双发请求（后端写幂等但避免重复 IPC/刷新）。
       const [saving, setSaving] = useState(false);
-      const inputCls = "w-full px-3 py-2 rounded-lg text-[14px] outline-hidden transition-colors border bg-slate-50 border-slate-200 text-slate-900 placeholder-slate-400 focus:border-[#007AFF] dark:bg-[#1C1C1E] dark:border-[#3A3A3C] dark:text-white dark:placeholder-slate-500 dark:focus:border-[#0A84FF]";
+      const inputCls = "w-full px-3 py-2 rounded-lg text-[14px] outline-none transition-colors border bg-slate-50 border-slate-200 text-slate-900 placeholder-slate-400 focus:border-[#007AFF] dark:bg-[#1C1C1E] dark:border-[#3A3A3C] dark:text-white dark:placeholder-slate-500 dark:focus:border-[#0A84FF]";
       const handleConfirm = async () => {
         if (saving) return;
         setSaving(true);
@@ -1376,7 +1376,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             category: 'other', type: 'MCP Server', mcpServer: true,
             version: x.version ? `v${String(x.version).replace(/^v/i, '')}` : '—',
             latency: storeCopy.localLatency, desc: (bf && bf.description) || x.description || '',
-            icon: Server, color: 'bg-linear-to-b from-slate-400 to-slate-600',
+            icon: Server, color: 'bg-gradient-to-b from-slate-400 to-slate-600',
             installed: bs ? bs.installed : !!x.installed,
             authRequired: false, userUploaded: x.source === 'upload',
             exportable: x.exportable !== false,
@@ -1397,7 +1397,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         .map(x => localizeTool({
           id: 'builtin-' + x.id, backendId: x.id, builtin: true,
           title: x.name || x.id, subtitle: '', desc: x.description || '',
-          icon: Package, color: 'bg-linear-to-b from-slate-400 to-slate-600',
+          icon: Package, color: 'bg-gradient-to-b from-slate-400 to-slate-600',
           securityLevel: x.security_level || null,
           dataAccess: Array.isArray(x.data_access) ? x.data_access : [],
           mcpTools: Array.isArray(x.mcp_tools) ? x.mcp_tools : [],
@@ -1483,7 +1483,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             companionBundle: !!mcpId,
             exportable: ownerExportable,
             version: '—', latency: storeCopy.localLatency, desc: x.description || '',
-            icon: tsSkillIconByName[x.icon] || Package, color: x.color || 'bg-linear-to-b from-slate-400 to-slate-600',
+            icon: tsSkillIconByName[x.icon] || Package, color: x.color || 'bg-gradient-to-b from-slate-400 to-slate-600',
             installed: mcpId ? (mcpInstalled || skillInstalled) : skillInstalled,
             updateAvailable: !!x.update_available,
             actions: mcpId
@@ -1494,7 +1494,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         id: 'up-' + x.id, backendId: x.id, title: x.title, subtitle: x.subtitle || storeCopy.uploadedSkill,
         // 用户上传技能无业务归属元数据,业务分组落「其他」;类型分组仍按 userUploaded 归 Skill。
         category: 'other', type: 'Skill', version: '—', latency: storeCopy.localLatency, desc: x.description || '',
-        icon: Package, color: 'bg-linear-to-b from-slate-400 to-slate-600', installed: true, userUploaded: true,
+        icon: Package, color: 'bg-gradient-to-b from-slate-400 to-slate-600', installed: true, userUploaded: true,
         actions: actionsOf(bundleStates[x.id]),
       }));
       const skillCards = [...presetSkills, ...companionSkillCards, ...uploadedSkills];
@@ -2195,7 +2195,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           {createPortal(<TsAlert alert={alert} copy={storeCopy} onDismiss={() => setAlert(a => ({ ...a, visible: false }))} onCancelLoading={cancelOAuthLoading} onNewChat={() => { const tid = alert.toolId; setAlert(a => ({ ...a, visible: false })); if (onNewChat) onNewChat(tid); }} />, document.body)}
           {/* 拖放技能包 overlay:可接受拖放期间全屏提示(pointer-events-none 不挡点击) */}
           {dropActive && canMutateToolStore && (
-            <div data-testid="tool-store-drop-overlay" className="fixed inset-0 z-80 flex items-center justify-center pointer-events-none bg-blue-500/10">
+            <div data-testid="tool-store-drop-overlay" className="fixed inset-0 z-[80] flex items-center justify-center pointer-events-none bg-blue-500/10">
               <div className="rounded-3xl border-2 border-dashed border-blue-500 bg-white/90 dark:bg-[#1C1C1E]/90 px-8 py-6 text-center shadow-2xl">
                 <Upload size={28} className="mx-auto mb-3 text-blue-500" />
                 <p className="text-[15px] font-semibold">{storeCopy.dropSkillZipHere}</p>
@@ -2249,7 +2249,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             return createPortal((
             // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is covered by the dialog's cancel control
             // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container
-            <div className="fixed inset-0 z-200 flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', WebkitBackdropFilter: 'blur(8px)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
+            <div className="fixed inset-0 z-[200] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(0,0,0,0.5)', WebkitBackdropFilter: 'blur(8px)', backdropFilter: 'blur(8px)' }} onClick={cancel}>
               {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-propagation stop layer; keyboard events need no bubbling here */}
               {/* biome-ignore lint/a11y/noStaticElementInteractions: click-propagation stop layer, non-interactive container */}
               <div className="bg-white dark:bg-[#1C1C1E] rounded-3xl p-7 w-full max-w-[440px] flex flex-col items-center text-center shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -2326,7 +2326,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                           <div className="flex-1 min-w-0">
                             <h3 className="text-[15px] font-semibold text-slate-900 dark:text-white truncate">{name}</h3>
                             <div className="flex items-center gap-2 mt-1">
-                              <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded-sm uppercase tracking-wide">{(storeCopy.typeGroups || {})[item.kind] || item.kind}</span>
+                              <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded uppercase tracking-wide">{(storeCopy.typeGroups || {})[item.kind] || item.kind}</span>
                               {recycledAt && <span className="text-[12px] text-slate-400 dark:text-slate-500">{storeCopy.recycledAt(recycledAt)}</span>}
                             </div>
                           </div>
@@ -2335,18 +2335,18 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                               <button type="button" data-testid={`recycled-restore-${item.id}`} onClick={() => handleRestoreRecycled(item)}
                                 disabled={!!item.package_missing || busyId === item.id}
                                 title={item.package_missing ? storeCopy.recycleRestoreUnavailable : undefined}
-                                className="inline-flex h-8 items-center rounded-full bg-blue-600 px-4 text-[12px] font-semibold text-white shadow-xs transition-colors hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed">
+                                className="inline-flex h-8 items-center rounded-full bg-blue-600 px-4 text-[12px] font-semibold text-white shadow-sm transition-colors hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed">
                                 {storeCopy.recycleRestore}
                               </button>
                               <button type="button" data-testid={`recycled-export-${item.id}`} onClick={() => handleExportRecycled(item)}
                                 disabled={!!item.package_missing || busyId === item.id}
                                 title={item.package_missing ? storeCopy.recycleExportUnavailable : undefined}
-                                className="inline-flex h-8 items-center rounded-full bg-slate-100 px-4 text-[12px] font-semibold text-slate-700 shadow-xs transition-colors hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed dark:bg-[#2C2C2E] dark:text-slate-200 dark:hover:bg-[#3A3A3C]">
+                                className="inline-flex h-8 items-center rounded-full bg-slate-100 px-4 text-[12px] font-semibold text-slate-700 shadow-sm transition-colors hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed dark:bg-[#2C2C2E] dark:text-slate-200 dark:hover:bg-[#3A3A3C]">
                                 {storeCopy.recycleExport}
                               </button>
                               <button type="button" data-testid={`recycled-purge-${item.id}`} onClick={() => setPurgeConfirm({ id: item.id, name })}
                                 disabled={busyId === item.id}
-                                className="inline-flex h-8 items-center rounded-full bg-slate-100 px-4 text-[12px] font-semibold text-rose-600 shadow-xs transition-colors hover:bg-slate-200 disabled:opacity-40 dark:bg-[#2C2C2E] dark:text-rose-400 dark:hover:bg-[#3A3A3C]">
+                                className="inline-flex h-8 items-center rounded-full bg-slate-100 px-4 text-[12px] font-semibold text-rose-600 shadow-sm transition-colors hover:bg-slate-200 disabled:opacity-40 dark:bg-[#2C2C2E] dark:text-rose-400 dark:hover:bg-[#3A3A3C]">
                                 {storeCopy.recyclePurge}
                               </button>
                             </div>
@@ -2445,20 +2445,20 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                     />
                     <div className="flex shrink-0 items-center justify-end gap-3">
                       <button type="button" data-testid="tool-store-guide" onClick={() => setShowGuide(true)} title={storeCopy.guide.title}
-                        className="inline-flex h-9 items-center rounded-full bg-slate-100 px-4 text-[13px] font-semibold shadow-xs transition-colors hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
+                        className="inline-flex h-9 items-center rounded-full bg-slate-100 px-4 text-[13px] font-semibold shadow-sm transition-colors hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
                         <BookOpen size={14} className="mr-2 opacity-70" />
                         <span>{storeCopy.guide.title}</span>
                       </button>
                       {canMutateToolStore && (
                         <button type="button" data-testid="tool-store-manage-visibility" onClick={() => setManagingVisibility(v => !v)} title={storeCopy.modeVisibilityHint}
-                          className={`inline-flex h-9 items-center rounded-full px-4 text-[13px] font-semibold shadow-xs transition-colors ${managingVisibility ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]'}`}>
+                          className={`inline-flex h-9 items-center rounded-full px-4 text-[13px] font-semibold shadow-sm transition-colors ${managingVisibility ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]'}`}>
                           <Settings size={14} className="mr-2 opacity-70" />
                           <span>{managingVisibility ? storeCopy.doneManagingVisibility : storeCopy.manageVisibility}</span>
                         </button>
                       )}
                       {canMutateToolStore && (
                         <button type="button" data-testid="tool-store-upload-btn" onClick={handleUploadSkill} title={storeCopy.uploadSkillPackage} disabled={busyId === '__upload__'}
-                          className="inline-flex h-9 items-center rounded-full bg-slate-100 px-4 text-[13px] font-semibold shadow-xs transition-colors hover:bg-slate-200 disabled:opacity-50 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
+                          className="inline-flex h-9 items-center rounded-full bg-slate-100 px-4 text-[13px] font-semibold shadow-sm transition-colors hover:bg-slate-200 disabled:opacity-50 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
                           <Upload size={14} className="mr-2 opacity-70" />
                           <span>{storeCopy.uploadSkillPackage}</span>
                         </button>
@@ -2504,12 +2504,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                     )}
                     <div className="flex flex-col gap-3">
                         {/* 主维度切换:按类型 / 按业务,决定二级筛选集合;下方列表始终按另一维度分区 */}
-                        <div className="flex h-9 shrink-0 items-center self-start rounded-full bg-slate-100 p-1 shadow-xs dark:bg-[#2C2C2E]">
+                        <div className="flex h-9 shrink-0 items-center self-start rounded-full bg-slate-100 p-1 shadow-sm dark:bg-[#2C2C2E]">
                           {[{ key: 'type', label: storeCopy.groupByType }, { key: 'business', label: storeCopy.groupByBusiness }].map(seg => (
                             <button type="button" key={seg.key} onClick={() => { setGroupBy(seg.key); setActiveCategory('all'); }}
                               className={`inline-flex h-7 items-center rounded-full px-3 text-[13px] font-semibold transition-colors whitespace-nowrap ${
                                 groupBy === seg.key
-                                  ? 'bg-white text-slate-900 shadow-xs dark:bg-[#3A3A3C] dark:text-white'
+                                  ? 'bg-white text-slate-900 shadow-sm dark:bg-[#3A3A3C] dark:text-white'
                                   : 'text-slate-700 hover:bg-slate-200 dark:text-white dark:hover:bg-[#3A3A3C]'
                               }`}>
                               {seg.label}
@@ -2524,8 +2524,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                 key={chip.id}
                                 onClick={() => { setActiveCategory(chip.id); }}
                                 className={`h-9 whitespace-nowrap shrink-0 text-[13px] px-3.5 rounded-full font-semibold transition-colors ${isActive
-                                  ? 'bg-[#3A3A3C] text-white dark:bg-white dark:text-black'
-                                  : 'bg-[#F2F2F7] text-black dark:bg-[#2C2C2E] dark:text-white'}`}
+                                  ? 'bg-[#3A3A3C] text-[#fff] dark:bg-[#fff] dark:text-[#000]'
+                                  : 'bg-[#F2F2F7] text-[#000] dark:bg-[#2C2C2E] dark:text-[#fff]'}`}
                               >
                                 {chip.label}
                               </button>
@@ -2533,13 +2533,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                           })}
                           <button type="button" data-testid="tool-store-installed-only" onClick={() => setInstalledOnly(v => !v)} title={storeCopy.installedOnly}
                             className={`ml-auto h-9 whitespace-nowrap shrink-0 inline-flex items-center rounded-full px-3.5 text-[13px] font-semibold transition-colors ${installedOnly
-                              ? 'bg-blue-600 text-white hover:bg-blue-700'
-                              : 'bg-[#F2F2F7] text-black dark:bg-[#2C2C2E] dark:text-white'}`}>
+                              ? 'bg-blue-600 text-[#fff] hover:bg-blue-700'
+                              : 'bg-[#F2F2F7] text-[#000] dark:bg-[#2C2C2E] dark:text-[#fff]'}`}>
                             <Check size={14} className="mr-1.5 opacity-70" />
                             <span>{storeCopy.installedOnly}</span>
                           </button>
                           <button type="button" data-testid="tool-store-recycle-bin" onClick={() => setShowRecycleBin(true)} title={storeCopy.recycleBin}
-                            className="h-9 whitespace-nowrap shrink-0 inline-flex items-center rounded-full px-3.5 text-[13px] font-semibold transition-colors bg-[#F2F2F7] text-black hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
+                            className="h-9 whitespace-nowrap shrink-0 inline-flex items-center rounded-full px-3.5 text-[13px] font-semibold transition-colors bg-[#F2F2F7] text-[#000] hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-[#fff] dark:hover:bg-[#3A3A3C]">
                             <Trash2 size={14} className="mr-1.5 opacity-70" />
                             <span>{storeCopy.recycleBin}</span>
                           </button>
@@ -2547,7 +2547,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                               a dedicated read-only subpage, kept out of the regular card flow */}
                           {builtinPluginCards.length > 0 && (
                             <button type="button" data-testid="tool-store-builtin-plugins" onClick={() => setShowBuiltinPlugins(true)} title={(builtinCopy || {}).sectionTitle}
-                              className="h-9 whitespace-nowrap shrink-0 inline-flex items-center rounded-full px-3.5 text-[13px] font-semibold transition-colors bg-[#F2F2F7] text-black hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C]">
+                              className="h-9 whitespace-nowrap shrink-0 inline-flex items-center rounded-full px-3.5 text-[13px] font-semibold transition-colors bg-[#F2F2F7] text-[#000] hover:bg-slate-200 dark:bg-[#2C2C2E] dark:text-[#fff] dark:hover:bg-[#3A3A3C]">
                               <Package size={14} className="mr-1.5 opacity-70" />
                               <span>{(builtinCopy || {}).sectionTitle}</span>
                             </button>
@@ -2580,12 +2580,12 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                 onClick={() => setSelectedTool(tool)}
                                 className="group flex items-center gap-4 py-3 cursor-pointer px-3 border-b border-slate-100 dark:border-white/5 last:border-0"
                               >
-                                <TsToolIcon tool={tool} className="h-16 w-16 shrink-0 rounded-[16px] border border-black/5 shadow-xs transition-shadow group-hover:shadow-sm dark:border-white/5" imageClassName="h-11 w-11" fallbackSize={30} />
+                                <TsToolIcon tool={tool} className="h-16 w-16 flex-shrink-0 rounded-[16px] border border-black/5 shadow-sm transition-shadow group-hover:shadow dark:border-white/5" imageClassName="h-11 w-11" fallbackSize={30} />
                                 <div className="flex-1 min-w-0 flex flex-col justify-center py-1">
                                   <h3 className="text-[17px] font-semibold text-slate-900 dark:text-white truncate tracking-tight">{tool.title}</h3>
                                   <p className="text-[13px] text-slate-500 dark:text-slate-400 truncate mt-0.5 font-medium">{tool.subtitle}</p>
                                   <div className="flex items-center gap-2 mt-1.5">
-                                    <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded-sm uppercase tracking-wide">{tool.type}</span>
+                                    <span className="text-[10px] font-semibold text-slate-400 dark:text-slate-500 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded uppercase tracking-wide">{tool.type}</span>
                                     {tool.authRequired && (
                                       <span className="text-[10px] text-amber-500/80 dark:text-amber-400/80 flex items-center gap-0.5">
                                         <Zap size={10} /> {storeCopy.keyRequired}
@@ -2633,7 +2633,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                                                   checked={visible}
                                                   disabled={checkDisabled}
                                                   onChange={() => toggleModeVisibility(tool.backendId, m.key, !visible)}
-                                                  className="h-4 w-4 rounded-sm border-slate-300 accent-blue-600"
+                                                  className="h-4 w-4 rounded border-slate-300 accent-blue-600"
                                                 />
                                                 <span className={`text-[12px] font-medium ${visible ? 'text-slate-700 dark:text-slate-200' : 'text-slate-400 dark:text-slate-500'}`}>{m.label}</span>
                                               </label>
@@ -2662,7 +2662,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       hintClassName="text-slate-500 dark:text-slate-400"
                       action={!searching && !installedOnly && canMutateToolStore && (
                         <button type="button" data-testid="tool-store-empty-upload-btn" onClick={handleUploadSkill}
-                          className="mt-5 inline-flex h-9 items-center rounded-full bg-blue-600 px-5 text-[13px] font-semibold text-white shadow-xs transition-colors hover:bg-blue-700">
+                          className="mt-5 inline-flex h-9 items-center rounded-full bg-blue-600 px-5 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-blue-700">
                           <Upload size={14} className="mr-2" />{storeCopy.uploadSkillPackage}
                         </button>
                       )}
@@ -2680,7 +2680,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is covered by the dialog header close button
             // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container
             <div
-              className="fixed inset-0 z-90 flex items-center justify-center p-4 sm:p-6 bg-slate-900/40 dark:bg-black/60 backdrop-blur-md transition-all duration-300"
+              className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-6 bg-slate-900/40 dark:bg-black/60 backdrop-blur-md transition-all duration-300"
               onClick={() => setShowGuide(false)}
             >
               {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-propagation stop layer; keyboard events need no bubbling here */}
@@ -2716,7 +2716,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                     <h3 className="text-[14px] font-semibold mb-1.5">{storeCopy.guide.specTitle}</h3>
                     <p className="text-[13px] text-slate-600 dark:text-slate-300 leading-relaxed">{storeCopy.guide.specDesc}</p>
                     <button type="button" onClick={downloadSpec} data-testid="tool-store-download-spec"
-                      className="mt-3 inline-flex h-9 items-center rounded-full bg-blue-600 px-4 text-[13px] font-semibold text-white shadow-xs transition-colors hover:bg-blue-700">
+                      className="mt-3 inline-flex h-9 items-center rounded-full bg-blue-600 px-4 text-[13px] font-semibold text-white shadow-sm transition-colors hover:bg-blue-700">
                       <Download size={14} className="mr-2" />{storeCopy.guide.downloadSpec}
                     </button>
                     <p className="mt-2 text-[11px] text-slate-400 dark:text-slate-500">{storeCopy.guide.downloadHint}</p>
@@ -2726,13 +2726,13 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             </div>
           ), document.body)}
 
-          {/* Detail modal — portal 到 body：否则被主内容区 backdrop-blur-sm 祖先造的包含块困住，
+          {/* Detail modal — portal 到 body：否则被主内容区 backdrop-blur 祖先造的包含块困住，
               fixed inset-0 只盖住右侧内容区、盖不到左侧栏。portal 后蒙层铺满整个视口。 */}
           {selectedTool && createPortal((
             // biome-ignore lint/a11y/useKeyWithClickEvents: backdrop click-to-close layer; the keyboard path is covered by the dialog header close button
             // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, non-interactive container
             <div
-              className="fixed inset-0 z-90 flex items-center justify-center p-4 sm:p-6 bg-slate-900/40 dark:bg-black/60 backdrop-blur-md transition-all duration-300"
+              className="fixed inset-0 z-[90] flex items-center justify-center p-4 sm:p-6 bg-slate-900/40 dark:bg-black/60 backdrop-blur-md transition-all duration-300"
               onClick={() => setSelectedTool(null)}
             >
               {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-propagation stop layer; keyboard events need no bubbling here */}
@@ -2744,7 +2744,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                 <div className="absolute top-0 right-0 w-full px-6 py-5 flex items-center justify-end z-20 pointer-events-none">
                   <button type="button"
                     onClick={() => setSelectedTool(null)}
-                    className="pointer-events-auto w-8 h-8 flex items-center justify-center rounded-full bg-slate-100/80 dark:bg-black/50 backdrop-blur-sm text-slate-500 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-black transition-colors"
+                    className="pointer-events-auto w-8 h-8 flex items-center justify-center rounded-full bg-slate-100/80 dark:bg-black/50 backdrop-blur text-slate-500 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-black transition-colors"
                   >
                     <XIcon size={18} />
                   </button>
@@ -2752,7 +2752,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
 
                 <div className="overflow-y-auto p-6 sm:p-10 no-scrollbar pt-12">
                   <div className="flex flex-col sm:flex-row items-start gap-6 sm:gap-8 mb-8">
-                    <TsToolIcon tool={selectedTool} className="h-28 w-28 shrink-0 rounded-[28px] border border-black/5 shadow-md sm:h-32 sm:w-32 sm:rounded-[32px] dark:border-white/5" imageClassName="h-20 w-20 sm:h-24 sm:w-24" fallbackSize={56} />
+                    <TsToolIcon tool={selectedTool} className="h-28 w-28 flex-shrink-0 rounded-[28px] border border-black/5 shadow-md sm:h-32 sm:w-32 sm:rounded-[32px] dark:border-white/5" imageClassName="h-20 w-20 sm:h-24 sm:w-24" fallbackSize={56} />
                     <div className="flex-1">
                       <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white mb-2 tracking-tight">{selectedTool.title}</h2>
                       <p className="text-[17px] text-slate-500 dark:text-slate-400 mb-5 font-medium">{selectedTool.subtitle}</p>
@@ -2764,19 +2764,19 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   </div>
 
                   <div className="flex items-center justify-between py-5 mb-8 border-y border-slate-100 dark:border-white/5 overflow-x-auto no-scrollbar gap-8">
-                    <div className="flex flex-col shrink-0">
+                    <div className="flex flex-col flex-shrink-0">
                       <span className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider mb-1">{storeCopy.detailInterfaceType}</span>
                       <span className="text-xl font-bold text-slate-800 dark:text-slate-200">{selectedTool.type}</span>
                       <span className="text-[12px] text-slate-400 mt-1 flex items-center gap-1"><Server size={12}/> {storeCopy.detailOfficialSupport}</span>
                     </div>
-                    <div className="w-px h-12 bg-slate-200 dark:bg-slate-800 shrink-0" />
-                    <div className="flex flex-col shrink-0">
+                    <div className="w-px h-12 bg-slate-200 dark:bg-slate-800 flex-shrink-0" />
+                    <div className="flex flex-col flex-shrink-0">
                       <span className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider mb-1">{storeCopy.detailVersion}</span>
                       <span className="text-xl font-bold text-slate-800 dark:text-slate-200">{selectedTool.version}</span>
                       <span className="text-[12px] text-slate-400 mt-1">{storeCopy.detailStableRelease}</span>
                     </div>
-                    <div className="w-px h-12 bg-slate-200 dark:bg-slate-800 shrink-0" />
-                    <div className="flex flex-col shrink-0 pr-4">
+                    <div className="w-px h-12 bg-slate-200 dark:bg-slate-800 flex-shrink-0" />
+                    <div className="flex flex-col flex-shrink-0 pr-4">
                       <span className="text-[11px] text-slate-500 font-semibold uppercase tracking-wider mb-1">{storeCopy.detailLatency}</span>
                       <span className="text-xl font-bold text-slate-800 dark:text-slate-200">{selectedTool.latency}</span>
                       <span className="text-[12px] text-slate-400 mt-1 flex items-center gap-1"><Globe size={12}/> {storeCopy.detailGlobalAccel}</span>
@@ -2797,7 +2797,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                   )}
                   {connectedBanners.filter(b => b.show).map((banner, i) => (
                     <div key={`connected-banner-${i}`} className="mb-8 flex items-center gap-3 p-4 rounded-2xl bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-200 dark:border-emerald-500/30">
-                      <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white shrink-0">✓</span>
+                      <span className="w-8 h-8 rounded-lg bg-emerald-500 grid place-items-center text-white flex-shrink-0">✓</span>
                       <span className="text-emerald-700 dark:text-emerald-300 font-semibold text-[15px]">{banner.text}</span>
                     </div>
                   ))}

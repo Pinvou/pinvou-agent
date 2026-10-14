@@ -30,11 +30,11 @@ function ChangeFileList({ changes, copy }) {
   const visible = changes.slice(0, FILE_LIST_LIMIT);
   const rest = changes.length - visible.length;
   return (
-    <div className="mt-2 max-h-44 overflow-y-auto custom-scrollbar rounded-xl border border-black/5 dark:border-white/[0.07]">
+    <div className="mt-2 max-h-44 overflow-y-auto custom-scrollbar rounded-xl border border-black/[0.05] dark:border-white/[0.07]">
       {visible.map((change, index) => (
         <div key={`${change.path || 'file'}-${index}`}
-          className="flex items-center gap-2 border-b border-black/4 px-2.5 py-1.5 text-[11px] last:border-b-0 dark:border-white/5">
-          <span className="shrink-0 rounded-md bg-black/5 px-1.5 py-0.5 text-[10px] text-gray-500 dark:bg-white/8 dark:text-gray-400">
+          className="flex items-center gap-2 border-b border-black/[0.04] px-2.5 py-1.5 text-[11px] last:border-b-0 dark:border-white/[0.05]">
+          <span className="shrink-0 rounded-md bg-black/[0.05] px-1.5 py-0.5 text-[10px] text-gray-500 dark:bg-white/[0.08] dark:text-gray-400">
             {copy.rewindStatus[change.status] || copy.rewindStatus.other}
           </span>
           <span className="min-w-0 flex-1 truncate font-mono text-gray-600 dark:text-gray-300" title={change.path}>
@@ -62,7 +62,7 @@ export function RewindChip({ entry, disabled, copy, onOpen }) {
     <div className="group relative my-1 flex h-7 items-center justify-center">
       <div
         aria-hidden="true"
-        className="h-px w-24 bg-black/8 transition-opacity group-hover:opacity-0 dark:bg-white/12"
+        className="h-px w-24 bg-black/[0.08] transition-opacity group-hover:opacity-0 dark:bg-white/[0.12]"
       />
       <button
         type="button"
@@ -70,7 +70,7 @@ export function RewindChip({ entry, disabled, copy, onOpen }) {
         disabled={disabled}
         onClick={() => onOpen(entry)}
         title={entry.conversationOnly ? copy.rewindConversationOnlyNote : copy.rewindPreRestoreNote}
-        className="pointer-events-none absolute inline-flex max-w-full items-center gap-1.5 rounded-xl border border-black/6 bg-white px-2.5 py-1 text-[11px] text-gray-500 opacity-0 shadow-xs transition-opacity focus:pointer-events-auto focus:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 hover:text-gray-700 disabled:cursor-not-allowed dark:border-white/10 dark:bg-[#2A2B2E] dark:text-gray-400 dark:hover:text-gray-200"
+        className="pointer-events-none absolute inline-flex max-w-full items-center gap-1.5 rounded-xl border border-black/[0.06] bg-white px-2.5 py-1 text-[11px] text-gray-500 opacity-0 shadow-sm transition-opacity focus:pointer-events-auto focus:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 hover:text-gray-700 disabled:cursor-not-allowed dark:border-white/10 dark:bg-[#2A2B2E] dark:text-gray-400 dark:hover:text-gray-200"
       >
         <RotateCcw size={11} className="shrink-0" />
         <span className="truncate">{label}</span>
@@ -100,7 +100,7 @@ export function RewindUndoChip({ state, disabled, copy, onOpen }) {
         disabled={disabled}
         onClick={() => onOpen(state)}
         title={rewindUndoBodyText(copy, state)}
-        className="inline-flex max-w-full items-center gap-1.5 rounded-xl border border-blue-500/25 bg-blue-500/6 px-2.5 py-1 text-[11px] text-blue-600 transition-colors hover:bg-blue-500/10 disabled:cursor-not-allowed disabled:opacity-40 dark:text-blue-300"
+        className="inline-flex max-w-full items-center gap-1.5 rounded-xl border border-blue-500/25 bg-blue-500/[0.06] px-2.5 py-1 text-[11px] text-blue-600 transition-colors hover:bg-blue-500/10 disabled:cursor-not-allowed disabled:opacity-40 dark:text-blue-300"
       >
         <RotateCcw size={11} className="shrink-0" />
         <span className="truncate">{copy.rewindUndo}</span>
@@ -125,8 +125,8 @@ function RewindDialogShell({
       zIndexClass="z-50"
       backdropLabel={copy.rewindCancel}
       backdropClass="absolute inset-0 cursor-default bg-black/30 backdrop-blur-[2px]"
-      panelClass={`w-full max-w-[440px] rounded-2xl border p-4 shadow-xl backdrop-blur-xl outline-hidden ${
-        isDark ? 'border-white/10 bg-[#202124]/95' : 'border-black/8 bg-white/95'
+      panelClass={`w-full max-w-[440px] rounded-2xl border p-4 shadow-xl backdrop-blur-xl outline-none ${
+        isDark ? 'border-white/10 bg-[#202124]/95' : 'border-black/[0.08] bg-white/95'
       }`}
       busy={busy}
       labelledBy={`${testid}-title`}
@@ -141,7 +141,7 @@ function RewindDialogShell({
           <button
             type="button"
             data-testid={`${testid}-cancel`}
-            className="rounded-xl px-3 py-1.5 text-[12px] font-medium transition-colors bg-black/6 hover:bg-black/10 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-white/10 dark:hover:bg-white/15"
+            className="rounded-xl px-3 py-1.5 text-[12px] font-medium transition-colors bg-black/[0.06] hover:bg-black/10 disabled:cursor-not-allowed disabled:opacity-45 dark:bg-white/10 dark:hover:bg-white/15"
             disabled={busy}
             onClick={onCancel}
           >{copy.rewindCancel}</button>
@@ -165,7 +165,7 @@ function RewindDialogShell({
 // changes to be reverted, where the conversation will be truncated to, and
 // errors rendered truthfully (backend copy such as cross-session busy or
 // restore-failure text appears as-is). Portal to <body>, same as the shared
-// YoloConfirmCard: avoids the composer container's backdrop-blur-sm becoming the
+// YoloConfirmCard: avoids the composer container's backdrop-blur becoming the
 // containing block for fixed descendants.
 export function RewindConfirmDialog({ entry, previewState, error, busy, theme, copy, onCancel, onConfirm }) {
   const isDark = theme === 'dark';

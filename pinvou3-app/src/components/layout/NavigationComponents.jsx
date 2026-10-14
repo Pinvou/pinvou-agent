@@ -93,7 +93,7 @@ import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGroupi
       const menu = menuOpen && menuStyle && typeof document !== 'undefined' ? createPortal(
         <div onPointerDown={e => e.stopPropagation()}
           data-testid={chat.menuTestId}
-          className={`fixed z-1000 overflow-hidden rounded-xl py-1 shadow-xl ring-1 bg-white ring-black/10 dark:bg-[#202124] dark:ring-white/10`}
+          className={`fixed z-[1000] overflow-hidden rounded-xl py-1 shadow-xl ring-1 bg-white ring-black/10 dark:bg-[#202124] dark:ring-white/10`}
           style={menuStyle}>
           <button type="button" className={menuItemCls} onClick={() => { closeMenu(); onTogglePinned && onTogglePinned(chat.id, !chat.pinned); }}>
             {chat.pinned ? <PinOffIcon size={15} /> : <PinIcon size={15} />}
@@ -152,7 +152,7 @@ import { PROJECT_SESSION_DRAG_TYPE } from '../../features/projects/projectGroupi
               onClick={e => e.stopPropagation()}
               onKeyDown={e => { if (e.key === 'Enter' && !isImeComposing(e)) { e.preventDefault(); save(); } else if (e.key === 'Escape') { setEditing(false); setVal(chat.title); } }}
               onBlur={save}
-              className="w-full px-3 py-1 rounded-full text-[15px] outline-hidden bg-white text-[#1F1F1F] ring-1 ring-[#0B57D0] dark:bg-[#131314] dark:text-[#E3E3E3] dark:ring-[#A8C7FA]" />
+              className="w-full px-3 py-1 rounded-full text-[15px] outline-none bg-white text-[#1F1F1F] ring-1 ring-[#0B57D0] dark:bg-[#131314] dark:text-[#E3E3E3] dark:ring-[#A8C7FA]" />
           </div>
         );
       }

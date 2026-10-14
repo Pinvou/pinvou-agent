@@ -26,7 +26,7 @@ export const SearchOverlay = ({ theme, history, t, onSelect, onClose }) => {
     // biome-ignore lint/a11y/noStaticElementInteractions: backdrop click-to-close layer, not an interactive container; the keyboard path is Escape-to-close
     <div
       role="presentation"
-      className="fixed inset-0 z-180 flex items-start justify-center px-5 pt-[76px] bg-[rgba(255,255,255,.28)] dark:bg-[rgba(0,0,0,.34)]"
+      className="fixed inset-0 z-[180] flex items-start justify-center px-5 pt-[76px] bg-[rgba(255,255,255,.28)] dark:bg-[rgba(0,0,0,.34)]"
       style={{
         backdropFilter: 'blur(18px) saturate(150%)',
         WebkitBackdropFilter: 'blur(18px) saturate(150%)',
@@ -77,7 +77,7 @@ export const SearchOverlay = ({ theme, history, t, onSelect, onClose }) => {
               key={chat.id}
               type="button"
               onClick={() => onSelect && onSelect(chat.id)}
-              className="w-full min-w-0 rounded-[18px] px-4 py-3 text-left transition-colors hover:bg-black/5 dark:hover:bg-white/8 text-[#1D1D1F] dark:text-[#F2F2F7]"
+              className="w-full min-w-0 rounded-[18px] px-4 py-3 text-left transition-colors hover:bg-black/[.05] dark:hover:bg-white/[.08] text-[#1D1D1F] dark:text-[#F2F2F7]"
             >
               <div className="flex min-w-0 items-center justify-between gap-4">
                 <span className="min-w-0 truncate text-[16px] leading-6">{chat.title}</span>

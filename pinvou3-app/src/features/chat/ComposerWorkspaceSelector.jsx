@@ -56,7 +56,7 @@ export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWork
         ref={triggerRef}
         data-testid="chat-workspace-selector"
         onClick={toggle}
-        className="h-7 max-w-[180px] rounded-lg px-2 inline-flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400 hover:bg-black/5 dark:hover:bg-white/[0.07]"
+        className="h-7 max-w-[180px] rounded-lg px-2 inline-flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
         title={draftWorkspacePath || copy.defaultWorkspace}
       >
         {draftWorkspacePath
@@ -73,19 +73,19 @@ export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWork
         </div>
       )}
       {open && (
-        <div ref={panelRef} className="absolute z-40 bottom-9 left-0 w-[280px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/8 dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
+        <div ref={panelRef} className="absolute z-40 bottom-9 left-0 w-[280px] max-w-[calc(100vw-32px)] rounded-2xl border border-black/[0.08] dark:border-white/10 bg-white/95 dark:bg-[#202124]/95 backdrop-blur-xl shadow-xl p-2">
           <button type="button" onClick={chooseDirectory}
-            className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/4 dark:hover:bg-white/6">
+            className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
             <FolderOpen size={16} className="text-blue-500 shrink-0" />
             <span><span className="block text-[12px] font-semibold">{copy.chooseDirectory}</span><span className="block text-[10px] text-gray-400 mt-0.5">{copy.chooseDirectoryDesc}</span></span>
           </button>
           <button type="button" onClick={() => select(null)}
-            className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/4 dark:hover:bg-white/6">
+            className="w-full rounded-xl px-3 py-2.5 flex items-center gap-3 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
             <Sparkles size={16} className="text-emerald-500 shrink-0" />
             <span><span className="block text-[12px] font-semibold">{copy.defaultWorkspace}</span><span className="block text-[10px] text-gray-400 mt-0.5">{copy.defaultWorkspaceDesc}</span></span>
           </button>
           {recentWorkspaces.length > 0 && (
-            <div className="mt-1 pt-2 border-t border-black/5 dark:border-white/6">
+            <div className="mt-1 pt-2 border-t border-black/[0.05] dark:border-white/[0.06]">
               <div className="px-3 pb-1 text-[10px] uppercase tracking-wider text-gray-400">{copy.recentDirectories}</div>
               {/* Grant-notice parity (§9.4): a recents pick grants the chosen
                   folder directly (single root), the same notice weight as the
@@ -96,7 +96,7 @@ export function ComposerWorkspaceSelector({ copy, draftWorkspacePath, onPickWork
               {recentWorkspaces.map(path => (
                 <button key={path} type="button" title={path}
                   onClick={() => select(path)}
-                  className="w-full rounded-lg px-3 py-1.5 flex items-center gap-2 text-left hover:bg-black/4 dark:hover:bg-white/6">
+                  className="w-full rounded-lg px-3 py-1.5 flex items-center gap-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06]">
                   <FolderOpen size={13} className="shrink-0 text-gray-400" />
                   <span className="truncate text-[11px]">{workspaceName(path, copy.unknownDirectory)}</span>
                 </button>

@@ -269,7 +269,7 @@ export const SearchView = ({ theme, history, t, language, archived = EMPTY_ARCHI
                     onClick={() => switchPanel(tab.key)}
                     className={`h-7 px-3 rounded-full text-[13px] font-medium transition-colors ${
                       showArchived === tab.key
-                        ? 'bg-white text-[#1F1F1F] shadow-xs dark:bg-[#A8C7FA] dark:text-[#041E49]'
+                        ? 'bg-white text-[#1F1F1F] shadow-sm dark:bg-[#A8C7FA] dark:text-[#041E49]'
                         : 'text-[#444746] dark:text-[#C4C7C5]'
                     }`}
                   >

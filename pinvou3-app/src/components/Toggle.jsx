@@ -20,7 +20,7 @@ export function Toggle({ checked, onChange, disabled = false, size = 'sm', 'aria
       onClick={() => { if (onChange) onChange(!checked); }}
       className={`relative inline-flex shrink-0 items-center rounded-full transition-colors disabled:cursor-default ${s.track} ${disabled ? 'opacity-70' : ''} ${checked ? 'bg-[#34C759]' : 'bg-[#E5E5EA] dark:bg-[#39393D]'} ${className}`}
     >
-      <span className={`inline-block rounded-full bg-white shadow-sm transition-transform ${s.knob} ${checked ? s.on : s.off}`} />
+      <span className={`inline-block rounded-full bg-white shadow transition-transform ${s.knob} ${checked ? s.on : s.off}`} />
     </button>
   );
 }

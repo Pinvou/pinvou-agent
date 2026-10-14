@@ -549,13 +549,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const ToolIcon = tool.icon || Sparkles;
       return (
         <div className="flex justify-start">
-          <div className={`max-w-[800px] w-full rounded-4xl overflow-hidden border transition-all ${
+          <div className={`max-w-[800px] w-full rounded-[2rem] overflow-hidden border transition-all ${
             'bg-white border-slate-100 shadow-lg shadow-slate-200/30 dark:bg-[#1E1F20] dark:border-[#3A3A3C]/60'
           }`}>
             <div className={`relative p-5 border-b flex items-center gap-3.5 ${
-              'bg-linear-to-b from-blue-50/80 to-white border-slate-100 dark:bg-[#1E1F20] dark:border-[#3A3A3C]/60'
+              'bg-gradient-to-b from-blue-50/80 to-white border-slate-100 dark:bg-[#1E1F20] dark:border-[#3A3A3C]/60'
             }`}>
-              <div className="bg-linear-to-tr from-blue-600 to-indigo-500 p-2.5 rounded-xl shadow-lg shadow-blue-500/30">
+              <div className="bg-gradient-to-tr from-blue-600 to-indigo-500 p-2.5 rounded-xl shadow-lg shadow-blue-500/30">
                 <ToolIcon size={22} className="text-white" />
               </div>
               <div>
@@ -577,12 +577,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                 {tool.desc.split('。')[0]}。{t.uiChat.naturalQuestion}
               </p>
               <div className="flex items-center my-5">
-                <div className={`grow h-px ${'bg-linear-to-r from-transparent via-slate-200 to-transparent dark:bg-linear-to-r dark:from-transparent dark:via-[#3A3A3C] dark:to-transparent'}`}></div>
+                <div className={`flex-grow h-px ${'bg-gradient-to-r from-transparent via-slate-200 to-transparent dark:bg-gradient-to-r dark:from-transparent dark:via-[#3A3A3C] dark:to-transparent'}`}></div>
                 <span className={`px-4 text-[11px] uppercase tracking-wider font-semibold flex items-center gap-1.5 ${'text-slate-400 dark:text-slate-500'}`}>
                   <Sparkles size={13} />
                   <span>{t.uiChat.askMe}</span>
                 </span>
-                <div className={`grow h-px ${'bg-linear-to-r from-transparent via-slate-200 to-transparent dark:bg-linear-to-r dark:from-transparent dark:via-[#3A3A3C] dark:to-transparent'}`}></div>
+                <div className={`flex-grow h-px ${'bg-gradient-to-r from-transparent via-slate-200 to-transparent dark:bg-gradient-to-r dark:from-transparent dark:via-[#3A3A3C] dark:to-transparent'}`}></div>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                 {tool.welcomeQueries.map((q, i) => (
@@ -593,7 +593,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                     onClick={() => onSend && onSend(q)}
                     className={`group relative flex items-center justify-between p-3 rounded-2xl border text-left transition-all duration-200 ${
                       hovered === i
-                        ? 'border-blue-200/80 bg-blue-50/50 shadow-xs dark:border-blue-500/30 dark:bg-blue-500/10'
+                        ? 'border-blue-200/80 bg-blue-50/50 shadow-sm dark:border-blue-500/30 dark:bg-blue-500/10'
                         : 'border-slate-200/60 bg-slate-50/30 hover:border-blue-200 dark:border-[#3A3A3C]/50 dark:bg-[#2A2B2D]/30 dark:hover:border-[#555]'
                     }`}
                   >
@@ -667,8 +667,8 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const SceneIcon = scene.Icon || Sparkles;
       return (
         <div className="mb-2 flex flex-wrap justify-start gap-2 px-1" data-testid="pinvou-scene-tag">
-          <div className={`inline-flex h-8 items-center gap-2 rounded-[14px] px-3 text-[13px] font-semibold shadow-xs ${
-            'bg-[#F5F5F7] text-[#1D1D1F] ring-1 ring-black/6 dark:bg-[#2A2B2D] dark:text-[#F5F5F7] dark:ring-white/10'
+          <div className={`inline-flex h-8 items-center gap-2 rounded-[14px] px-3 text-[13px] font-semibold shadow-sm ${
+            'bg-[#F5F5F7] text-[#1D1D1F] ring-1 ring-black/[0.06] dark:bg-[#2A2B2D] dark:text-[#F5F5F7] dark:ring-white/10'
           }`}>
             <SceneIcon size={15} className="shrink-0" />
             <span>{scene.label}</span>
@@ -724,7 +724,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         const select = panelId === 'browser' ? onOpenBrowser : onOpenArtifacts;
         void invokeObservedPanelSelection(select, [], reportRightDockSelectionFailure);
       };
-      const triggerClass = `pointer-events-auto flex h-10 shrink-0 items-center gap-2 rounded-full border px-3 text-[14px] font-medium shadow-xs transition-colors ${
+      const triggerClass = `pointer-events-auto flex h-10 shrink-0 items-center gap-2 rounded-full border px-3 text-[14px] font-medium shadow-sm transition-colors ${
         theme === 'dark'
           ? 'border-white/10 bg-[#1E1F20] text-[#E3E3E3] hover:bg-[#333537]'
           : 'border-black/10 bg-white text-[#1F1F1F] hover:bg-[#F0F4F9]'
@@ -841,7 +841,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       const tail = tailOutputLines(task.output, 3);
       const lastLine = tailOutputLines(task.output, 1);
       return (
-        <div className="px-3 py-2 hover:bg-black/3 dark:hover:bg-white/4"
+        <div className="px-3 py-2 hover:bg-black/[0.03] dark:hover:bg-white/[0.04]"
           data-testid="bg-task-row" data-bg-shell-task-id={task.taskId}>
           <div className="flex items-center gap-2 min-w-0">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
@@ -3587,7 +3587,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                   data-testid="scheduled-run-back"
                   aria-label={chatCopy.backRuns}
                   title={chatCopy.backRuns}
-                  className={`pointer-events-auto h-10 max-w-[520px] max-sm:max-w-[55vw] px-3 rounded-full flex items-center gap-2 border text-[14px] font-medium transition-colors ${'bg-white border-[#E3E5E8] text-[#1F1F1F] hover:bg-[#F5F5F6] shadow-xs dark:bg-[#1E1F20] dark:border-[#333537] dark:text-[#E3E3E3] dark:hover:bg-[#2B2C2F]'}`}>
+                  className={`pointer-events-auto h-10 max-w-[520px] max-sm:max-w-[55vw] px-3 rounded-full flex items-center gap-2 border text-[14px] font-medium transition-colors ${'bg-white border-[#E3E5E8] text-[#1F1F1F] hover:bg-[#F5F5F6] shadow-sm dark:bg-[#1E1F20] dark:border-[#333537] dark:text-[#E3E3E3] dark:hover:bg-[#2B2C2F]'}`}>
                   <ArrowLeft size={16} className="shrink-0" />
                   <span className="truncate">{scheduledRunContext.taskName || chatCopy.scheduledRun}</span>
                   <span className={`shrink-0 text-[12px] max-sm:hidden ${'text-[#85888D] dark:text-[#9AA0A6]'}`}>{chatCopy.runRecords}</span>
@@ -3604,7 +3604,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                   onMouseEnter={() => prefetchChatPanel('auxChat')}
                   onFocus={() => prefetchChatPanel('auxChat')}
                   onClick={openAuxChatPanel}
-                  className={`pointer-events-auto flex h-10 shrink-0 items-center gap-2 rounded-full border px-3 text-[14px] font-medium shadow-xs transition-colors ${
+                  className={`pointer-events-auto flex h-10 shrink-0 items-center gap-2 rounded-full border px-3 text-[14px] font-medium shadow-sm transition-colors ${
                     auxChatPanel && auxChatDockActive
                       ? theme === 'dark'
                         ? 'border-blue-400/30 bg-blue-500/15 text-blue-300'
@@ -3661,7 +3661,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             {!hasMessages && !welcomeToolId && (
               /* Gemini Style Centered Empty State */
               <div className="w-full max-w-[760px] px-4 text-center mb-12 animate-in slide-in-from-bottom-4 duration-500">
-                <h1 data-testid="chat-greeting" className={`${isWeb ? 'text-[28px] leading-[1.35] px-2 text-balance sm:text-[44px] sm:leading-normal sm:px-0' : 'text-[34px] md:text-[44px] leading-tight whitespace-normal wrap-break-word'} font-normal mb-2 ${'text-[#1F1F1F] dark:text-[#E3E3E3]'}`}>
+                <h1 data-testid="chat-greeting" className={`${isWeb ? 'text-[28px] leading-[1.35] px-2 [text-wrap:balance] sm:text-[44px] sm:leading-normal sm:px-0' : 'text-[34px] md:text-[44px] leading-tight whitespace-normal break-words'} font-normal mb-2 ${'text-[#1F1F1F] dark:text-[#E3E3E3]'}`}>
                   {t.chatGreeting}
                 </h1>
                 {/* Scene entry cards: replace the scene-tab stack above the
@@ -3746,17 +3746,17 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           </div>
 
           {/* 底部渐变蒙层:内容滚到底时在输入框上方柔和淡出(pointer-events-none 不挡滑动/点击;高度跟随输入框 auto-grow)。 */}
-          <div className={`pointer-events-none absolute bottom-0 inset-x-0 z-15 bg-linear-to-t to-transparent from-30% via-70% ${'from-white via-white/95 dark:from-[#131314] dark:via-[#131314]/95'}`}
+          <div className={`pointer-events-none absolute bottom-0 inset-x-0 z-[15] bg-gradient-to-t to-transparent from-30% via-70% ${'from-white via-white/95 dark:from-[#131314] dark:via-[#131314]/95'}`}
             style={{ height: (composerH ? composerH + 48 : 172) + 'px' }} />
           {hasMessages && showScrollBottom && (
-            <div className="pointer-events-none absolute inset-x-0 z-25 flex justify-center"
+            <div className="pointer-events-none absolute inset-x-0 z-[25] flex justify-center"
               style={{ bottom: (composerH ? composerH + 54 : 172) + 'px' }}>
               <button
                 type="button"
                 onClick={scrollChatToBottom}
                 aria-label={t.backToBottom}
                 title={t.backToBottom}
-                className={`pointer-events-auto w-9 h-9 rounded-full flex items-center justify-center shadow-lg backdrop-blur-sm transition-all hover:-translate-y-0.5 active:translate-y-0 ${
+                className={`pointer-events-auto w-9 h-9 rounded-full flex items-center justify-center shadow-lg backdrop-blur transition-all hover:-translate-y-0.5 active:translate-y-0 ${
                   'bg-white/95 text-[#1F1F1F] border border-black/10 hover:bg-[#F8FAFF] dark:bg-[#2B2C2F]/95 dark:text-[#E3E3E3] dark:border-white/10 dark:hover:bg-[#34363A]'
                 }`}>
                 <ChevronDown size={15} />
@@ -3764,7 +3764,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             </div>
           )}
           {hasMessages && chatItems.some((item) => item.type === 'memory_candidate' && !item.resolved) && (
-            <div className="pointer-events-none absolute inset-x-0 z-24"
+            <div className="pointer-events-none absolute inset-x-0 z-[24]"
               style={{ ...responsiveGutterStyle, bottom: (composerH ? composerH + 28 : 148) + 'px' }}>
               <div className="max-w-[800px] w-full mx-auto flex flex-col items-end gap-3">
                 {chatItems
@@ -3820,10 +3820,10 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                 are mutated only after the bridge confirms their withdrawal.
                 ⚡ remains the explicit interrupt-and-send action. */}
             {(queued.length > 0 || queuedActionError) && (
-              <div className={`mb-2 rounded-2xl border shadow-lg backdrop-blur-xl overflow-hidden max-h-[40vh] overflow-y-auto ${'border-black/6 bg-white/90 dark:border-white/10 dark:bg-[#161618]/90'}`}>
+              <div className={`mb-2 rounded-2xl border shadow-lg backdrop-blur-xl overflow-hidden max-h-[40vh] overflow-y-auto ${'border-black/[0.06] bg-white/90 dark:border-white/10 dark:bg-[#161618]/90'}`}>
                 {queued.map((q, index) => (
                   <div key={q.id}
-                    className={`flex items-center gap-2 px-3 py-2 text-[12px] text-[#444746] dark:text-[#C4C7C5] ${index > 0 ? 'border-t border-black/6 dark:border-white/10' : ''}`}>
+                    className={`flex items-center gap-2 px-3 py-2 text-[12px] text-[#444746] dark:text-[#C4C7C5] ${index > 0 ? 'border-t border-black/[0.06] dark:border-white/10' : ''}`}>
                     <span className="opacity-60 shrink-0">{t.queuedTag}</span>
                     {queuedEdit && queuedEdit.id === q.id ? (
                       <textarea
@@ -3849,7 +3849,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                             void handleSaveQueuedEdit(q);
                           }
                         }}
-                        className="flex-1 min-w-0 resize-none rounded-lg border border-black/10 bg-white/80 px-2 py-1 outline-hidden focus:border-blue-500 dark:border-white/15 dark:bg-white/5"
+                        className="flex-1 min-w-0 resize-none rounded-lg border border-black/10 bg-white/80 px-2 py-1 outline-none focus:border-blue-500 dark:border-white/15 dark:bg-white/5"
                       />
                     ) : (
                       // A queued chip shows only the body: the mention injection
@@ -3935,7 +3935,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                   </div>
                 ))}
                 {queuedActionError && (
-                  <div role="status" className="border-t border-black/6 px-3 py-2 text-[11px] text-amber-700 dark:border-white/10 dark:text-amber-300">
+                  <div role="status" className="border-t border-black/[0.06] px-3 py-2 text-[11px] text-amber-700 dark:border-white/10 dark:text-amber-300">
                     {queuedActionError}
                   </div>
                 )}
@@ -4011,7 +4011,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               return (
                 // biome-ignore lint/a11y/useKeyWithClickEvents: background click-to-close layer; keyboard path handled by the dialog's cancel button
                 // biome-ignore lint/a11y/noStaticElementInteractions: background click-to-close layer; non-interactive container
-                <div data-testid="voice-asr-setup-dialog" className="fixed inset-0 z-80 flex items-center justify-center p-4 bg-black/45"
+                <div data-testid="voice-asr-setup-dialog" className="fixed inset-0 z-[80] flex items-center justify-center p-4 bg-black/45"
                   onClick={() => { if (!su.installing) { pendingVoiceAfterIntroRef.current = null; bridge.voice.closeVoiceAsrSetup(); } }}>
                   {/* biome-ignore lint/a11y/useKeyWithClickEvents: click bubble-stop layer; keyboard events need no bubbling handling */}
                   {/* biome-ignore lint/a11y/noStaticElementInteractions: click bubble-stop layer; non-interactive container */}
@@ -4054,7 +4054,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                 </div>
               );
             })()}
-            <div className="relative bg-white/80 dark:bg-[#161618]/85 backdrop-blur-2xl border border-black/6 dark:border-white/10 rounded-[28px] shadow-lg focus-within:border-blue-400/50 dark:focus-within:border-blue-500/50 transition-colors px-4 pt-3 pb-2.5">
+            <div className="relative bg-white/80 dark:bg-[#161618]/85 backdrop-blur-2xl border border-black/[0.06] dark:border-white/10 rounded-[28px] shadow-lg focus-within:border-blue-400/50 dark:focus-within:border-blue-500/50 transition-colors px-4 pt-3 pb-2.5">
               <VoiceComposerPillLayer
                 voiceInput={voiceInput}
                 voiceMode={voiceMode}
@@ -4082,7 +4082,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                   }`} />
                   {/* Round-11 m14: no truncate — blocked id lists must stay
                       fully readable (the actionable part was ellipsized). */}
-                  <span className="min-w-0 wrap-break-word">{sceneCapabilityStatus.text}</span>
+                  <span className="min-w-0 break-words">{sceneCapabilityStatus.text}</span>
                 </div>
               )}
               {!scheduledRunContext && !conversationStarted && activeScene && (
@@ -4155,7 +4155,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                     ? `session-mention-option-${mentionCandidates[mentionIndex].sessionId}`
                     : undefined
                 }
-                className="w-full bg-transparent resize-none outline-hidden text-gray-800 dark:text-gray-100 text-[16px] leading-relaxed min-h-[48px] overflow-y-auto hide-scrollbar placeholder:text-gray-400 dark:placeholder:text-gray-500"
+                className="w-full bg-transparent resize-none outline-none text-gray-800 dark:text-gray-100 text-[16px] leading-relaxed min-h-[48px] overflow-y-auto hide-scrollbar placeholder:text-gray-400 dark:placeholder:text-gray-500"
               />
               <TextareaContextMenu inputRef={composerRef} setValue={setInputText} t={t} />
               {inputLimitReached && (
@@ -4307,8 +4307,8 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                         <button type="button" onClick={handleSend} disabled={!ready}
                           aria-label={busy ? t.queueMsg : t.sendMsg}
                           title={busy ? (can('interruptSend') ? t.queueMsgTip : t.queueMsg) : t.sendMsg}
-                          className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready ? (isQueue ? 'bg-linear-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md ring-2 ring-amber-300 dark:ring-amber-400' : 'bg-linear-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0') : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
-                          <Send size={17} className="translate-x-px" />
+                          className={`w-9 h-9 shrink-0 rounded-full flex items-center justify-center transition-all ${ready ? (isQueue ? 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md ring-2 ring-amber-300 dark:ring-amber-400' : 'bg-gradient-to-b from-[#47A1FF] to-[#007AFF] text-white shadow-md hover:-translate-y-0.5 active:translate-y-0') : 'bg-black/5 dark:bg-white/10 text-gray-400 cursor-not-allowed'}`}>
+                          <Send size={17} className="translate-x-[1px]" />
                         </button>
                       )}
                     </div>
@@ -4338,7 +4338,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             // a bound session/draft; confirming continues the switch, cancelling
             // stays in Plan. Mounted outside the conversation column (the card
             // portals itself to body, escaping the composer container's fixed
-            // containing block from backdrop-blur-sm — same as the code page).
+            // containing block from backdrop-blur — same as the code page).
             <YoloConfirmCard
               theme={theme}
               copy={{
@@ -4357,7 +4357,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
 
           {artifactsVisible && artifactsFullscreen && artifactFullscreenPublicationReady && createPortal(
             <div
-              className="fixed left-0 right-0 bottom-0 z-1000 pointer-events-auto"
+              className="fixed left-0 right-0 bottom-0 z-[1000] pointer-events-auto"
               style={{ top: can('desktopChrome') ? '36px' : 0 }}
               data-testid="artifact-fullscreen-panel">
               <ViewErrorBoundary t={t} variant="panel">
@@ -4523,7 +4523,7 @@ const SelectionCopyButton = ({ hostRef, targetRef, t }) => {
           title={selCopy.copied ? t.copied : t.copyMsg}
           onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
           onClick={(e) => { e.preventDefault(); e.stopPropagation(); onCopy(); }}
-          className={`absolute z-30 h-9 min-w-[92px] px-3 rounded-[10px] flex items-center justify-start gap-2 text-[13px] font-medium shadow-lg backdrop-blur-sm transition-colors ${
+          className={`absolute z-30 h-9 min-w-[92px] px-3 rounded-[10px] flex items-center justify-start gap-2 text-[13px] font-medium shadow-lg backdrop-blur transition-colors ${
             'bg-white text-[#1F1F1F] hover:bg-[#F8FAFF] border border-black/10 dark:bg-[#2B2C2F] dark:text-[#E3E3E3] dark:hover:bg-[#34363A] dark:border-white/10'
           }`}
           style={{ left: selCopy.x + 'px', top: selCopy.y + 'px' }}
@@ -4611,7 +4611,7 @@ const TextareaContextMenu = ({ inputRef, setValue, t }) => {
       const menuItemCls = (disabled) => `w-full h-9 px-3 flex items-center gap-2 text-left text-[13px] transition-colors ${
         disabled
           ? 'text-black/30 cursor-not-allowed dark:text-white/30'
-          : 'text-[#1F1F1F] hover:bg-black/6 dark:text-[#E3E3E3] dark:hover:bg-white/10'
+          : 'text-[#1F1F1F] hover:bg-black/[0.06] dark:text-[#E3E3E3] dark:hover:bg-white/10'
       }`;
 
       const selectAll = () => {
@@ -4640,7 +4640,7 @@ const TextareaContextMenu = ({ inputRef, setValue, t }) => {
         // biome-ignore lint/a11y/noStaticElementInteractions: context-menu positioning container; preventDefault avoids blur; menu items are real buttons
         <div
           data-textarea-context-menu="true"
-          className={`w-[136px] overflow-hidden rounded-[12px] py-1 shadow-xl backdrop-blur-sm border ${
+          className={`w-[136px] overflow-hidden rounded-[12px] py-1 shadow-xl backdrop-blur border ${
             'bg-white border-black/10 dark:bg-[#2B2C2F] dark:border-white/10'
           }`}
           style={{ position: 'fixed', zIndex: 9999, left: menu.x + 'px', top: menu.y + 'px' }}
@@ -4730,7 +4730,7 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
               <textarea autoFocus value={val} onChange={e => setVal(e.target.value)}
                 rows={Math.min(6, Math.max(1, val.split('\n').length))}
                 onKeyDown={e => { if (isPlainEnter(e)) { e.preventDefault(); commit(); } else if (e.key === 'Escape') { setEditing(false); setVal(mentionSplit.text); } }}
-                className={`w-full min-w-0 max-w-full wrap-break-word wrap-anywhere rounded-[16px] px-4 py-2 text-[15px] outline-hidden ${
+                className={`w-full min-w-0 max-w-full break-words [overflow-wrap:anywhere] rounded-[16px] px-4 py-2 text-[15px] outline-none ${
                   unified
                     ? 'bg-[#E9EEF6] text-[#1F1F1F] dark:bg-[#2A2B2E] dark:text-[#E3E3E3]'
                     : 'bg-[#D3E3FD] text-[#1F1F1F] dark:bg-[#004A77] dark:text-[#E3E3E3]'
@@ -4749,7 +4749,7 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
           ? 'text-[#1967D2] dark:text-[#8AB4F8]'
           : 'text-[#7C3AED] dark:text-[#D0BCFF]';
         const tintBg = isWu
-          ? 'bg-[#1A73E8]/6 dark:bg-[#1A73E8]/10'
+          ? 'bg-[#1A73E8]/[0.06] dark:bg-[#1A73E8]/10'
           : 'bg-[#7C3AED]/[0.07] dark:bg-[#D0BCFF]/10';
         return (
           <div className="flex justify-end min-w-0 max-w-full">
@@ -4757,12 +4757,12 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
               <div className={`flex items-center justify-end gap-1 mb-1 text-[11px] font-medium ${tintCls}`}>
                 <span>{isWu ? '✨' : '📋'}</span><span>{t.uiChatExtra.transferRevision(item.pinvouTransfer)}</span>
               </div>
-              <div className={`min-w-0 max-w-full wrap-break-word wrap-anywhere px-5 py-3 rounded-[20px] text-[15px] leading-relaxed whitespace-pre-wrap ${tintBg} text-[#1F1F1F] dark:text-[#E3E3E3]`}>{item.text}</div>
+              <div className={`min-w-0 max-w-full break-words [overflow-wrap:anywhere] px-5 py-3 rounded-[20px] text-[15px] leading-relaxed whitespace-pre-wrap ${tintBg} text-[#1F1F1F] dark:text-[#E3E3E3]`}>{item.text}</div>
             </div>
           </div>
         );
       }
-      const actBtn = 'text-[#9AA0A6] hover:text-[#444746] hover:bg-black/6 dark:text-[#8E8E8E] dark:hover:text-[#E3E3E3] dark:hover:bg-white/10';
+      const actBtn = 'text-[#9AA0A6] hover:text-[#444746] hover:bg-black/[0.06] dark:text-[#8E8E8E] dark:hover:text-[#E3E3E3] dark:hover:bg-white/10';
       // 附件行拆出正文,附件以独立小气泡显示在正文气泡上方(纯附件消息只显示附件气泡)
       const { text: bodyText, attachments: attachmentNames } = delivered
         ? { text: mentionSplit.text, attachments: [] }
@@ -4820,7 +4820,7 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
                 })}
               </div>
             )}
-            {bodyText && <div className={`min-w-0 max-w-full wrap-break-word wrap-anywhere px-4 py-3 rounded-[20px] rounded-br-md text-[14px] leading-6 whitespace-pre-wrap ${
+            {bodyText && <div className={`min-w-0 max-w-full break-words [overflow-wrap:anywhere] px-4 py-3 rounded-[20px] rounded-br-md text-[14px] leading-6 whitespace-pre-wrap ${
               unified
                 ? 'bg-[#E9EEF6] text-[#1F1F1F] dark:bg-[#2A2B2E] dark:text-[#E3E3E3]'
                 : 'bg-[#D3E3FD] text-[#1F1F1F] dark:bg-[#004A77] dark:text-[#E3E3E3]'
@@ -5209,7 +5209,7 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
               }}
             >
               <div className="flex items-center gap-2 min-w-0">
-                <span className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-[#34C759]/15 text-[#30D158]">
+                <span className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 bg-[#34C759]/[0.15] text-[#30D158]">
                   <Check size={15} />
                 </span>
                 <div className="min-w-0">
@@ -5221,7 +5221,7 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
                 </div>
               </div>
               {text && (
-                <div className="mt-3 ml-9 border-l-2 border-[#0A84FF]/70 pl-3 py-1 text-[13px] leading-relaxed wrap-break-word text-[#E8EAED]">
+                <div className="mt-3 ml-9 border-l-2 border-[#0A84FF]/70 pl-3 py-1 text-[13px] leading-relaxed break-words text-[#E8EAED]">
                   “{text}”
                 </div>
               )}
@@ -5252,7 +5252,7 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-2 min-w-0">
-                  <span className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${resolved ? 'bg-[#34C759]/15 text-[#30D158]' : 'bg-[#0A84FF]/16 text-[#7DBDFF]'}`}>
+                  <span className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${resolved ? 'bg-[#34C759]/[0.15] text-[#30D158]' : 'bg-[#0A84FF]/[0.16] text-[#7DBDFF]'}`}>
                     {resolved ? <Check size={15} /> : <Brain size={15} />}
                   </span>
                   <div className="min-w-0">
@@ -5264,7 +5264,7 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
                   <span className="text-[11px] px-2 py-1 rounded-full bg-white/[0.07] text-[#AEB4BC]">{meta.label}</span>
                   {!resolved && (
                     <button type="button"
-                      className="w-6 h-6 rounded-full flex items-center justify-center text-[#8E8E93] hover:text-[#F2F3F5] hover:bg-white/8 transition-colors"
+                      className="w-6 h-6 rounded-full flex items-center justify-center text-[#8E8E93] hover:text-[#F2F3F5] hover:bg-white/[0.08] transition-colors"
                       title={chatCopy.ignoreOnce}
                       data-testid="memory-candidate-dismiss"
                       onClick={() => bridge.available && bridge.memory.ignoreMemoryCandidate && bridge.memory.ignoreMemoryCandidate(item.memoryId, item.id)}
@@ -5274,15 +5274,15 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
                   )}
                 </div>
               </div>
-              <div className="mt-3 ml-9 border-l-2 border-[#0A84FF]/70 pl-3 py-1 text-[14px] leading-relaxed wrap-break-word text-[#F2F3F5]">
+              <div className="mt-3 ml-9 border-l-2 border-[#0A84FF]/70 pl-3 py-1 text-[14px] leading-relaxed break-words text-[#F2F3F5]">
                 “{text}”
               </div>
               {!resolved && <div className="mt-2 ml-9 text-[12px] leading-relaxed text-[#AEB4BC]">{meta.hint}</div>}
               {!resolved && (
                 <div className="mt-3 ml-9 flex flex-wrap items-center gap-2">
                   <button type="button" data-testid="memory-candidate-confirm" className="inline-flex items-center gap-1.5 text-[13px] font-medium px-3.5 py-1.5 rounded-full bg-[#0A84FF] text-white hover:bg-[#1677D2] transition-colors" onClick={() => bridge.available && bridge.memory.confirmMemoryCandidate && bridge.memory.confirmMemoryCandidate(item.memoryId, item.id)}><Check size={14} />{chatCopy.remember}</button>
-                  <button type="button" data-testid="memory-candidate-ignore" className="inline-flex items-center gap-1.5 text-[13px] px-3.5 py-1.5 rounded-full bg-white/8 text-[#E8EAED] hover:bg-white/12 transition-colors" onClick={() => bridge.available && bridge.memory.ignoreMemoryCandidate && bridge.memory.ignoreMemoryCandidate(item.memoryId, item.id)}><X size={14} />{chatCopy.ignoreOnce}</button>
-                  <button type="button" data-testid="memory-candidate-never" className="text-[13px] px-2 py-1.5 rounded-full text-[#AEB4BC] hover:text-[#F2F3F5] hover:bg-white/8 transition-colors" onClick={() => bridge.available && bridge.memory.neverMemoryCandidate && bridge.memory.neverMemoryCandidate(item.memoryId, item.id)}>{chatCopy.neverAsk}</button>
+                  <button type="button" data-testid="memory-candidate-ignore" className="inline-flex items-center gap-1.5 text-[13px] px-3.5 py-1.5 rounded-full bg-white/[0.08] text-[#E8EAED] hover:bg-white/[0.12] transition-colors" onClick={() => bridge.available && bridge.memory.ignoreMemoryCandidate && bridge.memory.ignoreMemoryCandidate(item.memoryId, item.id)}><X size={14} />{chatCopy.ignoreOnce}</button>
+                  <button type="button" data-testid="memory-candidate-never" className="text-[13px] px-2 py-1.5 rounded-full text-[#AEB4BC] hover:text-[#F2F3F5] hover:bg-white/[0.08] transition-colors" onClick={() => bridge.available && bridge.memory.neverMemoryCandidate && bridge.memory.neverMemoryCandidate(item.memoryId, item.id)}>{chatCopy.neverAsk}</button>
                 </div>
               )}
             </div>

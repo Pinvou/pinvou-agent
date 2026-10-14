@@ -187,10 +187,10 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       panelId="aux-chat"
       activationKey={activationKey}
       onActiveChange={onActiveChange}
-      className="border-l border-black/6 bg-white/92 backdrop-blur-xl dark:border-white/[0.07] dark:bg-[#17181A]/96"
+      className="border-l border-black/[0.06] bg-white/92 backdrop-blur-xl dark:border-white/[0.07] dark:bg-[#17181A]/96"
       dataTestId="aux-chat-panel"
     >
-      <div className="h-14 shrink-0 px-3 flex items-center gap-2 border-b border-black/5 dark:border-white/6">
+      <div className="h-14 shrink-0 px-3 flex items-center gap-2 border-b border-black/[0.05] dark:border-white/[0.06]">
         <MessageSquare size={15} className="shrink-0 text-gray-400" />
         <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{copy.panelTitle}</span>
         <button
@@ -201,7 +201,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
           className={`shrink-0 h-7 rounded-lg px-2 flex items-center gap-1 text-[11px] transition-colors ${
             view.restartArmed
               ? 'bg-red-500/10 text-red-600 dark:text-red-400'
-              : 'text-gray-400 hover:bg-black/5 dark:hover:bg-white/[0.07]'
+              : 'text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]'
           }`}
           aria-label={view.restartArmed ? copy.newTopicConfirm : copy.newTopic}
           aria-pressed={view.restartArmed}
@@ -217,7 +217,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
           type="button"
           data-testid="aux-chat-close"
           onClick={onClose}
-          className="w-7 h-7 shrink-0 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/5 dark:hover:bg-white/[0.07]"
+          className="w-7 h-7 shrink-0 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07]"
           aria-label={copy.close}
         >
           <X size={14} />
@@ -227,7 +227,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
       <div ref={scrollRef} className="custom-scrollbar flex-1 min-h-0 overflow-y-auto px-4 py-4">
         {!hasContent && (
           <div className="space-y-2">
-            <div className="rounded-xl border border-black/5 bg-black/2 px-3 py-2.5 text-[12px] leading-5 text-gray-500 dark:border-white/[0.07] dark:bg-white/3 dark:text-gray-400">
+            <div className="rounded-xl border border-black/[0.05] bg-black/[0.02] px-3 py-2.5 text-[12px] leading-5 text-gray-500 dark:border-white/[0.07] dark:bg-white/[0.03] dark:text-gray-400">
               {copy.landingHint}
             </div>
             <div className="px-1 text-[12px] text-gray-400" role="status">
@@ -244,7 +244,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
         )}
       </div>
 
-      <div className="shrink-0 border-t border-black/5 px-3 py-3 dark:border-white/6">
+      <div className="shrink-0 border-t border-black/[0.05] px-3 py-3 dark:border-white/[0.06]">
         {busy && (
           <div data-testid="aux-chat-busy-hint" className="mb-2 text-[11px] text-gray-400" role="status">{copy.busyHint}</div>
         )}
@@ -261,7 +261,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
           <div className="mb-2 text-[11px] text-red-600 dark:text-red-400" role="alert">{copy.discardFailed}</div>
         )}
         <div className={`rounded-xl border px-3 py-2 ${
-          theme === 'dark' ? 'border-white/8 bg-white/3' : 'border-black/8 bg-white/60'
+          theme === 'dark' ? 'border-white/[0.08] bg-white/[0.03]' : 'border-black/[0.08] bg-white/60'
         }`}>
           {view.quotes.length > 0 && (
             <div data-testid="aux-quote-chips" className="mb-2 space-y-1.5">
@@ -272,16 +272,16 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
               {view.quotes.map((quote, index) => (
                 <div
                   key={`${index}-${quote.text.slice(0, 24)}`}
-                  className="group/quote flex items-start gap-1.5 rounded-lg border border-black/5 bg-black/2 px-2 py-1.5 dark:border-white/[0.07] dark:bg-white/4"
+                  className="group/quote flex items-start gap-1.5 rounded-lg border border-black/[0.05] bg-black/[0.02] px-2 py-1.5 dark:border-white/[0.07] dark:bg-white/[0.04]"
                 >
-                  <div className="min-w-0 flex-1 line-clamp-3 whitespace-pre-wrap wrap-break-word text-[12px] leading-5 text-gray-500 dark:text-gray-400">
+                  <div className="min-w-0 flex-1 line-clamp-3 whitespace-pre-wrap break-words text-[12px] leading-5 text-gray-500 dark:text-gray-400">
                     {quote.text}
                   </div>
                   <button
                     type="button"
                     data-testid="aux-quote-remove"
                     onClick={() => removeAuxQuote(sessionId, index)}
-                    className="h-5 w-5 shrink-0 rounded-md flex items-center justify-center text-gray-400 hover:bg-black/6 dark:hover:bg-white/8"
+                    className="h-5 w-5 shrink-0 rounded-md flex items-center justify-center text-gray-400 hover:bg-black/[0.06] dark:hover:bg-white/[0.08]"
                     aria-label={copy.quoteRemove}
                     title={copy.quoteRemove}
                   >
@@ -306,7 +306,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
             onKeyDown={handleComposerKeyDown}
             placeholder={copy.inputPlaceholder}
             aria-label={copy.inputPlaceholder}
-            className="custom-scrollbar max-h-32 flex-1 resize-none bg-transparent text-[13px] leading-5 outline-hidden placeholder:text-gray-400"
+            className="custom-scrollbar max-h-32 flex-1 resize-none bg-transparent text-[13px] leading-5 outline-none placeholder:text-gray-400"
           />
           <button
             type="button"
