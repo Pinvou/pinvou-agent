@@ -6856,3 +6856,98 @@ Dependency audit ran all eighteen actual PE groups in 1.439s; compatibility audi
 ran them in 1.616s. All four original-image fixture groups executed without skips.
 Both passed affected vet, two-file formatting and diff checks; every independent
 process closed. The independent-prefix post-copy cancellation finding is closed.
+
+## T09 forty-fourth batch: original version record in current signed PE bytes
+
+`windowsversion.CaptureResourceRecord` reads the original uint16 root length at
+the beginning of an owned resource. It captures exactly that inner record into
+another immutable snapshot and freshly checks every physical nested block.
+The complete resource identity and all bytes after the declared record retain
+separate identities. The tail is opaque data, not approved padding, extension or
+native validity. A 33 MiB opaque-tail positive confirms that the atomic 32 MiB
+business-batch limit does not become an artifact/resource limit. Whole-resource,
+record source/copy and block capacities remain explicit, separate logical limits.
+
+The known root framing and 52-byte fixed structure are checked by existing
+observers. No CompanyName, translation, native resource lookup or app-version
+normalization is inferred. The tail is hashed from the same original snapshot in
+bounded 32 KiB reads without copying it into the inner record. Later boundary,
+capture, physical-block, tail-read or cancellation failure returns literal zero
+ResourceRecord, discarding earlier record/tree/fixed facts.
+
+`Verifier.InspectPEVersionInstaller` composes the existing current signed package/
+Root/deny/FullPack/native-byte/PE checks with exact Resource-path capture and that
+inner-record observer. Selector count/depth and minimum image/member source/copy
+capacity bounds precede path cloning and all context/current-source callbacks.
+Original resource-tree image identity must equal the signed installer framing
+identity; the version observer's complete resource identity must equal the
+freshly selected leaf identity. Final context is checked before success. Every
+later failure returns literal zero PEVersionFacts, without earlier signed,
+native, PE, resource or version facts.
+
+These observations bind current signed bytes to their original physical version
+declarations. They do not map four-part versions to Manifest appVersion, approve
+resource types/languages/tails, prove NSIS contents, Windows loading, publisher/
+Authenticode identity or grant Artifact admission. No defaults or production
+routing are added; existing observers remain unchanged.
+
+Three new resource-record groups cover exact inner/no-tail/zero-tail/opaque-tail/
+33 MiB-tail identities, independent original block/value spans, owned-source/
+projection isolation and restoration, too-short/overlong roots, invalid fixed
+signature, resource/record source/copy/block/key capacities and cancellation.
+Three new signed composition groups cover whole-image/resource/record/tail
+identity equality, four-part declarations, outer selector freezing under context
+mutation, current read references, independent returned projections, later tree/
+record/capacity refusals, current deny and same-owned restoration.
+
+Independent audit found missing final-check proof for both new wrappers: initial
+controls could not detect deleting their final context checks. Root added test-
+only controls. The resource-record prefix independently performs the original
+boundary polls and copy/block/tail stages on fixed spans; the signed-composition
+prefix uses the existing signed-PE, Resource-capture and record APIs. Each wrapper
+positive must reach exactly the independently measured prefix plus one. Each
+negative cancels at that extra final poll and returns literal zero. Both restore
+the same original input. Five additional isolated outer-selector controls cover
+Entries, Depth, image bytes, member source bytes and member copy bytes before
+any current-source/context callback. Production behavior remained unchanged.
+
+Actual resource-record coverage uses the independently frozen complete 884-byte
+Windows resource, the 880-byte inner record and its original 52-byte fixed-value
+identities. Actual signed composition wraps the same fixed original system PE
+in isolated strong synthetic package byte claims, then binds the original
+[16,1,1033] resource at file offset 351512 to those record/tail identities and
+the declared [10,0,22621,5415] words. Synthetic nsis/app/version claims prove byte
+continuity only; they do not qualify that image as an installer or publisher.
+No image is executed or native API probe repeated.
+
+The initial resource-record test build failed because an int length was passed
+to an existing int64 span helper; root corrected only that test argument. Actual
+windowsversion seventeen groups then passed in 1.686s with all four fixture groups.
+The first signed-composition selector ran two mandatory groups (1.971s) and omitted
+the actual group; the corrected exact selector ran all three in 7.557s without
+skips. After audit controls, final root actual seventeen passed in 1.773s and all
+three composition groups in 2.421s, without fixture skips. Affected two-package
+vet, four-file formatting and diff checks passed; all root processes closed.
+
+Complete default Go tests passed at package parallelism 2 before the later
+test-only controls: windowsversion thirteen mandatory groups with four fixture
+skips, 1.654s; verification 17.342s (its new composition fixture skipped), PE
+1.878s, Debian 1.462s, compression 3.527s and TAR 1.432s. Module verification,
+whole vet, server build, unchanged contract pins and formatting/diff passed.
+No production delta followed that full pass, so repaired actual affected tests
+and checks were run without a redundant whole-suite rerun.
+
+No dependency, SQL, protocol, application-version, deployment or download-budget
+change. Semantic Windows version/text/translation and approved native identity/
+publisher mapping, Artifact admission and production storage remain later work.
+Full T09 remains incomplete. Downloads have no hard total/cumulative elapsed or
+retry-count cap. Unchanged database/provider/browser integration was not repeated.
+
+Both final independent scoped code/test audits passed without required fixes.
+Dependency audit ran actual windowsversion seventeen in 1.552s and the exact new
+three signed-PE version groups in 2.257s; compatibility audit ran them in 1.729s
+and 1.989s. All four original-record/resource fixture groups and the new actual
+composition group executed without skips. Both passed affected two-package vet,
+four-file formatting and diff checks; all independent processes closed. Both
+independent-prefix final-cancellation findings and early-selector controls are
+verified without native qualification claims.
