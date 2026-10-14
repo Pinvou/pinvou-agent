@@ -6025,3 +6025,58 @@ is inferred. No dependency, SQL/protocol/application version/deployment change.
 No new complete-installer/signed identity composition or native matching yet.
 Full T09 remains incomplete. Downloads have no total/cumulative elapsed or
 retry-count limit.
+
+## T09 thirty-third batch: current signed complete required-identity composition
+
+Debian InspectIdentity performs complete same-owned-installer framing, decoding,
+both TAR inspections and unique regular root control capture before ReadIdentity
+reparses the exact captured ControlFile bytes for all three required declarations.
+It compares the new identity record Source with the prior control record Source
+and checks context before returning. No caller-supplied field projection is
+consumed. Every later error returns zero framing and nil IdentityMembers, without
+earlier TAR/decoded/control bytes, parsed fields or a partial identity string.
+
+Verifier InspectIdentityDebianInstaller first preserves existing current signed
+Manifest, FullPack/native-byte and framing guards, then uses the same Native.Bytes
+for complete identity inspection, comparing the whole source identity and checking
+context. Later failure returns zero previous package/native/framing facts and no
+member sequences. Original APIs are unchanged. The repeated original-byte parsing
+is deliberate; each capture/parser copy has its own logical byte capacity, not a
+combined heap or preparation budget. Declaration values remain opaque; no native
+package/version grammar, version ordering, approved architecture/app mapping,
+publisher certification or Artifact admission is introduced.
+
+Three new Debian groups cover exact installer/control/identity-record identities,
+all three values, independent returned-record/source mutation isolation and same
+source restoration. Missing/folded required-field cases first pass the previous
+complete control observer, then return exact IdentityInvalid with no prior facts.
+Field capacity refusal also returns no captured control bytes. The actual group
+uses all six frozen public/Python codec packages, retaining their whole-package
+identities and original selected control identities plus exact three declaration
+strings. No installation or script execution occurs.
+
+Four new signed groups cover current package denial and restoration, original
+installer/control bytes, old signed complete-control positives before isolated
+required-field failure, field capacity, cancellation and same-source restore.
+Actual public hello and Python Zstandard retain both control-record byte identities
+and all three declaration strings. Their signed Pinvou claims are synthetic test
+byte bindings, not approved native app/publisher mappings or platform certificates.
+Root actual Debian 40 groups passed 1.662s and verification 44 groups passed
+15.847s, with all thirteen/eleven fixture opt-in groups executed. Both initial
+independent scoped static audits passed without required fixes. Complete default
+Go tests passed with package parallelism 2: Debian 27 groups plus thirteen fixture
+skips, 1.789s; verification 33 groups plus eleven fixture skips, 15.897s; TAR 8
+groups plus one fixture skip, 1.584s; compression 29 groups plus one fixture skip,
+4.071s. Module verification, whole vet, server build, pinned contracts, changed-
+file formatting/diff and client architecture/version guards passed. All root
+processes closed. Both final independent scoped code/test audits passed without
+remaining required fixes. Dependency audit independently ran actual Debian 40 in
+1.641s and verification 44 in 16.682s; compatibility audit ran them in 1.742s and
+16.564s. Each executed all thirteen/eleven fixture groups without skips and passed
+affected vet, four-file formatting and diff checks; all independent processes
+closed. Unchanged database/provider/browser integration was not repeated.
+
+No dependency, SQL/protocol/application version/deployment change. Native matching,
+field-specific grammar, publisher certification, Artifact admission and production
+storage remain separate work. Full T09 remains incomplete. Downloads retain no
+total/cumulative elapsed or retry-count limit.
