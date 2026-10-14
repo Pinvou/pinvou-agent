@@ -154,24 +154,11 @@ fn local_asr_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(secs)
 }
 
-pub(super) fn has_nonempty_asr_cli_config(values: &[Option<&str>]) -> bool {
-    values
-        .iter()
-        .flatten()
-        .any(|value| !value.trim().is_empty())
-}
-
 fn has_explicit_asr_cli_fallback() -> bool {
-    let values = [
-        std::env::var("PINVOU3_ASR_CMD").ok(),
-        std::env::var("PINVOU3_DEEPSPEECH2_CMD").ok(),
-        std::env::var("PADDLESPEECH_BIN").ok(),
-    ];
-    has_nonempty_asr_cli_config(&[
-        values[0].as_deref(),
-        values[1].as_deref(),
-        values[2].as_deref(),
-    ])
+    // 变量清单唯一实现在 `platform::asr_tool_path_from_env`（经
+    // `features::voice::has_asr_cli_override` 暴露）：GUI 兜底门禁与平台
+    // 探测读同一组变量，新增/移除变量名时不会漏改这一侧（RT27 F27-1）。
+    crate::features::voice::has_asr_cli_override()
 }
 
 pub(super) fn apply_local_asr_model_env(
