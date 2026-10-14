@@ -3798,6 +3798,12 @@ impl EnginePool {
     /// "eval turn"). Returns the reservation for the caller's divergent
     /// tail; the eval lane's session ids are never `sched-`, so its
     /// scheduled arm is a no-op.
+    /// Admit a reserved turn under the session turn gate and return the gate
+    /// with the reservation. The caller MUST keep the returned guard alive
+    /// until the engine submission is enqueued: the cascade-cancel ordering
+    /// invariant (see `should_retry_cascade`) depends on a phase-two cancel
+    /// never being able to interleave between this admission and the next
+    /// turn's `SendMessage` enqueue.
     async fn admit_reserved_turn(
         &self,
         session_id: &str,
@@ -3805,7 +3811,7 @@ impl EnginePool {
         display_message: Message,
         role: &str,
         mut reservation: TurnReservation,
-    ) -> Result<TurnReservation> {
+    ) -> Result<(TurnReservation, tokio::sync::OwnedMutexGuard<()>)> {
         let baseline_revision = reservation
             .base_transcript_revision()
             .context("turn reservation has no base transcript revision")?
@@ -3817,7 +3823,7 @@ impl EnginePool {
             bail!("Scheduled session '{session_id}' no longer exists");
         }
         let turn_lock = self.turn_locks.for_session(session_id).await;
-        let _turn = turn_lock.lock().await;
+        let turn_gate = turn_lock.lock_owned().await;
         if let Some(profile) = scheduled_profile {
             scheduled_profile_after_turn_gate(&self.store, session_id, &profile.task_id)?;
         } else {
@@ -3827,7 +3833,7 @@ impl EnginePool {
         }
         reservation.ensure_active()?;
         self.touch_engine_activity(session_id).await;
-        Ok(reservation)
+        Ok((reservation, turn_gate))
     }
 
     #[cfg(any(feature = "benchmark-hooks", test))]
@@ -3839,7 +3845,9 @@ impl EnginePool {
         policy: &crate::features::assistant::product_runtime::eval_tool_policy::EvalTurnPolicy,
         reservation: TurnReservation,
     ) -> Result<()> {
-        let reservation = self
+        // Hold the turn gate through engine submission (cascade-cancel
+        // enqueue ordering — see admit_reserved_turn).
+        let (reservation, _turn_gate) = self
             .admit_reserved_turn(
                 session_id,
                 TranscriptOperation::Append,
@@ -3871,7 +3879,9 @@ impl EnginePool {
         expert_candidates: Vec<String>,
         reservation: TurnReservation,
     ) -> Result<()> {
-        let reservation = self
+        // Hold the turn gate through engine submission (cascade-cancel
+        // enqueue ordering — see admit_reserved_turn).
+        let (reservation, _turn_gate) = self
             .admit_reserved_turn(
                 session_id,
                 TranscriptOperation::Append,
@@ -4476,7 +4486,9 @@ impl EnginePool {
         display_message: Message,
         reservation: TurnReservation,
     ) -> Result<()> {
-        let reservation = self
+        // Hold the turn gate through engine submission (cascade-cancel
+        // enqueue ordering — see admit_reserved_turn).
+        let (reservation, _turn_gate) = self
             .admit_reserved_turn(
                 session_id,
                 TranscriptOperation::EditLast,
@@ -7385,8 +7397,8 @@ mod scheduled_model_tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
-    /// Regression: the eval teardown paths (`EnginePoolRuntime::close` /
-    /// `delete_eval_session`) reuse delete_chat_session, but submit already
+    /// Regression: the eval teardown paths (the product runtime port's
+    /// `close` / `delete_eval_session`) reuse delete_chat_session, but submit already
     /// ran `timing::start_turn`; deletion must clear the session's unpaired
     /// queue key in ACTIVE_TURNS, or a single GAIA pass's ~165 create/delete
     /// cycles would grow the process-level map unbounded.
