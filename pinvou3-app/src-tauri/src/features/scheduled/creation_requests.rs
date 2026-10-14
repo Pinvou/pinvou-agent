@@ -56,7 +56,7 @@
 //! Dependency direction: this module is a child of `tasks`, so it reuses the
 //! private domain entry points without widening them.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -955,6 +955,29 @@ fn read_regular_bounded(path: &Path, cap: usize) -> Option<Vec<u8>> {
         .filter(|bytes| bytes.len() <= cap)
 }
 
+/// [`read_regular_bounded`] plus the open handle's fstat metadata, so the
+/// Done arm can anchor its removal on the exact bytes the digest verified
+/// (round-24 minor 1).
+fn read_regular_bounded_anchored(path: &Path, cap: usize) -> Option<(Vec<u8>, std::fs::Metadata)> {
+    crate::platform::filesystem::read_private_data_file_bytes_within_anchored(path, cap as u64)
+        .ok()
+        .filter(|(bytes, _)| bytes.len() <= cap)
+}
+
+/// Identity compare for the anchored Done-arm unlink (round-24 minor 1):
+/// the open-handle fstat of the digested bytes vs the name's current
+/// symlink stat. std has no cross-platform inode, so identity is
+/// (regular file, len, modified-time) — a replacement payload virtually
+/// always moves the mtime, and a same-name miss only keeps the record for
+/// the next poll, where the digest gate re-verifies content regardless.
+/// FAT's 2 s mtime granularity is the documented floor (same caveat as
+/// the unlink gates in the design doc's borderline list).
+fn same_file_identity(current: &std::fs::Metadata, applied: &std::fs::Metadata) -> bool {
+    current.is_file()
+        && current.len() == applied.len()
+        && current.modified().ok() == applied.modified().ok()
+}
+
 fn write_done_marker(path: &Path, payload: &serde_json::Value) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -1230,17 +1253,26 @@ fn prune_stale_state_at(now: std::time::SystemTime) {
 
 /// Retry bookkeeping per file: attempt count. Entries are removed on every
 /// terminal path. `spool_dir_error_logged` keeps the unreadable-directory
-/// warning to one line per streak instead of 1 Hz spam. `parked` holds
-/// names whose terminal-path quarantine FAILED (round-16 MAJOR-1): the
-/// record is still in the spool and could not leave it, so re-processing
-/// would re-apply it — no marker suppresses a record whose marker write
-/// cannot land either — with no budget left to bound it. Parked names are
-/// skipped until restart, which re-reads the spool fresh.
+/// warning to one line per streak instead of 1 Hz spam, and
+/// `removal_error_logged` gives the Done arm's persisted removal failure
+/// the same gate (round-24 minor 4: a stuck file warned at 1 Hz —
+/// reset on a successful removal). `parked` holds names whose
+/// terminal-path quarantine FAILED (round-16 MAJOR-1): the record is
+/// still in the spool and could not leave it, so re-processing would
+/// re-apply it — no marker suppresses a record whose marker write cannot
+/// land either — with no budget left to bound it. Round-24 minor 3: a
+/// park is no longer restart-shaped — the entry carries the park-time
+/// wall clock and the name un-parks when the record at the
+/// deterministic sha256 name is replaced after the park (the
+/// retry-after-fix re-spool writes fresh bytes with a newer mtime) or
+/// vanishes; the quarantine failure applied to the previous bytes, not
+/// these.
 #[derive(Default)]
 struct RetryState {
     attempts: HashMap<String, u32>,
     spool_dir_error_logged: bool,
-    parked: HashSet<String>,
+    removal_error_logged: bool,
+    parked: HashMap<String, std::time::SystemTime>,
 }
 
 /// Watch loop body: process every pending spool file (sorted names — uuid /
@@ -1293,8 +1325,23 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
         else {
             continue;
         };
-        if retries.parked.contains(&name) {
-            continue;
+        // Round-24 minor 3: parked names skip until their record moves —
+        // a re-spool at the same deterministic sha256 name (the
+        // retry-after-fix shape) writes fresh bytes with a newer mtime
+        // and un-parks; a vanished name un-parks too. The quarantine
+        // failure that parked the name applied to the previous bytes.
+        if let Some(parked_at) = retries.parked.get(&name).copied() {
+            match std::fs::metadata(&path).and_then(|meta| meta.modified()) {
+                Ok(mtime) if mtime > parked_at => {
+                    retries.parked.remove(&name);
+                }
+                Ok(_) => continue,
+                // The name left the spool; nothing to keep skipping.
+                Err(_) => {
+                    retries.parked.remove(&name);
+                    continue;
+                }
+            }
         }
         // Round-21 M1 (the messaging sibling's round-8 M2 shape): the panic
         // guard is PER RECORD. The poll-level catch left a deterministic
@@ -1335,28 +1382,65 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                 // FIFO block the drain forever or a /dev/zero symlink grow
                 // an unbounded Vec. Gated+bounded like every other read
                 // (refusal counts as "not the applied record" → kept).
-                let still_applied = read_regular_bounded(&path, MAX_SPOOL_FILE_BYTES as usize)
-                    .and_then(|bytes| serde_json::from_slice::<SpooledCreationRequest>(&bytes).ok())
-                    .map(|request| spool_request_digest(&request) == applied_digest)
-                    .unwrap_or(false);
-                if !still_applied {
+                // Round-24 minor 1: the re-read is also ANCHORED — the
+                // unlink compares the name's current metadata against the
+                // open handle's fstat, so a same-name replace landing
+                // after the digest verified no longer deletes the retry's
+                // corrected payload untried (the false-5 s-"pending"
+                // degrade); it stays for the next poll. Residual: the
+                // compare-then-unlink pair is not atomic — a replace in
+                // that microscopic window still loses the new bytes, and
+                // they retry; same-len same-mtime collisions are the FAT
+                // granularity floor noted on `same_file_identity`.
+                let applied = read_regular_bounded_anchored(&path, MAX_SPOOL_FILE_BYTES as usize)
+                    .and_then(|(bytes, applied_meta)| {
+                        serde_json::from_slice::<SpooledCreationRequest>(&bytes)
+                            .ok()
+                            .filter(|request| spool_request_digest(request) == applied_digest)
+                            .map(|_| applied_meta)
+                    });
+                let Some(applied_meta) = applied else {
                     log::warn!(
                         "[scheduled-creation] {name} was replaced while its request was being applied; leaving the newest payload for the next poll"
                     );
                     continue;
+                };
+                match std::fs::symlink_metadata(&path) {
+                    Ok(current) if same_file_identity(&current, &applied_meta) => {
+                        if let Err(error) = std::fs::remove_file(&path) {
+                            // The marker exists, so the operation stays
+                            // deduped and no poll can re-apply it — but
+                            // the removal retries every poll until it
+                            // lands. Round-15 REQUIRED-4, now actually
+                            // true: the budget stays PUT on a persisted
+                            // removal failure. Round-24 minor 4: the warn
+                            // is once per streak (like the spool-dir
+                            // path) — a stuck file warned at 1 Hz was
+                            // 86k lines/day; the flag resets on success.
+                            if !retries.removal_error_logged {
+                                log::warn!(
+                                    "[scheduled-creation] processed {name} but could not remove it: {error}"
+                                );
+                                retries.removal_error_logged = true;
+                            }
+                            continue;
+                        }
+                        retries.attempts.remove(&name);
+                        retries.removal_error_logged = false;
+                    }
+                    // Replaced (or moved aside) after the digest verified:
+                    // leave whatever sits at the name for the next poll.
+                    Ok(_) => {
+                        log::warn!(
+                            "[scheduled-creation] {name} was replaced after its digest was verified; leaving the newest payload for the next poll"
+                        );
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "[scheduled-creation] processed {name} but could not stat it for removal: {error}"
+                        );
+                    }
                 }
-                if let Err(error) = std::fs::remove_file(&path) {
-                    // The marker exists, so the operation stays deduped and
-                    // no poll can re-apply it — but the removal retries
-                    // every poll until it lands. Round-15 REQUIRED-4, now
-                    // actually true: the budget stays PUT on a persisted
-                    // removal failure.
-                    log::warn!(
-                        "[scheduled-creation] processed {name} but could not remove it: {error}"
-                    );
-                    continue;
-                }
-                retries.attempts.remove(&name);
             }
             Processed::Poison(error) => {
                 log::warn!("[scheduled-creation] quarantining {name}: {error:#}");
@@ -1368,7 +1452,9 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                 if quarantine(&path) {
                     retries.attempts.remove(&name);
                 } else {
-                    retries.parked.insert(name.clone());
+                    retries
+                        .parked
+                        .insert(name.clone(), std::time::SystemTime::now());
                 }
                 let stem = path
                     .file_stem()
@@ -1396,7 +1482,9 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                     if quarantine(&path) {
                         retries.attempts.remove(&name);
                     } else {
-                        retries.parked.insert(name.clone());
+                        retries
+                            .parked
+                            .insert(name.clone(), std::time::SystemTime::now());
                     }
                     let stem = path
                         .file_stem()
@@ -1765,6 +1853,18 @@ mod tests {
         assert_eq!(marker["kind"], "create");
         assert_eq!(marker["task_id"], records[0].id);
         assert_eq!(marker["task_name"], "早报任务");
+        // Round-24 minor 8: the digest binding pinned on a PRODUCTION-
+        // written marker — every prior digest pin fed hand-written
+        // markers, so a joint rename of the payload key and the reader
+        // would ship green and surface only at runtime as keyed retries
+        // degrading to "pending" forever.
+        let spooled: SpooledCreationRequest =
+            serde_json::from_str(&spool_record_json(&[])).unwrap();
+        assert_eq!(
+            marker["request_digest"],
+            spool_request_digest(&spooled),
+            "the ok marker must carry the canonical request digest"
+        );
         // Spool file consumed, panel notified.
         assert!(!spool.join("abc.json").exists());
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -2033,8 +2133,8 @@ mod tests {
         // record re-applied on a fresh budget every poll forever — one new
         // real task per cycle. The exhaustion path must instead park the
         // name and keep the budget: the drain skips parked records until
-        // restart, so exactly MAX_CREATE_ATTEMPTS applies happen — not an
-        // unbounded storm.
+        // the record moves (round-24 minor 3) or restart, so exactly
+        // MAX_CREATE_ATTEMPTS applies happen — not an unbounded storm.
         let _home = TempHome::new();
         let state = watcher_state().await;
         let spool = spool_root();
@@ -2054,7 +2154,7 @@ mod tests {
             .await;
         }
         assert!(
-            retries.parked.contains("stuck.json"),
+            retries.parked.contains_key("stuck.json"),
             "a failed terminal quarantine must park the record"
         );
         assert_eq!(
@@ -2105,6 +2205,61 @@ mod tests {
         assert!(
             spool.join("stuck.json").exists(),
             "the parked record stays put"
+        );
+        // Round-24 minor 3: the park is no longer restart-shaped. A
+        // retry-after-fix re-spool rewrites the record at the same
+        // deterministic name with a newer mtime; the next pass must
+        // un-park and process it exactly once, and a fresh exhaustion
+        // parks the name again against the new bytes. The skip loop above
+        // (no rewrite, no un-park through 2×MAX passes) is the other half
+        // of this pin: unchanged mtime keeps the park.
+        let parked_at = *retries
+            .parked
+            .get("stuck.json")
+            .expect("the record is parked");
+        {
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(spool.join("stuck.json"))
+                .unwrap();
+            file.set_modified(parked_at + std::time::Duration::from_secs(1))
+                .unwrap();
+        }
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(calls.clone()),
+            &mut retries,
+        )
+        .await;
+        // The park froze the budget at MAX (round-16 MAJOR-1: no budget
+        // left to bound a parked record), so the un-parked record gets
+        // exactly ONE fresh attempt: it applies once (store count MAX+1),
+        // its marker write fails again, MAX+1 ≥ MAX → immediate
+        // exhaustion → the name parks again against the new bytes. The
+        // load-bearing minor-3 proof is the store count: without the
+        // un-park the drain never touches the record and the count stays
+        // MAX through any number of passes (pinned by the skip loop
+        // above).
+        assert_eq!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .unwrap()
+                .len(),
+            (MAX_CREATE_ATTEMPTS + 1) as usize,
+            "the re-spooled record was processed once after the un-park"
+        );
+        assert_eq!(
+            retries.attempts.get("stuck.json").copied(),
+            Some(MAX_CREATE_ATTEMPTS + 1),
+            "the fresh attempt burned exactly one budget unit"
+        );
+        assert!(
+            retries.parked.contains_key("stuck.json"),
+            "the fresh exhaustion parks the name again (bounded per replacement)"
         );
     }
 
@@ -2300,7 +2455,7 @@ mod tests {
         )
         .await;
         assert!(
-            retries.parked.contains("swap.json"),
+            retries.parked.contains_key("swap.json"),
             "a failed poison quarantine parks the name"
         );
         assert_eq!(
@@ -2561,6 +2716,23 @@ mod tests {
         .unwrap();
         assert_eq!(marker["kind"], "delete");
         assert_eq!(marker["task_id"], created.id);
+        // Round-24 minor 8 (delete twin): the same production-marker
+        // digest pin on the delete path.
+        let delete_record_json = spool_record_json(&[
+            ("kind", serde_json::json!("delete")),
+            ("task_id", serde_json::json!(created.id)),
+            ("name", serde_json::Value::Null),
+            ("prompt", serde_json::Value::Null),
+            ("rrule", serde_json::Value::Null),
+            ("paused", serde_json::Value::Null),
+        ]);
+        let delete_spooled: SpooledCreationRequest =
+            serde_json::from_str(&delete_record_json).unwrap();
+        assert_eq!(
+            marker["request_digest"],
+            spool_request_digest(&delete_spooled),
+            "the delete marker must carry the canonical request digest"
+        );
     }
 
     /// Round-8 M3-1: the R7 probe-order fix finally has its pin — a

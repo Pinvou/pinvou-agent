@@ -431,16 +431,20 @@ def load_disabled_features(base_dir):
     path = Path(base_dir).parent / "marketplace" / "builtin_features.json"
     try:
         # Round-17 MAJOR-3: this read runs on every tools/call — the same
-        # gated shape as the marker/store readers (lstat without following
-        # the final component, regular-file check, byte cap). A planted
-        # FIFO here blocked the single-threaded stdio server forever (all
-        # five tools dead, ping included) and a /dev/zero symlink read
-        # unbounded. A gate refusal keeps the existing fail-open fallback
+        # gated shape as the marker/store readers (regular-file check, byte
+        # cap). A planted FIFO here blocked the single-threaded stdio server
+        # forever (all five tools dead, ping included) and a /dev/zero
+        # symlink read unbounded. Round-24 minor 7: the gate rides the open
+        # fd (O_NOFOLLOW|O_NONBLOCK on posix), closing the lstat→open swap
+        # window. A gate refusal keeps the existing fail-open fallback
         # (features enabled), which cannot wedge the server.
-        st = os.lstat(path)
-        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_FEATURES_FILE_BYTES:
+        handle = _open_gated_regular(path, MAX_FEATURES_FILE_BYTES)
+        if handle is None:
             return set()
-        data = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(handle.read(MAX_FEATURES_FILE_BYTES + 1))
+        finally:
+            handle.close()
     except (OSError, ValueError):
         return set()
     disabled = data.get("disabled_features") if isinstance(data, dict) else None
@@ -682,6 +686,14 @@ def validate_rrule(rrule):
         at = datetime.datetime.strptime(raw_at, "%Y-%m-%dT%H:%M")
     except ValueError:
         return None, "invalid rrule: ONCE AT '%s' is not a real calendar minute" % raw_at[:64]
+    # Round-24 minor 2 (DST parity with the watcher's chrono .single()):
+    # a wall time that does not exist (spring-forward gap) or is ambiguous
+    # (fall-back overlap) is rejected by the Rust side — accepting it here
+    # spooled a record that deterministically poisoned after the full wait
+    # and answered an opaque ok:false.
+    dst_error = _once_wall_time_gap_or_ambiguous(at)
+    if dst_error:
+        return None, dst_error
     now = datetime.datetime.now()
     if at <= now:
         return None, (
@@ -689,6 +701,66 @@ def validate_rrule(rrule):
             "time with the user instead of creating a task that can never run" % raw_at
         )
     return normalized, None
+
+
+def _once_wall_time_gap_or_ambiguous(at, tz=None):
+    """Round-24 minor 2: returns an error string when the naive local wall
+    time `at` falls into a DST spring-forward gap or a fall-back overlap
+    (the watcher's chrono `with_ymd_and_hms(...).single()` rejects both),
+    else None. Mirrors the std datetime fold idiom: an overlap yields two
+    different UTC offsets for fold=0/fold=1; a gap does not round-trip
+    through UTC back to the same wall clock. Detection needs the IANA tz
+    database — resolved from the system local zone; when it is unavailable
+    (a Windows host without the tzdata package) the check degrades to the
+    pre-round-24 behavior and the watcher remains the authority. `tz`
+    overrides the zone for tests."""
+    try:
+        import zoneinfo as _zoneinfo
+
+        if tz is None:
+            tz = _local_zoneinfo()
+        if tz is None:
+            return None
+        fold0 = at.replace(tzinfo=tz, fold=0)
+        fold1 = at.replace(tzinfo=tz, fold=1)
+        # The round-trip check runs FIRST: in a gap the two folds also carry
+        # different utc offsets (pre/post transition), so the offset
+        # comparison alone cannot tell gap from overlap — but only a gap
+        # changes the wall clock on the way back.
+        round_tripped = fold0.astimezone(datetime.timezone.utc).astimezone(tz)
+        if round_tripped.replace(tzinfo=None) != at:
+            return (
+                "invalid rrule: ONCE AT '%s' does not exist (DST spring-forward gap). "
+                "Pick a real local time" % at.strftime("%Y-%m-%dT%H:%M")
+            )
+        if fold0.utcoffset() != fold1.utcoffset():
+            return (
+                "invalid rrule: ONCE AT '%s' is ambiguous (DST fall-back overlap). "
+                "Pick an unambiguous local time" % at.strftime("%Y-%m-%dT%H:%M")
+            )
+    except Exception:
+        return None
+    return None
+
+
+def _local_zoneinfo():
+    """Best-effort IANA zone for the system local timezone: $TZ when set,
+    else the /etc/localtime target's zoneinfo key (unix). None when the
+    zone cannot be determined or the tz database is missing."""
+    try:
+        import zoneinfo as _zoneinfo
+
+        tzname = os.environ.get("TZ")
+        if tzname:
+            return _zoneinfo.ZoneInfo(tzname)
+        target = os.path.realpath("/etc/localtime")
+        marker = "zoneinfo/"
+        idx = target.rfind(marker)
+        if idx >= 0:
+            return _zoneinfo.ZoneInfo(target[idx + len(marker):])
+    except Exception:
+        pass
+    return None
 
 
 def validate_task_id(task_id):
@@ -713,16 +785,20 @@ def read_scheduled_task(automations_dir, task_id):
     path = os.path.join(automations_dir, "automations", "%s.json" % task_id)
     try:
         # Round-15 REQUIRED-3: the store read is gated like the marker
-        # reader — lstat without following the final component (a planted
-        # FIFO must not block the single-threaded stdio server forever) and
-        # a byte cap (a sparse oversize record is refused, not slurped).
-        # Round-16 MAJOR-3: the cap is the STORE record budget (256 KiB,
-        # sized for the max CJK prompt), not the 64 KiB marker cap.
-        st = os.lstat(path)
-        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_STORE_RECORD_BYTES:
+        # reader — a planted FIFO must not block the single-threaded stdio
+        # server forever, and a byte cap refuses a sparse oversize record
+        # instead of slurping it. Round-16 MAJOR-3: the cap is the STORE
+        # record budget (256 KiB, sized for the max CJK prompt), not the
+        # 64 KiB marker cap. Round-24 minor 7: the gate rides the open fd
+        # (O_NOFOLLOW|O_NONBLOCK on posix), closing the lstat→open swap
+        # window.
+        handle = _open_gated_regular(path, MAX_STORE_RECORD_BYTES)
+        if handle is None:
             return None, "not found: no scheduled task with id %s" % task_id
-        with open(path, "r", encoding="utf-8") as handle:
+        try:
             record = json.loads(handle.read(MAX_STORE_RECORD_BYTES + 1))
+        finally:
+            handle.close()
     except (OSError, ValueError, RecursionError):
         # Deliberately no raw exception text: OSError messages embed absolute
         # local paths, which must not leak into tool responses.
@@ -807,23 +883,62 @@ def _spool_payload(spool_id, name, prompt, rrule, model_id, paused,
 MAX_RESULT_MARKER_BYTES = 64 * 1024
 
 
+def _open_gated_regular(path, max_bytes):
+    """Opens a private data file for a capped text read with the swap window
+    the lstat→open pair kept now closed on posix (round-24 minor 7, the
+    Rust read_regular_bounded's twin): `os.open` carries O_NOFOLLOW|O_NONBLOCK
+    — a swapped-in symlink is refused at the open (ELOOP) and a planted FIFO
+    fails or succeeds without blocking the single-threaded stdio server —
+    and the regular-file + byte-cap gate runs on the OPEN FD's fstat, so a
+    replace landing inside the old window cannot re-point the read. Windows
+    keeps the lstat+open shape (no std O_NOFOLLOW); the residual there is
+    the documented same-user spool/state tree (design doc borderline list).
+    Returns (handle, None) or (None, refusal); a missing file is a refusal."""
+    try:
+        if os.name == "posix":
+            fd = os.open(
+                path,
+                os.O_RDONLY
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0),
+            )
+        else:
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > max_bytes:
+            os.close(fd)
+            return None
+        return os.fdopen(fd, "r", encoding="utf-8")
+    except OSError:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        return None
+
+
 def _read_result_marker(path):
     """Reads one .done result marker; returns (marker, error). A corrupt or
     unreadable marker is reported as an error so the caller keeps waiting
     instead of surfacing garbage (a torn marker cannot happen — the watcher
     writes atomically — but a hostile one must not crash the server).
 
-    Round-12 MAJOR-3 (mirrors the Rust read_regular_bounded): lstat without
-    following the final component — a planted FIFO must not block open()
-    forever and a /dev/zero symlink must not read unbounded — and a byte
-    cap so a sparse oversize marker is refused instead of slurped whole
-    every poll."""
+    Round-12 MAJOR-3 (mirrors the Rust read_regular_bounded): a gated read —
+    regular-file check and a byte cap so a sparse oversize marker is refused
+    instead of slurped whole every poll. Round-24 minor 7: the gate moved to
+    the open fd (O_NOFOLLOW|O_NONBLOCK on posix), closing the lstat→open
+    swap window."""
     try:
-        st = os.lstat(path)
-        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_RESULT_MARKER_BYTES:
+        handle = _open_gated_regular(path, MAX_RESULT_MARKER_BYTES)
+        if handle is None:
             return None, "creation result marker is unreadable"
-        with open(path, "r", encoding="utf-8") as handle:
+        try:
             marker = json.loads(handle.read(MAX_RESULT_MARKER_BYTES + 1))
+        finally:
+            handle.close()
     except (OSError, ValueError, RecursionError):
         return None, "creation result marker is unreadable"
     if not isinstance(marker, dict):
@@ -833,7 +948,8 @@ def _read_result_marker(path):
 
 def create_scheduled_task(requests_dir, name, prompt, rrule, model_id=None,
                           paused=False, from_session=None,
-                          idempotency_key=None, automations_dir=None):
+                          idempotency_key=None, automations_dir=None,
+                          task_id=None):
     """Validates a creation request and spools it for the app-side watcher,
     then waits briefly for the creation result marker. Returns
     (payload, error); nothing else is written.
@@ -842,7 +958,11 @@ def create_scheduled_task(requests_dir, name, prompt, rrule, model_id=None,
     the sha256 of "<from_session>|<kind>|<task_id>|<key>", so a retried call
     replaces its own pending request and can never clobber another session's
     (nor a different operation that happens to reuse the key).
-    """
+
+    Round-24 minor 6: task_id is threaded through so the shared validator's
+    create guard fires — the tool binding never passed it, so a caller's
+    task_id was silently ignored (the server-assigned id is the only truth;
+    delete rejects extra fields, create now rejects this one)."""
     return schedule_task_request(
         requests_dir,
         "create",
@@ -854,6 +974,7 @@ def create_scheduled_task(requests_dir, name, prompt, rrule, model_id=None,
         paused=paused,
         from_session=from_session,
         idempotency_key=idempotency_key,
+        task_id=task_id,
     )
 
 
@@ -1045,6 +1166,14 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
     # digest differs from the marker — exactly the surgery/forge shape the
     # watcher's suppression gate re-applies — silently creating a second
     # task while the mismatch note below says the re-apply was suppressed.
+    # Round-24 minor 5: the poll's failure arm only trusts a marker that
+    # landed AFTER this call's spool — a pre-existing garbage/tampered
+    # marker (ok:"true", ok:0, absent ok) predating the fresh record is
+    # ignored and the loop keeps polling, instead of answering "failed"
+    # while the request is actually still queued (inviting a duplicate
+    # retry). None (no marker at entry) trusts any later marker: anything
+    # that appears must be newer.
+    entry_seen_at = None
     if not entry_marker_was_success:
         # Atomic write (tmp + rename): the watcher must never observe a
         # torn file (guarded above: a completed key answers from its marker).
@@ -1185,6 +1314,24 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
                         "processed; returning its recorded result."
                     )
                 return result, None
+            # Round-24 minor 5: a non-True marker OLDER than this call's
+            # spool is a stale/garbage leftover (ok:"true", ok:0, absent ok
+            # — anything the literal-True gate rejects), not this attempt's
+            # receipt: ignore it and keep polling, so the model is not told
+            # the request failed while it is actually still queued. The
+            # entry-side rule (round-8 minor 7) unlinks the ok:False shape
+            # under the same gate; this covers the non-False shapes the
+            # entry leaves alone.
+            try:
+                marker_is_stale = (
+                    entry_seen_at is not None
+                    and os.stat(done_marker).st_mtime_ns <= entry_seen_at
+                )
+            except OSError:
+                marker_is_stale = False
+            if marker_is_stale:
+                time.sleep(RESULT_POLL_INTERVAL_SECONDS)
+                continue
             return None, str(marker.get("error") or "scheduled task request failed")
         # marker_error only means "not there yet / unreadable" — keep polling.
         time.sleep(RESULT_POLL_INTERVAL_SECONDS)
@@ -1239,12 +1386,16 @@ def list_scheduled_tasks(automations_dir, limit=DEFAULT_LIST_LIMIT):
         try:
             # Round-15 REQUIRED-3: same gated read as the single-record path.
             # Round-16 MAJOR-3: store-record budget (256 KiB), not the 64 KiB
-            # marker cap.
-            st = os.lstat(path)
-            if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_STORE_RECORD_BYTES:
+            # marker cap. Round-24 minor 7: the gate rides the open fd
+            # (O_NOFOLLOW|O_NONBLOCK on posix) — the list arm is the one the
+            # FIFO hang pin observed.
+            handle = _open_gated_regular(path, MAX_STORE_RECORD_BYTES)
+            if handle is None:
                 continue
-            with open(path, "r", encoding="utf-8") as handle:
+            try:
                 record = json.loads(handle.read(MAX_STORE_RECORD_BYTES + 1))
+            finally:
+                handle.close()
         except (OSError, ValueError, RecursionError):
             continue
         if not isinstance(record, dict):
@@ -1316,6 +1467,7 @@ def _handle_call(req_id, params, requests_dir, automations_dir, tool_features):
             from_session=args.get("from_session"),
             idempotency_key=args.get("idempotency_key"),
             automations_dir=automations_dir,
+            task_id=args.get("task_id"),
         )
     elif name == "read_scheduled_task":
         payload, error = read_scheduled_task(

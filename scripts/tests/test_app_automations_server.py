@@ -126,6 +126,38 @@ class RruleValidationTests(unittest.TestCase):
             _, error = server.validate_rrule(rrule)
             self.assertIsNotNone(error, rrule)
 
+    def test_once_gap_and_ambiguous_wall_times_rejected(self):
+        """Round-24 minor 2: DST parity with the watcher's chrono
+        `.single()` — a spring-forward gap and a fall-back overlap are both
+        rejected. The old naive strptime accepted both and the spooled
+        record deterministically poisoned after the full wait (the model
+        got an opaque ok:false). Skipped where the IANA database is
+        absent (plain Windows); the watcher remains the authority there."""
+        import zoneinfo
+
+        try:
+            tz = zoneinfo.ZoneInfo("America/New_York")
+        except Exception:
+            self.skipTest("no IANA tz database on this host")
+        # 2026-03-08 02:30 US/Eastern does not exist (spring forward);
+        # 2026-11-01 01:30 exists twice (fall back).
+        gap_error = server._once_wall_time_gap_or_ambiguous(
+            datetime.datetime(2026, 3, 8, 2, 30), tz=tz
+        )
+        self.assertIsNotNone(gap_error)
+        self.assertIn("does not exist", gap_error)
+        amb_error = server._once_wall_time_gap_or_ambiguous(
+            datetime.datetime(2026, 11, 1, 1, 30), tz=tz
+        )
+        self.assertIsNotNone(amb_error)
+        self.assertIn("ambiguous", amb_error)
+        self.assertIsNone(
+            server._once_wall_time_gap_or_ambiguous(
+                datetime.datetime(2026, 6, 1, 9, 30), tz=tz
+            ),
+            "an ordinary local minute must pass",
+        )
+
     def test_out_of_range_and_unknown_fields_rejected(self):
         for rrule in [
             "FREQ=HOURLY;INTERVAL=0",
@@ -173,27 +205,45 @@ class CreateValidationTests(unittest.TestCase):
             self.assertIsNone(payload, override)
             self.assertIn("invalid", error, override)
 
+    def test_create_rejects_caller_supplied_task_id(self):
+        """Round-24 minor 6: the server assigns task ids — a caller's
+        task_id on create is REJECTED, not silently ignored (the shared
+        validator's guard became reachable when the tool binding started
+        threading task_id through; contrast delete, which already rejects
+        extra fields)."""
+        payload, error = self.create(task_id="task-123")
+        self.assertIsNone(payload)
+        self.assertIn("invalid task_id", error)
+
     def test_length_caps_boundary(self):
-        payload, error = self.create(name="n" * server.MAX_NAME_CHARS)
-        self.assertIsNone(error)
-        self.assertIsNotNone(payload)
-        payload, error = self.create(name="n" * (server.MAX_NAME_CHARS + 1))
-        self.assertIsNone(payload)
-        self.assertIn("200", error)
-        payload, error = self.create(prompt="p" * server.MAX_PROMPT_CHARS)
-        self.assertIsNone(error)
-        payload, error = self.create(prompt="p" * (server.MAX_PROMPT_CHARS + 1))
-        self.assertIsNone(payload)
-        self.assertIn("character limit", error)
-        payload, error = self.create(
-            idempotency_key="k" * server.MAX_IDEMPOTENCY_KEY_CHARS, from_session="reqsrc01"
-        )
-        self.assertIsNone(error)
-        payload, error = self.create(
-            idempotency_key="k" * (server.MAX_IDEMPOTENCY_KEY_CHARS + 1),
-            from_session="reqsrc01",
-        )
-        self.assertIsNone(payload)
+        # Round-24 minor 11: the success arms wait out the result window —
+        # patch it (UpdateDeleteRequestTests does the same) so the class
+        # stops burning ~20 s of dead wall clock.
+        old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 0.2
+        try:
+            payload, error = self.create(name="n" * server.MAX_NAME_CHARS)
+            self.assertIsNone(error)
+            self.assertIsNotNone(payload)
+            payload, error = self.create(name="n" * (server.MAX_NAME_CHARS + 1))
+            self.assertIsNone(payload)
+            self.assertIn("200", error)
+            payload, error = self.create(prompt="p" * server.MAX_PROMPT_CHARS)
+            self.assertIsNone(error)
+            payload, error = self.create(prompt="p" * (server.MAX_PROMPT_CHARS + 1))
+            self.assertIsNone(payload)
+            self.assertIn("character limit", error)
+            payload, error = self.create(
+                idempotency_key="k" * server.MAX_IDEMPOTENCY_KEY_CHARS, from_session="reqsrc01"
+            )
+            self.assertIsNone(error)
+            payload, error = self.create(
+                idempotency_key="k" * (server.MAX_IDEMPOTENCY_KEY_CHARS + 1),
+                from_session="reqsrc01",
+            )
+            self.assertIsNone(payload)
+        finally:
+            server.RESULT_WAIT_SECONDS = old_wait
 
     def test_rrule_parsing_matches_the_watcher(self):
         # Full-width digits are a classic LLM artifact: Python's int() would
@@ -226,10 +276,17 @@ class CreateValidationTests(unittest.TestCase):
             self.assertIsNotNone(error, bad)
 
     def test_normalization_lands_in_spool(self):
-        payload, error = self.create(
-            rrule=" freq=hourly;interval=6;byhour=8;byminute=30 ",
-            model_id="  model-7  ",
-        )
+        # Round-24 minor 11: patch the result window like
+        # test_length_caps_boundary — the success wait here is dead time.
+        old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 0.2
+        try:
+            payload, error = self.create(
+                rrule=" freq=hourly;interval=6;byhour=8;byminute=30 ",
+                model_id="  model-7  ",
+            )
+        finally:
+            server.RESULT_WAIT_SECONDS = old_wait
         self.assertIsNone(error)
         spooled = list(Path(self.requests, "spool").glob("*.json"))
         self.assertEqual(len(spooled), 1)
@@ -497,8 +554,13 @@ class CreateSpoolAndResultTests(unittest.TestCase):
         """Round-22 M2: ok:1 / ok:"true" with a MATCHING digest used to be
         classified as success by the server's truthiness check (answering a
         fabricated duplicate while the watcher deleted the marker and
-        re-applied). Both server sites now bind is-True; a non-literal
-        marker must answer the honest failure and the record stays queued."""
+        re-applied). Both server sites bind is-True. Round-24 minor 5
+        splits the poll arm by recency: a forged marker OLDER than this
+        call's spool is a stale leftover — ignored, the honest answer is
+        pending (the model is not told "failed" while the request is
+        queued); a forged marker landing AFTER the spool (a live tamper)
+        still classifies as the failure answer. No success is fabricated
+        and the record stays queued in either arm."""
         import hashlib
 
         digest = server.spool_request_digest(
@@ -508,32 +570,61 @@ class CreateSpoolAndResultTests(unittest.TestCase):
         spool_id = hashlib.sha256(b"reqsrc01|create||k-forged").hexdigest()
         marker = Path(self.requests, "spool", ".done", "%s.json" % spool_id)
         marker.parent.mkdir(parents=True, exist_ok=True)
-        for forged in (
+        spool = Path(self.requests, "spool", "%s.json" % spool_id)
+        record_body = json.dumps({
+            "schema_version": 1, "id": spool_id, "kind": "create",
+            "name": "新名字", "prompt": "汇总新闻",
+            "rrule": "FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30",
+            "from_session": "reqsrc01", "idempotency_key": "k-forged",
+            "created_at": "2026-10-14T00:00:00Z",
+        })
+        forged_bodies = (
             {"ok": 1, "task_id": "FORGED-1", "task_name": "伪造",
              "request_digest": digest},
             {"ok": "true", "task_id": "FORGED-1", "task_name": "伪造",
              "request_digest": digest},
-        ):
-            marker.write_text(json.dumps(forged), encoding="utf-8")
-            spool = Path(self.requests, "spool", "%s.json" % spool_id)
-            spool.write_text(
-                json.dumps({
-                    "schema_version": 1, "id": spool_id, "kind": "create",
-                    "name": "新名字", "prompt": "汇总新闻",
-                    "rrule": "FREQ=HOURLY;INTERVAL=6;BYHOUR=8;BYMINUTE=30",
-                    "from_session": "reqsrc01", "idempotency_key": "k-forged",
-                    "created_at": "2026-10-14T00:00:00Z",
-                }),
-                encoding="utf-8",
-            )
-            payload, error = server.create_scheduled_task(
-                **self._create_kwargs(
-                    name="新名字", from_session="reqsrc01", idempotency_key="k-forged"
+        )
+        old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 1.0
+        try:
+            # Stale shape: planted BEFORE the call — the poll's recency
+            # gate ignores it and the call answers pending.
+            for forged in forged_bodies:
+                marker.write_text(json.dumps(forged), encoding="utf-8")
+                spool.write_text(record_body, encoding="utf-8")
+                payload, error = server.create_scheduled_task(
+                    **self._create_kwargs(
+                        name="新名字", from_session="reqsrc01", idempotency_key="k-forged"
+                    )
                 )
-            )
-            self.assertIsNone(payload, "a non-literal-ok marker must not answer success")
-            self.assertIsNotNone(error)
-            self.assertTrue(spool.exists(), "the record stays queued")
+                self.assertIsNone(error)
+                self.assertIsNotNone(payload, "the stale forged marker must not hang the answer")
+                self.assertEqual(payload.get("delivery"), "pending", payload)
+                self.assertIsNone(payload.get("taskId"), payload)
+                self.assertTrue(spool.exists(), "the record stays queued")
+
+            # Live-tamper shape: lands MID-POLL (after this call's spool) —
+            # newer than entry_seen_at, so the failure arm answers it.
+            for forged in forged_bodies:
+                if marker.exists():
+                    marker.unlink()
+                spool.write_text(record_body, encoding="utf-8")
+
+                def tamper_late(body=forged):
+                    time.sleep(0.2)
+                    marker.write_text(json.dumps(body), encoding="utf-8")
+
+                threading.Thread(target=tamper_late, daemon=True).start()
+                payload, error = server.create_scheduled_task(
+                    **self._create_kwargs(
+                        name="新名字", from_session="reqsrc01", idempotency_key="k-forged"
+                    )
+                )
+                self.assertIsNone(payload, "a live-tampered marker must not answer success")
+                self.assertIsNotNone(error)
+                self.assertTrue(spool.exists(), "the record stays queued")
+        finally:
+            server.RESULT_WAIT_SECONDS = old_wait
 
     def test_digest_mismatch_poll_path_sleeps(self):
         """Round-12 MAJOR-5: the keyed poll's digest-mismatch arm sleeps
