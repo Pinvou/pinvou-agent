@@ -5682,3 +5682,55 @@ No Debian Zstandard dispatch, tar/control interpretation, native identity/publis
 certification, Artifact admission, production storage, SQL/protocol/application
 version/deployment change. Full T09 remains incomplete; downloads have no
 cumulative elapsed or retry limit.
+
+## T09 twenty-seventh batch: Debian control/data Zstandard member dispatch
+
+DecodeMembers dispatches control.tar.zst and data.tar.zst to the reviewed
+Zstandard adapter. Caller-explicit ZstandardWindowBytes applies independently
+to each member; existing stored and expanded control/data capacities remain
+independent. No implicit window, format guessing or aggregate heap/preparation
+policy is introduced. Non-Zstandard callers retain their previous zero-field
+behavior. Every failure returns zero Report and nil decoded pair, including
+failure after successful control decoding. The existing signed composition uses
+the same owned source and current authorization checks.
+
+Three new Debian groups cover mixed plain/gzip/Zstandard control, exact stored
+and expanded identities, independent buffer ownership, both expanded capacities,
+missing/excessive advertised window, isolated stored-valid unread tail and same
+original restoration. The previous unsupported-format negative becomes valid
+window plus gzip bytes labeled Zstandard: old stored capture succeeds, exact
+ZstandardInvalid refuses codec fallback. Existing format tests remain intact.
+An initial private draft substituted package size640 to548 throughout encoded
+fixture text, corrupting the normal frame; root actual Debian testing failed two
+inline cases (1.715s), while the actual package passed. Both independent static
+audits identified the same fixture defect. Root restored the exact independent
+945-byte Python/libzstd normal vector and added its frozen stored SHA guard;
+production code and expected decoded bytes were unchanged.
+
+The independent Python/libzstd Debian package is548 bytes, SHA256
+5956a14a81aeb0e58bfbfd2ccdb4da06c60e8ed112ae0eccd12265311e6834ba.
+Control/data stored spans are197/157 bytes; each decoded tar byte stream is10240
+bytes with the independently frozen control/data hashes. Actual tests opt in
+through UPGRADE_TEST_DEBIAN_ZSTANDARD_PACKAGE and never install or execute the
+package. A new signed-composition group binds the same exact package, expanded
+identities, missing-window refusal with no earlier facts and same-source restore.
+Its synthetic Pinvou claims do not certify native name/version/architecture or
+publisher. Root corrected actual Debian23 groups passed1.358s and actual signed
+verification32 groups passed14.888s, with all eight/five fixture opt-in groups executed.
+Complete default Go tests passed with package parallelism2: compression29 groups
+plus one fixture skip,5.213s; Debian15 groups plus eight fixture skips,1.160s;
+verification27 groups plus five fixture skips,30.500s. Module verification, whole
+vet, server build, pinned contracts, changed-file formatting/diff and client
+architecture/version guards passed. All root processes closed. Dependency audit
+independently ran actual Debian23 in1.508s and verification32 in14.415s with no
+fixture skips, plus affected vet and formatting/diff checks; all processes closed.
+Compatibility audit independently ran actual Debian23 in1.188s and
+verification32 in15.296s with no fixture skips, plus affected vet and formatting/
+diff checks; all processes closed. Both final independent scoped code/test audits
+passed with no remaining required fixes. Unchanged database/provider/browser
+integration was not repeated.
+
+No new dependency, SQL/protocol/application version or deployment change.
+Tar/control interpretation, native identity/publisher certification, Artifact
+admission and production storage remain separate work. Full T09 is incomplete.
+Downloads retain no total/cumulative elapsed or retry-count limit.
