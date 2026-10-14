@@ -32,16 +32,13 @@
 //! still bites inside session storage (an agent can create a file named `.env`
 //! or a `.ssh/` directory in its own workspace) and it is mirrored in full.
 
-use std::collections::HashMap;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use crate::support::{
     collapse_control_characters, join_rows, read_text_file_capped, render, success,
 };
 use crate::{CliError, CliOutcome, OutputMode};
-use pinvou3_lib::features::deliverables::{DELIVERABLE_EXTS, deliverable_category};
-use pinvou3_lib::features::sessions::{SessionStore, is_aux_session_id};
+use pinvou3_lib::features::sessions::SessionStore;
 
 /// Same cap as the GUI artifact editor (`MAX_EDITABLE_MARKDOWN_BYTES`).
 const MAX_EDITABLE_MARKDOWN_BYTES: usize = 10 * 1024 * 1024;
@@ -241,343 +238,21 @@ fn open_store() -> Result<SessionStore, CliError> {
         .map_err(|error| CliError::failed(format!("artifacts store unavailable: {error:#}")))
 }
 
-/// One row of the cross-session deliverables index (the GUI `DeliverableItem`
-/// shape, flattened to owned fields the CLI can render).
-#[derive(Clone, Debug)]
-struct DeliverableRow {
-    name: String,
-    path: String,
-    ext: String,
-    category: String,
-    session_id: String,
-    source: String,
-    mtime: i64,
-    size: u64,
-}
-
-/// What one index scan produced: the deliverable rows, plus the session
-/// records the scan could not read.
-///
-/// The skipped list is not cosmetic. A session record over the scan cap —
-/// or one that cannot be read/parsed at all (permissions, a mid-write
-/// record, corrupt JSON) — is dropped from the index, so an incomplete
-/// listing is indistinguishable from an empty one — see [`list`], which puts
-/// the names into the JSON payload for exactly that reason.
-struct DeliverableIndex {
-    rows: Vec<DeliverableRow>,
-    skipped: Vec<String>,
-}
-
-/// Mirror of `features::deliverables::list_deliverable_index_impl`: scan
-/// `sessions_root()/*.json`, keep tracked artifacts that still exist on
-/// disk, whitelist deliverable extensions, dedupe by physical path keeping
-/// the newest mtime, sort by mtime descending then name.
-///
-/// `only_session` is applied to the FILE NAME, before the record is read.
-/// Sessions are stored as `<id>.json`, so a single-session listing has no
-/// reason to read — let alone `serde_json`-parse — every other record in the
-/// store, each of which may be up to `MAX_LIST_SCAN_BYTES`. One deviation
-/// from the pre-short-circuit behavior, disclosed instead of paid for on
-/// every scan: a hand-edited record whose filename and parsed `metadata/id`
-/// disagree is invisible to the FILTERED lane (the filename gate skips it
-/// before the parse), while the unfiltered lane still finds it via the
-/// caller's parsed-id re-check. Only externally rewritten stores can hold
-/// such records.
-fn deliverable_index(only_session: Option<&str>) -> Result<DeliverableIndex, CliError> {
-    let sessions_dir = pinvou3_lib::platform::paths::sessions_root();
-    let entries = match std::fs::read_dir(&sessions_dir) {
-        Ok(entries) => entries,
-        // A missing sessions root is a genuinely empty store, not a failure.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(DeliverableIndex {
-                rows: Vec::new(),
-                skipped: Vec::new(),
-            });
-        }
-        // Anything else (EACCES on a locked-down home, `sessions` shadowed by
-        // a regular file) must not render as "no deliverables": the
-        // `skipped_sessions` disclosure exists precisely so a consumer can
-        // tell "empty" from "index incomplete" — an empty EVERYTHING is the
-        // one shape that reads as a clean bill.
-        Err(error) => {
-            return Err(CliError::failed(format!(
-                "artifacts list: cannot read the sessions root {}: {error}",
-                sessions_dir.display()
-            )));
-        }
-    };
-    let mut by_path: HashMap<String, DeliverableRow> = HashMap::new();
-    let mut skipped: Vec<String> = Vec::new();
-    // `list` only reads the metadata header, but a session record is parsed
-    // whole: cap the per-file read like every other family lane so a huge
-    // transcript cannot dominate the listing (oversized files are skipped
-    // with a note rather than read).
-    const MAX_LIST_SCAN_BYTES: u64 = 32 * 1024 * 1024;
-    // The over-cap skip disclosure, stated once: both the pre-read stat
-    // probe below and the `RecordRead::TooLarge` arm (a record that grew
-    // past the cap between the probe and the read) disclose the exact same
-    // way.
-    let skip_oversized = |file: &Path, stem: String, skipped: &mut Vec<String>| {
-        note!(
-            "[artifacts] list skips {} (larger than the {MAX_LIST_SCAN_BYTES}-byte scan cap)",
-            file.display()
-        );
-        // Also reported in the JSON payload: stderr is invisible to a
-        // `--output json` consumer, which would otherwise read a truncated
-        // index as "this session has no deliverables".
-        skipped.push(stem);
-    };
-    for entry in entries.flatten() {
-        let file = entry.path();
-        if !file.is_file() || file.extension().and_then(|value| value.to_str()) != Some("json") {
-            continue;
-        }
-        let stem = file
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .unwrap_or("")
-            .to_owned();
-        // Aux side-chat sessions stay outside the deliverable boundary, same
-        // as the GUI index this module mirrors
-        // (`features::deliverables::list_deliverable_index_impl` skips aux
-        // stems before parsing): an aux transcript tracking a deliverable
-        // must not surface its paths outside the aux session. The predicate
-        // is the store's shared `is_aux_session_id` (imported, not copied),
-        // so a case-aliasing fix upstream cannot drift behind a copy.
-        if is_aux_session_id(stem.as_str()) {
-            continue;
-        }
-        if only_session.is_some_and(|session| session != stem.as_str()) {
-            continue;
-        }
-        if std::fs::metadata(&file)
-            .map(|meta| meta.len())
-            .unwrap_or_default()
-            > MAX_LIST_SCAN_BYTES
-        {
-            skip_oversized(&file, stem, &mut skipped);
-            continue;
-        }
-        let raw = match read_record_capped(&file, MAX_LIST_SCAN_BYTES) {
-            RecordRead::Text(raw) => raw,
-            RecordRead::TooLarge => {
-                // The record passed the stat probe but grew past the cap
-                // before this read landed; identical skip contract to the
-                // probe above.
-                skip_oversized(&file, stem, &mut skipped);
-                continue;
-            }
-            RecordRead::Unreadable => {
-                // Same "incomplete ≠ empty" disclosure as the oversize
-                // branch: an EACCES'd or mid-write record is dropped from
-                // the index, so an unreadable slice must surface in
-                // skipped_sessions instead of vanishing (round-36 review).
-                note!("[artifacts] list skips {} (unreadable)", file.display());
-                skipped.push(stem);
-                continue;
-            }
-        };
-        // Round-43 review: the `Value` parse is the expensive half of the
-        // scan, and a record without the literal `"artifacts"` key cannot
-        // yield a row — a JSON object key must appear byte-for-byte for
-        // `view.get("artifacts")` to find it. A transcript that merely
-        // mentions the word still carries the quoted key and parses exactly
-        // as before. (Round-44 review: the skip removes only the parse —
-        // the capped READ still runs for every record, so a plain list
-        // still scales its I/O with total store bytes; the win is the parse
-        // half.)
-        //
-        // Round-44 review: a well-formed artifact-less record always
-        // carries `"metadata"` (the app serializes it before `artifacts`,
-        // which itself omits when empty), so a record carrying NEITHER key
-        // is corrupt in its early region — exactly the slice whose
-        // not-a-record disclosure the skip would have swallowed. Parse
-        // those (rare) so the no-artifacts-index arm below discloses them;
-        // the common artifact-less well-formed record keeps skipping the
-        // parse.
-        // Round-51 review: the same disclosure contract covers a record
-        // that IS unparseable but carries `"metadata"` — a mid-write or
-        // hand-truncated file cut after the metadata region hits the skip
-        // above and vanishes from `skipped_sessions` (indistinguishable
-        // from a clean bill). A well-formed JSON document always ends with
-        // `}`, so a record whose raw bytes do not is unparseable by
-        // construction: parse-and-disclose it too, at the same negligible
-        // frequency as the neither-key class.
-        if !raw.contains("\"artifacts\"")
-            && raw.contains("\"metadata\"")
-            && raw.trim_end().ends_with('}')
-        {
-            continue;
-        }
-        let Ok(view) = serde_json::from_str::<serde_json::Value>(&raw) else {
-            // Corrupt JSON is the same undecidable slice: disclosed, then
-            // skipped.
-            note!(
-                "[artifacts] list skips {} (not a valid session record)",
-                file.display()
-            );
-            skipped.push(stem);
-            continue;
-        };
-        let session_id = view
-            .pointer("/metadata/id")
-            .and_then(|value| value.as_str())
-            .unwrap_or("")
-            .to_owned();
-        let source = view
-            .pointer("/metadata/title")
-            .and_then(|value| value.as_str())
-            .unwrap_or("")
-            .to_owned();
-        let Some(artifacts) = view.get("artifacts").and_then(|value| value.as_array()) else {
-            // The record parsed but holds no artifacts index — a foreign
-            // JSON document (any top-level non-object parses too), or the
-            // parses-fine subset of the corrupt early-region classes above
-            // (missing key, or a present-but-non-array value). Same
-            // "incomplete ≠ empty" disclosure as the corrupt-JSON arm: the
-            // record is dropped from the index, so it must surface in
-            // skipped_sessions instead of vanishing. A record with a real
-            // `artifacts: []` binds below and stays a valid
-            // zero-deliverable session, not a skip.
-            note!(
-                "[artifacts] list skips {} (parses but holds no artifacts index)",
-                file.display()
-            );
-            skipped.push(stem);
-            continue;
-        };
-        for artifact in artifacts {
-            let Some(storage_path) = artifact
-                .get("storage_path")
-                .and_then(|value| value.as_str())
-            else {
-                continue;
-            };
-            let path = PathBuf::from(storage_path);
-            let Ok(metadata) = std::fs::metadata(&path) else {
-                continue;
-            };
-            if !metadata.is_file() {
-                continue;
-            }
-            let name = path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("")
-                .to_owned();
-            if name.is_empty() {
-                continue;
-            }
-            let ext = path
-                .extension()
-                .and_then(|value| value.to_str())
-                .unwrap_or("")
-                .to_lowercase();
-            if !DELIVERABLE_EXTS.contains(&ext.as_str()) {
-                continue;
-            }
-            let mtime = metadata
-                .modified()
-                .ok()
-                .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|duration| duration.as_secs() as i64)
-                .unwrap_or(0);
-            let byte_size = artifact
-                .get("byte_size")
-                .and_then(|value| value.as_u64())
-                .unwrap_or(0);
-            let path_string = path.to_string_lossy().to_string();
-            let row = DeliverableRow {
-                name,
-                path: path_string.clone(),
-                ext: ext.clone(),
-                category: deliverable_category(&ext).to_owned(),
-                session_id: session_id.clone(),
-                source: source.clone(),
-                mtime,
-                size: if metadata.len() > 0 {
-                    metadata.len()
-                } else {
-                    byte_size
-                },
-            };
-            by_path
-                .entry(path_string)
-                .and_modify(|current| {
-                    // Round-50 review: the equal-mtime tie breaks on the
-                    // session id so `--session` filtering is deterministic —
-                    // `read_dir` order is unspecified, and with a bare `>=`
-                    // which row survived an equal-mtime collision flipped
-                    // between runs, turning the CLI-only retain below into a
-                    // present/absent flip for the same store. (The GUI twin
-                    // keeps its `>=`; it has no session filter to amplify
-                    // the flip.) Round-51 review: the row sort's key is
-                    // (mtime, name, path); the dedup tie here keys the
-                    // session id so `--session` selection is deterministic
-                    // even before that sort runs.
-                    if row.mtime > current.mtime
-                        || (row.mtime == current.mtime && row.session_id >= current.session_id)
-                    {
-                        *current = row.clone();
-                    }
-                })
-                .or_insert(row);
-        }
-    }
-    let mut rows: Vec<DeliverableRow> = by_path.into_values().collect();
-    // Round-51 review: a final `path` leg — (mtime, name) ties (same-second
-    // same-name deliverables in different sessions) kept HashMap-random
-    // relative order, flipping the JSON array and human row order between
-    // runs. Path is unique per row (the dedup map's key).
-    rows.sort_by(|a, b| {
-        b.mtime
-            .cmp(&a.mtime)
-            .then_with(|| a.name.cmp(&b.name))
-            .then_with(|| a.path.cmp(&b.path))
-    });
-    skipped.sort();
-    Ok(DeliverableIndex { rows, skipped })
-}
-
-/// Outcome of a capped session-record read for [`deliverable_index`].
-#[derive(Debug)]
-enum RecordRead {
-    /// The record ends within the cap and decodes as UTF-8.
-    Text(String),
-    /// The record does not end within the cap; the read was cut off before
-    /// EOF instead of slurping an unbounded file.
-    TooLarge,
-    /// The record is unreadable or not valid UTF-8 — the silent skip the
-    /// previous uncapped `read_to_string` took on the same conditions.
-    Unreadable,
-}
-
-/// Reads at most `cap + 1` bytes of `path` and decodes it as UTF-8.
-///
-/// The stat probe in [`deliverable_index`] only sees the size at stat time,
-/// so a record under the cap at probe time that grows past it before the
-/// read lands must not be slurped whole by an uncapped `read_to_string`.
-/// The take allows one extra byte so a record of exactly `cap` bytes still
-/// reaches EOF inside the read and counts as a full read; only a strictly
-/// larger file reports [`RecordRead::TooLarge`]. `cap` is a parameter so
-/// the boundary can be unit-tested with small fixtures; the production
-/// caller passes `MAX_LIST_SCAN_BYTES`.
-fn read_record_capped(path: &Path, cap: u64) -> RecordRead {
-    let Ok(file) = std::fs::File::open(path) else {
-        return RecordRead::Unreadable;
-    };
-    let mut taken = file.take(cap.saturating_add(1));
-    let mut raw = Vec::new();
-    if taken.read_to_end(&mut raw).is_err() {
-        return RecordRead::Unreadable;
-    }
-    if raw.len() as u64 > cap {
-        return RecordRead::TooLarge;
-    }
-    match String::from_utf8(raw) {
-        Ok(text) => RecordRead::Text(text),
-        Err(_) => RecordRead::Unreadable,
-    }
+/// The cross-session deliverables index: one scan, shared with the GUI
+/// (`features::deliverables::deliverable_index`). The app side owns the
+/// whole scan policy — the 32 MiB per-record read cap with its probe, the
+/// `skipped_sessions` disclosure for oversized/unreadable/unparseable
+/// records, the `--session` filename short-circuit, the aux-stem gate, the
+/// equal-mtime dedupe tie-break keyed on session id, and the
+/// (mtime, name, path) row sort — so the two surfaces cannot drift on any
+/// of it (this was a ~255-LOC hand mirror that had diverged where the CLI
+/// was strictly more correct; the GUI now follows the CLI's semantics
+/// there). The CLI lane keeps only rendering.
+fn deliverable_index(
+    only_session: Option<&str>,
+) -> Result<pinvou3_lib::features::deliverables::DeliverableIndex, CliError> {
+    pinvou3_lib::features::deliverables::deliverable_index(only_session)
+        .map_err(|error| CliError::failed(format!("artifacts list: {error}")))
 }
 
 /// The path component's UTF-8 `Normal` segment; `None` for the `.`, `..`
@@ -723,7 +398,9 @@ pub fn execute(command: ArtifactsCommand, output: OutputMode) -> Result<CliOutco
 }
 
 fn list(session: Option<String>, output: OutputMode) -> Result<CliOutcome, CliError> {
-    let DeliverableIndex { mut rows, skipped } = deliverable_index(session.as_deref())?;
+    let index = deliverable_index(session.as_deref())?;
+    let mut rows = index.rows;
+    let skipped = index.skipped;
     if let Some(session) = session.as_deref() {
         // Kept even though the scan already short-circuited on the filename:
         // the reported `session_id` comes from the record's `metadata/id`, and
@@ -1052,35 +729,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn capped_record_read_cuts_off_past_the_cap() {
-        let dir = crate::support::test_support::scratch_dir("artifacts");
-        let record = dir.join("s-1.json");
-        let body = r#"{"metadata":{"id":"s-1"}}"#;
-        std::fs::write(&record, body).unwrap();
-        let size = std::fs::metadata(&record).unwrap().len();
-
-        match read_record_capped(&record, size) {
-            RecordRead::Text(raw) => assert_eq!(raw, body),
-            other => panic!("a record of exactly the cap must read whole, got {other:?}"),
-        }
-        // One byte below the file size, the record cannot end within the
-        // cap: the read must report TooLarge, not return truncated text.
-        match read_record_capped(&record, size - 1) {
-            RecordRead::TooLarge => {}
-            other => panic!("a record past the cap must read as TooLarge, got {other:?}"),
-        }
-        // Unreadable-as-text content keeps the silent-skip shape the old
-        // `read_to_string` error path had.
-        std::fs::write(&record, b"\xff\xfe not utf8").unwrap();
-        assert!(matches!(
-            read_record_capped(&record, size),
-            RecordRead::Unreadable
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// The mirror of `platform::path_policy` must cover every entry of both
+    /// The mirror of `platform::path_policy` must cover every entry of both`platform::path_policy` must cover every entry of both
     /// upstream lists, and must not fire on an ordinary deliverable — a
     /// too-eager substring match here would make `artifacts read` refuse
     /// normal files (`environment.md` is not `.env`).
