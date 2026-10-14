@@ -293,11 +293,14 @@ pub async fn accept_plan(
             ),
         });
     }
-    // Round-54 audit A5: commit runs finish_pending_plan_claim plus the
-    // accepted-mode persist (the settings transaction, cross-process
-    // settings.json.lock held across keychain I/O) — join the pair on a
-    // blocking worker instead of parking this runtime worker. Log-only on a
-    // failed join: the turn is already submitted, and
+    // Round-54 audit A5, round-1 correction: commit runs
+    // finish_pending_plan_claim plus the accepted-mode persist — a
+    // `_session_mode_states.json` sidecar RMW under a std Mutex, NOT the
+    // settings transaction (the audit's "plan accept" label pointed here,
+    // but this file's settings-transaction callers are confirm_code_yolo
+    // and set_mode_default above). Still joined on a blocking worker: the
+    // sidecar RMW is file I/O and need not park this runtime worker.
+    // Log-only on a failed join: the turn is already submitted, and
     // persist_accepted_yolo_mode's own write-failure arm has the same
     // tolerance.
     let joined = tauri::async_runtime::spawn_blocking(move || plan_claim.commit()).await;
