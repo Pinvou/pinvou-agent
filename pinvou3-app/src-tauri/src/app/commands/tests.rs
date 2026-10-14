@@ -3272,12 +3272,20 @@ fn web_settings_deferred_delete_serializes_with_a_concurrent_replacement() {
 /// settings.json.lock across keychain I/O (a CLI `models` command parked
 /// at a keychain prompt can hold it for minutes), so these command bodies
 /// must reach it only through a blocking-worker join. Comment lines are
-/// stripped so prose cannot satisfy it.
+/// stripped so prose cannot satisfy it. Round-2 review m1: the scan also
+/// stops at each file's test module and strips trailing comments, so a
+/// needle cannot be satisfied from #[cfg(test)] code or a comment, and
+/// the pet arm is scoped to the set_pet_enabled body.
 #[test]
 fn settings_transaction_commands_join_off_the_runtime() {
     fn code(source: &str) -> String {
         source
             .lines()
+            .take_while(|line| !line.trim_start().starts_with("mod tests"))
+            // Strip trailing `//` comments too: only real code can satisfy
+            // a needle (the needles contain no `//`, so a cut can only
+            // under-match, never over-match).
+            .map(|line| line.split("//").next().unwrap_or(""))
             .filter(|line| !line.trim_start().starts_with("//"))
             .collect::<Vec<_>>()
             .join("\n")
@@ -3318,13 +3326,22 @@ fn settings_transaction_commands_join_off_the_runtime() {
         );
     }
     // pet_window: the transaction must sit INSIDE the blocking closure —
-    // ordering, not mere presence (a bare spawn_blocking elsewhere in the
-    // file must not satisfy the pin).
+    // ordering scoped to the set_pet_enabled body (round-2 m1: a bare
+    // spawn_blocking anywhere before the function used to satisfy the
+    // whole-file ordering form).
     let pet_window = code(include_str!("../../features/pet/pet_window.rs"));
-    let spawn_at = pet_window.find("spawn_blocking");
-    let txn_at = pet_window.find("update_transaction");
+    let body_start = pet_window
+        .find("fn set_pet_enabled")
+        .expect("pet_window.rs must define set_pet_enabled");
+    let body = &pet_window[body_start..];
+    let spawn_at = body
+        .find("spawn_blocking")
+        .expect("set_pet_enabled must join its settings transaction");
+    let txn_at = body
+        .find("update_transaction")
+        .expect("set_pet_enabled must run the settings transaction");
     assert!(
-        matches!((spawn_at, txn_at), (Some(spawn), Some(txn)) if spawn < txn),
+        spawn_at < txn_at,
         "set_pet_enabled must run the settings transaction inside its blocking worker"
     );
 }
