@@ -315,7 +315,10 @@ fn cleanup_artifact_recovery_candidates<'a>(
 /// 文件已被删则跳过;mtime/size 现取 fs。
 #[tauri::command]
 pub async fn list_deliverable_index() -> Result<Vec<DeliverableItem>, String> {
-    Ok(crate::features::deliverables::list_deliverable_index_impl())
+    // An undecidable sessions root surfaces as a command error instead of
+    // the false "no deliverables" clean bill (the CLI lane's semantics,
+    // single-homed in features::deliverables::deliverable_index).
+    crate::features::deliverables::list_deliverable_index_impl()
 }
 
 /// 读 artifact 元数据：大小 / 类型 / 是否存在。
