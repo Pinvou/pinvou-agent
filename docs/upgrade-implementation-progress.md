@@ -5734,3 +5734,67 @@ No new dependency, SQL/protocol/application version or deployment change.
 Tar/control interpretation, native identity/publisher certification, Artifact
 admission and production storage remain separate work. Full T09 is incomplete.
 Downloads retain no total/cumulative elapsed or retry-count limit.
+
+## T09 twenty-eighth batch: bounded ordinary native TAR physical inspection
+
+A new feature-specific platform/tar adapter inspects immutable owned snapshots
+without extracting, following links or executing anything. Explicit Bytes,
+MemberBytes and Members limits bound source, individual payload and report count.
+It parses ordinary unextended V7/USTAR/GNU headers through the Go standard parser,
+checks complete physical spans and hashes each exact payload. Two end blocks and
+all trailing complete zero blocks through original source EOF are mandatory;
+checksum, truncation, incomplete terminators and nonzero/unread tail refuse with
+zero Report. Payload loops use fixed32 KiB scratch and cancellation checks.
+No header-controlled expanded allocation or implicit preparation policy is added.
+
+Names, links and modes are declarations, not safe host paths or permission/native
+identity evidence. Regular files, directories, links, device and FIFO headers are
+observed; non-file payload declarations refuse. Duplicate names retain distinct
+physical spans. The original zero/V7 type byte stays in Member.Type while the
+standard parser's normalized type is used for payload rules. PAX/GNU long-name
+extensions, sparse maps, STAR and unknown types return explicit Unsupported;
+this batch never guesses their logical member spans.
+
+Both independent static audits identified two SDK integration P2 issues: valid
+headers accompanied by ErrInsecurePath could depend on ambient GODEBUG and host
+filepath rules; STAR was silently accepted beyond the declared subset. Root
+allows only this specific error with a valid header because no declared name is
+used as a host path, and explicitly refuses the USTAR-magic/STAR-trailer layout.
+Tests independently isolate real SDK ErrInsecurePath plus a valid header from
+adapter acceptance and invalid checksum refusal, and SDK-valid STAR from
+Unsupported plus same USTAR restoration. Genuine V7 regular/directory zero type,
+GNU and device/FIFO positives cover the accepted ordinary declarations. The first
+new V7-directory test incorrectly asked the standard writer to encode a regular
+file ending in slash (1.321s failure); its setup now constructs a directory header
+before setting the legacy raw type. Production behavior was not altered for that
+test-only setup correction.
+
+Nine root actual groups passed1.582s (33 MiB payload .36s), including the one
+fixture opt-in group. GNU base-256 MaxInt64 is a valid SDK numeric declaration
+but exceeds the actual source span and returns Invalid without arithmetic
+wraparound; negative/non-numeric sizes and non-file bodies also refuse. Source,
+payload and count boundaries, context/nil handling, later checksum failure,
+footer/tail failure and exact same-source restore are covered. Independent Python
+USTAR/GNU fixtures each10240 bytes have frozen identities, as do actual public
+Debian control/data tar streams10240/256000 bytes with3/143 members. Actual PAX
+and GNU-long-name fixtures prove unsupported refusal; no package was installed,
+executed or natively authenticated. The private fixture directory opt-in is
+UPGRADE_TEST_TAR_FIXTURE_DIRECTORY; files remain outside repositories.
+
+Complete default Go tests passed with package parallelism2: TAR8 groups plus one
+fixture skip,6.308s; compression29 groups plus one fixture skip,6.411s; Debian15
+groups plus eight fixture skips,5.761s; verification27 groups plus five fixture
+skips,15.982s. Module verification, whole vet, server build, pinned contracts,
+changed-file formatting/diff and client architecture/version guards passed.
+All root processes closed. Both final independent scoped code/test audits passed
+with no remaining required fixes. Dependency audit independently ran actual TAR9
+in1.449s (33 MiB payload .29s); compatibility audit ran actual TAR9 in1.462s
+(payload .26s). Both executed all six fixtures in the actual fixture group with
+no skips, and each passed affected vet, two-file formatting and diff checks.
+All independent processes closed. Unchanged database/provider/browser integration
+was not repeated.
+No Debian TAR composition, logical contents/control interpretation, native
+name/version/architecture/publisher certification, Artifact admission, production
+storage, SQL/protocol/application version/deployment or dependency change.
+Full T09 remains incomplete. Downloads have no total/cumulative elapsed or
+retry-count limit.
