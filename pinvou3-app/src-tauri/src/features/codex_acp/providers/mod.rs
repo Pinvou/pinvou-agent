@@ -891,6 +891,26 @@ impl DivergenceGate {
     }
 }
 
+/// Round-2 review M1: the surviving owner the save failure arms gate on
+/// must be read from the UNDER-LOCK fresh record, never from the pre-lock
+/// `existing` clone. A Delete sets `written_credential` to None, so the
+/// divergence guard never re-validates the pointer for it — deriving from
+/// `existing` would let a peer `--delete-key` that cleared the pointer
+/// inside the pre-lock window (the file's own round-44/46/48/49 comments
+/// model exactly that peer) turn the round-1 Delete restore into a
+/// resurrection of a key the surviving record no longer names. For every
+/// non-Delete path the two derivations are provably equal: write paths
+/// reach the arms only after the guard verified pointer equality under
+/// the lock (or the record was never there / the pointer provably None),
+/// and the under-lock bail arms pass `None` explicitly.
+fn surviving_owner_under_lock(
+    fresh_record: &Option<ProviderRecord>,
+) -> Option<&CredentialReference> {
+    fresh_record
+        .as_ref()
+        .and_then(|record| record.credential.as_ref())
+}
+
 impl ProviderManager {
     pub fn new(credentials: SystemCredentialStore) -> Result<Self> {
         let home = crate::platform::os::user_home_dir();
@@ -1378,7 +1398,11 @@ impl ProviderManager {
             }
         }
         if keep_existing_carry {
-            record.credential = fresh_record.and_then(|fresh| fresh.credential);
+            // Borrow, don't move (round-2 M1): the failure arms below derive
+            // the surviving owner from this same fresh record.
+            record.credential = fresh_record
+                .as_ref()
+                .and_then(|fresh| fresh.credential.clone());
         }
         if self.store.current_fresh_locked(agent).as_deref() == Some(record.id.as_str()) {
             // Round-46 note: this keychain read parks inside the section
@@ -1395,13 +1419,12 @@ impl ProviderManager {
             // CONFIG apply fails before any upsert propagated bare and left
             // an unowned keychain entry no record names. Same narrowed
             // take-back; the section lock is held and the divergence guard
-            // passed, so `existing` still names the surviving owner. The
-            // M2 Delete restore rides the same arm — a Delete whose config
-            // apply fails must not keep its key destroyed either.
+            // passed, so the under-lock fresh record still names the
+            // surviving owner. The M2 Delete restore rides the same arm — a
+            // Delete whose config apply fails must not keep its key
+            // destroyed either.
             if let Err(error) = writer.apply(&ProviderTarget::from_record(&record, key)) {
-                let surviving_owner = existing
-                    .as_ref()
-                    .and_then(|record| record.credential.as_ref());
+                let surviving_owner = surviving_owner_under_lock(&fresh_record);
                 self.take_back_untouched_key(
                     written_credential.as_ref(),
                     written_key_value.as_deref(),
@@ -1434,9 +1457,7 @@ impl ProviderManager {
                 // record keeps advertising. Only a first-create / first-key
                 // write (surviving pointer None) leaves a slot no record
                 // names: a true orphan to reclaim.
-                let surviving_owner = existing
-                    .as_ref()
-                    .and_then(|record| record.credential.as_ref());
+                let surviving_owner = surviving_owner_under_lock(&fresh_record);
                 self.take_back_untouched_key(
                     written_credential.as_ref(),
                     written_key_value.as_deref(),
@@ -1446,6 +1467,10 @@ impl ProviderManager {
                 // RESTORE the key its surviving record still names (the
                 // captured value is the only copy left). A failed restore
                 // is appended to the rolled-back error, never swallowed.
+                // The owner is the under-lock fresh record (round-2 M1): a
+                // peer `--delete-key` clearing the pointer inside the
+                // pre-lock window must not make this restore resurrect the
+                // key the surviving record no longer names.
                 let restore_error = self.restore_deleted_key_after_failed_save(
                     &reference,
                     deleted_key_value.as_deref(),
@@ -1486,9 +1511,7 @@ impl ProviderManager {
                 // on-disk record naming this call's reference, so the entry
                 // is LIVE and stays; only an unowned (first-create /
                 // first-key) slot is reclaimed.
-                let surviving_owner = existing
-                    .as_ref()
-                    .and_then(|record| record.credential.as_ref());
+                let surviving_owner = surviving_owner_under_lock(&fresh_record);
                 self.take_back_untouched_key(
                     written_credential.as_ref(),
                     written_key_value.as_deref(),
@@ -1497,7 +1520,10 @@ impl ProviderManager {
                 // Round-1 review M2: same Delete restore as the current
                 // arm — the surviving on-disk record still names the
                 // reference, so the destroyed key is written back before
-                // the persist error propagates.
+                // the persist error propagates. Same round-2 M1 rule: the
+                // owner comes from the under-lock fresh record, so a peer
+                // pointer-clear inside the pre-lock window cannot turn the
+                // restore into a resurrection.
                 if let Some(restore_error) = self.restore_deleted_key_after_failed_save(
                     &reference,
                     deleted_key_value.as_deref(),
@@ -3213,6 +3239,111 @@ mod tests {
                 .as_deref(),
             Some("sk-persist-fault-original"),
             "the persist-failed active Delete must restore the key its surviving record names",
+        );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// Round-2 review M1 regression pin: the round-1 Delete restore derived
+    /// its ownership signal from the pre-lock `existing` snapshot, and a
+    /// Delete skips the divergence guard (`written_credential` is None) — so
+    /// a peer `--delete-key` clearing the pointer inside the parked window
+    /// plus a persist failure made the restore resurrect a key the
+    /// surviving record no longer names (an invisible orphan a later
+    /// KeepExisting save would silently re-adopt). The owner must come from
+    /// the under-lock fresh record, so the restore stays silent. Gate seam
+    /// + chmod fault, same shape as the peer-clear and fault pins (unix-only,
+    /// self-skip when the mode is not enforced).
+    #[cfg(unix)]
+    #[test]
+    fn save_skips_the_delete_restore_when_a_peer_clears_the_pointer() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_lock, _env, home) = locked_provider_env("peer-clear-delete-restore");
+        let store_path = home.join("acp-providers.json");
+
+        let bootstrap = ProviderManager::new(SystemCredentialStore::new()).expect("manager");
+        let created = bootstrap
+            .save(
+                "codex",
+                None,
+                "Keyed Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                Some("sk-round2-stale-owner".into()),
+                CredentialEditAction::Replace,
+            )
+            .expect("keyed create saves");
+        assert!(created.credential.is_some());
+
+        let created_id = created.id.clone();
+        let (gate_tx, gate_rx) = std::sync::mpsc::channel::<Arc<DivergenceGate>>();
+        let worker = std::thread::spawn(move || {
+            // The worker's Delete parks between its pre-lock read (which
+            // saw the keyed record) and the under-lock fresh read — after
+            // it already captured and destroyed the keychain entry.
+            let (worker_manager, gate) =
+                ProviderManager::new_with_armed_divergence_gate(SystemCredentialStore::new());
+            gate_tx.send(gate).unwrap();
+            worker_manager.save(
+                "codex",
+                Some(&created_id),
+                "Keyed Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                None,
+                CredentialEditAction::Delete,
+            )
+        });
+
+        let gate = gate_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("worker must hand over the gate");
+        assert!(
+            gate.wait_until_arrived(std::time::Duration::from_secs(10)),
+            "the save must reach the divergence window within the deadline"
+        );
+        // The peer's `--delete-key` completes inside the window: the pointer
+        // is cleared on disk (the keychain entry is already gone — the
+        // worker's own delete removed it).
+        let mut file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&store_path).unwrap()).unwrap();
+        file["agents"]["codex"]["providers"][0]["credential"] = serde_json::Value::Null;
+        fs::write(&store_path, serde_json::to_vec_pretty(&file).unwrap()).unwrap();
+        // Fault the metadata persist while the worker is still parked, then
+        // let it proceed into the failing upsert.
+        let original_mode = fs::metadata(&home).unwrap().permissions().mode();
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o555)).unwrap();
+        let fault_induced = fs::write(home.join(".persist-fault-probe"), b"x").is_err();
+        gate.release();
+
+        let result = worker.join().unwrap();
+        fs::set_permissions(&home, fs::Permissions::from_mode(original_mode)).unwrap();
+        if !fault_induced {
+            let _ = fs::remove_dir_all(&home);
+            return;
+        }
+
+        result.expect_err("the persist-faulted delete must fail");
+        let reference = CredentialReference::for_acp_provider("codex", &created.id);
+        assert_eq!(
+            SystemCredentialStore::new()
+                .get(&reference)
+                .expect("keychain read"),
+            None,
+            "a peer-cleared pointer must not be resurrected by the Delete restore",
+        );
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&store_path).unwrap()).unwrap();
+        let record = &file["agents"]["codex"]["providers"][0];
+        assert_eq!(
+            record["credential"],
+            serde_json::Value::Null,
+            "the peer's keyless record must survive untouched",
         );
         let _ = fs::remove_dir_all(&home);
     }
