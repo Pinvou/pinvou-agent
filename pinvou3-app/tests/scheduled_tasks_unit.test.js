@@ -353,11 +353,12 @@ assert.ok(
     !/data-testid="scheduled-live-mode"/.test(indexHtml) &&
     /function scheduledTaskBackendInput\(input\)/.test(tauriBridge) &&
     /(?:var|const|let) backendInput = \{ mode: "yolo" \}/.test(tauriBridge) &&
-    // createScheduledTask stayed in bridge/scheduled.js (web 版本不同未被去重)，
-    // updateScheduledTask 已随 dedup 合并进 bridge-shared-helpers.js 的 sharedBridgeBase（单一共享实现）。
-    // 拦截点本身仍是同一份 scheduledTaskBackendInput：mode 必须只在这里被强制为 "yolo"。
-    (scheduledBridge.match(/scheduledTaskBackendInput\(input\)/g) || []).length === 2 &&
-    (bridgeSharedHelpers.match(/scheduledTaskBackendInput\(input\)/g) || []).length === 1,
+    // lane-merge wave 3: createScheduledTask 也已随 FE14 合并进
+    // bridge-shared-helpers.js 的 sharedBridgeBase（updateScheduledTask 早已合并）；
+    // 两个共享写路径都经由 deps 注入的同一份 scheduledTaskBackendInput ——
+    // mode 必须只在这一个拦截点被强制为 "yolo"。
+    (scheduledBridge.match(/scheduledTaskBackendInput\(input\)/g) || []).length === 1 &&
+    (bridgeSharedHelpers.match(/scheduledTaskBackendInput\(input\)/g) || []).length === 2,
   'scheduled tasks should hide mode controls and force Yolo on every write'
 );
 assert.ok(
