@@ -7153,3 +7153,63 @@ Dependency audit ran only the new three actual groups in 7.253s; compatibility
 audit ran them in 2.058s. All three, including the original hello DEB, executed
 without skips. Both passed affected verification vet, two-file formatting and
 diff checks; every independent process closed. No source/test changes followed.
+
+## T09 forty-eighth batch: standalone original ELF inspection command
+
+`cmd/upgrade-elf-inspect` is a complete read-only command for the existing
+ordinary ELF64 little-endian physical observer. Application adaptation remains
+in the command; original parsing remains in the feature's ELF adapter.
+It opens a supported descriptor through the existing OS sourcefile adapter,
+captures complete owned bytes and observes that snapshot, followed by an extra
+final context check before JSON output. The input program is never executed.
+
+All four capacities are required positive arguments: source-bytes,
+snapshot-memory-bytes, programs and sections. There are no implicit production
+capacities. Source capture retains the existing Windows actual-volume/reparse/
+device restrictions and Unix last-symlink/nonblocking rules; this is not a
+protected execution-object handoff or filesystem-locality proof on Unix.
+
+Argument errors exit 2; source, inspection, cancellation and output failures
+exit 1; a complete successful report or help exits 0. Diagnostics are fixed
+and do not echo input paths, command arguments or underlying I/O/provider errors.
+Inspection/cancellation refusals emit no JSON. A failing output device may have
+accepted partial bytes, but short/error/negative/overlong write results are
+sticky and can never report success; help uses the same checked writer.
+
+Five mandatory groups independently compare the complete decoded report with
+Go's ELF reader and original raw header/table/program/section byte identities,
+including NULL/NOBITS absence of file data. They cover owned snapshot path
+replacement, every missing/nonpositive/overflow capacity, invalid arguments/help,
+missing/directory input, each source/memory/program/section bound, invalid/class/
+late section-span refusal and original restoration. Final cancellation completes
+ownedSource plus the original ELF API independently, then targets only the CLI's
+extra poll with exact positive/negative counts. Failed writers and absent writers
+also refuse; no self-calibration or approval policy is added.
+
+Two separate opt-ins verify the independently frozen 31448-byte public hello ELF
+and a privately built command through actual child processes. The original file
+is bounded-read and checked against its complete known SHA. Child E2E covers
+synthetic success, invalid arguments, invalid framing, same-path restoration and
+the original hello file, comparing all complete report fields and raw spans.
+Its 60-second child test timeout is a local test bound, not a download deadline.
+
+Root default five mandatory groups passed in 1.419s with both opt-ins skipped.
+The freshly built command then passed all seven in 3.071s, child E2E 1.82s,
+with both opt-ins executed and no skips. Complete default Go tests passed at
+package parallelism 2: the new command 1.980s (five mandatory, two skips),
+verification 17.763s, ELF 1.407s and sourcefile 1.467s. Module verification,
+whole vet, server build, unchanged contract pins, two-file formatting and diff
+checks passed; all root Go processes closed.
+
+Dependency audit passed all seven actual groups in 3.099s, child E2E 1.67s;
+compatibility audit passed them in 8.054s, child E2E 6.67s. Both enabled both
+opt-ins without skips and reused the frozen already built read-only command.
+Both passed affected command vet, two-file formatting and diff checks; all
+independent processes closed. Both scoped code/test audits found no required
+fixes and no source/test changes followed their frozen runs.
+
+No dependency, SQL, protocol, app VERSION, deployment or download-budget change.
+This command grants no native loading, app/version/architecture/publisher
+qualification, installation permission or Artifact admission. Full T09 remains
+incomplete. Downloads retain no total/cumulative duration or retry-count cap;
+unchanged database/provider/browser integration was not repeated.
