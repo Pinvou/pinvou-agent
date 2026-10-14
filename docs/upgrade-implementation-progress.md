@@ -4887,3 +4887,47 @@ No production SQL/provider/dependency/protocol/application version or deployment
 changes. Full T09 remains incomplete; unrelated provider/browser/deployment
 opt-ins are not claimed. Download has no total/cumulative elapsed deadline or
 retry budget.
+
+
+## T09 eleventh batch - executable provenance JSONL observation (2026-10-14)
+
+The isolated cmd/upgrade-provenance-inspect accepts one actual source file and
+requires explicit positive source bytes, owned snapshot memory, raw line bytes
+(including terminator) and record capacities. It opens through the existing OS
+source adapter, captures exact bytes with EOF confirmation and runs the unchanged
+bounded object-per-line observer. Success emits only original source size/SHA
+and record count; fixed failures emit no successful report or argument/provider/
+payload data. Interrupt cancellation is passed to capture and syntax inspection.
+The command writes no file and performs no network/provider/database operation.
+
+This is a complete isolated syntax workflow, not Manifest/Root verification,
+in-toto/DSSE/SLSA schema/signature/source/pipeline, immutable storage or Artifact
+admission. Windows uses the existing actual local handle checks. Unix regular
+descriptors do not attest filesystem locality; unchanged source-provider limits
+remain. Unavailable symlink privileges and an actual mapped-remote-source opt-in
+remain explicitly unverified; no elevation or external share is created.
+
+Root built the actual command and passed command2+childE2E7.542s (child6.32s),
+grammar3=1.463s and source adapter1.468s with the two documented unavailable
+source scenarios skipped. Actual source original CRLF/no-finalLF raw identity
+and two-record count, all missing/zero/insufficient independent capacities,
+invalid flag, missing path, directory, cancellation, nil context, duplicate-key
+later record, fixed redacted refusals and restored positives passed. The actual
+child executes positive, duplicate-key refusal and restored original positive.
+Its30s test-only process allowance is not a product/download deadline.
+
+Root full default Go tests passed, including default command1=12.212s,
+grammar3=5.996s/source5.961s/verification17=16.346s and all existing regressions;
+full vet/module verification/server build/pinned contracts/changed-source format/
+diff passed. Client architecture/version/diff passed.
+Dependency independently rebuilt a private unique binary and passed command2+
+actual childE2E3.790s (child1.61s), grammar3=2.260s/source2.260s and affected
+vet/format/diff. Compatibility independently rebuilt a private unique binary and
+passed command2+actual childE2E7.256s (child1.53s), grammar3=1.667s/source1.666s
+and affected vet/format/diff. Both retained the two explicitly unverified source
+scenarios. A multiline documentation example was repaired to a complete single
+command and both reviewers confirmed that fix. Both independent frozen scoped
+code/test reviews passed; all processes are closed. Both independent final documentation reviews passed before commit. No SQL/provider/dependency/protocol/application version or deployment
+changes. Full T09 remains incomplete; unchanged DB/provider/browser/deployment
+opt-ins are not claimed. Download retains no total/cumulative elapsed deadline
+or retry budget.
