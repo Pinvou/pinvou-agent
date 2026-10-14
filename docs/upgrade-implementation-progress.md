@@ -4786,3 +4786,52 @@ observation, not HA/native publisher, final-installer SBOM binding, provenance/
 pipeline/scan or Artifact admission. Unrelated provider/browser/deployment opt-ins
 are not claimed; full T09 remains incomplete. Download has no total/cumulative
 elapsed deadline or retry budget.
+
+
+## Ninth batch: declared primary SBOM installer byte binding
+
+InspectSBOMBinding extends the existing current signed Manifest, full archive,
+paired exact evidence and offline CycloneDX1.6 Schema observer. It requires at
+least one SHA-256 declaration on metadata.component, the primary described
+component. Every primary SHA-256 declaration must be exactly 64 hexadecimal
+characters and match the signed finalInstaller.sha256. Equivalent upper/lower
+hexadecimal forms retain the original raw SBOM identity. Dependency components
+cannot provide this identity; other hash algorithms do not replace SHA-256.
+This is a declared byte relationship, not publisher, name/version, pipeline,
+provenance-signature, vulnerability-scan or Artifact admission approval.
+
+Only the already Schema-validated immutable original SBOM is decoded. The
+additional read remains bounded by explicit JSONBytes, uses bounded chunk reads
+and checks cancellation. Every failure returns zero Facts and no paired evidence.
+Existing byte-only and Schema-only APIs retain their original acceptance.
+
+Root new binding tests passed all three groups in3.980s: correct and upper-case
+hex, missing primary/hash, wrong/short digest, other-algorithm-only,
+dependency-only decoy and contradictory primary SHA-256. Each Schema-valid
+negative first passes the same Schema observer, then returns precise binding
+failure; supported positives are restored. Current deny/restore, cancellation
+and independent JSON capacity controls also passed.
+
+The actual protected PostgreSQL composition additionally verifies the same
+binding through the existing SERIALIZABLE runtime token. A Schema-valid wrong
+primary digest first passes actual Schema observation, then binding refuses
+without Facts/evidence. Restoring the same supported owned upload succeeds.
+The current canonical indexed package deny refuses both Schema and binding
+observers on that previously accepted upload; exact genesis restoration restores
+both. These owner SQL mutations remain adversarial read-current controls, not
+approved deny commands or admission writes. Root actual PostgreSQL2 groups
+passed in18.686s (11.31s/4.87s), without printing private connection values.
+
+Root full default Go tests passed, including verification14=14.016s and all
+existing regressions. Full vet/module verification/server build/pinned contracts/
+changed-source format/diff passed. Client architecture/version/diff passed.
+Dependency independently passed verification14=9.736s and actual PostgreSQL2
+groups16.590s (7.80s/6.25s), affected vet/format/diff and complete scoped review.
+Compatibility independently passed verification14=10.051s and actual PostgreSQL2
+groups15.579s (7.79s/5.42s), affected vet/format/diff and complete scoped review.
+Both frozen independent code/test reviews found no mandatory issue. All test
+and tool processes are closed; private credentials were not printed.
+Both independent final documentation reviews passed before commit. No production SQL, provider, dependency,
+protocol or application version changes. Full T09 is incomplete; unrelated
+provider/browser/deployment opt-ins are not claimed. Download has no
+total/cumulative elapsed deadline or retry budget.
