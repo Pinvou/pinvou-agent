@@ -296,7 +296,9 @@ const expectedProtocolHashes = {
   // before degrading to []; same two commands, no new invoke or listen
   // entries (the switch-path occurrences now pass sessionId: sid like the
   // hydration ones).
-  sessions: '36c11f39253fce71a49a220ff36e544b8af22b7e2358b1fec7eda85701a880b7',
+  // Recomputed for the lane-merge residual wave: loadPersonaEventsForSession
+  // (get_session_persona_events) joined the shared base.
+  sessions: '479a47bcb6fa9a6456da4b92919c6d17630cc6ef525aea85ed37209bba3c6652',
   // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
   // wrapper (save_settings_and_restart invoke) was removed — no production
   // caller; the plain saveSettings + restart_app path stays the update route.
@@ -377,9 +379,10 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // the F-FE13-2 assistant_done timeline builder joined the shared base (the
 // builder ships on the static surface, so no signature moved).
 // Recomputed for the lane-merge residual waves: the chat tool-guard/relay
-// trios (no signature motion), userMessageDisplayText and persistMessagesFor
-// (save_session_artifacts + rename_session) joined the shared base.
-const expectedSharedBaseHash = 'd46e607a8d88cbb39cbcde8c67c443d9c0d0b42572ce3797038ad256053c3c43';
+// trios (no signature motion), userMessageDisplayText, persistMessagesFor
+// (save_session_artifacts + rename_session) and loadPersonaEventsForSession
+// (get_session_persona_events) joined the shared base.
+const expectedSharedBaseHash = 'f8e6ddd21380bcd6b72dfdb4ca234e76f65a040a5760ba22b3aeae07f14bd2ea';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),

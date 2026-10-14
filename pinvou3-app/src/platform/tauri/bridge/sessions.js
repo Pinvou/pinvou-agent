@@ -6,7 +6,7 @@
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry.sessions = function (context) {let pinvouSharedtauriSessionsCache = null;
 function pinvouSharedtauriSessions() {
-  if (!pinvouSharedtauriSessionsCache) pinvouSharedtauriSessionsCache = window.PinvouBridgeShared.create("tauriSessions", { sessionStates, freshBuffer, restoreEvictedSessionDraft, state, userMessageDisplayText, evictedSessionDrafts: { get value() { return evictedSessionDrafts; } }, MAX_EVICTED_SESSION_DRAFT_CHARS: { get value() { return MAX_EVICTED_SESSION_DRAFT_CHARS; } }, MAX_EVICTED_SESSION_DRAFTS: { get value() { return MAX_EVICTED_SESSION_DRAFTS; } }, sessionBufferTouchClock: { get value() { return sessionBufferTouchClock; }, set value(v) { sessionBufferTouchClock = v; } }, pruneScheduledSessionBuffers, pruneSessionBuffers, scheduledRunSessionOwners, scheduledRunOwnerTouchClock: { get value() { return scheduledRunOwnerTouchClock; }, set value(v) { scheduledRunOwnerTouchClock = v; } }, MAX_SCHEDULED_RUN_SESSION_OWNERS, enterDraft, setScheduledTaskError, notify, addSystemItem, bt, hydratedMessageKey, basename, switchToSessionInternal, openScheduledRunChatOnce, scheduledRunOpenInFlight, loadWorkingSetFrom, invalidateScheduledRecentRunsForSession, purgeSessionBuffer, invoke, personaPlaceholderTitles, refreshHistoryList, sessionSwitchRequestToken: { get value() { return sessionSwitchRequestToken; }, set value(v) { sessionSwitchRequestToken = v; } }, saveWorkingSetTo, loadScheduledTaskRecentRuns });
+  if (!pinvouSharedtauriSessionsCache) pinvouSharedtauriSessionsCache = window.PinvouBridgeShared.create("tauriSessions", { sessionStates, freshBuffer, restoreEvictedSessionDraft, state, userMessageDisplayText, evictedSessionDrafts: { get value() { return evictedSessionDrafts; } }, MAX_EVICTED_SESSION_DRAFT_CHARS: { get value() { return MAX_EVICTED_SESSION_DRAFT_CHARS; } }, MAX_EVICTED_SESSION_DRAFTS: { get value() { return MAX_EVICTED_SESSION_DRAFTS; } }, sessionBufferTouchClock: { get value() { return sessionBufferTouchClock; }, set value(v) { sessionBufferTouchClock = v; } }, pruneScheduledSessionBuffers, pruneSessionBuffers, scheduledRunSessionOwners, scheduledRunOwnerTouchClock: { get value() { return scheduledRunOwnerTouchClock; }, set value(v) { scheduledRunOwnerTouchClock = v; } }, MAX_SCHEDULED_RUN_SESSION_OWNERS, enterDraft, setScheduledTaskError, notify, addSystemItem, bt, hydratedMessageKey, basename, switchToSessionInternal, openScheduledRunChatOnce, scheduledRunOpenInFlight, invalidateScheduledRecentRunsForSession, purgeSessionBuffer, invoke, personaPlaceholderTitles, refreshHistoryList, sessionSwitchRequestToken: { get value() { return sessionSwitchRequestToken; }, set value(v) { sessionSwitchRequestToken = v; } }, loadScheduledTaskRecentRuns, reportSidecarReadFailure, historyRefreshTimer: { get value() { return historyRefreshTimer; }, set value(v) { historyRefreshTimer = v; } }, historyRefreshPending: { get value() { return historyRefreshPending; }, set value(v) { historyRefreshPending = v; } }, currentStreamText: { get value() { return context.currentStreamText; }, set value(v) { context.currentStreamText = v; } }, currentStreamId: { get value() { return context.currentStreamId; }, set value(v) { context.currentStreamId = v; } }, toolMeta: { get value() { return context.toolMeta; }, set value(v) { context.toolMeta = v; } }, restoreSteeredWorkingSet, saveSteeredWorkingSet });
   return pinvouSharedtauriSessionsCache;
 }
 
@@ -68,14 +68,7 @@ function pinvouSharedtauriSessions() {
     // backend now fails a corrupt sidecar explicitly (missing stays []). Degrade
     // to [] exactly as before, just not silently — report like the scene/steered
     // readers so a durable-data defect cannot pose as "no data".
-    async function loadPersonaEventsForSession(sid) {
-      try {
-        return await invoke("get_session_persona_events", { sessionId: sid }) || [];
-      } catch (error) {
-        reportSidecarReadFailure("persona events", sid, error);
-        return [];
-      }
-    }
+    function loadPersonaEventsForSession(sid) { return pinvouSharedtauriSessions().loadPersonaEventsForSession(sid); }
     async function loadPinvouReviewsForSession(sid) {
       try {
         return await invoke("get_session_pinvou_reviews", { sessionId: sid }) || [];
@@ -111,6 +104,18 @@ function pinvouSharedtauriSessions() {
     let scheduledRunOwnerTouchClock = 0;
     const scheduledRunOpenInFlight = Object.create(null);
     let sessionSwitchRequestToken = 0;
+    // Burst coalescing (review #463 round-20 R3): the rebind command emits one
+    // session:list_changed per affected id, and each undebounced refresh costs
+    // an IPC round trip + an O(n) backend list_sessions + a React commit — a
+    // large rebind burst translated into hundreds of full history refreshes
+    // exactly while the report dialog opens. Leading + trailing: the first
+    // event refreshes immediately (single-event semantics unchanged), events
+    // inside the window set a pending flag collapsed into ONE trailing
+    // refresh. Harnesses without timers fall back to the immediate refresh.
+    // Factory scope so the shared scheduleHistoryRefresh cell (deps literal)
+    // can close over them.
+    let historyRefreshTimer = null;
+    let historyRefreshPending = false;
     const evictedSessionDrafts = Object.create(null);
     // Returns true when the buffer's non-rehydratable state is safely retained
     // (or empty) and the caller may drop the buffer; false means eviction must
@@ -218,56 +223,13 @@ function markScheduledInitialTurnActive(id) { return pinvouSharedtauriSessions()
 function markScheduledInitialTurnTerminal(id) { return pinvouSharedtauriSessions().markScheduledInitialTurnTerminal(id); }
 function beginScheduledOpenActivation(id) { return pinvouSharedtauriSessions().beginScheduledOpenActivation(id); }
 function rollbackScheduledOpenActivation(snapshot) { return pinvouSharedtauriSessions().rollbackScheduledOpenActivation(snapshot); }
-  function saveWorkingSetTo(buf) {
-    if (!buf) return;
-    buf.messages = state.messages; buf.chatItems = state.chatItems; buf.artifacts = state.artifacts;
-    buf.composerDraft = state.composerDraft || "";
-    buf.turnTimeline = state.turnTimeline;
-    buf.activeTurnTimelineId = state.activeTurnTimelineId;
-    buf.personaEvents = state.personaEvents;
-    buf.pinvouReviews = state.pinvouReviews;
-    buf.pinvouSceneEvents = state.pinvouSceneEvents;
-    buf.steeredMessages = state.steeredMessages;
-    buf.busy = buf.scheduledInitialTurnPhase === "active" ? true : state.busy;
-    buf.planSnapshot = state.planSnapshot; buf.modeState = state.modeState;
-    buf.thinking = state.thinking; buf.tokens = state.tokens; buf.queued = state.queued;
-    buf.activePersona = state.activePersona;
-    buf.mountedCollection = state.mountedCollection;
-    buf.mountedCollections = state.mountedCollections;
-    buf.mountedCollectionsRevision = state.mountedCollectionsRevision;
-    buf.stream = {
-      currentStreamText: context.currentStreamText, currentStreamId: context.currentStreamId,
-      pendingAssistantText: context.pendingAssistantText, pendingAssistantBlocks: context.pendingAssistantBlocks,
-      itemIdSeq: context.itemIdSeq, toolMeta: context.toolMeta,
-    };
-  }
-  function loadWorkingSetFrom(buf) {
-    if (!buf) return;
-    state.messages = buf.messages; state.chatItems = buf.chatItems; state.artifacts = buf.artifacts;
-    state.composerDraft = buf.composerDraft || "";
-    state.turnTimeline = buf.turnTimeline || [];
-    state.activeTurnTimelineId = buf.activeTurnTimelineId || null;
-    state.personaEvents = buf.personaEvents || [];
-    state.pinvouReviews = buf.pinvouReviews || [];
-    state.pinvouSceneEvents = buf.pinvouSceneEvents || [];
-    state.steeredMessages = buf.steeredMessages || [];
-    state.pinvouModal = null; // 切 session 关掉检阅弹窗
-    state.turnDirtyArtifacts = []; // turn 临时态,切 session 清空,别串到新 session
-    state.turnPresentedArtifacts = [];
-    state.busy = buf.scheduledInitialTurnPhase === "active" ? true : buf.busy;
-    state.planSnapshot = buf.planSnapshot; state.modeState = buf.modeState;
-    state.thinking = buf.thinking; state.tokens = buf.tokens; state.queued = buf.queued || [];
-    state.activePersona = buf.activePersona || null;
-    state.mountedCollection = buf.mountedCollection || null;
-    state.mountedCollections = Array.isArray(buf.mountedCollections)
-      ? buf.mountedCollections
-      : (state.mountedCollection == null ? [] : [{ collectionId: state.mountedCollection, enabled: true }]);
-    state.mountedCollectionsRevision = Number(buf.mountedCollectionsRevision || 0);
-    const s = buf.stream || {};
-    context.currentStreamText = s.currentStreamText || ""; context.currentStreamId = s.currentStreamId || 0;
-    context.pendingAssistantText = s.pendingAssistantText || ""; context.pendingAssistantBlocks = s.pendingAssistantBlocks || [];
-    context.itemIdSeq = s.itemIdSeq || 0; context.toolMeta = s.toolMeta || {};
-  }
+  // FE14 残余批：steered sidecar 是桌面 lane 独有的工作集字段（web 无此概念）；
+  // 共享 loadWorkingSetFrom/saveWorkingSetTo 经这两个可选钩子挂接，写入位置
+  // 与合并前逐行一致（pinvouSceneEvents 之后、其余字段之前）。
+  function restoreSteeredWorkingSet(buf) { state.steeredMessages = buf.steeredMessages || []; }
+  function saveSteeredWorkingSet(buf) { buf.steeredMessages = state.steeredMessages; }
+  function saveWorkingSetTo(buf) { return pinvouSharedtauriSessions().saveWorkingSetTo(buf); }
+  function loadWorkingSetFrom(buf) { return pinvouSharedtauriSessions().loadWorkingSetFrom(buf); }
   function hydrateWorkingSetFromSaved(buf, saved) {
     if (!buf || !saved) return;
     const completedRemoteTurn = !!buf.remoteTerminalSeen || (!!buf.remoteTurnActive && !buf.busy);
@@ -1016,31 +978,7 @@ function onSessionDeleted(listener) { return pinvouSharedtauriSessions().onSessi
     // event refreshes immediately (single-event semantics unchanged), events
     // inside the window set a pending flag collapsed into ONE trailing
     // refresh. Harnesses without timers fall back to the immediate refresh.
-    let historyRefreshTimer = null;
-    let historyRefreshPending = false;
-    function scheduleHistoryRefresh() {
-      function runRefresh() {
-        refreshHistoryList().catch(function (error) {
-          console.error("[sessions] session:list_changed refresh failed", error);
-        });
-      }
-      if (typeof setTimeout !== "function") {
-        runRefresh();
-        return;
-      }
-      if (historyRefreshTimer) {
-        historyRefreshPending = true;
-        return;
-      }
-      runRefresh();
-      historyRefreshTimer = setTimeout(function () {
-        historyRefreshTimer = null;
-        if (historyRefreshPending) {
-          historyRefreshPending = false;
-          scheduleHistoryRefresh();
-        }
-      }, 200);
-    }
+    function scheduleHistoryRefresh() { return pinvouSharedtauriSessions().scheduleHistoryRefresh(); }
     listen("session:list_changed", function (event) {
       const payload = event && event.payload || {};
       // The rebind command stamps the sessions whose persisted artifact paths
