@@ -61,7 +61,7 @@
       recordAuthoritySyncDiagnostic, runSyncOnSession, notify, SCHEDULED_TEMPLATE_SOURCE_STORAGE_KEY, persistScheduledTaskTemplateSources,
       scheduledTaskBackendInput, forgetScheduledTaskTemplateSource, messageHasToolBlock, addChatItem, enterDraft, hydratedMessageKey,
       switchToSessionInternal, openScheduledRunChatOnce, loadWorkingSetFrom, purgeSessionBuffer, refreshHistoryList, saveWorkingSetTo,
-      normalizeTerminalTail, latestShellToolIsWaitObserver, extractArtifactPaths, summonPinvou, parseToolResultPayload, clearMonitorBaseline,
+      normalizeTerminalTail, latestShellToolIsWaitObserver, extractArtifactPaths, parseToolResultPayload, clearMonitorBaseline,
       loadSessionModel, setActiveModel, currentDraftModeState, setDraftMode,
       applyAuthoritativeModeState, sendMessage, pushUserEcho, flushAssistantMessageToHistory, dialogOpen, addAttachmentByPath,
       ensureSession, stopMediaTracks, finishVoiceInput, BT_TABLE, PINVOU_SCENE_EVENTS_STORAGE_PREFIX, sessionStates,
@@ -70,7 +70,7 @@
       SCHEDULED_LINK_POLL_DEADLINE_MS, SCHEDULED_LINK_POLL_FAST_ATTEMPTS, SCHEDULED_LINK_POLL_FAST_MS, SCHEDULED_LINK_POLL_SLOW_MS, scheduledTaskAutoCreateSeq, scheduledTaskAutoCreateInFlight, scheduledRunOpenInFlight,
       personaPlaceholderTitles, sessionSwitchRequestToken, SHELL_TOOL_NAMES, shellPollState, DELIVERABLE_EXTS, monitorBaseline,
       monitorIntervalId, monitorPollInFlight, gpuUtilHistory, settingsWriteQueue, modelsLoadSeq, memoryOverviewSeq, personaPoolCache, personaSyncSeq,
-      deletedPersonaIds, lastEquippedSid, mountedCollectionDraftTarget, mountedCollectionUpdate, activeVoiceInput, VOICE_DEVICE_REQUEST_TIMEOUT_MS,
+      deletedPersonaIds, lastEquippedSid, mountedCollectionDraftTarget, mountedCollectionUpdate, activeVoiceInput, voiceOperations, VOICE_DEVICE_REQUEST_TIMEOUT_MS,
       pe, sid, ensureSessionBufferLoaded, auxChatDispatch
     } = deps;
 
@@ -3868,6 +3868,239 @@
     return left + (/[。！？.!?，,;；:]$/.test(left) ? " " : "\n") + right;
   }
 
+  // web+tauriVoice 共享（FE14 wave 4：voice-operation 状态机块；voiceOperations
+  // Map 由各 lane 持有、以 deps 注入，Map 方法可变引用共享、从不整体重赋值）
+  // Operation ownership outlives the recording/UI. Async writeback and chat admission
+  // share this record; dismissing a notice cannot revive or cancel a submitted operation.
+  // Each recording gets its own operationId, handed to the composer before any async
+  // writeback and retained until the draft is really sent or abandoned.
+  function rememberVoiceOperation(session) {
+    if (!session.sessionId && session.ownerKind === "chat") {
+      session.draftEpoch = Number(state.draftEpoch || 0);
+    }
+    for (const entry of voiceOperations.value) {
+      const item = entry[1];
+      // Terminal entries are done; a dismissed entry stays adoptable for a
+      // manual retry until the next recording starts, then it is swept —
+      // a never-sent dismissal must not leak its audio chunks forever.
+      if (item.telemetryTerminal || (item.dismissed && !item.pendingSubmission)) {
+        voiceOperations.value.delete(entry[0]);
+      }
+    }
+    voiceOperations.value.set(session.operationId, session);
+  }
+
+  // web+tauriVoice 共享
+  function getVoiceOperationId(sessionId, ownerKind) {
+    const candidates = [...voiceOperations.value.values()].reverse();
+    const operation = candidates.find(function (item) {
+      return !item.telemetryTerminal && !item.pendingSubmission && item.voiceResultReady
+        && (item.sessionId || null) === (sessionId || null)
+        // A draft operation belongs to the draft epoch it was recorded in; a
+        // materialized session must not adopt an older draft's association.
+        && (item.sessionId || item.ownerKind !== "chat" || item.draftEpoch === Number(state.draftEpoch || 0))
+        && item.ownerKind === (ownerKind || "chat");
+    });
+    return operation ? operation.operationId : null;
+  }
+
+  // web+tauriVoice 共享
+  function beginVoiceSubmission(operationId, sessionId) {
+    const operation = voiceOperations.value.get(operationId);
+    if (!operation || operation.telemetryTerminal) return;
+    operation.pendingSubmission = true;
+    if (sessionId && !operation.sessionId) {
+      operation.sessionId = sessionId;
+    }
+  }
+
+  // web+tauriVoice 共享
+  function voiceOperationSessionId(operationId) {
+    return voiceOperations.value.get(operationId)?.sessionId || null;
+  }
+
+  // web+tauriVoice 共享
+  // Whether the composer's current voice operation is parked on an in-flight
+  // send admission. The composer hook skips its identity-change auto-cancel
+  // for a parked operation: first-turn materialization flips the adapter
+  // identity mid-send, and cancelling here would only kill the completion
+  // notice of a message that still lands. A context switch before the park
+  // still cancels — that is the wrong-session auto-send protection.
+  function hasVoiceSubmissionPending() {
+    const operation = voiceOperations.value.get((state.voiceInput || {}).operationId);
+    return !!(operation && operation.pendingSubmission);
+  }
+
+  // web+tauriVoice 共享
+  // Re-entering a departed draft hands its retained text back under a new
+  // draft epoch (enterDraft increments unconditionally). Once the text is
+  // visibly back in the composer the operation follows it: a manual retry
+  // keeps the voice association instead of being orphaned in the dead
+  // recording-time epoch (unadoptable, and unreachable by the keyed abandon).
+  // Restricted to unsubmitted draft operations (no session binding, chat
+  // kind), mirroring the rollback rebind; terminal operations never rebind.
+  function rebindVoiceOperationToDraft(operationId, toEpoch) {
+    const operation = voiceOperations.value.get(operationId);
+    if (!operation || operation.telemetryTerminal || operation.pendingSubmission
+      || operation.sessionId || operation.ownerKind !== "chat") return false;
+    operation.draftEpoch = Number(toEpoch);
+    return true;
+  }
+
+  // web+tauriVoice 共享
+  // Terminal dedup bookkeeping only (same state machine on both lanes):
+  // it marks the operation ended and consumes a queued terminal after a
+  // rejected admission; a cancel during admission waits for the admission
+  // result — an already-submitted operation is not recorded as cancelled.
+  function trackVoiceTerminal(eventName, session, fields) {
+    if (!session || session.telemetryTerminal) return;
+    if (session.pendingSubmission) {
+      session.pendingTerminal = { eventName, fields };
+      return;
+    }
+    session.telemetryTerminal = true;
+  }
+
+  // web+tauriVoice 共享
+  function completeVoiceSubmission(operationId, sessionId, accepted) {
+    const operation = voiceOperations.value.get(operationId);
+    if (!operation || operation.telemetryTerminal) return;
+    operation.pendingSubmission = false;
+    if (sessionId && !operation.sessionId) {
+      operation.sessionId = sessionId;
+    }
+    if (accepted) {
+      // Acceptance ends the operation (never adoptable again; the next
+      // recording start sweeps it).
+      operation.pendingTerminal = null;
+      operation.telemetryTerminal = true;
+      if (state.voiceInput && state.voiceInput.operationId === operationId) {
+        state.voiceInput = Object.assign({}, state.voiceInput, {
+          status: "idle", operationId: null, telemetryTerminal: true,
+        });
+        notify();
+      }
+    } else if (operation.pendingTerminal) {
+      const terminal = operation.pendingTerminal;
+      operation.pendingTerminal = null;
+      trackVoiceTerminal(terminal.eventName, operation, terminal.fields);
+    }
+  }
+
+  // web+tauriVoice 共享
+  function encodeWav(samples, sampleRate) {
+    const dataSize = samples.length * 2;
+    const buffer = new ArrayBuffer(44 + dataSize);
+    const view = new DataView(buffer);
+    function writeString(offset, value) {
+      // WAV header writes ASCII only; charCode is the target byte value, fromCodePoint/codePointAt add nothing here.
+      for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i)); // eslint-disable-line unicorn/prefer-code-point
+    }
+    writeString(0, "RIFF");
+    view.setUint32(4, 36 + dataSize, true);
+    writeString(8, "WAVE");
+    writeString(12, "fmt ");
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeString(36, "data");
+    view.setUint32(40, dataSize, true);
+    let offset = 44;
+    for (let i = 0; i < samples.length; i++, offset += 2) {
+      const s = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    return buffer;
+  }
+
+  // web+tauriChat 共享（FE14 wave 4）
+  // ── Pinvou v4 召唤式检阅:Boss 主动呼叫,审当前 session 前面的工作 ──
+  // 纯召唤、不替 Boss 决策。
+  // 审查卡进 chatItems(当前会话可见);跨会话持久化(进 messages/独立存储)是后续增强。
+  async function summonPinvou(focus, mode) {
+    if (!state.activeSessionId) { addSystemItem(bt("summonNeedsSession")); return; }
+    if (state.pinvouSummoning) return;
+    state.pinvouSummoning = true;
+    const sid = state.activeSessionId; // 召唤发起时的 session;await 返回后校验,防跨 session 串(召唤慢+切走)
+    // 检阅结果弹 modal(不进对话流):一次只一个,裁决/跳过直接操作 state.pinvouModal.review、
+    // 不靠 pos 定位(根治连续召唤 pos 重复串卡)。
+    state.pinvouModal = { loading: true, coverage: mode === "coverage" };
+    notify();
+    try {
+      // focus=产出物 path(品=审产物); mode="coverage"=悟(通盘体检)。
+      const review = await invoke("summon_pinvou", { sessionId: sid, focus: focus || null, mode: mode || null });
+      if (state.activeSessionId !== sid) return; // 召唤期间切了 session → 丢弃,绝不 record/写进别的 session
+      recordPinvouReview(review); // 存 sidecar(供核账读上轮账目);modal.review 同引用,裁决写它=写 sidecar
+      if (state.pinvouModal) { state.pinvouModal.loading = false; state.pinvouModal.review = review; }
+    } catch (e) {
+      if (state.activeSessionId === sid && state.pinvouModal) { state.pinvouModal.loading = false; state.pinvouModal.error = String(e && e.message ? e.message : e); }
+    } finally {
+      state.pinvouSummoning = false;
+      notify();
+    }
+  }
+
+  // web+tauriChat 共享（FE14 wave 4）
+  // §2 按勾选裁决:resolution 已由前端写回 review 对象(引用→sidecar),这里持久化 +
+  // 把勾「让AI改」的条目走 B1 发定向修订指令(只改对应段落、禁全文重写)。Boss 驾驶,非自动。
+  async function resolvePinvouReview(resolutions, actions) {
+    // 检阅发生的会话归属捕获：persist 挂起期间用户可能切走，修订指令必须发回
+    // 检阅会话，不得漂进当前 active 会话（审计）。
+    const reviewSid = state.activeSessionId;
+    // 弹窗只一个 review(state.pinvouModal.review),直接在它上面写 resolution——不靠 pos 定位
+    // (根治连续召唤 pos 重复串卡)。它和 sidecar entry.review 同引用,写它=写 sidecar。
+    const isWu = !!(state.pinvouModal && state.pinvouModal.coverage); // 关窗前取,供转交标品/悟
+    const review = state.pinvouModal && state.pinvouModal.review;
+    if (review && resolutions) {
+      (review.recommendations || []).forEach(function (r, k) { if (resolutions.recs && resolutions.recs[k]) r.resolution = resolutions.recs[k]; });
+      (review.issues || []).forEach(function (x, k) { if (resolutions.issues && resolutions.issues[k]) x.resolution = resolutions.issues[k]; });
+      (review.coverage || []).forEach(function (g, k) { if (resolutions.coverage && resolutions.coverage[k]) g.resolution = resolutions.coverage[k]; });
+    }
+    await persistPinvouReviews(); // 落盘,配合后端 preserve_resolutions 防覆盖
+    state.pinvouModal = null; // 裁决完关窗
+    notify();
+    if (!actions || !actions.length) return;
+    // 按动作类型分组,组装一条 Boss 消息发给主 AI(Boss 驾驶,非自动回传):
+    //   fix/verify=产物缺陷定向修订(verify 先核实);adopt=Boss 已定的决策;ask=让 AI 正式问。
+    const fix = actions.filter(function (a) { return a.t === "fix"; });
+    const verify = actions.filter(function (a) { return a.t === "verify"; });
+    const adopt = actions.filter(function (a) { return a.t === "adopt"; });
+    const ask = actions.filter(function (a) { return a.t === "ask"; });
+    const parts = [];
+    if (fix.length) {
+      parts.push(bt("reviewFixHeader"));
+      fix.forEach(function (a) { parts.push("- " + a.text); });
+    }
+    if (verify.length) {
+      if (parts.length) parts.push("");
+      parts.push(bt("reviewVerifyHeader"));
+      verify.forEach(function (a) { parts.push("- " + a.text); });
+    }
+    if (adopt.length) {
+      if (parts.length) parts.push("");
+      parts.push(bt("reviewAdoptHeader"));
+      adopt.forEach(function (a) { parts.push("- " + (a.topic ? a.topic + "：" : "") + a.pick); });
+    }
+    if (ask.length) {
+      if (parts.length) parts.push("");
+      parts.push(bt("reviewAskHeader"));
+      ask.forEach(function (a) { parts.push("- " + a.topic); });
+    }
+    const fill = actions.filter(function (a) { return a.t === "fill"; });
+    if (fill.length) {
+      if (parts.length) parts.push("");
+      parts.push(bt("reviewFillHeader"));
+      fill.forEach(function (a) { parts.push("- " + a.dimension + (a.suggestion ? "：" + a.suggestion : "")); });
+      parts.push(bt("reviewFillFooter"));
+    }
+    // 已切走则放弃发指令（修订指令属于检阅会话，漂进别的会话会误导其上下文）。
+    if (parts.length && reviewSid && state.activeSessionId === reviewSid) sendMessage(parts.join("\n"), { pinvouTransfer: isWu ? "悟" : "品" });
+  }
+
   // web:158313+tauriSessions:47342 共享
   function interruptedDisplayRange(item) {
       if (!item || item.interruptedDisplayOnly !== true) return null;
@@ -4077,7 +4310,7 @@
     if (deps[name] !== undefined) forwarderSetters[name](deps[name]);
   }
 
-    return {bt, textMatchesBtKey, isDefaultChatTitle, authoritySyncBufferSnapshot, normalizePinvouScene, pinvouSceneStorageKey, normalizePinvouSceneEvents, loadPinvouSceneEventsForSession, savePinvouSceneEventsForSession, recordPinvouSceneForMessage, pinvouSceneForMessagePos, getBuffer, isProtectedScheduledBuffer, touchSessionBuffer, registerScheduledRunOwner, scheduledRunOwnerVisibleRank, scheduledRunOwnerPriority, pruneScheduledRunSessionOwners, isScheduledRunTerminal, rememberScheduledRunOwner, scheduledRunBuffer, markScheduledInitialTurnActive, markScheduledInitialTurnTerminal, beginScheduledOpenActivation, rollbackScheduledOpenActivation, markRemoteTurn, onSessionEvent, isScheduledRunSession, defineSubscriptionStateProperty, copySubscriptionStateObject, loadScheduledTaskTemplateSources, rememberScheduledTaskTemplateSource, attachScheduledTaskTemplateSource, attachAndPruneScheduledTaskTemplateSources, upsertScheduledTask, applyScheduledRunViewed, invalidateScheduledTaskReads, invalidateScheduledRecentRuns, invalidateScheduledRecentRunsForSession, scheduleScheduledRunRefresh, scheduledTaskErrorText, setScheduledTaskError, dismissScheduledTaskError, clearScheduledTaskLoadError, beginScheduledTaskLoad, endScheduledTaskLoad, scheduledTaskRequestStamp, isCurrentScheduledTaskRequest, selectScheduledTask, clearScheduledTaskSelection, extractBalancedJsonObject, parseLooseJsonObject, parseScheduledTaskDraftFromText, normalizeScheduledTaskDraft, activeScheduledTaskModelConfig, lockScheduledTaskDraftModel, scheduledTaskInputFromDraft, autoCreateScheduledTaskDraft, createScheduledTask, loadScheduledTasks, readScheduledTask, mergeScheduledTaskRecentRuns, loadScheduledTaskRuns, upsertRecentRunRow, loadScheduledTaskRecentRuns, refreshScheduledTaskData, refreshScheduledRunShortcutUntilLinked, upsertScheduledTaskRun, runScheduledTaskAction, updateScheduledTask, pauseScheduledTask, resumeScheduledTask, toggleScheduledTaskPinned, deleteScheduledTask, runScheduledTaskNow, startScheduledTaskChat, toolCallAlreadyFinished, hasChatItemForTool, addSystemItem, addAuthoritySyncNotice, compactPruneRollupText, removeCompactionStartItem, addOrMergePruneCompaction, timeStr, createNewSession, reportSessionSwitchFailure, mergeHydratedMessages, hydratedChatItemKey, switchToSession, openScheduledRunChat, exitScheduledRunChat, recentScheduledRunForSession, leaveSessionView, applyDeletedSession, onSessionDeleted, renameSession, toggleSessionPinned, archiveSession, restoreArchivedSession, toolResultText, stripInternalToolRuntimeSuffix, toolResultDisplayContent, parsePlanSnapshot, parseUserAnswers, parseCarefulBlocked, userMessageInputProvenance, isInternalUserMessageProvenance, isShellExecutionTool, utf8Length, formatShellSnapshot, shellCommandForItem, shellSnapshotKey, terminalShellHistoryMatch, applyShellSnapshots, scheduleShellPoll, runShellPoll, patchLastItem, hasUnresolvedItem, basename, isAbsPath, normalizedPath, applyWorkspaceReboundMark, sessionRecentlyRebound, rebaseArtifactPathsForRebind, pathIsRebindStale, noteArtifactChange, isSharedMcpArtifactPath, artifactBelongsToSession, filterSessionArtifacts, isTmpPath, isDeliverable, markTurnDirtyArtifact, untrackArtifact, findPresentedArtifact, updatePresentedArtifact, pushArtifactPath, extractArtifactPath, fileMutationAction, composePlanMarkdown, isBusyFor, formatAttachmentDisplayText, queuedPayloadEnvelope, stripMentionBlockForComposerRestore, makeQueuedMessage, rebuiltQueuedPayload, rebuiltQueuedMetaPayload, getComposerDraft, setComposerDraft, prefillComposer, inspectPinvou, recordPinvouReview, dismissPinvouReview, persistPinvouReviews, planCardHydrationKey, reasoningEventIndex, streamingReasoningItem, finalizeStreamingReasoning, isPresentArtifactTool, artifactPathFromToolOutput, shouldUseToolOutputAsArtifact, presentArtifactAbsPath, numOr0, adjustCounters, startMonitorPolling, stopMonitorPolling, pollMonitor, loadSettings, loadSelectedPet, setSelectedPet, enqueueSettingsWrite, submitFeedback, discoverLocalVllm, loadEffectiveModelConfig, getImageInputCapability, loadModels, revealModelApiKey, switchModel, testModelConnection, testImageInputCapability, refreshSuperPerm, setModeLane, patchItemById, runOnSession, addSystemItemFor, patchItemByIdFor, memoryWriteLabel, memoryWriteStatusLabel, normalizeMemoryCandidateText, handleMemoryWrite, orderedMemoryWarnings, applyMemoryProfileState, applyMemoryWriteState, upsertMemoryValue, upsertPendingMemoryCandidate, rehydratePendingMemoryCandidates, discardStaleLoad, loadOrganizeHistory, applyMemoryOverview, loadMemoryOverview, updateMemoryItem, deleteMemoryItem, resolveMemoryCandidate, startThinking, thinkingTool, thinkingIdle, stopThinking, isActionablePlanCard, setPlanModeNext, planStuckReplan, submitUserInput, openContainingFolder, revealSessionFolder, openScheduledTaskFolder, deliverableCategory, sessionTitleById, currentMemoryArtifacts, conversationAttachmentArgs, pickAndAttach, loadPersonas, refreshPersonas, createPersona, updatePersona, deletePersona, personaName, recordPersonaEvent, equipPersona, postCardCreatorIntro, normalizeMountedCollections, applyMountedCollections, mountedCollectionTargetAtEnqueue, updateMountedCollections, mountCollection, setCollectionEnabled, removeCollection, checkForUpdate, checkDependencies, setVoiceInputStatus, emitVoiceDiagnostic, voiceFlowError, requestVoiceMedia, mergeFloatChunks, downsamplePcm, closeVoiceAsrSetup, downloadKbModel, cancelVoiceInput, appendVoiceText, interruptedDisplayRange, emitPersonaAt, restoreUiTurnState, rememberDraftWorkspaceRecent, maybePruneFailedWorkspaceRecent, forgetDraftWorkspaceRecent, auxChatEnsure, auxChatSend, auxChatSnapshot, auxChatReset };}
+    return {bt, textMatchesBtKey, isDefaultChatTitle, authoritySyncBufferSnapshot, normalizePinvouScene, pinvouSceneStorageKey, normalizePinvouSceneEvents, loadPinvouSceneEventsForSession, savePinvouSceneEventsForSession, recordPinvouSceneForMessage, pinvouSceneForMessagePos, getBuffer, isProtectedScheduledBuffer, touchSessionBuffer, registerScheduledRunOwner, scheduledRunOwnerVisibleRank, scheduledRunOwnerPriority, pruneScheduledRunSessionOwners, isScheduledRunTerminal, rememberScheduledRunOwner, scheduledRunBuffer, markScheduledInitialTurnActive, markScheduledInitialTurnTerminal, beginScheduledOpenActivation, rollbackScheduledOpenActivation, markRemoteTurn, onSessionEvent, isScheduledRunSession, defineSubscriptionStateProperty, copySubscriptionStateObject, loadScheduledTaskTemplateSources, rememberScheduledTaskTemplateSource, attachScheduledTaskTemplateSource, attachAndPruneScheduledTaskTemplateSources, upsertScheduledTask, applyScheduledRunViewed, invalidateScheduledTaskReads, invalidateScheduledRecentRuns, invalidateScheduledRecentRunsForSession, scheduleScheduledRunRefresh, scheduledTaskErrorText, setScheduledTaskError, dismissScheduledTaskError, clearScheduledTaskLoadError, beginScheduledTaskLoad, endScheduledTaskLoad, scheduledTaskRequestStamp, isCurrentScheduledTaskRequest, selectScheduledTask, clearScheduledTaskSelection, extractBalancedJsonObject, parseLooseJsonObject, parseScheduledTaskDraftFromText, normalizeScheduledTaskDraft, activeScheduledTaskModelConfig, lockScheduledTaskDraftModel, scheduledTaskInputFromDraft, autoCreateScheduledTaskDraft, createScheduledTask, loadScheduledTasks, readScheduledTask, mergeScheduledTaskRecentRuns, loadScheduledTaskRuns, upsertRecentRunRow, loadScheduledTaskRecentRuns, refreshScheduledTaskData, refreshScheduledRunShortcutUntilLinked, upsertScheduledTaskRun, runScheduledTaskAction, updateScheduledTask, pauseScheduledTask, resumeScheduledTask, toggleScheduledTaskPinned, deleteScheduledTask, runScheduledTaskNow, startScheduledTaskChat, toolCallAlreadyFinished, hasChatItemForTool, addSystemItem, addAuthoritySyncNotice, compactPruneRollupText, removeCompactionStartItem, addOrMergePruneCompaction, timeStr, createNewSession, reportSessionSwitchFailure, mergeHydratedMessages, hydratedChatItemKey, switchToSession, openScheduledRunChat, exitScheduledRunChat, recentScheduledRunForSession, leaveSessionView, applyDeletedSession, onSessionDeleted, renameSession, toggleSessionPinned, archiveSession, restoreArchivedSession, toolResultText, stripInternalToolRuntimeSuffix, toolResultDisplayContent, parsePlanSnapshot, parseUserAnswers, parseCarefulBlocked, userMessageInputProvenance, isInternalUserMessageProvenance, isShellExecutionTool, utf8Length, formatShellSnapshot, shellCommandForItem, shellSnapshotKey, terminalShellHistoryMatch, applyShellSnapshots, scheduleShellPoll, runShellPoll, patchLastItem, hasUnresolvedItem, basename, isAbsPath, normalizedPath, applyWorkspaceReboundMark, sessionRecentlyRebound, rebaseArtifactPathsForRebind, pathIsRebindStale, noteArtifactChange, isSharedMcpArtifactPath, artifactBelongsToSession, filterSessionArtifacts, isTmpPath, isDeliverable, markTurnDirtyArtifact, untrackArtifact, findPresentedArtifact, updatePresentedArtifact, pushArtifactPath, extractArtifactPath, fileMutationAction, composePlanMarkdown, isBusyFor, formatAttachmentDisplayText, queuedPayloadEnvelope, stripMentionBlockForComposerRestore, makeQueuedMessage, rebuiltQueuedPayload, rebuiltQueuedMetaPayload, getComposerDraft, setComposerDraft, prefillComposer, inspectPinvou, recordPinvouReview, dismissPinvouReview, summonPinvou, resolvePinvouReview, persistPinvouReviews, planCardHydrationKey, reasoningEventIndex, streamingReasoningItem, finalizeStreamingReasoning, isPresentArtifactTool, artifactPathFromToolOutput, shouldUseToolOutputAsArtifact, presentArtifactAbsPath, numOr0, adjustCounters, startMonitorPolling, stopMonitorPolling, pollMonitor, loadSettings, loadSelectedPet, setSelectedPet, enqueueSettingsWrite, submitFeedback, discoverLocalVllm, loadEffectiveModelConfig, getImageInputCapability, loadModels, revealModelApiKey, switchModel, testModelConnection, testImageInputCapability, refreshSuperPerm, setModeLane, patchItemById, runOnSession, addSystemItemFor, patchItemByIdFor, memoryWriteLabel, memoryWriteStatusLabel, normalizeMemoryCandidateText, handleMemoryWrite, orderedMemoryWarnings, applyMemoryProfileState, applyMemoryWriteState, upsertMemoryValue, upsertPendingMemoryCandidate, rehydratePendingMemoryCandidates, discardStaleLoad, loadOrganizeHistory, applyMemoryOverview, loadMemoryOverview, updateMemoryItem, deleteMemoryItem, resolveMemoryCandidate, startThinking, thinkingTool, thinkingIdle, stopThinking, isActionablePlanCard, setPlanModeNext, planStuckReplan, submitUserInput, openContainingFolder, revealSessionFolder, openScheduledTaskFolder, deliverableCategory, sessionTitleById, currentMemoryArtifacts, conversationAttachmentArgs, pickAndAttach, loadPersonas, refreshPersonas, createPersona, updatePersona, deletePersona, personaName, recordPersonaEvent, equipPersona, postCardCreatorIntro, normalizeMountedCollections, applyMountedCollections, mountedCollectionTargetAtEnqueue, updateMountedCollections, mountCollection, setCollectionEnabled, removeCollection, checkForUpdate, checkDependencies, setVoiceInputStatus, emitVoiceDiagnostic, voiceFlowError, requestVoiceMedia, mergeFloatChunks, downsamplePcm, closeVoiceAsrSetup, downloadKbModel, cancelVoiceInput, appendVoiceText, trackVoiceTerminal, rememberVoiceOperation, getVoiceOperationId, beginVoiceSubmission, voiceOperationSessionId, hasVoiceSubmissionPending, rebindVoiceOperationToDraft, completeVoiceSubmission, encodeWav, interruptedDisplayRange, emitPersonaAt, restoreUiTurnState, rememberDraftWorkspaceRecent, maybePruneFailedWorkspaceRecent, forgetDraftWorkspaceRecent, auxChatEnsure, auxChatSend, auxChatSnapshot, auxChatReset };}
 
   // 嵌套 cluster（<base>:<offset>）：web/tauri 两侧正文逐字相同，每对共用一个工厂并注册在两个 key 下。
   const nestedInterruptedDisplayRange = function (deps) {
@@ -4099,7 +4332,7 @@
     "web": function (deps) {
       const b = sharedBridgeBase(ensureCells(deps));
 
-      return Object.freeze({bt: b.bt, textMatchesBtKey: b.textMatchesBtKey, isDefaultChatTitle: b.isDefaultChatTitle, authoritySyncBufferSnapshot: b.authoritySyncBufferSnapshot, normalizePinvouScene: b.normalizePinvouScene, pinvouSceneStorageKey: b.pinvouSceneStorageKey, normalizePinvouSceneEvents: b.normalizePinvouSceneEvents, loadPinvouSceneEventsForSession: b.loadPinvouSceneEventsForSession, savePinvouSceneEventsForSession: b.savePinvouSceneEventsForSession, recordPinvouSceneForMessage: b.recordPinvouSceneForMessage, pinvouSceneForMessagePos: b.pinvouSceneForMessagePos, getBuffer: b.getBuffer, isProtectedScheduledBuffer: b.isProtectedScheduledBuffer, touchSessionBuffer: b.touchSessionBuffer, registerScheduledRunOwner: b.registerScheduledRunOwner, scheduledRunOwnerVisibleRank: b.scheduledRunOwnerVisibleRank, scheduledRunOwnerPriority: b.scheduledRunOwnerPriority, pruneScheduledRunSessionOwners: b.pruneScheduledRunSessionOwners, isScheduledRunTerminal: b.isScheduledRunTerminal, rememberScheduledRunOwner: b.rememberScheduledRunOwner, scheduledRunBuffer: b.scheduledRunBuffer, markScheduledInitialTurnActive: b.markScheduledInitialTurnActive, markScheduledInitialTurnTerminal: b.markScheduledInitialTurnTerminal, beginScheduledOpenActivation: b.beginScheduledOpenActivation, rollbackScheduledOpenActivation: b.rollbackScheduledOpenActivation, markRemoteTurn: b.markRemoteTurn, onSessionEvent: b.onSessionEvent, isScheduledRunSession: b.isScheduledRunSession, defineSubscriptionStateProperty: b.defineSubscriptionStateProperty, copySubscriptionStateObject: b.copySubscriptionStateObject, loadScheduledTaskTemplateSources: b.loadScheduledTaskTemplateSources, rememberScheduledTaskTemplateSource: b.rememberScheduledTaskTemplateSource, attachScheduledTaskTemplateSource: b.attachScheduledTaskTemplateSource, attachAndPruneScheduledTaskTemplateSources: b.attachAndPruneScheduledTaskTemplateSources, upsertScheduledTask: b.upsertScheduledTask, applyScheduledRunViewed: b.applyScheduledRunViewed, invalidateScheduledTaskReads: b.invalidateScheduledTaskReads, invalidateScheduledRecentRuns: b.invalidateScheduledRecentRuns, invalidateScheduledRecentRunsForSession: b.invalidateScheduledRecentRunsForSession, scheduleScheduledRunRefresh: b.scheduleScheduledRunRefresh, scheduledTaskErrorText: b.scheduledTaskErrorText, setScheduledTaskError: b.setScheduledTaskError, dismissScheduledTaskError: b.dismissScheduledTaskError, clearScheduledTaskLoadError: b.clearScheduledTaskLoadError, beginScheduledTaskLoad: b.beginScheduledTaskLoad, endScheduledTaskLoad: b.endScheduledTaskLoad, scheduledTaskRequestStamp: b.scheduledTaskRequestStamp, isCurrentScheduledTaskRequest: b.isCurrentScheduledTaskRequest, selectScheduledTask: b.selectScheduledTask, clearScheduledTaskSelection: b.clearScheduledTaskSelection, extractBalancedJsonObject: b.extractBalancedJsonObject, parseLooseJsonObject: b.parseLooseJsonObject, parseScheduledTaskDraftFromText: b.parseScheduledTaskDraftFromText, normalizeScheduledTaskDraft: b.normalizeScheduledTaskDraft, activeScheduledTaskModelConfig: b.activeScheduledTaskModelConfig, lockScheduledTaskDraftModel: b.lockScheduledTaskDraftModel, scheduledTaskInputFromDraft: b.scheduledTaskInputFromDraft, autoCreateScheduledTaskDraft: b.autoCreateScheduledTaskDraft, createScheduledTask: b.createScheduledTask, loadScheduledTasks: b.loadScheduledTasks, readScheduledTask: b.readScheduledTask, mergeScheduledTaskRecentRuns: b.mergeScheduledTaskRecentRuns, loadScheduledTaskRuns: b.loadScheduledTaskRuns, loadScheduledTaskRecentRuns: b.loadScheduledTaskRecentRuns, refreshScheduledTaskData: b.refreshScheduledTaskData, refreshScheduledRunShortcutUntilLinked: b.refreshScheduledRunShortcutUntilLinked, upsertScheduledTaskRun: b.upsertScheduledTaskRun, runScheduledTaskAction: b.runScheduledTaskAction, updateScheduledTask: b.updateScheduledTask, pauseScheduledTask: b.pauseScheduledTask, resumeScheduledTask: b.resumeScheduledTask, toggleScheduledTaskPinned: b.toggleScheduledTaskPinned, deleteScheduledTask: b.deleteScheduledTask, runScheduledTaskNow: b.runScheduledTaskNow, startScheduledTaskChat: b.startScheduledTaskChat, toolCallAlreadyFinished: b.toolCallAlreadyFinished, hasChatItemForTool: b.hasChatItemForTool, addSystemItem: b.addSystemItem, addAuthoritySyncNotice: b.addAuthoritySyncNotice, compactPruneRollupText: b.compactPruneRollupText, removeCompactionStartItem: b.removeCompactionStartItem, addOrMergePruneCompaction: b.addOrMergePruneCompaction, timeStr: b.timeStr, createNewSession: b.createNewSession, reportSessionSwitchFailure: b.reportSessionSwitchFailure, mergeHydratedMessages: b.mergeHydratedMessages, hydratedChatItemKey: b.hydratedChatItemKey, switchToSession: b.switchToSession, openScheduledRunChat: b.openScheduledRunChat, exitScheduledRunChat: b.exitScheduledRunChat, recentScheduledRunForSession: b.recentScheduledRunForSession, leaveSessionView: b.leaveSessionView, applyDeletedSession: b.applyDeletedSession, onSessionDeleted: b.onSessionDeleted, renameSession: b.renameSession, toggleSessionPinned: b.toggleSessionPinned, archiveSession: b.archiveSession, restoreArchivedSession: b.restoreArchivedSession, toolResultText: b.toolResultText, toolResultDisplayContent: b.toolResultDisplayContent, parsePlanSnapshot: b.parsePlanSnapshot, parseUserAnswers: b.parseUserAnswers, parseCarefulBlocked: b.parseCarefulBlocked, userMessageInputProvenance: b.userMessageInputProvenance, isInternalUserMessageProvenance: b.isInternalUserMessageProvenance, isShellExecutionTool: b.isShellExecutionTool, utf8Length: b.utf8Length, formatShellSnapshot: b.formatShellSnapshot, shellCommandForItem: b.shellCommandForItem, shellSnapshotKey: b.shellSnapshotKey, terminalShellHistoryMatch: b.terminalShellHistoryMatch, applyShellSnapshots: b.applyShellSnapshots, scheduleShellPoll: b.scheduleShellPoll, runShellPoll: b.runShellPoll, patchLastItem: b.patchLastItem, hasUnresolvedItem: b.hasUnresolvedItem, basename: b.basename, isAbsPath: b.isAbsPath, normalizedPath: b.normalizedPath, applyWorkspaceReboundMark: b.applyWorkspaceReboundMark, sessionRecentlyRebound: b.sessionRecentlyRebound, rebaseArtifactPathsForRebind: b.rebaseArtifactPathsForRebind, pathIsRebindStale: b.pathIsRebindStale, noteArtifactChange: b.noteArtifactChange, isSharedMcpArtifactPath: b.isSharedMcpArtifactPath, artifactBelongsToSession: b.artifactBelongsToSession, filterSessionArtifacts: b.filterSessionArtifacts, isDeliverable: b.isDeliverable, markTurnDirtyArtifact: b.markTurnDirtyArtifact, untrackArtifact: b.untrackArtifact, findPresentedArtifact: b.findPresentedArtifact, updatePresentedArtifact: b.updatePresentedArtifact, pushArtifactPath: b.pushArtifactPath, extractArtifactPath: b.extractArtifactPath, fileMutationAction: b.fileMutationAction, composePlanMarkdown: b.composePlanMarkdown, isBusyFor: b.isBusyFor, formatAttachmentDisplayText: b.formatAttachmentDisplayText, stripMentionBlockForComposerRestore: b.stripMentionBlockForComposerRestore, makeQueuedMessage: b.makeQueuedMessage, rebuiltQueuedPayload: b.rebuiltQueuedPayload, rebuiltQueuedMetaPayload: b.rebuiltQueuedMetaPayload, getComposerDraft: b.getComposerDraft, setComposerDraft: b.setComposerDraft, prefillComposer: b.prefillComposer, inspectPinvou: b.inspectPinvou, recordPinvouReview: b.recordPinvouReview, dismissPinvouReview: b.dismissPinvouReview, persistPinvouReviews: b.persistPinvouReviews, planCardHydrationKey: b.planCardHydrationKey, reasoningEventIndex: b.reasoningEventIndex, streamingReasoningItem: b.streamingReasoningItem, finalizeStreamingReasoning: b.finalizeStreamingReasoning, isPresentArtifactTool: b.isPresentArtifactTool, artifactPathFromToolOutput: b.artifactPathFromToolOutput, shouldUseToolOutputAsArtifact: b.shouldUseToolOutputAsArtifact, presentArtifactAbsPath: b.presentArtifactAbsPath, numOr0: b.numOr0, adjustCounters: b.adjustCounters, startMonitorPolling: b.startMonitorPolling, stopMonitorPolling: b.stopMonitorPolling, pollMonitor, loadSettings: b.loadSettings, loadSelectedPet: b.loadSelectedPet, setSelectedPet: b.setSelectedPet, enqueueSettingsWrite: b.enqueueSettingsWrite, submitFeedback: b.submitFeedback, discoverLocalVllm: b.discoverLocalVllm, getImageInputCapability: b.getImageInputCapability, loadModels: b.loadModels, revealModelApiKey: b.revealModelApiKey, switchModel: b.switchModel, testModelConnection: b.testModelConnection, testImageInputCapability: b.testImageInputCapability, refreshSuperPerm: b.refreshSuperPerm, setModeLane: b.setModeLane, patchItemById: b.patchItemById, runOnSession: b.runOnSession, addSystemItemFor: b.addSystemItemFor, patchItemByIdFor: b.patchItemByIdFor, handleMemoryWrite: b.handleMemoryWrite, orderedMemoryWarnings: b.orderedMemoryWarnings, applyMemoryProfileState: b.applyMemoryProfileState, applyMemoryWriteState: b.applyMemoryWriteState, upsertMemoryValue: b.upsertMemoryValue, rehydratePendingMemoryCandidates: b.rehydratePendingMemoryCandidates, discardStaleLoad: b.discardStaleLoad, loadOrganizeHistory: b.loadOrganizeHistory, applyMemoryOverview: b.applyMemoryOverview, loadMemoryOverview: b.loadMemoryOverview, updateMemoryItem: b.updateMemoryItem, deleteMemoryItem: b.deleteMemoryItem, resolveMemoryCandidate: b.resolveMemoryCandidate, startThinking: b.startThinking, thinkingTool: b.thinkingTool, thinkingIdle: b.thinkingIdle, stopThinking: b.stopThinking, isActionablePlanCard: b.isActionablePlanCard, setPlanModeNext: b.setPlanModeNext, planStuckReplan: b.planStuckReplan, submitUserInput: b.submitUserInput, openContainingFolder: b.openContainingFolder, revealSessionFolder: b.revealSessionFolder, openScheduledTaskFolder: b.openScheduledTaskFolder, deliverableCategory: b.deliverableCategory, sessionTitleById: b.sessionTitleById, currentMemoryArtifacts: b.currentMemoryArtifacts, conversationAttachmentArgs: b.conversationAttachmentArgs, pickAndAttach: b.pickAndAttach, loadPersonas: b.loadPersonas, createPersona: b.createPersona, updatePersona: b.updatePersona, deletePersona: b.deletePersona, personaName: b.personaName, recordPersonaEvent: b.recordPersonaEvent, equipPersona: b.equipPersona, postCardCreatorIntro: b.postCardCreatorIntro, normalizeMountedCollections: b.normalizeMountedCollections, applyMountedCollections: b.applyMountedCollections, mountedCollectionTargetAtEnqueue: b.mountedCollectionTargetAtEnqueue, updateMountedCollections: b.updateMountedCollections, mountCollection: b.mountCollection, setCollectionEnabled: b.setCollectionEnabled, removeCollection: b.removeCollection, checkForUpdate: b.checkForUpdate, checkDependencies: b.checkDependencies, setVoiceInputStatus: b.setVoiceInputStatus, emitVoiceDiagnostic: b.emitVoiceDiagnostic, voiceFlowError: b.voiceFlowError, requestVoiceMedia: b.requestVoiceMedia, mergeFloatChunks: b.mergeFloatChunks, downsamplePcm: b.downsamplePcm, closeVoiceAsrSetup: b.closeVoiceAsrSetup, downloadKbModel: b.downloadKbModel, cancelVoiceInput: b.cancelVoiceInput, appendVoiceText: b.appendVoiceText, loadEffectiveModelConfig: b.loadEffectiveModelConfig });},
+      return Object.freeze({bt: b.bt, textMatchesBtKey: b.textMatchesBtKey, isDefaultChatTitle: b.isDefaultChatTitle, authoritySyncBufferSnapshot: b.authoritySyncBufferSnapshot, normalizePinvouScene: b.normalizePinvouScene, pinvouSceneStorageKey: b.pinvouSceneStorageKey, normalizePinvouSceneEvents: b.normalizePinvouSceneEvents, loadPinvouSceneEventsForSession: b.loadPinvouSceneEventsForSession, savePinvouSceneEventsForSession: b.savePinvouSceneEventsForSession, recordPinvouSceneForMessage: b.recordPinvouSceneForMessage, pinvouSceneForMessagePos: b.pinvouSceneForMessagePos, getBuffer: b.getBuffer, isProtectedScheduledBuffer: b.isProtectedScheduledBuffer, touchSessionBuffer: b.touchSessionBuffer, registerScheduledRunOwner: b.registerScheduledRunOwner, scheduledRunOwnerVisibleRank: b.scheduledRunOwnerVisibleRank, scheduledRunOwnerPriority: b.scheduledRunOwnerPriority, pruneScheduledRunSessionOwners: b.pruneScheduledRunSessionOwners, isScheduledRunTerminal: b.isScheduledRunTerminal, rememberScheduledRunOwner: b.rememberScheduledRunOwner, scheduledRunBuffer: b.scheduledRunBuffer, markScheduledInitialTurnActive: b.markScheduledInitialTurnActive, markScheduledInitialTurnTerminal: b.markScheduledInitialTurnTerminal, beginScheduledOpenActivation: b.beginScheduledOpenActivation, rollbackScheduledOpenActivation: b.rollbackScheduledOpenActivation, markRemoteTurn: b.markRemoteTurn, onSessionEvent: b.onSessionEvent, isScheduledRunSession: b.isScheduledRunSession, defineSubscriptionStateProperty: b.defineSubscriptionStateProperty, copySubscriptionStateObject: b.copySubscriptionStateObject, loadScheduledTaskTemplateSources: b.loadScheduledTaskTemplateSources, rememberScheduledTaskTemplateSource: b.rememberScheduledTaskTemplateSource, attachScheduledTaskTemplateSource: b.attachScheduledTaskTemplateSource, attachAndPruneScheduledTaskTemplateSources: b.attachAndPruneScheduledTaskTemplateSources, upsertScheduledTask: b.upsertScheduledTask, applyScheduledRunViewed: b.applyScheduledRunViewed, invalidateScheduledTaskReads: b.invalidateScheduledTaskReads, invalidateScheduledRecentRuns: b.invalidateScheduledRecentRuns, invalidateScheduledRecentRunsForSession: b.invalidateScheduledRecentRunsForSession, scheduleScheduledRunRefresh: b.scheduleScheduledRunRefresh, scheduledTaskErrorText: b.scheduledTaskErrorText, setScheduledTaskError: b.setScheduledTaskError, dismissScheduledTaskError: b.dismissScheduledTaskError, clearScheduledTaskLoadError: b.clearScheduledTaskLoadError, beginScheduledTaskLoad: b.beginScheduledTaskLoad, endScheduledTaskLoad: b.endScheduledTaskLoad, scheduledTaskRequestStamp: b.scheduledTaskRequestStamp, isCurrentScheduledTaskRequest: b.isCurrentScheduledTaskRequest, selectScheduledTask: b.selectScheduledTask, clearScheduledTaskSelection: b.clearScheduledTaskSelection, extractBalancedJsonObject: b.extractBalancedJsonObject, parseLooseJsonObject: b.parseLooseJsonObject, parseScheduledTaskDraftFromText: b.parseScheduledTaskDraftFromText, normalizeScheduledTaskDraft: b.normalizeScheduledTaskDraft, activeScheduledTaskModelConfig: b.activeScheduledTaskModelConfig, lockScheduledTaskDraftModel: b.lockScheduledTaskDraftModel, scheduledTaskInputFromDraft: b.scheduledTaskInputFromDraft, autoCreateScheduledTaskDraft: b.autoCreateScheduledTaskDraft, createScheduledTask: b.createScheduledTask, loadScheduledTasks: b.loadScheduledTasks, readScheduledTask: b.readScheduledTask, mergeScheduledTaskRecentRuns: b.mergeScheduledTaskRecentRuns, loadScheduledTaskRuns: b.loadScheduledTaskRuns, loadScheduledTaskRecentRuns: b.loadScheduledTaskRecentRuns, refreshScheduledTaskData: b.refreshScheduledTaskData, refreshScheduledRunShortcutUntilLinked: b.refreshScheduledRunShortcutUntilLinked, upsertScheduledTaskRun: b.upsertScheduledTaskRun, runScheduledTaskAction: b.runScheduledTaskAction, updateScheduledTask: b.updateScheduledTask, pauseScheduledTask: b.pauseScheduledTask, resumeScheduledTask: b.resumeScheduledTask, toggleScheduledTaskPinned: b.toggleScheduledTaskPinned, deleteScheduledTask: b.deleteScheduledTask, runScheduledTaskNow: b.runScheduledTaskNow, startScheduledTaskChat: b.startScheduledTaskChat, toolCallAlreadyFinished: b.toolCallAlreadyFinished, hasChatItemForTool: b.hasChatItemForTool, addSystemItem: b.addSystemItem, addAuthoritySyncNotice: b.addAuthoritySyncNotice, compactPruneRollupText: b.compactPruneRollupText, removeCompactionStartItem: b.removeCompactionStartItem, addOrMergePruneCompaction: b.addOrMergePruneCompaction, timeStr: b.timeStr, createNewSession: b.createNewSession, reportSessionSwitchFailure: b.reportSessionSwitchFailure, mergeHydratedMessages: b.mergeHydratedMessages, hydratedChatItemKey: b.hydratedChatItemKey, switchToSession: b.switchToSession, openScheduledRunChat: b.openScheduledRunChat, exitScheduledRunChat: b.exitScheduledRunChat, recentScheduledRunForSession: b.recentScheduledRunForSession, leaveSessionView: b.leaveSessionView, applyDeletedSession: b.applyDeletedSession, onSessionDeleted: b.onSessionDeleted, renameSession: b.renameSession, toggleSessionPinned: b.toggleSessionPinned, archiveSession: b.archiveSession, restoreArchivedSession: b.restoreArchivedSession, toolResultText: b.toolResultText, toolResultDisplayContent: b.toolResultDisplayContent, parsePlanSnapshot: b.parsePlanSnapshot, parseUserAnswers: b.parseUserAnswers, parseCarefulBlocked: b.parseCarefulBlocked, userMessageInputProvenance: b.userMessageInputProvenance, isInternalUserMessageProvenance: b.isInternalUserMessageProvenance, isShellExecutionTool: b.isShellExecutionTool, utf8Length: b.utf8Length, formatShellSnapshot: b.formatShellSnapshot, shellCommandForItem: b.shellCommandForItem, shellSnapshotKey: b.shellSnapshotKey, terminalShellHistoryMatch: b.terminalShellHistoryMatch, applyShellSnapshots: b.applyShellSnapshots, scheduleShellPoll: b.scheduleShellPoll, runShellPoll: b.runShellPoll, patchLastItem: b.patchLastItem, hasUnresolvedItem: b.hasUnresolvedItem, basename: b.basename, isAbsPath: b.isAbsPath, normalizedPath: b.normalizedPath, applyWorkspaceReboundMark: b.applyWorkspaceReboundMark, sessionRecentlyRebound: b.sessionRecentlyRebound, rebaseArtifactPathsForRebind: b.rebaseArtifactPathsForRebind, pathIsRebindStale: b.pathIsRebindStale, noteArtifactChange: b.noteArtifactChange, isSharedMcpArtifactPath: b.isSharedMcpArtifactPath, artifactBelongsToSession: b.artifactBelongsToSession, filterSessionArtifacts: b.filterSessionArtifacts, isDeliverable: b.isDeliverable, markTurnDirtyArtifact: b.markTurnDirtyArtifact, untrackArtifact: b.untrackArtifact, findPresentedArtifact: b.findPresentedArtifact, updatePresentedArtifact: b.updatePresentedArtifact, pushArtifactPath: b.pushArtifactPath, extractArtifactPath: b.extractArtifactPath, fileMutationAction: b.fileMutationAction, composePlanMarkdown: b.composePlanMarkdown, isBusyFor: b.isBusyFor, formatAttachmentDisplayText: b.formatAttachmentDisplayText, stripMentionBlockForComposerRestore: b.stripMentionBlockForComposerRestore, makeQueuedMessage: b.makeQueuedMessage, rebuiltQueuedPayload: b.rebuiltQueuedPayload, rebuiltQueuedMetaPayload: b.rebuiltQueuedMetaPayload, getComposerDraft: b.getComposerDraft, setComposerDraft: b.setComposerDraft, prefillComposer: b.prefillComposer, inspectPinvou: b.inspectPinvou, recordPinvouReview: b.recordPinvouReview, dismissPinvouReview: b.dismissPinvouReview, summonPinvou: b.summonPinvou, resolvePinvouReview: b.resolvePinvouReview, persistPinvouReviews: b.persistPinvouReviews, planCardHydrationKey: b.planCardHydrationKey, reasoningEventIndex: b.reasoningEventIndex, streamingReasoningItem: b.streamingReasoningItem, finalizeStreamingReasoning: b.finalizeStreamingReasoning, isPresentArtifactTool: b.isPresentArtifactTool, artifactPathFromToolOutput: b.artifactPathFromToolOutput, shouldUseToolOutputAsArtifact: b.shouldUseToolOutputAsArtifact, presentArtifactAbsPath: b.presentArtifactAbsPath, numOr0: b.numOr0, adjustCounters: b.adjustCounters, startMonitorPolling: b.startMonitorPolling, stopMonitorPolling: b.stopMonitorPolling, pollMonitor, loadSettings: b.loadSettings, loadSelectedPet: b.loadSelectedPet, setSelectedPet: b.setSelectedPet, enqueueSettingsWrite: b.enqueueSettingsWrite, submitFeedback: b.submitFeedback, discoverLocalVllm: b.discoverLocalVllm, getImageInputCapability: b.getImageInputCapability, loadModels: b.loadModels, revealModelApiKey: b.revealModelApiKey, switchModel: b.switchModel, testModelConnection: b.testModelConnection, testImageInputCapability: b.testImageInputCapability, refreshSuperPerm: b.refreshSuperPerm, setModeLane: b.setModeLane, patchItemById: b.patchItemById, runOnSession: b.runOnSession, addSystemItemFor: b.addSystemItemFor, patchItemByIdFor: b.patchItemByIdFor, handleMemoryWrite: b.handleMemoryWrite, orderedMemoryWarnings: b.orderedMemoryWarnings, applyMemoryProfileState: b.applyMemoryProfileState, applyMemoryWriteState: b.applyMemoryWriteState, upsertMemoryValue: b.upsertMemoryValue, rehydratePendingMemoryCandidates: b.rehydratePendingMemoryCandidates, discardStaleLoad: b.discardStaleLoad, loadOrganizeHistory: b.loadOrganizeHistory, applyMemoryOverview: b.applyMemoryOverview, loadMemoryOverview: b.loadMemoryOverview, updateMemoryItem: b.updateMemoryItem, deleteMemoryItem: b.deleteMemoryItem, resolveMemoryCandidate: b.resolveMemoryCandidate, startThinking: b.startThinking, thinkingTool: b.thinkingTool, thinkingIdle: b.thinkingIdle, stopThinking: b.stopThinking, isActionablePlanCard: b.isActionablePlanCard, setPlanModeNext: b.setPlanModeNext, planStuckReplan: b.planStuckReplan, submitUserInput: b.submitUserInput, openContainingFolder: b.openContainingFolder, revealSessionFolder: b.revealSessionFolder, openScheduledTaskFolder: b.openScheduledTaskFolder, deliverableCategory: b.deliverableCategory, sessionTitleById: b.sessionTitleById, currentMemoryArtifacts: b.currentMemoryArtifacts, conversationAttachmentArgs: b.conversationAttachmentArgs, pickAndAttach: b.pickAndAttach, loadPersonas: b.loadPersonas, createPersona: b.createPersona, updatePersona: b.updatePersona, deletePersona: b.deletePersona, personaName: b.personaName, recordPersonaEvent: b.recordPersonaEvent, equipPersona: b.equipPersona, postCardCreatorIntro: b.postCardCreatorIntro, normalizeMountedCollections: b.normalizeMountedCollections, applyMountedCollections: b.applyMountedCollections, mountedCollectionTargetAtEnqueue: b.mountedCollectionTargetAtEnqueue, updateMountedCollections: b.updateMountedCollections, mountCollection: b.mountCollection, setCollectionEnabled: b.setCollectionEnabled, removeCollection: b.removeCollection, checkForUpdate: b.checkForUpdate, checkDependencies: b.checkDependencies, setVoiceInputStatus: b.setVoiceInputStatus, emitVoiceDiagnostic: b.emitVoiceDiagnostic, voiceFlowError: b.voiceFlowError, requestVoiceMedia: b.requestVoiceMedia, mergeFloatChunks: b.mergeFloatChunks, downsamplePcm: b.downsamplePcm, closeVoiceAsrSetup: b.closeVoiceAsrSetup, downloadKbModel: b.downloadKbModel, cancelVoiceInput: b.cancelVoiceInput, appendVoiceText: b.appendVoiceText, trackVoiceTerminal: b.trackVoiceTerminal, rememberVoiceOperation: b.rememberVoiceOperation, getVoiceOperationId: b.getVoiceOperationId, beginVoiceSubmission: b.beginVoiceSubmission, voiceOperationSessionId: b.voiceOperationSessionId, hasVoiceSubmissionPending: b.hasVoiceSubmissionPending, rebindVoiceOperationToDraft: b.rebindVoiceOperationToDraft, completeVoiceSubmission: b.completeVoiceSubmission, encodeWav: b.encodeWav, loadEffectiveModelConfig: b.loadEffectiveModelConfig });},
     "tauriMain": function (deps) {
       const b = sharedBridgeBase(ensureCells(deps));
       return Object.freeze({ authoritySyncBufferSnapshot: b.authoritySyncBufferSnapshot, bt: b.bt, textMatchesBtKey: b.textMatchesBtKey, isDefaultChatTitle: b.isDefaultChatTitle, normalizePinvouScene: b.normalizePinvouScene, pinvouSceneStorageKey: b.pinvouSceneStorageKey, normalizePinvouSceneEvents: b.normalizePinvouSceneEvents, loadPinvouSceneEventsForSession: b.loadPinvouSceneEventsForSession, savePinvouSceneEventsForSession: b.savePinvouSceneEventsForSession, recordPinvouSceneForMessage: b.recordPinvouSceneForMessage, pinvouSceneForMessagePos: b.pinvouSceneForMessagePos, markRemoteTurn: b.markRemoteTurn, onSessionEvent: b.onSessionEvent, isScheduledRunSession: b.isScheduledRunSession, planCardHydrationKey: b.planCardHydrationKey, defineSubscriptionStateProperty: b.defineSubscriptionStateProperty, copySubscriptionStateObject: b.copySubscriptionStateObject, toolResultText: b.toolResultText, toolResultDisplayContent: b.toolResultDisplayContent, parsePlanSnapshot: b.parsePlanSnapshot, parseUserAnswers: b.parseUserAnswers, parseCarefulBlocked: b.parseCarefulBlocked, userMessageInputProvenance: b.userMessageInputProvenance, isInternalUserMessageProvenance: b.isInternalUserMessageProvenance, patchLastItem: b.patchLastItem, hasUnresolvedItem: b.hasUnresolvedItem, composePlanMarkdown: b.composePlanMarkdown });
@@ -4114,7 +4347,7 @@
     },
     "tauriChat": function (deps) {
       const b = sharedBridgeBase(ensureCells(deps));
-      return Object.freeze({getComposerDraft: b.getComposerDraft, setComposerDraft: b.setComposerDraft, toolCallAlreadyFinished: b.toolCallAlreadyFinished, hasChatItemForTool: b.hasChatItemForTool, addSystemItem: b.addSystemItem, addAuthoritySyncNotice: b.addAuthoritySyncNotice, compactPruneRollupText: b.compactPruneRollupText, removeCompactionStartItem: b.removeCompactionStartItem, addOrMergePruneCompaction: b.addOrMergePruneCompaction, timeStr: b.timeStr, isBusyFor: b.isBusyFor, formatAttachmentDisplayText: b.formatAttachmentDisplayText, stripMentionBlockForComposerRestore: b.stripMentionBlockForComposerRestore, makeQueuedMessage: b.makeQueuedMessage, rebuiltQueuedPayload: b.rebuiltQueuedPayload, rebuiltQueuedMetaPayload: b.rebuiltQueuedMetaPayload, prefillComposer: b.prefillComposer, inspectPinvou: b.inspectPinvou, recordPinvouReview: b.recordPinvouReview, dismissPinvouReview: b.dismissPinvouReview, persistPinvouReviews: b.persistPinvouReviews});
+      return Object.freeze({getComposerDraft: b.getComposerDraft, setComposerDraft: b.setComposerDraft, summonPinvou: b.summonPinvou, resolvePinvouReview: b.resolvePinvouReview, toolCallAlreadyFinished: b.toolCallAlreadyFinished, hasChatItemForTool: b.hasChatItemForTool, addSystemItem: b.addSystemItem, addAuthoritySyncNotice: b.addAuthoritySyncNotice, compactPruneRollupText: b.compactPruneRollupText, removeCompactionStartItem: b.removeCompactionStartItem, addOrMergePruneCompaction: b.addOrMergePruneCompaction, timeStr: b.timeStr, isBusyFor: b.isBusyFor, formatAttachmentDisplayText: b.formatAttachmentDisplayText, stripMentionBlockForComposerRestore: b.stripMentionBlockForComposerRestore, makeQueuedMessage: b.makeQueuedMessage, rebuiltQueuedPayload: b.rebuiltQueuedPayload, rebuiltQueuedMetaPayload: b.rebuiltQueuedMetaPayload, prefillComposer: b.prefillComposer, inspectPinvou: b.inspectPinvou, recordPinvouReview: b.recordPinvouReview, dismissPinvouReview: b.dismissPinvouReview, persistPinvouReviews: b.persistPinvouReviews});
     },
     "web:158313": nestedInterruptedDisplayRange,
     "tauriSessions:47342": nestedInterruptedDisplayRange,
@@ -4168,7 +4401,7 @@
     },
     "tauriVoice": function (deps) {
       const b = sharedBridgeBase(ensureCells(deps));
-      return Object.freeze({ setVoiceInputStatus: b.setVoiceInputStatus, emitVoiceDiagnostic: b.emitVoiceDiagnostic, voiceFlowError: b.voiceFlowError, requestVoiceMedia: b.requestVoiceMedia, mergeFloatChunks: b.mergeFloatChunks, downsamplePcm: b.downsamplePcm, closeVoiceAsrSetup: b.closeVoiceAsrSetup, cancelVoiceInput: b.cancelVoiceInput, appendVoiceText: b.appendVoiceText });
+      return Object.freeze({ setVoiceInputStatus: b.setVoiceInputStatus, emitVoiceDiagnostic: b.emitVoiceDiagnostic, voiceFlowError: b.voiceFlowError, requestVoiceMedia: b.requestVoiceMedia, mergeFloatChunks: b.mergeFloatChunks, downsamplePcm: b.downsamplePcm, closeVoiceAsrSetup: b.closeVoiceAsrSetup, cancelVoiceInput: b.cancelVoiceInput, appendVoiceText: b.appendVoiceText, trackVoiceTerminal: b.trackVoiceTerminal, rememberVoiceOperation: b.rememberVoiceOperation, getVoiceOperationId: b.getVoiceOperationId, beginVoiceSubmission: b.beginVoiceSubmission, voiceOperationSessionId: b.voiceOperationSessionId, hasVoiceSubmissionPending: b.hasVoiceSubmissionPending, rebindVoiceOperationToDraft: b.rebindVoiceOperationToDraft, completeVoiceSubmission: b.completeVoiceSubmission, encodeWav: b.encodeWav });
     },
     "tauriKnowledgeModel": function (deps) {
       const b = sharedBridgeBase(ensureCells(deps));
