@@ -6317,3 +6317,81 @@ groups without skips and passed affected vet, two-file formatting and diff
 checks; all independent processes closed. Client architecture and synchronized-
 version guards passed. Unchanged database/provider/browser integration was not
 repeated.
+
+## T09 thirty-seventh batch: isolated PE inspection command
+
+`cmd/upgrade-pe-inspect` uses the existing explicit OS regular-source adapter to
+capture an exact bounded immutable snapshot before the unchanged physical PE
+observer runs. All five positive capacities are mandatory: complete source bytes,
+owned snapshot bytes, optional-header bytes, sections and certificates. They have
+no production defaults and do not establish aggregate heap or preparation budgets.
+For the isolated frozen inspection fixtures only:
+
+```sh
+go run ./cmd/upgrade-pe-inspect \
+  --source-bytes 16777216 --snapshot-memory-bytes 16777216 \
+  --optional-header-bytes 4096 --sections 96 --certificates 8 fixture.exe
+```
+
+The complete JSON report is written only after successful observation. It retains
+source, section and certificate byte identities, raw eight-byte section-name
+declarations, header size, machine/optional magic and other observed fields.
+It does not resolve COFF string-table section names into logical names. No Root,
+signed Manifest, NSIS contents, app version, architecture approval, Authenticode
+or publisher authentication is performed by the command. Current signed package
+composition remains in the preceding verifier API. There is no Artifact admission,
+installation, extraction, external script execution or protected handoff.
+
+Exit 0 requires complete report/help; invalid arguments return 2; source,
+inspection, cancellation or output failure returns 1. Diagnostics omit raw
+arguments, provider failures and source paths. Short writes, negative/overlong
+write counts and initial help failure remain sticky and cannot report success.
+A failing output device may physically leave a truncated stream; consumers must
+require exit 0 plus complete JSON. The source adapter keeps its existing Windows
+final-handle/local-volume/final-reparse and Unix no-final-symlink/nonblocking-FIFO
+boundaries. Unix remote-mount locality and arbitrary concurrent same-size source
+mutation are not attested. Unsupported hosts refuse.
+
+Six groups cover every missing/zero/negative capacity and unknown/extra arguments,
+actual regular input and post-capture replacement isolation, source/copy/header
+capacities, late certificate failure, nil/pre-cancelled capture and same-source
+restoration. Synthetic opaque certificate output independently checks complete
+offset, original identity, Revision and Type; it is not a PKCS#7 signature proof.
+Report/help output checks include short, negative and overlong writer returns.
+
+Two fixture opt-ins use the same frozen Go/Windows PE files from the prior batches,
+with regular/exact-size prechecks, bounded reads, close and original SHA guards.
+Go debug/pe independently checks raw section spans, virtual/characteristic
+declarations and SizeOfHeaders. Original eight-byte name declarations are compared
+directly with their original physical headers; SDK-resolved long names are separate.
+The actual built command E2E runs six children: synthetic success, invalid argument,
+invalid framing, same-path original restoration, actual Go image and actual Windows
+image. The 60-second child allowance is test-only and creates no download deadline.
+Only the inspection command is executed; input PE images are never launched.
+
+Initial default tests passed four mandatory groups in 1.702s with two explicit
+fixture/binary opt-in skips. Initial actual run failed in 4.202s because the test
+incorrectly compared original eight-byte names with SDK-resolved COFF long names.
+Root corrected the test to compare original physical names; production behavior
+was unchanged. Root frozen actual six-group rerun passed in 3.729s, with both
+fixture groups and all six actual child invocations executed without skips.
+
+Complete default Go tests passed with package parallelism 2: PE CLI four
+mandatory groups plus two opt-in skips, 1.383s; verification 20.959s, PE 1.484s,
+Debian 1.990s, compression 8.455s and TAR 1.631s. Fixture/provider/database/browser
+opt-ins were not enabled in that default run. Module verification, whole vet,
+server build, private inspector build, contract pins, changed-file formatting
+and diff checks passed; all root build/test processes closed.
+
+No dependency, SQL, protocol, application version or deployment change. Full
+native authenticity/version/app/publisher mapping, Artifact admission and
+production storage remain later work. Full T09 remains incomplete. Downloads
+have no total/cumulative elapsed or retry-count limit.
+
+Both final independent scoped code/test audits passed without required fixes.
+Dependency audit independently ran all six actual CLI groups in 10.362s (built
+child group 8.63s); compatibility audit ran them in 3.259s (built child group
+1.74s). Both enabled both frozen PE fixtures and all six actual child invocations
+without skips, and passed affected vet, two-file formatting and diff checks.
+All independent processes closed. Client architecture and synchronized-version
+guards passed. Unchanged database/provider/browser integration was not repeated.
