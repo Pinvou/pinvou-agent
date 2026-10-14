@@ -375,7 +375,7 @@ async_command_passthrough!(
     knowledge_domain,
     kb_search(
         state: State<'_, KnowledgeService>,
-        query: SearchQueryDto,
+        query: SearchQuery,
     ) -> Result<Vec<FileHit>, String>
 );
 async_command_passthrough!(
