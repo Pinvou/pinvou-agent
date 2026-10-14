@@ -57,7 +57,7 @@ pub use os::path_component_eq;
 // holders of a drifting local stage-then-rename copy; they now consume the
 // app's hardened writer (Windows backup/rollback state machine included)
 // instead of maintaining their own.
-pub use filesystem::{atomic_write, atomic_write_private};
+pub use filesystem::{IMAGE_MIME_TABLE, atomic_write, atomic_write_private};
 pub(crate) mod startup;
 pub(crate) mod strings;
 pub mod super_permission;
