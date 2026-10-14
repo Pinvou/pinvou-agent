@@ -914,6 +914,23 @@ pub(crate) fn binding_key() -> &'static [u8; 32] {
     })
 }
 
+/// One keyed 64-bit digest over `parts` (per-process random key from
+/// [`binding_key`], SHA-256, first 8 bytes big-endian): the shared tail of
+/// `action_binding` / `element_binding` / [`raw_element_binding`]. Callers
+/// own the domain separation of their byte stream.
+pub(crate) fn keyed_binding_u64(parts: &[&[u8]]) -> u64 {
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(binding_key());
+    for part in parts {
+        hasher.update(part);
+    }
+    let digest = hasher.finalize();
+    let mut prefix = [0u8; 8];
+    prefix.copy_from_slice(&digest[..8]);
+    u64::from_be_bytes(prefix)
+}
+
 /// Keyed hash of one element's raw identity: the unsanitized, untruncated
 /// accessible name and role, length-prefixed so no adversary-chosen pair of
 /// fields folds into the same byte stream as a different pair. Computed at
@@ -923,17 +940,12 @@ pub(crate) fn binding_key() -> &'static [u8; 32] {
 /// approval token carries, so a token cannot be replayed onto an element
 /// whose display line renders identically to the approved one.
 pub(crate) fn raw_element_binding(name: &str, role: &str) -> u64 {
-    use sha2::Digest;
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(binding_key());
-    hasher.update((name.len() as u64).to_be_bytes());
-    hasher.update(name.as_bytes());
-    hasher.update((role.len() as u64).to_be_bytes());
-    hasher.update(role.as_bytes());
-    let digest = hasher.finalize();
-    let mut prefix = [0u8; 8];
-    prefix.copy_from_slice(&digest[..8]);
-    u64::from_be_bytes(prefix)
+    keyed_binding_u64(&[
+        &(name.len() as u64).to_be_bytes(),
+        name.as_bytes(),
+        &(role.len() as u64).to_be_bytes(),
+        role.as_bytes(),
+    ])
 }
 
 /// Guard rejection reasons.
