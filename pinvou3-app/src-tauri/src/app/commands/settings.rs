@@ -157,6 +157,19 @@ fn saved_model_for_probe<'a>(
     }
 }
 
+/// Shared probe-key ladder (the three probe commands): a trimmed non-empty
+/// form `api_key` wins; otherwise the saved credential for `model_id` is
+/// read. Each caller maps the read failure to its own result shape (the
+/// local-kind probe swallows it and continues credential-less; the
+/// connection/image probes surface a typed error).
+fn resolve_probe_key(api_key: &str, model_id: Option<&str>) -> Result<Option<String>, String> {
+    let provided = api_key.trim();
+    if !provided.is_empty() {
+        return Ok(Some(provided.to_string()));
+    }
+    resolve_saved_model_key(model_id)
+}
+
 fn resolve_saved_model_key(model_id: Option<&str>) -> Result<Option<String>, String> {
     let prefs = UserPrefs::load();
     let Some(model) = saved_model_for_probe(&prefs, model_id) else {
@@ -345,13 +358,11 @@ pub async fn probe_local_server_kind(
     // not block the probe (continue as credential-less) — with credentials
     // missing the probe still identifies auth-free endpoints; authenticated
     // endpoints 401 into generic, the same semantics as an unreachable probe.
-    let bearer = match api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
-        Some(key) => Some(key.to_string()),
-        None => resolve_saved_model_key(model_id.as_deref())
-            .ok()
-            .flatten()
-            .map(|key| key.trim().to_string())
-            .filter(|k| !k.is_empty()),
+    let bearer = match resolve_probe_key(api_key.as_deref().unwrap_or(""), model_id.as_deref()) {
+        Ok(Some(key)) => Some(key.trim().to_string()).filter(|k| !k.is_empty()),
+        // Includes the swallowed credential-read failure: continue
+        // credential-less rather than blocking the probe.
+        _ => None,
     };
     let kind =
         crate::core::model_endpoint::probe_local_server_kind(&base_url, bearer.as_deref()).await;
@@ -863,22 +874,18 @@ pub async fn probe_model_connection(
     // Anthropic 官方端点用 x-api-key + anthropic-version,不接受 Bearer。
     let is_anthropic = crate::core::model_endpoint::is_anthropic_api_url(&parsed_url);
     let mut req = client.get(parsed_url);
-    let provided_key = api_key.trim().to_string();
-    let key = if provided_key.is_empty() {
-        match resolve_saved_model_key(model_id) {
-            Ok(key) => key.unwrap_or_default(),
-            Err(e) => {
-                return model_connection_result(
-                    false,
-                    "credential_unavailable",
-                    "无法读取已保存的 API Key，请重新填写",
-                    Some(e),
-                    None,
-                );
-            }
+    let key = match resolve_probe_key(api_key, model_id) {
+        Ok(Some(key)) => key,
+        Ok(None) => String::new(),
+        Err(e) => {
+            return model_connection_result(
+                false,
+                "credential_unavailable",
+                "无法读取已保存的 API Key，请重新填写",
+                Some(e),
+                None,
+            );
         }
-    } else {
-        provided_key
     };
     if !key.trim().is_empty() {
         if is_anthropic {
@@ -1274,21 +1281,17 @@ pub async fn run_image_capability_probe(
             return image_capability_result("error", false, format!("测试初始化失败: {e}"), None);
         }
     };
-    let provided_key = api_key.trim().to_string();
-    let key = if provided_key.is_empty() {
-        match resolve_saved_model_key(model_id) {
-            Ok(key) => key.unwrap_or_default(),
-            Err(e) => {
-                return image_capability_result(
-                    "error",
-                    false,
-                    format!("无法读取已保存的 API Key，请重新填写: {e}"),
-                    None,
-                );
-            }
+    let key = match resolve_probe_key(api_key, model_id) {
+        Ok(Some(key)) => key,
+        Ok(None) => String::new(),
+        Err(e) => {
+            return image_capability_result(
+                "error",
+                false,
+                format!("无法读取已保存的 API Key，请重新填写: {e}"),
+                None,
+            );
         }
-    } else {
-        provided_key
     };
     if is_anthropic {
         let messages_url = crate::core::model_endpoint::anthropic_messages_url(&base_url_stripped);
