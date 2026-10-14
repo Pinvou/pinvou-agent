@@ -3,7 +3,7 @@
 > English mirror of [`app-automations-定时任务创建工具-设计与验收.md`](./app-automations-定时任务创建工具-设计与验收.md); the Chinese original is authoritative on any divergence. Added per `CONTRIBUTING.md`'s English requirement for new developer documentation.
 > Status: **implemented** (design finalized 2026-09-29, landed with this branch; §9 is the CRUD-stage addendum, also implemented). Companion contract: `docs/builtin-toolset-contract.md` (the §9 registry row has been updated from "not initiated" to registered).
 > Baseline: `luzeyang-dev` (`0a9fb107e`) — this design depends on the builtin toolset contract, the `session-reader` package, and `features/messaging` (PRs not yet merged to main); the implementation branch must be stacked behind those dependencies.
-> Implementation pattern: fully reuses the "MCP tool + spool + app-side watcher" skeleton of `send_message_to_session` (`26b575a17`), opens a **new capability family** `app-automations`, zero CodeWhale changes.
+> Implementation pattern: fully reuses the "MCP tool + spool + app-side watcher" skeleton of `send_message_to_session` (`26b575a17`), opens a **new capability family** `app-automations`, zero CodeWhale content changes (the fork-register refresh and gitlink-chase commits ride on the branch per review progression — see `docs/fork-modifications.md`).
 > Usage: review section by section before implementation; after implementation, accept item by item against the §5 acceptance matrix — the feature is complete only when every P0 row passes; matrix ids are back-referenced by the §6 test mapping.
 
 ---
@@ -183,7 +183,7 @@ Test names in the "Verification" column are marked: ◇ = to be added, ○ = exi
 | H4 | `python3 -m unittest discover -s scripts/tests` | 0 failed (incl. no regression of existing session-reader cases) |
 | H5 | `python3 scripts/mcp-server-contract-smoke.py` | All green (matrix extended to 13 packages) |
 | H6 | `python3 scripts/architecture-guard.py` | Pass |
-| H7 | `./scripts/fork-guard.sh --fast` | Pass (zero fork changes) |
+| H7 | `./scripts/fork-guard.sh --fast` | Pass (zero fork content changes; the gitlink chase and register refresh ride on the branch) |
 | H8 | Catalog/default-install tests | `len()==13`; the default-install seed includes app-automations |
 
 ## 6. Test Files and Matrix Mapping
