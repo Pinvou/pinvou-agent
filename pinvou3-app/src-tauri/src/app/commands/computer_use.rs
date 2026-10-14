@@ -261,6 +261,12 @@ pub async fn computer_use_set_enabled(
         })
     })
     .await?;
+    // Round-2 review m3 disclosure: the await between the persist and the
+    // in-memory flip means two racing opposite toggles from multi-window
+    // mounts can transiently leave settings.json and the flag disagreeing
+    // until the next toggle or restart (settings are replayed into the
+    // flag at startup). Same accepted shape as the settings family;
+    // toggles are user-paced and idempotent.
     // set_enabled itself performs the consent sweeps (re-enable: reset_stop
     // semantics; disable: revoke_all_sessions semantics — see guard.rs), so
     // the explicit reset_stop/revoke_all_sessions calls the command used to

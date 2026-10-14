@@ -82,6 +82,12 @@ pub(crate) async fn set_voice_shortcut_enabled(enabled: bool) -> Result<(), Stri
         })
     })
     .await?;
+    // Round-2 review m3 disclosure: the await between the persist and the
+    // hook flip means two racing opposite invokes can transiently leave
+    // settings.json and the native hook disagreeing until the next invoke
+    // or restart (lib.rs replays settings into the hook at startup) — the
+    // accepted shape of the already-async settings family; invokes are
+    // user-paced and idempotent.
     crate::features::voice_shortcut::set_enabled(enabled);
     Ok(())
 }
