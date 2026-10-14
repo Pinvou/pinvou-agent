@@ -6,7 +6,7 @@
   const registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__ = window.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["chat-events"] = function (context) {let pinvouSharedtauriChatEventsCache = null;
 function pinvouSharedtauriChatEvents() {
-  if (!pinvouSharedtauriChatEventsCache) pinvouSharedtauriChatEventsCache = window.PinvouBridgeShared.create("tauriChatEvents", { state, addChatItem, itemIdSeq: { get value() { return context.itemIdSeq; }, set value(v) { context.itemIdSeq = v; } }, pendingStreamNotifications: { get value() { return pendingStreamNotifications; } }, pendingAssistantText: { get value() { return context.pendingAssistantText; }, set value(v) { context.pendingAssistantText = v; } }, pendingAssistantBlocks: { get value() { return context.pendingAssistantBlocks; }, set value(v) { context.pendingAssistantBlocks = v; } }, finalizeAssistantStreamBeforeReasoning });
+  if (!pinvouSharedtauriChatEventsCache) pinvouSharedtauriChatEventsCache = window.PinvouBridgeShared.create("tauriChatEvents", { state, addChatItem, bt, flushPendingTextBlock, autoCreateScheduledTaskDraft, itemIdSeq: { get value() { return context.itemIdSeq; }, set value(v) { context.itemIdSeq = v; } }, pendingStreamNotifications: { get value() { return pendingStreamNotifications; } }, pendingAssistantText: { get value() { return context.pendingAssistantText; }, set value(v) { context.pendingAssistantText = v; } }, pendingAssistantBlocks: { get value() { return context.pendingAssistantBlocks; }, set value(v) { context.pendingAssistantBlocks = v; } }, finalizeAssistantStreamBeforeReasoning });
   return pinvouSharedtauriChatEventsCache;
 }
 
@@ -22,6 +22,7 @@ function pinvouSharedtauriChatEvents() {
     const sessionStates = context.sessionStates;
     const renderMarkdown = context.renderMarkdown;
     const bt = context.bt;
+    const autoCreateScheduledTaskDraft = context.autoCreateScheduledTaskDraft;
     const onSessionEvent = context.onSessionEvent;
     const runSyncOnSession = context.runSyncOnSession;
     // 权威 modeState 写回收敛点（bridge.js 共享，评审 P1）：事件负载携带的
