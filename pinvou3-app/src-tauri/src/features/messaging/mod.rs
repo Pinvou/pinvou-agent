@@ -512,8 +512,20 @@ fn rederive_sender_title(
     mut message: SpooledMessage,
 ) -> SpooledMessage {
     if let Some(from) = message.from_session.clone() {
-        if let Ok(session) = store.load(&from) {
-            let live_title = session.metadata.title;
+        // Round-16 M1: a title-only read. `store.load` parses the FULL
+        // snapshot (messages + journal chain) per delivery attempt inside
+        // the serialized drain — a pathological sender pays O(transcript)
+        // IO+parse up to 10×. The cached metadata list carries the same
+        // titles at O(1) after its first scan (write-invalidated), and its
+        // isolated-prefix filtering matches exactly the senders the
+        // validator admits, so an admitted sender is always listed here.
+        let live_title = store.list_sessions_cached().ok().and_then(|sessions| {
+            sessions
+                .iter()
+                .find(|s| s.id == from)
+                .map(|session| session.title.clone())
+        });
+        if let Some(live_title) = live_title {
             // Round-12 minor 2: an over-cap live title is TRUNCATED to the
             // cap instead of keeping the spool claim — `set_title` is
             // uncapped, so a live sender with a >200-char stored title

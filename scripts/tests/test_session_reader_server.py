@@ -1234,6 +1234,47 @@ class SendMessageTests(unittest.TestCase):
     def _spooled(self):
         return sorted(Path(self.messaging, "spool").glob("*.json"))
 
+    def test_message_spool_byte_budget_is_pinned(self):
+        """Round-16 M2: the 60 KiB serialized-record budget is load-bearing
+        — the watcher's 64 KiB file cap poisons over-budget records with no
+        sender feedback, so the server's cap must sit just under it.
+        Mutation-verified: loosening 60→80 KiB shipped the whole suite
+        green while re-opening the silent-quarantine class."""
+        # The constant itself is pinned (a silent widening re-opens the
+        # poisoning class above).
+        self.assertEqual(server.MAX_MESSAGE_SPOOL_BYTES, 60 * 1024)
+
+        # Just under the budget: a CJK-heavy body (~54 KB as UTF-8) with
+        # the envelope overhead still spools.
+        near_budget = "\u6c49" * 18_000
+        payload, error = self._send(
+            from_session="src0001", text=near_budget, idempotency_key="k-near"
+        )
+        self.assertIsNone(error)
+        self.assertEqual(len(self._spooled()), 1)
+        record = json.loads(self._spooled()[0].read_text(encoding="utf-8"))
+        self.assertEqual(record["text"], near_budget)
+        self.assertLess(
+            self._spooled()[0].stat().st_size,
+            server.MAX_MESSAGE_SPOOL_BYTES,
+            "fixture guard: the serialized record must fit the budget",
+        )
+
+        # Over the budget: rejected with the size guidance, nothing
+        # spooled. CJK-heavy so the CHAR cap (32768) is not the limiter —
+        # the BYTE budget is (that split is the point of this pin).
+        over_budget_cjk = "\u6c49" * 21_000  # ~63 KB as UTF-8, 21k chars
+        self.assertGreater(
+            len(over_budget_cjk.encode("utf-8")),
+            server.MAX_MESSAGE_SPOOL_BYTES,
+        )
+        payload, error = self._send(
+            from_session="src0001", text=over_budget_cjk, idempotency_key="k-over"
+        )
+        self.assertIsNone(payload)
+        self.assertIn(str(server.MAX_MESSAGE_SPOOL_BYTES // 1024), error)
+        self.assertEqual(len(self._spooled()), 1)
+
     def test_valid_send_spools_with_titles_and_text(self):
         payload, error = self._send(from_session="src0001", idempotency_key="k1")
         self.assertIsNone(error)

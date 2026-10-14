@@ -129,4 +129,12 @@ test('JS↔Rust drift pin: the messaging module still carries the verbatim block
   for (const line of MESSAGE_BLOCK_CONTRACT_LINES) {
     assert.ok(modRs.includes(`"${line}"`), `Rust must mirror the envelope line verbatim: ${line}`);
   }
+  // Round-16 M3: close the loop — the JS-side header constant itself must
+  // equal the pinned Rust literal. A JS-side typo survived the full node
+  // suite before (deliveries silently stopped parsing as attributed cards).
+  assert.equal(
+    MESSAGE_BLOCK_HEADER,
+    '## Message from another session',
+    'the JS header must equal the Rust MESSAGE_BLOCK_HEADER literal',
+  );
 });
