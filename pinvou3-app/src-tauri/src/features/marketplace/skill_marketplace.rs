@@ -41,9 +41,10 @@ static MARKETPLACE_DIR: Dir<'static> =
 /// both bundled and uploaded skills). Only the test scaffolding
 /// (`import_package_named`) uses it — the unified plugin-package size gate
 /// for the production upload channel lives in
-/// `plugin_import::MAX_PLUGIN_SIZE_BYTES`.
+/// `plugin_import::MAX_PLUGIN_SIZE_BYTES`. Aliased to the engine's install
+/// cap so the two faces cannot silently diverge.
 #[cfg(test)]
-const MAX_SKILL_SIZE_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_SKILL_SIZE_BYTES: u64 = deepseek_tui::skills::install::DEFAULT_MAX_SIZE_BYTES;
 
 // 安装来源标记文件名：复用底座 `skills::install` 的公共常量（嵌入者契约：
 // 引用而非复述字面量，底座改名/换格式会在编译期暴露）。旧布局迁移/清扫
