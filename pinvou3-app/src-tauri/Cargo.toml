@@ -300,8 +300,10 @@ msg_parser = "0.3.0"
 # voice/platform/windows.rs 仅用 COM 基础类型(Interface/HSTRING/Result),它们源自
 # windows-core——不必拉入完整 windows crate。windows-core 已由 webview2-com 传递引入,
 # 此处显式声明只为把 app 直接依赖收敛到更轻的 windows-core(windows::core::* 即其 re-export)。
-# 0.62 与 codewhale-tui 的 windows 0.62.2 及 uiautomation 0.25 收敛为单一
-# 版本（消除 0.61 副本）；不跳 0.100——那会新增第三份拷贝。
+# 0.62 与 codewhale-tui 的 windows 0.62.2、uiautomation 0.25 及 webview2-com 0.39
+# 收敛 app 直接依赖为单一版本；enigo 0.6.1（0.6 线暂无更新）在 Windows target 仍拉
+# windows 0.61.3/windows-core 0.61.2，该副本保留到 enigo 发版；不跳 0.100——那会新增
+# 第三份拷贝。
 windows-core = "0.62"
 # Computer Use accessibility tree (features/computer_use): Windows UI Automation.
 uiautomation = "0.25"
