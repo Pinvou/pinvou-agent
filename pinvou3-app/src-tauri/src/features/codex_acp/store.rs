@@ -1774,16 +1774,16 @@ impl AcpConfigDefaultsStore {
         *records = file.agents;
     }
 
-    fn persist(&self) -> Result<()> {
-        let agents = self.records.read().clone();
-        Self::persist_locked(&agents, &self.path)
-    }
+    // Round-1 review m3: the read-snapshot `persist()` wrapper that survived
+    // the A4 fix had ZERO remaining callers (both mutators persist under
+    // the write guard via `persist_locked`) — deleted rather than kept,
+    // because a future caller reaching for it would silently reintroduce
+    // the exact release-then-persist lost-update shape A4 closed.
 
     /// Writes the defaults file from an ALREADY-CAPTURED map: `set` /
     /// `set_all_if_absent` pass the write-guarded records so the persist
     /// lands inside the same critical section as the mutate (round-54
-    /// audit A4); `persist` snapshots under the read guard for the
-    /// remaining callers.
+    /// audit A4). This is the store's only persist path.
     fn persist_locked(
         records: &HashMap<AgentBackend, HashMap<String, String>>,
         path: &Path,
@@ -1946,6 +1946,9 @@ mod tests {
         // And the disk truth carries it after everything settles.
         let reread = store.get_after_reload(AgentBackend::CodexAcp);
         assert_eq!(reread.get("config-a").map(String::as_str), Some("model-b"));
+        // Reset the seam so a future second park test arms from a clean
+        // RELEASE (round-1 review nit: the static is never reset otherwise).
+        *set_persist_park::RELEASE.lock().unwrap() = false;
         let _ = fs::remove_dir_all(&root);
     }
 
