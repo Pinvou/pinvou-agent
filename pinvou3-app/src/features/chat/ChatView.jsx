@@ -265,25 +265,42 @@ const makeSettleSessionRefSend = ({ mentionDraftKeyRef, sessionMentionEnabledRef
       // Acceptance consumes exactly the serialized set; the carry (mid-await
       // picks that followed a REAL materialization into the ledger) was
       // never sent, so they survive acceptance — kept live in the
-      // materialized scope, merged into the stash on a mid-settle switch
-      // (round-22 MAJOR, both reviewers' independent finding: the early
-      // return used to strand them silently). Cap priority: the surviving
-      // computation consumes refsAtSend first, the carry rides after.
-      const carriedKept = featureOn && carry && carry.target === resolveMaterializedDraftKey(draftKeyAtSend)
-        ? carry.carriedRefs : [];
+      // materialized scope AND in its stash (round-26 asto MAJOR 1: the live
+      // setter alone no-ops while the view is unmounted, and the ledger
+      // clear below would then destroy the carry — the stash write rescues
+      // it; mounted, the next scope cleanup overwrites the stash with the
+      // live snapshot, the established pattern). Cap priority: the surviving
+      // computation consumes refsAtSend first, the carry rides after. The
+      // carry is filtered by the serialized ids (round-26 asto m5): a
+      // mid-await re-pick of an already-sent ref must not ride the carry
+      // past acceptance — exactly the serialized set is consumed, per
+      // refsSurvivingAcceptance's contract. (The former
+      // `carry.target === resolveMaterializedDraftKey(draftKeyAtSend)`
+      // compare was tautological — both sides read the same ledger entry.)
+      const sentIds = new Set(refsAtSend.map((ref) => ref && ref.sessionId));
+      const carriedKept = featureOn && carry
+        ? carry.carriedRefs.filter((ref) => ref && !sentIds.has(ref.sessionId))
+        : [];
+      const acceptanceStashKey = resolveMaterializedDraftKey(draftKeyAtSend);
+      stashSessionMentionDraft(acceptanceStashKey, dedupeSessionRefs([
+        ...carriedKept,
+        ...refsSurvivingAcceptance(refsAtSend, dedupeSessionRefs([...carriedKept, ...restoreSessionMentionDraft(acceptanceStashKey)]), featureOn),
+      ]));
       const onDispatchScope = resolveMaterializedDraftKey(mentionDraftKeyRef.current)
-        === resolveMaterializedDraftKey(draftKeyAtSend);
+        === acceptanceStashKey;
       if (onDispatchScope) {
-        setSessionRefs(current => dedupeSessionRefs([
-          ...refsSurvivingAcceptance(refsAtSend, current, featureOn),
-          ...carriedKept,
-        ]));
-      } else {
-        const stashKey = resolveMaterializedDraftKey(draftKeyAtSend);
-        stashSessionMentionDraft(stashKey, dedupeSessionRefs([
-          ...carriedKept,
-          ...refsSurvivingAcceptance(refsAtSend, dedupeSessionRefs([...carriedKept, ...restoreSessionMentionDraft(stashKey)]), featureOn),
-        ]));
+        setSessionRefs(current => {
+          const next = dedupeSessionRefs([
+            ...refsSurvivingAcceptance(refsAtSend, current, featureOn),
+            ...carriedKept,
+          ]);
+          // Round-26 asto m7: a plain accepted send with nothing surviving
+          // must not schedule an extra render — return the same reference
+          // when the merged set is unchanged.
+          const unchanged = next.length === current.length
+            && next.every((ref, index) => ref.sessionId === current[index].sessionId);
+          return unchanged ? current : next;
+        });
       }
       if (carry) clearDraftMaterialization(draftKeyAtSend);
       return;
@@ -313,7 +330,10 @@ const makeSettleSessionRefSend = ({ mentionDraftKeyRef, sessionMentionEnabledRef
       // it has no other recovery path; refsAtSend ride with the restored
       // text).
       stashKey = resolveMaterializedDraftKey(draftKeyAtSend);
-      carriedRefs = carry && carry.target === stashKey ? carry.carriedRefs : [];
+      // (round-26 asto m5: the former `carry.target === stashKey` compare was
+      // tautological — both sides read the same ledger entry — a plain
+      // existence check is the honest shape.)
+      carriedRefs = carry ? carry.carriedRefs : [];
     }
     // Live restore when the current scope resolves to the same key —
     // including the user having navigated BACK to the draft while the
@@ -3089,6 +3109,16 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           // Escape/Tab itself): those keys belong to the IME, so bail out before
           // any preventDefault — Enter is already covered by isPlainEnter.
           if (isImeComposing(e)) return;
+          // Caret/panel desync (round-26 asto m6): the panel is text-derived
+          // and can stay visibly open after the caret moved out of the
+          // trailing token — sending the literal `hello @se` with the
+          // candidate list on screen reads as a misfire. Consume the Enter to
+          // dismiss the panel first; the next Enter sends.
+          if (isPlainEnter(e) && !mentionCaretInTriggerToken(composerRef, mentionTrigger)) {
+            e.preventDefault();
+            setMentionDismissedToken(mentionTrigger.token);
+            return;
+          }
           if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
             e.preventDefault();
             const count = mentionCandidates.length;
@@ -4846,7 +4876,10 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
       if (item.type === 'system') {
         return (
           <div className="flex justify-center">
-            <div className={`text-[13px] px-4 py-1.5 rounded-full ${'bg-[#F0F4F9] text-[#757575] dark:bg-[#1E1F20] dark:text-[#8E8E8E]'}`}>
+            {/* role=status (round-26 asto m9): system pills are outcome
+                notices (steer restore/queue verdicts, upload failures) —
+                announce them politely like the composer's own live regions. */}
+            <div role="status" className={`text-[13px] px-4 py-1.5 rounded-full ${'bg-[#F0F4F9] text-[#757575] dark:bg-[#1E1F20] dark:text-[#8E8E8E]'}`}>
               {item.text}
             </div>
           </div>

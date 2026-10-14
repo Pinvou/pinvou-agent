@@ -75,7 +75,7 @@ function loadChatFeature(root) {
   return root.__PINVOU_TAURI_BRIDGE_FEATURES__.chat;
 }
 
-function makeHarness({ ensureSession } = {}) {
+function makeHarness({ ensureSession, invoke } = {}) {
   const state = {
     activeSessionId: 'A',
     composerDraft: '',
@@ -89,10 +89,11 @@ function makeHarness({ ensureSession } = {}) {
   const sessionStates = {};
   const root = makeVmRoot();
   const factory = loadChatFeature(root);
+  const invokeImpl = invoke || (() => Promise.resolve({}));
   const api = factory({
     state,
     sessionStates,
-    invoke: () => Promise.resolve({}),
+    invoke: invokeImpl,
     ensureSession,
     notify() {},
     bt(key) { return BT[key] === undefined ? key : BT[key]; },
@@ -413,4 +414,83 @@ test('onSteerFailure: the 25s timeout routes the timed-out notice variants inste
   state.composerDraft = '';
   api.onSteerFailure(plain, 'A', { snapshot: null }, BLOCK_AND_BODY, new Error('engine not running'));
   assert.ok(notices().includes('⚠️ steerFailed'), `got: ${JSON.stringify(notices())}`);
+});
+
+// Round-26 asto m2(a): ensureSession's commit-then-navigate tail commits the
+// session to a background buffer and returns null — the materialization is
+// REAL (the draft epoch is dead), so the meta report must fire and the
+// round-25 "restored-materialized" mapping can route the chips. The rollback
+// tail (draft re-entered with a fresh epoch) reports nothing.
+test('commit-then-navigate reports the created session through the meta out-param; the rollback tail does not (round-26 asto m2a)', async () => {
+  const invocations = [];
+  const { state, sessionStates, api } = makeHarness({
+    ensureSession: async (owner) => {
+      state.activeSessionId = 'OTHER';
+      owner.createdSessionId = 'BG-CREATED';
+      return null;
+    },
+    invoke: (cmd) => { invocations.push(String(cmd)); return Promise.resolve({}); },
+  });
+  state.attachments = [];
+  state.activeSessionId = null;
+  state.draftEpoch = 11;
+  sessionStates['BG-CREATED'] = { composerDraft: '' };
+  const meta = {};
+  const verdict = await api.sendMessage(buildSessionMentionBlock(REFS) + '把配色用到 PPT 里', meta);
+  assert.equal(meta.materializedSessionId, 'BG-CREATED', 'the commit-then-navigate tail reports the committed background session');
+  assert.equal(verdict, 'restored', 'the textful restore lands in the created session buffer (the caller then maps restored-materialized)');
+  assert.equal(sessionStates['BG-CREATED'].composerDraft, '把配色用到 PPT 里');
+
+  const { state: rbState, api: rbApi } = makeHarness({
+    ensureSession: async (owner) => {
+      rbState.activeSessionId = null;
+      owner.createdSessionId = 'ROLLED-BACK';
+      owner.rollbackFromDraftEpoch = 11;
+      owner.draftEpoch = 12;
+      return null;
+    },
+  });
+  rbState.attachments = [];
+  rbState.activeSessionId = null;
+  rbState.draftEpoch = 11;
+  const rbMeta = {};
+  await rbApi.sendMessage(buildSessionMentionBlock(REFS) + '把配色用到 PPT 里', rbMeta).catch(() => {});
+  assert.equal(rbMeta.materializedSessionId, undefined, 'the rollback tail keeps the draft alive and reports nothing');
+});
+
+// Round-26 asto m3: on the 25s-timeout verdict the degraded queued chip must
+// NOT auto-resend — flushQueued is suppressed until the truth is known; the
+// ordinary rejection keeps the turn-end compensation.
+test('onSteerFailure: the timeout verdict suppresses the compensating auto-resend flush (round-26 asto m3)', async () => {
+  const makeCounting = () => {
+    const invocations = [];
+    return {
+      invocations,
+      harness: makeHarness({
+        invoke: (cmd) => { invocations.push(String(cmd)); return Promise.resolve({}); },
+      }),
+    };
+  };
+  // refs-only chip, empty composer: the chip degrades to a queued local entry
+  // — exactly the auto-resend candidate the gate must hold back.
+  const timedOut = makeCounting();
+  timedOut.harness.state.queued = [steerItem(REFS_ONLY_BLOCK)];
+  timedOut.harness.state.composerDraft = '';
+  timedOut.harness.state.busy = false;
+  timedOut.harness.api.onSteerFailure(steerItem(REFS_ONLY_BLOCK), 'A', { snapshot: null }, REFS_ONLY_BLOCK, new Error('steer_chat timed out'));
+  await new Promise((resolve) => { setTimeout(resolve, 0); });
+  assert.equal(
+    timedOut.invocations.filter((cmd) => cmd === 'chat').length,
+    0,
+    'the timeout verdict must not auto-send the degraded chip',
+  );
+  // The non-timeout path keeps its compensation flush (the harness's null
+  // buffer prevents the send itself from reaching invoke, so the gate line
+  // is pinned at the source instead).
+  const chatSource = readNormalized('src', 'platform', 'tauri', 'bridge', 'chat.js');
+  assert.match(
+    chatSource,
+    /if \(!steerTimedOut && !isBusyFor\(sid\)\) flushQueued\(sid\);/,
+    'the compensating flush stays gated on the timeout verdict',
+  );
 });

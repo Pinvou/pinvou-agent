@@ -637,6 +637,10 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedtauriChat
     console.warn("[pinvou3][chat-ui] steer failed, restoring draft", {
       sid, error: err && err.toString ? err.toString() : err,
     });
+    // The 25s transport timeout leaves delivery UNPROVEN (the engine is
+    // typically alive-but-wedged, not gone) — round-26 asto m3: a chip that
+    // degraded back to a queued entry must not auto-resend on that verdict.
+    const steerTimedOut = String(err && err.message) === "steer_chat timed out";
     const failureQueue = steeredQueueFor(sid);
     const failureIndex = failureQueue ? failureQueue.indexOf(queuedItem) : -1;
     // Snapshot restore is sid-guarded (do not clobber the new session's UI
@@ -691,7 +695,6 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedtauriChat
       // asto minor 5): the engine is typically alive-but-wedged there, so
       // the "session unavailable or engine not running" cause gets its own
       // timed-out variants instead of misattributing the failure.
-      const steerTimedOut = String(err && err.message) === "steer_chat timed out";
       const steerFailedKey = steerTimedOut
         ? (steerFailureNoticeRestored ? "steerFailedTimedOut" : "steerFailedQueuedTimedOut")
         : (steerFailureNoticeRestored ? "steerFailed" : "steerFailedQueued");
@@ -704,8 +707,10 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedtauriChat
     // was yielded by the then-steered queue head (flushQueued's q[0].steered
     // check) and nothing will retrigger after the chip is degraded/removed —
     // compensate with one flush when idle, or the chip hangs forever (sixth
-    // review round).
-    if (!isBusyFor(sid)) flushQueued(sid);
+    // review round). Suppressed on the timeout verdict (round-26 asto m3):
+    // the degraded chip would auto-send with delivery unproven; the late
+    // withdrawal/event reconciliation settles it once the truth is known.
+    if (!steerTimedOut && !isBusyFor(sid)) flushQueued(sid);
   }
 
   // Return protocol (issue #406 — ChatView clears the composer before the
@@ -757,6 +762,17 @@ function pinvouSharedtauriChatN31666() {
       const materialized = await ensureSession(draftOwner);
       if (!materialized || state.activeSessionId !== materialized) {
         if (materialized) draftOwner.createdSessionId = materialized;
+        // Round-26 asto m2(a): ensureSession's commit-then-navigate tail
+        // COMMITS the session to a background buffer (the draft epoch is
+        // dead) yet returns null, so the write below the early-return never
+        // fired and the round-25 "restored-materialized" mapping missed this
+        // path. The rollback tail is excluded: it re-enters the draft with a
+        // fresh epoch (draft alive), so it reports nothing and the chips stay
+        // scoped to the dead epoch per the disclosed limitation.
+        if (!materialized && draftOwner.createdSessionId
+          && draftOwner.rollbackFromDraftEpoch === undefined && meta) {
+          meta.materializedSessionId = draftOwner.createdSessionId;
+        }
         // Recover in the created session or the original draft epoch, never in
         // the unrelated active composer; "restored" stops the caller from doing
         // it a second time, including when recovery stays in a background buffer.
@@ -1079,7 +1095,9 @@ function prefillComposer(text, append) { return pinvouSharedtauriChat().prefillC
       addSystemItem("⚠️ " + bt(restoredText ? "steerEditRestored" : "steerDroppedDuringEdit"));
     });
     notify();
-    return null;
+    // Round-26 asto m4: this settlement already told the user the truth —
+    // the caller must not also flash the generic queuedActionFailed.
+    return "noticed";
   }
 
   // Detach a queued item only after its engine-side copy is known to be safe
@@ -1139,7 +1157,9 @@ function prefillComposer(text, append) { return pinvouSharedtauriChat().prefillC
         // degraded into an auto-resend); a refs-only message restores
         // nothing and the notice reports the unconfirmed variant.
         restoreSteerWithNotice(sid, item.text, "steerFailedUnconfirmed");
-        return null;
+        // Same double-report shape as the dropped-terminal settlement
+        // (round-26 asto m4): the notice already spoke.
+        return "noticed";
       } else {
         // A legacy successful steer without an engine id cannot be withdrawn
         // safely. Put the original chip back and let transcript settlement
@@ -1206,6 +1226,11 @@ function prefillComposer(text, append) { return pinvouSharedtauriChat().prefillC
       }
       const detached = await detachQueuedForMutation(sid, queuedId);
       if (!detached) return false;
+      // Round-26 asto m4: a settlement that already emitted its own system
+      // notice propagates the sentinel — the generic failure flash would
+      // double-report and misdirect (the restored variant has the chip
+      // spliced and the text back, not "left unchanged").
+      if (detached === "noticed") return "noticed";
       const queue = steeredQueueFor(sid);
       if (!queue) {
         (detached.item.attachments || []).forEach(discardManagedAttachment);
