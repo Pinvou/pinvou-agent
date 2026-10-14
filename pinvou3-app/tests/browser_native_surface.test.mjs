@@ -626,7 +626,7 @@ test('BrowserCore tab commits marker, WebDriver bind, initial navigation, then p
   );
   assert.match(
     userCreate,
-    /about:blank#pinvou-tab-[\s\S]{0,900}bind_staged_native_target\([\s\S]{0,900}bind_target\([\s\S]{0,900}navigate_tab_after_bind\(/,
+    /\{HOST_BLANK_MARKER_TAB_PREFIX\}\{tab_token\}[\s\S]{0,900}bind_staged_native_target\([\s\S]{0,900}bind_target\([\s\S]{0,900}navigate_tab_after_bind\(/,
   );
   assert.match(nativeHost, /staged_user_tabs: HashMap/);
   assert.match(nativeHost, /requires_automation_binding[\s\S]{0,240}capabilities\(\)\.agent_automation/);
