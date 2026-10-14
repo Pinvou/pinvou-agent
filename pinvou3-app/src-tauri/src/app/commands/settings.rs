@@ -735,7 +735,16 @@ enum TransportClass {
 }
 
 fn classify_transport_error(err: &reqwest::Error) -> (TransportClass, String) {
-    let raw = crate::platform::credential_store::redact_secret(&err.to_string());
+    // Two-pass scrub, the same composition as the CLI's
+    // `support::redact_error_text`: strip URL userinfo first, then the
+    // secret-shaped token patterns. Order is load-bearing — reqwest's Display
+    // embeds the full requested URL, and `redact_secret`'s generic heuristic
+    // needs a digit, so a `http://user:pass@host` base_url on a transport
+    // error must not depend on reqwest's own Display redaction staying
+    // complete (the CLI lane applies the identical composition).
+    let raw = crate::platform::credential_store::redact_secret(
+        &crate::platform::redact_url_credentials_in_text(&err.to_string()),
+    );
     let raw_lower = raw.to_lowercase();
     let class = if err.is_timeout() {
         TransportClass::Timeout
@@ -1595,6 +1604,36 @@ mod tests {
         assert_eq!(
             model_connection_http_result(reqwest::StatusCode::BAD_GATEWAY).code,
             "server_unavailable"
+        );
+    }
+
+    #[test]
+    fn transport_error_scrubs_url_userinfo_before_the_report() {
+        // End-to-end contract pin for `http://user:pass@host` transport
+        // failures: the detail must carry neither the URL username nor the
+        // password. `classify_transport_error` applies the CLI's two-pass
+        // `redact_error_text` composition explicitly, so the guarantee does
+        // not depend on reqwest's own Display redaction staying complete
+        // (reqwest 0.12+ redacts its top-level Display, but the scrub is the
+        // defense-in-depth both lanes share). Port 1 is refused locally, so
+        // the test stays hermetic; the timeout bounds any platform whose
+        // refusal is slower.
+        let error = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .expect("client")
+            .get("http://user:pass@127.0.0.1:1/v1")
+            .send()
+            .expect_err("connecting to port 1 must fail");
+        let (class, detail) = classify_transport_error(&error);
+        let _ = class; // class is platform-dependent (refused vs timeout); only the scrub is pinned here
+        assert!(
+            !detail.contains("user"),
+            "the transport detail must not carry the URL username: {detail}"
+        );
+        assert!(
+            !detail.contains("pass"),
+            "the transport detail must not carry the URL password: {detail}"
         );
     }
 
