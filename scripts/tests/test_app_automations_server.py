@@ -496,10 +496,9 @@ class CreateSpoolAndResultTests(unittest.TestCase):
     def test_forged_non_literal_ok_marker_is_not_terminal(self):
         """Round-22 M2: ok:1 / ok:"true" with a MATCHING digest used to be
         classified as success by the server's truthiness check (answering a
-        fabricated duplicate while the watcher — literal `== Some(true)` —
-        deleted the marker and re-applied). Both server sites now bind
-        `is True`; a non-literal marker must answer like no marker at all
-        (poll to pending, record stays spooled)."""
+        fabricated duplicate while the watcher deleted the marker and
+        re-applied). Both server sites now bind is-True; a non-literal
+        marker must answer the honest failure and the record stays queued."""
         import hashlib
 
         digest = server.spool_request_digest(
@@ -532,10 +531,6 @@ class CreateSpoolAndResultTests(unittest.TestCase):
                     name="新名字", from_session="reqsrc01", idempotency_key="k-forged"
                 )
             )
-            # The honest answer for a non-literal-ok marker: NOT a fabricated
-            # success (the round-22 shape answered ok=True taskId=FORGED-999
-            # duplicate=True) — the server refuses to classify it and the
-            # record stays queued for the watcher.
             self.assertIsNone(payload, "a non-literal-ok marker must not answer success")
             self.assertIsNotNone(error)
             self.assertTrue(spool.exists(), "the record stays queued")
