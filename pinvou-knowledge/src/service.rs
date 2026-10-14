@@ -792,16 +792,6 @@ impl KnowledgeService {
         Ok(())
     }
 
-    pub fn documents(
-        &self,
-        collection_id: i64,
-        include_deleted: bool,
-    ) -> Result<Vec<Document>, String> {
-        self.store
-            .list_documents(collection_id, include_deleted)
-            .map_err(|error| error.to_string())
-    }
-
     pub fn documents_page(
         &self,
         collection_id: i64,
@@ -1822,7 +1812,13 @@ mod tests {
         assert!(duplicate.already_exists);
         assert_eq!(duplicate.id, first.id);
         assert_eq!(duplicate.name, "first.md");
-        assert_eq!(service.documents(collection.id, false).unwrap().len(), 1);
+        assert_eq!(
+            service
+                .documents_page(collection.id, false, None, 0)
+                .unwrap()
+                .len(),
+            1
+        );
         assert_eq!(
             std::fs::read_dir(&service.documents_dir).unwrap().count(),
             1
@@ -1889,9 +1885,18 @@ mod tests {
 
         let error = service.restore_document(original.id).unwrap_err();
         assert!(error.contains("相同内容"));
-        assert_eq!(service.documents(collection.id, false).unwrap().len(), 1);
         assert_eq!(
-            service.documents(collection.id, false).unwrap()[0].id,
+            service
+                .documents_page(collection.id, false, None, 0)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            service
+                .documents_page(collection.id, false, None, 0)
+                .unwrap()[0]
+                .id,
             replacement.id
         );
     }
