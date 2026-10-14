@@ -35,7 +35,7 @@ pub use connectors::{
 // CLI's `upgrade_required` gates with it (the feishu floor is the live
 // one: round-49 raised it for the skill pack's command surface).
 pub use connectors::feishu::LARK_MIN_VERSION;
-pub use connectors::tmeet::TMEET_MIN_VERSION;
+pub use connectors::tmeet::{TMEET_MIN_VERSION, TMEET_NPM_SPEC};
 pub use connectors::wecom::WECOM_MIN_VERSION;
 // The CLI's connectors ima lanes and the plugins readiness table consume the
 // app's status computation instead of re-deriving it (the CLI keeps only its

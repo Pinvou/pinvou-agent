@@ -338,10 +338,7 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), FlowError> {
                 user_code = Some(c);
             }
             Ok(AuthEvent::Line(line)) => {
-                if auth_lines.len() >= 32 {
-                    auth_lines.pop_front();
-                }
-                auth_lines.push_back(line);
+                cc::remember_auth_line(&mut auth_lines, Some(line));
             }
             Err(_) => {
                 let _ = child.kill();
@@ -391,10 +388,7 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), FlowError> {
         while let Ok(event) = rx.try_recv() {
             match event {
                 AuthEvent::Line(line) => {
-                    if auth_lines.len() >= 32 {
-                        auth_lines.pop_front();
-                    }
-                    auth_lines.push_back(line);
+                    cc::remember_auth_line(&mut auth_lines, Some(line));
                 }
                 AuthEvent::Url(_) | AuthEvent::UserCode(_) => {}
             }
