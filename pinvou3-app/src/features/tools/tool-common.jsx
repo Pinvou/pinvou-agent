@@ -44,23 +44,23 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
 
       return (
         <div className="flex justify-start" style={{ fontFamily:'-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif' }}>
-          <div className="w-full bg-white dark:bg-[#1E1E1E] rounded-[24px] shadow-[0_8px_30px_rgba(0,0,0,0.04)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.2)] border border-black/4 dark:border-white/6 p-3 flex flex-col transition-all duration-300">
+          <div className="w-full bg-white dark:bg-[#1E1E1E] rounded-[24px] shadow-[0_8px_30px_rgba(0,0,0,0.04)] dark:shadow-[0_8px_30px_rgba(0,0,0,0.2)] border border-black/[0.04] dark:border-white/[0.06] p-3 flex flex-col transition-all duration-300">
 
             {/* 封面区域 */}
             {hasCover ? (
               // biome-ignore lint/a11y/useKeyWithClickEvents: cover click is a mouse shortcut; the keyboard path is the title-row open button (aria-label=open)
               // biome-ignore lint/a11y/noStaticElementInteractions: cover click hit-area extension layer, not a standalone interactive control
-              <div className={`relative group/cover rounded-[16px] overflow-hidden bg-gray-100 dark:bg-[#2C2C2E] border border-black/2 dark:border-white/2 ${canOpenArtifact ? 'cursor-pointer' : ''}`} onClick={canOpenArtifact ? open : undefined}>
-                <div className="w-full aspect-video relative">
+              <div className={`relative group/cover rounded-[16px] overflow-hidden bg-gray-100 dark:bg-[#2C2C2E] border border-black/[0.02] dark:border-white/[0.02] ${canOpenArtifact ? 'cursor-pointer' : ''}`} onClick={canOpenArtifact ? open : undefined}>
+                <div className="w-full aspect-[16/9] relative">
                   <img src={coverUrl} alt={tc(t).coverAlt} className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover/cover:scale-[1.02]" />
                 </div>
-                <div className="absolute top-3 right-3 px-2.5 py-1 rounded-[6px] bg-white/95 dark:bg-[#2C2C2E]/95 text-[#111] dark:text-[#eee] text-[11px] font-bold uppercase tracking-widest shadow-xs">
+                <div className="absolute top-3 right-3 px-2.5 py-1 rounded-[6px] bg-white/95 dark:bg-[#2C2C2E]/95 text-[#111] dark:text-[#eee] text-[11px] font-bold uppercase tracking-widest shadow-sm">
                   {fmt.label}
                 </div>
               </div>
             ) : (
               <div className="px-3 pt-3 pb-2 flex items-center space-x-3">
-                <div className="w-10 h-10 rounded-[8px] flex items-center justify-center shrink-0 bg-black/4 dark:bg-white/8">
+                <div className="w-10 h-10 rounded-[8px] flex items-center justify-center shrink-0 bg-black/[0.04] dark:bg-white/[0.08]">
                   <FileTypeIcon kind={kind} className="w-6 h-6" />
                 </div>
                 <span className="text-[13px] font-semibold text-[#888] dark:text-[#999] uppercase tracking-wider">
@@ -76,7 +76,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
               <h2 className="text-[20px] font-semibold tracking-tight text-[#111] dark:text-[#eee] leading-snug truncate group-hover/header:text-[#007AFF] transition-colors">
                 {title}
               </h2>
-              {canOpenArtifact && <button type="button" onClick={(e) => { e.stopPropagation(); open(); }} className="shrink-0 flex items-center justify-center w-9 h-9 rounded-full bg-gray-100 dark:bg-white/5 group-hover/header:bg-gray-200 dark:group-hover/header:bg-white/10 text-[#007AFF] dark:text-[#0A84FF] transition-colors active:scale-95" aria-label={tc(t).open}>
+              {canOpenArtifact && <button type="button" onClick={(e) => { e.stopPropagation(); open(); }} className="flex-shrink-0 flex items-center justify-center w-9 h-9 rounded-full bg-gray-100 dark:bg-white/5 group-hover/header:bg-gray-200 dark:group-hover/header:bg-white/10 text-[#007AFF] dark:text-[#0A84FF] transition-colors active:scale-95" aria-label={tc(t).open}>
                 <AcArrowUpRight className="w-[18px] h-[18px]" />
               </button>}
             </div>
@@ -99,7 +99,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
             )}
 
             {/* 底部路径 */}
-            <div className="mx-3 mt-1 mb-2 pt-3 border-t border-gray-100 dark:border-white/5">
+            <div className="mx-3 mt-1 mb-2 pt-3 border-t border-gray-100 dark:border-white/[0.05]">
               <div className="flex items-center gap-1.5 text-[12px] text-[#999] dark:text-[#777]">
                 <AcFolder className="w-3.5 h-3.5 shrink-0" />
                 <span className="truncate" title={path}>{path}</span>
@@ -378,14 +378,14 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
                     <span className="truncate font-mono">{file.newPath || file.oldPath || ''}</span>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
-                    <span className={`px-1.5 py-0.5 rounded-sm ${addText} ${addBg}`}>+{fst.add}</span>
-                    <span className={`px-1.5 py-0.5 rounded-sm ${delText} ${delBg}`}>−{fst.del}</span>
+                    <span className={`px-1.5 py-0.5 rounded ${addText} ${addBg}`}>+{fst.add}</span>
+                    <span className={`px-1.5 py-0.5 rounded ${delText} ${delBg}`}>−{fst.del}</span>
                     <button
                       type="button"
                       onClick={() => setExpanded((v) => !v)}
                       title={expanded ? T.diffCollapse : T.diffExpand}
                       aria-label={expanded ? T.diffCollapseAria : T.diffExpand}
-                      className={`px-1 py-0.5 rounded-sm ${mutedText} hover:bg-black/5 dark:hover:bg-white/10`}
+                      className={`px-1 py-0.5 rounded ${mutedText} hover:bg-black/5 dark:hover:bg-white/10`}
                     >
                       <ChevronDown size={12} className={`transition-transform ${expanded ? 'rotate-180' : ''}`} />
                     </button>
@@ -414,8 +414,8 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
                             data-new-no={newStr}
                             className={`flex items-start ${bg} text-[12px] leading-[1.55]`}
                           >
-                            <span className={`select-none text-right pr-2 pl-2 w-14 shrink-0 ${mutedText}`}>{oldStr}</span>
-                            <span className={`select-none text-right pr-2 w-14 shrink-0 ${mutedText}`}>{newStr}</span>
+                            <span className={`select-none text-right pr-2 pl-2 w-[3.5rem] shrink-0 ${mutedText}`}>{oldStr}</span>
+                            <span className={`select-none text-right pr-2 w-[3.5rem] shrink-0 ${mutedText}`}>{newStr}</span>
                             <span className={`select-none w-4 shrink-0 ${txt}`}>{marker}</span>
                             <span className={`flex-1 pr-3 ${txt}`} style={noStyle}>{l.text || ' '}</span>
                           </div>
@@ -507,25 +507,25 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
     // ════════════════════════════════════════════════════════════════════════
     // 输出渲染分发：失败→红字；大输出→receipt；高频工具→定制视图；其余→纯文本
     const tsToolsData = [
-      { id: 1, backendId: 'weather', mcpServer: true, title: '高德天气', subtitle: '高德地图实时天气与多日预报', category: 'life', type: 'MCP Server', version: 'v1.0.0', latency: '<50ms', desc: '通过高德地图 Web 服务 API 查询全国城市实时天气与未来多日预报。需要填写你自己的高德 Web 服务 API Key，密钥只写入本机系统凭据。', icon: CloudSun, color: 'bg-linear-to-b from-sky-400 to-blue-500', installed: false, authRequired: true, configTitle: '高德天气 Key', configDescription: 'Key 只保存在本机凭据，不写入 mcp.json。', configDocUrl: 'https://console.amap.com/dev/key/app', configDocLabel: '去创建 Web 服务 Key', configFields: [{ key: 'AMAP_KEY', label: 'API Key', required: true, target: 'env', secret: true, placeholder: '粘贴高德 Web 服务 Key', helpText: '请选择「Web 服务」类型。' }], welcomeQueries: ['杭州今天天气', '北京这周会下雨吗', '上海明天穿什么'] },
-      { id: 2, backendId: 'iwencai', mcpServer: true, title: '同花顺问财', subtitle: 'A股行情、财务、选股、宏观、新闻', category: 'finance', type: 'MCP Server', version: 'v1.0.0', latency: '<500ms', desc: '基于同花顺问财官方 API，提供 12 个金融查询工具。需要填写你自己的问财 API Key，密钥只写入本机系统凭据。', icon: LineChart, color: 'bg-linear-to-b from-red-400 to-red-600', installed: false, authRequired: true, configTitle: '问财 Key', configDescription: 'Key 只保存在本机凭据，不写入 mcp.json。', configDocUrl: 'https://www.iwencai.com/skillhub', configDocLabel: '打开问财 SkillHub', configFields: [{ key: 'IWENCAI_API_KEY', label: 'API Key', required: true, target: 'env', secret: true, placeholder: '粘贴 IWENCAI_API_KEY', helpText: '进入任一官方 Skill，在「安装方式」中复制。' }], welcomeQueries: ['茅台最新股价', '今天大盘怎么样', '市盈率低于10的银行股', '最近降息新闻'] },
-      { id: 3, backendId: null, title: 'QQ邮箱 API', subtitle: '智能邮件收发与线程提炼', category: 'collab', type: 'REST API', version: 'v1.4.2', latency: '<120ms', desc: '提供标准的邮件收发、搜索和整理接口。结合大模型可实现自然语言读取邮件内容、汇总长线程对话、自动归档管理文件夹。', icon: Mail, color: 'bg-linear-to-b from-amber-400 to-orange-500', installed: false, authRequired: true },
-      { id: 4, backendId: 'ima', imaOpenapi: true, title: '腾讯 ima', subtitle: '用 OpenAPI 操作 ima 笔记与知识库', category: 'docs', type: 'OpenAPI Skill', version: 'v1.1.8', latency: '云端', desc: '接入腾讯 ima OpenAPI Skill：通过 Pinvou 内置的受控工具调用 ima.qq.com 官方 OpenAPI，支持笔记搜索/读取/创建/追加，以及知识库搜索、浏览、网页导入和内容添加。需要填写你自己的 Client ID 和 API Key，凭据只写入本机系统凭据，不进入对话、环境变量、仓库或 mcp.json。', icon: BookOpen, color: 'bg-linear-to-b from-sky-500 to-indigo-600', installed: false, authRequired: true, configTitle: '连接腾讯 ima', configDescription: '凭据只保存在本机，用于启用 IMA OpenAPI Skill。', configDocUrl: 'https://ima.qq.com/agent-interface', configDocLabel: '获取 Client ID / API Key', configFields: [{ key: 'IMA_CLIENT_ID', label: 'Client ID', required: true, target: 'credential', secret: true, placeholder: 'Client ID' }, { key: 'IMA_API_KEY', label: 'API Key', required: true, target: 'credential', secret: true, placeholder: 'API Key' }], welcomeQueries: ['搜索我的 ima 知识库', '列出我有哪些 ima 笔记', '把这段内容新建为 ima 笔记', '在 ima 知识库里查产品方案'] },
-      { id: 5, backendId: null, title: '乐享文档连接器', subtitle: '企业知识文档全量检索', category: 'docs', type: 'Webhook/API', version: 'v1.1.0', latency: '<80ms', desc: '支持通过 API 搜索、创建和管理乐享知识库中的文档。支持批量导入 Markdown、按标签整理内容、实时订阅团队文档的更新动态。', icon: Hexagon, color: 'bg-linear-to-b from-blue-400 to-blue-600', installed: false, authRequired: true },
-      { id: 6, backendId: 'tencent-docs', mcpServer: true, title: '腾讯文档 MCP', subtitle: '官方远程 MCP：在线文档/表格/幻灯片读写与协作', category: 'docs', type: 'MCP Server', version: 'v1.0.41', latency: '云端', desc: '接入腾讯文档官方远程 MCP（通用文档 + PPT/Word/Excel 精细编辑四个服务）：以你的账号创建、读取、编辑在线文档、表格、幻灯片、思维导图、智能表格，管理知识库空间与文件，支持网页剪藏与本地文件上云；安装时自动配官方技能（场景路由 + 工具 API 参考）。需要腾讯文档个人 Token（官方页面 QQ/微信扫码获取），密钥只写入本机系统凭据。', icon: FileText, color: 'bg-linear-to-b from-blue-500 to-indigo-600', installed: false, authRequired: true, configTitle: '连接腾讯文档', configDescription: 'Token 只保存在本机系统凭据，不写入 mcp.json，也不会进入对话。', configDocUrl: 'https://docs.qq.com/scenario/open-claw.html?nlc=1', configDocLabel: '去获取腾讯文档 Token', configFields: [{ key: 'TENCENT_DOCS_TOKEN', label: '个人 Token', required: true, target: 'bearer', secret: true, placeholder: '粘贴腾讯文档个人 Token', helpText: '打开授权页用 QQ 或微信扫码登录后复制 Token；请勿添加 Bearer 前缀。' }], welcomeQueries: ['列出我最近的腾讯文档', '把这份周报写成腾讯智能文档', '新建一个在线表格记录收支', '读取这个腾讯文档表格并分析'] },
-      { id: 8, backendId: 'wecom-bot', mcpServer: true, title: '企微群机器人', subtitle: '向企业微信群推送消息与通知', category: 'collab', type: 'MCP Server', version: 'v1.0.0', latency: '云端', desc: '接入企业微信官方群机器人 webhook（消息推送 API）：让 AI 向绑定的群推送文本（可@成员）、Markdown、图文、图片和文件。需要填写你自己的群机器人 Webhook Key，密钥只写入本机系统凭据。数据经企业微信服务器（可选联网功能，opt-in）。', icon: MessageCircle, color: 'bg-linear-to-b from-cyan-400 to-blue-500', installed: false, authRequired: true, configTitle: '企微群机器人 Key', configDescription: 'Key 只保存在本机凭据，不写入 mcp.json。', configDocUrl: 'https://developer.work.weixin.qq.com/document/path/91770', configDocLabel: '查看官方群机器人文档', configFields: [{ key: 'WECOM_BOT_KEY', label: 'Webhook Key', required: true, target: 'env', secret: true, placeholder: '粘贴群机器人 key 或完整 webhook 地址', helpText: '企业微信群里右上角「…」→ 群机器人 → 添加机器人，复制 webhook 地址即可。' }], welcomeQueries: ['往群里发一条今日天气播报', '把这份周报整理成 Markdown 发到企微群', '@所有人：下午三点例会别忘了', '把这个文件发到企微群'] },
-      { id: 9, backendId: 'feishu', feishuCli: true, title: '飞书（Lark）', subtitle: '以你本人身份操作飞书文档/日历/表格/消息', category: 'collab', type: 'CLI + 官方技能', version: 'v1.0.95', latency: '云端', desc: '接入飞书官方 CLI + 官方域技能（MIT）：让 AI 以你本人身份读写云文档、查改日历、操作多维表格（Base）与电子表格、收发消息、管理知识库与任务。点「连接飞书」浏览器一键授权，全程不填 key。数据经飞书云 OpenAPI（可选联网功能，opt-in）。', icon: Send, color: 'bg-linear-to-b from-teal-400 to-emerald-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['读飞书文档帮我做一份 PPT', '把飞书文档整理成摘要', '查我今天的飞书日历', '看看我飞书里的待办任务'] },
-      { id: 22, backendId: 'tmeet', tmeetCli: true, title: '腾讯会议', subtitle: '以你本人身份管理会议/录制/纪要/参会报告', category: 'collab', type: 'CLI + 官方技能', version: 'v1.0.18', latency: '云端', desc: '接入腾讯会议官方 CLI（@tencentcloud/tmeet）+ 官方技能：让 AI 以你本人身份创建、查询、修改和取消腾讯会议，查询受邀人、参会报告、录制、转写与智能纪要，并支持会中呼叫成员入会。点「连接」打开腾讯会议授权页扫码登录，全程不填 key。', icon: Video, color: 'bg-linear-to-b from-sky-400 to-blue-600', installed: false, authRequired: true, configFields: [], welcomeQueries: ['帮我创建一个腾讯会议', '查一下我的腾讯会议录制', '看看最近会议的智能纪要', '查询这场腾讯会议的参会人'] },
-      { id: 99, backendId: 'wecom', wecomCli: true, title: '企业微信', subtitle: '以你本人身份操作企微消息/邮件/文档/会议/日程', category: 'collab', type: 'CLI + 官方技能', version: 'v1.2.1', latency: '云端', desc: '接入企业微信官方 CLI（@wecom/cli，MIT）+ 官方域技能：让 AI 以你本人身份收发消息、收发邮件、读写文档/智能表格/在线表格/智能文档、管理微盘文件、创建/查询会议与日程、管理待办、查询通讯录。点「连接」用企业微信 App 扫码授权，全程不填 key。数据经企业微信云（可选联网功能，opt-in）。', icon: MessageCircle, color: 'bg-linear-to-b from-cyan-400 to-blue-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['把这段内容写成企微智能文档', '读一下我企微某篇文档的内容', '在企微智能表格里新建一张子表', '查一下企微智能表格里的数据'] },
-      { id: 10, backendId: 'dingtalk', dingtalkCli: true, title: '钉钉', subtitle: '以你本人身份操作钉钉文档/日历/表格/消息', category: 'collab', type: 'CLI + 官方技能', version: 'v1.0.61', latency: '云端', desc: '接入钉钉官方 DingTalk Workspace CLI（dws，Apache-2.0）+ 官方技能：让 AI 以你本人身份读写钉钉文档、查改日历、操作 AI 表格/在线表格、收发群聊消息、处理待办/审批/日志/邮箱等。点「连接」用钉钉 App 扫码授权，全程不填 key。', icon: Navigation, color: 'bg-linear-to-b from-blue-400 to-indigo-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['读一下我的钉钉文档', '查我今天的钉钉日程', '在钉钉 AI 表格里查数据', '看看我的钉钉待办'] },
-      { id: 11, backendId: null, title: 'TAPD 敏捷研发', subtitle: '缺陷与迭代的自动化追踪', category: 'dev', type: 'Action Skill', version: 'v2.8.0', latency: '<60ms', desc: '研发管理核心工具。允许 AI 查询项目迭代进度、自动拆分需求条目、更新缺陷状态，实现从需求到发布的研发全生命周期数字化。', icon: Layout, color: 'bg-linear-to-b from-violet-500 to-fuchsia-600', installed: false, authRequired: true },
-      { id: 12, backendId: null, title: 'CNB 云原生管线', subtitle: '代码仓库与 CI/CD 调度', category: 'dev', type: 'MCP Server', version: 'v1.0.0', latency: '<40ms', desc: '将云原生开发能力赋予大模型。支持通过自然语言进行代码仓库检索、提交 Issue、审查 PR、触发并监控流水线部署等极客操作。', icon: Code, color: 'bg-linear-to-b from-orange-400 to-rose-500', installed: false, authRequired: true },
-      { id: 13, backendId: 'qcc', oauthMcp: true, oauthServerName: 'qcc-company', title: '企查查', subtitle: '企业工商数据授权查询', category: 'finance', type: 'Remote MCP', version: 'v1.0.0', latency: '云端', desc: '接入企查查智能体数据平台 qcc-company 远程 MCP。点「连接」默认通过企查查账号 OAuth 授权；如有企查查 API Key 也可选填，密钥只写入本机系统凭据。', icon: Building2, color: 'bg-linear-to-br from-blue-600 to-cyan-500', installed: false, authRequired: true, configTitle: '企查查 API Key（可选）', configDescription: 'API Key 只保存在本机系统凭据，不写入 mcp.json。留空则直接使用 OAuth 授权。', configFields: [{ key: 'QCC_API_KEY', label: '企查查 API Key', required: false, target: 'bearer', secret: true, placeholder: '粘贴企查查 API Key（可留空）', helpText: '可选。默认使用 OAuth 授权；如需以 API Key 方式接入再填写。' }], welcomeQueries: ['查一下华为的工商信息', '腾讯的工商登记信息', '比亚迪有哪些对外投资', '阿里巴巴的股东结构'] },
-      { id: 20, backendId: 'patsnap-search', mcpServer: true, title: '智慧芽专利&文献', subtitle: '全球专利与论文融合检索，支持公开号详情获取', category: 'docs', type: 'MCP Server', version: 'v1.0.0', latency: '云端', desc: '接入智慧芽远程 MCP，在全球专利数据库和文献库中进行融合检索，支持自然语言、语义搜索、关键词检索和多维过滤，并可按专利公开号或结果 URL 拉取 Markdown 详情。需要填写智慧芽 API Key，密钥只写入本机系统凭据，mcp.json 仅保存环境变量占位符。', icon: Search, color: 'bg-linear-to-b from-emerald-500 to-cyan-600', installed: false, authRequired: true, configTitle: '填写智慧芽 API Key', configDescription: 'API Key 仅存储在本机系统凭据中，不会明文写入 mcp.json；连接智慧芽服务时通过 Authorization 请求头发送。', configDocUrl: 'https://open.zhihuiya.com/dashboard/api-keys', configDocLabel: '查看 API Key 获取说明', configFields: [{ key: 'PATSNAP_API_KEY', label: '智慧芽 API Key', required: true, target: 'bearer', secret: true, placeholder: '粘贴你的智慧芽 API Key', helpText: '请从智慧芽开放平台或企业管理员提供的 MCP/API 凭证中获取。' }], welcomeQueries: ['检索固态电池电解质相关专利和论文', '查找近五年 CRISPR 递送系统核心专利和文献', '获取公开号 CN109123456A 的专利详情', '分析宁德时代钠离子电池方向专利布局'] },
-      { id: 21, backendId: 'canva-mcp', oauthMcp: true, oauthServerName: 'canva_mcp', title: 'Canva 可画', subtitle: '海报、演示文稿、封面与品牌模板设计', category: 'life', type: 'Remote MCP', version: 'v1.0.0', latency: '云端', desc: '接入 Canva 可画远程 MCP。支持通过自然语言生成和编辑海报、演示文稿、小红书封面、品牌模板等设计内容；点「连接」后会打开浏览器进行 Canva 可画账号授权，全程不填写 API Key。设计指令、素材、文件夹和品牌模板相关内容会发送到 Canva 可画远程 MCP 服务。', icon: Palette, color: 'bg-linear-to-b from-cyan-500 to-pink-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['帮我生成一张新品发布海报', '做一份三页产品介绍演示文稿', '设计一张小红书封面', '用品牌模板生成活动宣传图'] },
-      { id: 14, backendId: 'obsidian', mcpServer: true, title: 'Obsidian 知识库', subtitle: '检索并管理本机 Obsidian 笔记，读写你的个人知识', category: 'docs', type: 'MCP Server', version: 'v1.1.0', latency: '<30ms', desc: '把你本机的 Obsidian 笔记库（vault）接入大模型。支持全文检索、读取、新建、编辑、改名（自动修双链）与删除——让 AI 基于并维护你自己沉淀的知识。自动识别当前打开的库，无需手动配置；笔记不出本机、模型也在本机，知识与算力全链路不出域。', icon: BookOpen, color: 'bg-linear-to-b from-violet-500 to-purple-700', installed: false, authRequired: false, welcomeQueries: ['帮我搜一下我的笔记', '帮我新建一篇笔记记录今天的想法', '我的知识库有哪些文档？', '总结一下我的笔记'] },
-      { id: 19, backendId: 'yuandian-mcp', oauthMcp: true, oauthServerName: 'yuandian_mcp', title: '华宇元典法律数据', subtitle: '法律法规、案例文书与企业司法风险查询', category: 'docs', type: 'Remote MCP', version: 'v1.0.0', latency: '云端', desc: '接入华宇元典开放平台远程 MCP。支持法律法规、裁判案例、企业司法风险等法律数据检索；点「连接」后会打开浏览器进行元典账号授权，全程不填写 API Key。', icon: BookOpen, color: 'bg-linear-to-b from-emerald-500 to-cyan-700', installed: false, authRequired: true, configFields: [], welcomeQueries: ['检索一下劳动合同解除相关案例', '查一下公司股权责任相关法规', '帮我分析企业司法风险', '找一下最近的裁判观点'] },
-      { id: 16, backendId: 'gongwen', mcpServer: true, title: '公文写作', subtitle: '党政机关公文直出 GB/T 9704 合规 .docx', category: 'docs', type: 'MCP Server', version: 'v1.0.0', latency: '本地', desc: '说“写个通知 / 起草意见”，AI 按文种结构与固定话术写好内容，渲染器套党政机关公文国标格式（方正小标宋标题、仿宋_GB2312 正文、国标页边距、红头与红色分隔线）直出 .docx，全程本地、数据不出机。配合「党政机关公文写作」技能效果最佳。首次安装自动下载 python-docx 依赖（需联网）。', icon: FileText, color: 'bg-linear-to-b from-red-500 to-rose-700', installed: false, authRequired: false, welcomeQueries: ['起草一份关于印发管理办法的通知', '写一份加强某项工作的实施意见', '拟一份会议通知', '写一份情况报告'] },
+      { id: 1, backendId: 'weather', mcpServer: true, title: '高德天气', subtitle: '高德地图实时天气与多日预报', category: 'life', type: 'MCP Server', version: 'v1.0.0', latency: '<50ms', desc: '通过高德地图 Web 服务 API 查询全国城市实时天气与未来多日预报。需要填写你自己的高德 Web 服务 API Key，密钥只写入本机系统凭据。', icon: CloudSun, color: 'bg-gradient-to-b from-sky-400 to-blue-500', installed: false, authRequired: true, configTitle: '高德天气 Key', configDescription: 'Key 只保存在本机凭据，不写入 mcp.json。', configDocUrl: 'https://console.amap.com/dev/key/app', configDocLabel: '去创建 Web 服务 Key', configFields: [{ key: 'AMAP_KEY', label: 'API Key', required: true, target: 'env', secret: true, placeholder: '粘贴高德 Web 服务 Key', helpText: '请选择「Web 服务」类型。' }], welcomeQueries: ['杭州今天天气', '北京这周会下雨吗', '上海明天穿什么'] },
+      { id: 2, backendId: 'iwencai', mcpServer: true, title: '同花顺问财', subtitle: 'A股行情、财务、选股、宏观、新闻', category: 'finance', type: 'MCP Server', version: 'v1.0.0', latency: '<500ms', desc: '基于同花顺问财官方 API，提供 12 个金融查询工具。需要填写你自己的问财 API Key，密钥只写入本机系统凭据。', icon: LineChart, color: 'bg-gradient-to-b from-red-400 to-red-600', installed: false, authRequired: true, configTitle: '问财 Key', configDescription: 'Key 只保存在本机凭据，不写入 mcp.json。', configDocUrl: 'https://www.iwencai.com/skillhub', configDocLabel: '打开问财 SkillHub', configFields: [{ key: 'IWENCAI_API_KEY', label: 'API Key', required: true, target: 'env', secret: true, placeholder: '粘贴 IWENCAI_API_KEY', helpText: '进入任一官方 Skill，在「安装方式」中复制。' }], welcomeQueries: ['茅台最新股价', '今天大盘怎么样', '市盈率低于10的银行股', '最近降息新闻'] },
+      { id: 3, backendId: null, title: 'QQ邮箱 API', subtitle: '智能邮件收发与线程提炼', category: 'collab', type: 'REST API', version: 'v1.4.2', latency: '<120ms', desc: '提供标准的邮件收发、搜索和整理接口。结合大模型可实现自然语言读取邮件内容、汇总长线程对话、自动归档管理文件夹。', icon: Mail, color: 'bg-gradient-to-b from-amber-400 to-orange-500', installed: false, authRequired: true },
+      { id: 4, backendId: 'ima', imaOpenapi: true, title: '腾讯 ima', subtitle: '用 OpenAPI 操作 ima 笔记与知识库', category: 'docs', type: 'OpenAPI Skill', version: 'v1.1.8', latency: '云端', desc: '接入腾讯 ima OpenAPI Skill：通过 Pinvou 内置的受控工具调用 ima.qq.com 官方 OpenAPI，支持笔记搜索/读取/创建/追加，以及知识库搜索、浏览、网页导入和内容添加。需要填写你自己的 Client ID 和 API Key，凭据只写入本机系统凭据，不进入对话、环境变量、仓库或 mcp.json。', icon: BookOpen, color: 'bg-gradient-to-b from-sky-500 to-indigo-600', installed: false, authRequired: true, configTitle: '连接腾讯 ima', configDescription: '凭据只保存在本机，用于启用 IMA OpenAPI Skill。', configDocUrl: 'https://ima.qq.com/agent-interface', configDocLabel: '获取 Client ID / API Key', configFields: [{ key: 'IMA_CLIENT_ID', label: 'Client ID', required: true, target: 'credential', secret: true, placeholder: 'Client ID' }, { key: 'IMA_API_KEY', label: 'API Key', required: true, target: 'credential', secret: true, placeholder: 'API Key' }], welcomeQueries: ['搜索我的 ima 知识库', '列出我有哪些 ima 笔记', '把这段内容新建为 ima 笔记', '在 ima 知识库里查产品方案'] },
+      { id: 5, backendId: null, title: '乐享文档连接器', subtitle: '企业知识文档全量检索', category: 'docs', type: 'Webhook/API', version: 'v1.1.0', latency: '<80ms', desc: '支持通过 API 搜索、创建和管理乐享知识库中的文档。支持批量导入 Markdown、按标签整理内容、实时订阅团队文档的更新动态。', icon: Hexagon, color: 'bg-gradient-to-b from-blue-400 to-blue-600', installed: false, authRequired: true },
+      { id: 6, backendId: 'tencent-docs', mcpServer: true, title: '腾讯文档 MCP', subtitle: '官方远程 MCP：在线文档/表格/幻灯片读写与协作', category: 'docs', type: 'MCP Server', version: 'v1.0.41', latency: '云端', desc: '接入腾讯文档官方远程 MCP（通用文档 + PPT/Word/Excel 精细编辑四个服务）：以你的账号创建、读取、编辑在线文档、表格、幻灯片、思维导图、智能表格，管理知识库空间与文件，支持网页剪藏与本地文件上云；安装时自动配官方技能（场景路由 + 工具 API 参考）。需要腾讯文档个人 Token（官方页面 QQ/微信扫码获取），密钥只写入本机系统凭据。', icon: FileText, color: 'bg-gradient-to-b from-blue-500 to-indigo-600', installed: false, authRequired: true, configTitle: '连接腾讯文档', configDescription: 'Token 只保存在本机系统凭据，不写入 mcp.json，也不会进入对话。', configDocUrl: 'https://docs.qq.com/scenario/open-claw.html?nlc=1', configDocLabel: '去获取腾讯文档 Token', configFields: [{ key: 'TENCENT_DOCS_TOKEN', label: '个人 Token', required: true, target: 'bearer', secret: true, placeholder: '粘贴腾讯文档个人 Token', helpText: '打开授权页用 QQ 或微信扫码登录后复制 Token；请勿添加 Bearer 前缀。' }], welcomeQueries: ['列出我最近的腾讯文档', '把这份周报写成腾讯智能文档', '新建一个在线表格记录收支', '读取这个腾讯文档表格并分析'] },
+      { id: 8, backendId: 'wecom-bot', mcpServer: true, title: '企微群机器人', subtitle: '向企业微信群推送消息与通知', category: 'collab', type: 'MCP Server', version: 'v1.0.0', latency: '云端', desc: '接入企业微信官方群机器人 webhook（消息推送 API）：让 AI 向绑定的群推送文本（可@成员）、Markdown、图文、图片和文件。需要填写你自己的群机器人 Webhook Key，密钥只写入本机系统凭据。数据经企业微信服务器（可选联网功能，opt-in）。', icon: MessageCircle, color: 'bg-gradient-to-b from-cyan-400 to-blue-500', installed: false, authRequired: true, configTitle: '企微群机器人 Key', configDescription: 'Key 只保存在本机凭据，不写入 mcp.json。', configDocUrl: 'https://developer.work.weixin.qq.com/document/path/91770', configDocLabel: '查看官方群机器人文档', configFields: [{ key: 'WECOM_BOT_KEY', label: 'Webhook Key', required: true, target: 'env', secret: true, placeholder: '粘贴群机器人 key 或完整 webhook 地址', helpText: '企业微信群里右上角「…」→ 群机器人 → 添加机器人，复制 webhook 地址即可。' }], welcomeQueries: ['往群里发一条今日天气播报', '把这份周报整理成 Markdown 发到企微群', '@所有人：下午三点例会别忘了', '把这个文件发到企微群'] },
+      { id: 9, backendId: 'feishu', feishuCli: true, title: '飞书（Lark）', subtitle: '以你本人身份操作飞书文档/日历/表格/消息', category: 'collab', type: 'CLI + 官方技能', version: 'v1.0.95', latency: '云端', desc: '接入飞书官方 CLI + 官方域技能（MIT）：让 AI 以你本人身份读写云文档、查改日历、操作多维表格（Base）与电子表格、收发消息、管理知识库与任务。点「连接飞书」浏览器一键授权，全程不填 key。数据经飞书云 OpenAPI（可选联网功能，opt-in）。', icon: Send, color: 'bg-gradient-to-b from-teal-400 to-emerald-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['读飞书文档帮我做一份 PPT', '把飞书文档整理成摘要', '查我今天的飞书日历', '看看我飞书里的待办任务'] },
+      { id: 22, backendId: 'tmeet', tmeetCli: true, title: '腾讯会议', subtitle: '以你本人身份管理会议/录制/纪要/参会报告', category: 'collab', type: 'CLI + 官方技能', version: 'v1.0.18', latency: '云端', desc: '接入腾讯会议官方 CLI（@tencentcloud/tmeet）+ 官方技能：让 AI 以你本人身份创建、查询、修改和取消腾讯会议，查询受邀人、参会报告、录制、转写与智能纪要，并支持会中呼叫成员入会。点「连接」打开腾讯会议授权页扫码登录，全程不填 key。', icon: Video, color: 'bg-gradient-to-b from-sky-400 to-blue-600', installed: false, authRequired: true, configFields: [], welcomeQueries: ['帮我创建一个腾讯会议', '查一下我的腾讯会议录制', '看看最近会议的智能纪要', '查询这场腾讯会议的参会人'] },
+      { id: 99, backendId: 'wecom', wecomCli: true, title: '企业微信', subtitle: '以你本人身份操作企微消息/邮件/文档/会议/日程', category: 'collab', type: 'CLI + 官方技能', version: 'v1.2.1', latency: '云端', desc: '接入企业微信官方 CLI（@wecom/cli，MIT）+ 官方域技能：让 AI 以你本人身份收发消息、收发邮件、读写文档/智能表格/在线表格/智能文档、管理微盘文件、创建/查询会议与日程、管理待办、查询通讯录。点「连接」用企业微信 App 扫码授权，全程不填 key。数据经企业微信云（可选联网功能，opt-in）。', icon: MessageCircle, color: 'bg-gradient-to-b from-cyan-400 to-blue-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['把这段内容写成企微智能文档', '读一下我企微某篇文档的内容', '在企微智能表格里新建一张子表', '查一下企微智能表格里的数据'] },
+      { id: 10, backendId: 'dingtalk', dingtalkCli: true, title: '钉钉', subtitle: '以你本人身份操作钉钉文档/日历/表格/消息', category: 'collab', type: 'CLI + 官方技能', version: 'v1.0.61', latency: '云端', desc: '接入钉钉官方 DingTalk Workspace CLI（dws，Apache-2.0）+ 官方技能：让 AI 以你本人身份读写钉钉文档、查改日历、操作 AI 表格/在线表格、收发群聊消息、处理待办/审批/日志/邮箱等。点「连接」用钉钉 App 扫码授权，全程不填 key。', icon: Navigation, color: 'bg-gradient-to-b from-blue-400 to-indigo-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['读一下我的钉钉文档', '查我今天的钉钉日程', '在钉钉 AI 表格里查数据', '看看我的钉钉待办'] },
+      { id: 11, backendId: null, title: 'TAPD 敏捷研发', subtitle: '缺陷与迭代的自动化追踪', category: 'dev', type: 'Action Skill', version: 'v2.8.0', latency: '<60ms', desc: '研发管理核心工具。允许 AI 查询项目迭代进度、自动拆分需求条目、更新缺陷状态，实现从需求到发布的研发全生命周期数字化。', icon: Layout, color: 'bg-gradient-to-b from-violet-500 to-fuchsia-600', installed: false, authRequired: true },
+      { id: 12, backendId: null, title: 'CNB 云原生管线', subtitle: '代码仓库与 CI/CD 调度', category: 'dev', type: 'MCP Server', version: 'v1.0.0', latency: '<40ms', desc: '将云原生开发能力赋予大模型。支持通过自然语言进行代码仓库检索、提交 Issue、审查 PR、触发并监控流水线部署等极客操作。', icon: Code, color: 'bg-gradient-to-b from-orange-400 to-rose-500', installed: false, authRequired: true },
+      { id: 13, backendId: 'qcc', oauthMcp: true, oauthServerName: 'qcc-company', title: '企查查', subtitle: '企业工商数据授权查询', category: 'finance', type: 'Remote MCP', version: 'v1.0.0', latency: '云端', desc: '接入企查查智能体数据平台 qcc-company 远程 MCP。点「连接」默认通过企查查账号 OAuth 授权；如有企查查 API Key 也可选填，密钥只写入本机系统凭据。', icon: Building2, color: 'bg-gradient-to-br from-blue-600 to-cyan-500', installed: false, authRequired: true, configTitle: '企查查 API Key（可选）', configDescription: 'API Key 只保存在本机系统凭据，不写入 mcp.json。留空则直接使用 OAuth 授权。', configFields: [{ key: 'QCC_API_KEY', label: '企查查 API Key', required: false, target: 'bearer', secret: true, placeholder: '粘贴企查查 API Key（可留空）', helpText: '可选。默认使用 OAuth 授权；如需以 API Key 方式接入再填写。' }], welcomeQueries: ['查一下华为的工商信息', '腾讯的工商登记信息', '比亚迪有哪些对外投资', '阿里巴巴的股东结构'] },
+      { id: 20, backendId: 'patsnap-search', mcpServer: true, title: '智慧芽专利&文献', subtitle: '全球专利与论文融合检索，支持公开号详情获取', category: 'docs', type: 'MCP Server', version: 'v1.0.0', latency: '云端', desc: '接入智慧芽远程 MCP，在全球专利数据库和文献库中进行融合检索，支持自然语言、语义搜索、关键词检索和多维过滤，并可按专利公开号或结果 URL 拉取 Markdown 详情。需要填写智慧芽 API Key，密钥只写入本机系统凭据，mcp.json 仅保存环境变量占位符。', icon: Search, color: 'bg-gradient-to-b from-emerald-500 to-cyan-600', installed: false, authRequired: true, configTitle: '填写智慧芽 API Key', configDescription: 'API Key 仅存储在本机系统凭据中，不会明文写入 mcp.json；连接智慧芽服务时通过 Authorization 请求头发送。', configDocUrl: 'https://open.zhihuiya.com/dashboard/api-keys', configDocLabel: '查看 API Key 获取说明', configFields: [{ key: 'PATSNAP_API_KEY', label: '智慧芽 API Key', required: true, target: 'bearer', secret: true, placeholder: '粘贴你的智慧芽 API Key', helpText: '请从智慧芽开放平台或企业管理员提供的 MCP/API 凭证中获取。' }], welcomeQueries: ['检索固态电池电解质相关专利和论文', '查找近五年 CRISPR 递送系统核心专利和文献', '获取公开号 CN109123456A 的专利详情', '分析宁德时代钠离子电池方向专利布局'] },
+      { id: 21, backendId: 'canva-mcp', oauthMcp: true, oauthServerName: 'canva_mcp', title: 'Canva 可画', subtitle: '海报、演示文稿、封面与品牌模板设计', category: 'life', type: 'Remote MCP', version: 'v1.0.0', latency: '云端', desc: '接入 Canva 可画远程 MCP。支持通过自然语言生成和编辑海报、演示文稿、小红书封面、品牌模板等设计内容；点「连接」后会打开浏览器进行 Canva 可画账号授权，全程不填写 API Key。设计指令、素材、文件夹和品牌模板相关内容会发送到 Canva 可画远程 MCP 服务。', icon: Palette, color: 'bg-gradient-to-b from-cyan-500 to-pink-500', installed: false, authRequired: true, configFields: [], welcomeQueries: ['帮我生成一张新品发布海报', '做一份三页产品介绍演示文稿', '设计一张小红书封面', '用品牌模板生成活动宣传图'] },
+      { id: 14, backendId: 'obsidian', mcpServer: true, title: 'Obsidian 知识库', subtitle: '检索并管理本机 Obsidian 笔记，读写你的个人知识', category: 'docs', type: 'MCP Server', version: 'v1.1.0', latency: '<30ms', desc: '把你本机的 Obsidian 笔记库（vault）接入大模型。支持全文检索、读取、新建、编辑、改名（自动修双链）与删除——让 AI 基于并维护你自己沉淀的知识。自动识别当前打开的库，无需手动配置；笔记不出本机、模型也在本机，知识与算力全链路不出域。', icon: BookOpen, color: 'bg-gradient-to-b from-violet-500 to-purple-700', installed: false, authRequired: false, welcomeQueries: ['帮我搜一下我的笔记', '帮我新建一篇笔记记录今天的想法', '我的知识库有哪些文档？', '总结一下我的笔记'] },
+      { id: 19, backendId: 'yuandian-mcp', oauthMcp: true, oauthServerName: 'yuandian_mcp', title: '华宇元典法律数据', subtitle: '法律法规、案例文书与企业司法风险查询', category: 'docs', type: 'Remote MCP', version: 'v1.0.0', latency: '云端', desc: '接入华宇元典开放平台远程 MCP。支持法律法规、裁判案例、企业司法风险等法律数据检索；点「连接」后会打开浏览器进行元典账号授权，全程不填写 API Key。', icon: BookOpen, color: 'bg-gradient-to-b from-emerald-500 to-cyan-700', installed: false, authRequired: true, configFields: [], welcomeQueries: ['检索一下劳动合同解除相关案例', '查一下公司股权责任相关法规', '帮我分析企业司法风险', '找一下最近的裁判观点'] },
+      { id: 16, backendId: 'gongwen', mcpServer: true, title: '公文写作', subtitle: '党政机关公文直出 GB/T 9704 合规 .docx', category: 'docs', type: 'MCP Server', version: 'v1.0.0', latency: '本地', desc: '说“写个通知 / 起草意见”，AI 按文种结构与固定话术写好内容，渲染器套党政机关公文国标格式（方正小标宋标题、仿宋_GB2312 正文、国标页边距、红头与红色分隔线）直出 .docx，全程本地、数据不出机。配合「党政机关公文写作」技能效果最佳。首次安装自动下载 python-docx 依赖（需联网）。', icon: FileText, color: 'bg-gradient-to-b from-red-500 to-rose-700', installed: false, authRequired: false, welcomeQueries: ['起草一份关于印发管理办法的通知', '写一份加强某项工作的实施意见', '拟一份会议通知', '写一份情况报告'] },
     ];
 
     // 本地能力的元数据(非商店连接器卡):组合包化的 pptx 已无连接器卡,但安装后
@@ -668,8 +668,8 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
       const isPositive = changePercent >= 0;
       const mainColor = isPositive ? 'text-[#eb4335]' : 'text-[#34a853]';
       const bgGradient = isPositive
-        ? 'bg-linear-to-br from-red-50 to-white dark:from-red-950/30 dark:to-[#1C1C1E]'
-        : 'bg-linear-to-br from-green-50 to-white dark:from-green-950/30 dark:to-[#1C1C1E]';
+        ? 'bg-gradient-to-br from-red-50 to-white dark:from-red-950/30 dark:to-[#1C1C1E]'
+        : 'bg-gradient-to-br from-green-50 to-white dark:from-green-950/30 dark:to-[#1C1C1E]';
       const badgeColor = isPositive
         ? 'bg-red-100 text-red-600 dark:bg-red-900/40 dark:text-red-400'
         : 'bg-green-100 text-green-600 dark:bg-green-900/40 dark:text-green-400';
@@ -689,13 +689,13 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
               <div className="flex items-baseline space-x-4">
                 <span className={`text-[3.5rem] leading-none font-black tracking-tighter font-mono ${mainColor}`} style={{ fontVariantNumeric: 'tabular-nums' }}>{fmt(price)}</span>
                 <div className="flex flex-col justify-end pb-1 space-y-0.5">
-                  <span className={`text-sm font-bold font-mono px-1.5 py-0.5 rounded-sm ${badgeColor}`}>{isPositive ? '+' : ''}{changePercent == null || Number.isNaN(changePercent) ? '--' : changePercent.toFixed(2)}%</span>
+                  <span className={`text-sm font-bold font-mono px-1.5 py-0.5 rounded ${badgeColor}`}>{isPositive ? '+' : ''}{changePercent == null || Number.isNaN(changePercent) ? '--' : changePercent.toFixed(2)}%</span>
                 </div>
               </div>
               <TrendIcon className={`w-12 h-12 mb-2 opacity-15 ${mainColor}`} />
             </div>
           </div>
-          <div className={`h-px bg-linear-to-r from-transparent via-current to-transparent text-slate-200 dark:text-white/10`}></div>
+          <div className={`h-px bg-gradient-to-r from-transparent via-current to-transparent text-slate-200 dark:text-white/10`}></div>
           <div className={`p-6 bg-white dark:bg-[#1C1C1E]`}>
             <div className="grid grid-cols-3 gap-y-4 gap-x-4">
               {[
@@ -722,7 +722,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
     // 注:pptx 不在此——它是「PPT 生成」MCP 的同名 companion 技能,卡片由后端
     // list_marketplace_skills 数据合成(见 ToolStoreView 的 companionSkillCards)。
     const tsSkillsData = [
-      { id: 's5', title: '视觉设计', subtitle: '设计系统直出网页 / banner / 海报 / 简历', category: 'other', type: 'Skill', version: '内置', latency: '本地', desc: '内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', icon: Palette, color: 'bg-linear-to-b from-pink-400 to-fuchsia-600', installed: true, authRequired: false, builtin: true,
+      { id: 's5', title: '视觉设计', subtitle: '设计系统直出网页 / banner / 海报 / 简历', category: 'other', type: 'Skill', version: '内置', latency: '本地', desc: '内置自动技能:模型按需自动加载,以设计系统级审美直出网页 / banner / 海报 / 简历等。无需安装、随时可用。', icon: Palette, color: 'bg-gradient-to-b from-pink-400 to-fuchsia-600', installed: true, authRequired: false, builtin: true,
       // The audit badge keys mode control off backendId: this legacy entry's
       // real backend skill id (visual-design) must reach the builtin page so
       // its badge agrees with the store card (review round-5 M3).
@@ -930,7 +930,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
       return (
         <div data-testid="builtin-plugin-card" data-tool-id={tool.backendId || ''}
           className="flex items-start gap-4 py-3 px-3 border-b border-slate-100 dark:border-white/5 last:border-0">
-          <div className={`h-16 w-16 shrink-0 rounded-[16px] border border-black/5 shadow-xs dark:border-white/5 flex items-center justify-center text-white ${tool.color || 'bg-linear-to-b from-slate-400 to-slate-600'}`}>
+          <div className={`h-16 w-16 flex-shrink-0 rounded-[16px] border border-black/5 shadow-sm dark:border-white/5 flex items-center justify-center text-white ${tool.color || 'bg-gradient-to-b from-slate-400 to-slate-600'}`}>
             <Icon size={30} strokeWidth={1.5} />
           </div>
           <div className="flex-1 min-w-0 flex flex-col gap-1.5 py-1">
@@ -951,7 +951,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
                 <span className={labelCls}>{C.toolsLabel}</span>
                 <div className="flex flex-wrap gap-1.5">
                   {mcpTools.map(name => (
-                    <span key={name} title={name} className="text-[11px] font-mono px-1.5 py-0.5 rounded-sm bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">{builtinToolShortName(name, tool.backendId)}</span>
+                    <span key={name} title={name} className="text-[11px] font-mono px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">{builtinToolShortName(name, tool.backendId)}</span>
                   ))}
                 </div>
               </div>
@@ -960,7 +960,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
               <div className={rowCls}>
                 <span className={labelCls}>{C.securityLabel}</span>
                 <span className="inline-flex items-center gap-1.5 leading-5">
-                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-sm uppercase tracking-wide bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400" title={levelDesc || undefined}>{tool.securityLevel}</span>
+                  <span className="text-[10px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wide bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400" title={levelDesc || undefined}>{tool.securityLevel}</span>
                   {levelDesc && <span className="text-slate-500 dark:text-slate-400">{levelDesc}</span>}
                 </span>
               </div>
@@ -976,7 +976,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
                 <span className={labelCls}>{C.dataAccessLabel}</span>
                 <div className="flex flex-wrap gap-1.5">
                   {dataAccess.map(scope => (
-                    <span key={scope} title={scope} className="text-[11px] px-1.5 py-0.5 rounded-sm bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">{(C.dataAccess && C.dataAccess[scope]) || scope}</span>
+                    <span key={scope} title={scope} className="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">{(C.dataAccess && C.dataAccess[scope]) || scope}</span>
                   ))}
                 </div>
               </div>

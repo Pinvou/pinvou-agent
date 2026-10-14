@@ -165,18 +165,18 @@ const OutputActions = ({ o, compact, small, stopPropagation, wrapperClassName, t
           {t.kbOutContinue}
         </button>
         <button type="button" onClick={guarded(() => newOutputProject(o))}
-          className={`${textBtn} text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#D1D1D6] dark:hover:bg-white/8`}>
+          className={`${textBtn} text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#D1D1D6] dark:hover:bg-white/[0.08]`}>
           {t.kbOutNewProject}
         </button>
         {canOpenSystemFiles && (
           <button type="button" title={t.kbOutOpenFolder} onClick={guarded(() => openFolder(o.path))}
-            className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/8`}>
+            className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
             <FolderOpen size={15} />
           </button>
         )}
         {isWeb && canDownloadArtifacts && bridge.artifacts.downloadArtifact && (
           <button type="button" title={t.uiKnowledge.downloadOutput} onClick={guarded(() => bridge.artifacts.downloadArtifact(o.path, o.sessionId))}
-            className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/8`}>
+            className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
             <Download size={15} />
           </button>
         )}
@@ -202,7 +202,7 @@ const ChipTabs = ({ items, value, onChange, countOf }) => (
       const on = value === c.key;
       return (
         <button type="button" key={c.key} onClick={() => onChange(c.key)}
-          className={"h-7 whitespace-nowrap shrink-0 text-[13px] px-3 rounded-full font-semibold transition-colors " + (on ? 'bg-[#3A3A3C] dark:bg-white text-white dark:text-black' : 'bg-[#F2F2F7] dark:bg-[#2C2C2E] text-black dark:text-white')}>
+          className={"h-7 whitespace-nowrap shrink-0 text-[13px] px-3 rounded-full font-semibold transition-colors " + (on ? 'bg-[#3A3A3C] dark:bg-[#fff] text-[#fff] dark:text-[#000]' : 'bg-[#F2F2F7] dark:bg-[#2C2C2E] text-[#000] dark:text-[#fff]')}>
           {c.label}
           {countOf ? <span className="ml-1.5 opacity-70">{countOf(c).toLocaleString()}</span> : null}
         </button>
@@ -216,7 +216,7 @@ const SkeletonRows = ({ panelClassName, panelStyle, icon = 'w-7 h-7', start = 60
     {Array.from({ length: 6 }).map((_, i) => (
       <div key={i} className="flex items-center gap-3 px-5 py-3 border-b border-gray-400/10 last:border-0">
         <div className={`${icon} rounded-lg shrink-0 animate-pulse bg-black/[0.07] dark:bg-white/10`} />
-        <div className={`flex-1 h-3 rounded-sm animate-pulse bg-black/[0.07] dark:bg-white/10`} style={{ maxWidth: `${start - i * step}%` }} />
+        <div className={`flex-1 h-3 rounded animate-pulse bg-black/[0.07] dark:bg-white/10`} style={{ maxWidth: `${start - i * step}%` }} />
       </div>
     ))}
   </div>
@@ -337,7 +337,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
           // biome-ignore lint/a11y/noStaticElementInteractions: conditional role=button + onKeyDown are below; static analysis cannot see the dynamic role
           <div ref={boxRef} onClick={onOpen} role={onOpen ? 'button' : undefined} tabIndex={onOpen ? 0 : undefined}
             onKeyDown={(e) => { if (onOpen && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpen(); } }}
-            className={`h-[164px] m-2 rounded-[15px] overflow-hidden relative bg-[#111216] ring-1 ring-white/4.5 ${onOpen ? 'cursor-pointer' : ''}`}>
+            className={`h-[164px] m-2 rounded-[15px] overflow-hidden relative bg-[#111216] ring-1 ring-white/[0.045] ${onOpen ? 'cursor-pointer' : ''}`}>
             {children}
           </div>
         );
@@ -1048,7 +1048,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                       className="w-full min-w-0 lg:max-w-[360px] lg:flex-1"
                     />
                     <button type="button" onClick={startScan} disabled={scanning || !loaded} title={t.kbRescan}
-                      className={`inline-flex h-9 shrink-0 items-center rounded-full px-4 text-[13px] font-semibold shadow-xs transition-colors whitespace-nowrap ${scanning ? 'cursor-default' : ''} bg-[#E9E9EB] text-[#1D1D1F] hover:bg-[#DADADD] disabled:hover:bg-[#E9E9EB] dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C] dark:disabled:hover:bg-[#2C2C2E]`}>
+                      className={`inline-flex h-9 shrink-0 items-center rounded-full px-4 text-[13px] font-semibold shadow-sm transition-colors whitespace-nowrap ${scanning ? 'cursor-default' : ''} bg-[#E9E9EB] text-[#1D1D1F] hover:bg-[#DADADD] disabled:hover:bg-[#E9E9EB] dark:bg-[#2C2C2E] dark:text-white dark:hover:bg-[#3A3A3C] dark:disabled:hover:bg-[#2C2C2E]`}>
                       <RefreshCw size={14} className={`mr-2 opacity-70 ${scanning ? 'animate-spin' : ''}`} />
                       {scanning ? `${t.kbScanning} ${(scan.scanned || 0).toLocaleString()}` : t.kbRescan}
                     </button>
@@ -1106,7 +1106,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                                   <span className={`hidden md:block text-[12px] font-medium tabular-nums ${muted}`}>{fmtDate(f.mtime)}</span>
                                   <div className="flex shrink-0 items-center justify-end gap-1">
                                     <button type="button" title={t.kbAddToKb} onClick={(e2) => { e2.stopPropagation(); setAddToKb(f.path); if (outputsOnly) loadColls(); }}
-                                      className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/8`}>
+                                      className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
                                       <Plus size={15} />
                                     </button>
                                       {canOpenSystemFiles && (
@@ -1116,7 +1116,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                                             {t.kbOpen}
                                           </button>
                                           <button type="button" title={t.kbOpenFolder} onClick={(e2) => { e2.stopPropagation(); openFolder(f.path); }}
-                                            className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/8`}>
+                                            className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
                                             <FolderOpen size={15} />
                                           </button>
                                         </>
@@ -1143,7 +1143,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                           <div className="w-9 h-9 rounded-xl grid place-items-center shrink-0" style={{ background: col + (isDark ? '33' : '1f'), color: col }}><CatI size={17} /></div> {/* isDark dynamic-value: 保留 (background 依赖运行时 col) */}
                           <div className="min-w-0">
                             <div className={`text-[13px] font-bold truncate ${ink}`}>{c.label}</div>
-                            <div className={`h-3 w-10 rounded-sm mt-1.5 animate-pulse bg-black/[0.07] dark:bg-white/10`} />
+                            <div className={`h-3 w-10 rounded mt-1.5 animate-pulse bg-black/[0.07] dark:bg-white/10`} />
                           </div>
                         </div>
                       );})}
@@ -1181,11 +1181,11 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                               <div className="flex items-center gap-3 mb-3">
                                 <span className={`text-[20px] font-extrabold ${ink}`}>{label}</span>
                                 <small className={`text-[13px] font-semibold ${muted}`}>{t.kbOutGroupCount(rows.length)}</small>
-                                <span className="h-px flex-1 bg-linear-to-r from-gray-400/20 to-transparent" />
+                                <span className="h-px flex-1 bg-gradient-to-r from-gray-400/20 to-transparent" />
                               </div>
                               <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-[18px]">
                                 {rows.map((o) => (
-                                    <article key={o.path} className={`group min-h-[286px] rounded-[22px] overflow-hidden border transition-all duration-200 bg-white border-black/4.5 hover:border-black/7.5 dark:bg-[#1C1C1E] dark:border-white/5.5 dark:hover:bg-[#202124] dark:hover:border-white/9`}
+                                    <article key={o.path} className={`group min-h-[286px] rounded-[22px] overflow-hidden border transition-all duration-200 bg-white border-black/[0.045] hover:border-black/[0.075] dark:bg-[#1C1C1E] dark:border-white/[0.055] dark:hover:bg-[#202124] dark:hover:border-white/[0.09]`}
                                       style={isDark ? { boxShadow: '0 14px 36px rgba(0,0,0,.24)' } : { boxShadow: '0 1px 2px rgba(0,0,0,.035), 0 10px 24px rgba(0,0,0,.05)' }}>{/* isDark dynamic-value: 保留 (multi-stop boxShadow) */}
                                       <OutputLivePreview o={o} onOpen={() => setOutputPreview({ path: o.path, sessionId: o.sessionId || null })} outPreviewCache={outPreviewCache} runQueuedPreview={runQueuedPreview} rememberOutPreview={rememberOutPreview} outCatMeta={outCatMeta} />
                                       <div className="px-5 pb-4">
@@ -1337,7 +1337,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
             {/* ============ 知识库 列表（模型已就绪）============ */}
             {sub === 'kb' && modelUsable && (
               <div className="max-w-[1400px] mx-auto">
-                <div className={`rounded-3xl p-7 mb-6 flex items-center gap-6 bg-linear-to-br from-[#ece8fc] to-[#dcebfb] dark:bg-linear-to-br dark:from-[#2A2440] dark:to-[#1E2438]`}>
+                <div className={`rounded-3xl p-7 mb-6 flex items-center gap-6 bg-gradient-to-br from-[#ece8fc] to-[#dcebfb] dark:bg-gradient-to-br dark:from-[#2A2440] dark:to-[#1E2438]`}>
                   <div className="flex-1 min-w-0">
                     <h2 className={`text-[20px] font-bold mb-3 text-[#211f33] dark:text-[#E3E3E3]`}>{t.kbBannerTitle}</h2>
                     <button type="button" onClick={() => setNewColl({ name: '', category: '' })} className="px-5 py-2.5 rounded-xl text-[14px] font-bold text-white" style={{ background: 'linear-gradient(135deg,#6f5cf0,#5b6cf2)' }}>{t.kbNewColl} →</button>
@@ -1349,7 +1349,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                   </div>
                   <div className="hidden xl:flex gap-3 shrink-0">
                     {['#3f7bf0', '#7b5fe6', '#1aa07a', '#d6873e', '#d6589a'].map((c, i) => (
-                      <div key={i} className={`w-16 h-20 rounded-2xl grid place-items-center shadow-xs bg-white/70 dark:bg-white/10`}>
+                      <div key={i} className={`w-16 h-20 rounded-2xl grid place-items-center shadow-sm bg-white/70 dark:bg-white/10`}>
                         <div className="w-9 h-9 rounded-xl grid place-items-center" style={{ background: c + '22', color: c }}><FileText size={18} /></div>
                       </div>
                     ))}
@@ -1370,7 +1370,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                     deferred 并落 error，改走既有失败门（Retry/Repair），不进此分支。
                     canInstallKbModel=false 的平台（web）没有本地模型安装能力，不渲染。 */}
                 {canInstallKbModel && modelInstalled && !modelReady && !modelLoading && !downloading && !kbPeerDownloading && (
-                  <div className={`mb-5 rounded-2xl border p-4 border-[#dfe3ee] bg-[#f8f9fd] dark:border-white/10 dark:bg-white/4 flex flex-wrap items-center justify-between gap-3`}>
+                  <div className={`mb-5 rounded-2xl border p-4 border-[#dfe3ee] bg-[#f8f9fd] dark:border-white/10 dark:bg-white/[0.04] flex flex-wrap items-center justify-between gap-3`}>
                     <div className="min-w-0 flex-1">
                       <div className={`text-[14px] font-bold ${ink}`}>{t.kbModelNotLoadedTitle}</div>
                       <div className={`mt-1 text-[12px] ${muted}`}>{t.kbModelNotLoadedDesc}</div>
@@ -1392,7 +1392,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                   </div>
                 )}
                 {idx && (idx.running || idx.resumable || idx.failed > 0) && (
-                  <div className={`mb-5 rounded-2xl border p-4 border-[#dfe3ee] bg-[#f8f9fd] dark:border-white/10 dark:bg-white/4`}>
+                  <div className={`mb-5 rounded-2xl border p-4 border-[#dfe3ee] bg-[#f8f9fd] dark:border-white/10 dark:bg-white/[0.04]`}>
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0">
                         <div className={`text-[14px] font-bold ${ink}`}>
@@ -1619,9 +1619,9 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
               <div className={`text-[17px] font-bold mb-4 ${ink}`}>{newColl.id ? t.kbEditColl : t.kbNewColl}</div>
               {/* biome-ignore lint/a11y/noAutofocus: the new-collection modal focuses the name input on open; focus is the input intent */}
               <input autoFocus value={newColl.name} placeholder={t.kbCollNamePh} onChange={(e) => setNewColl({ ...newColl, name: e.target.value })} onKeyDown={(e) => { if (e.key === 'Enter' && !isImeComposing(e)) createColl(); }}
-                className={`w-full px-4 py-2.5 rounded-xl mb-3 text-[14px] outline-hidden bg-[#F0F4F9] text-[#1F1F1F] dark:bg-[#2A2B2D] dark:text-[#E3E3E3]`} />
+                className={`w-full px-4 py-2.5 rounded-xl mb-3 text-[14px] outline-none bg-[#F0F4F9] text-[#1F1F1F] dark:bg-[#2A2B2D] dark:text-[#E3E3E3]`} />
               <input value={newColl.category} placeholder={t.kbCollCatPh} onChange={(e) => setNewColl({ ...newColl, category: e.target.value })}
-                className={`w-full px-4 py-2.5 rounded-xl mb-4 text-[14px] outline-hidden bg-[#F0F4F9] text-[#1F1F1F] dark:bg-[#2A2B2D] dark:text-[#E3E3E3]`} />
+                className={`w-full px-4 py-2.5 rounded-xl mb-4 text-[14px] outline-none bg-[#F0F4F9] text-[#1F1F1F] dark:bg-[#2A2B2D] dark:text-[#E3E3E3]`} />
               <div className="flex justify-end gap-2">
                 <button type="button" onClick={() => setNewColl(null)} className={`px-4 py-2 rounded-full text-[13px] ${card} ${muted}`}>{t.kbCancel}</button>
                 <button type="button" onClick={createColl} className={`px-4 py-2 rounded-full text-[13px] font-medium ${accent}`}>{newColl.id ? t.kbSave : t.kbCreate}</button>
@@ -1652,7 +1652,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
           {/* 「+ 添加 ▾」下拉菜单：文件 / 文件夹(后端 WalkDir 递归展开目录) */}
           {addMenu && typeof document !== 'undefined' && createPortal(
             <div ref={addMenuRef} onPointerDown={(e) => e.stopPropagation()} style={{ left: addMenu.left, top: addMenu.top, width: addMenu.width }}
-              className={`fixed z-1000 overflow-hidden rounded-xl py-1 shadow-xl ring-1 bg-white ring-black/10 dark:bg-[#202124] dark:ring-white/10`}>
+              className={`fixed z-[1000] overflow-hidden rounded-xl py-1 shadow-xl ring-1 bg-white ring-black/10 dark:bg-[#202124] dark:ring-white/10`}>
               <button type="button" data-testid="kb-add-files" onClick={() => chooseAdd('files')} className={`w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]`}><FileText size={15} /><span>{t.kbAddFiles}</span></button>
               <button type="button" data-testid="kb-add-folder" onClick={() => chooseAdd('folders')} disabled={!folderPickerAvailable} className={`w-full h-9 px-3 flex items-center gap-2 text-left text-[14px] ${folderPickerAvailable ? 'text-[#1F1F1F] hover:bg-[#F1F3F4] dark:text-[#E3E3E3] dark:hover:bg-[#303134]' : 'opacity-40 cursor-default'}`}><FolderOpen size={15} /><span>{t.kbAddFolder}</span></button>
             </div>, document.body)}

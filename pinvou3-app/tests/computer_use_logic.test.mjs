@@ -821,10 +821,10 @@ try {
     'both dialogs must render through createPortal');
   assert.equal(consentSource.match(/document\.body,/g)?.length, 2,
     'both portals must target document.body');
-  // z-1210: strictly above every app overlay including the voice intro's
-  // z-1200 portal — a security prompt must never lose a same-z DOM-order
-  // race (round-17 nit, bumped from z-1200).
-  assert.match(consentSource, /fixed inset-0 z-1210/);
+  // z-[1210]: strictly above every app overlay including the voice intro's
+  // z-[1200] portal — a security prompt must never lose a same-z DOM-order
+  // race (round-17 nit, bumped from z-[1200]).
+  assert.match(consentSource, /fixed inset-0 z-\[1210\]/);
   // Height bound + pinned decision row. An over-tall target label used to push
   // Deny/Allow out of a panel that did not scroll; capping alone is not the
   // fix, because buttons left inside the scroll region can still be scrolled

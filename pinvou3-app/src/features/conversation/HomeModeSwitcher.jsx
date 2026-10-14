@@ -73,7 +73,7 @@ export function HomeModeSwitcher({
               <span
                 key={index}
                 aria-hidden="true"
-                className="h-8 w-24 shrink-0 animate-pulse rounded-lg bg-black/5 dark:bg-white/6"
+                className="h-8 w-24 shrink-0 animate-pulse rounded-lg bg-black/[0.05] dark:bg-white/[0.06]"
               />
             )) : visibleCodeAgents.map(({ key, label }) => (
               <button
@@ -104,7 +104,7 @@ export function HomeModeSwitcher({
                 aria-label={copy.providerSettings}
                 title={copy.providerSettings}
                 onClick={onManageProviders}
-                className="ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-black/5 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-white/8 dark:hover:text-gray-300"
+                className="ml-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-gray-400 transition-colors hover:bg-black/[0.05] hover:text-gray-600 dark:text-gray-500 dark:hover:bg-white/[0.08] dark:hover:text-gray-300"
               >
                 <Settings size={15} />
               </button>

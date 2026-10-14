@@ -716,7 +716,7 @@ try {
     && conversationView.includes('data-testid="conversation-tool-group-summary"')
     && conversationView.includes('min-w-0 flex-1 truncate'),
   'running tool groups must use bounded semantic labels instead of rendering raw command titles');
-  const boundedLongTextClass = 'whitespace-pre-wrap wrap-break-word wrap-anywhere';
+  const boundedLongTextClass = 'whitespace-pre-wrap break-words [overflow-wrap:anywhere]';
   // The long-text bounding contract is now carried solely by the shared timeline implementation (the legacy codex transcript component was removed).
   assert.ok(conversationView.includes(boundedLongTextClass)
     && conversationView.includes('max-h-80 max-w-full overflow-auto whitespace-pre'),

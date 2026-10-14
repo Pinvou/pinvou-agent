@@ -324,10 +324,10 @@ function StructuredValue({ label, value }) {
   return (
     <div className="mt-3">
       <div className="mb-1.5 text-[10px] font-medium uppercase tracking-wider text-gray-400">{label}</div>
-      <div className="rounded-xl border border-black/5 dark:border-white/[0.07] overflow-hidden">
+      <div className="rounded-xl border border-black/[0.05] dark:border-white/[0.07] overflow-hidden">
         {entries.map(([key, entry]) => (
-          <div key={key} className="grid grid-cols-[120px_minmax(0,1fr)] border-b last:border-b-0 border-black/5 dark:border-white/6 text-[11px]">
-            <div className="px-3 py-2 bg-black/2.5 dark:bg-white/2.5 text-gray-400 font-mono">{key}</div>
+          <div key={key} className="grid grid-cols-[120px_minmax(0,1fr)] border-b last:border-b-0 border-black/[0.05] dark:border-white/[0.06] text-[11px]">
+            <div className="px-3 py-2 bg-black/[0.025] dark:bg-white/[0.025] text-gray-400 font-mono">{key}</div>
             <pre className="px-3 py-2 overflow-x-auto whitespace-pre-wrap font-mono text-gray-700 dark:text-gray-200">
               {typeof entry === 'string' ? entry : JSON.stringify(entry, null, 2)}
             </pre>
@@ -345,13 +345,13 @@ function CompactItemRow({ icon, title, meta, status, open, onToggle, controlsId 
       ? 'text-amber-500 bg-amber-500/10'
     : status === 'running'
       ? 'text-blue-500 bg-blue-500/10'
-      : 'text-gray-500 bg-black/4 dark:bg-white/6';
+      : 'text-gray-500 bg-black/[0.04] dark:bg-white/[0.06]';
   return (
     <button type="button" onClick={onToggle}
       data-testid="conversation-compact-item-toggle"
       aria-expanded={controlsId ? Boolean(open) : undefined}
       aria-controls={controlsId && open ? controlsId : undefined}
-      className="w-full min-w-0 min-h-10 overflow-hidden px-2.5 py-2 flex items-center gap-2.5 text-left rounded-xl hover:bg-black/2.5 dark:hover:bg-white/[0.035]">
+      className="w-full min-w-0 min-h-10 overflow-hidden px-2.5 py-2 flex items-center gap-2.5 text-left rounded-xl hover:bg-black/[0.025] dark:hover:bg-white/[0.035]">
       <span className={`w-6 h-6 shrink-0 rounded-lg flex items-center justify-center ${tone}`}>{icon}</span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[12px] font-medium">{title}</span>
@@ -378,12 +378,12 @@ function CommandExecutionItem({ item, now, copy }) {
       ? `${c.executionFailed}${exitHint}`
       : `${c.executionFinished}${exitHint} · ${duration}`;
   return (
-    <div className={`rounded-xl border ${state === 'failed' ? 'border-red-500/20' : 'border-black/5 dark:border-white/[0.07]'} bg-white/45 dark:bg-white/1.5`}>
+    <div className={`rounded-xl border ${state === 'failed' ? 'border-red-500/20' : 'border-black/[0.05] dark:border-white/[0.07]'} bg-white/45 dark:bg-white/[0.015]`}>
       <CompactItemRow icon={<Terminal size={13} />} title={localizedSemanticLabel(details.summary, c)}
         meta={`${outcome}${countHint}`} status={state} open={open} controlsId={detailsId}
         onToggle={() => setOpen(value => !value)} />
       {open && (
-        <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/5 dark:border-white/6">
+        <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
           <TerminalBlock label={c.command} text={details.command} />
           {details.cwd && (
             <div className="mt-2 text-[10px] text-gray-400">
@@ -420,14 +420,14 @@ function SearchToolItem({ item, now, onOpenExternal, copy }) {
       ? `${queryLabel} · ${sourceLabel} · ${c.failed}`
       : `${queryLabel} · ${sourceLabel} · ${resultLabel}`;
   return (
-    <div className={`rounded-xl border ${state === 'failed' ? 'border-red-500/20' : 'border-black/5 dark:border-white/[0.07]'} bg-white/45 dark:bg-white/1.5`}>
+    <div className={`rounded-xl border ${state === 'failed' ? 'border-red-500/20' : 'border-black/[0.05] dark:border-white/[0.07]'} bg-white/45 dark:bg-white/[0.015]`}>
       <CompactItemRow icon={<Wrench size={13} />} title={toolName}
         meta={meta} status={state} open={open} controlsId={detailsId}
         onToggle={() => setOpen(value => !value)} />
       {open && (
-        <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/5 dark:border-white/6">
+        <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
           {details.results.length > 0 ? (
-            <div className="mt-2 divide-y divide-black/5 dark:divide-white/6">
+            <div className="mt-2 divide-y divide-black/[0.05] dark:divide-white/[0.06]">
               {details.results.slice(0, 5).map((result, index) => {
                 let domain = '';
                 try { domain = new URL(result.url).hostname.replace(/^www\./, ''); } catch { /* invalid URL: don't show the domain */ }
@@ -439,7 +439,7 @@ function SearchToolItem({ item, now, onOpenExternal, copy }) {
                     disabled={!onOpenExternal}
                     className="w-full py-2 flex items-start gap-2.5 text-left enabled:hover:text-blue-600 dark:enabled:hover:text-blue-300 disabled:cursor-default"
                   >
-                    <span className="mt-0.5 w-5 h-5 shrink-0 rounded-md bg-black/[0.035] dark:bg-white/6 text-[10px] text-gray-400 flex items-center justify-center">
+                    <span className="mt-0.5 w-5 h-5 shrink-0 rounded-md bg-black/[0.035] dark:bg-white/[0.06] text-[10px] text-gray-400 flex items-center justify-center">
                       {index + 1}
                     </span>
                     <span className="min-w-0 flex-1">
@@ -493,13 +493,13 @@ function FetchToolItem({ item, now, onOpenExternal, copy }) {
         ? 'border-red-500/20'
         : responseWarning
           ? 'border-amber-500/25'
-          : 'border-black/5 dark:border-white/[0.07]'
-    } bg-white/45 dark:bg-white/1.5`}>
+          : 'border-black/[0.05] dark:border-white/[0.07]'
+    } bg-white/45 dark:bg-white/[0.015]`}>
       <CompactItemRow icon={<Wrench size={13} />} title={toolName}
         meta={meta} status={visualState} open={open} controlsId={detailsId}
         onToggle={() => setOpen(value => !value)} />
       {open && (
-        <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/5 dark:border-white/6">
+        <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
           {details.url && (
             <button
               type="button"
@@ -514,7 +514,7 @@ function FetchToolItem({ item, now, onOpenExternal, copy }) {
           {details.preview && (
             <div className="mt-2">
               <div className="mb-1 text-[10px] font-medium text-gray-400">{c.contentPreview}</div>
-              <div className="max-h-24 overflow-hidden rounded-lg bg-black/2.5 dark:bg-white/[0.035] px-3 py-2 text-[11px] leading-5 text-gray-600 dark:text-gray-300">
+              <div className="max-h-24 overflow-hidden rounded-lg bg-black/[0.025] dark:bg-white/[0.035] px-3 py-2 text-[11px] leading-5 text-gray-600 dark:text-gray-300">
                 {details.preview}{details.contentLength > details.preview.length ? '…' : ''}
               </div>
             </div>
@@ -559,14 +559,14 @@ function GenericToolItem({ item, now, onOpenResource, copy }) {
       : `${c.executionFinished} · ${duration}`;
   const resources = toolWorkspaceResources(tool);
   return (
-    <div className="rounded-xl border border-black/5 dark:border-white/[0.07] bg-white/45 dark:bg-white/1.5">
+    <div className="rounded-xl border border-black/[0.05] dark:border-white/[0.07] bg-white/45 dark:bg-white/[0.015]">
       <CompactItemRow icon={<Wrench size={13} />} title={localizedSemanticLabel(tool.title || label, c)}
         meta={`${label} · ${stateLabel}`}
         status={state} open={open} controlsId={detailsId}
         onToggle={() => setOpen(value => !value)} />
       <WorkspaceResourceButtons resources={resources} onOpenResource={onOpenResource} />
       {open && (
-        <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/5 dark:border-white/6">
+        <div id={detailsId} data-testid="conversation-compact-item-content" className="px-3 pb-3 border-t border-black/[0.05] dark:border-white/[0.06]">
           <StructuredValue label={c.arguments} value={tool.rawInput} />
           <StructuredValue label={c.result} value={tool.rawOutput == null ? tool.content : tool.rawOutput} />
         </div>
@@ -640,7 +640,7 @@ function ToolGroup({ group, now, renderToolItem, onOpenExternal, onOpenResource,
       </button>
       <WorkspaceResourceButtons resources={resources} onOpenResource={onOpenResource} />
       {expanded && hasDetails && (
-        <div id={detailsId} data-testid="conversation-tool-group-content" className="min-w-0 max-w-full ml-3 pl-3 border-l border-black/6 dark:border-white/8 space-y-1.5 pb-1">
+        <div id={detailsId} data-testid="conversation-tool-group-content" className="min-w-0 max-w-full ml-3 pl-3 border-l border-black/[0.06] dark:border-white/[0.08] space-y-1.5 pb-1">
           {items.map(item => (
             <ToolItem
               key={item.id}
@@ -680,7 +680,7 @@ function ReasoningItem({ item, now, copy }) {
         <ChevronDown size={13} className={`ml-auto transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && hasDetails && (
-        <div id={detailsId} data-testid="conversation-reasoning-content" className="min-w-0 max-w-full ml-3 pl-3 py-1 border-l border-violet-500/15 text-[12px] leading-6 text-gray-500 dark:text-gray-300 whitespace-pre-wrap wrap-break-word wrap-anywhere">
+        <div id={detailsId} data-testid="conversation-reasoning-content" className="min-w-0 max-w-full ml-3 pl-3 py-1 border-l border-violet-500/15 text-[12px] leading-6 text-gray-500 dark:text-gray-300 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
           {item.text}
         </div>
       )}
@@ -693,7 +693,7 @@ function PlanBlock({ plan, copy }) {
   const entries = plan && plan.entries || [];
   if (!entries.length) return null;
   return (
-    <div data-testid="conversation-plan" className="min-w-0 max-w-full rounded-2xl border border-violet-500/15 bg-violet-500/4 p-3.5">
+    <div data-testid="conversation-plan" className="min-w-0 max-w-full rounded-2xl border border-violet-500/15 bg-violet-500/[0.04] p-3.5">
       <div className="text-[12px] font-semibold text-violet-600 dark:text-violet-300 mb-2">{c.plan}</div>
       <div className="space-y-2">
         {entries.map((entry, index) => (
@@ -703,7 +703,7 @@ function PlanBlock({ plan, copy }) {
               tone={entry.status === 'completed' ? 'ok' : entry.status === 'in_progress' ? 'run' : 'idle'}
               className="mt-1.5"
             />
-            <span className="min-w-0 flex-1 whitespace-pre-wrap wrap-break-word wrap-anywhere">{entry.content}</span>
+            <span className="min-w-0 flex-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{entry.content}</span>
           </div>
         ))}
       </div>
@@ -718,12 +718,12 @@ function PermissionCard({ permission, pending, onRespond, responding, agentLabel
   const options = request.options || [];
   const actionable = !!pending && !permission.resolved;
   return (
-    <div className="rounded-2xl border border-amber-500/25 bg-amber-500/6 p-4">
+    <div className="rounded-2xl border border-amber-500/25 bg-amber-500/[0.06] p-4">
       <div className="flex items-start gap-3">
         <AlertTriangle size={18} className="text-amber-500 mt-0.5 shrink-0" />
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-semibold">{c.permissionRequest(agentLabel)}</div>
-          <div className="mt-1 min-w-0 max-w-full text-[12px] text-gray-500 dark:text-gray-400 wrap-break-word wrap-anywhere">{tool.title || c.protectedOperation}</div>
+          <div className="mt-1 min-w-0 max-w-full text-[12px] text-gray-500 dark:text-gray-400 break-words [overflow-wrap:anywhere]">{tool.title || c.protectedOperation}</div>
           {tool.rawInput && tool.rawInput.command
             ? <TerminalBlock label={c.command} text={String(tool.rawInput.command)} />
             : <StructuredValue label={c.operationArguments} value={tool.rawInput} />}
@@ -734,7 +734,7 @@ function PermissionCard({ permission, pending, onRespond, responding, agentLabel
                 className={`max-w-full min-w-0 whitespace-normal break-all px-3 py-1.5 rounded-xl text-[12px] leading-5 font-medium transition-colors ${
                   String(option.kind || '').startsWith('allow')
                     ? 'bg-blue-600 text-white hover:bg-blue-700'
-                    : 'bg-black/6 dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15'
+                    : 'bg-black/[0.06] dark:bg-white/10 hover:bg-black/10 dark:hover:bg-white/15'
                 } disabled:opacity-45 disabled:cursor-not-allowed`}>
                 {option.optionId === 'allow_once'
                   ? c.allowOnce
@@ -892,7 +892,7 @@ function ConversationUserQuotes({ quotes, hasBody }) {
         <div
           key={`${index}-${String(quote.text || '').slice(0, 24)}`}
           data-testid="conversation-user-quote"
-          className="rounded-lg border border-black/6 bg-white/70 px-2.5 py-1.5 text-[12px] leading-5 text-gray-500 line-clamp-3 dark:border-white/8 dark:bg-white/5 dark:text-gray-400"
+          className="rounded-lg border border-black/[0.06] bg-white/70 px-2.5 py-1.5 text-[12px] leading-5 text-gray-500 line-clamp-3 dark:border-white/[0.08] dark:bg-white/[0.05] dark:text-gray-400"
         >
           {String(quote.text || '')}
         </div>
@@ -957,7 +957,7 @@ function ConversationTurnView({
     : (turn.userText || userAttachments.length || userQuotes.length)
       ? (
           <div className="flex justify-end">
-            <div className="max-w-[78%] rounded-[20px] rounded-br-md bg-[#E9EEF6] dark:bg-[#2A2B2E] px-4 py-3 text-[14px] leading-6 whitespace-pre-wrap wrap-break-word">
+            <div className="max-w-[78%] rounded-[20px] rounded-br-md bg-[#E9EEF6] dark:bg-[#2A2B2E] px-4 py-3 text-[14px] leading-6 whitespace-pre-wrap break-words">
               <ConversationUserQuotes quotes={userQuotes} hasBody={Boolean(turn.userText)} />
               {turn.userText && <div>{turn.userText}</div>}
               {userAttachments.length > 0 && (
@@ -988,7 +988,7 @@ function ConversationTurnView({
       {assistantRowVisible && (
       <div className="flex items-start gap-3">
         {assistantAvatar || (
-          <div className="mt-1 w-7 h-7 rounded-xl bg-linear-to-br from-[#34A853] to-[#168C46] text-white flex items-center justify-center shrink-0 shadow-xs">
+          <div className="mt-1 w-7 h-7 rounded-xl bg-gradient-to-br from-[#34A853] to-[#168C46] text-white flex items-center justify-center shrink-0 shadow-sm">
             <Sparkles size={15} />
           </div>
         )}
@@ -1050,7 +1050,7 @@ function ConversationTurnView({
                     {turn.userError.technicalDetail && (
                       <details className="mt-2.5 pl-10 text-[11px] text-gray-400 dark:text-[rgba(255,255,255,0.48)]">
                         <summary className="inline-flex cursor-pointer select-none rounded-full px-0 py-1 transition-colors hover:text-gray-600 dark:hover:text-[rgba(255,255,255,0.72)]">{c.technicalDetails}</summary>
-                        <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap wrap-break-word rounded-2xl bg-black/5 dark:bg-black/20 p-2.5 font-mono text-[10.5px] leading-4 text-gray-500 dark:text-[rgba(255,255,255,0.52)]">{turn.userError.technicalDetail}</pre>
+                        <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-2xl bg-black/5 dark:bg-black/20 p-2.5 font-mono text-[10.5px] leading-4 text-gray-500 dark:text-[rgba(255,255,255,0.52)]">{turn.userError.technicalDetail}</pre>
                       </details>
                     )}
                   </div>

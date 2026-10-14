@@ -57,7 +57,7 @@ function KeyDot({ hasCredential, copy }) {
 function CardConfirm({ title, desc, children, confirmLabel, cancelLabel, confirmTestId, confirmDisabled, onConfirm, onCancel, width }) {
   return (
     <ModalShell
-      zIndexClass="z-110"
+      zIndexClass="z-[110]"
       backdropClass="absolute inset-0 cursor-default bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
       backdropLabel={cancelLabel}
       panelClass={`${width} rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]`}
@@ -70,7 +70,7 @@ function CardConfirm({ title, desc, children, confirmLabel, cancelLabel, confirm
       }
       footer={
         <div className="mt-6 flex justify-end gap-2">
-          <button type="button" onClick={onCancel} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/8 dark:border-white/12">{cancelLabel}</button>
+          <button type="button" onClick={onCancel} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{cancelLabel}</button>
           <button type="button" data-testid={confirmTestId} onClick={onConfirm} disabled={confirmDisabled} className="h-9 px-4 rounded-full bg-red-500 text-white text-[13px] font-semibold disabled:opacity-50">{confirmLabel}</button>
         </div>
       }
@@ -81,7 +81,7 @@ function CardConfirm({ title, desc, children, confirmLabel, cancelLabel, confirm
 }
 
 // Shared backdrop + card shell for the provider export/import dialogs (identical
-// z-110 blurred backdrop and w-[min(560px,...)] rounded-[24px] p-6 card; only the
+// z-[110] blurred backdrop and w-[min(560px,...)] rounded-[24px] p-6 card; only the
 // content and close handler differ). Children render verbatim inside the card so the
 // pinned testids (acp-provider-export-json etc.) and DOM order survive: the export
 // "select all" button resolves the textarea via closest('div').previousElementSibling,
@@ -90,7 +90,7 @@ function CardConfirm({ title, desc, children, confirmLabel, cancelLabel, confirm
 function TransferModalShell({ onClose, children }) {
   return (
     <ModalShell
-      zIndexClass="z-110"
+      zIndexClass="z-[110]"
       backdropClass="absolute inset-0 cursor-default bg-black/45 backdrop-blur-[14px] animate-in fade-in duration-200"
       panelClass="w-[min(560px,calc(100vw-24px))] rounded-[24px] p-6 bg-white text-[#1F1F1F] dark:bg-[#1E1F20] dark:text-[#E8EAED]"
       onCancel={onClose}
@@ -594,7 +594,7 @@ export function ProvidersSection({ t }) {
     Boolean(installPhase) &&
     (installLog ? installLog.agent === activeAgent : busy === 'install:' + activeAgent);
 
-  const cardStyle = `rounded-[20px] p-4 bg-[#F0F4F9] dark:bg-white/5`;
+  const cardStyle = `rounded-[20px] p-4 bg-[#F0F4F9] dark:bg-white/[0.05]`;
   // Provider badge chip: shared implementation in StatusChip.jsx (the badge variant keeps
   // this view's free-form tone class strings local to the call sites below).
   const badge = (label, tone) => <StatusChip variant="badge" toneClass={tone}>{label}</StatusChip>;
@@ -613,7 +613,7 @@ export function ProvidersSection({ t }) {
     ? badge(copy.currentOverriddenByEnv, 'bg-amber-500/15 text-amber-600 dark:text-amber-400')
     : officialBadge;
   // 未启用的 Provider：灰色「未启用」标注，与当前/官方状态一眼可辨
-  const inactiveBadge = badge(copy.notEnabled, 'bg-black/6 text-gray-500 dark:bg-white/8 dark:text-gray-400');
+  const inactiveBadge = badge(copy.notEnabled, 'bg-black/[0.06] text-gray-500 dark:bg-white/[0.08] dark:text-gray-400');
 
   return (
     <div data-testid="acp-providers-section" className="space-y-5">
@@ -629,7 +629,7 @@ export function ProvidersSection({ t }) {
             className={`h-9 px-4 rounded-full text-[12px] font-semibold transition-colors ${
               activeAgent === agent.key
                 ? 'bg-[#007AFF] text-white'
-                : 'bg-[#F0F4F9] text-[#5F6368] dark:bg-white/8 dark:text-[#C7C7CC]'
+                : 'bg-[#F0F4F9] text-[#5F6368] dark:bg-white/[0.08] dark:text-[#C7C7CC]'
             }`}
           >
             {copy[`agent${agent.key[0].toUpperCase()}${agent.key.slice(1)}`]}
@@ -660,7 +660,7 @@ export function ProvidersSection({ t }) {
 
       {/* env 冲突警告 */}
       {view && view.configUnreadable && (
-        <div data-testid="acp-providers-unreadable-warning" className={`rounded-xl px-3 py-2.5 bg-red-500/8 dark:bg-red-500/10`}>
+        <div data-testid="acp-providers-unreadable-warning" className={`rounded-xl px-3 py-2.5 bg-red-500/[0.08] dark:bg-red-500/[0.1]`}>
           <div className="flex items-center gap-1.5 text-[12px] font-semibold text-red-600 dark:text-red-300">
             <AlertTriangle size={14} />
             {copy.configUnreadable}
@@ -670,7 +670,7 @@ export function ProvidersSection({ t }) {
       )}
 
       {view && view.envConflicts && view.envConflicts.length > 0 && (
-        <div data-testid="acp-providers-env-warning" className={`rounded-xl px-3 py-2.5 bg-amber-500/12 dark:bg-amber-500/10`}>
+        <div data-testid="acp-providers-env-warning" className={`rounded-xl px-3 py-2.5 bg-amber-500/[0.12] dark:bg-amber-500/[0.1]`}>
           <div className="flex items-center gap-1.5 text-[12px] font-semibold text-amber-600 dark:text-amber-300">
             <AlertTriangle size={14} />
             {copy.envConflictTitle}
@@ -697,7 +697,7 @@ export function ProvidersSection({ t }) {
       {/* 外部中转配置（配置文件归因不到当前 Provider）：全局提示而非每卡黄标，
           避免用户误以为有人动过自己的配置 */}
       {view && view.externalActive && (
-        <div className={`rounded-xl px-3 py-2.5 bg-amber-500/12 dark:bg-amber-500/10`}>
+        <div className={`rounded-xl px-3 py-2.5 bg-amber-500/[0.12] dark:bg-amber-500/[0.1]`}>
           <div className="flex items-center gap-1.5 text-[12px] font-semibold text-amber-600 dark:text-amber-300">
             <AlertTriangle size={14} />
             {copy.external}
@@ -709,7 +709,7 @@ export function ProvidersSection({ t }) {
       {/* 改动 2：生效中配置只读区（F4 可见化）——值来自实际 CLI 配置文件，
           不含任何凭据；官方登录态或配置不可解析时为空不渲染。 */}
       {view && view.effectiveEntries && view.effectiveEntries.length > 0 && (
-        <div data-testid="acp-providers-effective" className={`rounded-[20px] p-4 bg-[#F0F4F9] dark:bg-white/5`}>
+        <div data-testid="acp-providers-effective" className={`rounded-[20px] p-4 bg-[#F0F4F9] dark:bg-white/[0.05]`}>
           <div className="text-[13px] font-semibold">{copy.effectiveTitle}</div>
           <div className="mt-2 space-y-1">
             {view.effectiveEntries.map(entry => (
@@ -736,7 +736,7 @@ export function ProvidersSection({ t }) {
           data-testid="acp-provider-export"
           onClick={doExport}
           disabled={providers.length === 0}
-          className="h-9 px-3 rounded-full text-[12px] font-medium border border-black/8 dark:border-white/12 inline-flex items-center gap-1.5 disabled:opacity-40"
+          className="h-9 px-3 rounded-full text-[12px] font-medium border border-black/[0.08] dark:border-white/[0.12] inline-flex items-center gap-1.5 disabled:opacity-40"
         >
           <Download size={13} />
           {copy.export}
@@ -744,7 +744,7 @@ export function ProvidersSection({ t }) {
         <button type="button"
           data-testid="acp-provider-import"
           onClick={() => setImportOpen(true)}
-          className="h-9 px-3 rounded-full text-[12px] font-medium border border-black/8 dark:border-white/12 inline-flex items-center gap-1.5"
+          className="h-9 px-3 rounded-full text-[12px] font-medium border border-black/[0.08] dark:border-white/[0.12] inline-flex items-center gap-1.5"
         >
           <Upload size={13} />
           {copy.import}
@@ -752,7 +752,7 @@ export function ProvidersSection({ t }) {
         <button type="button"
           data-testid="acp-provider-refresh"
           onClick={() => refresh(true)}
-          className="h-9 px-3 rounded-full text-[12px] font-medium border border-black/8 dark:border-white/12 inline-flex items-center gap-1.5"
+          className="h-9 px-3 rounded-full text-[12px] font-medium border border-black/[0.08] dark:border-white/[0.12] inline-flex items-center gap-1.5"
         >
           <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
           {copy.recheck}
@@ -780,7 +780,7 @@ export function ProvidersSection({ t }) {
                   <div className="mt-1 font-mono text-[11px] opacity-60 truncate">{provider.baseUrl}</div>
                   <div className="mt-2 flex items-center gap-2 flex-wrap">
                     {provider.model && (
-                      <span className="rounded-md px-1.5 py-0.5 text-[10px] font-medium bg-black/5 dark:bg-white/8">{provider.model}</span>
+                      <span className="rounded-md px-1.5 py-0.5 text-[10px] font-medium bg-black/[0.05] dark:bg-white/[0.08]">{provider.model}</span>
                     )}
                     <WireBadge wireApi={provider.wireApi} agent={activeAgent} copy={copy} />
                     <KeyDot hasCredential={provider.hasCredential} copy={copy} />
@@ -802,7 +802,7 @@ export function ProvidersSection({ t }) {
                   <button type="button"
                     data-testid={`acp-provider-edit-${provider.id}`}
                     onClick={() => { setEditing(provider); setFormOpen(true); }}
-                    className="h-8 w-8 rounded-full flex items-center justify-center border border-black/8 dark:border-white/12"
+                    className="h-8 w-8 rounded-full flex items-center justify-center border border-black/[0.08] dark:border-white/[0.12]"
                     aria-label={copy.edit}
                   >
                     <Edit2 size={13} />
@@ -810,7 +810,7 @@ export function ProvidersSection({ t }) {
                   <button type="button"
                     data-testid={`acp-provider-delete-${provider.id}`}
                     onClick={() => setDeleteConfirm(provider)}
-                    className="h-8 w-8 rounded-full flex items-center justify-center border border-black/8 dark:border-white/12 hover:text-red-500"
+                    className="h-8 w-8 rounded-full flex items-center justify-center border border-black/[0.08] dark:border-white/[0.12] hover:text-red-500"
                     aria-label={copy.delete}
                   >
                     <Trash2 size={13} />
@@ -831,7 +831,7 @@ export function ProvidersSection({ t }) {
               data-testid="acp-provider-switch-official"
               onClick={() => switchTo(null, true)}
               disabled={busyOnAgent}
-              className="h-8 px-3 rounded-full border border-black/8 dark:border-white/12 text-[11px] font-semibold disabled:opacity-40 inline-flex items-center gap-1"
+              className="h-8 px-3 rounded-full border border-black/[0.08] dark:border-white/[0.12] text-[11px] font-semibold disabled:opacity-40 inline-flex items-center gap-1"
             >
               {busy === 'official' && <RefreshCw size={11} className="animate-spin" />}
               {copy.restoreOfficial}
@@ -893,7 +893,7 @@ export function ProvidersSection({ t }) {
                   onClick={doLogout}
                   disabled={busyOnAgent || Boolean(view && !view.officialActive)}
                   title={view && !view.officialActive ? copy.logoutRelayDisabled : undefined}
-                  className="h-8 px-3.5 rounded-full border border-black/8 dark:border-white/12 text-[11px] font-semibold disabled:opacity-50"
+                  className="h-8 px-3.5 rounded-full border border-black/[0.08] dark:border-white/[0.12] text-[11px] font-semibold disabled:opacity-50"
                 >
                   {busy === 'logout:' + activeAgent ? copy.saving : copy.logout}
                 </button>
@@ -911,7 +911,7 @@ export function ProvidersSection({ t }) {
               <button type="button"
                 onClick={recheck}
                 disabled={recheckingOnAgent || busyOnAgent}
-                className="h-8 px-3 rounded-full text-[11px] font-medium border border-black/8 dark:border-white/12 inline-flex items-center gap-1.5 disabled:opacity-50"
+                className="h-8 px-3 rounded-full text-[11px] font-medium border border-black/[0.08] dark:border-white/[0.12] inline-flex items-center gap-1.5 disabled:opacity-50"
               >
                 {recheckingOnAgent && <RefreshCw size={11} className="animate-spin" />}
                 {recheckingOnAgent ? copy.rechecking : copy.recheck}
@@ -919,7 +919,7 @@ export function ProvidersSection({ t }) {
             </div>
             {/* 安装进度：阶段标签 + 实际执行的命令行 + 输出最新一行（等宽截断） */}
             {showInstallLog && (
-              <div data-testid="acp-cli-install-progress" className={`rounded-xl px-3 py-2.5 space-y-1.5 bg-black/3 dark:bg-white/5`}>
+              <div data-testid="acp-cli-install-progress" className={`rounded-xl px-3 py-2.5 space-y-1.5 bg-black/[0.03] dark:bg-white/[0.05]`}>
                 <div className="flex items-center gap-2 text-[12px] font-semibold">
                   {installPhase === 'checking' || installPhase === 'installing' ? (
                     <RefreshCw size={12} className="animate-spin" />
@@ -946,7 +946,7 @@ export function ProvidersSection({ t }) {
             )}
             {/* 登录引导：URL + （claude 的）授权码输入，轮询直到完成/失败 */}
             {loginWaiting && status && status.login_in_progress && (
-              <div className={`rounded-xl px-3 py-2.5 space-y-2 bg-black/3 dark:bg-white/5`}>
+              <div className={`rounded-xl px-3 py-2.5 space-y-2 bg-black/[0.03] dark:bg-white/[0.05]`}>
                 <div className="flex items-center gap-2 text-[12px]">
                   <RefreshCw size={12} className="animate-spin" />
                   <span>{copy.loginWaiting}</span>
@@ -967,7 +967,7 @@ export function ProvidersSection({ t }) {
                       value={loginCode}
                       onChange={event => setLoginCode(event.target.value)}
                       placeholder={copy.loginCodePlaceholder}
-                      className="h-8 flex-1 rounded-lg px-2.5 font-mono text-[12px] outline-hidden bg-black/5 dark:bg-white/[0.07]"
+                      className="h-8 flex-1 rounded-lg px-2.5 font-mono text-[12px] outline-none bg-black/[0.05] dark:bg-white/[0.07]"
                     />
                     <button type="button"
                       data-testid="acp-cli-login-submit"
@@ -1051,17 +1051,17 @@ export function ProvidersSection({ t }) {
               <h3 className="text-[15px] font-semibold">{copy.exportWarningTitle}</h3>
               <p className="mt-1 text-[12px] leading-relaxed opacity-75">{copy.exportWarningDesc}</p>
             </div>
-            <button type="button" onClick={() => setExportOpen(false)} className="h-8 w-8 rounded-full flex items-center justify-center hover:bg-black/6 dark:hover:bg-white/8"><X size={15} /></button>
+            <button type="button" onClick={() => setExportOpen(false)} className="h-8 w-8 rounded-full flex items-center justify-center hover:bg-black/[0.06] dark:hover:bg-white/[0.08]"><X size={15} /></button>
           </div>
           <textarea
             data-testid="acp-provider-export-json"
             readOnly
             value={exportJson}
             onFocus={event => event.target.select()}
-            className="mt-4 h-56 w-full rounded-xl p-3 font-mono text-[11px] outline-hidden bg-black/5 dark:bg-white/6 resize-none custom-scrollbar"
+            className="mt-4 h-56 w-full rounded-xl p-3 font-mono text-[11px] outline-none bg-black/[0.05] dark:bg-white/[0.06] resize-none custom-scrollbar"
           />
           <div className="mt-4 flex justify-end gap-2">
-            <button type="button" onClick={() => setExportOpen(false)} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/8 dark:border-white/12">{copy.cancel}</button>
+            <button type="button" onClick={() => setExportOpen(false)} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{copy.cancel}</button>
             {/* 不自动复制到剪贴板：明文 key 意外粘贴到聊天/网页有泄露风险，
                 改为全选让用户主动复制 */}
             <button type="button"
@@ -1089,10 +1089,10 @@ export function ProvidersSection({ t }) {
             value={importJson}
             onChange={event => setImportJson(event.target.value)}
             placeholder='[{ "name": "...", "baseUrl": "...", "apiKey": "..." }]'
-            className="mt-3 h-52 w-full rounded-xl p-3 font-mono text-[11px] outline-hidden bg-black/5 dark:bg-white/6 resize-none custom-scrollbar"
+            className="mt-3 h-52 w-full rounded-xl p-3 font-mono text-[11px] outline-none bg-black/[0.05] dark:bg-white/[0.06] resize-none custom-scrollbar"
           />
           <div className="mt-4 flex justify-end gap-2">
-            <button type="button" onClick={() => setImportOpen(false)} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/8 dark:border-white/12">{copy.cancel}</button>
+            <button type="button" onClick={() => setImportOpen(false)} className="h-9 px-4 rounded-full text-[13px] font-semibold border border-black/[0.08] dark:border-white/[0.12]">{copy.cancel}</button>
             <button type="button"
               data-testid="acp-provider-import-confirm"
               onClick={doImport}

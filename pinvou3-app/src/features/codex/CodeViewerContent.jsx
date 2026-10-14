@@ -56,7 +56,7 @@ export function useViewerFontSize() {
 }
 
 // Unified style for the title-bar icon buttons (shared by the modal and reader A-/A+/copy/open/close buttons).
-export const CODE_VIEWER_ICON_BUTTON = 'w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/5 dark:hover:bg-white/[0.07] disabled:opacity-40 disabled:hover:bg-transparent';
+export const CODE_VIEWER_ICON_BUTTON = 'w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:bg-black/[0.05] dark:hover:bg-white/[0.07] disabled:opacity-40 disabled:hover:bg-transparent';
 
 // 高亮语言提示：优先扩展名（app.jsx → jsx），无扩展名时用完整文件名（Dockerfile / Makefile）。
 function languageHintForFile(name) {
@@ -122,7 +122,7 @@ export function CodeViewerContent({
           <img
             src={preview.dataUrl}
             alt={fileName}
-            className="mx-auto max-w-full h-auto rounded-lg border border-black/6 dark:border-white/8"
+            className="mx-auto max-w-full h-auto rounded-lg border border-black/[0.06] dark:border-white/[0.08]"
           />
         </div>
       ) : (
