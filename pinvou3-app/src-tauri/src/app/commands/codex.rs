@@ -18,7 +18,8 @@ use crate::features::codex_acp::workspace::{
 use crate::features::codex_acp::{
     AcpAgentDescriptor, AcpEventEnvelope, AcpPool, AgentBackend, CodexAcpPendingElicitation,
     CodexAcpPendingPermission, CodexAcpSessionInfo, CodexAcpStatus, CodexAcpWorkspaceInfo,
-    CodexWorkspaceKind, SessionAgentStore, on_blocking_labeled, validate_codex_project_workspace,
+    CodexWorkspaceKind, SessionAgentStore, acp_session_model_name, on_blocking_labeled,
+    validate_codex_project_workspace,
 };
 use crate::features::sessions::{SessionKind, SessionStore};
 
@@ -795,11 +796,7 @@ pub(crate) async fn create_codex_acp_session_with_workspace_binding(
         .clone()
         .unwrap_or_else(|| pool.bridge.workspace.clone());
     let session = store
-        .create_new(
-            format!("{} (ACP)", backend.display_name()),
-            None,
-            metadata_workspace,
-        )
+        .create_new(acp_session_model_name(backend), None, metadata_workspace)
         .map_err(|error| format!("create_codex_acp_session: {error:#}"))?;
     let kind = if project_workspace.is_some() {
         CodexWorkspaceKind::Project

@@ -62,7 +62,7 @@ use pinvou3_lib::features::codex_acp::{
     AcpAgentDescriptor, AcpPool, AcpProvidersView, AgentBackend, CLAUDE_MODEL_SLOTS,
     CodexWorkspaceKind, GIT_IDENTITY_KEYS, GIT_OVERRIDE_KEYS, MIN_CLAUDE_VERSION,
     MIN_CODEX_VERSION, MIN_KIMI_VERSION, ProviderManager, ProviderWireApi, SessionAgentStore,
-    version_at_least,
+    acp_session_model_name, version_at_least,
 };
 use pinvou3_lib::features::sessions::{SessionKind, SessionStore, is_aux_session_id};
 use pinvou3_lib::platform::credential_store::{
@@ -3749,21 +3749,28 @@ fn translate_import_entry_error(error: &str) -> String {
 
 // ── code sessions ───────────────────────────────────────────────────────────
 
-/// The three ACP session model names (`features::codex_acp`) paired with the
-/// agent identity each stands for — the one table [`acp_session_model`] and
+/// The three ACP session model names come from the shared
+/// `codex_acp::acp_session_model_name` (the string the GUI session creator
+/// writes and `acp_session_backend` parses), paired with the agent identity
+/// each stands for — the one table [`acp_session_model`] and
 /// [`agent_label`]'s lost-sidecar fallback both derive from, so a model name
 /// added app-side cannot be spelled one way in the gate and another way in
-/// the label.
-const ACP_SESSION_MODELS: [(&str, &str, &str); 3] = [
-    ("Codex (ACP)", "codex", "Codex"),
-    ("Claude Code (ACP)", "claude", "Claude Code"),
-    ("Kimi (ACP)", "kimi", "Kimi"),
-];
+/// the label. The agent-id/label columns stay local.
+fn acp_session_models() -> [(String, &'static str, &'static str); 3] {
+    [
+        (AgentBackend::CodexAcp, "codex", "Codex"),
+        (AgentBackend::ClaudeAcp, "claude", "Claude Code"),
+        (AgentBackend::KimiAcp, "kimi", "Kimi"),
+    ]
+    .map(|(backend, id, label)| (acp_session_model_name(backend), id, label))
+}
 
 /// Used to detect ACP sessions whose sidecar record was lost (same fallback
 /// as `acp_session_backend`).
 fn acp_session_model(model: &str) -> bool {
-    ACP_SESSION_MODELS.iter().any(|(name, _, _)| *name == model)
+    acp_session_models()
+        .iter()
+        .any(|(name, _, _)| *name == model)
 }
 
 fn is_code_chat_session(agents: &SessionAgentStore, id: &str, model: &str) -> bool {
@@ -3810,7 +3817,7 @@ fn agent_label(agents: &SessionAgentStore, id: &str, model: &str) -> (&'static s
         AgentBackend::CodexAcp => ("codex", "Codex"),
         AgentBackend::ClaudeAcp => ("claude", "Claude Code"),
         AgentBackend::KimiAcp => ("kimi", "Kimi"),
-        AgentBackend::Deepseek => ACP_SESSION_MODELS
+        AgentBackend::Deepseek => acp_session_models()
             .iter()
             .find(|(name, _, _)| *name == model)
             .map(|(_, id, label)| (*id, *label))
