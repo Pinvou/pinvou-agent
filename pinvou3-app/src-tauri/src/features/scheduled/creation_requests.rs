@@ -2073,6 +2073,71 @@ mod tests {
     // spool directory (POSIX semantics; the marker lives in `.done/`,
     // which stays writable), so the failure is deterministic.
     #[cfg(unix)]
+    // Round-22 M1-pin (and minor 2's disposition): a creator that PANICS
+    // per call — a per-record panicking record must burn its own budget
+    // (not starve later-sorted records) and quarantine at exhaustion like
+    // any persistent failure.
+    struct PanickingCreator;
+
+    impl TaskCreator for PanickingCreator {
+        async fn create(
+            &self,
+            _input: CreateScheduledTaskInput,
+        ) -> std::result::Result<ScheduledTaskDto, String> {
+            panic!("simulated domain panic");
+        }
+
+        async fn update(
+            &self,
+            _task_id: &str,
+            _input: UpdateScheduledTaskInput,
+        ) -> std::result::Result<ScheduledTaskDto, String> {
+            panic!("simulated domain panic");
+        }
+
+        async fn delete(&self, _task_id: &str) -> std::result::Result<ScheduledTaskDto, String> {
+            panic!("simulated domain panic");
+        }
+    }
+
+    #[tokio::test]
+    async fn panicking_record_burns_budget_and_does_not_starve_later_records() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        // "aaa" sorts BEFORE "zzz": the pre-round-21 whole-poll catch died
+        // at "aaa" every pass, so "zzz" was never processed.
+        std::fs::write(spool.join("aaa.json"), spool_record_json(&[])).unwrap();
+        std::fs::write(spool.join("zzz.json"), spool_record_json(&[])).unwrap();
+        let mut retries = RetryState::default();
+        for _ in 0..MAX_CREATE_ATTEMPTS {
+            process_pending_spool(
+                &PanickingCreator,
+                &state.sessions,
+                &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+                &mut retries,
+            )
+            .await;
+        }
+        // BOTH records exhausted and quarantined: "zzz" reaching failed/
+        // is the starvation proof — the pre-round-21 whole-poll catch died
+        // at "aaa" every pass, so "zzz" was never processed at all. The
+        // budgets cleared because both quarantines succeeded (the failed/
+        // directory is writable in this fixture).
+        assert!(failed_dir().join("aaa.json").exists(), "aaa quarantined");
+        assert!(
+            failed_dir().join("zzz.json").exists(),
+            "zzz quarantined — not starved"
+        );
+        assert!(!spool.join("aaa.json").exists());
+        assert!(!spool.join("zzz.json").exists());
+        assert!(
+            retries.attempts.is_empty(),
+            "terminal paths clear the budgets"
+        );
+    }
+
     #[tokio::test]
     async fn done_arm_keeps_the_budget_when_removal_fails() {
         let _home = TempHome::new();
