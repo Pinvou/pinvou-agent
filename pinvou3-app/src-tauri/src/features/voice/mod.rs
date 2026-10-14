@@ -1,3 +1,4 @@
+pub mod contract;
 mod platform;
 mod temp_wav;
 pub mod transcript;

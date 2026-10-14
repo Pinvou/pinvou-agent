@@ -160,6 +160,16 @@ fn compose_status(engine: bool, ffmpeg: bool, model: bool, installable: bool) ->
     }
 }
 
+/// Per-spec download cap carried in `DownloadRequest.max_bytes`: the expected
+/// model size with a 16 MiB floor, doubled, so the band scales with the spec
+/// instead of a flat cap silently over- or under-fitting a future model bump.
+/// Shared verbatim with pinvou-cli through
+/// [`crate::features::voice::contract`], whose `asr-install` size gate must
+/// scale with the spec identically.
+pub fn asr_download_max_bytes(expected_size: u64) -> u64 {
+    expected_size.max(16 * 1024 * 1024) * 2
+}
+
 pub async fn download_current_model(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let spec = current_model_spec();
     std::fs::create_dir_all(asr_dir()).map_err(|e| format!("创建 ASR 目录失败: {e}"))?;
@@ -207,7 +217,7 @@ pub async fn download_current_model(app: &tauri::AppHandle) -> Result<PathBuf, S
         // 进度按它算 100%)。max_bytes 只做离谱大文件挡板,刻意与 total 分开——此前
         // 复用单字段会让进度停在约 50%(2*expected_size 当 total)。
         let total_hint = spec.expected_size;
-        let max_bytes = spec.expected_size.max(16 * 1024 * 1024) * 2;
+        let max_bytes = asr_download_max_bytes(spec.expected_size);
         // `verify` 事件恢复到重构前时点:下载成功后、sha256 校验开始前 emit(helper 在
         // sync_all 后、sha256_file 前调用此闭包)。frontend 据此从下载进度(0–95%)
         // 切到「校验中」(96%),不再出现 96%→0% 倒退。
