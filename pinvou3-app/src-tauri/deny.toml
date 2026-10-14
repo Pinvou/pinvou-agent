@@ -20,7 +20,7 @@ ignore = [
     # RUSTSEC-2026-0194 (quick-xml quadratic complexity) and
     # RUSTSEC-2026-0195 (NsReader memory exhaustion) no longer match:
     # both advisories are fixed in quick-xml >=0.41.0, and the lockfile
-    # resolves 0.41.0 (plist 被钉在 1.10.0 以继续用 ^0.41;calamine 0.36.1 也走 0.41)。
+    # resolves 0.41.0 (锁文件把 plist 保持在 1.10.0 以继续用 ^0.41;calamine 0.36.1 也走 0.41)。
     # Without an ignore entry, a future dependency downgrade below
     # 0.41 would trip the advisory and fail CI again — reassess then.
     #
