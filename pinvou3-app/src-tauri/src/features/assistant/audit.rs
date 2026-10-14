@@ -1,3 +1,8 @@
+// architecture-guard: allow-target-cfg -- the round-21 FIFO-pin test
+// below needs mkfifo/S_IFIFO (POSIX-only, runtime-skipped elsewhere) to
+// pin the append open's planted-FIFO refusal; the gate itself lives in
+// the platform primitive open_private_append_file.
+//!
 //! 助手审计流水：append-only JSONL。
 //!
 //! 一行 = 一个事件：{"ts":"`<RFC3339>`","kind":"...","role":"...","detail":{...}}
@@ -74,6 +79,27 @@ mod tests {
         let content = std::fs::read_to_string(dir.join("workflow_audit.jsonl")).unwrap();
         let lines: Vec<&str> = content.lines().collect();
         assert_eq!(lines.len(), 2);
+
+        // Round-21 M2: a planted FIFO at the jsonl path is REFUSED (the
+        // gated open fails instead of blocking the caller — the drain's
+        // single task on the scheduled-creation paths). The append's
+        // contract (eprintln, never panic) is unchanged, and the test
+        // completing at all is the no-wedge pin: without the gate the
+        // write-only open blocked forever here.
+        #[cfg(unix)]
+        {
+            let fifo = dir.join("workflow_audit.fifo");
+            let c = std::ffi::CString::new(fifo.as_os_str().to_str().unwrap()).unwrap();
+            assert_eq!(
+                unsafe { libc::mkfifo(c.as_ptr(), libc::S_IFIFO | 0o644) },
+                0,
+                "fixture: the FIFO must be created"
+            );
+            append(&dir, "dispatch", "slide_writer", serde_json::json!({"n":1}));
+            let meta = std::fs::metadata(&fifo).unwrap();
+            use std::os::unix::fs::FileTypeExt as _;
+            assert!(meta.file_type().is_fifo(), "the FIFO must be untouched");
+        }
         for l in &lines {
             let v: serde_json::Value = serde_json::from_str(l).unwrap();
             assert!(v.get("ts").and_then(|t| t.as_str()).is_some());

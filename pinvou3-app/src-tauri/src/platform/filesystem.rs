@@ -597,11 +597,13 @@ fn open_private_data_file_within(path: &Path, max_bytes: u64) -> io::Result<std:
 /// Open a private temp file for a write-then-rename publish: create or
 /// truncate, `O_NOFOLLOW|O_NONBLOCK`, 0600, and a post-open non-regular
 /// refusal. The refusal is the point here, unlike
-/// [`open_private_lock_file`]'s deliberate FIFO tolerance: O_RDWR alone
-/// succeeds on a planted FIFO (it supplies its own reader), so the payload
-/// would vanish into the pipe buffer and the publish rename would install
-/// the FIFO as the data file (round-18 MAJOR-1 on #628 — silent receipt
-/// loss plus a duplicate-apply window on the scheduled-task marker).
+/// [`open_private_lock_file`]'s deliberate FIFO tolerance: a write-only
+/// open succeeds on a planted FIFO whenever a reader holds it (and fails
+/// with ENXIO when none does), so the payload would vanish into the pipe
+/// buffer and the publish rename would install the FIFO as the data file
+/// (round-18 MAJOR-1 on #628 — silent receipt loss plus a
+/// duplicate-apply window on the scheduled-task marker; round-21 M2
+/// pinned both the no-reader and reader-present variants).
 pub(crate) fn open_private_tmp_write_file(path: &Path) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
