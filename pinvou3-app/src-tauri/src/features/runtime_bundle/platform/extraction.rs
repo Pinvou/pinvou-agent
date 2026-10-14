@@ -860,7 +860,7 @@ impl Pinvou3Bundle {
             "feishu",
             &LARK_SKILLS_DIR,
             &LARK_SKILL_DIRS,
-            "NOTICE.md",
+            &FEISHU_SKILLS_NOTICE,
             show,
         )
     }
@@ -889,7 +889,7 @@ impl Pinvou3Bundle {
             "wecom",
             &WECOM_SKILLS_DIR,
             &WECOM_SKILL_DIRS,
-            "NOTICE-wecom.md",
+            &WECOM_SKILLS_NOTICE,
             show,
         )
     }
@@ -908,7 +908,7 @@ impl Pinvou3Bundle {
             "dingtalk",
             &DINGTALK_SKILLS_DIR,
             &DINGTALK_SKILL_DIRS,
-            "NOTICE-dingtalk.md",
+            &DINGTALK_SKILLS_NOTICE,
             show,
         )
     }
@@ -927,7 +927,7 @@ impl Pinvou3Bundle {
             "tmeet",
             &TMEET_SKILLS_DIR,
             &TMEET_SKILL_DIRS,
-            "NOTICE-tmeet.md",
+            &TMEET_SKILLS_NOTICE,
             show,
         )
     }
