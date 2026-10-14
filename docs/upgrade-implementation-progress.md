@@ -6951,3 +6951,87 @@ composition group executed without skips. Both passed affected two-package vet,
 four-file formatting and diff checks; all independent processes closed. Both
 independent-prefix final-cancellation findings and early-selector controls are
 verified without native qualification claims.
+
+## T09 forty-fifth batch: original ELF64 physical framing
+
+The new `platform/elf` observer reads original owned ELF identification before
+decoding a known ELF64 little-endian current-version header. Other classes and
+encodings return Unsupported, including a real 52-byte ELF32-sized input; they
+are not guessed as ELF64. Ordinary known 64/56/64-byte header/program/section
+entry sizes are supported. Extended numbering/reserved index forms return
+Unsupported without reading guessed counters or allocating declared extensions.
+
+Three required positive capacities bound original source bytes, program count
+and section count. Original table intervals are subtraction-bounded before table
+arrays are allocated and table offsets become int64. Each associated nonempty
+data span is uint64 subtraction-bounded before its read offset becomes int64;
+all such spans are checked before raw hashes begin. NULL program/section entries and NOBITS
+sections have no associated file bytes: their other fields remain uninterpreted
+declarations, with an actual empty-byte identity. Section index zero must be NULL.
+Empty table offsets remain declarations rather than invented pointers.
+Legitimate shared program/section file spans are allowed and independently hashed;
+this is not a one-scan or aggregate heap guarantee.
+
+The result preserves original header, complete program/section-table identities,
+every individual entry identity and backed data identity, plus all observed
+type/machine/ABI/entry/flags/name-index/link/info/virtual-size/alignment declarations.
+Unknown machine/ABI and unused NULL fields do not become platform certification.
+Section names, string lookup, virtual loading/alignment, imports/relocations,
+compressed-section expansion, app identity, publisher trust and execution are
+outside this physical profile. Overlays remain in the complete source identity.
+Any late failure returns literal zero Report without earlier headers or spans.
+
+Four groups cover original declarations and exact original metadata/payload
+identities, source/projection isolation and same-owned restoration, shared backed
+aliases, NULL/NOBITS maximal uint64 declarations without raw reads, absent tables,
+unknown machine/ABI, class/encoding/version/header widths, extended counts,
+invalid table/string indices, maximal/late truncated spans, explicit capacities,
+pre-cancellation and a 33 MiB overlay positive. A final-cancellation negative uses
+the independently fixed original read/hash prefix plus one; the successful
+observer must reach that exact extra poll, and cancellation there returns literal
+zero. Removing its final poll cannot recalibrate the test to an earlier stage.
+
+The actual opt-in comes from the previously fixed public Debian hello data TAR.
+Independent Python reads only its original regular binary member and writes a
+private fixture; no package extraction into a host namespace or execution occurs.
+The original ELF is fixed at 31448 bytes and SHA 1aab5d66fba9313733ca534dc9693f262532ab696eb9d29cc70978c5e1c7078c.
+Bounded Open/Stat/LimitReader/Close and exact original size/SHA precede inspection.
+Go debug/elf independently compares every declared program/section field and raw
+payload interval; fixed original offsets supply header/table/entry/name-index
+identities. It contains machine 62, thirteen program headers and thirty sections.
+No fixture binary, tool output or private host path is committed.
+
+Root actual four groups first passed in 1.448s. Self-review added index-zero NULL,
+independent final-cancellation and complete actual entry/table/name-index identity
+controls (1.083s), then identified ELF32 using its original 16-byte identification
+before requiring an ELF64-sized header. Final actual four passed in 1.491s with
+the original ELF fixture enabled and no skips.
+
+Complete default Go tests passed at package parallelism 2: ELF three mandatory
+groups with one fixture skip, 1.976s; verification 18.589s, PE 1.841s,
+windowsversion 6.825s, Debian 1.589s, compression 4.219s and TAR 2.031s. Module
+verification, whole vet, server build, unchanged contract pins, two-file
+formatting and diff checks passed; all root processes closed.
+
+No dependency, SQL, protocol, application-version, deployment or download-budget
+change. Current signed Debian-to-original-ELF selection and approved native app/
+architecture/publisher identity remain later work. Full T09 stays incomplete.
+The 32 MiB business-batch limit does not constrain artifact bytes. Downloads have
+no hard total/cumulative elapsed or retry-count cap. Unchanged database/provider/
+browser integration was not repeated.
+
+Independent compatibility audit found that the original short Class32 control
+was a truncated ELF64 fixture with its class tag changed, not a complete ELF32
+header. Root changed only that test to a genuine 52-byte ELF32 layout, independently
+accepted by Go debug/elf as Class32 with no program/section tables before our
+observer returns Unsupported and literal zero. Root repaired actual four groups
+passed in 1.684s without skips, with affected vet, formatting and diff checks;
+all processes closed. Production was unchanged after the complete default pass,
+so no redundant whole-suite rerun was needed for this test-only repair.
+
+Both final independent scoped code/test audits passed without required fixes.
+Dependency audit initially ran actual four in 1.722s before the ELF32 evidence
+repair, then reran the final repaired four in 1.418s. Compatibility audit ran the
+final four in 1.570s. All four executed, including the original public ELF fixture,
+without skips. Both passed affected ELF vet, two-file formatting and diff checks;
+all independent processes closed. The genuine ELF32 control finding is closed.
