@@ -1992,8 +1992,9 @@ mod tests {
     /// 的归一化输出喂给 `skill_md_rank` 等下游布局逻辑（`./SKILL.md` 今日归一
     /// 成 `SKILL.md` 后才参与 rank），且其对根前缀/中段 `..` 的「净化放行」
     /// 语义是既有放行面。本钉把底座谓词在这些输入上的 verdict 差异登记为刻意
-    /// 选择，防止后续无意识互换（zip crate 的 `enclosed_name` 是 pub(crate)，
-    /// sanitizer 侧 verdict 由既有端到端 zip 导入测试覆盖）。
+    /// 选择，防止后续无意识互换（zip crate 的 `enclosed_name` 是 pub(crate)）。
+    /// sanitizer 侧 verdict 由下方内存 zip 断言直接 executable 化，不依赖
+    /// 端到端导入测试的间接覆盖。
     #[test]
     fn forkguard_zip_gate_keeps_zip_sanitizer_verdicts_over_engine_reject_predicate() {
         use deepseek_tui::skills::install::is_safe_path;
@@ -2013,6 +2014,54 @@ mod tests {
         // 两边都放行但输出不同：sanitizer 把 `./b` 塌缩成 `b`，底座谓词放行
         // 原串——归一化输出承重，是保留 sanitizer 的另一原因。
         assert!(is_safe_path(Path::new("./b")));
+
+        // 内存 zip executable 钉：把登记的 sanitizer 语义（depth-0 前缀剥离
+        // 放行、`./`/中段 `..` 塌缩、前置 `..` 逃逸拒绝）直接钉在
+        // `enclosed_name` 的真实 verdict 上。zip crate 升级若改变其中任何一
+        // 条（比如把 depth-0 前缀从剥离改成拒绝），这里先红，登记随之更新。
+        let zip_path = std::env::temp_dir().join(format!(
+            "pinvu-sanitizer-verdicts-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_file(&zip_path);
+        let entries = [
+            ("../x", None::<&str>),
+            ("/abs/x", Some("abs/x")),
+            ("./b", Some("b")),
+            ("a/../b", Some("b")),
+            ("ok.txt", Some("ok.txt")),
+        ];
+        let verdicts: Vec<Option<String>> = {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            for (name, _) in entries {
+                zw.start_file(name, opts).unwrap();
+                use std::io::Write;
+                zw.write_all(b"x").unwrap();
+            }
+            zw.finish().unwrap();
+            let mut archive =
+                zip::ZipArchive::new(std::fs::File::open(&zip_path).unwrap()).unwrap();
+            (0..archive.len())
+                .map(|i| {
+                    archive
+                        .by_index(i)
+                        .unwrap()
+                        .enclosed_name()
+                        .map(|p| p.to_string_lossy().into_owned())
+                })
+                .collect()
+        };
+        let _ = std::fs::remove_file(&zip_path);
+        for ((name, expected), actual) in entries.iter().zip(verdicts.iter()) {
+            let expected = expected.map(|e| e.to_string());
+            assert_eq!(
+                actual, &expected,
+                "enclosed_name verdict for {name:?} 与登记的 sanitizer 语义不符"
+            );
+        }
     }
 
     /// The literal rejection messages must keep carrying the substrings the
@@ -3603,10 +3652,17 @@ mod tests {
     }
 
     /// zip-slip regression: an entry whose name escapes the package root via
-    /// `../` (and one with an absolute path) must be rejected wholesale by the
-    /// pass1 `enclosed_name()` safety check — before any detection, extraction,
-    /// or disk writes. The guard existed since the unified pipeline landed;
-    /// this test pins it so refactors cannot silently drop the enforcement.
+    /// `../` must be rejected wholesale by the pass1 `enclosed_name()` safety
+    /// check — before any detection, extraction, or disk writes. (The
+    /// absolute-path entry documents, and this test relies on, the sanitizer's
+    /// registered normalize-and-accept semantics: at depth 0 the root prefix
+    /// is stripped so `/abs/evil.txt` would land inside the package root as
+    /// `abs/evil.txt` — it is NOT itself a rejection. The traversal entry is
+    /// written first, so pass1 aborts on it before the absolute entry is
+    /// even reached; the executable per-entry verdicts live in
+    /// `forkguard_zip_gate_keeps_zip_sanitizer_verdicts_over_engine_reject_predicate`.)
+    /// The guard existed since the unified pipeline landed; this test pins it
+    /// so refactors cannot silently drop the enforcement.
     #[test]
     fn import_rejects_zip_slip_traversal_entries() {
         use std::io::Write;
