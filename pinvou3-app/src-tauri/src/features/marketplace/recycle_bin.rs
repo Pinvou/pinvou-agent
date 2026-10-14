@@ -139,7 +139,9 @@ impl Default for RecycleBin {
 /// （[`RecycleBin::held_dir`]，scope.rs）命名/识别的是同一目录，任一侧字面
 /// 单独改动都会让 shield 静默失配、把待恢复包的 consent 行重新认主。
 fn recycle_bin_root() -> PathBuf {
-    paths::pinvou3_home().join("marketplace").join("recycle-bin")
+    paths::pinvou3_home()
+        .join("marketplace")
+        .join("recycle-bin")
 }
 
 impl RecycleBin {
