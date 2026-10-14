@@ -250,19 +250,17 @@ impl ConnectorKind {
     /// Provenance NOTICE file each connector's bundle unpack drops next to
     /// its skill directories — the `notice_file` argument the app passes to
     /// `Pinvou3Bundle::apply_connector_skills` (runtime_bundle/platform/
-    /// extraction.rs). feishu owns the bare `NOTICE.md`; the other three
-    /// carry an id suffix so four unpacks into sibling roots cannot
-    /// overwrite each other. The hide direction must remove it alongside
-    /// the directories or a logged-out connector keeps a stray attribution
-    /// file the app would never leave behind. There is no exported constant
-    /// for these on the app side (the strings are literals at the four call
-    /// sites), so this table is a mirror, not an import.
+    /// extraction.rs). The hide direction must remove it alongside the
+    /// directories or a logged-out connector keeps a stray attribution file
+    /// the app would never leave behind. The names are imported from the
+    /// app's single source (`platform::connector_skills`), no longer a
+    /// hand-maintained mirror.
     fn skills_notice_file(self) -> &'static str {
         match self {
-            Self::Feishu => "NOTICE.md",
-            Self::Wecom => "NOTICE-wecom.md",
-            Self::Dingtalk => "NOTICE-dingtalk.md",
-            Self::Tmeet => "NOTICE-tmeet.md",
+            Self::Feishu => pinvou3_lib::platform::connector_skills::FEISHU_SKILLS_NOTICE,
+            Self::Wecom => pinvou3_lib::platform::connector_skills::WECOM_SKILLS_NOTICE,
+            Self::Dingtalk => pinvou3_lib::platform::connector_skills::DINGTALK_SKILLS_NOTICE,
+            Self::Tmeet => pinvou3_lib::platform::connector_skills::TMEET_SKILLS_NOTICE,
         }
     }
 }

@@ -44,7 +44,8 @@ static TMEET_SKILLS_DIR: Dir<'_> =
 // marketplace 侧曾按 0.1.9 旧表写死 7 技能，与本表分叉）。
 // 此处 re-export 保持本模块及 extraction 的既有引用不变。
 pub(crate) use crate::platform::connector_skills::{
-    DINGTALK_SKILL_DIRS, LARK_SKILL_DIRS, TMEET_SKILL_DIRS, WECOM_LEGACY_SKILL_DIRS,
+    DINGTALK_SKILLS_NOTICE, DINGTALK_SKILL_DIRS, FEISHU_SKILLS_NOTICE, LARK_SKILL_DIRS,
+    TMEET_SKILLS_NOTICE, TMEET_SKILL_DIRS, WECOM_SKILLS_NOTICE, WECOM_LEGACY_SKILL_DIRS,
     WECOM_SKILL_DIRS,
 };
 

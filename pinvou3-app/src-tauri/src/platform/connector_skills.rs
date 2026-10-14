@@ -12,6 +12,15 @@
 /// 起上游按服务模型重排(`msg`→`message`、`schedule`→`calendar`,新增 disk/
 /// doc-manage/email/media/sheet/smartpage/shared),本地结构跟随上游,不再维持
 /// 0.1.9 时代的「sheet/smartpage 并入 doc」合并形态。
+/// 出处声明文件名（各连接器解包技能时落在同一 `skills_dir` 旁，隐藏时须一并
+/// 删除）。飞书独占裸 `NOTICE.md`；其余三家带 id 后缀，避免同目录互相覆盖。
+/// 单一真相源：runtime_bundle 的解包门控与 headless CLI 的登出清理共用
+/// （原先 CLI 逐字手抄此表，无对齐护栏）。
+pub const FEISHU_SKILLS_NOTICE: &str = "NOTICE.md";
+pub const WECOM_SKILLS_NOTICE: &str = "NOTICE-wecom.md";
+pub const DINGTALK_SKILLS_NOTICE: &str = "NOTICE-dingtalk.md";
+pub const TMEET_SKILLS_NOTICE: &str = "NOTICE-tmeet.md";
+
 pub const WECOM_SKILL_DIRS: [&str; 14] = [
     "wecomcli-calendar",
     "wecomcli-contact",
