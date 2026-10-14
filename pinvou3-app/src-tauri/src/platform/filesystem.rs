@@ -440,7 +440,12 @@ pub(crate) fn metadata_file_identity(metadata: &std::fs::Metadata) -> Option<Fil
 /// `O_NONBLOCK` turns a FIFO open into an immediate error instead of a
 /// block, and the portable fstat refuses any non-regular entry that still
 /// made it through. Callers' existing write-failure handling absorbs the
-/// refusal.
+/// refusal. Round-24 minor-13 disclosure: the no-follow hardening is a
+/// deliberate behavior change for a user who legitimately symlinked a
+/// diagnostics/audit log path on unix — that open now fails closed (see
+/// the design doc's borderline list); the unix write primitives carry
+/// `O_NOFOLLOW` while the Windows ones have no reparse-point refusal in
+/// std `OpenOptions` (documented residual, same-user spool/state tree).
 pub(crate) fn open_private_append_file(path: &Path) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).append(true);
@@ -611,7 +616,12 @@ fn open_private_data_file_within(path: &Path, max_bytes: u64) -> io::Result<std:
 /// buffer and the publish rename would install the FIFO as the data file
 /// (round-18 MAJOR-1 on #628 — silent receipt loss plus a
 /// duplicate-apply window on the scheduled-task marker; round-21 M2
-/// pinned both the no-reader and reader-present variants).
+/// pinned both the no-reader and reader-present variants). Round-24
+/// minor-13 note: `mode(0o600)` applies at creation only — a pre-existing
+/// tmp left loose by an external tooling keeps its mode for that write
+/// (no secrets in the payloads; the publish rename lands it in the same
+/// private directory). Windows has no std-level reparse-point refusal on
+/// `OpenOptions` (documented residual, same-user spool/state tree).
 pub(crate) fn open_private_tmp_write_file(path: &Path) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
@@ -684,6 +694,23 @@ pub(crate) fn read_private_data_file_bytes_within(
     let mut file = open_private_data_file_within(path, max_bytes)?;
     read_capped(&mut file, max_bytes)
         .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))
+}
+
+/// [`read_private_data_file_bytes_within`] plus the open handle's fstat
+/// metadata, for callers that anchor a follow-up unlink on the exact bytes
+/// they verified (the scheduled-creation Done arm): the metadata comes from
+/// the gated fd, not a path stat, so a same-name replace landing between
+/// the read and the caller's name-stat shows up as an identity mismatch
+/// instead of silently deleting the replacement untried.
+pub(crate) fn read_private_data_file_bytes_within_anchored(
+    path: &Path,
+    max_bytes: u64,
+) -> io::Result<(Vec<u8>, std::fs::Metadata)> {
+    let mut file = open_private_data_file_within(path, max_bytes)?;
+    let meta = file.metadata()?;
+    let bytes = read_capped(&mut file, max_bytes)
+        .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))?;
+    Ok((bytes, meta))
 }
 
 /// One bounded read: at most `cap` bytes, with a one-byte overshoot window

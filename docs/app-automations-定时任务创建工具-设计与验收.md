@@ -49,7 +49,7 @@
   → 重校验（spool 目录用户可写，不信任 server 侧校验）
   → .done 已存在 → 跳过（幂等）
   → ScheduledTaskState::create_task（复用既有管线：强制 yolo、工作间创建、模型绑定 sidecar、失败回滚）
-  → 成功：写 .done {ok:true,task_id,task_name}、删 spool、audit::append(from_session 执行根)、
+  → 成功：写 .done {ok:true,task_id,task_name,request_digest}、删 spool、audit::append(绑定会话 → 私有台账根，未绑定 → 执行根；round-24 M4 后同 messaging r8-M1)、
           emit "scheduled_task:run_updated"（双端前端已有监听，面板实时刷新）
   → 失败：≤3 次尝试（至多 2 次重试） → 隔离 spool/failed/ + 写 .done {ok:false,error}（等待中的调用拿到失败）
 ```
@@ -140,7 +140,7 @@
 |---|---|---|---|---|---|
 | D1 | Ask 规则注册 | 任意会话规则集 | 含 create 工具的 `ToolAskRule`(Ask，无 command 约束) | ◇Rust bridge 规则集断言（镜像 ○`scope_deny_ruleset_asks_for_session_messaging_send`） | P0 |
 | D2 | 无人值守拒绝 | 定时任务运行会话内模型调用 create | `unattended_disallowed_tools` 引擎侧拒绝（本轮评审修订：force-prompt 链在当前全自动审批下不会触发）（递归自建被挡） | ○既有语义测试 + ◇新规则集断言 | P0 |
-| D3 | 审计日志 | 成功创建 | from_session 执行根 append `scheduled_task_create` 记录（tool/task_id/outcome）；另有 R4-M3 的看门狗侧影子审计（<home>/automations/audit/，以 spool 文件名为键、不依赖 from_session，请求者无法通过省略字段跳过） | ◇Rust 测试（含 shadow_audit_covers_requests_without_from_session） | P1 |
+| D3 | 审计日志 | 成功创建 | from_session **绑定会话 → 私有台账根**（`SessionRoots.ledger`，messaging r8-M1 同规则；round-24 M4 修订：原执行根落点把 provenance 行写进被审计模型自己的工作树，模型可用普通文件工具读取改写）append `scheduled_task_create` 记录（tool/task_id/outcome），未绑定会话保持执行根（两根同址）；另有 R4-M3 的看门狗侧影子审计（<home>/automations/audit/，以 spool 文件名为键、不依赖 from_session，请求者无法通过省略字段跳过） | ◇Rust 测试（含 shadow_audit_covers_requests_without_from_session + 绑定台账落点钉子） | P1 |
 | D4 | 错误脱敏 | 构造各类失败 | 错误文本不含宿主绝对路径 | ◇python（镜像 ○`test_error_messages_do_not_leak_absolute_paths`） | P0 |
 | D5 | 不越界写 | 全流程 | 不写 `~/.pinvou3/sessions/*.json`、不触碰 schtasks/cron/systemd（工具与 watcher 均只落 `~/.pinvou3/task-requests` 与领域目录） | 代码评审 + grep 检查项 | P1 |
 | D6 | 协议健壮性 | 非法 stdin/未知工具/深嵌套 JSON | 服务不死、`-32601/-32602`、catch-all 不漏异常文本 | ◇python（镜像 ○既有协议用例） | P1 |
@@ -215,6 +215,7 @@
 - 现有面板"对话创建"流程保留不动，两条通道汇合到同一个 `create_task` 领域函数。
 - 零 CodeWhale / fork 内容变更；分支上的 fork 登记册刷新与 gitlink 追平提交随评审推进落地（round-22 起更新 `docs/fork-modifications.md`）；本计划文档本身随本分支入库，作为后续实施的评审基线。
 - 领域层 `parse_rrule` 实际支持 CRON，工具层收紧为三种子集是有意的产品约束；若未来要放开，只改 server.py + watcher 的子集校验，领域无需动。
+- **I/O 原语硬化披露（round-24 minor 13）**：unix 写原语（`open_private_append_file`/`open_private_tmp_write_file`）带 `O_NOFOLLOW|O_NONBLOCK`——用户合法符号链接的诊断/审计日志路径现在**失败关闭**（有意的行为变化；round-17 前符号链接会被跟随）；tmp 写原语对遗留的已存在 tmp 文件不重紧缩权限（载荷无敏感内容，落在同一私有目录）；Windows 写原语无 std 级 reparse-point 拒绝（同用户 spool/state 树的已记录残余）。
 
 
 ---

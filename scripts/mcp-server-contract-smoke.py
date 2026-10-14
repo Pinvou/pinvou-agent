@@ -849,6 +849,18 @@ def main():
             # 逐条写结果标记并删 spool——积压的 k1 请求与在途请求都拿到同步回执
             # （A2 短等待同步返回 + C3 积压恢复）。
             import threading as _threading
+            import importlib.util as _importlib_util
+
+            # Round-24 minor 8: production markers carry the canonical
+            # request digest — a digest-less marker is a shape production
+            # never produces. The simulated watcher computes it with the
+            # server module's own function so the smoke cannot drift from it.
+            _server_spec = _importlib_util.spec_from_file_location(
+                "pinvou_app_automations_server_for_smoke",
+                MCP_ROOT / "app-automations" / "server.py",
+            )
+            _server_module = _importlib_util.module_from_spec(_server_spec)
+            _server_spec.loader.exec_module(_server_module)
 
             stop = _threading.Event()
 
@@ -866,6 +878,15 @@ def main():
                             "ok": True,
                             "task_id": "sim-%s" % spool_id[:8],
                             "task_name": request.get("name"),
+                            "request_digest": _server_module.spool_request_digest(
+                                request.get("kind"),
+                                task_id=request.get("task_id"),
+                                name=request.get("name"),
+                                prompt=request.get("prompt"),
+                                rrule=request.get("rrule"),
+                                model_id=request.get("model_id"),
+                                paused=request.get("paused"),
+                            ),
                         }, ensure_ascii=False), encoding="utf-8")
                         path.unlink()
                     time.sleep(0.05)

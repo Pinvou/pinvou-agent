@@ -10871,5 +10871,19 @@ mod probed_facts_wiring_tests {
             gate < compose,
             "sched ids route through the shield composition in the broadcast"
         );
+        // Round-24 minor 12: the composition must reach the op — the
+        // ordering assert above stays green if the send is reverted to the
+        // raw catalog. The engine.rs counterpart pin checks dataflow; this
+        // asserts the broadcast carries `Some(shaped)`, the composed value.
+        let send = fn_body
+            .find("Op::SetDisallowedTools {")
+            .expect("the broadcast send exists");
+        let carries = fn_body[send..]
+            .find("tools: Some(shaped)")
+            .expect("the broadcast must carry the composed shield value");
+        assert!(
+            compose < send + carries,
+            "the composed value (not the raw catalog) reaches Op::SetDisallowedTools"
+        );
     }
 }
