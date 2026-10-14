@@ -5271,3 +5271,58 @@ certification, native trust, Artifact admission, production storage/heap/prepara
 policy or support for other codecs is implied. Full T09 remains incomplete;
 no dependency/provider/SQL/protocol/application version/deployment changes.
 Download has no cumulative deadline or retry budget.
+
+
+## T09 nineteenth batch: bounded bzip2 decoding and shared snapshot capture
+
+Moved common immutable-source, exact-length/EOF, explicit-capacity, cancellation
+and owned capture logic to a private compression helper. Codec factories remain
+closed implementation details, not caller-supplied validation. The gzip public
+API and complete per-member reserved-flag/CRC/trailer acceptance remain intact.
+Added a bzip2 adapter using the Go SDK ByteReader path to validate concatenated
+streams, block/file CRC and complete source EOF. Bzip2 header levels bound SDK
+block workspace to the format maximum (900000 uint32 entries plus decoder
+bookkeeping); this workspace is
+separate from caller-selected expanded snapshot capacities and total heap policy.
+All failures return no expanded snapshot; no cumulative time/retry limit is used.
+
+Root initial compression9 groups, including the existing Python gzip opt-in, passed3.194s
+(actual33 MiB bzip2 .48s and gzip .25s). Root Debian default7 groups passed2.360s
+with three actual fixture opt-ins skipped, then actual Debian10 groups passed1.545s.
+Three new bzip2 groups use frozen independently Python-generated sequences:
+concatenated level1/empty/level9 streams, original expanded identity/buffer
+isolation, three independent one-below capacities, invalid header level, block
+CRC, truncation, later-stream and trailing corruption, cancellation and exact
+supported restoration. A separately frozen50-byte sequence expands to33 MiB with
+its explicit artifact capacity; business batch32 MiB is not a file limit.
+The main195-byte stored vector has SHA-256
+c1bf0d06f82ef209efe1059248fd8fde3ef7fd9e7cdcaa62743475560e276e3f;
+its67629 expanded bytes have SHA-256
+9c9e65f9bd6f3adea2404464bfc79f5ce667607bf87d07a01f5ee907b22541fb.
+Initial complete default Go tests passed (compression8 groups, Python opt-in
+skipped,6.976s; verification25 groups27.044s), module verification, whole-repository
+vet, server build, pinned contracts, formatting/diff and client guards passed.
+Compatibility static review identified a critical verification gap: block CRC
+negatives did not independently exercise terminal file/combined CRC failure.
+The root added first/later single-bit file CRC controls after complete payload.
+Each original stream first passes; the test verifies its exact end marker and
+independently observes all expected SDK output followed specifically by file
+checksum mismatch. The adapter returns Bzip2Invalid and no snapshot, then the
+same original owned source restores success. Root final compression10 including
+Python passed1.855s (33 MiB bzip2 .50s/gzip .25s). Final complete default Go
+tests passed (compression9 groups, Python opt-in skipped,7.574s; verification25
+groups18.945s). Module verification, whole-repository vet, server build, pinned
+contracts, formatting/diff and client architecture/version guards passed.
+Dependency independent compression10 including Python passed5.331s (33 MiB
+bzip2 .80s/gzip .30s), Debian10 including all three actual cases passed3.348s;
+affected vet, formatting and diff passed, all processes closed. Compatibility
+independent compression10 passed7.605s (33 MiB bzip2 .58s/gzip .35s), actual
+Debian10 passed2.123s; affected vet, formatting and diff passed, all processes
+closed. Both final documentation reviews passed.
+
+The adapter does not yet add Debian bzip2 dispatch, interpret tar/control data,
+certify app/version/architecture/publisher/native trust, grant execution or admit
+Artifacts. Synchronous SDK work between read polls is not internally interruptible;
+snapshot byte limits are not a total heap or preparation policy. No dependencies,
+provider/SQL/protocol/application version/deployment changes. Full T09 remains
+incomplete; real application/native certification is not supplied by these vectors.
