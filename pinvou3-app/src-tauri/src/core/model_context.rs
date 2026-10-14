@@ -316,6 +316,17 @@ const PINVOU_DOCUMENTED_OUTPUT: &[(&str, u32)] = &[
     // 8192 uncatalogued fail-close truncates reasoning-heavy turns mid-CoT
     // (the reported-bug row; the context side rides PINVOU_OVERRIDES at 1M).
     ("deepseek-flash", 384_000),
+    // The Tencent Token Plan spelling of the same V4.1-Flash — a real
+    // selectable catalog row (原厂直供 first-party direct supply per the
+    // live Tencent 130060 table; the 2026-10 catalog refresh on main also
+    // carries its 1M context in PINVOU_OVERRIDES). model_name_matches has
+    // no vendor-prefix tolerance, so the bare-id row above cannot carry
+    // this spelling, and the base output chain resolves it None just the
+    // same; with only the context fact reaching the wire, the quartile
+    // branch `(window/4).clamp(1, 8192)` re-clamps to 8192 — the same
+    // truncation this table exists to stop, so the row stays symmetric
+    // with the context-side override.
+    ("deepseek/deepseek-flash", 384_000),
     // GLM-5.3-FlashX: official 128K max output (open.bigmodel.cn / docs.z.ai
     // 2026-09 — the same figure the base exact table cites for the glm-5.3
     // family and the PINVOU_KNOWN context row cites for this model). The
@@ -587,6 +598,12 @@ mod tests {
         assert_eq!(resolved_output_limit("deepseek-flash"), Some(384_000));
         // Suffix tolerance carries date/snapshot spellings.
         assert_eq!(resolved_output_limit("deepseek-flash-1107"), Some(384_000));
+        // The vendor-prefixed Tencent spelling of the same model rides its
+        // own row — no prefix tolerance carries it from the bare id.
+        assert_eq!(
+            resolved_output_limit("deepseek/deepseek-flash"),
+            Some(384_000)
+        );
         assert_eq!(resolved_output_limit("glm-5.3-flashx"), Some(131_072));
         // Ids the base resolves stay None here: neither matches a table row
         // under model_name_matches ("deepseek-v4-flash" does not carry the

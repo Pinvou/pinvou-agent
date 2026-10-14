@@ -26,9 +26,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
 /// 期望的钢丝输出上限：底座对未收录名字的自动请求默认
-/// `(静态 128K 窗口 / 2).min(64K)` = 64000，经申报事实
-/// `min(64000, 384000/131072)` 后不变。修复前两家族的 model-aware 侧
-/// 被静态重解析钳回 8192。
+/// `(128K 窗口 / 2).min(64K)` = 64000（deepseek 家族经 DeepSeek legacy
+/// 供应商启发式取 128K 窗口，glm 经通用 `unwrap_or(128_000)` 回退；两处
+/// /2 同值），经申报事实 `min(64000, 384000/131072)` 后不变。修复前
+/// 两家族的 model-aware 侧被静态重解析钳回 8192。
 const EXPECTED_WIRE_MAX_TOKENS: u64 = 64_000;
 
 #[derive(Default)]

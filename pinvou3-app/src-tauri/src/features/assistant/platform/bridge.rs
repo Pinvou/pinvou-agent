@@ -6510,6 +6510,28 @@ mod tests {
             .route_limits_for_model("glm-5.3-flashx")
             .expect("glm-5.3-flashx must resolve route limits");
         assert_eq!(flashx_limits.output_tokens, Some(131_072));
+        // The Tencent Token Plan spelling of the same V4.1-Flash declares
+        // the same 384K through its own anchor row (no prefix tolerance
+        // carries the bare id). On the combined tree its 1M context rides
+        // the PINVOU_OVERRIDES row from the 2026-10 catalog refresh; the
+        // explicit declaration below stands in for that fact
+        // deterministically. Without the row the id resolves no output
+        // fact anywhere and a context-only declaration takes the quartile
+        // branch on the wire — the same 8192 truncation.
+        let mut tencent = fixture_bridge();
+        set_active_model(
+            &mut tencent,
+            ModelPreset::Deepseek,
+            "deepseek/deepseek-flash",
+            "https://api.deepseek.com",
+            "sk-deepseek",
+        );
+        tencent.prefs.advanced.saved_models[0].context_window_tokens = Some(1_048_576);
+        let tencent_limits = tencent
+            .route_limits_for_model("deepseek/deepseek-flash")
+            .expect("deepseek/deepseek-flash must resolve route limits");
+        assert_eq!(tencent_limits.context_tokens, Some(1_048_576));
+        assert_eq!(tencent_limits.output_tokens, Some(384_000));
         // B. The user's explicit max_output_tokens keeps winning — and keeps
         // the process-level 24K min-clamp semantics of explicit configs.
         cloud.prefs.advanced.saved_models[0].max_output_tokens = Some(8_192);
@@ -6517,9 +6539,13 @@ mod tests {
             .route_limits_for_model("deepseek-flash")
             .expect("deepseek-flash must resolve route limits");
         assert_eq!(explicit.output_tokens, Some(8_192));
-        // C. Operator-owned endpoints keep declaring by window tier, never
-        // by the anchor: a custom endpoint serving deepseek-flash with a
+        // C. Operator-owned endpoints declare by the window tier when the
+        // tier fires: a custom endpoint serving deepseek-flash with a
         // declared 1M window takes the >=500K tier (131072), not 384000.
+        // (When the tier yields — declared window <16K, tier value <4096 →
+        // None — the anchor chain does run; the small declared window's
+        // headroom min then clamps the fact, so the anchor still never
+        // outranks an operator window.)
         let mut local = fixture_bridge();
         set_active_model(
             &mut local,
