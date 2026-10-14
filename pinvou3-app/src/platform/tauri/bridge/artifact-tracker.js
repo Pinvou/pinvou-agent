@@ -6,7 +6,7 @@
   const registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__ = window.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["artifact-tracker"] = function (context) {let pinvouSharedtauriArtifactTrackerCache = null;
 function pinvouSharedtauriArtifactTracker() {
-  if (!pinvouSharedtauriArtifactTrackerCache) pinvouSharedtauriArtifactTrackerCache = window.PinvouBridgeShared.create("tauriArtifactTracker", { state, notify, invoke, DELIVERABLE_EXTS, parseToolResultPayload });
+  if (!pinvouSharedtauriArtifactTrackerCache) pinvouSharedtauriArtifactTrackerCache = window.PinvouBridgeShared.create("tauriArtifactTracker", { state, notify, invoke, isScheduledRunSession, DELIVERABLE_EXTS, parseToolResultPayload });
   return pinvouSharedtauriArtifactTrackerCache;
 }
 
@@ -14,6 +14,7 @@ function pinvouSharedtauriArtifactTracker() {
     const state = context.state;
     const invoke = context.invoke;
     const notify = context.notify;
+    const isScheduledRunSession = context.isScheduledRunSession;
 
   // ── 产物跟踪 ─────────────────────────────────────────────────────
 function basename(p) { return pinvouSharedtauriArtifactTracker().basename(p); }

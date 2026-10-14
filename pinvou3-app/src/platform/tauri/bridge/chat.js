@@ -6,7 +6,7 @@
   const registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__ = window.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry.chat = function (context) {let pinvouSharedtauriChatCache = null;
 function pinvouSharedtauriChat() {
-  if (!pinvouSharedtauriChatCache) pinvouSharedtauriChatCache = window.PinvouBridgeShared.create("tauriChat", { state, sessionStates, messageHasToolBlock, addChatItem, notify, bt, summonPinvou, sendMessage, invoke, pendingAssistantBlocks: { get value() { return context.pendingAssistantBlocks; }, set value(v) { context.pendingAssistantBlocks = v; } }, flushPendingTextBlock, autoCreateScheduledTaskDraft, runSyncOnSession, ensureSessionBufferLoaded, recordAuthoritySyncDiagnostic, reconcileRemoteTurn, doSendFor, flushQueued, itemIdSeq: { get value() { return context.itemIdSeq; }, set value(v) { context.itemIdSeq = v; } } });
+  if (!pinvouSharedtauriChatCache) pinvouSharedtauriChatCache = window.PinvouBridgeShared.create("tauriChat", { state, sessionStates, addChatItem, notify, bt, summonPinvou, sendMessage, invoke, pendingAssistantBlocks: { get value() { return context.pendingAssistantBlocks; }, set value(v) { context.pendingAssistantBlocks = v; } }, flushPendingTextBlock, autoCreateScheduledTaskDraft, runSyncOnSession, ensureSessionBufferLoaded, recordAuthoritySyncDiagnostic, reconcileRemoteTurn, doSendFor, flushQueued, itemIdSeq: { get value() { return context.itemIdSeq; }, set value(v) { context.itemIdSeq = v; } } });
   return pinvouSharedtauriChatCache;
 }
 
@@ -285,7 +285,6 @@ function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDra
     item.id = ++context.itemIdSeq;
     state.chatItems.push(item);
   }
-  function messageHasToolBlock(type, toolCallId) { return pinvouSharedtauriChat().messageHasToolBlock(type, toolCallId); }
   function toolCallAlreadyStarted(toolCallId) { return pinvouSharedtauriChat().toolCallAlreadyStarted(toolCallId); }
 function toolCallAlreadyFinished(toolCallId) { return pinvouSharedtauriChat().toolCallAlreadyFinished(toolCallId); }
 function hasChatItemForTool(type, toolCallId) { return pinvouSharedtauriChat().hasChatItemForTool(type, toolCallId); }

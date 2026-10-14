@@ -101,16 +101,20 @@ for (const [host, source] of [
     `${host} must stamp the rebind mark exactly once inside the session:list_changed listener`,
   );
 }
+// The lane-merge residual waves relocated the save transform and BOTH
+// wholesale saves (persistMessagesFor + reconcileArtifacts) into the shared
+// base; each host executes the same body through its cluster instance, so
+// the pins follow the bodies instead of the web lane source.
 assert.match(
-  webSource,
+  sharedSource,
   /function rebaseArtifactPathsForRebind\(sid, paths\)/,
-  'the web host must carry the save transform',
+  'the shared base must carry the save transform',
 );
-const webSaveSites = webSource.match(/save_session_artifacts", \{ id: sid, paths: rebaseArtifactPathsForRebind\(/g) || [];
+const sharedSaveSites = sharedSource.match(/save_session_artifacts", \{ id: sid, paths: rebaseArtifactPathsForRebind\(/g) || [];
 assert.equal(
-  webSaveSites.length,
+  sharedSaveSites.length,
   2,
-  'both web wholesale saves (persistMessagesFor + reconcile) must transform their paths',
+  'both shared wholesale saves (persistMessagesFor + reconcile) must transform their paths',
 );
 // The backend emit site must carry the geometry, cover all three lists, and
 // also fire on the roots-commit error path (round-C minor 1) — otherwise the

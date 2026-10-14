@@ -733,9 +733,11 @@ assert.match(bridge, /registry\.auxChat = function \(context\)/,
   'the desktop bridge must register the auxChat feature module');
 assert.match(desktopAuxChatBridge, /invoke\("chat", \{ message, attachments: \[\], sessionId: sid, restrictTools: true \}\)/,
   'desktop aux chat sends must restrict tools and skip attachments');
-assert.match(webBridge, /buf\.composerDraft = state\.composerDraft/,
+// The lane-merge residual wave moved the working-set save/restore bodies into
+// the shared base; the Web lane executes them through its cluster instance.
+assert.match(sharedBridgeHelpers, /buf\.composerDraft = state\.composerDraft/,
   'WebUI session switching must save the active composer draft');
-assert.match(webBridge, /state\.composerDraft = buf\.composerDraft/,
+assert.match(sharedBridgeHelpers, /state\.composerDraft = buf\.composerDraft/,
   'WebUI session switching must restore the destination composer draft');
 assert.match(webBridge, /(?:var|const|let) draftComposer = realId \? "" : \(state\.composerDraft \|\| ""\)/,
   'WebUI background session events must snapshot an unmaterialized draft');
