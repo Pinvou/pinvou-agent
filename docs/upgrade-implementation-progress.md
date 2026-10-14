@@ -6166,3 +6166,93 @@ six native fixtures and all five actual child invocations without skips, and
 passed affected vet, two-file formatting and diff checks. All independent
 processes closed. Client architecture and synchronized-version guards passed.
 Unchanged database/provider/browser integration was not repeated.
+
+## T09 thirty-fifth batch: PE image physical-span inspection
+
+The new explicit `artifacts/platform/pe` adapter observes PE32 and PE32+ headers,
+raw section spans and embedded attribute-certificate table spans on an owned
+immutable snapshot. Source bytes, optional-header bytes, section count and
+certificate count are separately required positive capacities before applicable
+allocation. uint16/uint32 declarations are widened to int64 before offset/length
+arithmetic; subtraction bounds guard every actual read. The directory count must
+fit the actual optional-header size. Its Security directory address is interpreted
+as a file offset, not an RVA.
+
+The section table must fit declared SizeOfHeaders within the source. Every
+nonempty raw span lies after headers and within the source. Nonempty spans are
+sorted only for non-overlap validation before hashing, preventing repeated
+overlapping source reads. Returned order remains declared section order, with
+raw eight-byte names and virtual/characteristic declarations. Empty sections
+have an empty-byte identity and retain their declared pointer without inventing
+a physical read. Machine values remain observed declarations, not a supported
+architecture or signed app mapping.
+
+A present certificate table must be eight-byte aligned, fully within the file
+and after all nonempty section spans. Every entry has at least its eight-byte
+header; rounded dwLength values must exactly exhaust the table. Extra alignment
+bytes outside dwLength must be zero. Each identity covers exactly dwLength,
+including any padding already counted inside that declaration; only additional
+external alignment bytes are excluded. Revision, type and opaque certificate
+payloads are observations. DER structure, unique semantic certificate types,
+Authenticode image digests/signatures and publisher authentication are not
+established. Missing embedded tables do not establish absence or validity of
+catalog authentication.
+
+Header, section and certificate parsing are separate narrow adapter functions.
+Every failure returns a literal zero report without prior source, sections or
+certificate facts. Context is checked between bounded reads/hashes and before
+success. Source and returned projection mutation cannot change the owned input.
+Uninterpreted overlays are retained in the complete Source identity. No bytes
+are extracted, executed, installed or handed to a privileged helper.
+
+This physical observer does not validate Windows virtual loading, FileAlignment,
+imports, resources, file/product version, NSIS package contents or installation
+support. It grants no native format certification, publisher approval, protected
+execution-object handoff or Artifact admission. Existing Debian and signed
+verifier APIs are unchanged; no signed PE composition is introduced in this batch.
+The Microsoft [PE format reference](https://learn.microsoft.com/en-us/windows/win32/debug/pe-format)
+was read privately to check optional-header/directory widths and the certificate
+table file-pointer/rounding rules. No reference or binary fixture is committed.
+
+Seven groups cover PE32/PE32+ original source/section/certificate identities,
+caller-source/projection isolation and restoration, malformed/truncated headers,
+unbounded-looking uint32 offsets/sizes, overlap, late certificate/padding/tail
+errors, missing/exceeded capacities, invalid sources/context and pre-cancellation.
+Separate controls retain original section order, ignore undeclared directory
+bytes and preserve a zero-size section's pointer only as a declaration. A file
+with more than 33 MiB of opaque overlay succeeds under explicit test capacities;
+the 32 MiB atomic business-batch limit remains unrelated to file size.
+
+Actual opt-in inspection reads the previously frozen built Go inspector image
+(5,933,568 bytes, 16 sections) and a frozen actual Windows system image (360,448
+bytes, 7 sections). Original SHA/size are fixed; both have no embedded certificate
+table. Go's independent debug/pe parser and direct original-byte SHA checks verify
+all raw section spans and virtual/characteristic declarations. Neither image is
+executed in this test and no actual signed-certificate/WinVerifyTrust or Windows
+installation certification is claimed.
+
+Initial default selected tests passed six groups in 1.641s with one explicit
+fixture skip; initial actual seven groups passed in 1.566s. Dependency review found
+a test-only unbounded fixture-read gap. Root repaired it to require a regular file
+with exact expected size before reading at most size+1, then close and check exact
+read length and original SHA. Both independent roles passed the static repair.
+Root frozen actual seven-group rerun passed in 1.572s without skips.
+
+Complete default Go tests passed with package parallelism 2: PE six mandatory
+groups plus one fixture skip, 6.066s; Debian 2.903s, verification 16.022s,
+compression 4.504s and TAR 2.225s. Fixture/provider/database/browser opt-ins were
+not enabled in that default run. Module verification, whole vet, server build,
+contract pins, changed-file formatting and diff checks passed; all root
+build/test processes closed.
+
+No dependency, SQL, protocol, application version or deployment change. Approved
+native app/publisher mappings, signed PE composition, full native authenticity,
+Artifact admission and production storage remain later work. Full T09 remains
+incomplete. Downloads have no total/cumulative elapsed or retry-count limit.
+
+Both final independent scoped code/test audits passed without remaining fixes.
+Dependency audit ran all seven actual PE groups in 1.455s; compatibility audit ran
+them in 1.583s. Both enabled the frozen Go/Windows image group without skips and
+passed affected vet, four-file formatting and diff checks; all independent
+processes closed. Client architecture and synchronized-version guards passed.
+Unchanged database/provider/browser integration was not repeated.
