@@ -374,7 +374,19 @@ pub async fn set_pet_enabled(enabled: bool, app: AppHandle) -> Result<(), String
         (result, was_enabled)
     })
     .await
-    .map_err(|error| format!("set_pet_enabled 任务失败: {error}"))?;
+    .map_err(|error| {
+        // Round-2 review m2: mirror the persist-failure rollback below for
+        // the join-failure arm (reachable only on a closure panic or a
+        // runtime cancel — the closure never returned, so `was_enabled` is
+        // unknown and a pre-existing window must be left alone). Only a
+        // window THIS call created is provably ours to close.
+        if enabled && !window_existed {
+            if let Some(win) = app.get_webview_window(PET_LABEL) {
+                let _ = win.close();
+            }
+        }
+        format!("set_pet_enabled 任务失败: {error}")
+    })?;
     if let Err(error) = persist_result {
         if enabled && !was_enabled {
             if let Some(win) = app.get_webview_window(PET_LABEL) {
