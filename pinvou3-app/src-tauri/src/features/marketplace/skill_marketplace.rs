@@ -1087,23 +1087,6 @@ impl SkillMarketplaceManager {
     /// with a pre-teardown owner snapshot (its callers are the ones that
     /// know the owner), and the tool uninstall's companion legs strip inside
     /// `cleanup_uninstalled_tool_state` instead.
-
-    /// Uninstall plus the caller-side scope strip, with the per-id import
-    /// lock held across BOTH: the teardown and the strip share one critical
-    /// section, so a deny-first registration a concurrent same-id install
-    /// makes after this function returns survives, and the strip can never
-    /// delete a just-registered fresh entry. The residual is the same
-    /// in-section window the MCP tool lane has: a gate that reads the store
-    /// in the instant between the record removal and the strip still
-    /// registers and is then stripped (microsecond scale, fail-open,
-    /// disclosed in capability-governance §3.2). A vacuous `Ok(false)`
-    /// strips nothing; a refused strip only logs (the leftover entry fails
-    /// closed). The strip targets the pre-teardown owner snapshot via the
-    /// exact form. Only for teardown paths with no outer transaction lock
-    /// (ima logout); the skill command lane keeps its own post-return strip
-    /// with a pre-teardown owner snapshot (its callers are the ones that
-    /// know the owner), and the tool uninstall's companion legs strip inside
-    /// `cleanup_uninstalled_tool_state` instead.
     pub fn uninstall_and_strip_scope(&self, skill_id: &str) -> Result<bool, String> {
         let dir_name = self.precheck_uninstall(skill_id)?;
         let import_lock = super::plugin_import::import_lock_for(skill_id);
@@ -1961,10 +1944,10 @@ fn collect_disk_files_under(
 /// 递归写出 `include_dir` 子目录到 `dest`,strip 掉 `source_dir` 前缀
 /// (`file.path()` 是相对最外层 include_dir 根的完整路径,如 "pua/SKILL.md")。
 /// 跳过 vendored 来源标注文件 SOURCE.md(非 skill 运行内容)。
-/// 同样排除 `__pycache__/` 与 `*.pyc`:include_dir! 按文件系统内嵌(不受
-/// .gitignore 约束),在仓库里直接运行技能脚本产生的 Python 编译缓存若不
-/// 排除,会在用户安装预置技能时物化到运行时目录(跨平台 cpython 版本耦合)。
-/// 与 runtime_bundle::platform 的 extract_dir 排除规则保持一致。
+/// 同样排除 `__pycache__/` 与 `*.pyc`(判定复用
+/// `plugin_import::is_python_cache_rel_path`):include_dir! 按文件系统内嵌
+/// (不受 .gitignore 约束),在仓库里直接运行技能脚本产生的 Python 编译缓存
+/// 若不排除,会在用户安装预置技能时物化到运行时目录(跨平台 cpython 版本耦合)。
 fn extract_embedded_subdir(dir: &Dir<'_>, source_dir: &str, dest: &Path) -> std::io::Result<()> {
     let prefix = format!("{source_dir}/");
     for file in dir.files() {

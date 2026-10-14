@@ -273,8 +273,9 @@ fn collect_landed_disk_files(
 }
 
 /// Whether a relative path ('/'-separated) belongs to the Python run cache: any path level is a `__pycache__`
-/// directory, or the file name ends with `.pyc` (case-insensitive). The single predicate shared by three walkers —
-/// package import comparison, package export packing, and skill-marketplace fingerprinting; symlink/directory-traversal policy is decided by each walker
+/// directory, or the file name ends with `.pyc` (case-insensitive). The single predicate shared by four walkers —
+/// package import comparison, package export packing, skill-marketplace fingerprinting, and runtime_bundle's
+/// embedded-bundle extraction; symlink/directory-traversal policy is decided by each walker
 /// on its own (export skips symlinks, import compare and skill fingerprints follow) and is not part of this predicate.
 pub(crate) fn is_python_cache_rel_path(rel: &str) -> bool {
     rel.split('/').any(|c| c == "__pycache__") || rel.to_ascii_lowercase().ends_with(".pyc")
