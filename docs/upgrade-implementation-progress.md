@@ -6469,3 +6469,81 @@ fixture group without skips and passed affected vet, two-file formatting and
 diff checks; all independent processes closed. Client architecture and
 synchronized-version guards passed. Unchanged database/provider/browser
 integration and the previously recorded native API probe were not repeated.
+
+## T09 thirty-ninth batch: complete physical Windows version-block tree
+
+`windowsversion.InspectBlocks` first reparses the same exact owned record through
+ObserveFixed, then copies it under separate explicit positive source/copy limits
+and parses every nested block's physical framing. Block count, nesting depth and
+each original UTF-16 key size including its terminator also require positive
+caller capacities. The original uint16 root length bounds the copy before host-int
+allocation. These are logical copy/structure capacities, not aggregate heap or
+installation/preparation policy.
+
+Every block has positive in-parent length, aligned physical start, a complete
+nonempty UTF-16 key with valid surrogate pairing and zero alignment bytes.
+Type 0 value lengths are bytes; type 1 lengths are UTF-16 words. Declared values
+must fit their original parent and preserve original size/SHA/offset. Unknown
+value-unit types return Unsupported. Child cursors advance strictly within parent
+bounds, with total-node/depth limits including the root. Exact duplicate sibling
+keys are refused. Case variants remain original declarations and do not select
+or certify Windows native key-lookup equivalence.
+
+The report preserves complete block and value identities, original keys/order/
+type/offsets and the complete tree. Root Source/Value are compared with the earlier
+fixed observer's identities. Each bounded subtree receives its own Source hash;
+nested bytes may therefore be hashed at more than one depth. No one-scan or
+aggregate-heap guarantee is claimed. Any later malformed block, capacity or
+cancellation failure returns literal zero BlockRecord with no earlier fixed value
+or partial child tree. Orchestration/copy and block/UTF-16 parsing are separate
+narrow functions/modules; no input paths or extracted objects are accepted.
+
+Values remain opaque bytes. This is complete physical block framing, not semantic
+StringFileInfo/VarFileInfo hierarchy validation, UTF-16 text-value decoding,
+translation relationships, company/publisher authentication, native case policy
+or PE resource association. It grants no NSIS validation, approved application/
+version identity, privileged handoff or Artifact admission. The original fixed
+observer retains its intentionally opaque-child behavior and is unchanged.
+
+Five new groups cover binary/text length units, all original node/value/parent
+identities, supplementary keys, caller-source/projection isolation, empty values
+and preserved case variants. Late malformed length/value/key/zero-padding/
+surrogate cases first pass the previous fixed observer, then fail complete physical
+block inspection without retaining fixed facts. Exact duplicate siblings and
+unknown value-unit types refuse; copy/key/node/depth/source capacities, nil context,
+cancellation and same-source restoration have independent controls.
+
+The new actual opt-in group uses the same frozen original 880-byte Windows record.
+It checks StringFileInfo/VarFileInfo physical keys, the original language/code-page
+table spelling, eight child fields and Translation. Every reported node and value
+is independently checked against its exact original parent span, raw header length/
+type and original SHA. These keys/counts prove no translation policy or publisher
+approval. The previous actual fixed-word evidence also executes; no image is
+launched, no native API probe is repeated and no fixture is committed.
+
+Root initial actual windowsversion ten-group run passed in 1.195s, with both
+fixture groups executed. Root self-review strengthened recursive original node/
+value span and SHA assertions; the frozen ten-group rerun passed in 0.865s without
+skips. Both initial independent scoped static audits passed without required fixes.
+
+Complete default Go tests passed with package parallelism 2: windowsversion eight
+mandatory groups plus two fixture skips, 1.098s; verification 16.570s, PE 1.736s,
+Debian 2.133s, compression 3.896s and TAR 1.429s. Fixture/provider/database/browser
+opt-ins were not enabled in that default run. Module verification, whole vet,
+server build, contract pins, changed-file formatting and diff checks passed;
+all root processes closed. After closure, root grouped standard/internal imports
+for readability only; formatting/diff stayed clean.
+
+No dependency, SQL, protocol, application version or deployment change. Semantic
+version-tree validation and text/translation policy, original PE resource binding,
+current signed version composition, approved native app/version/publisher mapping,
+Artifact admission and production storage remain later work. Full T09 remains
+incomplete. Downloads have no total/cumulative elapsed or retry-count limit.
+
+Both final independent scoped code/test audits passed without required fixes.
+Dependency audit independently ran all ten actual windowsversion groups in 0.981s;
+compatibility audit ran them in 1.215s. Both enabled the two original-record fixture
+groups without skips and passed affected vet, three-file formatting and diff
+checks; all independent processes closed. Client architecture and synchronized-
+version guards passed. Unchanged database/provider/browser integration and the
+previously recorded native API probe were not repeated.
