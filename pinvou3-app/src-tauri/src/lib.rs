@@ -670,6 +670,32 @@ fn mark_knowledge_service_failed(error: impl std::fmt::Display) {
     eprintln!("[pinvou3-app] knowledge service init failed: {detail}");
 }
 
+/// Best-effort removal of a purged session's entry from the codex_acp agents
+/// index (`session-agents.json`). Retention evictions and scheduled cleanups
+/// delete the saved-session record and its directory, but that index is owned
+/// by `features::codex_acp` (the sessions purge cannot touch it), so a stale
+/// entry used to outlive its owner and feed the boot-time sidecar backfill —
+/// resurrecting ghost `sessions/<id>/` directories on every startup. The
+/// user-delete path already removes the entry in the `delete_session` command;
+/// this leg covers the GUI purge paths that have no app handle at hook time
+/// (runtime retention evictions, scheduled-run cleanups) via the
+/// `SessionPurgedHook` (same dependency inversion as the other hook legs —
+/// sessions must not depend on codex_acp in reverse). The windowless host
+/// registers no purge hooks; dead code-mode entries its evictions leave
+/// behind are converged by the boot scan's prune at the next GUI start
+/// (dead ACP-mode entries are inert and intentionally left in place).
+/// Failure tolerance matches the other purge legs: a missing entry is fine,
+/// and any error is logged without aborting or rolling back the eviction
+/// itself.
+pub(crate) fn remove_agents_index_entry(
+    agents: &crate::features::codex_acp::SessionAgentStore,
+    session_id: &str,
+) {
+    if let Err(error) = agents.remove(session_id) {
+        eprintln!("[pinvou3-app] remove session-agents.json entry after purge failed: {error:#}");
+    }
+}
+
 pub fn run() {
     // WebKitGTK reads its RemoteInspector endpoint while constructing the first
     // WebContext, so the browser feature must reserve it before Tauri starts.
@@ -1152,8 +1178,15 @@ pub fn run() {
                     // place; if unmanaged (very early deletions) the item is
                     // skipped.
                     let app_for_purge_hook = handle.clone();
+                    let agents_index_for_purge_hook = code_session_agents.clone();
                     store_for_engine
                         .register_session_purged_hook(std::sync::Arc::new(move |session_id: &str| {
+                            // Drop the codex_acp agents-index entry as well —
+                            // see `remove_agents_index_entry`.
+                            crate::remove_agents_index_entry(
+                                &agents_index_for_purge_hook,
+                                session_id,
+                            );
                             crate::features::assistant::timing::clear_session(session_id);
                             crate::features::assistant::pending_user_input::clear_session(
                                 session_id,
@@ -1938,6 +1971,51 @@ mod startup_order_contract {
             "dump_system_prompt.rs must keep its freeze-persist failure eprintln mirror (this host has neither window nor log plugin)"
         );
     }
+
+    /// Wiring pin for the ghost-session fix's root-cause leg: the purge
+    /// hook's agents-index leg must capture the store derived from
+    /// `AcpPool::new` (`pool.agents().clone()`), never a second
+    /// `SessionAgentStore` instance over the same file — a second instance
+    /// would rewrite `session-agents.json` from its own memory on every
+    /// purge, clobbering concurrent binds. Textual pin like the legs above
+    /// (needles fragment-concatenated against self-match, `find` takes the
+    /// first = production occurrence): deleting the capture, swapping it
+    /// for an independent `SessionAgentStore::load_or_empty`, or swapping
+    /// the `pool.agents()` binding itself for an independent instance all
+    /// fail here.
+    #[test]
+    fn purge_hook_captures_the_pool_agents_store() {
+        let source = include_str!("lib.rs");
+        let capture = source
+            .find(
+                &[
+                    "let agents_index_for_purge_hook = code_session_",
+                    "agents.clone();",
+                ]
+                .concat(),
+            )
+            .unwrap_or_else(|| {
+                panic!(
+                    "lib.rs is missing the purge-hook agents-index capture from code_session_agents"
+                )
+            });
+        let agents_binding = source
+            .find(&["let agents = pool.", "agents().clone();"].concat())
+            .unwrap_or_else(|| {
+                panic!("lib.rs is missing the pool agents binding for the purge hook")
+            });
+        let pool_binding = source
+            .find(&["let (code_session_", "agents, acp_pool_for_capabilities)"].concat())
+            .unwrap_or_else(|| panic!("lib.rs is missing the AcpPool agents binding"));
+        assert!(
+            agents_binding < capture,
+            "the purge hook's store must be cloned from the AcpPool's agents store, not an independent instance"
+        );
+        assert!(
+            pool_binding < capture,
+            "the purge hook must capture the store derived from AcpPool::new (pool.agents()), not an independent instance"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2670,5 +2748,82 @@ mod knowledge_service_failure_tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
+mod session_purge_agents_index_tests {
+    use crate::features::codex_acp::{CodexWorkspaceKind, SessionAgentStore};
+
+    /// The composition root's purge hook must remove the purged session's
+    /// entry from the codex_acp agents index: retention evictions and
+    /// scheduled cleanups cannot reach that codex_acp-owned index, and a
+    /// stale entry outlives its owner and feeds the boot-time sidecar
+    /// backfill — resurrecting ghost `sessions/<id>/` directories on every
+    /// startup. The removal must be id-scoped (unrelated entries survive)
+    /// and must drop the authoritative sidecar with the index record.
+    #[test]
+    fn purge_removes_index_entry_and_keeps_others() {
+        crate::platform::test_support::with_temp_home("pinvou3-purge-agents-index", || {
+            // Index inside the hermetic home; the sidecar root derives as
+            // <home>/sessions, matching the production layout.
+            let home = crate::platform::paths::pinvou3_home();
+            let store = SessionAgentStore::for_test(home.join("session-agents.json"));
+            store
+                .bind_code_native_session(
+                    "sess-purged",
+                    CodexWorkspaceKind::Project,
+                    Some(home.clone()),
+                )
+                .expect("bind purged");
+            store
+                .bind_code_native_session(
+                    "sess-survivor",
+                    CodexWorkspaceKind::Project,
+                    Some(home.clone()),
+                )
+                .expect("bind survivor");
+
+            super::remove_agents_index_entry(&store, "sess-purged");
+
+            assert!(
+                !store.is_code_session("sess-purged"),
+                "the purged id's in-memory entry must be gone"
+            );
+            assert!(
+                store.is_code_session("sess-survivor"),
+                "unrelated entries must survive the purge leg"
+            );
+            let on_disk = std::fs::read_to_string(home.join("session-agents.json"))
+                .expect("the index must persist after the purge leg");
+            assert!(
+                !on_disk.contains("sess-purged"),
+                "the purged id must not survive on disk: {on_disk}"
+            );
+            assert!(
+                on_disk.contains("sess-survivor"),
+                "the survivor must remain on disk: {on_disk}"
+            );
+            assert!(
+                !home.join("sessions").join("sess-purged").exists(),
+                "the authoritative sidecar (and its directory) must be removed with the index entry",
+            );
+        });
+    }
+
+    /// The purge leg is best-effort like its siblings: an id without an index
+    /// entry (user deletes already removed it, or the session never had one)
+    /// must be a no-op, never an error that could abort an eviction.
+    #[test]
+    fn purge_tolerates_missing_index_entry() {
+        crate::platform::test_support::with_temp_home("pinvou3-purge-agents-index-missing", || {
+            let home = crate::platform::paths::pinvou3_home();
+            let store = SessionAgentStore::for_test(home.join("session-agents.json"));
+            super::remove_agents_index_entry(&store, "never-bound");
+            assert!(
+                !store.is_code_session("never-bound"),
+                "nothing to remove, nothing to resurrect"
+            );
+        });
     }
 }

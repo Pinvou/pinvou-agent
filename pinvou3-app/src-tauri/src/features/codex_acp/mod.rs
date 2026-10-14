@@ -767,6 +767,77 @@ struct SidecarRecoverySummary {
     backfilled: usize,
     /// 已被 ACP 会话占用、作为残留清理的 sidecar 数。
     cleaned: usize,
+    /// Dead index entries removed: code entries whose durable session record
+    /// (`sessions/<id>.json`) is gone.
+    pruned_dead_entries: usize,
+    /// Ghost sidecars removed: sidecar files of record-less dirs whose owner
+    /// record is also gone (the emptied dir is then removed best-effort; a
+    /// dir holding other content survives).
+    cleaned_ghost_sidecars: usize,
+}
+
+/// Owner liveness probe for deletions: does the durable record
+/// `sessions/<id>.json` still exist? Delegates to the shared
+/// `SessionAgentStore::owner_record_state` core (same path and stat judgment
+/// as the private store.rs probe `binding_owner_exists`, enforced by code),
+/// with a more conservative disposition: invalid ids and probe errors count
+/// as ALIVE — the caller decides deletions from this probe, and a deletion
+/// must never rest on "uncertain"; the read side's "invalid id ⇒ no owner"
+/// disposition does not apply to deletion. Only a genuine NotFound (including
+/// a non-file entry at the record path) counts as dead.
+fn code_session_owner_alive(agents: &SessionAgentStore, session_id: &str) -> bool {
+    match agents.owner_record_state(session_id) {
+        store::OwnerRecordState::Live => true,
+        // Only a real NotFound counts as dead: it is better to miss a
+        // deletion than to make a wrong one.
+        store::OwnerRecordState::NotFound => false,
+        store::OwnerRecordState::InvalidId => true,
+        store::OwnerRecordState::ProbeError(kind) => {
+            eprintln!(
+                "[pinvou3-app] code session owner probe failed, treating {session_id} as live (io kind: {kind})"
+            );
+            true
+        }
+    }
+}
+
+/// Boot-time prune of dead index entries: retention evictions delete the
+/// `sessions/<id>.json` record and the `<id>/` directory but never touch
+/// `session-agents.json`, so code entries in the index can outlive their
+/// owner — the backfill would rebuild a sidecar dir for them on every boot,
+/// and a sidecar surviving next to a lost index entry would be restored
+/// into the index again: a ghost factory repeating on every boot. Code
+/// entries whose owner is dead (only a real NotFound counts as dead, see
+/// `code_session_owner_alive`) are removed together with their sidecar/dir:
+/// `remove` does index removal + persist + sidecar cleanup in one step
+/// (NotFound tolerated). Only code-mode entries are handled: ACP leftovers
+/// are cleaned by the scan's existing branch. Returns the number of removed
+/// entries. Iteration runs over the in-memory index (see
+/// `SessionAgentStore::session_ids`), so an unparsable index file simply
+/// leaves nothing to iterate and no deletion is ever based on a state that
+/// would not be persisted.
+fn prune_dead_code_index_entries(agents: &SessionAgentStore) -> usize {
+    let mut pruned = 0usize;
+    for session_id in agents.session_ids() {
+        if !agents.get(&session_id).mode.is_code() {
+            continue;
+        }
+        if code_session_owner_alive(agents, &session_id) {
+            continue;
+        }
+        match agents.remove(&session_id) {
+            Ok(()) => {
+                pruned += 1;
+                eprintln!(
+                    "[pinvou3-app] pruned dead native code session index record for {session_id}"
+                );
+            }
+            Err(error) => eprintln!(
+                "[pinvou3-app] native code session {session_id} index prune failed: {error:#}"
+            ),
+        }
+    }
+    pruned
 }
 
 /// 扫描 session 私有目录中的原生代码会话权威 sidecar，恢复辅助索引缺失的
@@ -777,36 +848,71 @@ struct SidecarRecoverySummary {
 /// （均由辅助索引路径派生，见 `store::code_session_sidecar_root`），避免两处
 /// 根定义漂移。对每个 sidecar：索引已持有 code 模式记录时跳过（不误报
 /// 恢复）；会话已被 ACP 占用时 sidecar 属历史残留，直接清理而非反复重试；
-/// 其余情况据 sidecar 恢复索引。
+/// a record-less dir whose owner record is also gone is deletion leftover —
+/// disposed as a ghost without resurrecting the index (once the owner is
+/// gone, the sidecar's readability does not matter). The dead-index prune
+/// (see `prune_dead_code_index_entries`) runs before the scan so the scan
+/// and the backfill cannot resurrect deleted sessions' index entries or
+/// rebuild their sidecar dirs.
 fn restore_code_native_sessions_from_sidecars(
     agents: &SessionAgentStore,
 ) -> SidecarRecoverySummary {
     let mut summary = SidecarRecoverySummary::default();
+    // Dead index entries go first: retention deletes records and dirs but
+    // never the agents index, so pruning first cuts the backfill's "rebuild
+    // a sidecar dir for a dead entry" leg of the ghost-factory loop.
+    summary.pruned_dead_entries = prune_dead_code_index_entries(agents);
     // Shared iterator (review #463 round-8 elegance): the scan root, the
     // "no sessions directory is normal" case and the unreadable-entry logging
     // are defined once next to the sidecar readers, so the boot restore and
     // both rebind scans cannot drift apart again.
     for session_id in store::code_session_dir_ids(agents.path(), "native code session restore") {
-        // Round-44 review: the sidecar content is re-read under the section
-        // lock inside the restore (the enumeration snapshot can be stale in
-        // both directions), so the scan only needs its existence as a
-        // pre-filter.
-        if store::read_code_session_sidecar(agents.path(), &session_id).is_none() {
-            continue;
-        }
         let record = agents.get(&session_id);
         if record.mode.is_code() {
             // 索引完好无需恢复：不计入 restored，避免每次启动误报恢复信号。
             continue;
         }
         if record.backend.is_acp() {
-            // 会话已被 ACP 绑定：sidecar 是历史残留，恢复必然被拒，直接清理并
-            // 如实记日志，而不是每次启动重复报 degraded。
-            store::remove_code_session_sidecar(agents.path(), &session_id);
-            summary.cleaned += 1;
-            eprintln!(
-                "[pinvou3-app] removed leftover native code session sidecar for ACP session {session_id}"
-            );
+            // The session is already ACP-bound: the sidecar is a historical
+            // leftover, restoring it would be rejected, so dispose of it and
+            // log truthfully instead of re-reporting degraded on every boot.
+            // Count and log only when the sidecar file was really removed: a
+            // normal ACP session's dir holds no code-session.json, so an
+            // unconditional count would turn every boot into a false cleanup
+            // report.
+            if store::remove_code_session_sidecar(agents.path(), &session_id) {
+                summary.cleaned += 1;
+                eprintln!(
+                    "[pinvou3-app] removed leftover native code session sidecar for ACP session {session_id}"
+                );
+            }
+            continue;
+        }
+        // Ghost dir: no index record and the durable record is gone —
+        // deletion leftover. Restoring from it would only resurrect a ghost
+        // index entry; like the ACP-leftover branch above, dispose instead
+        // of resurrecting. Checked before the sidecar read on purpose: a
+        // corrupt or future-version `code-session.json` in a dead owner's
+        // dir must converge too, not log a parse error every boot forever.
+        // Only the sidecar file plus the now-empty dir are removed, so a
+        // leftover dir holding other content survives untouched. The count
+        // and log fire only when the sidecar file was really removed: a
+        // dead owner's bare dir (no sidecar) removes nothing, and counting
+        // it would repeat a false report on every boot forever.
+        if !code_session_owner_alive(agents, &session_id) {
+            if store::remove_code_session_sidecar(agents.path(), &session_id) {
+                summary.cleaned_ghost_sidecars += 1;
+                eprintln!(
+                    "[pinvou3-app] removed ghost native code session sidecar for deleted session {session_id}"
+                );
+            }
+            continue;
+        }
+        // Round-44 review: the sidecar content is re-read under the section
+        // lock inside the restore (the enumeration snapshot can be stale in
+        // both directions), so the scan only needs its existence as a
+        // pre-filter.
+        if store::read_code_session_sidecar(agents.path(), &session_id).is_none() {
             continue;
         }
         match agents.restore_missing_code_session_record(&session_id) {
@@ -840,6 +946,18 @@ fn restore_code_native_sessions_from_sidecars(
         eprintln!(
             "[pinvou3-app] backfilled {} missing native code session sidecar(s) from index",
             summary.backfilled
+        );
+    }
+    if summary.pruned_dead_entries > 0 {
+        eprintln!(
+            "[pinvou3-app] pruned {} dead native code session index record(s)",
+            summary.pruned_dead_entries
+        );
+    }
+    if summary.cleaned_ghost_sidecars > 0 {
+        eprintln!(
+            "[pinvou3-app] removed {} ghost native code session sidecar(s)",
+            summary.cleaned_ghost_sidecars
         );
     }
     summary
@@ -6178,6 +6296,10 @@ mod tests {
         writer
             .bind_code_native_session("code-1", CodexWorkspaceKind::Project, Some(root.clone()))
             .unwrap();
+        // code-1's durable record exists on disk (any live session has one in
+        // reality; the owner probe and the backfill gate only stat existence
+        // and never parse content, so a stub file stands in for "alive").
+        std::fs::write(root.join("sessions").join("code-1.json"), b"{}").unwrap();
         // 模拟辅助索引丢失。Round-43 review：恢复臂现在在 section 锁下重读
         // 磁盘索引，所以“索引丢失”的前提必须落在磁盘上（记录从索引文件中
         // 移除、权威 sidecar 保留），而不仅是空内存表——否则重载后记录仍在，
@@ -6196,7 +6318,9 @@ mod tests {
             SidecarRecoverySummary {
                 restored: 1,
                 backfilled: 0,
-                cleaned: 0
+                cleaned: 0,
+                pruned_dead_entries: 0,
+                cleaned_ghost_sidecars: 0
             }
         );
         assert!(agents.is_code_session("code-1"));
@@ -6219,7 +6343,9 @@ mod tests {
             SidecarRecoverySummary {
                 restored: 0,
                 backfilled: 1,
-                cleaned: 0
+                cleaned: 0,
+                pruned_dead_entries: 0,
+                cleaned_ghost_sidecars: 0
             }
         );
         assert!(sidecar_path.is_file());
@@ -6251,12 +6377,134 @@ mod tests {
             SidecarRecoverySummary {
                 restored: 0,
                 backfilled: 0,
-                cleaned: 1
+                cleaned: 1,
+                pruned_dead_entries: 0,
+                cleaned_ghost_sidecars: 0
             }
         );
         assert!(!leftover_dir.join("code-session.json").exists());
         assert_eq!(agents.get("acp-1").backend, AgentBackend::CodexAcp);
         // 残留已清理：再次启动扫描无任何动作。
+        let summary = restore_code_native_sessions_from_sidecars(&agents);
+        assert_eq!(summary, SidecarRecoverySummary::default());
+        // Dead index entry: the index holds the entry but the durable record
+        // (sessions/<id>.json) is gone — retention deletes records and dirs,
+        // never the index. Boot must drop the entry together with its
+        // sidecar dir instead of backfilling a sidecar that keeps the ghost
+        // alive. dead-2.json is deliberately not created: a missing owner
+        // record means "dead".
+        agents
+            .bind_code_native_session("dead-2", CodexWorkspaceKind::Temporary, None)
+            .unwrap();
+        let summary = restore_code_native_sessions_from_sidecars(&agents);
+        assert_eq!(
+            summary,
+            SidecarRecoverySummary {
+                restored: 0,
+                backfilled: 0,
+                cleaned: 0,
+                pruned_dead_entries: 1,
+                cleaned_ghost_sidecars: 0
+            }
+        );
+        let index: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(index["sessions"].get("dead-2").is_none());
+        assert!(!root.join("sessions").join("dead-2").exists());
+        // Dead-entry pruning must not touch live entries: code-1 stays a
+        // code session, acp-1 stays ACP.
+        assert!(agents.is_code_session("code-1"));
+        assert_eq!(agents.get("acp-1").backend, AgentBackend::CodexAcp);
+        // Ghost sidecar: no index record and no durable record (deletion
+        // leftover). Restoring from it would only resurrect a ghost index
+        // entry — the dir must be disposed without creating any index
+        // record.
+        let ghost_dir = root.join("sessions").join("ghost-1");
+        std::fs::create_dir_all(&ghost_dir).unwrap();
+        std::fs::write(
+            ghost_dir.join("code-session.json"),
+            serde_json::to_vec(&store::CodeSessionSidecar {
+                version: 1,
+                workspace_kind: CodexWorkspaceKind::Temporary,
+                workspace_path: None,
+                bound_at: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let summary = restore_code_native_sessions_from_sidecars(&agents);
+        assert_eq!(
+            summary,
+            SidecarRecoverySummary {
+                restored: 0,
+                backfilled: 0,
+                cleaned: 0,
+                pruned_dead_entries: 0,
+                cleaned_ghost_sidecars: 1
+            }
+        );
+        assert!(!ghost_dir.exists());
+        let index: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(index["sessions"].get("ghost-1").is_none());
+        assert!(!agents.is_code_session("ghost-1"));
+        // Ghost convergence must not depend on a readable sidecar: a dead
+        // owner's dir with a corrupt code-session.json (crash of a
+        // pre-atomic-write build, disk damage) is disposed too, instead of
+        // logging a parse error on every boot forever.
+        let corrupt_dir = root.join("sessions").join("corrupt-1");
+        std::fs::create_dir_all(&corrupt_dir).unwrap();
+        std::fs::write(corrupt_dir.join("code-session.json"), b"{not json").unwrap();
+        let summary = restore_code_native_sessions_from_sidecars(&agents);
+        assert_eq!(
+            summary,
+            SidecarRecoverySummary {
+                restored: 0,
+                backfilled: 0,
+                cleaned: 0,
+                pruned_dead_entries: 0,
+                cleaned_ghost_sidecars: 1
+            }
+        );
+        assert!(!corrupt_dir.exists());
+        let index: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(index["sessions"].get("corrupt-1").is_none());
+        assert!(!agents.is_code_session("corrupt-1"));
+        // A live ACP session's normal dir shape: session data under
+        // sessions/<id>/ with NO code-session.json (ACP bindings never write
+        // one). The ACP-leftover branch must stay silent for it — no cleaned
+        // count, no log — and the dir must survive. Before the count was
+        // gated on an actual removal, this shape fired a false "removed
+        // leftover sidecar" report on every boot for every ACP session.
+        agents
+            .set_acp_workspace(
+                "acp-live",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Temporary,
+                None,
+            )
+            .unwrap();
+        let acp_live_dir = root.join("sessions").join("acp-live");
+        std::fs::create_dir_all(&acp_live_dir).unwrap();
+        std::fs::write(acp_live_dir.join("events.jsonl"), b"{}").unwrap();
+        let summary = restore_code_native_sessions_from_sidecars(&agents);
+        assert_eq!(summary, SidecarRecoverySummary::default());
+        assert!(acp_live_dir.is_dir());
+        assert!(acp_live_dir.join("events.jsonl").is_file());
+        // A dead owner's bare dir (no sidecar — crash between durable-record
+        // deletion and dir removal): the ghost branch removes nothing, so it
+        // must count and log nothing; otherwise the report would repeat on
+        // every boot forever. The dir holding other content survives
+        // untouched.
+        let bare_dead_dir = root.join("sessions").join("bare-dead");
+        std::fs::create_dir_all(&bare_dead_dir).unwrap();
+        std::fs::write(bare_dead_dir.join("events.jsonl"), b"{}").unwrap();
+        let summary = restore_code_native_sessions_from_sidecars(&agents);
+        assert_eq!(summary, SidecarRecoverySummary::default());
+        assert!(bare_dead_dir.is_dir());
+        assert!(bare_dead_dir.join("events.jsonl").is_file());
+        // Ghosts fully converged: a second boot scan is a no-op.
         let summary = restore_code_native_sessions_from_sidecars(&agents);
         assert_eq!(summary, SidecarRecoverySummary::default());
         std::fs::remove_dir_all(&root).unwrap();

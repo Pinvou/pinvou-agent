@@ -371,7 +371,10 @@ pub(super) fn read_code_session_sidecar(
 }
 
 /// 删除原生代码会话 sidecar（会话删除时调用）。
-pub(super) fn remove_code_session_sidecar(store_path: &Path, session_id: &str) {
+///
+/// Returns whether the sidecar file was actually removed, so callers that
+/// count or log the removal stay silent when there was nothing to remove.
+pub(super) fn remove_code_session_sidecar(store_path: &Path, session_id: &str) -> bool {
     let sidecar = code_session_sidecar_path(store_path, session_id);
     match fs::remove_file(&sidecar) {
         Ok(()) => {
@@ -382,12 +385,16 @@ pub(super) fn remove_code_session_sidecar(store_path: &Path, session_id: &str) {
             if let Some(parent) = sidecar.parent() {
                 let _ = fs::remove_dir(parent);
             }
+            true
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => eprintln!(
-            "[pinvou3-app] 清理原生代码会话 sidecar 失败（{}）: {error:#}",
-            sidecar.display()
-        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            eprintln!(
+                "[pinvou3-app] 清理原生代码会话 sidecar 失败（{}）: {error:#}",
+                sidecar.display()
+            );
+            false
+        }
     }
 }
 
@@ -452,6 +459,24 @@ fn store_version() -> u32 {
 pub struct SessionAgentStore {
     path: PathBuf,
     records: Arc<RwLock<HashMap<String, SessionAgentRecord>>>,
+}
+
+/// Outcome of the durable-owner-record probe: does `sessions/<id>.json`
+/// still exist? The path derivation and the stat judgment live in exactly
+/// one place (`SessionAgentStore::owner_record_state`) so the read side
+/// (rebind lanes) and the deletion side (boot prune, backfill gate) cannot
+/// drift; each caller maps this state onto its own disposition.
+pub(super) enum OwnerRecordState {
+    /// The durable record exists as a regular file. (A non-file entry at
+    /// the record path counts as absent — the app never creates one, so a
+    /// stray directory there is not a durable record.)
+    Live,
+    /// No durable record: the path is gone, or it is not a regular file.
+    NotFound,
+    /// The id fails validation, so the record path was not probed at all.
+    InvalidId,
+    /// A non-NotFound stat error: the record's state is unknowable.
+    ProbeError(std::io::ErrorKind),
 }
 
 impl SessionAgentStore {
@@ -535,6 +560,15 @@ impl SessionAgentStore {
             .get(session_id)
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// Snapshot of the in-memory index's session ids. `load` is all-or-nothing
+    /// (an unparsable file leaves the map empty) and every persist rewrites
+    /// the file from this same state, so iterating memory is iterating the
+    /// state that would be persisted — the boot prune walks this set instead
+    /// of reaching into the on-disk format.
+    pub(super) fn session_ids(&self) -> Vec<String> {
+        self.records.read().keys().cloned().collect()
     }
 
     /// Returns session ids bound to the given project workspace for
@@ -804,35 +838,51 @@ impl SessionAgentStore {
     /// rebind scan/write passes gate on it the same way so a dead session is
     /// never rewritten and never classified Rebound.
     fn binding_owner_exists(&self, session_id: &str) -> bool {
+        match self.owner_record_state(session_id) {
+            OwnerRecordState::Live => true,
+            // Round-24 minor 2 (was round-20 minor 10 + round-21 SF-3):
+            // a non-NotFound stat error is treated as LIVE and logged.
+            // The conservative direction here is inclusion, not death: a
+            // transient EACCES blip must not silently drop a live
+            // session from the scan, both write passes, the fence and
+            // the post-lane rescan while the run reports success. A
+            // session included on a stale probe whose reads then fail is
+            // reported failed (retryable) by the passes themselves.
+            OwnerRecordState::ProbeError(kind) => {
+                eprintln!(
+                    "[codex] rebind owner probe failed, treating the session as live (io kind: {kind})"
+                );
+                true
+            }
+            // Read-side disposition: an invalid id owns nothing.
+            OwnerRecordState::NotFound | OwnerRecordState::InvalidId => false,
+        }
+    }
+
+    /// The shared owner-record probe (see `OwnerRecordState`): one path
+    /// derivation and one stat judgment for every caller. The test seam
+    /// (`OWNER_PROBE_DEAD_IDS`) applies to every consumer by construction.
+    pub(super) fn owner_record_state(&self, session_id: &str) -> OwnerRecordState {
         #[cfg(test)]
         if let Ok(armed) = OWNER_PROBE_DEAD_IDS.lock() {
             if armed.iter().any(|sid| sid == session_id) {
-                return false;
+                return OwnerRecordState::NotFound;
             }
         }
-        crate::features::sessions::validate_session_id(session_id).is_ok()
-            && match code_session_sidecar_root(&self.path)
-                .join(format!("{session_id}.json"))
-                .metadata()
-            {
-                Ok(meta) => meta.is_file(),
-                // Round-24 minor 2 (was round-20 minor 10 + round-21 SF-3):
-                // a non-NotFound stat error is treated as LIVE and logged.
-                // The conservative direction here is inclusion, not death: a
-                // transient EACCES blip must not silently drop a live
-                // session from the scan, both write passes, the fence and
-                // the post-lane rescan while the run reports success. A
-                // session included on a stale probe whose reads then fail is
-                // reported failed (retryable) by the passes themselves.
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-                Err(error) => {
-                    eprintln!(
-                        "[codex] rebind owner probe failed, treating the session as live (io kind: {})",
-                        error.kind()
-                    );
-                    true
-                }
+        if crate::features::sessions::validate_session_id(session_id).is_err() {
+            return OwnerRecordState::InvalidId;
+        }
+        match code_session_sidecar_root(&self.path)
+            .join(format!("{session_id}.json"))
+            .metadata()
+        {
+            Ok(meta) if meta.is_file() => OwnerRecordState::Live,
+            Ok(_) => OwnerRecordState::NotFound,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                OwnerRecordState::NotFound
             }
+            Err(error) => OwnerRecordState::ProbeError(error.kind()),
+        }
     }
 
     /// Directory rebind (broken-link repair): translates every project
@@ -1298,7 +1348,17 @@ impl SessionAgentStore {
 
     pub fn remove(&self, session_id: &str) -> Result<()> {
         let _section = self.lock_and_reload()?;
-        self.records.write().remove(session_id);
+        // Most purged sessions (plain chats) have no index entry; without
+        // this short-circuit every such purge would rewrite the whole index
+        // file for nothing, serialized inside the purge flow. It must sit
+        // AFTER `lock_and_reload`: only the fresh disk table proves durable
+        // absence. An in-memory miss on a boot-era snapshot proves nothing
+        // — a prior call whose persist failed leaves the entry on disk
+        // while memory already dropped it, and short-circuiting on that
+        // state would make the removal silently unretryable.
+        if self.records.write().remove(session_id).is_none() {
+            return Ok(());
+        }
         self.persist()?;
         // 删除会话时同步清理权威 sidecar，避免残留的 sidecar 让重建后的索引
         // 误恢复一个已删除的原生代码会话。
@@ -1391,6 +1451,15 @@ impl SessionAgentStore {
     /// 两类来源：sidecar 持久化修复前构建创建的存量会话从未写过 sidecar；绑定时
     /// sidecar 写失败只记日志未补写。索引记录 `code_session=true` 而 sidecar 缺失
     /// 时按索引补写；返回成功补写的数量（写失败已逐条记日志，不计入）。
+    ///
+    /// Ghost gate: index entries whose durable record `<id>.json` was already
+    /// deleted by retention are skipped as dead instead of being backfilled —
+    /// otherwise every boot would mass-"resurrect" long-evicted sessions as
+    /// dirs containing only `code-session.json`. This gate only skips and
+    /// counts; removing the entry itself belongs to the boot scan's prune.
+    /// The probe keeps `binding_owner_exists`'s conservative semantics: only
+    /// a real NotFound counts as dead, so a transient stat error never keeps
+    /// a live session from being backfilled.
     pub fn backfill_missing_code_session_sidecars(&self) -> Result<usize> {
         // Round-43 review: the boot-era snapshot must not decide which
         // sidecars are "missing" — a CLI `sessions delete` landing after
@@ -1403,11 +1472,20 @@ impl SessionAgentStore {
         let _section = self.lock_and_reload()?;
         let records = self.records.read().clone();
         let mut backfilled = 0usize;
+        let mut skipped_dead = 0usize;
         for (session_id, record) in records {
             if !record.mode.is_code() {
                 continue;
             }
             if read_code_session_sidecar(&self.path, &session_id).is_some() {
+                continue;
+            }
+            // Ghost gate: an entry whose durable record was deleted by
+            // retention gets no backfilled sidecar — that would resurrect a
+            // ghost dir under sessions/<id>/; removing the entry itself
+            // belongs to the boot scan's prune.
+            if !self.binding_owner_exists(&session_id) {
+                skipped_dead += 1;
                 continue;
             }
             if write_code_session_sidecar(
@@ -1419,6 +1497,11 @@ impl SessionAgentStore {
                 backfilled += 1;
                 eprintln!("[pinvou3-app] 回填原生代码会话 sidecar: {session_id}");
             }
+        }
+        if skipped_dead > 0 {
+            eprintln!(
+                "[pinvou3-app] backfill skipped {skipped_dead} native code session entries without a live owner record"
+            );
         }
         Ok(backfilled)
     }
@@ -3561,6 +3644,50 @@ mod tests {
     }
 
     #[test]
+    fn remove_retries_durable_cleanup_after_a_failed_persist() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-remove-persist-retry-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        store
+            .bind_code_native_session("session-1", CodexWorkspaceKind::Temporary, None)
+            .unwrap();
+        store
+            .bind_code_native_session("session-2", CodexWorkspaceKind::Temporary, None)
+            .unwrap();
+
+        // Review #690 (discussion_r4258007878): a persist failure between
+        // the in-memory removal and the durable rewrite leaves exactly this
+        // residue — the map already dropped the entry while the index file
+        // and the sidecar still hold it. The failing write itself is not
+        // fault-injected here (the fault boundary lives below the store);
+        // the residue state it leaves is arranged directly. The next
+        // remove — the purge flow's retry — must not accept memory absence
+        // as durable success.
+        store.records.write().remove("session-1");
+        assert!(read_code_session_sidecar(store.path(), "session-1").is_some());
+        store.remove("session-1").unwrap();
+
+        // The retry performed the full durable cleanup: the reloaded index
+        // no longer holds the removed entry ...
+        let index: serde_json::Value =
+            serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+        assert!(index["sessions"].get("session-1").is_none());
+        assert!(read_code_session_sidecar(store.path(), "session-1").is_none());
+        // ... and the unaffected survivor is intact on disk and in memory.
+        assert!(index["sessions"].get("session-2").is_some());
+        assert!(store.is_code_session("session-2"));
+        assert!(read_code_session_sidecar(store.path(), "session-2").is_some());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn code_native_sidecar_rejects_malformed_kind_path_combination() {
         let root = std::env::temp_dir().join(format!(
             "pinvou3-code-native-sidecar-malformed-test-{}",
@@ -3662,6 +3789,9 @@ mod tests {
         store
             .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
             .unwrap();
+        // session-1's durable record is still present (not evicted by
+        // retention): a missing sidecar is still backfilled from the index.
+        touch_owner_record(store.path(), "session-1");
         // 非代码会话不参与回填。
         store
             .set_acp_workspace(
@@ -3671,15 +3801,36 @@ mod tests {
                 None,
             )
             .unwrap();
+        // Replicate the leftover shape after a retention eviction: the index
+        // says code_session=true, but both the durable record <id>.json and
+        // the session dir <id>/ are gone (retention cleanup never touches
+        // the agents index).
+        store
+            .bind_code_native_session("session-3", CodexWorkspaceKind::Project, Some(root.clone()))
+            .unwrap();
+        fs::remove_dir_all(code_session_sidecar_root(store.path()).join("session-3")).unwrap();
         // 模拟存量会话/绑定时写失败：索引记录 code_session=true 但 sidecar 缺失。
         fs::remove_file(code_session_sidecar_path(store.path(), "session-1")).unwrap();
+        // Only session-1, whose durable record is still present, is
+        // backfilled; session-3 is a ghost entry and must be skipped — no
+        // rebuilt dir under sessions/<id>/, no fabricated sidecar (the very
+        // source of the boot-time mass resurrection of evicted sessions).
+        // Removing the leftover entry belongs to the boot scan's prune.
         assert_eq!(store.backfill_missing_code_session_sidecars().unwrap(), 1);
         let sidecar = read_code_session_sidecar(store.path(), "session-1")
             .expect("sidecar should be backfilled");
         assert_eq!(sidecar.version, CODE_SESSION_SIDECAR_VERSION);
         assert_eq!(sidecar.workspace_kind, CodexWorkspaceKind::Project);
         assert_eq!(sidecar.workspace_path.as_deref(), Some(root.as_path()));
-        // 幂等：sidecar 完好、非代码会话都不补写。
+        // The ghost entry stays dead: no sidecar, no resurrected session dir.
+        assert!(
+            !code_session_sidecar_root(store.path())
+                .join("session-3")
+                .exists()
+        );
+        assert!(read_code_session_sidecar(store.path(), "session-3").is_none());
+        // Idempotent: intact sidecars, non-code sessions and ghost entries
+        // are all left alone.
         assert_eq!(store.backfill_missing_code_session_sidecars().unwrap(), 0);
         fs::remove_dir_all(&root).unwrap();
     }
@@ -3699,6 +3850,9 @@ mod tests {
         store
             .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
             .unwrap();
+        // Durable record still present: only an old-version sidecar treated
+        // as missing goes through the backfill rewrite.
+        touch_owner_record(store.path(), "session-1");
         // 写入高于当前支持版本的 sidecar：拒读并按缺失处理，不能静默按 v1 解析。
         let future = CodeSessionSidecar {
             version: CODE_SESSION_SIDECAR_VERSION + 1,
