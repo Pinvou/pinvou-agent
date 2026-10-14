@@ -87,7 +87,6 @@ use objc2_core_foundation::{
 };
 use objc2_core_graphics::{CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess};
 use objc2_foundation::{NSPoint, NSSize, NSString};
-use xcap::Monitor;
 
 use super::super::backend::ComputerUseBackend;
 use super::super::types::{

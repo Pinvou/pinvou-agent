@@ -73,7 +73,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     GetDesktopWindow, GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId,
     SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
-use xcap::Monitor;
 
 use super::super::backend::ComputerUseBackend;
 use super::super::guard::raw_element_binding;
@@ -1261,6 +1260,8 @@ pub(super) fn create_backend() -> Result<Box<dyn ComputerUseBackend>, ComputerUs
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use xcap::Monitor;
 
     /// Unwrap [`MappedKey::Key`] (test helper).
     fn unwrap_mapped(plan: Result<MappedKey, ComputerUseError>) -> Option<enigo::Key> {
