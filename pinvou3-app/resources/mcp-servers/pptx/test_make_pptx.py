@@ -18,6 +18,7 @@ pptx 工具(make_pptx)测试用例 —— 覆盖本次 PR 的可确定性核心�
   9. MCP 协议冒烟(子进程):initialize / tools/list / tools/call(make_pptx)
   10. 非法 JSON 抢救 / 彻底空 loud error
   11. slides inputSchema.items 结构钉死(数组必须带具体类型 items)
+  12. 可选字段显式 null 安全(DeepSeek strict 模式把全部属性改 required+nullable)
 
 注意:测试把 PINVOU3_SESSION_ARTIFACTS 指向临时目录,不污染 ~/.pinvou3。
 """
@@ -292,6 +293,37 @@ def test_slides_schema_items_pin():
     assert series_items["properties"]["data"]["items"] == {"type": "number"}, "series.data items 应为 number"
     assert props["rows"]["items"]["type"] == "array" and props["rows"]["items"]["items"] == {"type": "string"}, \
         "rows 应为二维字符串数组,实际 %r" % props["rows"]
+
+
+# ── 12. 可选字段显式 null 安全(DeepSeek strict 把全部属性改 required+nullable,
+#        模型会对不用的字段显式发 "field": null;渲染层必须回退默认而不是炸页)──
+@case("12. 可选字段显式 null 渲染无错误占位页、无字面 None")
+def test_explicit_null_fields_render():
+    deck = _deck(
+        {"layout": "cover", "title": None, "subtitle": None, "date": None},
+        {"layout": "agenda", "title": None, "items": None},
+        {"layout": "section", "title": None},
+        {"layout": "bullets", "title": None, "bullets": None},
+        {"layout": "two_col", "title": None, "leftTitle": None, "left": None,
+         "rightTitle": None, "right": None},
+        {"layout": "kpi", "title": None, "items": [{"num": None, "label": None}, "68%"]},
+        {"layout": "chart", "title": None, "chartType": None, "categories": None, "series": None},
+        {"layout": "table", "title": None, "headers": None, "rows": None},
+        {"layout": "image", "title": None, "bullets": None, "caption": None, "image": None},
+        {"layout": "end", "title": None, "subtitle": None},
+    )
+    r = server.make_pptx(theme="business-blue", slides=deck, filename="test_null_fields")
+    assert r.get("ok") is True, "全 null 可选字段应 ok=True,实际 %r" % r
+    assert r["slides"] == 10, "页数应为 10,实际 %r" % r["slides"]
+    prs = Presentation(r["path"])
+    texts = [shape.text_frame.text
+             for slide in prs.slides for shape in slide.shapes if shape.has_text_frame]
+    joined = "\n".join(texts)
+    assert "本页渲染失败" not in joined, "任何一页都不应渲染失败: %s" % joined[:300]
+    assert "None" not in joined, "null 不应渲染成字面 None: %r" % [t for t in texts if "None" in t]
+    # null title 应回退各版式默认标题;kpi 的字符串元素(schema anyOf 允许)按大数字渲染
+    assert "未命名演示" in joined and "谢谢" in joined, "cover/end 的 null title 应回退默认标题"
+    assert "68%" in joined, "kpi 字符串元素应作为大数字渲染"
 
 
 # ── 跑全部 ───────────────────────────────────────────────────────────────

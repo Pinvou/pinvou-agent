@@ -170,12 +170,16 @@ def _title_block(slide, th, title):
 
 
 # ── 版式 ────────────────────────────────────────────────────────────────────
+# 字段读取一律 `s.get(k) or 默认` / `or []`,不要 `get(k, 默认)`:DeepSeek 严格
+# 工具模式会把 schema 里声明的全部属性改成 required+nullable(引擎的
+# enforce_strict_subset),模型对不用的字段会显式发 null —— dict.get 的默认值
+# 对"键存在但值为 null"不生效,会把 None 一路带进渲染。
 
 def layout_cover(slide, th, s):
     bg(slide, th["bg"])
     rect(slide, 0, 0, Inches(0.28), SLIDE_H, th["primary"])
     tf = textbox(slide, Inches(1.1), Inches(2.5), Inches(11.0), Inches(2.6), MSO_ANCHOR.MIDDLE)
-    para(tf, s.get("title", "未命名演示"), 46, th["ink"], bold=True, font=th["title_font"], first=True, space_after=14)
+    para(tf, s.get("title") or "未命名演示", 46, th["ink"], bold=True, font=th["title_font"], first=True, space_after=14)
     if s.get("subtitle"):
         para(tf, s["subtitle"], 22, th["muted"], font=th["body_font"])
     rect(slide, Inches(1.13), Inches(5.25), Inches(1.6), Inches(0.08), th["primary"])
@@ -203,7 +207,7 @@ def layout_section(slide, th, s):
     bg(slide, th["primary"])
     rect(slide, Inches(1.1), Inches(3.05), Inches(0.9), Inches(0.1), th["accent"])
     tf = textbox(slide, Inches(1.1), Inches(3.3), Inches(11), Inches(1.5))
-    para(tf, s.get("title", ""), 40, th["on_primary"], bold=True, font=th["title_font"], first=True)
+    para(tf, s.get("title") or "", 40, th["on_primary"], bold=True, font=th["title_font"], first=True)
 
 
 def layout_bullets(slide, th, s):
@@ -243,10 +247,14 @@ def layout_kpi(slide, th, s):
         x = x0 + i * (card_w + gap)
         rect(slide, x, y, card_w, h, th["light"])
         rect(slide, x, y, card_w, Inches(0.12), th["primary"])
+        # schema 的 items 是 string|{num,label} anyOf(共享 agenda 通道):字符串元素
+        # 按大数字渲染,dict 的 num/label 为 null 时回退空串,都不能崩。
+        num = str(it.get("num") or "") if isinstance(it, dict) else str(it)
+        label = str(it.get("label") or "") if isinstance(it, dict) else ""
         tfn = textbox(slide, x, y + Inches(0.55), card_w, Inches(1.1), MSO_ANCHOR.MIDDLE)
-        para(tfn, str(it.get("num", "")), 40, th["primary"], bold=True, align=PP_ALIGN.CENTER, font=th["title_font"], first=True)
+        para(tfn, num, 40, th["primary"], bold=True, align=PP_ALIGN.CENTER, font=th["title_font"], first=True)
         tfl = textbox(slide, x, y + Inches(1.65), card_w, Inches(0.6), MSO_ANCHOR.MIDDLE)
-        para(tfl, str(it.get("label", "")), 15, th["muted"], align=PP_ALIGN.CENTER, font=th["body_font"], first=True)
+        para(tfl, label, 15, th["muted"], align=PP_ALIGN.CENTER, font=th["body_font"], first=True)
 
 
 _CHART_TYPES = {
@@ -259,12 +267,12 @@ _CHART_TYPES = {
 def layout_chart(slide, th, s):
     bg(slide, th["bg"])
     _title_block(slide, th, s.get("title"))
-    ctype = _CHART_TYPES.get(s.get("chartType", "bar"), XL_CHART_TYPE.COLUMN_CLUSTERED)
+    ctype = _CHART_TYPES.get(s.get("chartType") or "bar", XL_CHART_TYPE.COLUMN_CLUSTERED)
     cd = CategoryChartData()
     cd.categories = s.get("categories") or []
     series = s.get("series") or []
     for ser in series:
-        cd.add_series(ser.get("name", ""), tuple(ser.get("data") or []))
+        cd.add_series(ser.get("name") or "", tuple(ser.get("data") or []))
     gframe = slide.shapes.add_chart(ctype, Inches(1.0), Inches(1.95), Inches(11.3), Inches(4.85), cd)
     chart = gframe.chart
     chart.has_legend = (len(series) > 1) or (ctype == XL_CHART_TYPE.PIE)
@@ -376,7 +384,7 @@ def layout_image(slide, th, s):
 def layout_end(slide, th, s):
     bg(slide, th["primary"])
     tf = textbox(slide, Inches(1), Inches(3.0), Inches(11.3), Inches(1.6), MSO_ANCHOR.MIDDLE)
-    para(tf, s.get("title", "谢谢"), 48, th["on_primary"], bold=True, align=PP_ALIGN.CENTER, font=th["title_font"], first=True)
+    para(tf, s.get("title") or "谢谢", 48, th["on_primary"], bold=True, align=PP_ALIGN.CENTER, font=th["title_font"], first=True)
     if s.get("subtitle"):
         para(tf, s["subtitle"], 18, th["light"], align=PP_ALIGN.CENTER, font=th["body_font"])
 
