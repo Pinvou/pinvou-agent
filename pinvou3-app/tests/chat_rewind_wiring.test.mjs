@@ -63,6 +63,15 @@ assert.match(webBridge, /stepBudgetNotice[\s\S]{0,240}if \(utext && !stepBudgetN
 // 必须在 rerender 的 user 分支里被调用（carrier check 在 bubble 创建前）。
 assert.match(tauriBridge, /if \(isCompactionCarrierBlocks\(blocks\)\) continue;/, 'tauri bridge：压缩载体必须在用户气泡创建前被过滤——禁用该行必须变红');
 assert.match(webBridge, /if \(isCompactionCarrierBlocks\(blocks\)\) continue;/, 'web bridge：压缩载体必须在用户气泡创建前被过滤——禁用该行必须变红');
+// r12 M3：invalidateSkippedCache 的调用形状锚——变异实证：改回读执行时刻的
+// depsRef.current.sessionId（r11-M1 修掉的回归形状）当前全绿。六个调用点
+// 必须传闭包局部 sessionId（回退发起时的目标会话 id，入口现取非陈旧捕获）。
+assert.doesNotMatch(controller, /invalidateSkippedBuffer\?\.\(depsRef\.current\.sessionId\)/,
+  '不得回读执行时刻的活动会话 id——那是 r11-M1 修掉的回归形状（目标会话漏失效 + 活动会话被误伤）');
+assert.match(controller, /invalidateSkippedCache\(sessionId\)/,
+  '调用点必须传闭包局部 sessionId（回退目标）——至少一处形状锚定');
+const invalidateCallCount = (controller.match(/invalidateSkippedCache\(sessionId\)/g) || []).length;
+assert.ok(invalidateCallCount >= 5, `六个调用点应至少有 5 处传闭包局部 sessionId，实际 ${invalidateCallCount}`);
 // r11 M4：frontendEcho 标记行的形状锚（变异实证：禁用标记行全绿）。标记必须
 // 在 pushUserBody 的 !persist 分支——回退为恒不标记即回滚 r5-M1。
 assert.match(tauriInteraction, /if \(!persist\) item\.frontendEcho = true;/, 'tauri 交互桥：persist=false 的回显必须标记 frontendEcho——禁用标记行必须变红');
