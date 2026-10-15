@@ -19,7 +19,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T07 | In progress | Signing/Root primitives and actual provider checks; complete production issuance composition remains pending |
 | T08 | In progress | Protected atomic metadata publication primitives; complete business publication workflows remain pending |
 | T09 | In progress | Bounded package/native-byte inspection; complete upload, quarantine and platform qualification remain pending |
-| T17 | In progress | Protected logical workflow and private initial installation; qualified check/refresh and handoff remain pending |
+| T17 | In progress | Protected logical workflow, private initial installation and atomic download handoff; qualified check/refresh composition remains pending |
 | T20 | In progress | Actual no-update/transaction and bounded Session/download-progress acceptance/recovery plus four original HTTP batch routes; remaining Session profiles, client queue and quality contribution remain pending |
 | T21 | In progress | Scoped quality projection/control primitives; complete quality evaluation and business composition remain pending |
 | T25 | In progress | Privacy/deduplication primitives; weekly provider configuration and complete business composition remain pending |
@@ -8181,3 +8181,128 @@ version or download-budget change is introduced. The forty-seven-task totals
 remain four implemented, twelve in progress and thirty-one not completed or
 deferred. Full T17/T20/T44, physical client qualification and deployment remain
 uncompleted; no hard total/cumulative download duration or retry cap is added.
+
+## T17 private atomic download handoff (2026-10-16)
+
+This bounded T17/T44 increment creates a new actual ordinary Session and fences
+the downloading source in the same T06 transaction as the workflow update,
+original association and immutable per-destination resume registration. It is
+a private prerequisite. Qualified check/refresh, current decision issue-time
+and signing composition, preparation acquisition, original resume-event
+acceptance, client continuation and quality contribution remain pending.
+
+Available normal/forced install and silent preinstall sources can hand off from
+download_started/deferred or their original expired states. Actual create_session
+provides the common new startedAt, old fencedAt and binding handedOffAt. Scope
+revision advances once. The source state, sequence, original start and complete
+logical context, hop, original stage/group/window and source observation times
+are preserved. New opaque lifecycle context/current preparation may differ,
+while each actual association independently binds its own Session. There is no
+total/cumulative download duration, retry or handoff-count cap; revision/resource
+bounds do not become artifact budgets.
+
+Readonly registration capture validates the actual destination and source
+Session/association, including install identity and source fence. Repeated
+handoff authenticates its prior immutable binding before replacing latest;
+historical bindings survive later handoffs and legitimate channel invalidation.
+Missing expected current registrations, fabricated sources and inaccessible or
+partial native catalogs fail closed. Observation clocks retain all actual
+source watermarks, including a later channel fence. These reads grant no resume
+event or execution permission.
+
+Explicit paired initialization holds shared locks, creates only from complete
+absence, verifies an existing pair without repair and refuses either one-sided
+installation without DDL/grants. New handoff capability requires lifecycle
+migration 15. Its additive overlay preserves the original channel signature and
+all existing invalidation logic, adding only valid authority-free fenced download
+sources to the complete inventory. Existing migration SQL bytes remain unchanged;
+runtime receives no new native write/execute rights and startup never initializes.
+Older exact-definition binaries fail closed; mixed-version operation is not
+qualified. Deployment remains deferred.
+
+Complete first-handoff joined references include the old-binding absence point
+(native inventory plus seven); repeated handoff additionally consumes the earlier
+source association (plus eight). Actual old/new capture union is bounded at
+4096 refs and 1 MiB encoded refs. Each lifecycle record retains 1 MiB, original
+association/binding 64 KiB and aggregate sources 32 MiB. Final capacity includes
+the old fenced body's growth and the actual new Session. The native result
+reserves maximum safe observation-clock width before its final owner/window
+guard. All compound state and T06 completion roll back together on refusal.
+
+Independent review identified and root repaired incomplete historical source
+authentication, previous-binding validation before replacement, one-sided
+initialization repair, post-handoff channel incompatibility, source-clock
+watermark loss and incomplete safe fence validation. Final test review also
+replaced a boolean-only competition result with exact SQL conflict checks and
+standalone full-write/rollback positives. A final source-channel-fence time
+lower bound was added after the first complete runtime run and independently
+reviewed. The bounded production/code/test audits have no remaining required
+static findings; independent runtime acceptance is recorded below.
+
+Root's first frozen-code actual PostgreSQL run passed eighteen new groups and
+three existing initial-creation/download-owner/HTTP groups, with seventy-seven
+child passes, zero skips and zero failures in 361.897s. After the final source
+fence clock guard, root passed all four directly affected groups in 31.237s,
+including exact source-only time regression and restored positives, current and
+historical binding tamper/restore, and direct/expired/repeated channel changes.
+The earlier full run is not described as an execution of the later guard.
+
+Actual resource checks use complete old/new capture unions: exact4096 refs,
+exact1MiB encoded refs and exact32MiB aggregate pass; one-item/one-byte excess
+rolls back. The aggregate negative isolates growth of the old fenced body after
+the actual initializer succeeds. Sixteen observed clock faults, two post-write
+lease losses, seventeen identity/CAS/epoch controls plus the separate event-owner
+policy refusal, both one-sided catalogs, rights/catalog drift and actual
+same/different-destination/progress/failure/timeout competition retain restored
+positives. Historical timestamps and unrelated resource rows do not establish
+qualified online decisions or physical multi-day downloads.
+
+On the final frozen code root passed the complete cleared-opt-in Go suite,
+module verification, complete vet, original pinned contract bytes/inventory,
+empty formatting for all twenty-eight changed Go sources and an actual service
+build. Thirty-two working/staged Go/SQL/reference hashes, three new SQL
+UTF-8/single-final-LF/no-CR checks and both whitespace checks passed. Client
+architecture and unchanged version 0.10.9 checks passed. Default opt-in skips
+are not actual database/provider/platform evidence.
+
+The final original Node comparison passed twelve genuinely signed mode/source
+profiles in 3.900s (the actual reference subtest took 2.63s), comparing complete
+Go handoff candidates, preserved source observations and original channel
+invalidation. It calls the normative signer/verifier and both original plans,
+and does not substitute a local model or claim current production qualification.
+
+The independent dependency role passed its final scoped code/test/doc audit and
+actual nine-group subset, with thirty child passes and zero skips in 106.605s.
+Its actual migration/safe-path regression passed two groups with zero skips in
+6.643s. Its independent original Node comparison passed twelve child cases in
+3.971s. Cleared affected defaults, affected vet, module verification, original
+pins/inventory, all twenty-eight Go sources' empty formatting, thirty-two
+working/staged frozen hashes, thirteen production hashes, new SQL byte format
+and both whitespace checks passed. Parent default passes containing skipped
+actual children are not database evidence. Every test/tool session and child
+process closed before the compatibility role received the exclusive runtime
+slot. Neither role's nine-group subset is reported as its own eighteen-group run.
+
+The independent compatibility role's actual run passed the complementary nine
+new groups and three existing initial-creation/download-owner/HTTP groups,
+with forty-seven child passes, zero skips and zero failures in 241.866s. Its
+independent original Node comparison passed twelve child cases in 4.121s.
+Together the two roles cover all eighteen new actual groups on the final
+frozen code, including the last source-channel-fence watermark guard.
+
+The compatibility role also passed cleared affected defaults, affected vet,
+module verification, original pinned bytes/inventory, twenty-eight-source empty
+Go formatting, thirty-two working/staged code hashes, thirteen production
+hashes, the three SQL byte-format checks and both whitespace checks. Its actual
+workers, fixture cleanups and all tool/Go/Node child processes closed before
+formally returning the exclusive runtime slot. It made no source edits.
+
+Both independent roles accept this bounded increment with no remaining required
+code/test findings. Their complementary actual subsets jointly cover the full
+new profile; skipped default children are not counted as integration execution.
+No wire contract, dependency or application version changes. The forty-seven
+task totals remain four implemented, twelve in progress and thirty-one not
+completed or deferred. Full T17/T20/T44, physical client qualification and
+deployment remain uncompleted; no hard total/cumulative download duration or
+retry cap is introduced. Continue the missing original resume edge and remaining
+task graph after committing this prerequisite.
