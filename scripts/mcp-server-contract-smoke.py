@@ -127,6 +127,77 @@ def content_json(response: dict) -> dict:
     return json.loads(content[0]["text"])
 
 
+# ── 模型可见 schema 契约 ────────────────────────────────────────────────
+# 背景(k3 slides:[] 事故):`type:"array"` 不带 items 时,Kimi 等受限解码通道
+# 会把参数补全成最小合法值 [](实测连续 27 次发出 slides:[]);而 `items:{}` 这类
+# 空节点会被 Moonshot MFJS 校验拒掉、整个工具被静默丢弃(#683)。两条都在这里
+# 门死:数组必须带具体类型的 items,且任何 schema 位置不得出现空节点。
+_MFJS_CONCRETE_TYPES = ("string", "number", "integer", "boolean", "object", "array", "null")
+
+
+def _schema_has_concrete_type(node) -> bool:
+    if not isinstance(node, dict) or not node:
+        return False
+    if node.get("type") in _MFJS_CONCRETE_TYPES:
+        return True
+    branches = node.get("anyOf")
+    if isinstance(branches, list) and branches:
+        return all(_schema_has_concrete_type(branch) for branch in branches)
+    return "$ref" in node
+
+
+def _walk_tool_schema(node, path: str, offenders: list[str]) -> None:
+    """只走 schema 值位置;enum/default/const/examples 里出现的 {} 是数据,不进。"""
+    if not isinstance(node, dict):
+        return
+    if not node:
+        offenders.append(f"{path}: 空 schema 节点(会被 MFJS 拒绝并静默丢工具)")
+        return
+    if node.get("type") == "array":
+        items = node.get("items")
+        if isinstance(items, list):
+            offenders.append(f"{path}: tuple 形式 items 不在 MFJS 允许集内")
+        elif not _schema_has_concrete_type(items):
+            offenders.append(
+                f"{path}: array 缺少带具体类型的 items(受限解码通道会补全成 [])"
+            )
+    for map_key in ("properties", "patternProperties", "$defs", "definitions", "dependentSchemas"):
+        subs = node.get(map_key)
+        if isinstance(subs, dict):
+            for name, sub in subs.items():
+                _walk_tool_schema(sub, f"{path}.{map_key}.{name}", offenders)
+    items = node.get("items")
+    if isinstance(items, list):
+        for index, sub in enumerate(items):
+            _walk_tool_schema(sub, f"{path}.items[{index}]", offenders)
+    elif isinstance(items, dict):
+        _walk_tool_schema(items, f"{path}.items", offenders)
+    if isinstance(node.get("additionalProperties"), dict):
+        _walk_tool_schema(node["additionalProperties"], f"{path}.additionalProperties", offenders)
+    for key in ("contains", "propertyNames", "not", "if", "then", "else"):
+        if isinstance(node.get(key), dict):
+            _walk_tool_schema(node[key], f"{path}.{key}", offenders)
+    for key in ("allOf", "anyOf", "oneOf"):
+        branches = node.get(key)
+        if isinstance(branches, list):
+            for index, sub in enumerate(branches):
+                _walk_tool_schema(sub, f"{path}.{key}[{index}]", offenders)
+
+
+def check_schema_contract(tool_id: str, tools: list) -> None:
+    offenders: list[str] = []
+    for tool in tools:
+        schema = tool.get("inputSchema")
+        name = tool.get("name", "?")
+        if not isinstance(schema, dict):
+            offenders.append(f"{tool_id}.{name}: inputSchema 缺失或不是对象")
+            continue
+        _walk_tool_schema(schema, f"{tool_id}.{name}", offenders)
+    assert not offenders, (
+        "模型可见 schema 违反契约:\n  " + "\n  ".join(offenders)
+    )
+
+
 def check_protocol(tool_id: str, expected_tools: set[str], env=None):
     with RpcServer(MCP_ROOT / tool_id, env) as rpc:
         initialized = rpc.call("initialize")
@@ -134,7 +205,8 @@ def check_protocol(tool_id: str, expected_tools: set[str], env=None):
         listed = rpc.call("tools/list")
         actual = {tool["name"] for tool in listed["result"]["tools"]}
         assert actual == expected_tools, (tool_id, actual)
-    print(f"✅ {tool_id}: initialize + tools/list ({len(expected_tools)})")
+        check_schema_contract(tool_id, listed["result"]["tools"])
+    print(f"✅ {tool_id}: initialize + tools/list ({len(expected_tools)}) + schema 守卫")
 
 
 def check_session_reader_length_cap_parity() -> None:
