@@ -243,7 +243,7 @@ export const dictZh = {
         kbLoadMoreFailedFiles: '加载更多失败文件', kbLoadingFailedFiles: '加载中…', kbLoadFailedFilesFailed: '加载失败文件失败',
         kbDeleteColl: '删除知识集', kbRemove: '移除', kbCollEmpty: '还没有文档，点「添加文件」加入。', kbNoCollFiles: '知识库里还没有文件', kbAllColls: '全部', kbDelCollConfirm: '确定删除知识集「{n}」？', kbDelCollWarn: '仅移除该知识集的索引（{c} 个文档的解析数据）；你磁盘上的原文件不会被删除。', kbDelete: '删除', kbRemoveDocConfirm: '从知识库移除「{n}」？', kbRemoveDocWarn: '仅删除该文件在知识库中的索引；磁盘上的原文件不受影响。', kbRemoveFailed: '移除失败', 
           kbCollNamePh: '知识集名称', kbCollCatPh: '分类（可选）', kbCancel: '取消', kbCreate: '创建',
-        kbEmbedOn: '语义检索已启用', kbEmbedOff: '语义检索未配置 · 全文模式',
+        kbEmbedOn: '语义检索已启用', kbEmbedOff: '语义检索未配置 · 全文模式', kbEmbedUnsupported: '当前平台暂不支持本地向量嵌入模型',
         kbModelTitle: '还未安装 Embedding 模型', kbModelDesc: '知识库的向量化与语义检索依赖本地 Embedding 模型。下载部署后即可创建知识库，让 AI 基于你的本地文件作答。',
         kbModelLoadingTitle: 'Embedding 模型正在加载', kbModelLoadingDesc: '正在初始化本地语义检索，请稍候。完成后知识库会自动恢复可用。', kbModelFailedTitle: 'Embedding 模型加载失败', kbModelFailedDesc: '可以先重试加载；若本地文件损坏或不完整，请重新下载并修复模型。',
         kbModelPkgName: 'PINVOU Embedding 模型', kbModelPkgSub: '多语言语义向量模型 · int8 量化 · 纯 CPU 本地运行',
