@@ -294,6 +294,17 @@ function auditDistCss(assetsDir) {
         `dist:${name}:${lineOfOffset(code, match.index).line}: inset shorthand survives the build — Safari 14.0 cannot parse it (needs 14.1); context: …${excerpt}…`,
       );
     }
+    // Cascade layers ship in Safari 15.4+ and lightningcss does not flatten
+    // them at cssTarget safari14; a Tailwind 4 build puts ~90% of its output
+    // inside @layer blocks, so any survivor means the macOS 11 / Safari 14.0
+    // floor renders unstyled (same verdict as the #665 TW4 investigation).
+    const layerIndex = code.indexOf('@layer');
+    if (layerIndex !== -1) {
+      const excerpt = code.slice(Math.max(0, layerIndex - 30), layerIndex + 50).replaceAll(/\s+/g, ' ');
+      violations.push(
+        `dist:${name}:${lineOfOffset(code, layerIndex).line}: @layer survives the build — cascade layers need Safari 15.4, below the Safari 14.0 floor; context: …${excerpt}…`,
+      );
+    }
   }
   return violations;
 }
