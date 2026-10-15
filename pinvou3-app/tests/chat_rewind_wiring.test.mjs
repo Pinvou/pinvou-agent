@@ -15,6 +15,13 @@ const codexView = source('features/codex/CodexAcpView.jsx');
 const controller = source('features/conversation/useRewindController.js');
 const rewindChip = source('features/conversation/RewindChip.jsx');
 const rewindDialogs = source('features/conversation/RewindDialogs.jsx');
+// r11 拆分形状锚：chips 文件只导出入口组件（弹窗已移 RewindDialogs.jsx 懒加载，
+// 不占启动主入口预算）；弹窗文件不导出 chips（防止拆分漂移回去）。
+assert.match(rewindChip, /export function RewindChip\(/, 'RewindChip.jsx 必须导出 RewindChip');
+assert.match(rewindChip, /export function RewindUndoChip\(/, 'RewindChip.jsx 必须导出 RewindUndoChip');
+assert.doesNotMatch(rewindChip, /export function RewindConfirmDialog\(/, '确认弹窗必须已拆出（不得留在启动路径的 chips 文件内）');
+assert.match(rewindDialogs, /export function RewindConfirmDialog\(/, 'RewindDialogs.jsx 必须导出确认弹窗');
+assert.match(rewindDialogs, /export function RewindUndoConfirmDialog\(/, 'RewindDialogs.jsx 必须导出撤销确认弹窗');
 
 // ── 运行时桥暴露锚定：ChatView 依赖的两个 bridge 方法必须真的在 TauriBridge
 // curated 对象上（静态源断言曾漏过此层——方法只存在于 feature registry 而
