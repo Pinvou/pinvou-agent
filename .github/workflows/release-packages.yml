@@ -160,24 +160,13 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          # The pinvou-knowledge:knowledge-host server builds cold in an isolated
-          # target dir; without a cache every release recompiles it from scratch
-          # (one of the three ELFs in the deb).
-          workspaces: |
-            pinvou3-app/src-tauri
-            pinvou-knowledge
-          # jammy 后缀:runner 从 24.04 降到 22.04 时必须换 key,防止 24.04
-          # glibc 环境编译的 target 产物被复用进 22.04 构建混入新符号引用。
-          shared-key: release-linux-x64-jammy
-          # save-if: false (2026-10 quota policy): four release caches × 1-2GB
-          # landing at once on a VERSION push burst-evicted the PR-gate caches
-          # (windows/macos/rust-test/lint) via the 10GB LRU — the same
-          # dynamics that left mac-build permanently cold. Releases are rare
-          # and pass cold; the restore side stays in case an entry exists.
-          save-if: false
+      # No rust-cache here: releases are strictly read-only against the cache
+      # (2026-10 quota policy, pinned by test_release_cache_policy). The
+      # restore-only steps that used to live here were removed on 2026-10-15 —
+      # zero release-* entries existed live (nothing has written them since the
+      # save side was disabled), so every restore was a guaranteed miss and the
+      # steps were dead weight. Re-adding caching to a release job needs a
+      # fresh look at the quota policy first.
 
       # pinvou3 编译链接的系统库(gtk/webkit/soup/rsvg/openssl/X11×3/appindicator),
       # ubuntu runner 默认没装;cmake:reqwest 的 rustls 用 aws-lc-rs,其 build script
@@ -214,8 +203,18 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: '24'
-          cache: 'npm'
-          cache-dependency-path: pinvou3-app/package-lock.json
+          # No npm cache. setup-node cannot be told not to save, so keeping
+          # cache: 'npm' re-mints a main-scope single-lockfile entry
+          # whenever the previous one is gone — evicted, or displaced by a
+          # lockfile hash change (scopes are refs: release jobs run in main
+          # scope alongside pr-check's push legs; an exact hit in scope
+          # skips the re-save, and the 0.10.11 macOS release leg genuinely
+          # restored 294MB from exactly such an entry). What the
+          # removal costs is seconds of npm ci on a rare job (cold npm ci
+          # measured 10-25s in the release runs); what it saves is ~0.2-0.3GB
+          # of per-release churn against the 10GB quota. Pinned by
+          # test_release_cache_policy; the other three release setup-node
+          # steps below carry the same policy via a pointer comment.
 
       - name: 安装前端依赖
         working-directory: pinvou3-app
@@ -323,17 +322,8 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          # Same as x64: also cache the pinvou-knowledge isolated target dir.
-          workspaces: |
-            pinvou3-app/src-tauri
-            pinvou-knowledge
-          # jammy 后缀:同 x64,换 runner 基座后必须换 key 防止旧 glibc 产物混链。
-          shared-key: release-linux-arm64-jammy
-          # save-if: false — same quota policy as release-linux-x64-jammy.
-          save-if: false
+      # No rust-cache here — same read-only quota policy as build-linux-x64
+      # (see that job's comment; pinned by test_release_cache_policy).
 
       - name: 装 Tauri + pinvou3 Linux 系统依赖
         run: |
@@ -367,8 +357,10 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: '24'
-          cache: 'npm'
-          cache-dependency-path: pinvou3-app/package-lock.json
+          # No npm cache — same policy and rationale as the first
+          # setup-node above (dropping it stops the per-release main-scope
+          # re-mint; the lost warmth is seconds of npm ci), pinned by
+          # test_release_cache_policy.
 
       - name: 安装前端依赖
         working-directory: pinvou3-app
@@ -497,20 +489,17 @@ jobs:
         shell: bash
         run: rustc -O pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.rs -o pinvou3-app/src-tauri/scripts/rustc-stack-wrapper.exe
 
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: pinvou3-app/src-tauri
-          shared-key: release-windows-x64
-          # save-if: false — same quota policy as release-linux-x64-jammy.
-          save-if: false
+      # No rust-cache here — same read-only quota policy as build-linux-x64
+      # (see that job's comment; pinned by test_release_cache_policy).
 
       - name: Node.js
         uses: actions/setup-node@v7
         with:
           node-version: '24'
-          cache: 'npm'
-          cache-dependency-path: pinvou3-app/package-lock.json
+          # No npm cache — same policy and rationale as the first
+          # setup-node above (dropping it stops the per-release main-scope
+          # re-mint; the lost warmth is seconds of npm ci), pinned by
+          # test_release_cache_policy.
 
       - name: 安装前端依赖
         working-directory: pinvou3-app
@@ -601,26 +590,15 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # No rust-cache here — same read-only quota policy as build-linux-x64
+      # (see that job's comment; pinned by test_release_cache_policy).
+
       # 实际构建工具链由 src-tauri/rust-toolchain.toml 锁定；必须在该目录下把双 target
       # 安装到 pinned toolchain。只给上面的 stable 引导工具链装 target 会导致 Tauri
       # 切换到 pinned toolchain 后找不到 x86_64 target。
       - name: 安装双 target (universal 构建)
         working-directory: pinvou3-app/src-tauri
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
-
-      - name: Rust cache
-        uses: Swatinem/rust-cache@v2
-        with:
-          # Same as the Linux release job: also cache the pinvou-knowledge
-          # isolated target dir.
-          workspaces: |
-            pinvou3-app/src-tauri
-            pinvou-knowledge
-          shared-key: release-macos-universal
-          # save-if: false — same quota policy as release-linux-x64-jammy: a
-          # 2GB+ macos save on each VERSION push was prime LRU-eviction fuel
-          # for the PR-gate caches.
-          save-if: false
 
       # The macOS 27+ strip=none workaround is removed: every stable toolchain
       # since 1.98 (2026-09) contains the Mach-O __LINKEDIT 8-byte alignment
@@ -633,8 +611,10 @@ jobs:
         uses: actions/setup-node@v7
         with:
           node-version: '24'
-          cache: 'npm'
-          cache-dependency-path: pinvou3-app/package-lock.json
+          # No npm cache — same policy and rationale as the first
+          # setup-node above (dropping it stops the per-release main-scope
+          # re-mint; the lost warmth is seconds of npm ci), pinned by
+          # test_release_cache_policy.
 
       - name: 安装前端依赖
         working-directory: pinvou3-app

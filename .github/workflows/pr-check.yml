@@ -1829,11 +1829,26 @@ jobs:
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
         with:
-          # This job compiles the CodeWhale Windows-only regression target as
-          # well as the application workspace. Cache both target directories.
+          # This job compiles the CodeWhale Windows-only regression target,
+          # the application workspace, AND the pinvou-cli workspace (the
+          # check leg's `cargo check --manifest-path pinvou-cli` plus the
+          # regression leg's filtered pinvou-cli test runs). Cache all three
+          # target directories: without the CLI entry every run cold-compiled
+          # the CLI dependency tree on the slowest leg — the sibling jobs
+          # that compile it (cli-lint, macos-cli-check; cli-test shares only
+          # the registry portion via cache-targets: false) cache it in
+          # their own namespaces, which this Windows job can never restore
+          # from, so this entry is the only Windows-side warmth the CLI can
+          # get. Quota note: this grows the namespace ~1GB,
+          # offset by pruning the release artifacts out of the
+          # macos-rust-check save (see that job; its shared-key rotation
+          # lands the shrink on the first post-merge push — rust-cache
+          # skips the save on an exact key hit, so a content-only prune
+          # needs the rotation to ever replace the old fat entry).
           workspaces: |
             pinvou3-app/src-tauri
             CodeWhale
+            pinvou-cli
           # Both legs restore the established namespace on their isolated
           # runners. Only the regression leg on main may save (it owns the
           # linked app and CodeWhale test artifacts), so the split adds

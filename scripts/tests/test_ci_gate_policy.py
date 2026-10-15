@@ -2516,6 +2516,45 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("WINDOWS_RUST_CACHE", windows_rust_test)
         self.assertIn("WINDOWS_RUST_TIMING", windows_rust_test)
         self.assertNotIn("actions/setup-node", windows_rust_test)
+        # The workspaces list must be EXACTLY the three compiled entries:
+        # the app workspace, the CodeWhale regression target, and pinvou-cli
+        # (check leg + filtered regression tests). Dropping an entry
+        # cold-compiles that workspace on the slowest leg again; adding one
+        # silently rotates the exact key and grows the quota on that leg.
+        # The block
+        # is extracted from the Cargo cache STEP and bounded by indentation
+        # (entry lines are indented deeper than the sibling `with:` keys):
+        # a first-occurrence "workspaces: |" split over the whole job could
+        # be captured by a decoy echo, and an exact-indent `shared-key:`
+        # end anchor breaks silently when the `with:` keys are reordered.
+        cargo_cache_step = windows_rust_test.split(
+            "- name: Cargo cache", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        self.assertIn(
+            "workspaces: |", cargo_cache_step,
+            "workspaces marker missing from the Cargo cache step — the "
+            "extraction below must fail, not widen",
+        )
+        workspaces_lines = cargo_cache_step.split(
+            "workspaces: |", maxsplit=1
+        )[1].splitlines()[1:]
+        workspaces_block = []
+        for line in workspaces_lines:
+            if line.strip() and not line.startswith("            "):
+                break
+            workspaces_block.append(line)
+        workspaces_text = "\n".join(workspaces_block)
+        workspaces_entries = sorted(
+            line.strip() for line in workspaces_block if line.strip()
+        )
+        self.assertEqual(
+            workspaces_entries,
+            ["CodeWhale", "pinvou-cli", "pinvou3-app/src-tauri"],
+            "the windows-rust-test cache must cache EXACTLY the three "
+            "compiled workspaces: a dropped entry cold-compiles its "
+            "workspace on every run, an extra entry silently rotates the "
+            "exact key and grows the quota on the slowest leg",
+        )
 
     def test_windows_regression_loop_pins_the_round43_and_round44_app_filters(self):
         # Round-44 review: six app-side cfg(windows) tests ran on no leg —
@@ -3517,9 +3556,11 @@ class ReleaseDiskAndImagePolicyTests(unittest.TestCase):
             self.assertIn("--min-free-gib 24", job)
             # Disk preparation must run before setup-node (the aggressive tier
             # deletes /opt/hostedtoolcache, and setup-node would re-download
-            # Node afterwards) and before the toolchain and the Rust cache
-            # land, so the free-space gate measures the disk the cold build
-            # actually gets.
+            # Node afterwards) and before the toolchain lands, so the
+            # free-space gate measures the disk the cold build actually
+            # gets. (The release jobs no longer restore a rust-cache —
+            # removed 2026-10-15, see test_release_cache_policy — so there is
+            # no cache-restore ordering left to pin.)
             self.assertLess(
                 job.index("python3 scripts/ci-rust-disk.py"),
                 job.index("uses: actions/setup-node"),
@@ -3527,10 +3568,6 @@ class ReleaseDiskAndImagePolicyTests(unittest.TestCase):
             self.assertLess(
                 job.index("python3 scripts/ci-rust-disk.py"),
                 job.index("uses: dtolnay/rust-toolchain"),
-            )
-            self.assertLess(
-                job.index("python3 scripts/ci-rust-disk.py"),
-                job.index("uses: Swatinem/rust-cache"),
             )
             self.assertIn("sudo apt-get autoremove -y --purge", job)
             self.assertIn("sudo apt-get clean", job)

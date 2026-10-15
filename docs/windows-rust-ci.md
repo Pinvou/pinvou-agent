@@ -117,15 +117,15 @@ path-depends on its crates.
 
 ## Cache
 
-`Swatinem/rust-cache@v2` stores `pinvou3-app/src-tauri` and `CodeWhale` in one
-entry under shared key `windows-rust-test`. CodeWhale is a path dependency,
-not an application-workspace member, so its required lib tests need their own
-target directory; including that directory in the existing entry is the
-minimum cache shape for this coverage, not a second cache. The first `main`
-run after adding CodeWhale to the entry may compile it cold and is expected
-to add about 0.8–2GB compressed. Restore-key fallback then reuses the entry
-across lockfile changes. Both legs restore the same entry on their isolated
-runners, but
+`Swatinem/rust-cache@v2` stores `pinvou3-app/src-tauri`, `CodeWhale`, and
+`pinvou-cli` in one entry under shared key `windows-rust-test`. CodeWhale is a
+path dependency, not an application-workspace member, so its required lib tests
+need their own target directory; including that directory in the existing entry
+is the minimum cache shape for this coverage, not a second cache. The first
+`main` run after adding CodeWhale to the entry may compile it cold and is
+expected to add about 0.8–2GB compressed. Restore-key fallback then reuses the
+entry across lockfile changes. Both legs restore the same entry on their
+isolated runners, but
 `save-if` only allows the `regression` leg on `refs/heads/main` to write it
 (that leg owns the linked application and CodeWhale test artifacts), so the
 split adds neither a second writer nor a new namespace, pull requests never
@@ -134,7 +134,10 @@ The saved entry holds the regression leg's build artifacts, so much of the
 dependency graph stays warm for the `all-targets-check` leg; the application
 crate's own `--all-targets --features dev-tools` metadata is the part compiled
 cold on every run. That residual cost is visible in the timing lines below.
-`pinvou-cli` has no separate cache. Node/npm setup is absent —
+The `pinvou-cli` workspace joined the entry on 2026-10-15 (both legs compile
+it — the check leg's manifest check and the regression leg's filtered CLI
+test runs — so its target directory needs caching here; before that every
+run cold-compiled the CLI tree on the slowest leg). Node/npm setup is absent —
 under the debug profile tauri's `generate_context!` uses `devUrl`, `dist/`
 is never packaged, and `build.rs` only depends on `tauri-build`/`cc` —
 saving 3-5 minutes per run.
