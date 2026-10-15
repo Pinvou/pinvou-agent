@@ -473,13 +473,13 @@ function documentFromMarkdown(markdown) {
   assert.match(timeline, /const copyButton = findCodeCopyButton\(event\.target\);\s*\n\s*if \(copyButton\) \{\s*\n\s*event\.preventDefault\(\);\s*\n\s*copyCodeBlockFromButton\(copyButton, \{ labels: copyLabels \}\)/);
   const copyProps = timeline.match(/streaming=\{item\.status === 'in_progress'\}\s*copy=\{copy\}/g) || [];
   assert.equal(copyProps.length, 2, 'both ConversationMarkdown branches (commentary and main) must pass copy');
-  assert.match(timeline, /\}, \[html, copyLabels\]\);/, 'the install effect must depend on copyLabels for label refresh');
+  assert.match(timeline, /\}, \[html, copyLabels, streaming\]\);/, 'the install effect must depend on copyLabels for label refresh');
   // 容器 div 的附件本身:ref/onClick 丢掉时 effect 内部与 onClick 函数体仍然完好,
   // 只有钉住挂接点才能拦住这种整体静默失效。
   assert.match(timeline, /ref=\{containerRef\}/, 'the container div must wire the ref used by the install effect');
   assert.match(timeline, /onClick=\{onClick\}\s*\n\s*dangerouslySetInnerHTML/, 'the container div must wire the delegated click handler');
   const chatView = source('features/chat/ChatView.jsx');
-  assert.match(chatView, /const target = assistantSelectionTargetRef\.current;\s*\n\s*if \(!target\) return;\s*\n\s*const labels = codeBlockCopyLabels\(t\.uiConversation\);\s*\n\s*ensureCodeCopyButtons\(target, labels\);\s*\n\s*return observeCodeCopyButtons\(target, labels\);/);
+  assert.match(chatView, /const target = assistantSelectionTargetRef\.current;\s*\n\s*if \(!target\) return;\s*\n\s*const labels = codeBlockCopyLabels\(t\.uiConversation\);\s*\n\s*ensureCodeCopyButtons\(target, labels\);\s*\n\s*(?:\/\/[^\n]*\n\s*)*applyStreamFade\(target, \{ streaming: !!item\.streaming \}\);\s*\n\s*return observeCodeCopyButtons\(target, labels\);/);
   assert.match(chatView, /const copyButton = findCodeCopyButton\(e\.target\);/);
   assert.match(chatView, /copyCodeBlockFromButton\(copyButton, \{ labels: codeBlockCopyLabels\(t\.uiConversation\) \}\)/);
   assert.match(chatView, /ref=\{assistantSelectionTargetRef\}/, 'the legacy bubble div must wire the ref used by its install effect');

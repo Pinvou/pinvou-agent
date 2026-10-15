@@ -37,6 +37,7 @@ import {
   findCodeCopyButton,
   observeCodeCopyButtons,
 } from './code-block-copy.js';
+import { applyStreamFade } from './stream-fade.js';
 import { createWeakCache } from '../../shared/weak-cache.js';
 import { assistantResponseAvailable, assistantResponseText } from './message-clipboard.js';
 import {
@@ -120,8 +121,17 @@ export function ConversationMarkdown({ text, className = '', onOpenExternal, onO
   // 容器内任何结构变化都幂等补装,卸载时断开。
   useEffect(() => {
     ensureCodeCopyButtons(containerRef.current, copyLabels);
+    // Wrap text streamed since the previous throttled render in one-shot fade
+    // spans; seen text never re-animates (offset bookkeeping in
+    // stream-fade.js). Runs before the observer below is (re)installed and the
+    // cleanup already disconnected the previous one, so the wrap's own
+    // mutations are not self-observed. `streaming` joins the deps because the
+    // completion flush may coincide with no html change (final text already
+    // rendered) and the streaming=false pass must still run to forget the
+    // fade bookkeeping.
+    applyStreamFade(containerRef.current, { streaming });
     return observeCodeCopyButtons(containerRef.current, copyLabels);
-  }, [html, copyLabels]);
+  }, [html, copyLabels, streaming]);
   const openLink = (event) => {
     const anchor = event.target && event.target.closest && event.target.closest('a[href]');
     if (!anchor) return;

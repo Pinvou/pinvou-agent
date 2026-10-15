@@ -41,6 +41,7 @@ import {
   findCodeCopyButton,
   observeCodeCopyButtons,
 } from '../conversation/code-block-copy.js';
+import { applyStreamFade } from '../conversation/stream-fade.js';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
 import {
   conversationItemsForMode,
@@ -4811,6 +4812,11 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
         if (!target) return;
         const labels = codeBlockCopyLabels(t.uiConversation);
         ensureCodeCopyButtons(target, labels);
+        // Wrap text streamed since the previous render in one-shot fade spans
+        // (no-op when nothing is new); runs before the observer below is
+        // (re)installed and the cleanup already disconnected the previous one,
+        // so the wrap's own mutations are not self-observed.
+        applyStreamFade(target, { streaming: !!item.streaming });
         return observeCodeCopyButtons(target, labels);
       });
 
