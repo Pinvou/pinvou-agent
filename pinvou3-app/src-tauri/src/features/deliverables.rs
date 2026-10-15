@@ -360,3 +360,39 @@ fn read_record_capped(path: &Path, cap: u64) -> RecordRead {
 pub(crate) fn list_deliverable_index_impl() -> Result<Vec<DeliverableItem>, String> {
     deliverable_index(None).map(|index| index.rows)
 }
+
+#[cfg(test)]
+mod capped_record_read_tests {
+    use super::{RecordRead, read_record_capped};
+
+    /// Boundary math of the capped record read: a record of exactly the cap
+    /// still reaches EOF inside the read (the `take(cap + 1)` headroom), one
+    /// byte past the cap reports `TooLarge` instead of returning truncated
+    /// text, and non-UTF-8 content keeps the silent-skip shape
+    /// (`Unreadable`) the uncapped `read_to_string` error path had.
+    /// Round-3 review: the CLI mirror's boundary unit test was deleted with
+    /// the mirror and the integration contract only exercises the stat-probe
+    /// skip, so the math is pinned here beside the shared implementation.
+    #[test]
+    fn capped_record_read_cuts_off_past_the_cap() {
+        let dir = tempfile::tempdir().expect("scratch dir");
+        let record = dir.path().join("s-1.json");
+        let body = r#"{"metadata":{"id":"s-1"}}"#;
+        std::fs::write(&record, body).expect("seed record");
+        let size = std::fs::metadata(&record).expect("stat record").len();
+
+        match read_record_capped(&record, size) {
+            RecordRead::Text(raw) => assert_eq!(raw, body),
+            other => panic!("a record of exactly the cap must read whole, got {other:?}"),
+        }
+        match read_record_capped(&record, size - 1) {
+            RecordRead::TooLarge => {}
+            other => panic!("a record past the cap must read as TooLarge, got {other:?}"),
+        }
+        std::fs::write(&record, b"\xff\xfe not utf8").expect("seed binary record");
+        assert!(matches!(
+            read_record_capped(&record, size),
+            RecordRead::Unreadable
+        ));
+    }
+}
