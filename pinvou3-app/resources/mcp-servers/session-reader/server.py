@@ -933,10 +933,11 @@ def list_sessions(sessions_dir, query=None, limit=DEFAULT_LIST_LIMIT,
     """Searches sessions by title (newest first). Returns (payload, error).
 
     allowed_sessions (scoped instances, ADR-0024): no directory scan —
-    exactly one metadata entry per scoped id that exists on disk (empty list
-    when the record is absent); query/limit are not search filters here (the
-    scope pins the answer set), which keeps "empty" meaning "record absent",
-    the cheap parent-exists probe."""
+    exactly one metadata entry per scoped id that exists on disk AND parses
+    (an absent, corrupt, or unreadable record all yield the empty list —
+    "empty" is NOT a parent-exists probe, only the absence of a readable
+    entry; round-7 minor 2); query/limit are not search filters here (the
+    scope pins the answer set)."""
     if allowed_sessions is not None:
         entries = []
         for scoped_id in sorted(allowed_sessions):

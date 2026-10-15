@@ -433,14 +433,14 @@ pub(crate) fn aux_allowed_tools(session_id: &str) -> Vec<String> {
 
 /// The per-turn view of the aux allowlist — demotion-aware, unlike the pure
 /// [`aux_allowed_tools`] projection. The scoped list applies only while the
-/// per-aux config file the spawn wrote is on disk: its presence is exactly
-/// the condition under which the spawn did NOT fail closed to ZeroTool
-/// (`atomic_write_private` leaves no valid file behind on failure, and the
-/// content is deterministic per aux id), so a demoted engine also receives
-/// turns with an empty allowlist instead of turns naming a tool its catalog
-/// does not carry. The probe can only NARROW: a missing file (write
-/// failure, later deletion) yields the empty list, and the engine's
-/// boot-time catalog remains the grant authority either way.
+/// per-aux config file the spawn wrote is on disk: presence means the spawn
+/// either did not fail closed, or failed closed after a previous successful
+/// spawn left a file behind — the demotion arm unlinks the stale file for
+/// exactly that sequence (`bridge.rs`, pinned; an unlink failure logs a
+/// warning and the execution-layer gate remains the fail-safe). The probe
+/// can only NARROW: a missing file (write failure, later deletion) yields
+/// the empty list, and the engine's boot-time catalog remains the grant
+/// authority either way.
 pub(crate) fn aux_turn_allowed_tools(session_id: &str) -> Vec<String> {
     match aux_tool_surface(session_id) {
         AuxToolSurface::ParentScopedRead { .. }

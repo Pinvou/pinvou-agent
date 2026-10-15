@@ -72,7 +72,7 @@ Data flow: aux panel send (unchanged wire) → pool `send_reserved_user_message`
 - **Union-gated kill switch**: turning off aux context requires disabling both `session-mention` and `long-memory` (v1); the scoped instance then returns `feature_disabled`. Not independent — R3.
 - **Rust shape pins on instruction/reminder text are `contains()`-vulnerable** (house-known gap from #433's register); accepted with disclosure.
 - **The aux transcript now contains tool_use/tool_result blocks** — the aux panel's chat-item projection has never rendered a tool call (the zero-tool era had none). Verified under A5; a minimal neutral rendering is acceptable v1 (the generic MCP tool card if it fits, else a plain system-style item). No first-party breakage is acceptable.
-- **Per-aux config files are not reclaimed on aux deletion** (review round-1 registered follow-up): `~/.pinvou3/mcp-sessions/<token>.json`, one tiny secret-free file (resolved paths + parent id) per task, persists after the aux session is deleted/reset — same retention stance as the browser per-session configs. Follow-up: delete the token file on the aux delete/reset paths.
+- **Per-aux config files are not reclaimed on aux deletion** (review round-1 registered follow-up): `~/.pinvou3/mcp-sessions/<token>.json`, one tiny secret-free file (resolved paths + parent id) per task, persists after the aux session is deleted/reset. The browser per-session configs are NOT the same stance — they get a boot-time reconcile sweep (`browser/mod.rs`); the aux files have no sweep at all (round-7 minor 5 correction). Follow-up: delete the token file on the aux delete/reset paths.
 - Zero CodeWhale changes (`fork-modifications.md` untouched); no new Tauri commands; no new events.
 
 ## 7. Acceptance matrix
@@ -122,7 +122,7 @@ Data flow: aux panel send (unchanged wire) → pool `send_reserved_user_message`
 | E3 | Scoped `list_sessions` | Exactly one entry (the scoped session); empty list when the record is absent | ● python `ScopedListTests` | P1 |
 | E4 | Feature gate in scoped mode | `session-mention`+`long-memory` both off → `feature_disabled` (union, per-call re-read) | ● python `ScopedFeatureGateTests` | P0 |
 | E5 | Untrusted envelope | Injection payloads inside the parent transcript pass through inside the untrusted framing (existing pattern, scoped variant) | ● python `ScopedUntrustedEnvelopeTests` | P0 |
-| E6 | Package re-release | manifest 1.1.0; `ensure_package_released` upgrades an existing install | ● smoke (`version` pin + the scoped journey) — the byte-compare upgrade path itself rides the existing `ensure_package_released` mismatch-rewrite tests; ○ manual dev-build half | P1 |
+| E6 | Package re-release | manifest 1.1.0; `ensure_package_released` upgrades an existing install | ● smoke (`version` pin + the scoped journey) + Rust `ensure_package_released_upgrades_a_stale_install_byte_compare` (the byte-compare upgrade leg, added in round 7); ○ manual dev-build half | P1 |
 
 ### F — instructions & reminder
 

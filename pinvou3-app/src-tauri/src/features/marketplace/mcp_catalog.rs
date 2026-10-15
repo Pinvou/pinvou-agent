@@ -366,4 +366,53 @@ mod tests {
         // 12 known embedded packages
         assert_eq!(MCP_PACKAGES.len(), 12);
     }
+
+    /// ADR-0024 E6: the byte-compare upgrade leg — an existing 1.0.0 install
+    /// (content mismatch vs the embedded 1.1.0 package) is re-released and
+    /// reports `true`; an up-to-date install reports `false` and is left
+    /// byte-identical. This is the "mismatch-rewrite" behavior the aux
+    /// config tests seed through.
+    #[test]
+    fn ensure_package_released_upgrades_a_stale_install_byte_compare() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-mcp-release-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        // Fresh release: created, reports true.
+        assert!(ensure_package_released("session-reader").expect("first release"));
+        let server_py = package_mcp_dir("session-reader").join("server.py");
+        let current = std::fs::read_to_string(&server_py).expect("released server.py");
+
+        // Idempotent re-release: byte-compare equal, reports false, untouched.
+        let before = std::fs::metadata(&server_py).unwrap();
+        assert!(!ensure_package_released("session-reader").expect("idempotent"));
+        let after = std::fs::metadata(&server_py).unwrap();
+        assert_eq!(
+            before.modified().ok(),
+            after.modified().ok(),
+            "an up-to-date install must not be rewritten"
+        );
+
+        // Stale install (1.0.0 shape: any byte drift): re-released, true.
+        std::fs::write(&server_py, "# stale 1.0.0 content\n").unwrap();
+        assert!(ensure_package_released("session-reader").expect("upgrade"));
+        assert_eq!(
+            std::fs::read_to_string(&server_py).unwrap(),
+            current,
+            "the stale install must be byte-restored to the embedded package"
+        );
+
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 }

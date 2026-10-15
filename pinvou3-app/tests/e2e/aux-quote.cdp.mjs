@@ -450,6 +450,11 @@ scenario('aux chat scoped tools: asking to run a command stays a Q&A turn', asyn
   // session-reader (read_session); a shell/command execution must never.
   // Rows are matched by their rendered title (the generic tool card titles
   // entries with the registry tool name, e.g. mcp_session-reader_read_session).
+  // Round-7 minor 6 caveat: this guard only sees rows that are EXPANDED or
+  // in-flight — a collapsed completed tool group does not render
+  // conversation-compact-item-toggle, so this is a best-effort sweep; the
+  // answer-text DSML regex above and the Rust spawn/per-turn pins are the
+  // load-bearing guarantees.
   const nonReaderRows = await evaluate(`(() => {
     const panel = document.querySelector('[data-testid="aux-chat-panel"]');
     if (!panel) return [];

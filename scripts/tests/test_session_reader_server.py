@@ -1637,6 +1637,54 @@ class OnlySessionArgTests(unittest.TestCase):
         for value in ["", "has space", "../escape", "aux帮", "x" * 129, "a/b"]:
             self.assertIsNotNone(server.validate_only_session(value), repr(value))
 
+    def test_empty_only_session_string_refuses_to_start(self):
+        # Round-7 minor 3: `--only-session=` (empty value) must refuse at
+        # startup — the `is not None` guard in main() is what stops an empty
+        # pin from silently degrading the instance to UNSCOPED; refactoring
+        # it to a truthiness check turns this red.
+        with tempfile.TemporaryDirectory() as sessions:
+            proc = subprocess.Popen(
+                [sys.executable, str(SERVER_PATH),
+                 "--sessions-dir", sessions, "--only-session="],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, encoding="utf-8",
+            )
+            _, stderr = proc.communicate(timeout=10)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("refusing to start", stderr)
+
+    def test_duplicate_only_session_flags_last_wins(self):
+        # argparse's default: a repeated single-value flag keeps the LAST
+        # value. Pin it so a future parser change (e.g. append semantics)
+        # cannot silently widen the scope.
+        sessions = tempfile.mkdtemp(prefix="pinvou3-dup-pin-")
+        self.addCleanup(shutil.rmtree, sessions, True)
+        _write_session(sessions, "parent01",
+                       [_msg("user", _text("q")), _msg("assistant", _text("a"))],
+                       title="dup pin parent")
+        proc = subprocess.Popen(
+            [sys.executable, str(SERVER_PATH),
+             "--sessions-dir", sessions,
+             "--only-session", "aux-evil", "--only-session", "parent01"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, encoding="utf-8",
+        )
+        try:
+            proc.stdin.write(json.dumps({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": server.PROTOCOL_VERSION,
+                           "capabilities": {},
+                           "clientInfo": {"name": "test", "version": "0"}},
+            }) + "\n")
+            proc.stdin.flush()
+            line = proc.stdout.readline()
+            self.assertTrue(line, "the last (valid) pin must boot normally")
+            self.assertEqual(json.loads(line)["result"]["serverInfo"]["name"],
+                             "pinvou3-session-reader")
+        finally:
+            proc.kill()
+            proc.communicate()
+
     def test_scoped_allowed_sessions_is_a_membership_set(self):
         # R2: the scope is stored set-ready — frozenset membership is the only
         # operation handlers perform, so widening --only-session later is a

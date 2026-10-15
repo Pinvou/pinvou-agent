@@ -1806,7 +1806,8 @@ mod tests {
         // The writer judges the launch target itself (round-3 MAJOR-2), so
         // the isolated home needs the released package the way the boot seed
         // would have produced it; the byte-compare release path is pinned
-        // separately by the `ensure_package_released` mismatch tests.
+        // separately by the `ensure_package_released` byte-compare upgrade
+        // test in `mcp_catalog.rs` (added in review round 7).
         crate::features::marketplace::mcp_catalog::ensure_package_released("session-reader")
             .expect("seed the released session-reader package");
 
@@ -1892,6 +1893,20 @@ mod tests {
             )
             .unwrap();
             let again = bundle.aux_mcp_config_path_for_session(aux_id, parent_id);
+            // Assert BEFORE restoring the dir (round-7 M1): the skip branch
+            // touches nothing, so the dir must still be 0500 here; a mutation
+            // that drops the identical-content early-return would chmod the
+            // dir back to 0700 (try_make_private_dir owns the dir) and this
+            // assertion turns red — the return value alone cannot see it.
+            let dir_mode_after = std::fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(
+                dir_mode_after, 0o500,
+                "the skip branch must not touch the directory (a rewrite path would re-chmod it)"
+            );
             std::fs::set_permissions(
                 path.parent().unwrap(),
                 std::fs::Permissions::from_mode(0o700),
