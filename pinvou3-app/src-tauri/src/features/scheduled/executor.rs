@@ -58,7 +58,9 @@ pub(crate) trait ScheduledConversationRuntime: Send + Sync {
     /// Delivers one scheduled message into the target session (the run body of a
     /// `session_message` kind task): steer into the current turn when the target is
     /// mid-turn, otherwise dispatch a new turn — the same delivery semantics as
-    /// features::messaging. No session is created for the run itself.
+    /// features::messaging, with one stated parity delta (doc §10.2): messaging
+    /// bounds each leg at 30s while steer and dispatch share one 30s budget here.
+    /// No session is created for the run itself.
     async fn deliver_session_message(
         &self,
         target_session: &str,
@@ -1169,9 +1171,13 @@ mod tests {
     /// isolated target FAILS the run and nothing is delivered. Removing the
     /// gate call (from the double or the live impl, see the source pin
     /// below) turns this red.
-    /// Round-4 M5: the executor's body belts are pinned — a stored empty or
+    /// Round-4 M5: the oversize body belt is pinned at run level — a stored
     /// oversized prompt (hand-edited store / older record, the exact
     /// scenario the belt exists for) fails the run without any delivery.
+    /// The belt's EMPTY arm has no run-level drive (the foundation queue
+    /// refuses empty prompts before the executor sees one) — it is driven
+    /// directly on the executor by
+    /// `session_message_empty_body_belt_fails_without_delivery` below.
     #[tokio::test]
     async fn session_message_run_fails_empty_and_oversized_bodies() -> Result<()> {
         // The empty arm cannot be driven through task creation (creation
@@ -1214,6 +1220,44 @@ mod tests {
             drop(root);
         }
         Ok(())
+    }
+
+    /// Review round-15 N10: the belt's EMPTY arm, driven directly on the
+    /// executor — the foundation queue refuses empty prompts, so the
+    /// run-level test above can only carry the oversize arm, while the
+    /// belt must still catch a blank body from a hand-edited store /
+    /// older record. Deleting the empty arm turns this red.
+    #[tokio::test]
+    async fn session_message_empty_body_belt_fails_without_delivery() {
+        for body in ["", "   "] {
+            let runtime = Arc::new(ScriptedRuntime::new([]));
+            let executor = ScheduledChatExecutor::new(runtime.clone());
+            let result = executor
+                .execute_session_message(
+                    "automation-1",
+                    "target001",
+                    body,
+                    CancellationToken::new(),
+                )
+                .await;
+            assert_eq!(
+                result.status,
+                TaskStatus::Failed,
+                "{body:?} body must fail at the belt"
+            );
+            assert!(
+                result
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("body is empty")),
+                "{body:?}: the failure names the empty belt: {:?}",
+                result.error
+            );
+            assert!(
+                runtime.deliveries().is_empty(),
+                "{body:?}: nothing may be delivered"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1285,6 +1329,30 @@ mod tests {
         assert!(
             gate < timeout && timeout < steer,
             "textual order is gate → timeout wrapper → steer/dispatch body"
+        );
+    }
+
+    /// Review round-15 N10: the delivery-failure reason passes through
+    /// `redact_secret` before it reaches the run record (app error chains
+    /// carry store paths and gate detail) — deleting the call kept every
+    /// behavioral test green, so the call site is pinned textually, the
+    /// same way as the live body above.
+    #[test]
+    fn delivery_failure_reason_is_redacted_in_source() {
+        let source = include_str!("executor.rs");
+        let body = source
+            .split("async fn execute_session_message")
+            .nth(1)
+            .expect("the session-message run body present");
+        let failure_arm = body
+            .find("Some(Err(error))")
+            .expect("the failure arm present");
+        let redact = body
+            .find("redact_secret(&format!(\"{error:#}\"))")
+            .expect("the failure reason must pass through redact_secret");
+        assert!(
+            failure_arm < redact,
+            "the redaction sits inside the delivery-failure arm"
         );
     }
 

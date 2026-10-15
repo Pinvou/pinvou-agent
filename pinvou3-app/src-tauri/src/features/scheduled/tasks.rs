@@ -534,6 +534,19 @@ impl ScheduledTaskState {
     ) -> Result<ScheduledTaskDto, String> {
         let _operation = self.lock_operation(&id).await;
         let manager = self.automations.lock().await;
+        // Round-15 minor 2: a permanently ABSENT task is named as such — the
+        // plain Display wrap below hides the io cause ("No such file"), so
+        // the watcher's poison classification never matched and an
+        // unknown-task update burned its whole 3-attempt budget on a
+        // permanent miss. The chain is inspected here, not leaked into the
+        // caller's error text; a present-but-unreadable record keeps the
+        // retry-classified wrap (the miss may be transient).
+        if let Err(err) = manager.get_automation(&id) {
+            if format!("{err:#}").contains("No such file") {
+                return Err(format!("scheduled task not found: {id}"));
+            }
+            return Err(format!("Failed to update scheduled task '{id}': {err}"));
+        }
         let requested_model_update = input.model.clone();
         let requested_model_id = input.model_id.clone();
         let requires_model_binding = requested_model_id.is_some();
@@ -4471,6 +4484,134 @@ mod tests {
             .await
             .expect("retarget");
         assert_eq!(retargeted.target_session.as_deref(), Some("target002"));
+
+        match &previous {
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Review round-15 R2: the kind-derivation matrix's three domain arms —
+    /// an explicit kind combined with `target_session`, an explicit
+    /// `session_message` kind, and an explicit blank target — must each
+    /// reject at the domain before anything persists. Dropping an arm re-opens
+    /// a silent-downgrade/silent-accept vector (e.g. a blank target would
+    /// create an ordinary task for a client that meant a scheduled message).
+    #[tokio::test]
+    async fn session_message_kind_derivation_domain_arms_are_rejected() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_home();
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+
+        let sessions = SessionStore::boot_for_process_startup().expect("sessions store");
+        let state = ScheduledTaskState {
+            automations: Arc::new(tokio::sync::Mutex::new(
+                AutomationManager::open(scheduled_automation_root()).expect("automations"),
+            )),
+            task_manager: None,
+            sessions: sessions.clone(),
+            read_state: ScheduledRunReadStore::open(
+                crate::platform::paths::scheduled_run_read_state_path(),
+            )
+            .expect("read state"),
+            model_bindings: ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
+                .expect("model bindings"),
+            task_kinds: ScheduledTaskKindStore::open(scheduled_task_kinds_path())
+                .expect("task kinds"),
+            ui_metadata: ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
+                .expect("ui metadata"),
+            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
+                .expect("history archive"),
+            operation_locks: Arc::new(ParkingMutex::new(HashMap::new())),
+            pool: None,
+            fallback_model: "fallback-model".to_string(),
+            scheduler_cancel: None,
+            scheduler_handle: Arc::new(SyncMutex::new(None)),
+            retention_handle: Arc::new(SyncMutex::new(None)),
+            creation_watch: Arc::new(SyncMutex::new(None)),
+        };
+        // The mutual-exclusion arm validates the target before rejecting the
+        // combination, so the ordinary target session must exist.
+        let session_file = crate::platform::paths::sessions_root().join("target001.json");
+        std::fs::create_dir_all(crate::platform::paths::sessions_root()).unwrap();
+        std::fs::write(
+            &session_file,
+            r#"{"schema_version":1,"metadata":{"id":"target001","title":"目标","created_at":"2026-10-15T00:00:00Z","updated_at":"2026-10-15T00:00:00Z","message_count":0,"total_tokens":0,"model":"test-model","workspace":"/tmp/target-workspace"},"messages":[],"system_prompt":null}"#,
+        )
+        .unwrap();
+
+        let input = |kind: Option<&str>, target: Option<&str>| CreateScheduledTaskInput {
+            name: "派生矩阵".to_string(),
+            prompt: "问一下进展".to_string(),
+            rrule: "FREQ=HOURLY;INTERVAL=6".to_string(),
+            cwds: Vec::new(),
+            kind: kind.map(str::to_string),
+            target_session: target.map(str::to_string),
+            model: None,
+            model_id: None,
+            mode: None,
+            allow_shell: None,
+            trust_mode: None,
+            auto_approve: None,
+            paused: Some(false),
+        };
+
+        // Arm 1: an explicit kind cannot ride with a target_session — the
+        // target's presence derives the kind, so the pair is contradictory.
+        let error = state
+            .create_for_test(input(
+                Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE),
+                Some("target001"),
+            ))
+            .await
+            .expect_err("kind + target must be mutually exclusive");
+        assert!(
+            error.contains("an explicit kind cannot be combined with target_session"),
+            "{error}"
+        );
+
+        // Arm 2: the session_message kind itself is never nameable — passing
+        // the target is the only way to create one.
+        let error = state
+            .create_for_test(input(Some(SCHEDULED_TASK_KIND_SESSION_MESSAGE), None))
+            .await
+            .expect_err("explicit session_message kind must be rejected");
+        assert!(
+            error.contains("pass target_session to create a scheduled-message task"),
+            "{error}"
+        );
+
+        // Arm 3: an explicit blank target is a client bug — it must error,
+        // not silently downgrade to an ordinary task (whitespace exercises
+        // the trim).
+        for blank in ["", "   "] {
+            let error = state
+                .create_for_test(input(None, Some(blank)))
+                .await
+                .expect_err("blank target must be rejected");
+            assert!(
+                error.contains("target_session cannot be blank"),
+                "{blank:?}: {error}"
+            );
+        }
+
+        assert!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .unwrap()
+                .is_empty(),
+            "no rejected arm may persist a task"
+        );
 
         match &previous {
             // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
