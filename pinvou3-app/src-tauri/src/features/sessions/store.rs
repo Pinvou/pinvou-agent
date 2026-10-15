@@ -866,6 +866,34 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Persist the provider route the engine spawn actually resolved onto the
+    /// session record (same load→patch→persist pattern as [`Self::set_title`]).
+    ///
+    /// The foundation's create path
+    /// (`create_saved_session_with_id_and_mode`) stamps every new record with
+    /// the engine default `model_provider = "deepseek"`; the app resolves the
+    /// real route only at spawn, so without this write a session riding the
+    /// moonshot/zai/... wire reads back as "deepseek" and misleads diagnosis.
+    /// The value comes verbatim from `DtConfig.provider` (`build_dt_config` /
+    /// `engine_route_provider`), keeping the engine side the source of truth
+    /// for the field semantics (foundation `SessionMetadata` model_provider /
+    /// model_provider_id). `model_provider_id` stays `None`: app routes key
+    /// the engine provider table by the resolved kind itself, so there is no
+    /// per-session exact configured provider key to record.
+    pub fn stamp_resolved_provider(&self, id: &str, provider: &str) -> Result<()> {
+        let _mutation = self.scheduled_mutation.lock();
+        let mut session = self
+            .manager
+            .load_session_snapshot(id)
+            .with_context(|| format!("load_session({id}) for provider stamp"))?;
+        session.metadata.model_provider = provider.to_string();
+        session.metadata.model_provider_id = None;
+        // In-place metadata rewrite: no session created or removed, so the
+        // post-persist retention rescan is skipped (round-18 MAJOR-4).
+        self.persist_in_place(&session, "provider stamp")?;
+        Ok(())
+    }
+
     /// Artifact-path rebase for directory rebind (review #463 round-10
     /// Major 2): `SavedSession.artifacts[].storage_path` persists absolute
     /// workspace paths for deliverables, and without this pass every

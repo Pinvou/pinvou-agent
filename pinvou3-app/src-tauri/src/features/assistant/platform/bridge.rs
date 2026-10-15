@@ -9784,6 +9784,12 @@ mod tests {
                 ApiProvider::Moonshot,
             ),
             (
+                "k3",
+                "https://api.kimi.com/coding/v1",
+                "moonshot",
+                ApiProvider::Moonshot,
+            ),
+            (
                 "tc-code-latest",
                 "https://api.lkeap.cloud.tencent.com/coding/v3/chat/completions",
                 "openai",

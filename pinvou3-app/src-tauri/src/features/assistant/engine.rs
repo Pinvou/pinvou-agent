@@ -1803,6 +1803,28 @@ impl AppEngine {
 
         let workspace = engine_config.workspace.clone();
         let handle = spawn_engine(engine_config, &dt_config);
+        // Forensic metadata only (no wire/route effect): record the provider
+        // route this spawn resolved — the exact `build_dt_config` value the
+        // engine will run on (`cfg.provider`, e.g. "moonshot") — onto the
+        // session record. The foundation's create path stamps the engine
+        // default ("deepseek") into every new record, which misleads diagnosis
+        // when the session actually rides another vendor's route. Fail-soft by
+        // contract: a stamp failure must never break or abort the spawn.
+        if let Some(provider) = dt_config
+            .provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|provider| !provider.is_empty())
+        {
+            if let Err(error) = store.stamp_resolved_provider(session_id, provider) {
+                // eprintln, not log: the headless host installs no logger, and
+                // every other diagnostic in this file uses eprintln for the
+                // same reason.
+                eprintln!(
+                    "[pinvou3-app] session {session_id} resolved-provider stamp failed: {error:#}"
+                );
+            }
+        }
         let (turn_events, _) = broadcast::channel(32);
         let scheduled_unattended = Arc::new(AtomicBool::new(false));
         let forwarder = spawn_event_forwarder(

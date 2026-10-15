@@ -3105,6 +3105,51 @@ fn set_title_updates_metadata() {
     assert_eq!(loaded.metadata.title, "改个名字");
 }
 
+/// The engine spawn path must record the provider route it actually resolved
+/// onto the session record. The foundation create path stamps the engine
+/// default ("deepseek") into every new record; a session bound to a
+/// vendor-kimi saved model ("k3" on the Kimi Coding Plan, whose resolved
+/// route the bridge pins to "moonshot" in
+/// coding_plan_vendor_routes_reasoning_without_model_name_heuristics) must
+/// read back as "moonshot" after the spawn-time stamp, survive a store
+/// reopen, and the stamp must fail soft — an unstampable session errors
+/// instead of panicking or touching any record (the spawn caller logs and
+/// continues, never aborting the spawn).
+#[test]
+fn stamp_resolved_provider_records_vendor_route_over_engine_default() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("k3".into(), None, std::env::temp_dir())
+        .expect("create");
+    // Baseline poison being fixed: creation itself cannot know the route and
+    // carries the foundation default.
+    assert_eq!(s.metadata.model_provider, "deepseek");
+    assert_eq!(s.metadata.model_provider_id, None);
+
+    store
+        .stamp_resolved_provider(&s.metadata.id, "moonshot")
+        .expect("stamp resolved provider");
+    let loaded = store.load(&s.metadata.id).expect("load");
+    assert_eq!(loaded.metadata.model_provider, "moonshot");
+    assert_eq!(loaded.metadata.model_provider_id, None);
+
+    // The stamp is forensic data: it must survive an app restart.
+    let reopened = reopen_store(&store).expect("reopen");
+    let reloaded = reopened.load(&s.metadata.id).expect("reload");
+    assert_eq!(reloaded.metadata.model_provider, "moonshot");
+    assert_eq!(reloaded.metadata.model_provider_id, None);
+
+    // Fail-soft seam contract: an absent record is a clean Err — no panic,
+    // no write — so the spawn caller can log and continue.
+    let error = reopened
+        .stamp_resolved_provider("no-such-session", "moonshot")
+        .expect_err("stamping an absent session must fail soft");
+    assert!(
+        error.to_string().contains("provider stamp"),
+        "error must name the stamp step: {error:#}"
+    );
+}
+
 #[test]
 fn touch_activity_updates_timestamp_without_mutating_conversation() {
     let (store, _g) = isolated_store();
