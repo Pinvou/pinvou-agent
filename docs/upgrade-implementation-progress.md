@@ -5,14 +5,30 @@ Tasks are completed individually only after in-scope independent code review,
 repairs, applicable tests and commit/push. Contract completion is not production
 client, service, physical platform certification or rollout readiness.
 
+Current task totals: 47 tasks; four implemented, twelve in progress and
+thirty-one not completed or deferred. Detailed chronological evidence follows
+the current overview; a completed bounded batch does not complete its whole task.
+
 | Task | Status | Delivery / outstanding dependency |
 |---|---|---|
 | T01 | Implemented; independently reviewed and verified | Executable metadata/credential Schemas, byte/trust profile, reference verifier, independently verified fixed vectors and local CLI E2E |
 | T02 | Implemented; independently reviewed and verified | Closed control APIs, publication/lifecycle/selection/quality reference models and regression tests; no production service implementation |
-| T03閳ユ彑04 | Not completed | Platform/data scope, measured preparation budgets and trustworthy time evidence remain pending; follow the task graph |
+| T03 / T04 | Not completed | Platform/data scope, measured preparation budgets and complete platform/package qualification remain pending; follow the task graph |
 | T05 | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
 | T06 | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
-| T07閳ユ彑47 (including final T43) | Not completed | Follow the task graph; no runtime or certification completion is claimed |
+| T07 | In progress | Signing/Root primitives and actual provider checks; complete production issuance composition remains pending |
+| T08 | In progress | Protected atomic metadata publication primitives; complete business publication workflows remain pending |
+| T09 | In progress | Bounded package/native-byte inspection; complete upload, quarantine and platform qualification remain pending |
+| T17 | In progress | Protected logical workflow and private initial installation; qualified check/refresh and handoff remain pending |
+| T20 | In progress | Actual no-update/transaction acceptance and recovery, plus Session observations; Session atomic acceptance and other profiles/client queue remain pending |
+| T21 | In progress | Scoped quality projection/control primitives; complete quality evaluation and business composition remain pending |
+| T25 | In progress | Privacy/deduplication primitives; weekly provider configuration and complete business composition remain pending |
+| T26 | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
+| T27 | In progress | Contract/trust/response checks and fixed control POST; complete protected client workflow remains pending |
+| T29 | In progress | Download/cache/byte-verification primitives; complete host download/continuation workflow remains pending |
+| T44 | In progress | Actual protected lifecycle commands; remaining complete task acceptance/composition is not claimed |
+| T47 | In progress | Protected rollout lifecycle primitives; remaining complete task acceptance/composition is not claimed |
+| T10–T16, T18–T19, T22–T24, T28, T30–T43, T45–T46 | Not completed or deferred | Twenty-nine other tasks retain the task graph's dependencies; T42 deployment is explicitly deferred |
 
 Confirmed implementation decisions (2026-10-09):
 
@@ -7725,3 +7741,87 @@ Handoff, general Session reception, production HTTP/signing, quality contributio
 and deployment remain outside this batch. T17 remains in progress; the 47-task
 totals remain four implemented, twelve in progress and thirty-one not completed
 or deferred. No application version, protocol contract or dependency change.
+
+## T20 workflow-aware Session observation (2026-10-15)
+
+This bounded prerequisite adds pure Session event calculation and an actual
+protected PostgreSQL read source for available normal/forced install and silent
+preinstall. It returns candidates only. The fixed atomic acceptance owner,
+sealed recovery, production endpoint and client upload queue remain pending;
+neither T17 nor T20 is promoted to completed.
+
+Original signature, current published Root, role deny and immutable actual T44
+Session lineage precede permanent receipt lookup. Exact original receipt replay
+repeats current proof without reading workflow or cursor, including when the
+workflow catalog is unavailable. Current denial and original upload expiry still
+apply. New events require the actual protected workflow, original association,
+same actual Session and exact original diagnostic cursor. Final proof and safe,
+nondecreasing SQL time follow the reads. Complete joined references deduplicate
+only identical points and enforce 4096 references and 1 MiB canonical bytes.
+
+An inert workflow reader constructor avoids both premature workflow checks on
+replay and a second transaction while an owner holds the sole pool connection.
+The original constructor preserves eager readiness checks, and every actual
+Read/Capture preserves original catalog, role and transaction guards. No SQL,
+migration, writer grant, protocol, dependency or command registration changes.
+
+Live events calculate original T44 edges, normal confirmation and the first
+workflow failure. Lawful late events calculate diagnostics without reviving the
+old Session. Cursor state/sequence precede absent pre-terminal history; shared
+freeze, boundary, health and byte anchors retain their original meaning. Unused
+zero/preinstall freeze anchors do not become Session execution authority. Only
+the original backup edges consume the freeze guard. Already ended workflows
+retain their first failure. New progress/task, activation and protected
+resume/staged transitions are explicitly outside this local-state profile.
+
+Root compared 182 cases against the pinned original full Node planEvent with
+genuine signed original credentials and schemas; all passed together with eight
+pure domain groups in 42.098s. Comparison covers complete receipt/workflow/cursor
+candidates and the Session revision/state/sequence/freeze projection, not the
+original model's additional ledger/outbox/contribution atomic write set.
+
+Root's combined actual PostgreSQL run passed all twelve top-level groups with
+zero skips in 105.352s: nine new Session observation groups and three related
+workflow constructor/migration regressions. Coverage includes all three modes,
+late facts, receipt-before-workflow, current deny, cutoff equality, missing
+association, sole-connection operation, catalog/privilege restoration, continuous
+late cursors and preserved shared anchors. Actual joined count/byte overflow
+tests first prove both source subsets independently readable, then refuse only
+the oversized union and restore exact-limit positives. A point-read delay lets
+an actually published Root expire before final proof; the actual clock and
+source are not replaced, and refusal leaves no writes.
+
+Protected historical receipt/cursor and terminal resource fixtures certify
+observation, not production qualification, credential issuance or acceptance.
+Default integration skips do not provide actual database evidence. Download
+continuation retains no total/cumulative duration or retry cap. The 47-task
+totals remain four implemented, twelve in progress and thirty-one not completed
+or deferred.
+
+Root's complete default Go suite passed with all actual/reference opt-ins
+cleared (events 9.433s, event PostgreSQL adapter 2.431s, metadata PostgreSQL
+2.329s and workflow 2.313s). Module verification, complete vet, server build,
+original pinned bytes/inventory, all eleven Go files' empty formatting and diff
+checks passed. Client architecture and unchanged version 0.10.9 checks passed.
+
+The dependency role's final scoped audit passed without required findings or
+source/test edits. Its actual twelve-group run passed without skips in 89.839s;
+its explicitly enabled original Node 182 cases and eight pure groups passed in
+43.689s. Cleared-opt-in affected default packages passed (events 9.975s, event
+PostgreSQL adapter 2.027s, workflow 2.043s and metadata PostgreSQL 2.119s), as did
+affected vet, exact pins, all eleven Go files' empty formatting and diff checks.
+Default actual parent containers with skipped children provide no database
+evidence. All dependency sessions and child processes closed before the second
+independent role received the exclusive execution slot.
+
+The compatibility role's final scoped audit also passed without required
+findings or edits. Its actual twelve-group run passed without skips in 94.812s;
+the explicit original Node 182 cases and eight pure groups passed in 41.979s.
+Cleared-opt-in defaults passed (events 9.432s, event PostgreSQL adapter 1.638s,
+workflow 1.908s and metadata PostgreSQL 2.192s), along with affected vet, exact
+pins, all eleven Go files' empty formatting and diff checks. Within the nine new
+actual groups, the default run skips eight top-level groups and all five children
+across the suite; the ninth parent passes with both capacity children skipped.
+It is not actual integration evidence. All root and both reviewers' execution
+sessions/child processes closed before commit
+preparation. Both independent roles accept this observation/calculation batch.
