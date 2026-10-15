@@ -234,6 +234,11 @@ pub fn deliverable_index(only_session: Option<&str>) -> Result<DeliverableIndex,
 
         for art in view.artifacts {
             let p = &art.storage_path;
+            // A per-artifact stat failure (file vanished between readdir and
+            // metadata, or an unreadable path) skips just that row — unlike
+            // the whole-record skips above, it is silent by design: the
+            // deliverable's own row would only mislead while its siblings
+            // stay listable.
             let Ok(meta) = std::fs::metadata(p) else {
                 continue;
             };

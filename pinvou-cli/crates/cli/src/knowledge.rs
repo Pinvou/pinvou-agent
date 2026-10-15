@@ -663,7 +663,7 @@ fn model_download_unavailable() -> CliError {
     CliError::failed(
         "knowledge_backend_unavailable: model download needs the download + verify + deploy \
          orchestration in features/knowledge/model_download.rs::kb_model_download, which is \
-         built on private statics (DOWNLOADING/CANCEL/MODEL_LOAD) and private helpers \
+         built on private statics (DOWNLOADING/MODEL_LOAD/MODEL_LOAD_ERROR) and private helpers \
          (uses_external_model_dir, deploy_validated_model) that the \
          parent mod.rs cannot reach, so a headless wrapper cannot reuse or share the cancel \
          state (kb_model_cancel could not cancel it, model status.downloading could not see \

@@ -3795,9 +3795,9 @@ impl EnginePool {
     /// reclaim the engine between reserve and send (attachment resolution
     /// and other time-consuming steps sit in that window). `role` only
     /// names the admission in the deleted-session error ("turn" / "edit" /
-    /// "eval turn"). Returns the reservation for the caller's divergent
-    /// tail; the eval lane's session ids are never `sched-`, so its
-    /// scheduled arm is a no-op.
+    /// "eval turn"). Returns the reservation with the held turn gate for the
+    /// caller's divergent tail; the eval lane's session ids are never
+    /// `sched-`, so its scheduled arm is a no-op.
     /// Admit a reserved turn under the session turn gate and return the gate
     /// with the reservation. The caller MUST keep the returned guard alive
     /// until the engine submission is enqueued: the cascade-cancel ordering
