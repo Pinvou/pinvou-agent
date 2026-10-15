@@ -1375,6 +1375,7 @@ pub struct GeneralSettingsPatch {
     pub memory_enabled: Option<bool>,
     pub notifications: Option<NotificationPrefs>,
     pub sidebar: Option<SidebarPrefs>,
+    pub chat: Option<ChatPrefs>,
     pub advanced: Option<AdvancedPrefs>,
 }
 
@@ -1420,6 +1421,9 @@ fn apply_general_settings_patch(current: &mut UserPrefs, patch: GeneralSettingsP
     }
     if let Some(sidebar) = patch.sidebar {
         current.sidebar = sidebar;
+    }
+    if let Some(chat) = patch.chat {
+        current.chat = chat;
     }
     if let Some(mut advanced) = patch.advanced {
         // The model list and active model have dedicated write commands; an advanced-settings patch built from a
@@ -2118,6 +2122,61 @@ mod tests {
         let saved = UserPrefs::load();
         assert_eq!(saved.theme, Theme::LiquidLight);
         assert_eq!(saved.language, Language::En);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        match old_home {
+            // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: same as above; restore-side removal serialized under ENV_LOCK.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+    }
+
+    #[test]
+    fn chat_streaming_animation_patch_round_trips_and_survives_unrelated_patches() {
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let old_home = std::env::var_os("PINVOU3_HOME");
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-chat-animation-round-trip-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let mut initial = UserPrefs::default();
+        initial.migrate_models();
+        initial.save().expect("initial settings should save");
+
+        // Explicit opt-out persists and reads back as false.
+        persist_general_settings(GeneralSettingsPatch {
+            chat: Some(ChatPrefs {
+                streaming_animation: false,
+            }),
+            ..Default::default()
+        })
+        .expect("chat patch should save");
+        let disabled = UserPrefs::load();
+        assert!(
+            !disabled.chat.streaming_animation,
+            "an explicit chat opt-out must round-trip through settings.json"
+        );
+
+        // A later patch that does not mention `chat` (whole-sub-struct replace
+        // per field) must not resurrect the user's opt-out.
+        persist_general_settings(GeneralSettingsPatch {
+            sidebar: Some(SidebarPrefs {
+                date_grouping: false,
+            }),
+            ..Default::default()
+        })
+        .expect("sidebar patch should save");
+        let reloaded = UserPrefs::load();
+        assert!(
+            !reloaded.chat.streaming_animation,
+            "an unrelated sidebar patch must preserve the chat opt-out"
+        );
+        assert!(!reloaded.sidebar.date_grouping);
 
         let _ = std::fs::remove_dir_all(&tmp);
         match old_home {

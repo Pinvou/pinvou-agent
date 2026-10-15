@@ -1712,7 +1712,7 @@ function hasStoredCredential(record) {
     };
 
     // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
-    const SettingsView = ({ activeTheme, colorScheme, onColorSchemeChange, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders, onAddSearchProvider, onDeleteSearchProvider, setSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, bs, t, sidebarDateGrouping = true, onSidebarDateGroupingChange, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
+    const SettingsView = ({ activeTheme, colorScheme, onColorSchemeChange, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders, onAddSearchProvider, onDeleteSearchProvider, setSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, bs, t, sidebarDateGrouping = true, onSidebarDateGroupingChange, chatStreamingAnimation = true, onChatStreamingAnimationChange, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
       const settingsCopy = t.uiSettingsDetail;
       const platformCapabilities = (bs && bs.platformCapabilities) || {};
       const showSuperPermissionSettings = !!platformCapabilities.showSuperPermissionSettings;
@@ -2227,6 +2227,17 @@ function hasStoredCredential(record) {
               <IOSSwitch checked={sidebarDateGrouping} onChange={onSidebarDateGroupingChange} />
             </IOSRow>
           </IOSSection>
+          {/* Chat behavior gets its own group. The web lane cannot persist
+              this key (WebSettingsPatch has no `chat` field and hard-rejects
+              the patch), so the section stays desktop-only like the voice
+              postprocess toggle instead of rendering an empty titled group. */}
+          {!isWeb && (
+          <IOSSection title={t.chatSection}>
+            <IOSRow label={t.chatStreamingAnimation} desc={t.chatStreamingAnimationDesc}>
+              <IOSSwitch checked={chatStreamingAnimation} onChange={onChatStreamingAnimationChange} />
+            </IOSRow>
+          </IOSSection>
+          )}
           {canConfigureDesktopNotifications && (
           <IOSSection title={t.uiSettings.notifications}>
             <IOSRow label={t.uiSettings.taskNotice} desc={t.uiSettings.taskNoticeDesc}>
