@@ -20,7 +20,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T08 | In progress | Protected atomic metadata publication primitives; complete business publication workflows remain pending |
 | T09 | In progress | Bounded package/native-byte inspection; complete upload, quarantine and platform qualification remain pending |
 | T17 | In progress | Protected logical workflow and private initial installation; qualified check/refresh and handoff remain pending |
-| T20 | In progress | Actual no-update/transaction acceptance and recovery, plus Session observations; Session atomic acceptance and other profiles/client queue remain pending |
+| T20 | In progress | Actual no-update/transaction and bounded Session acceptance/recovery; other Session profiles, public batching and client queue remain pending |
 | T21 | In progress | Scoped quality projection/control primitives; complete quality evaluation and business composition remain pending |
 | T25 | In progress | Privacy/deduplication primitives; weekly provider configuration and complete business composition remain pending |
 | T26 | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
@@ -7825,3 +7825,112 @@ across the suite; the ninth parent passes with both capacity children skipped.
 It is not actual integration evidence. All root and both reviewers' execution
 sessions/child processes closed before commit
 preparation. Both independent roles accept this observation/calculation batch.
+
+## T20 fixed original Session event acceptance (2026-10-15)
+
+This bounded batch implements the internal original-input Session acceptance,
+sealed recovery and command acknowledgement workflow for available normal/forced
+install and silent preinstall. It follows the previously committed Session
+observation prerequisite and composes actual T06/T44/T17 commands. Full T20
+remains in progress: activation, resume/staged transitions, progress/task facts,
+public batching, client persistent upload queue and quality contribution are
+separate work. Deployment and physical-client qualification are not claimed.
+
+The additive protected event_session_reception namespace owns immutable intent
+and operation-attempt rows only. Original event_reception receipt/outbox/cursor
+identities and all existing lifecycle/workflow/reception/transaction SQL bytes
+remain unchanged. Explicit initialization leaves runtime read-only; explicit
+enable grants only the fixed reserve/apply pair. Startup checks exact catalogs,
+permanent table persistence and complete direct/inherited/SET-reachable capability
+pairs; it neither migrates nor repairs sibling permissions.
+
+Original signed claims/allowedEvents, current published Root, role deny and
+immutable Session lineage precede receipt. All workflow/cursor and mutable CAS
+checks for new acceptance follow absent receipt. Existing original receipts can
+therefore replay after terminal/workflow changes or workflow unavailability,
+while current deny, Root and upload windows still apply. Permanent JTI/event and
+signed-claims identity remain independent of lawful envelope variants and proof
+generation. Generic decoding or a copied facade cannot borrow initial authority.
+Sealed frames retain bounded claim bindings/hashes/refs, never raw credentials
+or original packets; original event bytes live in the protected immutable intent.
+
+Live facts call actual T44 transitions; normal confirmation and first download
+failure compose actual T17 ports. First failure's returned endedAt is also the
+receipt/outbox time, and the complete Go plan is recomputed at that actual time.
+Already failed workflows retain their first latch, while new lawful late events
+receive their own acceptance time. Late facts advance only the original cursor
+and preserve shared anchors without reviving Session rights.
+
+Actual domain readback, complete joined references and whole encoded frame
+capacity precede a final same-port receipt-only time/proof seal. Safe observation
+lower bounds include protected-intent Current, each recovery refresh and the
+final actual workflow read. All applicable Session/workflow/cursor writes,
+receipt, outbox and T06 completion commit together. Committed epoch zero cannot
+insert missing acceptance. Unknown commit/output acknowledgement never returns
+speculative success; a fresh original retry or restricted recovery reconciles it.
+
+Independent review identified and root repaired permanent-table persistence,
+last-readback native time propagation and protected-intent recovery time
+propagation. Tests independently capture actual workflow clock/readback completion
+and use exact rejection reasons. Three controlled private red runs prove that
+removing the native clock comparison, omitting the last actual readback watermark
+or omitting the protected-intent lower bound permits real acknowledgement and
+commit; every modified source is restored byte-for-byte afterward. An initial
+recovery-clock control accidentally exercised Current's own internal guard; the
+corrected control holds that internal pair coherent and isolates the cross-read
+lower bound. Compiler errors or a different refusal never count as red evidence.
+
+Root's actual PostgreSQL run passed all 22 top-level groups with zero skips in
+636.877s. The subsequently tightened native epoch-zero error-reason assertions
+passed in 10.492s (case 8.20s). T06 intentionally hides native SQL errors behind
+Unavailable; this test captures the actual native reason before that mapping
+without changing execution or emitting private diagnostics.
+
+Root's complete cleared-opt-in default Go suite passed (events 15.699s, events
+PostgreSQL 2.627s, metadata PostgreSQL 2.607s, Session command 7.009s, workflow
+2.179s), as did module verification, complete vet, original pins, all 31 Go
+sources' empty formatting, server build and diff checks. Client architecture
+and unchanged version 0.10.9 checks passed. Default integration skips are not
+actual execution evidence.
+
+The independent dependency audit passed without remaining findings or edits.
+Its nine core actual groups all executed with zero skips in 300.134s. Cleared
+opt-in defaults passed (Session command 2.124s, config 1.330s, events 10.042s,
+events PostgreSQL 2.401s, workflow 2.159s and metadata PostgreSQL 2.481s), along
+with affected vet, exact original pins/inventory, all 31 Go sources' empty
+formatting, both SQL files' UTF-8/LF checks and diff checks. All its sessions and
+child processes closed before the compatibility role received the sole execution
+slot.
+
+The independent compatibility audit also passed without remaining findings or
+edits. Its other thirteen actual groups all executed with zero skips in
+303.740s, including real CLI output loss, abrupt exit/fresh restricted recovery,
+three unknown-commit boundaries, eight capability combinations, original owner
+acceptance/replay, concurrency, single connection and historical/signature cases.
+Cleared-opt-in defaults passed (Session command 2.546s, config 1.509s, events
+9.318s, events PostgreSQL 2.275s, workflow 2.057s and metadata PostgreSQL 2.299s),
+as did affected vet, original pins/inventory, all 31 Go sources' empty formatting,
+both SQL UTF-8/LF checks and diff checks. Default skipped helpers/references and
+actual tests provide no integration evidence. All root and both reviewers'
+sessions, command/helper children and test processes closed before commit
+preparation. Both independent roles accept this scoped implementation batch.
+
+The final staged-file check additionally found an extra trailing LF in the new
+owner SQL; previous unstaged checks did not include that untracked file. Root
+removed exactly one final LF outside the unchanged SQL definitions/statements.
+Both independent roles rechecked the final single-LF staged bytes and unchanged
+old SQL. The original 22/9/13 runs precede this nonsemantic cleanup. Root rebuilt
+the command/helper for the resulting new namespace migration digest and passed
+three related actual groups with zero skips in 43.720s: command provisioning/
+output loss, catalog/role restoration and confirmation/receipt-before-workflow
+replay. These post-cleanup runs are root evidence, not another reviewer runtime
+run.
+Post-cleanup cleared-opt-in affected defaults (Session command 2.089s, config
+1.217s, events PostgreSQL 2.748s, metadata PostgreSQL 6.949s), affected vet,
+server build, original pins, 31-Go empty formatting, both SQL single-final-LF,
+all 33 frozen fingerprints and staged/unstaged diff checks also passed. All
+post-cleanup execution processes closed before commit preparation.
+
+The 47-task totals remain four implemented, twelve in progress and thirty-one
+not completed or deferred. Downloads retain no hard total/cumulative duration
+or retry cap; credible progress or confirmable waiting remains incomplete.
