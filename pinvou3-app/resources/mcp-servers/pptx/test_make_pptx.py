@@ -272,19 +272,29 @@ def test_slides_schema_items_pin():
     props = items.get("properties") or {}
     assert set(props.get("layout", {}).get("enum") or []) == set(server.LAYOUTS), \
         "layout.enum 应与 LAYOUTS 完全一致,实际 %r vs %r" % (props.get("layout", {}).get("enum"), sorted(server.LAYOUTS))
+    # chartType 枚举必须与 _CHART_TYPES 渲染表精确一致
+    assert set(props.get("chartType", {}).get("enum") or []) == set(server._CHART_TYPES), \
+        "chartType.enum 应与 _CHART_TYPES 完全一致,实际 %r vs %r" % (props.get("chartType", {}).get("enum"), sorted(server._CHART_TYPES))
+    # 属性名集合钉死:少一个字段(模型失去该字段指引)或多一个未登记字段都应爆红
+    expected = {"layout", "title", "subtitle", "date", "items", "bullets", "leftTitle", "left",
+                "rightTitle", "right", "chartType", "categories", "series", "headers", "rows",
+                "caption", "image"}
+    assert set(props) == expected, \
+        "slides.items.properties 应恰为 %d 个声明字段,差异 %r" % (len(expected), set(props) ^ expected)
     # 全部嵌套数组都要带具体类型的 items(守卫类:再引入无 items 数组应在此爆红)
     def _assert_typed(node, path):
-        if node.get("type") == "array":
-            sub = node.get("items")
-            assert isinstance(sub, dict) and sub, "%s 缺 items" % path
-            if sub.get("type") == "array" or sub.get("type") == "object" or sub.get("type") == "string" \
-                    or sub.get("type") == "number":
-                _assert_typed(sub, path + ".items") if sub.get("type") == "array" else None
-            elif "anyOf" in sub:
-                for i, br in enumerate(sub["anyOf"]):
-                    assert br.get("type"), "%s.anyOf[%d] 缺具体 type" % (path, i)
-            else:
-                assert False, "%s.items 缺具体 type: %r" % (path, sub.get("type"))
+        if node.get("type") != "array":
+            return
+        sub = node.get("items")
+        assert isinstance(sub, dict) and sub, "%s 缺 items" % path
+        if sub.get("type") in ("array", "object", "string", "number"):
+            if sub.get("type") == "array":
+                _assert_typed(sub, path + ".items")
+        elif "anyOf" in sub:
+            for i, br in enumerate(sub["anyOf"]):
+                assert br.get("type"), "%s.anyOf[%d] 缺具体 type" % (path, i)
+        else:
+            assert False, "%s.items 缺具体 type: %r" % (path, sub.get("type"))
     for key in ("bullets", "left", "right", "categories", "headers", "rows", "items", "series"):
         _assert_typed(props[key], "slides.items.properties.%s" % key)
     # series.data 数值数组 + rows 二维数组这两处最深,单独钉形状
