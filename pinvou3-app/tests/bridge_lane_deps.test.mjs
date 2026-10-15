@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as acorn from 'acorn';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -145,8 +146,38 @@ const sharedFnCount = helpers.slice(baseStart, baseEnd)
   .split('\n')
   .filter((l) => /^ {2}(async )?function /.test(l))
   .length;
-const forwarders = (helpers.match(/const FORWARDER_DEP_NAMES = \[([\s\S]*?)\];/) ?? [])[1] ?? '';
-const forwarderNames = (forwarders.match(/[A-Za-z_$][\w$]*/g) ?? []).filter((n) => n !== 'FORWARDER_DEP_NAMES');
+// AST-extracted (round-3 review): the raw-source regex was comment-blind —
+// a name commented out of FORWARDER_DEP_NAMES is a runtime removal (the
+// base binding is used instead) — and the comment stripper itself cannot
+// be trusted on this file: a regex literal containing a quote
+// (`/[&<>"']/g`, escapeHtml) parks it in string mode for the rest of the
+// file, so line comments inside that span pass through verbatim. acorn is
+// the repo's parser dependency (see scripts/audit-compat.mjs).
+const helpersAst = acorn.parse(helpers, { ecmaVersion: 'latest', sourceType: 'script' });
+const forwarderNames = [];
+const setterNames = [];
+(function walkNode(node) {
+  if (!node || typeof node.type !== 'string') return;
+  if (node.type === 'VariableDeclarator' && node.id?.type === 'Identifier') {
+    if (node.id.name === 'FORWARDER_DEP_NAMES' && node.init?.type === 'ArrayExpression') {
+      for (const el of node.init.elements) {
+        assert.equal(el?.type, 'Literal', 'FORWARDER_DEP_NAMES must stay a plain string array');
+        forwarderNames.push(el.value);
+      }
+    }
+    if (node.id.name === 'forwarderSetters' && node.init?.type === 'ObjectExpression') {
+      for (const prop of node.init.properties) {
+        assert.equal(prop.type, 'Property', 'forwarderSetters must stay a plain method table');
+        setterNames.push(prop.key.name);
+      }
+    }
+  }
+  for (const key of Object.keys(node)) {
+    const child = node[key];
+    if (Array.isArray(child)) child.forEach(walkNode);
+    else if (child && typeof child.type === 'string') walkNode(child);
+  }
+})(helpersAst);
 const snapshot = {
   sharedFnCount,
   forwarderNames: forwarderNames.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)),
@@ -159,7 +190,6 @@ while ((m = clusterRe.exec(helpers)) !== null) {
 }
 const EXPECTED_SURFACE = {
   sharedFnCount: 308,
-  clusterCount: Object.keys(snapshot.clusters).length,
 };
 
 assert.equal(
@@ -651,30 +681,113 @@ function walkLaneScripts(dir, out) {
 const laneFiles = ['src/platform/tauri', 'src/platform/web'].flatMap(
   (dir) => walkLaneScripts(path.join(root, dir), []),
 );
+// Per-lane site presence (round-3 review): `seen` keyed by cluster name only
+// tolerated a whole-lane site deletion whenever the other lane still created
+// the same cluster — exactly the web-drift bug class this gate exists for.
+// The map below pins the audited lane set of every cluster; nested
+// `<base>:<offset>` alias keys are pinned like any other site.
+const EXPECTED_CLUSTER_LANES = {
+  'auxChat': ['tauri', 'web'],
+  'tauriArtifactTracker': ['tauri'],
+  'tauriArtifacts': ['tauri'],
+  'tauriChat': ['tauri'],
+  'tauriChat:31666': ['tauri'],
+  'tauriChatEvents': ['tauri'],
+  'tauriDependencies': ['tauri'],
+  'tauriInteraction': ['tauri'],
+  'tauriKnowledgeModel': ['tauri'],
+  'tauriMain': ['tauri'],
+  'tauriMain:99856': ['tauri'],
+  'tauriMemory': ['tauri'],
+  'tauriMonitor': ['tauri'],
+  'tauriPersonas': ['tauri'],
+  'tauriScheduled': ['tauri'],
+  'tauriSessions': ['tauri'],
+  'tauriSessions:47342': ['tauri'],
+  'tauriSettings': ['tauri'],
+  'tauriTerminal': ['tauri'],
+  'tauriUpdater': ['tauri'],
+  'tauriVoice': ['tauri'],
+  'web': ['web'],
+  'web:158313': ['web'],
+  'web:189622': ['web'],
+  'web:247496': ['web'],
+};
 const seen = new Map();
 for (const file of laneFiles) {
-  const source = stripCommentsForScan(fs.readFileSync(file, 'utf8'));
-  const re = /\bcreate\("([\w:]+)"/g;
-  let m;
-  while ((m = re.exec(source)) !== null) {
+  const raw = fs.readFileSync(file, 'utf8');
+  // stripCommentsForScan is length-preserving, so AST offsets on the raw
+  // source index the stripped text 1:1. Site discovery itself must use the
+  // AST (round-3 review): the stripper's regex-literal blind spot could
+  // surface commented-out create( lines as phantom sites, and a stuck
+  // string mode could hide real ones.
+  const source = stripCommentsForScan(raw);
+  let ast;
+  try {
+    ast = acorn.parse(raw, { ecmaVersion: 'latest', sourceType: 'script' });
+  } catch (err) {
+    // ESM lane modules (e.g. startup-window.js) need module mode; every
+    // other file must parse as a classic script like the lanes load.
+    if (String(err).includes('import') || String(err).includes('export')) {
+      ast = acorn.parse(raw, { ecmaVersion: 'latest', sourceType: 'module' });
+    } else {
+      throw err;
+    }
+  }
+  const sites = [];
+  (function walkNode(node) {
+    if (!node || typeof node.type !== 'string') return;
+    if (node.type === 'CallExpression'
+      && ((node.callee?.type === 'Identifier' && node.callee.name === 'create')
+        || (node.callee?.type === 'MemberExpression'
+          && !node.callee.computed && node.callee.property?.name === 'create'))
+      && node.arguments[0]?.type === 'Literal' && typeof node.arguments[0]?.value === 'string') {
+      sites.push({ name: node.arguments[0].value, start: node.start });
+    }
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      if (Array.isArray(child)) child.forEach(walkNode);
+      else if (child && typeof child.type === 'string') walkNode(child);
+    }
+  })(ast);
+  for (const site of sites) {
     const rel = path.relative(root, file);
-    const keys = extractLiteralKeys(source, m.index);
-    const expected = EXPECTED_CLUSTER_KEYS[m[1]];
+    const keys = extractLiteralKeys(source, site.start);
+    const expected = EXPECTED_CLUSTER_KEYS[site.name];
     assert.ok(
       expected,
-      `unknown bridge cluster "${m[1]}" created in ${rel} — add its audited ` +
+      `unknown bridge cluster "${site.name}" created in ${rel} — add its audited ` +
       'key set to EXPECTED_CLUSTER_KEYS (header comment has the procedure)',
     );
     assert.deepEqual(
       [...keys].sort(cmpNames),
       [...expected].sort(cmpNames),
-      `the "${m[1]}" deps literal in ${rel} drifted from the audited surface — ` +
+      `the "${site.name}" deps literal in ${rel} drifted from the audited surface — ` +
       're-run the dep audit (header comment) and update EXPECTED_CLUSTER_KEYS; ' +
       'a missing key binds undefined in the shared bodies, an extra key is ' +
       'silently ignored dead wiring',
     );
-    seen.set(m[1], rel);
+    const lane = rel.startsWith('src/platform/tauri/') ? 'tauri' : 'web';
+    if (!seen.has(site.name)) seen.set(site.name, new Set());
+    seen.get(site.name).add(lane);
   }
+}
+for (const [cluster, lanes] of Object.entries(EXPECTED_CLUSTER_LANES)) {
+  const got = [...(seen.get(cluster) ?? [])].sort(cmpNames);
+  assert.deepEqual(
+    got,
+    [...lanes].sort(cmpNames),
+    `cluster "${cluster}" must have a create( site in exactly these lanes ` +
+    `${lanes.join('+')} (found: ${got.join('+') || 'none'}) — a lane that ` +
+    'loses its literal silently drifts from the shared body it should pin',
+  );
+}
+for (const cluster of seen.keys()) {
+  assert.ok(
+    EXPECTED_CLUSTER_LANES[cluster],
+    `cluster "${cluster}" gained an unexpected lane presence — update ` +
+    'EXPECTED_CLUSTER_LANES after re-running the dep audit',
+  );
 }
 for (const cluster of Object.keys(EXPECTED_CLUSTER_KEYS)) {
   assert.ok(
@@ -693,6 +806,18 @@ assert.deepEqual(
   EXPECTED_FORWARDER_DEP_NAMES,
   'FORWARDER_DEP_NAMES drifted from the audited list — re-run the dep audit ' +
   '(header comment); lanes passing a removed name crash at create() time',
+);
+
+// forwarderSetters must implement exactly the names FORWARDER_DEP_NAMES
+// routes (round-3 review): a name listed but missing its setter throws
+// "forwarderSetters[name] is not a function" at create() time, and a setter
+// with no routed name is dead wiring the list pin cannot see. Both lists
+// come from the AST walk above.
+assert.deepEqual(
+  setterNames.sort(cmpNames),
+  [...forwarderNames].sort(cmpNames),
+  'forwarderSetters keys and FORWARDER_DEP_NAMES must match exactly — a ' +
+  'listed name without a setter crashes every lane at create() time',
 );
 
 console.log('bridge lane cluster dep contracts passed');
