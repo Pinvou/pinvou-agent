@@ -49,13 +49,14 @@ export function useRewindController({
   // eslint-disable-next-line react-hooks/refs -- latest-ref sync: deps (copy/reload/ownsSession/…) are read only inside the stable confirm callbacks, never during render; the original in-view orchestration rebuilt fresh closures per render, this mirror is the extracted equivalent
   depsRef.current = { sessionId, enabled, turns, busy, copy, invoke, reload, ownsSession, invalidateSkippedBuffer, bumpTick, appendNotice };
 
-  // 失效被跳过/中止重载会话的缓存 buffer（评审 r8 M1 → r10 M1）：六个调用点
-  // （rewind/undo 的 wrapper 跳过、两条流的中止早退、两条流的重载失败分支）
-  // 共用本辅助函数——切回任何此类会话都落到 durable load，按磁盘重建时间线。
-  const invalidateSkippedCache = useCallback(() => {
-    // 稳定标识（deps []）：confirm 回调把本函数列入依赖数组而不触发重建；
-    // sessionId 经 depsRef 现取，稳定回调不捕获陈旧会话 id。
-    depsRef.current.invalidateSkippedBuffer?.(depsRef.current.sessionId);
+  // 失效回退目标会话的缓存 buffer（评审 r8 M1 → r11 M1）：六个调用点（rewind/
+  // undo 的 wrapper 跳过、两条流的中止早退、两条流的重载失败分支）共用本辅助
+  // 函数。**必须传回退发起时的目标会话 id**（confirm 回调闭包局部 sessionId，
+  // 入口现取非陈旧捕获）——传执行时刻的活动 id 会在用户已切走时把 B 的前台
+  // buffer 误删（违反「活动会话受保护」不变量），同时漏掉 A（被回退会话）的
+  // 回退前缓存（切回归快路径复活陈旧时间线）。
+  const invalidateSkippedCache = useCallback(targetSessionId => {
+    depsRef.current.invalidateSkippedBuffer?.(targetSessionId);
   }, []);
 
   const checkpoints = useSessionCheckpoints({
@@ -196,7 +197,7 @@ export function useRewindController({
         // durable load；notice 补发走 pendingNotice 暂存。
         reload: () => {
           if (currentOwnsSession(sessionId)) return currentReload(sessionId);
-          invalidateSkippedCache();
+          invalidateSkippedCache(sessionId);
           return Promise.resolve(null);
         },
         bumpTick: currentBumpTick,
@@ -213,7 +214,7 @@ export function useRewindController({
       // 也会走到这里：彼时缓冲仍是回退前的陈旧快照，同样失效（若重载其实已
       // 提交，切回多付一次 durable load 的代价，无害）。
       if (!currentOwnsSession(sessionId)) {
-        invalidateSkippedCache();
+        invalidateSkippedCache(sessionId);
         return;
       }
       if (reloadError) {
@@ -222,7 +223,7 @@ export function useRewindController({
         // 的快路径恢复）会无限期复现陈旧时间线并续写旧 buffer。失效后任何
         // 激活（含本弹窗的「重试加载」）都落到 durable load；若后续切回，
         // 多付一次盘载的代价，无害。
-        invalidateSkippedCache();
+        invalidateSkippedCache(sessionId);
         // 回退已在后端生效：把成功结果随目标暂存（pendingNotice），重试只补
         // 重载、成功后补发提示——避免整条流走完时间线却没有「已回退」确认项。
         // 重试再失败时保留既有暂存（result 为 null 的重试路径不得覆盖）。
@@ -289,7 +290,7 @@ export function useRewindController({
         // 陈旧缓存（截断后时间线）同样会被切回快路径复用，与 rewind 同类反向）。
         reload: () => {
           if (currentOwnsSession(sessionId)) return currentReload(sessionId);
-          invalidateSkippedCache();
+          invalidateSkippedCache(sessionId);
           return Promise.resolve(null);
         },
         bumpTick: currentBumpTick,
@@ -300,7 +301,7 @@ export function useRewindController({
       // 也会走到这里：彼时缓冲仍是回退前的陈旧快照，同样失效（若重载其实已
       // 提交，切回多付一次 durable load 的代价，无害）。
       if (!currentOwnsSession(sessionId)) {
-        invalidateSkippedCache();
+        invalidateSkippedCache(sessionId);
         return;
       }
       if (reloadError) {
@@ -309,7 +310,7 @@ export function useRewindController({
         // 的快路径恢复）会无限期复现陈旧时间线并续写旧 buffer。失效后任何
         // 激活（含本弹窗的「重试加载」）都落到 durable load；若后续切回，
         // 多付一次盘载的代价，无害。
-        invalidateSkippedCache();
+        invalidateSkippedCache(sessionId);
         setRewindUndoEntry({ ...entry, reloadFailed: true });
         setRewindUndoError(reloadError);
         // 与回退侧对齐：刷新让 undoState 收敛（记录已消费 → null），用户取消

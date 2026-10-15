@@ -112,6 +112,25 @@ function loadSessionsFeature(overrides) {
 
 // ── ensureSession：再进草稿不劫持 ──────────────────────────
 
+test('invalidateSessionBuffer：活动会话失效必须清 live 工作集（r11 M2 回归锚定）', () => {
+  // r11 M2：只删 sessionStates 条目对前台会话无效——切走时 saveWorkingSetTo
+  // 回存 live 陈旧消息为复活条目。活动会话的失效必须同时清 messages/chatItems
+  // 并 notify 驱动重投影；非活动会话不动 live（防误伤 B）。
+  const { api, state, sessionStates } = loadSessionsFeature();
+  // 直接构造：A 活动、B 缓存
+  state.activeSessionId = 's-active';
+  state.messages = [{ role: 'user', content: [] }];
+  state.chatItems = [{ type: 'user', text: 'stale' }];
+  sessionStates['s-active'] = { loadedFromDisk: true, messages: [1], chatItems: [2] };
+  sessionStates['s-bg'] = { loadedFromDisk: true, messages: [3], chatItems: [4] };
+  api.invalidateSessionBuffer('s-bg'); // 非活动：只删缓存
+  assert.equal(sessionStates['s-bg'], undefined, '非活动会话缓存被删');
+  assert.equal(state.messages.length, 1, '非活动失效不得清 live 工作集（防误伤）');
+  api.invalidateSessionBuffer('s-active'); // 活动：缓存 + live
+  assert.equal(sessionStates['s-active'], undefined, '活动会话缓存被删');
+  assert.equal(state.messages.length, 0, '活动会话失效必须清 live messages');
+  assert.equal(state.chatItems.length, 0, '活动会话失效必须清 live chatItems');
+});
 test('switchToSessionInternal：真工厂导出为可调用函数（r10 M5——r8 事故类暴露）', () => {
   const { api } = loadSessionsFeature();
   assert.equal(typeof api.switchToSessionInternal, 'function',
