@@ -3315,6 +3315,11 @@ fn settings_transaction_commands_join_off_the_runtime() {
             "voice.rs",
         ),
         (
+            include_str!("global_shortcut.rs"),
+            "join_blocking(\"set_global_shortcut_config\"",
+            "global_shortcut.rs",
+        ),
+        (
             include_str!("computer_use.rs"),
             "join_blocking(\"computer_use_set_enabled\"",
             "computer_use.rs",

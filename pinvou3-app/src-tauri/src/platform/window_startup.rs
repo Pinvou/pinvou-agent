@@ -34,6 +34,20 @@ fn present_linux_main_window(
             Ok(gtk_window) => {
                 // 同一 GTK 主循环任务内完成映射、取消 iconic 状态和前台呈现。
                 // 避免 release 启动较快时，异步 set_focus 早于窗口 map 而被 Mutter 丢弃。
+                //
+                // Mutter 拒绝 deiconify 处于 iconic 状态的窗口（unminimize 返回 Ok
+                // 但窗口召不回来，同一实测与规避见 features/pet/pet_window.rs 的
+                // hide→show）：先 hide（withdraw）再 show，等价于新窗口映射，WM 必须
+                // 显示。仅在确实 iconic 时走这条路，可见窗口不做无谓的闪烁。gtk 0.18
+                // 未绑定 GtkWindowExt::is_iconified，用 GDK 窗口状态位等价判断
+                // （WidgetExt::window → gdk::Window::state 含 ICONIFIED）。
+                if gtk_window.window().is_some_and(|gdk_window| {
+                    gdk_window
+                        .state()
+                        .contains(gtk::gdk::WindowState::ICONIFIED)
+                }) {
+                    gtk_window.hide();
+                }
                 gtk_window.show_all();
                 gtk_window.deiconify();
                 gtk_window.present();
@@ -76,7 +90,12 @@ pub fn reveal_startup_window(window: tauri::WebviewWindow) -> Result<bool, Strin
 
 /// Bring an already-running main window forward without bypassing the Linux
 /// cold-start readiness gate used by the hidden startup overlay.
-pub(crate) fn activate_main_window(window: tauri::WebviewWindow) {
+///
+/// Returns `true` only when the Linux cold-start gate DEFERRED the activation
+/// (no present task was enqueued), so callers can skip follow-up work that
+/// assumes the window is coming up; `false` when the window was presented —
+/// always `false` on non-Linux, which presents unconditionally.
+pub(crate) fn activate_main_window(window: tauri::WebviewWindow) -> bool {
     #[cfg(target_os = "linux")]
     {
         let startup_ready = MAIN_WINDOW_STARTUP_READY.load(Ordering::Acquire);
@@ -86,7 +105,7 @@ pub(crate) fn activate_main_window(window: tauri::WebviewWindow) {
             // 输入表面暴露给第二实例用户；前端首次提交或 8 秒兜底会负责显示窗口。
             // 边界：若前端始终不 reveal，第二实例在兜底前启动将无窗口反馈（仅日志）。
             crate::platform::startup::mark("tauri:single_instance_activation_deferred");
-            return;
+            return true;
         }
         if let Err(error) = present_linux_main_window(
             window,
@@ -99,6 +118,7 @@ pub(crate) fn activate_main_window(window: tauri::WebviewWindow) {
                 &error,
             );
         }
+        false
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -106,6 +126,7 @@ pub(crate) fn activate_main_window(window: tauri::WebviewWindow) {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
+        false
     }
 }
 

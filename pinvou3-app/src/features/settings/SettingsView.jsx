@@ -31,6 +31,12 @@ import {
   voicePostprocessEnabled,
   voiceShortcutEnabled,
 } from '../chat/voice-shortcut-settings.mjs';
+import {
+  GLOBAL_SHORTCUT_DEFAULT_ACCELERATOR,
+  formatGlobalShortcutForDisplay,
+  isPlausibleGlobalShortcutAccelerator,
+  normalizeGlobalShortcutDraft,
+} from './globalShortcutSettings.mjs';
 import { VoiceShortcutIntroModal } from '../voice-composer/VoiceShortcutIntroModal.jsx';
 import { ReasoningTierPicker, useModelReasoningTierState } from './local-server-tiers.jsx';
 import { StatusChip } from './StatusChip.jsx';
@@ -1711,6 +1717,135 @@ function hasStoredCredential(record) {
       );
     };
 
+    /**
+     * 全局唤醒快捷键（默认组合 Ctrl/Cmd+Alt+P，把后台窗口置前；默认关闭）。
+     * 桌面专用：web 整节不渲染（调用方 !isWeb 门控）；globalShortcutsAvailable=false
+     * 时开关与输入框灰掉、desc 展示不支持文案。开关与组合输入共用一条 single-flight
+     * 命令通道（每次上送完整 enabled+accelerator 配置，与 ComputerUse 同款
+     * flightRef），成功才提交本地状态；"invalid"/"conflict" 把本地化错误写进
+     * 所在行的 desc 槽（conflict 的技术 message 只进 console）。enabled 请求返回
+     * disabled 且带 message（会话环境不支持）时，状态照常提交但开关行 desc 换为
+     * 不支持文案。输入框持有展示形态（formatGlobalShortcutForDisplay），
+     * savedAccelerator 保留机器规范串，脏检查比较两侧展示形态。持久化归
+     * set_global_shortcut_config 独占（bridge 侧同步 settings 快照），不走
+     * update_settings。
+     * @param {{ t: object, platformCapabilities: { globalShortcutsAvailable?: boolean } }} props - Dictionary and platform capability slice.
+     */
+    const GlobalShortcutSettingSection = ({ t, platformCapabilities }) => {
+      const copy = t.uiSettings;
+      const slice = useBridgeState(['settings']);
+      const prefs = (slice && slice.settings) || {};
+      const available = !!(platformCapabilities && platformCapabilities.globalShortcutsAvailable);
+      // Rust 端 global_shortcut_enabled 默认 false：只有显式 true 才显示为开，
+      // 未加载/为空的设置一律显示为关。
+      const [shortcutEnabled, setShortcutEnabled] = useState(() => prefs.global_shortcut_enabled === true);
+      const [savedAccelerator, setSavedAccelerator] = useState(() => normalizeGlobalShortcutDraft(prefs.global_shortcut_accelerator) || GLOBAL_SHORTCUT_DEFAULT_ACCELERATOR);
+      const [draftAccelerator, setDraftAccelerator] = useState(() => formatGlobalShortcutForDisplay(savedAccelerator));
+      const [actionError, setActionError] = useState('');
+      const [errorSlot, setErrorSlot] = useState('toggle');
+      const [pending, setPending] = useState(false);
+      // 与 ComputerUseSettingSection 相同的同步 single-flight：disabled 属性晚一拍，
+      // 双击会并发两条命令，ref 在事件处理器内先行拦截。
+      const flightRef = useRef({ busy: false });
+      // settings 分片可能晚于本节挂载才加载完成（useState 初始值只求值一次）：
+      // 在未加载 → 已加载的第一次跃迁时一次性重新播种本地镜像；提交进行中跳过，
+      // 等命令落定后的 settings 快照推送再播种。
+      const seededRef = useRef(false);
+      const loadedSettings = (slice && slice.settings) || null;
+      useEffect(() => {
+        if (seededRef.current || !loadedSettings || flightRef.current.busy) return;
+        seededRef.current = true;
+        setShortcutEnabled(loadedSettings.global_shortcut_enabled === true);
+        const saved = normalizeGlobalShortcutDraft(loadedSettings.global_shortcut_accelerator) || GLOBAL_SHORTCUT_DEFAULT_ACCELERATOR;
+        setSavedAccelerator(saved);
+        setDraftAccelerator(formatGlobalShortcutForDisplay(saved));
+      }, [loadedSettings]);
+      const applyConfig = (nextEnabled, nextAccelerator, slot) => {
+        if (flightRef.current.busy) return;
+        if (!bridge.available || !bridge.settings || typeof bridge.settings.setGlobalShortcutConfig !== 'function') return;
+        flightRef.current.busy = true;
+        setActionError('');
+        setPending(true);
+        bridge.settings.setGlobalShortcutConfig(nextEnabled, nextAccelerator)
+          .then((result) => {
+            const status = result && result.status;
+            if (status === 'registered' || status === 'disabled') {
+              // 成功才提交本地状态；savedAccelerator 存 Rust 返回的机器规范串，
+              // 输入框经 formatGlobalShortcutForDisplay 显示人类可读形态。
+              const normalized = normalizeGlobalShortcutDraft(result.accelerator) || nextAccelerator;
+              setShortcutEnabled(nextEnabled);
+              setSavedAccelerator(normalized);
+              // 开关成功仅在草稿未被编辑时同步输入框，避免覆盖用户正在输入的组合。
+              if (normalizeGlobalShortcutDraft(draftAccelerator) === formatGlobalShortcutForDisplay(nextAccelerator)) {
+                setDraftAccelerator(formatGlobalShortcutForDisplay(normalized));
+              }
+              // disabled + message 只出现在会话环境不支持（如 Wayland）时：
+              // 意愿已持久化，但要在开关行 desc 给出本地化不支持提示而非无声成功。
+              if (status === 'disabled' && nextEnabled === true && result.message) {
+                setActionError(copy.globalShortcutUnsupportedDesc);
+                setErrorSlot('toggle');
+              }
+              return;
+            }
+            if (status === 'conflict' && result && result.message) {
+              console.warn('[settings] global shortcut conflict detail', result.message);
+            }
+            setActionError(status === 'invalid' ? copy.globalShortcutInvalid
+              : status === 'conflict' ? copy.globalShortcutConflict
+              : copy.globalShortcutSaveFailed);
+            setErrorSlot(slot);
+          })
+          .catch((error) => {
+            // 包装层约定不 reject（硬失败返回 null）；此处仅防御意外异常卡死飞行标志。
+            console.warn('[settings] global shortcut config failed', error);
+            setActionError(copy.globalShortcutSaveFailed);
+            setErrorSlot(slot);
+          })
+          .finally(() => {
+            flightRef.current.busy = false;
+            setPending(false);
+          });
+      };
+      // 脏检查比较展示形态：draft 是展示形态，savedAccelerator 是机器规范串。
+      const acceleratorDirty = normalizeGlobalShortcutDraft(draftAccelerator) !== formatGlobalShortcutForDisplay(savedAccelerator);
+      const acceleratorPlausible = isPlausibleGlobalShortcutAccelerator(draftAccelerator);
+      const toggleDesc = available
+        ? (actionError && errorSlot === 'toggle' ? actionError : copy.globalShortcutEnableDesc)
+        : copy.globalShortcutUnsupportedDesc;
+      const acceleratorDesc = actionError && errorSlot === 'accelerator' ? actionError : undefined;
+      return (
+        <IOSSection title={copy.globalShortcuts}>
+          <IOSRow label={copy.globalShortcutEnable} desc={toggleDesc}>
+            <IOSSwitch
+              checked={shortcutEnabled}
+              disabled={!available || pending}
+              onChange={value => applyConfig(!!value, savedAccelerator, 'toggle')}
+            />
+          </IOSRow>
+          <IOSRow label={copy.globalShortcutAccelerator} desc={acceleratorDesc}>
+            <div className="flex items-center gap-2 max-sm:w-full">
+              <input
+                type="text"
+                value={draftAccelerator}
+                onChange={e => setDraftAccelerator(e.target.value)}
+                disabled={!available || pending}
+                placeholder={copy.globalShortcutPlaceholder}
+                autoCorrect="off" autoCapitalize="off" spellCheck={false}
+                className="h-8 w-36 rounded-lg border border-black/[0.12] bg-transparent px-2.5 text-[13px] leading-5 outline-none focus:border-[#007AFF] disabled:opacity-45 dark:border-white/[0.14] dark:focus:border-[#0A84FF] max-sm:w-full"
+              />
+              <button
+                type="button"
+                data-testid="global-shortcut-save"
+                disabled={!available || pending || !acceleratorDirty || !acceleratorPlausible}
+                onClick={() => applyConfig(shortcutEnabled, normalizeGlobalShortcutDraft(draftAccelerator), 'accelerator')}
+                className="h-8 shrink-0 rounded-full bg-[#007AFF]/10 px-3 text-[13px] font-medium text-[#007AFF] transition-colors hover:bg-[#007AFF]/20 disabled:opacity-35 dark:bg-[#0A84FF]/20 dark:text-[#0A84FF]"
+              >{t.uiSettingsDetail.save}</button>
+            </div>
+          </IOSRow>
+        </IOSSection>
+      );
+    };
+
     // eslint-disable-next-line sonarjs/cognitive-complexity -- settings page aggregates many form branches; splitting needs a dedicated design; tracked via this suppression for now
     const SettingsView = ({ activeTheme, colorScheme, onColorSchemeChange, language, setLanguage, superPerm, setSuperPerm, taskCompletedNotif, setTaskCompletedNotif, searchProvider, setSearchProvider, enabledSearchProviders, onAddSearchProvider, onDeleteSearchProvider, setSearchApiKey, savedModels, activeModelId, onSaveModel, onDeleteModel, onSetActiveModel, onSaveSearchConfig, onConfirmSearchConfig, onMemoryEnabledChange, onPetEnabledChange, bs, t, sidebarDateGrouping = true, onSidebarDateGroupingChange, chatStreamingAnimation = true, onChatStreamingAnimationChange, updateFocusTick, onCloseSettings, initialSection = 'general' }) => {
       const settingsCopy = t.uiSettingsDetail;
@@ -2273,6 +2408,11 @@ function hasStoredCredential(record) {
               onClose={handleVoiceShortcutInfoClose}
               onToggleShortcut={handleVoiceShortcutInfoEnable}
             />
+          )}
+          {/* 全局唤醒快捷键是桌面能力：web 通道既没有该命令也没有全局窗口概念，
+              整节隐藏（与通知节的 can 门控同款）。 */}
+          {!isWeb && (
+            <GlobalShortcutSettingSection t={t} platformCapabilities={platformCapabilities} />
           )}
           {canUsePet && (
           <section className="mb-6">

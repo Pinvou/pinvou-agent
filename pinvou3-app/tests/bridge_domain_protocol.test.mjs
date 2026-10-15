@@ -278,7 +278,11 @@ const expectedProtocolHashes = {
   // set_builtin_feature_enabled sends `{ featureId: id, enabled }` — the Rust
   // command's parameter is `feature_id` (app/commands/builtin.rs) and Tauri
   // v2 maps camelCase JS keys to snake_case. The merged surface is main's.
-  settings: '42190e3dd08e197f0b7a862a1b365dd5f2b8acdd64ec68fbb0b030fa7ae47e93',
+  // Recomputed for the global bring-to-front shortcut: settings.js gains the
+  // set_global_shortcut_config invoke (the dedicated command owns both the
+  // plugin registration and the prefs persistence; update_settings stays
+  // untouched).
+  settings: '981a53b39cce9c689425c458bdab7c73119e3e8e6c2298b9a5e3160d35380ef3',
   // Recomputed for the dead-code cleanup: the never-emitted
   // remote_control:status / remote_control:session_created listeners were
   // removed, and the update:progress listener plus its coalescing timer

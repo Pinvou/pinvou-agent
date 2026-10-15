@@ -10,7 +10,7 @@ export const desktopBridgeApi = {
   sessions: ['archiveSession', 'createNewSession', 'deleteSession', 'exportSessionArchive', 'getSessionWorkspaceBinding', 'onSessionDeleted', 'pickDraftWorkspace', 'renameSession', 'restoreArchivedSession', 'setDraftWorkspace', 'switchToSession', 'toggleSessionPinned'],
   monitor: ['clearMonitorStats', 'startMonitorPolling', 'stopMonitorPolling'],
 
-  settings: ['listBuiltinFeatures', 'saveSearchSettings', 'saveSearchSettingsAndRestart', 'saveSettings', 'setBuiltinFeatureEnabled', 'setSelectedPet'],
+  settings: ['listBuiltinFeatures', 'saveSearchSettings', 'saveSearchSettingsAndRestart', 'saveSettings', 'setBuiltinFeatureEnabled', 'setGlobalShortcutConfig', 'setSelectedPet'],
   feedback: ['submitFeedback'],
   vllm: ['discoverLocalVllm'],
   multiAgent: ['listSubagentTranscripts', 'readSubagentTranscript'],
@@ -62,7 +62,14 @@ export const desktopOnlyBridgeApi = {
   // contract hook for future per-feature settings pages, no consumer yet.
   // saveSettingsAndRestart/saveSearchSettingsAndRestart restart the desktop
   // process in place; the web host has no restart channel.
-  settings: ['saveSearchSettingsAndRestart', 'setBuiltinFeatureEnabled'],
+  // setGlobalShortcutConfig registers an OS-wide key grab through the desktop
+  // Rust command; a browser has no such backend (the settings section is
+  // hidden behind !isWeb). list_builtin_features left this desktop-only list
+  // in PR #586: the registry read is lane-agnostic now (see above); only the
+  // write channel (set_builtin_feature_enabled) and the OS-wide key grab stay
+  // desktop-only.
+  settings: ['saveSearchSettingsAndRestart', 'setBuiltinFeatureEnabled', 'setGlobalShortcutConfig'],
+
   // Local vLLM discovery probes loopback services on the desktop host; the web capability bit is always false
   // and the command is not in the access-policy allowlist.
   vllm: ['discoverLocalVllm'],

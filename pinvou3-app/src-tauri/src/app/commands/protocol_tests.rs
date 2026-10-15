@@ -169,6 +169,11 @@ command_protocol!(
     ["check_dependencies", "install_dependencies"]
 );
 command_protocol!(
+    global_shortcut_protocol,
+    "global_shortcut.rs",
+    ["set_global_shortcut_config"]
+);
+command_protocol!(
     files_protocol,
     "files.rs",
     [
