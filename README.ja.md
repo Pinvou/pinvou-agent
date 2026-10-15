@@ -125,7 +125,7 @@ export DEEPSEEK_MODEL="your-model-name"
 - お使いのプラットフォーム向けの [Tauri 2 のシステム依存関係](https://v2.tauri.app/start/prerequisites/)
 - アクセス可能な OpenAI 互換モデルエンドポイント
 
-ソースツリーは **Linux、Windows、macOS** に対応しています。Linux のリリースパッケージは、x86_64 と arm64 の Ubuntu 22.04 以降（glibc 2.35+）を対象としており、deb はさらに WebKitGTK 2.40+ が必要です（標準の updates pocket を適用済みの 22.04 システムであれば条件を満たします）。macOS のリリースパッケージは、macOS 11 以降向けのユニバーサル（Apple Silicon と Intel）ビルドです。音声認識エンジンはビルド構成ごとにパッケージ化できます。ファイル解析（PDF / Office / OCR / アーカイブ）は、プラットフォームのパッケージマネージャーでインストールできるオプションの外部ツールに依存します（`pinvou3-app/INSTALL.md` を参照）。
+ソースツリーは **Linux、Windows、macOS** に対応しています。Linux のリリースパッケージは、x86_64 と arm64 の Ubuntu 22.04 以降（glibc 2.35+）、および LoongArch64（new-world：UOS V25 または deepin 23 以降、glibc 2.38+）を対象としており、deb はさらに WebKitGTK 2.40+ が必要です（標準の updates pocket を適用済みの 22.04 システムであれば条件を満たします）。旧世界（old-world）の LoongArch システム（UOS V20 Loongson 版、Loongnix 20、Kylin V10 時代）はサポート対象外です。Tauri 2 が必要とする webkit2gtk-4.1/libsoup3 が提供されていないためです。macOS のリリースパッケージは、macOS 11 以降向けのユニバーサル（Apple Silicon と Intel）ビルドです。音声認識エンジンはビルド構成ごとにパッケージ化できます。ファイル解析（PDF / Office / OCR / アーカイブ）は、プラットフォームのパッケージマネージャーでインストールできるオプションの外部ツールに依存します（`pinvou3-app/INSTALL.md` を参照）。
 
 ### ソースから実行
 

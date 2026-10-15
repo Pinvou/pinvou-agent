@@ -125,7 +125,7 @@ export DEEPSEEK_MODEL="your-model-name"
 - [Tauri 2 系统依赖](https://v2.tauri.app/start/prerequisites/)
 - 一个可访问的 OpenAI-compatible 模型端点
 
-源码树支持 **Linux、Windows 和 macOS**；Linux 发布包的目标基线为 Ubuntu 22.04 及以上（glibc 2.35+，x86_64 与 arm64；deb 另要求 WebKitGTK 2.40+，已应用标准更新源的 22.04 系统均满足），macOS 发布包为 universal（Apple Silicon + Intel）构建、要求 macOS 11.0+。语音识别引擎可按构建配置打包；文件解析（PDF / Office / OCR / 压缩包等）依赖可选外部工具，可通过 Homebrew、apt 或各工具官网安装（见 `pinvou3-app/INSTALL.md`）。
+源码树支持 **Linux、Windows 和 macOS**；Linux 发布包的目标基线为 Ubuntu 22.04 及以上（glibc 2.35+，x86_64 与 arm64），以及 LoongArch64（新世界：UOS V25 或 deepin 23 及以上，glibc 2.38+；deb 另要求 WebKitGTK 2.40+，已应用标准更新源的 22.04 系统均满足）。旧世界（old-world）龙芯系统（UOS V20 龙芯版、Loongnix 20、麒麟 V10 时代）不受支持：缺少 Tauri 2 运行所必需的 webkit2gtk-4.1/libsoup3。macOS 发布包为 universal（Apple Silicon + Intel）构建、要求 macOS 11.0+。语音识别引擎可按构建配置打包；文件解析（PDF / Office / OCR / 压缩包等）依赖可选外部工具，可通过 Homebrew、apt 或各工具官网安装（见 `pinvou3-app/INSTALL.md`）。
 
 ### 启动应用
 

@@ -75,6 +75,11 @@ PINVOU3_ASR_CMD=~/.pinvou3/asr/pinvou3-asr-shim.py SV_MODEL=~/.pinvou3/asr/sense
 - 引擎需在 arm64 上重新构建（`uname -m` 自动取架构，setup 脚本已处理 cmake 下载）。
 - GB10 有 GPU，用 `GGML_CUDA=ON` 构建走 GPU 加速（CPU 也能跑，x86 实测 5.5s 音频 ~0.2s）。
 
+## 五·二、loongarch64 注意
+
+- release CI 已为 loongarch64 交叉构建 SenseVoice 引擎（ggml 启用 LASX），随 loong64 安装包分发，无需用户自行构建。
+- 从源码构建引擎时，仍按 `uname -m` 取本机架构的原生构建口径操作（同上节 arm64 的做法）。
+
 ## 六、生产化待办
 
 - [x] **按需下载器** —— 已完成（#474）：应用内一键安装已实现（`features/voice/platform/linux.rs` 的 `install_asr_runtime` 自动装 ffmpeg，并从 modelscope 下载引擎配套模型到 `~/.pinvou3/asr/`），替代手动跑 setup。
