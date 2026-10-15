@@ -7343,3 +7343,95 @@ administration, HA or broader T05 certification. Deployment remains deferred.
 No database migration, protocol, app VERSION or runtime dependency changes.
 Downloads retain no hard total/cumulative elapsed or retry-count cap; local
 acceptance timeouts do not apply to product downloads.
+
+## T20 fixed late transaction acceptance and recovery (2026-10-15)
+
+The separate service adds one bounded internal workflow for genuine original
+`preinstall-transaction-event`, `install-transaction-event` and
+`activate-transaction-event` requests. It accepts only late diagnostics; live
+transaction candidates are refused before a reservation. Actual original
+Session, authorization and transaction lineage, full original allowed events,
+current signed Root/role-specific deny and original upload windows remain
+mandatory. Neither terminal transactions nor elapsed report windows are revived.
+
+An independently initialized `event_transaction_reception` namespace owns only
+this command's immutable intents and attempt bindings. The existing five event
+reception migrations, their digests and native function definitions remain
+unchanged. Receipts, original-event outbox and transaction diagnostic cursors
+remain in the existing event ledger. Initialization is read-only; explicit
+enablement grants only the two fixed owner ports. Existing no-update rights are
+preserved. Every reachable runtime role must have the whole pair or neither.
+
+One registered T06 OwnerReplay command seals compact original claims, hashes and
+complete actual read references. Original credentials and request packets never
+enter durable recovery projections. Recovery rechecks original immutable points,
+current trust and complete actual lineage; it refreshes mutable CAS values without
+renewing proof or deadlines. Go and native SQL both calculate the historical edge
+using T44's pure planner. Receipt, original outbox, cursor and T06 completion
+commit together. Original Session/authorization/transaction/staged/active state
+and quality watermarks remain unchanged. Native epoch zero can return only an
+existing receipt for the exact already committed operation; it cannot reserve
+or recreate missing accepted data.
+
+The explicit `upgrade-transaction-events` command supplies initialize, enable,
+single original-input acceptance and original-request-free recovery. Only a
+complete committed acceptance/current lawful replay prints the fixed ACK.
+Failed or lost output can follow a real commit and must reuse the original
+identity. Cancellation owns and closes stdin; recovery joins work before pool
+closure. Windows test process termination proves isolation/joining, not native
+console interrupt or POSIX signal certification. Deployment remains deferred.
+
+Independent runtime review reproduced two P2 issues in actual PostgreSQL:
+changed native CHECK constraints retained readiness and partial enablement
+silently repaired a missing port. The fixes verify all ten exact native CHECK
+definitions/attributes, complete constraint counts, column defaults/identity/
+generated attributes and rewrite rules, and reject a half-pair in any current or
+SET-reachable role. Actual 25 catalog/permission controls and restoration passed;
+the other reviewer independently checked the fixes. Two P2 test defects were
+also repaired: final-clock controls now observe all three exact candidate rows
+inside the still-open transaction, and replay-only refusals assert their exact
+reason so another historical-edge failure cannot mask a missing guard.
+
+Root's complete new actual PostgreSQL suite passed all 18 top-level groups in
+276.957s, without skips. It includes all three roles, terminal/report-window late
+input, live refusal, current deny before unavailable receipt, ephemeral owner
+isolation, exact native catalog/ACL drift, concurrent identity/conflicting bytes,
+corrupt cursor, receipt preservation, positive-epoch and replay final-clock
+faults, atomic Apply-before-Complete rollback, natural-lease sealed recovery,
+actual CLI initialization/enablement/acceptance/replay, real committed-output
+loss and abrupt-process exit followed by a fresh normal recovery command.
+That recovery process receives only the runtime connection and original T06 key,
+not the original packet, credential, role or product. It commits the original
+result under a higher fenced epoch without duplicating the accepted write set.
+
+Root also passed 14 existing actual regression groups in 216.033s, without skips:
+original no-update command/lost output, explicit provisioning and authenticated
+recovery, natural-lease recovery, lost commit ACK, legal signature variants,
+live/late owner behavior, unaccepted maintenance protection, accepted retention
+inspection, and existing transaction observation/cursor upgrades and guards.
+These runs used freshly built current command/test executables. Full default Go
+tests passed with package parallelism two (new command 1.602s, events 3.935s,
+events PostgreSQL 1.985s, metadata PostgreSQL 2.173s). Actual database/provider
+opt-ins skip by default and were run separately where described above.
+Module verification, whole vet, server/both command builds, unchanged contract
+inventory, formatting and diff checks passed. All root Go processes closed
+before independent executable review.
+
+Both final independent scoped code/test audits passed without new mandatory
+findings. Dependency review independently reran all 18 actual groups in 274.482s
+with zero skips; compatibility review reran all 18 in 271.857s with zero skips.
+Each also passed all five affected default packages, affected vet, all 27 changed
+Go files' formatting and diff checks. Their default runs explicitly clear actual
+opt-ins and do not replace the separate actual runs. The catalog/permission
+repairs and both fault-test repairs passed the other role's independent review.
+No reviewer edited the frozen result during final validation. All root/reviewer
+Go, helper and recovery processes closed before commit preparation. Client
+architecture, unchanged application version 0.10.9 and diff checks passed.
+
+The fixture uses actual protected storage and genuinely signed event credentials;
+it does not certify T19 authorization issuance or physical client execution.
+Public atomic batching, live event transitions, task-owned events, protected
+client outbox, quality contribution and full T20 remain unfinished. Accepted
+history deletion awaits its consumer/archive and diagnostic retention policy.
+No app VERSION, protocol contract, dependency or download-budget change.
+Downloads retain no hard total/cumulative elapsed or retry-count cap.
