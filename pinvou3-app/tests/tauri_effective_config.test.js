@@ -229,6 +229,7 @@ assert.equal(
 const injectedBridgeMachines = new Set();
 for (const [targetArch, machine] of [
   ["arm64", "aarch64"],
+  ["loong64", "loongarch64"],
   ["x64", "x86_64"],
 ]) {
   for (const platform of ["linux", "darwin"]) {
@@ -260,12 +261,13 @@ assert.equal(
 // PINVOU3_BRIDGE_TARGET_ARCH from the caller's shell must be dropped. That
 // variable is the script's manual switch; passing a leftover value through
 // would prepare another architecture's Node for a non-cross build while the
-// overlay still follows process.arch. The counter-example is loongarch64, a
-// segment unlikely to ever be supported (riscv64 might, and would break this).
+// overlay still follows process.arch. The counter-example is riscv64, a
+// plausible future architecture that would turn this test red when supported
+// (loongarch64 graduated to the machine map; it injects loongarch64 above).
 const leftoverBridgeEnv = { ...bridgeEnvFixture, PINVOU3_BRIDGE_TARGET_ARCH: "x86_64" };
 const fallbackBridgeEnv = capturedBridgeSpawn({
   platform: "linux",
-  targetArch: "loongarch64",
+  targetArch: "riscv64",
   env: leftoverBridgeEnv,
 }).options.env;
 assert.deepEqual(
@@ -309,6 +311,10 @@ const acceptedBridgeTargets = new Set(
 );
 for (const machine of injectedBridgeMachines) {
   for (const osName of ["Linux", "Darwin"]) {
+    // darwin Node distributions exist only for aarch64/x86_64; loongarch64 is
+    // Linux-only and must fall into the bridge script's *) there (a darwin
+    // host cannot package it - no darwin-loong64 build exists).
+    if (osName === "Darwin" && !["aarch64", "x86_64"].includes(machine)) continue;
     assert.ok(
       acceptedBridgeTargets.has(`${osName}-${machine}`),
       `the bridge script must accept ${osName}-${machine}, or cross builds fall into *)`,
@@ -328,13 +334,14 @@ assert.match(
 // Adding an architecture must extend build.js's table and codex-bridge.js's
 // machine map together.
 //
-// The loop above hard-codes arm64->aarch64 / x64->x86_64 and pins the values;
-// adding loongarch64 to TARGET_MACHINE_ARCHITECTURES without touching the
-// machine map would keep it green. That is the hole: machine becomes
-// undefined, nothing is injected, the script falls back to `uname -m` and the
-// package ships a host-architecture bridge Node with no error. So both sides
-// are derived from the sources here: every Node arch the table can produce,
-// whether prepareCodexBridge really injects something for it, and whether the
+// The loop above hard-codes the arm64->aarch64 / loong64->loongarch64 /
+// x64->x86_64 pairs and pins the values; adding a new architecture to
+// TARGET_MACHINE_ARCHITECTURES without touching the machine map would keep
+// it green. That is the hole: machine becomes undefined, nothing is
+// injected, the script falls back to `uname -m` and the package ships a
+// host-architecture bridge Node with no error. So both sides are derived
+// from the sources here: every Node arch the table can produce, whether
+// prepareCodexBridge really injects something for it, and whether the
 // injected word is in the script's target list.
 for (const targetArch of new Set(Object.values(TARGET_MACHINE_ARCHITECTURES))) {
   const injected = capturedBridgeSpawn({
@@ -349,6 +356,11 @@ for (const targetArch of new Set(Object.values(TARGET_MACHINE_ARCHITECTURES))) {
       + " Node. Both tables must change together.",
   );
   for (const osName of ["Linux", "Darwin"]) {
+    // darwin Node distributions exist only for aarch64/x86_64; a machine
+    // without one (loongarch64) is rejected by the darwin dispatch on
+    // purpose, so only its Linux acceptance is derived. The darwin aliases of
+    // the machines that do exist stay pinned by the hard-coded loop above.
+    if (osName === "Darwin" && !["aarch64", "x86_64"].includes(injected)) continue;
     assert.ok(
       acceptedBridgeTargets.has(`${osName}-${injected}`),
       `${targetArch} injects ${injected}, which the bridge script does not accept on ${osName};`
@@ -492,12 +504,14 @@ assert.match(
 );
 // Pin the order, not the exact line: preparation must happen before the
 // resource manifest is written, or the bundle fails with a missing resource.
+// Cross builds may pass options (target architecture, pre-built engine), so
+// the pin is the packaging-path call itself, not an argument-less one.
 assert.ok(
-  buildSource.includes("prepareLinuxAsrRuntime()"),
+  buildSource.includes("prepareLinuxAsrRuntime("),
   "Linux packaging must still prepare the SenseVoice runtime",
 );
 assert.ok(
-  buildSource.indexOf("prepareLinuxAsrRuntime()") < buildSource.indexOf("writeEffectiveArtifacts("),
+  buildSource.indexOf("prepareLinuxAsrRuntime(") < buildSource.indexOf("writeEffectiveArtifacts("),
   "Linux packaging must prepare the architecture-specific SenseVoice runtime before manifest generation",
 );
 // Cross builds must be able to skip ASR (SenseVoice only builds natively).
@@ -759,6 +773,10 @@ assert.match(
 assert.match(
   platformArchitectureConfigPath("linux", "arm64").replaceAll("\\", "/"),
   /platforms\/linux\/aarch64\/tauri\.conf\.json$/u,
+);
+assert.match(
+  platformArchitectureConfigPath("linux", "loong64").replaceAll("\\", "/"),
+  /platforms\/linux\/loongarch64\/tauri\.conf\.json$/u,
 );
 
 const linuxDev = composeEffectiveConfig([linuxStartupOverlay]).effectiveConfig;

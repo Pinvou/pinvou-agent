@@ -375,7 +375,7 @@ function prepareCodexBridge({
   // undefined, the variable is not injected, and the script falls back to
   // `uname -m`, packaging a host-architecture Node - the silent wrong package
   // this path exists to prevent. The same test file holds that subset check.
-  const machine = { arm64: "aarch64", x64: "x86_64" }[targetArch];
+  const machine = { arm64: "aarch64", loong64: "loongarch64", x64: "x86_64" }[targetArch];
   // Always pass a copy: inject the machine when there is one, otherwise drop
   // any PINVOU3_BRIDGE_TARGET_ARCH left in the caller's environment. The
   // variable is a legitimate manual switch when the script is run directly,
