@@ -7637,3 +7637,91 @@ The kernel is a T17
 prerequisite, not full T17, qualified decision creation/handoff, general Session
 event acceptance, production signing, quality contribution or deployment. No
 application version, protocol contract, dependency or download-budget change.
+
+## T17 private atomic initial installation (2026-10-15)
+
+The next bounded prerequisite adds a pure initial-installation calculation and
+private native atomic creation of the actual T44 Session, logical workflow and
+independent original association. Both independent roles passed its scope plan
+after clarifying two boundaries: the original channel owner must already have
+initialized the scope/current channel, and time guarantees cover the actual
+returned Session start and wrapper-observed clocks, not unexposed inner reads.
+
+Only available normal/forced install or silent preinstall is supported. Exact
+canonical zero-start prototypes retain original scope/workflow/Session/install,
+channel/type/purpose/hop/final identity. The actual returned T44 Session supplies
+workflow and association start; opaque lifecycle and logical context digests
+remain distinct. The private installer requires a processing standard24h T06
+owner with positive epoch and active original lease/deadline, original scope CAS
+and exact current channel. It neither repairs partial originals nor guesses a
+channel. Duplicate identities and partial sets refuse without writes. T44 remains
+the sole Session writer. Actual protected readback and stored hashes must agree
+before final clock/fence checks and the future owner's same-transaction completion.
+
+Explicit workflow migration two preserves v1 and every T44/T06/event migration
+byte-for-byte. Updated readers recognize exact v1 or v1+v2; old v1 binaries are
+not claimed to support v2. Startup never migrates. Runtime retains reads only,
+without private EXECUTE, DML or SET-reachable authority. Complete post-write
+inventory includes every T44 member, scope and both workflow references; exact
+4096-reference and 1 MiB encoded bounds join the original T44 source/reserve
+checks. They do not limit artifact downloads or introduce a duration/retry cap.
+
+Actual tests use the original initialize_channel/create_session functions and
+a clearly isolated test definer, not a production qualification/credential owner.
+All three supported modes agree with the pure model and read back through the
+restricted actual reader. Tests cover original owner/canonical/scope refusals,
+whole rollback, duplicate/partial originals, same/different-identity concurrency,
+missing scope/channel, v1 reads/explicit upgrade with preserved bytes/references
+and confirmation, and restored v2 native catalog/privilege drift controls.
+Resource-only terminal inventory fixtures prove exact 4096 and 1 MiB positives;
+one extra reference or encoded byte refuses and rolls back while T44's own
+inventory remains within its original bounds.
+
+Compatibility review requested independent returned-start and action-window
+controls. The primary added two actual T44 returned-start faults and exact final
+time equality at Session start plus one day. These supplement six wrapper-clock
+cases: initial NULL/unsafe and actual post-write final NULL/unsafe/backward/window
+equality. Every fault checks the precise native guard, full state rollback, T06
+processing and restored positive; no Session helper is replaced with a fake.
+The original helper definition is restored after isolated clock faults.
+
+Root's complete 24-group actual run passed without skips in 156.890s. After the
+review additions and test-only concurrency encoding cleanup, the three affected
+groups passed without skips in 36.686s: six wrapper clocks 17.88s, two returned
+starts 10.54s and concurrent same/different identities 5.74s. These are separate
+runs, not a claimed root single-run 25-group result. Client architecture and
+unchanged version 0.10.9 checks passed.
+
+Root's complete default Go tests passed with actual opt-ins cleared (workflow's
+ten groups 1.736s; metadata PostgreSQL 1.606s). Module verification, full vet,
+server build, pinned contract bytes/inventory and final empty formatting/diff
+checks passed. Default integration skips are not actual database evidence.
+
+The dependency role's final scoped audit passed without required findings. Its
+complete 25-group actual run had zero skips/failures; 224.221s is the private
+runner's elapsed time, not a preserved Go package duration. Its cleared-opt-in
+default run passed all ten workflow domain groups (7.059s) and affected packages;
+the metadata package's actual parents include sixteen skips and nine containers
+whose children skip, providing no separate database evidence. Affected vet,
+exact pins, empty formatting for all ten Go files and diff checks passed. Both
+execution sessions and all child processes closed before the compatibility role
+received the exclusive test slot. No reviewer modified source or tests.
+
+The compatibility role's final scoped audit also passed without required
+findings. Its complete actual 25-group run had zero skips and a Go package
+duration of 172.767s. Its cleared-opt-in default contracts (1.576s), ten workflow
+domain groups (1.928s) and metadata package (2.185s), affected vet, original pins,
+all ten Go files' empty formatting and diff checks passed. Default actual cases
+again consist of sixteen top-level skips and nine passing parent containers with
+skipped children; they are not actual database evidence. All three compatibility
+sessions and child processes closed before commit preparation. Both independent
+roles accept this bounded private primitive after the test repairs/additions.
+
+Qualified decision creation still needs current metadata/Root/deny, complete
+qualification/contribution and signing composition, including original
+decision.iat/create-time consistency. This private primitive does not establish
+those absent inputs or make a presigned credential valid for a different start.
+Handoff, general Session reception, production HTTP/signing, quality contribution
+and deployment remain outside this batch. T17 remains in progress; the 47-task
+totals remain four implemented, twelve in progress and thirty-one not completed
+or deferred. No application version, protocol contract or dependency change.
