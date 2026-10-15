@@ -804,6 +804,22 @@ pub fn run() {
         .plugin(startup_probe_plugin("startup-probe-notification"))
         .plugin(tauri_plugin_dialog::init())
         .plugin(startup_probe_plugin("startup-probe-dialog"))
+        // System-wide bring-to-front shortcut (off by default, opt-in like
+        // the voice shortcut; default accelerator Ctrl/Cmd+Alt+P when
+        // enabled — configurable in settings). The plugin-level handler
+        // survives register/unregister cycles and only fires for shortcuts
+        // this module registered; triggering strictly on Pressed keeps the
+        // Released event a no-op.
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        crate::features::global_shortcut::handle_triggered(app);
+                    }
+                })
+                .build(),
+        )
+        .plugin(startup_probe_plugin("startup-probe-global-shortcut"))
         .on_page_load(|webview, payload| {
             startup::mark_with_detail(
                 "rust",
@@ -1359,6 +1375,16 @@ pub fn run() {
                 crate::platform::prefs::UserPrefs::load().voice_shortcut_enabled,
             );
 
+            // System-wide bring-to-front shortcut: same replay shape. A parse
+            // failure or register conflict (another app owns the combination)
+            // logs and continues — startup must never fail over the shortcut.
+            crate::features::global_shortcut::install(app.handle().clone());
+            let prefs = crate::platform::prefs::UserPrefs::load();
+            crate::features::global_shortcut::apply_saved_settings(
+                prefs.global_shortcut_enabled,
+                &prefs.global_shortcut_accelerator,
+            );
+
             startup::mark("setup:done");
             Ok(())
         })
@@ -1515,6 +1541,7 @@ pub fn run() {
             commands::voice::cancel_voice_asr,
             commands::voice::set_voice_shortcut_enabled,
             commands::voice::set_voice_shortcut_recording,
+            commands::global_shortcut::set_global_shortcut_config,
             commands::projects::list_projects,
             commands::projects::create_project,
             commands::projects::update_project,

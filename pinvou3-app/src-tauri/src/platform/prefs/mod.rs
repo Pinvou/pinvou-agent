@@ -832,6 +832,19 @@ pub struct ModeDefaultPrefs {
     pub design: Option<SerializableMode>,
 }
 
+/// Default accelerator of the system-wide bring-to-front shortcut
+/// (`CmdOrCtrl` = Ctrl on Windows/Linux, Cmd on macOS — an alias accepted by
+/// the `tauri-plugin-global-shortcut` parser). Single source of truth: the
+/// prefs default fn below and `features::global_shortcut` (whose
+/// normalization tests pin the agreement) both read it from here, keeping
+/// platform/prefs independent of features.
+pub(crate) const DEFAULT_GLOBAL_SHORTCUT_ACCELERATOR: &str = "CmdOrCtrl+Alt+P";
+
+/// serde default for [`UserPrefs::global_shortcut_accelerator`].
+fn default_global_shortcut_accelerator() -> String {
+    DEFAULT_GLOBAL_SHORTCUT_ACCELERATOR.to_string()
+}
+
 /// 用户偏好。`settings.json` 顶层结构。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -864,6 +877,28 @@ pub struct UserPrefs {
     /// storage is cleared, and races where a later multi-window mount invoke
     /// overwrites an earlier one.
     pub voice_shortcut_enabled: bool,
+    /// System-wide bring-to-front shortcut switch (registered through the
+    /// `tauri-plugin-global-shortcut` plugin; pressing it presents the main
+    /// window while Pinvou runs in the background). OFF by default — an
+    /// opt-in like `voice_shortcut_enabled`, so no silent system-wide combo
+    /// grab is imposed on the whole existing user base at upgrade; the
+    /// container-level `#[serde(default)]` yields this `false`, so the field
+    /// needs no per-field serde default fn. The authoritative persistence
+    /// lives in settings.json: `set_global_shortcut_config` writes both
+    /// fields through a field-level transaction, and lib.rs setup replays
+    /// them into the plugin at startup (parse/conflict failures log and
+    /// continue). Only offered where the session supports system-wide
+    /// shortcuts (`platform::capabilities` `global_shortcuts_available`:
+    /// Windows/macOS and X11 on Linux; Wayland keeps the feature off).
+    pub global_shortcut_enabled: bool,
+    /// Accelerator of the bring-to-front shortcut, stored in the plugin's
+    /// canonical display form (e.g. `"control+alt+KeyP"`) so comparisons and
+    /// re-registration do not depend on the input alias (`CmdOrCtrl`,
+    /// casing, spacing). The default keeps the user-facing alias form
+    /// ([`DEFAULT_GLOBAL_SHORTCUT_ACCELERATOR`]); it is normalized to the
+    /// canonical form on the first apply.
+    #[serde(default = "default_global_shortcut_accelerator")]
+    pub global_shortcut_accelerator: String,
     pub computer_use: ComputerUsePrefs,
     /// One-time migration marker (#622): pre-#622 settings pages prefilled
     /// the local thinking default `off` into the form and the save handler
@@ -935,6 +970,13 @@ impl UserPrefs {
     fn defaults_for_system_locale(locale: Option<&str>) -> Self {
         Self {
             language: Language::from_system_locale(locale),
+            // The container-level `..Self::default()` spread bypasses the
+            // per-field serde defaults, so fields whose default is NOT the
+            // type default must be spelled out here: a fresh install (and a
+            // corrupt-file fallback) must materialize the alias default
+            // accelerator, never an empty string. (`global_shortcut_enabled`
+            // needs no entry: its default is `false`, the type default.)
+            global_shortcut_accelerator: default_global_shortcut_accelerator(),
             ..Self::default()
         }
     }
@@ -2321,6 +2363,43 @@ mod tests {
     }
 
     #[test]
+    fn global_shortcut_defaults_and_round_trip() {
+        // Older settings.json lacks both fields: enabled falls back to the
+        // container-level `#[serde(default)]` (false — opt-in, no silent
+        // system-wide combo grab), while the accelerator keeps its per-field
+        // serde default (the CmdOrCtrl alias), never an empty string.
+        let legacy = UserPrefs::parse_settings(Some(r#"{"theme":"genesis"}"#), Some("zh-CN"));
+        assert!(!legacy.global_shortcut_enabled);
+        assert_eq!(
+            legacy.global_shortcut_accelerator,
+            DEFAULT_GLOBAL_SHORTCUT_ACCELERATOR
+        );
+        // No file at all (fresh install / corrupt fallback via
+        // `defaults_for_system_locale`): same outcome — the accelerator
+        // default must be applied explicitly there, since the struct-update
+        // spread bypasses the per-field serde defaults.
+        let no_file = UserPrefs::parse_settings(None, Some("zh-CN"));
+        assert!(!no_file.global_shortcut_enabled);
+        assert_eq!(
+            no_file.global_shortcut_accelerator,
+            DEFAULT_GLOBAL_SHORTCUT_ACCELERATOR
+        );
+        // Explicit values survive a load and serialize verbatim (the command
+        // stores the plugin's canonical display form, e.g. control+alt+KeyP).
+        let explicit = UserPrefs::parse_settings(
+            Some(
+                r#"{"theme":"genesis","global_shortcut_enabled":false,"global_shortcut_accelerator":"control+alt+KeyF9"}"#,
+            ),
+            Some("zh-CN"),
+        );
+        assert!(!explicit.global_shortcut_enabled);
+        assert_eq!(explicit.global_shortcut_accelerator, "control+alt+KeyF9");
+        let serialized = serde_json::to_string(&explicit).expect("UserPrefs serialize");
+        assert!(serialized.contains("\"global_shortcut_enabled\":false"));
+        assert!(serialized.contains("\"global_shortcut_accelerator\":\"control+alt+KeyF9\""));
+    }
+
+    #[test]
     fn computer_use_enabled_defaults_off_and_round_trips() {
         // Older settings.json lacks the field: the serde container-level
         // default falls back to false (off by default).
@@ -3166,6 +3245,8 @@ mod tests {
             code_permission: CodePermissionPrefs::default(),
             mode_defaults: ModeDefaultPrefs::default(),
             voice_shortcut_enabled: false,
+            global_shortcut_enabled: true,
+            global_shortcut_accelerator: "control+alt+KeyP".to_string(),
             computer_use: ComputerUsePrefs::default(),
             local_thinking_default_migrated: false,
             advanced: AdvancedPrefs {
@@ -3184,6 +3265,10 @@ mod tests {
         assert!(!parsed.chat.streaming_animation);
         assert_eq!(parsed.advanced.allow_shell, Some(false));
         assert_eq!(parsed.advanced.max_output_tokens, Some(8192));
+        // New fields round-trip verbatim too (whole-preferences writes must
+        // not drop them — see ModeDefaultPrefs::design for the failure mode).
+        assert!(parsed.global_shortcut_enabled);
+        assert_eq!(parsed.global_shortcut_accelerator, "control+alt+KeyP");
     }
 
     #[test]
@@ -3193,6 +3278,14 @@ mod tests {
         assert_eq!(prefs.theme, Theme::Genesis);
         assert_eq!(prefs.color_scheme, ColorScheme::System);
         assert_eq!(prefs.language, Language::ZhHans);
+        // Missing global-shortcut fields take the serde defaults:
+        // enabled OFF (opt-in) + the CmdOrCtrl alias default for the
+        // accelerator (its per-field serde default).
+        assert!(!prefs.global_shortcut_enabled);
+        assert_eq!(
+            prefs.global_shortcut_accelerator,
+            DEFAULT_GLOBAL_SHORTCUT_ACCELERATOR
+        );
         // Legacy settings.json without the builtin-feature field → defaults
         // to empty (all enabled), docs/builtin-toolset-contract.md §3.3.
         assert!(prefs.disabled_builtin_features.is_empty());

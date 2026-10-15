@@ -150,6 +150,45 @@ async function testImageInputCapability(model, baseUrl, apiKey, modelId) { retur
     });
   }
 
+  // ── 全局唤醒快捷键 ────────────────────────────────────────────────
+  // 专用 Rust 命令 set_global_shortcut_config 独占注册与持久化（不走
+  // update_settings）：success = status "registered"/"disabled"（accelerator
+  // 为归一化组合）；"invalid"/"conflict" 表示注册被拒（conflict 的 message
+  // 是技术细节，仅记 console，UI 展示本地化文案）。硬失败（IPC 异常）返回
+  // null，调用方据此回滚开关并展示通用失败文案。
+  function setGlobalShortcutConfig(enabled, accelerator) {
+    const sync = function () {
+      return invoke("set_global_shortcut_config", { enabled: !!enabled, accelerator: String(accelerator || "") });
+    };
+    // Retry once so a transient IPC failure does not desync the settings
+    // snapshot from the native registration for long (same shape as
+    // setVoiceShortcutEnabled); on persistent failure return null so the
+    // caller can roll its optimistic state back. On success the authoritative
+    // response is mirrored into state.settings so a settings-page remount
+    // reads the persisted combo instead of the startup snapshot.
+    return sync().then(function (result) { return applyGlobalShortcutResult(result, enabled, accelerator); }, function (error) {
+      console.warn("[settings] global shortcut config sync failed, retrying once", error);
+      return sync().then(function (result) { return applyGlobalShortcutResult(result, enabled, accelerator); }, function (retryError) {
+        console.warn("[settings] global shortcut config sync failed after retry", retryError);
+        return null;
+      });
+    });
+  }
+  function applyGlobalShortcutResult(result, enabled, accelerator) {
+    if (!result || typeof result.status !== "string") return null;
+    if (result.status !== "registered" && result.status !== "disabled") return result;
+    if (state.settings) {
+      // Same mechanics as the pet:enabled_changed listener above: the bridge
+      // owns its settings slice; the React layer only reads it.
+      state.settings = Object.assign({}, state.settings, {
+        global_shortcut_enabled: !!enabled,
+        global_shortcut_accelerator: result.accelerator || accelerator,
+      });
+      notify();
+    }
+    return result;
+  }
+
   // ── Builtin feature toggles (docs/builtin-toolset-contract.md hook) ──────
   // list_builtin_features is consumed by ChatView (the session-mention feature
   // gate, PR #586); set_builtin_feature_enabled only wraps the command channel
@@ -185,6 +224,7 @@ async function testImageInputCapability(model, baseUrl, apiKey, modelId) { retur
       testModelConnection,
       testImageInputCapability,
       probeLocalServerKind,
+      setGlobalShortcutConfig,
       listBuiltinFeatures,
       setBuiltinFeatureEnabled
     };
