@@ -7548,3 +7548,92 @@ client outbox, quality contribution, accepted-history deletion policy and full
 T20 remain unfinished. Deployment remains deferred. No application version,
 protocol contract, dependency or download-budget change is introduced. Downloads
 retain no hard total/cumulative duration or retry-count cap.
+
+## T17 protected logical workflow prerequisite (2026-10-15)
+
+Independent prerequisite review found that general update-Session event
+acceptance cannot use T44 Session edges alone. The original model also requires
+the actual T17 workflow and current writable Session, atomic original-hop
+confirmation, permanent original download-failure latch and ended/handoff
+cutoffs. The service has no production qualified workflow creation/handoff
+owner yet. General Session reception remains refused rather than using an
+invented workflow projection. Both independent roles passed the bounded kernel
+plan after the primary clarified complete resume preservation and distinct
+logical versus existing opaque lifecycle context identities.
+
+The new separate service feature `upgradeworkflow` derives exact original
+workflow context, complete selection identity and four-field hop identity from
+already authenticated decision claims. Closed pinned Schema and intrinsic
+semantics are repeated; signature/current eligibility are not inferred. The
+protected record supports original ongoing/failed facts, complete optional
+downloadResumeBinding, first failure occurrence/server end/event/Session, original
+stage/group/content, confirmation and explicit positive loss interval. Unknown
+observation never creates a failure or refreshes progress. Logical downloads
+have no total/cumulative duration or retry-count cap.
+
+An independent namespace provides protected canonical workflow bytes and T17
+original Session associations. Each association preserves the actual T44 opaque
+context digest and separate logical context digest, scope/workflow/Session/install,
+original start/channel/type/purpose/hop/final identity. Reads require actual
+Session plus complete T44 scope inventory and full read references; missing or
+altered associations fail closed. Explicit provisioning grants runtime reads
+only, with no private execution or direct/SET-reachable write authority. Startup
+checks exact native definitions/attributes, table shape/defaults/constraints,
+keys/indexes/owners/rules/triggers, migration and actual connection/isolation.
+Existing T44, T06 and event migration bytes remain unchanged.
+
+Private SECURITY INVOKER confirmation/failure primitives require real T06 owner
+epoch/lease/deadline and actual scope/Session/workflow CAS. Confirmation follows
+the actual T44 confirmed edge and current writable Session. A lawful old Session
+failure can permanently end its ongoing workflow after handoff without changing
+that Session or granting new rights. First failure bytes/time/revision remain
+unchanged for later lawful observations; original event receipt replay still
+belongs to the future event owner. Actual tests compose T44/workflow/T06 through
+a clearly isolated test definer, not a production event or decision command.
+
+The primary repaired a native optional-array append error exposed by actual
+handoff tests. Subsequent self-review added original handoff/acceptance chronology:
+pure negative controls originally accepted both confirmation/failure (1.111s),
+and the real native confirmation returned a candidate while failure refused only
+later at the wrong guard (package 8.325s, group 6.03s). Both sides now refuse the
+original pre-handoff acceptance explicitly. Compatibility review found SQL NULL
+and out-of-range final clock gaps. All initial/final clocks now require an
+explicit safe non-null value and nondecreasing time. Removing only the final
+confirmation NULL guard wrongly returns a real candidate; the independent
+post-write fault detects that red (package 4.701s, case 2.52s), then the original
+source is restored byte-for-byte. Tests cover both initial NULL/unsafe and actual
+post-write NULL/unsafe/backward clocks, complete rollback and restored positives.
+
+Independent Node evaluation rejected five terminal line-separator publisher
+counterexamples in the original Schema while intrinsic semantics stayed valid.
+The new Go original-claims/context and stored-record paths reject all five too;
+no Schema or regular-expression behavior change was needed. Domain context,
+selection and hop goldens were independently computed with the pinned original
+JavaScript model. Actual Go/native agreement includes the same counterexamples.
+
+Root's frozen actual suite passed all 12 top-level groups without skips in
+80.831s. The original handoff guard group passed in 6.02s, and the ten independent
+bounded-clock cases passed in 30.84s. Complete default Go tests passed with all
+actual opt-ins cleared; workflow domain's eight groups passed in 1.645s, contracts
+2.266s and metadata PostgreSQL 7.260s. Module verification, whole vet, server
+build, unchanged pinned contract bytes/inventory, formatting and diff checks
+passed. Client architecture and unchanged application version 0.10.9 passed.
+Both independent static implementation reviews passed after the repairs.
+
+Both final independent scoped implementation audits passed without remaining
+required fixes. Each independently ran all 12 actual top-level groups with zero
+skips: dependency 74.664s and compatibility 74.800s. Both also passed all eight
+domain groups and the affected default packages, affected vet, exact contract
+bytes/inventory, all 13 new Go files' formatting and diff checks. Default runs
+explicitly clear actual opt-ins: integration child cases skip, including those
+inside passing parent containers, and provide no actual database evidence.
+No reviewer edited source/tests. All root/reviewer sessions and test processes
+closed before commit preparation. This accepts the bounded workflow kernel.
+T17 is in progress; no further whole task is promoted to completed. The current
+47-task totals are four implemented, twelve in progress and thirty-one not
+completed or deferred.
+
+The kernel is a T17
+prerequisite, not full T17, qualified decision creation/handoff, general Session
+event acceptance, production signing, quality contribution or deployment. No
+application version, protocol contract, dependency or download-budget change.
