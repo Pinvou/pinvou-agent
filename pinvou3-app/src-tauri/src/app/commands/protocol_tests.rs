@@ -762,6 +762,54 @@ fn delete_chat_session_keeps_its_aux_cascade_wrapper() {
     );
 }
 
+// Round-2 review M-R2: the reserved-turn gate hold (admit_reserved_turn
+// returns the per-session turn gate and every sender keeps it alive across
+// get_or_spawn + engine submission) is load-bearing concurrency wiring — it
+// upholds the cascade-cancel enqueue-ordering invariant documented on the
+// module's cancel path — and has NO executing test: dropping the returned
+// guard in a sender compiles and keeps the whole suite green (mutation-proven
+// during the round-2 review). Source-shape pin: each reserved-turn sender
+// body must destructure the returned gate binding and must not drop it early.
+#[test]
+fn reserved_turn_senders_hold_the_turn_gate_through_submission() {
+    let pool = include_str!("../../features/assistant/engine_pool.rs");
+    let spans = [
+        (
+            "async fn send_reserved_eval_user_message(",
+            "pub(crate) async fn send_reserved_user_message(",
+        ),
+        (
+            "pub(crate) async fn send_reserved_user_message(",
+            "pub(crate) async fn run_scheduled_turn<F, Fut>(",
+        ),
+        (
+            "pub(crate) async fn edit_last_turn_reserved(",
+            "pub async fn compact_now(&self, session_id: &str) -> Result<()> {",
+        ),
+    ];
+    for (start_marker, end_marker) in spans {
+        let start = pool
+            .find(start_marker)
+            .unwrap_or_else(|| panic!("{start_marker} must exist"));
+        let end = pool[start..]
+            .find(end_marker)
+            .unwrap_or_else(|| panic!("{end_marker} must follow {start_marker}"));
+        let body = &pool[start..start + end];
+        assert!(
+            body.contains("let (reservation, _turn_gate) = "),
+            "{start_marker} must keep the turn gate binding returned by admit_reserved_turn alive across engine submission — dropping it (e.g. `let (reservation, _)`) reopens the admitted-but-not-submitted window where a phase-2 cascade cancel can enqueue CancelSubAgents after the new turn's SendMessage",
+        );
+        assert!(
+            body.contains("admit_reserved_turn("),
+            "{start_marker} must admit through the shared prelude",
+        );
+        assert!(
+            !body.contains("drop(_turn_gate)"),
+            "{start_marker} must not drop the turn gate before submission completes",
+        );
+    }
+}
+
 // Round-36 minors 4+5: the two aux-classification surfaces an independent
 // re-enumeration found beyond the 26 guard sites. The deliverables index is a
 // cross-session surface, so it must skip aux records by the derived-id rule;
