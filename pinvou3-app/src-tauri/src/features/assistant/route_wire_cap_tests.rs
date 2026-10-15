@@ -8,6 +8,10 @@
 //! `limit_overrides` 为空，把未收录 wire id 重新钳回 8192，官方
 //! deepseek-flash 的思维链在 Responses 线上烧完 8192 即截断报错）。
 //!
+//! 引擎自起轮次（#703 + CodeWhale#108）：`Op::EditLastTurn` 不携带 route，
+//! 引擎经 `current_runtime_route` 重推导——重推导必须重申已安装的宿主申报
+//! 限额，否则目录外模型在重发轮被 8192 兼容钳制打回。
+//!
 //! 用本地 mock 端点驱动真实引擎完整一轮（app 路由解析 → Engine::new →
 //! Op::SendMessage → 底座出站 → HTTP），断言钢丝请求体的 `max_tokens`：
 //! 两个 wire-policy 家族（Deepseek=model-aware、Zai=固定 wire）都必须落在
@@ -140,14 +144,21 @@ async fn start_wire_cap_probe() -> (String, Arc<WireCapProbe>, tokio::task::Join
 /// turn 立即结束；调用方随后读取 probe 捕获的请求体断言钢丝限额。
 /// `expected_declared_output` 钉住引擎收到的路由申报（PINVOU_DOCUMENTED_OUTPUT
 /// 的表行值），确保后续的钢丝断言确实在验证"申报穿过出站缝"。
-async fn run_turn_against_mock(
+struct WireCapEngine {
+    bridge: Pinvou3Bridge,
+    handle: deepseek_tui::core::engine::EngineHandle,
+    engine_run: tokio::task::JoinHandle<()>,
+    provider_kind: deepseek_tui::config::ApiProvider,
+}
+
+async fn boot_wire_cap_engine(
     label: &str,
     preset: crate::platform::prefs::ModelPreset,
     model: &str,
     base_url: &str,
     project: &Path,
     expected_declared_output: u64,
-) {
+) -> WireCapEngine {
     let mut bridge =
         Pinvou3Bridge::boot_with_workspace(project.to_path_buf()).expect("boot wire-cap bridge");
     bridge.prefs.advanced.saved_models = vec![crate::platform::prefs::SavedModel {
@@ -187,28 +198,33 @@ async fn run_turn_against_mock(
     engine_config.snapshots_enabled = false;
     engine_config.terminal_chrome_enabled = false;
     let (engine, handle) = Engine::new(engine_config, &dt_config);
-    let run_task = tokio::spawn(engine.run());
-    let op = bridge
-        .build_send_message_op(
-            "wire-cap-session",
-            "Say ok.".to_string(),
-            AppMode::Agent,
-            None,
-            false,
-        )
-        .expect("build wire-cap turn");
-    handle.send(op).await.expect("send wire-cap turn");
+    let engine_run = tokio::spawn(engine.run());
+    WireCapEngine {
+        bridge,
+        handle,
+        engine_run,
+        provider_kind,
+    }
+}
+
+/// 驱动一个 op 到 TurnComplete。mock 端点对任意请求回一条极短的 SSE 完成
+/// 流，turn 立即结束；工具审批（如有）自动放行。
+async fn drive_wire_cap_turn_to_completion(
+    engine: &WireCapEngine,
+    op: deepseek_tui::core::ops::Op,
+) {
+    engine.handle.send(op).await.expect("send wire-cap turn");
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-    let mut events = handle.rx_event.write().await;
+    let mut events = engine.handle.rx_event.write().await;
     loop {
         let event = tokio::time::timeout_at(deadline, events.recv())
             .await
-            .unwrap_or_else(|_| panic!("{label}: wire-cap turn timed out"))
-            .unwrap_or_else(|| panic!("{label}: engine event channel closed"));
+            .expect("wire-cap turn timed out")
+            .unwrap_or_else(|| panic!("engine event channel closed"));
         match event {
             Event::ApprovalRequired { id, .. } => {
-                let approval_handle = handle.clone();
+                let approval_handle = engine.handle.clone();
                 tokio::spawn(async move {
                     let _ = approval_handle.approve_tool_call(id).await;
                 });
@@ -218,18 +234,59 @@ async fn run_turn_against_mock(
         }
     }
     drop(events);
-    run_task.abort();
+}
+
+async fn run_turn_against_mock(
+    label: &str,
+    preset: crate::platform::prefs::ModelPreset,
+    model: &str,
+    base_url: &str,
+    project: &Path,
+    expected_declared_output: u64,
+) {
+    let engine = boot_wire_cap_engine(
+        label,
+        preset,
+        model,
+        base_url,
+        project,
+        expected_declared_output,
+    )
+    .await;
+    let op = engine
+        .bridge
+        .build_send_message_op(
+            "wire-cap-session",
+            "Say ok.".to_string(),
+            AppMode::Agent,
+            None,
+            false,
+        )
+        .expect("build wire-cap turn");
+    drive_wire_cap_turn_to_completion(&engine, op).await;
+    engine.engine_run.abort();
     eprintln!(
-        "PROBE[{label}] model={model} api_provider={provider_kind:?} declared_output={expected_declared_output}"
+        "PROBE[{label}] model={model} api_provider={:?} declared_output={expected_declared_output}",
+        engine.provider_kind
     );
 }
 
-/// 两个 wire-policy 家族的钢丝输出上限都必须携带宿主申报事实：
-/// Deepseek（model-aware，修复对象）与 Zai（固定 wire，回归保护）。
-#[tokio::test(flavor = "current_thread")]
-#[allow(clippy::await_holding_lock)]
-async fn host_declared_output_fact_reaches_the_wire_for_both_wire_policies() {
-    let _env_lock = crate::platform::paths::tests::ENV_LOCK
+/// 进程级 env 与临时 HOME 的密闭隔离：持有 `ENV_LOCK`（in-process env 写串行），
+/// 捕获/恢复全部相关 env 名，落临时 PINVOU3_HOME/CODEWHALE_HOME，并清掉可能
+/// 干扰路由解析的既有 DEEPSEEK_* 配置。guard 存活期间隔离持续生效。
+///
+/// 字段声明顺序即 drop 顺序：`_env_restore` 必须先于 `_env_lock` 声明，使
+/// env 恢复（含 personas 缓存重载）在 `ENV_LOCK` 仍被持有时完成；反序会在
+/// 恢复窗口内提前放锁，并行测试可进入并捕获/覆盖错误的环境（拆解顺序由
+/// `wire_cap_env_restores_environment_before_releasing_the_lock` 钉死）。
+struct WireCapEnv {
+    _env_restore: EnvRestore,
+    _env_lock: std::sync::MutexGuard<'static, ()>,
+    root: std::path::PathBuf,
+}
+
+fn lock_wire_cap_env() -> WireCapEnv {
+    let env_lock = crate::platform::paths::tests::ENV_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let env_names = [
@@ -246,7 +303,7 @@ async fn host_declared_output_fact_reaches_the_wire_for_both_wire_policies() {
         "DEEPSEEK_MAX_OUTPUT_TOKENS",
         "PINVOU3_MAX_OUTPUT_TOKENS",
     ];
-    let _env_restore =
+    let env_restore =
         EnvRestore::capture_with_post_restore(&env_names, crate::features::personas::reload_user);
     let root = std::env::temp_dir().join(format!(
         "pinvou3-wire-cap-{}-{}",
@@ -276,6 +333,20 @@ async fn host_declared_output_fact_reaches_the_wire_for_both_wire_policies() {
             unsafe { std::env::remove_var(name) };
         }
     }
+    WireCapEnv {
+        _env_restore: env_restore,
+        _env_lock: env_lock,
+        root,
+    }
+}
+
+/// 两个 wire-policy 家族的钢丝输出上限都必须携带宿主申报事实：
+/// Deepseek（model-aware，修复对象）与 Zai（固定 wire，回归保护）。
+#[tokio::test(flavor = "current_thread")]
+#[allow(clippy::await_holding_lock)]
+async fn host_declared_output_fact_reaches_the_wire_for_both_wire_policies() {
+    let env = lock_wire_cap_env();
+    let project = env.root.join("user-project");
 
     for (label, preset, model, declared_output) in [
         (
@@ -316,5 +387,92 @@ async fn host_declared_output_fact_reaches_the_wire_for_both_wire_policies() {
         }
     }
 
-    let _ = std::fs::remove_dir_all(root);
+    let _ = std::fs::remove_dir_all(&env.root);
+}
+
+/// 引擎自起轮次（issue #703 / CodeWhale#108 修复对象）：`/edit` 末轮重发不
+/// 携带 route，引擎经 `current_runtime_route` 重推导路由。重推导必须重申宿主
+/// 已申报的路由限额——修复前底座以 `host_limits: None` 重解析并替换
+/// `active_route_limits`，目录外模型（deepseek-flash，申报 384K）的钢丝
+/// `max_tokens` 被打回 8192 兼容钳制。首轮用户直发走申报 route 安装限额；
+/// 次轮 EditLastTurn 只有重推导，钢丝断言钉在次轮请求体上。
+#[tokio::test(flavor = "current_thread")]
+#[allow(clippy::await_holding_lock)]
+async fn engine_self_started_edit_resend_keeps_declared_output_on_the_wire() {
+    let env = lock_wire_cap_env();
+    let project = env.root.join("user-project");
+    let (base_url, probe, server_task) = start_wire_cap_probe().await;
+
+    let engine = boot_wire_cap_engine(
+        "deepseek-edit-resend",
+        crate::platform::prefs::ModelPreset::Deepseek,
+        "deepseek-flash",
+        &base_url,
+        &project,
+        384_000,
+    )
+    .await;
+    let first = engine
+        .bridge
+        .build_send_message_op(
+            "wire-cap-session",
+            "Say ok.".to_string(),
+            AppMode::Agent,
+            None,
+            false,
+        )
+        .expect("build first wire-cap turn");
+    drive_wire_cap_turn_to_completion(&engine, first).await;
+    let edit = deepseek_tui::core::ops::Op::EditLastTurn {
+        new_message: "Say ok again.".to_string(),
+        submission_id: Some(engine.bridge.next_submission_id()),
+    };
+    drive_wire_cap_turn_to_completion(&engine, edit).await;
+    engine.engine_run.abort();
+
+    let bodies = probe.bodies.lock().expect("wire-cap bodies").clone();
+    server_task.abort();
+    assert!(
+        bodies.len() >= 2,
+        "the mock endpoint must capture both the direct turn and the edit resend, got {}",
+        bodies.len()
+    );
+    let resend = bodies.last().expect("edit resend request body");
+    let value: serde_json::Value =
+        serde_json::from_str(resend).expect("edit resend request is JSON");
+    assert_eq!(
+        value.get("model").and_then(serde_json::Value::as_str),
+        Some("deepseek-flash"),
+        "edit resend: the wire model id must be preserved"
+    );
+    assert_eq!(
+        value.get("max_tokens").and_then(serde_json::Value::as_u64),
+        Some(EXPECTED_WIRE_MAX_TOKENS),
+        "edit resend: the re-derived route must keep the host-declared output fact on the wire (issue #703: was clamped back to 8192)"
+    );
+
+    let _ = std::fs::remove_dir_all(&env.root);
+}
+
+/// 确定性拆解顺序回归（#709 评审 P2）：Rust 按字段声明顺序 drop struct，
+/// `WireCapEnv` 必须让 `_env_restore` 先于 `_env_lock` 析构，使 env 恢复
+/// 在 `ENV_LOCK` 仍被持有时完成。用空 env 名列表 + post_restore 回调内
+/// `try_lock` 断言复现拆解顺序——不触碰真实环境变量、不依赖时序调度：
+/// 反序时锁已释放、`try_lock` 成功、断言击红。
+#[test]
+fn wire_cap_env_restores_environment_before_releasing_the_lock() {
+    let env_lock = crate::platform::paths::tests::ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let env_restore = EnvRestore::capture_with_post_restore(&[], || {
+        assert!(
+            crate::platform::paths::tests::ENV_LOCK.try_lock().is_err(),
+            "ENV_LOCK must still be held while EnvRestore restores the environment"
+        );
+    });
+    drop(WireCapEnv {
+        _env_restore: env_restore,
+        _env_lock: env_lock,
+        root: std::env::temp_dir(),
+    });
 }
