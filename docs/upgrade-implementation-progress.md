@@ -19,7 +19,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T07 | In progress | Signing/Root primitives and actual provider checks; complete production issuance composition remains pending |
 | T08 | In progress | Protected atomic metadata publication primitives; complete business publication workflows remain pending |
 | T09 | In progress | Bounded package/native-byte inspection; complete upload, quarantine and platform qualification remain pending |
-| T17 | In progress | Protected logical workflow, private initial installation and atomic download handoff; qualified check/refresh composition remains pending |
+| T17 | In progress | Protected logical workflow, private initial installation, atomic handoff and private live download resume edge; qualified check/refresh composition remains pending |
 | T20 | In progress | Actual no-update/transaction and bounded Session/download-progress acceptance/recovery plus four original HTTP batch routes; remaining Session profiles, client queue and quality contribution remain pending |
 | T21 | In progress | Scoped quality projection/control primitives; complete quality evaluation and business composition remain pending |
 | T25 | In progress | Privacy/deduplication primitives; weekly provider configuration and complete business composition remain pending |
@@ -8306,3 +8306,94 @@ completed or deferred. Full T17/T20/T44, physical client qualification and
 deployment remain uncompleted; no hard total/cumulative download duration or
 retry cap is introduced. Continue the missing original resume edge and remaining
 task graph after committing this prerequisite.
+
+
+## T17/T44 private live download resume edge (2026-10-16)
+
+This bounded prerequisite adds the original update_offered/deferred to
+download_resume_context edge after an actual handoff. The destination first
+receives the existing ordinary update_offered event. The next download_started
+edge uses the existing ordinary command. Authenticated original T20 receipt,
+outbox, late-cursor, sealed recovery and HTTP/CLI acceptance follow separately.
+No complete T17/T20/T44 or physical client acceptance is claimed.
+
+T17 authenticates both real Sessions and original associations, immutable
+per-destination registration and unchanged logical context/hop. Live resume
+requires ongoing/current/latest equality. Original event facts only compare
+protected workflow/Session/hop identities; normal mode reuses the actual
+confirmed hop. Opaque lifecycle context remains independently bound to each
+Session. T44 advances Session revision/sequence/state and scope exactly once;
+the workflow revision, original attribution, source observation, preparation
+and Session start/action window remain unchanged. Activation is excluded.
+
+Two new private namespaces require the existing actual handoff pair and
+lifecycle migration 15. Explicit initialization creates a wholly absent pair,
+verifies an existing pair and refuses partial/corrupt state without repair.
+Runtime has no generic native EXECUTE/DML or PUBLIC authority. Event OwnerReplay
+requires a positive live owner epoch, exact complete original CAS and scope
+lock. Full native readback, source time watermarks, joined references and
+aggregate/result growth precede final owner/clock/window fences. T06 completion
+shares the transaction; refusal rolls back every business write.
+
+CaptureDownloadResume authenticates the complete native inventory plus seven
+joined refs, including actual source association, immutable binding and the
+new installation identity. Original limits remain 4096 refs, 1 MiB encoded
+refs and 32 MiB aggregate source, including final body growth. They impose no
+artifact size, total/cumulative download duration, retry or handoff-count cap.
+Source timeout does not end the ongoing logical workflow or erase original
+intent. The private native port acknowledges no authentic client event.
+
+The root's final frozen actual PostgreSQL run passed fifteen groups and
+sixty-eight child cases with zero skips/failures in 370.003s: twelve new resume
+groups plus three existing handoff/download-owner/HTTP regressions. Controls
+cover genuine initial creation and first handoff, three modes/two source
+states, full Go/native readback, original source tampering, exact CAS/owner
+refusal, four observed clocks, postwrite lease, catalog/role/partial capability,
+4096 and 1 MiB exact joined refs, final32MiB aggregate, three lawful-owner
+races and original source timeout with fresh-capture convergence. Historical
+failure latches only its workflow; a winning resume advances scope once.
+
+The final cleared-opt-in complete Go tests, module verification, complete vet,
+original contract bytes/inventory, fifteen-source empty Go formatting, server
+build, eighteen working/staged source hashes and both whitespace checks passed.
+Both new SQL files are UTF-8 with single final LF; all previously committed
+SQL bytes remain unchanged. The original genuinely signed Node reference
+passed six mode/state pairs in 5.054s (actual subtest 3.74s), compares complete
+Session candidates, and independently asserts unchanged workflow/source.
+Default skipped cases are not actual integration evidence. Client architecture
+guard and version consistency passed; application version remains 0.10.9 and
+normative document versions remain 1.0.
+
+
+The independent dependency role's final scoped code/test/doc audit passed with
+no remaining required finding. Its assigned six new actual groups passed
+twenty-nine child cases with zero skips/failures in 94.849s. Its original signed
+Node 26 reference comparison passed six cases in 5.784s (actual subtest 4.89s).
+Cleared affected defaults/vet, module verification, original pinned bytes and
+inventory, fifteen-source empty formatting, eighteen working/staged frozen
+hashes, two new SQL byte formats, unchanged old SQL and both whitespace checks
+passed. All sessions, fixtures and Go/Node child processes closed before the
+compatibility role received the exclusive runtime slot. Its six-group subset
+is not described as a twelve-group run.
+
+
+The independent compatibility role's final scoped code/test audit passed with
+no remaining required finding. Its complementary six new groups plus three
+existing handoff/download-owner/HTTP regressions passed nine groups and
+thirty-nine child cases, zero skips/failures in 274.270s. Its original signed
+Node comparison passed six cases in 2.445s (actual subtest 1.17s). Cleared
+affected defaults/vet, module verification, pinned original bytes/inventory,
+fifteen-source empty formatting, eighteen frozen working/staged hashes, both
+new SQL byte formats, unchanged old SQL and both whitespace checks passed.
+All fixture cleanups, worker/Go/Node child processes and tool sessions closed
+before the exclusive runtime slot returned to the primary role.
+
+Both independent scoped code/test audits pass with no remaining required
+findings. Their complementary actual subsets jointly cover all twelve new
+resume groups; neither role's six-group subset is called its own twelve-group
+run. Default parent passes with skipped children are not actual PG evidence.
+No wire contract, dependency or application version changes. The forty-seven
+task totals remain four implemented, twelve in progress and thirty-one not
+completed or deferred. Continue authenticated original resume reception,
+shared late cursors, receipt/outbox/sealed recovery and HTTP/CLI composition,
+then the remaining task graph. Deployment remains explicitly deferred.
