@@ -1869,6 +1869,50 @@ pub(crate) mod tests {
     use super::*;
     use crate::platform::paths::tests::ENV_LOCK;
 
+    // Synthetic pin for model_probe_transport_code's composition (a real
+    // reqwest::Error cannot carry userinfo — reqwest >= 0.12 redacts its own
+    // Display, so the e2e probe in settings.rs cannot fail against a
+    // single-pass regression). The userinfo here carries no digit, so the
+    // token-shape pass alone cannot catch it: only the URL-userinfo pass
+    // does, and the order is load-bearing (same composition as the CLI's
+    // support::redact_error_text, order-pinned by
+    // redact_scrubs_url_userinfo_before_token_shapes).
+    #[test]
+    fn transport_scrub_composition_strips_url_userinfo_before_token_shapes() {
+        // The URL path carries no digit anywhere: the generic >= 24 chars +
+        // digit + alpha branch of the token heuristic cannot fire, and no
+        // secret-like prefix matches, so the token pass alone keeps the URL.
+        let raw = "error sending request for url (http://alice:letmein@example.com/api):                    request rejected: sk-proj-abcd1234 invalid";
+        // The order claim, executable: the token-shape pass alone keeps the
+        // digit-less userinfo (the URL run matches no secret-like prefix).
+        let single_pass = crate::platform::credential_store::redact_secret(raw);
+        assert!(
+            single_pass.contains("letmein"),
+            "precondition drifted — the token pass alone now catches the userinfo: {single_pass}"
+        );
+        let scrubbed = crate::platform::credential_store::redact_secret(
+            &crate::platform::redact_url_credentials_in_text(raw),
+        );
+        assert!(
+            !scrubbed.contains("alice"),
+            "userinfo user survived: {scrubbed}"
+        );
+        assert!(
+            !scrubbed.contains("letmein"),
+            "userinfo password survived: {scrubbed}"
+        );
+        assert!(
+            !scrubbed.contains("sk-proj-abcd1234"),
+            "bearer token survived: {scrubbed}"
+        );
+        // The credential-bearing URL run is redacted wholesale (fail-closed —
+        // the host is not preserved either).
+        assert!(
+            scrubbed.contains("[REDACTED]"),
+            "the credential-bearing URL run must be redacted: {scrubbed}"
+        );
+    }
+
     #[test]
     fn parse_models_response_list_keeps_all_model_ids() {
         let json: serde_json::Value = serde_json::from_str(
