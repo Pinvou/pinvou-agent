@@ -633,6 +633,35 @@ test('BrowserCore tab commits marker, WebDriver bind, initial navigation, then p
   assert.match(nativeHost, /candidate\.publish\(\)/);
 });
 
+test('every browser/mod.rs blank-tab marker references the shared const, never a hand-typed literal', () => {
+  // Round-2 review minor: only create_native_bound_tab was const-by-name
+  // pinned; handle_hosted_browser_request and create_agent_popup_tab could
+  // revert to hand-typed literals (plus a typo) with every test green. All
+  // three production sites must go through HOST_BLANK_MARKER_TAB_PREFIX, and
+  // no production line may hand-type the value (host.rs's three documented
+  // hand-typed sites are value-pinned by its own unit tests; the mod.rs
+  // literal below belongs to this file's test module).
+  const uses = [...browserManager.matchAll(/\{HOST_BLANK_MARKER_TAB_PREFIX\}/g)].length;
+  assert.equal(
+    uses,
+    3,
+    'browser/mod.rs blank-tab markers must all reference the shared platform const',
+  );
+  for (const fn of [
+    'handle_hosted_browser_request',
+    'create_agent_popup_tab',
+    'async fn create_native_bound_tab',
+  ]) {
+    assert.ok(browserManager.includes(fn), `${fn} must exist`);
+  }
+  const production = browserManager.slice(0, browserManager.lastIndexOf('#[cfg(test)]'));
+  assert.doesNotMatch(
+    production,
+    /about:blank#pinvou-tab-/,
+    'the blank-tab marker value must stay single-sourced in the platform constant',
+  );
+});
+
 test('Linux WebDriver safely rebinds with a host marker without injecting remote-page identity', () => {
   assert.match(nativePlatform, /register_browser_core_webview_binding/);
   assert.match(
