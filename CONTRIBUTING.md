@@ -137,7 +137,8 @@ infrastructure paths fall back to the complete smoke set. Every retained `main` 
 runs cumulative Linux compile verification (full Linux behavior execution stays on the
 merge-queue leg, which already validates the same combined tree), native Windows
 checks, and — since 2026-10 — the native macOS legs folded into `macos-rust-check`
-(full lib tests plus the release-fast/bundle smokes), and continues to warm the
+(full lib tests on every push; the release-fast/bundle smokes only on pushes whose
+diff touches the Rust, knowledge, or packaging surfaces), and continues to warm the
 shared caches. The Windows required job runs its
 all-target metadata check and linked native regression as two parallel matrix legs;
 both legs use the same high-risk/main routing and both must pass. See

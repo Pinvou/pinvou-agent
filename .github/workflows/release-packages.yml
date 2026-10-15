@@ -622,10 +622,11 @@ jobs:
           # for the PR-gate caches.
           save-if: false
 
-      # The macOS 27+ strip=none workaround is removed: the 1.98.0 toolchain
-      # pinned in rust-toolchain.toml contains the Mach-O __LINKEDIT 8-byte
-      # alignment fix (rust#157750, LLVM backport #158410), so strip="symbols"
-      # is safe again on every macOS version and artifacts no longer keep
+      # The macOS 27+ strip=none workaround is removed: every stable toolchain
+      # since 1.98 (2026-09) contains the Mach-O __LINKEDIT 8-byte alignment
+      # fix (rust#157750, LLVM backport #158410) — rust-toolchain.toml floats
+      # stable and can never roll back below it — so strip="symbols" is safe
+      # again on every macOS version and artifacts no longer keep
       # symbol tables / debug maps. See docs/binary-size-optimization.md.
 
       - name: Node.js
