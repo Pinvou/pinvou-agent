@@ -4569,12 +4569,13 @@ fn workspace_preview(
 /// commit fail honestly instead of recording a fabricated `user@hostname`.
 ///
 /// `commit.gpgsign=false` is a disclosed deviation from the user's git
-/// config and from the GUI's commit lane (which honors signing): this lane
-/// runs git with stdin at `/dev/null`, and the git lanes deliberately run
-/// without a deadline, so a `gpg.ssh`/GPG pinentry prompt would hang the
-/// command until interrupted. The price
+/// config: this lane runs git with stdin at `/dev/null`, and the git lanes
+/// deliberately run without a deadline, so a `gpg.ssh`/GPG pinentry prompt
+/// would hang the command until interrupted. The GUI's commit lane applies
+/// the same suppression since the 2026-10 dead-code sweep unified the two
+/// commit-argument builders, so neither surface honors signing. The price
 /// is honest and documented in `docs/pinvou-cli.md`: commits made through
-/// this lane are unsigned even for a `commit.gpgsign=true` user, so a
+/// either lane are unsigned even for a `commit.gpgsign=true` user, so a
 /// signature-based audit must not treat them as verified.
 fn commit_command_args(root: &Path, message: &str) -> Vec<String> {
     let mut args = vec!["-c".to_owned(), "commit.gpgsign=false".to_owned()];
