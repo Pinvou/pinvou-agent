@@ -7213,3 +7213,71 @@ This command grants no native loading, app/version/architecture/publisher
 qualification, installation permission or Artifact admission. Full T09 remains
 incomplete. Downloads retain no total/cumulative duration or retry-count cap;
 unchanged database/provider/browser integration was not repeated.
+
+## T20 explicit original no-update acceptance command (2026-10-15)
+
+The separate service adds `upgrade-events accept-no-update` to its existing
+fixed owner commands. It requires the enabled runtime connection, original
+independent T06 encryption key and explicit UPGRADE_EVENT_PRODUCT. It takes one
+original signed no-update request from standard input, never a caller-supplied
+projection, event disposition, SQL command or recovery frame. Existing
+provisioning, recovery and maintenance actions retain their behavior.
+
+Before database work, the owned input is read through an explicit 1 MiB-plus-one
+bound and existing strict canonicalization, rejecting incomplete/duplicate/
+multiple/invalid JSON and over-cap input without exposing contents. Cancellation
+closes the owned descriptor exactly once and joins the close callback. Both an
+in-process pipe and a real native descriptor have read-start cancellation
+controls; they do not certify console/POSIX signal behavior.
+
+Actual acceptance reuses the unchanged NoUpdateOwner and T06 registration.
+Current signed Root/deny, original contract/lineage/sequence/windows and final
+private guards remain mandatory before one atomic lifecycle/receipt/outbox and
+operation completion. Only a real success or currently lawful replay prints the
+fixed acknowledgement. Short, invalid-count or failed output remains a failure
+and explicitly says acceptance may have committed. No event/credential/product/
+provider text or private connection configuration is printed.
+
+Root unit checks passed five command groups in 0.788s with two actual-helper
+opt-ins skipped; configuration's five groups passed in 0.536s. The command and
+its test helper were built privately. The first actual database invocation
+refused both cases in 2.157s because the original private local test database was
+stopped; it is not called a pass. The same local test instance was restored,
+without production deployment or policy changes. The repaired actual two cases
+then passed in 27.007s, without skips.
+
+An independent P2 finding identified an administrator negative before writer
+enablement, which could be masked by missing capability. The primary role moved
+it after enablement, changing only the actual login with the original good
+request/product/key, asserting exact readiness refusal and zero acceptance
+before restoring runtime. Actual E2E also checks read-only authority, product/
+key/input/signature refusal, same-original replay, immutable receipt, joined
+no_update Session revision two, current key-deny refusal and restored replay.
+Receipt, outbox and committed operation counts remain one. The second actual
+case injects stdout failure after real owner completion, verifies all three
+committed facts, then uses a fresh normal command to replay the original request
+without another accepted event or receipt rewrite.
+
+No SQL migration, dependency, protocol, application VERSION, provider or
+download-budget change. This is a fixed internal no-update reception workflow,
+not HTTP batching, another event role, protected client outbox, accepted-history
+deletion, quality qualification or full T20 completion. Accepted-data deletion
+remains deferred until its consumer/archive and diagnostic retention policy is
+defined. Deployment remains deferred. Downloads retain no total/cumulative
+duration or retry-count cap.
+
+Complete default Go tests passed at package parallelism 2: command 1.299s,
+configuration 1.367s, events 4.374s, event PostgreSQL adapter 2.138s, metadata
+PostgreSQL adapter 2.550s and HTTP 7.185s. Real database/provider opt-ins skip
+by default; the two new actual cases and committed-output helper ran separately.
+Module verification, whole vet, server build, unchanged contract inventory,
+six-file formatting and diff checks passed; all root Go processes closed.
+
+Dependency audit passed command five in 1.845s (two helper skips), configuration
+five in 6.000s and actual PostgreSQL two in 19.250s (11.08s / 6.51s), without actual
+skips. Compatibility audit passed command five in 2.053s (two helper skips),
+configuration five in 0.619s and actual PostgreSQL two in 19.992s (11.65s / 6.76s),
+without actual skips. Both reused the frozen privately built command and helper,
+passed affected three-package vet, six-file formatting and diff checks, and
+closed every process. Both final scoped code/test audits passed after the
+primary role's P2 test isolation repair; production owner/SQL behavior was unchanged.
