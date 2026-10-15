@@ -1891,6 +1891,59 @@ fn readiness_ima_without_credentials_reports_the_gui_reason() {
     );
 }
 
+// Round-2 review M3 pin: a credential-store READ failure must degrade only
+// the credential half of the ima row — `ima_readiness_parts`' Err arm
+// re-derives the companion skill's installed flag independently (matching
+// main and the GUI), so `installed` stays true and the reason names the
+// store rather than the skill. The regression this guards (the round-1
+// M3 finding: the Err arm returning `(false, false, true)`) flipped an
+// installed `ima-skills` to absent. The file backend is forced so the
+// corrupted blob below is deterministically read — where the OS keyring
+// would win the namespace probe, the failure could not be induced at all.
+#[test]
+fn readiness_ima_survives_a_credential_store_read_failure() {
+    let _env = env_lock();
+    let _home = HomeGuard::new(
+        "plugins",
+        "readiness-ima-store-failure",
+        Isolation::ProductHome,
+    );
+    let _store_env = EnvGuard::set_values(&[
+        (
+            "CODEWHALE_SECRET_BACKEND",
+            Some(std::ffi::OsString::from("file")),
+        ),
+        (
+            "CODEWHALE_HOME",
+            Some(_home.path().join("codewhale").into_os_string()),
+        ),
+    ]);
+
+    run_ok(&["pinvou", "plugins", "skills", "install", "ima-skills"]);
+    let secrets = _home
+        .path()
+        .join("codewhale")
+        .join("secrets")
+        .join("secrets.json");
+    std::fs::create_dir_all(secrets.parent().unwrap()).expect("create secrets dir");
+    std::fs::write(&secrets, "{corrupted blob").expect("write corrupted secrets blob");
+
+    let value = run_json(&["pinvou", "plugins", "readiness"]);
+    let ima = row_of(&value, "bundles", "bundle_id", "ima");
+    assert_eq!(
+        ima["installed"],
+        serde_json::json!(true),
+        "a store read failure must not degrade an installed ima-skills to absent: {ima}"
+    );
+    assert_eq!(ima["ready"], serde_json::json!(false));
+    assert_eq!(
+        ima["reason"],
+        serde_json::json!("credential_store_unavailable"),
+        "the row's verdict must name the store, not the (installed) skill: {ima}"
+    );
+    assert_eq!(ima["probe"], serde_json::json!("registry"));
+}
+
 /// OPT-IN (credential store): seeds both ima credentials through the same
 /// system store `plugins readiness` reads, pinning the two verdicts the zero
 /// state cannot reach — credentials + `ima-skills` installed → ready (the
