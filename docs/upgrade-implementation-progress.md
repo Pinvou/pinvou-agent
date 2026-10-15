@@ -20,7 +20,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T08 | In progress | Protected atomic metadata publication primitives; complete business publication workflows remain pending |
 | T09 | In progress | Bounded package/native-byte inspection; complete upload, quarantine and platform qualification remain pending |
 | T17 | In progress | Protected logical workflow and private initial installation; qualified check/refresh and handoff remain pending |
-| T20 | In progress | Actual no-update/transaction and bounded Session acceptance/recovery; other Session profiles, public batching and client queue remain pending |
+| T20 | In progress | Actual no-update/transaction and bounded Session acceptance/recovery plus four original HTTP batch routes; other Session profiles, client queue and quality contribution remain pending |
 | T21 | In progress | Scoped quality projection/control primitives; complete quality evaluation and business composition remain pending |
 | T25 | In progress | Privacy/deduplication primitives; weekly provider configuration and complete business composition remain pending |
 | T26 | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
@@ -7934,3 +7934,114 @@ post-cleanup execution processes closed before commit preparation.
 The 47-task totals remain four implemented, twelve in progress and thirty-one
 not completed or deferred. Downloads retain no hard total/cumulative duration
 or retry cap; credible progress or confirmable waiting remains incomplete.
+
+## T20 original event HTTP batching and recovery (2026-10-15)
+
+This bounded service increment exposes only the original telemetry-event and
+three purpose-specific transaction-event POST operations. Exact pinned request,
+response and status-specific error Schemas remain unchanged. Task paths remain
+absent. No-update, available normal/forced install and silent preinstall Session
+facts, and three transaction purposes use their existing actual owners. Full T20
+remains in progress: progress/resume/staged/activation-Session and task facts,
+protected client outbox/upload lifecycle and quality contribution remain separate.
+
+The events feature validates the complete original batch, then the actual current
+Root/role deny/signature/windows and event bindings precede lineage dispatch,
+unsupported-profile refusal and receipt availability. Each ordered original unit
+repeats owner checks and commits independently. Success contains every matching
+confirmed acknowledgement, retaining duplicates; a later failure emits a closed
+error with no successful-prefix list. Earlier accepted units remain durable and
+replay on original retry. Every HTTP response, including replay, receives a fresh
+server requestId without exposing the T06 result identity or provider diagnostics.
+
+Default-off explicit composition requires the configured expected product,
+independent operations key and all explicitly provisioned owner capabilities.
+Startup never migrates, grants or borrows administrative configuration. One
+joined recovery worker registers no-update, Session, live/late TransactionOwner
+and the unchanged legacy late-only command. Recovery uses sealed original
+bindings without an original request or an HTTP product override. Listener
+failure and shutdown join the worker before closing its pool. Existing native
+SQL, dependency versions and pinned contracts remain unchanged.
+
+The per-request event control-body read deadline is 30 seconds, with server-side
+cancellation, joined callback, owned body close and final deadline clear. Even
+invalid Content-Type owns cleanup so net/http cannot subsequently drain an open
+incomplete input indefinitely. Global read/write timeouts remain unset; this is
+not a download-duration limit. Legal undelivered profiles return retryable 503,
+without acknowledgement or permanent-invalid classification.
+
+Independent review found and root repaired the early Content-Type cleanup gap
+and tests that originally relied on client disconnection. Revised real HTTP
+tests keep the peer open, cancel only server context, observe server-side closed
+connections for all four rejected routes, and isolate callback join and deadline
+clear ordering. Four private controlled removals independently fail their target
+tests: missing cancellation deadline, missing callback join, missing final clear
+and restored early media-type refusal. Compiler failures do not count as red
+evidence, and every altered production source is restored byte-for-byte.
+
+Actual integration fixtures contain genuinely signed original inputs, published
+Root/deny and protected original lineage records. Those fixture records do not
+certify qualified Session/Transaction creation. The actual server lifecycle helper
+runs production composition and cancels its context rather than killing the
+process, so worker joining is exercised. Expired four-role credentials are
+rejected before absent lineage; transaction late facts occur after the 30-day
+execution window but within the original 37-day upload horizon. No expired
+credential is extended to make a late positive pass.
+
+Root's frozen-code PostgreSQL run passed all nine new top-level groups with zero
+skips in 441.845s. It covers seven delivered profiles and permanent replay,
+whole-batch Schema and duplicate ordering, prefix commit/error/original retry,
+deny before unavailable lineage/receipt across supported and undelivered legal
+profiles, original expired credentials, valid late facts, actual built-process
+startup/runtime permission refusal and joined shutdown, lost HTTP output and all
+four versioned sealed recovery commands. Whole business-state readback compares
+Session, Transaction, workflow, receipt and outbox records on replay. Additional
+current-authority observations may legitimately commit another T06 frame for the
+same permanent acceptance, and fixtures also contain unrelated Root/component
+operations; total operation-row count alone is not an acceptance duplication
+oracle.
+
+Root's complete cleared-opt-in Go suite passed, including server 3.944s,
+contracts 3.268s, events 10.791s, event PostgreSQL 3.977s, metadata PostgreSQL
+5.303s and HTTP 6.711s. Module verification, complete vet, original pinned
+bytes/inventory, all eighteen Go sources' empty formatting, actual server build,
+frozen fingerprints and staged/unstaged whitespace checks passed. Client
+architecture and unchanged version 0.10.9 checks passed. Default integration
+skips are not actual database, physical platform or provider evidence.
+
+The independent dependency role passed its final scoped static audit and actual
+four-group run with zero top-level or child skips in 222.626s (runner elapsed
+236.419s). Its groups cover actual process startup/joined shutdown, expired
+credentials before absent lineage, denial before unavailable lineage/receipts
+and undelivered profiles, and all four sealed recovery commands. It reused the
+frozen actual server/helper binaries, without rebuilding or editing sources.
+Cleared-opt-in affected defaults passed, along with affected vet, module
+verification, original pins/inventory, eighteen-source empty formatting, frozen
+fingerprints and staged/unstaged whitespace checks. Default skips and parents
+with skipped actual children are not integration evidence. Every dependency-role
+session and child process closed before the compatibility role received the
+exclusive execution slot.
+
+The independent compatibility role's actual other five-group run passed with
+zero top-level or child skips in 158.284s. It covers seven original profiles and
+permanent replay, partial-batch commit/error/retry, complete Schema and duplicate
+order, four late profiles and lost HTTP output followed by original retry.
+These five groups and the dependency role's four are complementary independent
+runtime coverage; neither role's subset is reported as its own full nine-group
+execution.
+
+The compatibility role's final scoped audit passed without required findings or
+edits. Its cleared-opt-in affected defaults passed (server 3.060s, contracts
+2.199s, events 9.170s, event PostgreSQL 2.479s, HTTP 5.850s and metadata
+PostgreSQL 3.189s), as did affected vet, module verification, original pins and
+inventory, eighteen-source empty formatting, both working/staged frozen hashes
+and staged/unstaged whitespace checks. In the default suite, this batch's nine
+actual groups are exactly five top-level skips plus four passing parents whose
+eighteen children all skip; neither the parent passes nor skipped helpers/Node
+references count as actual execution. Every compatibility-role session and child
+process closed before returning the exclusive execution slot to root.
+
+Both independent roles accept this bounded HTTP/recovery implementation. The
+47-task totals remain four implemented, twelve in progress and thirty-one not
+completed or deferred. There is no hard total/cumulative download duration or
+retry cap, and this increment makes no deployment or physical-client claim.
