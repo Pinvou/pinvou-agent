@@ -1656,6 +1656,26 @@ pub struct EnginePool {
     /// run_scheduled_turn's spawn→submit window the lifecycle is not yet
     /// active; idle reclaim needs this as a second layer of protection).
     scheduled_running_sessions: Arc<SyncMutex<HashSet<String>>>,
+    /// Round-11 M1 (#657), round-12/13 reshaped: sessions whose opening
+    /// turn was delivered under the watcher shield
+    /// (unattended_disallowed_tools) and whose delivery's submission
+    /// succeeded. The first subsequent send through the attended seams —
+    /// `send_reserved_user_message` or `edit_last_turn_reserved`, after
+    /// the turn reservation is acquired — restores the ordinary catalog
+    /// and clears the mark: the shield must not outlive the unattended
+    /// opening turn into the user's interactive session (the scheduled
+    /// family's pre/post-turn evict closes the same invariant by
+    /// respawning; this is the delivery path's equivalent). Round-13
+    /// MINOR 7 wording truth: "the seams" includes the messaging relay
+    /// tail-call (`unattended_shield=false`), whose sender is
+    /// unauthenticated — a cross-session relay can lift the shield without
+    /// a human; that capability is inside the #627-disclosed relay
+    /// boundary, so the shield is fail-closed against interactive silence,
+    /// not against relays. The mark is recorded by `deliver_messaging_turn`
+    /// once the delivered turn's submission succeeds, is stripped again
+    /// when the delivery fails, and is cleared at reclaim/forget time so
+    /// it never outlives the engine it names.
+    watcher_shielded_sessions: Arc<SyncMutex<HashSet<String>>>,
     /// Steer-id engine-incarnation allocator: a process-monotonic AtomicU64
     /// sequence bumped on every engine spawn. Arc-shared so pool clones see
     /// one sequence (same idiom as every shared field here — EnginePool is a
@@ -1753,6 +1773,35 @@ fn delegate_steer_withdrawal(steer_id: &str, current_generation: u64) -> SteerWi
     }
 }
 
+/// Round-15 (#657) MAJOR 1: scoped guard over the watcher-shield's
+/// unmarked window (see `EnginePool::watcher_shield_drop_guard`).
+struct WatcherShieldDropGuard {
+    pool: EnginePool,
+    session_id: String,
+    armed: bool,
+}
+
+impl WatcherShieldDropGuard {
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for WatcherShieldDropGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let pool = self.pool.clone();
+        let session_id = self.session_id.clone();
+        // Detached: Drop is sync, and the strip is a plain catalog
+        // re-shape on the live engine (a no-op if it already ran).
+        let _ = tauri::async_runtime::spawn(async move {
+            pool.send_ordinary_disallowed_tools(&session_id).await;
+        });
+    }
+}
+
 impl EnginePool {
     pub fn new_with_dependencies(
         app: AppHandle,
@@ -1779,6 +1828,7 @@ impl EnginePool {
             bridge,
             idle_reaper: Arc::new(SyncMutex::new(None)),
             scheduled_running_sessions: Arc::new(SyncMutex::new(HashSet::new())),
+            watcher_shielded_sessions: Arc::new(SyncMutex::new(HashSet::new())),
             steer_incarnation_seq: Arc::new(AtomicU64::new(0)),
             execution_root_rewind_flags: Arc::new(SyncMutex::new(HashMap::new())),
         })
@@ -3127,6 +3177,12 @@ impl EnginePool {
     }
 
     async fn reclaim_engine_entry(&self, session_id: &str, entry: EngineEntry) {
+        // Round-13 (#657) MINOR 6: the shield mark dies with the engine.
+        // This is the shared teardown funnel — evict_locked's Some arm and
+        // the idle-reclaim / rebind paths that remove the entry directly
+        // both land here — so the mark is cleared on every reclaim shape,
+        // not only the evict_locked callers.
+        self.watcher_shielded_sessions.lock().remove(session_id);
         // Stop the producer before admission fallback awaits disk I/O.
         // An in-flight SessionUpdated save is serialized with the fallback
         // by SessionStore's mutation gate; no later delta/tool event can
@@ -3264,6 +3320,13 @@ impl EnginePool {
     async fn evict_locked(&self, session_id: &str) {
         let runtime_lock = self.runtime_model_locks.for_session(session_id).await;
         let _runtime = runtime_lock.lock().await;
+        // Round-12 (#657) MINOR 11 / round-13 MINOR 6: the shield mark dies
+        // with the engine — the shield itself is an in-memory op, so a mark
+        // surviving reclaim is a leaked String plus a redundant spawn+op on
+        // the restore paths. Delete / model-switch funnel through here;
+        // idle reclaim / rebind clear the mark inside reclaim_engine_entry
+        // (their shared teardown funnel, which bypasses this fn).
+        self.watcher_shielded_sessions.lock().remove(session_id);
         // Take the entry out of the map before matching: a temporary guard in
         // the match scrutinee would live until the whole match ends, and
         // reclaiming inside an arm would then hold the pool-wide entries lock
@@ -3288,6 +3351,9 @@ impl EnginePool {
     pub(crate) fn forget_session(&self, session_id: &str) {
         #[cfg(any(feature = "benchmark-hooks", test))]
         self.eval_model_snapshots.forget_session(session_id);
+        // Round-12 (#657) MINOR 11: a deleted session's shield mark must not
+        // outlive it (a stale mark would spawn+op on the restore paths).
+        self.watcher_shielded_sessions.lock().remove(session_id);
         self.turn_lifecycles.remove(session_id);
         self.turn_shell_tasks.remove(session_id);
         self.shell_managers.remove(session_id);
@@ -3763,6 +3829,18 @@ impl EnginePool {
             .map(crate::features::personas::equip_anchor);
         let persona_conversational = active_card.as_ref().is_some_and(|c| c.conversational_only);
         let engine = self.get_or_spawn(session_id).await?;
+        // Round-12 (#657) BLOCKER 1: the watcher-shield restore lives HERE —
+        // in the production attended seam every attended send converges on
+        // (desktop chat, plan acceptance, web/Acp via chat_with_reservation)
+        // — not in the benchmark-gated send_user_message where the round-11
+        // fix was compiled out of production builds. It runs AFTER the
+        // reservation is acquired (ensure_active above), so a busy-loser
+        // attended send cannot strip the shield from a still-pending opening
+        // turn, and never from the delivery itself (the mark is recorded
+        // once the opening turn's submission succeeds — see
+        // deliver_messaging_turn; a reader "fixing" this comment back to
+        // completes would reintroduce the round-11 ordering bug).
+        self.restore_watcher_shield_if_marked(session_id).await;
         forward_forced_turn_restrict(
             session_id,
             persona_conversational,
@@ -3783,6 +3861,56 @@ impl EnginePool {
         .await
     }
 
+    /// Push the session's ordinary per-session catalog — the global
+    /// tool-policy base shaped by the bridge, the same composition every
+    /// other catalog computation uses (spawn, toggle broadcast). The plain
+    /// scope's policy names (user-toggled-off connector tools, computer_use
+    /// when off, kb_search/kb_open_source when unindexed, automation /
+    /// send_later) come ONLY from the base argument, so an empty base here
+    /// would re-expose tool-policy-disabled tools for the engine's remaining
+    /// lifetime (round-12 #657 MAJOR 1).
+    async fn send_ordinary_disallowed_tools(&self, session_id: &str) {
+        if let Some(engine) = self.handle_for(session_id).await {
+            let ordinary = self
+                .bridge
+                .shape_disallowed_tools(session_id, self.compute_disallowed_tools());
+            let _ = engine
+                .handle
+                .send(Op::SetDisallowedTools {
+                    tools: (!ordinary.is_empty()).then_some(ordinary),
+                })
+                .await;
+        }
+    }
+
+    /// Clear the watcher-delivery shield: drop the mark and restore the
+    /// ordinary catalog on the live engine. The shield itself is an
+    /// in-memory op, so with no live engine there is nothing to restore — a
+    /// respawn already starts from the ordinary spawn catalog, and no
+    /// engine is spawned here just to clear a stale mark (round-12 #657
+    /// MINOR 11: evict/forget clear the mark at reclaim time).
+    async fn restore_watcher_shield_if_marked(&self, session_id: &str) {
+        if self.watcher_shielded_sessions.lock().remove(session_id) {
+            self.send_ordinary_disallowed_tools(session_id).await;
+        }
+    }
+
+    /// Round-15 (#657) MAJOR 1: armed after the watcher-shield op resolves,
+    /// disarmed by the delivery tail once it owns the disposition. If the
+    /// delivery future is DROPPED in between — the watcher's 30s delivery
+    /// timeout or its per-file panic guard — the drop strips the shield
+    /// again: an engine silenced with no mark and no restore duty is the
+    /// one state this feature must never persist. The strip is detached
+    /// (Drop is sync): the pool clone re-shapes the ordinary catalog, a
+    /// no-op when nothing was applied yet.
+    fn watcher_shield_drop_guard(&self, session_id: &str) -> WatcherShieldDropGuard {
+        WatcherShieldDropGuard {
+            pool: self.clone(),
+            session_id: session_id.to_string(),
+            armed: true,
+        }
+    }
+
     /// Deliver a cross-session message as a new turn — the idle-wake path of
     /// `features::messaging` (docs/builtin-toolset-contract.md §6: target
     /// idle / not loaded → dispatch immediately, the scheduled-task wake
@@ -3795,8 +3923,42 @@ impl EnginePool {
         &self,
         session_id: &str,
         content: String,
+        unattended_shield: bool,
     ) -> Result<()> {
+        // Round-9 M6 (session-creation): the watcher-delivered opening
+        // turn is unattended — shield the engine before the turn op.
+        // Interactive senders (the messaging tool, called from an attended
+        // session) keep the session's ordinary catalog. The mark is NOT
+        // recorded here: the restore lives in send_reserved_user_message
+        // (the shared seam this fn tail-calls), so an insert-before would
+        // let the delivery's own send deterministically dequeue the shield
+        // it just applied — the mark is recorded once the turn submission
+        // succeeds (see the tail).
         let reservation = self.reserve_turn(session_id)?;
+        // Round-13 (#657) MAJOR 3: the shield op (and the cold spawn it
+        // needs) moves AFTER the reservation is acquired. Applied before,
+        // a reserve_turn failure (an attended send for the just-created
+        // session winning the reserve during the seconds-long cold spawn)
+        // early-returned BEFORE the tail's strip arm: the live engine kept
+        // the 7-tool deny list with no mark and no restore duty — fail-stuck
+        // for the engine's lifetime. The FIFO-ordering rationale survives:
+        // the reservation is held from here on, so no other turn can submit
+        // ops in between and the shield op still precedes this delivery's
+        // turn op on the channel.
+        let mut shield_guard = None;
+        if unattended_shield {
+            let engine = self.get_or_spawn(session_id).await?;
+            engine.apply_unattended_shield().await?;
+            // Round-15 (#657) MAJOR 1: the tail's mark/strip only runs if
+            // this future completes — the watcher's 30s delivery timeout
+            // and the per-file panic guard both DROP it, and a drop after
+            // the shield op resolved but before the tail leaves the engine
+            // silenced with no mark and no restore duty (the third entry
+            // into the hazard the last two rounds closed by pairs). The
+            // guard strips the shield on drop; the tail disarms it once it
+            // owns the disposition.
+            shield_guard = Some(self.watcher_shield_drop_guard(session_id));
+        }
         // Round-7 Q2: expert matching sees the delivered BODY only. The
         // round-6 version passed the full block (header + contract lines +
         // sender JSON + body) — the fixed envelope text scored a containment
@@ -3830,7 +3992,7 @@ impl EnginePool {
             .map(|snapshot| snapshot.available_role_lines(&match_text))
             .unwrap_or_default();
         let mode = self.store.mode_state(session_id).mode.to_app_mode();
-        match self
+        let delivered = self
             .send_reserved_user_message(
                 session_id,
                 engine_content,
@@ -3841,8 +4003,43 @@ impl EnginePool {
                 expert_candidates,
                 reservation,
             )
-            .await
-        {
+            .await;
+        // Round-12 (#657) BLOCKER 1 / round-13 wording: the mark is recorded
+        // once the opening turn's SUBMISSION succeeds — it means "the
+        // opening turn went out shielded; the next send through the seams
+        // must restore the ordinary catalog". (The round-11 form inserted
+        // before the turn; with the restore living in the shared send seam,
+        // that ordering would have the delivery dequeue its own shield.) A
+        // failed submission records no mark and strips the shield again: an
+        // opening turn that never went out must not leave the engine
+        // silenced with nobody holding the restore duty.
+        if unattended_shield {
+            match delivered {
+                Ok(()) => {
+                    // The tail owns the disposition: disarm (nothing to strip
+                    // — the mark insert below is sync) and record the mark.
+                    if let Some(guard) = shield_guard.take() {
+                        guard.disarm();
+                    }
+                    self.watcher_shielded_sessions
+                        .lock()
+                        .insert(session_id.to_string());
+                }
+                Err(_) => {
+                    // Round-19 (#657) MAJOR 1: the strip is left to the
+                    // ARMED guard's Drop — a detached, idempotent re-shape
+                    // that survives this future being dropped. The round-18
+                    // shape disarmed FIRST and then awaited the strip, so a
+                    // 30s timeout landing inside that await dropped the
+                    // disarmed guard and never enqueued the strip: the live
+                    // engine kept the 7-tool deny list with no mark and no
+                    // restore duty — the strand, re-entering through the
+                    // tail itself. No await sits in this arm.
+                    drop(shield_guard);
+                }
+            }
+        }
+        match delivered {
             Ok(()) => {
                 pending_injections.commit();
                 Ok(())
@@ -4261,7 +4458,14 @@ impl EnginePool {
             // plain OVERWRITE of config.disallowed_tools, so the un-gated
             // broadcast replaced a live scheduled run's shield with the
             // ordinary catalog (turns after the toggle ran unshielded).
-            let shaped = if crate::features::sessions::is_sched_session_id(&sid) {
+            // Round-15 (#657) MINOR 10: the same overwrite semantics apply
+            // to a plain session currently carrying the watcher-delivery
+            // shield (the shield now outlives the turn until the seams
+            // restore it) — the broadcast consults watcher_shielded_sessions
+            // so a mid-window toggle re-shields instead of un-shielding.
+            let shaped = if crate::features::sessions::is_sched_session_id(&sid)
+                || self.watcher_shielded_sessions.lock().contains(&sid)
+            {
                 crate::features::assistant::engine::unattended_disallowed_tools(
                     &self.bridge.shape_disallowed_tools(&sid, tools.clone()),
                 )
@@ -4369,6 +4573,11 @@ impl EnginePool {
         // and are unchanged. Folding the merge into the dispatch seam keeps
         // the wiring itself pinned by an executing test (round-31 M9-rust).
         let engine = self.get_or_spawn(session_id).await?;
+        // Round-12 (#657) BLOCKER 1: edit-and-resend is an attended seam too
+        // and bypasses send_reserved_user_message — restore here as well,
+        // after the reservation is acquired (same reasoning as the send
+        // seam above).
+        self.restore_watcher_shield_if_marked(session_id).await;
         forward_edit_resend_with_reminder(session_id, new_message, |message| {
             engine.edit_last_turn_reserved(message, reservation)
         })

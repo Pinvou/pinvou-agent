@@ -247,6 +247,45 @@ impl SessionStore {
         }
     }
 
+    /// Round-17 MAJOR 1 (#657), round-18 MAJOR 1 parity fix: whether the
+    /// plain-chat budget is already at cap — the gate a tool-driven creator
+    /// consults BEFORE `create_new`, so an unattended loop can never push
+    /// the count past the cap and evict a pre-existing conversation (with
+    /// its workspace and checkpoints) as a side effect of a save. This is
+    /// the headless carve-out's own lesson (`MAX_HEADLESS_SESSIONS`): a
+    /// model-paced batch must not be a destructive operation on GUI data.
+    /// The count mirrors the sweep's enumeration EXACTLY — the sweep skips
+    /// pinned sessions BEFORE counting (they occupy neither the cap nor
+    /// eviction), so the gate excludes them too: allowed ⇒ unpinned ≤ cap-1
+    /// ⇒ the create lands ≤ cap ⇒ the sweep's `*count > cap` never fires.
+    /// A listing failure is fail-closed (cannot count ⇒ refuse). Unknown
+    /// pin state takes the CONSERVATIVE arm here: the fallback counts pinned
+    /// sessions in (they are not exempted when the pin state is unknown), so
+    /// the gate can over-refuse — never under-refuse. (The sweep itself
+    /// evicts nothing on unknown pin state, so this over-refusal is the only
+    /// cost; an `is_some_and`-style "allow when unknown" would be the wrong
+    /// fix for a future reader.)
+    pub(crate) fn plain_chat_budget_full(&self) -> Result<bool> {
+        // Unknown keep-forever state: the sweep's own fail-safe direction is
+        // no evictions at all, so the create cannot be the evictor.
+        let pinned = self.durable_pinned_sessions().unwrap_or_default();
+        let plain = self
+            .list_sessions_cached()
+            .map(|sessions| {
+                sessions
+                    .iter()
+                    .filter(|metadata| {
+                        !pinned.contains(&metadata.id)
+                            && !super::validators::is_sched_session_id(&metadata.id)
+                            && !super::validators::is_aux_session_id(&metadata.id)
+                            && !metadata.id.starts_with(HEADLESS_SESSION_PREFIX)
+                    })
+                    .count()
+            })
+            .context("list sessions for the chat-budget gate")?;
+        Ok(plain >= MAX_SESSIONS_PER_KIND)
+    }
+
     pub(crate) fn enforce_session_retention_locked(&self) -> Result<()> {
         let sessions = self
             .list_sessions_cached()

@@ -148,13 +148,35 @@ pub(crate) fn validate_user_workspace_path(raw: &str) -> Result<PathBuf> {
     if !canonical.is_dir() {
         bail!("Workspace path must be a directory: {raw}");
     }
+    let canonical_str = crate::platform::os::platform_compat_path(&canonical.to_string_lossy());
+    // Round-23 M1 (#657): the pinvou3 home (settings.json, connector
+    // credentials, sessions/, spool roots) and filesystem volume roots are
+    // refused as project workspaces — binding either would present
+    // privileged state as an unattended opening turn's project. Scope
+    // refusal lives HERE (the panel's own gate) so the panel and the
+    // tool-created path share it. BOTH sides are canonicalized so the
+    // comparison is in real-path space (canonicalize resolves junctions —
+    // e.g. the CI runner's Temp — into their targets, and a string-level
+    // comparison against the raw pinvou3_home() would silently miss).
+    // PathBuf::starts_with compares whole components, so a sibling like
+    // `<home>-backup` is not a false match.
+    let home_canonical = crate::platform::paths::pinvou3_home()
+        .canonicalize()
+        .unwrap_or_else(|_| crate::platform::paths::pinvou3_home());
+    if canonical == home_canonical || canonical.starts_with(&home_canonical) {
+        bail!(
+            "Workspace path must not be inside the Pinvou home ({}): {raw}",
+            home_canonical.display()
+        );
+    }
+    if canonical_str.as_os_str().len() <= 3 {
+        bail!("Workspace path must not be a filesystem volume root: {raw}");
+    }
     // Windows canonicalize returns a \?\ verbatim prefix; agents and the
     // frontend misjudge cwd in string/prefix comparisons, so normalize to a
     // regular drive path (identity on non-Windows) — the same invariant as
     // validate_codex_project_workspace.
-    Ok(crate::platform::os::platform_compat_path(
-        &canonical.to_string_lossy(),
-    ))
+    Ok(canonical_str)
 }
 
 pub(crate) fn persisted_system_prompt(system_prompt: Option<&SystemPrompt>) -> Option<String> {

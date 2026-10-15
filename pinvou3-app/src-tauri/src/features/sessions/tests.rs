@@ -1105,6 +1105,30 @@ fn validate_user_workspace_path_rejects_invalid_and_accepts_directory() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Round-23 M1 (#657): the pinvou3 home (settings.json, connector
+/// credentials, sessions/, spool roots) is refused as a project workspace —
+/// binding it would present privileged state as an unattended opening
+/// turn's project. Deleting the scope clause turns this red.
+#[test]
+fn validate_user_workspace_path_refuses_pinvou3_home() {
+    use super::validators::validate_user_workspace_path;
+
+    let home = crate::platform::paths::pinvou3_home();
+    std::fs::create_dir_all(&home).expect("seed pinvou3 home");
+    let validated = validate_user_workspace_path(home.to_str().expect("utf8"));
+    assert!(
+        validated.is_err(),
+        "the pinvou3 home must be refused: {:?}",
+        validated
+    );
+    let inside = home.join("sessions");
+    std::fs::create_dir_all(&inside).expect("seed sessions dir");
+    assert!(
+        validate_user_workspace_path(inside.to_str().expect("utf8")).is_err(),
+        "paths inside the pinvou3 home must also be refused"
+    );
+}
+
 fn text_message(role: &str, text: &str) -> Message {
     Message {
         role: role.into(),
