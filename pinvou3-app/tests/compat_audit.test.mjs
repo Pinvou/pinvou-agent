@@ -156,6 +156,28 @@ test('the auditor flags inset shorthand that survives into dist CSS (Safari 14.0
   }
 });
 
+test('the auditor flags @layer blocks that survive into dist CSS (Safari 14.0 contract)', () => {
+  // Cascade layers ship in Safari 15.4+ and lightningcss does not flatten
+  // them at cssTarget safari14: a Tailwind 4 build puts most of its output
+  // inside @layer blocks and the macOS 11 / Safari 14.0 floor renders
+  // unstyled (the #665 TW4 verdict). The auditor fails on any survivor in
+  // the built artifact; other at-rules must not phantom-match.
+  const distDir = fs.mkdtempSync(path.join(os.tmpdir(), 'compat-audit-layer-'));
+  try {
+    fs.mkdirSync(path.join(distDir, 'assets'), { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'assets', 'main.css'), [
+      '@layer base{*{box-sizing:border-box}}',
+      '@media (min-width:640px){.ok{display:block}}',
+      '@keyframes spin{to{transform:rotate(360deg)}}',
+    ].join('\n'));
+    const violations = hermeticAudit({ distDir });
+    assert.equal(violations.length, 1, `exactly the surviving @layer must be reported; got: ${JSON.stringify(violations)}`);
+    assert.match(violations[0], /^dist:main\.css:1: @layer survives the build/);
+  } finally {
+    fs.rmSync(distDir, { recursive: true, force: true });
+  }
+});
+
 test('the audit fails closed when a dist layer is absent or empty', () => {
   // The presence guards are the CLI's only defense against green-lighting an
   // audit whose dist layers were never produced: every layer runAudit scans
