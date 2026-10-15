@@ -3009,7 +3009,12 @@ function emitPersonaAt(atOrAfter, isTail) { return pinvouSharedwebN189622().emit
         const utext = toolResultCarrier
           ? ""
           : userMessageDisplayText(blocks, isScheduledRunSession(state.activeSessionId));
-        if (utext) {
+        // 步数预算通知（r10 M3）：过滤气泡，与 Rust 计数侧（counts_as_user_turn）
+        // 同口径——否则调和门序号错位 / 假用户气泡。
+        const stepBudgetNotice = utext
+          && (utext.indexOf("Step budget soft landing:") === 0
+            || utext.indexOf("Your model-step budget was exhausted") === 0);
+        if (utext && !stepBudgetNotice) {
           // pinvouTransfer 是展示层标记、不在 messages → rerender 从转交固定措辞还原品/悟样式
           const uitem2 = { type: "user", text: utext, time: "", messageIndex: mi };
           const scene = pinvouSceneForMessagePos(mi);

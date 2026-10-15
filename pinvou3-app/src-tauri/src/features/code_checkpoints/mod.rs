@@ -244,6 +244,11 @@ fn estimate_workspace_bytes(execution_root: &Path, ledger_root: &Path) -> Option
     while let Some(dir) = stack.pop() {
         let read = match fs::read_dir(&dir) {
             Ok(read) => read,
+            // 目录已消失（评审 r10 M4）：入栈后被删是 build/test/watcher 清临时
+            // 目录的常态竞态，消失的目录贡献 0 字节而非「不可读」——按 skip 处
+            // 理，不再触发粘性禁用把整个会话的回退静默永久关掉。其余错误
+            // （EACCES 等）维持 fail-closed。
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => {
                 eprintln!(
                     "[checkpoints] 体积估算读取目录失败（按不在预算内处理，快照跳过）: {}: {error:#}",
@@ -270,6 +275,8 @@ fn estimate_workspace_bytes(execution_root: &Path, ledger_root: &Path) -> Option
             // 不跟随符号链接（file_type 自身不触发跟随）。
             let file_type = match entry.file_type() {
                 Ok(file_type) => file_type,
+                // 同款 NotFound 竞态（评审 r10 M4）：条目消失按 skip。
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => {
                     eprintln!(
                         "[checkpoints] 体积估算读取文件类型失败（按不在预算内处理，快照跳过）: {}: {error:#}",
@@ -290,10 +297,25 @@ fn estimate_workspace_bytes(execution_root: &Path, ledger_root: &Path) -> Option
                 if !skip_dirs.contains(entry.file_name().to_string_lossy().as_ref()) {
                     stack.push(path);
                 }
-            } else if let Ok(metadata) = entry.metadata() {
-                total += metadata.len();
-                if total > MAX_WORKSPACE_BYTES_FOR_SNAPSHOT {
-                    return Some(total);
+            } else {
+                // 与目录级 fail-closed 对齐（评审 r10 M4）：NotFound（条目刚被删）
+                // 跳过；其余 metadata 错误按不可读处理——此前一律静默计 0，方向
+                // 与目录级相反。
+                match entry.metadata() {
+                    Ok(metadata) => {
+                        total += metadata.len();
+                        if total > MAX_WORKSPACE_BYTES_FOR_SNAPSHOT {
+                            return Some(total);
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        eprintln!(
+                            "[checkpoints] 体积估算读取文件元数据失败（按不在预算内处理，快照跳过）: {}: {error:#}",
+                            entry.path().display()
+                        );
+                        return None;
+                    }
                 }
             }
         }
@@ -1914,15 +1936,53 @@ mod tests {
         );
     }
 
+    /// 非绑定布局的预算遍历跳过影子目录自身（评审 r10 M5：r9 minor-4 修复
+    /// 此前零测试引用，删除跳过逻辑可全绿通过——快照自身把会话顶过预算线
+    /// 并触发粘性禁用的回归必须变红）。
+    #[test]
+    fn budget_walk_excludes_shadow_dir_in_unbound_layout() {
+        let dir = TestDir::new("budget-walk-unbound");
+        let root = dir.path().to_path_buf();
+        dir.write(
+            "a.txt", "v1
+",
+        );
+        // 真实登记两个快照：影子仓库（含对象文件）落在 root/checkpoints/ 内。
+        create_checkpoint(&root, &root, Some(1), CheckpointKind::Turn, "t1").expect("first");
+        dir.write(
+            "a.txt", "v2
+",
+        );
+        create_checkpoint(&root, &root, Some(2), CheckpointKind::Turn, "t2").expect("second");
+        assert!(
+            root.join("checkpoints").join("repo").exists(),
+            "前置：影子仓库确实位于遍历根内"
+        );
+        // 估算只计入工作区文件（a.txt），不含 checkpoints/ ——没有跳过的话，
+        // 对象文件会计入 total（测试体量小，断言「远小于」以兼容平台差异）。
+        let estimate = estimate_workspace_bytes(&root, &root).expect("estimate must succeed");
+        let shadow_bytes = shadow_repo_bytes(&repo_dir(&root));
+        assert!(
+            shadow_bytes > 0,
+            "前置：影子仓库确有字节可计入（否则断言无效）"
+        );
+        assert!(
+            estimate < shadow_bytes,
+            "估算不得计入影子目录自身（estimate={estimate}, shadow={shadow_bytes}）"
+        );
+    }
     /// 粘性超预算标记（评审 r8 M3 锚定）：标记存在即短路（不触估算路径——
     /// 用不存在的执行根验证：无标记时会走估算并落标记，有标记时直接 false）。
     #[test]
     fn budget_disabled_marker_short_circuits() {
         let ledger = TestDir::new("budget-marker-ledger");
-        let missing_exec = ledger.path().join("no-such-exec-root");
-        // 无标记：估算失败（目录不存在）按不在预算内 → false，且落下标记。
+        // r10 M4 后「目录不存在」按 skip 计 0 字节（不再触发 fail-closed），改用
+        // 「执行根是个文件」制造 NotADirectory——这条错误路径维持 fail-closed。
+        let not_a_dir = ledger.path().join("exec-is-a-file");
+        fs::write(&not_a_dir, b"").unwrap();
+        // 无标记：估算失败（NotADirectory）按不在预算内 → false，且落下标记。
         assert!(!execution_root_within_snapshot_budget(
-            &missing_exec,
+            &not_a_dir,
             ledger.path()
         ));
         assert!(
@@ -1931,7 +1991,7 @@ mod tests {
         );
         // 有标记：短路返回 false（此刻执行根存在与否、可读与否都无关）。
         assert!(!execution_root_within_snapshot_budget(
-            &missing_exec,
+            &not_a_dir,
             ledger.path()
         ));
     }
