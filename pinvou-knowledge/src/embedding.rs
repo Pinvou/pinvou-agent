@@ -1,25 +1,64 @@
 //! 进程内 BGE-M3 embedding，供桌面本地库与独立服务复用。
+//!
+//! 有效门控 = `local-embed` feature **且**目标平台存在 fastembed/ort-sys 制品。
+//! ort-sys 的 dist 表不含 linux/loongarch64，在该目标上构建期即 panic；Cargo
+//! feature 无法按 target 关闭（上层 `local-embed` feature 在 loongarch64 仍然
+//! 会开），因此本文件用与 Cargo.toml 依赖表同形的 cfg 复合门控：loongarch64
+//! 一律编译下面的显式「平台不支持」桩实现，嵌入请求返回明确错误而不是崩溃。
 
 use std::path::Path;
 
-#[cfg(feature = "local-embed")]
+#[cfg(all(
+    feature = "local-embed",
+    not(all(target_os = "linux", target_arch = "loongarch64"))
+))]
 use std::{path::PathBuf, sync::Mutex};
 
-#[cfg(feature = "local-embed")]
+#[cfg(all(
+    feature = "local-embed",
+    not(all(target_os = "linux", target_arch = "loongarch64"))
+))]
 use fastembed::{
     InitOptionsUserDefined, Pooling, TextEmbedding, TokenizerFiles, UserDefinedEmbeddingModel,
 };
 
-#[cfg(feature = "local-embed")]
+/// 桩实现返回的错误文案：按目标平台二选一，其余语义完全一致。
+/// loongarch64（含 feature 开/关两种构建）给出显式的平台不支持；
+/// 其余平台的 feature 关闭构建保持历史文案不变。两段 cfg 与下面的
+/// 桩 impl 同形（避免常量在真实实现生效的目标上变成 dead_code）。
+#[cfg(not(all(
+    feature = "local-embed",
+    not(all(target_os = "linux", target_arch = "loongarch64"))
+)))]
+#[cfg(all(target_os = "linux", target_arch = "loongarch64"))]
+const LOCAL_EMBED_UNAVAILABLE: &str = "本地 embedding 在此平台（linux/loongarch64）暂不支持";
+
+#[cfg(not(all(
+    feature = "local-embed",
+    not(all(target_os = "linux", target_arch = "loongarch64"))
+)))]
+#[cfg(not(all(target_os = "linux", target_arch = "loongarch64")))]
+const LOCAL_EMBED_UNAVAILABLE: &str = "local embedding feature disabled";
+
+#[cfg(all(
+    feature = "local-embed",
+    not(all(target_os = "linux", target_arch = "loongarch64"))
+))]
 pub struct Embedder {
     model: Mutex<TextEmbedding>,
     name: String,
 }
 
-#[cfg(not(feature = "local-embed"))]
+#[cfg(not(all(
+    feature = "local-embed",
+    not(all(target_os = "linux", target_arch = "loongarch64"))
+)))]
 pub struct Embedder;
 
-#[cfg(feature = "local-embed")]
+#[cfg(all(
+    feature = "local-embed",
+    not(all(target_os = "linux", target_arch = "loongarch64"))
+))]
 impl Embedder {
     pub fn from_dir(dir: &Path, name: &str) -> Result<Self, String> {
         let read = |file: &str| -> Result<Vec<u8>, String> {
@@ -100,14 +139,17 @@ impl Embedder {
     }
 }
 
-#[cfg(not(feature = "local-embed"))]
+#[cfg(not(all(
+    feature = "local-embed",
+    not(all(target_os = "linux", target_arch = "loongarch64"))
+)))]
 impl Embedder {
     pub fn from_dir(_dir: &Path, _name: &str) -> Result<Self, String> {
-        Err("local embedding feature disabled".to_string())
+        Err(LOCAL_EMBED_UNAVAILABLE.to_string())
     }
 
     pub fn from_env_or_dir(_fallback: Option<&Path>) -> Result<Self, String> {
-        Err("local embedding feature disabled".to_string())
+        Err(LOCAL_EMBED_UNAVAILABLE.to_string())
     }
 
     pub fn model(&self) -> &str {
@@ -119,15 +161,18 @@ impl Embedder {
     }
 
     pub fn embed(&self, _texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
-        Err("local embedding feature disabled".to_string())
+        Err(LOCAL_EMBED_UNAVAILABLE.to_string())
     }
 
     pub fn embed_one(&self, _text: &str) -> Result<Vec<f32>, String> {
-        Err("local embedding feature disabled".to_string())
+        Err(LOCAL_EMBED_UNAVAILABLE.to_string())
     }
 }
 
-#[cfg(feature = "local-embed")]
+#[cfg(all(
+    feature = "local-embed",
+    not(all(target_os = "linux", target_arch = "loongarch64"))
+))]
 fn normalize(vector: &mut [f32]) {
     let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
     if norm > 0.0 {

@@ -140,7 +140,12 @@ const ComposerKbSelector = ({
   const triggerBlocked = modelBlocked
     && mountedEntries.every(entry => entry.source !== 'remote')
     && (collections || []).every(collection => !(collection.source === 'remote' && collection.ready !== false));
-  const modelBlockedCopy = modelMissing ? t.kbMountNoModel : t.kbMountNotReady;
+  // 平台无本地 embedding（localEmbedSupported=false，如 linux/loongarch64；能力快照
+  // 到达前同样按 false 兜底）时，「先去知识库下载」的引导不成立，改用平台不支持说明。
+  const localEmbedSupported = !!(bs && bs.platformCapabilities && bs.platformCapabilities.localEmbedSupported);
+  const modelBlockedCopy = modelMissing
+    ? (localEmbedSupported ? t.kbMountNoModel : t.kbEmbedUnsupported)
+    : t.kbMountNotReady;
 
   function toggle() { const next = !open; setOpen(next); if (next) { refreshModelStatus(); if (collections === null) loadList(); } }
   function pick(collection) {

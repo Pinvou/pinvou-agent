@@ -136,7 +136,11 @@ fn bundled_connector_runtime_paths_for(
 ) -> Option<(PathBuf, PathBuf)> {
     let root = resource_dir.join("runtime/codex-bridge/node");
     let node = match (os, arch) {
-        ("linux", "aarch64" | "x86_64") => root.join("bin/node"),
+        // linux/loongarch64 ships the same unified Node runtime layout as the
+        // other Linux arches (packaged by the deb); the connector CLI
+        // platform dir (connector_platform_dir) deliberately keeps returning
+        // None there because no connector artifacts exist upstream.
+        ("linux", "aarch64" | "x86_64" | "loongarch64") => root.join("bin/node"),
         ("macos", "aarch64") => root.join("darwin-arm64/bin/node"),
         ("macos", "x86_64") => root.join("darwin-x64/bin/node"),
         _ => return None,
@@ -748,6 +752,8 @@ pub(crate) mod tests {
             managed_connector_bin_dir_for("linux", "x86_64"),
             expected("linux-x64")
         );
+        // 连接器无 loongarch64 上游制品：平台目录保持 None（显式降级）。
+        assert_eq!(managed_connector_bin_dir_for("linux", "loongarch64"), None);
         assert_eq!(
             managed_connector_bin_dir_for("macos", "aarch64"),
             expected("darwin-arm64")
@@ -776,6 +782,14 @@ pub(crate) mod tests {
         let npm = resource.join("runtime/codex-bridge/node/lib/node_modules/npm/bin/npm-cli.js");
         assert_eq!(
             bundled_connector_runtime_paths_for(&resource, "linux", "x86_64"),
+            Some((
+                resource.join("runtime/codex-bridge/node/bin/node"),
+                npm.clone()
+            ))
+        );
+        // loongarch64 的 deb 会带同一份统一 Node runtime（bin/node）。
+        assert_eq!(
+            bundled_connector_runtime_paths_for(&resource, "linux", "loongarch64"),
             Some((
                 resource.join("runtime/codex-bridge/node/bin/node"),
                 npm.clone()

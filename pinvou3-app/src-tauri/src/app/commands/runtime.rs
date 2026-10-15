@@ -56,6 +56,7 @@ pub struct PlatformCapabilities {
     pub browser_native_display: bool,
     pub voice_shortcut_native: bool,
     pub paste_image_clipboard_read: bool,
+    pub local_embed_supported: bool,
 }
 
 impl PlatformCapabilities {
@@ -86,6 +87,7 @@ impl PlatformCapabilities {
             browser_native_display: browser_ready,
             voice_shortcut_native: capabilities.voice_shortcut_native,
             paste_image_clipboard_read: capabilities.paste_image_clipboard_read,
+            local_embed_supported: capabilities.local_embed_supported,
         }
     }
 }
@@ -159,6 +161,10 @@ mod platform_capability_tests {
         assert_eq!(
             capabilities.paste_image_clipboard_read,
             expected.paste_image_clipboard_read
+        );
+        assert_eq!(
+            capabilities.local_embed_supported,
+            expected.local_embed_supported
         );
     }
 
