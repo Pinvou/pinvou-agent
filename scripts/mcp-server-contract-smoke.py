@@ -129,9 +129,11 @@ def content_json(response: dict) -> dict:
 
 # ── 模型可见 schema 契约 ────────────────────────────────────────────────
 # 背景(k3 slides:[] 事故):`type:"array"` 不带 items 时,Kimi 等受限解码通道
-# 会把参数补全成最小合法值 [](实测连续 27 次发出 slides:[]);而 `items:{}` 这类
-# 空节点会被 Moonshot MFJS 校验拒掉、整个工具被静默丢弃(#683)。两条都在这里
-# 门死:数组必须带具体类型的 items,且任何 schema 位置不得出现空节点。
+# 会把参数补全成最小合法值 [](实测连续 27 次发出 slides:[])。空 schema 节点
+# 在 MFJS 里没有表示、校验直接 MissingType,#683 曾因此使整个工具被静默丢弃;
+# 引擎(CodeWhale #101)如今会先把 items:{} 这一个形状修复掉,其余位置的空
+# 节点仍会弃用整个工具。两类都在这里门死:数组必须带具体类型的 items,任何
+# schema 位置不得出现空节点或本守卫无法检视的 $ref。
 _MFJS_CONCRETE_TYPES = ("string", "number", "integer", "boolean", "object", "array", "null")
 
 
@@ -140,15 +142,26 @@ def _schema_has_concrete_type(node) -> bool:
         return False
     if node.get("type") in _MFJS_CONCRETE_TYPES:
         return True
-    branches = node.get("anyOf")
+    # anyOf/oneOf 是并集:任一分支可能被取到,所以每个分支都必须具体。
+    for union_key in ("anyOf", "oneOf"):
+        branches = node.get(union_key)
+        if isinstance(branches, list) and branches:
+            return all(_schema_has_concrete_type(branch) for branch in branches)
+    # allOf 是交集:一个带具体类型的分支足以确定类型(允许 {type}+{maxLength} 这类细化)。
+    branches = node.get("allOf")
     if isinstance(branches, list) and branches:
-        return all(_schema_has_concrete_type(branch) for branch in branches)
-    return "$ref" in node
+        return any(_schema_has_concrete_type(branch) for branch in branches)
+    return False
 
 
 def _walk_tool_schema(node, path: str, offenders: list[str]) -> None:
     """只走 schema 值位置;enum/default/const/examples 里出现的 {} 是数据,不进。"""
     if not isinstance(node, dict):
+        return
+    if "$ref" in node:
+        # $ref 的目标内容本守卫不检视(bundled server 均为手写小 schema,直接
+        # 内联即可);不跟随是为了不让事故类藏在引用背后,失败关闭。
+        offenders.append(f"{path}: $ref 不被本守卫跟随(目标内容未检);请内联 schema")
         return
     if not node:
         offenders.append(f"{path}: 空 schema 节点(会被 MFJS 拒绝并静默丢工具)")
@@ -156,7 +169,9 @@ def _walk_tool_schema(node, path: str, offenders: list[str]) -> None:
     if node.get("type") == "array":
         items = node.get("items")
         if isinstance(items, list):
-            offenders.append(f"{path}: tuple 形式 items 不在 MFJS 允许集内")
+            # tuple 形式是合法 JSON Schema,但超出本仓验证过的 MFJS 形状集
+            # (items 须为单一 schema),按失败关闭统一禁用。
+            offenders.append(f"{path}: tuple 形式 items 超出已验证的 MFJS 形状集(items 须为单一 schema)")
         elif not _schema_has_concrete_type(items):
             offenders.append(
                 f"{path}: array 缺少带具体类型的 items(受限解码通道会补全成 [])"
