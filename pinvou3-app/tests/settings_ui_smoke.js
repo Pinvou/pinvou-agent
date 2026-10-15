@@ -73,6 +73,27 @@ assert.doesNotMatch(
   /setBaseUrl\(|setModel\(/,
   'local detection must not auto-fill the form; the user adds a candidate explicitly',
 );
+// 添加/编辑模型弹窗的滚动必须收敛在内层 data-testid="model-form-scroll" 容器
+// （min-h-0 + flex-1 + overflow-y-auto），弹窗本体（圆角 + max-h 元素）不再自带
+// overflow-y-auto：fixed + backdrop-filter 祖先链下，个别 WebKit 内核不会为
+// 「同元素 max-h + overflow-y-auto」组合建立滚动区（用户反馈：本地模型列表
+// 后半部分无法滚动选择）。内层 flex 滚动区在所有内核行为一致。
+const modelFormScrollers = settingsViewSource.match(
+  /data-testid="model-form-scroll" className="min-h-0 flex-1 overflow-y-auto overscroll-contain custom-scrollbar"/g,
+) || [];
+assert.strictEqual(
+  modelFormScrollers.length,
+  2,
+  'both model form dialogs (picker + edit form) must scroll inside the dedicated min-h-0 container',
+);
+const flexScrollDialogs = settingsViewSource.match(
+  /max-h-\[76vh\] flex flex-col overflow-hidden rounded-\[22px\]/g,
+) || [];
+assert.strictEqual(
+  flexScrollDialogs.length,
+  2,
+  'model form dialog containers must cap height and delegate scrolling to the inner container',
+);
 for (const settingsI18nSource of settingsI18nSources) {
   assert.match(
     settingsI18nSource,
@@ -874,6 +895,46 @@ async function modalWidth(page, headingText) {
     };
   });
   rec('⑥.1 添加模型默认展示云端 tab 且保留本地 tab 入口', Object.values(addPickerDefault).every(Boolean), JSON.stringify(addPickerDefault));
+
+  // ⑥.2 长列表可达性守卫：云端目录远超弹窗 max-h，滚动必须发生在内层
+  // model-form-scroll 容器上，且能一路滚到底部（模型列表后半部分必须可选）。
+  const pickerScroll = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const scroller = document.querySelector('[data-testid="model-form-scroll"]');
+    const rect = dialog ? dialog.getBoundingClientRect() : null;
+    return {
+      found: !!dialog && !!scroller,
+      overflowY: scroller ? getComputedStyle(scroller).overflowY : null,
+      capped: dialog ? (parseFloat(getComputedStyle(dialog).maxHeight) || 0) > 0 : false,
+      overflowing: !!scroller && scroller.scrollHeight > scroller.clientHeight,
+      center: rect ? { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + Math.min(rect.height / 2, 200)) } : null,
+    };
+  });
+  let pickerScrollAfter = { top: -1, reachedEnd: false };
+  if (pickerScroll.found && pickerScroll.overflowing && pickerScroll.center) {
+    await page.mouse.move(pickerScroll.center.x, pickerScroll.center.y);
+    await page.mouse.wheel({ deltaY: 600 });
+    await sleep(250);
+    for (let i = 0; i < 8; i += 1) {
+      await page.mouse.wheel({ deltaY: 1200 });
+      await sleep(100);
+    }
+    pickerScrollAfter = await page.evaluate(() => {
+      const scroller = document.querySelector('[data-testid="model-form-scroll"]');
+      return {
+        top: scroller.scrollTop,
+        reachedEnd: Math.abs(scroller.scrollTop + scroller.clientHeight - scroller.scrollHeight) <= 2,
+      };
+    });
+  }
+  rec('⑥.2 添加模型弹窗长列表可在内层滚动容器一路滚到底（列表尾部可达）',
+    pickerScroll.found
+      && pickerScroll.overflowY === 'auto'
+      && pickerScroll.capped
+      && pickerScroll.overflowing
+      && pickerScrollAfter.top > 0
+      && pickerScrollAfter.reachedEnd === true,
+    JSON.stringify({ pickerScroll, pickerScrollAfter }));
 
   await clickExact(page, '通义千问 Token Plan');
   await sleep(300);

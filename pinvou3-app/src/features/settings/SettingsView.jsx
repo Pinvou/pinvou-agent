@@ -1168,7 +1168,13 @@ function hasStoredCredential(record) {
             {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling; cancel button in the modal header */}
             <div data-testid="model-form-dialog" role="dialog" aria-modal="true"
               onClick={e => e.stopPropagation()}
-              className={`w-[440px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}>
+              className={`w-[440px] max-w-[90vw] max-h-[76vh] flex flex-col overflow-hidden rounded-[22px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}>
+              {/* 滚动必须收敛在内层 min-h-0 容器上，不要放回圆角弹窗本体：在
+                  fixed + backdrop-filter 祖先链下，个别 WebKit 内核（用户反馈的
+                  环境无法复现，疑为 webkit2gtk/旧 WebView）不会为「max-h +
+                  overflow-y-auto 同元素」的组合建立滚动区，模型列表下半部分
+                  无法滚动选择。内层 flex 滚动区在所有内核行为一致。 */}
+              <div data-testid="model-form-scroll" className="min-h-0 flex-1 overflow-y-auto overscroll-contain custom-scrollbar">
               <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b border-black/[0.10] dark:border-white/[0.10]`}>
                 <div>
                   <h2 className="text-[20px] leading-6 font-semibold">{t.modelFormAddTitle}</h2>
@@ -1190,6 +1196,7 @@ function hasStoredCredential(record) {
                 </div>
               </div>
               <div className="px-5 py-4">{pickerTab === 'local' ? renderLocalPicker() : renderCloudProviderPicker()}</div>
+              </div>
             </div>
           </div>
         );
@@ -1198,7 +1205,9 @@ function hasStoredCredential(record) {
         <div data-testid="model-form-backdrop" className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 animate-in fade-in duration-150">
           {/* biome-ignore lint/a11y/useKeyWithClickEvents: click-bubbling stop layer; keyboard events need no bubbling; cancel button in the modal header */}
           <div data-testid="model-form-dialog" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()}
-            className={`w-[430px] max-w-[90vw] max-h-[76vh] overflow-y-auto custom-scrollbar rounded-[22px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}>
+            className={`w-[430px] max-w-[90vw] max-h-[76vh] flex flex-col overflow-hidden rounded-[22px] shadow-2xl bg-white text-[#1C1C1E] dark:bg-[#1C1C1E] dark:text-[#F2F2F7]`}>
+            {/* 同上方 picker 弹窗：滚动收敛在内层 min-h-0 容器，不放圆角弹窗本体。 */}
+            <div data-testid="model-form-scroll" className="min-h-0 flex-1 overflow-y-auto overscroll-contain custom-scrollbar">
             <div className={`px-5 py-4 flex items-start justify-between gap-4 border-b ${formDivider}`}>
               <div>
                 <h2 className="text-[20px] leading-6 font-semibold">{modalTitle}</h2>
@@ -1354,6 +1363,7 @@ function hasStoredCredential(record) {
                 className="h-10 px-5 rounded-full bg-[#007AFF] text-white text-[15px] font-semibold transition-colors disabled:opacity-35">
                 {savingModel ? settingsCopy.saving : t.modelSaveBtn}
               </button>
+            </div>
             </div>
           </div>
         </div>
