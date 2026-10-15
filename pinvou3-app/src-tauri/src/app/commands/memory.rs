@@ -776,9 +776,10 @@ pub async fn edit_last_turn(
     let reservation = pool
         .reserve_turn(&sid)
         .map_err(|e| format!("reserve edit_last_turn: {e:#}"))?;
-    // 编辑重发只发编辑后的原文：`EditLastTurn` 沿用引擎上一轮已安装的 route
-    // （含专家 fleet 配置），蜂群契约在 spawn 级 instructions，无需（也不应）
-    // 在此重新拼接任何提醒内容。
+    // 编辑重发只发编辑后的原文：`EditLastTurn` 不携带 route，由引擎按当前
+    // 配置重推导 provider 路由（含专家 fleet 配置随配置重读）；底座重推导时
+    // 会重申宿主已申报的路由限额，不因重推导退回目录猜测。蜂群契约在 spawn
+    // 级 instructions，无需（也不应）在此重新拼接任何提醒内容。
     let display_message = user_display_message(new_message.clone());
 
     // 定时会话不走 ensure_chat_session:编辑重发与继续追问同路,EnginePool 内部
