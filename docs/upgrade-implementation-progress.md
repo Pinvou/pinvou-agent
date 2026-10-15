@@ -7435,3 +7435,116 @@ client outbox, quality contribution and full T20 remain unfinished. Accepted
 history deletion awaits its consumer/archive and diagnostic retention policy.
 No app VERSION, protocol contract, dependency or download-budget change.
 Downloads retain no hard total/cumulative elapsed or retry-count cap.
+
+
+## T20 fixed live transaction acceptance and recovery (2026-10-15)
+
+This continuation extends the separate service's committed fixed late receiver
+with one complete internal single-event transaction workflow. The new explicit
+`enable-transaction`, `accept-transaction <role>` and `recover-transaction` actions
+use `upgrade.events.transaction.v1`; the original four late-only actions and
+`upgrade.events.late-transaction.v1` retain their scope and operation identity.
+All three transaction roles support live local-state events, permanent receipt
+replay and original-request-free sealed recovery. This does not complete T20.
+
+The original signed input, current Root/role denial, full allowed events and
+actual original Session/consumed authorization/transaction remain mandatory.
+T44 owns every lifecycle write: ordinary advance, preinstall staged completion,
+activation terminal/staged composition and safe activation cancellation. The
+staged completion identity comes from the server-owned T06 result. Safe cancel
+does not automatically rebuild waiting or grant fresh qualification. Original
+activation association remains verifiable after completed/cancelled content or
+the exact old reporting timeout, using the original consumption time. Actual
+staged/transaction terminal pairing is checked before any local projection.
+
+Version-two migration adds fixed guards/ports only in the independent transaction
+namespace. Existing five reception migrations and transaction version-one SQL
+bytes/digest remain unchanged. Original intents/attempts and permanent accepted
+data are shared. Explicit initialization upgrades the namespace and removes
+both transaction writer pairs for the named runtime; each is explicitly enabled
+again. Startup/enable/recovery never implicitly upgrade. Every reachable role
+has each known pair in full or neither; OID checks are search-path independent.
+No runtime receives direct lifecycle writes or private T44 helper privileges.
+
+Live T44 changes, immutable receipt/original outbox and T06 completion share one
+transaction. Late diagnostics use the existing pure planner/cursor and do not
+change original lifecycle state. After complete live or diagnostic readback,
+the same fixed native port rechecks the existing receipt/outbox, original trust,
+association and windows using the original positive processing epoch. Only live
+lifecycle writes advance the CAS revisions. Returned receipt bytes must match.
+Pure time crossing can change live/late classification without changing read
+references; the candidate/native disposition mismatch rolls back as Changed,
+requiring a fresh Read/Compute attempt rather than silent reinterpretation.
+
+Different fixed commands may own distinct T06 results/attempts but converge on
+one permanent receipt/outbox/cursor, preserving original disposition and time.
+Retries of the same authenticated command/proof/request attempt preserve its
+result; fresh proof/request attempts can have distinct T06 results while retaining
+the permanent receipt. Native epoch zero remains exact
+committed-operation read-only replay and cannot reconstruct missing acceptance.
+Value-copied facades have distinct ephemeral original-input context identities.
+
+Independent static review found and the primary repaired core-copy identity,
+historical terminal pairing, search-path-dependent function-name matching, and
+post-readback original-window gaps. The terminal-pair negative independently
+proves StagedValid remains true, exact Go/native rejection, unchanged protected
+fingerprints and restored original replay. Removing the Go pair check gives the
+required red (7.61s). Window faults are independently triggered after actual
+cursor Scan or complete live inventory readback. Both missing final seal (5.87s)
+and seal-before-readback (5.79s) wrongly accept and are detected as red; the
+restored four live/late original-expiry/short-Root cases pass (25.71s). This avoids
+a fault triggered by the tested guard itself masking incorrect guard placement.
+
+Complete default Go tests, module verification, vet, server/both event-command
+and helper builds, unchanged contract pins, formatting and whitespace passed.
+Affected default package times: transaction command 6.681s, existing event command
+1.071s, events domain 3.884s, events PostgreSQL 2.162s, metadata PostgreSQL 2.293s,
+lifecycle domain 2.578s and lifecycle PostgreSQL 1.793s. Actual provider/database
+opt-ins remain skipped by default and are executed separately below.
+
+Root's frozen new actual suite passed all 17 top-level groups in 363.770s,
+without skips. It includes all three live state sequences with per-edge replay,
+real CLI role/product/refusal boundaries, safe cancellation, completed original
+history and exact legacy timeout, time-only classification drift, copied owner
+context isolation, fixed-pair/search-path checks, native epoch-zero refusals,
+shared permanent receipts across command identities, concurrent same-event
+acceptance/conflicting bytes, Apply-before-Complete rollback, sealed fresh-owner
+recovery, lost committed output and abrupt process loss with a fresh normal
+recovery command. Actual original-expiry and independently shorter-Root faults
+cover live and diagnostic post-readback rollback. A real version-one pending
+operation survives explicit version-two installation and recovers from its
+original sealed frame without new original input or proof.
+
+The initial 32-group existing actual regression invocation passed 31 groups and
+exposed one generated-column test fixture that incorrectly reused the sole v1
+migration digest for the new v2 row. The primary repaired only that test: preserve
+and independently verify each original digest during the generated-column
+mutation, then restore the ordinary non-defaulted column and each version's
+exact original value. Its complete ten-case catalog group passed separately in
+16.49s (package 17.497s), including final runtime and lifecycle restoration.
+The other 31 unchanged groups retain their passing evidence from that invocation
+(543.924s); a passing combined rerun is not claimed. They cover the old late
+receiver/CLI/epochs/catalog/identity/current-deny and original no-update command,
+atomicity, sealed recovery, lost ACK/signature variants, maintenance and existing
+transaction observation/cursor guards. No production change followed the frozen
+17-group run. Full default checks passed again after the test-only repair.
+
+Both final independent scoped deep reviews passed, including the test restoration
+repair, without remaining required fixes. Each independently executed all 18
+actual top-level groups (the 17 new groups and repaired complete catalog group)
+without skips: dependency review 453.359s, compatibility review 410.525s.
+Each also passed the five affected default packages with actual opt-ins cleared,
+affected vet including the lifecycle adapter, unchanged pinned contract bytes and
+inventory, all 29 changed Go files' formatting and diff checks. No reviewer
+edited the frozen source/tests. All root and reviewer test, helper and recovery
+processes closed. Client architecture, unchanged version 0.10.9 and diff checks
+passed. These results accept this bounded transaction workflow, not full T20.
+
+Actual fixtures use protected storage and genuinely signed event credentials
+with synthetic original consumed records. They do not certify T19 issuance,
+physical client execution, qualified successor reconstruction or deployment.
+Public atomic multi-event HTTP, remaining live progress/task profiles, protected
+client outbox, quality contribution, accepted-history deletion policy and full
+T20 remain unfinished. Deployment remains deferred. No application version,
+protocol contract, dependency or download-budget change is introduced. Downloads
+retain no hard total/cumulative duration or retry-count cap.
