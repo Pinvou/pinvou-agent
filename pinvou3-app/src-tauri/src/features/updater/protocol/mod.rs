@@ -35,6 +35,19 @@ pub(crate) fn check_supplied_client_request_bytes(
         .assert_supplied_client_request_contract(operation)
 }
 
+/// Match complete supplied event request/receipt bytes; never local queue removal.
+pub(crate) fn check_supplied_event_acknowledgements_bytes(
+    request_bytes: &[u8],
+    response_bytes: &[u8],
+    operation: pinvou_upgrade_codec::ClientRequestOperation,
+    http_status: u16,
+) -> Result<(), pinvou_upgrade_codec::EventAcknowledgementError> {
+    use pinvou_upgrade_codec::EventAcknowledgementError;
+    let request = decode_metadata(request_bytes).map_err(EventAcknowledgementError::Json)?;
+    let response = decode_metadata(response_bytes).map_err(EventAcknowledgementError::Json)?;
+    request.assert_supplied_event_acknowledgements(&response, operation, http_status)
+}
+
 /// Complete supplied HTTP contract; unit success is structural for errors too.
 pub(crate) fn check_supplied_client_http_response_bytes(
     bytes: &[u8],
@@ -469,6 +482,84 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_matches_original_event_batches_without_queue_authority() {
+        use pinvou_upgrade_codec::{
+            ClientRequestOperation as Op, EventAcknowledgementError as AckError,
+        };
+        let output = std::process::Command::new("node")
+            .args([
+                "--input-type=module",
+                "-e",
+                include_str!("codec/tests/event-acknowledgement-fixtures.mjs"),
+            ])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../specs/upgrade/v1/reference/canonical-json.mjs"),
+            )
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let fixtures: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(fixtures.len(), 6);
+        for case in fixtures {
+            let op: Op = case["operation"].as_str().unwrap().parse().unwrap();
+            let request = serde_json::to_vec(&case["request"]).unwrap();
+            let response = serde_json::to_vec(&case["response"]).unwrap();
+            assert_eq!(
+                check_supplied_event_acknowledgements_bytes(&request, &response, op, 200),
+                Ok(())
+            );
+            let mut changed = case["response"].clone();
+            changed["acknowledgements"][1]["eventId"] = serde_json::json!("foreign-event");
+            assert_eq!(
+                check_supplied_event_acknowledgements_bytes(
+                    &request,
+                    &serde_json::to_vec(&changed).unwrap(),
+                    op,
+                    200
+                ),
+                Err(AckError::AcknowledgementMismatch)
+            );
+            let error = serde_json::to_vec(&serde_json::json!({"protocolVersion":1,
+                "requestId":"request-error","code":"SERVICE_UNAVAILABLE","retryable":true}))
+            .unwrap();
+            assert_eq!(
+                check_supplied_client_http_response_bytes(&error, op, 503),
+                Ok(())
+            );
+            assert_eq!(
+                check_supplied_event_acknowledgements_bytes(&request, &error, op, 503),
+                Err(AckError::InvalidStatus)
+            );
+            for request_side in [true, false] {
+                let original = if request_side { &request } else { &response };
+                let duplicate = String::from_utf8(original.clone()).unwrap().replacen(
+                    "{",
+                    r#"{"protocolVersion":1,"#,
+                    1,
+                );
+                let (input, receipt) = if request_side {
+                    (duplicate.as_bytes(), response.as_slice())
+                } else {
+                    (request.as_slice(), duplicate.as_bytes())
+                };
+                assert_eq!(
+                    check_supplied_event_acknowledgements_bytes(input, receipt, op, 200),
+                    Err(AckError::Json(pinvou_upgrade_codec::Error::DuplicateKey))
+                );
+            }
+            assert_eq!(
+                check_supplied_event_acknowledgements_bytes(&request, &response, op, 200),
+                Ok(())
+            );
+        }
+    }
 
     #[test]
     fn feature_facade_checks_request_bytes_without_sending_or_authorizing_them() {

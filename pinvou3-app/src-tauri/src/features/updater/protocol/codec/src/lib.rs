@@ -3,6 +3,8 @@
 
 mod client_request;
 pub use client_request::{ClientRequestError, ClientRequestOperation};
+mod event_acknowledgements;
+pub use event_acknowledgements::EventAcknowledgementError;
 mod client_http_response;
 pub use client_http_response::ClientHttpResponseError;
 mod client_error_response;

@@ -20,7 +20,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T08 | In progress | Protected atomic metadata publication primitives; complete business publication workflows remain pending |
 | T09 | In progress | Bounded package/native-byte inspection; complete upload, quarantine and platform qualification remain pending |
 | T17 | In progress | Protected logical workflow, private initial installation, atomic handoff and private live download resume edge; qualified check/refresh composition remains pending |
-| T20 | In progress | Actual no-update/transaction and bounded Session/download-progress/download-resume acceptance/recovery plus four original HTTP batch routes; remaining Session profiles, client queue and quality contribution remain pending |
+| T20 | In progress | Actual no-update/transaction and bounded Session/download-progress/download-resume acceptance/recovery, four original HTTP batch routes and supplied client request/ACK correlation; remaining Session profiles, durable client queue and quality contribution remain pending |
 | T21 | In progress | Scoped quality projection/control primitives; complete quality evaluation and business composition remain pending |
 | T25 | In progress | Privacy/deduplication primitives; weekly provider configuration and complete business composition remain pending |
 | T26 | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
@@ -8483,3 +8483,73 @@ The service increment is committed and pushed as
 `codex/t20-authenticated-resume`. Both final independent documentation reviews
 passed. The client architecture guard and version consistency check passed;
 application version remains 0.10.9 and normative document versions remain 1.0.
+
+## T20 supplied original client event acknowledgement correlation (2026-10-16)
+
+This bounded client prerequisite adds one dedicated event request/receipt entry
+in the existing Rust codec and a raw-byte application facade. Only the six
+original event operations and supplied HTTP 200 responses can return a binding.
+Complete original request/response validators retain all metadata and nested
+credential bounds. Exact count and per-position event IDs preserve identical
+duplicate events, all three original dispositions and the server-generated
+response requestId. A batch-local credential JTI/event-ID map compares full
+canonical event bytes and refuses immutable conflicts beyond the facts hash.
+Existing contract-only APIs, including structural acceptance of declared HTTP
+errors, retain their behavior and error codes. No request is sent, queue written
+or pending event cleared by this supplied correspondence calculation.
+
+The primary's final scoped five groups passed with zero skips/failures in 3.50s,
+after 4.46s compilation. Six genuinely signed original credential templates are
+generated in memory and preflighted through the original complete Node API
+contracts. Controls cover mixed dispositions, duplicates, cardinality, distinct-ID
+reorder/foreign IDs, immutable sequence/time/from-state/facts conflicts with
+independent old-contract positives, canonical key-order equivalence, wrong
+operation/purpose, status separation, unchanged inputs, malformed/duplicate JSON,
+exact 1 MiB metadata and nested 64 KiB credential boundaries and restored
+positives. The facts-conflict control recomputes its digest before preflight.
+
+The actual Windows application passed all fifty-four updater tests in 1.26s
+after 3m24s compilation, including the new real application facade across all six
+original fixtures. Architecture guard, version consistency, all-target codec
+Clippy (final 3.18s), formatting and five working/staged source hashes/whitespace
+checks passed. The final pure-test-only refinement explicitly permits swapping
+two identical events' valid mixed dispositions, which the wire cannot
+distinguish. Only that integration test's hash changed after the application run;
+all production, application/test and Node fixture bytes remained identical.
+
+Both independent static audits found no required code defect. One documentation
+phrase about reordered acknowledgements was narrowed to event-ID positions and
+the duplicate-disposition positive was added. Actual independent verification
+is recorded separately below. Unchanged full codec/original
+contract suites and unrelated application tests were not repeated.
+
+Supplied correspondence is not authenticated transport, current Root/deny/time,
+remote commit evidence or durable queue deletion authority. A batch without a
+complete exact receipt cannot clear a remotely committed prefix. Protected
+durable original event storage, retry/recovery ownership, authenticated receipt
+handling and physical host qualification remain pending; full T20 is open.
+No Schema, wire contract, dependency, configured origin/root, UI, application
+version or gitlink changes. No total/cumulative artifact download duration or
+retry cap is introduced. The forty-seven-task totals remain four implemented,
+twelve in progress and thirty-one not completed or deferred. Deployment remains
+explicitly deferred. Details: [supplied event acknowledgements](client-upgrade-event-acknowledgements.md).
+
+The independent dependency role's final scoped code/test/doc audit passed with
+no remaining required findings. Its five codec groups passed with zero
+skips/failures in 2.86s; the actual application's new exact facade test passed
+in 6.46s, with 3066 unrelated tests filtered. This is not another full
+fifty-four-updater run. All-target Clippy (2.600s), codec/application formatting,
+five frozen working/staged source hashes and both whitespace checks passed.
+All Cargo/rustc/wrapper/application/fixture Node children and tool sessions
+closed before the exclusive runtime slot transferred to the compatibility role.
+
+The independent compatibility role's final scoped code/test audit passed with
+no remaining required findings. Its five codec groups passed with zero
+skips/failures in 3.01s; the actual application's new exact facade test passed in
+2.78s, with 3066 unrelated tests filtered. All-target Clippy (2.448s), codec and
+application formatting, five frozen working/staged source hashes and both
+whitespace checks passed. It ran only the new application test, not another full
+fifty-four-updater run. All owned Cargo/rustc/application/fixture Node processes
+and tool sessions closed before the exclusive runtime slot returned to the
+primary role. Both independent scoped code/test audits pass; final documentation
+reviews precede the DCO commit and push of this bounded increment.
