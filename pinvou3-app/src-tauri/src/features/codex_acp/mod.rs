@@ -6140,6 +6140,19 @@ mod tests {
     /// helper rename can never silently fall back to Deepseek.
     #[test]
     fn acp_session_model_name_round_trips_through_acp_session_backend() {
+        // The exact spellings already persisted into existing sessions'
+        // metadata: a display_name() rebrand must ship a migration for these
+        // strings, not silently orphan them (the derived round-trip below
+        // alone stays green through any rename).
+        assert_eq!(
+            acp_session_model_name(AgentBackend::CodexAcp),
+            "Codex (ACP)"
+        );
+        assert_eq!(
+            acp_session_model_name(AgentBackend::ClaudeAcp),
+            "Claude Code (ACP)"
+        );
+        assert_eq!(acp_session_model_name(AgentBackend::KimiAcp), "Kimi (ACP)");
         for backend in AgentBackend::ACP_BACKENDS {
             assert_eq!(
                 acp_session_backend(AgentBackend::Deepseek, &acp_session_model_name(backend)),
