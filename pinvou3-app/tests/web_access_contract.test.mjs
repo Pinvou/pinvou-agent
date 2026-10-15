@@ -838,6 +838,20 @@ assert.match(bridge, /if \(expectedSize > MAX_WEB_ARTIFACT_DOWNLOAD_BYTES\)/);
 // pipelines must route through it.
 assert.match(bridge, /streamBase64PartsToBlob\(function \(offset\)/);
 assert.match(bridge, /if \(bytes\.length > maxBytes - offset\)/);
+// Round-2 review minor: the maxBytes ARGUMENT at each call site is
+// load-bearing — the core re-checks are only as strong as the binding passed
+// in (e.g. Infinity would silently disarm them), so both download pipelines
+// must pass the module cap explicitly, exactly once each.
+assert.equal(
+  (bridge.match(/\}, expectedSize, MAX_WEB_ARTIFACT_DOWNLOAD_BYTES, \{/g) || []).length,
+  1,
+  'the artifact download pipeline must pass MAX_WEB_ARTIFACT_DOWNLOAD_BYTES as maxBytes',
+);
+assert.equal(
+  (bridge.match(/\}, null, MAX_WEB_ARTIFACT_DOWNLOAD_BYTES, \{/g) || []).length,
+  1,
+  'the attachment download pipeline must pass MAX_WEB_ARTIFACT_DOWNLOAD_BYTES as maxBytes',
+);
 assert.match(bridge, /streamBase64PartsToBlob\(function \(offset\) \{\n {6}return invoke\("web_access_read_conversation_attachment_chunk"/);
 assert.match(artifactsPanel, /const canDownloadArtifacts = can\('artifactDownload'\);/);
 assert.ok((artifactsPanel.match(/\(!isWeb \|\| canDownloadArtifacts\)/g) || []).length >= 2,
