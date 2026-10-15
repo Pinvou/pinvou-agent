@@ -9,7 +9,7 @@
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["memory"] = function (context) {let pinvouSharedtauriMemoryCache = null;
 function pinvouSharedtauriMemory() {
-  if (!pinvouSharedtauriMemoryCache) pinvouSharedtauriMemoryCache = window.PinvouBridgeShared.create("tauriMemory", { state, runOnSession, invoke, notify, bt, addSystemItem, candidateCardPatcher: patchItemByIdFor, timeStr, addChatItem, itemIdSeq: { get value() { return context.itemIdSeq; }, set value(v) { context.itemIdSeq = v; } }, loadMemoryOverview, memoryOverviewSeq: { get value() { return memoryOverviewSeq; }, set value(v) { memoryOverviewSeq = v; } } });
+  if (!pinvouSharedtauriMemoryCache) pinvouSharedtauriMemoryCache = window.PinvouBridgeShared.create("tauriMemory", { state, runOnSession, invoke, notify, bt, addSystemItem, candidateCardPatcher: patchItemByIdFor, timeStr, addChatItem, itemIdSeq: { get value() { return context.itemIdSeq; }, set value(v) { context.itemIdSeq = v; } }, memoryOverviewSeq: { get value() { return memoryOverviewSeq; }, set value(v) { memoryOverviewSeq = v; } } });
   return pinvouSharedtauriMemoryCache;
 }
 

@@ -6,7 +6,7 @@
   const registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__ = window.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["artifact-tracker"] = function (context) {let pinvouSharedtauriArtifactTrackerCache = null;
 function pinvouSharedtauriArtifactTracker() {
-  if (!pinvouSharedtauriArtifactTrackerCache) pinvouSharedtauriArtifactTrackerCache = window.PinvouBridgeShared.create("tauriArtifactTracker", { state, notify, invoke, isScheduledRunSession, DELIVERABLE_EXTS, parseToolResultPayload });
+  if (!pinvouSharedtauriArtifactTrackerCache) pinvouSharedtauriArtifactTrackerCache = window.PinvouBridgeShared.create("tauriArtifactTracker", { state, notify, invoke, isScheduledRunSession, DELIVERABLE_EXTS });
   return pinvouSharedtauriArtifactTrackerCache;
 }
 

@@ -9,7 +9,7 @@
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["monitor"] = function (context) {let pinvouSharedtauriMonitorCache = null;
 function pinvouSharedtauriMonitor() {
-  if (!pinvouSharedtauriMonitorCache) pinvouSharedtauriMonitorCache = window.PinvouBridgeShared.create("tauriMonitor", { state, sessionStates, notify, invoke, bt, monitorBaseline: { get value() { return monitorBaseline; }, set value(v) { monitorBaseline = v; } }, clearMonitorBaseline, monitorIntervalId: { get value() { return monitorIntervalId; }, set value(v) { monitorIntervalId = v; } }, gpuUtilHistory: { get value() { return gpuUtilHistory; }, set value(v) { gpuUtilHistory = v; } }, monitorPollInFlight: { get value() { return monitorPollInFlight; }, set value(v) { monitorPollInFlight = v; } }, pollMonitor });
+  if (!pinvouSharedtauriMonitorCache) pinvouSharedtauriMonitorCache = window.PinvouBridgeShared.create("tauriMonitor", { state, sessionStates, notify, invoke, bt, monitorBaseline: { get value() { return monitorBaseline; }, set value(v) { monitorBaseline = v; } }, clearMonitorBaseline, monitorIntervalId: { get value() { return monitorIntervalId; }, set value(v) { monitorIntervalId = v; } }, gpuUtilHistory: { get value() { return gpuUtilHistory; }, set value(v) { gpuUtilHistory = v; } }, monitorPollInFlight: { get value() { return monitorPollInFlight; }, set value(v) { monitorPollInFlight = v; } } });
   return pinvouSharedtauriMonitorCache;
 }
 
