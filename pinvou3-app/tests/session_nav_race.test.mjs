@@ -116,7 +116,7 @@ test('invalidateSessionBuffer：活动会话失效必须清 live 工作集（r11
   // r11 M2：只删 sessionStates 条目对前台会话无效——切走时 saveWorkingSetTo
   // 回存 live 陈旧消息为复活条目。活动会话的失效必须同时清 messages/chatItems
   // 并 notify 驱动重投影；非活动会话不动 live（防误伤 B）。
-  const { api, state, sessionStates } = loadSessionsFeature();
+  const { api, state, sessionStates, calls } = loadSessionsFeature();
   // 直接构造：A 活动、B 缓存
   state.activeSessionId = 's-active';
   state.messages = [{ role: 'user', content: [] }];
@@ -130,6 +130,9 @@ test('invalidateSessionBuffer：活动会话失效必须清 live 工作集（r11
   assert.equal(sessionStates['s-active'], undefined, '活动会话缓存被删');
   assert.equal(state.messages.length, 0, '活动会话失效必须清 live messages');
   assert.equal(state.chatItems.length, 0, '活动会话失效必须清 live chatItems');
+  // r12 M3：活动会话失效必须 notify() 驱动重投影——被清空的 live 数组不会自动
+  // 触发 React 重渲染，画面会停留在陈旧时间线上（删掉 notify 行此前全绿）。
+  assert.ok(calls.notify >= 1, '活动会话失效必须触发 notify（r12 M3）');
 });
 test('switchToSessionInternal：真工厂导出为可调用函数（r10 M5——r8 事故类暴露）', () => {
   const { api } = loadSessionsFeature();

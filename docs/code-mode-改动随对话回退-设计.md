@@ -15,7 +15,7 @@
 - 粒度为 **turn（一轮用户消息）**，不做 turn 内中间状态、不做单文件 keep/undo。
 - 「回退到第一轮之前」（清空全部）= 恢复第 1 轮 checkpoint + 对话截断到 0，UI 文案写明。
 - 恢复单位是**执行根**，不是会话（共享执行根的语义见 §6）。
-- 代码侧可反悔（恢复前强制打 PreRestore 快照）；对话侧 v1 不可前进（被截段落存 sidecar 留恢复可能，UI 不承诺 redo）。
+- 原生车道（工作模式 + 原生 code）可反悔（恢复前强制打 PreRestore 快照）；对话侧 v1 不可前进（被截段落存 sidecar 留恢复可能，UI 不承诺 redo）。
 
 ## 2. 方案选型结论
 
@@ -67,7 +67,7 @@
 
 1. **turn 计数口径**（必须改）：feat 分支用 `messages.iter().filter(|m| m.role == "user").count() + 1`，会把 tool_result（同样以 `role="user"` 落盘）计入，导致 turn 号错位。改用 `is_user_turn_prompt` 同口径谓词（`CodeWhale/crates/tui/src/runtime_handoff.rs:637`，`deepseek_tui` 已 re-export），与 `8d4d2a991`「编辑重发三层同口径」保持一致。
 2. **模块落位**：feat 分支依赖 `code_sessions` 模块拆分，本方案不引入该重构；移植到现有 `codex_acp` 相邻位置或新建 `features/code_checkpoints/`，按架构守卫边界落位。
-3. **快照钩子**：只保留原生车道 `chat_with_reservation`（`app/commands/chat.rs`）一处，删除 ACP `codex_acp_prompt` 钩子。
+3. **快照钩子**：保留原生车道两条缝——`chat_with_reservation`（`app/commands/chat.rs`）与 `accept_plan()`（`app/commands/interaction.rs`，车道门同口径），删除 ACP `codex_acp_prompt` 钩子。
 
 ## 4. 对话侧：截断到任意 turn + engine 重注水（新增）
 
