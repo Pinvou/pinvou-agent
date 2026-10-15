@@ -14,6 +14,7 @@ const chatView = source('features/chat/ChatView.jsx');
 const codexView = source('features/codex/CodexAcpView.jsx');
 const controller = source('features/conversation/useRewindController.js');
 const rewindChip = source('features/conversation/RewindChip.jsx');
+const rewindDialogs = source('features/conversation/RewindDialogs.jsx');
 
 // ── 运行时桥暴露锚定：ChatView 依赖的两个 bridge 方法必须真的在 TauriBridge
 // curated 对象上（静态源断言曾漏过此层——方法只存在于 feature registry 而
@@ -124,9 +125,9 @@ assert.match(
 
 // 工作范围弹窗变体：默认勾选（推荐值）+ 无快照边界不渲染选择项（不承诺后端
 // 给不了的文件恢复）。
-assert.match(rewindChip, /useState\(true\)/, '回退范围选择默认勾选（双层回退为推荐值）');
+assert.match(rewindDialogs, /useState\(true\)/, '回退范围选择默认勾选（双层回退为推荐值）');
 assert.match(
-  rewindChip,
+  rewindDialogs,
   /scopeChoiceable = scopeSelection && !entry\.conversationOnly/,
   '无快照边界不得呈现回退范围选择项',
 );
@@ -135,17 +136,17 @@ assert.match(
 // 在代价可见后才可执行——预览未决（未加载/加载中/失败）时禁用确认键。
 // 回滚该门控（okDisabled 恒 false）必须让本 pin 变红。
 assert.match(
-  rewindChip,
+  rewindDialogs,
   /const previewUndecided = filesWillRewind[\s\S]{0,300}?!previewState \|\| previewState\.loading \|\| previewState\.error/,
   '预览未决（未加载/加载中/失败）必须计入 previewUndecided',
 );
 assert.match(
-  rewindChip,
+  rewindDialogs,
   /okDisabled=\{previewUndecided\}/,
   '确认键必须接入 okDisabled={previewUndecided}（预览未决时禁用）',
 );
 assert.match(
-  rewindChip,
+  rewindDialogs,
   /disabled=\{busy \|\| okDisabled\}/,
   '弹窗壳的确认键禁用条件必须包含 okDisabled',
 );
