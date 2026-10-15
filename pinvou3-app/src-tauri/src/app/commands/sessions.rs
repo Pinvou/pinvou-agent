@@ -1892,60 +1892,47 @@ mod desktop_saved_session_contract_tests {
     /// "面板有、artifact:disk 事件无"，前端对账永远对不齐。
     #[test]
     fn workspace_file_list_drops_the_audit_journal_and_temp_files() {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let root = std::env::temp_dir().join(format!(
-            "pinvou3-workspace-file-list-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-        // serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-        let store = crate::features::sessions::SessionStore::boot_with_scheduled_root(
-            root.join("scheduled"),
-        )
-        .expect("session store");
-        let session = store
-            .create_new("model".to_string(), None, root.clone())
-            .expect("create session");
-        let ledger_root = store
-            .ledger_root(&session.metadata.id)
-            .expect("ledger root");
-        std::fs::create_dir_all(&ledger_root).expect("create ledger root");
-        std::fs::write(ledger_root.join("report.md"), b"hello").expect("write report");
-        std::fs::write(ledger_root.join("draft.tmp"), b"x").expect("write tmp");
-        std::fs::write(ledger_root.join("workflow_audit.jsonl"), b"{}\n")
-            .expect("write audit journal");
+        // with_temp_home (not a straight-line env restore): a failing assert
+        // above used to leak PINVOU3_HOME and the temp dir into every later
+        // test in this process; the harness restores both on unwind.
+        crate::platform::test_support::with_temp_home("pinvou3-workspace-file-list", || {
+            let root = std::path::PathBuf::from(
+                std::env::var("PINVOU3_HOME").expect("with_temp_home sets PINVOU3_HOME"),
+            );
+            let store = crate::features::sessions::SessionStore::boot_with_scheduled_root(
+                root.join("scheduled"),
+            )
+            .expect("session store");
+            let session = store
+                .create_new("model".to_string(), None, root.clone())
+                .expect("create session");
+            let ledger_root = store
+                .ledger_root(&session.metadata.id)
+                .expect("ledger root");
+            std::fs::create_dir_all(&ledger_root).expect("create ledger root");
+            std::fs::write(ledger_root.join("report.md"), b"hello").expect("write report");
+            std::fs::write(ledger_root.join("draft.tmp"), b"x").expect("write tmp");
+            std::fs::write(ledger_root.join("workflow_audit.jsonl"), b"{}\n")
+                .expect("write audit journal");
 
-        let files =
-            list_workspace_files_for_session(&session.metadata.id, &store).expect("list files");
+            let files =
+                list_workspace_files_for_session(&session.metadata.id, &store).expect("list files");
 
-        assert!(
-            files.iter().any(|file| file.ends_with("report.md")),
-            "a real deliverable must stay listed: {files:?}"
-        );
-        assert!(
-            !files.iter().any(|file| file.ends_with("draft.tmp")),
-            "editor temp files must stay filtered: {files:?}"
-        );
-        assert!(
-            !files
-                .iter()
-                .any(|file| file.ends_with("workflow_audit.jsonl")),
-            "the audit journal is watcher-suppressed infrastructure and must not reach the artifact panel: {files:?}"
-        );
-        match previous {
-            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-            // serialized in-process.
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: platform::paths::tests::ENV_LOCK is held; env writes are
-            // serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&root);
+            assert!(
+                files.iter().any(|file| file.ends_with("report.md")),
+                "a real deliverable must stay listed: {files:?}"
+            );
+            assert!(
+                !files.iter().any(|file| file.ends_with("draft.tmp")),
+                "editor temp files must stay filtered: {files:?}"
+            );
+            assert!(
+                !files
+                    .iter()
+                    .any(|file| file.ends_with("workflow_audit.jsonl")),
+                "the audit journal is watcher-suppressed infrastructure and must not reach the artifact panel: {files:?}"
+            );
+        });
     }
 }
 
