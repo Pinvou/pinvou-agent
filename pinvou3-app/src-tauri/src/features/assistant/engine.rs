@@ -1817,9 +1817,9 @@ impl AppEngine {
             .filter(|provider| !provider.is_empty())
         {
             if let Err(error) = store.stamp_resolved_provider(session_id, provider) {
-                // eprintln, not log: the headless host installs no logger, and
-                // every other diagnostic in this file uses eprintln for the
-                // same reason.
+                // eprintln, not log: the headless host installs no logger, so
+                // stderr is this file's diagnostic channel (the dominant
+                // existing pattern here).
                 eprintln!(
                     "[pinvou3-app] session {session_id} resolved-provider stamp failed: {error:#}"
                 );
