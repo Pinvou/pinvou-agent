@@ -78,7 +78,8 @@ use pinvou3_lib::features::marketplace::bundle::CLI_DISCONNECTED_DEGRADED_REASON
 use pinvou3_lib::features::marketplace::skill_marketplace::SkillMarketplaceManager;
 use pinvou3_lib::features::marketplace::store::{BundleRecord, BundleSource, BundleStore};
 use pinvou3_lib::features::{
-    IMA_SKILL_ID, LARK_MIN_VERSION as FEISHU_MIN_VERSION, TMEET_MIN_VERSION, WECOM_MIN_VERSION,
+    IMA_SKILL_ID, LARK_MIN_VERSION as FEISHU_MIN_VERSION, TMEET_MIN_VERSION, TMEET_NPM_SPEC,
+    WECOM_MIN_VERSION,
 };
 use pinvou3_lib::platform::connector_lock::{executable_name, locked_cli_path};
 use pinvou3_lib::platform::connector_skills::{
@@ -104,7 +105,6 @@ const USAGE: &str =
 // feishu and wecom floors are the live ones: the same sync raised them with
 // the resynced skill packs (lark 1.0.95→1.0.98, wecom 1.2.1→1.3.4), so
 // future raises are expected.
-const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.18";
 
 /// ima companion skill version (`IMA_SKILL_ID` itself is imported from the
 /// feature layer alongside the version floors above).
@@ -5260,15 +5260,15 @@ mod tests {
 
     // ── version-parse arms + spec parity (round-52 review) ──────────────
 
-    /// `TMEET_NPM_SPEC` hand-copies the version the GUI floor carries, and
-    /// nothing tied the two: raising the app's `TMEET_MIN_VERSION` (the
-    /// install AND upgrade gate this crate imports) would have silently
-    /// left `npm install -g` pinning the OLD spec — the freshly installed
-    /// CLI then fails the new floor and every connect answers
-    /// "upgrade required" forever. The spec's version suffix must parse to
-    /// exactly the imported floor, so a GUI-side raise turns this red until
-    /// the spec moves with it (the app asserts the same parity for its own
-    /// pair).
+    /// `TMEET_NPM_SPEC` is imported from the feature layer together with
+    /// `TMEET_MIN_VERSION` (the install AND upgrade gate), so a GUI-side
+    /// spec bump now moves this crate's install lane by construction. This
+    /// pin keeps the underlying invariant visible from the CLI side: the
+    /// spec's version suffix must parse to exactly the imported floor, so a
+    /// floor raise that forgets the spec turns red HERE too instead of only
+    /// in the app's own parity test — the freshly installed CLI would fail
+    /// the new floor and every connect would answer "upgrade required"
+    /// forever.
     #[test]
     fn tmeet_npm_spec_version_matches_the_imported_min_version_floor() {
         let suffix = TMEET_NPM_SPEC
