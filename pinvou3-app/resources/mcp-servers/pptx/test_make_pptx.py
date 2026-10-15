@@ -16,6 +16,8 @@ pptx 工具(make_pptx)测试用例 —— 覆盖本次 PR 的可确定性核心�
   7. slides 传成 JSON 字符串也兼容(模型有时这么传)
   8. 回归:不再产生调试落盘文件 ~/_make_pptx_debug.json
   9. MCP 协议冒烟(子进程):initialize / tools/list / tools/call(make_pptx)
+  10. 非法 JSON 抢救 / 彻底空 loud error
+  11. slides inputSchema.items 结构钉死(数组必须带具体类型 items)
 
 注意:测试把 PINVOU3_SESSION_ARTIFACTS 指向临时目录,不污染 ~/.pinvou3。
 """
@@ -254,6 +256,42 @@ def test_malformed_json_salvage():
         r2 = server.make_pptx(theme="business-blue", slides=empty, filename="test_empty")
         assert r2.get("ok") is False and r2.get("error"), \
             "空/无法解析的 slides 应返回 ok:False+error,实际 %r(输入 %r)" % (r2, empty)
+
+
+# ── 11. slides schema 必须带结构化 items(回归:k3 曾把无 items 的数组补全成 [])──
+@case("11. slides inputSchema.items 结构钉死(数组必须带具体类型 items)")
+def test_slides_schema_items_pin():
+    schema = server.TOOL_DEFS[0]["inputSchema"]["properties"]["slides"]
+    assert schema.get("type") == "array", "slides 应为 array,实际 %r" % schema.get("type")
+    items = schema.get("items")
+    assert isinstance(items, dict) and items, "slides 必须带非空 items(Kimi 通道会把无 items 数组补全成 []),实际 %r" % items
+    assert items.get("type") == "object", "items 应为 object,实际 %r" % items.get("type")
+    assert items.get("required") == ["layout"], "items.required 应为 ['layout'],实际 %r" % items.get("required")
+    # layout 枚举必须与 LAYOUTS 渲染表精确一致(新增版式漏更枚举应在此爆红)
+    props = items.get("properties") or {}
+    assert set(props.get("layout", {}).get("enum") or []) == set(server.LAYOUTS), \
+        "layout.enum 应与 LAYOUTS 完全一致,实际 %r vs %r" % (props.get("layout", {}).get("enum"), sorted(server.LAYOUTS))
+    # 全部嵌套数组都要带具体类型的 items(守卫类:再引入无 items 数组应在此爆红)
+    def _assert_typed(node, path):
+        if node.get("type") == "array":
+            sub = node.get("items")
+            assert isinstance(sub, dict) and sub, "%s 缺 items" % path
+            if sub.get("type") == "array" or sub.get("type") == "object" or sub.get("type") == "string" \
+                    or sub.get("type") == "number":
+                _assert_typed(sub, path + ".items") if sub.get("type") == "array" else None
+            elif "anyOf" in sub:
+                for i, br in enumerate(sub["anyOf"]):
+                    assert br.get("type"), "%s.anyOf[%d] 缺具体 type" % (path, i)
+            else:
+                assert False, "%s.items 缺具体 type: %r" % (path, sub.get("type"))
+    for key in ("bullets", "left", "right", "categories", "headers", "rows", "items", "series"):
+        _assert_typed(props[key], "slides.items.properties.%s" % key)
+    # series.data 数值数组 + rows 二维数组这两处最深,单独钉形状
+    series_items = props["series"]["items"]
+    assert series_items.get("required") == ["name", "data"], "series items.required 应为 ['name','data'],实际 %r" % series_items.get("required")
+    assert series_items["properties"]["data"]["items"] == {"type": "number"}, "series.data items 应为 number"
+    assert props["rows"]["items"]["type"] == "array" and props["rows"]["items"]["items"] == {"type": "string"}, \
+        "rows 应为二维字符串数组,实际 %r" % props["rows"]
 
 
 # ── 跑全部 ───────────────────────────────────────────────────────────────

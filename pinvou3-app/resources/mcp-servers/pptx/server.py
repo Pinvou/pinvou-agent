@@ -638,6 +638,73 @@ TOOL_DEFS = [{
                     "- end: {layout, title, subtitle}  ← 结尾页\n"
                     "正文要有真实内容/数据,不要只放标题。"
                 ),
+                # items 必须带具体类型:无 items 的数组在 Kimi 等家的工具调用通道上
+                # 会被补全成最小合法值 [](实测 k3 连续 27 次发出 slides:[]),
+                # 结构化 items 同时给受约束解码器一个可填的形状。
+                "items": {
+                    "type": "object",
+                    "required": ["layout"],
+                    "properties": {
+                        "layout": {
+                            "type": "string",
+                            "enum": ["cover", "agenda", "section", "bullets", "two_col",
+                                     "kpi", "chart", "table", "image", "end"],
+                            "description": "版式(必填)",
+                        },
+                        "title": {"type": "string", "description": "页标题"},
+                        "subtitle": {"type": "string", "description": "副标题(cover/end)"},
+                        "date": {"type": "string", "description": "日期(cover)"},
+                        "items": {
+                            "type": "array",
+                            "description": "agenda: 字符串数组; kpi: {num,label} 对象数组(最多4个)",
+                            "items": {
+                                "anyOf": [
+                                    {"type": "string"},
+                                    {"type": "object",
+                                     "properties": {
+                                         "num": {"type": "string", "description": "大数字,如 68%"},
+                                         "label": {"type": "string", "description": "指标说明"},
+                                     },
+                                     "required": ["num"]},
+                                ],
+                            },
+                        },
+                        "bullets": {"type": "array", "items": {"type": "string"},
+                                    "description": "要点(bullets/image)"},
+                        "leftTitle": {"type": "string", "description": "左栏标题(two_col)"},
+                        "left": {"type": "array", "items": {"type": "string"},
+                                 "description": "左栏要点(two_col)"},
+                        "rightTitle": {"type": "string", "description": "右栏标题(two_col)"},
+                        "right": {"type": "array", "items": {"type": "string"},
+                                  "description": "右栏要点(two_col)"},
+                        "chartType": {"type": "string", "enum": ["bar", "pie", "line"],
+                                      "description": "图表类型(chart)"},
+                        "categories": {"type": "array", "items": {"type": "string"},
+                                       "description": "类目轴(chart)"},
+                        "series": {
+                            "type": "array",
+                            "description": "数据系列(chart)",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string", "description": "系列名"},
+                                    "data": {"type": "array", "items": {"type": "number"},
+                                             "description": "与 categories 等长的数值"},
+                                },
+                                "required": ["name", "data"],
+                            },
+                        },
+                        "headers": {"type": "array", "items": {"type": "string"},
+                                    "description": "表头(table)"},
+                        "rows": {
+                            "type": "array",
+                            "description": "行数据,每行是与 headers 等长的单元格数组(table)",
+                            "items": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "caption": {"type": "string", "description": "图注(image)"},
+                        "image": {"type": "string", "description": "本地图片绝对路径(image,可选)"},
+                    },
+                },
             },
             "filename": {"type": "string", "description": "文件名(不含扩展名),缺省 演示文稿"},
         },
