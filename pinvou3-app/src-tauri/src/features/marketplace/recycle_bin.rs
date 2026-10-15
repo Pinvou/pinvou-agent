@@ -158,6 +158,12 @@ impl RecycleBin {
 
     /// 测试用：三套路径都指到同一临时目录下，不碰真实 ~/.pinvou3。
     /// （与 `BundleStore::with_file` / `SkillMarketplaceManager::with_roots` 同范式）
+    ///
+    /// Invariant (issue #704): these roots do NOT relocate the cross-process
+    /// marketplace write lock `.imports.lock`, which `recycle_package` /
+    /// `take_back` / `restore_plugin` open under the env-resolved
+    /// `paths::bundles_root()`. Any test whose body or setup reaches those
+    /// methods must hold `ENV_LOCK` (`with_temp_home` or `locked_env`).
     #[cfg(test)]
     pub(crate) fn with_roots(dir: PathBuf) -> Self {
         Self {
@@ -1120,82 +1126,97 @@ mod tests {
     }
 
     /// 回收 → list → 取回的完整往返：目录搬动、清单条目、记录快照逐字段保留。
+    ///
+    /// Outer `with_temp_home` (issue #704): recycle/take_back first acquire the
+    /// cross-process marketplace write lock `.imports.lock` under
+    /// `paths::bundles_root()`, which resolves from the process env —
+    /// `with_roots` cannot relocate it. Running lock-free, a parallel
+    /// env-redirection test's closing `remove_dir_all` can make this test's
+    /// lock-file open fail with EACCES (suite-level race; single, module, and
+    /// pairwise reruns stay green).
     #[test]
     fn recycle_list_take_back_roundtrip() {
-        let tmp = fresh_dir("roundtrip");
-        let bin = RecycleBin::with_roots(tmp.clone());
-        let pkg = tmp.join("bundles/my-pkg");
-        std::fs::create_dir_all(pkg.join("mcp")).unwrap();
-        std::fs::create_dir_all(pkg.join("skills/my-skill")).unwrap();
-        std::fs::write(pkg.join("mcp/manifest.json"), "{}").unwrap();
-        std::fs::write(
-            pkg.join("skills/my-skill/SKILL.md"),
-            "---\nname: my-skill\n---",
-        )
-        .unwrap();
-
-        bin.recycle_package("my-pkg", KIND_BUNDLE, "my-pkg.zip", upload_record("my-pkg"))
+        crate::platform::test_support::with_temp_home("pinvou3-recyclebin-roundtrip", || {
+            let tmp = fresh_dir("roundtrip");
+            let bin = RecycleBin::with_roots(tmp.clone());
+            let pkg = tmp.join("bundles/my-pkg");
+            std::fs::create_dir_all(pkg.join("mcp")).unwrap();
+            std::fs::create_dir_all(pkg.join("skills/my-skill")).unwrap();
+            std::fs::write(pkg.join("mcp/manifest.json"), "{}").unwrap();
+            std::fs::write(
+                pkg.join("skills/my-skill/SKILL.md"),
+                "---\nname: my-skill\n---",
+            )
             .unwrap();
-        assert!(!pkg.exists(), "回收后原包目录应搬走");
-        assert!(tmp.join("recycle-bin/my-pkg/mcp/manifest.json").is_file());
-        assert!(
-            tmp.join("recycle-bin/my-pkg/skills/my-skill/SKILL.md")
-                .is_file()
-        );
 
-        let list = bin.list().unwrap();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].id, "my-pkg");
-        assert_eq!(list[0].display_name, "my-pkg.zip");
-        assert_eq!(list[0].kind, KIND_BUNDLE);
-        assert!(!list[0].package_missing);
-        assert!(!list[0].recycled_at.is_empty());
+            bin.recycle_package("my-pkg", KIND_BUNDLE, "my-pkg.zip", upload_record("my-pkg"))
+                .unwrap();
+            assert!(!pkg.exists(), "回收后原包目录应搬走");
+            assert!(tmp.join("recycle-bin/my-pkg/mcp/manifest.json").is_file());
+            assert!(
+                tmp.join("recycle-bin/my-pkg/skills/my-skill/SKILL.md")
+                    .is_file()
+            );
 
-        let snapshot = bin.take_back("my-pkg").unwrap();
-        assert_eq!(snapshot, upload_record("my-pkg"), "快照应逐字段保留");
-        assert!(pkg.join("mcp/manifest.json").is_file(), "取回应搬回原位");
-        assert!(!tmp.join("recycle-bin/my-pkg").exists());
-        assert!(bin.list().unwrap().is_empty(), "取回后清单应移除条目");
+            let list = bin.list().unwrap();
+            assert_eq!(list.len(), 1);
+            assert_eq!(list[0].id, "my-pkg");
+            assert_eq!(list[0].display_name, "my-pkg.zip");
+            assert_eq!(list[0].kind, KIND_BUNDLE);
+            assert!(!list[0].package_missing);
+            assert!(!list[0].recycled_at.is_empty());
 
-        let _ = std::fs::remove_dir_all(&tmp);
+            let snapshot = bin.take_back("my-pkg").unwrap();
+            assert_eq!(snapshot, upload_record("my-pkg"), "快照应逐字段保留");
+            assert!(pkg.join("mcp/manifest.json").is_file(), "取回应搬回原位");
+            assert!(!tmp.join("recycle-bin/my-pkg").exists());
+            assert!(bin.list().unwrap().is_empty(), "取回后清单应移除条目");
+
+            let _ = std::fs::remove_dir_all(&tmp);
+        });
     }
 
     /// list 展示名回退链：记录快照 extra.display_name（用户可见名）优先于
     /// 源文件名；extra 无该字段（或为空）时回退源文件名。单 md 导入的包源
     /// 文件名恒为 "SKILL.md"，必须展示用户可见名才认得出是哪个技能。
+    /// Outer `with_temp_home`: recycle_package acquires the env-resolved
+    /// marketplace write lock `.imports.lock` (the #704 race, same as
+    /// recycle_list_take_back_roundtrip).
     #[test]
     fn list_display_name_prefers_record_snapshot_over_source_file() {
-        let tmp = fresh_dir("display_name");
-        let bin = RecycleBin::with_roots(tmp.clone());
+        crate::platform::test_support::with_temp_home("pinvou3-recyclebin-display-name", || {
+            let tmp = fresh_dir("display_name");
+            let bin = RecycleBin::with_roots(tmp.clone());
 
-        let pkg = tmp.join("bundles/md-skill");
-        std::fs::create_dir_all(pkg.join("skills/md-skill")).unwrap();
-        let mut record = upload_record("md-skill");
-        record.extra.insert(
-            "display_name".to_string(),
-            serde_json::Value::String("初始化git".to_string()),
-        );
-        bin.recycle_package("md-skill", KIND_SKILL, "SKILL.md", record)
+            let pkg = tmp.join("bundles/md-skill");
+            std::fs::create_dir_all(pkg.join("skills/md-skill")).unwrap();
+            let mut record = upload_record("md-skill");
+            record.extra.insert(
+                "display_name".to_string(),
+                serde_json::Value::String("初始化git".to_string()),
+            );
+            bin.recycle_package("md-skill", KIND_SKILL, "SKILL.md", record)
+                .unwrap();
+
+            let pkg2 = tmp.join("bundles/zip-skill");
+            std::fs::create_dir_all(pkg2.join("skills/zip-skill")).unwrap();
+            bin.recycle_package(
+                "zip-skill",
+                KIND_SKILL,
+                "zip-skill.zip",
+                upload_record("zip-skill"),
+            )
             .unwrap();
 
-        let pkg2 = tmp.join("bundles/zip-skill");
-        std::fs::create_dir_all(pkg2.join("skills/zip-skill")).unwrap();
-        bin.recycle_package(
-            "zip-skill",
-            KIND_SKILL,
-            "zip-skill.zip",
-            upload_record("zip-skill"),
-        )
-        .unwrap();
+            let list = bin.list().unwrap();
+            assert_eq!(list.len(), 2);
+            let md = list.iter().find(|i| i.id == "md-skill").unwrap();
+            assert_eq!(md.display_name, "初始化git", "应展示记录快照里的用户可见名");
+            let zip = list.iter().find(|i| i.id == "zip-skill").unwrap();
+            assert_eq!(zip.display_name, "zip-skill.zip", "无快照名时回退源文件名");
 
-        let list = bin.list().unwrap();
-        assert_eq!(list.len(), 2);
-        let md = list.iter().find(|i| i.id == "md-skill").unwrap();
-        assert_eq!(md.display_name, "初始化git", "应展示记录快照里的用户可见名");
-        let zip = list.iter().find(|i| i.id == "zip-skill").unwrap();
-        assert_eq!(zip.display_name, "zip-skill.zip", "无快照名时回退源文件名");
-
-        let _ = std::fs::remove_dir_all(&tmp);
+            let _ = std::fs::remove_dir_all(&tmp);
+        });
     }
 
     /// 清单读取走硬化打开后，植入的 symlink/FIFO 必须
@@ -1224,79 +1245,98 @@ mod tests {
 
     /// purge：物理删除目录 + 清单条目；不在清单的 id 拒绝（fail-closed）；
     /// take_back 对不在清单的 id 同样拒绝。
+    /// Outer `with_temp_home`: both the recycle_package setup and the
+    /// take_back refusal arm acquire the env-resolved marketplace write lock
+    /// (the #704 race).
     #[test]
     fn purge_removes_dir_and_unknown_id_is_rejected() {
-        let tmp = fresh_dir("purge");
-        let bin = RecycleBin::with_roots(tmp.clone());
-        let pkg = tmp.join("bundles/my-skill");
-        std::fs::create_dir_all(pkg.join("skills/my-skill")).unwrap();
-        bin.recycle_package(
-            "my-skill",
-            KIND_SKILL,
-            "my-skill.zip",
-            upload_record("my-skill"),
-        )
-        .unwrap();
-        assert!(tmp.join("recycle-bin/my-skill").is_dir());
+        crate::platform::test_support::with_temp_home("pinvou3-recyclebin-purge", || {
+            let tmp = fresh_dir("purge");
+            let bin = RecycleBin::with_roots(tmp.clone());
+            let pkg = tmp.join("bundles/my-skill");
+            std::fs::create_dir_all(pkg.join("skills/my-skill")).unwrap();
+            bin.recycle_package(
+                "my-skill",
+                KIND_SKILL,
+                "my-skill.zip",
+                upload_record("my-skill"),
+            )
+            .unwrap();
+            assert!(tmp.join("recycle-bin/my-skill").is_dir());
 
-        assert!(bin.purge("ghost").is_err(), "不在清单的 id purge 应拒绝");
-        assert!(
-            bin.take_back("ghost").is_err(),
-            "不在清单的 id take_back 应拒绝"
-        );
-        assert!(
-            tmp.join("recycle-bin/my-skill").is_dir(),
-            "误 purge 不得删他人目录"
-        );
+            assert!(bin.purge("ghost").is_err(), "不在清单的 id purge 应拒绝");
+            assert!(
+                bin.take_back("ghost").is_err(),
+                "不在清单的 id take_back 应拒绝"
+            );
+            assert!(
+                tmp.join("recycle-bin/my-skill").is_dir(),
+                "误 purge 不得删他人目录"
+            );
 
-        bin.purge("my-skill").unwrap();
-        assert!(
-            !tmp.join("recycle-bin/my-skill").exists(),
-            "purge 应物理删除目录"
-        );
-        assert!(bin.list().unwrap().is_empty(), "purge 后清单应移除条目");
-        assert!(bin.purge("my-skill").is_err(), "重复 purge 应拒绝");
+            bin.purge("my-skill").unwrap();
+            assert!(
+                !tmp.join("recycle-bin/my-skill").exists(),
+                "purge 应物理删除目录"
+            );
+            assert!(bin.list().unwrap().is_empty(), "purge 后清单应移除条目");
+            assert!(bin.purge("my-skill").is_err(), "重复 purge 应拒绝");
 
-        let _ = std::fs::remove_dir_all(&tmp);
+            let _ = std::fs::remove_dir_all(&tmp);
+        });
     }
 
     /// 清单在、包目录被外部删掉 → package_missing 标记；此时 take_back 拒绝、
     /// purge 仍允许（清条目）。
+    /// Outer `with_temp_home`: same as above — the recycle_package setup and
+    /// the take_back refusal arm acquire the marketplace write lock (the #704
+    /// race).
     #[test]
     fn list_marks_missing_package_and_purge_still_allowed() {
-        let tmp = fresh_dir("missing");
-        let bin = RecycleBin::with_roots(tmp.clone());
-        let pkg = tmp.join("bundles/my-pkg");
-        std::fs::create_dir_all(&pkg).unwrap();
-        bin.recycle_package("my-pkg", KIND_MCP, "my-pkg.zip", upload_record("my-pkg"))
-            .unwrap();
-        std::fs::remove_dir_all(tmp.join("recycle-bin/my-pkg")).unwrap();
+        crate::platform::test_support::with_temp_home("pinvou3-recyclebin-missing", || {
+            let tmp = fresh_dir("missing");
+            let bin = RecycleBin::with_roots(tmp.clone());
+            let pkg = tmp.join("bundles/my-pkg");
+            std::fs::create_dir_all(&pkg).unwrap();
+            bin.recycle_package("my-pkg", KIND_MCP, "my-pkg.zip", upload_record("my-pkg"))
+                .unwrap();
+            std::fs::remove_dir_all(tmp.join("recycle-bin/my-pkg")).unwrap();
 
-        let list = bin.list().unwrap();
-        assert_eq!(list.len(), 1);
-        assert!(list[0].package_missing, "目录缺失应标记 package_missing");
-        assert!(bin.take_back("my-pkg").is_err(), "目录缺失不得恢复");
-        bin.purge("my-pkg").unwrap();
-        assert!(bin.list().unwrap().is_empty());
+            let list = bin.list().unwrap();
+            assert_eq!(list.len(), 1);
+            assert!(list[0].package_missing, "目录缺失应标记 package_missing");
+            assert!(bin.take_back("my-pkg").is_err(), "目录缺失不得恢复");
+            bin.purge("my-pkg").unwrap();
+            assert!(bin.list().unwrap().is_empty());
 
-        let _ = std::fs::remove_dir_all(&tmp);
+            let _ = std::fs::remove_dir_all(&tmp);
+        });
     }
 
     /// 同 id 回收站目标已存在 → preflight 拒绝覆盖（不静默顶掉残留条目）。
+    /// The refusal fires only after the marketplace write lock is taken
+    /// (`recycle_package` acquires it up front, before the preflight), so this
+    /// test needs the `with_temp_home` serialization + private home as well
+    /// (the #704 race).
     #[test]
     fn recycle_refuses_to_overwrite_existing_target() {
-        let tmp = fresh_dir("preflight");
-        let bin = RecycleBin::with_roots(tmp.clone());
-        std::fs::create_dir_all(tmp.join("bundles/my-pkg")).unwrap();
-        std::fs::create_dir_all(tmp.join("recycle-bin/my-pkg")).unwrap();
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-recyclebin-overwrite-refusal",
+            || {
+                let tmp = fresh_dir("preflight");
+                let bin = RecycleBin::with_roots(tmp.clone());
+                std::fs::create_dir_all(tmp.join("bundles/my-pkg")).unwrap();
+                std::fs::create_dir_all(tmp.join("recycle-bin/my-pkg")).unwrap();
 
-        assert!(
-            bin.recycle_package("my-pkg", KIND_MCP, "my-pkg.zip", upload_record("my-pkg"))
-                .is_err()
+                assert!(
+                    bin.recycle_package("my-pkg", KIND_MCP, "my-pkg.zip", upload_record("my-pkg"))
+                        .is_err()
+                );
+                assert!(tmp.join("bundles/my-pkg").is_dir(), "源目录应保持原位");
+
+                let _ = std::fs::remove_dir_all(&tmp);
+            },
         );
-        assert!(tmp.join("bundles/my-pkg").is_dir(), "源目录应保持原位");
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// Restore consent gate (review #455 R5-m5): in initialized scopes a
@@ -2144,155 +2184,176 @@ mod tests {
 
     /// 导出：清单内条目生成 zip，plugin.json/mcp/skills 条目完整可读回；Python
     /// 运行缓存（__pycache__/、*.pyc）不打包。
+    /// Outer `with_temp_home`: the `recycle_package` setup takes the
+    /// env-resolved marketplace write lock `.imports.lock` (the #704 race,
+    /// same as recycle_list_take_back_roundtrip); unwrapped, a clean run
+    /// would also create the lock file in the real `~/.pinvou3`.
     #[test]
     fn export_package_writes_complete_zip() {
-        let tmp = fresh_dir("export");
-        let bin = RecycleBin::with_roots(tmp.clone());
-        let pkg = tmp.join("bundles/exp-pkg");
-        std::fs::create_dir_all(pkg.join("mcp/__pycache__")).unwrap();
-        std::fs::create_dir_all(pkg.join("skills/exp-skill")).unwrap();
-        std::fs::write(
-            pkg.join("plugin.json"),
-            r#"{"manifest_version":1,"id":"exp-pkg","name":"Exp"}"#,
-        )
-        .unwrap();
-        std::fs::write(pkg.join("mcp/manifest.json"), r#"{"id":"exp-pkg"}"#).unwrap();
-        std::fs::write(pkg.join("mcp/server.py"), b"print('hi')").unwrap();
-        std::fs::write(pkg.join("mcp/__pycache__/server.cpython-311.pyc"), b"cache").unwrap();
-        std::fs::write(
-            pkg.join("skills/exp-skill/SKILL.md"),
-            "---\nname: exp-skill\n---\n",
-        )
-        .unwrap();
-        bin.recycle_package(
-            "exp-pkg",
-            KIND_BUNDLE,
-            "exp-pkg.zip",
-            upload_record("exp-pkg"),
-        )
-        .unwrap();
-
-        let dest = tmp.join("export.zip");
-        bin.export_package("exp-pkg", &dest).unwrap();
-
-        // 回收站内容不受导出影响（导出 ≠ 取回/删除）
-        assert!(tmp.join("recycle-bin/exp-pkg/plugin.json").is_file());
-        assert_eq!(bin.list().unwrap().len(), 1);
-
-        let archive_file = std::fs::File::open(&dest).unwrap();
-        let mut archive = zip::ZipArchive::new(archive_file).unwrap();
-        let mut names: Vec<String> = (0..archive.len())
-            .map(|i| archive.by_index(i).unwrap().name().to_string())
-            .collect();
-        names.sort();
-        assert_eq!(
-            names,
-            vec![
-                "mcp/manifest.json".to_string(),
-                "mcp/server.py".to_string(),
-                "plugin.json".to_string(),
-                "skills/exp-skill/SKILL.md".to_string(),
-            ],
-            "zip 条目应为包本体平铺在根，且不含 Python 缓存"
-        );
-        let mut content = String::new();
-        std::io::Read::read_to_string(&mut archive.by_name("plugin.json").unwrap(), &mut content)
+        crate::platform::test_support::with_temp_home("pinvou3-recyclebin-export", || {
+            let tmp = fresh_dir("export");
+            let bin = RecycleBin::with_roots(tmp.clone());
+            let pkg = tmp.join("bundles/exp-pkg");
+            std::fs::create_dir_all(pkg.join("mcp/__pycache__")).unwrap();
+            std::fs::create_dir_all(pkg.join("skills/exp-skill")).unwrap();
+            std::fs::write(
+                pkg.join("plugin.json"),
+                r#"{"manifest_version":1,"id":"exp-pkg","name":"Exp"}"#,
+            )
             .unwrap();
-        assert!(
-            content.contains("\"exp-pkg\""),
-            "plugin.json 内容应完整: {content}"
-        );
-        let mut skill = String::new();
-        std::io::Read::read_to_string(
-            &mut archive.by_name("skills/exp-skill/SKILL.md").unwrap(),
-            &mut skill,
-        )
-        .unwrap();
-        assert!(skill.contains("name: exp-skill"));
+            std::fs::write(pkg.join("mcp/manifest.json"), r#"{"id":"exp-pkg"}"#).unwrap();
+            std::fs::write(pkg.join("mcp/server.py"), b"print('hi')").unwrap();
+            std::fs::write(pkg.join("mcp/__pycache__/server.cpython-311.pyc"), b"cache").unwrap();
+            std::fs::write(
+                pkg.join("skills/exp-skill/SKILL.md"),
+                "---\nname: exp-skill\n---\n",
+            )
+            .unwrap();
+            bin.recycle_package(
+                "exp-pkg",
+                KIND_BUNDLE,
+                "exp-pkg.zip",
+                upload_record("exp-pkg"),
+            )
+            .unwrap();
 
-        let _ = std::fs::remove_dir_all(&tmp);
+            let dest = tmp.join("export.zip");
+            bin.export_package("exp-pkg", &dest).unwrap();
+
+            // 回收站内容不受导出影响（导出 ≠ 取回/删除）
+            assert!(tmp.join("recycle-bin/exp-pkg/plugin.json").is_file());
+            assert_eq!(bin.list().unwrap().len(), 1);
+
+            let archive_file = std::fs::File::open(&dest).unwrap();
+            let mut archive = zip::ZipArchive::new(archive_file).unwrap();
+            let mut names: Vec<String> = (0..archive.len())
+                .map(|i| archive.by_index(i).unwrap().name().to_string())
+                .collect();
+            names.sort();
+            assert_eq!(
+                names,
+                vec![
+                    "mcp/manifest.json".to_string(),
+                    "mcp/server.py".to_string(),
+                    "plugin.json".to_string(),
+                    "skills/exp-skill/SKILL.md".to_string(),
+                ],
+                "zip 条目应为包本体平铺在根，且不含 Python 缓存"
+            );
+            let mut content = String::new();
+            std::io::Read::read_to_string(
+                &mut archive.by_name("plugin.json").unwrap(),
+                &mut content,
+            )
+            .unwrap();
+            assert!(
+                content.contains("\"exp-pkg\""),
+                "plugin.json 内容应完整: {content}"
+            );
+            let mut skill = String::new();
+            std::io::Read::read_to_string(
+                &mut archive.by_name("skills/exp-skill/SKILL.md").unwrap(),
+                &mut skill,
+            )
+            .unwrap();
+            assert!(skill.contains("name: exp-skill"));
+
+            let _ = std::fs::remove_dir_all(&tmp);
+        });
     }
 
     /// 回收站导出的 args 净化：旧版本/手改 manifest 落了安装期绝对路径（指向
     /// 原安装位置 bundles/<id>/mcp/），导出必须还原为相对入口脚本名——净化前缀
     /// 按原安装位置匹配（回收站目录前缀会漏匹配，产出导不回的 zip）。
+    /// Outer `with_temp_home`: same `recycle_package` setup exposure as
+    /// export_package_writes_complete_zip (the #704 race).
     #[test]
     fn export_package_sanitizes_legacy_absolute_args() {
-        let tmp = fresh_dir("export-sanitize");
-        let bin = RecycleBin::with_roots(tmp.clone());
-        let pkg = tmp.join("bundles/legacy-mcp");
-        std::fs::create_dir_all(pkg.join("mcp")).unwrap();
-        std::fs::write(pkg.join("mcp/server.py"), b"print('hi')").unwrap();
-        let abs_entry = pkg
-            .join("mcp/server.py")
-            .to_string_lossy()
-            .replace('\\', "\\\\");
-        std::fs::write(
+        crate::platform::test_support::with_temp_home("pinvou3-recyclebin-export-sanitize", || {
+            let tmp = fresh_dir("export-sanitize");
+            let bin = RecycleBin::with_roots(tmp.clone());
+            let pkg = tmp.join("bundles/legacy-mcp");
+            std::fs::create_dir_all(pkg.join("mcp")).unwrap();
+            std::fs::write(pkg.join("mcp/server.py"), b"print('hi')").unwrap();
+            let abs_entry = pkg
+                .join("mcp/server.py")
+                .to_string_lossy()
+                .replace('\\', "\\\\");
+            std::fs::write(
             pkg.join("mcp/manifest.json"),
             format!(
                 r#"{{"id":"legacy-mcp","name":"L","description":"d","version":"1","icon":"","category":"c","mcp_tools":[],"command":"python","args":["{abs_entry}"]}}"#
             ),
         )
         .unwrap();
-        bin.recycle_package(
-            "legacy-mcp",
-            KIND_MCP,
-            "legacy-mcp.zip",
-            upload_record("legacy-mcp"),
-        )
-        .unwrap();
+            bin.recycle_package(
+                "legacy-mcp",
+                KIND_MCP,
+                "legacy-mcp.zip",
+                upload_record("legacy-mcp"),
+            )
+            .unwrap();
 
-        let dest = tmp.join("export.zip");
-        bin.export_package("legacy-mcp", &dest).unwrap();
+            let dest = tmp.join("export.zip");
+            bin.export_package("legacy-mcp", &dest).unwrap();
 
-        let archive_file = std::fs::File::open(&dest).unwrap();
-        let mut archive = zip::ZipArchive::new(archive_file).unwrap();
-        let mut manifest = String::new();
-        std::io::Read::read_to_string(
-            &mut archive.by_name("mcp/manifest.json").unwrap(),
-            &mut manifest,
-        )
-        .unwrap();
-        let value: serde_json::Value = serde_json::from_str(&manifest).unwrap();
-        assert_eq!(
-            value["args"],
-            serde_json::json!(["server.py"]),
-            "安装期绝对路径应还原为相对入口脚本名: {manifest}"
-        );
-        // 源文件不被净化修改（导出只读源）
-        let on_disk =
-            std::fs::read_to_string(tmp.join("recycle-bin/legacy-mcp/mcp/manifest.json")).unwrap();
-        assert!(on_disk.contains(&abs_entry));
+            let archive_file = std::fs::File::open(&dest).unwrap();
+            let mut archive = zip::ZipArchive::new(archive_file).unwrap();
+            let mut manifest = String::new();
+            std::io::Read::read_to_string(
+                &mut archive.by_name("mcp/manifest.json").unwrap(),
+                &mut manifest,
+            )
+            .unwrap();
+            let value: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+            assert_eq!(
+                value["args"],
+                serde_json::json!(["server.py"]),
+                "安装期绝对路径应还原为相对入口脚本名: {manifest}"
+            );
+            // 源文件不被净化修改（导出只读源）
+            let on_disk =
+                std::fs::read_to_string(tmp.join("recycle-bin/legacy-mcp/mcp/manifest.json"))
+                    .unwrap();
+            assert!(on_disk.contains(&abs_entry));
 
-        let _ = std::fs::remove_dir_all(&tmp);
+            let _ = std::fs::remove_dir_all(&tmp);
+        });
     }
 
     /// 导出 fail-closed：不在清单的 id 拒绝；清单在、目录缺失（package_missing）报错。
+    /// Outer `with_temp_home`: same `recycle_package` setup exposure as
+    /// export_package_writes_complete_zip (the #704 race).
     #[test]
     fn export_unknown_id_and_missing_package_rejected() {
-        let tmp = fresh_dir("export-failclosed");
-        let bin = RecycleBin::with_roots(tmp.clone());
-        let dest = tmp.join("export.zip");
+        crate::platform::test_support::with_temp_home(
+            "pinvou3-recyclebin-export-failclosed",
+            || {
+                let tmp = fresh_dir("export-failclosed");
+                let bin = RecycleBin::with_roots(tmp.clone());
+                let dest = tmp.join("export.zip");
 
-        assert!(
-            bin.export_package("ghost", &dest).is_err(),
-            "未知 id 应拒绝导出"
+                assert!(
+                    bin.export_package("ghost", &dest).is_err(),
+                    "未知 id 应拒绝导出"
+                );
+                assert!(!dest.exists(), "拒绝导出不得留文件");
+
+                let pkg = tmp.join("bundles/my-pkg");
+                std::fs::create_dir_all(&pkg).unwrap();
+                std::fs::write(pkg.join("plugin.json"), "{}").unwrap();
+                bin.recycle_package("my-pkg", KIND_MCP, "my-pkg.zip", upload_record("my-pkg"))
+                    .unwrap();
+                std::fs::remove_dir_all(tmp.join("recycle-bin/my-pkg")).unwrap();
+                assert!(
+                    bin.export_package("my-pkg", &dest).is_err(),
+                    "package_missing 应拒绝导出"
+                );
+                assert!(!dest.exists(), "失败导出不得留半写文件");
+
+                let _ = std::fs::remove_dir_all(&tmp);
+            },
         );
-        assert!(!dest.exists(), "拒绝导出不得留文件");
-
-        let pkg = tmp.join("bundles/my-pkg");
-        std::fs::create_dir_all(&pkg).unwrap();
-        std::fs::write(pkg.join("plugin.json"), "{}").unwrap();
-        bin.recycle_package("my-pkg", KIND_MCP, "my-pkg.zip", upload_record("my-pkg"))
-            .unwrap();
-        std::fs::remove_dir_all(tmp.join("recycle-bin/my-pkg")).unwrap();
-        assert!(
-            bin.export_package("my-pkg", &dest).is_err(),
-            "package_missing 应拒绝导出"
-        );
-        assert!(!dest.exists(), "失败导出不得留半写文件");
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     /// 导出的 zip 可经统一导入管线（plugin_import::import_plugin_package）重新
@@ -2367,67 +2428,78 @@ mod tests {
     /// 竞争（结果不可预期，目标已存在/不在清单等 Err 都合法），终态必须满足
     /// 「清单条目 ⟺ 回收站目录」一一对应、无重复条目、无 id 同时存在于
     /// bundles/ 与 recycle-bin/（无丢失条目、无复活条目、无孤儿目录）。
+    /// Outer `with_temp_home` covers the whole thread fleet (join happens
+    /// inside the closure): worker threads read `bundles_root` from the
+    /// process env, so the env must stay stable for the fleet's whole span
+    /// and point at a private temp home (the #704 race; the workers never
+    /// mutate env themselves, so they cannot deadlock against ENV_LOCK).
     #[test]
     fn concurrent_recycle_take_back_purge_stay_consistent() {
-        let tmp = fresh_dir("concurrent");
-        let bin = std::sync::Arc::new(RecycleBin::with_roots(tmp.clone()));
-        let ids: Vec<String> = (0..6).map(|i| format!("pkg-{i}")).collect();
-        for id in &ids {
-            std::fs::create_dir_all(tmp.join("bundles").join(id)).unwrap();
-        }
+        crate::platform::test_support::with_temp_home("pinvou3-recyclebin-concurrent", || {
+            let tmp = fresh_dir("concurrent");
+            let bin = std::sync::Arc::new(RecycleBin::with_roots(tmp.clone()));
+            let ids: Vec<String> = (0..6).map(|i| format!("pkg-{i}")).collect();
+            for id in &ids {
+                std::fs::create_dir_all(tmp.join("bundles").join(id)).unwrap();
+            }
 
-        let mut handles = Vec::new();
-        for tid in 0..6usize {
-            let bin = bin.clone();
-            let ids = ids.clone();
-            handles.push(std::thread::spawn(move || {
-                for round in 0..12usize {
-                    let id = &ids[(tid + round) % ids.len()];
-                    let _ =
-                        bin.recycle_package(id, KIND_MCP, &format!("{id}.zip"), upload_record(id));
-                    let _ = bin.take_back(id);
-                    if round % 3 == 2 {
-                        let _ = bin.purge(id);
+            let mut handles = Vec::new();
+            for tid in 0..6usize {
+                let bin = bin.clone();
+                let ids = ids.clone();
+                handles.push(std::thread::spawn(move || {
+                    for round in 0..12usize {
+                        let id = &ids[(tid + round) % ids.len()];
+                        let _ = bin.recycle_package(
+                            id,
+                            KIND_MCP,
+                            &format!("{id}.zip"),
+                            upload_record(id),
+                        );
+                        let _ = bin.take_back(id);
+                        if round % 3 == 2 {
+                            let _ = bin.purge(id);
+                        }
                     }
-                }
-            }));
-        }
-        for h in handles {
-            h.join().unwrap();
-        }
+                }));
+            }
+            for h in handles {
+                h.join().unwrap();
+            }
 
-        // 终态一致性：清单可读（无撕裂写），条目 ⟺ 目录一一对应。
-        let file = load_locked(&tmp.join("recycle-bin.json")).unwrap();
-        let mut seen = std::collections::HashSet::new();
-        for entry in &file.entries {
-            assert!(
-                seen.insert(entry.id.clone()),
-                "清单存在重复条目 {}",
-                entry.id
-            );
-            assert!(
-                tmp.join("recycle-bin").join(&entry.id).is_dir(),
-                "清单条目 {} 必须有对应回收站目录（条目不得丢失目录）",
-                entry.id
-            );
-            assert!(
-                !tmp.join("bundles").join(&entry.id).exists(),
-                "{} 不得同时存在于 bundles/ 与 recycle-bin/（复活/双份）",
-                entry.id
-            );
-        }
-        let rb = tmp.join("recycle-bin");
-        if rb.is_dir() {
-            for dir in std::fs::read_dir(&rb).unwrap().flatten() {
-                let name = dir.file_name().to_string_lossy().to_string();
+            // 终态一致性：清单可读（无撕裂写），条目 ⟺ 目录一一对应。
+            let file = load_locked(&tmp.join("recycle-bin.json")).unwrap();
+            let mut seen = std::collections::HashSet::new();
+            for entry in &file.entries {
                 assert!(
-                    file.entries.iter().any(|e| e.id == name),
-                    "回收站目录 {name} 必须有清单条目（不得有无清单孤儿目录）"
+                    seen.insert(entry.id.clone()),
+                    "清单存在重复条目 {}",
+                    entry.id
+                );
+                assert!(
+                    tmp.join("recycle-bin").join(&entry.id).is_dir(),
+                    "清单条目 {} 必须有对应回收站目录（条目不得丢失目录）",
+                    entry.id
+                );
+                assert!(
+                    !tmp.join("bundles").join(&entry.id).exists(),
+                    "{} 不得同时存在于 bundles/ 与 recycle-bin/（复活/双份）",
+                    entry.id
                 );
             }
-        }
+            let rb = tmp.join("recycle-bin");
+            if rb.is_dir() {
+                for dir in std::fs::read_dir(&rb).unwrap().flatten() {
+                    let name = dir.file_name().to_string_lossy().to_string();
+                    assert!(
+                        file.entries.iter().any(|e| e.id == name),
+                        "回收站目录 {name} 必须有清单条目（不得有无清单孤儿目录）"
+                    );
+                }
+            }
 
-        let _ = std::fs::remove_dir_all(&tmp);
+            let _ = std::fs::remove_dir_all(&tmp);
+        });
     }
 
     /// A failed registration rebuild must roll back to the recycle bin (review
