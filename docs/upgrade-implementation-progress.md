@@ -10,7 +10,7 @@ client, service, physical platform certification or rollout readiness.
 | T01 | Implemented; independently reviewed and verified | Executable metadata/credential Schemas, byte/trust profile, reference verifier, independently verified fixed vectors and local CLI E2E |
 | T02 | Implemented; independently reviewed and verified | Closed control APIs, publication/lifecycle/selection/quality reference models and regression tests; no production service implementation |
 | T03閳ユ彑04 | Not completed | Platform/data scope, measured preparation budgets and trustworthy time evidence remain pending; follow the task graph |
-| T05 | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; actual Keycloak realm acceptance remains pending |
+| T05 | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
 | T06 | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
 | T07閳ユ彑47 (including final T43) | Not completed | Follow the task graph; no runtime or certification completion is claimed |
 
@@ -7281,3 +7281,65 @@ without actual skips. Both reused the frozen privately built command and helper,
 passed affected three-package vet, six-file formatting and diff checks, and
 closed every process. Both final scoped code/test audits passed after the
 primary role's P2 test isolation repair; production owner/SQL behavior was unchanged.
+
+## T05 isolated actual Keycloak acceptance (2026-10-15)
+
+The separate service adds an explicit opt-in real-provider harness and one Go
+acceptance test. Production authentication, permissions, sessions and dependency
+versions are unchanged. Official Keycloak 26.8.1 and Temurin Java 21.0.12.1+1 run
+in a fresh owned temporary runtime with an in-memory realm and synthetic
+identities. Only the official library tree is copied; source configuration,
+data and custom providers are excluded. The harness downloads nothing, uses
+explicit runtime paths and never prints provider logs, tokens or credentials.
+It provisions no service management principal and performs no deployment.
+
+The actual flow uses S256 PKCE and the unchanged production OIDC adapter.
+Password-only authentication cannot satisfy the dedicated fresh-MFA guard.
+Empty and wrong OTP cannot complete authorization; correct OTP produces the
+verified dedicated ACR and current signed authentication time for the same actor.
+Actual introspection must pass before logout. Authorization-code replay must
+be refused; successful actual provider user logout must make subsequent session
+introspection refuse. Five-minute equality tests
+calculate from the actual signed timestamp, without claiming five minutes of
+wall-clock waiting or production-realm certification.
+
+Early real runs exposed fixture mistakes: the launch path/relaunch contract,
+local HTTP Secure-cookie handling, missing standard basic scope and missing
+exact client audience. All were fixed within the isolated harness. The standard
+basic/acr scopes and precise access-token/introspection audience mapper retain
+Keycloak's current checks; no compatibility bypass or backend relaxation exists.
+A test-only Secure-cookie exception is confined to the exact private HTTP
+127.0.0.1 origin. Actual CookieJar controls preserve port/host, domain, path,
+expiry and normal HTTPS behavior.
+
+Independent review found two P2 issues, repaired by the primary role. The helper
+now owns its bound socket before realm configuration, including configuration
+failure. Its context waits for real active handlers before returning. The
+handler regression holds that handler blocked through a controlled wait;
+a single-variable block_on_close=false negative implementation produced exactly
+the intended failure, while the normal four local groups passed in 0.851s.
+SDK-log-derived diagnostics were also removed instead of claiming general
+secret-safe redaction.
+
+Root final actual acceptance passed in 2.892s (case 1.27s), without skips.
+Complete default Go tests passed at package parallelism two; OIDC 2.007s,
+management PostgreSQL 2.818s and HTTP 2.154s. The new actual opt-in skips by
+default and was enabled separately. Module verification, whole vet, server
+build, unchanged contract pins, formatting and diff checks passed; root's
+processes closed before independent executable reviews.
+
+Dependency review passed all four local groups in 0.844s and actual Keycloak
+in 3.146s (case 1.30s), without skips. Compatibility review passed all four local
+groups in 0.841s and actual Keycloak in 3.582s (case 1.81s), without skips.
+Both also passed the existing two default OIDC groups with the actual opt-in
+explicitly skipped there (1.742s / 1.785s), affected vet, formatting and diff
+checks. Both independent final code/test reviews passed after the primary role's
+repairs. All helper, Python, Go and Java processes closed and owned temporary
+runtime cleanup completed before each role released execution.
+
+This closes the local actual-provider evidence gap for these exercised T05
+flows. It does not approve the deployment's realm, enrollment, TLS ingress,
+administration, HA or broader T05 certification. Deployment remains deferred.
+No database migration, protocol, app VERSION or runtime dependency changes.
+Downloads retain no hard total/cumulative elapsed or retry-count cap; local
+acceptance timeouts do not apply to product downloads.
