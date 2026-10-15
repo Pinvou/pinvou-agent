@@ -1881,7 +1881,12 @@ fn poll_tolerant(
             Err(error) if attempt < READ_ERROR_TOLERANCE => {
                 attempt += 1;
                 if announce {
-                    eprintln!(
+                    // note!, never eprintln!: Rust ignores SIGPIPE, so a
+                    // closed stderr turns eprintln! into a panic (exit 101
+                    // "this is a bug") that also loses the report — the
+                    // closed-pipe contract is enforced by the note! macro,
+                    // not by review at each call site (round-54 audit A3).
+                    note!(
                         "knowledge {operation}: status read failed ({error}); retry {attempt}/{READ_ERROR_TOLERANCE}"
                     );
                 }

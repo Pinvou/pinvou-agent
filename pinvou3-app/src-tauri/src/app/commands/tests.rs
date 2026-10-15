@@ -3262,3 +3262,86 @@ fn web_settings_deferred_delete_serializes_with_a_concurrent_replacement() {
         );
     });
 }
+
+/// Round-54 audit A5 wiring pin (round-1 review m5: per-command labels and
+/// ordering, not file-level markers — the file-granular form was
+/// satisfiable by unrelated joins, e.g. interaction.rs's spawn_blocking
+/// check passed on the pre-existing set_super_permission join while
+/// accept_plan's was unwrapped, and a NEW bare command in a pinned file
+/// stayed green): the settings transaction holds the cross-process
+/// settings.json.lock across keychain I/O (a CLI `models` command parked
+/// at a keychain prompt can hold it for minutes), so these command bodies
+/// must reach it only through a blocking-worker join. Comment lines are
+/// stripped so prose cannot satisfy it. Round-2 review m1: the scan also
+/// stops at each file's test module and strips trailing comments, so a
+/// needle cannot be satisfied from #[cfg(test)] code or a comment, and
+/// the pet arm is scoped to the set_pet_enabled body.
+#[test]
+fn settings_transaction_commands_join_off_the_runtime() {
+    fn code(source: &str) -> String {
+        source
+            .lines()
+            .take_while(|line| !line.trim_start().starts_with("mod tests"))
+            // Strip trailing `//` comments too: only real code can satisfy
+            // a needle (the needles contain no `//`, so a cut can only
+            // under-match, never over-match).
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    // Per-command needles: each settings-transaction command names itself
+    // in its join label (the settings family's convention), and
+    // accept_plan's commit joins through spawn_blocking with the claim
+    // moved into the closure.
+    let interaction = code(include_str!("interaction.rs"));
+    for needle in [
+        "join_blocking(\"confirm_code_yolo\"",
+        "join_blocking(\"set_mode_default\"",
+    ] {
+        assert!(
+            interaction.contains(needle),
+            "interaction.rs lost its per-command join: {needle}"
+        );
+    }
+    assert!(
+        interaction.contains("spawn_blocking(move || plan_claim.commit())"),
+        "accept_plan's commit must run on a blocking worker"
+    );
+    for (source, label, name) in [
+        (
+            include_str!("voice.rs"),
+            "join_blocking(\"set_voice_shortcut_enabled\"",
+            "voice.rs",
+        ),
+        (
+            include_str!("computer_use.rs"),
+            "join_blocking(\"computer_use_set_enabled\"",
+            "computer_use.rs",
+        ),
+    ] {
+        assert!(
+            code(source).contains(label),
+            "{name} lost its per-command join: {label}"
+        );
+    }
+    // pet_window: the transaction must sit INSIDE the blocking closure —
+    // ordering scoped to the set_pet_enabled body (round-2 m1: a bare
+    // spawn_blocking anywhere before the function used to satisfy the
+    // whole-file ordering form).
+    let pet_window = code(include_str!("../../features/pet/pet_window.rs"));
+    let body_start = pet_window
+        .find("fn set_pet_enabled")
+        .expect("pet_window.rs must define set_pet_enabled");
+    let body = &pet_window[body_start..];
+    let spawn_at = body
+        .find("spawn_blocking")
+        .expect("set_pet_enabled must join its settings transaction");
+    let txn_at = body
+        .find("update_transaction")
+        .expect("set_pet_enabled must run the settings transaction");
+    assert!(
+        spawn_at < txn_at,
+        "set_pet_enabled must run the settings transaction inside its blocking worker"
+    );
+}

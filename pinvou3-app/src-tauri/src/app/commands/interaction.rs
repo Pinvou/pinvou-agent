@@ -59,7 +59,13 @@ pub async fn get_code_permission_prefs(
 pub async fn confirm_code_yolo(
     store: State<'_, SessionStore>,
 ) -> Result<crate::platform::prefs::CodePermissionPrefs, String> {
-    store.confirm_code_yolo()
+    // Round-54 audit A5: the settings transaction holds the cross-process
+    // settings.json.lock across keychain I/O (a CLI `models` command parked
+    // at a keychain prompt can hold it for minutes) — join it on a blocking
+    // worker instead of parking this runtime worker, like the settings
+    // family.
+    let store = store.inner().clone();
+    super::settings::join_blocking("confirm_code_yolo", move || store.confirm_code_yolo()).await
 }
 
 /// The per-lane (work/code) global default modes. Fetched at startup / on
@@ -85,8 +91,14 @@ pub async fn set_mode_default(
     store: State<'_, SessionStore>,
 ) -> Result<crate::core::mode_state::ModeDefaultsView, String> {
     let lane = crate::core::mode_state::ModeLane::parse(&lane)?;
-    store.set_mode_default(lane, mode);
-    Ok(store.mode_defaults())
+    // Round-54 audit A5: same blocking-worker join as confirm_code_yolo —
+    // the draft-state switch persists through the settings transaction.
+    let store = store.inner().clone();
+    super::settings::join_blocking("set_mode_default", move || {
+        store.set_mode_default(lane, mode);
+        Ok(store.mode_defaults())
+    })
+    .await
 }
 
 // ===================== 卡片池: 专家面具 =====================
@@ -281,7 +293,20 @@ pub async fn accept_plan(
             ),
         });
     }
-    plan_claim.commit();
+    // Round-54 audit A5, round-1 correction: commit runs
+    // finish_pending_plan_claim plus the accepted-mode persist — a
+    // `_session_mode_states.json` sidecar RMW under a std Mutex, NOT the
+    // settings transaction (the audit's "plan accept" label pointed here,
+    // but this file's settings-transaction callers are confirm_code_yolo
+    // and set_mode_default above). Still joined on a blocking worker: the
+    // sidecar RMW is file I/O and need not park this runtime worker.
+    // Log-only on a failed join: the turn is already submitted, and
+    // persist_accepted_yolo_mode's own write-failure arm has the same
+    // tolerance.
+    let joined = tauri::async_runtime::spawn_blocking(move || plan_claim.commit()).await;
+    if let Err(error) = joined {
+        eprintln!("[sessions] accept_plan commit join failed: {error}");
+    }
     Ok(accepted_mode_state)
 }
 

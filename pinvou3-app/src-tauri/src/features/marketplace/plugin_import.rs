@@ -1271,8 +1271,10 @@ pub fn import_plugin_package(
 }
 
 /// Refuses an id that an installed claimant's companion vocabulary folds
-/// onto. Called once before the pre-land gate and once under
-/// the import lock (a TOCTOU re-check).
+/// onto. Called once before the pre-land gate and once under the import
+/// AND market locks (a TOCTOU re-check) — the market lock is the seam
+/// that excludes a CROSS-PROCESS claimant (a CLI skills install contends
+/// on it, not on this import's per-id lock).
 fn ensure_package_id_self_mapping(id: &str) -> Result<(), String> {
     let folded = crate::features::marketplace::scope::to_package_id(id);
     if folded == id {
@@ -1651,7 +1653,7 @@ pub fn import_plugin_package_gated(
     // conflict-check → rename window (lock order: import_lock → market
     // file lock → store file lock, identical at every market mutator).
     let _market_lock = MarketplaceWriteLock::acquire_map_err()?;
-    // Re-check the fold divergence under the import lock: the
+    // Re-check the fold divergence under the import and market locks: the
     // first check ran before the consent gate, and a claimant (preset skill
     // install, CLI companion, ima connect) completing in between would fold
     // this id onto the claimant — the gate registers (or skips on) the
@@ -1659,6 +1661,7 @@ pub fn import_plugin_package_gated(
     // Nothing has landed at this point, so the refusal aborts with the home
     // untouched (the gate's earlier registration is an over-denial row on an
     // installed claimant — fail-closed).
+    ensure_package_id_self_mapping(&id)?;
     // 上传包 id 冲突：目标包目录已存在且内容不同 → 拒绝（提示改名重试），避免
     // 不同包静默互覆盖（二轮评审：冲突检查需覆盖上传包）。内容一致视为同包
     // 重导/升级，允许走原子替换。比对为全内容口径（五轮评审，详见
@@ -3850,6 +3853,139 @@ mod tests {
                 "SKILL.md 正文变更应报冲突，实际: {err}"
             );
         });
+    }
+
+    /// Owner-claim divergence must also be refused from the UNDER-LOCK
+    /// re-check, not only the pre-gate check: a claimant install (preset
+    /// skill install, CLI companion, ima connect) completing while this
+    /// import waits on the landing lease / import lock / market lock folds
+    /// the pending id onto the claimant — the pack would land keyed by its
+    /// own id, ungoverned in initialized DenyAll scopes. Round-54 audit A1:
+    /// commit 1656d739c deleted the re-check call while this site's comment
+    /// kept describing it. The pre-land gate hook is the hermetic seam that
+    /// completes a claimant install inside exactly that window (after the
+    /// pre-gate check, before the landing), so this pin is deterministic.
+    #[test]
+    fn claimant_completing_inside_the_import_window_is_refused_at_recheck() {
+        crate::platform::test_support::with_temp_home("pinvou-recheck-fold", || {
+            let claimant_zip = write_test_zip(
+                "pinvou-recheck-fold",
+                &[
+                    (
+                        "plugin.json",
+                        r#"{"manifest_version":1,"id":"local-claimant","name":"claimant","components":{"mcp_servers":[{"id":"local-claimant","dir":"mcp"}]}}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                    (
+                        "mcp/manifest.json",
+                        r#"{"id":"local-claimant","name":"claimant","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"],"companion_skills":["local-victim"]}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                    ("mcp/server.py", b"print('c')".to_vec()),
+                ],
+            );
+            let victim_zip = write_test_zip(
+                "pinvou-recheck-fold",
+                &[
+                    (
+                        "plugin.json",
+                        r#"{"manifest_version":1,"id":"local-victim","name":"victim","components":{"mcp_servers":[{"id":"local-victim","dir":"mcp"}]}}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                    (
+                        "mcp/manifest.json",
+                        r#"{"id":"local-victim","name":"victim","description":"d","version":"1.0.0","icon":"","category":"life","mcp_tools":[],"command":"python","args":["server.py"]}"#
+                            .as_bytes()
+                            .to_vec(),
+                    ),
+                    ("mcp/server.py", b"print('v')".to_vec()),
+                ],
+            );
+
+            // The victim's pre-land hook installs the claimant for real
+            // (full pipeline): by the time the under-lock re-check runs, the
+            // claimant's companion vocabulary folds "local-victim" onto
+            // "local-claimant". The pre-gate check ran BEFORE the hook, so
+            // only the re-check can produce this refusal.
+            let pre_land = |id: &str, _skills: &[String]| {
+                if id == "local-victim" {
+                    import_plugin_package(&claimant_zip.to_string_lossy(), "claimant.zip")
+                        .unwrap_or_else(|e| {
+                            panic!("claimant install inside the window failed: {e}")
+                        });
+                }
+                Ok(())
+            };
+            let error = import_plugin_package_gated(
+                &victim_zip.to_string_lossy(),
+                "victim.zip",
+                &pre_land,
+            )
+            .expect_err(
+                "a claimant completing inside the import window must fold the id and refuse the import",
+            );
+            assert!(
+                error.contains("配套技能占用"),
+                "expected the fold-divergence refusal, got: {error}"
+            );
+            // The refusal aborts with the home untouched: no victim pack.
+            assert!(
+                !crate::platform::paths::bundles_root()
+                    .join("local-victim")
+                    .exists(),
+                "the refused import must not leave the victim pack on disk"
+            );
+        });
+    }
+
+    /// Round-1 review m1 / round-2 M3 repair: the re-check's POSITION is
+    /// load-bearing — it must sit AFTER the market-lock acquisition,
+    /// because the market lock is what a CROSS-PROCESS claimant (a CLI
+    /// `plugins skills install`) contends on; moved before it, the
+    /// behavioral pin above stays green (its claimant is in-process and
+    /// stays excluded by the import lock the moved call still sits behind)
+    /// while the second-process window reopens. The round-1 form asserted
+    /// this with a whole-file `rfind`, which self-matched this test's own
+    /// needle literal and could never fail (round-2 mutation-verified:
+    /// green under both a move of the call and a full deletion). The
+    /// repaired pin scopes the search to the production slice and the
+    /// pipeline function: the re-check must keep exactly two call sites
+    /// there (the pre-gate twin and the under-lock call), the market lock
+    /// is acquired once, and the LAST re-check must follow it.
+    #[test]
+    fn the_under_lock_recheck_sits_after_the_market_lock_acquisition() {
+        let code: String = include_str!("plugin_import.rs")
+            .lines()
+            // Stop at the test module: needles must match production code
+            // only — the round-1 defect was the test's own literal
+            // satisfying the rfind.
+            .take_while(|line| !line.trim_start().starts_with("mod tests"))
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let pipeline = &code[code
+            .find("fn import_plugin_package_gated")
+            .expect("the gated import pipeline must exist")..];
+        let recheck = "ensure_package_id_self_mapping(&id)?;";
+        assert_eq!(
+            pipeline.matches(recheck).count(),
+            2,
+            "the pipeline must keep both re-checks (pre-gate twin + under-lock)"
+        );
+        let lock_at = pipeline
+            .find("MarketplaceWriteLock::acquire_map_err()?")
+            .expect("the import pipeline must acquire the market lock");
+        let recheck_at = pipeline
+            .rfind(recheck)
+            .expect("the under-lock re-check call must exist");
+        assert!(
+            lock_at < recheck_at,
+            "the TOCTOU re-check must sit after the market-lock acquisition \
+             (that position is what excludes a cross-process claimant)"
+        );
     }
 
     /// 未声明技能子树拒收（五轮评审必修 2）：detect 只登记声明/识别的技能，

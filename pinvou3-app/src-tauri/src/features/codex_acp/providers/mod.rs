@@ -10,7 +10,9 @@
 // CLI config); the create-time mode bit is a unix-only OpenOptions flag,
 // and routing the create through a platform adapter would split the
 // create_new + AlreadyExists no-op semantics this backup's idempotence
-// relies on.
+// relies on. The post-merge persist-fault pins are also cfg(unix)-gated:
+// the fault is a chmod-0555 providers home with no portable non-unix
+// equivalent, and the tests self-skip when the mode is not enforced.
 
 mod claude;
 mod codex;
@@ -889,6 +891,26 @@ impl DivergenceGate {
     }
 }
 
+/// Round-2 review M1: the surviving owner the save failure arms gate on
+/// must be read from the UNDER-LOCK fresh record, never from the pre-lock
+/// `existing` clone. A Delete sets `written_credential` to None, so the
+/// divergence guard never re-validates the pointer for it — deriving from
+/// `existing` would let a peer `--delete-key` that cleared the pointer
+/// inside the pre-lock window (the file's own round-44/46/48/49 comments
+/// model exactly that peer) turn the round-1 Delete restore into a
+/// resurrection of a key the surviving record no longer names. For every
+/// non-Delete path the two derivations are provably equal: write paths
+/// reach the arms only after the guard verified pointer equality under
+/// the lock (or the record was never there / the pointer provably None),
+/// and the under-lock bail arms pass `None` explicitly.
+fn surviving_owner_under_lock(
+    fresh_record: &Option<ProviderRecord>,
+) -> Option<&CredentialReference> {
+    fresh_record
+        .as_ref()
+        .and_then(|record| record.credential.as_ref())
+}
+
 impl ProviderManager {
     pub fn new(credentials: SystemCredentialStore) -> Result<Self> {
         let home = crate::platform::os::user_home_dir();
@@ -1052,16 +1074,73 @@ impl ProviderManager {
     /// is deleted only while it still equals what THIS call wrote — a peer
     /// rotation landing in the window replaced that value and owns the entry
     /// now, so it is left alone.
+    ///
+    /// `surviving_owner` gates record OWNERSHIP, which the value check alone
+    /// cannot see: the reference is deterministic, so replacing the key of an
+    /// already-keyed provider overwrites the very slot its persisted record
+    /// names, and after a persist failure that record survives unchanged and
+    /// still advertises `has_credential: true`. Deleting the entry there
+    /// strands the surviving record over an emptied keychain — its original
+    /// value is already gone (overwritten by this call's write), so the
+    /// delete would destroy the only live value. When `surviving_owner` names
+    /// `wrote`, the entry is LIVE, not an orphan: this call's value stays,
+    /// which is the outcome the pre-take-back shape left behind. Callers pass
+    /// `None` only where the record is provably gone or its pointer provably
+    /// cleared (the under-lock bail arms).
     fn take_back_untouched_key(
         &self,
         wrote: Option<&CredentialReference>,
         wrote_value: Option<&str>,
+        surviving_owner: Option<&CredentialReference>,
     ) {
         if let (Some(wrote), Some(wrote_value)) = (wrote, wrote_value) {
+            if surviving_owner == Some(wrote) {
+                return;
+            }
             if self.credentials.get(wrote).ok().flatten().as_deref() == Some(wrote_value) {
                 self.credentials.delete(wrote).ok();
             }
         }
+    }
+
+    /// Round-1 review M2: restores a pre-upsert DELETED key when the save
+    /// failed and the surviving on-disk record still names the reference —
+    /// the delete ran before the persist was attempted, so without this the
+    /// record keeps advertising `has_credential: true` over an emptied
+    /// keychain (the captured value is the only copy left). Fires only on
+    /// the pointer the record actually names (`surviving_owner == Some(
+    /// reference)`, the same ownership signal the take-back uses) AND only
+    /// into a slot this call's delete actually emptied (round-2 M2: a peer
+    /// write at the same reference owns the slot now); a keyless delete
+    /// captured None and restores nothing. Returns the
+    /// restore failure — if any — so the caller appends it to the error it
+    /// is already propagating; a credential loss is never swallowed.
+    fn restore_deleted_key_after_failed_save(
+        &self,
+        reference: &CredentialReference,
+        deleted_key_value: Option<&str>,
+        surviving_owner: Option<&CredentialReference>,
+    ) -> Option<anyhow::Error> {
+        let value = deleted_key_value?;
+        if surviving_owner != Some(reference) {
+            return None;
+        }
+        // Round-2 review M2: read-compare-write mirror of the take-back's
+        // read-compare-delete — restore only into the slot this call's
+        // delete emptied. A present value is a peer's committed write at
+        // the same deterministic reference (a peer Replace's pointer never
+        // moves, so no divergence guard sees it); overwriting it with the
+        // stale captured value would silently revert a completed key
+        // rotation the surviving record still advertises.
+        match self.credentials.get(reference) {
+            Ok(None) => {}
+            Ok(Some(_)) => return None,
+            Err(error) => return Some(anyhow::Error::from(error)),
+        }
+        self.credentials
+            .set(reference, value)
+            .err()
+            .map(anyhow::Error::from)
     }
 
     /// store 持久化失败后的收口（save 生效臂与 switch 共用）：回滚已写入的
@@ -1172,6 +1251,16 @@ impl ProviderManager {
         // persist-failure take-back below re-reads the entry and only deletes
         // while it still holds this exact value (round-49 review).
         let mut written_key_value: Option<String> = None;
+        // Round-1 review M2 (the post-merge P2 reviewer's "preserve or
+        // restore" mandate, its Delete case): a Delete destroys the owned
+        // key BEFORE the upsert is attempted — if that upsert (or the
+        // config apply) then fails, the unchanged on-disk record still
+        // names the reference and advertises `has_credential: true` over
+        // an emptied keychain, with the pre-failure value unrecoverable.
+        // Captured here so the failure arms below can restore exactly what
+        // the surviving record advertises; a keyless delete reads None and
+        // restores nothing (nothing was destroyed).
+        let mut deleted_key_value: Option<String> = None;
         let credential = match api_key_action {
             CredentialEditAction::Replace => {
                 let key = api_key
@@ -1180,16 +1269,16 @@ impl ProviderManager {
                 self.credentials.set(&reference, key)?;
                 written_credential = Some(reference.clone());
                 written_key_value = Some(key.to_string());
-                Some(reference)
+                Some(reference.clone())
             }
             CredentialEditAction::KeepExisting => match self.credentials.get(&reference)? {
-                Some(_) => Some(reference),
+                Some(_) => Some(reference.clone()),
                 None => match api_key {
                     Some(key) => {
                         self.credentials.set(&reference, &key)?;
                         written_credential = Some(reference.clone());
                         written_key_value = Some(key.to_string());
-                        Some(reference)
+                        Some(reference.clone())
                     }
                     None => existing
                         .as_ref()
@@ -1197,6 +1286,7 @@ impl ProviderManager {
                 },
             },
             CredentialEditAction::Delete => {
+                deleted_key_value = self.credentials.get(&reference)?;
                 self.credentials.delete(&reference).ok();
                 None
             }
@@ -1262,8 +1352,13 @@ impl ProviderManager {
             // while the entry still holds THIS call's value, so a peer
             // rotation landing in the pre-lock credential window keeps its
             // entry. The DELETE action already removed its key; KeepExisting
-            // without a write has nothing to remove.
-            self.take_back_untouched_key(written_credential.as_ref(), written_key_value.as_deref());
+            // without a write has nothing to remove. No surviving owner: the
+            // record is gone from disk, so nothing names the reference.
+            self.take_back_untouched_key(
+                written_credential.as_ref(),
+                written_key_value.as_deref(),
+                None,
+            );
             anyhow::bail!("Provider 不存在: {}", record.id);
         }
         // Round-46 review: the removed-record guard above covers a peer
@@ -1305,8 +1400,10 @@ impl ProviderManager {
                     // Same narrowed read-compare-delete as the persist-failure
                     // arms: a peer rotation landing in the pre-lock window
                     // replaced the value and owns the entry, so it survives
-                    // this bail.
-                    self.take_back_untouched_key(Some(wrote), written_key_value.as_deref());
+                    // this bail. No surviving owner: the on-disk record's
+                    // pointer is None (this branch's condition), so nothing
+                    // names the reference.
+                    self.take_back_untouched_key(Some(wrote), written_key_value.as_deref(), None);
                 }
                 anyhow::bail!(
                     "Provider {} 被并发修改（凭据已被另一端更改），请重试",
@@ -1315,7 +1412,11 @@ impl ProviderManager {
             }
         }
         if keep_existing_carry {
-            record.credential = fresh_record.and_then(|fresh| fresh.credential);
+            // Borrow, don't move (round-2 M1): the failure arms below derive
+            // the surviving owner from this same fresh record.
+            record.credential = fresh_record
+                .as_ref()
+                .and_then(|fresh| fresh.credential.clone());
         }
         if self.store.current_fresh_locked(agent).as_deref() == Some(record.id.as_str()) {
             // Round-46 note: this keychain read parks inside the section
@@ -1327,7 +1428,33 @@ impl ProviderManager {
             // the section-lock degrade remains the bounded safety valve.
             let key = self.api_key(agent, &record.id)?;
             let writer = self.writer_for(agent)?;
-            writer.apply(&ProviderTarget::from_record(&record, key))?;
+            // Round-1 review m6 (a pre-existing leak, now uniform with the
+            // persist arms below): a first-key / first-create write whose
+            // CONFIG apply fails before any upsert propagated bare and left
+            // an unowned keychain entry no record names. Same narrowed
+            // take-back; the section lock is held and the divergence guard
+            // passed, so the under-lock fresh record still names the
+            // surviving owner. The M2 Delete restore rides the same arm — a
+            // Delete whose config apply fails must not keep its key
+            // destroyed either.
+            if let Err(error) = writer.apply(&ProviderTarget::from_record(&record, key)) {
+                let surviving_owner = surviving_owner_under_lock(&fresh_record);
+                self.take_back_untouched_key(
+                    written_credential.as_ref(),
+                    written_key_value.as_deref(),
+                    surviving_owner,
+                );
+                if let Some(restore_error) = self.restore_deleted_key_after_failed_save(
+                    &reference,
+                    deleted_key_value.as_deref(),
+                    surviving_owner,
+                ) {
+                    return Err(anyhow::anyhow!(
+                        "{error:#}; 且回写已删除的 key 失败（Provider 记录仍声明持有凭据）: {restore_error:#}"
+                    ));
+                }
+                return Err(error);
+            }
             if let Err(error) = self.store.upsert_locked(agent, record.clone()) {
                 // Round-49 review: a persist failure must not leave the
                 // just-written key behind either. The take-back is a narrowed
@@ -1335,13 +1462,37 @@ impl ProviderManager {
                 // reference and delete only while it still equals what THIS
                 // call wrote — a peer rotation landing in the window replaced
                 // that value and owns the entry now, so it is left alone.
+                // Post-merge P2: the upsert failed, so the on-disk record is
+                // unchanged and still names the pointer it named before this
+                // call — when that pointer IS this call's reference (an
+                // already-keyed provider), the entry is owned by the
+                // surviving record and must NOT be taken back: the value this
+                // call wrote stays in the slot, which is the credential the
+                // record keeps advertising. Only a first-create / first-key
+                // write (surviving pointer None) leaves a slot no record
+                // names: a true orphan to reclaim.
+                let surviving_owner = surviving_owner_under_lock(&fresh_record);
                 self.take_back_untouched_key(
                     written_credential.as_ref(),
                     written_key_value.as_deref(),
+                    surviving_owner,
+                );
+                // Round-1 review M2: a Delete's persist failure must
+                // RESTORE the key its surviving record still names (the
+                // captured value is the only copy left). A failed restore
+                // is appended to the rolled-back error, never swallowed.
+                // The owner is the under-lock fresh record (round-2 M1): a
+                // peer `--delete-key` clearing the pointer inside the
+                // pre-lock window must not make this restore resurrect the
+                // key the surviving record no longer names.
+                let restore_error = self.restore_deleted_key_after_failed_save(
+                    &reference,
+                    deleted_key_value.as_deref(),
+                    surviving_owner,
                 );
                 // store 持久化失败：回滚配置写入（含 kimi 的 default_model），
                 // 保持「失败 = 什么都没发生」语义。回滚失败如实附加（复审 F3）。
-                return Err(self.revert_after_persist_failure(
+                let reverted = self.revert_after_persist_failure(
                     error,
                     "保存失败：配置已写入但无法保存 Provider 状态，已尝试回滚配置；请检查磁盘后重试",
                     writer.as_ref(),
@@ -1352,7 +1503,13 @@ impl ProviderManager {
                     self.store
                         .official_default_model_fresh_locked(agent)
                         .as_deref(),
-                ));
+                );
+                return match restore_error {
+                    None => Err(reverted),
+                    Some(restore_error) => Err(anyhow::anyhow!(
+                        "{reverted:#}; 且回写已删除的 key 失败（Provider 记录仍声明持有凭据）: {restore_error:#}"
+                    )),
+                };
             }
         } else {
             if let Err(error) = self.store.upsert_locked(agent, record.clone()) {
@@ -1363,10 +1520,33 @@ impl ProviderManager {
                 // is never reclaimed). Same narrowed read-compare-delete:
                 // a peer rotation landing in the window replaced that
                 // value and owns the entry now, so it is left alone.
+                // Post-merge P2, same ownership gate as the current arm: an
+                // already-keyed provider's persist failure leaves the
+                // on-disk record naming this call's reference, so the entry
+                // is LIVE and stays; only an unowned (first-create /
+                // first-key) slot is reclaimed.
+                let surviving_owner = surviving_owner_under_lock(&fresh_record);
                 self.take_back_untouched_key(
                     written_credential.as_ref(),
                     written_key_value.as_deref(),
+                    surviving_owner,
                 );
+                // Round-1 review M2: same Delete restore as the current
+                // arm — the surviving on-disk record still names the
+                // reference, so the destroyed key is written back before
+                // the persist error propagates. Same round-2 M1 rule: the
+                // owner comes from the under-lock fresh record, so a peer
+                // pointer-clear inside the pre-lock window cannot turn the
+                // restore into a resurrection.
+                if let Some(restore_error) = self.restore_deleted_key_after_failed_save(
+                    &reference,
+                    deleted_key_value.as_deref(),
+                    surviving_owner,
+                ) {
+                    return Err(anyhow::anyhow!(
+                        "{error:#}; 且回写已删除的 key 失败（Provider 记录仍声明持有凭据）: {restore_error:#}"
+                    ));
+                }
                 return Err(error);
             }
         }
@@ -1841,6 +2021,29 @@ mod tests {
             credential: None,
             created_at: "2026-09-30T00:00:00Z".into(),
         }
+    }
+
+    /// Whether any file under `dir` contains `needle` (lossy text read).
+    /// The orphan-reclamation pin uses this to stay independent of the file
+    /// secret backend's on-disk layout.
+    fn tree_contains_string(dir: &Path, needle: &str) -> bool {
+        fn walk(dir: &Path, needle: &str) -> std::io::Result<bool> {
+            for entry in fs::read_dir(dir)? {
+                let path = entry?.path();
+                if path.is_dir() {
+                    if walk(&path, needle)? {
+                        return Ok(true);
+                    }
+                } else if fs::read(&path)
+                    .map(|bytes| String::from_utf8_lossy(&bytes).contains(needle))
+                    .unwrap_or(false)
+                {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        walk(dir, needle).unwrap_or(false)
     }
 
     /// Locked env + isolated HOME for the tests that drive the real
@@ -2578,19 +2781,25 @@ mod tests {
     /// Round-50 review: the shared take-back helper's narrowed semantics,
     /// pinned directly — it deletes only while the entry still equals what
     /// THIS call wrote, so a peer rotation in the window survives, and the
-    /// `None` arms are honest no-ops. (The arm wiring — that both save arms
-    /// call it on persist failure — rides the compile-time call graph; a
-    /// hermetic persist-failure seam for the full save path does not exist,
-    /// since `atomic_write`'s staging token is pid+nanotime.)
+    /// `None` arms are honest no-ops. Post-merge P2: it also deletes only
+    /// UNOWNED entries — when a surviving record still names the reference
+    /// (the already-keyed Replace persist-failure shape), the entry is that
+    /// record's live credential and must survive even when it holds exactly
+    /// this call's value. (The arm wiring — that both save arms call it on
+    /// persist failure with the surviving record's pointer — is pinned by the
+    /// full-save fault tests below; a hermetic persist-failure seam for the
+    /// full save path does not exist, since `atomic_write`'s staging token is
+    /// pid+nanotime.)
     #[test]
     fn take_back_untouched_key_deletes_only_its_own_value() {
         let (_lock, _env, home) = locked_provider_env("take-back");
         let manager = ProviderManager::new(SystemCredentialStore::new()).expect("manager");
         let reference = CredentialReference::for_acp_provider("codex", "unit-take-back");
+        let other = CredentialReference::for_acp_provider("codex", "unit-take-back-other");
 
         // Matching value: the entry this call wrote is taken back.
         manager.credentials.set(&reference, "sk-mine").expect("set");
-        manager.take_back_untouched_key(Some(&reference), Some("sk-mine"));
+        manager.take_back_untouched_key(Some(&reference), Some("sk-mine"), None);
         assert_eq!(
             SystemCredentialStore::new().get(&reference).expect("get"),
             None,
@@ -2599,7 +2808,7 @@ mod tests {
 
         // A peer rotation replaced the value first: the peer's entry survives.
         manager.credentials.set(&reference, "sk-peer").expect("set");
-        manager.take_back_untouched_key(Some(&reference), Some("sk-mine"));
+        manager.take_back_untouched_key(Some(&reference), Some("sk-mine"), None);
         assert_eq!(
             SystemCredentialStore::new()
                 .get(&reference)
@@ -2609,9 +2818,33 @@ mod tests {
             "a peer's rotated value must be left alone"
         );
 
+        // Post-merge P2: a surviving record naming THIS reference owns the
+        // entry — the delete must not fire even on an exact value match
+        // (this call's replacement overwrote the slot before the persist
+        // failed; the surviving record keeps advertising it).
+        manager.take_back_untouched_key(Some(&reference), Some("sk-peer"), Some(&reference));
+        assert_eq!(
+            SystemCredentialStore::new()
+                .get(&reference)
+                .expect("get")
+                .as_deref(),
+            Some("sk-peer"),
+            "an entry a surviving record names must never be taken back"
+        );
+
+        // A surviving owner naming a DIFFERENT reference shields nothing:
+        // only the pointer the record actually names is owned.
+        manager.take_back_untouched_key(Some(&reference), Some("sk-peer"), Some(&other));
+        assert_eq!(
+            SystemCredentialStore::new().get(&reference).expect("get"),
+            None,
+            "an entry the surviving owner does not name is still reclaimed"
+        );
+
         // The `None` arms (nothing written / no recorded value) are no-ops.
-        manager.take_back_untouched_key(None, Some("sk-peer"));
-        manager.take_back_untouched_key(Some(&reference), None);
+        manager.credentials.set(&reference, "sk-peer").expect("set");
+        manager.take_back_untouched_key(None, Some("sk-peer"), None);
+        manager.take_back_untouched_key(Some(&reference), None, None);
         assert_eq!(
             SystemCredentialStore::new()
                 .get(&reference)
@@ -2620,6 +2853,614 @@ mod tests {
             Some("sk-peer"),
         );
         manager.credentials.delete(&reference).ok();
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// Post-merge P2 regression pin, the non-current arm: a persist-failed
+    /// Replace on an ALREADY-KEYED provider must leave the slot its
+    /// surviving record names LIVE. The reference is deterministic, so the
+    /// write overwrote that slot before the persist was attempted; the
+    /// take-back then used to delete it because the entry held exactly what
+    /// this call wrote — stranding the record's `has_credential: true` over
+    /// an emptied keychain (base kept the key). Preserve, don't reclaim: the
+    /// failed save leaves THIS call's value in the slot, which is what the
+    /// record advertises.
+    /// unix-only: the fault is a chmod-0555 providers home — the store
+    /// persist cannot stage its tmp file there while the keychain (a
+    /// subdirectory) keeps working; self-skips when the mode is not
+    /// enforced (running as root).
+    #[cfg(unix)]
+    #[test]
+    fn save_persist_failure_keeps_the_key_of_an_already_keyed_provider() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_lock, _env, home) = locked_provider_env("persist-fault-keyed");
+        let store_path = home.join("acp-providers.json");
+
+        let manager = ProviderManager::new(SystemCredentialStore::new()).expect("manager");
+        let created = manager
+            .save(
+                "codex",
+                None,
+                "Keyed Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                Some("sk-persist-fault-original".into()),
+                CredentialEditAction::Replace,
+            )
+            .expect("keyed create saves");
+        assert!(created.credential.is_some());
+
+        let original_mode = fs::metadata(&home).unwrap().permissions().mode();
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o555)).unwrap();
+        // The fault must be INDUCED before the save is meaningful: on a host
+        // that does not enforce the mode (running as root) the persist would
+        // succeed and nothing can be pinned here — skip via early return,
+        // never by treating the un-induced probe as evidence.
+        let fault_induced = fs::write(home.join(".persist-fault-probe"), b"x").is_err();
+        let result = manager.save(
+            "codex",
+            Some(&created.id),
+            "Keyed Provider".into(),
+            "https://api.example.com/v1".into(),
+            None,
+            None,
+            None,
+            ProviderWireApi::Openai,
+            Some("sk-persist-fault-replacement".into()),
+            CredentialEditAction::Replace,
+        );
+        fs::set_permissions(&home, fs::Permissions::from_mode(original_mode)).unwrap();
+        if !fault_induced {
+            let _ = fs::remove_dir_all(&home);
+            return;
+        }
+
+        result.expect_err("the persist-faulted save must fail");
+        // The record on disk is unchanged by the failed upsert and still
+        // names the slot.
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&store_path).unwrap()).unwrap();
+        let record = &file["agents"]["codex"]["providers"][0];
+        assert_eq!(record["id"], created.id.as_str());
+        assert_eq!(
+            record["credential"]["account"],
+            format!("codex:{}", created.id).as_str(),
+            "the surviving record must keep advertising its credential",
+        );
+        // The slot must hold THIS call's value — live and usable, never
+        // emptied (the original was already overwritten before the persist
+        // ran; there is nothing to roll back to).
+        assert_eq!(
+            manager
+                .api_key("codex", &created.id)
+                .expect("keychain read")
+                .as_deref(),
+            Some("sk-persist-fault-replacement"),
+            "the persist-failed Replace must not empty the slot its surviving record names",
+        );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// Post-merge P2 regression pin, the active-provider arm: same shape as
+    /// the non-current pin, but this arm also applies the vendor config and
+    /// rolls it back on the persist failure — the take-back must still not
+    /// empty the slot the surviving record names, and the returned error
+    /// must be the honest persist-failure arm. unix-only + self-skip, same
+    /// fault shape as the non-current pin.
+    #[cfg(unix)]
+    #[test]
+    fn save_persist_failure_keeps_the_active_provider_key() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_lock, _env, home) = locked_provider_env("persist-fault-active");
+        let store_path = home.join("acp-providers.json");
+
+        let manager = ProviderManager::new(SystemCredentialStore::new()).expect("manager");
+        let created = manager
+            .save(
+                "codex",
+                None,
+                "Active Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                Some("sk-persist-fault-original".into()),
+                CredentialEditAction::Replace,
+            )
+            .expect("keyed create saves");
+        manager
+            .switch("codex", &created.id)
+            .expect("switch makes the provider active");
+        assert_eq!(
+            manager.store.current("codex").as_deref(),
+            Some(created.id.as_str()),
+            "the provider must be active before the faulted save"
+        );
+
+        let original_mode = fs::metadata(&home).unwrap().permissions().mode();
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o555)).unwrap();
+        let fault_induced = fs::write(home.join(".persist-fault-probe"), b"x").is_err();
+        let result = manager.save(
+            "codex",
+            Some(&created.id),
+            "Active Provider".into(),
+            "https://api.example.com/v1".into(),
+            None,
+            None,
+            None,
+            ProviderWireApi::Openai,
+            Some("sk-persist-fault-replacement".into()),
+            CredentialEditAction::Replace,
+        );
+        fs::set_permissions(&home, fs::Permissions::from_mode(original_mode)).unwrap();
+        if !fault_induced {
+            let _ = fs::remove_dir_all(&home);
+            return;
+        }
+
+        let error = result.expect_err("the persist-faulted save must fail");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("已尝试回滚配置"),
+            "the failure must be the active arm's persist failure (config rolled back), got: {rendered}"
+        );
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&store_path).unwrap()).unwrap();
+        let record = &file["agents"]["codex"]["providers"][0];
+        assert_eq!(record["id"], created.id.as_str());
+        assert_eq!(
+            record["credential"]["account"],
+            format!("codex:{}", created.id).as_str(),
+            "the surviving record must keep advertising its credential",
+        );
+        assert_eq!(
+            manager
+                .api_key("codex", &created.id)
+                .expect("keychain read")
+                .as_deref(),
+            Some("sk-persist-fault-replacement"),
+            "the persist-failed Replace must not empty the slot its surviving record names",
+        );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// The retained cleanup under the same fault: a FIRST-CREATE write has
+    /// no surviving owner (no persisted record names the generated
+    /// reference), so the persist failure must still reclaim the just-written
+    /// key — the ownership gate must not widen the orphan window. unix-only
+    /// + self-skip, same fault shape as the keyed pins.
+    #[cfg(unix)]
+    #[test]
+    fn save_persist_failure_still_reclaims_a_first_create_orphan() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_lock, _env, home) = locked_provider_env("persist-fault-orphan");
+        let store_path = home.join("acp-providers.json");
+
+        // Bootstrap a keyed provider so the keychain subdirectory and the
+        // store file exist before the fault: the failing create's keychain
+        // write must succeed for the orphan cleanup to be its own concern
+        // (an early keychain failure would pin nothing).
+        let manager = ProviderManager::new(SystemCredentialStore::new()).expect("manager");
+        manager
+            .save(
+                "codex",
+                None,
+                "Bootstrap".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                Some("sk-persist-fault-bootstrap".into()),
+                CredentialEditAction::Replace,
+            )
+            .expect("bootstrap create saves");
+        assert!(store_path.exists());
+
+        let original_mode = fs::metadata(&home).unwrap().permissions().mode();
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o555)).unwrap();
+        let fault_induced = fs::write(home.join(".persist-fault-probe"), b"x").is_err();
+        let result = manager.save(
+            "codex",
+            None,
+            "Orphaned Create".into(),
+            "https://api.example.com/v1".into(),
+            None,
+            None,
+            None,
+            ProviderWireApi::Openai,
+            Some("sk-persist-fault-orphan".into()),
+            CredentialEditAction::Replace,
+        );
+        fs::set_permissions(&home, fs::Permissions::from_mode(original_mode)).unwrap();
+        if !fault_induced {
+            let _ = fs::remove_dir_all(&home);
+            return;
+        }
+
+        result.expect_err("the persist-faulted create must fail");
+        // The store file still holds exactly the bootstrap record.
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&store_path).unwrap()).unwrap();
+        let providers = file["agents"]["codex"]["providers"].as_array().unwrap();
+        assert_eq!(
+            providers.len(),
+            1,
+            "the failed create must not land a record"
+        );
+        // And the key it wrote is reclaimed: nothing on disk may keep the
+        // orphan alive. Walked, not path-pinned: the file secret backend's
+        // layout is the facade's concern, not this module's.
+        assert!(
+            !tree_contains_string(&home, "sk-persist-fault-orphan"),
+            "an unowned first-create key must be reclaimed on the persist failure",
+        );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// Round-1 review M2 regression pin, the non-current arm: a
+    /// persist-failed Delete must RESTORE the key its surviving record
+    /// names. The Delete destroyed the entry before the upsert was
+    /// attempted; without the restore the unchanged on-disk record keeps
+    /// advertising `has_credential: true` while `api_key()` returns None
+    /// after reload — the P2 stranding shape, with the value unrecoverable
+    /// (the restore's captured copy is the only one left). unix-only +
+    /// self-skip, same fault shape as the P2 pins.
+    #[cfg(unix)]
+    #[test]
+    fn save_persist_failure_restores_the_key_of_a_delete() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_lock, _env, home) = locked_provider_env("persist-fault-delete");
+        let store_path = home.join("acp-providers.json");
+
+        let manager = ProviderManager::new(SystemCredentialStore::new()).expect("manager");
+        let created = manager
+            .save(
+                "codex",
+                None,
+                "Keyed Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                Some("sk-persist-fault-original".into()),
+                CredentialEditAction::Replace,
+            )
+            .expect("keyed create saves");
+        assert!(created.credential.is_some());
+
+        let original_mode = fs::metadata(&home).unwrap().permissions().mode();
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o555)).unwrap();
+        let fault_induced = fs::write(home.join(".persist-fault-probe"), b"x").is_err();
+        let result = manager.save(
+            "codex",
+            Some(&created.id),
+            "Keyed Provider".into(),
+            "https://api.example.com/v1".into(),
+            None,
+            None,
+            None,
+            ProviderWireApi::Openai,
+            None,
+            CredentialEditAction::Delete,
+        );
+        fs::set_permissions(&home, fs::Permissions::from_mode(original_mode)).unwrap();
+        if !fault_induced {
+            let _ = fs::remove_dir_all(&home);
+            return;
+        }
+
+        result.expect_err("the persist-faulted delete must fail");
+        // The record on disk is unchanged by the failed upsert and still
+        // names the slot — the invariant the restore defends.
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&store_path).unwrap()).unwrap();
+        let record = &file["agents"]["codex"]["providers"][0];
+        assert_eq!(record["id"], created.id.as_str());
+        assert_eq!(
+            record["credential"]["account"],
+            format!("codex:{}", created.id).as_str(),
+            "the surviving record must keep advertising its credential",
+        );
+        assert_eq!(
+            manager
+                .api_key("codex", &created.id)
+                .expect("keychain read")
+                .as_deref(),
+            Some("sk-persist-fault-original"),
+            "the persist-failed Delete must restore the key its surviving record names",
+        );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// Round-1 review M2 regression pin, the active-provider arm: same
+    /// shape as the non-current pin, but this arm also applies the vendor
+    /// config and rolls it back on the persist failure — the restore must
+    /// ride the same arm, and the returned error must still be the honest
+    /// rollback one (the restore's failure, if it ever fired, is appended,
+    /// never substituted).
+    #[cfg(unix)]
+    #[test]
+    fn save_persist_failure_restores_the_key_of_an_active_delete() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_lock, _env, home) = locked_provider_env("persist-fault-delete-active");
+        let store_path = home.join("acp-providers.json");
+
+        let manager = ProviderManager::new(SystemCredentialStore::new()).expect("manager");
+        let created = manager
+            .save(
+                "codex",
+                None,
+                "Active Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                Some("sk-persist-fault-original".into()),
+                CredentialEditAction::Replace,
+            )
+            .expect("keyed create saves");
+        manager
+            .switch("codex", &created.id)
+            .expect("switch makes the provider active");
+
+        let original_mode = fs::metadata(&home).unwrap().permissions().mode();
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o555)).unwrap();
+        let fault_induced = fs::write(home.join(".persist-fault-probe"), b"x").is_err();
+        let result = manager.save(
+            "codex",
+            Some(&created.id),
+            "Active Provider".into(),
+            "https://api.example.com/v1".into(),
+            None,
+            None,
+            None,
+            ProviderWireApi::Openai,
+            None,
+            CredentialEditAction::Delete,
+        );
+        fs::set_permissions(&home, fs::Permissions::from_mode(original_mode)).unwrap();
+        if !fault_induced {
+            let _ = fs::remove_dir_all(&home);
+            return;
+        }
+
+        let error = result.expect_err("the persist-faulted delete must fail");
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("已尝试回滚配置"),
+            "the failure must be the active arm's persist failure (config rolled back), got: {rendered}"
+        );
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&store_path).unwrap()).unwrap();
+        let record = &file["agents"]["codex"]["providers"][0];
+        assert_eq!(record["id"], created.id.as_str());
+        assert_eq!(
+            record["credential"]["account"],
+            format!("codex:{}", created.id).as_str(),
+            "the surviving record must keep advertising its credential",
+        );
+        assert_eq!(
+            manager
+                .api_key("codex", &created.id)
+                .expect("keychain read")
+                .as_deref(),
+            Some("sk-persist-fault-original"),
+            "the persist-failed active Delete must restore the key its surviving record names",
+        );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// Round-2 review M1 regression pin: the round-1 Delete restore derived
+    /// its ownership signal from the pre-lock `existing` snapshot, and a
+    /// Delete skips the divergence guard (`written_credential` is None) — so
+    /// a peer `--delete-key` clearing the pointer inside the parked window
+    /// plus a persist failure made the restore resurrect a key the
+    /// surviving record no longer names (an invisible orphan a later
+    /// KeepExisting save would silently re-adopt). The owner must come from
+    /// the under-lock fresh record, so the restore stays silent. Gate seam
+    /// + chmod fault, same shape as the peer-clear and fault pins (unix-only,
+    /// self-skip when the mode is not enforced).
+    #[cfg(unix)]
+    #[test]
+    fn save_skips_the_delete_restore_when_a_peer_clears_the_pointer() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_lock, _env, home) = locked_provider_env("peer-clear-delete-restore");
+        let store_path = home.join("acp-providers.json");
+
+        let bootstrap = ProviderManager::new(SystemCredentialStore::new()).expect("manager");
+        let created = bootstrap
+            .save(
+                "codex",
+                None,
+                "Keyed Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                Some("sk-round2-stale-owner".into()),
+                CredentialEditAction::Replace,
+            )
+            .expect("keyed create saves");
+        assert!(created.credential.is_some());
+
+        let created_id = created.id.clone();
+        let (gate_tx, gate_rx) = std::sync::mpsc::channel::<Arc<DivergenceGate>>();
+        let worker = std::thread::spawn(move || {
+            // The worker's Delete parks between its pre-lock read (which
+            // saw the keyed record) and the under-lock fresh read — after
+            // it already captured and destroyed the keychain entry.
+            let (worker_manager, gate) =
+                ProviderManager::new_with_armed_divergence_gate(SystemCredentialStore::new());
+            gate_tx.send(gate).unwrap();
+            worker_manager.save(
+                "codex",
+                Some(&created_id),
+                "Keyed Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                None,
+                CredentialEditAction::Delete,
+            )
+        });
+
+        let gate = gate_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("worker must hand over the gate");
+        assert!(
+            gate.wait_until_arrived(std::time::Duration::from_secs(10)),
+            "the save must reach the divergence window within the deadline"
+        );
+        // The peer's `--delete-key` completes inside the window: the pointer
+        // is cleared on disk (the keychain entry is already gone — the
+        // worker's own delete removed it).
+        let mut file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&store_path).unwrap()).unwrap();
+        file["agents"]["codex"]["providers"][0]["credential"] = serde_json::Value::Null;
+        fs::write(&store_path, serde_json::to_vec_pretty(&file).unwrap()).unwrap();
+        // Fault the metadata persist while the worker is still parked, then
+        // let it proceed into the failing upsert.
+        let original_mode = fs::metadata(&home).unwrap().permissions().mode();
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o555)).unwrap();
+        let fault_induced = fs::write(home.join(".persist-fault-probe"), b"x").is_err();
+        gate.release();
+
+        let result = worker.join().unwrap();
+        fs::set_permissions(&home, fs::Permissions::from_mode(original_mode)).unwrap();
+        if !fault_induced {
+            let _ = fs::remove_dir_all(&home);
+            return;
+        }
+
+        result.expect_err("the persist-faulted delete must fail");
+        let reference = CredentialReference::for_acp_provider("codex", &created.id);
+        assert_eq!(
+            SystemCredentialStore::new()
+                .get(&reference)
+                .expect("keychain read"),
+            None,
+            "a peer-cleared pointer must not be resurrected by the Delete restore",
+        );
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&store_path).unwrap()).unwrap();
+        let record = &file["agents"]["codex"]["providers"][0];
+        assert_eq!(
+            record["credential"],
+            serde_json::Value::Null,
+            "the peer's keyless record must survive untouched",
+        );
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    /// Round-2 review M2 regression pin: the round-1 Delete restore was an
+    /// unconditional `set` — a peer Replace committing inside the parked
+    /// window (its write lands at the same deterministic reference, so the
+    /// pointer never moves and no divergence guard sees it) plus our
+    /// persist failure made the stale captured value silently revert the
+    /// peer's committed rotation. The restore must only fill a slot this
+    /// call's delete actually emptied (read-compare-write, the mirror of
+    /// the take-back's read-compare-delete).
+    #[cfg(unix)]
+    #[test]
+    fn save_skips_the_delete_restore_when_a_peer_owns_the_slot() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_lock, _env, home) = locked_provider_env("peer-replace-delete-restore");
+        let store_path = home.join("acp-providers.json");
+
+        let bootstrap = ProviderManager::new(SystemCredentialStore::new()).expect("manager");
+        let created = bootstrap
+            .save(
+                "codex",
+                None,
+                "Keyed Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                Some("sk-round2-stale-owner".into()),
+                CredentialEditAction::Replace,
+            )
+            .expect("keyed create saves");
+        assert!(created.credential.is_some());
+
+        let created_id = created.id.clone();
+        let (gate_tx, gate_rx) = std::sync::mpsc::channel::<Arc<DivergenceGate>>();
+        let worker = std::thread::spawn(move || {
+            // The worker's Delete parks after capturing and destroying the
+            // keychain entry, before the under-lock fresh read.
+            let (worker_manager, gate) =
+                ProviderManager::new_with_armed_divergence_gate(SystemCredentialStore::new());
+            gate_tx.send(gate).unwrap();
+            worker_manager.save(
+                "codex",
+                Some(&created_id),
+                "Keyed Provider".into(),
+                "https://api.example.com/v1".into(),
+                None,
+                None,
+                None,
+                ProviderWireApi::Openai,
+                None,
+                CredentialEditAction::Delete,
+            )
+        });
+
+        let gate = gate_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("worker must hand over the gate");
+        assert!(
+            gate.wait_until_arrived(std::time::Duration::from_secs(10)),
+            "the save must reach the divergence window within the deadline"
+        );
+        // The peer's Replace completes inside the window: it writes its new
+        // key into the slot the worker's delete just emptied, and its
+        // successful save leaves the on-disk pointer unchanged (the same
+        // deterministic reference) — which is exactly why no divergence
+        // guard observes the peer.
+        let reference = CredentialReference::for_acp_provider("codex", &created.id);
+        SystemCredentialStore::new()
+            .set(&reference, "sk-round2-peer-rotation")
+            .expect("peer keychain write");
+        let original_mode = fs::metadata(&home).unwrap().permissions().mode();
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o555)).unwrap();
+        let fault_induced = fs::write(home.join(".persist-fault-probe"), b"x").is_err();
+        gate.release();
+
+        let result = worker.join().unwrap();
+        fs::set_permissions(&home, fs::Permissions::from_mode(original_mode)).unwrap();
+        if !fault_induced {
+            let _ = fs::remove_dir_all(&home);
+            return;
+        }
+
+        result.expect_err("the persist-faulted delete must fail");
+        assert_eq!(
+            SystemCredentialStore::new()
+                .get(&reference)
+                .expect("keychain read")
+                .as_deref(),
+            Some("sk-round2-peer-rotation"),
+            "the restore must not clobber a peer's committed key",
+        );
+        let file: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&store_path).unwrap()).unwrap();
+        let record = &file["agents"]["codex"]["providers"][0];
+        assert_eq!(
+            record["credential"]["account"],
+            format!("codex:{}", created.id).as_str(),
+            "the surviving record keeps advertising the credential the peer owns",
+        );
         let _ = fs::remove_dir_all(&home);
     }
 
