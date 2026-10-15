@@ -30,7 +30,7 @@ use super::platform::bridge::Pinvou3Bridge;
 use crate::platform::test_support::EnvRestore;
 use deepseek_tui::AppMode;
 use deepseek_tui::core::engine::Engine;
-use deepseek_tui::core::events::Event;
+use deepseek_tui::core::events::{Event, TurnOutcomeStatus};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -208,8 +208,10 @@ async fn boot_wire_cap_engine(
 }
 
 /// 驱动一个 op 到 TurnComplete。mock 端点对任意请求回一条极短的 SSE 完成
-/// 流，turn 立即结束；工具审批（如有）自动放行。
+/// 流，turn 立即结束；工具审批（如有）自动放行。turn 必须以 Completed 收束：
+/// 请求发出后才失败的轮次不允许靠钢丝形状假绿。
 async fn drive_wire_cap_turn_to_completion(
+    label: &str,
     engine: &WireCapEngine,
     op: deepseek_tui::core::ops::Op,
 ) {
@@ -220,8 +222,8 @@ async fn drive_wire_cap_turn_to_completion(
     loop {
         let event = tokio::time::timeout_at(deadline, events.recv())
             .await
-            .expect("wire-cap turn timed out")
-            .unwrap_or_else(|| panic!("engine event channel closed"));
+            .unwrap_or_else(|_| panic!("{label}: wire-cap turn timed out"))
+            .unwrap_or_else(|| panic!("{label}: engine event channel closed"));
         match event {
             Event::ApprovalRequired { id, .. } => {
                 let approval_handle = engine.handle.clone();
@@ -229,7 +231,14 @@ async fn drive_wire_cap_turn_to_completion(
                     let _ = approval_handle.approve_tool_call(id).await;
                 });
             }
-            Event::TurnComplete { .. } => break,
+            Event::TurnComplete { status, .. } => {
+                assert_eq!(
+                    status,
+                    TurnOutcomeStatus::Completed,
+                    "{label}: turn must complete successfully for the wire asserts to be meaningful"
+                );
+                break;
+            }
             _ => {}
         }
     }
@@ -263,7 +272,7 @@ async fn run_turn_against_mock(
             false,
         )
         .expect("build wire-cap turn");
-    drive_wire_cap_turn_to_completion(&engine, op).await;
+    drive_wire_cap_turn_to_completion(label, &engine, op).await;
     engine.engine_run.abort();
     eprintln!(
         "PROBE[{label}] model={model} api_provider={:?} declared_output={expected_declared_output}",
@@ -422,12 +431,12 @@ async fn engine_self_started_edit_resend_keeps_declared_output_on_the_wire() {
             false,
         )
         .expect("build first wire-cap turn");
-    drive_wire_cap_turn_to_completion(&engine, first).await;
+    drive_wire_cap_turn_to_completion("deepseek-edit-resend/direct", &engine, first).await;
     let edit = deepseek_tui::core::ops::Op::EditLastTurn {
         new_message: "Say ok again.".to_string(),
         submission_id: Some(engine.bridge.next_submission_id()),
     };
-    drive_wire_cap_turn_to_completion(&engine, edit).await;
+    drive_wire_cap_turn_to_completion("deepseek-edit-resend/resend", &engine, edit).await;
     engine.engine_run.abort();
 
     let bodies = probe.bodies.lock().expect("wire-cap bodies").clone();
@@ -438,6 +447,10 @@ async fn engine_self_started_edit_resend_keeps_declared_output_on_the_wire() {
         bodies.len()
     );
     let resend = bodies.last().expect("edit resend request body");
+    assert!(
+        resend.contains("Say ok again."),
+        "edit resend: the last captured body must be the edited resend itself, got {resend}"
+    );
     let value: serde_json::Value =
         serde_json::from_str(resend).expect("edit resend request is JSON");
     assert_eq!(
