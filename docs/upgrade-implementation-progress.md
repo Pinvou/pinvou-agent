@@ -20,7 +20,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T08 | In progress | Protected atomic metadata publication primitives; complete business publication workflows remain pending |
 | T09 | In progress | Bounded package/native-byte inspection; complete upload, quarantine and platform qualification remain pending |
 | T17 | In progress | Protected logical workflow, private initial installation, atomic handoff and private live download resume edge; qualified check/refresh composition remains pending |
-| T20 | In progress | Actual no-update/transaction and bounded Session/download-progress acceptance/recovery plus four original HTTP batch routes; remaining Session profiles, client queue and quality contribution remain pending |
+| T20 | In progress | Actual no-update/transaction and bounded Session/download-progress/download-resume acceptance/recovery plus four original HTTP batch routes; remaining Session profiles, client queue and quality contribution remain pending |
 | T21 | In progress | Scoped quality projection/control primitives; complete quality evaluation and business composition remain pending |
 | T25 | In progress | Privacy/deduplication primitives; weekly provider configuration and complete business composition remain pending |
 | T26 | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
@@ -8397,3 +8397,89 @@ task totals remain four implemented, twelve in progress and thirty-one not
 completed or deferred. Continue authenticated original resume reception,
 shared late cursors, receipt/outbox/sealed recovery and HTTP/CLI composition,
 then the remaining task graph. Deployment remains explicitly deferred.
+
+## T20 authenticated original download resume reception (2026-10-16)
+
+This bounded increment composes the actual T17/T44 resume prerequisite with
+authenticated original event reception. It accepts the original offered/deferred
+resume event through a fixed owner, immutable receipt/outbox, shared late cursor,
+sealed recovery, explicit CLI and the existing ordered HTTP batch route. Ordinary
+download-start and progress events retain their existing owners. Original Root,
+credential and current deny checks precede receipt replay; genuinely committed
+receipts remain replayable after mutable workflow/resume capabilities disappear.
+
+Live acceptance observes the actual source Session, handoff association and
+immutable destination registration. Final readback and time/capacity checks join
+native state, receipt, outbox and T06 completion in one transaction. A private
+transaction marker preserves the live action window across savepoints and
+same-transaction owner completion, while later committed replay retains original
+permanent-receipt semantics. Historical events update only their diagnostic
+cursor. New admission may be disabled without stranding sealed recovery or
+original receipt retries. Repeated CLI initialization verifies existing state
+without changing enabled permissions.
+
+The primary passed all thirteen new actual PostgreSQL groups and three existing
+download HTTP/download owner/native resume regressions in two serial segments:
+three groups/four children in 216.952s and thirteen groups/thirty-one children in
+551.512s, totaling sixteen groups/thirty-five children with zero skips/failures.
+The four final clock cases cover top-level, open-savepoint, released-savepoint
+and same-transaction completed-owner epoch zero. Each rejects the actual final
+SQL clock change atomically, accepts the restored case and permits genuine
+next-transaction permanent replay. Capacity controls reject 4097 joined refs
+before reservation and accept the restored exact 4096 boundary. CLI crash/output
+loss and disabled-admission recovery use actual isolated database state.
+
+Complete cleared-opt-in Go tests/vet, module verification, original pins,
+formatting, server build, thirty-six working/staged source hashes, both whitespace
+checks and two new SQL byte-format checks passed. All old SQL remains unchanged.
+After a final pure test refinement, event defaults and affected vet passed again;
+production and actual PostgreSQL-test bytes remained identical. The final
+original signed Node comparison passed twenty-four mode/state/history cases in
+8.532s (actual reference subtest 7.22s).
+
+The original model's full quality head/outbox is independently checked by the
+comparison; the physical owner retains its previous bounded null contribution
+watermark. Full T21 quality writing, protected durable client queues and physical
+host qualification remain pending. Default skipped children are not integration
+evidence. No wire contract, dependency or application version changes and no
+artifact size, total/cumulative download duration or retry cap is introduced.
+The forty-seven-task totals remain four implemented, twelve in progress and
+thirty-one not completed or deferred. Full T17/T20/T44 remains open. Continue
+client request-to-ACK correlation and the remaining task graph after this batch;
+deployment remains explicitly deferred.
+
+The independent dependency role's final scoped code/test/doc audit passed with
+no remaining required findings. Its six new actual groups passed seventeen
+child cases with zero skips/failures in 370.917s. Its original signed Node 26
+comparison passed twenty-four cases in 8.799s (actual reference subtest 7.43s).
+Cleared affected defaults/vet, module verification, original pins, thirty-four
+Go files' empty formatting, thirty-six working/staged hashes, both new SQL byte
+formats, unchanged old SQL and both whitespace checks passed. All sessions,
+fixtures and worker/Go/Node processes closed before the compatibility role
+received the exclusive runtime slot. Its six-group subset is not described as
+its own thirteen-new-group run.
+
+The independent compatibility role passed its complementary seven new groups
+and three existing download HTTP/download owner/native resume regressions:
+ten actual groups, eighteen child cases, zero skips/failures in 392.186s. Its
+independently built CLI/helper exercised actual command and crash recovery.
+Its original signed Node comparison passed twenty-four cases in 8.510s (actual
+reference subtest 7.13s).
+
+Its cleared affected defaults/vet, module verification, original pins,
+thirty-four Go files' empty formatting, thirty-six frozen working/staged hashes,
+two new SQL byte formats and both whitespace checks passed. Old committed SQL
+blobs remained identical; the observed Windows checkout CRLF difference was
+verified without rewriting that file. Default skipped children are not actual
+integration evidence. Both independent scoped code/test audits pass with no
+remaining required findings. Their complementary actual subsets jointly cover
+all thirteen new groups, plus three existing regressions in the compatibility
+subset.
+All compatibility workers, fixtures, owned runtime processes and tool sessions
+closed before the exclusive runtime slot returned to the primary role.
+
+The service increment is committed and pushed as
+`100b22ea855e52ee9b7a074e4e448bb616cd0d70` on
+`codex/t20-authenticated-resume`. Both final independent documentation reviews
+passed. The client architecture guard and version consistency check passed;
+application version remains 0.10.9 and normative document versions remain 1.0.
