@@ -84,7 +84,6 @@ wait-timeout = { version = "0.2", optional = true }
 # fastembed 5+ pulls ort rc.10-rc.13 prebuilt ONNX Runtime: rc.10 macOS minos 13.3,
 # rc.11+ drops the x86_64-apple-darwin prebuilt, rc.13 needs glibc 2.38 — all violate the
 # macOS 11 / Ubuntu 22.04 (glibc 2.35) floors. Held at 4 until ort prebuilts comply.
-# See .zcode/dep-audit/rule-check-os.md (## Remediation).
 [target.'cfg(windows)'.dependencies]
 fastembed = { version = "4", optional = true, default-features = false, features = ["ort-load-dynamic"] }
 

@@ -122,6 +122,10 @@ assert.equal(
   'question cards should copy their visible question and numbered options instead of hidden JSON',
 );
 
+// marked is held at ^16.4.2: >=17 retokenizes lists (CommonMark lazy
+// continuation) so persona-card fences stop parsing and their hidden
+// prompt copies out as literal text -- a disclosure regression. Bumping
+// marked means re-verifying every concealment variant in this suite.
 const personaOnly = [
   '```persona-card',
   '{"name":"代码审查员","emoji":"🔎","description":"检查设计与副作用","body":"完整内部提示词"}',
