@@ -22,6 +22,7 @@
 mod common;
 
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 
 use common::{
     EnvGuard, HomeGuard, Isolation, assert_usage, env_lock, expect_failed, run, run_json, run_ok,
@@ -1901,6 +1902,23 @@ fn readiness_ima_without_credentials_reports_the_gui_reason() {
 // corrupted blob below is deterministically read — where the OS keyring
 // would win the namespace probe, the failure could not be induced at all.
 #[test]
+// Round-2 review M3 pin: a credential-store READ failure must degrade only
+// the credential half of the ima row — `ima_readiness_parts`' Err arm
+// re-derives the companion skill's installed flag independently (matching
+// main and the GUI), so `installed` stays true and the reason names the
+// store rather than the skill. The regression this guards (the round-1
+// M3 finding: the Err arm returning `(false, false, true)`) flipped an
+// installed `ima-skills` to absent.
+//
+// The readiness verdict itself runs in a SUBPROCESS: the credential store
+// caches one Secrets handle per service for the whole process, bound to the
+// CODEWHALE_HOME of whoever read that service first — an in-process dispatch
+// here would non-deterministically inherit a sibling test's handle and never
+// see the corrupted blob. A fresh process has an empty cache, so the
+// corrupted store read fails deterministically. The file backend is forced
+// for the same reason: where the OS keyring would win the namespace probe,
+// the failure could not be induced at all.
+#[test]
 fn readiness_ima_survives_a_credential_store_read_failure() {
     let _env = env_lock();
     let _home = HomeGuard::new(
@@ -1908,6 +1926,7 @@ fn readiness_ima_survives_a_credential_store_read_failure() {
         "readiness-ima-store-failure",
         Isolation::ProductHome,
     );
+    let codewhale_home = _home.path().join("codewhale");
     let _store_env = EnvGuard::set_values(&[
         (
             "CODEWHALE_SECRET_BACKEND",
@@ -1915,20 +1934,32 @@ fn readiness_ima_survives_a_credential_store_read_failure() {
         ),
         (
             "CODEWHALE_HOME",
-            Some(_home.path().join("codewhale").into_os_string()),
+            Some(codewhale_home.clone().into_os_string()),
         ),
     ]);
 
     run_ok(&["pinvou", "plugins", "skills", "install", "ima-skills"]);
-    let secrets = _home
-        .path()
-        .join("codewhale")
-        .join("secrets")
-        .join("secrets.json");
+    let secrets = codewhale_home.join("secrets").join("secrets.json");
     std::fs::create_dir_all(secrets.parent().unwrap()).expect("create secrets dir");
     std::fs::write(&secrets, "{corrupted blob").expect("write corrupted secrets blob");
 
-    let value = run_json(&["pinvou", "plugins", "readiness"]);
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"))
+        .args(["plugins", "readiness", "--output", "json"])
+        .env("PINVOU3_HOME", _home.path())
+        .env("CODEWHALE_SECRET_BACKEND", "file")
+        .env("CODEWHALE_HOME", &codewhale_home)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("the pinvou binary must spawn");
+    assert!(
+        output.status.success(),
+        "readiness must degrade, not fail, on a store read error: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).expect("utf8 stdout");
+    let value: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|error| panic!("json output must parse: {error}: {stdout}"));
     let ima = row_of(&value, "bundles", "bundle_id", "ima");
     assert_eq!(
         ima["installed"],
@@ -1943,21 +1974,6 @@ fn readiness_ima_survives_a_credential_store_read_failure() {
     );
     assert_eq!(ima["probe"], serde_json::json!("registry"));
 }
-
-/// OPT-IN (credential store): seeds both ima credentials through the same
-/// system store `plugins readiness` reads, pinning the two verdicts the zero
-/// state cannot reach — credentials + `ima-skills` installed → ready (the
-/// round-18 finding's red case: this used to read missing_credentials under
-/// probe:"registry"), and credentials without the companion skill →
-/// `skill_not_installed`. A non-ima neighbor row is re-checked after each
-/// phase so the seeding cannot masquerade as a broad verdict change.
-///
-/// On headless CI the store's file-backed fallback lands inside the sandboxed
-/// `CODEWHALE_HOME` (no OS keyring involved). On macOS the real login keychain
-/// serves the store; the previous values are snapshotted and restored on drop
-/// (including the panic path), the same exposure as the opt-in
-/// `tools_install_with_secret_persists_credential`.
-/// Run with: cargo test -p pinvou-cli --test plugins_contract -- --ignored
 #[test]
 #[ignore = "opt-in: needs the real system keychain / network; run with -- --ignored"]
 fn readiness_ima_ready_only_when_the_gui_would_call_it_connected() {
