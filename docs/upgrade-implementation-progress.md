@@ -20,7 +20,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T08 | In progress | Protected atomic metadata publication primitives; complete business publication workflows remain pending |
 | T09 | In progress | Bounded package/native-byte inspection; complete upload, quarantine and platform qualification remain pending |
 | T17 | In progress | Protected logical workflow and private initial installation; qualified check/refresh and handoff remain pending |
-| T20 | In progress | Actual no-update/transaction and bounded Session acceptance/recovery plus four original HTTP batch routes; other Session profiles, client queue and quality contribution remain pending |
+| T20 | In progress | Actual no-update/transaction and bounded Session/download-progress acceptance/recovery plus four original HTTP batch routes; remaining Session profiles, client queue and quality contribution remain pending |
 | T21 | In progress | Scoped quality projection/control primitives; complete quality evaluation and business composition remain pending |
 | T25 | In progress | Privacy/deduplication primitives; weekly provider configuration and complete business composition remain pending |
 | T26 | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
@@ -8045,3 +8045,139 @@ Both independent roles accept this bounded HTTP/recovery implementation. The
 47-task totals remain four implemented, twelve in progress and thirty-one not
 completed or deferred. There is no hard total/cumulative download duration or
 retry cap, and this increment makes no deployment or physical-client claim.
+
+## T20 original download progress reception (2026-10-15)
+
+This bounded increment accepts the original `download_progress` telemetry for
+available normal/forced install and silent preinstall Sessions. It composes the
+T44 protected observation and T17 logical-observation write with the actual T06
+owner, original receipt/outbox, explicit CLI provisioning/recovery and the existing
+HTTP batch routes. Activation-Session, resume/staged and task facts, client
+outbox, qualified Session creation and quality evaluation remain separate work.
+
+The four original progress labels retain their reference semantics. Confirmable
+waiting can keep the byte count; total bytes may change and source observations
+may arrive out of order. Live acceptance advances only Session sequence/revision
+and scope revision, the protected progress record and workflow revision/maximum
+original observation time. It preserves execution rights, deadlines and other workflow
+fields. Late acceptance advances the shared diagnostic cursor and receipt only.
+Ordinary late events preserve the actual progress byte floor. Session expiry
+does not stop a download; no total/cumulative duration or retry cap is introduced.
+
+Additive lifecycle/workflow observation and fixed event namespaces authenticate
+exact native definitions, ownership, migration hashes, constraints, indexes and
+direct/inherited/SET-reachable rights. The runtime has readonly native state and
+only the complete fixed reserve/apply pair. Trusted initialization installs the
+ordinary-event progress-aware overlay atomically; original SQL migration bytes
+and digests remain unchanged. Older binaries with the original exact-definition
+guard fail closed on that overlay. No mixed-version deployment is qualified.
+Repeated initialization verifies existing state and preserves an enabled pair;
+its neutral acknowledgement does not imply that existing rights were revoked.
+
+Current published Root and role deny precede global receipt replay. Existing
+receipts do not require a mutable original workflow or progress row. New events
+authenticate their complete actual association/Session/progress/cursor. A present
+inaccessible namespace cannot become an empty installation. Old sealed frames
+refresh complete progress references. Incremental reference union deduplicates
+each read set before applying the original count and whole-frame limits.
+
+The fixed owner compares complete actual state after native application and
+seals against the latest actual SQL observation, including progress readback.
+Concurrent ordinary/progress events share one sequence CAS. Partial native
+writes, stale leases, regressed/unsafe clocks and changed readback roll back
+without acknowledgement. Original retry and sealed recovery preserve permanent
+acceptance identity. The default-off HTTP admission option still allows existing
+receipt replay and registers sealed progress recovery whenever its complete
+capability is ready. A missing capability cannot strand pending progress.
+
+Protected retention uses the original maximum Session upload horizon, saturated
+at the protocol maximum safe integer. Genuine original signatures/API/model
+verification confirmed that shorter lawful credentials at the upper Session
+timestamp boundary remain valid. Trusted due-only cleanup is independent of a
+shorter current credential and cannot remove a usable byte anchor.
+
+Root's actual PostgreSQL run passed all nineteen new top-level groups with zero
+skips in 464.145s. Coverage includes six live/late mode profiles, all four HTTP
+labels, unchanged-byte waiting/source order, shared ordinary/progress sequence
+competition, both timeout orders, nineteen native catalog fault/restore controls,
+five fixed capability controls, both native post-write fences, eight final-clock
+guards, two write/readback mismatches, latest progress SQL time regression,
+permanent replay before mutable workflow, closed owner authority, admission-off
+recovery, CLI output loss, fresh-process recovery and due-only cleanup. Native
+primitive and future safe-time calculations are distinguished from authenticated
+acceptance and actual current-clock execution. Original Node differential checks
+cover thirty-four signed API/model vectors; they do not replace database tests.
+
+That nineteen-group run follows the initialization-message repair and precedes
+removing one extra final LF outside the new reception schema's definitions. The
+cleanup changes its new installation digest while preserving SQL behavior and
+all original SQL files. Final-digest checks and independent runtime evidence are
+recorded below; the earlier run is not described as a final-digest execution.
+
+On the final digest, root passed the complete cleared-opt-in Go suite, module
+verification, complete vet, original pinned bytes/inventory, all fifty Go/SQL
+frozen hashes, Go formatting, actual server build and staged/unstaged whitespace
+checks. The actual original Node/API differential group passed in 8.60s, within
+the four-group pure download run of 11.724s. Actual CLI/helper executables were
+rebuilt from these bytes. Client architecture and unchanged version 0.10.9 checks
+passed. Default skipped integrations and helpers provide no actual database,
+provider, physical-platform or deployment evidence.
+
+Root's final-digest PostgreSQL rerun passed the three relevant actual groups in
+50.849s with zero skips: native catalog fault/restoration, actual command
+provisioning/reinitialization/output loss/cleanup, and ordinary/progress receipt
+replay before an unavailable original workflow. All root sessions, helpers and
+workers closed before the dependency reviewer received the exclusive execution
+slot. The independently executed subsets below must not be described as either
+reviewer's own full nineteen-group run.
+
+The independent dependency role passed its final scoped code/test/doc audit
+without required findings or edits. Its final-digest actual PostgreSQL run
+passed thirteen top-level groups (nine new and four old Session regressions),
+with twenty-nine named child cases and zero skips in 371.028s. It covers native
+progress/workflow parity, six live/late mode profiles, complete prospective
+capacity, final native clocks/fences, actual readback mismatch, latest progress
+seal time, shared sequence CAS, both timeout orders and original Session
+rollback/sealed recovery. Its independent original Node comparison passed all
+thirty-four vectors with zero skips in 12.289s (runner elapsed 18.835s).
+
+The dependency role also passed cleared-opt-in affected defaults, affected vet,
+module verification, original pins/inventory, all forty-five Go sources' empty
+formatting, five new SQL files' single-final-LF/no-CR checks, fifty frozen
+Go/SQL hashes and both staged/unstaged whitespace checks. Original SQL remained
+unchanged. Default integration/reference/helper skips are not actual evidence.
+Every dependency-role session, child process and worker closed before the
+compatibility role received the exclusive execution slot.
+
+The compatibility role's complementary ten new actual PostgreSQL groups passed
+in 208.116s with zero top-level or child skips. They cover fixed capability and
+native catalog fault/restoration, actual CLI initialization/reinitialization and
+output loss, process death/fresh recovery, four-label HTTP/disabled-admission
+replay, trusted due cleanup, safe upper retention, copied-owner/generic-input
+refusal, sealed recovery with admission off and ordinary/progress receipt replay
+before a missing original workflow. These ten and the dependency role's nine
+new groups jointly cover the nineteen-group profile on the final digest;
+neither role executed all nineteen as its own actual run.
+
+The compatibility role passed its final scoped code/test/doc audit with no
+remaining required findings, source edits or executable rebuilds. Its actual
+Node 26 original comparison passed thirty-four vectors in 8.79s, within four
+pure download groups totaling 11.807s with zero skips. Cleared-opt-in affected
+defaults, affected vet, module verification, original pins/inventory,
+forty-five-source empty Go formatting, fifty working/staged frozen hashes,
+five SQL UTF-8/single-final-LF/no-CR checks and both whitespace checks passed.
+The default new PostgreSQL groups comprise thirteen top-level skips and six
+passing parents whose seventeen children all skip; none is actual evidence.
+Original SQL stayed unchanged. Every compatibility-role runtime/tool session,
+test worker and actual command/helper/Node child closed before returning the
+exclusive execution slot to root. Unrelated existing local services were not
+stopped or changed.
+
+Both independent roles accept this bounded download-progress increment. Root
+also updated the existing HTTP and ordinary-Session operator documents to
+describe the optional progress owner, fifth recovery registration, byte-floor
+compatibility and protected overlay. No wire contract, dependency, application
+version or download-budget change is introduced. The forty-seven-task totals
+remain four implemented, twelve in progress and thirty-one not completed or
+deferred. Full T17/T20/T44, physical client qualification and deployment remain
+uncompleted; no hard total/cumulative download duration or retry cap is added.
