@@ -1898,16 +1898,6 @@ fn readiness_ima_without_credentials_reports_the_gui_reason() {
 // main and the GUI), so `installed` stays true and the reason names the
 // store rather than the skill. The regression this guards (the round-1
 // M3 finding: the Err arm returning `(false, false, true)`) flipped an
-// installed `ima-skills` to absent. The file backend is forced so the
-// corrupted blob below is deterministically read — where the OS keyring
-// would win the namespace probe, the failure could not be induced at all.
-#[test]
-// Round-2 review M3 pin: a credential-store READ failure must degrade only
-// the credential half of the ima row — `ima_readiness_parts`' Err arm
-// re-derives the companion skill's installed flag independently (matching
-// main and the GUI), so `installed` stays true and the reason names the
-// store rather than the skill. The regression this guards (the round-1
-// M3 finding: the Err arm returning `(false, false, true)`) flipped an
 // installed `ima-skills` to absent.
 //
 // The readiness verdict itself runs in a SUBPROCESS: the credential store
@@ -1974,6 +1964,12 @@ fn readiness_ima_survives_a_credential_store_read_failure() {
     );
     assert_eq!(ima["probe"], serde_json::json!("registry"));
 }
+/// On headless CI the store's file-backed fallback lands inside the sandboxed
+/// `CODEWHALE_HOME` (no OS keyring involved). On macOS the real login keychain
+/// serves the store; the previous values are snapshotted and restored on drop
+/// (including the panic path), the same exposure as the opt-in
+/// `tools_install_with_secret_persists_credential`.
+/// Run with: cargo test -p pinvou-cli --test plugins_contract -- --ignored
 #[test]
 #[ignore = "opt-in: needs the real system keychain / network; run with -- --ignored"]
 fn readiness_ima_ready_only_when_the_gui_would_call_it_connected() {
