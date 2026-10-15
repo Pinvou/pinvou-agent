@@ -1,6 +1,6 @@
 # Pinvou CodeWhale Fork Policy
 
-> Updated: 2026-10-15. Inside the transition window after the r3 closure: the immutable tag `pinvou-v0.9.12-r3` stays pinned at its closure commit `61cb769be` while the registered head advanced to `0bc868ff0` with the 2026-10-08/09 batch and again to `480bebf61` with the 2026-10-13/14 batch (#92/#96/#101/#102/#103/#104), and to `803e672bb` with the 2026-10-14 batch (#54/#107), and to `13ee4dfd2` with #108 (2026-10-15) — the parent gitlink tracks the maintenance branch and leads the tag; `verify-public-submodule.sh` asserts the transition pinning via `TRANSITION_BASELINE`.
+> Updated: 2026-10-15. Inside the transition window after the r3 closure: the immutable tag `pinvou-v0.9.12-r3` stays pinned at its closure commit `61cb769be` while the registered head advanced to `0bc868ff0` with the 2026-10-08/09 batch and again to `480bebf61` with the 2026-10-13/14 batch (#92/#96/#101/#102/#103/#104), and to `803e672bb` with the 2026-10-14 batch (#54/#107), and again to `13ee4dfd2` with the 2026-10-15 batch (#108) — the parent gitlink tracks the maintenance branch and leads the tag; `verify-public-submodule.sh` asserts the transition pinning via `TRANSITION_BASELINE`.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md). This English page is a condensed summary; the Chinese version is the complete, authoritative process.
 
 ## Baseline

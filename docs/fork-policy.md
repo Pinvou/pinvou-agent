@@ -1,6 +1,6 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
-> 最后更新：2026-10-15（r3 收口后过渡期：不可变 tag `pinvou-v0.9.12-r3` 仍钉在其收口 `61cb769be`，登记头随 2026-10-08/09 批次前进至 `0bc868ff0`、再随 2026-10-12/13 批次前进至 `3118c36b8a`、又随 2026-10-13/14 批次（#92/#96/#101/#102/#103/#104）前进至 `480bebf61`、再随 2026-10-14 批次（#54/#107）前进至 `803e672bb`、又随 #108 前进至 `13ee4dfd2`，gitlink=维护分支头并领先 tag；`verify-public-submodule.sh` 以 `TRANSITION_BASELINE` 断言过渡期钉点）
+> 最后更新：2026-10-15（r3 收口后过渡期：不可变 tag `pinvou-v0.9.12-r3` 仍钉在其收口 `61cb769be`，登记头随 2026-10-08/09 批次前进至 `0bc868ff0`、再随 2026-10-12/13 批次前进至 `3118c36b8a`、又随 2026-10-13/14 批次（#92/#96/#101/#102/#103/#104）前进至 `480bebf61`、再随 2026-10-14 批次（#54/#107）前进至 `803e672bb`、复随 2026-10-15 批次（#108）前进至 `13ee4dfd2`，gitlink=维护分支头并领先 tag；`verify-public-submodule.sh` 以 `TRANSITION_BASELINE` 断言过渡期钉点）
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
