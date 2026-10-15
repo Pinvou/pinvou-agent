@@ -9,10 +9,11 @@
 //! sanitizer, kimi gate, download band) is imported from the pub
 //! `features::voice::contract` module instead of mirrored:
 //! - data root `$PINVOU3_HOME/asr` (`features::voice::voice_asr::asr_dir`),
-//!   engine binary per platform adapter (`sense-voice-main` on Linux,
-//!   `pinvou-asr` elsewhere), model `sense-voice-small-q4_k.gguf` (Linux/
-//!   macOS) or `sensevoice-small-q8.gguf` (Windows) with the same expected
-//!   byte size, and the same `PINVOU3_ASR_CMD` / `PINVOU3_DEEPSPEECH2_CMD` /
+//!   engine binary and model per platform adapter (`sense-voice-main` on
+//!   Linux, `pinvou-asr` + `sensevoice-small-q8.gguf` on Windows, the q4
+//!   gguf on macOS; any other target inherits the app's stub verdict, see
+//!   the divergence note in `features::voice::contract`), with the same
+//!   expected byte size, and the same `PINVOU3_ASR_CMD` / `PINVOU3_DEEPSPEECH2_CMD` /
 //!   `PADDLESPEECH_BIN` external-CLI fallback chain with the same `asr
 //!   --model --lang --input` protocol, 60 s default timeout and exit-code-6
 //!   "no speech" convention.

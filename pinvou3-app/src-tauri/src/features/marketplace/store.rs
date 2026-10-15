@@ -555,6 +555,11 @@ fn apply_display_meta(
 /// 反斜杠/首尾单引号，见 `rewrite_frontmatter_description`）——同一值在非
 /// 单技能包可存、在单技能包会被整体拒绝，这是同步能力差异使然，不是本函数的
 /// 口径不一致。
+/// 上传来源展示名的长度上限（字符数）：GUI 的 `sanitize_display_name`
+/// 与 headless CLI 的导入净化共用同一截断口径（与上面 64 字符的展示元数据
+/// 校验上限是两个不同的口径，勿混用）。
+pub const MAX_IMPORT_DISPLAY_NAME_CHARS: usize = 128;
+
 /// 展示字段值的不可见字符拒绝集：`Cc`（控制字符/换行）之外，补充对卡片标题/
 /// composer 菜单/SKILL.md 回写都有实际危害或显示异常的不可见字符——
 /// - 双向控制（U+202A–202E、U+2066–2069）：可视觉重排/隐藏文本（bidi 欺骗）；
@@ -566,11 +571,6 @@ fn apply_display_meta(
 /// （如变体选择符）不拦——宁可少拦可见字符，不误伤正常文案。
 /// `pub`：headless CLI 的 plugins 家族为共享 `bundles.json` 的导入显示名
 /// 直接复用本判定（曾因 crate-private 而逐字手抄镜像）。
-/// 上传来源展示名的长度上限（字符数）：GUI 的 `sanitize_display_name`
-/// 与 headless CLI 的导入净化共用同一截断口径（与上面 64 字符的展示元数据
-/// 校验上限是两个不同的口径，勿混用）。
-pub const MAX_IMPORT_DISPLAY_NAME_CHARS: usize = 128;
-
 pub fn is_display_unsafe_char(c: char) -> bool {
     c.is_control()
         || matches!(c,
