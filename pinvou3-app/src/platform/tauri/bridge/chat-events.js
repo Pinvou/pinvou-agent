@@ -1480,7 +1480,6 @@ function normalizeMountedCollections(value) { return pinvouSharedtauriChatEvents
   });
 
     return {
-      latestTimelineCompletion,
       authoritativeTimelineMissesKnownCompletion,
       refreshAuthoritativeTurnTimeline,
       // Called from bridge.js on session buffer eviction/deletion to cancel

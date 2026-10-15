@@ -1051,8 +1051,6 @@ async function restoreArchivedSession(id) { return pinvouSharedtauriSessions().r
       registerScheduledRunOwner,
       scheduledRunOwnerVisibleRank,
       scheduledRunOwnerPriority,
-      isProtectedScheduledRunOwner,
-      pruneScheduledRunSessionOwner,
       pruneScheduledRunSessionOwners,
       isScheduledRunTerminal,
       rememberScheduledRunOwner,
