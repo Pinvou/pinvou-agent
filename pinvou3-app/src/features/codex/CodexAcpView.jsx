@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import {
   Brain, Check, ChevronDown, FileText, FolderOpen, GitBranch, MessageSquare, Monitor, Paperclip,
@@ -76,12 +76,12 @@ import {
 // 组件与编排 hook 均来自 features/conversation。
 import { rewindUndoAvailable } from '../conversation/checkpoints.js';
 import { useRewindController } from '../conversation/useRewindController.js';
-import {
-  RewindChip,
-  RewindConfirmDialog,
-  RewindUndoChip,
-  RewindUndoConfirmDialog,
-} from '../conversation/RewindChip.jsx';
+import { RewindChip, RewindUndoChip } from '../conversation/RewindChip.jsx';
+// 回退确认弹窗懒加载（r11，与 ChatView 同款）：弹窗按需加载，不占启动预算。
+const RewindConfirmDialog = React.lazy(() => import('../conversation/RewindDialogs.jsx')
+  .then(m => ({ default: m.RewindConfirmDialog })));
+const RewindUndoConfirmDialog = React.lazy(() => import('../conversation/RewindDialogs.jsx')
+  .then(m => ({ default: m.RewindUndoConfirmDialog })));
 import { ModalShell } from '../../components/ModalShell.jsx';
 import {
   ConversationMarkdown,
@@ -4309,6 +4309,7 @@ export function CodexAcpView({
         {rewindTarget && (
           // 「回退到第 N 轮」确认弹窗：变更摘要（懒加载 diff）+ 对话截断位置 +
           // 错误如实上屏；确认后 confirmRewind 走 rewind_to_turn 编排。
+          <React.Suspense fallback={null}>
           <RewindConfirmDialog
             entry={rewindTarget}
             previewState={rewindTarget.checkpoint
@@ -4321,11 +4322,13 @@ export function CodexAcpView({
             onCancel={cancelRewind}
             onConfirm={confirmRewind}
           />
+        </React.Suspense>
         )}
         {rewindUndoEntry && (
           // 「撤销回退」轻量确认：说明将恢复代码（有绑定回滚点时）与被截掉的
           // N 轮对话；reloadFailed 时降级为「重试加载」语义。本地副本驱动，
           // 与 undoState 生命周期解耦（见状态声明处注释）。
+          <React.Suspense fallback={null}>
           <RewindUndoConfirmDialog
             state={rewindUndoEntry}
             error={rewindUndoError}
@@ -4335,6 +4338,7 @@ export function CodexAcpView({
             onCancel={cancelRewindUndo}
             onConfirm={confirmRewindUndo}
           />
+        </React.Suspense>
         )}
         {pendingBranchSwitch && (
           // 脏工作区分支切换：操作选项弹窗（自绘，Tauri WebView2 下 window.confirm 不弹）。

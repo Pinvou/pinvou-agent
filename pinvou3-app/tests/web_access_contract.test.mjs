@@ -458,7 +458,7 @@ assert.match(rustCommandBlock(commands, 'chat'),
   /if acp_pool\.is_acp\(&sid\) \{\s*return Err\(ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
   'chat() must reject ACP sessions at its own entry — deleting this gate must fail here');
 assert.match(rustCommandBlock(commands, 'chat'),
-  /if !is_scheduled && !crate::features::sessions::is_aux_session_id\(&sid\) \{\s*created_snapshot_id = super::checkpoints::create_turn_checkpoint\(/,
+  /if !is_scheduled && !crate::features::sessions::is_aux_session_id\(&sid\) \{[\s\S]{0,1000}?created_snapshot_id = super::checkpoints::create_turn_checkpoint\(/,
   'chat() must gate the pre-send snapshot on !is_scheduled (scheduled excluded) and skip zero-tool aux side-chats — reverting either leg must fail here');
 assert.match(rustCommandBlock(commands, 'accept_plan'),
   /if store\.scheduled_profile\(&session_id\)\.is_none\(\)\s*&& !crate::features::sessions::is_aux_session_id\(&session_id\)\s*\{\s*created_snapshot_id = super::checkpoints::create_turn_checkpoint\(/,
