@@ -1807,9 +1807,8 @@ mod tests {
             );
         }
 
-        // This test neither holds ENV_LOCK nor sets PINVOU3_HOME, so it must
-        // not use cleanup() — its contract requires the caller to hold the
-        // lock, and it unconditionally removes the variable. A lock-free
+        // This test neither holds ENV_LOCK nor sets PINVOU3_HOME, so it
+        // must not remove or mutate PINVOU3_HOME on its own: a lock-free
         // removal here would punch through a parallel test's lock-holding
         // window, and the dingtalk/wecom skill-gate tests then fail
         // intermittently with assertions reading the wrong root.

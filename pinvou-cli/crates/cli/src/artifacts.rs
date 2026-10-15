@@ -729,7 +729,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The mirror of `platform::path_policy` must cover every entry of both`platform::path_policy` must cover every entry of both
+    /// The mirror of `platform::path_policy` must cover every entry of both
     /// upstream lists, and must not fire on an ordinary deliverable — a
     /// too-eager substring match here would make `artifacts read` refuse
     /// normal files (`environment.md` is not `.env`).

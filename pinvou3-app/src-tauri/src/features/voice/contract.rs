@@ -17,6 +17,14 @@
 //! supervised probe), external ASR command resolution (the CLI falls through
 //! to the next env candidate), the native/external transcribe lanes, and the
 //! CLI's deterministic subset of the reasoning controls.
+//!
+//! One verdict-level divergence the CLI inherited with this module (round-3
+//! review): on targets outside linux/macOS/windows the re-exported platform
+//! adapters answer the app's stub verdicts — engine name `sense-voice-main`
+//! and a placeholder model spec (size 0, empty sha/urls), so `model_available`
+//! can never hold and `asr-install` would refuse rather than download. The
+//! CLI's old hand-rolled else-branch answered `pinvou-asr` with the real q4
+//! spec instead; every supported desktop target behaves identically to it.
 
 use std::time::Duration;
 
