@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+# End-to-end LoongArch64 (new-world, dpkg arch: loong64) release build:
+# cross toolchain -> glibc-2.38 sysroot -> knowledge server -> SenseVoice ASR
+# engine -> tauri app -> hand-assembled loong64 deb -> repack -> guards.
+# This is the script the loong64 release job calls; every step fails loudly.
+#
+# Pipeline (each stage is its own script, consumed through its documented
+# interface):
+#   1. scripts/ci-loongarch64-toolchain.sh   pinned loong64/cross-tools
+#      (gcc 14.4 / glibc 2.38) download + verify; reusable via
+#      PINVOU_LOONG64_TOOLCHAIN_PREFIX.
+#   2. scripts/ci-loongarch64-sysroot.sh     deepin beige (glibc 2.38) dev
+#      sysroot + generated CMake toolchain file; reusable via
+#      PINVOU_LOONG64_SYSROOT.
+#   3. cargo build of pinvou-knowledge-server for the exact target triple —
+#      the prebuilt-mode source of
+#      pinvou3-app/scripts/tauri/knowledge-host.js
+#      (pinvou-knowledge/target/<triple>/release/pinvou-knowledge-server).
+#   4. scripts/asr/build-sensevoice-runtime.sh --arch loongarch64, driven by
+#      the generated CMAKE_TOOLCHAIN_FILE + STRIP — output lands at
+#      src-tauri/target/linux-asr-runtime/loongarch64/sense-voice-main,
+#      where the loongarch64 overlay
+#      (config/platforms/linux/loongarch64/tauri.conf.json) and
+#      scripts/tauri/linux-asr-runtime.js prebuilt mode expect it.
+#   5. node scripts/tauri/build.js build --target loongarch64-unknown-linux-gnu
+#      with PINVOU3_LINUX_ASR_PREBUILT=1 + PINVOU3_KNOWLEDGE_HOST_PREBUILT=1
+#      (the cross-build gate in build.js requires exactly one resolution per
+#      sidecar; prebuilt keeps the overlay resource declarations, so the
+#      artifacts are packaged). Bundling is skipped via `--bundles none`
+#      (build.js translates it to the tauri CLI's --no-bundle; see step 5):
+#      tauri-bundler cannot bundle loongarch64 (its arch mapping errors on
+#      the triple) — the deb is assembled by hand in step 7.
+#   6. Stage the package-deb-loongarch64.sh contract from the locations the
+#      tauri overlays declare as resources for a cross build:
+#        usr/bin/pinvou3-tauri       <- src-tauri/target/<triple>/release/
+#                                       (cargo target dir is keyed by the
+#                                       whole triple)
+#        runtime/codex-bridge/       <- src-tauri/resources/platforms/linux/
+#                                       codex-bridge/ (build.js step 5
+#                                       prepares the loong64 node bridge)
+#        runtime/knowledge-host/     <- src-tauri/resources/platforms/linux/
+#                                       knowledge-host/ (helper script +
+#                                       the prebuilt loong64 server that
+#                                       build.js copied in)
+#        runtime/asr/sense-voice-main <- src-tauri/target/linux-asr-runtime/
+#                                       loongarch64/sense-voice-main
+#      (the asr shim + license are installed by the packaging script itself,
+#      matching the platform overlay declarations).
+#   7. scripts/package-deb-loongarch64.sh -> pinvou3_<VERSION>_loong64.deb in
+#      the bundler-conventional output dir (target/release/bundle/deb).
+#   8. scripts/repack-deb-xz.sh (gzip-6 -> xz -9, same as the amd64/arm64
+#      jobs) and scripts/check-linux-glibc-floor.sh <deb> loongarch64
+#      (default floor 2.38, deepin 23/25 + UOS V25). The elf policy itself
+#      lives in check-linux-elf-policy.sh and is invoked by the floor guard
+#      on the extracted tree — the .deb file is not an ELF, so the policy
+#      script must not be pointed at the deb directly.
+#
+# RUSTFLAGS are deliberately NOT set here: they are release-job policy (the
+# arm64 job uses -fuse-ld=lld, but the pinned cross toolchain ships NO lld —
+# only bfd ld — so the loong64 job must not copy that flag). Whatever the
+# workflow exports is inherited unchanged.
+#
+# Env knobs: PINVOU_LOONG64_TOOLCHAIN_PREFIX / PINVOU_LOONG64_SYSROOT (reuse
+# prepared trees), PINVOU_LOONG64_SYSROOT_METHOD and the mirror overrides
+# consumed by the two setup scripts, PINVOU_LOONG64_SKIP_KNOWLEDGE_BUILD /
+# PINVOU_LOONG64_SKIP_ASR_BUILD (only for debugging the tail of the
+# pipeline; the package then fails loudly on the missing sidecar unless the
+# artifact is already present from a previous run).
+#
+# Host requirements: node/npm, cargo+rustup, curl, git, cmake, perl,
+# pkg-config, dpkg-deb, readelf/file, python3 — the jammy runner image plus
+# the release job's apt list covers all of them.
+#
+# Local static check: bash -n scripts/ci-build-linux-loongarch64.sh
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+APP_DIR="$REPO_ROOT/pinvou3-app"
+SRC_TAURI="$APP_DIR/src-tauri"
+
+TRIPLE="loongarch64-unknown-linux-gnu"
+RUST_TARGET_ENV="LOONGARCH64_UNKNOWN_LINUX_GNU"
+TOOLCHAIN_ROOT_DEFAULT="$SRC_TAURI/target/loongarch64-cross-tools/loongarch64-unknown-linux-gnu"
+SYSROOT_DEFAULT="$SRC_TAURI/target/loongarch64-sysroot"
+STAGING_ROOT="$SRC_TAURI/target/loong64-staging"
+APP_BINARY="$SRC_TAURI/target/$TRIPLE/release/pinvou3-tauri"
+KNOWLEDGE_SERVER="$REPO_ROOT/pinvou-knowledge/target/$TRIPLE/release/pinvou-knowledge-server"
+ASR_ENGINE="$SRC_TAURI/target/linux-asr-runtime/loongarch64/sense-voice-main"
+DEB_OUTPUT_DIR="$SRC_TAURI/target/release/bundle/deb"
+
+fail() {
+  echo "FAIL: $*" >&2
+  exit 1
+}
+
+log() {
+  echo "[loong64-build] $*"
+}
+
+for command_name in node npm cargo rustup curl git cmake perl pkg-config \
+  dpkg-deb readelf file python3 bash; do
+  command -v "$command_name" >/dev/null || fail "missing required host command: $command_name"
+done
+
+[ -f "$REPO_ROOT/VERSION" ] || fail "repo VERSION file missing"
+[ -f "$REPO_ROOT/pinvou-knowledge/Cargo.toml" ] \
+  || fail "pinvou-knowledge is not checked out; run 'git submodule update --init --recursive' first"
+
+# ---- 1. cross toolchain ------------------------------------------------------
+toolchain_root="${PINVOU_LOONG64_TOOLCHAIN_PREFIX:-}"
+if [ -n "$toolchain_root" ] && [ ! -x "$toolchain_root/bin/$TRIPLE-gcc" ]; then
+  fail "PINVOU_LOONG64_TOOLCHAIN_PREFIX has no bin/$TRIPLE-gcc: $toolchain_root"
+fi
+if [ -z "$toolchain_root" ]; then
+  bash "$SCRIPT_DIR/ci-loongarch64-toolchain.sh"
+  toolchain_root="$TOOLCHAIN_ROOT_DEFAULT"
+fi
+TOOLCHAIN_BIN="$toolchain_root/bin"
+
+# ---- 2. deepin glibc-2.38 sysroot + CMake toolchain file ---------------------
+sysroot="${PINVOU_LOONG64_SYSROOT:-}"
+if [ -n "$sysroot" ]; then
+  [ -f "$sysroot/pinvou-loongarch64-toolchain.cmake" ] \
+    || fail "PINVOU_LOONG64_SYSROOT lacks pinvou-loongarch64-toolchain.cmake: $sysroot"
+else
+  bash "$SCRIPT_DIR/ci-loongarch64-sysroot.sh" --toolchain-prefix "$toolchain_root"
+  sysroot="$SYSROOT_DEFAULT"
+fi
+CMAKE_TOOLCHAIN_FILE="$sysroot/pinvou-loongarch64-toolchain.cmake"
+PKG_CONFIG_LIBDIR="$sysroot/usr/lib/loongarch64-linux-gnu/pkgconfig:$sysroot/usr/share/pkgconfig:$sysroot/usr/lib/pkgconfig"
+PKG_CONFIG_SYSROOT_DIR="$sysroot"
+
+# ---- cross environment (single source of truth for steps 3-6) ----------------
+# Both spellings: cc-rs/cmake-rs accept the underscore and the verbatim
+# triple form; cargo only knows the underscore form for the linker. gcc
+# resolves its bundled glibc sysroot from its own path (relocatable), so no
+# SYSROOT/--sysroot flag is needed for plain rust/cargo compilation.
+export PINVOU_LOONG64_TOOLCHAIN_PREFIX="$toolchain_root"
+export CC_loongarch64_unknown_linux_gnu="$TOOLCHAIN_BIN/$TRIPLE-gcc"
+export CC_loongarch64-unknown-linux-gnu="$TOOLCHAIN_BIN/$TRIPLE-gcc"
+export CXX_loongarch64_unknown_linux_gnu="$TOOLCHAIN_BIN/$TRIPLE-g++"
+export CXX_loongarch64-unknown-linux-gnu="$TOOLCHAIN_BIN/$TRIPLE-g++"
+export AR_loongarch64_unknown_linux_gnu="$TOOLCHAIN_BIN/$TRIPLE-gcc-ar"
+export AR_loongarch64-unknown-linux-gnu="$TOOLCHAIN_BIN/$TRIPLE-gcc-ar"
+export RANLIB_loongarch64_unknown_linux_gnu="$TOOLCHAIN_BIN/$TRIPLE-gcc-ranlib"
+export RANLIB_loongarch64-unknown-linux-gnu="$TOOLCHAIN_BIN/$TRIPLE-gcc-ranlib"
+export STRIP="$TOOLCHAIN_BIN/$TRIPLE-strip"
+export CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER="$TOOLCHAIN_BIN/$TRIPLE-gcc"
+export PKG_CONFIG_LIBDIR PKG_CONFIG_SYSROOT_DIR CMAKE_TOOLCHAIN_FILE
+
+# ---- rust target --------------------------------------------------------------
+# Run from the repo root: rustup resolves the active toolchain per directory
+# (pinvou-knowledge and src-tauri float on "stable" via their
+# rust-toolchain.toml), and the cargo builds below run from this CWD too.
+(cd "$REPO_ROOT" && rustup target add "$TRIPLE") \
+  || fail "cannot install the rust $TRIPLE std for the active toolchain"
+
+assert_loongarch_elf() {
+  local elf="$1" machine
+  [ -f "$elf" ] || fail "expected loong64 artifact missing: $elf"
+  machine="$(LC_ALL=C readelf -h "$elf" 2>/dev/null | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')"
+  [ "$machine" = "LoongArch" ] \
+    || fail "$elf is not a LoongArch64 ELF (readelf Machine: '${machine:-<none>}')"
+}
+
+# ---- 3. knowledge server (exact target triple) --------------------------------
+if [ "${PINVOU_LOONG64_SKIP_KNOWLEDGE_BUILD:-0}" = "1" ]; then
+  log "step 3: skipped by PINVOU_LOONG64_SKIP_KNOWLEDGE_BUILD (reusing an earlier build)"
+else
+  log "step 3: building pinvou-knowledge-server for $TRIPLE"
+  (cd "$REPO_ROOT" && cargo build \
+    --manifest-path "$REPO_ROOT/pinvou-knowledge/Cargo.toml" \
+    --target "$TRIPLE" --release --locked)
+fi
+assert_loongarch_elf "$KNOWLEDGE_SERVER"
+
+# ---- 4. SenseVoice ASR engine (cross cmake build) ------------------------------
+if [ "${PINVOU_LOONG64_SKIP_ASR_BUILD:-0}" = "1" ]; then
+  log "step 4: skipped by PINVOU_LOONG64_SKIP_ASR_BUILD (reusing an earlier build)"
+else
+  log "step 4: cross-building the SenseVoice engine"
+  bash "$SCRIPT_DIR/asr/build-sensevoice-runtime.sh" \
+    --output "$ASR_ENGINE" --arch loongarch64
+fi
+assert_loongarch_elf "$ASR_ENGINE"
+
+# ---- 5. tauri app cross build (no bundling: see the header) --------------------
+# build.js owns the flag translation: `--bundles none` is absorbed before the
+# tauri CLI sees it (the pinned @tauri-apps/cli 2.11.4 rejects `--bundles none`
+# at arg-parse time — verified: "error: invalid value 'none'") and becomes the
+# CLI's official `--no-bundle`, "Skip the bundling step".
+log "step 5: tauri app cross build (no bundling; the deb is hand-assembled below)"
+(
+  cd "$APP_DIR" \
+    && PINVOU3_LINUX_ASR_PREBUILT=1 \
+       PINVOU3_KNOWLEDGE_HOST_PREBUILT=1 \
+       node scripts/tauri/build.js build --target "$TRIPLE" --bundles none
+) || fail "tauri app cross build failed"
+assert_loongarch_elf "$APP_BINARY"
+
+# ---- 6. staging (package-deb-loongarch64.sh contract) ---------------------------
+log "step 6: staging the deb inputs"
+rm -rf -- "$STAGING_ROOT"
+mkdir -p "$STAGING_ROOT/usr/bin" "$STAGING_ROOT/runtime/asr"
+install -m 0755 "$APP_BINARY" "$STAGING_ROOT/usr/bin/pinvou3-tauri"
+
+bridge_dir="$SRC_TAURI/resources/platforms/linux/codex-bridge"
+[ -d "$bridge_dir" ] || fail "codex bridge runtime not prepared: $bridge_dir"
+if ! find "$bridge_dir" -type f -name node | grep -q .; then
+  fail "codex bridge runtime has no node binary (was it prepared for loong64?): $bridge_dir"
+fi
+cp -a "$bridge_dir" "$STAGING_ROOT/runtime/codex-bridge"
+
+knowledge_dir="$SRC_TAURI/resources/platforms/linux/knowledge-host"
+[ -f "$knowledge_dir/pinvou-knowledge-server" ] \
+  || fail "prebuilt knowledge server was not staged by the tauri build: $knowledge_dir/pinvou-knowledge-server"
+cp -a "$knowledge_dir" "$STAGING_ROOT/runtime/knowledge-host"
+
+install -m 0755 "$ASR_ENGINE" "$STAGING_ROOT/runtime/asr/sense-voice-main"
+
+# ---- 7. hand-assembled loong64 deb ---------------------------------------------
+log "step 7: assembling the deb"
+bash "$SCRIPT_DIR/package-deb-loongarch64.sh" --staged "$STAGING_ROOT" --output "$DEB_OUTPUT_DIR"
+
+version="$(tr -d '[:space:]' < "$REPO_ROOT/VERSION")"
+deb="$DEB_OUTPUT_DIR/pinvou3_${version}_loong64.deb"
+[ -f "$deb" ] || fail "packaging script did not produce $deb"
+
+# ---- 8. repack + guards ---------------------------------------------------------
+log "step 8: repack (xz -9) + glibc floor guard"
+bash "$SCRIPT_DIR/repack-deb-xz.sh" "$deb"
+# The floor guard extracts the deb and runs check-linux-elf-policy.sh on the
+# tree (the .deb itself is not an ELF); its third argument defaults to the
+# loongarch64 floor 2.38 (deepin 23/25 + UOS V25).
+bash "$SCRIPT_DIR/check-linux-glibc-floor.sh" "$deb" loongarch64
+
+deb_sha="$(sha256sum "$deb" | awk '{print $1}')"
+cat <<EOF
+---- ci-build-linux-loongarch64: artifacts ----
+deb: $deb
+sha256: $deb_sha
+staged root: $STAGING_ROOT
+toolchain: $toolchain_root
+sysroot: $sysroot
+# CI step exports (recompute at consumption time; see also the env blocks
+# printed by the two setup scripts):
+#   CC/CXX/AR/RANLIB_loongarch64_unknown_linux_gnu (+ verbatim-triple forms),
+#   CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER, STRIP,
+#   PKG_CONFIG_LIBDIR, PKG_CONFIG_SYSROOT_DIR, CMAKE_TOOLCHAIN_FILE
+#   (all set inside this script for its children; a workflow that runs the
+#   setup scripts directly exports the same values from their output).
+#   RUSTFLAGS stay the workflow's decision; the pinned toolchain has no lld,
+#   so the arm64 -fuse-ld=lld flag must not be copied.
+EOF
