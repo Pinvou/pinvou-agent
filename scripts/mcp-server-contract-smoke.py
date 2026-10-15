@@ -353,7 +353,8 @@ def main():
                         path.unlink()
                     time.sleep(0.05)
 
-            _threading.Thread(target=watcher, daemon=True).start()
+            watcher_thread = _threading.Thread(target=watcher, daemon=True)
+            watcher_thread.start()
             confirmed = content_json(rpc.call("tools/call", {
                 "name": "create_scheduled_task",
                 "arguments": {
@@ -366,6 +367,13 @@ def main():
             assert confirmed.get("taskName") == "晚报", confirmed
             assert confirmed.get("duplicate") is False, confirmed
             stop.set()
+            # Round-15 minor 4: the watcher must be GONE before the later
+            # journeys run — a thread descheduled between its stop-check and
+            # the spool scan could otherwise drain timeout2's record after
+            # stop.set() and flip the pending/target assertions below. The
+            # bounded join makes its lifetime deterministic.
+            watcher_thread.join(timeout=2)
+            assert not watcher_thread.is_alive(), "the fake watcher must stop"
             # 积压与在途都被排水，spool 清空、.done 留有两条标记。
             assert not list(Path(home, "task-requests", "spool").glob("*.json"))
             assert len(list(Path(home, "task-requests", "spool", ".done").glob("*.json"))) == 2
