@@ -10,19 +10,43 @@
 //! 否则「第 N 轮」在 checkpoint 卡片与回退/分叉入口之间整体错位。设计文档
 //! `docs/code-mode-改动随对话回退-设计.md` §3「移植时的修正」。
 
-use deepseek_tui::models::Message;
+use deepseek_tui::models::{ContentBlock, Message, Role};
 use deepseek_tui::user_turn_prompt_indices;
 
-/// 会话日志中的真实用户 turn 数（不含 tool_result、运行时内部信封、纯图片
-/// turn 与 pre-provenance 历史里的压缩摘要头 turn——与底座 Editable 分类
-/// 同口径）。唯一计入的运行时形态：canonical `<context_update>` 漂移增量
-/// 无 provenance 载体、按底座分类就是 Editable turn 边界（序号计数器的
-/// 存在前提，见 `count_user_turns_counts_canonical_context_update_as_era_boundary`）。
-/// checkpoint 的 turn 序号 = 本计数 + 1（当前 turn 尚未落盘时
-/// 调用）。era 由传入的完整消息列表推导；对被截段的 `removed_messages`
+/// 步数预算通知判定（评审 r10 M3）：底座把 soft landing / exhaustion 两条通知
+/// 以 ExternalUser provenance 落盘（engine.rs 硬编码，上游待修）。ExternalUser
+/// 可授权工作（`ops.rs can_authorize_work`），其 turn_meta 不带
+/// non-authoritative 标记，era 口径因此仍把它们计成 Editable turn——识别
+/// 前缀与前端双 bridge / code 车道同款镜像，统一在此剔除。
+pub fn is_step_budget_notification(message: &Message) -> bool {
+    if message.role != Role::User {
+        return false;
+    }
+    let Some(ContentBlock::Text { text, .. }) = message.content.first() else {
+        return false;
+    };
+    text.starts_with("Step budget soft landing:")
+        || text.starts_with("Your model-step budget was exhausted")
+}
+
+/// 统一口径（快照序号、回退预检、调和门、截断边界与 undo 计数）：底座 era 形
+/// `user_turn_prompt_indices` 再剔除步数预算通知。era 口径比单消息
+/// `is_user_turn_prompt` 多计入 post-provenance 历史里粘贴的压缩摘要头
+/// turn——底座文档明确 host turn 编号应统一读这一个列表（fork 分叉同一
+/// 口径）。era 由传入的完整消息列表推导；对被截段的 `removed_messages`
 /// 切片，era 取切片自身（通常不含 provenance 载体，退回宽松口径）。
+pub(crate) fn user_turn_prompt_cut_indices(messages: &[Message]) -> Vec<usize> {
+    user_turn_prompt_indices(messages)
+        .into_iter()
+        .filter(|&index| !is_step_budget_notification(&messages[index]))
+        .collect()
+}
+
+/// 会话日志中的真实用户 turn 数。checkpoint 的 turn 序号 = 本计数 + 1
+/// （当前 turn 尚未落盘时调用）。
 pub(crate) fn count_user_turns(messages: &[Message]) -> u32 {
-    user_turn_prompt_indices(messages).len() as u32
+    user_turn_prompt_cut_indices(messages).len() as u32
+}
 }
 
 /// Exact user-turn count over raw JSON messages. Headless callers (the CLI)
@@ -44,7 +68,6 @@ pub fn count_user_turns_in_json(messages: &[serde_json::Value]) -> Result<u32, s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use deepseek_tui::models::ContentBlock;
 
     fn text_message(role: &str, text: &str) -> Message {
         Message {

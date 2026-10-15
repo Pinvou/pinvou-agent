@@ -94,22 +94,21 @@ const REWOUND_TURNS_FILE: &str = "_rewound_turns.json";
 /// 防止反复回退把 sidecar 写到无限大。
 const MAX_REWIND_BACKUPS_PER_SESSION: usize = 20;
 
-/// 底座 compaction 摘要标记。底座现行标记是 `COMPACTION_SUMMARY_MARKER`
-/// （首句 "Another language model started to solve this problem"，随摘要检查点
-/// 以 `Role::User` 历史消息进入对话历史并单独存于 `compaction_summary_prompt`，
-/// 稳定 system 前缀不携带检查点——底座 `core/engine.rs`
-/// `commit_compaction_checkpoint` 与 `compaction.rs`
-/// `compaction_checkpoint_message`），定义在底座
-/// `CodeWhale/crates/tui/src/history_recognition.rs`；
-/// 本字面量是底座 v0.9.6 前的旧格式标记（`LEGACY_COMPACTION_SUMMARY_MARKER`），
-/// 现仅命中旧格式会话——现行格式的会话回退后不再触发压缩残留提示，只是不提示，
-/// 不影响回退正确性，可接受。
-const COMPACTION_SUMMARY_MARKER: &str = "Conversation Summary (Auto-Generated)";
+/// 底座 compaction 摘要标记（`CodeWhale/crates/tui/src/history_recognition.rs` 的
+/// `COMPACTION_SUMMARY_MARKER` / `LEGACY_COMPACTION_SUMMARY_MARKER`，`pub(crate)`
+/// 不可跨仓引用，app 侧用同一字面量匹配；r10 minor：此前只匹配 legacy 头，
+/// 新纪元压缩后「回退点之前发生过压缩」警告永不触发——现两条都匹配）。
+/// 漂移后果：底座改文案后这里不再命中，回退后不再提示「对话含压缩摘要残留」——
+/// 只是不提示，不影响回退正确性，可接受。
+const COMPACTION_SUMMARY_MARKERS: [&str; 2] = [
+    "Another language model started to solve this problem",
+    "Conversation Summary (Auto-Generated)",
+];
 
 /// 持久化的 system_prompt 是否含 compaction 摘要（截断不会触碰 system_prompt，
 /// 压缩摘要残留因此随回退一起保留，前端据此提示）。
 fn system_prompt_has_compaction_summary(system_prompt: Option<&String>) -> bool {
-    system_prompt.is_some_and(|text| text.contains(COMPACTION_SUMMARY_MARKER))
+    system_prompt.is_some_and(|text| COMPACTION_SUMMARY_MARKERS.iter().any(|m| text.contains(m)))
 }
 
 /// 一次回退被截段落的备份记录（追加进 `_rewound_turns.json`）。
@@ -318,13 +317,12 @@ impl SessionStore {
             .load_session_snapshot(id)
             .with_context(|| format!("load_session({id}) for turn rewind"))?;
 
-        // 与 code_checkpoints::count_user_turns 同一口径（其内部同为底座 era
-        // 形 user_turn_prompt_indices），保证「第 N 轮」在快照、截断、UI 三处
-        // 口径一致。era 口径比单消息 is_user_turn_prompt 多计入 post-provenance
-        // 历史里粘贴的压缩摘要头 turn——底座文档明确 host turn 编号应统一读
-        // 这一个列表（fork 分叉同一口径）。
-        let turn_prompt_indices: Vec<usize> =
-            deepseek_tui::user_turn_prompt_indices(&session.messages);
+        // 与 code_checkpoints::count_user_turns 同一口径（底座 era 形
+        // user_turn_prompt_indices 再剔除步数预算通知），保证「第 N 轮」在快照、
+        // 截断、UI 三处口径一致。era 口径比单消息 is_user_turn_prompt 多计入
+        // post-provenance 历史里粘贴的压缩摘要头 turn——底座文档明确 host
+        // turn 编号应统一读这一个列表（fork 分叉同一口径）。
+        let turn_prompt_indices: Vec<usize> = crate::features::code_checkpoints::turns::user_turn_prompt_cut_indices(&session.messages);
         let total_turns = turn_prompt_indices.len() as u32;
         if keep_turns >= total_turns {
             bail!("会话当前只有 {total_turns} 轮，无法回退到第 {keep_turns} 轮末尾（无可截内容）");
@@ -425,7 +423,8 @@ impl SessionStore {
             .manager
             .load_session_snapshot(id)
             .with_context(|| format!("load_session({id}) for rewind undo"))?;
-        let current_turns = deepseek_tui::user_turn_prompt_indices(&session.messages).len() as u32;
+        let current_turns =
+            crate::features::code_checkpoints::turns::count_user_turns(&session.messages);
         if current_turns != record.kept_turns {
             bail!(
                 "回退后已产生新轮次（当前 {current_turns} 轮，回退时为 {} 轮），不可反悔",

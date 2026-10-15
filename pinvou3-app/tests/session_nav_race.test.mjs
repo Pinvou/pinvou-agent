@@ -112,6 +112,11 @@ function loadSessionsFeature(overrides) {
 
 // ── ensureSession：再进草稿不劫持 ──────────────────────────
 
+test('switchToSessionInternal：真工厂导出为可调用函数（r10 M5——r8 事故类暴露）', () => {
+  const { api } = loadSessionsFeature();
+  assert.equal(typeof api.switchToSessionInternal, 'function',
+    'sessions 工厂必须导出可调用的 switchToSessionInternal（回退重注水接缝；r8 事故类别）');
+});
 test('invalidateSessionBuffer：真工厂导出为可调用函数且只丢缓存（r9 B1 回归锚定）', () => {
   // r8 事故：函数加了定义与共享依赖表、漏了工厂返回对象——bridge 拿到
   // undefined、typeof 守卫静默吞掉整个修复。协议套件的 Proxy 桩对 undefined

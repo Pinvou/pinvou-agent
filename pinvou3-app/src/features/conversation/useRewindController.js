@@ -210,6 +210,13 @@ export function useRewindController({
         return;
       }
       if (reloadError) {
+        // 重载失败时同样失效缓存（评审 r10 M1）：load 失败/token 中止都不会
+        // 替换缓存，buffer 停在回退前——不失效的话，切走再切回（或 A→B→A
+        // 的快路径恢复）会无限期复现陈旧时间线并续写旧 buffer。失效后任何
+        // 激活（含本弹窗的「重试加载」）都落到 durable load；若后续切回，
+        // 多付一次盘载的代价，无害。
+        const { invalidateSkippedBuffer: invalidateOnError } = depsRef.current;
+        if (typeof invalidateOnError === 'function') invalidateOnError(sessionId);
         // 回退已在后端生效：把成功结果随目标暂存（pendingNotice），重试只补
         // 重载、成功后补发提示——避免整条流走完时间线却没有「已回退」确认项。
         // 重试再失败时保留既有暂存（result 为 null 的重试路径不得覆盖）。
@@ -293,6 +300,13 @@ export function useRewindController({
         return;
       }
       if (reloadError) {
+        // 重载失败时同样失效缓存（评审 r10 M1）：load 失败/token 中止都不会
+        // 替换缓存，buffer 停在回退前——不失效的话，切走再切回（或 A→B→A
+        // 的快路径恢复）会无限期复现陈旧时间线并续写旧 buffer。失效后任何
+        // 激活（含本弹窗的「重试加载」）都落到 durable load；若后续切回，
+        // 多付一次盘载的代价，无害。
+        const { invalidateSkippedBuffer: invalidateOnError } = depsRef.current;
+        if (typeof invalidateOnError === 'function') invalidateOnError(sessionId);
         setRewindUndoEntry({ ...entry, reloadFailed: true });
         setRewindUndoError(reloadError);
         // 与回退侧对齐：刷新让 undoState 收敛（记录已消费 → null），用户取消
