@@ -46,6 +46,10 @@ name: PR Check
 #   type-check somewhere; compile-only leg mirroring the Windows CLI compile check
 #   for ready cli_rust/rust_full PRs, the matching Merge Queue combined tree, and
 #   main push (cumulative; Linux cannot type-check macOS-gated code).
+# - rust-loongarch64-check:交叉 compile-only leg:用发布 job 同一套钉死 loong64
+#   工具链 + deepin glibc-2.38 sysroot 对三个 workspace 做
+#   cargo check --target loongarch64-unknown-linux-gnu,防止目标专属 cfg/依赖
+#   静默破坏 loongarch64 构建(GitHub 无 loong64 runner,发布侧交叉构建太重)。
 # - Benchmarks stay outside product PR/MQ gates and run manually in an isolated environment.
 # - required-gate:PR 阶段汇总所有适用检查，作为唯一 required check。
 # - merge_group:按 base/head 的真实组合 diff 运行适用门禁，保证验证对象就是
@@ -346,6 +350,7 @@ jobs:
               - 'scripts/tests/test_release_arm64_policy.py'
               - 'scripts/tests/test_release_cache_policy.py'
               - 'scripts/tests/test_release_linux_floor_policy.py'
+              - 'scripts/tests/test_release_loongarch64_policy.py'
               - 'scripts/tests/test_release_manifest_probe.py'
               - 'scripts/tests/test_release_size_policy.py'
               - '.github/workflows/release-packages.yml'
@@ -2947,6 +2952,201 @@ jobs:
           cargo check --manifest-path pinvou-cli/Cargo.toml
           -p adapter-gaia --features test-support --all-targets --locked
 
+  # LoongArch64 交叉编译检查:GitHub 没有 loong64 runner,目标编译只能交叉,
+  # 而发布 job 的完整交叉构建(packaging + ASR/knowledge 交叉产物)太重,
+  # 不能每个 PR 跑——本 leg 用发布 job 同一套钉死工具链
+  # (ci-loongarch64-toolchain.sh,sha256 钉死资产;只有 bfd,无 lld)+
+  # deepin beige glibc-2.38 sysroot 把三个 workspace 对
+  # loongarch64-unknown-linux-gnu 类型检查一遍,让目标专属 cfg/依赖/链接
+  # 约束在 PR 上就红,而不是等下一次 VERSION push 的发布构建才炸。
+  # 与 macos-cli-check 同类:compile-only(check 不链接,不产出安装包)。
+  rust-loongarch64-check:
+    name: rust-loongarch64-check
+    needs: changes
+    if: >-
+      ${{
+        !cancelled() &&
+        github.event.action != 'closed' &&
+        (
+          github.event_name == 'push' ||
+          (
+            github.event_name == 'merge_group' &&
+            (
+              needs.changes.outputs.rust_full == 'true' ||
+              needs.changes.outputs.cli_rust == 'true' ||
+              needs.changes.outputs.knowledge_rust == 'true'
+            )
+          ) ||
+          (
+            github.event_name == 'pull_request' &&
+            github.event.pull_request.draft == false &&
+            (
+              needs.changes.outputs.rust_full == 'true' ||
+              needs.changes.outputs.cli_rust == 'true' ||
+              needs.changes.outputs.knowledge_rust == 'true'
+            )
+          )
+        )
+      }}
+    runs-on: ubuntu-22.04
+    # 冷缓存要交叉编译三个 workspace(含 700+ crate 的 src-tauri)加下载
+    # 工具链/sysroot,120 分钟覆盖冷编译与 runner 抖动(同 macos-cli-check
+    # 的"上限=冷编译预算"原则)。
+    timeout-minutes: 120
+    env:
+      # 工具链/sysroot 缓存路径,与 release-packages.yml 的
+      # build-linux-loongarch64 job 逐字一致(键与路径任一漂移,发布 job
+      # 就 restore 不到)。语义注意:ci-loongarch64-toolchain.sh 的 --prefix
+      # 是"接收目录"(树落在 <prefix>/<triple>),而
+      # PINVOU_LOONG64_TOOLCHAIN_PREFIX(ci-build-linux-loongarch64.sh 与
+      # ci-loongarch64-sysroot.sh 的消费约定)指"工具链根"(含 bin/)。
+      PINVOU_LOONG64_CACHE_ROOT: ${{ github.workspace }}/.pinvou-loong64-cache
+      PINVOU_LOONG64_TOOLCHAIN_PREFIX: ${{ github.workspace }}/.pinvou-loong64-cache/cross-tools/loongarch64-unknown-linux-gnu
+      PINVOU_LOONG64_SYSROOT: ${{ github.workspace }}/.pinvou-loong64-cache/sysroot
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          submodules: false
+
+      # 同 cli-test:冷交叉编译 + 工具链/sysroot 会逼近宿主 ~13 GiB。
+      - name: Prepare Rust disk capacity
+        run: |
+          sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            python3 scripts/ci-rust-disk.py
+
+      # Same policy as the other Linux Rust legs: best-effort extra memory,
+      # non-fatal; only the wrapper structure is enforced by the gate policy.
+      - name: Set up zram and swap
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
+
+      - name: Init CodeWhale submodule
+        run: git submodule update --init --recursive -- CodeWhale
+
+      # 宿主侧只需要构建脚本工具(cc/cmake/pkg-config):目标侧的
+      # webkit/gtk/soup/openssl/pipewire 头与库全部来自 glibc 2.38 sysroot
+      # (setup 步骤把 PKG_CONFIG_LIBDIR/SYSROOT_DIR 指向它)。不装 webkit
+      # 主机开发包,不跑 ci-libpipewire-build.sh(beige 已带 libpipewire
+      # 1.2.5,sysroot 头部齐全),lld 不装(钉死交叉工具链只有 bfd)。
+      # libclang: pipewire/libspa 的 bindgen 构建脚本需要(runner 镜像虽
+      # 预装,这里显式钉住);file: 交叉构建脚本与守卫脚本的宿主依赖。
+      - name: Install host build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config cmake libclang-dev file
+          # Reduce footprint at the source: orphan dependencies, apt cache packages, and index lists do not stay on the build disk.
+          sudo apt-get autoremove -y --purge
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+
+      # 工具链/sysroot 缓存:restore 在 setup 之前,save 在 setup 之后拆开写
+      # (actions/cache 没有 rust-cache 的 save-if,用 main-only 条件实现同一
+      # 配额策略:main 写、PR/MQ/发布只读;发布 job 只 restore 这两个键)。
+      # 键把 setup 脚本内容 hash 进去,脚本(钉的 sha256/包清单)一变即换代,
+      # 旧代由 scripts/cache-janitor.sh 规则 E 去重。
+      - name: Restore loong64 cross toolchain cache
+        id: loong64-toolchain-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.pinvou-loong64-cache/cross-tools
+          key: release-linux-loong64-jammy-toolchain-${{ hashFiles('scripts/ci-loongarch64-toolchain.sh') }}
+          restore-keys: |
+            release-linux-loong64-jammy-toolchain-
+
+      - name: Restore loong64 sysroot cache
+        id: loong64-sysroot-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}/.pinvou-loong64-cache/sysroot
+          key: release-linux-loong64-jammy-sysroot-${{ hashFiles('scripts/ci-loongarch64-sysroot.sh') }}
+          restore-keys: |
+            release-linux-loong64-jammy-sysroot-
+
+      # Same two-step toolchain as cli-test/macos-cli-check: dtolnay only
+      # bootstraps rustup; the floating stable pinned by the three workspaces'
+      # rust-toolchain.toml must become the default so cargo invoked from the
+      # repo root with --manifest-path (and rustup target add below) uses the
+      # same toolchain as local development.
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Align the toolchain pinned by rust-toolchain.toml
+        working-directory: pinvou3-app/src-tauri
+        run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
+
+      - name: Add the loongarch64 Rust target
+        run: rustup target add loongarch64-unknown-linux-gnu
+
+      # 幂等:restore 命中时脚本自检(marker 含 tag/variant/host/sha)直接
+      # 复用,未命中时下载 + sha256 校验(sha256 钉死在脚本内)。两个脚本把
+      # "export in the CI step"导出块打到 stdout,这里截取后写入 GITHUB_ENV
+      # 供后续 cargo 步骤使用;只取下划线拼写的变量名(GITHUB_ENV 与
+      # cargo/cc-rs/cmake-rs 都认),verbatim-triple 的带横线形式被过滤。
+      - name: Set up the pinned loong64 cross toolchain (sha256-pinned asset)
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/loong64-toolchain.log"
+          bash scripts/ci-loongarch64-toolchain.sh --prefix "$PINVOU_LOONG64_CACHE_ROOT/cross-tools" | tee "$log"
+          sed -n '/export in the CI step/,/^---- notes/p' "$log" \
+            | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' >> "$GITHUB_ENV"
+
+      # sysroot 的 docker 方法需要 loong64 binfmt(本 job 不注册),脚本 auto
+      # 探测失败后自动回退 deepin beige 索引直连方法(逐包 sha256 校验)。
+      - name: Set up the deepin glibc-2.38 loong64 sysroot
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/loong64-sysroot.log"
+          bash scripts/ci-loongarch64-sysroot.sh \
+            --output "$PINVOU_LOONG64_SYSROOT" \
+            --toolchain-prefix "$PINVOU_LOONG64_TOOLCHAIN_PREFIX" | tee "$log"
+          sed -n '/export in the CI step/,/^---- notes/p' "$log" \
+            | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' >> "$GITHUB_ENV"
+
+      # 缓存保存:仅 main push(setup 脚本自校验失败即 step 红,不会保存
+      # 半成品;cache-hit 时无需重写同一键)。
+      - name: Save loong64 cross toolchain cache
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.loong64-toolchain-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.pinvou-loong64-cache/cross-tools
+          key: release-linux-loong64-jammy-toolchain-${{ hashFiles('scripts/ci-loongarch64-toolchain.sh') }}
+
+      - name: Save loong64 sysroot cache
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.loong64-sysroot-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.pinvou-loong64-cache/sysroot
+          key: release-linux-loong64-jammy-sysroot-${{ hashFiles('scripts/ci-loongarch64-sysroot.sh') }}
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          # 三个 workspace 的交叉产物共享一份缓存(交叉 target 目录都在各自
+          # workspace 的 target 下;工具链/sysroot 在 target 之外,不被吞)。
+          # 独立 shared-key 避免与宿主架构缓存互相污染;main-only 保存,
+          # PR/MQ 走前缀回退,同 cli-test/macos-cli-check。
+          workspaces: |
+            pinvou3-app/src-tauri
+            pinvou-knowledge
+            pinvou-cli
+          shared-key: rust-loongarch64-check
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # --locked:与所有 Rust leg 相同,锁文件即构建输入。check 不链接,
+      # 但 -sys crate 的 build script 会真实交叉编译 C(消费上面导出的
+      # CC_/CARGO_TARGET_*_LINKER/PKG_CONFIG_*/CMAKE_TOOLCHAIN_FILE)。
+      - name: cargo check src-tauri (loongarch64 cross)
+        run: cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml --target loongarch64-unknown-linux-gnu --locked
+
+      - name: cargo check pinvou-knowledge (loongarch64 cross)
+        run: cargo check --manifest-path pinvou-knowledge/Cargo.toml --target loongarch64-unknown-linux-gnu --locked
+
+      - name: cargo check pinvou-cli (loongarch64 cross)
+        run: cargo check --manifest-path pinvou-cli/Cargo.toml --workspace --target loongarch64-unknown-linux-gnu --locked
+
   required-gate:
     name: required-gate
     needs:
@@ -2966,6 +3166,7 @@ jobs:
       - macos-rust-check
       - macos-codex-runtime-test
       - macos-cli-check
+      - rust-loongarch64-check
       - windows-codex-runtime-test
       - windows-rustup-repair-test
     if: ${{ always() && ((github.event_name == 'pull_request' && github.event.action != 'closed') || github.event_name == 'merge_group') }}
@@ -2997,6 +3198,7 @@ jobs:
           MACOS_RUST_CHECK_RESULT: ${{ needs.macos-rust-check.result }}
           MACOS_CODEX_RESULT: ${{ needs.macos-codex-runtime-test.result }}
           MACOS_CLI_RESULT: ${{ needs.macos-cli-check.result }}
+          RUST_LOONGARCH64_CHECK_RESULT: ${{ needs.rust-loongarch64-check.result }}
           WINDOWS_CODEX_RESULT: ${{ needs.windows-codex-runtime-test.result }}
           WINDOWS_RUSTUP_REPAIR_RESULT: ${{ needs.windows-rustup-repair-test.result }}
         run: |
@@ -3026,6 +3228,7 @@ jobs:
             "macos-rust-check:$MACOS_RUST_CHECK_RESULT" \
             "macos-codex-runtime-test:$MACOS_CODEX_RESULT" \
             "macos-cli-check:$MACOS_CLI_RESULT" \
+            "rust-loongarch64-check:$RUST_LOONGARCH64_CHECK_RESULT" \
             "windows-codex-runtime-test:$WINDOWS_CODEX_RESULT" \
             "windows-rustup-repair-test:$WINDOWS_RUSTUP_REPAIR_RESULT"; do
             name="${item%%:*}"
