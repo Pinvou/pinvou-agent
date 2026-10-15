@@ -28,6 +28,14 @@ const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_ENV_NAME_BYTES: usize = 128;
 const MAX_METADATA_ENTRIES: usize = 4096;
 const MAX_METADATA_BODY_BYTES: u64 = 2 * 1024 * 1024;
+/// reqwest's blocking default is a fresh 30s deadline per read (not a total
+/// request deadline); stated here so an upstream default change cannot silently
+/// alter the hang behavior. Stalled reads fail; slow-but-flowing transfers do
+/// not.
+const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Identifies the client to the Hub and its mirrors (replaces the `ureq/…`
+/// default UA the hf-hub client used to send).
+const HUB_USER_AGENT: &str = concat!("pinvou-adapter-gaia/", env!("CARGO_PKG_VERSION"));
 const MAX_METADATA_PATH_BYTES: usize = 512;
 const MAX_METADATA_PATH_TOTAL_BYTES: usize = 1024 * 1024;
 const MAX_INTEGRITY_MANIFEST_BYTES: u64 = 64 * 1024;
@@ -431,8 +439,13 @@ impl SnapshotDownloader for HfSnapshotDownloader {
         );
         // reqwest's default redirect policy strips the Authorization header on
         // cross-host redirects, so the bearer token only ever reaches the
-        // endpoint (and its same-host redirects).
+        // endpoint (and its same-host redirects). The timeout is reqwest
+        // blocking's own default (a fresh 30s deadline per read, not a total
+        // request deadline) stated explicitly so an upstream default change
+        // cannot silently alter the hang behavior.
         let response = reqwest::blocking::Client::builder()
+            .timeout(READ_TIMEOUT)
+            .user_agent(HUB_USER_AGENT)
             .build()
             .map_err(|_| SnapshotFetchFailure)?
             .get(&url)
@@ -505,7 +518,11 @@ fn hf_repo(repo_id: &str, revision: &str) -> Result<HfRepoHandle, ()> {
 // caps below only see post-parse values, so a hostile HF_ENDPOINT mirror must not
 // be able to force an unbounded allocation before rejection. The wire shape —
 // POST {"paths":[...]} to /api/datasets/{repo}/paths-info/{revision}, response a
-// bare array of type-tagged entries — mirrors hf-hub's own request.
+// bare array of type-tagged entries — mirrors hf-hub's own request. The `lfs`
+// object on the wire carries the content digest in `oid` (plus `size` and
+// `pointerSize`); hf-hub 1.0's `BlobLfsInfo` instead declares a `sha256` field,
+// which the endpoint never sends — the digest is therefore read from `oid` with
+// `sha256` accepted only as a redundant mirror-side cross-check.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 enum RawPathsInfoEntry {
@@ -522,8 +539,9 @@ enum RawPathsInfoEntry {
 
 #[derive(Debug, Deserialize)]
 struct RawPathsInfoLfs {
-    size: Option<u64>,
+    oid: Option<String>,
     sha256: Option<String>,
+    size: Option<u64>,
 }
 
 fn fetch_paths_info_bounded(
@@ -541,6 +559,8 @@ fn fetch_paths_info_bounded(
     // strips the Authorization header on cross-host redirects, so the bearer
     // token only ever reaches the endpoint (and its same-host redirects).
     let response = reqwest::blocking::Client::builder()
+        .timeout(READ_TIMEOUT)
+        .user_agent(HUB_USER_AGENT)
         .build()
         .map_err(|_| ())?
         .post(&url)
@@ -608,8 +628,24 @@ fn parse_hf_metadata(
             if lfs.size != Some(size) {
                 return Err(());
             }
-            let digest_text = lfs.sha256.as_deref().ok_or(())?;
-            let digest = parse_sha256(digest_text.strip_prefix("sha256:").unwrap_or(digest_text))?;
+            // The wire puts the LFS content sha256 in `lfs.oid` (optionally with
+            // a "sha256:" prefix on mirrors that copy the pointer-file shape);
+            // `sha256` is only sent by non-conforming mirrors and must agree.
+            let oid = lfs
+                .oid
+                .as_deref()
+                .map(|value| value.strip_prefix("sha256:").unwrap_or(value));
+            let sha256 = lfs
+                .sha256
+                .as_deref()
+                .map(|value| value.strip_prefix("sha256:").unwrap_or(value));
+            let digest_text = match (oid, sha256) {
+                (Some(oid), Some(sha256)) if oid == sha256 => oid,
+                (Some(oid), None) => oid,
+                (None, Some(sha256)) => sha256,
+                _ => return Err(()),
+            };
+            let digest = parse_sha256(digest_text)?;
             SnapshotFileMetadata::new(relative, size, digest)
         } else {
             let digest = parse_git_sha1(&oid)?;
@@ -2306,6 +2342,22 @@ mod review_contract_tests {
         assert!(
             parse_paths_info_body(std::io::repeat(b'x').take(MAX_METADATA_BODY_BYTES + 1)).is_err()
         );
+        // The same must hold for a body the parser would happily accept: only
+        // the pre-parse length check rejects this, so the test pins the check's
+        // placement, not just its existence.
+        let entry = format!(
+            r#"{{"type":"file","oid":"{}","size":1,"path":"f"}},"#,
+            "3".repeat(20),
+        );
+        let repetitions = (MAX_METADATA_BODY_BYTES as usize / entry.len()) + 1;
+        let mut oversized_json = String::with_capacity(repetitions * entry.len() + 2);
+        oversized_json.push('[');
+        for _ in 0..repetitions {
+            oversized_json.push_str(&entry);
+        }
+        oversized_json.pop();
+        oversized_json.push(']');
+        assert!(parse_paths_info_body(oversized_json.as_bytes()).is_err());
         // A valid under-cap wire body parses into typed entries, and entries
         // whose tag is not "file" fall into the catch-all arm instead of
         // failing deserialization (parse_hf_metadata rejects them).
@@ -2322,19 +2374,48 @@ mod review_contract_tests {
     }
 
     #[test]
+    fn paths_info_parses_real_hub_wire_lfs_entries() {
+        // Byte-for-byte shape of a live response from
+        // POST /api/datasets/{repo}/paths-info/{rev} (observed 2026-10-15 on a
+        // public LFS dataset): the content digest lives in `lfs.oid`, the lfs
+        // object also carries `pointerSize`, and the entry carries `xetHash` —
+        // unknown keys are ignored. hf-hub 1.0's own `BlobLfsInfo` declares a
+        // `sha256` field the endpoint never sends, so requiring it breaks every
+        // LFS entry; this test deserializes the real shape end-to-end.
+        let digest = "11".repeat(32);
+        let body = format!(
+            r#"[{{"type":"file","oid":"{}","size":419088,"lfs":{{"oid":"{digest}","size":419088,"pointerSize":131}},"xetHash":"{}","path":"safe/file"}}]"#,
+            "33".repeat(20),
+            "44".repeat(32),
+        );
+        let entries = parse_paths_info_body(body.as_bytes()).unwrap();
+        let requested = HashSet::from(["safe/file".to_owned()]);
+        let parsed = parse_hf_metadata(entries, &requested).unwrap();
+        assert_eq!(parsed.siblings.len(), 1);
+        assert_eq!(parsed.siblings[0].expected_sha256(), Some(&[0x11; 32]));
+    }
+
+    #[test]
     fn fetch_metadata_requires_consistent_lfs_size_and_content_digest() {
         let valid_digest = "11".repeat(32);
         let requested = HashSet::from(["safe/file".to_owned()]);
-        let lfs = |size| {
+        let lfs_with = |oid: Option<&str>, sha256: Option<&str>, size: u64| {
             Some(RawPathsInfoLfs {
+                oid: oid.map(str::to_owned),
+                sha256: sha256.map(str::to_owned),
                 size: Some(size),
-                sha256: Some(format!("sha256:{valid_digest}")),
             })
         };
+        // The wire puts the bare hex digest in lfs.oid.
         let parsed = parse_hf_metadata(
             vec![
                 tree_file("README.md", &"22".repeat(20), 3, None),
-                tree_file("safe/file", &"33".repeat(20), 7, lfs(7)),
+                tree_file(
+                    "safe/file",
+                    &"33".repeat(20),
+                    7,
+                    lfs_with(Some(valid_digest.as_str()), None, 7),
+                ),
             ],
             &requested,
         )
@@ -2350,18 +2431,20 @@ mod review_contract_tests {
             )
             .is_err()
         );
-        // LFS metadata must agree with the entry size and carry a sha256.
+        // LFS metadata must agree with the entry size and carry a digest.
         assert!(
             parse_hf_metadata(
-                vec![tree_file("safe/file", &"33".repeat(20), 7, lfs(8))],
+                vec![tree_file(
+                    "safe/file",
+                    &"33".repeat(20),
+                    7,
+                    lfs_with(Some(valid_digest.as_str()), None, 8)
+                )],
                 &requested
             )
             .is_err()
         );
-        let missing_digest = Some(RawPathsInfoLfs {
-            size: Some(7),
-            sha256: None,
-        });
+        let missing_digest = lfs_with(None, None, 7);
         assert!(
             parse_hf_metadata(
                 vec![tree_file("safe/file", &"33".repeat(20), 7, missing_digest)],
@@ -2369,6 +2452,57 @@ mod review_contract_tests {
             )
             .is_err()
         );
+        // A "sha256:"-prefixed oid (pointer-file shape some mirrors send) is
+        // accepted, a redundant sha256 that agrees is accepted, one that
+        // disagrees is rejected, and sha256 alone still works as a fallback.
+        let prefixed = format!("sha256:{valid_digest}");
+        let prefixed_parsed = parse_hf_metadata(
+            vec![tree_file(
+                "safe/file",
+                &"33".repeat(20),
+                7,
+                lfs_with(Some(prefixed.as_str()), None, 7),
+            )],
+            &requested,
+        )
+        .unwrap();
+        assert_eq!(
+            prefixed_parsed.siblings[0].expected_sha256(),
+            Some(&[0x11; 32])
+        );
+        parse_hf_metadata(
+            vec![tree_file(
+                "safe/file",
+                &"33".repeat(20),
+                7,
+                lfs_with(Some(valid_digest.as_str()), Some(valid_digest.as_str()), 7),
+            )],
+            &requested,
+        )
+        .unwrap();
+        assert!(
+            parse_hf_metadata(
+                vec![tree_file(
+                    "safe/file",
+                    &"33".repeat(20),
+                    7,
+                    lfs_with(Some(valid_digest.as_str()), Some("99".repeat(32).as_str()), 7)
+                )],
+                &requested
+            )
+            .is_err()
+        );
+        let sha_only = parse_hf_metadata(
+            vec![tree_file(
+                "safe/file",
+                &"33".repeat(20),
+                7,
+                lfs_with(None, Some(valid_digest.as_str()), 7),
+            )],
+            &requested,
+        )
+        .unwrap();
+        assert_eq!(sha_only.siblings[0].expected_sha256(), Some(&[0x11; 32]));
         // The entry count is bounded.
         let overflow = (0..MAX_METADATA_ENTRIES + 1)
             .map(|index| tree_file(&format!("f{index}"), &"44".repeat(20), 1, None))
