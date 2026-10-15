@@ -20,7 +20,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T08 | In progress | Protected atomic metadata publication primitives; complete business publication workflows remain pending |
 | T09 | In progress | Bounded package/native-byte inspection; complete upload, quarantine and platform qualification remain pending |
 | T17 | In progress | Protected logical workflow, private initial installation, atomic handoff/live download resume and private activation Session registration; qualified check/refresh composition remains pending |
-| T20 | In progress | Actual no-update/transaction and bounded Session/download-progress/download-resume acceptance/recovery, four original HTTP batch routes and supplied client request/ACK correlation; remaining Session profiles, durable client queue and quality contribution remain pending |
+| T20 | In progress | Actual no-update/transaction and bounded Session/download-progress/download-resume/activation acceptance/recovery, four original HTTP batch routes and supplied client request/ACK correlation; independent task-event acceptance, durable client queue and quality contribution remain pending |
 | T21 | In progress | Scoped quality projection/control primitives; complete quality evaluation and business composition remain pending |
 | T25 | In progress | Privacy/deduplication primitives; weekly provider configuration and complete business composition remain pending |
 | T26 | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
@@ -8625,3 +8625,111 @@ blobs, the new SQL byte format and both whitespace checks passed. All owned
 workers, fixtures, runtime processes and tool sessions closed before the primary
 received the exclusive runtime slot. Both independent scoped code/test audits
 pass; final documentation verification precedes DCO commit and push.
+
+
+## T20/T44 original activation Session event reception (2026-10-16)
+
+The separate service now has a fixed private activation owner for all eighteen
+original client preparation edges over the protected T17 registration. It checks
+original signed telemetry, current Root/role denial, immutable Session identity,
+full historical source and the applicable actual native transition. Activation
+failures preserve the complete workflow. Only staged verification requires
+current waiting eligibility; later ordinary preparation uses the original
+activation action window. Late events update only diagnostics, receipt and
+outbox. Permanent replay precedes mutable registration/waiting access, while
+current trust and original proof remain mandatory.
+
+Native transition/cursor, immutable receipt/outbox, complete readback, joined
+capacity and T06 completion share one transaction. Independent source/native
+clocks and final waiting/action/proof windows fence acceptance. CLI output loss,
+crash recovery and HTTP ordered partial commit/replay use original identities.
+An HTTP error contains no successful-prefix acknowledgements; replay reconciles
+already committed units without extending the original wire Schema. Admission
+is explicitly disabled by default; disabling it preserves sealed recovery and
+exact receipt replay.
+
+The primary's final forty-two-source service run passed seven original signed
+Node/pure groups with fifty-seven child cases (package times 8.917s/50.587s),
+including ninety-one signed activation cases. The actual PostgreSQL selection
+passed thirteen new and three existing regression groups: sixteen groups,
+thirty-four child cases, zero skips/failures, 709.019s. Cleared defaults, full
+vet, modules, pinned original contracts, server build, formatting, frozen source
+identities, all fifty-eight unchanged old SQL raw bytes/index blobs and whitespace
+passed. Defaults included 937 opt-in/default skips, which are not actual evidence.
+A further independent review gap is covered by a forty-third, test-only source:
+the corrected actual final-readback/seal test passed in 44.830s. The earlier
+forty-two production/test sources remain byte-identical; this additional test is
+not represented as a repeated full primary run.
+
+Original Node terminal recovery fields are explicitly checked against native
+semantics before comparing all remaining Session fields. The actual outbox's
+contribution marker stays null. Original model outbox/head comparisons do not
+claim the unfinished T21 owner. Qualified authorization/preparation remains an
+explicit isolated fixture bridge; source creation/consumption/staging/waiting
+and registration use actual native storage and ports. No production qualified
+issuer, physical restart/host certification or protected durable client outbox
+is claimed. Full T17/T20/T44 remains open. Totals remain four implemented,
+twelve in progress and thirty-one incomplete/deferred out of forty-seven.
+Deployment remains deferred. Downloads have no total/cumulative duration or
+retry cap; credible progress/confirmable waiting remains incomplete and only
+lost/unconfirmable progress becomes unknown.
+
+
+Both controlled working-tree mutations were decisively rejected by the new
+actual test: removing the final Go seal and moving it before the final activation
+readback each exposed incorrect successful acceptance (`errNil=true` and an
+acknowledgement). Neither red result was a compile failure or unrelated refusal.
+The exact original production bytes and staged blob were restored after each
+control. The restored actual test passed again, package 48.395s, with zero skips
+or failures. The native observation probe uses existing SELECT-only capabilities;
+it grants no extra execution privilege and leaves the clock/lease/catalog intact.
+
+
+On the final forty-three-source freeze, the primary repeated cleared defaults
+(387 groups, 783 child cases, 938 skipped opt-in/default cases, zero failures),
+full vet and both source/old-SQL identity and whitespace checks after restoring
+the two mutations. The additional skipped case is the explicitly opt-in actual
+readback test. These defaults do not represent actual integration execution.
+
+
+The independent dependency role's frozen forty-three-source original Node/pure
+selection passed seven groups and fifty-seven child cases with zero skips or
+failures (package times 9.185s/50.280s). Independently built CLI/helper binaries
+were used for all seventeen actual PostgreSQL groups: fourteen new plus three
+shared regressions, thirty-four child cases, zero skips/failures, 728.269s.
+Cleared defaults passed 387 groups and 783 child cases with 938 opt-in/default
+skips and zero failures; cached/default results are not fresh actual evidence.
+
+
+The dependency role's remaining full vet, module verification, original pins,
+server build, all forty-one Go files' empty formatting, forty-three frozen
+working/index source identities, fifty-eight previous SQL raw/index identities
+and both whitespace checks passed. Its scoped code/test audit has no remaining
+required finding. All owned fixtures, workers, Go/compiler/Node/CLI/helper
+processes and tool sessions closed before the exclusive runtime slot returned
+to the primary and then transferred to the compatibility role.
+
+
+The independent compatibility role's fresh original Node/pure selection passed
+seven groups and fifty-seven child cases with zero skips/failures (workflow
+7.453s, events 48.809s, including the ninety-one original signed cases). Its
+complementary actual selection passed ten groups: seven new focused groups and
+three existing shared regressions, nineteen child cases, zero skips/failures,
+376.561s. This is a targeted ten-group run, not another full seventeen-group run.
+It independently exercises the final-readback seal, current denial/permanent
+replay, native historical channel fence, ordinary preparation after the original
+waiting deadline, complete staged facts/fixed profile, and freshly built actual
+CLI/HTTP output-loss and partial-commit paths. Cleared defaults passed 387 groups
+and 783 child cases with 938 skips and zero failures; cached/default results are
+not fresh actual integration evidence.
+
+
+The compatibility role's full vet, module verification, original pins, server
+build, forty-one Go files' empty formatting, forty-three frozen working/index
+source identities, fifty-eight previous SQL raw/index identities, the two new
+SQL files' UTF-8/LF/single-final-LF format and both whitespace checks passed.
+Its full scoped code/test audit passes with no remaining required finding.
+All owned workers, fixtures, Go/compiler/Node/CLI/helper processes and tool
+sessions closed before the exclusive runtime slot returned to the primary.
+Both independent code/test audits pass on the same final forty-three-source
+freeze. Final documentation review precedes the DCO commit and push.
