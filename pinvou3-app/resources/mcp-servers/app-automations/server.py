@@ -842,8 +842,10 @@ def validate_message_target(sessions_dir, target):
     (the id flows into storage paths), the isolated-prefix rejection (waking
     an unattended session on a schedule is the recursion direction), and an
     existence probe so a typo fails at creation instead of failing every
-    future run. The app-side watcher and the domain layer re-check all of
-    this against the live store (the spool is not trusted)."""
+    future run. The app-side watcher re-checks charset and isolation against
+    the live store (the spool is not trusted); the domain layer additionally
+    re-probes existence — this probe is deliberately the only one before the
+    app confirms the request."""
     target = str(target or "").strip()
     if not target or len(target) > MAX_TASK_ID_LEN or not TASK_ID_RE.match(target):
         return None, "invalid target_session: %r" % (
@@ -853,11 +855,19 @@ def validate_message_target(sessions_dir, target):
             "invalid target_session: %s is an isolated or unattended session and "
             "cannot receive scheduled messages" % target
         )
-    probe = os.path.join(sessions_dir, "%s.json" % target)
-    # os.path.isfile never raises: an unreadable/missing dir just yields
-    # False, which the app-side re-check against the live store would catch
-    # anyway.
-    if not os.path.isfile(probe):
+    probe_name = "%s.json" % target
+    # Existence is judged by EXACT name, not os.path.isfile (round-15 minor
+    # 5): isfile hits the filesystem, so on a case-insensitive volume a
+    # case-variant typo ("Target001") would false-pass against a real
+    # "target001.json". Comparing against the directory listing is exact on
+    # every platform. os.listdir never raises into the caller: an
+    # unreadable/missing dir is caught below, which the app-side re-check
+    # against the live store would catch anyway.
+    try:
+        entries = os.listdir(sessions_dir)
+    except OSError:
+        return None, "target_session not found: %s" % target
+    if probe_name not in entries:
         return None, "target_session not found: %s" % target
     return target, None
 
@@ -1390,9 +1400,6 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
         # started — in the read→unlink window the watcher can re-apply and
         # publish ok:true, and the unguarded unlink deleted the SUCCESS
         # receipt (this call degrades to pending and a retry duplicates).
-        # The read-then-unlink is not atomic: the accepted at-least-once race
-        # degrades this call to the pending-timeout result, self-healing on
-        # the next retry.
         try:
             # Round-12 MAJOR-3: the stale-marker re-read goes through the
             # gated reader (regular-file + cap) like every other marker

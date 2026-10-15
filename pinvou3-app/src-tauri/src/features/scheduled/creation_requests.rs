@@ -1252,7 +1252,7 @@ fn same_file_identity(current: &std::fs::Metadata, applied: &std::fs::Metadata) 
 /// Validation-shaped domain errors (charset/isolation/caps/kind rules and
 /// missing targets) — retrying the same record can never fix them.
 fn is_permanent_domain_error(error: &str) -> bool {
-    const PERMANENT_MARKERS: [&str; 13] = [
+    const PERMANENT_MARKERS: [&str; 14] = [
         "invalid target_session",
         "cannot be blank",
         "isolated or unattended",
@@ -1265,6 +1265,11 @@ fn is_permanent_domain_error(error: &str) -> bool {
         // A permanently corrupt target can never load — poison, don't burn
         // the retry budget (round-4 minor 3).
         "could not be loaded",
+        // Round-15 minor 2: an update/delete of an UNKNOWN task surfaces the
+        // parent CRUD's wrapped read miss ("Failed to read automation …: No
+        // such file or directory") — the same permanent miss as a missing
+        // target, so it poisons at attempt 1 instead of burning the budget.
+        "No such file",
         // Round-5 minor 1: the ACP/code disposition and the kind errors are
         // permanent too — no retry can fix them.
         "ACP/code session",
@@ -3428,6 +3433,145 @@ mod tests {
             "an update-kind hostile target must poison, not apply"
         );
         assert!(!spool.join("upd-hostile.json").exists());
+    }
+
+    /// Review round-15 N2: the typo-target update poisons at attempt 1
+    /// through the LIVE drain path — "target_session not found" is a
+    /// permanent-domain marker, so the budget stays untouched, the record
+    /// leaves the spool, and the waiting MCP call gets its failure marker.
+    #[tokio::test]
+    async fn missing_target_update_poisons_at_attempt_1() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let sessions_dir = crate::platform::paths::sessions_root();
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        std::fs::write(
+            sessions_dir.join("target001.json"),
+            r#"{"schema_version":1,"metadata":{"id":"target001","title":"目标","created_at":"2026-10-15T00:00:00Z","updated_at":"2026-10-15T00:00:00Z","message_count":0,"total_tokens":0,"model":"test-model","workspace":"/tmp/target-workspace"},"messages":[],"system_prompt":null}"#,
+        )
+        .unwrap();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        // Land a real session-message task first (a chat task would die on
+        // the kind guard before the target probe).
+        std::fs::write(
+            spool.join("mk.json"),
+            spool_record_json(&[
+                ("target_session", serde_json::json!("target001")),
+                ("rrule", serde_json::json!("FREQ=ONCE;AT=2099-06-01T09:30")),
+            ]),
+        )
+        .unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        let created = state
+            .automations
+            .lock()
+            .await
+            .list_automations()
+            .unwrap()
+            .pop()
+            .expect("session-message task created");
+
+        // The typo-target retarget: existence is probed at the domain, the
+        // "not found" classification poisons on the first drain pass.
+        std::fs::write(
+            spool.join("typo.json"),
+            spool_record_json(&[
+                ("kind", serde_json::json!("update")),
+                ("task_id", serde_json::json!(created.id)),
+                ("target_session", serde_json::json!("no-such-target")),
+            ]),
+        )
+        .unwrap();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            failed_dir().join("typo.json").exists(),
+            "a missing target must quarantine on attempt 1"
+        );
+        assert!(!spool.join("typo.json").exists());
+        assert_eq!(
+            retries.attempts.get("typo.json").copied(),
+            None,
+            "attempt-1 poison must not buy retry budget"
+        );
+        assert_eq!(
+            state.task_kinds.target_session_for(&created.id).as_deref(),
+            Some("target001"),
+            "the failed retarget leaves the old target in place"
+        );
+        let marker: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(done_dir().join("typo.json")).expect("failure marker"),
+        )
+        .unwrap();
+        assert_eq!(marker["ok"], false);
+        assert!(
+            marker["error"].as_str().unwrap().contains("not found"),
+            "{marker}"
+        );
+    }
+
+    /// Review round-15 N2: an update/delete of an UNKNOWN task used to be
+    /// retry-classified (the wrapped read miss matched no marker) and burned
+    /// the whole 3-attempt budget on a permanent miss; the "No such file"
+    /// marker poisons it at attempt 1.
+    #[tokio::test]
+    async fn unknown_task_update_poisons_at_attempt_1() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(
+            spool.join("ghost.json"),
+            spool_record_json(&[
+                ("kind", serde_json::json!("update")),
+                ("task_id", serde_json::json!("nosuch99")),
+                ("name", serde_json::json!("改名")),
+            ]),
+        )
+        .unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            failed_dir().join("ghost.json").exists(),
+            "an unknown-task update must quarantine on attempt 1"
+        );
+        assert!(!spool.join("ghost.json").exists());
+        assert_eq!(
+            retries.attempts.get("ghost.json").copied(),
+            None,
+            "attempt-1 poison must not buy retry budget"
+        );
+        let marker: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(done_dir().join("ghost.json")).expect("failure marker"),
+        )
+        .unwrap();
+        assert_eq!(marker["ok"], false);
+        assert!(
+            marker["error"]
+                .as_str()
+                .unwrap()
+                .contains("scheduled task not found: nosuch99"),
+            "{marker}"
+        );
     }
 
     #[tokio::test]

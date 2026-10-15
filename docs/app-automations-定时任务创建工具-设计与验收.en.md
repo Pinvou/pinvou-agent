@@ -332,3 +332,15 @@ In the rebuilt Linux desktop, two paused fixtures had the same name and differen
 Parked terminal records and unpublished receipts do not consume apply or tail-quarantine slots. Each poll retries the identity-checked terminal move for unchanged parked records, without another domain apply; a genuine newer replacement retains its filename-scoped spent retry budget. When the bounded in-memory evidence capacity is exhausted, fresh requests stay queued until storage recovers, with a streak warning, rather than receiving a false ceiling failure. Successful evidence moves automatically release capacity without restart. Directory enumeration remains bounded; flood starvation is not solved by this change.
 
 Replacing a keyed request while the watcher is already applying the previous payload can apply both payloads. This is a separate at-least-once window even without a crash. The retry result describes its own apply and explicitly warns that the earlier request may also have applied; inspect the panel before retrying again. No exactly-once or in-flight cancellation guarantee is made.
+
+---
+
+## Mirror delta (round 15, #629)
+
+The Chinese original gained a §10 addendum (the scheduled-messages
+`session_message` task kind) after this mirror was written; the mirror
+currently covers §§1–9 only, so the header's mirror claim holds through §9.
+Until §10 is mirrored here, the authoritative English record of the
+scheduled-messages addendum is the original's §10 (written in English per
+the documentation language rule) together with the Scheduled-messages row in
+`docs/builtin-toolset-contract.md` §9.

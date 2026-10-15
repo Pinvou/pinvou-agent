@@ -1421,6 +1421,17 @@ class MessageTargetTests(unittest.TestCase):
         self.assertIsNotNone(error)
         self.assertIn("not found", error)
 
+    def test_case_variant_target_fails_the_probe(self):
+        """Round-15 minor 5: the existence probe is EXACT-NAME, not
+        isfile — on a case-insensitive volume a case-variant typo
+        ("Target001" vs a real "target001.json") would false-pass the FS
+        hit and fail only later at the domain. The listing comparison
+        rejects it right here on every platform."""
+        payload, error = self._create(target_session="Target001")
+        self.assertIsNone(payload)
+        self.assertIsNotNone(error)
+        self.assertIn("not found", error)
+
     def test_blank_target_errors_in_every_arm(self):
         """Round-5 M-E: the explicit-blank fix is pinned — create, update
         (alone and combined), and delete all error, nothing spools, and the

@@ -923,6 +923,11 @@ def main():
             assert confirmed.get("taskName") == "晚报", confirmed
             assert confirmed.get("duplicate") is False, confirmed
             stop.set()
+            # Round-15 minor 4: the watcher must be GONE before the later
+            # journeys run — a thread descheduled between its stop-check and
+            # the spool scan could otherwise drain timeout2's record after
+            # stop.set() and flip the pending/target assertions below. The
+            # bounded join makes its lifetime deterministic.
             watcher_thread.join(timeout=2)
             assert not watcher_thread.is_alive(), "fake watcher must finish before inspecting the spool"
             # 积压与在途都被排水，spool 清空、.done 留有两条标记。
