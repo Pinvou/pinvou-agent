@@ -273,8 +273,9 @@ def _steps_of(job_block):
 
 
 def _step_named(job_block, name):
-    """Return the one step whose name equals `name`; missing or duplicate
-    raises (fail closed).
+    """Return the one step whose name equals `name`.
+
+    A missing or duplicate name raises (fail closed).
     """
     matches = [text for step_name, text in _steps_of(job_block) if step_name == name]
     if len(matches) != 1:
@@ -2660,7 +2661,10 @@ class CiGatePolicyTests(unittest.TestCase):
         # 2026-10-01 stable rollover to 1.99.0 invalidated the rust-cache key
         # so PR legs recompiled both workspaces cold and the link step alone
         # consumed 180 minutes (run 36919362322).
-        self.assertIn("timeout-minutes: 240", windows_rust_test)
+        # Job-level line anchor, same discipline as the macos fold pin:
+        # a bare substring is satisfied by timeout-minutes: 2400 or by a
+        # step-level 240 while the job cap reverts.
+        self.assertIn("\n    timeout-minutes: 240\n", windows_rust_test)
 
         windows_rust_test = _without_yaml_comments(
             _extract_job_block(self.pr_workflow, "windows-rust-test")
@@ -3285,6 +3289,34 @@ class CiGatePolicyTests(unittest.TestCase):
 
         # Deployment-target parity with the release job.
         self.assertIn('MACOSX_DEPLOYMENT_TARGET: "11.0"', macos_job)
+
+    def test_cargo_deny_installs_stay_version_pinned(self):
+        # cargo-deny is a hard dependency gate on two jobs (knowledge-rust
+        # and rust-lint). install-action defaults to the tool's latest
+        # release when the version is unversioned, so an upstream CLI or
+        # lint-semantics change would flip a hard gate nondeterministically
+        # (same rationale as the cargo-shear pin). The two call sites keep
+        # in sync by comment only, so pin the exact set of live cargo-deny
+        # install lines across ALL workflow files; the value catcher is a
+        # regex, so quoted or oddly-spelled values are still collected and
+        # then fail the exact-set comparison: every spelling other than the
+        # pinned version — unversioned, a drifted patch (0.20.21 passes a
+        # count+prefix pin), a quoted value, an extra site in another
+        # workflow — fails.
+        deny_lines = []
+        for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            workflow = _without_yaml_comments(path.read_text(encoding="utf-8"))
+            for line in workflow.splitlines():
+                match = re.match(r"^\s*tool:\s*(.*cargo-deny.*)$", line)
+                if match:
+                    deny_lines.append((path.name, match.group(1).strip()))
+        self.assertEqual(
+            deny_lines,
+            [("pr-check.yml", "cargo-deny@0.20.2")] * 2,
+            "exactly the knowledge-rust and rust-lint call sites must "
+            "install cargo-deny, both at exactly the pinned version, "
+            "and no other workflow may install it at all",
+        )
 
     def test_macos_lld_linker_wiring_is_pinned(self):
         # The mac leg's lld linker wiring is easy to lose silently: a dropped

@@ -582,7 +582,7 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: Session replay auditor 测试
+      - name: Gate policy test suite (scripts/tests)
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 
       - name: Python MCP server 测试 (mcp-servers/*/test_*.py)
@@ -853,7 +853,11 @@ jobs:
         if: ${{ needs.changes.outputs.knowledge_dependencies == 'true' }}
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny
+          # Version pinned, same rationale as cargo-shear below/above:
+          # install-action defaults to latest, and upstream CLI changes
+          # (flag renames, new lint severities) would silently flip this
+          # hard gate nondeterministically.
+          tool: cargo-deny@0.20.2
 
       # 共用现有许可证/来源策略，但审计对象显式指向独立 crate。
       - name: cargo deny check
@@ -1039,7 +1043,12 @@ jobs:
         if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' && needs.changes.outputs.rust_dependencies == 'true' }}
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny
+          # Version pinned (same rationale as the cargo-shear pin): this is a
+          # hard gate on every dependency change — a floating install would
+          # let an upstream release flip its CLI or lint semantics
+          # nondeterministically. Keep in sync with the knowledge-rust
+          # cargo-deny pin.
+          tool: cargo-deny@0.20.2
       - name: cargo deny check (hard gate)
         if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' && needs.changes.outputs.rust_dependencies == 'true' }}
         working-directory: pinvou3-app/src-tauri
@@ -1774,6 +1783,13 @@ jobs:
       - name: dev profile 内存边界覆盖(codewhale-tui O0,仅本 job)
         shell: pwsh
         run: |
+          # Without Stop, Add-Content/Get-Content failures are non-terminating
+          # and the pwsh wrapper only propagates $LASTEXITCODE — a failed
+          # append would exit 0 and silently resurrect the documented 16GB
+          # rustc/LLVM OOM regression this override exists to prevent
+          # (the content-mutating sibling pwsh steps here set the same
+          # preference).
+          $ErrorActionPreference = "Stop"
           $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE ".cargo" }
           $config = Join-Path $cargoHome "config.toml"
           Add-Content -Path $config -Value @"
@@ -2438,8 +2454,9 @@ jobs:
           # pre-rotation fat entry still full-matches — only a key change
           # lets the pruned generation replace it. Cost: one cold post-merge
           # push (within the 240 cap); PR legs warm up again once that first
-          # push lands. The prune is `if: always()`, so even a run cancelled at the
-          # cap prunes before the cache-on-failure post-save — the snapshot
+          # push lands. The prune is `if: always()`, so even a run cancelled
+          # at the cap prunes before the cache-on-failure post-save — the
+          # snapshot
           # that save takes is already pruned. The cache janitor's A3 rule
           # insures the residual window where a save lands without the
           # prune having run (runner forced down mid-prune), which
