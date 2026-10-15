@@ -511,7 +511,14 @@ fn hf_repo(repo_id: &str, revision: &str) -> Result<HfRepoHandle, ()> {
 // The paths-info endpoint pins the revision in the URL, so the entries are
 // already scoped to GAIA_DATASET_REVISION; validation here only needs to enforce
 // the shape of each entry (path hygiene, size/digest presence, exact coverage of
-// the requested set).
+// the requested set). Unlike the old repo-info round-trip (whose response echoed
+// the revision and was checked against GAIA_DATASET_REVISION), paths-info
+// responses carry no revision echo, so revision binding rests on the URL segment
+// alone — a hostile HF_ENDPOINT mirror could serve metadata for another
+// revision. That mirror is already trusted with the bearer token (see
+// HfRepoHandle), and content integrity does not depend on the metadata: the
+// scored parquet is pinned by the compiled-in size/sha256 checks and every
+// downloaded file is digest-verified before it is published out of staging.
 //
 // The request is issued with a hard byte cap in front of the JSON parser instead
 // of hf-hub's `get_paths_info` (which reads the body unbounded): the entry-shape
@@ -948,10 +955,6 @@ impl<D: SnapshotDownloader> GaiaSnapshotManager<D> {
                 .find(|entry| entry.remote_path() == relative)
                 .ok_or(GaiaFetchError::DownloadFailed)?;
             self.download_one(token, staging, &relative, metadata, &mut actual_bytes)?;
-        }
-        let cache = staging.join(".hf-cache");
-        if cache.exists() {
-            fs::remove_dir_all(cache).map_err(|_| GaiaFetchError::DownloadFailed)?;
         }
         validate_snapshot_budget(staging).map_err(|_| GaiaFetchError::DownloadFailed)?;
         Ok(())
@@ -2337,14 +2340,14 @@ mod review_contract_tests {
 
     #[test]
     fn paths_info_body_read_is_bounded_and_parses_wire_entries() {
-        // A body at or over the cap is rejected before deserialization (the
-        // take() wrapper also structurally caps how far the reader is pulled).
+        // The take() wrapper bounds how far the reader is pulled ahead of the
+        // parser, and the length check rejects anything over the cap.
         assert!(
             parse_paths_info_body(std::io::repeat(b'x').take(MAX_METADATA_BODY_BYTES + 1)).is_err()
         );
-        // The same must hold for a body the parser would happily accept: only
-        // the pre-parse length check rejects this, so the test pins the check's
-        // placement, not just its existence.
+        // The same must hold for a body the parser would happily accept. This
+        // oversized-but-valid array alone would still be caught by truncation
+        // (take() cuts it mid-entry), so the decisive arm is the one below.
         let entry = format!(
             r#"{{"type":"file","oid":"{}","size":1,"path":"f"}},"#,
             "3".repeat(20),
@@ -2358,6 +2361,22 @@ mod review_contract_tests {
         oversized_json.pop();
         oversized_json.push(']');
         assert!(parse_paths_info_body(oversized_json.as_bytes()).is_err());
+        // A body of exactly cap+1 bytes that is valid JSON as a whole: take()
+        // does not truncate it, so if the length check were deleted the parser
+        // would accept it and the download would proceed on oversized
+        // metadata. This arm pins the check itself, not the truncation.
+        let single = r#"{"type":"file","oid":"3","size":1,"path":"f"}"#;
+        let framed_len = single.len() + 2; // '[' + entry + ']'
+        let padding = (MAX_METADATA_BODY_BYTES + 1) as usize - framed_len;
+        let mut exact = String::with_capacity((MAX_METADATA_BODY_BYTES + 1) as usize);
+        exact.push('[');
+        for _ in 0..padding {
+            exact.push(' ');
+        }
+        exact.push_str(single);
+        exact.push(']');
+        assert_eq!(exact.len() as u64, MAX_METADATA_BODY_BYTES + 1);
+        assert!(parse_paths_info_body(exact.as_bytes()).is_err());
         // A valid under-cap wire body parses into typed entries, and entries
         // whose tag is not "file" fall into the catch-all arm instead of
         // failing deserialization (parse_hf_metadata rejects them).
@@ -2486,7 +2505,11 @@ mod review_contract_tests {
                     "safe/file",
                     &"33".repeat(20),
                     7,
-                    lfs_with(Some(valid_digest.as_str()), Some("99".repeat(32).as_str()), 7)
+                    lfs_with(
+                        Some(valid_digest.as_str()),
+                        Some("99".repeat(32).as_str()),
+                        7
+                    )
                 )],
                 &requested
             )
