@@ -9,14 +9,36 @@
 //! `docs/code-mode-改动随对话回退-设计.md` §3「移植时的修正」）。
 
 use deepseek_tui::is_user_turn_prompt;
-use deepseek_tui::models::Message;
+use deepseek_tui::models::{ContentBlock, Message, Role};
 
 /// 会话日志中的真实用户 turn 数（不含 tool_result 与运行时内部信封）。
 /// checkpoint 的 turn 序号 = 本计数 + 1（当前 turn 尚未落盘时调用）。
+/// 步数预算通知判定（评审 r10 M3）：底座把 soft landing / exhaustion 两条通知
+/// 以 ExternalUser provenance 落盘（engine.rs 硬编码，上游待修），谓词将其
+/// 误计为用户 turn。识别前缀与前端双 bridge / code 车道同款镜像——所有
+/// 计数/截断定位点（本计数、rewind.rs 的边界枚举与 undo 计数）必须共用本
+/// 谓词，否则 keepTurns 口径分叉。
+pub fn is_step_budget_notification(message: &Message) -> bool {
+    if message.role != Role::User {
+        return false;
+    }
+    let Some(ContentBlock::Text { text, .. }) = message.content.first() else {
+        return false;
+    };
+    text.starts_with("Step budget soft landing:")
+        || text.starts_with("Your model-step budget was exhausted")
+}
+
+/// 单条消息是否计为一个用户 turn（快照序号、回退预检、调和门与截断边界的
+/// 统一口径：is_user_turn_prompt 且非步数预算通知）。
+pub(crate) fn counts_as_user_turn(message: &Message) -> bool {
+    is_user_turn_prompt(message) && !is_step_budget_notification(message)
+}
+
 pub(crate) fn count_user_turns(messages: &[Message]) -> u32 {
     messages
         .iter()
-        .filter(|message| is_user_turn_prompt(message))
+        .filter(|message| counts_as_user_turn(message))
         .count() as u32
 }
 
@@ -40,7 +62,6 @@ pub fn count_user_turns_in_json(messages: &[serde_json::Value]) -> Result<u32, s
 #[cfg(test)]
 mod tests {
     use super::*;
-    use deepseek_tui::models::ContentBlock;
 
     fn text_message(role: &str, text: &str) -> Message {
         Message {

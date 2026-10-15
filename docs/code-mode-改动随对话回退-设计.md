@@ -215,7 +215,7 @@ info/exclude——`clean -fd` 不会删除恢复中断时正在协调重试的�
 含完整消息文本的会话侧数据不进 git 对象库）。绑定会话不适用（文件在工作树
 外，模式为 no-op）。
 
-**超预算/不可读根的粘性判定（r7 M4）**：首次「不在预算内」（超限/条目超上限/读取错误）即在账本根落 `budget-disabled` 标记，此后每轮短路不再重复全树遍历（此前超限形状每条消息白付一次 20 万条目级 walk + 逐目录 canonicalize，且只有 info 日志），首次升级为 warn；标记随账本根存续，删除会话即重置。**打包硬上限（r8 M3）**：断路模式（跳过裁剪/gc）下字节回收被跳过，打包体积达 2× 预算（1GB）即拒绝新的 Turn 快照登记（该轮入口如实降级为仅对话回退；回退路径的 PreRestore 豁免——可反悔兜底不可缺席），影子库不再只增不减。
+**超预算/不可读根的粘性判定（r7 M4）**：首次「不在预算内」（超限/条目超上限/读取错误）即在账本根落 `budget-disabled` 标记，此后每轮短路不再重复全树遍历（此前超限形状每条消息白付一次 20 万条目级 walk + 逐目录 canonicalize，且只有 info 日志），首次升级为 warn；标记随账本根存续，删除会话即重置。**字节硬上限（r8 M3；r10 措辞修正）**：断路模式（跳过裁剪/gc）下字节回收被跳过，仓库字节量（total 与 packed 取大——断路后 gc 不再打包、增量以 loose 对象累积而 size-pack 冻结，r9 M3）达 2× 预算（1GB）即拒绝新的 Turn 快照登记（该轮入口如实降级为仅对话回退；回退路径的 PreRestore 豁免——可反悔兜底不可缺席），影子库不再只增不减。
 - **悬停入口的触屏可达性**：回退入口平时是淡色细线、hover 显形（桌面鼠标语义）；纯触屏无 hover，需首 tap 触发 `:hover` 再点按。鉴于 rewind 命令桌面专属（web 策略锚定测试锁定），v1 不为触屏加交互复杂度。
 - **Web 车道不支持**：rewind 直接改写本地文件，`rewind_to_turn`/`undo_last_rewind`/`rewind_undo_state`/`list_checkpoints`/`checkpoint_diff` 均未加入 web access-policy 的 allowed_commands，前端经 `canInvoke` 能力检查提前收口（不发必被拒的请求）。放行需单独评估（桌面执行语义），由 `codex_checkpoints_logic.test.mjs` 的策略断言锚定。
 - **秘密排除恒大小写不敏感，core.ignorecase 仅承载 git 原生语义**：为堵住大写秘密文件逃过 exclude 后被 restore 误删的链路（评审 B1），敏感模式自身写成大小写不敏感形式——info/exclude 用 `icase_gitignore_pattern` 展开的字符类（`[xX]`）、purge pathspec 恒带 `:(icase)`、预览过滤恒按 ASCII 折叠匹配——三层在任何文件系统上命中相同的大小写变体集合，不依赖影子仓库的 core.ignorecase。core.ignorecase 仍按 `fs_is_case_insensitive` 探测设置（每次 ensure 幂等校正），但只承载 git 原生大小写语义：不无条件强制 true，大小写敏感文件系统上强制不敏感会引发 git alias 冲突（`Makefile`/`makefile` 共存时 `add -A` 整体 fatal、别名新文件静默跳过、仅大小写改名记成空树，评审 M1）；探测后这些都不触发。alias 冲突发生时快照失败以 error 级日志显式上报（不再静默 warn）。残余取舍：大小写不敏感系统上仅大小写不同的改名对快照不可见、不随回退恢复。

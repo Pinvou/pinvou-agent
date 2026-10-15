@@ -14,7 +14,7 @@
 
 import { projectDeepSeekConversation, conversationItemsForMode, timelineDisplayError } from '../conversation/deepseek-conversation.js';
 import { annotateAgentSpawnGroups } from '../multiagent/spawn-aggregation.mjs';
-import { isInternalRuntimeEnvelopeText, isInternalUserMessage } from '../../shared/internal-message.mjs';
+import { isCompactionCarrierBlocks, isInternalRuntimeEnvelopeText, isInternalUserMessage, isStepBudgetNoticeText } from '../../shared/internal-message.mjs';
 
 // Native controls are session-owned; bridge state belongs to the separate
 // chat workspace. Only a loaded model whose controls belong to this very
@@ -768,7 +768,18 @@ export function hydrateNativeLane(lane, saved, timelineEvents = []) {
       : (typeof raw === 'string' && raw ? [{ type: 'text', text: raw }] : []);
     if (role === 'user') {
       if (isInternalUserMessage(blocks)) continue; // 内部运行时信封/交接：保留在模型上下文，不上屏
-      const text = messageText(blocks);
+      // 压缩载体与工具结果载体（评审 r10 M2）：code 车道重载不走 bridge 的
+      // rerender，此前漏掉这两类过滤——压缩+重载后序号被载体顶偏 → 调和门
+      // 永久隐藏该会话全部回退入口，且渲染裸 summary 的假用户气泡。识别
+      // 逻辑与两车道 rerender 同款（桥侧 isCompactionCarrierBlocks 的镜像：
+      // 摘要头前缀 + provenance 注释；tool_result 首块即 ToolResult-first）。
+      // 载体/工具结果消息只跳过「用户气泡」——下方 tool_result 回填必须照跑
+      // （工具卡还原靠它；continue 版本会把回填一并跳过，r10 自检抓回）。
+      const skipUserBubble = isCompactionCarrierBlocks(blocks)
+        || blocks.some(b => b && b.type === 'tool_result');
+      const text = skipUserBubble ? '' : messageText(blocks);
+      // 步数预算通知（r10 M3）：过滤气泡与 Rust 计数侧同口径。
+      if (text && isStepBudgetNoticeText(text)) continue;
       if (text) lane.items.push({ id: nextId(lane), type: 'user', text });
       for (const block of blocks) {
         if (!block || block.type !== 'tool_result') continue;
