@@ -293,6 +293,61 @@ fn normalize_root(path: &std::path::Path) -> std::path::PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// apply_restore 前的 ACP peer 最后一刻复检（评审 r7 M2 引入于 rewind 侧；
+/// r11 M3 提取为共用函数，undo 侧同款调用——正门只拦「检查时已在途」的 ACP
+/// 写入，预约→apply 之间放入的写入由本复检兜底，残余 check-then-act 窗口
+/// （复检返回→apply 启动）在 §12 如实披露）。
+async fn reject_if_acp_peer_busy_before_apply(
+    store: &SessionStore,
+    acp_pool: &AcpPool,
+    session_id: &str,
+    execution: &std::path::Path,
+    action: &str,
+) -> Result<(), String> {
+    let recheck_store = store.clone();
+    let recheck_session = session_id.to_string();
+    let recheck_execution = execution.to_path_buf();
+    let recheck_agents = acp_pool.agents().clone();
+    let recheck_store2 = store.clone();
+    let recheck_peers = tauri::async_runtime::spawn_blocking(move || {
+        peers_on_same_execution_root(
+            &recheck_store,
+            &recheck_session,
+            &recheck_execution,
+            production_execution_root_resolver(recheck_agents, recheck_store2),
+        )
+    })
+    .await
+    .map_err(|error| format!("执行前 ACP 复检任务失败: {error}"))??;
+    let recheck_ids: Vec<String> = recheck_peers
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .filter(|id| acp_pool.is_acp(id))
+        .map(str::to_string)
+        .collect();
+    if !recheck_ids.is_empty() {
+        match acp_pool.rebind_blocking_sessions(&recheck_ids).await {
+            None => {
+                return Err(format!(
+                    "同目录 ACP 会话的忙碌状态暂时不可读（并发冷启动握手中），{action}"
+                ));
+            }
+            Some(blocking) => {
+                if let Some(blocked_id) = blocking.first() {
+                    let label = recheck_peers
+                        .iter()
+                        .find(|(id, _)| id == blocked_id)
+                        .map(|(_, label)| label.clone())
+                        .unwrap_or_else(|| blocked_id.clone());
+                    return Err(format!(
+                        "会话「{label}」绑定同一项目目录且正在执行，{action}"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
 /// 跨会话忙碌门的 async 包装（diff / rewind / undo 三处共用的 State clone +
 /// spawn_blocking + map_err 编排）：在阻塞线程上执行
 /// [`busy_peer_on_same_execution_root`]，任一同执行根 peer 在跑时返回带上下文
@@ -650,49 +705,15 @@ pub async fn rewind_to_turn(
         })
         .await
         .map_err(|error| format!("准备回滚检查点任务失败: {error}"))??;
-        // ACP peer 复检（r7 M2）：同根 ACP 会话任一忙碌/配置中/待响应即拒绝，
-        // 状态不可读同样拒绝（与正门同谓词、同保守语义）。
-        let recheck_store = store.inner().clone();
-        let recheck_session = session_id.clone();
-        let recheck_execution = execution.clone();
-        let recheck_agents = acp_pool.agents().clone();
-        let recheck_peers = tauri::async_runtime::spawn_blocking(move || {
-            peers_on_same_execution_root(
-                &recheck_store,
-                &recheck_session,
-                &recheck_execution,
-                production_execution_root_resolver(recheck_agents, recheck_store.clone()),
-            )
-        })
-        .await
-        .map_err(|error| format!("回退前 ACP 复检任务失败: {error}"))??;
-        let recheck_ids: Vec<String> = recheck_peers
-            .iter()
-            .map(|(id, _)| id.as_str())
-            .filter(|id| acp_pool.is_acp(id))
-            .map(str::to_string)
-            .collect();
-        if !recheck_ids.is_empty() {
-            match acp_pool.rebind_blocking_sessions(&recheck_ids).await {
-                None => {
-                    return Err(format!(
-                        "同目录 ACP 会话的忙碌状态暂时不可读（并发冷启动握手中），请稍后重试回退"
-                    ));
-                }
-                Some(blocking) => {
-                    if let Some(blocked_id) = blocking.first() {
-                        let label = recheck_peers
-                            .iter()
-                            .find(|(id, _)| id == blocked_id)
-                            .map(|(_, label)| label.clone())
-                            .unwrap_or_else(|| blocked_id.clone());
-                        return Err(format!(
-                            "会话「{label}」绑定同一项目目录且正在执行，请先停止该会话再回退"
-                        ));
-                    }
-                }
-            }
-        }
+        // ACP peer 复检（r7 M2；r11 M3 提取为共用函数，undo 侧同款）。
+        reject_if_acp_peer_busy_before_apply(
+            &store.inner(),
+            &acp_pool,
+            &session_id,
+            &execution,
+            "请稍后重试回退",
+        )
+        .await?;
         let apply_ledger = ledger.clone();
         let apply_execution = execution.clone();
         let undo_id = undo.id.clone();
@@ -946,6 +967,17 @@ pub async fn undo_last_rewind(
     //    本步——degraded 语义承诺绝不动代码）。对称语义：restore 内部会再打
     //    一次 PreRestore（内容为回退后的状态），「反悔的反悔」仍可恢复；该新
     //    回滚点不影响本 undo 的目标选择（绑定 id 已在 undo_info 里，重试不漂移）。
+    // apply 前 ACP 复检（评审 r11 M3）：undo 的 restore 同样做 read-tree →
+    // checkout-index → clean -fd，正门后放入的同根 ACP 写入同样会被摧毁——
+    // 与 rewind 侧共用同一函数与谓词。
+    reject_if_acp_peer_busy_before_apply(
+        &store.inner(),
+        &acp_pool,
+        &session_id,
+        &execution,
+        "请稍后重试撤销",
+    )
+    .await?;
     if let Some(checkpoint_id) = undo_info.checkpoint_id.clone() {
         let ledger_restore = ledger.clone();
         let execution_restore = execution.clone();
