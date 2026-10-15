@@ -43,8 +43,20 @@ assert.match(chatView, /from '\.\.\/conversation\/useRewindController\.js'/, 'Ch
 // （后端按 ToolResult-first 判 NotPrompt；工具卡由 toolMeta 回填还原）——
 // 否则截图类工具回传的 [ToolResult, Text, ImageUrl, Text] 渲染幻影气泡并顶
 // 偏序号，调和门随之隐藏该会话全部入口。
-assert.match(tauriBridge, /toolResultCarrier[\s\S]{0,600}userMessageDisplayText/, 'tauri 重载：tool_result 载体必须跳过用户气泡');
-assert.match(webBridge, /toolResultCarrier[\s\S]{0,600}userMessageDisplayText/, 'web 重载：tool_result 载体必须跳过用户气泡');
+// r10 M5：形状锚（非标识符共现）——删掉三元守卫（回退为直取
+// userMessageDisplayText）必须变红；只留未用变量声明的变异同样变红。
+assert.match(tauriBridge, /toolResultCarrier\s*\?\s*""\s*:\s*userMessageDisplayText/, 'tauri 重载：tool_result 载体必须以三元守卫跳过用户气泡');
+assert.match(webBridge, /toolResultCarrier\s*\?\s*""\s*:\s*userMessageDisplayText/, 'web 重载：tool_result 载体必须以三元守卫跳过用户气泡');
+// 步数预算通知过滤（r10 M3）双车道同款形状锚。
+assert.match(tauriBridge, /stepBudgetNotice[\s\S]{0,240}if \(utext && !stepBudgetNotice\)/, 'tauri 重载：步数预算通知必须被过滤出用户气泡');
+assert.match(webBridge, /stepBudgetNotice[\s\S]{0,240}if \(utext && !stepBudgetNotice\)/, 'web 重载：步数预算通知必须被过滤出用户气泡');
+// r10 M5：busy 容差必须在调用点以 { busy: Boolean(busy) } 传入——删掉该参数
+// （生产失去 busy 容差、每轮发送期间入口消失）必须变红；函数级单测对此静默。
+assert.match(
+  controller,
+  /rewindEntriesByTurnId\(turns, checkpoints\.checkpoints, checkpoints\.userTurns, \{ busy: Boolean\(busy\) \}\)/,
+  'entries 构建必须传 { busy: Boolean(busy) }（r9 minor 9 的调用点锚）',
+);
 // 评审 r7 M3(d)：回退后重载必须走 force-durable-load 的 switchToSessionInternal
 // （换 plain switchToSession 的同 id 快路径会把截断前的陈旧时间线当成功上屏，
 // 全部套件对此静默）。
