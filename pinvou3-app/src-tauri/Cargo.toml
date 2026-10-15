@@ -10,8 +10,9 @@ edition = "2024"
 # MSRV: rust-version is the lower bound "the minimum rustc that can compile
 # this crate"; the actual toolchain is pinned to an exact version by
 # rust-toolchain.toml (reproducible). The two are complementary.
-# 1.90 is the floor required by the Tauri 2.12 line (tauri 2.12 / wry 0.57 /
-# tauri-build 2.7 and the 2.12-era plugins all declare rust-version 1.90);
+# 1.90 is the floor required by the Tauri 2.12 line (tauri 2.12 / tauri-build
+# 2.7 and the 2.12-era plugins declare rust-version 1.90; wry 0.57 itself
+# declares 1.85, so tauri sets the floor);
 # above the 1.85 floor of edition 2024.
 rust-version = "1.90"
 # The main binary is the Tauri app (src/main.rs); src/bin/dump_system_prompt.rs
@@ -91,7 +92,7 @@ uuid = { version = "1.11", features = ["v4", "v5"] }
 # Codex/Claude/Kimi 各自的 ACP 实现提供，pinvou3 不复制其会话/工具循环。
 # unstable_elicitation 在 2.1.0 已转正（feature 被移除），2.2 直接带稳定
 # elicitation；不再加 feature 开关。3.x（当前 3.3.0）改了 feature 命名与
-# 协议 schema，留给独立 PR 评估（见 dep-audit 报告），本仓暂不升级。
+# 协议 schema，留给独立 PR 评估，本仓暂不升级。
 agent-client-protocol = { version = "2.2" }
 
 # 底层 Agent —— CodeWhale 提供 LLM 调用 + 工具循环 + 流式事件。
