@@ -257,3 +257,15 @@ The first design (§1–§8) covered only create + list. Per review feedback it 
 | I6 | Ask-rule extension | The ruleset carries Ask entries for update/delete; read/list carry none | ◇Rust `scope_deny_ruleset_asks_for_scheduled_task_create` extension | P0 |
 
 The §6 test mapping extends accordingly: the python suite covers I3/I4/I5, the smoke journey covers the read/update/delete validation paths, and the result-card tests cover parsing all three operations' results.
+
+---
+
+## Mirror delta (round 15, #629)
+
+The Chinese original gained a §10 addendum (the scheduled-messages
+`session_message` task kind) after this mirror was written; the mirror
+currently covers §§1–9 only, so the header's mirror claim holds through §9.
+Until §10 is mirrored here, the authoritative English record of the
+scheduled-messages addendum is the original's §10 (written in English per
+the documentation language rule) together with the Scheduled-messages row in
+`docs/builtin-toolset-contract.md` §9.
