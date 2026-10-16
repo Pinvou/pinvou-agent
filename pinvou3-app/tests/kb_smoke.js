@@ -64,6 +64,9 @@ function injectSource() {
       if (window.__KB_FAIL_IMPORT_CMD__ === cmd) return Promise.reject(new Error('mock import failure'));
       switch(cmd){
         case 'get_settings': return Promise.resolve({theme:'liquid-light',language:'zh-Hans'});
+        // 桌面快照缺省（fail-closed 假 closed）：所有能力位显式给 true，
+        // 除非某个用例经 __KB_CAPABILITIES_OVERRIDE__ 注入负值。
+        case 'get_platform_capabilities': return Promise.resolve(window.__KB_CAPABILITIES_OVERRIDE__ || {codexAcpSupported:true,browserNativeDisplay:true,localModelSetup:true,localEmbedSupported:true,dependencyInstall:true});
         case 'get_effective_model_config': return Promise.resolve({model:'qwen36_35b_256k',base_url:'http://127.0.0.1:8000/v1',api_key_set:false});
         case 'list_sessions': return Promise.resolve([]);
         case 'get_super_permission_status': return Promise.resolve(false);
@@ -1663,6 +1666,63 @@ async function chooseRemoteUploadSource(page, testId) {
   rec('⑩c 安装中断(deferred)状态给出立即加载入口且点击后热加载恢复',
     deferredBanner.banner && deferredBanner.loadBtn && loadNow.called && loadNow.bannerGone,
     JSON.stringify({ deferredBanner, loadNow }));
+
+  // ⑩c-2 fail-closed 负例（PR #715 回归钉），localEmbedSupported=false 的两
+  // 个姿态都要成立：
+  //  a) deferred（已装未加载）：「模型已安装 · 尚未加载」横幅与「立即加载」
+  //     入口必须消失（能力位 belt-and-braces 门）；
+  //  b) 加载失败态：下载/修复入口整体被「当前平台暂不支持本地向量嵌入模型」
+  //     取代（ui_smoke ③a-3 遍历的状态，快照缺省 fail-closed 不能漏入口）。
+  await page.evaluateOnNewDocument((value) => {
+    window.__KB_CAPABILITIES_OVERRIDE__ = value;
+  }, { codexAcpSupported: true, browserNativeDisplay: true, localModelSetup: true, localEmbedSupported: false, dependencyInstall: true });
+  const deferredModelStatus = {
+    installed: true, ready: false, loading: false, failed: false,
+    deferredNoUsage: true, error: null, downloading: false,
+    sizeBytes: 585565019, installedBytes: 585565019, version: 'bge-m3',
+  };
+  // 重载后应用回到草稿页且侧边栏收起：与启动序列一致，先展开侧边栏再进入
+  // 知识库（用 clickContains 的兜底匹配，避免 optional-click 静默 no-op）。
+  const gotoKbSubtab = async () => {
+    // 稳定选择器进知识库视图（ui_smoke ③a-3 同款）；懒加载 chunk 就绪前
+    // subtab 行不存在，轮询到「本地知识库」出现再点击。
+    await page.evaluate(() => document.querySelector('[data-nav="knowledge"]')?.click());
+    await page.waitForFunction(() => [...document.querySelectorAll('button')]
+      .some(b => (b.textContent || '').trim() === '本地知识库'), { timeout: 8000 }).catch(() => {});
+    await page.evaluate(() => [...document.querySelectorAll('button')]
+      .find(b => (b.textContent || '').trim() === '本地知识库')?.click());
+    await sleep(900);
+  };
+  // 状态必须在文档启动时就在位：应用在 boot 时即读取 kb_model_status，之后
+  // 进入知识库视图不会重读——evaluateOnNewDocument 注册按顺序覆盖，最后一次
+  // 注册的值生效。
+  await page.evaluateOnNewDocument((status) => { window.__KB_MODEL_STATUS__ = status; }, deferredModelStatus);
+  await page.reload({ waitUntil: 'networkidle0' });
+  await gotoKbSubtab();
+  const deferredGate = await page.evaluate(() => ({
+    bannerGone: !document.body.innerText.includes('模型已安装 · 尚未加载'),
+    loadBtnGone: ![...document.querySelectorAll('button')].some(b => (b.textContent || '').trim() === '立即加载'),
+  }));
+  await page.evaluateOnNewDocument((status) => {
+    window.__KB_MODEL_STATUS__ = { ...status, failed: true, deferredNoUsage: false, error: 'mock load failure' };
+  }, deferredModelStatus);
+  await page.reload({ waitUntil: 'networkidle0' });
+  await gotoKbSubtab();
+  // 重载后能力快照与 kb 状态需重新到位：轮询直到不支持文案出现（状态尚未
+  // 落地时的主界面缺省会被误判）。
+  await page.waitForFunction(
+    () => document.body.innerText.includes('当前平台暂不支持本地向量嵌入模型'),
+    { timeout: 8000 },
+  ).catch(() => {});
+  const failedGate = await page.evaluate(() => ({
+    unsupportedCopy: document.body.innerText.includes('当前平台暂不支持本地向量嵌入模型'),
+    failedTitleGone: !document.body.innerText.includes('Embedding 模型加载失败'),
+    repairGone: ![...document.querySelectorAll('button')].some(b => (b.textContent || '').includes('重新下载并修复')),
+  }));
+  rec('⑩c-2 localEmbedSupported=false 时 fail-closed 隐藏加载/下载入口并显示不支持文案',
+    deferredGate.bannerGone && deferredGate.loadBtnGone
+      && failedGate.unsupportedCopy && failedGate.failedTitleGone && failedGate.repairGone,
+    JSON.stringify({ deferredGate, failedGate }));
 
   rec('⑪ 全程无运行时报错(ReferenceError 等)', errs.length === 0, errs.length ? errs.slice(0,3).join(' | ') : '');
 
