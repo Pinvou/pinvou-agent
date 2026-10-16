@@ -11098,3 +11098,80 @@ cap;32MiB is not an artifact/download-size limit.
 DCO committed and pushed as `175ff0c7b80dcb43ffe4acdb26699cbfba4f4ca8` on
 `codex/t09-provenance-integration`; scope/evidence is in
 `docs/artifact-provenance-integration.md`.
+
+### T09 owned native byte candidates and Debian framing
+
+Four accepted consecutive sources from
+`eb93f9738c57a4b7209ce066fdce88dd6a6bebe6` through
+`2defedfbfe3591a61da9596094dd29a46dbcdc25` are integrated as14 exact final
+raw/Git blobs. Six existing paths matched the first parent; eight new paths were
+absent. Original219 additive document and134 additive PG-test lines remain
+historical source-batch evidence, separate from fresh combined-tree checks.
+
+Closed signed role/helper-ID selection follows current Manifest/Root/deny and
+complete owned FullPack inspection. Exact size/SHA direct membership yields
+the signed five-field declaration and owned native bytes. Safe direct ZIP and
+ordinary members share complete scanning/retained live nested-memory accounting;
+old selectors stay compatible. ZIP-only/equal aliases preserve raw identity;
+nested-only matches cannot supply direct candidates. Short-name SysV/GNU AR
+inspection checks all physical headers/fields/spans/padding and member hashes
+with bounded reads. Debian framing observes major2, control/data order, supported
+labels, extensions and exact raw spans; signed composition requires format deb
+and the same owned byte identity. Failures return zero earlier results.
+
+Both independent scoped line-level reviews passed. Primary affected testing
+passed12 packages,81 top-level/79 child tests (38.334s wall),
+zero failures, with exactly one explicit unavailable actual-AR-tool skip.
+Three freshly rebuilt actual CLIs, real HTTP capture, actual public Debian
+outer framing and actual-file/synthetic-signed composition all passed. Fixture
+original size53080 and SHA256
+`2e6e2f1a0007dc43bc91c273fd36e91e40a4f1c2765a03eca68b70a42103878a`
+were checked throughout. Public bytes were only read; no installation/execution
+or repository/publisher authenticity was tested. AR synthetic controls and this
+public package do not substitute actual AR-tool-produced E2E. Controls include
+all four signed roles, exact/below capacities,33MiB expanded native payloads
+under Store/Deflate (not a claim about Deflate container size), aliases,
+late-corrupt/unsupported physical frames, zero-result errors and restored positives.
+
+Actual isolated PostgreSQL17.11 passed one top-level/four child tests,
+zero skips/failures (28.726s recorded interval), retaining all
+earlier SBOM/JSONL/current-authority coverage and adding owned four-role bytes,
+signed framing positive, non-AR refusal after old byte-stage positive and
+current-deny/restores. Before/after inventory matched:
+0 pre-existing fixture databases and
+1 pre-existing fixture role retained; no new
+fixture database/role remained. Owner mutations are adversarial storage controls,
+not approved business deny commands or production data.
+
+All13 root gates passed: three CLI builds, affected tests, actual PG, full
+default service, modules, full vet, server build, pinnedV1, formatting and both
+whitespace checks. Default passed61 tested packages,
+541 top-level/1132 child tests
+(69.491s wall), with570 top-level/
+606 child opt-in/unavailable-host skips and12 no-test
+packages separately recorded. Unavailable sourcefile host fixtures remain
+unverified. Each independent reviewer passed nine gates: three own CLI builds,
+affected81/79 tests plus the same single actual-AR-tool skip, actual PG1/4 with
+zero skips/failures, affected vet, format and two whitespace checks. Their
+affected walls were26.509s/27.927s;
+PG intervals were19.72s/20.582s
+(dependency/compatibility). PG intervals include pre-inventory through Go
+completion, excluding verified post-inventory and frozen-source checks. Other
+command walls exclude frozen-source checks. Independent runs did not repeat
+the root whole-default suite. All sessions/owned children closed, PG inventories
+restored and full source/index/status,69 old SQL identities,four official SBOM
+resources and public fixture stayed fixed. All14 imports remain exact.
+
+These are candidate bytes and physical framing, not decompression/TAR/control,
+app identity/version/architecture, publisher/native authentication, protected
+staging, execution or Artifact admission. Synthetic declarations do not certify
+the public package. No production SQL/grant/route/dependency/provider/Root/
+Session/UI/contract/version change or physical/deployment qualification is
+claimed. Full T09 stays in progress; totals remain5/12/30 out of47. Product0.10.9,
+normative1.0,pinnedV1,CodeWhale and deployment deferral remain unchanged.
+Downloads have no hard total/cumulative duration or retry cap;32MiB is not an
+artifact/download-size limit.
+
+DCO committed and pushed as `023218a899a54284eb6fdb169ae46fe8decd3c37` on
+`codex/t09-native-framing`; scope/evidence is in
+`docs/artifact-native-framing-integration.md`.
