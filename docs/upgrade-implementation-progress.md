@@ -30,7 +30,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T17 | In progress | Bounded original initial selection, protected logical workflow/initial installation, atomic handoff/live resume and private activation Session; qualified protected check/refresh composition remains pending |
 | T18 | Not completed | Approved HTTPS file-source management and current download-info issuance. |
 | T19 | Not completed | Current qualification and three-purpose authorize/consume/cancel/status API composition over T44. |
-| T20 | In progress | Actual no-update/transaction and bounded Session/download-progress/download-resume/activation acceptance/recovery, four original HTTP batch routes and supplied client request/ACK correlation; independent task-event acceptance, durable client queue and quality contribution remain pending |
+| T20 | In progress | Actual no-update/transaction and bounded Session/download/resume/activation acceptance, four HTTP batch routes, client request/ACK correlation and restricted task observation calculation; actual task acceptance, durable client queue and quality contribution remain pending |
 | T21 | In progress | Private sample/receipt persistence authenticates actual frozen SN sources and preserves original-stage history; contribution, aggregate evaluation and business composition remain pending |
 | T22 | Not completed | Independent restricted unknown-consume reconciliation and protected original-request disposition. |
 | T23 | Not completed | Complete grouped quality review and controlled unfreeze. |
@@ -10688,5 +10688,53 @@ T46 capability, T47 membership/private bucket, protected chain projection and
 atomic final rechecks remain with the future business composition. No route,
 SQL, Session writer, signer, provider or UI is added. T17 remains in progress;
 totals stay five implemented, twelve in progress and thirty incomplete/deferred
+out of 47. Product 0.10.9, normative 1.0, pinned V1 and CodeWhale are unchanged.
+Downloads have no hard total/cumulative duration or retry cap.
+
+### T20 restricted task observation calculation
+
+The service now plans both reconciliation-event and recovery-review-event
+observations beside existing Session/transaction planners. The complete original
+task binding, full scope, role/purpose/install/start and target bind before exact
+receipt replay. The task binding revision remains independent from its mutable
+observation record revision. Internal DTOs and signed fixtures are not protected
+T22/T23 task sources or actual admission authority.
+
+Fresh live pending/observing tasks can only advance observing state and sequence.
+At exact windowEnd or a server terminal, only the historical diagnostic cursor
+advances; current task state and execution rights remain unchanged. Complete
+shared anchors, including zero, are preserved with owned copies. Existing exact
+receipts replay before fresh facts/cursor/increment checks, including maximum
+current revisions/sequences; changed immutable bindings still refuse first.
+Clients cannot complete/fail/cancel tasks or submit an execution transition.
+
+Both actual original public signed task-role fixtures pass the real verifier.
+Independent binding/scope negatives still fit the complete original Schema;
+fresh facts/window/target, sequence/overflow, terminal/history, replay/conflict,
+cursor and ownership controls pass. Strict snapshot validity is separately
+labelled. The actual frozen signed planEvent executes 76 task/cursor/receipt
+comparisons with in-memory test keys. Its contribution/outbox/outer atomic writes
+are outside the compared projection and are not implemented by this batch.
+
+The final primary contracts/complete-events run passed 57 top-level/
+846 child tests, zero skips/failures (141.898s wall), executing all
+existing original event reference groups as well as the 76 new comparisons.
+Default service passed 51 tested packages, 478 top-level/
+1120 child tests (97.624s wall), separately recording
+564 top-level/606 child external opt-in skips and 12 no-test packages.
+All nine service gates passed, including modules, full vet, build, pins,
+formatting and both whitespace checks. Both independent code/test/documentation
+reviews gave final scoped PASS. Their own contracts/complete-events/original-Node
+runs each passed 57 top-level/846 child tests, zero skips/failures
+(142.643s/136.425s wall, dependency/compatibility). Source/index/status and all
+69 existing SQL raw/index identities stayed fixed; all sessions/children closed.
+Unchanged PG/Bao/browser integrations were not rerun for this calculation delta.
+
+The increment is DCO committed and pushed as `6c0a5503f38fad3b6963f15e9ae37b1632934f94` on
+`codex/t20-task-observation`; service boundary/evidence is in
+`docs/task-observation-calculation.md`. Actual T22/T23 lineage, current trust/deny
+and final atomic receipt/task/cursor/outbox/contribution composition remain
+pending. No SQL, grants, public task HTTP roles, production writer, client queue
+or qualification are added. T20 remains in progress and totals stay 5/12/30
 out of 47. Product 0.10.9, normative 1.0, pinned V1 and CodeWhale are unchanged.
 Downloads have no hard total/cumulative duration or retry cap.
