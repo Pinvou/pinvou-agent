@@ -1,6 +1,28 @@
 //! Upgrade V1 contract decoding and fixed-origin control POST adaptation.
 //! Contract-valid transport bodies grant no signature/time/installation authority.
 
+/// Actual single-envelope checks under independently supplied existing Root,
+/// expected context/time/deny/high-water facts. Production is fixed here; this
+/// facade establishes no protected bootstrap, persistent acceptance or rights.
+pub(crate) fn verify_supplied_envelope_bytes<'a>(
+    bytes: &[u8],
+    root: &'a pinvou_upgrade_codec::RootPolicyShape,
+    expected: &'a pinvou_upgrade_codec::Document,
+    now: &'a pinvou_upgrade_codec::SuppliedProtocolTime,
+    high_water: Option<&'a pinvou_upgrade_codec::Document>,
+    denied_key_ids: &'a [String],
+) -> Result<
+    pinvou_upgrade_verifier::SignatureCheckedEnvelope<'a>,
+    pinvou_upgrade_verifier::VerificationError,
+> {
+    let mut inputs = pinvou_upgrade_verifier::VerificationInputs::new(root, expected, now)
+        .with_denied_key_ids(denied_key_ids);
+    if let Some(record) = high_water {
+        inputs = inputs.with_high_water(record);
+    }
+    pinvou_upgrade_verifier::verify_with_supplied_root(bytes, inputs)
+}
+
 /// Exactly one fixed-origin POST; a dropped/error response can have committed
 /// remotely. Owner-controlled retries and durable ACK/consume recovery remain separate.
 pub(crate) async fn send_client_request_once(
@@ -482,6 +504,89 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_verifies_all_original_signatures_and_refuses_denied_signers() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let inventory: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/envelopes.json"
+        )))
+        .unwrap();
+        let root =
+            decode_root_policy_shape(&serde_json::to_vec(&inventory["trustedRoot"]).unwrap())
+                .unwrap();
+        for vector in inventory["vectors"].as_array().unwrap() {
+            let bytes = URL_SAFE_NO_PAD
+                .decode(vector["envelopeBase64Url"].as_str().unwrap())
+                .unwrap();
+            let expected =
+                decode_metadata(&serde_json::to_vec(&vector["expectedContext"]).unwrap()).unwrap();
+            let now = decode_metadata(&serde_json::to_vec(&vector["now"]).unwrap())
+                .unwrap()
+                .protocol_time_shape()
+                .unwrap();
+            let checked = verify_supplied_envelope_bytes(&bytes, &root, &expected, &now, None, &[])
+                .unwrap_or_else(|error| panic!("{}: {error}", vector["name"]));
+            assert_eq!(checked.envelope().envelope().raw_bytes(), bytes);
+            let denied: Vec<_> = checked.verified_signer_ids().iter().cloned().collect();
+            assert!(matches!(
+                verify_supplied_envelope_bytes(&bytes, &root, &expected, &now, None, &denied),
+                Err(pinvou_upgrade_verifier::VerificationError::SigningKeyDenied)
+            ));
+        }
+    }
+
+    #[test]
+    fn feature_facade_keeps_production_for_an_actually_signed_incremental_package() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let output = std::process::Command::new("node")
+            .args([
+                "--input-type=module",
+                "-e",
+                include_str!("verify/tests/envelope-oracle.mjs"),
+            ])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../specs/upgrade/v1/reference/canonical-json.mjs"),
+            )
+            .output()
+            .expect("Node is required for the original full signature oracle");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        let case = cases
+            .iter()
+            .find(|case| case["name"] == "same-signed-incremental-explicit-development")
+            .unwrap();
+        let bytes = URL_SAFE_NO_PAD
+            .decode(case["bytes"].as_str().unwrap())
+            .unwrap();
+        let root =
+            decode_root_policy_shape(&serde_json::to_vec(&case["trustedRoot"]).unwrap()).unwrap();
+        let expected = decode_metadata(&serde_json::to_vec(&case["expected"]).unwrap()).unwrap();
+        let now = decode_metadata(&serde_json::to_vec(&case["now"]).unwrap())
+            .unwrap()
+            .protocol_time_shape()
+            .unwrap();
+        assert!(
+            pinvou_upgrade_verifier::verify_with_supplied_root(
+                &bytes,
+                pinvou_upgrade_verifier::VerificationInputs::new(&root, &expected, &now)
+                    .with_package_mode(pinvou_upgrade_codec::PackageSemanticsMode::Development)
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            verify_supplied_envelope_bytes(&bytes, &root, &expected, &now, None, &[]),
+            Err(pinvou_upgrade_verifier::VerificationError::Metadata(
+                pinvou_upgrade_codec::MetadataSemanticsError::IncrementalProduction
+            ))
+        ));
+    }
 
     #[test]
     fn feature_facade_matches_original_event_batches_without_queue_authority() {

@@ -6971,6 +6971,15 @@ name = "pinvou-upgrade-transfer"
 version = "0.0.0"
 
 [[package]]
+name = "pinvou-upgrade-verifier"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "pinvou-upgrade-codec",
+ "ring",
+]
+
+[[package]]
 name = "pinvou3-tauri"
 version = "0.10.9"
 dependencies = [
@@ -7021,6 +7030,7 @@ dependencies = [
  "pinvou-upgrade-package-check",
  "pinvou-upgrade-timing",
  "pinvou-upgrade-transfer",
+ "pinvou-upgrade-verifier",
  "pipewire",
  "qrcode",
  "quick-xml",

@@ -40,8 +40,8 @@ mod credential_semantics;
 pub use credential_semantics::{CredentialSemanticsError, assert_supplied_credential_semantics};
 mod metadata_semantics;
 pub use metadata_semantics::{
-    MetadataSemanticsError, RootWindowMode, SuppliedProtocolTime,
-    assert_supplied_metadata_semantics,
+    MetadataSemanticsError, PackageSemanticsMode, RootWindowMode, SuppliedProtocolTime,
+    assert_supplied_metadata_semantics, assert_supplied_metadata_semantics_in_mode,
 };
 mod context;
 pub use context::{ContextBindingError, assert_supplied_expected_context};

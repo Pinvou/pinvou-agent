@@ -63,6 +63,7 @@ filetime = "0.2.29"
 
 [dependencies]
 pinvou-upgrade-codec = { path = "src/features/updater/protocol/codec" }
+pinvou-upgrade-verifier = { path = "src/features/updater/protocol/verify" }
 pinvou-upgrade-control-http = { path = "src/features/updater/protocol/http" }
 pinvou-upgrade-timing = { path = "src/features/updater/timing/math" }
 pinvou-upgrade-transfer = { path = "src/features/updater/download/transfer" }
