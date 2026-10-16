@@ -8911,3 +8911,99 @@ independent task-event owners and full T17/T20/T44 completion remain open. Total
 remain four implemented, twelve in progress and thirty-one incomplete/deferred
 out of forty-seven. Deployment remains deferred. No artifact download size,
 retry or total/cumulative duration cap is introduced.
+
+## Accepted transaction minimum retention inspection
+
+The separate service adds a fixed protected-owner READ ONLY inspection API and
+`inspect-transactions` command for accepted transaction events. Elapsed is only
+the original minimum time floor, never archive/deletion authority or consumer
+completion. Original receipt/outbox, immutable intake and exact native Session,
+consumed authorization and transaction must agree. Missing located evidence
+refuses the entire page; no transaction intake means Unclassified without a
+retention conclusion. Lookup uses both permanent key and original JTI/event tuple.
+
+The floor remains immutable exp + 120000, equal to the original receipt retention.
+All observations follow actual receipt/native time watermarks and earlier clocks;
+the final safe clock follows the last catalogue/ACL/READ ONLY check. Unknown
+commit/error returns no speculative page result. Existing v1 late-only and v2
+late/live dispositions remain original under permanent replay. Current channel,
+qualification, waiting and workflow authority do not renew original evidence.
+
+Fourteen Go sources are frozen. All sixty previous SQL raw/index identities and
+the original cleanup/Session public APIs remain intact. Scalar lengths precede
+payload transfer; at most 32 points share the source-inclusive 32 MiB logical
+resource budget. Whole oversize points retain an advancing private cursor.
+Fixed CLI output is aggregate only after the complete scan; pages are separate
+observations and output loss requires a read-only retry.
+
+Both independent static reviews passed the production and test repairs. The
+primary moved the fixed transaction NULL quality restriction after Unclassified
+classification. Current schema does not permit an otherwise-valid actual
+non-NULL watermark; pure binding negatives and lawful NULL Unclassified actual
+controls are reported separately. Exploratory test failures exposed an incorrect
+replay ACK expectation, private canonical SQL use and an FK-unsafe test restore;
+all were repaired, with in-place original-key restoration and cleanup safeguards.
+Those failed runs are not final acceptance evidence.
+
+The repaired primary actual PostgreSQL selection passed three groups and twenty-
+six children, zero skips/failures (package 304.682s): capacity 35.490s, genuine
+three-purpose late/live acceptance and replay 55.470s, original natural expiry
+205.220s. Fresh CLI and two helpers verify receiptAt-1 at/above all native times,
+restored receiptAt, final-only backward/unsafe/NULL-Scan observations after full
+native/catalogue reads, unknown commit, output loss/retry/runtime refusal,
+original evidence faults/restored positives and v1 unchanged. All full native,
+accepted, intake and operation fingerprints remain unchanged by inspection.
+Synthetic exact-byte padding/source sentinels prove budget/cursor ordering,
+not signatures, AEAD or qualified business facts.
+
+Accepted archival policy, full T17/T20/T44, durable protected client queues, T21
+contribution, qualified issuers/physical hosts and production deployment remain
+open. Totals remain four implemented, twelve in progress and thirty-one
+incomplete/deferred of forty-seven. No artifact size, retry or total/cumulative
+download duration cap is introduced.
+
+The primary's cleared-opt-in fresh full defaults passed 402 groups and 807
+children, with 955 skipped tests, twelve packages without tests and zero
+failures. Skipped cases are excluded from passed counts; defaults are separate
+from actual integration evidence. Full vet, modules, private server build,
+original pinned contracts, fourteen-source formatting/frozen working/index
+identities, all sixty prior SQL raw/index identities and whitespace checks
+passed. Both client architecture/version checks passed, preserving product
+0.10.9 and normative documents 1.0.
+
+The independent dependency role built its own command and both helpers and
+passed the complete new natural-expiry parent: one group, twenty children, zero
+skips/failures (parent 203.250s, package 206.643s). This is independent actual
+evidence for that parent, not another full three-group combined selection.
+Its fresh defaults passed 402 groups/807 children, 955 test skips plus twelve
+no-test package records, zero failures. Vet, modules, original pins, private
+server build, fourteen-source format/frozen working/index identities, all sixty
+old SQL raw/index identities and both whitespace checks passed. The freeze
+manifest digest is unchanged. Its scoped code/test audit has no required finding;
+all owned fixtures, workers, compiler/test/CLI/helper/Node/runner processes and
+sessions closed before returning the exclusive runtime slot. Compatibility
+verification follows separately.
+
+The independent compatibility role's complementary actual selection passed
+three groups/nine children, zero skips/failures (package 129.163s): new six-case
+late/live native acceptance/replay, capacity and the original three-purpose
+maintenance native parent, preserving old fixture defaults. It did not repeat
+the complete natural-expiry parent (executed by primary and dependency) and did
+not build/run fresh CLI/helpers; no extra CLI E2E evidence is claimed here.
+
+The complementary parents passed in 57.000s (new six-case retention), 33.610s
+(capacity) and 35.480s (old three-purpose maintenance). Its fresh defaults passed
+402 groups/807 children, 955 test skips plus twelve no-test package records,
+zero failures. Full vet, modules, pins, private server build, fourteen-source
+format/frozen working/index identities, all sixty previous SQL raw/index
+identities and whitespace checks passed. The freeze digest is unchanged. Its
+scoped code/test audit has no required finding. All owned fixtures, workers,
+Go/compiler/test/server/CLI/helper/runner processes and tool sessions closed
+before returning the exclusive runtime slot. Both independent code/test audits
+pass on the same fourteen-source freeze; final documentation review precedes
+DCO commit/push. Task totals and deferred boundaries stated above are unchanged.
+
+Both final independent documentation reviews passed. Service delivery is DCO
+committed and pushed as 60e6d17a0d2346d29add7728e9c761e8db44ab13 on
+`codex/t20-transaction-retention`. The accepted-data and full-task boundaries
+above remain open; both client progress records are synchronized separately.
