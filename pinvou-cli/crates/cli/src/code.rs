@@ -4572,8 +4572,9 @@ fn workspace_preview(
 /// config: this lane runs git with stdin at `/dev/null`, and the git lanes
 /// deliberately run without a deadline, so a `gpg.ssh`/GPG pinentry prompt
 /// would hang the command until interrupted. The GUI's commit lane applies
-/// the same suppression since the 2026-10 dead-code sweep unified the two
-/// commit-argument builders, so neither surface honors signing. The price
+/// the same suppression through its mirrored `checkout_commit_args` builder
+/// (argument-for-argument twin, kept drift-safe by tests — not a shared
+/// body), so neither surface honors signing. The price
 /// is honest and documented in `docs/pinvou-cli.md`: commits made through
 /// either lane are unsigned even for a `commit.gpgsign=true` user, so a
 /// signature-based audit must not treat them as verified.
