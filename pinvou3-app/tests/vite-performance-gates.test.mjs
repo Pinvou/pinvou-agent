@@ -17,7 +17,10 @@ function chunk({ name, modules = {}, isEntry = false, code = '' }) {
 const mainSource = readFileSync(new URL('../src/app/main.jsx', import.meta.url), 'utf8');
 
 test('startup gates remain active in desktop and web production builds', () => {
-  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 500_000);
+  // Round-21 B-1: the measured raise (main@007f5ea4 alone = 498.54 kB web;
+  // +session-messaging receive path = 500.25 kB web / 497.93 kB desktop —
+  // see the budget comment in vite.config.mjs).
+  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 502_000);
   for (const mode of ['production', 'web']) {
     const config = createViteConfig({ command: 'build', mode });
     const pluginNames = new Set(config.plugins.flat(Infinity).filter(Boolean).map(plugin => plugin.name));

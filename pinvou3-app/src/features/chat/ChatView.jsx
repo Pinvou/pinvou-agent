@@ -68,6 +68,8 @@ import {
 import { formatAttachmentLimitError } from '../attachments/attachment-limit-errors.js';
 import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachmentDropOverlay.jsx';
 import { SessionMentionChips, SessionMentionMenu, SessionMentionCards } from './SessionMentionControls.jsx';
+import { buildSessionMessageBlock, splitSessionMessageBlock } from './session-message-block.js';
+
 import { PROJECT_SESSION_DRAG_TYPE } from '../projects/projectGrouping.js';
 import {
   buildSessionMentionBlock,
@@ -115,10 +117,16 @@ const CHAT_PANEL_LOADERS = Object.freeze({
   artifacts: () => import('../artifacts/ArtifactsPanel.jsx'),
   subagent: () => import('../multiagent/SubagentTranscriptPanel.jsx'),
   auxChat: () => import('../aux-chat/AuxChatPanel.jsx'),
+  // Round-18: the sender card is deferred out of the main entry — its static
+  // copy pushed the web build past the 500 kB startup budget, and entry
+  // policy requires new entry work to be split or lazy-loaded. Prefetched on
+  // mount below, so delivered messages render without a visible delay.
+  sessionMessageCard: () => import('./SessionMessageCard.jsx'),
 });
 const LazyArtifactsPanel = React.lazy(() => CHAT_PANEL_LOADERS.artifacts().then((m) => ({ default: m.ArtifactsPanel })));
 const LazySubagentTranscriptPanel = React.lazy(() => CHAT_PANEL_LOADERS.subagent().then((m) => ({ default: m.SubagentTranscriptPanel })));
 const LazyAuxChatPanel = React.lazy(() => CHAT_PANEL_LOADERS.auxChat().then((m) => ({ default: m.AuxChatPanel })));
+const LazySessionMessageCard = React.lazy(() => CHAT_PANEL_LOADERS.sessionMessageCard().then((m) => ({ default: m.SessionMessageCard })));
 const prefetchChatPanel = (key) => {
   const loader = CHAT_PANEL_LOADERS[key];
   if (loader) loader().catch(() => {});
@@ -934,6 +942,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           }
           return merged;
         });
+      }, []);
+      // Warm the deferred sender-card chunk at view entry: delivered messages
+      // render it above the body, and the mount-time prefetch keeps the lazy
+      // split (entry-budget policy) free of visible first-render delay.
+      useEffect(() => {
+        prefetchChatPanel('sessionMessageCard');
       }, []);
       const scrollRef = useRef(null);
       const conversationContentRef = useRef(null);
@@ -4524,8 +4538,24 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
   // users cannot accidentally edit the JSON contract line. Parsed refs pass
   // the shared choke point — dirty history (e.g. thousands of refs) must not
   // blow up the cards UI or the edit-resend rebuild.
-  const mentionSplit = splitSessionMentionBlock(item.text);
-  const mentionRefs = dedupeSessionRefs(mentionSplit.refs);
+  // A delivered cross-session message (features/messaging) carries the
+  // sender header block; parse it first to render the sender card above
+  // the text — the body itself is then rendered verbatim (round-4 A2:
+  // sender-controlled content must not feed the mention/attachment
+  // parsers).
+  const messageSplit = splitSessionMessageBlock(item.text);
+  // A delivered body is sender-controlled content (round-4 A2): feeding it
+  // into the mention/attachment parsers would render attacker-forged
+  // reference cards and attachment chips as first-party UI, and an
+  // edit-resend would re-serialize them into the receiver's own injection
+  // block. A delivered message renders its body verbatim — no mention
+  // parsing, no attachment splitting; the titler-side chaining is
+  // strip-only and stays correct either way.
+  const delivered = Boolean(messageSplit.sender);
+  const mentionSplit = delivered
+    ? { refs: [], text: messageSplit.text }
+    : splitSessionMentionBlock(messageSplit.text);
+  const mentionRefs = delivered ? [] : dedupeSessionRefs(mentionSplit.refs);
       const unified = conversationVariant === 'unified';
       const deliveryState = item.deliveryState || '';
       const sceneDisplay = pinvouSceneDisplay(item.pinvouScene, t.uiChat.sceneModes);
@@ -4535,7 +4565,24 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
       const [copied, copyToClipboard] = useCopyFlash(1200);
       // Edit-resend keeps layer 2 of the feature gate: with the feature off
       // only the body is resent — the injection block is never re-injected.
-      function commit() { const tx = val.trim(); setEditing(false); if (tx && bridge.available) bridge.interaction.editLastTurn(!sessionMentionDisabled && mentionRefs.length ? buildSessionMentionBlock(mentionRefs) + tx : tx); }
+      function commit() {
+        const tx = val.trim();
+        setEditing(false);
+        if (!tx || !bridge.available) return;
+        // Round-6 R1: a delivered message's replacement turn PRESERVES the
+        // sender-header provenance — re-prepend the original header so the
+        // edited turn re-parses as delivered and its body keeps rendering
+        // verbatim (no parser re-arming for ANY shape: leading mention
+        // blocks, attachment-marker tails, or nested sender headers are all
+        // inert once the delivered branch stays engaged). Stripping shapes
+        // one by one was the round-5 approach and missed two of them.
+        const outgoing = !sessionMentionDisabled && mentionRefs.length
+          ? buildSessionMentionBlock(mentionRefs) + tx
+          : delivered && messageSplit.sender
+            ? buildSessionMessageBlock(messageSplit.sender, tx)
+            : tx;
+        bridge.interaction.editLastTurn(outgoing);
+      }
       function copyText() {
         // Copy the body for the user: strip the mention injection block (a
         // machine contract, not human-written content); useCopyFlash is the
@@ -4589,10 +4636,28 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
       }
       const actBtn = 'text-[#9AA0A6] hover:text-[#444746] hover:bg-black/[0.06] dark:text-[#8E8E8E] dark:hover:text-[#E3E3E3] dark:hover:bg-white/10';
       // 附件行拆出正文,附件以独立小气泡显示在正文气泡上方(纯附件消息只显示附件气泡)
-      const { text: bodyText, attachments: attachmentNames } = splitAttachmentLine(mentionSplit.text);
+      const { text: bodyText, attachments: attachmentNames } = delivered
+        ? { text: mentionSplit.text, attachments: [] }
+        : splitAttachmentLine(mentionSplit.text);
       return (
         <div className="flex justify-end group min-w-0 max-w-full">
           <div className="flex flex-col items-end max-w-[85%] min-w-0 max-w-full">
+            {messageSplit.sender && (
+              // Legacy-timeline render-item paths pass no onOpenSession: the
+              // card deliberately renders its non-interactive (alive) arm
+              // there instead of a dead-looking pill. Wire the callback into
+              // that path only after confirming user turns reach it.
+              <ViewErrorBoundary t={t} variant="panel">
+                <React.Suspense fallback={null}>
+                  <LazySessionMessageCard
+                    sender={messageSplit.sender}
+                    knownSessionIds={knownSessionMentionIds}
+                    onOpenSession={onOpenSessionMention}
+                    copy={t.uiSessionMessage}
+                  />
+                </React.Suspense>
+              </ViewErrorBoundary>
+            )}
             <SessionMentionCards
               refs={mentionRefs}
               knownSessionIds={knownSessionMentionIds}

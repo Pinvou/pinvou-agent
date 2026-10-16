@@ -74,9 +74,24 @@ for (const language of ['zh', 'en', 'ja']) {
     'uiToolDetails',
     'uiBuiltinPlugins',
     'uiAuxChat',
+    'uiBuiltinFeatures',
     'uiSessionMention',
+    'uiSessionMessage',
   ]) {
     assert.ok(dict[language][section], `${language}.${section} must exist`);
+  }
+  // Round-8 minor 15: key-pins for the two messaging-critical builtin keys
+  // that previously could be deleted from all three locales with the suite
+  // green — the switch-off notice and the plugin-card write capability line.
+  for (const language of ['en', 'zh', 'ja']) {
+    assert.ok(
+      dict[language].uiBuiltinFeatures.disabledNotice,
+      `${language}.uiBuiltinFeatures.disabledNotice must exist`,
+    );
+    assert.ok(
+      dict[language].uiBuiltinPlugins.dataAccess['sessions.write'],
+      `${language}.uiBuiltinPlugins.dataAccess.sessions.write must exist`,
+    );
   }
   // All 23 uiAuxChat keys are pinned (round-14 minor-3: the list previously
   // covered 13, so sendingHint/bindingHint and the six quote* keys could be
@@ -196,6 +211,20 @@ for (const language of ['zh', 'en', 'ja']) {
   }
   for (const fnKey of ['chipRemove', 'cardJump']) {
     assert.equal(typeof dict[language].uiSessionMention[fnKey], 'function', `${language}.uiSessionMention.${fnKey} must be a function`);
+  }
+  // uiSessionMessage (delivered-message sender card copy): every key must
+  // exist and the fn-shaped entries must be functions — a drifted key
+  // crashes UserBubble's copy.from call for every delivered message
+  // (round-4 C1). Round-18 minor 20: this loop used to sit nested inside
+  // the chipRemove/cardJump loop above, asserting every key twice.
+  for (const key of ['fromUnknown', 'jump', 'unavailable']) {
+    assert.ok(dict[language].uiSessionMessage[key], `${language}.uiSessionMessage.${key} must exist`);
+  }
+  for (const fnKey of ['from', 'jump']) {
+    // Round-19 minor 18: `jump` is fn-shaped — a string drift crashes the
+    // card render for every attributed delivery with the suite green (the
+    // sibling section pins both its fns; this one only truthy-pinned `jump`).
+    assert.equal(typeof dict[language].uiSessionMessage[fnKey], 'function', `${language}.uiSessionMessage.${fnKey} must be a function`);
   }
   // Count guard (round-15 m4): ja replaces the whole section object, so a
   // ja-missing key renders undefined rather than falling back — pin the

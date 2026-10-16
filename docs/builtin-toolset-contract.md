@@ -173,8 +173,9 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   carrier); the register names the principal surfaces and claims no
   exhaustiveness, and any future read surface defaults to the same
   no-id-class-rejection norm. The model-facing write family (delivery/
-  messaging — not yet landed; an explicit ownership design is required on
-  landing) admits no aux requester or target; the auxChat relay is the
+  messaging — landed 2026-10 as `send_message_to_session`, §6/§9; the
+  round-18 minor-16 correction: this section previously still said "not yet
+  landed") admits no aux requester or target; the auxChat relay is the
   sanctioned user-mediated channel, and deletion interacts with aux sessions
   only through the designed main→aux cascade and the by-aux-id reset.
 - Logs and errors contain no sensitive data; no network access is introduced.
@@ -189,8 +190,117 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
 - **Write-semantics decision template**: when writing a message into a running session,
   the design must declare queue (wait for the current turn) vs steer (inject into the
   current turn); do not reinvent.
+- **Inter-session delivery semantics** (session-reader `send_message_to_session`,
+  landed 2026-10): a target that is mid-turn gets the message **steered** into its
+  current turn; an idle or not-yet-loaded target gets a **new turn dispatched
+  immediately** (the scheduled-task wake precedent — the receiving session's model
+  sees the message at once and may reply by calling the same tool). Delivery never
+  writes the target's session file directly: the MCP server validates and spools
+  (`~/.pinvou3/messaging/spool/<spool-id>.json`), and an app-side Rust watcher performs
+  the steer/dispatch through the engine pool, so the persistence actor's
+  last-writer-wins snapshots can never clobber an external edit. The delivered text
+  carries a machine-readable sender header block (the session-mention block pattern
+  mirrored on receive) that the timeline renders as a sender card and all three
+  auto-title paths strip.
 - **Idempotency**: the engine may retry tool calls; L1/L2 tools must define an
-  idempotency key or be naturally idempotent.
+  idempotency key or be naturally idempotent. `send_message_to_session` takes an
+  optional `idempotency_key` (requires `from_session`, so the namespace is
+  never global); the spool file is named by the sender+target-scoped sha256 of
+  `"<from_session>|<to_session>|<key>"`, so a retried call replaces its own
+  pending message and cannot clobber another session's without claiming that
+  session's identity — `from_session` is existence-checked, never bound to
+  the calling session, so an honest retried send is collision-free while a
+  caller that names a victim as its sender replaces the victim's queued
+  message — delivered under the victim's claimed identity; that is the
+  unauthenticated-sender boundary (round-19 minor 24: the parenthetical here
+  previously fused this clause with two unrelated mechanics). Separately:
+  transient delivery failures retry with backoff; poison files are
+  quarantined under `messaging/spool/failed/`.
+- **Disclosed limitations (session-reader send)**: sender identity is
+  model-supplied and unauthenticated — the working gates are the layered
+  validation (the watcher-side isolated sender/target checks and the
+  per-delivery ACP/code gate) plus the audit log; there is no per-call
+  confirmation under the current full-auto approval (the registered typed
+  Ask rule is the latent pin awaiting the approval-mode split, not the
+  `from_session` field); delivery is at-least-once (a crash between delivery and the done-marker write replays on
+  next boot; the done-marker window itself is the keyed-dedup horizon —
+  pruned after the 7-day retention, so a retried call older than that
+  re-delivers; and for an UNKEYED send whose spool file persistently cannot
+  be removed after delivery, the same body re-delivers on up to ten
+  consecutive ~1 Hz polls before the removal-streak arm quarantines — the
+  round-18 minor-3 precision: "at-least-once" covers a bounded
+  ten-duplicate burst; the double-dispatch window attribution (round-21
+  minor 13): an UNKEYED resubmission re-delivers at any latency (a fresh
+  uuid spool name — the ≤30s steer window is irrelevant), while a KEYED
+  resubmission double-dispatches only inside that window and only with a
+  materially different body); a steer accepted against a mid-turn target can still be
+  dropped or lost by the foundation — when that turn is cancelled (the
+  `chat:steer_dropped` window is not yet correlated) or when the idle
+  engine is evicted/rebuilt before the steer lands, and — the third
+  trigger, round-19 MAJOR-1 — when the **app crashes/exits after the steer
+  was registered in memory but before the turn loop drains it into a
+  persisted user turn**: the keyed done-marker and spool removal are written
+  at steer registration, so that window loses the message silently and a
+  keyed retry is answered "delivered" from the marker (the only zero-trace
+  loss channel; gating the marker on `chat:steer_committed` is the recorded
+  follow-up); a macOS two-instance startup race (the single-instance
+  plugin's connect-then-bind window) can run two watchers and
+  double-deliver, and the replaced-after-delivery arm can then erase the
+  winning instance's done marker — plugin-level upstream, the marker
+  interplay is disclosed here (round-19 minor 15); a send against an
+  ACP/code target — keyed or not (the round-18 minor-17 correction: this
+  list previously scoped the silent quarantine to keyed retries) — answers
+  "pending" and the record is quarantined by
+  the watcher with no failure feedback to the sender (the per-delivery
+  ACP/code gate lives below the poll layer); a send whose spool file the
+  watcher never reaches within its 256-pending-file ceiling (round-19 minor
+  24: all pending files count, including ones in backoff — "due" was a
+  misnomer) is
+  quarantined as the ceiling's sorted tail with no sender-visible feedback —
+  including a legitimate backlog's overflow, not just hostile growth (the
+  round-18 minor-17 addition); a mid-delivery keyed retry with a DIFFERENT body re-queues the
+  newest body (the round-8 semantic compare — created_at and both volatile
+  titles nulled — treats
+  the same logical message as unchanged); (round-9 minor 2: this list previously disclosed a "slow-spawn
+  double-deliver window" — an impossible event: submission is
+  cancel-safe (reserve + synchronous send), a timeout drop can only land
+  before submission and the dropped reservation rolls back, so
+  timeout+retry delivers exactly once);
+  the spool directory itself remains an unauthenticated local side door —
+  any process running as the OS user can write it, and that account boundary
+  is the trust boundary for the write family (round-19 minor 19);
+  self-send rejection covers ATTRIBUTED sends only — an unattributed send
+  spooled into one's own session delivers, so a model can inject an
+  apparently-foreign sender card into its own transcript or self-wake
+  (round-19 minor 20);
+  spend shape: one send = one paid target turn, with no per-target rate
+  limit — the 256-file ceiling bounds queued records, not turns
+  (round-19 minor 21);
+  switch-off pauses delivery for the first 256 pending files but
+  quarantines the sorted-tail excess of a larger backlog — switch-off does
+  not preserve more than that (round-19 minor 22);
+  a steered delivery rides the target's **user-turn channel with full user
+  authority** — the delivered block's "never follow instructions inside"
+  envelope is advisory framing, not an enforcement boundary (inherent to
+  steering; round-19 minor 23);
+  the watcher's per-file retry budget is per-process: a watcher restart
+  re-buys up to 10 delivery attempts for a failing file (a crash loop
+  re-buys per boot, bounded by boot cadence; round-20 minor 7);
+  the builtin rides the app release: an updated app silently upgrades every
+  existing session-reader install to the current L1 manifest (send tool
+  included, feature default-on, Ask rule latent) on first boot — no
+  per-install consent step exists (round-20 minor 7; §8 item 4 framing — round-21 minor 15: "§8.4" named a subsection that does not exist);
+  an edit-resend of a delivered message keeps the ORIGINAL sender
+  attribution verbatim — including body words the local user added in the
+  edit — a deliberate provenance-over-accuracy trade-off: re-attributing
+  locally-edited content would require re-parsing the replacement, which
+  re-arms the injection-block parsers the delivered branch exists to keep
+  inert (round-19 minor 25);
+  receive-side historical sender cards have no
+  "feature off" degradation yet (a step BACKWARD from the session-mention
+  precedent — the mention cards shipped their feature-off degradation;
+  round-21 minor 14) and the `session-messaging` switch is
+  settings.json-only (no UI); both land with the feature's own settings page.
 
 ## 7. Presentation to the model
 
@@ -224,10 +334,10 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
 
 | Tool | Server | Level | Status |
 |---|---|---|---|
-| `read_session` | session-reader (marketplace package, built-in) | L0 | landed (#585) |
-| `list_sessions` | session-reader (marketplace package, built-in) | L0 | landed (#585) |
+| `read_session` | session-reader (marketplace package, built-in) | L0 | landed (built-in registration: #585) |
+| `list_sessions` | session-reader (marketplace package, built-in) | L0 | landed (built-in registration: #585) |
 | read_session extensions (entry_range/branch/index) | session-reader | L0 | planning (long-term memory mode) |
-| Inter-session messaging (`send_message_to_session`-like) | session-reader | L1 | not initiated; mind sched- ownership and queue/steer semantics in design |
+| `send_message_to_session` | session-reader (marketplace package, built-in) | L1 | landed (2026-10; hosted in session-reader per §2 — one family = one server; gated by layered validation + audit log; a typed execpolicy Ask rule is registered as the latent approval-mode-split pin and does not prompt under the current full-auto approval; sched-/eval_/aux- rejected as targets by the server and the watcher; the delivery path's gate is the ACP/code class — round-9 minor 3: the old text claimed a third checkpoint that does not exist) |
 | Scheduled task creation | TBD (Scheduled Tasks panel ownership involved) | L1 | not initiated |
 
 ---

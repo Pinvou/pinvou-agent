@@ -109,8 +109,60 @@ const chatViewSource = await readFile(
 );
 assert.match(
   chatViewSource,
-  /splitSessionMentionBlock\(item\.text\)/,
-  'UserBubble must strip the session-mention injection block before display (session_mention.test.mjs covers the block contract)',
+  /splitSessionMessageBlock\(item\.text\)/,
+  'UserBubble must strip the received-message sender block first (session_message_block.test.mjs covers the block contract)',
+);
+// Round-4 A2 + round-6 R1 pins: a delivered body (messageSplit.sender
+// present) must NOT feed the mention/attachment parsers — and the
+// edit-resend PRESERVES the sender header so the replacement turn stays on
+// the delivered branch (any body shape is inert there).
+assert.match(
+  chatViewSource,
+  /const delivered = Boolean\(messageSplit\.sender\)/,
+  'UserBubble must branch on the delivered-sender presence',
+);
+assert.match(
+  chatViewSource,
+  /delivered\s*\?\s*\{ refs: \[\], text: messageSplit\.text \}\s*:\s*splitSessionMentionBlock\(messageSplit\.text\)/,
+  'a delivered body bypasses the mention splitter (verbatim render)',
+);
+assert.match(
+  chatViewSource,
+  /delivered\s*\?\s*\{ text: mentionSplit\.text, attachments: \[\] \}\s*:\s*splitAttachmentLine\(mentionSplit\.text\)/,
+  'a delivered body bypasses the attachment splitter (forged chips cannot render)',
+);
+assert.match(
+  chatViewSource,
+  /delivered && messageSplit\.sender\s*\?\s*buildSessionMessageBlock\(messageSplit\.sender,\s*tx\)/,
+  'an edit-resend of a delivered message serializes through the shared builder (provenance preserved — the layout itself is round-trip-pinned in session_message_block.test.mjs; the previous regex-only pin shipped green under a blank-separator mutation, round-18 M5)',
+);
+// Round-4 B5' pin: the sender card render + its i18n copy are wired —
+// deleting the render (or drifting the copy key) turns this red. Round-18:
+// the card is lazy-loaded (entry budget), so the pin follows the lazy
+// component through its Suspense slot.
+assert.match(
+  chatViewSource,
+  /\{messageSplit\.sender && \([^]*?<React\.Suspense fallback=\{null\}>\s*<LazySessionMessageCard\s+sender=\{messageSplit\.sender\}\s+knownSessionIds=\{knownSessionMentionIds\}\s+onOpenSession=\{onOpenSessionMention\}/,
+  'UserBubble must render the lazy SessionMessageCard for delivered messages, WITH the jump wiring — dropping knownSessionIds/onOpenSession silently degrades every card to its non-interactive arm while "attributed, jumpable sender card" stays claimed (round-19 MAJOR-4, mutation-verified)',
+);
+// Round-19 minor 17: the card is deferred out of the main entry so the relay
+// web build stays under its 500 kB startup budget — a future static
+// re-import would only fail at build time (CI), never in this suite; the
+// tripwire keeps the lazy loader honest locally.
+assert.doesNotMatch(
+  chatViewSource,
+  /import\s*\{[^}]*SessionMessageCard[^}]*\}\s*from\s*'\.\/SessionMessageCard\.jsx'/,
+  'SessionMessageCard must stay lazily loaded (entry-budget policy), not statically imported',
+);
+assert.match(
+  chatViewSource,
+  /sessionMessageCard: \(\) => import\('\.\/SessionMessageCard\.jsx'\)/,
+  'the deferred loader must stay registered in CHAT_PANEL_LOADERS',
+);
+assert.match(
+  chatViewSource,
+  /copy=\{t\.uiSessionMessage\}/,
+  'the sender card consumes the uiSessionMessage copy section',
 );
 assert.match(
   chatViewSource,

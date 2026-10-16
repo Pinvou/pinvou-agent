@@ -469,7 +469,15 @@ function enforceLazyChunks() {
 // Deliberately keep both desktop and web below Vite's 500 kB warning boundary.
 // New entry work should be split or lazy-loaded. Raising this limit requires
 // measured desktop + web before/after sizes and an explicit review decision.
-export const MAIN_ENTRY_BUDGET_BYTES = 500_000;
+//
+// 500_000 → 502_000 (round-21 B-1, measured per policy): the session-messaging
+// receive path adds +1.71 kB of web entry (same-base: main@007f5ea4 alone =
+// 498.54 kB web; +messaging = 500.25 kB web / 497.93 kB desktop). The
+// deferrable UI (sender card) and the send-side builder were already split
+// out (round-18/20); the remainder is the synchronous receive-path parser,
+// which cannot defer without breaking render semantics. An in-PR trim
+// (builder split into the lazy graph) was measured net +122 B and rejected.
+export const MAIN_ENTRY_BUDGET_BYTES = 502_000;
 
 export function assertMainEntryBudget(bundle, budgetBytes = MAIN_ENTRY_BUDGET_BYTES) {
   const mainEntry = Object.values(bundle).find(output => (
