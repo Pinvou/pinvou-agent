@@ -9360,3 +9360,105 @@ Both final code/test audits apply to the same seven-source freeze above, with no
 required finding. Final documentation review precedes DCO commit/push. The
 separately reviewed authenticated-public-graph plan is future work, not delivered
 by this archive batch; the remaining T27/task and authority boundaries stay open.
+
+## Complete authenticated public metadata chain
+
+The feature-owned verifier now composes the original complete public-chain
+operation under caller-supplied existing Root, independent product/component,
+safe time and global/exact-role denial facts. Each Timestamp, Snapshot and
+referenced member passes unchanged ordinary fresh-Root, full Schema/context,
+all-signature, exact-policy and Production semantics checks. Role-specific deny
+is consulted only for that role; unrelated entries have no effect. No high-water
+or Development argument is introduced into this operation.
+
+The authenticated Timestamp binds original Snapshot bytes. That authenticated
+Snapshot supplies each member's role and complete scope, while product/component
+always come from independent bounded context. Escaped bounded JSON creates each
+complete expected Document. Exact original references and complete membership
+are checked, then the unchanged codec validates Target baseline/ordinary/bridge
+reachability, Release targets/Package identities/modes and candidate-leak refusal.
+Repeated Snapshot references fail original ordinary metadata semantics. The
+Snapshot-derived necessary actual-member bound is applied before allocating member collections,
+without inventing an independent aggregate byte/member or artifact policy.
+
+The immutable public-chain proof owns checked original Timestamp/Snapshot/member
+envelopes, preserves member input order and borrows the exact supplied Root with
+supplied time. It exposes authenticated original objects, not Node's derived
+result arrays. Successful private ordinary proofs are consumed into owned data;
+temporary expected/deny facts do not escape. Failure returns no valid prefix.
+No protected trust/clock custody, durable atomic high-water acceptance, current
+online qualification, candidate selection or execution rights are established.
+
+Five new tests execute fifty-six full frozen Node public-chain controls: thirty-
+four relationship cases, nine denial/isolation, five actual signatures/thresholds,
+three windows and five exact-policy/wire/Production. Twenty-eight relationship
+scenarios reuse the existing complete Node graph fixture logic; six additional
+membership/multi-Target scenarios and twenty-two authentication controls are
+separate additions, not fifty-six previously unseen protocol scenarios. Private
+keys stay inside Node. Genuine two-Target/two-Package graphs use independent exact
+Root policies and shuffled five-member order, with second-Target policy/channel
+scope negative controls. Within-count duplicate members, oversized lists,
+repeated Snapshot references, ordinary/bridge reachability, bad extra after a
+valid threshold, unsigned body changes and role-denial isolation are covered.
+
+Independent static review found a missing multi-Target test, which the primary
+repaired with the complete signed positive/negative controls above. A test-only
+mapping now preserves the existing Rust ROLE_POLICY_NOT_DECLARED label against
+Node ROLE_NOT_AUTHORIZED; reference/Schema labels are similarly mapped. Test
+fixture preflight corrections retain ARM hostArchitectures and original duplicate
+reference semantics. No production algorithm was changed to satisfy the tests.
+Both final frozen static deep audits passed without a required finding.
+
+The primary's thirty-eight verifier tests passed, zero failures/ignored (75.304s
+wall), including five new public-chain tests/56 controls (2.070s harness). Strict
+all-target Clippy passed (14.089s wall). The prior ordinary111, successor55,
+archive36, thirty new chain and fifty-five reused length-one parity cases remain
+separate regressions. One narrow typed App facade adds one test with nine genuine
+full-operation positive/negative controls. The ordinary verifier, codec source,
+manifests and all three locks are unchanged; prior codec157 actual tests,
+including two enabled Node oracles, retain acceptance without an unaffected rerun.
+
+Both final source/test audits apply to the six-source freeze, manifest SHA256
+5721005371b5c4e2800ff87b6de6e6f69c943c44be0ab9851526f653113ad07c.
+Full T27 remains in progress. Overall totals remain forty-seven: four implemented,
+twelve in progress, thirty-one incomplete/deferred. Product 0.10.9, normative
+document versions 1.0, pinned V1 contracts and CodeWhale remain unchanged. Physical platform
+qualification and deployment remain deferred. No artifact download size, retry
+or total/cumulative duration cap is added.
+
+The primary default App facade passed forty-four tests, zero failures/ignored
+(13.850s harness, 197.728s wall). The actual CLI-workspace backend built the
+production App/verifier graph and passed the zero-test library harness (200.228s
+wall); it is compilation/graph evidence rather than workflow E2E. Four-source
+Rust formatting, architecture, version, before/after six-source freeze and normal
+working/index whitespace checks passed. No codec, manifest or dependency lock
+changed; prior selected App/CLI graph evidence retains 104 dependency packages/
+109 feature nodes each, identical nine verification-critical packages/features
+and disclosed preexisting ICU/zerovec patch differences, not full closure identity.
+
+The independent dependency role's final scoped code/test audit passed without a
+required finding. Its own thirty-eight verifier tests passed, zero failures/
+ignored (51.453s wall); public-chain five tests/56 cases took 1.970s harness.
+Strict all-target Clippy passed (3.820s wall). Its actual default App facade
+passed forty-four tests (15.250s harness, 25.335s wall); its actual CLI backend
+zero-test library harness passed (8.766s wall), not workflow E2E. Four-source
+Rust formatting, architecture, version, before/after six-source freeze and normal
+working/index whitespace passed. Unchanged codec/three-lock/core graph acceptance
+was reused. All its owned runtime processes/sessions closed before handoff.
+
+The independent compatibility role's final scoped code/test audit also passed
+without a required finding. Its own thirty-eight verifier tests passed, zero
+failures/ignored (47.541s wall), including five public-chain tests/
+56 complete Node controls. Strict all-target Clippy passed
+(3.474s wall). Its actual default App facade
+passed forty-four tests (17.010s harness,
+25.823s wall); actual CLI backend zero-test library harness passed
+(8.884s wall). Four-source Rust formatting, architecture, version,
+unchanged codec/three-lock baseline, before/after six-source freeze and standard
+working/index whitespace passed. No workflow E2E or unrelated codec/benchmark
+rerun is claimed. All owned runtime processes/sessions closed before handoff.
+
+Both independent final audits apply to the same six-source freeze above. Final
+documentation review precedes DCO commit/push. The separately approved candidate-
+opening authentication plan remains future work, not delivered by this public-
+chain batch; protected acceptance and complete T27 boundaries remain open.
