@@ -125,6 +125,19 @@ pub(crate) fn verify_supplied_candidate_release_bytes<'a>(
     pinvou_upgrade_verifier::verify_candidate_release(target_bytes, release_bytes, opening, inputs)
 }
 
+/// Authenticate Package metadata and bind supplied Release Schema material.
+/// Release authenticity and current execution/qualification remain external.
+pub(crate) fn verify_supplied_release_package_bytes<'a>(
+    supplied_release: &'a pinvou_upgrade_codec::SchemaCheckedEnvelope,
+    package_bytes: &[u8],
+    inputs: pinvou_upgrade_verifier::PackageBindingInputs<'a>,
+) -> Result<
+    pinvou_upgrade_verifier::SignatureCheckedPackageBinding<'a>,
+    pinvou_upgrade_verifier::PackageBindingVerificationError,
+> {
+    pinvou_upgrade_verifier::verify_release_package(supplied_release, package_bytes, inputs)
+}
+
 /// Exactly one fixed-origin POST; a dropped/error response can have committed
 /// remotely. Owner-controlled retries and durable ACK/consume recovery remain separate.
 pub(crate) async fn send_client_request_once(
@@ -1096,6 +1109,88 @@ mod tests {
                         expected,
                         "wrong candidate refusal {name}"
                     );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn feature_facade_authenticates_package_without_certifying_supplied_release() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        use pinvou_upgrade_verifier::PackageBindingInputs;
+        let output = std::process::Command::new("node")
+            .args([
+                "--input-type=module",
+                "-e",
+                include_str!("verify/tests/package-binding-oracle.mjs"),
+            ])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../specs/upgrade/v1/reference/signatures.mjs"),
+            )
+            .output()
+            .expect("Node is required for the frozen Package binding oracle");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        for name in [
+            "original-package-binding",
+            "release-mode-subset-positive",
+            "expired-release-positive",
+            "invalid-release-signature-positive",
+            "foreign-release-component-positive",
+            "bad-extra-after-valid-threshold",
+            "two-actual-package-signatures",
+            "unsigned-package-body-change",
+            "original-reference-version",
+            "production-incremental-refuses",
+        ] {
+            let case = cases.iter().find(|c| c["name"] == name).unwrap();
+            let root = decode_root_policy_shape(&serde_json::to_vec(&case["trustedRoot"]).unwrap())
+                .unwrap();
+            let context = decode_metadata(&serde_json::to_vec(&case["context"]).unwrap()).unwrap();
+            let now = decode_metadata(&serde_json::to_vec(&case["now"]).unwrap())
+                .unwrap()
+                .protocol_time_shape()
+                .unwrap();
+            let release_raw = STANDARD
+                .decode(case["releaseBytes"].as_str().unwrap())
+                .unwrap();
+            let release = decode_schema_checked_envelope(
+                &release_raw,
+                pinvou_upgrade_codec::InputKind::Metadata,
+            )
+            .unwrap();
+            let package = STANDARD
+                .decode(case["packageBytes"].as_str().unwrap())
+                .unwrap();
+            let denied: Vec<String> = serde_json::from_value(case["deniedKeyIds"].clone()).unwrap();
+            let inputs =
+                PackageBindingInputs::new(&root, &context, &now).with_denied_key_ids(&denied);
+            match verify_supplied_release_package_bytes(&release, &package, inputs) {
+                Ok(checked) => {
+                    assert_eq!(
+                        case["accepted"], true,
+                        "unexpected Package acceptance {name}"
+                    );
+                    assert!(std::ptr::eq(checked.supplied_root(), &root));
+                    assert!(std::ptr::eq(checked.supplied_release(), &release));
+                    assert_eq!(checked.checked_package().envelope().raw_bytes(), package);
+                }
+                Err(error) => {
+                    assert_eq!(
+                        case["accepted"], false,
+                        "unexpected Package refusal {name}: {error}"
+                    );
+                    let expected = if name == "original-reference-version" {
+                        "METADATA_REFERENCE_INVALID"
+                    } else {
+                        case["code"].as_str().unwrap()
+                    };
+                    assert_eq!(error.to_string(), expected, "wrong Package refusal {name}");
                 }
             }
         }

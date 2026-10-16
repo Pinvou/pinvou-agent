@@ -229,3 +229,41 @@ verification, manifests and all three locks are unchanged; prior unaffected
 regressions retain acceptance. App/CLI checks are not workflow E2E. Protected
 acceptance and full T27 remain open. No artifact download size, retry or total/
 cumulative duration cap is introduced.
+
+## Signed Package and supplied Release binding
+
+`verify_release_package` implements the complete frozen Package operation using
+supplied full-Schema canonical Release material, original Package bytes, supplied
+existing Root/time/global denial and independent bounded product/component/
+targetKey context. It finds the Release target and checks all six fields of its
+reference against the exact original Package bytes before Package authentication.
+The unchanged ordinary verifier checks fresh Root, exact Package policy, all
+actual signatures, independent context and Production. The unchanged codec then
+binds appVersion, launcher, target and activation-mode subset relationships.
+
+This original operation authenticates only Package. It does not authenticate
+supplied Release or check that object's product/component/context/time. Callers
+must independently authenticate Release before any qualification. Accordingly,
+the immutable `SignatureCheckedPackageBinding` owns `checked_package`, borrows
+the exact `supplied_release` and supplied Root, and records supplied time. The
+supplied Release getter remains Schema material, not a signature proof. No
+partial proof, persistent acceptance, protected custody, current online rights or
+execution authority is returned. Package here is signed metadata rather than
+proof of downloaded artifact bytes. No high-water, role-denial or Development
+option is introduced.
+
+Five tests execute thirty-five complete frozen Node cases: references/business
+binding (13), supplied Release boundaries (4), independent Package context (3),
+actual signatures/thresholds/denial (8), and windows/policy/wire/Production (7).
+Ten positive controls include mode ordering/subsets, foreign product/component,
+expired or invalid-signature supplied Release, context extras, actual two-signer
+Package and irrelevant denial. All supplied Release inputs independently pass
+the full Schema factory. These positives establish only Package authentication
+and supplied-value relationships, never Release authenticity or current rights.
+All reference fields and actual Package signatures have negative controls.
+Existing closed-reference/Schema/policy error labels are mapped explicitly;
+fresh private keys remain in Node. One App test exercises ten genuine controls.
+Codec, ordinary verification, manifests and all three locks are unchanged, so
+prior unaffected regressions retain acceptance. App/CLI checks are not workflow
+E2E; protected acceptance and full T27 remain open. No artifact download size,
+retry or total/cumulative duration cap is added.

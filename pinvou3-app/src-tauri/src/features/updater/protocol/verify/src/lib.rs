@@ -7,6 +7,7 @@ mod chain;
 mod envelope;
 mod error;
 mod graph;
+mod package;
 mod signatures;
 mod successor;
 use envelope::parse_bound_envelope;
@@ -21,6 +22,10 @@ pub use chain::{SignatureCheckedRootChain, verify_root_chain};
 pub use error::VerificationError;
 pub use graph::{
     PublicChainError, PublicChainInputs, SignatureCheckedPublicChain, verify_public_chain,
+};
+pub use package::{
+    PackageBindingInputs, PackageBindingVerificationError, SignatureCheckedPackageBinding,
+    verify_release_package,
 };
 use pinvou_upgrade_codec::{
     Document, PackageSemanticsMode, RootPolicyShape, RootWindowMode, SchemaCheckedEnvelope,
