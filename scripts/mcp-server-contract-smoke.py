@@ -156,12 +156,21 @@ def _schema_has_concrete_type(node) -> bool:
 
 def _walk_tool_schema(node, path: str, offenders: list[str]) -> None:
     """只走 schema 值位置;enum/default/const/examples 里出现的 {} 是数据,不进。"""
+    if isinstance(node, bool):
+        # true 是空 schema 的语义等价物,false 在 MFJS 里同样没有表示:
+        # 与 {} 同类,失败关闭。
+        offenders.append(f"{path}: boolean schema(true/false)等同空节点,MFJS 无表示")
+        return
     if not isinstance(node, dict):
         return
     if "$ref" in node:
         # $ref 的目标内容本守卫不检视(bundled server 均为手写小 schema,直接
         # 内联即可);不跟随是为了不让事故类藏在引用背后,失败关闭。
         offenders.append(f"{path}: $ref 不被本守卫跟随(目标内容未检);请内联 schema")
+        return
+    if "prefixItems" in node:
+        # 与 tuple items 同族:元组语义超出已验证的 MFJS 形状集,失败关闭。
+        offenders.append(f"{path}: prefixItems(元组语义)超出已验证的 MFJS 形状集(items 须为单一 schema)")
         return
     if not node:
         offenders.append(f"{path}: 空 schema 节点(会被 MFJS 拒绝并静默丢工具)")
@@ -199,7 +208,13 @@ def _walk_tool_schema(node, path: str, offenders: list[str]) -> None:
                 _walk_tool_schema(sub, f"{path}.{key}[{index}]", offenders)
 
 
-def check_schema_contract(tool_id: str, tools: list) -> None:
+def check_schema_contract(tool_id: str, tools: list) -> int:
+    """守卫全部工具的 inputSchema,返回检视的工具数。
+
+    返回值被 check_protocol 打进成功行:调用点一旦被删,那行 print 立即
+    NameError——没有它,守卫的接线可以在全 CI 矩阵绿着的情况下被静默拆除
+    (本文件的单测只能钉 walker 内部,钉不住调用点本身)。
+    """
     offenders: list[str] = []
     for tool in tools:
         schema = tool.get("inputSchema")
@@ -211,6 +226,7 @@ def check_schema_contract(tool_id: str, tools: list) -> None:
     assert not offenders, (
         "模型可见 schema 违反契约:\n  " + "\n  ".join(offenders)
     )
+    return len(tools)
 
 
 def check_protocol(tool_id: str, expected_tools: set[str], env=None):
@@ -220,8 +236,8 @@ def check_protocol(tool_id: str, expected_tools: set[str], env=None):
         listed = rpc.call("tools/list")
         actual = {tool["name"] for tool in listed["result"]["tools"]}
         assert actual == expected_tools, (tool_id, actual)
-        check_schema_contract(tool_id, listed["result"]["tools"])
-    print(f"✅ {tool_id}: initialize + tools/list ({len(expected_tools)}) + schema 守卫")
+        walked = check_schema_contract(tool_id, listed["result"]["tools"])
+    print(f"✅ {tool_id}: initialize + tools/list ({len(expected_tools)}) + schema 守卫({walked} 个 inputSchema)")
 
 
 def check_session_reader_length_cap_parity() -> None:
