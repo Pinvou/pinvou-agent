@@ -320,6 +320,14 @@ impl KnowledgeService {
     }
 
     pub fn begin_model_download(&self) -> Result<(), String> {
+        // 服务端孪生门（桌面端 = kb_model_download 的 local_embed_download_refusal）：
+        // 桩构建里下载下来的模型永远无法加载，任何下载触发（含宿主服务的
+        // 远端下载入口）都必须在触碰下载管线之前被拒绝。
+        if !crate::embedding::local_embed_available() {
+            return Err(
+                "本地向量嵌入模型在此平台不可用，无法下载（ort-sys 无本平台制品）".to_string(),
+            );
+        }
         self.model_downloading
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map(|_| ())
@@ -1604,6 +1612,27 @@ mod tests {
         // model_load_failure_uses_negative_cache_then_retries_after_window 覆盖。
         let cached = rt.block_on(async { service.ensure_model_loaded().await });
         assert!(cached.is_err(), "negative cache still reports the failure");
+    }
+
+    #[test]
+    #[cfg(not(all(
+        feature = "local-embed",
+        not(all(target_os = "linux", target_arch = "loongarch64"))
+    )))]
+    fn model_download_refuses_on_stub_embedder_without_starting_the_pipeline() {
+        // 服务端下载门（与桌面端 local_embed_download_refusal 同语义）：桩
+        // 构建里下载注定无法加载,必须在触碰 DOWNLOADING 状态之前拒绝,否则
+        // 状态视图会显示一个永远卡住的「下载中」。
+        assert!(!crate::embedding::local_embed_available());
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let error = service
+            .begin_model_download()
+            .expect_err("stub builds must refuse model downloads");
+        assert!(error.contains("此平台不可用"), "{error}");
+        assert!(!service.model_downloading(), "no download may be in flight");
     }
 
     #[tokio::test]
