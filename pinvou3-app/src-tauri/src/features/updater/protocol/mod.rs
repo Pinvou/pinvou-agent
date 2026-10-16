@@ -163,6 +163,19 @@ pub(crate) fn verify_supplied_download_response_bytes<'a>(
     pinvou_upgrade_verifier::verify_download_info_response(response, inputs)
 }
 
+/// Signed historical/current Release renewal relationship; protected metadata
+/// acceptance and complete chain qualification remain separate owners.
+pub(crate) fn verify_supplied_release_renewal_bytes<'a>(
+    previous: &[u8],
+    next: &[u8],
+    inputs: pinvou_upgrade_verifier::ReleaseRenewalInputs<'a>,
+) -> Result<
+    pinvou_upgrade_verifier::SignatureCheckedReleaseRenewal<'a>,
+    pinvou_upgrade_verifier::ReleaseRenewalVerificationError,
+> {
+    pinvou_upgrade_verifier::verify_release_renewal(previous, next, inputs)
+}
+
 /// Exactly one fixed-origin POST; a dropped/error response can have committed
 /// remotely. Owner-controlled retries and durable ACK/consume recovery remain separate.
 pub(crate) async fn send_client_request_once(
@@ -1410,6 +1423,96 @@ mod tests {
                         error.to_string(),
                         case["code"].as_str().unwrap(),
                         "wrong download refusal {name}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn feature_facade_preserves_authenticated_release_renewal_proof_levels() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        use pinvou_upgrade_verifier::ReleaseRenewalInputs;
+        let output = std::process::Command::new("node")
+            .args([
+                "--input-type=module",
+                "-e",
+                include_str!("verify/tests/release-renewal-oracle.mjs"),
+            ])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../specs/upgrade/v1/reference/signatures.mjs"),
+            )
+            .output()
+            .expect("Node required for composed Release renewal controls");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        for name in [
+            "expired-history-distinct-current-signer",
+            "future-historical-own-time-no-cross-order",
+            "historical-key-denied-not-retroactive",
+            "unchanged-current-root-and-release-key",
+            "both-actual-independent-thresholds",
+            "previous-bad-extra-after-valid-threshold",
+            "immutable-notes",
+            "independent-component",
+            "revision-equal",
+            "next-release-future",
+            "next-noncanonical",
+            "historical-original-window-invalid",
+        ] {
+            let case = cases.iter().find(|c| c["name"] == name).unwrap();
+            let archived =
+                decode_root_policy_shape(&serde_json::to_vec(&case["archivedRoot"]).unwrap())
+                    .unwrap();
+            let current =
+                decode_root_policy_shape(&serde_json::to_vec(&case["currentRoot"]).unwrap())
+                    .unwrap();
+            let context = decode_metadata(&serde_json::to_vec(&case["context"]).unwrap()).unwrap();
+            let now = decode_metadata(&serde_json::to_vec(&case["now"]).unwrap())
+                .unwrap()
+                .protocol_time_shape()
+                .unwrap();
+            let previous = STANDARD
+                .decode(case["previousBytes"].as_str().unwrap())
+                .unwrap();
+            let next = STANDARD
+                .decode(case["nextBytes"].as_str().unwrap())
+                .unwrap();
+            let denied: Vec<String> = serde_json::from_value(case["deniedKeyIds"].clone()).unwrap();
+            match verify_supplied_release_renewal_bytes(
+                &previous,
+                &next,
+                ReleaseRenewalInputs::new(&archived, &current, &context, &now)
+                    .with_denied_key_ids(&denied),
+            ) {
+                Ok(proof) => {
+                    assert_eq!(
+                        case["accepted"], true,
+                        "unexpected renewal acceptance {name}"
+                    );
+                    assert!(std::ptr::eq(
+                        proof.previous().supplied_archived_root(),
+                        &archived
+                    ));
+                    assert!(std::ptr::eq(proof.next().supplied_root(), &current));
+                    assert_eq!(proof.previous().envelope().envelope().raw_bytes(), previous);
+                    assert_eq!(proof.next().envelope().envelope().raw_bytes(), next);
+                    assert_eq!(proof.next().supplied_time_millis(), now.as_millis());
+                }
+                Err(error) => {
+                    assert_eq!(
+                        case["accepted"], false,
+                        "unexpected renewal refusal {name}: {error}"
+                    );
+                    assert_eq!(
+                        error.to_string(),
+                        case["code"].as_str().unwrap(),
+                        "wrong renewal refusal {name}"
                     );
                 }
             }

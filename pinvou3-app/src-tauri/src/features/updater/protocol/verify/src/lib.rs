@@ -10,6 +10,7 @@ mod envelope;
 mod error;
 mod graph;
 mod package;
+mod renewal;
 mod signatures;
 mod successor;
 use envelope::parse_bound_envelope;
@@ -41,6 +42,10 @@ use pinvou_upgrade_codec::{
     Document, PackageSemanticsMode, RootPolicyShape, RootWindowMode, SchemaCheckedEnvelope,
     SuppliedProtocolTime, assert_supplied_credential_semantics, assert_supplied_high_water,
     assert_supplied_metadata_semantics_in_mode,
+};
+pub use renewal::{
+    ReleaseRenewalInputs, ReleaseRenewalVerificationError, SignatureCheckedReleaseRenewal,
+    verify_release_renewal,
 };
 use std::collections::BTreeSet;
 

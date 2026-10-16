@@ -361,3 +361,43 @@ envelope identities and exact borrowed objects are checked. Private keys stay in
 Node. One narrow App facade test reuses twelve genuine controls. Codec/ordinary/manifests/locks
 remain unchanged; prior unaffected regressions retain acceptance. Actual App/CLI
 builds are not workflow E2E; full T27 and physical qualification remain open.
+
+## Authenticated immutable Release renewal
+
+`verify_release_renewal` composes three unchanged complete operations:
+`verify_archived_release`, ordinary next Release verification, and codec
+`assert_supplied_release_renewal`. Both original envelope inputs use fixed
+Release role and independent bounded product/component/releaseId identity.
+Historical and current trust are separately supplied Root objects.
+
+Previous is a historical identity: each original Root/Release window is checked
+at that object's own issuedAt, with full Schema, context, all actual signatures
+and exact archived policy. No current-time or retroactive current-deny check is
+added. Next requires fresh supplied current Root/time, actual ordinary signatures
+and global denial. Complete business equality excludes exactly revision,
+issuedAt and expiresAt. Revision strictly increases; gaps are allowed, and no
+cross-object issuance ordering or signature-array equality is invented.
+
+The immutable result retains distinct `ArchivedEnvelopeIdentity` and
+`SignatureCheckedEnvelope` wrappers, original bytes, signer identities and exact
+separately borrowed Roots. The current wrapper's owned parts are safely rebound
+to the exact input Root; a temporary expected-context borrow cannot escape.
+No partial proof, archive custody/completeness, Root rotation lineage,
+high-water/cache replacement, complete public/private publication, generation
+acceptance, selection or execution permission is established. Those remain
+protected owner responsibilities. This does not choose archival retention policy.
+
+Six tests cover forty-seven composed controls (nine positives): renewal/revision
+eight, immutable business seven, context six, signatures twelve, windows seven
+and wire seven. They compose the three unchanged original Node functions, rather than
+claiming a nonexistent frozen full-renewal helper. Genuine controls cover expired
+history, unchanged Root/key or separately supplied current Release signing policy, revision gaps/safe bound,
+immutable business/context/scope changes, both actual thresholds/bad extras/
+duplicates/exact role policies, current denial without retroactively denying
+history, original own-issued-time behavior without invented cross ordering,
+current windows, canonical/full Schema/resource bounds, original proof bytes and
+distinct Root pointers. Private keys remain in Node. One App facade test reuses twelve
+genuine controls. Ordinary/archive/codec implementations, manifests and locks
+remain unchanged. Actual App/CLI compilation is not workflow E2E; full T27 and
+physical/deployment qualification remain open. No artifact size, retry or total/
+cumulative download duration cap is introduced.
