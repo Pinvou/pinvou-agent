@@ -404,7 +404,10 @@ pub async fn deliver_spooled_message(
     let to_session = message.to_session.clone();
     steer_then_dispatch(
         || pool.steer(&to_session, text.clone()),
-        || pool.deliver_messaging_turn(&to_session, text.clone()),
+        // Round-9 M6 (session-creation): no shield here — this sender runs in an
+        // attended session under the user's eye (the family pass tracks
+        // the target-side question separately).
+        || pool.deliver_messaging_turn(&to_session, text.clone(), false),
     )
     .await
 }

@@ -988,6 +988,9 @@ pub(crate) fn spawn_event_forwarder(
                     status,
                     error,
                     tool_catalog,
+                    // CodeWhale #97 carries the round/submission/compaction
+                    // attribution ids; the forwarder's shell-turn tracking
+                    // keeps its own bookkeeping (behavior unchanged).
                     turn_id: _,
                     submission_id: _,
                     compaction_id: _,

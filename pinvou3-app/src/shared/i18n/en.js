@@ -683,7 +683,7 @@ dictEn.uiBuiltinPlugins = {
   versionNote:'Updates with the app',
   dataAccessLabel:'Data access',
   levels:{ L0:'Read-only: modifies no state; content is marked untrusted', L1:'Write: produces user-visible side effects (e.g. send messages, create tasks)', L2:'Destructive: irreversible delete/overwrite; requires explicit authorization' },
-  dataAccess:{ 'sessions.read':'Local session store (read-only)', 'sessions.write':'Send messages into other local sessions (write)', 'automations.read':'Local scheduled task list (read-only)', 'automations.write':'Create, update, and delete local scheduled tasks (write)' },
+  dataAccess:{ 'sessions.read':'Local session store (read-only)', 'sessions.write':'Send messages into, and create, other local sessions (write)', 'automations.read':'Local scheduled task list (read-only)', 'automations.write':'Create, update, and delete local scheduled tasks (write)' },
 };
 
 // Generic built-in feature degradation copy (docs/builtin-toolset-contract.md
