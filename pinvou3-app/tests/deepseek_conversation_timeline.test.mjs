@@ -480,8 +480,9 @@ try {
   assert.ok(toolRenderers.includes('<QuestionChoiceCard'),
     'DeepSeek request_user_input must use the shared Codex-style choice card');
   assert.ok(toolRenderers.includes('isFreeTextPlaceholderOption')
-    && userInputShared.includes('!allowOther || !isFreeTextPlaceholderOption(option)'),
-  'free-text questions must not render duplicate Other placeholder choices');
+    && userInputShared.includes('allowOther: true')
+    && userInputShared.includes('!isFreeTextPlaceholderOption(option)'),
+  'free-text questions must not render duplicate Other placeholder choices (custom box pinned open, so the placeholder filter is unconditional)');
   assert.ok(toolRenderers.includes('otherPlaceholder={t.uiToolRender.other}'),
     'DeepSeek and Codex question cards must use the same free-text placeholder');
   assert.ok(questionChoiceCard.includes("type={question.multiSelect ? 'checkbox' : 'radio'}")
