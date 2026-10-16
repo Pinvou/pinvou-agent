@@ -217,7 +217,7 @@ name (steps 12-13); cache restore misses stay visible rollback signals. Do not
 recover time by removing a regression filter, moving a step to the other leg
 without its prerequisites, skipping the manifest or import contract, changing
 failures to warnings, or adding another independent large target cache beyond
-the single two-workspace entry documented above.
+the single three-workspace entry documented above.
 
 Source of truth: the `windows-rust-test` job in
 `.github/workflows/pr-check.yml`; on any mismatch the workflow wins.

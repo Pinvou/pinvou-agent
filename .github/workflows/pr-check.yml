@@ -1852,8 +1852,9 @@ jobs:
           # regression leg's filtered pinvou-cli test runs). Cache all three
           # target directories: without the CLI entry every run cold-compiled
           # the CLI dependency tree on the slowest leg — the sibling jobs
-          # that compile it (cli-lint, macos-cli-check; cli-test shares only
-          # the registry portion via cache-targets: false) cache it in
+          # that compile it (cli-lint, macos-cli-check, rust-lint's
+          # product-backend check; cli-test shares only the registry
+          # portion via cache-targets: false) cache it in
           # their own namespaces, which this Windows job can never restore
           # from, so this entry is the only Windows-side warmth the CLI can
           # get. Quota note: this grows the namespace ~1GB,
@@ -1861,7 +1862,11 @@ jobs:
           # macos-rust-check save (see that job; its shared-key rotation
           # lands the shrink on the first post-merge push — rust-cache
           # skips the save on an exact key hit, so a content-only prune
-          # needs the rotation to ever replace the old fat entry).
+          # needs the rotation to ever replace the old fat entry). As with
+          # that rotation, adding a workspace changes only this entry's
+          # exact key (restore prefix unchanged), so the first post-merge
+          # run prefix-restores the old 2-workspace generation and both
+          # entries coexist until LRU/GC reclaims the old one.
           workspaces: |
             pinvou3-app/src-tauri
             CodeWhale
@@ -2607,9 +2612,10 @@ jobs:
       # compile still smoke-tests it" exact per push, with three known,
       # separately-covered gaps: compile inputs outside all four buckets
       # (tauri capabilities, the rustc-stack-wrapper, the include_str!'d
-      # JS asset under src-tauri/src) break the dev-profile
-      # compile too and are caught by this job's push-unconditional
-      # check/lib-test legs — NOT by bundle_chain or release builds; and a
+      # JS asset — rebindErrors.js, embedded by src-tauri from the
+      # frontend tree) break the dev-profile compile too and are caught
+      # by this job's push-unconditional check/lib-test legs — NOT by
+      # bundle_chain or release builds; and a
       # pending Rust push replaced by a docs-only push (push concurrency
       # replaces pending runs) never runs its own smoke — the next Rust
       # push re-runs it. Non-Rust merges skip it (their release-path
