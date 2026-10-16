@@ -55,10 +55,10 @@
 #      on the extracted tree — the .deb file is not an ELF, so the policy
 #      script must not be pointed at the deb directly.
 #
-# RUSTFLAGS are deliberately NOT set here: they are release-job policy (the
-# arm64 job uses -fuse-ld=lld, but the pinned cross toolchain ships NO lld —
-# only bfd ld — so the loong64 job must not copy that flag). Whatever the
-# workflow exports is inherited unchanged.
+# RUSTFLAGS are release-job policy and are inherited unchanged from the
+# workflow env (remap-only there: the pinned cross toolchain ships NO lld —
+# only bfd ld — so the arm64 job's -fuse-ld=lld must never be copied; the
+# rustc-side --remap-path-prefix is kept for artifact-path parity).
 #
 # Env knobs: PINVOU_LOONG64_TOOLCHAIN_PREFIX / PINVOU_LOONG64_SYSROOT (reuse
 # prepared trees), PINVOU_LOONG64_SYSROOT_METHOD and the mirror overrides
@@ -149,9 +149,14 @@ export CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER="$TOOLCHAIN_BIN/$TRIPLE
 export PKG_CONFIG_LIBDIR PKG_CONFIG_SYSROOT_DIR CMAKE_TOOLCHAIN_FILE
 # bindgen (libspa/pipewire -sys build scripts) must bind against the target
 # sysroot's headers, not the host's /usr/include (exported by the sysroot
-# script's print_env on the pr-check path; re-exported here because this
-# script owns the release path's cargo invocations).
-export BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$sysroot"
+# script on the pr-check path; re-exported here because this script owns
+# the release path's cargo invocations). The explicit --target is load
+# bearing: bindgen 0.72 compiles its clang_macro_fallback PCH from the
+# clang args known before it injects --target for cross builds, so without
+# it the fallback parses the sysroot's glibc headers as the host arch —
+# the multiarch bits fail to resolve and typedef-carrying macro bodies
+# (spa's SPA_ID_INVALID) evaluate to nothing and drop out of the bindings.
+export BINDGEN_EXTRA_CLANG_ARGS="--target=$TRIPLE --sysroot=$sysroot"
 # bindgen dlopens libclang. LoongArch became a primary LLVM target in 16 and
 # the jammy archive ships no libclang >= 16 (its 14/15 lack the target), so
 # the release job installs libclang-18-dev from the pinned apt.llvm.org

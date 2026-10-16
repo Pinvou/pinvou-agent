@@ -465,10 +465,15 @@ apt_method() {
   # package wins, so main keeps priority over the extra components.
   local release_url="$mirror/dists/$suite/Release"
   local release_file="$work_dir/Release"
-  # Keep the Release file: its SHA256 section authenticates every
-  # Packages.gz index below. Without that check the index is only protected
-  # by TLS to a mirror the operator can redirect — and every per-.deb hash
-  # is read FROM that index, so an unsigned index proves nothing.
+  # Keep the Release file: its SHA256 section ties every Packages.gz index
+  # below to it, and every per-.deb hash is read FROM that index, so the
+  # chain defeats mirror inconsistency, truncation and a stale/mismatched
+  # index. Trust anchor honesty: the Release file itself is fetched over
+  # plain TLS and its GPG signature is NOT verified (no InRelease/keyring
+  # check), so a mirror that can also serve a self-consistent Release is
+  # outside what this check defends against. Deepin publishes InRelease;
+  # wiring a pinned-key verification is a deliberate follow-up, not done
+  # here.
   curl --proto '=https' --tlsv1.2 --location --silent --show-error --fail \
     --retry 3 --retry-delay 2 -o "$release_file" "$release_url" \
     || fail "Release download failed: $release_url"
@@ -832,15 +837,23 @@ PINVOU_LOONG64_SYSROOT=$output_dir
 PKG_CONFIG_LIBDIR=$output_dir/usr/lib/$MULTIARCH_DIR/pkgconfig:$output_dir/usr/share/pkgconfig:$output_dir/usr/lib/pkgconfig
 PKG_CONFIG_SYSROOT_DIR=$output_dir
 CMAKE_TOOLCHAIN_FILE=$output_dir/$CMAKE_TOOLCHAIN_NAME
-BINDGEN_EXTRA_CLANG_ARGS=--sysroot=$output_dir
+BINDGEN_EXTRA_CLANG_ARGS=--target=$TRIPLE --sysroot=$output_dir
 ---- notes ----
 # Do NOT set PKG_CONFIG_PATH (it appends to the host's default dirs); the
 # LIBDIR above fully replaces the search path. The host pkg-config binary
 # is used as-is (it reads foreign .pc files); no target pkg-config needed.
 # BINDGEN_EXTRA_CLANG_ARGS points bindgen (libspa/pipewire -sys build
 # scripts) at this sysroot so bindings resolve target headers instead of
-# the host's /usr/include; LIBCLANG_PATH itself is host tooling and is
-# exported by the CI job / orchestrator (libclang-18 pin).
+# the host's /usr/include. The explicit --target is load bearing, not
+# redundant: bindgen 0.72 compiles its clang_macro_fallback PCH from the
+# clang args known before it injects --target for cross builds, so the
+# fallback otherwise parses the sysroot's glibc headers as the host arch —
+# the multiarch bits then fail to resolve and every macro whose body uses
+# a stdint typedef (spa's SPA_ID_INVALID / SPA_TIME_INVALID do) evaluates
+# to nothing and vanishes from the bindings (libspa E0425). Env args are
+# merged before the fallback arg set is derived, so spelling --target
+# here reaches it. LIBCLANG_PATH itself is host tooling and is exported
+# by the CI job / orchestrator (libclang-18 pin).
 # The generated $CMAKE_TOOLCHAIN_NAME sets CMAKE_SYSTEM_NAME /
 # CMAKE_SYSTEM_PROCESSOR=loongarch64, the cross compilers from the
 # toolchain prefix and CMAKE_SYSROOT — exactly the interface
