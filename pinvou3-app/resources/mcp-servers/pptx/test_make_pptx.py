@@ -16,10 +16,10 @@ pptx 工具(make_pptx)测试用例 —— 覆盖本次 PR 的可确定性核心�
   7. slides 传成 JSON 字符串也兼容(模型有时这么传)
   8. 回归:不再产生调试落盘文件 ~/_make_pptx_debug.json
   9. MCP 协议冒烟(子进程):initialize / tools/list / tools/call(make_pptx)
-  10. 非法 JSON 抢救 / 彻底空 loud error
-  11. slides inputSchema.items 结构钉死(数组必须带具体类型 items)
-  12. 可选字段显式 null 安全(DeepSeek strict 模式把全部属性改 required+nullable)
-  13. kpi 数值 0 / agenda dict items(schema anyOf 允许)按数据渲染,不被 `or` 吞掉
+  10. malformed-JSON salvage / fully empty loud error
+  11. slides inputSchema.items structure pinned (arrays must carry concretely typed items)
+  12. explicit-null optional fields are safe (DeepSeek strict mode rewrites every property required+nullable)
+  13. kpi numeric 0 / agenda dict items (allowed by the schema anyOf) render as data, not swallowed by `or`
 
 注意:测试把 PINVOU3_SESSION_ARTIFACTS 指向临时目录,不污染 ~/.pinvou3。
 """
@@ -260,55 +260,61 @@ def test_malformed_json_salvage():
             "空/无法解析的 slides 应返回 ok:False+error,实际 %r(输入 %r)" % (r2, empty)
 
 
-# ── 11. slides schema 必须带结构化 items(回归:k3 曾把无 items 的数组补全成 [])──
-@case("11. slides inputSchema.items 结构钉死(数组必须带具体类型 items)")
+# ── 11. slides schema must carry structured items (regression: k3 once completed an itemless array to []) ──
+@case("11. slides inputSchema.items structure pinned (arrays must carry concretely typed items)")
 def test_slides_schema_items_pin():
     schema = server.TOOL_DEFS[0]["inputSchema"]["properties"]["slides"]
-    assert schema.get("type") == "array", "slides 应为 array,实际 %r" % schema.get("type")
+    assert schema.get("type") == "array", "slides must be an array, got %r" % schema.get("type")
     items = schema.get("items")
-    assert isinstance(items, dict) and items, "slides 必须带非空 items(Kimi 通道会把无 items 数组补全成 []),实际 %r" % items
-    assert items.get("type") == "object", "items 应为 object,实际 %r" % items.get("type")
-    assert items.get("required") == ["layout"], "items.required 应为 ['layout'],实际 %r" % items.get("required")
-    # layout 枚举必须与 LAYOUTS 渲染表精确一致(新增版式漏更枚举应在此爆红)
+    assert isinstance(items, dict) and items, "slides must carry non-empty items (Kimi-channel decoders complete an itemless array to []), got %r" % items
+    assert items.get("type") == "object", "items must be an object, got %r" % items.get("type")
+    assert items.get("required") == ["layout"], "items.required must be ['layout'], got %r" % items.get("required")
+    # The layout enum must match the LAYOUTS render table exactly (a new
+    # layout added without updating the enum must turn red here).
     props = items.get("properties") or {}
     assert set(props.get("layout", {}).get("enum") or []) == set(server.LAYOUTS), \
-        "layout.enum 应与 LAYOUTS 完全一致,实际 %r vs %r" % (props.get("layout", {}).get("enum"), sorted(server.LAYOUTS))
-    # chartType 枚举必须与 _CHART_TYPES 渲染表精确一致
+        "layout.enum must match LAYOUTS exactly, got %r vs %r" % (props.get("layout", {}).get("enum"), sorted(server.LAYOUTS))
+    # The chartType enum must match the _CHART_TYPES render table exactly.
     assert set(props.get("chartType", {}).get("enum") or []) == set(server._CHART_TYPES), \
-        "chartType.enum 应与 _CHART_TYPES 完全一致,实际 %r vs %r" % (props.get("chartType", {}).get("enum"), sorted(server._CHART_TYPES))
-    # 属性名集合钉死:少一个字段(模型失去该字段指引)或多一个未登记字段都应爆红
+        "chartType.enum must match _CHART_TYPES exactly, got %r vs %r" % (props.get("chartType", {}).get("enum"), sorted(server._CHART_TYPES))
+    # Property-name set pinned: a dropped field (the model loses that field's
+    # guidance) and an unregistered extra field must both turn red.
     expected = {"layout", "title", "subtitle", "date", "items", "bullets", "leftTitle", "left",
                 "rightTitle", "right", "chartType", "categories", "series", "headers", "rows",
                 "caption", "image"}
     assert set(props) == expected, \
-        "slides.items.properties 应恰为 %d 个声明字段,差异 %r" % (len(expected), set(props) ^ expected)
-    # 全部嵌套数组都要带具体类型的 items(守卫类:再引入无 items 数组应在此爆红)
+        "slides.items.properties must be exactly the %d declared fields, diff %r" % (len(expected), set(props) ^ expected)
+    # Every nested array must carry concretely typed items (guard class:
+    # reintroducing an itemless array must turn red here).
     def _assert_typed(node, path):
         if node.get("type") != "array":
             return
         sub = node.get("items")
-        assert isinstance(sub, dict) and sub, "%s 缺 items" % path
+        assert isinstance(sub, dict) and sub, "%s is missing items" % path
         if sub.get("type") in ("array", "object", "string", "number"):
             if sub.get("type") == "array":
                 _assert_typed(sub, path + ".items")
         elif "anyOf" in sub:
             for i, br in enumerate(sub["anyOf"]):
-                assert br.get("type"), "%s.anyOf[%d] 缺具体 type" % (path, i)
+                assert br.get("type"), "%s.anyOf[%d] lacks a concrete type" % (path, i)
         else:
-            assert False, "%s.items 缺具体 type: %r" % (path, sub.get("type"))
+            assert False, "%s.items lacks a concrete type: %r" % (path, sub.get("type"))
     for key in ("bullets", "left", "right", "categories", "headers", "rows", "items", "series"):
         _assert_typed(props[key], "slides.items.properties.%s" % key)
-    # series.data 数值数组 + rows 二维数组这两处最深,单独钉形状
+    # series.data's numeric array and rows' 2-D array are the two deepest
+    # spots; pin their shapes separately.
     series_items = props["series"]["items"]
-    assert series_items.get("required") == ["name", "data"], "series items.required 应为 ['name','data'],实际 %r" % series_items.get("required")
-    assert series_items["properties"]["data"]["items"] == {"type": "number"}, "series.data items 应为 number"
+    assert series_items.get("required") == ["name", "data"], "series items.required must be ['name','data'], got %r" % series_items.get("required")
+    assert series_items["properties"]["data"]["items"] == {"type": "number"}, "series.data items must be number"
     assert props["rows"]["items"]["type"] == "array" and props["rows"]["items"]["items"] == {"type": "string"}, \
-        "rows 应为二维字符串数组,实际 %r" % props["rows"]
+        "rows must be a 2-D string array, got %r" % props["rows"]
 
 
-# ── 12. 可选字段显式 null 安全(DeepSeek strict 把全部属性改 required+nullable,
-#        模型会对不用的字段显式发 "field": null;渲染层必须回退默认而不是炸页)──
-@case("12. 可选字段显式 null 渲染无错误占位页、无字面 None")
+# ── 12. explicit-null optional-field safety (DeepSeek strict rewrites every
+#        property required+nullable, so the model explicitly sends
+#        "field": null for unused fields; the renderer must fall back to
+#        defaults instead of blowing up the page) ──
+@case("12. explicit-null optional fields render with no error placeholder pages and no literal None")
 def test_explicit_null_fields_render():
     deck = _deck(
         {"layout": "cover", "title": None, "subtitle": None, "date": None},
@@ -324,23 +330,25 @@ def test_explicit_null_fields_render():
         {"layout": "end", "title": None, "subtitle": None},
     )
     r = server.make_pptx(theme="business-blue", slides=deck, filename="test_null_fields")
-    assert r.get("ok") is True, "全 null 可选字段应 ok=True,实际 %r" % r
-    assert r["slides"] == 10, "页数应为 10,实际 %r" % r["slides"]
+    assert r.get("ok") is True, "all-null optional fields must render ok=True, got %r" % r
+    assert r["slides"] == 10, "slide count must be 10, got %r" % r["slides"]
     prs = Presentation(r["path"])
     texts = [shape.text_frame.text
              for slide in prs.slides for shape in slide.shapes if shape.has_text_frame]
     joined = "\n".join(texts)
-    assert "本页渲染失败" not in joined, "任何一页都不应渲染失败: %s" % joined[:300]
-    assert "None" not in joined, "null 不应渲染成字面 None: %r" % [t for t in texts if "None" in t]
-    # null title 应回退各版式默认标题;kpi 的字符串元素(schema anyOf 允许)按大数字渲染
-    assert "未命名演示" in joined and "谢谢" in joined, "cover/end 的 null title 应回退默认标题"
-    assert "68%" in joined, "kpi 字符串元素应作为大数字渲染"
+    assert "本页渲染失败" not in joined, "no page may render as a failure: %s" % joined[:300]
+    assert "None" not in joined, "null must not render as a literal None: %r" % [t for t in texts if "None" in t]
+    # A null title must fall back to each layout's default title; a kpi
+    # string element (allowed by the schema anyOf) renders as the big number.
+    assert "未命名演示" in joined and "谢谢" in joined, "cover/end null titles must fall back to the default titles"
+    assert "68%" in joined, "kpi string elements must render as the big number"
 
 
-# ── 13. 数值 0 与 dict 形 items:items 的 anyOf 允许 {num,label},渲染层对
-#        num/label 只按 None 回退 —— 数值 0 是合法数据,`or` 惯用法会把它吞成
-#        空白卡;agenda 收到 dict 元素也不得渲染成 dict repr。──
-@case("13. kpi 数值 0 与 agenda dict items 按数据渲染")
+# ── 13. numeric 0 and dict-form items: the items anyOf allows {num,label},
+#        and num/label fall back on None only — a numeric 0 is valid data
+#        that the `or` idiom would swallow into a blank card; an agenda dict
+#        element must not render as a dict repr either. ──
+@case("13. kpi numeric 0 and agenda dict items render as data")
 def test_falsy_and_dict_items_render():
     deck = _deck(
         {"layout": "kpi", "title": "指标",
@@ -349,20 +357,21 @@ def test_falsy_and_dict_items_render():
          "items": [{"num": "68%", "label": "满意度"}, "前言"]},
     )
     r = server.make_pptx(theme="business-blue", slides=deck, filename="test_falsy_items")
-    assert r.get("ok") is True, "数值 0 / dict items 应 ok=True,实际 %r" % r
-    assert r["slides"] == 2, "页数应为 2,实际 %r" % r["slides"]
+    assert r.get("ok") is True, "numeric 0 / dict items must render ok=True, got %r" % r
+    assert r["slides"] == 2, "slide count must be 2, got %r" % r["slides"]
     prs = Presentation(r["path"])
     texts = [shape.text_frame.text
              for slide in prs.slides for shape in slide.shapes if shape.has_text_frame]
     joined = "\n".join(texts)
-    assert "本页渲染失败" not in joined, "任何一页都不应渲染失败: %s" % joined[:300]
-    # 数值 0 必须按数据渲染成独立的 "0" 文本框(agenda 序号是 "01"/"02",不算)
-    assert "0" in texts, "kpi 数值 0 不应被 or 吞成空白卡,实际文本框 %r" % texts
-    assert "5" in texts, "kpi 数值 5 应正常渲染,实际文本框 %r" % texts
-    # agenda 的 dict 元素按 "num label" 渲染,不能是 dict repr
-    assert "满意度" in joined and "68%" in joined, "agenda dict items 应渲染 num/label: %r" % texts
-    assert "{" not in joined and "'" not in joined, "agenda 不应渲染 dict repr: %r" % texts
-    assert "前言" in joined, "agenda 字符串元素应按原文渲染"
+    assert "本页渲染失败" not in joined, "no page may render as a failure: %s" % joined[:300]
+    # A numeric 0 must render as its own "0" text box (agenda ordinals are
+    # "01"/"02", which do not count).
+    assert "0" in texts, "kpi numeric 0 must not be swallowed by `or` into a blank card, got text frames %r" % texts
+    assert "5" in texts, "kpi numeric 5 must render normally, got text frames %r" % texts
+    # An agenda dict element renders as "num label", never a dict repr.
+    assert "满意度" in joined and "68%" in joined, "agenda dict items must render num/label: %r" % texts
+    assert "{" not in joined and "'" not in joined, "agenda must not render a dict repr: %r" % texts
+    assert "前言" in joined, "agenda string elements must render verbatim"
 
 
 # ── 跑全部 ───────────────────────────────────────────────────────────────

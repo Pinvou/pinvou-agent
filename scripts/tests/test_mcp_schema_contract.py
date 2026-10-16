@@ -1,21 +1,27 @@
-"""mcp-server-contract-smoke 模型可见 schema 守卫自身的单测。
+"""Unit tests for the model-visible schema guard in mcp-server-contract-smoke.
 
-守卫(check_schema_contract/_walk_tool_schema)跑在 CI fast-gate 的
-mcp-server-contract-smoke.py 里,对全部 bundled server 的 tools/list 结果做
-形状检查。所有 bundled server 目前都合规——守卫自身若被改坏,smoke 依旧
-全绿(对合规 schema,坏守卫与好守卫同样沉默),只有这里的直接单测能在
-守卫腐坏时爆红。红/绿两方向都钉:事故形状(数组无 items)、items:{}、
-无类型 items、tuple items、prefixItems、boolean schema、anyOf 空分支、
-$ref 必须红;全类型 oneOf/allOf、真实 pptx schema 必须绿。递归通道
-(additionalProperties、anyOf 分支内部)各自有一个红例钉住——walker 的
-递归不是摆设,而是每条通道都被断言消费。接线(调用点本身)由
-check_schema_contract 的返回值契约钉住:check_protocol 把它打进成功行,
-调用点被删时该行立即 NameError,单测钉返回值。
+The guard (check_schema_contract/_walk_tool_schema) runs inside the CI
+fast-gate's mcp-server-contract-smoke.py, shape-checking every bundled
+server's tools/list result. All bundled servers are currently compliant, so
+if the guard itself breaks the smoke stays green (against compliant schemas
+a broken guard is exactly as silent as a good one) — only the direct unit
+tests here turn red when the guard rots. Both directions are pinned: the
+incident shape (itemless array), items:{}, untyped items, tuple items,
+prefixItems, boolean schemas, anyOf with an empty branch, and $ref must be
+red; fully typed oneOf/allOf and the real pptx schema must be green. The
+recursion lanes (additionalProperties, inside anyOf branches) each have a
+red case pinning them — the walker's recursion is not decorative, every
+lane is consumed by an assertion. The wiring (the call site itself) is
+pinned by check_schema_contract's return-value contract: check_protocol
+prints it into the success line, which raises NameError the moment the call
+site is deleted; the unit test pins the return value.
 
-真实 pptx schema 的绿例需要 python-pptx 才能导入 server 模块;fast-gate 里
-unittest discover 先于 python-pptx 安装执行,故该例在有依赖的环境跳过——
-CI 对真实 schema 的绿覆盖由同一 job 里后面的 smoke 步骤(真实 stdio 启动
-pptx 并跑同一守卫)提供,这里补的是本地全量深度。
+The real-pptx-schema green case needs python-pptx to import the server
+module; in the fast-gate, unittest discover runs before python-pptx is
+installed, so that case skips in dependency-free environments — CI's green
+coverage of the real schema comes from the smoke step later in the same job
+(a real stdio pptx boot run through the same guard); what this file adds is
+local full-depth coverage.
 """
 import importlib.util
 import unittest
@@ -37,12 +43,12 @@ smoke = _load_module("mcp_contract_smoke_under_test", SMOKE)
 
 try:
     pptx_server = _load_module("pptx_server_under_test", PPTX_SERVER)
-except Exception:  # python-pptx 未装(fast-gate discover 步骤先于依赖安装)
+except Exception:  # python-pptx not installed (fast-gate discover runs before deps)
     pptx_server = None
 
 
 def _contract_message(schema):
-    """跑守卫,返回违例清单文本;合规返回 None。"""
+    """Run the guard; return the offender-list text, or None when compliant."""
     try:
         smoke.check_schema_contract("t", [{"name": "tool", "inputSchema": schema}])
     except AssertionError as error:
@@ -55,18 +61,18 @@ class SchemaContractWalkerTest(unittest.TestCase):
         message = _contract_message(
             {"type": "object", "properties": {"slides": {"type": "array"}}})
         self.assertIsNotNone(message)
-        self.assertIn("缺少带具体类型的 items", message)
+        self.assertIn("without concretely typed items", message)
         self.assertIn("slides", message)
 
     def test_empty_items_node_is_red(self):
         message = _contract_message({"type": "array", "items": {}})
         self.assertIsNotNone(message)
-        self.assertIn("空 schema 节点", message)
+        self.assertIn("empty schema node", message)
 
     def test_untyped_items_node_is_red(self):
         message = _contract_message({"type": "array", "items": {"description": "x"}})
         self.assertIsNotNone(message)
-        self.assertIn("缺少带具体类型的 items", message)
+        self.assertIn("without concretely typed items", message)
 
     def test_tuple_items_is_red(self):
         message = _contract_message({"type": "array", "items": [{"type": "string"}]})
@@ -78,7 +84,7 @@ class SchemaContractWalkerTest(unittest.TestCase):
             {"type": "array",
              "items": {"anyOf": [{"type": "string"}, {"description": "x"}]}})
         self.assertIsNotNone(message)
-        self.assertIn("缺少带具体类型的 items", message)
+        self.assertIn("without concretely typed items", message)
 
     def test_fully_typed_one_of_items_is_green(self):
         self.assertIsNone(_contract_message(
@@ -102,21 +108,22 @@ class SchemaContractWalkerTest(unittest.TestCase):
     def test_nested_array_without_items_is_red_at_inner_level(self):
         message = _contract_message({"type": "array", "items": {"type": "array"}})
         self.assertIsNotNone(message)
-        self.assertIn("缺少带具体类型的 items", message)
+        self.assertIn("without concretely typed items", message)
 
     def test_empty_property_node_is_red(self):
         message = _contract_message({"type": "object", "properties": {"x": {}}})
         self.assertIsNotNone(message)
-        self.assertIn("空 schema 节点", message)
+        self.assertIn("empty schema node", message)
 
     def test_boolean_schema_node_is_red(self):
-        # true 是空 schema 的语义等价物:与 {} 同类,必须红。
+        # true is semantically the empty schema: same class as {}, must be red.
         message = _contract_message({"type": "object", "properties": {"x": True}})
         self.assertIsNotNone(message)
         self.assertIn("boolean schema", message)
 
     def test_prefix_items_is_red(self):
-        # 元组语义与 tuple items 同族,超出已验证的 MFJS 形状集。
+        # Tuple semantics, same family as tuple items: outside the verified
+        # MFJS shape set.
         message = _contract_message(
             {"type": "array", "items": {"type": "string"},
              "prefixItems": [{"type": "string"}]})
@@ -124,25 +131,28 @@ class SchemaContractWalkerTest(unittest.TestCase):
         self.assertIn("prefixItems", message)
 
     def test_itemless_array_inside_additional_properties_is_red(self):
-        # 钉 additionalProperties 递归通道:删掉这条递归,此例必须翻红不了。
+        # Pin the additionalProperties recursion lane: remove that recursion
+        # and this case must stop turning red.
         message = _contract_message(
             {"type": "object", "additionalProperties": {"type": "array"}})
         self.assertIsNotNone(message)
         self.assertIn("additionalProperties", message)
-        self.assertIn("缺少带具体类型的 items", message)
+        self.assertIn("without concretely typed items", message)
 
     def test_itemless_array_inside_union_branch_is_red(self):
-        # 钉 anyOf/oneOf 分支递归通道:并集任一分支都可能被取到。
+        # Pin the anyOf/oneOf branch recursion lane: any branch of a union
+        # may be taken.
         message = _contract_message(
             {"type": "object",
              "properties": {"x": {"anyOf": [{"type": "array"}, {"type": "string"}]}}})
         self.assertIsNotNone(message)
         self.assertIn("anyOf[0]", message)
-        self.assertIn("缺少带具体类型的 items", message)
+        self.assertIn("without concretely typed items", message)
 
     def test_guard_wiring_returns_walked_tool_count(self):
-        # 接线钉:check_protocol 消费这个返回值打印成功行,调用点被删时
-        # 那行 print 立即 NameError——walker 内部单测钉不住调用点本身。
+        # Wiring pin: check_protocol consumes this return value to print the
+        # success line, which raises NameError the moment the call site is
+        # deleted — the walker's own unit tests cannot pin the call site.
         walked = smoke.check_schema_contract("t", [
             {"name": "a", "inputSchema": {"type": "string"}},
             {"name": "b", "inputSchema": {"type": "array",
@@ -161,7 +171,7 @@ class SchemaContractWalkerTest(unittest.TestCase):
              "properties": {"e": {"enum": ["a", "b"]}, "s": {"type": "string"}},
              "additionalProperties": False}))
 
-    @unittest.skipIf(pptx_server is None, "python-pptx 未安装(无法导入 pptx server 模块)")
+    @unittest.skipIf(pptx_server is None, "python-pptx not installed (cannot import the pptx server module)")
     def test_real_pptx_schema_is_green(self):
         self.assertIsNone(_contract_message(pptx_server.TOOL_DEFS[0]["inputSchema"]))
 
