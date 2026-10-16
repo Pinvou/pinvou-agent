@@ -11276,3 +11276,127 @@ total/cumulative duration or retry cap; 32 MiB is not an artifact/download-size 
 DCO committed and pushed as `de7c555d3a0d61cbae5bb5530f55005ac48d8129` on
 `codex/t09-debian-decode`; scope/evidence is in
 `docs/artifact-debian-decode-integration.md`.
+
+### T09 explicit LZMA-alone and Debian data decoding
+
+Two consecutive accepted commits b4b9ee693468eed1862fcc30813521be497801b7
+and b963a3dfc9229b865cad972e893d5b2c2f436015 were initially imported as nine
+exact raw/Git blobs: five existing paths matched their first parent, four paths
+were absent. The source delta adds 102 historical documentation lines, one
+go.mod line, two go.sum lines, 11 added/5 removed Debian dispatch lines and 46
+added signed-composition test lines. Historical source evidence is separate from
+fresh combined-tree runs.
+Eight imported paths remain exact. The repaired lzma.go and two new EOF
+implementation/test paths have separate primary repair proof. All three earlier
+gzip repair paths stayed exact. No whole-branch overwrite was performed.
+
+The only added module is github.com/ulikunitz/xz v0.5.17, its pure-Go classic
+LZMA Reader. Official proxy download and public sum.golang.org lookup matched
+both pinned go.sum entries. Its go.mod has no additional module requirements.
+Actual cache source and all file identities were checked; the BSD license is
+retained byte-exact under compression/third_party/ulikunitz-xz.LICENSE and must
+accompany binary redistribution materials. Every root/independent run checked
+the pinned cache, public-checksum proof and license; modules verified separately.
+
+Explicit stored, expanded source/memory and dictionary capacities are distinct.
+Properties, original header dictionary and known expanded size are checked before
+SDK allocation. Dictionary has a minimum of 4096 bytes and reserves its sentinel
+byte before host-int conversion. SDK probability/fixed workspace and total
+preparation heap remain separate. The pinned SDK supports known-size headers
+through 2^50 bytes (1 PiB); above that returns LZMAUnsupported after caller/host
+capacity checks. Unknown-size
+sentinel does not have this SDK header boundary. This is an implementation support
+boundary, not an artifact/download policy, timeout or 32 MiB limit.
+
+Independent pre-import SDK/liblzma evaluation covered 167 synthetic/specification
+profiles. It exposed two bugs: canonical known0/no-EOS was refused, and 22 corrupt
+known+EOS finalization variants were accepted. Duplicate empty-writer and
+canonical vectors represent one bug. A red original-adapter regression passed 143
+children and failed 24 children plus its parent (7.53s
+command wall); that expected failing run is retained, not final acceptance.
+Python ALONE independently checks true known/no-EOS. Its wrapper refuses even
+the lawful specification known+EOS positive, so independent RAW LZMA1 verifies
+full EOS/no unused bytes plus exact header count and output SHA for that profile.
+That reference limitation is not classified as a malformed artifact.
+
+Primary repair recognizes only exact 18-byte known0 with all five range-init
+bytes zero, after all ordinary guards, and returns normal owned empty Capture.
+Other zero-size forms use the full decoder. Known+EOS is first decoded normally,
+then replayed through the SDK's strict unknown-size EOS path using the same
+immutable source and only a private size-header substitution. Complete EOS,
+exact stored EOF, original known count, expanded SHA and context are checked with
+fixed scratch, no second expanded capture. Known/no-EOS is not required to have
+an EOS marker. Original decoder references are dropped before replay; GC timing
+does not guarantee total heap. Replay may use full header dictionary instead of
+known-size shrinking, always within explicit dictionary capacity. Any failure
+returns no Snapshot or earlier Debian/signed facts. No dependency fork is used.
+LZMA-alone has no checksum/magic authentication; identity is an observation only.
+
+Debian dispatch adds only data.tar.lzma with explicit LZMADictionaryBytes.
+Existing keyed zero-field plain/gzip/bzip2 behavior remains compatible; no control
+LZMA, XZ or Zstd dispatch is added. Signed composition repeats current Manifest,
+Root and deny checks over the same original native-byte source.
+
+Both scoped line-level independent reviews passed after primary repairs.
+Root passed 14 gates: three own CLI builds, affected tests in 13 packages, actual
+isolated PG, whole default suite, modules, full vet, server build, pinned V1,
+license/cache proof, formatting and two whitespace checks. Affected passed
+119 top-level/295 child tests, zero failures,
+one explicit unavailable actual-AR-tool skip (37.252s wall).
+Thirteen required actual cases passed, including the prior 11 actual cases plus
+independent Python-produced Debian LZMA data and synthetic-signed composition.
+All 167 EOF children, canonical empty guards/restoration, nonallocating known-size
+and 32-bit dictionary boundaries, capacities, truncation/tail/concatenation,
+cancellation, owned isolation and 33 MiB expanded LZMA passed.
+
+Six fixed original fixtures stayed exact. The new Debian LZMA fixture is 10588
+bytes, SHA256 2aa4a71a063e4e826aedb0fd71f668738e41914ccdc33816ec7edbac35b743d8;
+Python independently decoded its control/data to 10240-byte originals with frozen
+identities. Prior gzip/bzip2/long-header independent checks remain enabled.
+Nothing was installed/executed, or certified as an app/publisher/repository release.
+
+Actual PG17.11 passed 1 top-level/4 child tests with zero skips/failures
+(27.927s recorded interval). This is unchanged plain-member stage
+regression, not PG LZMA or CRC qualification. Before/after inventories matched:
+0 pre-existing fixture databases and
+1 pre-existing fixture role retained; no new
+fixture resources remained. Whole default passed 62 tested
+packages, 571 top-level/1348 child tests
+(141.064s wall); 578 top-level/606 child
+opt-in/unavailable-host skips and 12 no-test packages are separate. Sourcefile
+symlink/mapped-drive host fixtures remain unverified, as does actual AR-tool output.
+
+The initial whole-default run failed one unchanged upgrade-events native-pipe
+cancellation test at its five-second observation allowance (144.745s
+whole-run wall; 570 top-level/1348 child passes, 578/606 skips, one top-level
+failure). Source stayed fixed. Isolated original-test repetition passed five of
+five (11.802s wall). The complete default suite was then rerun
+and passed with the counts above; the isolated positives did not replace that
+gate. Accepted root evidence combines the first five passed stages and nine
+subsequent retry/remaining stages, preserving the initial failure separately.
+No event code or test allowance changed.
+
+Each reviewer passed 11 gates with own three CLI builds, identical affected
+counts/13 actual cases/one AR skip, PG 1/4 zero skips/failures, modules, affected
+vet, license/cache proof, formatting and both whitespace checks. Dependency and
+compatibility affected walls were 35.649s/
+34.062s; PG intervals were
+20.621s/19.287s.
+PG intervals include pre-inventory through Go completion and exclude post-inventory
+and frozen-source checks; other command walls exclude frozen-source checks.
+Independent runs do not repeat the root whole-default suite. All sessions/owned
+children closed. Source/index/status, 69 prior SQL identities, four official SBOM
+resources, six fixtures, prior gzip repairs and new import/repair identities stayed
+fixed. Official module/retained license matched in all three runs.
+
+No TAR/control interpretation, app/version/architecture/publisher or native
+authentication, protected staging, execution, Artifact admission or physical/
+deployment qualification is supplied. No SQL/grant/route/provider/Root/Session/
+UI/contract/version change. Full T09 stays in progress; totals 5 implemented,
+12 in progress, 30 incomplete/deferred out of 47. Product 0.10.9, normative 1.0,
+pinned V1, CodeWhale and deployment deferral stay unchanged. Downloads have no
+hard total/cumulative duration or retry cap; 32 MiB bounds only the joined atomic
+business inventory.
+
+DCO committed and pushed as `e1bba99a91b0033d3630e70a379e2e2f75f2b44c` on
+`codex/t09-lzma`; scope/evidence is in `docs/artifact-lzma-integration.md`.
