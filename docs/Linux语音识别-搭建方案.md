@@ -78,7 +78,7 @@ PINVOU3_ASR_CMD=~/.pinvou3/asr/pinvou3-asr-shim.py SV_MODEL=~/.pinvou3/asr/sense
 ## 五·二、loongarch64 注意
 
 - release CI 已为 loongarch64 交叉构建 SenseVoice 引擎（ggml 启用 LASX），随 loong64 安装包分发，无需用户自行构建。
-- 从源码构建引擎时，仍按 `uname -m` 取本机架构的原生构建口径操作（同上节 arm64 的做法）。
+- 从源码构建引擎时，仍按 `uname -m` 取本机架构的原生构建口径操作（同上节 arm64 的做法）；区别是 loongarch64 不在 setup 脚本的 cmake 自动下载范围内，机器上需自备系统 cmake（`apt install cmake`）。
 
 ## 六、生产化待办
 
