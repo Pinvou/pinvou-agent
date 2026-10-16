@@ -162,8 +162,10 @@ async function testImageInputCapability(model, baseUrl, apiKey, modelId) { retur
     const sync = function () {
       return invoke("set_global_shortcut_config", { enabled: !!enabled, accelerator: String(accelerator || "") });
     };
-    // Retry once so a transient IPC failure does not desync the settings
-    // snapshot from the native registration for long (same shape as
+    // Retry once on any invocation failure — a transient IPC error, or a
+    // Rust-side persist failure (which rolls the registration back before
+    // returning Err). The full re-apply is safe: apply_config is idempotent
+    // per (enabled, accelerator) and disk stays authoritative (same shape as
     // setVoiceShortcutEnabled); on persistent failure return null so the
     // caller can roll its optimistic state back. On success the authoritative
     // response is mirrored into state.settings so a settings-page remount

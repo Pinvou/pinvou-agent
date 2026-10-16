@@ -2374,14 +2374,23 @@ mod tests {
             legacy.global_shortcut_accelerator,
             DEFAULT_GLOBAL_SHORTCUT_ACCELERATOR
         );
-        // No file at all (fresh install / corrupt fallback via
-        // `defaults_for_system_locale`): same outcome — the accelerator
-        // default must be applied explicitly there, since the struct-update
-        // spread bypasses the per-field serde defaults.
+        // No file at all (fresh install via `defaults_for_system_locale`):
+        // same outcome — the accelerator default must be applied explicitly
+        // there, since the struct-update spread bypasses the per-field serde
+        // defaults.
         let no_file = UserPrefs::parse_settings(None, Some("zh-CN"));
         assert!(!no_file.global_shortcut_enabled);
         assert_eq!(
             no_file.global_shortcut_accelerator,
+            DEFAULT_GLOBAL_SHORTCUT_ACCELERATOR
+        );
+        // Corrupt JSON routes through the same locale-defaults constructor —
+        // exercise that arm directly so both callers of the fallback stay
+        // pinned for the shortcut fields.
+        let corrupt = UserPrefs::parse_settings(Some("{ not json"), Some("zh-CN"));
+        assert!(!corrupt.global_shortcut_enabled);
+        assert_eq!(
+            corrupt.global_shortcut_accelerator,
             DEFAULT_GLOBAL_SHORTCUT_ACCELERATOR
         );
         // Explicit values survive a load and serialize verbatim (the command

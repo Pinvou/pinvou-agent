@@ -6,6 +6,7 @@ import {
   GLOBAL_SHORTCUT_DEFAULT_ACCELERATOR,
   foldGlobalShortcutDraft,
   formatGlobalShortcutForDisplay,
+  globalShortcutDraftToRust,
   isPlausibleGlobalShortcutAccelerator,
   normalizeGlobalShortcutDraft,
 } from '../src/features/settings/globalShortcutSettings.mjs';
@@ -21,10 +22,20 @@ assert.equal(normalizeGlobalShortcutDraft(null), '');
 assert.equal(normalizeGlobalShortcutDraft(), '');
 assert.equal(normalizeGlobalShortcutDraft(42), '42');
 
-const plausible = ['Ctrl+Alt+P', 'CmdOrCtrl+Alt+P', 'Cmd+Shift+K', 'Ctrl+P', 'super+X', ' ALT+q ', ' CTRL + ALT + P '];
+const plausible = ['Ctrl+Alt+P', 'CmdOrCtrl+Alt+P', 'CommandOrControl+P', 'Cmd+Shift+K', 'Ctrl+P', 'super+X', ' ALT+q ', ' CTRL + ALT + P '];
 for (const value of plausible) {
   assert.equal(isPlausibleGlobalShortcutAccelerator(value), true, `${JSON.stringify(value)} must pre-validate as plausible`);
 }
+
+// ── Display form → Rust-parseable string ──────────────────────────────
+// 'Ctrl/Cmd' is display-only (Rust cannot parse "CTRL/CMD"); the save path
+// and the plausibility check must fold it back to the CmdOrCtrl alias so an
+// edit of just the trailing key does not guarantee an invalid error.
+
+assert.equal(globalShortcutDraftToRust('Ctrl/Cmd+Alt+O'), 'CmdOrCtrl+Alt+O');
+assert.equal(globalShortcutDraftToRust('  ctrl/cmd + alt + o  '), 'CmdOrCtrl+alt+o');
+assert.equal(globalShortcutDraftToRust('Ctrl+Alt+P'), 'Ctrl+Alt+P', 'non-display drafts pass through untouched');
+assert.equal(isPlausibleGlobalShortcutAccelerator('Ctrl/Cmd+Alt+O'), true, 'the untouched-default display form with an edited key must be saveable');
 
 const implausible = [
   '', '   ',            // empty
@@ -117,6 +128,14 @@ assert.match(settingsView, /<GlobalShortcutSettingSection t=\{t\} platformCapabi
 // selectors (sibling convention: localPortPlaceholder input).
 assert.match(settingsView, /aria-label=\{copy\.globalShortcutAccelerator\}/);
 assert.match(settingsView, /data-testid="global-shortcut-accelerator"/);
+// The save path folds the display form back to a Rust-parseable string
+// (Ctrl/Cmd → CmdOrCtrl); sending the raw display draft would guarantee an
+// invalid error for edits of the untouched default.
+assert.match(settingsView, /applyConfig\(shortcutEnabled, globalShortcutDraftToRust\(draftAccelerator\), 'accelerator'\)/);
+// A persisted-on switch stays switchable-OFF on unavailable sessions (the
+// Rust disable path is availability-independent); only turning ON requires a
+// capable session.
+assert.match(settingsView, /disabled=\{\(!available && !shortcutEnabled\) \|\| pending\}/);
 
 const bridge = source('platform/tauri/bridge.js');
 // Fail-closed capability default (Wayland reports the real value via get_platform_capabilities).
