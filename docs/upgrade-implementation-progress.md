@@ -54,7 +54,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T41 | Not completed | Atomic legacy bootstrap migration to the new protocol. |
 | T42 | Explicitly deferred | Production deployment, operations, alerts and disaster-recovery acceptance are deferred at the owner's request |
 | T43 | Not completed | All-target real-system combined qualification and release gates. |
-| T44 | In progress | Actual lifecycle commands, successful-authorization installation and durable unconsumed-backup deadlines; controlled waiting invalidation/replacement and whole-task acceptance remain pending |
+| T44 | In progress | Actual lifecycle commands, successful-authorization installation, durable unconsumed-backup deadlines and controlled waiting invalidation/replacement; access-driven selected-scope timeout convergence and whole-task acceptance remain pending |
 | T45 | Not completed | Approved helper/launcher evolution and restricted cleanup execution. |
 | T46 | Not completed | Actual local-mode prerequisite certification and exact evidence integration. |
 | T47 | In progress | Protected rollout lifecycle primitives; remaining complete task acceptance/composition is not claimed |
@@ -10128,3 +10128,62 @@ deployment are not delivered by this increment. Downloads retain no hard total
 or cumulative duration limit. Product 0.10.9, normative 1.0, pinned V1 and CodeWhale
 remain unchanged. Totals remain four implemented, twelve in progress and
 thirty-one incomplete/deferred across all 47 tasks.
+
+## T44 controlled waiting invalidation and replacement (2026-10-16)
+
+Additive lifecycle migration 18 supplies fixed private control and event-owner
+ports for retiring unconsumed, unexpired waiting content and atomically replacing
+it with a different actual completed preinstall source. Retirement preserves all
+original identities, preparation/slot history and deadlines. Replacement binds
+the current channel and actual Session/Authorization/Transaction lineage; the
+original staging-completion signature and result remain compatible. Neither port
+grants current qualification, physical slot writes or local deletion authority.
+
+Independent reviews found and the primary repaired original-channel migration
+compatibility, last-obligation revision capacity, helper ACL authentication and
+final-readback test isolation. Cross-step SQL watermarks include retirement's
+final observation, the new completion's first observation and the outer fence
+after all actual readbacks. NULL, unsafe or regressing clocks and either original
+deadline reject the whole write set. Complete member, aggregate, encoded-reference
+and convergence reserves remain enforced; no earlier SQL file was rewritten.
+
+The primary passed the complete lifecycle feature with actual PostgreSQL enabled:
+pure domain 44 top-level/127 child tests and PostgreSQL 212 top-level/286 child
+tests, zero skips/failures (1037.867s combined wall). Default full-service
+tests passed 46 tested packages, 426 top-level and 830 child tests (70.296s wall).
+Its 1055 explicit test skips and 12 no-test packages are separate from that native
+feature result. Modules, vet, private server build, pinned V1, Go formatting and
+both working/cached whitespace checks passed. All 18 changed source files and
+64 existing SQL raw/index entries stayed frozen throughout these nine gates.
+
+Both independent auditors passed the frozen scoped code and performed separate
+fresh runs. The dependency auditor passed pure 1 top-level test (0.663s package,
+7.267s wall) and actual PostgreSQL 15 top-level/26 child tests (87.311s package,
+95.026s wall). The compatibility auditor independently passed pure 1 top-level
+test (1.178s package, 7.637s wall) and the same actual PostgreSQL 15 top-level/26
+child tests (79.835s package, 91.910s wall). Both scoped runs had zero skips or
+failures. Sessions 72489 and 17974 closed exit zero, joined owned children and
+returned the runtime slot with zero owned processes. All 18 frozen source paths,
+64 existing SQL raw/index entries and full index/status checks remained unchanged.
+ROOT's complete nine-gate session 25814 also closed exit zero. Final scoped review
+status is PASS; these results do not complete whole T44.
+
+The bounded service increment is DCO committed and pushed as
+`879eca5ee43aa8fe805ce3477da37950dfd293db` on `codex/t44-waiting-invalidation`; the checkout is clean and
+matches upstream. Native regressions cover full T06 completion/rollback, actual
+activation/channel/expiry competitors, exact resource boundaries and committed
+original-result recovery after discarding the reply. This is actual database
+evidence; network ACK loss or HTTP E2E is not claimed for this private increment.
+
+Whole-task independent inventory confirmed another T44 requirement still pending:
+C section 8 requires an access to persist selected-scope timeout compensation
+before reading again. Existing captures reject unsettled due rows while the
+bounded global worker performs persistence. The next independently scoped
+increment will commit selected-scope settlement before a fresh protected typed
+observation, retaining historical read-only ports and final business-owner CAS.
+That implementation and separate whole-task acceptance remain outstanding.
+
+Totals remain four implemented, twelve in progress and thirty-one incomplete or
+deferred across 47 tasks. Product 0.10.9, normative 1.0, pinned V1 and CodeWhale
+remain unchanged. T19/qualification composition, physical certification and
+deployment remain separate. Downloads have no hard total/cumulative deadline.
