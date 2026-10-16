@@ -5,8 +5,12 @@ mcp-server-contract-smoke.py 里,对全部 bundled server 的 tools/list 结果�
 形状检查。所有 bundled server 目前都合规——守卫自身若被改坏,smoke 依旧
 全绿(对合规 schema,坏守卫与好守卫同样沉默),只有这里的直接单测能在
 守卫腐坏时爆红。红/绿两方向都钉:事故形状(数组无 items)、items:{}、
-无类型 items、tuple items、anyOf 空分支、$ref 必须红;全类型 oneOf/allOf、
-真实 pptx schema 必须绿。
+无类型 items、tuple items、prefixItems、boolean schema、anyOf 空分支、
+$ref 必须红;全类型 oneOf/allOf、真实 pptx schema 必须绿。递归通道
+(additionalProperties、anyOf 分支内部)各自有一个红例钉住——walker 的
+递归不是摆设,而是每条通道都被断言消费。接线(调用点本身)由
+check_schema_contract 的返回值契约钉住:check_protocol 把它打进成功行,
+调用点被删时该行立即 NameError,单测钉返回值。
 
 真实 pptx schema 的绿例需要 python-pptx 才能导入 server 模块;fast-gate 里
 unittest discover 先于 python-pptx 安装执行,故该例在有依赖的环境跳过——
@@ -104,6 +108,47 @@ class SchemaContractWalkerTest(unittest.TestCase):
         message = _contract_message({"type": "object", "properties": {"x": {}}})
         self.assertIsNotNone(message)
         self.assertIn("空 schema 节点", message)
+
+    def test_boolean_schema_node_is_red(self):
+        # true 是空 schema 的语义等价物:与 {} 同类,必须红。
+        message = _contract_message({"type": "object", "properties": {"x": True}})
+        self.assertIsNotNone(message)
+        self.assertIn("boolean schema", message)
+
+    def test_prefix_items_is_red(self):
+        # 元组语义与 tuple items 同族,超出已验证的 MFJS 形状集。
+        message = _contract_message(
+            {"type": "array", "items": {"type": "string"},
+             "prefixItems": [{"type": "string"}]})
+        self.assertIsNotNone(message)
+        self.assertIn("prefixItems", message)
+
+    def test_itemless_array_inside_additional_properties_is_red(self):
+        # 钉 additionalProperties 递归通道:删掉这条递归,此例必须翻红不了。
+        message = _contract_message(
+            {"type": "object", "additionalProperties": {"type": "array"}})
+        self.assertIsNotNone(message)
+        self.assertIn("additionalProperties", message)
+        self.assertIn("缺少带具体类型的 items", message)
+
+    def test_itemless_array_inside_union_branch_is_red(self):
+        # 钉 anyOf/oneOf 分支递归通道:并集任一分支都可能被取到。
+        message = _contract_message(
+            {"type": "object",
+             "properties": {"x": {"anyOf": [{"type": "array"}, {"type": "string"}]}}})
+        self.assertIsNotNone(message)
+        self.assertIn("anyOf[0]", message)
+        self.assertIn("缺少带具体类型的 items", message)
+
+    def test_guard_wiring_returns_walked_tool_count(self):
+        # 接线钉:check_protocol 消费这个返回值打印成功行,调用点被删时
+        # 那行 print 立即 NameError——walker 内部单测钉不住调用点本身。
+        walked = smoke.check_schema_contract("t", [
+            {"name": "a", "inputSchema": {"type": "string"}},
+            {"name": "b", "inputSchema": {"type": "array",
+                                          "items": {"type": "string"}}},
+        ])
+        self.assertEqual(walked, 2)
 
     def test_non_object_input_schema_is_red(self):
         message = _contract_message("not-a-schema")
