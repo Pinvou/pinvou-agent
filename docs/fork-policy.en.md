@@ -1,20 +1,19 @@
 # Pinvou CodeWhale Fork Policy
 
-> Updated: 2026-10-28. Public maintenance f1eb10efc contains #114/#125; parent gitlink follows the public maintenance head.
+> Updated: 2026-10-23. Public maintenance ea9fdc90f contains #115/#116/#117; parent gitlink follows the public maintenance head.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md). This English page is a condensed summary; the Chinese version is the complete, authoritative process.
-
-Integrated upstream backport and historical provenance: [modification register](fork-modifications.en.md#web-jsonpath-upstream-backport-integrated-historical-candidate-evidence-756). The public maintenance gate and section 6 authorization requirement continue to apply.
 
 ## 0. Current maintenance baseline and validation boundary
 
-- Public maintenance and parent gitlink: `f1eb10efcfe2468fde42d1724d7f5f19d54b904c` (2026-10-28). #114 merged as `fe90f72f9`, #125 as `f1eb10efc`. This follow-up changes parent references only; it does not advance maintenance.
-- Measured history: 86 commits above upstream v0.9.12 `dcd4c200f`, 71 above r1 `1fafee7e2`; 84 carry DCO sign-offs. The unsigned squash commits are #107 `f27672935` and #116 `e9a7f48da1`. The previous single-exception claim no longer applies. Published maintenance history is preserved.
+- Public maintenance and parent gitlink: `ea9fdc90f1c90335554833195eeeb847c83d82dd` (2026-10-23). CodeWhale#115 squash-merged as `7d26369934`, then #116 as `e9a7f48da1`. This follow-up changes parent references only; it does not advance maintenance. #117 merged remotely on 2026-10-23 as `ea9fdc90f`.
+- Measured history: 79 commits above upstream v0.9.12 `dcd4c200f`, 64 above r1 `1fafee7e2`; 77 carry DCO sign-offs. The unsigned squash commits are #107 `f27672935` and the new #116 `e9a7f48da1`. The previous single-exception claim no longer applies. Published maintenance history is preserved.
 - Immutable `pinvou-v0.9.12-r3` remains at `61cb769be5b33abc64f64da4272f5b39a8b6c1fd`; r1 remains at `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`. The public verifier still requires maintenance-head equality and the frozen r3 tag; no predicate is relaxed.
-- Measured drift: 525 files, +91397/-39288, net +52109; 255 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.
+- Measured drift: 504 files, +86011/-37667, net +48344; 231 distinct `forkguard_*` names (floor remains 64). Earlier native Windows receipts retain their recorded commit boundaries; they do not prove execution on this integrated tree. Current parent CI and final integrated-tree review remain separate requirements.
 
 - The public pre-upgrade rollback point is immutable tag `pinvou-v0.9.5-r13` at `f853f8f1566c57e6be40d5439a222a932aa79ef5`; local `backup/pre-v0.9.12-sync` at the same SHA is only a convenience ref.
 - r1 is the protected consumable baseline. At each rN closure the parent gitlink, maintenance branch, and immutable tag resolve to the same commit.
 - Transition exemption (from 2026-09-11): between two rN closures the parent gitlink may advance along `pinvou3-clean` ahead of the immutable tag. During the transition `scripts/verify-public-submodule.sh` asserts gitlink equals the public maintenance-branch head and the immutable tag stays pinned at its closure commit; the next rN closure cuts a fresh immutable tag at the merged head and restores three-way equality.
+- Integration-pin window exemption (from 2026-10-04): while a parent-repo PR consumes upstream topics still under review, the gitlink may be temporarily pinned to the re-cut integration head `upstream/integration` (public maintenance-branch head + pending upstream topic commits — see the zh register's section-0 integration-pin row); inside the window the `verify-public-submodule.sh` "gitlink = maintenance-branch head" assertion is red by design (the `TRANSITION_BASELINE` mechanism cannot express this state, so the window is registered as deliberately red rather than switched off). Re-pushing the integration branch and re-pinning the gitlink must land in the same batch; after the upstream PRs merge, re-cut from the final merge result to restore.
 - Keep four long-lived topics, three appended reduction topics, and three merged-into-maintenance topics:
 
   1. Host embedding and routing boundary
