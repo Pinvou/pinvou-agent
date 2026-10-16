@@ -57,7 +57,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T44 | Implemented; independently reviewed and verified | Actual protected lifecycle kernel, complete atomic commands, original retention/backup deadlines and worker/access-driven timeout convergence; T17/T19/T20 composition and deployment remain separate |
 | T45 | Not completed | Approved helper/launcher evolution and restricted cleanup execution. |
 | T46 | Not completed | Actual local-mode prerequisite certification and exact evidence integration. |
-| T47 | In progress | Protected rollout lifecycle primitives; remaining complete task acceptance/composition is not claimed |
+| T47 | In progress | Protected lifecycle primitives plus actual private SN sources, same-plan approval/freeze and retained-key membership; complete command/admin/quality/publication composition remains pending |
 
 Confirmed implementation decisions (2026-10-09):
 
@@ -10275,3 +10275,83 @@ The service increment is DCO committed and pushed as `8908d94205bf6939701cf358c1
 progress and thirty-one incomplete or deferred across 47 tasks. T47 continues
 next; product 0.10.9, normative 1.0, pinned V1 and CodeWhale remain unchanged.
 Downloads have no hard total or cumulative elapsed deadline.
+
+### T47 private SN sources and same-plan freeze
+
+This bounded increment adds real private inclusion/exclusion groups and complete
+same-plan T05 approval/T06 freeze bindings. Exact decoded UTF-8 SN is transient;
+canonical durable groups contain purpose-isolated keyed digests, full scope,
+plan/policy identity, role and exact retained provider material. Nil and explicit
+empty input remain distinct. Edits require the exact old plan and new approval;
+frozen source bodies cannot change. A generic approved change is not a group.
+
+A dedicated restricted OpenBao Transit HMAC adapter pins an explicit version
+and actual material commitment. The trusted registry keeps explicitly retained
+versions; latest rotation, recreated names and missing/unsafe provider material
+cannot substitute for an original reference or produce a successful negative
+membership result. This does not provision production keys or settle destructive
+retirement, cross-plan reuse, visibility or export policy.
+
+Additive rollout_sn storage preserves all 66 prior SQL raw/index entries and
+original rollout native executable functions. Actual complete source readback
+joins the original receipt, Base, approval, result/outbox and T06 identity/epoch.
+Its frozen history survives ordinary response blob expiry. Explicit provisioning
+refuses structural/executable/permission drift before grants; private execution,
+write/CREATE/PUBLIC and non-owner grant options remain closed. Unknown commit
+reconciles the original result, and late clock/lease failure rolls back complete
+plan, source binding, outbox and audit writes.
+
+Both independent auditors reviewed all 24 production/test/documentation paths.
+Primary repairs restored native upgrade-type guards, complete original source
+index/Base binding and grant-option refusal. Stronger tests use individually
+complete rollback positives, canonical single-field controls, actual server race
+causes and authenticated in-memory decryption of actual processing projection
+and committed result; ciphertext scanning is not treated as plaintext evidence.
+
+ROOT earlier ran the entire old/new rollout feature: 62 top-level/55 child tests
+passed, zero failures (190.002s wall); its two opt-in original Node references
+were initially skipped. The final candidate then ran every changed SN/domain/
+provider test plus both actual original references: 22 top-level/34 child tests,
+zero skips/failures (54.873s wall). Default service passed 48 tested packages,
+440 top-level/830 child tests (63.276s wall), with 530 top-level/580 child explicit
+integration skips recorded separately. Modules, vet, private build, pinned V1,
+Go formatting and working/cached whitespace checks passed. The complete source,
+index/status and 66 original SQL raw/index entries remained frozen in every run.
+One intermediate reference invocation used the wrong model entry point and
+failed; correcting only private test configuration made the actual reference
+run pass. No repository implementation was changed for that environment error.
+
+After both initial independent actual runs passed, final primary self-review
+identified a narrower historical provenance gap: comparing stored digest columns
+alone did not authenticate current receipt actor/request bytes. Both auditors
+agreed with the in-scope repair. New Go/native frozen-source readers recompute
+the original T06 lookup/request digest and native canonical receipt bytes; they
+do not change old SQL or reauthorize historical actors. Canonical actor-only and
+operation-lookup controls reject and restore. The initial independent 22/32
+runs precede this exact revision; final independent results below supersede them.
+
+The dependency auditor independently reran the final provenance candidate:
+22 top-level/34 child tests, zero skips/failures, 57.431s wall. Actual PostgreSQL
+package took 48.885s; actual OpenBao and both original Node references passed.
+Session 40478 closed exit zero, joined its children and returned owned processes
+to zero. It also checked ROOT's nine final gate logs without claiming that full
+default service execution as its own.
+
+The compatibility auditor separately reran the same final frozen candidate:
+22 top-level/34 child tests, zero skips/failures, 60.609s wall. Actual PostgreSQL
+package took 47.142s; actual OpenBao and both original Node references passed.
+Session 80651 closed exit zero, joined its children and returned owned processes
+to zero. It independently checked ROOT's nine final gate logs, not a second
+whole-default execution. Both auditors passed the complete final candidate.
+
+The service increment is DCO committed and pushed as
+`99393e031019b2794b01b6cd3243c940f5a26e58` on `codex/t47-sn-groups`.
+The service developer boundary is recorded in `docs/rollout-sn-sources.md`.
+
+This increments T47 without marking the whole task complete. Actual lifecycle
+commands/admin workflow, T14/T15/T21 qualification and quality, T08 atomic
+publication, physical platform/data qualification and measured budgets remain
+pending. T42 deployment stays explicitly deferred. Totals remain 47 tasks:
+five implemented, eleven in progress, thirty-one incomplete or deferred.
+Product 0.10.9, normative 1.0, pinned V1 and CodeWhale are unchanged. Downloads
+retain no hard total or cumulative duration limit.
