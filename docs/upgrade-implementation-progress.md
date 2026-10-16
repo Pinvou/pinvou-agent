@@ -10899,3 +10899,61 @@ cumulative duration or retry cap;32MiB is not an artifact/download size limit.
 DCO committed and pushed as `b859fb0e685cb9958a3ccf4b052f2eee9a881fd7` on
 `codex/t09-capture-integration`; service boundaries and fresh evidence are in
 `docs/artifact-capture-integration.md`.
+
+### T09 Manifest-bound independent child snapshots
+
+Accepted consecutive sources `334eaec82a4460e5190c0c39b8bb85126d14b64f` and
+`5208ab5733fa5697a45e96e9d785787a309c620b` are integrated as nine exact final
+Git blobs. Five existing paths matched the first parent at both raw/Git levels;
+four new paths were absent. The source document retains its text and the original
+124 additive lines. Historical source-batch evidence is separate from these fresh
+combined-tree checks; no divergent branch history or later policy was imported.
+
+FullPack/SBOM/provenance extraction returns independent owned process-memory
+bytes only after the entire same immutable upload is inspected. Root ZIP capture
+shares the nested buffer and retains its live-memory charge until the outer scan
+ends. OuterFile accepts exact safe relative names in the outer ZIP, including
+directory prefixes, without nested traversal or host path selection; FullPack
+alone uses the bare root ZIP. Child source/memory caps, complete EOF/hash and
+parent/member identity are checked. Current Manifest/Root/deny are rechecked by
+InspectFullPack/InspectEvidence, and the actual child identities must match their
+signed claims. A failed second evidence file returns neither the first file nor
+earlier Facts. Old inspection APIs remain compatible and no authority is cached.
+
+Both independent code/test reviews passed after verifying all nine source blobs
+and raw digests. The primary frozen affected suite passed five packages,
+38 top-level/79 child tests, zero skips/failures (21.931s wall),
+including actual Store/Deflate ZIP separation with a 33MiB-plus expanded native
+payload, retained-buffer
+capacity and restored positives, outer/nested decoys, later corruption, exact
+directory-prefixed evidence, second-file failure, same-size hash changes, wrong
+target/current-deny refusal and signed-byte recovery. Original HTTP cancellation
+and explicitly rebuilt actual CLI subprocess controls also passed. Synthetic
+signed-byte payloads do not certify SBOM/SLSA content or native authenticity.
+
+All ten primary gates passed: rebuilt private CLI, affected tests with actual CLI,
+full default service, modules, full vet, private server build, pinnedV1, formatting
+and both whitespace checks. Default service passed 55 tested packages,
+504 top-level/1132 child tests
+(70.93s wall), with 565 top-level/
+606 child opt-in/unavailable-host skips and12 no-test packages
+separately recorded. The unchanged sourcefile symlink/mapped-source fixtures
+remain unverified on this host and are not represented as qualification passes.
+Each independent role separately rebuilt its own CLI and passed all38/79 affected
+tests, zero skips/failures, actual CLI enabled, affected vet, formatting and both
+whitespace checks: six gates each (16.625s/19.568s
+affected-test wall, dependency/compatibility). They did not repeat whole-default.
+
+Full source/index/status and all69 existing SQL raw/index identities stayed fixed
+during every run; sessions and owned children closed. All nine imports remain
+exact accepted source blobs. No Node/PG/Bao, durable upload/quarantine/Artifact
+admission, supply-chain approval, native authentication or physical E2E is claimed.
+No SQL, route, dependency, permission, provider, Root, contract, Session or UI
+changed. Those full T09 workflows remain pending, so T09 stays in progress and
+totals remain5/12/30 out of47. Product0.10.9, normative1.0, pinnedV1 and CodeWhale
+are unchanged; deployment remains deferred. Downloads have no hard total/
+cumulative duration or retry cap;32MiB is not an artifact/download size limit.
+
+DCO committed and pushed as `75deeb65729e251963fed8e4a26b24ea73022a7e` on
+`codex/t09-owned-children`; service scope/evidence is in
+`docs/artifact-owned-children-integration.md`.
