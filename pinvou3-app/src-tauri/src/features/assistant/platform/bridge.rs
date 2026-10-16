@@ -83,6 +83,34 @@ const SEPARATE_REASONING_FIELD: &str = "separate_field";
 // pinvou3-clean as `3035a022e` and carried by the pinned head `0bc868ff0`.
 const RESPONSES_ROUTE_PROVIDER: &str = "pinvou_responses";
 
+/// Canonical persisted `(model_provider, model_provider_id)` pair for the
+/// engine route `build_dt_config` resolved (its `cfg.provider`).
+///
+/// The spawn-time stamp must write the pair the foundation's fail-closed
+/// `resolve_persisted_provider_identity` accepts at a later resume
+/// (review #713 round 2): rewriting only the kind left a shared-home
+/// CLI-created record's exact id naming the previous route, and that
+/// mismatched pair is rejected on resume even with both providers
+/// configured. Three shapes, each reproducing the resolution the spawn
+/// itself used:
+/// - built-in kind → the kind as both fields (the exact shape
+///   `resolve_runtime_route` re-resolves a built-in route with);
+/// - the Responses named-custom key → generic `custom` kind + the exact
+///   table key as id (`build_dt_config` writes
+///   `[providers.pinvou_responses]`, so the id is what names that table);
+/// - an unparseable operator pin (raw `DEEPSEEK_PROVIDER`) → the id-less
+///   legacy shape, whose resume path resolves the raw string exactly as
+///   the engine resolved it at spawn.
+pub(crate) fn persisted_provider_route(provider: &str) -> (String, Option<String>) {
+    if provider == RESPONSES_ROUTE_PROVIDER {
+        return ("custom".to_string(), Some(provider.to_string()));
+    }
+    match ApiProvider::parse(provider) {
+        Some(_) => (provider.to_string(), Some(provider.to_string())),
+        None => (provider.to_string(), None),
+    }
+}
+
 // Multi-agent is an agent cluster where the main session stays the overall
 // coordinator and complex tasks nest at most one extra level — not an unbounded
 // recursive tree. Plain conversations keep the original CodeWhale caps; only
@@ -11643,6 +11671,42 @@ mod tests {
                 .and_then(|sub| sub.default_wall_time_secs),
             Some(86_400),
             "多智能体 dt 配置必须把默认墙钟钉到底座上限 86400s"
+        );
+    }
+
+    /// The spawn-time provider stamp must persist the canonical pair the
+    /// foundation's fail-closed `resolve_persisted_provider_identity`
+    /// re-derives at resume (review #713 round 2). Each route class maps to
+    /// the exact shape its own resolution uses — a mismatched pair (stale
+    /// exact id next to a new kind) is rejected at the next resume even with
+    /// both providers configured.
+    #[test]
+    fn persisted_provider_route_maps_each_route_class_to_its_canonical_pair() {
+        // Built-in kind: the kind as both fields — the exact shape
+        // resolve_runtime_route re-resolves a built-in route with.
+        assert_eq!(
+            persisted_provider_route("moonshot"),
+            ("moonshot".to_string(), Some("moonshot".to_string()))
+        );
+        assert_eq!(
+            persisted_provider_route("vllm"),
+            ("vllm".to_string(), Some("vllm".to_string()))
+        );
+        // The Responses named-custom key is an exact table key, not a
+        // canonical kind: it pairs the generic custom kind with the key.
+        assert_eq!(
+            persisted_provider_route(RESPONSES_ROUTE_PROVIDER),
+            (
+                "custom".to_string(),
+                Some(RESPONSES_ROUTE_PROVIDER.to_string())
+            )
+        );
+        // An unparseable operator pin (raw DEEPSEEK_PROVIDER) keeps the
+        // id-less legacy shape, whose resume path re-resolves the raw string
+        // exactly as the engine did at spawn.
+        assert_eq!(
+            persisted_provider_route("operator-private-pin"),
+            ("operator-private-pin".to_string(), None)
         );
     }
 }
