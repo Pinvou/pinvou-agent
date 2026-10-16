@@ -1,6 +1,6 @@
 # Pinvou CodeWhale Fork Policy
 
-> Updated: 2026-10-15. Inside the transition window after the r3 closure: the immutable tag `pinvou-v0.9.12-r3` stays pinned at its closure commit `61cb769be` while the registered head advanced to `0bc868ff0` with the 2026-10-08/09 batch and again to `480bebf61` with the 2026-10-13/14 batch (#92/#96/#101/#102/#103/#104), and to `803e672bb` with the 2026-10-14 batch (#54/#107), and again to `13ee4dfd2` with the 2026-10-15 batch (#108) — the parent gitlink tracks the maintenance branch and leads the tag; `verify-public-submodule.sh` asserts the transition pinning via `TRANSITION_BASELINE`.
+> Updated: 2026-10-16. Inside the transition window after the r3 closure: the immutable tag `pinvou-v0.9.12-r3` stays pinned at its closure commit `61cb769be` while the registered head advanced to `0bc868ff0` with the 2026-10-08/09 batch and again to `480bebf61` with the 2026-10-13/14 batch (#92/#96/#101/#102/#103/#104), and to `803e672bb` with the 2026-10-14 batch (#54/#107), and again to `13ee4dfd2` with the 2026-10-15 batch (#108) — the parent gitlink tracks the maintenance branch and leads the tag; `verify-public-submodule.sh` asserts the transition pinning via `TRANSITION_BASELINE`.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md). This English page is a condensed summary; the Chinese version is the complete, authoritative process.
 
 ## Baseline
@@ -10,6 +10,7 @@
 - The public pre-upgrade rollback point is immutable tag `pinvou-v0.9.5-r13` at `f853f8f1566c57e6be40d5439a222a932aa79ef5`; local `backup/pre-v0.9.12-sync` at the same SHA is only a convenience ref.
 - r1 is the protected consumable baseline. At each rN closure the parent gitlink, maintenance branch, and immutable tag resolve to the same commit.
 - Transition exemption (from 2026-09-11): between two rN closures the parent gitlink may advance along `pinvou3-clean` ahead of the immutable tag. During the transition `scripts/verify-public-submodule.sh` asserts gitlink equals the public maintenance-branch head and the immutable tag stays pinned at its closure commit; the next rN closure cuts a fresh immutable tag at the merged head and restores three-way equality.
+- Integration-pin window exemption (from 2026-10-04): while a parent-repo PR consumes upstream topics still under review, the gitlink may be temporarily pinned to the re-cut integration head `upstream/integration` (public maintenance-branch head + pending upstream topic commits — see the zh register's section-0 integration-pin row); inside the window the `verify-public-submodule.sh` "gitlink = maintenance-branch head" assertion is red by design (the `TRANSITION_BASELINE` mechanism cannot express this state, so the window is registered as deliberately red rather than switched off). Re-pushing the integration branch and re-pinning the gitlink must land in the same batch; after the upstream PRs merge, re-cut from the final merge result to restore.
 - Keep four long-lived topics, three appended reduction topics, and one merged-into-maintenance topic:
 
   1. Host embedding and routing boundary

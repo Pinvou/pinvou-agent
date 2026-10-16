@@ -1,6 +1,6 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
-> 最后更新：2026-10-15（r3 收口后过渡期：不可变 tag `pinvou-v0.9.12-r3` 仍钉在其收口 `61cb769be`，登记头随 2026-10-08/09 批次前进至 `0bc868ff0`、再随 2026-10-12/13 批次前进至 `3118c36b8a`、又随 2026-10-13/14 批次（#92/#96/#101/#102/#103/#104）前进至 `480bebf61`、再随 2026-10-14 批次（#54/#107）前进至 `803e672bb`、复随 2026-10-15 批次（#108）前进至 `13ee4dfd2`，gitlink=维护分支头并领先 tag；`verify-public-submodule.sh` 以 `TRANSITION_BASELINE` 断言过渡期钉点）
+> 最后更新：2026-10-16（r3 收口后过渡期：不可变 tag `pinvou-v0.9.12-r3` 仍钉在其收口 `61cb769be`，登记头随 2026-10-08/09 批次前进至 `0bc868ff0`、再随 2026-10-12/13 批次前进至 `3118c36b8a`、又随 2026-10-13/14 批次（#92/#96/#101/#102/#103/#104）前进至 `480bebf61`、再随 2026-10-14 批次（#54/#107）前进至 `803e672bb`、复随 2026-10-15 批次（#108）前进至 `13ee4dfd2`，gitlink=维护分支头并领先 tag；`verify-public-submodule.sh` 以 `TRANSITION_BASELINE` 断言过渡期钉点）
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
@@ -11,6 +11,7 @@
 - 升级前公开回退点是不可变 tag `pinvou-v0.9.5-r13`，head `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 branch `backup/pre-v0.9.12-sync` 只作便利引用。
 - r1 已成为可消费的受保护基线；rN 收口时父仓 gitlink、维护分支和不可变 tag 指向同一 commit。
 - 过渡期豁免（2026-09-11 起）：两次 rN 收口之间，父仓 gitlink 可沿 `pinvou3-clean` 领先不可变 tag 前进；期间 `scripts/verify-public-submodule.sh` 断言 gitlink 等于公开维护分支头、不可变 tag 仍钉在其收口 commit，rN 收口时在合并头切新不可变 tag 并恢复三方相等。
+- 集成钉定窗豁免（2026-10-04 起）：父仓 PR 消费尚在评审的上游主题时，gitlink 可暂钉到重切集成头 `upstream/integration`（公开维护分支头 + 待上游合并的主题提交，见 `docs/fork-modifications.md` §0 集成钉定行）；窗口内 `verify-public-submodule.sh` 的「gitlink=维护分支头」断言按设计为红（`TRANSITION_BASELINE` 机制无法表达该态，故不走豁免开关而是登记为按设计红），重切时集成分支强推与 gitlink 改钉须同批落地，上游合并后按最终合并结果重切收口恢复。
 - `.gitmodules` 不配置浮动 `branch`；发布后父仓 gitlink、维护分支和不可变标签必须指向同一 commit。
 - 当前维护 4 个长期主题、3 个追加减量主题与 1 个已合入维护分支的主题：
 

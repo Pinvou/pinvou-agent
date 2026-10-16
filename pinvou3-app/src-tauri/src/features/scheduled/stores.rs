@@ -127,6 +127,18 @@ impl Default for ScheduledTaskUiMetadataRegistry {
     }
 }
 
+/// 归档任务的 UI 元数据快照（展示名 / 模型绑定），随 [`ArchivedScheduledTask`]
+/// 一起进本应用自己的历史归档 sidecar。
+///
+/// 底座（engine）侧现在也有终态 run 归档：删除 automation 时把
+/// completed/failed/canceled run 移入 `archive/<automation_id>/`，由
+/// `automation_manager::list_archived_runs` 按 id 读取。两套归档刻意并存：
+/// 本 sidecar 是 UI 契约——快照携带 task 展示名/model（引擎 run 记录带
+/// task/thread/turn id，但没有展示名/model 与 `deleted_at` 这类 UI 元数据）
+/// + `deleted_at`，单 JSON 全量列出所有已归档 automation；引擎 API 只按单
+/// 个 automation id 返回 run 记录，存储布局（per-id 目录 vs 单文件）不同，
+/// 引擎还按 `ARCHIVE_RETAINED_TERMINAL_RUNS` 每自动化裁剪而本 sidecar 自身
+/// 无界保留。委托迁移登记为 #702，不在本次 chops 内。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ArchivedScheduledTaskSnapshot {
     pub(crate) id: String,

@@ -351,12 +351,18 @@ pub(crate) fn read_zip_entry_bounded(
     Ok(buf)
 }
 
-/// zip pass-1 单条目安全闸（统一插件包导入与技能 zip 导入共用；穿越/symlink/
-/// 大小防护对齐底座 install.rs 的判断）：
-/// - `enclosed_name` 为 None = 路径穿越（`..` / 绝对路径），拒绝；
-/// - unix_mode 文件类型位 = symlink，拒绝；
-/// - 头部声明大小累计超 `max_bytes` 拒绝（真实解压字节由各自 pass2 的有界读取
-///   兜底计量——头部声明可被伪造）。
+/// zip pass-1 单条目安全闸（统一插件包导入与技能 zip 导入共用；与底座
+/// `skills::install` 的安装安全面同源）：
+/// - `enclosed_name` 归一化穿越/绝对路径判定走 zip crate 自带 sanitizer：其
+///   归一化输出还会喂给 `skill_md_rank` 等下游布局逻辑，归一化本身是承重行为
+///   （`./x`、`a/../b` 今日按净化后路径放行），不能换成底座 `is_safe_path`
+///   的纯拒绝谓词——verdict 差异由 `forkguard_zip_gate_keeps_zip_sanitizer…`
+///   等价性钉登记；
+/// - unix_mode 文件类型位 = symlink，拒绝（底座 `entry_type_is_link` 的 zip
+///   面：tar 面底座自用，zip 面按底座契约在条目 unix 位上判定）；
+/// - 头部声明大小累计复用底座 `skills::install::add_entry_size`（饱和累加 +
+///   严格大于才拒绝，与旧内联实现逐点等价，见等价性测试；真实解压字节由各自
+///   pass2 的有界读取兜底计量——头部声明可被伪造）。
 /// 返回净化后的条目路径（分隔符归一为 `/`），并把本条目声明大小累进
 /// `declared_total`。
 pub(crate) fn checked_zip_entry_path(
@@ -373,10 +379,9 @@ pub(crate) fn checked_zip_entry_path(
             return Err(REJECT_SYMLINK.to_string());
         }
     }
-    *declared_total = declared_total.saturating_add(entry.size());
-    if *declared_total > max_bytes {
-        return Err(reject_declared_cap(label, max_bytes));
-    }
+    *declared_total =
+        deepseek_tui::skills::install::add_entry_size(*declared_total, entry.size(), max_bytes)
+            .map_err(|_| reject_declared_cap(label, max_bytes))?;
     Ok(enclosed.to_string_lossy().replace('\\', "/"))
 }
 
@@ -1935,6 +1940,14 @@ pub fn import_plugin_package_gated(
 
 #[cfg(test)]
 mod tests {
+    // 断言中途 unwrap 恐慌也不遗留临时 zip（panic 走 unwind，Drop 仍执行）。
+    struct RemoveTempZip<'a>(&'a std::path::Path);
+    impl Drop for RemoveTempZip<'_> {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(self.0);
+        }
+    }
+
     // Round-37 review anti-drift pin: the CLI's error translation keys on
     // substrings of the rejection strings below (不安全路径 / symlink /
     // 伪造头部 / 解压+上限). Rewording any of them silently reverts the
@@ -1948,6 +1961,179 @@ mod tests {
         ("forged header / zip bomb", &["伪造头部", "解压"]),
         ("extraction cap", &["解压", "上限"]),
     ];
+
+    /// 底座安装安全原语复用的等价性钉：旧内联「饱和累加 + 严格大于才拒绝」
+    /// 的大小闸 vs `deepseek_tui::skills::install::add_entry_size`，含 `== max`
+    /// 放行边界与 u64 饱和边界。委托实现的错误路径不再把新累计值写回
+    /// `declared_total`（旧实现先写回再返回 Err）——错误会直接中止导入，累计
+    /// 值随之作废，无可观察差异。
+    ///
+    /// 钉的是引擎语义而非生产接线：接线由唯一的编译期生产调用点
+    /// （`checked_zip_entry_path`）约束，把调用点静默改回内联算术本钉不红，
+    /// 引擎侧语义漂移才在此变红——两类漂移各有归属，勿混淆。
+    #[test]
+    fn forkguard_declared_size_cap_delegates_to_engine_add_entry_size() {
+        let max_bytes: u64 = 1000;
+        let cases = [
+            (0, 0),
+            (0, 100),
+            (100, 50),
+            (950, 50),
+            (950, 51),
+            (999, 1),
+            (1000, 1),
+            (1000, 0),
+            (u64::MAX, 0),
+            (u64::MAX, 1),
+            (u64::MAX - 1, 1),
+            (u64::MAX - 1, 2),
+        ];
+        for (total, added) in cases {
+            let old = {
+                let t = total.saturating_add(added);
+                if t > max_bytes { Err("over") } else { Ok(t) }
+            };
+            let new = deepseek_tui::skills::install::add_entry_size(total, added, max_bytes)
+                .map_err(|_| "over");
+            assert_eq!(new, old, "add_entry_size({total}, {added}, {max_bytes})");
+        }
+    }
+
+    /// 穿越面等价性钉：`checked_zip_entry_path` 的穿越判定保留 zip crate 的
+    /// `enclosed_name` sanitizer 而非底座 `is_safe_path` 拒绝谓词——sanitizer
+    /// 的归一化输出喂给 `skill_md_rank` 等下游布局逻辑（`./SKILL.md` 今日归一
+    /// 成 `SKILL.md` 后才参与 rank），且其对根前缀/中段 `..` 的「净化放行」
+    /// 语义是既有放行面。本钉把底座谓词在这些输入上的 verdict 差异登记为刻意
+    /// 选择，防止后续无意识互换（zip crate 的归一化器不可独立复用，只能经
+    /// `ZipFile::enclosed_name` 触达）。
+    /// sanitizer 侧 verdict 由下方内存 zip 断言直接 executable 化，不依赖
+    /// 端到端导入测试的间接覆盖。
+    #[test]
+    fn forkguard_zip_gate_keeps_zip_sanitizer_verdicts_over_engine_reject_predicate() {
+        use deepseek_tui::skills::install::is_safe_path;
+        // 逃逸面：底座谓词拒绝（zip sanitizer 同样拒绝，端到端由导入测试覆盖）。
+        assert!(!is_safe_path(Path::new("../x")));
+        assert!(!is_safe_path(Path::new("a/../../x")));
+        // 正常面：两边都放行。
+        assert!(is_safe_path(Path::new("skills/x/SKILL.md")));
+        assert!(is_safe_path(Path::new("plugin.json")));
+        // 刻意登记的 verdict 差异：sanitizer 归一化放行、底座拒绝谓词会拒绝
+        // 的输入（`a/../b`、根前缀；Windows 驱动器前缀）。
+        assert!(!is_safe_path(Path::new("a/../b")));
+        assert!(!is_safe_path(Path::new("/abs/x")));
+        if cfg!(windows) {
+            assert!(!is_safe_path(Path::new("C:/x")));
+        }
+        // 两边都放行但输出不同：sanitizer 把 `./b` 塌缩成 `b`，底座谓词放行
+        // 原串——归一化输出承重，是保留 sanitizer 的另一原因。
+        assert!(is_safe_path(Path::new("./b")));
+
+        // 内存 zip executable 钉：把登记的 sanitizer 语义（depth-0 前缀剥离
+        // 放行、`./`/中段 `..` 塌缩、前置 `..` 逃逸拒绝、Windows 驱动器前缀
+        // 剥离——zip 8.x 在所有平台经 Utf8WindowsPath 解析条目名，Unix 上
+        // 同样放行 `C:/x`）直接钉在 `enclosed_name` 的真实 verdict 上。zip
+        // crate 升级若改变其中任何一条（比如把 depth-0 前缀从剥离改成拒绝），
+        // 这里先红，登记随之更新。
+        let zip_path = std::env::temp_dir().join(format!(
+            "pinvu-sanitizer-verdicts-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _temp_guard = RemoveTempZip(&zip_path);
+        let entries = [
+            ("../x", None::<&str>),
+            ("/abs/x", Some("abs/x")),
+            ("./b", Some("b")),
+            ("a/../b", Some("b")),
+            ("C:/x", Some("x")),
+            ("ok.txt", Some("ok.txt")),
+        ];
+        let verdicts: Vec<Option<String>> = {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            for (name, _) in entries {
+                zw.start_file(name, opts).unwrap();
+                use std::io::Write;
+                zw.write_all(b"x").unwrap();
+            }
+            zw.add_symlink("link.txt", "/etc/ssh/ssh_config", opts)
+                .unwrap();
+            zw.finish().unwrap();
+            let mut archive =
+                zip::ZipArchive::new(std::fs::File::open(&zip_path).unwrap()).unwrap();
+            (0..archive.len())
+                .map(|i| {
+                    archive
+                        .by_index(i)
+                        .unwrap()
+                        .enclosed_name()
+                        .map(|p| p.to_string_lossy().into_owned())
+                })
+                .collect()
+        };
+        for ((name, expected), actual) in entries
+            .iter()
+            .chain(std::iter::once(&("link.txt", Some("link.txt"))))
+            .zip(verdicts.iter())
+        {
+            let expected = expected.map(|e| e.to_string());
+            assert_eq!(
+                actual, &expected,
+                "enclosed_name verdict for {name:?} 与登记的 sanitizer 语义不符"
+            );
+        }
+
+        // symlink 面 executable 化：unix_mode 文件类型位 = symlink 的条目被
+        // 生产闸拒绝（底座 `entry_type_is_link` 的 zip 面）。链接条目名本身
+        // 的 enclosed_name 是放行的（上一循环），拒绝必须来自 symlink 判定。
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&zip_path).unwrap()).unwrap();
+        let mut link = archive.by_name("link.txt").unwrap();
+        assert!(link.enclosed_name().is_some(), "链接名本身不触发穿越拒绝");
+        let mut total = 0u64;
+        let err = checked_zip_entry_path(&mut link, &mut total, u64::MAX, "link")
+            .expect_err("symlink 条目必须被生产闸拒绝");
+        assert_eq!(err, REJECT_SYMLINK);
+    }
+
+    /// 生产闸承担声明大小上限的 executable 钉：无论 `checked_zip_entry_path`
+    /// 内部是委派 `add_entry_size` 还是旧内联实现，上限执行本身不得被移除——
+    /// 等价性测试（上方）钉的是引擎语义，本钉钉的是生产接线。三条目声明大小
+    /// 累计越过 `max_bytes` 时第三条必须被拒，且前两条照常放行、累计正确。
+    #[test]
+    fn forkguard_zip_gate_enforces_declared_size_cap() {
+        let zip_path = std::env::temp_dir().join(format!(
+            "pinvu-declared-cap-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _temp_guard = RemoveTempZip(&zip_path);
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            for name in ["a.txt", "b.txt", "c.txt"] {
+                zw.start_file(name, opts).unwrap();
+                use std::io::Write;
+                zw.write_all(&[b'x'; 400]).unwrap();
+            }
+            zw.finish().unwrap();
+        }
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&zip_path).unwrap()).unwrap();
+        let mut total = 0u64;
+        let max_bytes: u64 = 1000;
+        for name in ["a.txt", "b.txt"] {
+            let mut entry = archive.by_name(name).unwrap();
+            let path = checked_zip_entry_path(&mut entry, &mut total, max_bytes, name)
+                .unwrap_or_else(|e| panic!("{name} 在 {total}/{max_bytes} 内应放行: {e}"));
+            assert_eq!(path, name);
+        }
+        assert_eq!(total, 800, "前两条目声明大小应已累计");
+        let mut entry = archive.by_name("c.txt").unwrap();
+        let err = checked_zip_entry_path(&mut entry, &mut total, max_bytes, "c.txt")
+            .expect_err("越过声明上限必须被拒");
+        assert_eq!(err, reject_declared_cap("c.txt", max_bytes));
+    }
 
     /// The literal rejection messages must keep carrying the substrings the
     /// CLI translator searches for. Asserts on the PRODUCTION constants
@@ -3537,10 +3723,17 @@ mod tests {
     }
 
     /// zip-slip regression: an entry whose name escapes the package root via
-    /// `../` (and one with an absolute path) must be rejected wholesale by the
-    /// pass1 `enclosed_name()` safety check — before any detection, extraction,
-    /// or disk writes. The guard existed since the unified pipeline landed;
-    /// this test pins it so refactors cannot silently drop the enforcement.
+    /// `../` must be rejected wholesale by the pass1 `enclosed_name()` safety
+    /// check — before any detection, extraction, or disk writes. (The
+    /// absolute-path entry documents, and this test relies on, the sanitizer's
+    /// registered normalize-and-accept semantics: at depth 0 the root prefix
+    /// is stripped so `/abs/evil.txt` would land inside the package root as
+    /// `abs/evil.txt` — it is NOT itself a rejection. The traversal entry is
+    /// written first, so pass1 aborts on it before the absolute entry is
+    /// even reached; the executable per-entry verdicts live in
+    /// `forkguard_zip_gate_keeps_zip_sanitizer_verdicts_over_engine_reject_predicate`.)
+    /// The guard existed since the unified pipeline landed; this test pins it
+    /// so refactors cannot silently drop the enforcement.
     #[test]
     fn import_rejects_zip_slip_traversal_entries() {
         use std::io::Write;

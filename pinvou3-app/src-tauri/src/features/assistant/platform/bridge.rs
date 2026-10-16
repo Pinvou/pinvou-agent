@@ -4831,7 +4831,8 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
-            dir.join("bundles/my-skill/skills/my-skill/.installed-from"),
+            dir.join("bundles/my-skill/skills/my-skill")
+                .join(deepseek_tui::skills::install::INSTALLED_FROM_MARKER),
             "upload:pkg.zip",
         )
         .unwrap();
