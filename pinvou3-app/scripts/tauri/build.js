@@ -462,14 +462,15 @@ function targetArchitecture(
       + " and the shared knowledge host for the host architecture, silently producing a"
       + " package whose main binary targets one architecture while its sidecars target"
       + " another. To support this architecture, extend all of the following (missing (2)"
-      + " or (4) silently reintroduces a wrong package; missing (1), (3) or (5) fails the"
+      + " or (4) silently reintroduces a wrong package; missing (1), (3), (5) or (6) fails the"
       + " build loudly): (1) TARGET_MACHINE_ARCHITECTURES in this file; (2)"
       + " ARCHITECTURE_CONFIG_NAMES in scripts/tauri/platform-config.js (without it"
       + " platformArchitectureConfigPath returns null and the whole architecture overlay is"
       + " skipped); (3) the matching architecture overlay under src-tauri/config/platforms/linux/;"
       + " (4) the Node arch -> machine map in scripts/tauri/codex-bridge.js (without it the"
       + " bridge script falls back to uname -m and packages a host-architecture Node);"
-      + " (5) the target list in scripts/prepare-codex-bridge-runtime.sh. If the triple has"
+      + " (5) the target list in scripts/prepare-codex-bridge-runtime.sh; (6) the"
+      + " LINUX_ASR_ARCHITECTURES table in scripts/tauri/linux-asr-runtime.js. If the triple has"
       + " no single target architecture (like universal binaries, darwin hosts only), add it"
       + " to HOST_FALLBACK_TARGET_TRIPLES instead.",
   );
@@ -710,14 +711,29 @@ function prepareTauriArgs(
   // caller can intentionally override or remove inherited resource mappings.
   prepared.splice(commandIndex + 1, 0, ...injected);
   if (noBundle) {
-    // Translate the absorbed `--bundles none` request into the flag the
-    // pinned @tauri-apps/cli 2.11.4 actually accepts (verified against
-    // `tauri build --help`: `--no-bundle`, "Skip the bundling step even if
-    // `bundle > active` is `true`"). The compiled binary stays at the cargo
-    // target dir (`target/<triple>/release/`) for the caller's own packager;
-    // value-flag pairs (`--config <spec>`) keep their value adjacency, which
-    // is why the flag is spliced before them.
-    prepared.splice(commandIndex + 1, 0, "--no-bundle");
+    // `build`-gated: the `bundle` subcommand has no `--no-bundle`, and
+    // re-emitting the absorbed request there would fail arg validation —
+    // surface that as the wrapper's own error instead. Silently dropping
+    // the request is not an option: `bundle` without it runs a FULL bundle.
+    // (`dev` falls through on purpose: it never bundles, so stripping IS
+    // the requested semantics.)
+    if (args[commandIndex] === "bundle") {
+      throw new Error(
+        "--bundles none is a wrapper-owned build request: the `bundle` subcommand has"
+          + " no --no-bundle and cannot skip bundling. Use `tauri build --bundles none`"
+          + " (compile without bundling, package yourself) or pass real bundle types.",
+      );
+    }
+    if (args[commandIndex] === "build") {
+      // Translate the absorbed `--bundles none` request into the flag the
+      // pinned @tauri-apps/cli 2.11.4 actually accepts (verified against
+      // `tauri build --help`: `--no-bundle`, "Skip the bundling step even if
+      // `bundle > active` is `true`"). The compiled binary stays at the cargo
+      // target dir (`target/<triple>/release/`) for the caller's own packager;
+      // value-flag pairs (`--config <spec>`) keep their value adjacency, which
+      // is why the flag is spliced before them.
+      prepared.splice(commandIndex + 1, 0, "--no-bundle");
+    }
   }
   return prepared;
 }

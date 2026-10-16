@@ -158,3 +158,19 @@ test("repeated none requests are absorbed as one", () => {
   );
   assert.equal(prepared.filter((arg) => arg === "--no-bundle").length, 1);
 });
+
+test("bundle subcommand rejects the request loudly instead of mis-splicing", () => {
+  // `tauri bundle` has no --no-bundle; re-emitting it there would fail the
+  // CLI's arg parse, and silently dropping the absorbed request would run a
+  // FULL bundle instead of the requested skip. The wrapper surfaces its own
+  // error with the reason (and `dev` keeps its absorb-only semantics —
+  // covered by the test above — so this pin is what makes the gate
+  // bundle-specific rather than build-or-nothing).
+  assert.throws(
+    () => prepareTauriArgs(
+      ["bundle", "--target", "loongarch64-unknown-linux-gnu", "--bundles", "none"],
+      LINUX_X64,
+    ),
+    /--bundles none is a wrapper-owned build request/u,
+  );
+});
