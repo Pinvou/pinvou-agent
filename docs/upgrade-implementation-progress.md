@@ -11175,3 +11175,104 @@ artifact/download-size limit.
 DCO committed and pushed as `023218a899a54284eb6fdb169ae46fe8decd3c37` on
 `codex/t09-native-framing`; scope/evidence is in
 `docs/artifact-native-framing-integration.md`.
+
+### T09 bounded stored and expanded Debian bytes
+
+Six consecutive accepted commits from
+`2818db15d7ce20a79ba68ae34f88feb694b1fabc` through
+`b6c6e9f69f8f8d2900aa9ae7099857be368e4c0b` were initially imported as 14 exact
+raw/Git blobs. Two existing document/PG-test paths matched the first parent;
+12 new paths were absent. Original 261 additive document and 47 additive PG-test
+lines remain historical source evidence, separate from fresh combined-tree checks.
+
+Independent review found the SDK's hidden 512-byte text buffer refused lawful
+gzip FNAME/FCOMMENT within explicit stored capacity. A primary red regression
+passed eight 511-byte children but failed 32 first/later 512/513/32769/131073-byte
+children plus the independent Python long-header case: two failed top-level,
+32 failed child cases, eight passing children, 10.022s recorded interval including
+post-run source-freeze checks. The initial original 13-gate passing run is retained
+as unrepaired evidence and does not represent final acceptance. The primary
+repaired gzip.go and added gzip_header.go/test: original header/XLEN/opaque Latin-1
+NUL fields/FHCRC are verified in bounded fragments without retaining text. A
+fixed private header excludes already checked optional metadata before SDK
+Deflate/trailer processing; Reader and ByteReader share original source position.
+The stored Snapshot/identity stays unchanged. No filename/path/UTF-8 or 512-byte
+policy is added. Thirteen accepted imports remain exact; one is repaired and two
+new files have separate primary repair raw/Git identities. Original proof is kept.
+
+Complete immutable Debian framing precedes exact stored control/data captures.
+Shared closed codec adapters first validate full EOF/CRC and count expanded
+length within a fixed buffer, then capture the same input's exact expanded bytes.
+Gzip validates every concatenated header, reserved flag, lawful optional header
+CRC and trailer; bzip2 validates concatenation, block and terminal file CRC.
+Stored/expanded control/data capacities are independent; SDK workspace and total
+heap/preparation policy remain separate. Plain reuse preserves immutable owned
+bytes while checking expanded capacity. Only control plain/gzip and data
+plain/gzip/bzip2 are supported here; other recognized labels are unsupported.
+Signed composition repeats current Manifest/Root/deny/native/framing then decodes
+the same native source. Every failure returns no earlier facts or partial pair.
+
+Both independent scoped line-level reviews passed. Primary affected testing
+passed 13 packages, 107 top-level/121 child tests (34.036s wall),
+zero failures and exactly one explicit unavailable actual-AR-tool skip. Eleven
+required actual cases passed: three freshly rebuilt CLIs, public Debian framing,
+stored pair and synthetic-signed framing, independent gzip stream, independent
+Debian gzip/bzip2 decoding, synthetic-signed bzip2 composition and independent
+long gzip headers. Python standard library independently read/decompressed four
+fixed generated fixtures; per-member zlib also verified long headers/FHCRC before
+Go. Five original fixture identities were checked throughout. Fixture original
+sizes/SHA256 were gzip 278/809c54939b6324cda731e7e9a3eff6c402e25c90b878ba46fe9720a423d48b48,
+Debian gzip 520/0c7bfea20dbd6983f7b142f3f693ca028095264ba1e8a93ec2e64f2545cfc7c7,
+Debian bzip2 10570/f54ccbd8c327a98960af0562ba465c25a184c4a27dd06c42409ae7570fac78a3,
+plus the unchanged 53080-byte public hello fixture. Expanded identities match
+their frozen independent originals. The new long-header sequence is 230517 bytes,
+SHA256 81b886e0e96a97379cf9f86f96f7cba0fdc00c08a9268c372fb317191d181b60,
+expanded 420/SHA256 1782c4d4d140688dae63f07542d98971c45ea68f89cf92bd722edfd3dc694e83.
+Nothing was installed/executed or certified
+as an application, publisher or repository release. Actual AR-tool output remains
+unverified. Controls retain exact/below capacities, empty/concatenated streams,
+post-payload file CRC errors after SDK output, first/later header faults, restored
+positives, owned buffer isolation and 33 MiB expanded gzip/bzip2 capacities.
+All 40 first/later long-field/CRC combinations pass, as do Latin-1, maximum XLEN,
+empty fields, isolated header/trailer corruption and same-original restoration.
+
+Actual isolated PG17.11 passed one top-level/four child tests, zero skips/failures
+(33.76s recorded interval). Existing coverage remains; additions
+observe plain opaque control/data, original/expanded identities and Root revision2,
+one-below expanded data memory after signed framing success, zero earlier facts,
+current deny and exact restoration. PG gzip/bzip2 CRC scenarios are not claimed.
+Owner storage mutations are adversarial controls, not approved business commands.
+Before/after inventories matched: 0 pre-existing
+fixture databases and 1 pre-existing fixture role
+retained; no new fixture database/role remained.
+
+All 13 root gates passed: three CLI builds, affected tests, actual PG, full default
+service, modules, full vet, server build, pinned V1, formatting and two whitespace
+checks. Default passed 62 tested packages,
+561 top-level/1174 child tests
+(132.67s wall); 576 top-level/
+606 child opt-in/unavailable-host skips and 12 no-test packages
+were recorded separately. Sourcefile host fixtures remain unverified. Each
+reviewer passed nine gates with its own three builds, 107/121 affected tests plus
+the same single AR-tool skip, actual PG1/4 zero skips/failures, affected vet,
+formatting and both whitespace checks. Dependency/compatibility affected walls
+were 30.52s/31.233s; PG intervals were
+24.627s/19.925s. PG intervals include
+pre-inventory through Go completion, excluding post-inventory and frozen-source
+checks. Other command walls exclude frozen-source checks. Independent runs did
+not repeat the root whole-default suite. All sessions/owned children closed,
+PG inventories matched their baseline, and full source/index/status, 69 old SQL
+identities, four official SBOM resources and all five fixture files stayed fixed.
+Thirteen imports remain exact; three primary repair paths match separate proof.
+
+No TAR/control/path/script interpretation, app/version/architecture/publisher or
+native authentication, protected staging, execution, Artifact admission or
+physical/deployment qualification is supplied. No SQL/grant/route/dependency/
+provider/Root/Session/UI/contract/version change. Full T09 stays in progress;
+totals remain 5/12/30 out of 47. Product 0.10.9, normative 1.0, pinned V1,
+CodeWhale and deployment deferral remain unchanged. Downloads have no hard
+total/cumulative duration or retry cap; 32 MiB is not an artifact/download-size limit.
+
+DCO committed and pushed as `de7c555d3a0d61cbae5bb5530f55005ac48d8129` on
+`codex/t09-debian-decode`; scope/evidence is in
+`docs/artifact-debian-decode-integration.md`.
