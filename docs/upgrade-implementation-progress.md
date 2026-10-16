@@ -5,8 +5,8 @@ Tasks are completed individually only after in-scope independent code review,
 repairs, applicable tests and commit/push. Contract completion is not production
 client, service, physical platform certification or rollout readiness.
 
-Current task totals: 47 tasks; five implemented, eleven in progress and
-thirty-one not completed or deferred. Detailed chronological evidence follows
+Current task totals: 47 tasks; five implemented, twelve in progress and
+thirty not completed or deferred. Detailed chronological evidence follows
 the current overview; a completed bounded batch does not complete its whole task.
 
 | Task | Status | Delivery / outstanding dependency |
@@ -22,7 +22,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T09 | In progress | Bounded package/native-byte inspection; complete upload, quarantine and platform qualification remain pending |
 | T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
 | T11 | Not completed | Complete multi-platform Release/Target approval workflow and qualification integration. |
-| T12 | Not completed | Production source profiles, migration plans and Registry management. |
+| T12 | In progress | Original stable-facts identity and exact profile matching; protected Registry/version/approval, forward policies and production qualification remain pending |
 | T13 | Not completed | Supported floor, prerequisite paths and historical bridge approvals. |
 | T14 | Not completed | Deployment lifecycle and first-baseline activation with atomic parent/rollout composition. |
 | T15 | Not completed | Approved automatic rollout scheduling, quality guards and controlled completion. |
@@ -10549,3 +10549,49 @@ implemented, eleven in progress and thirty-one incomplete/deferred out of 47.
 T42 deployment stays deferred; physical platform/data certification and measured
 budgets remain pending. Product 0.10.9, normative 1.0, pinned V1 and CodeWhale stay
 unchanged. Downloads have no hard total/cumulative duration or retry ceiling.
+
+### T12 stable installed-facts identity and exact profile matching
+
+The service now computes the original sourceProfileId from the complete nine
+stable fields using the actual pinned Schema and exact JCS/SHA-256. Closed facts
+parsing and richer-request projection are separate: top-level runtime/self/policy
+fields never enter stable identity, nested unknown fields still refuse, and the
+actual request owner must separately authenticate the complete DTO and bind its
+full digest. No version normalization or target/format certification is inferred.
+
+Every internal candidate must have complete facts, its recomputed actual ID and
+the exact product/component/target scope. Matching compares full canonical facts,
+never version or array order. Zero/duplicate matches return the original unknown
+or ambiguous reasons with no partial identity. Invalid nonmatching entries refuse
+even after earlier matches. Returned snapshots have no mutable input/result alias.
+An independent 1 MiB raw payload preflight prevents whitespace parsing amplification;
+the full canonical array, framing and all facts have a separate 1 MiB limit, with
+4,096 entries as an upper bound. These are internal metadata capacities.
+
+Full original-field and single-variable malformed-JSON controls, every leaf's
+match/scope refusal, empty/duplicate/order cases and exact/excess parser and raw/
+canonical inventory byte controls pass. Original Node sourceProfileId actually
+executes 47 positive/refusal cases and compares both canonical bytes and IDs.
+The final primary contracts/registry run passed 13 top-level/51 child tests,
+zero skips/failures (9.205s wall). Default service passed 49 tested packages,
+460 top-level/891 child tests (63.978s wall), separately recording 561 top-level/
+606 child external opt-in skips and 12 no-test packages. All nine service gates
+passed, including full vet, modules, build, pinned contracts and whitespace.
+
+Both independent code/test/documentation reviews gave final scoped PASS. Their
+own separate contracts/registry/original-Node runs passed 13 top-level/51 child
+tests each with zero skips/failures (13.281s/9.548s wall, dependency/compatibility).
+Each checked full source/index/status and all 69 existing SQL raw/index identities,
+closed its session and joined owned processes. Unchanged database/provider/browser
+integrations were not rerun for this domain-only delta.
+
+This service increment is DCO committed and pushed as `7ef4c0983a9ad580bc1f902bdc393cdb8e77b30f` on
+`codex/t12-stable-source-facts`; its boundary is in `docs/registry-facts.md` in
+the service repository. The actual protected Registry/version/state/approval,
+ForwardPathPolicy/transforms, T46 evidence, helper cleanup and all-channel T08
+publication remain pending. A match is neither host evidence nor production
+qualification. T12 is now in progress, not completed. Totals are 47 tasks:
+five implemented, twelve in progress and thirty incomplete/deferred. T42 deployment
+and physical platform/data/budget certification remain deferred or pending.
+Product 0.10.9, normative 1.0, pinned V1 and CodeWhale are unchanged; downloads
+have no hard total/cumulative duration or retry cap.
