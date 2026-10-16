@@ -137,6 +137,23 @@ assert.match(timeline, /\}, \[html, copyLabels, streaming\]\);/, 'the install ef
 assert.doesNotMatch(codeCopy, /applyStreamFade/, 'code-copy observer module must not reference the fade pass');
 assert.doesNotMatch(streamFadeSource, /new MutationObserver/, 'stream-fade.js must not install observers');
 
+// Preference sync: both shells must feed the module flag from the resolved
+// chat preference, and the settings toggle must write the desktop-only chat
+// key through the settings bridge — a dropped sync would strand the module on
+// its compiled-in default while the UI shows the user's choice.
+const mainShell = read('src', 'app', 'main.jsx');
+const detachedShell = read('src', 'app', 'DetachedShell.jsx');
+const settingsView = read('src', 'features', 'settings', 'SettingsView.jsx');
+assert.match(mainShell, /setStreamFadePreference\(chatStreamingAnimation\);/);
+assert.match(mainShell, /saveSettings\(\{ chat: \{ streaming_animation: !!enabled \} \}\)/);
+assert.match(detachedShell, /setStreamFadePreference\(chatStreamingAnimation\);/);
+assert.match(detachedShell, /streaming_animation !== false/, 'detached shell must resolve the same default-on polarity');
+assert.match(
+  settingsView,
+  /\{!isWeb && \(\s*<IOSSection title=\{t\.chatSection\}>\s*<IOSRow label=\{t\.chatStreamingAnimation\}/,
+  'the chat row must stay desktop-only',
+);
+
 // ---- DOM pass against a real (domino) tree ----
 // The module guards degrade cleanly under Node: no window/matchMedia, and the
 // ancestor re-check makes up for domino not skipping FILTER_REJECT subtrees.
