@@ -1382,7 +1382,9 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                     deferred 并落 error，改走既有失败门（Retry/Repair），不进此分支。
                     canInstallKbModel=false 的平台（web）没有本地模型安装能力，不渲染；
                     localEmbedSupported=false 的平台（linux/loongarch64）无法加载本地
-                    embedding，同样不渲染（模型也不可能在该平台处于已安装态）。 */}
+                    embedding，同样不渲染。正常安装路径在该平台不存在已安装态，但
+                    peer/共享宿主可能留下残留模型目录（kb_tool.rs 的同款场景），此处
+                    按 fail-closed 一并隐藏。 */}
                 {localEmbedSupported && canInstallKbModel && modelInstalled && !modelReady && !modelLoading && !downloading && !kbPeerDownloading && (
                   <div className={`mb-5 rounded-2xl border p-4 border-[#dfe3ee] bg-[#f8f9fd] dark:border-white/10 dark:bg-white/[0.04] flex flex-wrap items-center justify-between gap-3`}>
                     <div className="min-w-0 flex-1">
