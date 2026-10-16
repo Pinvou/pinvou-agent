@@ -9833,3 +9833,111 @@ in progress and thirty-one incomplete/deferred. Product 0.10.9, normative versio
 1.0, pinned V1 and CodeWhale remain unchanged. Physical platform qualification and
 deployment remain deferred. No artifact download size, retry or total/cumulative
 duration cap is introduced.
+
+## Authenticated immutable Release renewal
+
+The feature-owned verifier composes unchanged archived Release identity, ordinary
+current Release verification and complete codec renewal binding. Fixed role and
+independent bounded product/component/releaseId apply to both original envelopes.
+Previous and next use separately supplied archived/current Roots. Each historical
+object's original window is checked at its own issuedAt; no retroactive current
+deny/window or cross-object issuance ordering is added. Next requires supplied
+fresh Root/current time/global denial and all actual exact-role signatures.
+
+Renewal requires strictly greater revision and exact signed business equality,
+excluding only revision/issuedAt/expiresAt. Consecutive revisions or matching
+signature arrays are not required. The immutable result keeps the distinct
+ArchivedEnvelopeIdentity and SignatureCheckedEnvelope wrappers, original bytes,
+signer identities and exact Root pointers. The current wrapper safely retains
+owned checked parts and rebinds the exact input current Root lifetime; no temporary
+expected-context reference escapes. No unsafe construction or partial proof is
+introduced. Archive custody/completeness, Root rotation lineage, atomic metadata
+high-water/cache replacement, complete publication/generation/current rights and
+candidate renewal opening remain their protected owners' responsibilities.
+
+Six tests run forty-seven composed Node controls, nine positives: renewal/revision
+eight, business seven, independent context six, actual signatures twelve,
+windows seven and wire seven. They compose the three unchanged original full
+functions rather than claiming a nonexistent full renewal helper. Coverage
+includes expired history, separately supplied current Release policy/key,
+unchanged Root/key with the SAME Root object passed in both standalone input
+roles, revision gaps/safe maximum, immutable content changes, full expected
+scope, both actual thresholds/bad extras/duplicates/exact policies, current denial
+without retroactive archive denial, historical future-own-issued-time/no cross
+ordering, next expiry/future window and last valid millisecond, canonical/full
+Schema/size limits and original bytes/Root/time/signer getters. Private keys stay
+in Node. One App facade test exercises twelve genuine controls. Root-policy
+fixtures never attest actual Root rotation lineage.
+
+Initial six/46 passed (1.390s harness); self-review added the no-rotation/same-Root
+positive before the final freeze. One private generator preflight initially tried
+to sign an unsafe revision that the frozen signing helper correctly refuses;
+the malformed negative now mutates the valid original envelope before full
+verification. This changed only negative-fixture preparation, no protocol rules.
+
+Both independent final scoped static deep audits passed the same six-source
+manifest SHA256 ddd3ac060e7342243390b733b4e4bf8c5a60995cf56dbd76b03be038b036895e,
+without a required finding. The primary's sixty-eight verifier tests passed,
+zero failures/ignored (96.207s wall); new six/47 controls took 1.620s harness.
+Strict all-target Clippy passed (9.240s wall). Default App protocol facade
+forty-nine passed, zero failures/ignored (22.980s harness / 170.357s wall).
+Actual CLI-workspace backend built the production App/verifier graph and passed
+its zero-test library harness (204.074s wall), solely compilation/graph evidence,
+not workflow E2E.
+
+Ordinary/archive/codec implementations, manifests and three locks are unchanged.
+Prior actual codec157 including two enabled Node oracle tests retains acceptance;
+unchanged selected App/CLI graphs retain 104 packages/109 feature nodes each and
+nine identical verification-critical packages/features, with preexisting two
+ICU/zerovec patch differences already disclosed. No newly run exhaustive codec
+or full-closure equivalence claim is made.
+
+Four Rust format checks, architecture (16.943s wall), version, before/after
+six-source freeze and standard working/index whitespace all passed. Primary
+session 34845 closed exit zero; all known owned compiler/runtime/runner/Node
+processes were zero before granting the dependency auditor exclusive execution.
+
+The dependency auditor independently repeated all gates on the same freeze:
+sixty-eight verifier tests passed (68.239s wall), new six/47 controls 1.310s
+harness; strict all-target Clippy 3.378s; default App forty-nine 20.750s harness /
+32.748s wall; actual CLI backend zero-test compilation/harness 8.810s wall.
+Four Rust format checks, architecture, version, standard working/index whitespace
+and before/after six-source freeze all passed. Session 4458 closed exit zero;
+all owned runners/Cargo/compiler/Node/test processes were zero. Ordinary/archive/
+codec source, manifests and three locks were explicitly unchanged; prior selected
+graph evidence remains reused.
+
+The compatibility auditor independently repeated all gates on the same freeze:
+sixty-eight verifier tests passed (61.522s wall), new six/47 controls 1.240s
+harness; strict all-target Clippy 3.318s; default App forty-nine 24.730s harness /
+33.449s wall; actual CLI backend zero-test compilation/harness 8.497s wall.
+Four Rust format checks, architecture, version, standard working/index whitespace
+and before/after six-source freeze all passed. Session 36886 closed exit zero;
+all owned runner/compiler/runtime/test processes and newly spawned Node processes
+were zero. Codec/archive/manifests/three locks were explicitly unchanged; ordinary
+verification's lib delta adds only registration/exports, no behavior change.
+Prior actual codec and selected-graph evidence remains reused.
+
+A separate independent read-only task inventory confirmed concrete unfinished
+T44/T47 functionality; neither is merely waiting for a final test run. T44 lacks
+production successful validation -> available Authorization + authorized Session
+installation (existing tests seed that record). T47 still lacks executable
+lifecycle owner composition, non-null approved SN-set sources and full recovery
+reason/frozen-state carrier integration. Their T19/T14/T15/T21 business owners
+remain separate; these findings do not expand the current renewal code audit.
+
+The next concrete increment is T44's private successful-validation installation
+kernel, same real T06 transaction/activeValidate/owner lease/scope/session CAS,
+with actual Authorization creation, final fences/clock and downstream recovery/
+consume/cancel/expiry tests. The plan was independently reviewed and repaired to
+include all existing capacity dimensions (canonical refs 1MiB, member 1MiB,
+4096/32MiB plus terminal/cleanup growth and revision reserve). Actual full Schema/
+consume-purpose binding and historical-success-marker semantics remain mandatory;
+no runtime/HTTP writer or fabricated T19 qualification is permitted. This is an
+approved next implementation plan, not delivered functionality or task completion.
+
+Full T27 remains in progress. Forty-seven tasks remain four implemented, twelve
+in progress and thirty-one incomplete/deferred. Product 0.10.9, normative versions
+1.0, pinned V1 and CodeWhale remain unchanged. Physical platform qualification and
+deployment remain deferred. No artifact size, retry or total/cumulative download
+duration cap is introduced.
