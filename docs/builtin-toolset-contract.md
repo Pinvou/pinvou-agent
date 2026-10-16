@@ -173,8 +173,9 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   carrier); the register names the principal surfaces and claims no
   exhaustiveness, and any future read surface defaults to the same
   no-id-class-rejection norm. The model-facing write family (delivery/
-  messaging — not yet landed; an explicit ownership design is required on
-  landing) admits no aux requester or target; the auxChat relay is the
+  messaging — landed 2026-10 as `send_message_to_session`, §6/§9; the
+  round-18 minor-16 correction: this section previously still said "not yet
+  landed") admits no aux requester or target; the auxChat relay is the
   sanctioned user-mediated channel, and deletion interacts with aux sessions
   only through the designed main→aux cascade and the by-aux-id reset.
 - Logs and errors contain no sensitive data; no network access is introduced.
@@ -223,13 +224,24 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   `from_session` field); delivery is at-least-once (a crash between delivery and the done-marker write replays on
   next boot; the done-marker window itself is the keyed-dedup horizon —
   pruned after the 7-day retention, so a retried call older than that
-  re-delivers); a steer accepted against a mid-turn target can still be
+  re-delivers; and for an UNKEYED send whose spool file persistently cannot
+  be removed after delivery, the same body re-delivers on up to ten
+  consecutive ~1 Hz polls before the removal-streak arm quarantines — the
+  round-18 minor-3 precision: "at-least-once" covers a bounded
+  ten-duplicate burst, and a submission slower than the ≤30s steer window
+  can double-dispatch the same turn); a steer accepted against a mid-turn target can still be
   dropped by the foundation — when that turn is cancelled (the
   `chat:steer_dropped` window is not yet correlated) or when the idle
-  engine is evicted/rebuilt before the steer lands; a keyed retry against
-  an ACP/code target answers "pending" and the record is quarantined by
+  engine is evicted/rebuilt before the steer lands; a send against an
+  ACP/code target — keyed or not (the round-18 minor-17 correction: this
+  list previously scoped the silent quarantine to keyed retries) — answers
+  "pending" and the record is quarantined by
   the watcher with no failure feedback to the sender (the per-delivery
-  ACP/code gate lives below the poll layer); a mid-delivery keyed retry with a DIFFERENT body re-queues the
+  ACP/code gate lives below the poll layer); a send whose spool file the
+  watcher never reaches within its 256-due-files-per-poll ceiling is
+  quarantined as the ceiling's sorted tail with no sender-visible feedback —
+  including a legitimate backlog's overflow, not just hostile growth (the
+  round-18 minor-17 addition); a mid-delivery keyed retry with a DIFFERENT body re-queues the
   newest body (the round-8 semantic compare — created_at nulled — treats
   the same logical message as unchanged); (round-9 minor 2: this list previously disclosed a "slow-spawn
   double-deliver window" — an impossible event: submission is

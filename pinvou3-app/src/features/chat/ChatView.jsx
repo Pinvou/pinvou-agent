@@ -66,8 +66,8 @@ import {
 } from '../attachments/paste-image.js';
 import { formatAttachmentLimitError } from '../attachments/attachment-limit-errors.js';
 import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachmentDropOverlay.jsx';
-import { SessionMentionChips, SessionMentionMenu, SessionMentionCards, SessionMessageCard } from './SessionMentionControls.jsx';
-import { MESSAGE_BLOCK_CONTRACT_LINES, MESSAGE_BLOCK_HEADER, splitSessionMessageBlock } from './session-message-block.js';
+import { SessionMentionChips, SessionMentionMenu, SessionMentionCards } from './SessionMentionControls.jsx';
+import { buildSessionMessageBlock, splitSessionMessageBlock } from './session-message-block.js';
 
 
 import { PROJECT_SESSION_DRAG_TYPE } from '../projects/projectGrouping.js';
@@ -117,10 +117,16 @@ const CHAT_PANEL_LOADERS = Object.freeze({
   artifacts: () => import('../artifacts/ArtifactsPanel.jsx'),
   subagent: () => import('../multiagent/SubagentTranscriptPanel.jsx'),
   auxChat: () => import('../aux-chat/AuxChatPanel.jsx'),
+  // Round-18: the sender card is deferred out of the main entry — its static
+  // copy pushed the web build past the 500 kB startup budget, and entry
+  // policy requires new entry work to be split or lazy-loaded. Prefetched on
+  // mount below, so delivered messages render without a visible delay.
+  sessionMessageCard: () => import('./SessionMessageCard.jsx'),
 });
 const LazyArtifactsPanel = React.lazy(() => CHAT_PANEL_LOADERS.artifacts().then((m) => ({ default: m.ArtifactsPanel })));
 const LazySubagentTranscriptPanel = React.lazy(() => CHAT_PANEL_LOADERS.subagent().then((m) => ({ default: m.SubagentTranscriptPanel })));
 const LazyAuxChatPanel = React.lazy(() => CHAT_PANEL_LOADERS.auxChat().then((m) => ({ default: m.AuxChatPanel })));
+const LazySessionMessageCard = React.lazy(() => CHAT_PANEL_LOADERS.sessionMessageCard().then((m) => ({ default: m.SessionMessageCard })));
 const prefetchChatPanel = (key) => {
   const loader = CHAT_PANEL_LOADERS[key];
   if (loader) loader().catch(() => {});
@@ -936,6 +942,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
           }
           return merged;
         });
+      }, []);
+      // Warm the deferred sender-card chunk at view entry: delivered messages
+      // render it above the body, and the mount-time prefetch keeps the lazy
+      // split (entry-budget policy) free of visible first-render delay.
+      useEffect(() => {
+        prefetchChatPanel('sessionMessageCard');
       }, []);
       const scrollRef = useRef(null);
       const conversationContentRef = useRef(null);
@@ -4567,13 +4579,7 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
         const outgoing = !sessionMentionDisabled && mentionRefs.length
           ? buildSessionMentionBlock(mentionRefs) + tx
           : delivered && messageSplit.sender
-            ? [
-                MESSAGE_BLOCK_HEADER,
-                ...MESSAGE_BLOCK_CONTRACT_LINES,
-                JSON.stringify(messageSplit.sender),
-                '',
-                tx,
-              ].join('\n')
+            ? buildSessionMessageBlock(messageSplit.sender, tx)
             : tx;
         bridge.interaction.editLastTurn(outgoing);
       }
@@ -4637,12 +4643,16 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
         <div className="flex justify-end group min-w-0 max-w-full">
           <div className="flex flex-col items-end max-w-[85%] min-w-0 max-w-full">
             {messageSplit.sender && (
-              <SessionMessageCard
-                sender={messageSplit.sender}
-                knownSessionIds={knownSessionMentionIds}
-                onOpenSession={onOpenSessionMention}
-                copy={t.uiSessionMessage}
-              />
+              <ViewErrorBoundary t={t} variant="panel">
+                <React.Suspense fallback={null}>
+                  <LazySessionMessageCard
+                    sender={messageSplit.sender}
+                    knownSessionIds={knownSessionMentionIds}
+                    onOpenSession={onOpenSessionMention}
+                    copy={t.uiSessionMessage}
+                  />
+                </React.Suspense>
+              </ViewErrorBoundary>
             )}
             <SessionMentionCards
               refs={mentionRefs}

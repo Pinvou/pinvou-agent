@@ -18,12 +18,14 @@
 //! - every delivery writes an audit record into both sessions' workspaces
 //!   (`assistant::audit`, contract §5 L1 requirement), and every quarantine
 //!   (poison, oversize, retry exhaustion, pending-cap excess) audits the
-//!   target session when its id is valid. Five carve-outs where no
+//!   target session when its id is valid. Six carve-outs where no
 //!   workspace audit exists (the log line is the trace): an unparseable
 //!   record, an invalid-target record, a valid target whose workspace
 //!   directory no longer exists (a deleted target's audit append cannot
 //!   create parents), an oversize file (refused before parse — no target
-//!   is knowable), and a non-UTF-8 spool name (quarantined before read);
+//!   is knowable), an unreadable file (refused at the bounded re-read,
+//!   round-18 minor 17: previously under-counted as five), and a
+//!   non-UTF-8 spool name (quarantined before read);
 //! - a delivered idempotency-keyed message leaves a marker under
 //!   `spool/.done/<file-stem>` (the stem is the sender+target-scoped key
 //!   hash), so a retried tool call cannot deliver twice across watcher
@@ -715,10 +717,32 @@ async fn process_spool_file<D: SpoolDelivery, G: DeliveryGates>(
 /// entry read's cap; a hostile mid-delivery swap to a multi-GB file must
 /// not be slurped whole — None means unreadable/oversize, which the caller
 /// treats as changed) ...
+/// Round-18 M1: `File::take` bounds the READ, not the OPEN — the plain
+/// open could be parked indefinitely by a FIFO swapped onto a listed name
+/// inside the listing→open window (the same-user racer the module declares;
+/// verified experimentally by the reviewer), silently killing all
+/// cross-session messaging on the single watcher task. Open non-blocking
+/// and follow-free (unix), fstat the open HANDLE (which also closes the
+/// stat→open type race), and refuse anything that is not a regular file
+/// before reading a byte: a FIFO (or symlink, socket, device) yields None
+/// and the caller poisons, per the module's fail-closed rule.
 fn read_bounded(path: &Path) -> Option<Vec<u8>> {
     use std::io::Read as _;
-    let mut buf = Vec::new();
+    #[cfg(unix)]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+            .open(path)
+            .ok()?
+    };
+    #[cfg(not(unix))]
     let file = std::fs::File::open(path).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut buf = Vec::new();
     file.take(MAX_SPOOL_FILE_BYTES + 1)
         .read_to_end(&mut buf)
         .ok()?;
@@ -838,35 +862,33 @@ impl RetryState {
     }
 }
 
+/// Re-read a spool record for audit purposes, BOUNDED (round-5 A2, re-cut
+/// in round-18 M2): the racy stat-then-`std::fs::read` pair re-slurped the
+/// path unbounded — a same-user writer alternating ftruncate small/huge (or
+/// swapping in a hardlinked multi-GB file) could materialize attacker-chosen
+/// memory on every terminal disposition, the exact thing this doc promised
+/// could not happen. The helper now goes through `read_bounded` (same cap,
+/// plus the handle-side regular-file gate), so oversize and unreadable
+/// files have no workspace-audit arm — the `log::warn!` line is their only
+/// trace (the module doc's carve-out list).
+fn read_record_for_audit(path: &Path) -> Option<SpooledMessage> {
+    read_bounded(path).and_then(|bytes| serde_json::from_slice(&bytes).ok())
+}
+
 /// Quarantine with evidence preservation: if `failed/<name>` already exists
 /// (same idempotency identity quarantined before), the rename target is
 /// unique-ified with a timestamp instead of silently overwriting the earlier
 /// evidence file.
-/// Re-read a spool record for audit purposes, BOUNDED (round-5 A2): the
-/// pipeline has already refused files over `MAX_SPOOL_FILE_BYTES`, so the
-/// audit re-read must not load a multi-GB hostile blob whole. Oversize,
-/// unreadable, and non-UTF-8-named files have no workspace-audit arm — the
-/// `log::warn!` line is their only trace (the module doc's carve-out list).
-fn read_record_for_audit(path: &Path) -> Option<SpooledMessage> {
-    let oversize = std::fs::metadata(path)
-        .map(|meta| meta.len() > MAX_SPOOL_FILE_BYTES)
-        .unwrap_or(true);
-    if oversize {
-        return None;
-    }
-    std::fs::read(path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-}
-
 fn quarantine(path: &Path) -> bool {
     let _ = std::fs::create_dir_all(failed_dir());
     let mut target = failed_dir().join(path.file_name().unwrap_or_default());
     // Round-8 minor 5: the timestamp suffix has 1s resolution and the
     // original shape re-checked nothing after composing it — a same-second
     // re-quarantine replaced the earlier evidence (POSIX rename overwrites).
-    // Re-check after each suffix attempt (second-resolution, then
-    // millisecond) until the target is free.
+    // Two fallback suffixes are attempted (seconds, then milliseconds); a
+    // target still colliding after both is renamed blind (round-18 minor 9:
+    // the comment previously overclaimed a re-check "until the target is
+    // free" that the code never had).
     if target.exists() {
         if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
             let now = std::time::SystemTime::now()
@@ -965,7 +987,8 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
             // a "quarantined" line it never earned.
             if quarantine(&path) {
                 log::warn!(
-                    "[messaging] quarantining {name}: pending-file ceiling {} exceeded",
+                    "[messaging] quarantining {:?}: pending-file ceiling {} exceeded",
+                    name,
                     MAX_PENDING_FILES
                 );
                 if let Some(record) = record.as_ref() {
@@ -1038,7 +1061,7 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
         let outcome = match outcome {
             Ok(outcome) => outcome,
             Err(panic) => {
-                log::error!("[messaging] delivery of {name} panicked: {panic:?}");
+                log::error!("[messaging] delivery of {:?} panicked: {panic:?}", name);
                 let count = retries.record(&name);
                 if count >= MAX_DELIVERY_ATTEMPTS {
                     // Round-10 M1: the file may have been replaced while it
@@ -1046,8 +1069,9 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                     // body under the old body's verdict.
                     if replaced_since_first_read(&path, first_read.as_ref()) {
                         log::warn!(
-                            "[messaging] {name} was replaced during its panicking attempts; \
-                             re-queuing the newest body"
+                            "[messaging] {:?} was replaced during its panicking attempts; \
+                             re-queuing the newest body",
+                            name
                         );
                         retries.clear(&name);
                         continue;
@@ -1056,7 +1080,8 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                     // Round-12 M2: audit/log/clear only on an actual move.
                     if quarantine(&path) {
                         log::warn!(
-                            "[messaging] quarantining {name} after {count} panicking attempts"
+                            "[messaging] quarantining {:?} after {count} panicking attempts",
+                            name
                         );
                         audit_quarantine(
                             store,
@@ -1088,8 +1113,9 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                 // deliver the newest body.
                 if replaced_since_first_read(&path, Some(&original)) {
                     log::warn!(
-                        "[messaging] {name} was replaced after delivery; leaving the newest \
-                         body for the next poll"
+                        "[messaging] {:?} was replaced after delivery; leaving the newest \
+                         body for the next poll",
+                        name
                     );
                     // Round-11 minor 8: dropping the stale marker MUST NOT
                     // be silent — an unlink failure here would suppress the
@@ -1102,7 +1128,8 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                         std::fs::remove_file(done_dir().join(format!("{stem}.json")))
                     {
                         log::warn!(
-                            "[messaging] failed to drop the stale done marker for {name}: {unlink_error}"
+                            "[messaging] failed to drop the stale done marker for {:?}: {unlink_error}",
+                            name
                         );
                     }
                     retries.clear(&name);
@@ -1119,7 +1146,8 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                     Err(error) => {
                         let fails = retries.record_removal_failure(&name);
                         log::warn!(
-                            "[messaging] processed {name} but could not remove it (attempt {fails}): {error}"
+                            "[messaging] processed {:?} but could not remove it (attempt {fails}): {error}",
+                            name
                         );
                         if fails >= MAX_DELIVERY_ATTEMPTS {
                             // Round-10 M1: same guard as above — only
@@ -1127,8 +1155,9 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                             // delivered-and-stuck, not a replacement.
                             if replaced_since_first_read(&path, Some(&original)) {
                                 log::warn!(
-                                    "[messaging] {name} was replaced while removals kept \
-                                     failing; re-queuing the newest body"
+                                    "[messaging] {:?} was replaced while removals kept \
+                                     failing; re-queuing the newest body",
+                                    name
                                 );
                                 retries.clear(&name);
                                 continue;
@@ -1146,7 +1175,8 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                             quarantine(&path);
                             if !path.exists() {
                                 log::warn!(
-                                    "[messaging] quarantining {name} after {fails} failed removals"
+                                    "[messaging] quarantining {:?} after {fails} failed removals",
+                                    name
                                 );
                                 audit_quarantine(
                                     store,
@@ -1166,8 +1196,9 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                 // actually read and rejected.
                 if replaced_since_first_read(&path, original.as_ref()) {
                     log::warn!(
-                        "[messaging] {name} was replaced during processing; re-queuing the \
-                         newest body instead of quarantining: {error:#}"
+                        "[messaging] {:?} was replaced during processing; re-queuing the \
+                         newest body instead of quarantining: {error:#}",
+                        name
                     );
                     continue;
                 }
@@ -1176,7 +1207,7 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                 // actually landed — a persisted rename failure must not
                 // append a "quarantined" line it never earned.
                 if quarantine(&path) {
-                    log::warn!("[messaging] quarantining {name}: {error:#}");
+                    log::warn!("[messaging] quarantining {:?}: {error:#}", name);
                     audit_quarantine(store, record.as_ref(), &format!("{error:#}"));
                 }
             }
@@ -1194,8 +1225,9 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                     // (round-14 minor 1).
                     if replaced_since_first_read(&path, Some(&original)) {
                         log::warn!(
-                            "[messaging] {name} was replaced during its {count} failed \
-                             attempts; resetting the budget for the newest body: {error:#}"
+                            "[messaging] {:?} was replaced during its {count} failed \
+                             attempts; resetting the budget for the newest body: {error:#}",
+                            name
                         );
                         retries.clear(&name);
                         continue;
@@ -1207,7 +1239,8 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                     // attempts against a target that already failed ten.
                     if quarantine(&path) {
                         log::warn!(
-                            "[messaging] quarantining {name} after {count} delivery attempts: {error:#}"
+                            "[messaging] quarantining {:?} after {count} delivery attempts: {error:#}",
+                            name
                         );
                         audit_quarantine(
                             store,
@@ -1218,7 +1251,8 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                     }
                 } else {
                     log::warn!(
-                        "[messaging] delivery attempt {count} for {name} failed (will retry): {error:#}"
+                        "[messaging] delivery attempt {count} for {:?} failed (will retry): {error:#}",
+                        name
                     );
                 }
             }
@@ -2042,6 +2076,99 @@ mod spool_pipeline_tests {
         assert!(lines[3].contains("\"title\":\"标题\""));
         assert_eq!(lines[4], "", "blank separator before the body");
         assert_eq!(lines[5..].join("\n"), "正文\n两行");
+    }
+
+    /// Round-18 M3: the watcher-side 64 KiB cap is half of the load-bearing
+    /// "serialized budget < watcher cap" pair, and its only fixture was 65 KiB
+    /// of unparseable junk (indistinguishable from poison) — both cap
+    /// mutations (64→128 KiB and 64→48 KiB) shipped the suite green. Pin the
+    /// boundary with a VALID record at exactly `MAX_SPOOL_FILE_BYTES`
+    /// (accepted: the stat gate refuses only `> cap`) vs cap+1 (refused as
+    /// oversize) driven through `process_spool_file`.
+    #[tokio::test]
+    async fn spool_cap_boundary_exact_bytes_valid_record() {
+        let _home = TempHome::new();
+        let store = sessions_store();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+
+        // A valid record serialized to EXACTLY `target` bytes: the text is
+        // padded with 3-byte CJK chars (within MAX_MESSAGE_TEXT_CHARS) plus
+        // 0-2 ASCII bytes for the remainder. The empty text's surrounding
+        // quotes are re-used by the real text, so blob = envelope + text
+        // bytes (the envelope is the full serialization with an empty text).
+        let sized_record = |target: usize| -> String {
+            let mut value: serde_json::Value =
+                serde_json::from_str(&record_json("cap", Some("k1"))).unwrap();
+            value["text"] = serde_json::Value::String(String::new());
+            let envelope = serde_json::to_string(&value).unwrap().len();
+            let needed = target - envelope;
+            let text = format!("{}{}", "漢".repeat(needed / 3), "a".repeat(needed % 3));
+            value["text"] = serde_json::Value::String(text);
+            let bytes = serde_json::to_string(&value).unwrap();
+            assert_eq!(
+                bytes.len(),
+                target,
+                "record must serialize to exactly {target}"
+            );
+            bytes
+        };
+
+        let fake = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Steered),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let mut skip_audited = std::collections::HashSet::new();
+
+        std::fs::write(
+            spool.join("cap.json"),
+            sized_record(MAX_SPOOL_FILE_BYTES as usize),
+        )
+        .unwrap();
+        let outcome = process_spool_file(
+            &spool.join("cap.json"),
+            &fake,
+            &AllowAllGates,
+            &store,
+            &mut skip_audited,
+            &mut None,
+        )
+        .await;
+        assert!(
+            matches!(outcome, Processed::Done(..)),
+            "a valid record at exactly the cap is inside it, not oversize"
+        );
+
+        std::fs::write(
+            spool.join("over.json"),
+            sized_record(MAX_SPOOL_FILE_BYTES as usize + 1),
+        )
+        .unwrap();
+        let outcome = process_spool_file(
+            &spool.join("over.json"),
+            &fake,
+            &AllowAllGates,
+            &store,
+            &mut skip_audited,
+            &mut None,
+        )
+        .await;
+        assert!(
+            matches!(outcome, Processed::Poison(..)),
+            "one byte over the cap is refused as oversize"
+        );
+    }
+
+    /// Round-18 M3: the body declares the "serialized budget < watcher cap"
+    /// margin load-bearing (the server refuses serialized records over
+    /// 61440 bytes; a 48 KiB watcher cap would silently quarantine every
+    /// legal max-size send). Pin the margin so neither side can drift.
+    #[test]
+    fn spool_cap_exceeds_the_server_serialized_budget() {
+        assert!(
+            MAX_SPOOL_FILE_BYTES > 61_440,
+            "watcher cap {MAX_SPOOL_FILE_BYTES} must stay above the server's 61440-byte serialized budget"
+        );
     }
 
     #[tokio::test]

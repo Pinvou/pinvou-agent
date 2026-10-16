@@ -133,15 +133,17 @@ assert.match(
 );
 assert.match(
   chatViewSource,
-  /delivered && messageSplit\.sender\s*\?\s*\[\s*MESSAGE_BLOCK_HEADER,/,
-  'an edit-resend of a delivered message re-prepends the sender header (provenance preserved — no shape can re-arm the parsers)',
+  /delivered && messageSplit\.sender\s*\?\s*buildSessionMessageBlock\(messageSplit\.sender,\s*tx\)/,
+  'an edit-resend of a delivered message serializes through the shared builder (provenance preserved — the layout itself is round-trip-pinned in session_message_block.test.mjs; the previous regex-only pin shipped green under a blank-separator mutation, round-18 M5)',
 );
 // Round-4 B5' pin: the sender card render + its i18n copy are wired —
-// deleting the render (or drifting the copy key) turns this red.
+// deleting the render (or drifting the copy key) turns this red. Round-18:
+// the card is lazy-loaded (entry budget), so the pin follows the lazy
+// component through its Suspense slot.
 assert.match(
   chatViewSource,
-  /\{messageSplit\.sender && \(\s*<SessionMessageCard\s+sender=\{messageSplit\.sender\}/,
-  'UserBubble must render the SessionMessageCard for delivered messages',
+  /\{messageSplit\.sender && \(\s*<ViewErrorBoundary[^]*?<React\.Suspense fallback=\{null\}>\s*<LazySessionMessageCard\s+sender=\{messageSplit\.sender\}/,
+  'UserBubble must render the lazy SessionMessageCard for delivered messages',
 );
 assert.match(
   chatViewSource,

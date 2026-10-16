@@ -15,6 +15,12 @@
  * Tolerance mirrors the mention block: only a block at the very start is
  * recognized; a hand-written lookalike (tampered JSON, missing blank line
  * before a body, absurdly long JSON line) passes through unchanged.
+ *
+ * Units note (round-18 minor 19, same disclosure as the mention twin): the
+ * MAX_BLOCK_JSON_LINE_LENGTH bound below counts UTF-8 BYTES via the
+ * Rust-side string length — matching the delivery side's byte caps — while
+ * JS string APIs measure UTF-16 units; the JSON line is bytes-on-the-wire,
+ * so bytes is the binding unit here.
  */
 
 /** Header line of the delivered block — mirrored verbatim by features/messaging's MESSAGE_BLOCK_HEADER (Rust) and the titler strippers. */
@@ -86,6 +92,29 @@ export function splitSessionMessageBlock(text) {
     return { sender, text: lines.slice(jsonLineIndex + 2).join('\n') };
   }
   return untouched;
+}
+
+/**
+ * Serialize a delivered message to its wire/text form: sender header block
+ * followed by the body. Single source of the send-side layout on the web —
+ * the edit-resend path in ChatView re-serializes through this builder so the
+ * bytes it emits are exactly what splitSessionMessageBlock parses back
+ * (pinned behaviorally in session_message_block.test.mjs; the round-18
+ * review rejected a regex-only pin after a blank-separator mutation shipped
+ * the suite green). The Rust delivery side (features/messaging) mirrors the
+ * same layout natively.
+ * @param {{sessionId: string | null, title: string | null}} sender
+ * @param {string} body non-empty message body (verbatim, no stripping)
+ * @returns {string} text starting with the sender header block
+ */
+export function buildSessionMessageBlock(sender, body) {
+  return [
+    MESSAGE_BLOCK_HEADER,
+    ...MESSAGE_BLOCK_CONTRACT_LINES,
+    JSON.stringify(sender),
+    '',
+    body,
+  ].join('\n');
 }
 
 // Classic-script bridges (platform/{tauri,web}) reuse the same parser for

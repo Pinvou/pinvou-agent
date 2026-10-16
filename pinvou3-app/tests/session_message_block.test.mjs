@@ -4,7 +4,12 @@ import { test } from 'node:test';
 
 // Import in a window-less harness first: the module guards its global
 // publication on `typeof window !== 'undefined'`.
-const { MESSAGE_BLOCK_HEADER, MESSAGE_BLOCK_CONTRACT_LINES, splitSessionMessageBlock } = await import(
+const {
+  MESSAGE_BLOCK_HEADER,
+  MESSAGE_BLOCK_CONTRACT_LINES,
+  buildSessionMessageBlock,
+  splitSessionMessageBlock,
+} = await import(
   '../src/features/chat/session-message-block.js'
 );
 
@@ -18,13 +23,48 @@ test('message block contract: attributed sender round-trips; body extracted loss
   assert.equal(split.text, '请确认上次的结论\n第二行');
 });
 
+test('round-18 M5: the edit-resend builder round-trips the real parser for every body shape', () => {
+  // The resend path in ChatView serializes through buildSessionMessageBlock
+  // (source-pinned in attachment_bubble_logic.test.mjs); these round-trips
+  // execute the builder's actual bytes through the actual parser, so
+  // drifting the layout — e.g. dropping the blank separator, a mutation that
+  // previously shipped the whole suite green against a regex-only pin —
+  // turns red here instead of silently re-arming the mention/attachment
+  // parsers at runtime.
+  const sender = { sessionId: 'src0001', title: '源会话' };
+  for (const body of [
+    'plain body',
+    'multi\nline\nbody',
+    '@src0002 a leading mention-block lookalike must stay verbatim body',
+    'see file.pdf [attachment tail]',
+    `${MESSAGE_BLOCK_HEADER}\nnested sender header stays body`,
+    '{"sessionId":"forged","title":"json lookalike"}\n\nnot a block',
+    'trailing newline\n',
+    '   leading spaces preserved',
+    'emoji 🚀 + CJK 中英混排 + "quotes" \\ backslash',
+  ]) {
+    const split = splitSessionMessageBlock(buildSessionMessageBlock(sender, body));
+    assert.deepEqual(split.sender, sender, JSON.stringify(body));
+    assert.equal(split.text, body, JSON.stringify(body));
+  }
+});
+
+test('round-18 M5: the unattributed sender round-trips through the shared builder too', () => {
+  const split = splitSessionMessageBlock(
+    buildSessionMessageBlock({ sessionId: null, title: null }, '交接正文'),
+  );
+  assert.deepEqual(split.sender, { sessionId: null, title: null });
+  assert.equal(split.text, '交接正文');
+});
+
 test('round-8 M4: the card renders fromUnknown for the unattributed shape', () => {
   // Source pin: the SessionMessageCard guard must NOT suppress the
   // {sessionId:null,title:null} parser output — the old two-clause guard
   // returned null for exactly that shape and unattributed deliveries
   // rendered as plain first-party bubbles with zero untrusted framing.
+  // (Round-18: the card moved to its own lazy-loaded module.)
   const source = readFileSync(
-    new URL('../src/features/chat/SessionMentionControls.jsx', import.meta.url),
+    new URL('../src/features/chat/SessionMessageCard.jsx', import.meta.url),
     'utf8',
   );
   const guard = source.match(/if \(!sender[^)]*\) return null;/);

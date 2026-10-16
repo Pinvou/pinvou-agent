@@ -3786,8 +3786,11 @@ impl EnginePool {
     /// Deliver a cross-session message as a new turn — the idle-wake path of
     /// `features::messaging` (docs/builtin-toolset-contract.md §6: target
     /// idle / not loaded → dispatch immediately, the scheduled-task wake
-    /// precedent). Mirrors `send_user_message` minus its benchmark gate;
-    /// the session's own mode governs the turn.
+    /// precedent). Follows `send_user_message`'s shape minus its benchmark
+    /// gate, and additionally checks out persona injection (a messaging wake
+    /// is a first-class turn, not a bare send); the session's own mode
+    /// governs the turn. (Round-18 minor 20: the old "mirrors" wording
+    /// overstate the equivalence.)
     pub(crate) async fn deliver_messaging_turn(
         &self,
         session_id: &str,

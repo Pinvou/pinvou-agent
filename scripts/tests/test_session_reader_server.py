@@ -1275,6 +1275,51 @@ class SendMessageTests(unittest.TestCase):
         self.assertIn(str(server.MAX_MESSAGE_SPOOL_BYTES // 1024), error)
         self.assertEqual(len(self._spooled()), 1)
 
+    def test_message_spool_budget_exact_boundary_is_pinned(self):
+        """Round-18 minor 15: the reject is `len(blob) > MAX` — a `>` → `>=`
+        mutation shipped the suite green because no test sat on the exact
+        boundary. Pin a record serialized to exactly MAX_MESSAGE_SPOOL_BYTES
+        (accepted) against one byte over (rejected)."""
+        # The envelope probe must use the REAL payload shape: spool_id is a
+        # 64-char sha256 hex (a short probe id under-counts the envelope and
+        # the "exact" record lands over budget).
+        import hashlib
+
+        spool_id = hashlib.sha256(b"src0001|tgt0001|k-exact").hexdigest()
+        payload_base = server._spool_payload(
+            spool_id, "src0001", "源会话", "tgt0001", "目标会话", "", "k-exact",
+        )
+        # The empty text's surrounding quotes are re-used by the real text:
+        # blob = envelope (full serialization with an empty text) + text bytes.
+        envelope = len(json.dumps(payload_base, ensure_ascii=False).encode("utf-8"))
+
+        def sized_text(target_total: int) -> str:
+            needed = target_total - envelope
+            # 3-byte CJK chars for bulk, ASCII for the 0-2 byte remainder;
+            # char count stays far under the 32768 char cap.
+            return "\u6c49" * (needed // 3) + "a" * (needed % 3)
+
+        exact = sized_text(server.MAX_MESSAGE_SPOOL_BYTES)
+        payload, error = self._send(
+            from_session="src0001", text=exact, idempotency_key="k-exact"
+        )
+        self.assertIsNone(error)
+        files = self._spooled()
+        self.assertEqual(len(files), 1)
+        self.assertEqual(
+            files[0].stat().st_size,
+            server.MAX_MESSAGE_SPOOL_BYTES,
+            "a record at exactly the budget must be accepted",
+        )
+
+        over = sized_text(server.MAX_MESSAGE_SPOOL_BYTES + 1)
+        payload, error = self._send(
+            from_session="src0001", text=over, idempotency_key="k-over2"
+        )
+        self.assertIsNone(payload)
+        self.assertIn(str(server.MAX_MESSAGE_SPOOL_BYTES // 1024), error)
+        self.assertEqual(len(self._spooled()), 1)
+
     def test_valid_send_spools_with_titles_and_text(self):
         payload, error = self._send(from_session="src0001", idempotency_key="k1")
         self.assertIsNone(error)
