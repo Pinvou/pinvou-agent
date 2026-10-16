@@ -13,7 +13,10 @@ use tauri::{AppHandle, Manager};
 /// Present the main window in response to the global shortcut. A missing
 /// main window (teardown race) is logged and ignored. When the Linux
 /// cold-start gate deferred the presentation (nothing was enqueued), the
-/// transient raise is skipped too — there is no present to land after.
+/// transient raise is skipped too — there is no present to land after; the
+/// press itself is dropped for that moment, bounded by the startup overlay's
+/// own reveal (frontend mount or the 8s fallback), mirroring the established
+/// second-instance defer contract.
 pub(super) fn bring_main_window_to_front(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         log::debug!("global shortcut trigger ignored: main window is gone");
@@ -29,9 +32,9 @@ pub(super) fn bring_main_window_to_front(app: &AppHandle) {
     raise_after_present(&window);
 }
 
-/// Linux: transient always-on-top raise. Window operations queue onto the
-/// main thread in dispatch order, so these land after the present task that
-/// `activate_main_window` enqueued above.
+/// Linux: transient always-on-top raise. The whole composition runs inline on
+/// the main thread (dispatched by `handle_triggered`), so these calls execute
+/// right after the present inside `activate_main_window` above.
 #[cfg(target_os = "linux")]
 fn raise_after_present(window: &tauri::WebviewWindow) {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -53,9 +56,16 @@ fn raise_after_present(window: &tauri::WebviewWindow) {
     let window = window.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(HOLD_MS)).await;
-        if GENERATION.load(Ordering::Acquire) == generation {
-            let _ = window.set_always_on_top(false);
-        }
+        // Check AND clear on the main thread: the raise of a newer press
+        // runs inline on the main thread too, so joining the generation
+        // check into the same thread's FIFO makes raise/clear order total —
+        // a stale clear can never land after (and cancel) a newer raise.
+        let app = window.app_handle().clone();
+        let _ = app.run_on_main_thread(move || {
+            if GENERATION.load(Ordering::Acquire) == generation {
+                let _ = window.set_always_on_top(false);
+            }
+        });
     });
     if let Err(error) = focus_result {
         log::warn!("global shortcut set_focus failed: {error}");

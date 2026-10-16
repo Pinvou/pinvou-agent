@@ -152,10 +152,12 @@ async function testImageInputCapability(model, baseUrl, apiKey, modelId) { retur
 
   // ── 全局唤醒快捷键 ────────────────────────────────────────────────
   // 专用 Rust 命令 set_global_shortcut_config 独占注册与持久化（不走
-  // update_settings）：success = status "registered"/"disabled"（accelerator
-  // 为归一化组合）；"invalid"/"conflict" 表示注册被拒（conflict 的 message
-  // 是技术细节，仅记 console，UI 展示本地化文案）。硬失败（IPC 异常）返回
-  // null，调用方据此回滚开关并展示通用失败文案。
+  // update_settings）：success = status "registered"/"disabled"（registered
+  // 必带归一化 accelerator；disabled 且 accelerator 为 null 时——会话不支持
+  // 或携带无法解析的组合——Rust 端磁盘保留原组合）；"invalid"/"conflict"
+  // 表示注册被拒（conflict 的 message 是技术细节，仅记 console，UI 展示
+  // 本地化文案）。硬失败（IPC 异常）返回 null，调用方据此回滚开关并展示
+  // 通用失败文案。
   function setGlobalShortcutConfig(enabled, accelerator) {
     const sync = function () {
       return invoke("set_global_shortcut_config", { enabled: !!enabled, accelerator: String(accelerator || "") });
@@ -166,24 +168,28 @@ async function testImageInputCapability(model, baseUrl, apiKey, modelId) { retur
     // caller can roll its optimistic state back. On success the authoritative
     // response is mirrored into state.settings so a settings-page remount
     // reads the persisted combo instead of the startup snapshot.
-    return sync().then(function (result) { return applyGlobalShortcutResult(result, enabled, accelerator); }, function (error) {
+    return sync().then(function (result) { return applyGlobalShortcutResult(result, enabled); }, function (error) {
       console.warn("[settings] global shortcut config sync failed, retrying once", error);
-      return sync().then(function (result) { return applyGlobalShortcutResult(result, enabled, accelerator); }, function (retryError) {
+      return sync().then(function (result) { return applyGlobalShortcutResult(result, enabled); }, function (retryError) {
         console.warn("[settings] global shortcut config sync failed after retry", retryError);
         return null;
       });
     });
   }
-  function applyGlobalShortcutResult(result, enabled, accelerator) {
+  function applyGlobalShortcutResult(result, enabled) {
     if (!result || typeof result.status !== "string") return null;
     if (result.status !== "registered" && result.status !== "disabled") return result;
     if (state.settings) {
       // Same mechanics as the pet:enabled_changed listener above: the bridge
-      // owns its settings slice; the React layer only reads it.
-      state.settings = Object.assign({}, state.settings, {
-        global_shortcut_enabled: !!enabled,
-        global_shortcut_accelerator: result.accelerator || accelerator,
-      });
+      // owns its settings slice; the React layer only reads it. Mirror the
+      // accelerator ONLY when Rust reports one — with null (unsupported
+      // session or an unparsable draft while disabled) disk keeps the
+      // existing combo, so the snapshot must not regress to the raw input.
+      const mirror = { global_shortcut_enabled: !!enabled };
+      if (typeof result.accelerator === "string" && result.accelerator) {
+        mirror.global_shortcut_accelerator = result.accelerator;
+      }
+      state.settings = Object.assign({}, state.settings, mirror);
       notify();
     }
     return result;

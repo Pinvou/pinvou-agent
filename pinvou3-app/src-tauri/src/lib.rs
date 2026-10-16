@@ -806,19 +806,12 @@ pub fn run() {
         .plugin(startup_probe_plugin("startup-probe-dialog"))
         // System-wide bring-to-front shortcut (off by default, opt-in like
         // the voice shortcut; default accelerator Ctrl/Cmd+Alt+P when
-        // enabled — configurable in settings). The plugin-level handler
-        // survives register/unregister cycles and only fires for shortcuts
-        // this module registered; triggering strictly on Pressed keeps the
-        // Released event a no-op.
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        crate::features::global_shortcut::handle_triggered(app);
-                    }
-                })
-                .build(),
-        )
+        // enabled — configurable in settings). No plugin-level handler here:
+        // it would fire for ANY shortcut registered on this shared plugin.
+        // Scoping is bound per shortcut at registration time —
+        // `features::global_shortcut` registers through `on_shortcut`, whose
+        // handler triggers strictly on Pressed (Released stays a no-op) and
+        // only for the combo that registration created.
         .plugin(startup_probe_plugin("startup-probe-global-shortcut"))
         .on_page_load(|webview, payload| {
             startup::mark_with_detail(
@@ -1370,16 +1363,15 @@ pub fn run() {
             // Startup replay: settings.json's voice_shortcut_enabled is the
             // authoritative persistence of the switch (frontend localStorage is
             // only a mirror); sync it into the native-layer AtomicBool right
-            // after the hook is installed.
-            crate::features::voice_shortcut::set_enabled(
-                crate::platform::prefs::UserPrefs::load().voice_shortcut_enabled,
-            );
+            // after the hook is installed. One shared load serves both this
+            // and the global-shortcut replay below.
+            let prefs = crate::platform::prefs::UserPrefs::load();
+            crate::features::voice_shortcut::set_enabled(prefs.voice_shortcut_enabled);
 
             // System-wide bring-to-front shortcut: same replay shape. A parse
             // failure or register conflict (another app owns the combination)
             // logs and continues — startup must never fail over the shortcut.
             crate::features::global_shortcut::install(app.handle().clone());
-            let prefs = crate::platform::prefs::UserPrefs::load();
             crate::features::global_shortcut::apply_saved_settings(
                 prefs.global_shortcut_enabled,
                 &prefs.global_shortcut_accelerator,

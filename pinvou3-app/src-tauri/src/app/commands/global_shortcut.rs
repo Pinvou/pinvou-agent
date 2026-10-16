@@ -37,8 +37,10 @@ impl GlobalShortcutApplyResult {
 /// register/unregister) and the settings persist below must be atomic per
 /// command, or two racing invokes could interleave apply A → apply B →
 /// persist B → persist A and leave settings.json describing a config the
-/// plugin never applied. The startup replay is not a user of this lock — it
-/// runs once in `lib.rs` setup, strictly before the command surface exists.
+/// plugin never applied. The startup replay is not a user of this lock —
+/// the event loop cannot dispatch webview invokes until `lib.rs` setup
+/// returns, so the replay can never overlap a command invoke (and the
+/// feature's own REGISTERED state serializes the rest).
 static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 
 fn config_lock() -> std::sync::MutexGuard<'static, ()> {
