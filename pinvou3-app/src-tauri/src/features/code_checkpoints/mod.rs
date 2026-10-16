@@ -842,8 +842,13 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
     let info_dir = repo.join("info");
     fs::create_dir_all(&info_dir)
         .with_context(|| format!("创建 checkpoint 仓库 info 目录失败: {}", info_dir.display()))?;
-    fs::write(info_dir.join("exclude"), excludes.join("\n") + "\n")
-        .with_context(|| "写入 checkpoint 仓库 exclude 失败".to_string())?;
+    // r13 M3：exclude 的 truncate-then-write 可被并发 add -A 读到半写；unbound
+    // 布局下位于 agent 可写的工作树内，同款原子私有写原语。
+    crate::platform::filesystem::atomic_write_private(
+        &info_dir.join("exclude"),
+        (excludes.join("\n") + "\n").as_bytes(),
+    )
+    .with_context(|| "写入 checkpoint 仓库 exclude 失败".to_string())?;
     // 一次性迁移（存量仓库）：exclude 只挡 untracked 文件，升级前已 add -A 进
     // 影子 index 的敏感文件会继续被跟踪、被后续快照、被 checkout-index 恢复。
     // 按新模式清一次 index（幂等，marker 门控；只有 git 真实成功才写 marker，
@@ -869,7 +874,7 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(CheckpointIndex {
-                version: 1,
+                version: 2,
                 entries: Vec::new(),
             });
         }
@@ -878,8 +883,30 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
                 .with_context(|| format!("读取 checkpoint 索引失败: {}", path.display()));
         }
     };
-    match serde_json::from_slice(&bytes) {
-        Ok(index) => Ok(index),
+    match serde_json::from_slice::<CheckpointIndex>(&bytes) {
+        Ok(mut index) => {
+            // 谓词收窄迁移（评审 r13 M1）：v1 的 Turn 条目号是旧口径
+            // （is_user_turn_prompt，步数预算通知计 turn）算的；r10 收窄为
+            // counts_as_user_turn 后无迁移则新旧同号碰撞——新边界取旧条目，
+            // 「文件+对话」回退实际恢复早 k 轮的文件状态。保守失效：v1 索引
+            // 的 Turn 条目整体退役（PreRestore 保留供 undo），该会话的旧边界
+            // 诚实降级为仅对话；新 turn 起以 v2 口径从当前计数对齐。
+            if index.version < 2 {
+                let retired = index
+                    .entries
+                    .iter()
+                    .filter(|e| e.kind == CheckpointKind::Turn)
+                    .count();
+                if retired > 0 {
+                    eprintln!(
+                        "[checkpoints] legacy v1 turn numbering: retiring {retired} Turn entries (honest conversation-only degradation); new turns use the narrowed predicate",
+                    );
+                }
+                index.entries.retain(|e| e.kind != CheckpointKind::Turn);
+                index.version = 2;
+            }
+            Ok(index)
+        }
         Err(_parse_error) => {
             // 损坏的 index 不得让该会话的 checkpoint 功能永久失效（临时会话的
             // 账本就在 agent 可见的工作目录内，agent 的工具可能写坏它）：隔离
@@ -903,7 +930,7 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
                 ),
             }
             Ok(CheckpointIndex {
-                version: 1,
+                version: 2,
                 entries: Vec::new(),
             })
         }
@@ -1824,15 +1851,17 @@ mod tests {
         )
         .unwrap();
         let index = load_index(dir.path()).expect("a main-era index must deserialize");
-        assert_eq!(index.entries.len(), 2, "both entries must survive the load");
+        // r13 M1 迁移：v1 的 Turn 条目被保守退役（旧口径号不可信），PreRestore 保留。
         assert_eq!(
-            index.entries[0].label, "",
-            "a missing label defaults to empty"
+            index.entries.len(),
+            1,
+            "the v1 Turn entry is retired by the predicate migration; only PreRestore survives"
         );
         assert_eq!(
-            index.entries[1].label, "legacy value",
+            index.entries[0].label, "legacy value",
             "a present label must still be read"
         );
+        assert_eq!(index.version, 2, "the index is stamped to v2 on load");
         // No quarantine file may appear next to the index.
         let corrupt: Vec<_> = fs::read_dir(path.parent().unwrap())
             .unwrap()
@@ -2623,7 +2652,7 @@ mod tests {
         save_index(
             ledger.path(),
             &CheckpointIndex {
-                version: 1,
+                version: 2,
                 entries: vec![meta],
             },
         )
@@ -2691,7 +2720,7 @@ mod tests {
         save_index(
             ledger.path(),
             &CheckpointIndex {
-                version: 1,
+                version: 2,
                 entries: vec![CheckpointMeta {
                     id: "c1-1".into(),
                     turn: Some(1),
@@ -3019,7 +3048,7 @@ mod tests {
         save_index(
             ledger.path(),
             &CheckpointIndex {
-                version: 1,
+                version: 2,
                 entries: vec![CheckpointMeta {
                     id: "c1-1".into(),
                     turn: Some(1),
@@ -3115,7 +3144,7 @@ mod tests {
         save_index(
             ledger.path(),
             &CheckpointIndex {
-                version: 1,
+                version: 2,
                 entries: vec![CheckpointMeta {
                     id: "np-1".into(),
                     turn: Some(1),
@@ -3178,7 +3207,7 @@ mod tests {
         use crate::platform::test_support::{loosen_to_world_readable_for_test, permission_bits};
         let ledger = TestDir::new("index-perms");
         let index = CheckpointIndex {
-            version: 1,
+            version: 2,
             entries: Vec::new(),
         };
         save_index(ledger.path(), &index).unwrap();

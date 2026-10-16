@@ -990,7 +990,13 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
       }
       saveWorkingSetTo(liveBuffer);
     } else {
+      // r13 M2：durable 分支同样不得丢未发送草稿——快路径在 :427 有同款修复
+      // 并留有注释，慢路径漏了。switchToSessionInternal(forceDurableLoad) 的
+      // 调用方（回退/撤销重载）目标是活动会话，live composerDraft 是用户
+      // 「打了一半先回退」的最新键击；跨 freshBuffer 替换携带。
+      const liveDraft = state.composerDraft || "";
       sessionStates[id] = freshBuffer();
+      if (liveDraft) sessionStates[id].composerDraft = liveDraft;
       // The slow-path disk rehydration bypasses getBuffer; the draft stashed at eviction time must be restored here.
       restoreEvictedSessionDraft(id, sessionStates[id]);
       loadWorkingSetFrom(sessionStates[id]);
