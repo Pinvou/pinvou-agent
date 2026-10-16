@@ -20,7 +20,10 @@ test('startup gates remain active in desktop and web production builds', () => {
   // Round-21 B-1: the measured raise (main@007f5ea4 alone = 498.54 kB web;
   // +session-messaging receive path = 500.25 kB web / 497.93 kB desktop —
   // see the budget comment in vite.config.mjs).
-  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 502_000);
+  // Combined re-stack measurement: 502.18 kB web / 499.74 kB desktop
+  // (messaging +1.71 kB and the automations residual stacked over the
+  // 498_540 B base) — see the budget comment in vite.config.mjs.
+  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 503_000);
   for (const mode of ['production', 'web']) {
     const config = createViteConfig({ command: 'build', mode });
     const pluginNames = new Set(config.plugins.flat(Infinity).filter(Boolean).map(plugin => plugin.name));

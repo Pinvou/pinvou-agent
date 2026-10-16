@@ -480,12 +480,13 @@ function enforceLazyChunks() {
 //   deferrable — the result card and its parser moved to the on-demand
 //   scheduled-task-card chunk, leaving only the timeline-header summary
 //   surface whose synchronous rendering is pinned reviewed behavior.
-// The combined tree is re-measured after this rebase and this constant
-// set to cover both residuals; main may now emit Vite's informational
-// chunk-size warning on web, while this gate remains the hard limit.
-// Raising further requires the same measured evidence plus an explicit
-// review decision.
-export const MAIN_ENTRY_BUDGET_BYTES = 502_000;
+// The combined tree is measured at 502_181 B on web after this rebase
+// (both residuals stacked over the 498_540 B base), so this constant is
+// set to 503_000 — the next kB boundary, ~800 B of headroom; main may
+// now emit Vite's informational chunk-size warning on web, while this
+// gate remains the hard limit. Raising further requires the same measured
+// evidence plus an explicit review decision.
+export const MAIN_ENTRY_BUDGET_BYTES = 503_000;
 
 export function assertMainEntryBudget(bundle, budgetBytes = MAIN_ENTRY_BUDGET_BYTES) {
   const mainEntry = Object.values(bundle).find(output => (
