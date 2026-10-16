@@ -1940,6 +1940,14 @@ pub fn import_plugin_package_gated(
 
 #[cfg(test)]
 mod tests {
+    // 断言中途 unwrap 恐慌也不遗留临时 zip（panic 走 unwind，Drop 仍执行）。
+    struct RemoveTempZip<'a>(&'a std::path::Path);
+    impl Drop for RemoveTempZip<'_> {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(self.0);
+        }
+    }
+
     // Round-37 review anti-drift pin: the CLI's error translation keys on
     // substrings of the rejection strings below (不安全路径 / symlink /
     // 伪造头部 / 解压+上限). Rewording any of them silently reverts the
@@ -2021,27 +2029,23 @@ mod tests {
         assert!(is_safe_path(Path::new("./b")));
 
         // 内存 zip executable 钉：把登记的 sanitizer 语义（depth-0 前缀剥离
-        // 放行、`./`/中段 `..` 塌缩、前置 `..` 逃逸拒绝）直接钉在
-        // `enclosed_name` 的真实 verdict 上。zip crate 升级若改变其中任何一
-        // 条（比如把 depth-0 前缀从剥离改成拒绝），这里先红，登记随之更新。
+        // 放行、`./`/中段 `..` 塌缩、前置 `..` 逃逸拒绝、Windows 驱动器前缀
+        // 剥离——zip 8.x 在所有平台经 Utf8WindowsPath 解析条目名，Unix 上
+        // 同样放行 `C:/x`）直接钉在 `enclosed_name` 的真实 verdict 上。zip
+        // crate 升级若改变其中任何一条（比如把 depth-0 前缀从剥离改成拒绝），
+        // 这里先红，登记随之更新。
         let zip_path = std::env::temp_dir().join(format!(
             "pinvu-sanitizer-verdicts-{}-{}",
             std::process::id(),
             crate::platform::paths::tests::unique_suffix()
         ));
-        // 断言中途 unwrap 恐慌也不遗留临时 zip（panic 走 unwind，Drop 仍执行）。
-        struct RemoveTempZip<'a>(&'a std::path::Path);
-        impl Drop for RemoveTempZip<'_> {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_file(self.0);
-            }
-        }
         let _temp_guard = RemoveTempZip(&zip_path);
         let entries = [
             ("../x", None::<&str>),
             ("/abs/x", Some("abs/x")),
             ("./b", Some("b")),
             ("a/../b", Some("b")),
+            ("C:/x", Some("x")),
             ("ok.txt", Some("ok.txt")),
         ];
         let verdicts: Vec<Option<String>> = {
@@ -2053,6 +2057,8 @@ mod tests {
                 use std::io::Write;
                 zw.write_all(b"x").unwrap();
             }
+            zw.add_symlink("link.txt", "/etc/ssh/ssh_config", opts)
+                .unwrap();
             zw.finish().unwrap();
             let mut archive =
                 zip::ZipArchive::new(std::fs::File::open(&zip_path).unwrap()).unwrap();
@@ -2066,13 +2072,67 @@ mod tests {
                 })
                 .collect()
         };
-        for ((name, expected), actual) in entries.iter().zip(verdicts.iter()) {
+        for ((name, expected), actual) in entries
+            .iter()
+            .chain(std::iter::once(&("link.txt", Some("link.txt"))))
+            .zip(verdicts.iter())
+        {
             let expected = expected.map(|e| e.to_string());
             assert_eq!(
                 actual, &expected,
                 "enclosed_name verdict for {name:?} 与登记的 sanitizer 语义不符"
             );
         }
+
+        // symlink 面 executable 化：unix_mode 文件类型位 = symlink 的条目被
+        // 生产闸拒绝（底座 `entry_type_is_link` 的 zip 面）。链接条目名本身
+        // 的 enclosed_name 是放行的（上一循环），拒绝必须来自 symlink 判定。
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&zip_path).unwrap()).unwrap();
+        let mut link = archive.by_name("link.txt").unwrap();
+        assert!(link.enclosed_name().is_some(), "链接名本身不触发穿越拒绝");
+        let mut total = 0u64;
+        let err = checked_zip_entry_path(&mut link, &mut total, u64::MAX, "link")
+            .expect_err("symlink 条目必须被生产闸拒绝");
+        assert_eq!(err, REJECT_SYMLINK);
+    }
+
+    /// 生产闸承担声明大小上限的 executable 钉：无论 `checked_zip_entry_path`
+    /// 内部是委派 `add_entry_size` 还是旧内联实现，上限执行本身不得被移除——
+    /// 等价性测试（上方）钉的是引擎语义，本钉钉的是生产接线。三条目声明大小
+    /// 累计越过 `max_bytes` 时第三条必须被拒，且前两条照常放行、累计正确。
+    #[test]
+    fn forkguard_zip_gate_enforces_declared_size_cap() {
+        let zip_path = std::env::temp_dir().join(format!(
+            "pinvu-declared-cap-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _temp_guard = RemoveTempZip(&zip_path);
+        {
+            let f = std::fs::File::create(&zip_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            for name in ["a.txt", "b.txt", "c.txt"] {
+                zw.start_file(name, opts).unwrap();
+                use std::io::Write;
+                zw.write_all(&[b'x'; 400]).unwrap();
+            }
+            zw.finish().unwrap();
+        }
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(&zip_path).unwrap()).unwrap();
+        let mut total = 0u64;
+        let max_bytes: u64 = 1000;
+        for name in ["a.txt", "b.txt"] {
+            let mut entry = archive.by_name(name).unwrap();
+            let path = checked_zip_entry_path(&mut entry, &mut total, max_bytes, name)
+                .unwrap_or_else(|e| panic!("{name} 在 {total}/{max_bytes} 内应放行: {e}"));
+            assert_eq!(path, name);
+        }
+        assert_eq!(total, 800, "前两条目声明大小应已累计");
+        let mut entry = archive.by_name("c.txt").unwrap();
+        let err = checked_zip_entry_path(&mut entry, &mut total, max_bytes, "c.txt")
+            .expect_err("越过声明上限必须被拒");
+        assert_eq!(err, reject_declared_cap("c.txt", max_bytes));
     }
 
     /// The literal rejection messages must keep carrying the substrings the
