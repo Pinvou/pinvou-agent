@@ -1356,12 +1356,20 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
     retries
         .stuck_episode_audited
         .retain(|name, _| listed.contains(name));
+    // #680 rebase: the parked map gets the same vanished-name guard — its
+    // lazy un-park branches only run for LISTED names, so an externally
+    // deleted park would otherwise leak its entry for the process lifetime.
+    retries.parked.retain(|name, _| listed.contains(name));
     // Round-3 m-D: a hostile 10k-file burst reserves O(N) buckets that
     // HashMap::retain never shrinks — release them when everything is
     // empty again.
-    if retries.attempts.is_empty() && retries.stuck_episode_audited.is_empty() {
+    if retries.attempts.is_empty()
+        && retries.stuck_episode_audited.is_empty()
+        && retries.parked.is_empty()
+    {
         retries.attempts.shrink_to_fit();
         retries.stuck_episode_audited.clear();
+        retries.parked.clear();
     }
 
     // Round-11 sibling parity: the ceiling quarantines the sorted tail.
@@ -1414,26 +1422,38 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
             // record still self-heals when failed/ unlocks. Round-3 M3:
             // the disposition is AUDITED like every other terminal arm
             // (the tail can hold legitimate-looking records — the trail
-            // must show where they went and why).
-            if let Some(reason) = marker_reason.as_ref() {
-                if retries
+            // must show where they went and why). #680 rebase: an
+            // existing entry's identity is PRESERVED (contains-key, not
+            // insert-wipe) — a digest identity audited by the gate arm
+            // must not be reset to the empty ceiling identity, or a
+            // same-bytes re-spool after the burst recedes would rebind
+            // onto a fresh budget.
+            let first_of_episode = !retries.stuck_episode_audited.contains_key(&name);
+            if first_of_episode {
+                retries
                     .stuck_episode_audited
-                    .insert(name.clone(), String::new())
-                    .is_none()
-                {
+                    .insert(name.clone(), String::new());
+            }
+            if let Some(reason) = marker_reason.as_ref() {
+                if first_of_episode {
                     audit_failure(sessions, &path, &reason);
                     if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                         write_failure_marker(stem, &reason);
                     }
                 }
             }
-            log::warn!(
-                "[scheduled-creation] quarantining {name}: {}",
-                marker_reason
-                    .as_ref()
-                    .map(|e| format!("{e:#}"))
-                    .unwrap_or_else(|| "recorded ok receipt".to_string())
-            );
+            // Once per episode (the round-24 minor-4 streak-gate shape):
+            // the marker and the audit line carry the persistent state; a
+            // 1 Hz re-warn just rots the rotating log.
+            if first_of_episode {
+                log::warn!(
+                    "[scheduled-creation] quarantining {name}: {}",
+                    marker_reason
+                        .as_ref()
+                        .map(|e| format!("{e:#}"))
+                        .unwrap_or_else(|| "recorded ok receipt".to_string())
+                );
+            }
             quarantine(&path);
             if !path.exists() {
                 retries.attempts.remove(&name);
@@ -1502,21 +1522,23 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                     continue;
                 }
             }
-            log::warn!(
-                "[scheduled-creation] retry budget exhausted for {name} (marker and quarantine both failing); not re-applying"
-            );
             let exhausted_error = anyhow::anyhow!(
                 "scheduled task request could not be finalized on the app side (the result marker and the quarantine move both keep failing); check the Scheduled Tasks panel before retrying"
             );
             // Round-1 M4: the audit line and the marker rewrite fire ONCE
             // per stuck episode, not every poll; the quarantine retry below
             // stays per-poll so the record still self-heals when failed/
-            // unlocks.
+            // unlocks. The warn rides the same episode gate — a 1 Hz
+            // re-warn just rots the rotating log (the marker and the audit
+            // line carry the persistent state).
             if retries
                 .stuck_episode_audited
                 .insert(name.clone(), current_digest.unwrap_or_else(|| name.clone()))
                 .is_none()
             {
+                log::warn!(
+                    "[scheduled-creation] retry budget exhausted for {name} (marker and quarantine both failing); not re-applying"
+                );
                 audit_failure(sessions, &path, &exhausted_error);
                 let stem = path
                     .file_stem()
@@ -1628,6 +1650,12 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                             continue;
                         }
                         retries.attempts.remove(&name);
+                        // #680 rebase: the episode entry clears here like
+                        // every other terminal move (round-4 m-A's rationale
+                        // — a lingering identity must not silence a fresh
+                        // same-name episode that lands within this poll's
+                        // retain window).
+                        retries.stuck_episode_audited.remove(&name);
                         retries.removal_error_logged = false;
                     }
                     // Replaced (or moved aside) after the digest verified:
@@ -1655,11 +1683,17 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                 // per stuck episode — a squatted failed/ used to re-append
                 // the jsonl line and rewrite the marker every poll
                 // (~86,400/day). The quarantine retry stays per-poll so the
-                // record still self-heals when failed/ unlocks.
-                let first_of_episode = retries
-                    .stuck_episode_audited
-                    .insert(name.clone(), String::new())
-                    .is_none();
+                // record still self-heals when failed/ unlocks. #680
+                // rebase: an existing entry's identity is PRESERVED — the
+                // episode map is keyed by name across dispositions, and a
+                // gate-audited digest must not be wiped to empty by a later
+                // poison of the same name.
+                let first_of_episode = !retries.stuck_episode_audited.contains_key(&name);
+                if first_of_episode {
+                    retries
+                        .stuck_episode_audited
+                        .insert(name.clone(), String::new());
+                }
                 if first_of_episode {
                     audit_failure(sessions, &path, &error);
                 }
@@ -2383,6 +2417,15 @@ mod tests {
         std::fs::write(spool.join(".done"), b"blocked\n").unwrap();
         std::fs::write(spool.join("failed"), b"blocked\n").unwrap();
         std::fs::write(spool.join("stuck.json"), spool_record_json(&[])).unwrap();
+        // The workspace dir is created FIRST so the audit appends actually
+        // land (audit::append does not create parents) — the flat-count pin
+        // below must see every episode line on disk.
+        let exec_root = state
+            .sessions
+            .session_roots("reqsrc01")
+            .expect("roots")
+            .execution;
+        std::fs::create_dir_all(&exec_root).unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
         let mut retries = RetryState::default();
         for _ in 0..MAX_CREATE_ATTEMPTS {
@@ -2455,6 +2498,12 @@ mod tests {
         // the gate exists to stop. The skip loop above (no rewrite, no
         // un-park through 2×MAX passes) is the other half of this pin:
         // unchanged mtime keeps the park.
+        let audit_lines = || {
+            std::fs::read_to_string(exec_root.join("workflow_audit.jsonl"))
+                .map(|content| content.lines().count())
+                .unwrap_or(0)
+        };
+        let lines_before_bump = audit_lines();
         let parked_at = *retries
             .parked
             .get("stuck.json")
@@ -2493,6 +2542,15 @@ mod tests {
         assert!(
             spool.join("stuck.json").exists(),
             "the gated record stays queued"
+        );
+        // The episode identity the PARK wrote must be the one the gate
+        // consumes: an mtime-only bump re-gates without re-auditing. (If
+        // the park-time digest insert were dropped, the gate would insert
+        // the identity itself here and append a second audit line.)
+        assert_eq!(
+            audit_lines(),
+            lines_before_bump,
+            "an mtime-only bump re-audits the parked episode (park-time digest identity lost)"
         );
         // A CORRECTED payload at the same name is what re-opens the
         // episode: the gate's digest rebind resets the budget (that pass
@@ -2715,13 +2773,24 @@ mod tests {
         )
         .await;
         assert_eq!(retries.attempts.get("swap.json").copied(), Some(1));
-        // Swap the record to poison (schema drift: CRON smuggled past the
-        // server — the watcher's mirror validation rejects it).
+        // Swap the record to poison (oversize prompt: PARSEABLE, so the
+        // poison arm's audit_failure can actually land — an unparseable
+        // record would silence the whole episode trail and make the
+        // flat-count pin below vacuous).
         std::fs::write(
             spool.join("swap.json"),
-            r#"{"schema_version":1,"id":"swap","kind":"create","name":"x","prompt":"p","rrule":"FREQ=CRON;EXPR=* * * * *"}"#,
+            spool_record_json(&[(
+                "prompt",
+                serde_json::json!("x".repeat(MAX_PROMPT_CHARS + 1)),
+            )]),
         )
         .unwrap();
+        // The workspace dir exists from here on so the episode's audit
+        // appends land on disk (audit::append does not create parents).
+        let exec_root = crate::platform::paths::sessions_root()
+            .join("reqsrc01")
+            .join("workspace");
+        std::fs::create_dir_all(&exec_root).unwrap();
         // Poll 2: poison → quarantine fails (failed/ blocked).
         process_pending_spool(
             &StateCreator(&state),
@@ -2750,6 +2819,45 @@ mod tests {
                 .len(),
             0,
             "a poisoned record never applies"
+        );
+        // Round-3 M4's poison half, pinned end-to-end: un-parking the
+        // parked poison (mtime bump, same bytes) re-enters the poison arm,
+        // and the episode dedupe — not a fresh audit line — is what keeps
+        // the jsonl flat across the re-poison. (Reverting the dedupe to
+        // an unconditional audit_failure ships this red.)
+        let audit_lines = || {
+            std::fs::read_to_string(exec_root.join("workflow_audit.jsonl"))
+                .map(|content| content.lines().count())
+                .unwrap_or(0)
+        };
+        let lines_before_unpark = audit_lines();
+        let parked_at = *retries
+            .parked
+            .get("swap.json")
+            .expect("the record is parked");
+        {
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(spool.join("swap.json"))
+                .unwrap();
+            file.set_modified(parked_at + std::time::Duration::from_secs(1))
+                .unwrap();
+        }
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert_eq!(
+            audit_lines(),
+            lines_before_unpark,
+            "the un-parked re-poison must not append a second audit line for the episode"
+        );
+        assert!(
+            retries.parked.contains_key("swap.json"),
+            "the re-poison parks the name again"
         );
     }
 
@@ -3624,6 +3732,19 @@ mod tests {
         )
         .unwrap();
         std::fs::write(spool.join("c99999.json"), spool_record_json(&[])).unwrap();
+        // The workspace dir is created BEFORE the drain (resolved from the
+        // live store, so it is the home the drain actually writes):
+        // audit::append does not create parents, and without it the audit
+        // half of the m-B pin below cannot fail (a dropped suppression
+        // probe would ship green).
+        std::fs::create_dir_all(
+            state
+                .sessions
+                .session_roots("reqsrc01")
+                .expect("roots")
+                .execution,
+        )
+        .unwrap();
         let mut retries = RetryState::default();
         process_pending_spool(
             &StateCreator(&state),
@@ -3648,9 +3769,11 @@ mod tests {
         // a receipt-answered tail must NOT gain a "ceiling exceeded"
         // failure audit line (the marker half is independently protected by
         // write_failure_marker's ok-receipt guard; this line is not).
-        let audit_root = crate::platform::paths::sessions_root()
-            .join("reqsrc01")
-            .join("workspace")
+        let audit_root = state
+            .sessions
+            .session_roots("reqsrc01")
+            .expect("roots")
+            .execution
             .join("workflow_audit.jsonl");
         assert!(
             !audit_root.exists()
@@ -3835,6 +3958,11 @@ mod tests {
         )
         .unwrap();
         let mut retries = RetryState::default();
+        // Round-4 m10, falsifiable: the entry EXISTS before the poll (a
+        // stale count left by an earlier record at this name), so the
+        // assert below actually pins the poison arm's post-move clear —
+        // with an empty start map it passed even with the clear deleted.
+        retries.attempts.insert("bad.json".to_string(), 2);
         process_pending_spool(
             &StateCreator(&state),
             &state.sessions,
@@ -3842,8 +3970,8 @@ mod tests {
             &mut retries,
         )
         .await;
-        // Round-4 m10 (the assert round-3 claimed but had not shipped):
-        // the poison path clears the attempt budget.
+        // The poison path clears the attempt budget (including the stale
+        // seeded one) when the quarantine move lands.
         assert!(retries.attempts.is_empty(), "poison clears the budget");
         // The waiting MCP call receives a terminal failure instead of
         // "pending" (the poison arm writes the marker too).
