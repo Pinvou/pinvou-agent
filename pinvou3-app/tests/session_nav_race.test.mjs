@@ -112,6 +112,33 @@ function loadSessionsFeature(overrides) {
 
 // ── ensureSession：再进草稿不劫持 ──────────────────────────
 
+test('durable reload：同会话（wasActive）草稿存活；跨会话冷切换草稿不注入（r14 B1 回归锚定）', async () => {
+  const { api, state, sessionStates, calls } = loadSessionsFeature({
+    invoke(name, args) {
+      calls.invoke.push(name);
+      if (name === 'load_session') {
+        return Promise.resolve({
+          metadata: { id: args.id },
+          messages: [],
+          artifacts: [],
+        });
+      }
+      return Promise.resolve({});
+    },
+  });
+  // 同会话 durable 重载：草稿存活
+  state.activeSessionId = 's-a';
+  state.composerDraft = 'half-typed';
+  sessionStates['s-a'] = { loadedFromDisk: true, messages: [1], composerDraft: '' };
+  const ok1 = await api.switchToSessionInternal('s-a', null, 'test', { forceDurableLoad: true });
+  assert.equal(ok1, true, 'durable reload succeeds');
+  assert.equal(state.composerDraft, 'half-typed', '同会话 durable 重载草稿存活（r13-M2 修复本体）');
+  // 跨会话冷切换：目标会话草稿不受切出会话污染
+  state.composerDraft = 'session-a draft';
+  const ok2 = await api.switchToSessionInternal('s-b', null, 'test', { forceDurableLoad: true });
+  assert.equal(ok2, true, 'cross-session switch succeeds');
+  assert.notEqual(state.composerDraft, 'session-a draft', '跨会话冷切换不得注入切出会话的草稿（r14-B1 修复本体）');
+});
 test('invalidateSessionBuffer：活动会话失效必须清 live 工作集（r11 M2 回归锚定）', () => {
   // r11 M2：只删 sessionStates 条目对前台会话无效——切走时 saveWorkingSetTo
   // 回存 live 陈旧消息为复活条目。活动会话的失效必须同时清 messages/chatItems
