@@ -239,6 +239,16 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedtauriSessio
       stashEvictedSessionDraft(id, sessionStates[id]);
     }
     delete sessionStates[id];
+    // 活动会话的失效必须同时作用于 live 工作集（评审 r11 M2）：只删
+    // sessionStates 条目对前台会话无效——切走时 saveWorkingSetTo 会把 live
+    // 陈旧消息回存为复活条目，切回归快路径。清 live 投影并通知重渲染：
+    // 活动场景下调用方（useRewindController 的 reloadError 路径）随后会走
+    // 重试/自然激活的 durable load 重建时间线；清空画面优于陈旧画面。
+    if (state.activeSessionId === id) {
+      state.messages = [];
+      state.chatItems = [];
+      if (typeof notify === "function") notify();
+    }
   }
   function purgeSessionBuffer(id) {
     if (typeof id !== "string" || !id) return;

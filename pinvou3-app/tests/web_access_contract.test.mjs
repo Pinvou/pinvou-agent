@@ -62,6 +62,7 @@ const hostFilePicker = readSource(
   'utf8',
 );
 const commandsRoot = path.join(root, 'src-tauri', 'src', 'app', 'commands');
+const turnsSource = readSource(path.join(root, 'src-tauri', 'src', 'features', 'code_checkpoints', 'turns.rs'), 'utf8');
 const commands = fs.readdirSync(commandsRoot)
   .filter(name => name.endsWith('.rs'))
   .sort() // eslint-disable-line unicorn/require-array-sort-compare -- lexicographic order of the string array is the asserted expectation
@@ -457,6 +458,17 @@ assert.match(commands,
 assert.match(rustCommandBlock(commands, 'chat'),
   /if acp_pool\.is_acp\(&sid\) \{\s*return Err\(ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
   'chat() must reject ACP sessions at its own entry — deleting this gate must fail here');
+// r11 M4：counts_as_user_turn 的接线点 pin——删掉 is_step_budget_notification
+// 排除（回滚为纯 is_user_turn_prompt）后序号双侧失配、调和门隐藏全部入口。
+// 快照序号的计数链走 create_turn_checkpoint → checkpoints::count_user_turns →
+// counts_as_user_turn；chat() 自身不直接调用——改为在 turns 源码上锚定排除条件
+// 本体（删掉 is_step_budget_notification 排除即回滚 r10-M3，必须变红）。
+assert.match(turnsSource,
+  /fn counts_as_user_turn[\s\S]{0,200}?is_user_turn_prompt\(message\) && !is_step_budget_notification\(message\)/,
+  'counts_as_user_turn 必须排除步数预算通知——删掉排除条件必须变红（r10-M3 接线锚）');
+assert.match(rustCommandBlock(commands, 'chat'),
+  /if acp_pool\.is_acp\(&sid\) \{\s*return Err\(ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
+  'chat() must reject ACP sessions at its own entry — deleting this gate must fail here');
 assert.match(rustCommandBlock(commands, 'chat'),
   /if !is_scheduled && !crate::features::sessions::is_aux_session_id\(&sid\) \{[\s\S]{0,1000}?created_snapshot_id = super::checkpoints::create_turn_checkpoint\(/,
   'chat() must gate the pre-send snapshot on !is_scheduled (scheduled excluded) and skip zero-tool aux side-chats — reverting either leg must fail here');
@@ -466,6 +478,14 @@ assert.match(rustCommandBlock(commands, 'accept_plan'),
 assert.match(rustCommandBlock(commands, 'accept_plan'),
   /if acp_pool\.is_acp\(&session_id\) \{\s*return Err\(super::chat::ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
   'accept_plan() must reject ACP sessions with the shared lane-rejected literal');
+// r11 M4：apply 前 ACP 复检的接线点 pin（变异实证：删掉复检 filter 全套件绿）。
+// rewind_to_turn 与 undo_last_rewind 都必须在 restore 前调用共用复检函数。
+assert.match(rustCommandBlock(commands, 'rewind_to_turn'),
+  /reject_if_acp_peer_busy_before_apply\(/,
+  'rewind_to_turn 必须在 apply_restore 前调用 ACP 复检——删除该调用必须变红');
+assert.match(rustCommandBlock(commands, 'undo_last_rewind'),
+  /reject_if_acp_peer_busy_before_apply\(/,
+  'undo_last_rewind 必须在 restore 前调用 ACP 复检（r11 M3 对称修复）——删除该调用必须变红');
 assert.match(rustCommandBlock(remoteControlCommands, 'web_access_chat_for_session'),
   /if acp_pool\.is_acp\(&session_id\) \{\s*return Err\(super::chat::ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
   'web_access_chat_for_session must reject ACP sessions before reserving a native-engine turn');

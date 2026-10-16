@@ -9,6 +9,7 @@ import { dict } from './helpers/i18n-all.js';
 
 const source = relative => readFileSync(new URL(`../src/${relative}`, import.meta.url), 'utf8');
 const tauriBridge = source('platform/tauri/bridge.js');
+const tauriInteraction = source('platform/tauri/bridge/interaction.js');
 const webBridge = source('platform/web/bridge.js');
 const chatView = source('features/chat/ChatView.jsx');
 const codexView = source('features/codex/CodexAcpView.jsx');
@@ -58,6 +59,14 @@ assert.match(webBridge, /toolResultCarrier\s*\?\s*""\s*:\s*userMessageDisplayTex
 // 步数预算通知过滤（r10 M3）双车道同款形状锚。
 assert.match(tauriBridge, /stepBudgetNotice[\s\S]{0,240}if \(utext && !stepBudgetNotice\)/, 'tauri 重载：步数预算通知必须被过滤出用户气泡');
 assert.match(webBridge, /stepBudgetNotice[\s\S]{0,240}if \(utext && !stepBudgetNotice\)/, 'web 重载：步数预算通知必须被过滤出用户气泡');
+// r11 M4：压缩载体过滤的调用形状锚（变异实证：禁用过滤行全绿）。过滤器
+// 必须在 rerender 的 user 分支里被调用（carrier check 在 bubble 创建前）。
+assert.match(tauriBridge, /if \(isCompactionCarrierBlocks\(blocks\)\) continue;/, 'tauri bridge：压缩载体必须在用户气泡创建前被过滤——禁用该行必须变红');
+assert.match(webBridge, /if \(isCompactionCarrierBlocks\(blocks\)\) continue;/, 'web bridge：压缩载体必须在用户气泡创建前被过滤——禁用该行必须变红');
+// r11 M4：frontendEcho 标记行的形状锚（变异实证：禁用标记行全绿）。标记必须
+// 在 pushUserBody 的 !persist 分支——回退为恒不标记即回滚 r5-M1。
+assert.match(tauriInteraction, /if \(!persist\) item\.frontendEcho = true;/, 'tauri 交互桥：persist=false 的回显必须标记 frontendEcho——禁用标记行必须变红');
+assert.match(webBridge, /if \(!persist\) item\.frontendEcho = true;/, 'web bridge：persist=false 的回显必须标记 frontendEcho——禁用标记行必须变红');
 // r10 M5：busy 容差必须在调用点以 { busy: Boolean(busy) } 传入——删掉该参数
 // （生产失去 busy 容差、每轮发送期间入口消失）必须变红；函数级单测对此静默。
 assert.match(
