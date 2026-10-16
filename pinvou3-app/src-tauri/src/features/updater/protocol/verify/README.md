@@ -267,3 +267,52 @@ Codec, ordinary verification, manifests and all three locks are unchanged, so
 prior unaffected regressions retain acceptance. App/CLI checks are not workflow
 E2E; protected acceptance and full T27 remain open. No artifact download size,
 retry or total/cumulative duration cap is added.
+
+## Authenticated successful Check/Refresh response correlation
+
+`verify_check_response` combines unchanged complete frozen request/response
+contracts and actual ordinary verification of both new Decision and Telemetry
+credentials with normative request-fact comparisons. Its operation selects only
+a successful Check or Refresh body. Error/unactivated transport classification
+remains separate. Original response bytes use the 1 MiB metadata profile;
+embedded objects receive canonical identities and retain the original 64 KiB
+credential limit. Signature arrays retain their original order and uniqueness.
+Transport whitespace/key order is allowed; no raw-envelope substring is invented.
+
+The independent original bounded request supplies product/component and complete
+installation/channel/revision/target scope, nonce, installId, host, four fact
+digests, currentVersion and the sourceProfileId derived by the unchanged stable
+facts projection. Stable product/component/target must agree with request.scope.
+Both new credentials require fresh supplied Root, exact role policies, all actual
+signatures, global denial and current supplied time. Complete existing response
+pair/session bindings also apply. These are supplied facts, not native probes.
+
+The old inline Refresh request Decision keeps its original contract semantics;
+it is not newly authenticated or checked against current time/deny/Root policy.
+A valid expired prior decision can accompany a newly authenticated response.
+This preserves long downloads without extending old credential windows. When the
+new refreshed Decision offers an update, its workflowId must match the request.
+Response workflowRevision is not forced to old+1; writer registration, immutable
+workflow continuation and CAS remain later owner checks.
+
+The immutable `SignatureCheckedCheckResponse` owns canonical checked credentials
+and exact original transport bytes, borrows the exact original request/Root and
+records operation/time. It exposes no partial proof, protected custody, metadata
+acceptance, Registry/generation qualification, current session acceptance,
+selection or execution rights. Authenticated metadata, protected facts and owner
+state must still be checked before any usable client projection.
+
+Seven tests run sixty-two composed Node controls (12 positives): successful/
+long-download boundaries (8), independent facts/workflow (15), complete expected
+context (6), credential pair/session (6), actual signatures/thresholds/deny (12),
+current windows (8), and contracts/wire/resource bounds (7). The oracle uses
+complete frozen `assertApiContract`, actual `verifyEnvelope` twice and original
+`sourceProfileId`, plus explicitly new normative request comparisons; it is not
+an unchanged frozen full-response verifier. Tests cover both credentials at exp
+and one millisecond before, bad last signatures after a valid threshold, expired
+or invalid-signature old Refresh inputs, independent workflowRevision, and exact
+original bytes/canonical credential identities. Private keys stay in Node. One
+App facade test exercises twelve genuine controls. Codec, ordinary verifier,
+manifests and three locks remain unchanged. App/CLI compilation is not workflow
+E2E; full T27 and protected acceptance remain open. No artifact download size,
+retry or total/cumulative duration limit is introduced.

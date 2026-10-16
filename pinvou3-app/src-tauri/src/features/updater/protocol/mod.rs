@@ -138,6 +138,19 @@ pub(crate) fn verify_supplied_release_package_bytes<'a>(
     pinvou_upgrade_verifier::verify_release_package(supplied_release, package_bytes, inputs)
 }
 
+/// Actual new Check/Refresh credentials correlated to the independent original
+/// request; metadata acceptance and workflow writer CAS remain external.
+pub(crate) fn verify_supplied_check_response_bytes<'a>(
+    response: &[u8],
+    operation: pinvou_upgrade_codec::CheckResponseOperation,
+    inputs: pinvou_upgrade_verifier::CheckVerificationInputs<'a>,
+) -> Result<
+    pinvou_upgrade_verifier::SignatureCheckedCheckResponse<'a>,
+    pinvou_upgrade_verifier::CheckVerificationError,
+> {
+    pinvou_upgrade_verifier::verify_check_response(response, operation, inputs)
+}
+
 /// Exactly one fixed-origin POST; a dropped/error response can have committed
 /// remotely. Owner-controlled retries and durable ACK/consume recovery remain separate.
 pub(crate) async fn send_client_request_once(
@@ -1191,6 +1204,108 @@ mod tests {
                         case["code"].as_str().unwrap()
                     };
                     assert_eq!(error.to_string(), expected, "wrong Package refusal {name}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn feature_facade_authenticates_and_correlates_successful_check_responses() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        use pinvou_upgrade_codec::CheckResponseOperation;
+        use pinvou_upgrade_verifier::CheckVerificationInputs;
+        let output = std::process::Command::new("node")
+            .args([
+                "--input-type=module",
+                "-e",
+                include_str!("verify/tests/check-response-oracle.mjs"),
+            ])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../specs/upgrade/v1/reference/signatures.mjs"),
+            )
+            .output()
+            .expect("Node required for composed signed-response controls");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        for name in [
+            "signed-check-update",
+            "signed-check-no-update",
+            "signed-refresh",
+            "expired-prior-refresh-decision",
+            "unverified-old-refresh-signature",
+            "whitespace-unordered-transport",
+            "request-host-arch",
+            "decision-requestNonce",
+            "telemetryCredential-bad-extra-after-valid-threshold",
+            "actual-dual-credential-thresholds",
+            "telemetryCredential-at-expiry",
+            "refreshed-workflow-mismatch",
+        ] {
+            let case = cases.iter().find(|c| c["name"] == name).unwrap();
+            let root = decode_root_policy_shape(&serde_json::to_vec(&case["trustedRoot"]).unwrap())
+                .unwrap();
+            let now = decode_metadata(&serde_json::to_vec(&case["now"]).unwrap())
+                .unwrap()
+                .protocol_time_shape()
+                .unwrap();
+            let raw_request = STANDARD
+                .decode(case["requestBytes"].as_str().unwrap())
+                .unwrap();
+            let request = decode_metadata(&raw_request).unwrap();
+            let response = STANDARD
+                .decode(case["responseBytes"].as_str().unwrap())
+                .unwrap();
+            let denied: Vec<String> = serde_json::from_value(case["deniedKeyIds"].clone()).unwrap();
+            let operation = if case["operation"] == "check" {
+                CheckResponseOperation::Check
+            } else {
+                CheckResponseOperation::Refresh
+            };
+            match verify_supplied_check_response_bytes(
+                &response,
+                operation,
+                CheckVerificationInputs::new(&root, &request, &now).with_denied_key_ids(&denied),
+            ) {
+                Ok(proof) => {
+                    assert_eq!(
+                        case["accepted"], true,
+                        "unexpected response acceptance {name}"
+                    );
+                    assert!(std::ptr::eq(proof.supplied_root(), &root));
+                    assert!(std::ptr::eq(proof.supplied_request(), &request));
+                    assert_eq!(proof.original_response_bytes(), response);
+                    assert_eq!(proof.operation(), operation);
+                    let transport = decode_metadata(&response).unwrap();
+                    for (field, credential) in [
+                        ("decision", proof.decision()),
+                        ("telemetryCredential", proof.telemetry_credential()),
+                    ] {
+                        assert_eq!(
+                            credential.envelope().raw_bytes(),
+                            decode_metadata(
+                                &serde_json::to_vec(&transport.value()[field]).unwrap()
+                            )
+                            .unwrap()
+                            .canonical_bytes()
+                            .unwrap()
+                        );
+                    }
+                }
+                Err(error) => {
+                    assert_eq!(
+                        case["accepted"], false,
+                        "unexpected response refusal {name}: {error}"
+                    );
+                    assert_eq!(
+                        error.to_string(),
+                        case["code"].as_str().unwrap(),
+                        "wrong response refusal {name}"
+                    );
                 }
             }
         }

@@ -4,6 +4,7 @@
 mod archive;
 mod candidate;
 mod chain;
+mod check;
 mod envelope;
 mod error;
 mod graph;
@@ -19,6 +20,10 @@ pub use candidate::{
     verify_candidate_release,
 };
 pub use chain::{SignatureCheckedRootChain, verify_root_chain};
+pub use check::{
+    CheckVerificationError, CheckVerificationInputs, SignatureCheckedCheckResponse,
+    verify_check_response,
+};
 pub use error::VerificationError;
 pub use graph::{
     PublicChainError, PublicChainInputs, SignatureCheckedPublicChain, verify_public_chain,

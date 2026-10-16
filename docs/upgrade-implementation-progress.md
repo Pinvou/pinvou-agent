@@ -9639,3 +9639,99 @@ implemented, twelve in progress and thirty-one incomplete/deferred. Product
 0.10.9, normative document versions 1.0, pinned V1 and CodeWhale are unchanged.
 Physical platform qualification and deployment remain deferred. No artifact
 download size, retry or total/cumulative duration cap is introduced.
+
+## Authenticated successful Check/Refresh response correlation
+
+The feature-owned verifier now composes complete original request/response
+contracts, actual ordinary authentication of both new Decision and Telemetry
+credentials, and explicitly normative correlation to the caller's independent
+original request. Product/component and complete scope come from that request,
+not incoming response claims. Nonce, installId, host, four fact digests, current
+version and derived sourceProfileId must match; stable product/component/target
+must agree with request.scope. Existing complete response pair/session checks
+remain unchanged. Both new credentials require supplied fresh Root, exact roles,
+all actual signatures/global denial and actual supplied current time.
+
+Inline response credentials have canonical identities, preserve signature array
+order and original credential bounds. Original transport whitespace/key order is
+allowed and exact original response bytes are retained. No fabricated original
+envelope substring, trust bootstrap, protected fact probe, persistent metadata
+acceptance or current workflow writer permission is claimed. The proof owns
+canonical checked Decision/Telemetry envelopes, borrows the exact request/Root
+and records operation/time. Metadata/Registry/generation qualification and
+protected workflow CAS remain later owner checks.
+
+The old Refresh request Decision deliberately has original contract semantics
+only. It may be expired or have an unverified actual signature; it does not gain
+new rights through this correlation proof. New response credentials still require
+actual current verification. New update.workflowId must equal the Refresh request
+workflowId, while response workflowRevision is not forced to old+1. This keeps
+long download continuation possible without extending any credential window or
+introducing a total/cumulative download-duration or retry limit.
+
+Seven tests execute sixty-two composed Node controls, with twelve positives:
+successful/continuation boundaries eight, request facts/workflow fifteen,
+independent complete context six, credential pair/session six, actual signatures/
+thresholds/denial twelve, windows eight and contract/wire/resource seven. Both
+credentials are checked exactly at expiration and one millisecond before. Bad
+last signatures after an otherwise valid threshold, duplicates, wrong exact role policy,
+expired prior Refresh Decision, unverified old actual signature, independent
+revision and original-response/canonical-credential identity controls are present.
+The oracle invokes complete frozen assertApiContract, actual verifyEnvelope twice
+and original sourceProfileId, then explicitly new normative comparisons. It is
+not claimed as an unchanged frozen full-response operation. Private keys stay in
+Node. One App facade test exercises twelve genuine controls.
+
+Both independent scoped final static deep audits passed the six-source freeze,
+manifest SHA256 f2075ac161619d0332926f42b99366b7ad1971e6606cd0eba827ed5e8e03b188,
+without a required finding. The primary's fifty-five verifier tests passed with
+zero failures/ignored (87.653s wall); new seven/62 controls took 4.070s harness.
+Strict all-target Clippy passed (9.018s wall). Original codec/ordinary verifier,
+manifests and three locks remain unchanged. Prior actual codec157 including two
+enabled Node oracle tests retains acceptance; the unchanged selected graphs retain
+104 dependency packages/109 feature nodes per App/CLI root and nine identical
+verification-critical packages/features. Previously disclosed ICU/zerovec patch
+differences remain; no full-closure equivalence or newly rerun exhaustive codec
+suite is claimed.
+
+The primary actual default App facade passed forty-seven tests with zero failures/
+ignored (17.030s harness / 172.097s wall). The actual CLI-workspace backend built
+the production App/verifier graph and passed its zero-test library harness
+(210.125s wall); this is compilation/graph evidence rather than workflow E2E.
+Four Rust formatting checks, architecture (16.415s wall), version, before/after
+six-source freeze and normal working/index whitespace checks passed. Root session
+37400 closed exit zero; all known primary-owned compiler/runtime/runner/Node
+processes were zero before granting the dependency auditor exclusive execution.
+
+The dependency auditor independently repeated all gates on the same frozen tree:
+fifty-five verifier tests passed (67.537s wall), new seven/62 controls 3.490s
+harness; strict Clippy 8.267s; default App forty-seven 18.210s harness / 54.666s
+wall; CLI backend zero-test build/harness 19.080s wall. Four Rust format checks,
+architecture, version, normal working/index whitespace and before/after freeze
+all passed. Session 25087 closed exit zero; all owned runners/Cargo/compiler/
+Node/test processes were zero. Codec, manifests and three locks were explicitly
+unchanged; prior selected-graph evidence remains reused.
+
+The compatibility auditor independently repeated all gates on the same freeze:
+fifty-five verifier tests passed (60.016s wall), new seven/62 controls 3.530s
+harness; strict all-target Clippy 3.314s; default App forty-seven 20.920s harness /
+29.835s wall; CLI backend zero-test compilation/harness 8.920s wall. Four Rust
+format checks, architecture, version, standard working/index whitespace and both
+six-source freeze checks passed. Session 52453 closed exit zero; all owned
+runner/compiler/runtime/test processes and newly spawned Node processes were
+zero. Codec, manifests and three locks were explicitly confirmed unchanged;
+prior selected-graph and actual codec acceptance remain reused.
+
+Both independent reviewers passed the next bounded signed DownloadInfo plan:
+complete frozen contracts, current Decision plus new Download authentication,
+complete shared qualification/update inheritance and current URL window. Refresh
+historical-input semantics remain separate. URL/Decision expiry requires fresh
+qualification and a new short-lived URL; it does not terminate a logical download
+or erase cache. Destination/file/native/metadata/Registry/workflow owner checks
+remain distinct. This plan is not delivered behavior in the current batch.
+
+Full T27 remains in progress. Overall forty-seven tasks remain four implemented,
+twelve in progress and thirty-one incomplete/deferred. Product 0.10.9, normative
+versions 1.0, pinned V1 and CodeWhale remain unchanged. Physical platform
+qualification and deployment remain deferred; no artifact download size, retry
+or total/cumulative duration cap is introduced.
