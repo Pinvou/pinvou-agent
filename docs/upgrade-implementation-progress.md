@@ -9189,3 +9189,96 @@ Product 0.10.9, normative documents 1.0, pinned V1 contracts and CodeWhale gitli
 remain unchanged. Final documentation review precedes DCO commit/push. Complete
 chain and archive plans reviewed separately are future scopes, not implemented
 by this single-successor batch; all task/authority boundaries above stay open.
+
+## Complete supplied-Root chain verification
+
+The feature-owned pure verifier now checks one through 4096 supplied original
+Root successors. Each step retains the original full canonical/Schema/context,
+descriptor/policy, product, exact consecutive safe version, all actual signatures
+and separate old/new Root-role threshold checks. Only a nonfinal next Root may
+be expired, retaining original window and issued-time constraints; the final Root
+must be fresh. A later error returns no valid prefix. Public ordinary and single-
+successor operations retain their fresh-Root behavior and original defaults.
+
+A private owned transition-parts type and private next-window selection avoid
+constructing a public fresh-successor proof for expired intermediates. Temporary
+previous envelope/cache state is released each step. The immutable chain result
+borrows the exact supplied initial Root and owns only final original envelope,
+validated final Root, final verified signer IDs, checked step count and supplied
+time. It does not retain cloned intermediate envelopes or persist/install Roots.
+
+Caller-owned active metadata key preservation is checked only under the final
+Root; temporary intermediate key retirement followed by final restoration is
+allowed. All supplied final active entries still bind full independent context
+and verify actual exact-policy signatures, without ordinary body-time/Production
+eligibility, high-water, deny or new aggregate set/byte rules. Caller snapshot
+consistency/completeness and protected original chain storage are not attested.
+The original 4096 chain count rule is not an artifact download limitation.
+
+The primary's twenty-eight verifier tests passed, zero failures/ignored: the
+previous twenty tests/111 ordinary and fifty-five successor reference cases plus
+eight new chain tests. Thirty new full frozen Node chain cases are separate from
+the fifty-five reused successor fixtures that additionally execute both complete
+frozen operations and both Rust APIs as length-one chains. API negative controls
+also require complete independent Root context. Chain bounds include an actual
+4096-step positive, every distinct consecutive body genuinely re-signed with a
+valid unchanged Root policy/key set, and a 4097 invalid-byte list rejected before
+parsing. Other controls use distinct real rotations, old/intermediate/final
+windows, both thresholds/bad middle extras, final key retention/bad last, exact
+product/version and every step's original raw/full-Schema boundaries. Private
+keys remain inside Node and never enter emitted fixtures. Strict all-target
+Clippy passed. Both frozen static deep audits found no required issue.
+
+The codec source subtree, all three locks and dependency manifests are unchanged.
+Its previous 157 actual regression tests, including two explicitly enabled Node
+oracles, retain acceptance and are not rerun without a new relevant change.
+The App facade adds the same narrow complete-chain operation and six genuinely
+signed positive/negative controls. No workflow E2E, protected bootstrap/lineage
+custody, trusted clock acquisition, atomic high-water acceptance, Root storage/
+installation, current qualification or execution rights are claimed. Full T27 and
+historical archive identities remain open. Totals remain four implemented,
+twelve in progress and thirty-one incomplete/deferred of forty-seven. Physical
+platform qualification and deployment remain deferred. No artifact size, retry
+or total/cumulative download duration cap is introduced.
+
+The primary's actual default App facade passed forty-two tests, zero failures/
+ignored (11.390s harness, 111.556s wall). The actual CLI-workspace backend and
+production App/verifier graph built and passed the zero-test library harness
+(140.173s wall); this is compilation/graph evidence, not CLI workflow E2E.
+Scoped formatting, architecture, version, standard whitespace and final frozen
+source checks passed. The unchanged codec subtree, all three lockfiles and
+manifests retain the prior selected App/CLI graph evidence: 104 dependency
+packages/109 feature nodes each, identical nine verification-critical package
+versions/sources/features, and only the disclosed preexisting icu_provider and
+zerovec-derive patch differences. Full closure identity is not claimed.
+
+The independent dependency role's final scoped code/test audit passed without a
+required finding. Its own twenty-eight verifier tests passed with zero failures/
+ignored (47.936s wall): fixed three, ordinary ten/111 cases, chain eight tests
+(30 new cases plus 55 reused parity fixtures and five API controls), and successor
+seven/fifty-five cases plus five API controls. The reused parity fixtures are not
+counted as fifty-five new distinct chain scenarios. Strict all-target Clippy
+passed. Its actual App facade passed forty-two tests (14.640s harness, 24.246s
+wall); its actual CLI backend passed the zero-test library harness (8.952s wall).
+Formatting, architecture, version, unchanged codec/locks, before/after nine-source
+freeze and standard working/index whitespace checks passed. All owned runtime
+processes and sessions closed before returning the exclusive slot.
+
+The independent compatibility role's final scoped code/test audit also passed
+without a required finding. Its own twenty-eight verifier tests passed with zero
+failures/ignored (30.863s wall), keeping 30 new chain cases and 55 reused one-step
+parity fixtures distinct. Strict all-target Clippy passed. Its actual App facade
+passed forty-two tests (14.690s harness, 23.580s wall); its actual CLI backend
+zero-test library harness passed (8.731s wall). Formatting, architecture, version,
+unchanged codec/three locks, before/after nine-source freeze and standard working/
+index whitespace checks passed. It reused the unchanged selected graph evidence,
+without codec/metadata/extra-benchmark reruns. All owned runtime processes and
+sessions closed before returning the exclusive slot.
+
+Both independent final code/test audits apply to the same nine-source freeze,
+manifest SHA256 04f17c11d6a9be6485672a9eb2a18414f71d9df04c588a91c7cc273e24869e2f.
+Product 0.10.9, normative documents 1.0, pinned V1 contracts and CodeWhale gitlink
+remain unchanged. Final documentation review precedes DCO commit/push. Historical
+archive identity plans are a later separately reviewed scope, not implemented
+by this chain batch; protected custody/acceptance and full-task boundaries above
+remain open.

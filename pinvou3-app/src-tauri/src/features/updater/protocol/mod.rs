@@ -44,6 +44,27 @@ pub(crate) fn verify_supplied_root_successor_bytes<'a>(
     )
 }
 
+/// Complete pure Root traversal. Only nonfinal expiry is allowed; no protected
+/// install/persistence or active-snapshot completeness is established here.
+pub(crate) fn verify_supplied_root_chain_bytes<'a>(
+    successors: &[&[u8]],
+    initial_root: &'a pinvou_upgrade_codec::RootPolicyShape,
+    expected_root: &pinvou_upgrade_codec::Document,
+    now: &pinvou_upgrade_codec::SuppliedProtocolTime,
+    active_metadata: &[pinvou_upgrade_verifier::ActiveMetadataInput<'_>],
+) -> Result<
+    pinvou_upgrade_verifier::SignatureCheckedRootChain<'a>,
+    pinvou_upgrade_verifier::VerificationError,
+> {
+    pinvou_upgrade_verifier::verify_root_chain(
+        successors,
+        initial_root,
+        expected_root,
+        now,
+        active_metadata,
+    )
+}
+
 /// Exactly one fixed-origin POST; a dropped/error response can have committed
 /// remotely. Owner-controlled retries and durable ACK/consume recovery remain separate.
 pub(crate) async fn send_client_request_once(
@@ -673,6 +694,93 @@ mod tests {
                     assert_eq!(case["accepted"], true, "unexpected acceptance {name}");
                     assert!(std::ptr::eq(checked.supplied_old_root(), &old));
                     assert_eq!(checked.envelope().envelope().raw_bytes(), bytes);
+                }
+                Err(error) => {
+                    assert_eq!(
+                        case["accepted"], false,
+                        "unexpected refusal {name}: {error}"
+                    );
+                    assert_eq!(error.to_string(), case["rustCode"].as_str().unwrap());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn feature_facade_traverses_expired_intermediates_and_requires_fresh_final_root() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        use pinvou_upgrade_verifier::ActiveMetadataInput;
+        let output = std::process::Command::new("node")
+            .args([
+                "--input-type=module",
+                "-e",
+                include_str!("verify/tests/root-chain-oracle.mjs"),
+            ])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../specs/upgrade/v1/reference/canonical-json.mjs"),
+            )
+            .output()
+            .expect("Node is required for the frozen complete Root-chain oracle");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        for name in [
+            "three-real-distinct-dual-threshold-steps",
+            "expired-old-and-intermediates-fresh-final",
+            "expired-final-refuses",
+            "bad-middle-extra-does-not-return-prefix",
+            "final-retirement-refuses",
+            "4097-count-refuses-before-parse",
+        ] {
+            let case = cases.iter().find(|c| c["name"] == name).unwrap();
+            let old = decode_root_policy_shape(&serde_json::to_vec(&case["trustedRoot"]).unwrap())
+                .unwrap();
+            let expected =
+                decode_metadata(&serde_json::to_vec(&case["expected"]).unwrap()).unwrap();
+            let now = decode_metadata(&serde_json::to_vec(&case["now"]).unwrap())
+                .unwrap()
+                .protocol_time_shape()
+                .unwrap();
+            let bytes: Vec<_> = case["successors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|b| URL_SAFE_NO_PAD.decode(b.as_str().unwrap()).unwrap())
+                .collect();
+            let repeat = case["repeatSteps"].as_u64().unwrap() as usize;
+            let successors: Vec<_> = (0..repeat)
+                .flat_map(|_| bytes.iter().map(Vec::as_slice))
+                .collect();
+            let active: Vec<_> = case["activeEnvelopes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| {
+                    (
+                        URL_SAFE_NO_PAD
+                            .decode(a["bytes"].as_str().unwrap())
+                            .unwrap(),
+                        decode_metadata(&serde_json::to_vec(&a["expected"]).unwrap()).unwrap(),
+                    )
+                })
+                .collect();
+            let inputs: Vec<_> = active
+                .iter()
+                .map(|(b, e)| ActiveMetadataInput::new(b, e))
+                .collect();
+            match verify_supplied_root_chain_bytes(&successors, &old, &expected, &now, &inputs) {
+                Ok(checked) => {
+                    assert_eq!(case["accepted"], true, "unexpected acceptance {name}");
+                    assert!(std::ptr::eq(checked.supplied_initial_root(), &old));
+                    assert_eq!(checked.checked_steps(), successors.len());
+                    assert_eq!(
+                        checked.final_envelope().envelope().raw_bytes(),
+                        *successors.last().unwrap()
+                    );
                 }
                 Err(error) => {
                     assert_eq!(

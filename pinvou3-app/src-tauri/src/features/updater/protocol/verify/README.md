@@ -14,7 +14,8 @@ The caller must supply the existing Root from its trust state. Constructing
 It grants no protected persistent acceptance, trusted clock, current online
 qualification, download/install rights or durable acknowledgement. A changed
 Root returns `RootTransitionRequired`; a successor uses the separate operation
-below. Complete chains and archive operations remain unimplemented.
+below. Complete chains use their own operation; archive identities remain
+unimplemented.
 
 `VerificationInputs::new` defaults to production semantics. Explicit trusted
 callers may select `PackageSemanticsMode::Development`, matching the original
@@ -62,7 +63,7 @@ resource limits apply; no aggregate 4096-entry or 32 MiB policy is invented.
 `SignatureCheckedRootSuccessor` preserves original bytes, borrows the exact old
 Root and owns the validated next Root. It installs/persists nothing, attests no
 active-set completeness, acquires no bootstrap/clock/custody and grants no current
-qualification or execution rights. Full T27 and protected Root chains remain open.
+qualification or execution rights. Full T27 and protected Root storage/installation remain open.
 
 Fifty-five fresh full frozen Node successor cases cover dual thresholds and extras,
 continuity and safe-integer edges, both windows, active key retention, original
@@ -71,3 +72,38 @@ test checks mandatory independent complete Root context. The 4097 repeated-entry
 cap. Private test keys never leave the Node process. Existing ordinary 111-case
 oracles remain separate regressions. The App facade exercises both Root policies
 and active key retention; actual CLI graph compilation is not workflow E2E.
+
+## Complete Root chain
+
+`verify_root_chain` accepts one through 4096 original successor byte slices,
+the supplied initial Root, independently expected complete Root context, supplied
+safe time and mandatory caller-owned active read set. Every step performs the
+same canonical/full-Schema/context/descriptor/policy, consecutive-version and
+actual dual-threshold checks. Every submitted signature is verified; no valid
+prefix is returned after a later error. Only nonfinal next-Root expiry is allowed,
+with original window bounds and issued time still checked. The final Root must
+be fresh. Public single-successor verification remains strictly fresh.
+
+Active metadata key preservation is checked only against that final Root. A key
+may be absent from an intermediate policy and restored in the final policy.
+No active body eligibility or new aggregate byte/active-set cap is added. The
+4096 chain count limit is the original protocol rule, not a download limitation.
+The caller owns active snapshot consistency/completeness and protected original
+chain storage; the operation cannot attest these facts or persist/install Roots.
+
+Private owned transition parts avoid constructing a public fresh-successor proof
+for an expired intermediate. Each step releases the previous temporary state.
+`SignatureCheckedRootChain` borrows the exact initial Root and retains only final
+original envelope bytes, validated final Root, final verified signer IDs, checked
+step count and supplied time. It grants no bootstrap, protected custody, high-
+water reset, current qualification or execution permission. Full T27 stays open.
+
+Thirty full frozen Node chain cases cover real distinct rotations, original count
+bounds including 4096 genuinely consecutive re-signed bodies, expired intermediate
+versus final Root, bad middle signatures, final active key retention and original
+per-object input/Schema limits. All fifty-five single-successor cases additionally
+run both complete frozen operations and both Rust APIs as length-one chains.
+Separate API controls retain independent full Root context. Test private keys
+remain inside Node; the App facade uses genuine signed positive/negative controls.
+The unchanged codec regression and dependency locks retain prior acceptance;
+App/CLI graph execution does not constitute a full upgrade workflow E2E.

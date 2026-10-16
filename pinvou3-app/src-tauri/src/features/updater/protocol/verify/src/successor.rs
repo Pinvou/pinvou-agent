@@ -57,6 +57,44 @@ pub fn verify_root_successor<'a>(
     now: &SuppliedProtocolTime,
     active_metadata: &[ActiveMetadataInput<'_>],
 ) -> Result<SignatureCheckedRootSuccessor<'a>, VerificationError> {
+    let parts = verify_root_transition_parts(
+        bytes,
+        old_root,
+        expected_root,
+        now,
+        active_metadata,
+        NextRootWindow::Fresh,
+    )?;
+    Ok(SignatureCheckedRootSuccessor {
+        envelope: parts.envelope,
+        old_root,
+        next_root: parts.next_root,
+        signer_ids: parts.signer_ids,
+        supplied_now: now.as_millis(),
+    })
+}
+
+// Private owned transition parts carry no old-Root borrow and no public claim
+// that an expired intermediate is a fresh successor. Only these fixed callers
+// choose the mode: the single operation always Fresh; chain uses history solely
+// for nonfinal steps. No mode is supplied by an envelope or public API option.
+pub(super) enum NextRootWindow {
+    Fresh,
+    HistoricalIntermediate,
+}
+pub(super) struct TransitionParts {
+    pub(super) envelope: SchemaCheckedEnvelope,
+    pub(super) next_root: RootPolicyShape,
+    pub(super) signer_ids: BTreeSet<String>,
+}
+pub(super) fn verify_root_transition_parts(
+    bytes: &[u8],
+    old_root: &RootPolicyShape,
+    expected_root: &Document,
+    now: &SuppliedProtocolTime,
+    active_metadata: &[ActiveMetadataInput<'_>],
+    next_window: NextRootWindow,
+) -> Result<TransitionParts, VerificationError> {
     if expected_root.value().get("role").and_then(|v| v.as_str()) != Some("root") {
         return Err(VerificationError::Context(
             pinvou_upgrade_codec::ContextBindingError::InvalidExpected,
@@ -79,9 +117,11 @@ pub fn verify_root_successor<'a>(
     }
     let signer_ids =
         signatures::verify_root_transition_signatures(&envelope, old_root, &next_root)?;
-    next_root
-        .assert_supplied_current_window(now)
-        .map_err(VerificationError::Time)?;
+    match next_window {
+        NextRootWindow::Fresh => next_root.assert_supplied_current_window(now),
+        NextRootWindow::HistoricalIntermediate => next_root.assert_supplied_historical_window(now),
+    }
+    .map_err(VerificationError::Time)?;
     for current in active_metadata {
         let active = parse_bound_envelope(current.bytes, current.expected)?;
         if !matches!(
@@ -92,11 +132,9 @@ pub fn verify_root_successor<'a>(
         }
         signatures::verify_signatures(&active, &next_root)?;
     }
-    Ok(SignatureCheckedRootSuccessor {
+    Ok(TransitionParts {
         envelope,
-        old_root,
         next_root,
         signer_ids,
-        supplied_now: now.as_millis(),
     })
 }
