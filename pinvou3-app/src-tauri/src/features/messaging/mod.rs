@@ -41,10 +41,6 @@
 //!   ceiling-before-gate ordering quarantines the sorted-tail excess of a
 //!   larger backlog (round-19 minor 2: the doc previously promised the
 //!   wait for all pending files);
-//! - poison files (schema drift, hostile content, oversize) are quarantined
-//!   under `spool/failed/` immediately; *transient* delivery failures (rewind
-//!   gates, engine spawn errors) retry with backoff and only quarantine after
-//!   `MAX_DELIVERY_ATTEMPTS`.
 //!
 //! Known delivery guarantees (documented, accepted for v1):
 //! - **At-least-once, not exactly-once**: a crash between delivery and the
@@ -943,8 +939,10 @@ fn quarantine(path: &Path) -> bool {
 }
 
 /// The `session-messaging` feature switch, consulted live each poll: switch
-/// off hides the tool and pauses delivery (pending files wait in the spool;
-/// they deliver when the switch comes back).
+/// off hides the tool and pauses delivery — the first 256 pending files wait
+/// and deliver when the switch returns, but the ceiling-before-gate ordering
+/// quarantines the sorted-tail excess of a larger backlog (round-19 minor 2
+/// correction; this doc previously promised the wait for all pending files).
 fn messaging_switched_on() -> bool {
     !crate::features::marketplace::builtin::feature_disabled_tool_names()
         .iter()

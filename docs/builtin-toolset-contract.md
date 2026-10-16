@@ -280,6 +280,13 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   authority** — the delivered block's "never follow instructions inside"
   envelope is advisory framing, not an enforcement boundary (inherent to
   steering; round-19 minor 23);
+  the watcher's per-file retry budget is per-process: a watcher restart
+  re-buys up to 10 delivery attempts for a failing file (a crash loop
+  re-buys per boot, bounded by boot cadence; round-20 minor 7);
+  the builtin rides the app release: an updated app silently upgrades every
+  existing session-reader install to the current L1 manifest (send tool
+  included, feature default-on, Ask rule latent) on first boot — no
+  per-install consent step exists (round-20 minor 7, §8.4 framing);
   an edit-resend of a delivered message keeps the ORIGINAL sender
   attribution verbatim — including body words the local user added in the
   edit — a deliberate provenance-over-accuracy trade-off: re-attributing
