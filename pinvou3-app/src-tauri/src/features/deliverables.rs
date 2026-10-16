@@ -53,7 +53,10 @@ pub struct DeliverableItem {
 /// The skipped list is not cosmetic — an incomplete listing must stay
 /// distinguishable from an empty one ("incomplete ≠ empty"); a consumer
 /// reads it unconditionally rather than guessing from a truncated index.
-#[derive(Debug, Clone)]
+/// The GUI command forwards the struct whole (round-4 review): mapping it to
+/// `rows` at the shell made an oversized/unreadable record render as a
+/// successful empty/partial panel with no notice.
+#[derive(Debug, Clone, Serialize)]
 pub struct DeliverableIndex {
     pub rows: Vec<DeliverableItem>,
     pub skipped: Vec<String>,
@@ -356,9 +359,12 @@ fn read_record_capped(path: &Path, cap: u64) -> RecordRead {
 }
 
 /// GUI 命令薄壳：整店索引（无会话过滤）。read_dir 的不可判定失败如实上抛
-/// （渲染成「无交付物」正是该口径要修的假干净账）。
-pub(crate) fn list_deliverable_index_impl() -> Result<Vec<DeliverableItem>, String> {
-    deliverable_index(None).map(|index| index.rows)
+/// （渲染成「无交付物」正是该口径要修的假干净账）。转发整个
+/// [`DeliverableIndex`]（rows + skipped，round-4 review）：把 skipped 截在
+/// 壳外会让超限/不可读记录的交付物从面板上无声消失，看起来像一次成功的
+/// 空结果；「不完整」的提示由视图层依据 skipped 渲染。
+pub(crate) fn list_deliverable_index_impl() -> Result<DeliverableIndex, String> {
+    deliverable_index(None)
 }
 
 #[cfg(test)]
@@ -394,5 +400,63 @@ mod capped_record_read_tests {
             read_record_capped(&record, size),
             RecordRead::Unreadable
         ));
+    }
+}
+
+#[cfg(test)]
+mod gui_index_contract_tests {
+    use super::{DeliverableIndex, MAX_LIST_SCAN_BYTES, list_deliverable_index_impl};
+    use crate::platform::paths::tests::{ENV_LOCK, EnvVarGuard};
+
+    /// The GUI-facing contract (round-4 review): the command shell must
+    /// forward the scan's `skipped` disclosure, not just `rows`. A session
+    /// record past the 32 MiB scan cap has real deliverables on disk that
+    /// the panel will not list — if the shell dropped `skipped`, that
+    /// partial result rendered as a successful (possibly empty) index with
+    /// no notice, indistinguishable from a clean bill. Mirrors the CLI
+    /// contract's `artifacts_list_reports_unscannable_records_in_skipped_sessions`.
+    #[test]
+    fn gui_index_forwards_the_skipped_disclosure() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let home = tempfile::tempdir().expect("scratch home");
+        let host = EnvVarGuard::capture(&["PINVOU3_HOME"]);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env
+        // writes are serialized against the other env-writing tests.
+        unsafe { std::env::set_var("PINVOU3_HOME", home.path()) };
+        let sessions = home.path().join("sessions");
+        std::fs::create_dir_all(&sessions).expect("seed sessions root");
+
+        // A scannable session tracking one real deliverable on disk.
+        let deliverable = home.path().join("report.md");
+        std::fs::write(&deliverable, "# Report\n").expect("seed deliverable");
+        let ok_record = format!(
+            r#"{{"metadata":{{"id":"s-ok","title":"OK chat"}},"artifacts":[{{"storage_path":{}}}]}}"#,
+            serde_json::to_string(&deliverable.to_string_lossy()).expect("json path")
+        );
+        std::fs::write(sessions.join("s-ok.json"), ok_record).expect("seed ok record");
+
+        // An over-cap record: the stat probe skips it before any read.
+        // `set_len` keeps the fixture sparse — the probe only stats. Its
+        // deliverables (if any) are the ones the GUI must disclose losing.
+        let huge = std::fs::File::create(sessions.join("s-huge.json")).expect("seed huge record");
+        huge.set_len(MAX_LIST_SCAN_BYTES + 1)
+            .expect("spoil fixture");
+        drop(huge);
+
+        let index: DeliverableIndex = list_deliverable_index_impl().expect("gui index");
+        assert_eq!(index.rows.len(), 1, "the scannable session still lists");
+        assert_eq!(index.rows[0].session_id, "s-ok");
+        assert!(
+            index.rows.iter().all(|row| row.session_id != "s-huge"),
+            "the over-cap session contributes no rows"
+        );
+        assert_eq!(
+            index.skipped,
+            vec!["s-huge".to_string()],
+            "the GUI shell must forward the skip disclosure, not drop it"
+        );
+
+        // The guard's Drop restores the host env even on assert failure.
+        drop(host);
     }
 }

@@ -39,3 +39,22 @@ test('BGE model loading keeps a distinct indeterminate status', () => {
   assert.match(indicator, /animate-spin motion-reduce:animate-none/);
   assert.match(knowledgeSource, /<ModelProgressIndicator[\s\S]*?downloading=\{downloading\}[\s\S]*?percent=\{dlPct\}/);
 });
+
+test('deliverables index discloses unscannable session records instead of rendering a silent partial list', async () => {
+  // refreshOutputs consumes the command's { rows, skipped } shape: the
+  // skipped list (session records over the scan cap, unreadable, or
+  // unparseable) is the only signal that the listing is incomplete —
+  // defaulting the result to an array hid it (round-4 review).
+  assert.match(knowledgeSource, /Array\.isArray\(res\.rows\)/);
+  assert.match(knowledgeSource, /Array\.isArray\(res\.skipped\)/);
+  assert.match(knowledgeSource, /setOutputsSkipped\(nextSkipped\)/);
+  // The notice renders on the outputs tab whenever loaded work has skips —
+  // including above the "empty" state, which must not read as a clean bill.
+  assert.match(knowledgeSource, /outputsLoaded && outputsSkipped\.length > 0/);
+  assert.match(knowledgeSource, /t\.kbOutSkippedNotice\(outputsSkipped\.length\)/);
+  // The copy is tri-language via the shared i18n module (no zh-only literal).
+  for (const lang of ['zh', 'en', 'ja']) {
+    const source = await readFile(new URL(`../src/shared/i18n/${lang}.js`, import.meta.url), 'utf8');
+    assert.match(source, /kbOutSkippedNotice: \(n\) =>/);
+  }
+});
