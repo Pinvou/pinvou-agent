@@ -31,7 +31,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T18 | Not completed | Approved HTTPS file-source management and current download-info issuance. |
 | T19 | Not completed | Current qualification and three-purpose authorize/consume/cancel/status API composition over T44. |
 | T20 | In progress | Actual no-update/transaction and bounded Session/download-progress/download-resume/activation acceptance/recovery, four original HTTP batch routes and supplied client request/ACK correlation; independent task-event acceptance, durable client queue and quality contribution remain pending |
-| T21 | In progress | Scoped quality projection/control primitives; complete quality evaluation and business composition remain pending |
+| T21 | In progress | Private sample/receipt persistence authenticates actual frozen SN sources and preserves original-stage history; contribution, aggregate evaluation and business composition remain pending |
 | T22 | Not completed | Independent restricted unknown-consume reconciliation and protected original-request disposition. |
 | T23 | Not completed | Complete grouped quality review and controlled unfreeze. |
 | T24 | Not completed | Fixed weekly release-quality snapshots and restricted export. |
@@ -10498,3 +10498,54 @@ budgets and physical qualification remain pending; T42 deployment remains
 explicitly deferred. Totals remain 47 tasks: five implemented, eleven in progress,
 thirty-one incomplete or deferred. Product 0.10.9, normative 1.0, pinned V1 and
 CodeWhale stay unchanged. Downloads have no hard total/cumulative duration limit.
+
+### T21 explicit frozen-SN quality source integration
+
+The private quality owner and runtime now explicitly opt into the original T47
+frozen-SN source/lifecycle adapters. Existing null-only setup remains independent
+of optional SN schemas and providers. Owner preflight checks existing quality
+role rights without rerunning grant normalization; drift refuses without healing.
+Readiness and actual reads retain current protected catalog, connection, owner,
+scope and original T05/T06 approval binding checks. Partial staged provisioning
+is not readiness. No runtime writer, private EXECUTE or production route is added.
+
+New sample and complete receipt/head writes recheck their actual original source
+after writing and before the existing final SQL clock. Original two-clock fences,
+CAS, replay, sticky outcomes and permanent history are unchanged. Actual
+include/exclude, empty and exclude-only plans preserve the first stage/window
+through pause/resume/advance. Faults change actual retained binding metadata only
+after the complete candidate write set is observable; the actual subsequent bad
+binding read refuses with no object and one clock. Rollback restores every row;
+identical original inputs pass before rollback and after a real two-clock commit.
+Exact Invalid/42501 runtime refusal and a single-connection unsafe session path
+control have restored positive checks. All 69 existing SQL files remain unchanged.
+
+ROOT's complete quality run enabled actual PostgreSQL and both original Node
+models: 23 top-level/11 child tests, zero skips/failures (150.263s wall).
+Related actual SN source/lifecycle/OpenBao regression passed 7 top-level/18 child
+tests with zero skips/failures (42.098s wall). Default service passed 48 tested
+packages, 455 top-level/840 child tests (67.241s wall); 560 top-level/606 child
+explicit external opt-in skips and 12 no-test packages are separately recorded.
+All nine service gates passed, including modules, vet, private build, pinned V1,
+formatting and both whitespace checks.
+
+Both independent roles gave final in-scope code/test/documentation PASS. Their
+separate actual quality/Node runs passed 23 top-level/11 child tests each, zero
+skips/failures (162.383s/156.692s wall, dependency/compatibility). Each verified
+full source/index/status and all 69 previous SQL raw/index identities before and
+after, closed its session and joined owned processes. They checked ROOT's full
+gate evidence without claiming those gates as their own execution.
+
+This service increment is DCO committed and pushed as `1f854602624f7c6f50b289ab288ced1452be1bd9` on
+`codex/t21-frozen-sn-samples`. Its boundary and evidence are in the service's
+`docs/quality-kernel-plan.md`, fourth batch.
+
+The isolated MAC and fixed publisher fixtures certify storage integration only.
+Actual T20 accepted bytes and processing cursors, T25 purpose-bound eligibility
+and limits, complete groups/aggregates, freeze reasons and fixed T15/T14/T08
+business composition remain pending. No device membership, qualified sample or
+production assessment is inferred. T21 remains in progress; totals remain five
+implemented, eleven in progress and thirty-one incomplete/deferred out of 47.
+T42 deployment stays deferred; physical platform/data certification and measured
+budgets remain pending. Product 0.10.9, normative 1.0, pinned V1 and CodeWhale stay
+unchanged. Downloads have no hard total/cumulative duration or retry ceiling.
