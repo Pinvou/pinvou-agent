@@ -11031,3 +11031,70 @@ artifact/download-size limit.
 DCO committed and pushed as `f607656cf837b23806e1e19aa722dcf26ce758b2` on
 `codex/t09-sbom-integration`; service scope/evidence is in
 `docs/artifact-sbom-integration.md`.
+
+### T09 bounded provenance object syntax
+
+Consecutive accepted sources `b9e69b7c8c14b05ff34dcd0b8ce75fd4ac2fc548`
+and `ee94807fbea900c6df01aff83e78336e779e8af6` are integrated as eight exact
+final raw/Git blobs. Two existing document/PG-test paths matched the first parent;
+six new paths were absent. The original103 additive document lines and accepted
+PG52 additions/seven deletions remain source-batch history. Fresh combined-tree
+evidence is recorded separately. Prior SBOM/current-authority cases are retained.
+
+Owned Snapshot inspection independently bounds whole bytes, raw line bytes
+including LF/CRLF and object records. Bounded fragments fill one capped buffer;
+strict ParseBounded preserves original grammar rules. A final unterminated object
+is supported; blank/BOM/non-object/duplicate/later-malformed/capacity/cancel
+failures expose zero Report. Composition first repeats current Manifest/Root/deny,
+paired evidence and primary SBOM/installer binding, then checks JSONL syntax and
+the same provenance identity; failure returns no earlier Facts, evidence or count.
+The explicit-capacity standalone CLI reports only record count/raw identity and
+uses fixed diagnostics. Old APIs and offline SBOM resources remain unchanged.
+
+Both independent line-level code/test reviews passed. Primary affected testing
+passed ten packages,61 top-level/79 child tests, zero skips/failures
+(23.711s wall), including three freshly built actual CLI cases,
+real HTTP capture and malformed/capacity/identity/current-deny controls with
+earlier-stage positives and restored valid observations. Actual isolated
+PostgreSQL17.11 passed one top-level/four child tests, zero skips/failures
+(22.439s recorded interval), with valid two-object provenance,
+duplicate-key refusal after signed size/hash and SBOM checks, restored positive,
+and existing published Root/current-deny cases. Before/after fixture inventory
+matched: 0 pre-existing fixture databases and
+1 pre-existing fixture role were retained; no
+new fixture database/role remained. These private adversarial storage controls
+do not represent production data or approved business deny commands.
+
+All13 root gates passed: three actual CLI builds, affected tests, actual PG,
+full default service, modules, full vet, server build, pinnedV1, formatting and
+two whitespace checks. Default service passed59 tested
+packages,523 top-level/1132 child tests
+(61.059s wall); 567 top-level/
+606 child opt-in/unavailable-host skips and12 no-test
+packages were recorded separately. Sourcefile symlink/mapped-source host
+fixtures remain unverified. Each reviewer independently rebuilt all three CLIs,
+passed61/79 affected tests and actual PG1/4 with zero skips/failures, and passed
+affected vet, formatting and both whitespace checks: nine gates each.
+Dependency/compatibility affected walls were25.075s/
+24.688s; PG recorded intervals were21.108s/
+26.056s. PG intervals include pre-inventory and Go completion;
+post-inventory and frozen-source checks are outside those intervals. Other
+command walls exclude frozen-source checks. Reviewers did not repeat the root
+whole-default suite. Every PG inventory matched its pre-existing baseline.
+All sessions/owned children closed; full source/index/status and all69 old SQL
+raw/index identities stayed fixed during every run. Eight imports remain exact.
+
+Object syntax does not interpret/approve declared provenance schemaVersion,
+in-toto/DSSE/SLSA profiles, signatures, subjects, source revisions or pipeline
+identity. Synthetic objects are not qualified provenance and supply no trusted
+statement or Artifact admission. Unresolved profile/signature policy stays
+closed. No production HTTP upload/quarantine/admission, native/physical or
+deployment qualification is claimed. No SQL, grant, route, dependency, provider,
+Root, Session, UI, contract or version changed. Full T09 remains in progress;
+totals stay5/12/30 out of47, product0.10.9/normative1.0/pinnedV1/CodeWhale unchanged,
+deployment deferred. Downloads have no hard total/cumulative duration or retry
+cap;32MiB is not an artifact/download-size limit.
+
+DCO committed and pushed as `175ff0c7b80dcb43ffe4acdb26699cbfba4f4ca8` on
+`codex/t09-provenance-integration`; scope/evidence is in
+`docs/artifact-provenance-integration.md`.
