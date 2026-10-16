@@ -9007,3 +9007,87 @@ Both final independent documentation reviews passed. Service delivery is DCO
 committed and pushed as 60e6d17a0d2346d29add7728e9c761e8db44ab13 on
 `codex/t20-transaction-retention`. The accepted-data and full-task boundaries
 above remain open; both client progress records are synchronized separately.
+
+## Supplied existing-Root envelope signature verification
+
+The client adds a feature-owned pure verifier for the ordinary frozen V1
+single-envelope operation. It verifies original bounded canonical bytes, the
+complete embedded role Schema, independent full context, fresh supplied Root,
+exact declared policy, every actual Ed25519 signature and configured unique
+threshold, credential signingKeyId, supplied deny facts, body time and original
+metadata high-water rules. Bad/unknown/denied extra signatures still refuse
+after a valid prefix meets the threshold. Root claims must equal the existing
+Root; a genuine successor requires the separate transition operation.
+
+The provider reuses exact ring 0.17.14 already in the App/CLI graph. Production
+remains the default; explicit trusted-caller Development matches the reference's
+production=false incremental descriptor rule. The App facade fixes Production.
+The same genuinely signed incremental package succeeds in explicit Development
+and refuses through that facade. Packages with high-water refuse; credentials
+ignore that argument, preserving the original applicability. Existing codec APIs
+keep their production behavior, with narrow immutable Root key/window reuse.
+
+This proves signature checks only under independently supplied existing Root,
+context, safe time and deny/high-water facts. No protected bootstrap, trusted
+clock acquisition, atomic accepted-state persistence, complete Root-chain
+installation, archive mode, current qualification, execution permission or
+durable queue acknowledgement is added. Full T27 remains open. Deployment and
+platform/custody qualification remain deferred. Task totals remain four
+implemented, twelve in progress and thirty-one incomplete/deferred of forty-seven.
+No artifact size, retry or total/cumulative download duration cap is introduced.
+The primary passed thirteen verifier tests: three original-vector tests and ten
+groups containing exactly 111 full frozen Node acceptance/error oracle cases.
+They cover all twenty original envelopes, complete signature processing, role
+and product scopes, time/high-water applicability, Production/Development,
+resource limits and malformed Ed25519 A/R points and S scalars. The sampled
+provider preflight also agreed across Node, ring and Go on sixty controls; this
+is compatibility evidence, not universal cryptographic certification or a new
+weak-point blacklist. Strict all-target verifier Clippy passed. All 157 codec
+tests passed with zero failures/ignored; the two opt-in original Node oracles
+were additionally executed genuinely, within those same 157 cases.
+
+The actual default App facade passed forty tests, zero failures/ignored. The
+actual CLI-workspace backend and its App/verifier dependencies built with the
+locked offline graph and passed its library harness (zero unit tests, 22m56s).
+An additional App benchmark-hooks/local-embed facade run passed forty tests,
+zero failures/ignored (5.05s after compilation). Neither backend compilation
+nor App harnesses constitute CLI workflow E2E. Earlier external-package Cargo
+selection attempts failed at harness selection and are excluded from acceptance.
+
+Selected-root App and CLI dependency trees each contain 104 dependency packages
+and 109 feature-variant nodes. The nine verification-critical packages have
+identical versions, sources and features. The complete closures are not identical:
+original locks already differ in icu_provider 2.3.0/2.3.1 and zerovec-derive
+0.11.5/0.11.6. This batch changes no existing package version/source. Embedded
+Schema validation explicitly disables format validation and retrieves only the
+fixed common URN; both independent reviewers confirmed these baseline patch
+differences do not affect this operation. This is Windows graph evidence;
+physical platform qualification and release packaging remain open.
+
+The independent dependency role's final scoped code/test audit passed with no
+required finding. Its own verifier run passed thirteen tests/111 full Node cases,
+zero failures/ignored (10.056s wall); strict all-target Clippy passed. Its actual
+default App facade passed forty tests (2.960s harness), and its actual CLI backend
+library harness passed with zero unit tests (78.612s wall), without an additional
+benchmark run. Scoped formatting, architecture, version, working/index whitespace
+and before/after sixteen-source freeze checks passed. All its owned compiler,
+runner, Node and tool sessions closed before returning the exclusive runtime slot.
+
+The independent compatibility role's final scoped code/test audit also passed
+with no required finding. Its own verifier run passed thirteen tests/111 fresh
+full Node cases, zero failures/ignored (9.928s wall); strict all-target Clippy
+passed. Its actual default App facade passed forty tests (2.640s harness), and
+its actual CLI backend passed its zero-test library harness (9.022s wall).
+Its own selected-root graph reconstruction reproduced the nine critical package
+identities and the two disclosed baseline patch differences. Formatting,
+architecture, version, narrow lock changes, before/after sixteen-source freeze
+and working/index whitespace checks passed. All its owned runtime processes and
+sessions closed before returning the exclusive slot. No CLI E2E is claimed.
+
+Both final code/test audits apply to the same sixteen-source freeze, manifest
+SHA256 8a8b54ae5e42bc4fec91fc9e56894a047c19915b9376f3e04c0217ecdb4ca738.
+The primary's final scoped format, strict codec library Clippy, architecture,
+version, narrow parent locks, selected dependency graphs and whitespace checks
+also passed. Product 0.10.9, normative documents 1.0, original pinned V1 contracts
+and CodeWhale gitlink remain unchanged. Final progress documentation review
+precedes DCO commit/push; all task and authority boundaries above remain open.
