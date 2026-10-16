@@ -9282,3 +9282,81 @@ remain unchanged. Final documentation review precedes DCO commit/push. Historica
 archive identity plans are a later separately reviewed scope, not implemented
 by this chain batch; protected custody/acceptance and full-task boundaries above
 remain open.
+
+## Historical Package and Release signature identities
+
+The feature-owned verifier now provides separate original Package and Release
+identity operations under caller-supplied archived Root and independently expected
+complete context. Each checks original bounded canonical bytes, full Schema,
+exact role policy, all actual Ed25519 signatures and configured threshold. The
+immutable historical proof preserves original bytes, borrows the exact archived
+Root and records verified signer IDs; it is distinct from ordinary fresh proof.
+
+Package uses supplied safe time: Root expiry alone is allowed, retaining original
+positive bounded window and issued-at checks. Production body semantics remain
+fixed, including incremental-package refusal. Release takes no current time: its
+Root original window is checked at that Root's issuedAt and its Release original
+window at that Release's issuedAt. No cross-object ordering is added; valid
+Root-after-Release and Release-after-Root-expiry controls establish identity only.
+No denial/high-water/development switch is added to these archive operations.
+
+Five new verifier tests execute thirty-six full frozen Node cases: Package six,
+Release eight, signatures/thresholds eight, independent complete context eight,
+and wire-limit/closed-Schema six. Historical positives additionally assert
+ordinary verification refusal where applicable. Private keys remain inside Node.
+Two narrow App facades add one test exercising eleven genuine positive/negative
+cases for both operations. No production codec source, manifests or locks change.
+
+Both final independent static deep audits passed the same seven-source freeze,
+manifest SHA256 78ce97c26f3530e94bfddd6bb740cd926df5203cdb63d58fbf161a67ab441a29.
+The primary's full thirty-three verifier tests passed, zero failures/ignored:
+previous twenty-eight tests and five new archive tests (1.060s archive harness).
+Strict all-target Clippy passed (5.343s wall). Existing 111 ordinary, 55 successor,
+30 new chain and 55 reused length-one parity fixtures remain distinct regressions.
+The unchanged codec's prior 157 actual tests, including two enabled Node oracles,
+retain acceptance without rerunning an unaffected exhaustive suite.
+
+Protected archive lineage/custody and snapshot consistency remain caller-owned.
+Historical identity grants no current qualification, download, activation,
+installation or acknowledgement rights, and specifies no service accepted-data
+archival, retention or deletion policy. Protected trust/high-water persistence,
+clock acquisition and complete T27 workflow remain open. Totals remain forty-seven:
+four implemented, twelve in progress, thirty-one incomplete/deferred. Product
+0.10.9, normative documents 1.0, pinned V1 and CodeWhale remain unchanged. Physical
+platform qualification and deployment remain deferred. No artifact download size,
+retry or total/cumulative duration cap is introduced.
+
+The primary default App facade passed forty-three tests, zero failures/ignored
+(12.300s harness, 111.679s wall). The actual CLI-workspace backend built the
+production verifier/App graph and passed its zero-test library harness (140.999s
+wall), which is compilation evidence rather than workflow E2E. Formatting,
+architecture, version, normal whitespace and final seven-source freeze passed.
+The unchanged selected dependency graph retains 104 packages/109 feature nodes
+per App/CLI root and identical nine verification-critical packages/features;
+previously disclosed ICU/zerovec patch differences remain, not full closure identity.
+
+The independent dependency role's own thirty-three verifier tests passed with
+zero failures/ignored (58.070s wall), including five archive tests/36 cases
+(1.860s harness). Strict all-target Clippy passed (7.799s wall). Its default App
+facade passed forty-three tests (16.780s harness, 55.094s wall); its actual CLI
+backend zero-test library harness passed (19.03s wall). Formatting,
+architecture, version, unchanged source/dependency baseline, before/after freeze
+and normal working/index whitespace checks passed. Runtime closure is confirmed
+before the next independent role receives the exclusive slot.
+
+The independent compatibility role's own thirty-three verifier tests passed with
+zero failures/ignored (47.521s wall), including all five archive
+tests/36 full Node cases. Strict all-target Clippy passed
+(3.188s wall). Its actual default App
+facade passed forty-three tests (15.040s harness,
+23.789s wall); its actual CLI backend zero-test library harness
+passed (8.744s wall). Five-source Rust formatting, architecture,
+version, unchanged codec/three locks, reused actual selected graph evidence,
+before/after seven-source freeze and normal working/index whitespace all passed.
+No E2E or unrelated benchmark/codec-suite rerun is claimed. Both independent
+roles closed every owned runtime process/session before returning the slot.
+
+Both final code/test audits apply to the same seven-source freeze above, with no
+required finding. Final documentation review precedes DCO commit/push. The
+separately reviewed authenticated-public-graph plan is future work, not delivered
+by this archive batch; the remaining T27/task and authority boundaries stay open.
