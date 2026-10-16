@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef,
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { StatusDot } from '../../components/StatusDot.jsx';
-import { dict, zhDict } from '../../shared/i18n.js';
+import { zhDict } from '../../shared/i18n.js';
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
 import { useThrottledValue } from './useThrottledValue.js';
@@ -52,17 +52,25 @@ import {
 // Key-set diff (refactor): every key the timeline reads exists in zhDict().uiConversation,
 // so no literal overlay is needed; the defensive `|| {}` only guards the impossible case
 // of a missing dict section (same style as other `x || {}` fallbacks in the codebase).
-const FALLBACK_COPY = zhDict()?.uiConversation || {};
+// Round-43 (zhuowp P1 class): the zh dict moved behind the lazy loader —
+// resolve at call time. `elapsed` is a FUNCTION key consumed
+// unconditionally during render, so seed a numeric formatter that covers
+// the pre-load window (the zh table's own formatter overwrites it on
+// load; browser fixtures without ensureLanguage ride this default).
+const conversationFallbackCopy = () => {
+  const zh = zhDict()?.uiConversation;
+  return zh ? { elapsed: (ms) => `${Math.max(0, Math.round(ms / 1000))}s`, ...zh } : { elapsed: (ms) => `${Math.max(0, Math.round(ms / 1000))}s` };
+};
 
 // conversationCopy(copy) merges the fallback copy table with the caller's
 // overrides; it used to run once per component per render, so long transcripts
 // rebuilt that object for every turn on every keystroke/stream chunk. The merged
 // table is immutable and `copy` identities are stable (i18n dict tables), so cache
 // the merge per source table (same WeakMap trick as ChatView's legacyMarkdownCache).
-const cachedConversationCopy = createWeakCache((copy) => ({ ...FALLBACK_COPY, ...copy }));
+const cachedConversationCopy = createWeakCache((copy) => ({ ...conversationFallbackCopy(), ...copy }));
 function conversationCopy(copy) {
   // Non-object keys never enter the WeakMap-backed cache (WeakMap contract).
-  if (!copy) return FALLBACK_COPY;
+  if (!copy) return conversationFallbackCopy();
   return cachedConversationCopy(copy);
 }
 

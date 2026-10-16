@@ -5,7 +5,7 @@
 // AppIcon 的头像 img 补了 loading="lazy" decoding="async"(本 PR 主题内优化)。
 import { useState } from 'react';
 import { AppWindow, Award, Briefcase, Cpu, Feather, Globe, Lock, Navigation, Palette, Radio, Terminal, TrendingUp, User } from '../../components/icons.jsx';
-import { dict, zhDict } from '../../shared/i18n.js';
+import { zhDict } from '../../shared/i18n.js';
 import { personaOverlayFor } from '../../shared/persona-overlay.js';
     // iOS-style font stack shared by the Persona surfaces (5 call sites in
     // Personas/persona-shared/SavedPersonaConfirmDialog); the promo banner in

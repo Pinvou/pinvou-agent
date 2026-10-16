@@ -1,4 +1,4 @@
-import { dict, zhDict } from '../../shared/i18n.js';
+import { zhDict } from '../../shared/i18n.js';
 import { sessionPayloadId } from './pet-state.js';
 
 // 持久化键仅在本模块读写(read/acknowledge),不对外暴露。

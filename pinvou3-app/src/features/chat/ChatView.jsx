@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, lazy as mentionLazy, useMemo, useRef, useState, Suspense as MentionSuspense, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import {
   invokeObservedPanelSelection,
@@ -74,14 +74,13 @@ import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachment
 import { buildSessionMessageBlock, splitSessionMessageBlock } from './session-message-block.js';
 // Startup-budget (round-41 merge with #586): the mention controls split
 // into their own chunk — the feature is flag-gated and off by default.
-import { lazy as mentionLazy, Suspense as mentionSuspense } from 'react';
 const SessionMentionChips = mentionLazy(() =>
   import('./SessionMentionControls.jsx').then((m) => ({ default: m.SessionMentionChips })));
 const SessionMentionMenu = mentionLazy(() =>
   import('./SessionMentionControls.jsx').then((m) => ({ default: m.SessionMentionMenu })));
 const SessionMentionCards = mentionLazy(() =>
   import('./SessionMentionControls.jsx').then((m) => ({ default: m.SessionMentionCards })));
-import { PROJECT_SESSION_DRAG_TYPE } from '../projects/projectGrouping.js';
+import { PROJECT_SESSION_DRAG_TYPE, resolveSessionProjectId } from '../projects/projectGrouping.js';
 import {
   buildSessionMentionBlock,
   splitSessionMentionBlock,
@@ -219,7 +218,6 @@ import { YoloConfirmCard } from '../../shared/yolo-confirm-card.jsx';
 import { needsYoloConfirmation } from '../codex/code-permission-state.js';
 import { CHAT_YOLO_GATE_UNKNOWN_BINDING, chatYoloGateApplies, shouldShowWorkspaceBindingChip } from './chat-workspace-binding.js';
 import { WorkspaceKeychainChip } from '../projects/WorkspaceKeychainChip.jsx';
-import { resolveSessionProjectId } from '../projects/projectGrouping.js';
 import {
   VoiceComposerButton,
   VoiceEditPreview,
@@ -3962,13 +3960,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                 {t.uiSessionMention.dropHint}
               </div>
             )}
-            <mentionSuspense fallback={null}><SessionMentionChips
+            <MentionSuspense fallback={null}><SessionMentionChips
               refs={sessionRefs}
               onRemove={handleRemoveMentionRef}
               copy={t.uiSessionMention}
               disabled={!sessionMentionEnabled}
               disabledNotice={t.uiSessionMention.disabledNotice}
-            /></mentionSuspense>
+            /></MentionSuspense>
             {imageInputWarning && (
               <div data-testid="image-capability-warning"
                 className="flex items-center gap-2 mb-2 px-3 py-2 rounded-2xl text-[12px] leading-5 bg-amber-500/10 text-amber-700 dark:text-amber-300">
@@ -4128,13 +4126,13 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                   compact={composerCompact}
                   desktopClassName={`absolute bottom-full left-0 mb-2 z-50 w-[320px] max-w-[calc(100vw-24px)] max-h-[320px] overflow-y-auto ${POPOVER_SURFACE}`}
                 >
-                  <mentionSuspense fallback={null}><SessionMentionMenu
+                  <MentionSuspense fallback={null}><SessionMentionMenu
                     candidates={mentionCandidates}
                     selectedIndex={mentionIndex}
                     onSelect={handleSelectMentionCandidate}
                     onHover={(index) => setMentionSelection({ token: mentionTrigger && mentionTrigger.token, index })}
                     copy={t.uiSessionMention}
-                  /></mentionSuspense>
+                  /></MentionSuspense>
                 </ComposerPopover>
               </div>
               {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: the composer carries the @-mention listbox popup semantics (aria-haspopup/expanded/activedescendant), same contract as the ScheduledTasksView read-only input */}
@@ -4789,14 +4787,15 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
               </ViewErrorBoundary>
             )}
 
-            <mentionSuspense fallback={null}><SessionMentionCards
+
+            <MentionSuspense fallback={null}><SessionMentionCards
               refs={mentionRefs}
               knownSessionIds={knownSessionMentionIds}
               onOpenSession={onOpenSessionMention}
               copy={t.uiSessionMention}
               disabled={sessionMentionDisabled}
               disabledNotice={t.uiSessionMention.disabledNotice}
-            /></mentionSuspense>
+            /></MentionSuspense>
             {attachmentNames.length > 0 && (
               <div className={`flex max-w-full flex-wrap justify-end gap-1.5 ${bodyText ? 'mb-1.5' : ''}`}>
                 {attachmentNames.map((name, index) => {
