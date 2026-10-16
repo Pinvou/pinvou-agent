@@ -122,10 +122,13 @@ if [ "$cross_mode" -eq 1 ]; then
   fi
   # A native loongarch64 host uses its own strip; a real cross build needs
   # the target's strip (host strip cannot handle foreign-arch ELFs).
+  # Default spelling matches the pinned cross toolchain's binutils
+  # (loongarch64-unknown-linux-gnu-*); the Debian cross-binutils spelling
+  # keeps working via STRIP override.
   if [ "$requested_arch" = "$host_arch" ]; then
     strip_bin="${STRIP:-strip}"
   else
-    strip_bin="${STRIP:-loongarch64-linux-gnu-strip}"
+    strip_bin="${STRIP:-loongarch64-unknown-linux-gnu-strip}"
   fi
 else
   for command_name in cmake g++ git make sha256sum dpkg file objdump readelf; do
