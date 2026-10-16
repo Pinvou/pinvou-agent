@@ -2186,4 +2186,29 @@ mod tests {
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
     }
+
+    /// The chat preference is desktop-only: `WebSettingsPatch` (the only
+    /// settings surface the web UI can drive) has no `chat` field and
+    /// `deny_unknown_fields` must hard-reject a patch that carries it,
+    /// instead of silently ignoring it. The transport boundary matters more
+    /// than the field itself — a web client must never be able to flip the
+    /// key even if a future field rename leaves the UI row gated wrong.
+    #[test]
+    fn web_settings_patch_rejects_the_chat_key() {
+        let rejected = serde_json::from_value::<WebSettingsPatch>(serde_json::json!({
+            "chat": { "streaming_animation": false },
+        }));
+        assert!(
+            rejected.is_err(),
+            "WebSettingsPatch must hard-reject the desktop-only chat key"
+        );
+        // Positive control: the authorized web fields still deserialize.
+        let accepted = serde_json::from_value::<WebSettingsPatch>(serde_json::json!({
+            "memory_enabled": true,
+        }));
+        assert!(
+            accepted.is_ok(),
+            "web-authorized settings fields must keep deserializing"
+        );
+    }
 }

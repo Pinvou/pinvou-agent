@@ -1840,13 +1840,20 @@ mod tests {
             let settings_path = super::super::paths::settings_path();
             // Build the fixture from a real serialization so every other field
             // keeps its on-disk shape, then drop the sub-struct the pre-`chat`
-            // builds never wrote.
+            // builds never wrote. A non-default sentinel field stays in the
+            // file: if the load below ever fell back to whole-file defaults
+            // (parse failure), the sentinel would read false and the
+            // assertion would expose the fallback masquerading as a backfill.
             let mut document =
                 serde_json::to_value(UserPrefs::default()).expect("serialize default prefs");
-            document
+            let object = document
                 .as_object_mut()
-                .expect("prefs serialize to a JSON object")
-                .remove("chat");
+                .expect("prefs serialize to a JSON object");
+            object.insert(
+                "voice_shortcut_enabled".into(),
+                serde_json::Value::Bool(true),
+            );
+            object.remove("chat");
             std::fs::write(
                 &settings_path,
                 serde_json::to_string_pretty(&document).expect("serialize legacy prefs"),
@@ -1854,6 +1861,10 @@ mod tests {
             .expect("write legacy prefs");
 
             let loaded = UserPrefs::load();
+            assert!(
+                loaded.voice_shortcut_enabled,
+                "sentinel must survive the load: a whole-file default fallback would reset it"
+            );
             assert!(
                 loaded.chat.streaming_animation,
                 "missing chat key must fall back to the default-on streaming animation"
@@ -1875,6 +1886,12 @@ mod tests {
             let object = document
                 .as_object_mut()
                 .expect("prefs serialize to a JSON object");
+            // Same sentinel contract as the missing-key test above: proves the
+            // load parsed the file instead of falling back to all-defaults.
+            object.insert(
+                "voice_shortcut_enabled".into(),
+                serde_json::Value::Bool(true),
+            );
             object.insert(
                 "chat".into(),
                 serde_json::json!({ "some_future_field": "unused by this build" }),
@@ -1886,6 +1903,10 @@ mod tests {
             .expect("write fixture prefs");
 
             let loaded = UserPrefs::load();
+            assert!(
+                loaded.voice_shortcut_enabled,
+                "sentinel must survive the load: a whole-file default fallback would reset it"
+            );
             assert!(
                 loaded.chat.streaming_animation,
                 "a chat object without the known field must backfill the default-on value"
