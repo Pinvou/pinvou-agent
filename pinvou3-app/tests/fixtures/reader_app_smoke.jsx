@@ -2,6 +2,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import '../../src/styles/base.css';
 import { ReaderApp } from '../../src/features/reader/ReaderApp.jsx';
+import { ensureLanguage } from '../../src/shared/i18n.js';
 
 window.__invokeLog = [];
 window.__readerOpenHandler = null;
@@ -54,4 +55,8 @@ window.__TAURI__ = {
   },
 };
 
-createRoot(document.getElementById('root')).render(<ReaderApp />);
+// 与生产入口 src/app/reader-main.jsx 同口径：首渲染前装载 zh 词典，
+// 使中文文案断言不依赖动态 import 与首渲染的时序竞态。
+ensureLanguage('zh').catch(() => {}).then(() => {
+  createRoot(document.getElementById('root')).render(<ReaderApp />);
+});
