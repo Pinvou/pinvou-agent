@@ -510,7 +510,7 @@ PINNED_GATE_STEP_NAMES = {
         "Set up the pinned loong64 cross toolchain (sha256-pinned asset)",
         "Set up the deepin glibc-2.38 loong64 sysroot",
         "cargo check src-tauri (loongarch64 cross)",
-        "cargo check pinvou-knowledge (loongarch64 cross)",
+        "cargo check pinvou-knowledge (loongarch64 cross, incl. tests)",
         "cargo check pinvou-cli (loongarch64 cross)",
     ),
     "macos-rust-check": (

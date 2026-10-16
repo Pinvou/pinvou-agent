@@ -83,8 +83,9 @@ class ReleaseSizePolicyTests(unittest.TestCase):
         # The pinned loong64/cross-tools asset ships NO lld (bfd ld only —
         # see scripts/ci-loongarch64-toolchain.sh). Copying the arm64 job's
         # -fuse-ld=lld (or the lld-only --icf=safe) would fail every link;
-        # RUSTFLAGS stays unset and LTO stays in Cargo.toml (thin LTO runs
-        # inside rustc and is linker-independent).
+        # RUSTFLAGS carries only the rustc-side --remap-path-prefix and LTO
+        # stays in Cargo.toml (thin LTO runs inside rustc and is
+        # linker-independent).
         job = self.job("\n  build-linux-loongarch64:", "\n  build-windows-x64:")
         # Only live configuration counts: the job's comments deliberately name
         # the forbidden flags to warn future editors (same rule as the
@@ -97,11 +98,19 @@ class ReleaseSizePolicyTests(unittest.TestCase):
         self.assertNotIn("CARGO_PROFILE_RELEASE_LTO", job_code)
         self.assertNotIn("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", job_code)
         job_env = job_code.split("\n    steps:", maxsplit=1)[0]
-        for line in job_env.splitlines():
-            self.assertFalse(
-                line.strip().startswith("RUSTFLAGS:"),
-                f"the loongarch64 job must leave RUSTFLAGS unset, found: {line.strip()}",
-            )
+        # RUSTFLAGS must be exactly the remap-only spelling: build-machine
+        # paths leave the artifact like every other release job, while the
+        # lld-specific link flags stay out (the cross toolchain is bfd-only).
+        rustflags = [
+            line.strip()
+            for line in job_env.splitlines()
+            if line.strip().startswith("RUSTFLAGS:")
+        ]
+        self.assertEqual(
+            rustflags,
+            ['RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/"'],
+            "the loongarch64 job must set exactly the remap-only RUSTFLAGS",
+        )
 
     def test_linux_jobs_repack_deb_as_xz_before_sha256(self):
         for start, end in (
