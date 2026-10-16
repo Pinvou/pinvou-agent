@@ -3197,7 +3197,17 @@ class CiGatePolicyTests(unittest.TestCase):
         # a commented-out copy of the line must not satisfy the pin.
         stripped_macos = _without_yaml_comments(macos_job)
         self.assertEqual(stripped_macos.count("shared-key:"), 1)
-        self.assertIn("shared-key: macos-rust-check-v2", stripped_macos)
+        # Line-exact membership, not a substring: assertIn would also be
+        # satisfied by a v22-style stretch (macos-rust-check-v22), which
+        # rust-cache would mint under the v0-rust-macos-rust-check-v22-
+        # series — a prefix janitor rule A3 never matches, silently
+        # disarming the fat-save insurance for the prune invariant.
+        self.assertIn(
+            "shared-key: macos-rust-check-v2",
+            [line.strip() for line in stripped_macos.splitlines()],
+            "the rotation key must be the exact live line "
+            "shared-key: macos-rust-check-v2",
+        )
         verify_step = _without_yaml_comments(
             _step_named(
                 macos_job,
