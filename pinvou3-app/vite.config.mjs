@@ -482,6 +482,11 @@ function enforceLazyChunks() {
 // the remainder is the synchronous receive-path parser, which cannot defer
 // without breaking render semantics. An in-PR trim (builder split into the
 // lazy graph) was measured net +122 B and rejected.
+//
+// Round-43 (this PR): the same ceiling also absorbs the ~3 kB node-version
+// minification delta between local (v22) and CI (v24) toolchains — the
+// identical tree measured 499.7 kB locally and 500.6 kB on CI; only the
+// minifier output differs.
 export const MAIN_ENTRY_BUDGET_BYTES = 502_000;
 
 export function assertMainEntryBudget(bundle, budgetBytes = MAIN_ENTRY_BUDGET_BYTES) {
