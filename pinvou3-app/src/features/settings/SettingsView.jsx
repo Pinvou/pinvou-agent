@@ -35,6 +35,7 @@ import {
   GLOBAL_SHORTCUT_DEFAULT_ACCELERATOR,
   foldGlobalShortcutDraft,
   formatGlobalShortcutForDisplay,
+  globalShortcutDraftToRust,
   isPlausibleGlobalShortcutAccelerator,
   normalizeGlobalShortcutDraft,
 } from './globalShortcutSettings.mjs';
@@ -1825,9 +1826,11 @@ function hasStoredCredential(record) {
       return (
         <IOSSection title={copy.globalShortcuts}>
           <IOSRow label={copy.globalShortcutEnable} desc={toggleDesc}>
+            {/* 不可用会话仍允许把残留的 enabled=true 关掉（Rust 端 disable 刻意
+                不做可用性门槛，随时安全）；只有打开新快捷键才需要可用会话。 */}
             <IOSSwitch
               checked={shortcutEnabled}
-              disabled={!available || pending}
+              disabled={(!available && !shortcutEnabled) || pending}
               onChange={value => applyConfig(!!value, savedAccelerator, 'toggle')}
             />
           </IOSRow>
@@ -1848,7 +1851,7 @@ function hasStoredCredential(record) {
                 type="button"
                 data-testid="global-shortcut-save"
                 disabled={!available || pending || !acceleratorDirty || !acceleratorPlausible}
-                onClick={() => applyConfig(shortcutEnabled, normalizeGlobalShortcutDraft(draftAccelerator), 'accelerator')}
+                onClick={() => applyConfig(shortcutEnabled, globalShortcutDraftToRust(draftAccelerator), 'accelerator')}
                 className="h-8 shrink-0 rounded-full bg-[#007AFF]/10 px-3 text-[13px] font-medium text-[#007AFF] transition-colors hover:bg-[#007AFF]/20 disabled:opacity-35 dark:bg-[#0A84FF]/20 dark:text-[#0A84FF]"
               >{t.uiSettingsDetail.save}</button>
             </div>
