@@ -171,9 +171,26 @@ def _title_block(slide, th, title):
 
 # ── 版式 ────────────────────────────────────────────────────────────────────
 # 字段读取一律 `s.get(k) or 默认` / `or []`,不要 `get(k, 默认)`:DeepSeek 严格
-# 工具模式会把 schema 里声明的全部属性改成 required+nullable(引擎的
-# enforce_strict_subset),模型对不用的字段会显式发 null —— dict.get 的默认值
-# 对"键存在但值为 null"不生效,会把 None 一路带进渲染。
+# 工具模式会把 schema 里声明的可选属性改成 required+nullable(引擎的
+# enforce_strict_subset;原本就 required 的 layout 不加 nullable),模型对不用
+# 的字段会显式发 null —— dict.get 的默认值对"键存在但值为 null"不生效,会把
+# None 一路带进渲染。例外:kpi/agenda 的 num/label 数值 0 是合法数据,`or` 会
+# 把它吞掉,那里只按 None 判等回退(_item_num_label)。
+
+def _item_num_label(it):
+    """items 的 string|{num,label} anyOf 统一取值。
+
+    字符串元素按原文返回;dict 元素的 num/label 只在 None 时回退空串
+    (`or ""` 会把合法的数值 0 吞成空白卡)。渲染层对返回值不再判真值。
+    """
+    if not isinstance(it, dict):
+        return str(it), ""
+    num, label = it.get("num"), it.get("label")
+    return (
+        "" if num is None else str(num),
+        "" if label is None else str(label),
+    )
+
 
 def layout_cover(slide, th, s):
     bg(slide, th["bg"])
@@ -200,7 +217,8 @@ def layout_agenda(slide, th, s):
         para(tfn, "%02d" % (i + 1), 30, th["primary"], bold=True, font=th["title_font"], first=True)
         rect(slide, Inches(2.25), yy + Inches(0.12), Inches(0.04), step - Inches(0.28), th["light"])
         tft = textbox(slide, Inches(2.55), yy, Inches(9.3), step, MSO_ANCHOR.MIDDLE)
-        para(tft, str(it), 20, th["ink"], font=th["body_font"], first=True)
+        num, label = _item_num_label(it)
+        para(tft, " ".join(t for t in (num, label) if t), 20, th["ink"], font=th["body_font"], first=True)
 
 
 def layout_section(slide, th, s):
@@ -248,9 +266,9 @@ def layout_kpi(slide, th, s):
         rect(slide, x, y, card_w, h, th["light"])
         rect(slide, x, y, card_w, Inches(0.12), th["primary"])
         # schema 的 items 是 string|{num,label} anyOf(共享 agenda 通道):字符串元素
-        # 按大数字渲染,dict 的 num/label 为 null 时回退空串,都不能崩。
-        num = str(it.get("num") or "") if isinstance(it, dict) else str(it)
-        label = str(it.get("label") or "") if isinstance(it, dict) else ""
+        # 按大数字渲染,dict 的 num/label 为 null 时回退空串,都不能崩;num/label
+        # 只对 None 回退,数值 0 按数据渲染(见 _item_num_label)。
+        num, label = _item_num_label(it)
         tfn = textbox(slide, x, y + Inches(0.55), card_w, Inches(1.1), MSO_ANCHOR.MIDDLE)
         para(tfn, num, 40, th["primary"], bold=True, align=PP_ALIGN.CENTER, font=th["title_font"], first=True)
         tfl = textbox(slide, x, y + Inches(1.65), card_w, Inches(0.6), MSO_ANCHOR.MIDDLE)

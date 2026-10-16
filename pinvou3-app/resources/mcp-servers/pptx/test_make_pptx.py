@@ -19,6 +19,7 @@ pptx 工具(make_pptx)测试用例 —— 覆盖本次 PR 的可确定性核心�
   10. 非法 JSON 抢救 / 彻底空 loud error
   11. slides inputSchema.items 结构钉死(数组必须带具体类型 items)
   12. 可选字段显式 null 安全(DeepSeek strict 模式把全部属性改 required+nullable)
+  13. kpi 数值 0 / agenda dict items(schema anyOf 允许)按数据渲染,不被 `or` 吞掉
 
 注意:测试把 PINVOU3_SESSION_ARTIFACTS 指向临时目录,不污染 ~/.pinvou3。
 """
@@ -334,6 +335,34 @@ def test_explicit_null_fields_render():
     # null title 应回退各版式默认标题;kpi 的字符串元素(schema anyOf 允许)按大数字渲染
     assert "未命名演示" in joined and "谢谢" in joined, "cover/end 的 null title 应回退默认标题"
     assert "68%" in joined, "kpi 字符串元素应作为大数字渲染"
+
+
+# ── 13. 数值 0 与 dict 形 items:items 的 anyOf 允许 {num,label},渲染层对
+#        num/label 只按 None 回退 —— 数值 0 是合法数据,`or` 惯用法会把它吞成
+#        空白卡;agenda 收到 dict 元素也不得渲染成 dict repr。──
+@case("13. kpi 数值 0 与 agenda dict items 按数据渲染")
+def test_falsy_and_dict_items_render():
+    deck = _deck(
+        {"layout": "kpi", "title": "指标",
+         "items": [{"num": 0, "label": "增长"}, {"num": 5, "label": None}]},
+        {"layout": "agenda", "title": None,
+         "items": [{"num": "68%", "label": "满意度"}, "前言"]},
+    )
+    r = server.make_pptx(theme="business-blue", slides=deck, filename="test_falsy_items")
+    assert r.get("ok") is True, "数值 0 / dict items 应 ok=True,实际 %r" % r
+    assert r["slides"] == 2, "页数应为 2,实际 %r" % r["slides"]
+    prs = Presentation(r["path"])
+    texts = [shape.text_frame.text
+             for slide in prs.slides for shape in slide.shapes if shape.has_text_frame]
+    joined = "\n".join(texts)
+    assert "本页渲染失败" not in joined, "任何一页都不应渲染失败: %s" % joined[:300]
+    # 数值 0 必须按数据渲染成独立的 "0" 文本框(agenda 序号是 "01"/"02",不算)
+    assert "0" in texts, "kpi 数值 0 不应被 or 吞成空白卡,实际文本框 %r" % texts
+    assert "5" in texts, "kpi 数值 5 应正常渲染,实际文本框 %r" % texts
+    # agenda 的 dict 元素按 "num label" 渲染,不能是 dict repr
+    assert "满意度" in joined and "68%" in joined, "agenda dict items 应渲染 num/label: %r" % texts
+    assert "{" not in joined and "'" not in joined, "agenda 不应渲染 dict repr: %r" % texts
+    assert "前言" in joined, "agenda 字符串元素应按原文渲染"
 
 
 # ── 跑全部 ───────────────────────────────────────────────────────────────
