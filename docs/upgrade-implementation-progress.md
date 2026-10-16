@@ -27,7 +27,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T14 | Not completed | Deployment lifecycle and first-baseline activation with atomic parent/rollout composition. |
 | T15 | Not completed | Approved automatic rollout scheduling, quality guards and controlled completion. |
 | T16 | Not completed | Explicit Stable-to-Beta/Internal atomic draft synchronization. |
-| T17 | In progress | Protected logical workflow, private initial installation, atomic handoff/live download resume and private activation Session registration; qualified check/refresh composition remains pending |
+| T17 | In progress | Bounded original initial selection, protected logical workflow/initial installation, atomic handoff/live resume and private activation Session; qualified protected check/refresh composition remains pending |
 | T18 | Not completed | Approved HTTPS file-source management and current download-info issuance. |
 | T19 | Not completed | Current qualification and three-purpose authorize/consume/cancel/status API composition over T44. |
 | T20 | In progress | Actual no-update/transaction and bounded Session/download-progress/download-resume/activation acceptance/recovery, four original HTTP batch routes and supplied client request/ACK correlation; independent task-event acceptance, durable client queue and quality contribution remain pending |
@@ -10638,3 +10638,55 @@ No SQL, grants, route, provider or UI changes are introduced. Totals remain 47:
 five implemented, twelve in progress and thirty incomplete/deferred. Product
 0.10.9, normative 1.0, pinned V1 and CodeWhale are unchanged. Downloads have no
 hard total/cumulative duration or retry cap.
+
+### T17 bounded initial upgrade selection calculation
+
+The service now computes the original initial baseline/candidate and highest
+reachable next hop from the complete closed pinned selection projection and
+actual parsed stable facts. Extra source/current-version/hash consistency checks
+are explicitly separate from original model parity. Calculation flags, buckets
+and an owned facts identity do not authenticate current sources or a host.
+
+Original floor/profile/state/endpoint/path/policy precedence is preserved. SN
+absence, exclusion, inclusion and bucket order match the frozen model; bucket
+upper bounds are consulted only in the actual bucket branch. Exact eligibility,
+ordinary/bridge rules, forced full-window coverage and activation-mode equality
+feed an iterative descending equal-version-group search. Equal versions cannot
+enable one another. Forward-policy hash/intersection is checked only for the
+unique winning hop, with no lower-hop fallback. Refusals return no partial IDs.
+
+A shared checked decimal-version primitive preserves exact arbitrary-length
+three-component order without conversion or normalization; the accepted Registry
+comparison now uses it with unchanged API. Tests include complete malformed
+JSON, source consistency, independent raw/canonical 1 MiB exact/excess controls,
+oversized components and a 1100-node path within input bytes. Actual original
+Node runs generated selection comparisons and all 19 public path plus 7 public
+bucket vectors, checking their fixed expectations first. Both forced visibility
+window boundaries have otherwise-valid positive/negative controls and original
+Node comparisons. Existing 47 facts and 29 policy comparisons also regress.
+
+The final primary affected run passed 4 packages,
+27 top-level/256 child tests with zero skips/failures
+(17.862s wall). Default service passed 51 tested packages,
+472 top-level/996 child tests (64.506s wall), with
+563 top-level/606 child external opt-in skips and 12 no-test packages
+separately recorded. All nine service gates passed: affected/default tests,
+modules, full vet, build, pinned V1, formatting and both whitespace checks.
+
+Both independent code/test/documentation reviews gave final scoped PASS after
+the primary repaired the independent forced-visibility test gap. Their own
+separate affected/original-Node runs each passed 27 top-level/256 child
+tests, zero skips/failures (11.234s/20.179s wall, dependency/compatibility).
+Source/index/status and all 69 existing SQL raw/index identities remained fixed;
+all sessions and owned children closed. Unchanged PG/Bao/browser integrations
+were not rerun for this calculation delta; no real qualification is claimed.
+
+This increment is DCO committed and pushed as `73498aef89795bac6790fced3fdff4580e00873d` on
+`codex/t17-selection-calculation`; service boundaries/evidence are in
+`docs/initial-selection-calculation.md`. Current Registry/approvals, T13 paths,
+T46 capability, T47 membership/private bucket, protected chain projection and
+atomic final rechecks remain with the future business composition. No route,
+SQL, Session writer, signer, provider or UI is added. T17 remains in progress;
+totals stay five implemented, twelve in progress and thirty incomplete/deferred
+out of 47. Product 0.10.9, normative 1.0, pinned V1 and CodeWhale are unchanged.
+Downloads have no hard total/cumulative duration or retry cap.
