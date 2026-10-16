@@ -16,7 +16,12 @@ import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../share
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
 import { createWeakCache } from '../../shared/weak-cache.js';
 import { AppIcon, DEPT_ORDER, deptLabelFor, personaText } from '../personas/persona-shared.jsx';
-import { ComposerModelSelector, ComposerToolMenu } from '../settings/composer-shared.jsx';
+// 底栏选择器懒加载（r11）：composer-shared 压缩后 ~21KB，只在用户聚焦输入框
+// 底栏时才需要；Suspense fallback 用等宽 pill 占位（PanelSuspense 同款）。
+const ComposerModelSelector = React.lazy(() => import('../settings/composer-shared.jsx')
+  .then(m => ({ default: m.ComposerModelSelector })));
+const ComposerToolMenu = React.lazy(() => import('../settings/composer-shared.jsx')
+  .then(m => ({ default: m.ComposerToolMenu })));
 import { ComposerPopover, POPOVER_SURFACE, useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
 import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { ViewErrorBoundary } from '../../shared/ViewErrorBoundary.jsx';
@@ -46,12 +51,12 @@ import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
 // code 车道复用同一套，见 features/conversation）。
 import { rewindUndoAvailable } from '../conversation/checkpoints.js';
 import { useRewindController } from '../conversation/useRewindController.js';
-import {
-  RewindChip,
-  RewindConfirmDialog,
-  RewindUndoChip,
-  RewindUndoConfirmDialog,
-} from '../conversation/RewindChip.jsx';
+import { RewindChip, RewindUndoChip } from '../conversation/RewindChip.jsx';
+// 回退确认弹窗懒加载（r11）：弹窗只在用户点击入口后需要，~7KB 不占启动预算。
+const RewindConfirmDialog = React.lazy(() => import('../conversation/RewindDialogs.jsx')
+  .then(m => ({ default: m.RewindConfirmDialog })));
+const RewindUndoConfirmDialog = React.lazy(() => import('../conversation/RewindDialogs.jsx')
+  .then(m => ({ default: m.RewindUndoConfirmDialog })));
 import {
   conversationItemsForMode,
   projectDeepSeekConversation,
@@ -3797,6 +3802,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             // 回退工作区文件，勾选时展示变更预览）+ 对话截断位置 + 错误如实上屏；
             // 确认后 confirmRewind 走 rewind_to_turn 编排（共享 hook）。车道门与
             // chip 一致：定时上下文激活（如定时创建向导接管当前会话）时收回弹窗。
+            <React.Suspense fallback={null}>
             <RewindConfirmDialog
               entry={rewindTarget}
               previewState={rewindTarget.checkpoint
@@ -3810,10 +3816,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               onCancel={cancelRewind}
               onConfirm={confirmRewind}
             />
+          </React.Suspense>
           )}
           {isRewindLane && rewindUndoEntry && (
             // 「撤销回退」轻量确认：说明将恢复文件（有绑定回滚点时）与被截掉的
             // N 轮对话；reloadFailed 时降级为「重试加载」语义。车道门同上。
+            <React.Suspense fallback={null}>
             <RewindUndoConfirmDialog
               state={rewindUndoEntry}
               error={rewindUndoError}
@@ -3823,6 +3831,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
               onCancel={cancelRewindUndo}
               onConfirm={confirmRewindUndo}
             />
+          </React.Suspense>
           )}
           {voiceIntroOpen && (
             <VoiceShortcutIntroModal
@@ -4245,8 +4254,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                       the backend's swarm_mode_available excludes them (the
                       engine always assembles plain config there), so the
                       entry hides up front instead of erroring on click. */}
+                  <React.Suspense fallback={<span className="inline-flex h-[26px] w-16" />}>
                   <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoModelSettings || onGotoSettings} compact={composerCompact} multiAgentAvailable={!scheduledRunContext} />
+                </React.Suspense>
+                  <React.Suspense fallback={<span className="inline-flex h-[26px] w-16" />}>
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} compact={composerCompact} activeSkill={bs && bs.activeSkill} />
+                </React.Suspense>
                   <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
                 </div>
                 <VoiceComposerButton
