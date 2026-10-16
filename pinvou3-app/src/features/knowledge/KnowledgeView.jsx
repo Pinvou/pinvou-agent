@@ -41,7 +41,7 @@ import { useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
  * @property {string} [error] - Failure message for fallback previews.
  */
 
-const kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], allDocs: [], embedInfo: null, model: null, outputs: [], outputsLoaded: false };
+const kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], allDocs: [], embedInfo: null, model: null, outputs: [], outputsLoaded: false, outputsSkipped: [] };
 // The full document table (kb_documents limit:0) is unbounded, so the
 // module-level cache keeps only a bounded slice: a remount instantly shows
 // the first rows and loadColls() re-fetches the complete data after mount,
@@ -448,6 +448,12 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       // ================= 产出物 =================
       const [outputs, setOutputs] = useState(kbCache.outputs);
       const [outputsLoaded, setOutputsLoaded] = useState(kbCache.outputsLoaded);
+      // Session records the backend index could not scan (over the 32 MiB
+      // read cap, unreadable, or unparseable). Their deliverables are absent
+      // from `outputs`, so this partial-result signal must surface — an
+      // oversized record silently shrinking the panel must not read as a
+      // successful empty index (round-4 review).
+      const [outputsSkipped, setOutputsSkipped] = useState(kbCache.outputsSkipped);
       const [outCat, setOutCat] = useState('all');
       const [outQuery, setOutQuery] = useState('');
       const [outView, setOutView] = useState('list');
@@ -509,6 +515,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       })), []);
       const outputListSig = (list) => (list || []).map((o) => `${o.path || ''}|${o.mtime || 0}|${o.size || 0}|${o.sessionId || ''}|${o.source || ''}|${o.name || ''}`).join('\n');
       const outputsSigRef = useRef(outputListSig(kbCache.outputs));
+      const outputsSkippedSigRef = useRef((kbCache.outputsSkipped || []).join('\n'));
       const OUTPUT_CATS = [
         { key: 'all', label: t.kbOutCatAll, color: '#6a6a78', icon: GridIcon },
         { key: 'web', label: t.kbOutCatWeb, color: '#2f6beb', icon: AppWindow },
@@ -519,20 +526,30 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       const outCatMeta = (k) => OUTPUT_CATS.find((c) => c.key === k) || OUTPUT_CATS[0];
       const outputsDisposedRef = useRef(false);
       const refreshOutputs = useCallback(async () => {
-        const list = bridge && bridge.artifacts.listDeliverableIndex
-          ? await bridge.artifacts.listDeliverableIndex().catch(() => [])
-          : await invokeTauri('list_deliverable_index').catch(() => []);
+        const res = bridge && bridge.artifacts.listDeliverableIndex
+          ? await bridge.artifacts.listDeliverableIndex().catch(() => null)
+          : await invokeTauri('list_deliverable_index').catch(() => null);
         // Unmount cleanup already released the big table: an in-flight
         // request started before unmount must not write the index back into
         // the module-level cache once it resolves, or it would undo the
         // cleanup (setOutputs after unmount is a no-op and harmless).
         if (outputsDisposedRef.current) return;
-        const nextList = list || [];
+        // The command returns { rows, skipped }: rows are the listable
+        // deliverables, skipped names the session records the scan could not
+        // read — the "incomplete ≠ empty" disclosure the panel renders.
+        const nextList = res && Array.isArray(res.rows) ? res.rows : [];
+        const nextSkipped = res && Array.isArray(res.skipped) ? res.skipped : [];
         const nextSig = outputListSig(nextList);
         if (nextSig !== outputsSigRef.current) {
           outputsSigRef.current = nextSig;
           setOutputs(nextList);
           kbCache.outputs = nextList;
+        }
+        const nextSkippedSig = nextSkipped.join('\n');
+        if (nextSkippedSig !== outputsSkippedSigRef.current) {
+          outputsSkippedSigRef.current = nextSkippedSig;
+          setOutputsSkipped(nextSkipped);
+          kbCache.outputsSkipped = nextSkipped;
         }
         setOutputsLoaded(true);
         kbCache.outputsLoaded = true;
@@ -559,6 +576,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         outputsDisposedRef.current = true;
         kbCache.outputs = [];
         kbCache.outputsLoaded = false;
+        kbCache.outputsSkipped = [];
       }, []);
       const filteredOutputs = React.useMemo(() => {
         const q = outQuery.trim().toLowerCase();
@@ -1168,6 +1186,17 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
             {/* ============ 产出物 ============ */}
             {sub === 'output' && (
               <div className="max-w-[1400px] mx-auto">
+                {/* Partial-result disclosure (round-4 review): records the
+                    backend index could not scan (over the 32 MiB read cap,
+                    unreadable, unparseable) contribute no rows, so their
+                    deliverables are missing from every branch below —
+                    including the "empty" one, which must not read as a
+                    clean bill. */}
+                {outputsLoaded && outputsSkipped.length > 0 && (
+                  <div className="mb-4 px-4 py-2.5 rounded-[14px] text-[13px] leading-[18px] bg-[rgba(224,119,58,.08)] text-[#9A5B23] dark:bg-[rgba(224,119,58,.12)] dark:text-[#E0A477]">
+                    {t.kbOutSkippedNotice(outputsSkipped.length)}
+                  </div>
+                )}
                 {outputsLoaded ? outputs.length === 0 ? (
                   <KbEmptyState muted={muted} card={card} ink={ink} title={t.kbOutEmpty} hint={t.kbOutEmptyHint} />
                 ) : (() => {

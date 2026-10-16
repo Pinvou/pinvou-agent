@@ -1,5 +1,5 @@
 use super::prelude::*;
-use crate::features::deliverables::DeliverableItem;
+use crate::features::deliverables::DeliverableIndex;
 use crate::platform::path_policy::validate_user_path;
 use std::sync::OnceLock;
 
@@ -312,9 +312,11 @@ fn cleanup_artifact_recovery_candidates<'a>(
 
 /// 「产出物」跨会话索引:遍历 `~/.pinvou3/sessions/*.json`,把每个会话跟踪的
 /// artifacts 汇成一张扁平表(供「产出物」一级入口用)。只走磁盘真相:
-/// 文件已被删则跳过;mtime/size 现取 fs。
+/// 文件已被删则跳过;mtime/size 现取 fs。返回整个 [`DeliverableIndex`]
+/// (rows + skipped,round-4 review):超限/不可读记录的会话不会出现在 rows
+/// 里，前端须依据 skipped 提示「列表不完整」，不得把部分结果渲染成成功。
 #[tauri::command]
-pub async fn list_deliverable_index() -> Result<Vec<DeliverableItem>, String> {
+pub async fn list_deliverable_index() -> Result<DeliverableIndex, String> {
     // An undecidable sessions root surfaces as a command error instead of
     // the false "no deliverables" clean bill (the CLI lane's semantics,
     // single-homed in features::deliverables::deliverable_index).

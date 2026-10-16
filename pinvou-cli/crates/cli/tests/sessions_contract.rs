@@ -1454,7 +1454,7 @@ fn timeline_event_whitelist_equals_the_foundation_set() {
 
     let cli_list = quoted_region(CLI_SESSIONS_RS, "const EVENTS: [&str; 12] = [", "];")
         .expect("CLI EVENTS table shape");
-    let cli_events: BTreeSet<&str> = string_literals(&cli_list);
+    let cli_events: BTreeSet<&str> = string_literals(cli_list);
 
     // The foundation admits base events plus (under the CLI's enabled
     // benchmark-hooks feature) observation events; both `matches!(event, …)`
@@ -1466,7 +1466,7 @@ fn timeline_event_whitelist_equals_the_foundation_set() {
     ] {
         let region = matches_region(FOUNDATION_TIMING_RS, marker)
             .unwrap_or_else(|| panic!("foundation region missing: {marker}"));
-        foundation_events.extend(string_literals(&region));
+        foundation_events.extend(string_literals(region));
     }
 
     assert!(
