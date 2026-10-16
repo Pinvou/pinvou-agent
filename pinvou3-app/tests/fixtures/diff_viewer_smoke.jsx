@@ -2,6 +2,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import '../../src/styles/base.css';
 import { ToolOutput } from '../../src/features/tools/tool-renderers.jsx';
+import { ensureLanguage } from '../../src/shared/i18n.js';
 
 const replacementLines = [];
 for (let line = 1; line <= 18; line += 1) {
@@ -61,4 +62,8 @@ const Fixture = () => (
   </main>
 );
 
-createRoot(document.getElementById('root')).render(<Fixture />);
+// tc(t) 的 zh 兜底腿(zhDict().uiToolCommon)需词典就位：与生产首帧同口径
+// 先装载再渲染，diff 文案断言不依赖动态 import 与首渲染的时序竞态。
+ensureLanguage('zh').catch(() => {}).then(() => {
+  createRoot(document.getElementById('root')).render(<Fixture />);
+});
