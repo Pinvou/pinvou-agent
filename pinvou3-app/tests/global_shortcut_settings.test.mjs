@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
 import { dict } from './helpers/i18n-all.js'; // aggregate shim: browser entry must not import this (tests only)
 import {
   GLOBAL_SHORTCUT_DEFAULT_ACCELERATOR,
@@ -128,6 +129,9 @@ assert.match(settingsView, /<GlobalShortcutSettingSection t=\{t\} platformCapabi
 // selectors (sibling convention: localPortPlaceholder input).
 assert.match(settingsView, /aria-label=\{copy\.globalShortcutAccelerator\}/);
 assert.match(settingsView, /data-testid="global-shortcut-accelerator"/);
+// The enable switch carries an accessible name too (role="switch" button;
+// the row label alone is not a programmatic name).
+assert.match(settingsView, /aria-label=\{copy\.globalShortcutEnable\}/);
 // The save path folds the display form back to a Rust-parseable string
 // (Ctrl/Cmd → CmdOrCtrl); sending the raw display draft would guarantee an
 // invalid error for edits of the untouched default.
@@ -142,15 +146,90 @@ const bridge = source('platform/tauri/bridge.js');
 assert.match(bridge, /globalShortcutsAvailable: false/);
 // Facade wiring: the settings feature function is destructured and exported on bridge.settings.
 assert.match(bridge, /const setGlobalShortcutConfig = settingsFeature\.setGlobalShortcutConfig;/);
-assert.match(bridge, /setGlobalShortcutConfig,\n {6}listBuiltinFeatures,/);
+// \r?\n: a normal Windows checkout has CRLF line endings (core.autocrlf=true);
+// a literal \n here would fail on every source line the pattern spans.
+assert.match(bridge, /setGlobalShortcutConfig,\r?\n {6}listBuiltinFeatures,/);
 
 const bridgeSettings = source('platform/tauri/bridge/settings.js');
 // The dedicated command owns persistence (never update_settings for this feature).
 assert.match(bridgeSettings, /invoke\("set_global_shortcut_config"/);
 assert.match(bridgeSettings, /setGlobalShortcutConfig,/);
-// The snapshot mirror never regresses the accelerator to the raw input:
-// Rust reports null (disabled/unsupported or unparsable draft) and disk
-// keeps the existing combo.
+// The snapshot mirror follows every accelerator the response reports — a
+// successful disabled save reports one too (it may have changed the stored
+// combo); the string guard only shields against a response shape without it.
 assert.match(bridgeSettings, /typeof result\.accelerator === "string" && result\.accelerator/);
+
+// ── Behavioral: bridge mirror + toggle flow, over the real module ─────
+// settings.js is a classic-script feature factory; evaluate it in a VM with
+// a stubbed invoke and drive the review-round-3 scenario end to end: a save
+// while the shortcut is DISABLED persists a new combo and the Rust response
+// reports it, so the mirrors must follow — the later toggle reads the saved
+// mirror and would otherwise re-submit the stale combo over this save.
+const bridgeSettingsSource = readFileSync(new URL('../src/platform/tauri/bridge/settings.js', import.meta.url), 'utf8');
+
+function createShortcutBridgeHarness({ respond }) {
+  const state = { settings: { global_shortcut_enabled: false, global_shortcut_accelerator: 'control+alt+KeyP' } };
+  const invoked = [];
+  const context = vm.createContext({ window: {}, console });
+  vm.runInContext(bridgeSettingsSource, context, { filename: 'bridge/settings.js' });
+  const feature = context.window.__PINVOU_TAURI_BRIDGE_FEATURES__.settings({
+    state,
+    notify() {},
+    listen() {},
+    async invoke(command, args) {
+      invoked.push([command, args]);
+      if (command === 'set_global_shortcut_config') return respond(args);
+      return null;
+    },
+  });
+  assert.equal(typeof feature.setGlobalShortcutConfig, 'function', 'the settings feature must expose setGlobalShortcutConfig');
+  return { state, invoked, feature };
+}
+
+// Faithful Rust-side stub for the inputs used: canonical display forms (like
+// normalize_accelerator) and the fixed round-3 contract — a committed save
+// reports the persisted accelerator, registered or disabled.
+const CANONICAL = { 'ctrl+alt+p': 'control+alt+KeyP', 'ctrl+alt+o': 'control+alt+KeyO' };
+const rustSuccessStub = (args) => {
+  const accelerator = CANONICAL[String(args.accelerator || '').trim().toLowerCase()] || args.accelerator;
+  return { status: args.enabled ? 'registered' : 'disabled', accelerator, message: null };
+};
+
+{
+  const harness = createShortcutBridgeHarness({ respond: rustSuccessStub });
+  // Disabled save of a new combo: the response carries the persisted combo,
+  // and the bridge snapshot must land on it.
+  await harness.feature.setGlobalShortcutConfig(false, 'Ctrl+Alt+O');
+  assert.equal(harness.state.settings.global_shortcut_enabled, false);
+  assert.equal(
+    harness.state.settings.global_shortcut_accelerator,
+    'control+alt+KeyO',
+    'a disabled save that changed the combo must update the bridge mirror',
+  );
+  // The toggle path submits the saved accelerator: it must reach Rust as the
+  // combo the save persisted, not the stale default.
+  await harness.feature.setGlobalShortcutConfig(true, harness.state.settings.global_shortcut_accelerator);
+  assert.equal(
+    harness.invoked[1][1].accelerator,
+    'control+alt+KeyO',
+    'the later enable must submit the combo the disabled save persisted',
+  );
+  assert.equal(harness.state.settings.global_shortcut_enabled, true);
+}
+
+{
+  // The legitimate null case (nothing persisted to report): the mirror must
+  // not regress to the raw draft input either.
+  const harness = createShortcutBridgeHarness({
+    respond: () => ({ status: 'disabled', accelerator: null, message: 'global shortcuts are unavailable on this session' }),
+  });
+  await harness.feature.setGlobalShortcutConfig(false, 'Ctrl+Alt+O');
+  assert.equal(
+    harness.state.settings.global_shortcut_accelerator,
+    'control+alt+KeyP',
+    'a null-accelerator response must not write the raw draft into the mirror',
+  );
+  assert.equal(harness.state.settings.global_shortcut_enabled, false);
+}
 
 console.log('global_shortcut_settings: ok');

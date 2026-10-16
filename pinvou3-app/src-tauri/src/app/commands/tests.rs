@@ -3350,3 +3350,33 @@ fn settings_transaction_commands_join_off_the_runtime() {
         "set_pet_enabled must run the settings transaction inside its blocking worker"
     );
 }
+
+/// The set_global_shortcut_config committed-persist arm must compose the
+/// wire result from the PERSISTED prefs, not the apply outcome (review
+/// round 3, both lanes): a disabled save's outcome carries no accelerator,
+/// and a `from_outcome` there would strand the just-saved combo — both UI
+/// mirrors skip a null response, so the next toggle re-submits the stale
+/// combo over this save. The composition helper has its own unit test in
+/// the command file; this pins the WIRING, from a file that cannot match
+/// its own needle. Comment lines are stripped and the scan stops at the
+/// test module, so prose or #[cfg(test)] code cannot satisfy it (same
+/// rules as settings_transaction_commands_join_off_the_runtime).
+#[test]
+fn global_shortcut_persist_arm_reports_the_persisted_accelerator() {
+    fn code(source: &str) -> String {
+        source
+            .lines()
+            .take_while(|line| !line.trim_start().starts_with("mod tests"))
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    let source = code(include_str!("global_shortcut.rs"));
+    assert!(
+        source.contains(
+            "Ok(persisted) => Ok(GlobalShortcutApplyResult::persisted(outcome, persisted)),"
+        ),
+        "the committed-persist arm must report the persisted prefs' accelerator"
+    );
+}

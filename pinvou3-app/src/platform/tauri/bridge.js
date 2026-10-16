@@ -2223,7 +2223,8 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const getImageInputCapability = settingsFeature.getImageInputCapability;
   const testImageInputCapability = settingsFeature.testImageInputCapability;
   const probeLocalServerKind = settingsFeature.probeLocalServerKind;
-  // 全局唤醒快捷键专用命令（不走 update_settings）；持久化与注册由 Rust 独占。
+  // Dedicated global-shortcut command (update_settings is never used);
+  // Rust exclusively owns persistence and registration.
   const setGlobalShortcutConfig = settingsFeature.setGlobalShortcutConfig;
   // Builtin feature switches (contract hook point): desktop Rust command
   // channel only — the web lane has no such backend.
