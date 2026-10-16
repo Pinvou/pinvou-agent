@@ -3187,8 +3187,12 @@ jobs:
       - name: cargo check src-tauri (loongarch64 cross)
         run: cargo check --manifest-path pinvou3-app/src-tauri/Cargo.toml --target loongarch64-unknown-linux-gnu --locked
 
-      - name: cargo check pinvou-knowledge (loongarch64 cross)
-        run: cargo check --manifest-path pinvou-knowledge/Cargo.toml --target loongarch64-unknown-linux-gnu --locked
+      # knowledge 加 --tests:stub 合同测试（embedding::stub_tests）在
+      # loongarch64 目标上也是 cfg 生效路径,编译期钉住它;check 不运行,
+      # 运行由宿主 feature-off 腿覆盖。src-tauri/cli 不加:其 dev-deps 会
+      # 把重型交叉依赖拖进编译却无对应运行环境。
+      - name: cargo check pinvou-knowledge (loongarch64 cross, incl. tests)
+        run: cargo check --manifest-path pinvou-knowledge/Cargo.toml --target loongarch64-unknown-linux-gnu --locked --tests
 
       - name: cargo check pinvou-cli (loongarch64 cross)
         run: cargo check --manifest-path pinvou-cli/Cargo.toml --workspace --target loongarch64-unknown-linux-gnu --locked
