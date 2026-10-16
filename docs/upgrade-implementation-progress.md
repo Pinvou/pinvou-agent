@@ -10738,3 +10738,46 @@ pending. No SQL, grants, public task HTTP roles, production writer, client queue
 or qualification are added. T20 remains in progress and totals stay 5/12/30
 out of 47. Product 0.10.9, normative 1.0, pinned V1 and CodeWhale are unchanged.
 Downloads have no hard total/cumulative duration or retry cap.
+
+### T25 reviewed network privacy modules on the combined service line
+
+The current service development line now includes the accepted fixed network
+weekly calculator and protected in-memory IPv4/IPv6 prefix normalization. All
+seven code/test/source-document files are exact original Git blobs from
+`0ba848f77042339e6f5afe3073e817e9d416ab13` and
+`f2af566bde47bb1547c8aec8c0e81bb9cb5e6aed`; unrelated branch history and another
+worktree's mutable files were not imported. Only an additional integration
+evidence document is new. Original historical source-batch checks remain separate.
+
+Network leaf versions retain their own two-component semantics. Full-leaf scope
+and prefix/day quotas, shared cross-leaf prefix/week cap seven, k20 suppression,
+identity duplicate/conflict and owned output rules remain unchanged. Prefix
+normalization retains /24,/48,mapped unwrapping/zone refusal and direct/nested
+formatting/encoding protection with an explicit owned in-memory KMS-input copy.
+The network result does not qualify stage/release-quality contribution. Unresolved
+same-time/eventId distinct identity ties still refuse the whole calculation; the
+OpenBao probe's unproven week isolation is not enabled as an adapter or changed
+key-custody policy. No owner decision is inferred by this integration.
+
+Both independent code/test/documentation reviews gave scoped PASS and separately
+checked all seven source blobs/raw digests. The primary final privacy/edge run
+passed 10 top-level tests, zero child tests/skips/failures (15.419s wall).
+Default service passed 53 tested packages, 488 top-level/
+1120 child tests (73.934s wall), with 564 top-level/
+606 child external opt-in skips and 12 no-test packages separately recorded.
+All nine service gates passed: affected/default tests, modules, full vet, build,
+pinned V1, formatting and both whitespace checks. The independent reviewers'
+own separate privacy/edge runs each passed 10 top-level tests, zero child tests/
+skips/failures (5.522s/6.277s wall, dependency/compatibility). Full source/index/
+status and all 69 existing SQL raw/index identities stayed fixed; all sessions/
+owned children closed. No Node/PG/Bao/browser or physical E2E is claimed here.
+
+This combined-tree integration is DCO committed and pushed as `e374493d28a22d59270947c2a146afa0bab26bba` on
+`codex/t25-network-integration`; its boundary/evidence is in
+`docs/network-privacy-integration.md`. Actual KMS/ASN/event-source composition,
+purpose-specific quality policy, permanent frozen snapshots, restricted reports/
+exports, retention cleanup and three-language privacy UI remain pending. No SQL,
+grants, dependency, artifact, signing, Root or public route changes are introduced.
+T25 stays in progress and totals remain 5/12/30 out of47. Product0.10.9,
+normative1.0, pinned V1 and CodeWhale are unchanged. Downloads have no hard total/
+cumulative duration or retry cap; 32MiB is not an artifact/download size limit.
