@@ -54,7 +54,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T41 | Not completed | Atomic legacy bootstrap migration to the new protocol. |
 | T42 | Explicitly deferred | Production deployment, operations, alerts and disaster-recovery acceptance are deferred at the owner's request |
 | T43 | Not completed | All-target real-system combined qualification and release gates. |
-| T44 | In progress | Actual lifecycle commands and private successful-authorization installation; unconsumed-backup deadlines, controlled waiting invalidation/replacement and whole-task acceptance remain pending |
+| T44 | In progress | Actual lifecycle commands, successful-authorization installation and durable unconsumed-backup deadlines; controlled waiting invalidation/replacement and whole-task acceptance remain pending |
 | T45 | Not completed | Approved helper/launcher evolution and restricted cleanup execution. |
 | T46 | Not completed | Actual local-mode prerequisite certification and exact evidence integration. |
 | T47 | In progress | Protected rollout lifecycle primitives; remaining complete task acceptance/composition is not claimed |
@@ -10072,3 +10072,59 @@ Forty-seven tasks remain four implemented, twelve in progress and thirty-one
 incomplete/deferred. Product 0.10.9, normative 1.0, pinned V1 and CodeWhale are unchanged.
 Deployment and physical platform qualifications remain separate. Downloads retain
 no hard total/cumulative duration limit.
+
+## T44 durable unconsumed-backup deadlines (2026-10-16)
+
+Additive lifecycle migration 17 records one permanent fact only when the actual
+private session event owner accepts backup_succeeded under its T06 OwnerReplay
+fence. It binds the original preparation, freeze, data scope and SQL completion
+time. Every first unconsumed Session terminal atomically records its original
+terminalAt and exact backupCleanupAt=terminalAt+24h. Cancellation, validation
+failure, authorization end/expiry, due compensation and channel invalidation
+share this rule. An actual consumed Transaction excludes it. Repeated observations
+never rebase either time; missing legacy evidence remains explicit unknown.
+The private complete-read-set observation does not grant local deletion authority.
+
+Admission reserves evidence growth and remaining terminal writes against the
+existing member, logical aggregate, encoded-reference and revision bounds. Both
+independent reviews and actual regressions found compatibility gaps and the
+primary repaired them: new backup admission now preserves all existing legacy
+credentials' missing late original Attempt/Outcome and actual future recovery
+closure. Only real cleanup at original authorization expiry+62d creates that
+closure, deletes original recovery material and advances the scope in one
+transaction with a final clock fence. Migration, reads and admission never invent
+historical facts. Actual terminal parent and consumed Transaction bindings remain
+required; scopes without backup evidence or successful validation keep their old
+cleanup behavior. A recorded closure prevents reopening after clock rollback.
+
+The primary passed the final affected real PostgreSQL regression: 31 top-level
+and 56 child tests, zero skips/failures (178.184s wall). Default full-service tests
+passed 46 tested packages, 420 top-level and 830 child tests (64.562s wall);
+1028 explicit test skips and 12 no-test packages are recorded separately. Module
+verification, vet, private server build, pinned V1, Go formatting and both working
+and cached whitespace checks passed. An earlier broader lifecycle regression
+passed 236 top-level and 387 child tests before the final legacy-capacity delta;
+that broader result is not represented as a rerun of the final implementation.
+
+Both independent auditors passed the frozen scoped source and performed separate
+fresh pure-backup and actual PostgreSQL runs. The dependency auditor passed pure 1 top-level test (0.763s package,
+7.354s wall) and actual PostgreSQL 20 top-level/28 child tests (92.442s package,
+100.414s wall). The compatibility auditor independently passed pure 1 top-level
+test (1.026s package, 6.135s wall) and the same actual PostgreSQL 20 top-level/28
+child tests (105.625s package, 113.539s wall). These scoped runs had zero skips or
+failures. Sessions 77307 and 64800 closed exit zero, joined all owned children and
+returned the runtime slot with zero owned Go/compiler/test processes. Before/after
+21-file raw source, 63 existing SQL raw/index and complete status/index checks
+passed without source edits. ROOT's nine final gates closed exit zero in 39231.
+
+The bounded service increment is DCO committed and pushed as
+`4d1389cd7b3ab44f672cf9f8d62804210beb95f0` on `codex/t44-backup-cleanup`;
+the service checkout is clean and matches its upstream.
+
+This bounded increment does not complete T44. Controlled unexpired waiting
+invalidation/replacement and separate whole-task acceptance remain. T19 HTTP and
+qualification composition, T30 local backup/deletion, physical certification and
+deployment are not delivered by this increment. Downloads retain no hard total
+or cumulative duration limit. Product 0.10.9, normative 1.0, pinned V1 and CodeWhale
+remain unchanged. Totals remain four implemented, twelve in progress and
+thirty-one incomplete/deferred across all 47 tasks.
