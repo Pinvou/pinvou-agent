@@ -169,6 +169,26 @@ impl Embedder {
     }
 }
 
+/// 编译期平台能力：本构建是否存在真实（非桩）embedding 实现。cfg 与上面的
+/// 桩 impl 同形。宿主服务（server.rs）在启动下载管线前用它拒绝注定无法
+/// 加载的下载触发——与桌面端 `local_embed_download_refusal` 是同一语义的
+/// 服务端孪生。
+#[cfg(not(all(
+    feature = "local-embed",
+    not(all(target_os = "linux", target_arch = "loongarch64"))
+)))]
+pub fn local_embed_available() -> bool {
+    false
+}
+
+#[cfg(all(
+    feature = "local-embed",
+    not(all(target_os = "linux", target_arch = "loongarch64"))
+))]
+pub fn local_embed_available() -> bool {
+    true
+}
+
 #[cfg(all(
     feature = "local-embed",
     not(all(target_os = "linux", target_arch = "loongarch64"))
@@ -211,6 +231,7 @@ mod stub_tests {
 
     #[test]
     fn every_entry_point_returns_the_explicit_error_without_touching_disk() {
+        assert!(!local_embed_available());
         let error = Embedder::from_dir(Path::new("/nonexistent/pinvou-stub-probe"), "bge-m3")
             .err()
             .expect("stub from_dir must fail");
@@ -237,4 +258,18 @@ pub fn cosine(left: &[f32], right: &[f32]) -> f32 {
         return -1.0;
     }
     left.iter().zip(right).map(|(a, b)| a * b).sum()
+}
+
+// 真实实现方向的镜像钉：fastembed 生效的构建里能力必须为 true，与桩方向
+// 的 assert!(!local_embed_available()) 合起来覆盖 2×2 cfg 矩阵。
+#[cfg(all(
+    feature = "local-embed",
+    not(all(target_os = "linux", target_arch = "loongarch64"))
+))]
+#[cfg(test)]
+mod real_impl_tests {
+    #[test]
+    fn local_embed_is_available_where_fastembed_compiles() {
+        assert!(super::local_embed_available());
+    }
 }
