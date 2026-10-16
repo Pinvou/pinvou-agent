@@ -22,7 +22,13 @@ test('startup gates remain active in desktop and web production builds', () => {
   // re-stack re-measured web at 501_357 B; the +1_000 raise (round 22)
   // covers that residual. Accepted with conditions in review; the measured
   // before/after lives in the PR discussion and the config comment.
-  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 502_000);
+  // Re-stack round-21: the combined budget carries BOTH measured raises —
+  // this PR's automations residual (accepted with conditions in round 16)
+  // and the messaging receive path (round-21 B-1); the combined tree
+  // measures 502.18 kB web / 499.74 kB desktop.
+  // Round-21 re-stack refresh (onto 6b7572d9b): 502_181 B web measured —
+  // 503_000 covers both residuals with ~800 B of headroom.
+  assert.equal(MAIN_ENTRY_BUDGET_BYTES, 503_000);
   for (const mode of ['production', 'web']) {
     const config = createViteConfig({ command: 'build', mode });
     const pluginNames = new Set(config.plugins.flat(Infinity).filter(Boolean).map(plugin => plugin.name));
