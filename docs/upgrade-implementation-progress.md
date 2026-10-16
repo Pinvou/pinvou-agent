@@ -9091,3 +9091,101 @@ version, narrow parent locks, selected dependency graphs and whitespace checks
 also passed. Product 0.10.9, normative documents 1.0, original pinned V1 contracts
 and CodeWhale gitlink remain unchanged. Final progress documentation review
 precedes DCO commit/push; all task and authority boundaries above remain open.
+
+## Single supplied-Root successor verification
+
+The client now verifies exactly one genuine Root successor in the feature-owned
+pure verifier. The mandatory independent complete Root context binds product,
+role, null component and empty scope without serializing an unbounded product
+string. Original canonical bytes, full Schema and Root descriptor/policy
+consistency are checked. The old Root permits expiry only, retaining its
+original window and issued-time constraints; the next Root must be fresh and
+exactly version + 1, within the original maximum safe integer.
+
+Every submitted actual Ed25519 signature must belong to the union of the exact
+old/new Root-role policies. Each policy separately meets its verified-member
+threshold, shared signers may count in both, and next descriptors take precedence
+for repeated IDs. Invalid or unauthorized extras still refuse after sufficient
+valid signatures. The ordinary verifier reuses the private wire/context and
+whole-Root signature workers, retaining its fresh-Root production behavior.
+
+The caller explicitly supplies the complete active metadata read set. Each
+original entry binds its full independent expected context and non-Root metadata
+Schema, then every actual next-Root signature and exact role policy. This checks
+key preservation rather than current body eligibility: expired or otherwise
+ordinary-semantic-invalid but Schema-valid metadata, including incremental
+Package descriptors, still needs its original key. Empty/repeated entries are
+allowed and every entry is checked; no aggregate 4096-entry or 32 MiB policy,
+body-time/Production/high-water/deny option is added. Per-object original limits
+remain. The result cannot attest caller snapshot/read-set completeness.
+
+The immutable result preserves original successor bytes, borrows the exact old
+Root and owns the validated next Root. The App exposes the same narrow operation.
+It does not install/persist a Root, reset high-water, establish protected lineage,
+bootstrap, trusted time or current rights. Complete chains, archive identities,
+protected OS custody and full T27 remain open. Totals remain four implemented,
+twelve in progress and thirty-one incomplete/deferred of forty-seven. Deployment
+and physical platform qualification remain deferred. No artifact size, retry or
+total/cumulative download duration cap is introduced.
+
+Twenty verifier tests passed: the original thirteen tests/111 full Node cases,
+six groups with fifty-five fresh full frozen Node successor cases, and a separate
+mandatory independent Root-context API test with five negative controls. New
+cases include distinct dual 2-of-3 and overlapping policies, all extras,
+consecutive/max-safe versions, old/next windows, all five metadata roles,
+4097 actually checked repeated active entries, multiple components/bad last,
+expired and invalid-window/incremental active bodies, original raw/Schema limits,
+and five Schema-valid descriptor/policy inconsistencies. Strict all-target
+verifier Clippy passed. Keys are generated only inside Node and never exported.
+Earlier exploratory failures were a missing new cache-field initializer and a
+wrong future-old test error label; both were repaired before final acceptance.
+The frozen reference and Rust both require TIME_WINDOW_INVALID for future old
+Roots in the expired-history branch; no production relaxation was needed.
+
+The primary's complete codec regression passed all 157 tests, zero failures or
+ignored (549.809s wall), including both explicitly enabled original Node oracles.
+Those two are within the same 157 tests, not additional unique tests. Strict
+codec library Clippy passed. The actual default App facade passed forty-one
+tests, zero failures/ignored (168.276s including compilation). The new App test
+uses six genuine full-reference controls for both Root policies and active key
+retention, alongside the previous forty facade tests.
+
+The actual CLI-workspace backend and its production App/verifier dependencies
+built and passed the zero-test library harness (150.204s wall). This is Windows
+dependency-graph evidence, not CLI workflow E2E. The selected App and CLI trees
+retain 104 dependency packages/109 feature nodes each, identical verification-
+critical nine package versions/sources/features, and only the previously disclosed
+icu_provider and zerovec-derive baseline patch differences. None of the three
+App, CLI or verifier lockfiles changes in this batch. Architecture, version,
+scoped formatting, standard repository whitespace and final frozen-source checks
+passed; an initial custom whitespace command misclassified valid Windows CRLF,
+so the repository's normal check was used without changing source bytes.
+
+The independent dependency role's final scoped code/test audit passed without a
+required finding. Its own twenty verifier tests/111 ordinary and fifty-five
+successor Node cases plus five API negative controls passed, zero failures or
+ignored (17.903s wall). Strict all-target Clippy passed. Its actual default App
+passed forty-one tests (4.840s harness, 25.078s wall); the actual CLI backend
+zero-test harness passed (8.996s wall). Formatting, architecture, version,
+before/after/final ten-source freeze and working/index whitespace checks passed.
+Its private runner initially combined harmless line-ending stderr warnings with
+empty stdout; a separate corrected final check passed without source changes or
+functional reruns. All owned runtime processes and sessions closed before return.
+
+The independent compatibility role's final scoped code/test audit also passed
+without a required finding. Its own twenty verifier tests/111 ordinary and
+fifty-five successor Node cases plus five API negative controls passed, zero
+failures/ignored (13.843s wall); strict all-target Clippy passed. Its actual App
+facade passed forty-one tests (8.090s harness, 17.042s wall); its actual CLI backend
+zero-test library harness passed (8.627s wall). Formatting, architecture, version,
+all three unchanged locks, before/after ten-source freeze and standard working/
+index whitespace checks passed. It reused the unchanged selected graph evidence
+and did not rerun the codec suite or extra benchmark. All its owned processes and
+sessions closed before returning the exclusive runtime slot.
+
+Both independent final code/test audits apply to the same ten-source freeze,
+manifest SHA256 3f83c848e9c4d94f773a8b9281863ae75758652fba4051da21d5d7e3d91f43bf.
+Product 0.10.9, normative documents 1.0, pinned V1 contracts and CodeWhale gitlink
+remain unchanged. Final documentation review precedes DCO commit/push. Complete
+chain and archive plans reviewed separately are future scopes, not implemented
+by this single-successor batch; all task/authority boundaries above stay open.
