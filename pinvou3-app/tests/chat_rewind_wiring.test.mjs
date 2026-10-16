@@ -75,6 +75,9 @@ assert.match(rewindDialogs, /onConfirm\(\{ includeWorkspace \}\)/,
   '确认回调必须传 { includeWorkspace }——硬编码 true 复选框变死 UI');
 assert.match(controller, /includeWorkspace === false/,
   '控制器侧必须消费 includeWorkspace === false（仅对话回退腿）');
+// r14 M-D：code 车道有意不注入 invalidateSkippedBuffer（loadSession 每次从磁盘
+// 重读，无快路径缓存可陈旧）——此形状必须被钉住，防止被当作遗漏"修复"回去。
+assert.doesNotMatch(codexView, /invalidateSkippedBuffer/, 'code 车道不得注入 invalidateSkippedBuffer（loadSession 无缓存快路径，注入是 work 模式专用修复）');
 // 4) ChatView 注入接线：删掉 invalidateSkippedBuffer 注入 → 静默 no-op。
 assert.match(chatView, /invalidateSkippedBuffer:/,
   'ChatView 必须注入 invalidateSkippedBuffer——删掉注入回退失效静默 no-op');
@@ -86,7 +89,7 @@ assert.doesNotMatch(controller, /invalidateSkippedBuffer\?\.\(depsRef\.current\.
 assert.match(controller, /invalidateSkippedCache\(sessionId\)/,
   '调用点必须传闭包局部 sessionId（回退目标）——至少一处形状锚定');
 const invalidateCallCount = (controller.match(/invalidateSkippedCache\(sessionId\)/g) || []).length;
-assert.ok(invalidateCallCount >= 5, `六个调用点应至少有 5 处传闭包局部 sessionId，实际 ${invalidateCallCount}`);
+assert.equal(invalidateCallCount, 6, `全部六处调用点必须传闭包局部 sessionId（单点回归此前可全绿），实际 ${invalidateCallCount}`);
 // r11 M4：frontendEcho 标记行的形状锚（变异实证：禁用标记行全绿）。标记必须
 // 在 pushUserBody 的 !persist 分支——回退为恒不标记即回滚 r5-M1。
 assert.match(tauriInteraction, /if \(!persist\) item\.frontendEcho = true;/, 'tauri 交互桥：persist=false 的回显必须标记 frontendEcho——禁用标记行必须变红');

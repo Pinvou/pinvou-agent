@@ -1116,6 +1116,9 @@ export function CodexAcpView({
     copy: codexCopy,
     invoke,
     reload: loadSession,
+    // r14 M-D：code 车道有意不注入缓存失效回调——loadSession 每次从磁盘重读
+    // （无快路径缓存可陈旧），skip 的前提在本车道结构性不存在。ChatView 的注入
+    // 是工作模式快路径的专用修复，此处省略不是遗漏（见 ChatView 的注入声明）。
     ownsSession: (id) => activeIdRef.current === id,
     bumpTick: () => setNativeLaneTick(tick => tick + 1),
     appendNotice: (sessionId, text) => appendNativeSystemItem(getNativeLane(sessionId), text),

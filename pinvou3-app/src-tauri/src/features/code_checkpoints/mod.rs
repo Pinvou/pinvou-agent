@@ -345,7 +345,8 @@ pub fn execution_root_within_snapshot_budget(execution_root: &Path, ledger_root:
             execution_root.display()
         );
         // 标记写入失败不改变本次判定（本次已拒绝）；只是下次会再走一遍估算。
-        let _ = fs::write(&marker, b"");
+        // r14 M-A：与其它 ledger 文件同款原子私有写。
+        let _ = crate::platform::filesystem::atomic_write_private(&marker, b"");
     }
     within
 }
@@ -357,7 +358,9 @@ pub fn execution_root_within_snapshot_budget(execution_root: &Path, ledger_root:
 /// 不依赖探测结果（见 ensure_repo 的 info/exclude 注释）。
 fn fs_is_case_insensitive(dir: &Path) -> bool {
     let probe = dir.join(format!(".Pinvou-Icase-Probe-{}", std::process::id()));
-    let insensitive = match fs::write(&probe, b"") {
+    let insensitive = match fs::File::create_new(&probe)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, b""))
+    {
         Ok(()) => {
             let other = dir.join(format!(".PINVOU-ICASE-PROBE-{}", std::process::id()));
             fs::metadata(&other).is_ok()
@@ -1002,6 +1005,26 @@ fn turn_snapshot_hard_stopped(repo_bytes: u64, packed_bytes: u64, kind: Checkpoi
         && repo_bytes.max(packed_bytes) >= (MAX_SHADOW_REPO_BYTES as u64).saturating_mul(2)
 }
 
+/// add -A 后的账本路径 staged 校验（评审 r14 M-B）：worktree `.gitignore` 的
+/// 否定行（`!checkpoints/`、`!.env`）可击穿 info/exclude 的三层排除——把敏感
+/// 文件或账本自身照进影子树。fail-closed：staged 里出现账本路径即中止（不
+/// 产出被污染的快照）；敏感文件由既有 purge 处理（迁移/restore 各跑一次，
+/// 此处不清——`add -A` 每轮跑会双写）。
+fn validate_no_ledger_paths_staged(repo: &Path, work_tree: &Path) -> Result<()> {
+    let staged = git_ok(repo, work_tree, &["diff", "--cached", "--name-only"])?;
+    for line in staged.lines() {
+        let path = line.trim();
+        if path.starts_with("checkpoints/")
+            || path == "pending_rewind.json"
+            || path == "budget-disabled"
+        {
+            bail!(
+                "checkpoint staged path {path} detected: worktree .gitignore negation may have pierced the ledger exclusion; refusing to snapshot",
+            );
+        }
+    }
+    Ok(())
+}
 fn create_checkpoint_preserving(
     ledger_root: &Path,
     execution_root: &Path,
@@ -1037,6 +1060,8 @@ fn create_checkpoint_preserving(
     // add -A 全量暂存（影子 index），write-tree 取内容树；与上一条 commit 的树相同
     // 则复用（空 turn 不产生冗余快照内容，但 meta 仍按新 turn 登记，保持对齐）。
     git_ok(&repo, &execution_root, &["add", "-A"])?;
+    validate_no_ledger_paths_staged(&repo, &execution_root)?;
+    validate_no_ledger_paths_staged(&repo, &execution_root)?;
     let tree = git_ok(&repo, &execution_root, &["write-tree"])?
         .trim()
         .to_string();
@@ -1223,9 +1248,11 @@ pub fn write_pending_rewind(
         pre_restore_id: pre_restore_id.to_string(),
         transcript_revision: transcript_revision.to_string(),
     };
-    fs::write(
-        pending_rewind_path(ledger_root),
-        serde_json::to_vec(&pending).context("序列化 pending_rewind 失败")?,
+    // r14 M-A：崩溃恢复契约文件——原子+私有（0600）+O_EXCL 暂存+rename 抗
+    // symlink 植入；unbound 布局下账本位于 agent 可写的工作树内。
+    crate::platform::filesystem::atomic_write_private(
+        &pending_rewind_path(ledger_root),
+        &serde_json::to_vec(&pending).context("序列化 pending_rewind 失败")?,
     )
     .context("写入 pending_rewind 失败")
 }
@@ -1694,6 +1721,11 @@ pub fn diff_checkpoint(
 ///
 /// 写操作只落在执行根内：read-tree/checkout-index/clean 都以执行根为 work-tree，
 /// 且不删 ignored 文件（不用 -x，node_modules 等不受波及）。
+/// **双写者分歧披露（评审 r14 M-C）**：本函数是单段组合（prepare→apply），
+/// 不走 GUI 命令层的 pending-rewind 协议。pinvou-cli 的 code 子命令直接调用
+/// 本函数：GUI 回退在 apply 中途失败后改用 CLI 完成恢复，CLI 会对混合工作树
+/// 新拍 PreRestore 并绑定之——GUI 的 undo 语义保证在 CLI 路径不成立。
+/// 协议下沉到本函数或 CLI 改走拆分序列是跟进项。
 pub fn restore_checkpoint(
     ledger_root: &Path,
     execution_root: &Path,
@@ -1824,6 +1856,8 @@ pub(crate) fn git_available() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::features::code_checkpoints::turns::is_step_budget_notification;
+    use deepseek_tui::models::{ContentBlock, Message, Role};
 
     /// Upgrade regression: index entries written before `CheckpointMeta.label`
     /// was restored carry no `label` key. The field must deserialize with its
@@ -2177,6 +2211,87 @@ mod tests {
                 .expect("degraded match"),
             None,
             "revision 不同不携带",
+        );
+    }
+    /// prepare_restore 复用腿（评审 r14 M-E ②）：同目标 + reuse id → 跳过新拍
+    /// PreRestore，返回的 undo 即被复用条目——这是崩溃恢复（同目标重试）的核心。
+    #[test]
+    fn prepare_restore_reuse_skips_new_pre_restore() {
+        let dir = TestDir::new("prepare-reuse");
+        let ledger = dir.path().to_path_buf();
+        let exec = dir.path().to_path_buf();
+        dir.write(
+            "a.txt", "v1
+",
+        );
+        let target =
+            create_checkpoint(&ledger, &exec, Some(1), CheckpointKind::Turn, "t").expect("target");
+        let pre = create_checkpoint(&ledger, &exec, None, CheckpointKind::PreRestore, "undo")
+            .expect("pre-restore");
+        let count_before = load_index(&ledger).unwrap().entries.len();
+        let (meta, undo) =
+            prepare_restore(&ledger, &exec, &target.id, Some(&pre.id)).expect("prepare with reuse");
+        assert_eq!(undo.id, pre.id, "复用时返回被复用的 PreRestore");
+        assert_eq!(meta.id, target.id, "目标解析正确");
+        let count_after = load_index(&ledger).unwrap().entries.len();
+        assert_eq!(
+            count_before, count_after,
+            "复用路径不得新增 index 条目（跳过新拍快照）"
+        );
+    }
+
+    /// is_step_budget_notification 行为夹具（评审 r14 M-E ③）：两条真实前缀
+    /// 命中、lookalike 用户消息不误吞、assistant 角色不命中。
+    #[test]
+    fn step_budget_notification_predicate_fixtures() {
+        let notice = Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "Step budget soft landing: you have used about 80% of your 200 step budget."
+                    .into(),
+                cache_control: None,
+            }],
+        };
+        assert!(
+            is_step_budget_notification(&notice),
+            "soft landing 通知必须命中"
+        );
+        let notice2 = Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "Your model-step budget was exhausted (limit: 200).".into(),
+                cache_control: None,
+            }],
+        };
+        assert!(
+            is_step_budget_notification(&notice2),
+            "exhaustion 通知必须命中"
+        );
+        let lookalike = Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text:
+                    "Step budget soft landing: what does this mean? I was asking about the weather."
+                        .into(),
+                cache_control: None,
+            }],
+        };
+        // 当前谓词按前缀匹配，lookalike 同样命中——这是已知取舍（fail-closed
+        // 方向：不计数不渲染），夹具钉住当前行为防止意外改变。
+        assert!(
+            is_step_budget_notification(&lookalike),
+            "前缀 lookalike 同命中（fail-closed 方向的已知取舍）"
+        );
+        let assistant = Message {
+            role: deepseek_tui::models::Role::Assistant,
+            content: vec![ContentBlock::Text {
+                text: "Step budget soft landing:".into(),
+                cache_control: None,
+            }],
+        };
+        assert!(
+            !is_step_budget_notification(&assistant),
+            "assistant 角色不命中"
         );
     }
     /// 损坏的暂记文件被隔离删除，退回「新建 PreRestore」路径（不阻塞回退）。
