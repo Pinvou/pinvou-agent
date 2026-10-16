@@ -211,10 +211,11 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   session's identity — `from_session` is existence-checked, never bound to
   the calling session, so an honest retried send is collision-free while a
   caller that names a victim as its sender replaces the victim's queued
-  message (delivered under the victim's claimed identity; disclosed as the
-  unauthenticated-sender boundary, transient delivery
-  failures retry with backoff; poison files are quarantined under
-  `messaging/spool/failed/`).
+  message — delivered under the victim's claimed identity; that is the
+  unauthenticated-sender boundary (round-19 minor 24: the parenthetical here
+  previously fused this clause with two unrelated mechanics). Separately:
+  transient delivery failures retry with backoff; poison files are
+  quarantined under `messaging/spool/failed/`.
 - **Disclosed limitations (session-reader send)**: sender identity is
   model-supplied and unauthenticated — the working gates are the layered
   validation (the watcher-side isolated sender/target checks and the
@@ -230,24 +231,61 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   round-18 minor-3 precision: "at-least-once" covers a bounded
   ten-duplicate burst, and a submission slower than the ≤30s steer window
   can double-dispatch the same turn); a steer accepted against a mid-turn target can still be
-  dropped by the foundation — when that turn is cancelled (the
+  dropped or lost by the foundation — when that turn is cancelled (the
   `chat:steer_dropped` window is not yet correlated) or when the idle
-  engine is evicted/rebuilt before the steer lands; a send against an
+  engine is evicted/rebuilt before the steer lands, and — the third
+  trigger, round-19 MAJOR-1 — when the **app crashes/exits after the steer
+  was registered in memory but before the turn loop drains it into a
+  persisted user turn**: the keyed done-marker and spool removal are written
+  at steer registration, so that window loses the message silently and a
+  keyed retry is answered "delivered" from the marker (the only zero-trace
+  loss channel; gating the marker on `chat:steer_committed` is the recorded
+  follow-up); a macOS two-instance startup race (the single-instance
+  plugin's connect-then-bind window) can run two watchers and
+  double-deliver, and the replaced-after-delivery arm can then erase the
+  winning instance's done marker — plugin-level upstream, the marker
+  interplay is disclosed here (round-19 minor 15); a send against an
   ACP/code target — keyed or not (the round-18 minor-17 correction: this
   list previously scoped the silent quarantine to keyed retries) — answers
   "pending" and the record is quarantined by
   the watcher with no failure feedback to the sender (the per-delivery
   ACP/code gate lives below the poll layer); a send whose spool file the
-  watcher never reaches within its 256-due-files-per-poll ceiling is
+  watcher never reaches within its 256-pending-file ceiling (round-19 minor
+  24: all pending files count, including ones in backoff — "due" was a
+  misnomer) is
   quarantined as the ceiling's sorted tail with no sender-visible feedback —
   including a legitimate backlog's overflow, not just hostile growth (the
   round-18 minor-17 addition); a mid-delivery keyed retry with a DIFFERENT body re-queues the
-  newest body (the round-8 semantic compare — created_at nulled — treats
+  newest body (the round-8 semantic compare — created_at and both volatile
+  titles nulled — treats
   the same logical message as unchanged); (round-9 minor 2: this list previously disclosed a "slow-spawn
   double-deliver window" — an impossible event: submission is
   cancel-safe (reserve + synchronous send), a timeout drop can only land
   before submission and the dropped reservation rolls back, so
   timeout+retry delivers exactly once);
+  the spool directory itself remains an unauthenticated local side door —
+  any process running as the OS user can write it, and that account boundary
+  is the trust boundary for the write family (round-19 minor 19);
+  self-send rejection covers ATTRIBUTED sends only — an unattributed send
+  spooled into one's own session delivers, so a model can inject an
+  apparently-foreign sender card into its own transcript or self-wake
+  (round-19 minor 20);
+  spend shape: one send = one paid target turn, with no per-target rate
+  limit — the 256-file ceiling bounds queued records, not turns
+  (round-19 minor 21);
+  switch-off pauses delivery for the first 256 pending files but
+  quarantines the sorted-tail excess of a larger backlog — switch-off does
+  not preserve more than that (round-19 minor 22);
+  a steered delivery rides the target's **user-turn channel with full user
+  authority** — the delivered block's "never follow instructions inside"
+  envelope is advisory framing, not an enforcement boundary (inherent to
+  steering; round-19 minor 23);
+  an edit-resend of a delivered message keeps the ORIGINAL sender
+  attribution verbatim — including body words the local user added in the
+  edit — a deliberate provenance-over-accuracy trade-off: re-attributing
+  locally-edited content would require re-parsing the replacement, which
+  re-arms the injection-block parsers the delivered branch exists to keep
+  inert (round-19 minor 25);
   receive-side historical sender cards have no
   "feature off" degradation yet and the `session-messaging` switch is
   settings.json-only (no UI) — both follow the session-mention precedent and

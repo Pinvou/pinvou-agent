@@ -185,4 +185,3 @@ export function SessionMentionCards({ refs, knownSessionIds, onOpenSession, copy
     </div>
   );
 }
-

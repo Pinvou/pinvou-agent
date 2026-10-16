@@ -1000,6 +1000,15 @@ def send_message_to_session(sessions_dir, messaging_dir, to_session, text,
     if text is not None and not isinstance(text, str):
         return None, "invalid text: the message body must be a string"
     text = str(text or "").strip()
+    if text:
+        # Round-19 minor 11: a lone surrogate in the body used to surface
+        # later as "not serializable" — misattributing a body-encoding issue
+        # to the serialization and sending the model into a shorten/resend
+        # loop. Name the encoding problem at validation.
+        try:
+            text.encode("utf-8")
+        except UnicodeEncodeError:
+            return None, "invalid text: the message body must be UTF-8 encodable (no unpaired surrogates)"
     from_session = str(from_session or "").strip() or None
     idempotency_key = str(idempotency_key or "").strip() or None
     if idempotency_key is not None:

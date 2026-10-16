@@ -69,7 +69,6 @@ import { ComposerAttachmentDropOverlay } from '../attachments/ComposerAttachment
 import { SessionMentionChips, SessionMentionMenu, SessionMentionCards } from './SessionMentionControls.jsx';
 import { buildSessionMessageBlock, splitSessionMessageBlock } from './session-message-block.js';
 
-
 import { PROJECT_SESSION_DRAG_TYPE } from '../projects/projectGrouping.js';
 import {
   buildSessionMentionBlock,
@@ -4643,6 +4642,10 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
         <div className="flex justify-end group min-w-0 max-w-full">
           <div className="flex flex-col items-end max-w-[85%] min-w-0 max-w-full">
             {messageSplit.sender && (
+              // Legacy-timeline render-item paths pass no onOpenSession: the
+              // card deliberately renders its non-interactive (alive) arm
+              // there instead of a dead-looking pill. Wire the callback into
+              // that path only after confirming user turns reach it.
               <ViewErrorBoundary t={t} variant="panel">
                 <React.Suspense fallback={null}>
                   <LazySessionMessageCard

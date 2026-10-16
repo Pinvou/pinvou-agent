@@ -142,8 +142,22 @@ assert.match(
 // component through its Suspense slot.
 assert.match(
   chatViewSource,
-  /\{messageSplit\.sender && \(\s*<ViewErrorBoundary[^]*?<React\.Suspense fallback=\{null\}>\s*<LazySessionMessageCard\s+sender=\{messageSplit\.sender\}/,
-  'UserBubble must render the lazy SessionMessageCard for delivered messages',
+  /\{messageSplit\.sender && \([^]*?<React\.Suspense fallback=\{null\}>\s*<LazySessionMessageCard\s+sender=\{messageSplit\.sender\}\s+knownSessionIds=\{knownSessionMentionIds\}\s+onOpenSession=\{onOpenSessionMention\}/,
+  'UserBubble must render the lazy SessionMessageCard for delivered messages, WITH the jump wiring — dropping knownSessionIds/onOpenSession silently degrades every card to its non-interactive arm while "attributed, jumpable sender card" stays claimed (round-19 MAJOR-4, mutation-verified)',
+);
+// Round-19 minor 17: the card is deferred out of the main entry so the relay
+// web build stays under its 500 kB startup budget — a future static
+// re-import would only fail at build time (CI), never in this suite; the
+// tripwire keeps the lazy loader honest locally.
+assert.doesNotMatch(
+  chatViewSource,
+  /import\s*\{[^}]*SessionMessageCard[^}]*\}\s*from\s*'\.\/SessionMessageCard\.jsx'/,
+  'SessionMessageCard must stay lazily loaded (entry-budget policy), not statically imported',
+);
+assert.match(
+  chatViewSource,
+  /sessionMessageCard: \(\) => import\('\.\/SessionMessageCard\.jsx'\)/,
+  'the deferred loader must stay registered in CHAT_PANEL_LOADERS',
 );
 assert.match(
   chatViewSource,

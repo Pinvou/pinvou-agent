@@ -25,6 +25,10 @@ import {
   isReportedMaterialization,
   recordDraftMaterialization,
 } from '../src/features/chat/session-mention.js';
+import {
+  buildSessionMessageBlock,
+  splitSessionMessageBlock,
+} from '../src/features/chat/session-message-block.js';
 
 // Windows-CRLF portability (round-20 zhuowp): multi-line extraction and
 // contract compares are LF-anchored; normalize at the read boundary so the
@@ -283,7 +287,15 @@ test('auto-title contract: both bridges name the session from the stripped body 
         isDefaultChatTitle: () => true,
         personaPlaceholderTitles: {},
         userMessageDisplayText: (content) => content.map((part) => (part && part.text) || '').join(''),
-        window: { __PINVOU_SESSION_MENTION__: { splitSessionMentionBlock } },
+        window: {
+          __PINVOU_SESSION_MENTION__: { splitSessionMentionBlock },
+          // Round-19 MAJOR-3: the bridges' message-block title strip executed
+          // in no test — the sandbox only published the mention global, so a
+          // strip destructured off the WRONG global shipped the suite green
+          // and delivered sessions auto-titled as the raw header. Publish
+          // both, exactly as the bridges consume them.
+          __PINVOU_SESSION_MESSAGE__: { splitSessionMessageBlock },
+        },
         console,
       };
       vm.runInNewContext(`${fn}\nthis.persistMessagesFor = persistMessagesFor;`, sandbox);
@@ -303,6 +315,16 @@ test('auto-title contract: both bridges name the session from the stripped body 
       await run(buildSessionMentionBlock(REFS)),
       [],
       `${rel}: a refs-only message never names the session`,
+    );
+    assert.deepEqual(
+      await run(buildSessionMessageBlock({ sessionId: 'src0001', title: '源会话' }, BODY)),
+      [BODY],
+      `${rel}: the delivered-message sender header never feeds auto-naming (round-19 MAJOR-3: the strip must come off the message global, not the mention one)`,
+    );
+    assert.deepEqual(
+      await run(buildSessionMessageBlock({ sessionId: null, title: null }, BODY)),
+      [BODY],
+      `${rel}: the unattributed sender header never feeds auto-naming either`,
     );
     assert.deepEqual(await run(BODY), [BODY], `${rel}: plain bodies pass through`);
   }

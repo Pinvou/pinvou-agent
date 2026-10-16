@@ -16,11 +16,13 @@
  * recognized; a hand-written lookalike (tampered JSON, missing blank line
  * before a body, absurdly long JSON line) passes through unchanged.
  *
- * Units note (round-18 minor 19, same disclosure as the mention twin): the
- * MAX_BLOCK_JSON_LINE_LENGTH bound below counts UTF-8 BYTES via the
- * Rust-side string length — matching the delivery side's byte caps — while
- * JS string APIs measure UTF-16 units; the JSON line is bytes-on-the-wire,
- * so bytes is the binding unit here.
+ * Units note (round-18 minor 19, precision-corrected round-19 minor 17): the
+ * MAX_BLOCK_JSON_LINE_LENGTH bound below is applied on the JS side in UTF-16
+ * code units (string .length) while the Rust twin counts UTF-8 bytes — the
+ * Rust delivery side is the authoritative gate; this parser's bound is a
+ * tolerant pre-filter, and the units divergence between the two languages is
+ * the disclosed point (not "bytes are the binding unit" as this comment
+ * previously claimed).
  */
 
 /** Header line of the delivered block — mirrored verbatim by features/messaging's MESSAGE_BLOCK_HEADER (Rust) and the titler strippers. */

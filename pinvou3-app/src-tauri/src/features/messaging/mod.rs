@@ -36,7 +36,15 @@
 //!   gates, engine spawn errors) retry with backoff and only quarantine after
 //!   `MAX_DELIVERY_ATTEMPTS`;
 //! - the watcher honors the `session-messaging` feature switch each poll:
-//!   switch off hides the tool **and** pauses delivery (pending files wait).
+//!   switch off hides the tool **and** pauses delivery — the first 256
+//!   pending files wait and deliver when the switch returns, but the
+//!   ceiling-before-gate ordering quarantines the sorted-tail excess of a
+//!   larger backlog (round-19 minor 2: the doc previously promised the
+//!   wait for all pending files);
+//! - poison files (schema drift, hostile content, oversize) are quarantined
+//!   under `spool/failed/` immediately; *transient* delivery failures (rewind
+//!   gates, engine spawn errors) retry with backoff and only quarantine after
+//!   `MAX_DELIVERY_ATTEMPTS`.
 //!
 //! Known delivery guarantees (documented, accepted for v1):
 //! - **At-least-once, not exactly-once**: a crash between delivery and the
@@ -44,10 +52,20 @@
 //! - **Dedup horizon is bounded**: `.done` markers are pruned after
 //!   `RETENTION` (7 days) — a retried keyed call older than that
 //!   re-delivers.
-//! - **Steer loss window**: an accepted steer can still be dropped by the
-//!   foundation when the target turn is cancelled or the engine evicted
-//!   (`chat:steer_dropped`); the messaging path treats steer-Ok as final and
-//!   does not yet correlate that event.
+//! - **Steer loss window — three triggers, not two (round-19 MAJOR-1)**: an
+//!   accepted steer can still be lost by the foundation when (a) the target
+//!   turn is cancelled, (b) the engine is evicted/rebuilt
+//!   (`chat:steer_dropped`), or (c) **the app crashes/exits after the steer
+//!   was registered in memory but before the turn loop drains it into a
+//!   persisted user turn** — for a long-running target turn that window can
+//!   be minutes. Trigger (c) is the only one that leaves no event and no
+//!   audit trace, and it is the most common: `Ok(Steered)` means only the
+//!   in-memory registration landed, yet the keyed done-marker and the spool
+//!   removal are written immediately — so a crash in that window silently
+//!   loses the message and a keyed retry is answered "delivered" from the
+//!   marker. The messaging path treats steer-Ok as final and does not yet
+//!   correlate `chat:steer_committed`; gating the marker on the commit event
+//!   is the recorded follow-up.
 //! - **Retry budget is per-process**: `RetryState` lives in memory, so a
 //!   watcher restart gives a permanently-failing file a fresh attempt budget
 //!   (a crash loop re-buys ~10 attempts per boot — bounded by boot cadence).
@@ -111,10 +129,13 @@ const MAX_TITLE_CHARS: usize = 200;
 const MAX_SPOOL_FILE_BYTES: u64 = 64 * 1024;
 /// Pending-file ceiling: beyond this many undelivered spool files the excess
 /// is treated as hostile growth (a looping model can produce unattended
-/// turns; the cap bounds the damage) and quarantined with an audit record.
-/// Sorted order is deterministic, so the *excess* (lexicographic tail) is
-/// what gets dropped — incoming files sort after already-pending ones in
-/// practice (hex hash names carry no time order; the cap is a bound, not a
+/// turns; the cap bounds the damage) and quarantined with a best-effort
+/// audit record. Sorted order is deterministic, so the *excess*
+/// (lexicographic tail) is what gets dropped — with uniform hex hash names
+/// the tail is an *arbitrary* subset, not "incoming files" (round-19 minor
+/// 1: the doc previously claimed incoming files sort after pending ones,
+/// which hex names do not guarantee); each excess file is quarantined with
+/// evidence preserved, never silently deleted (the cap is a bound, not a
 /// queue discipline).
 const MAX_PENDING_FILES: usize = 256;
 /// Transient delivery failures retry with backoff; quarantine only after this

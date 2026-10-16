@@ -1320,6 +1320,48 @@ class SendMessageTests(unittest.TestCase):
         self.assertIn(str(server.MAX_MESSAGE_SPOOL_BYTES // 1024), error)
         self.assertEqual(len(self._spooled()), 1)
 
+    def test_non_string_text_and_surrogate_inputs_are_structured_errors(self):
+        """Round-19 minor 16: the round-18 minor-14 rejections had no tests
+        (mutation-verified green) — pin them."""
+        payload, error = self._send(text={"not": "a string"})
+        self.assertIsNone(payload)
+        self.assertIn("must be a string", error)
+        payload, error = self._send(from_session="src0001", idempotency_key="\ud800")
+        self.assertIsNone(payload)
+        self.assertIn("UTF-8 encodable", error)
+        # Round-19 minor 11: a lone surrogate in the BODY is a text-encoding
+        # error, not a serialization error (the old message sent the model
+        # into a shorten/resend loop).
+        payload, error = self._send(from_session="src0001", text="ok \ud800 bad")
+        self.assertIsNone(payload)
+        self.assertIn("must be UTF-8 encodable", error)
+        self.assertNotIn("serializable", error)
+
+    def test_delivered_retry_survives_read_only_spool_dir(self):
+        """Round-19 minor 16: behavioral pin for the round-18 minor-13
+        reorder — the .done consult runs before any spool-dir creation, so a
+        read-only spool dir still answers a delivered retry "delivered"
+        instead of a spurious not-writable error."""
+        import hashlib as _hashlib
+
+        payload, error = self._send(from_session="src0001", idempotency_key="k-ro")
+        self.assertIsNone(error)
+        spool_id = _hashlib.sha256(b"src0001|tgt0001|k-ro").hexdigest()
+        done = self.messaging / "spool" / ".done" / f"{spool_id}.json"
+        done.parent.mkdir(parents=True, exist_ok=True)
+        done.write_bytes(b"")
+        pending = self.messaging / "spool" / f"{spool_id}.json"
+        if pending.exists():
+            pending.unlink()
+        os.chmod(self.messaging / "spool", 0o555)
+        try:
+            payload, error = self._send(from_session="src0001", idempotency_key="k-ro")
+            self.assertIsNone(error)
+            self.assertEqual(payload["delivery"], "delivered")
+            self.assertTrue(payload["duplicate"])
+        finally:
+            os.chmod(self.messaging / "spool", 0o755)
+
     def test_valid_send_spools_with_titles_and_text(self):
         payload, error = self._send(from_session="src0001", idempotency_key="k1")
         self.assertIsNone(error)
@@ -1393,6 +1435,10 @@ class SendMessageTests(unittest.TestCase):
         self.assertIn("itself", error)
 
     def test_text_and_key_caps_are_enforced(self):
+        # Round-19 MAJOR-2: the 32k char cap is watcher-coupled (the watcher
+        # re-checks 32k at validation) — a raised constant would silently
+        # re-open accept-then-quarantine, so pin the constant itself.
+        self.assertEqual(server.MAX_MESSAGE_TEXT_CHARS, 32768)
         payload, error = self._send(text="   ")
         self.assertIsNone(payload)
         payload, error = self._send(text="x" * (server.MAX_MESSAGE_TEXT_CHARS + 1))
@@ -1427,6 +1473,11 @@ class SendMessageTests(unittest.TestCase):
     def test_over_long_titles_are_clipped_not_rejected(self):
         """B1: a >200-char session title clips at spool time instead of making
         the session undeliverable as sender or target."""
+        # Round-19 MAJOR-2: the clip pins are self-referential without a
+        # structural constant pin — raising MAX_TITLE_CHARS shipped the suite
+        # green (mutation-verified) while re-opening the accept-then-
+        # quarantine class: the watcher rejects >200-char titles outright.
+        self.assertEqual(server.MAX_TITLE_CHARS, 200)
         _write_session(self.sessions, "long1", [], title="长" * 250)
         payload, error = self._send(to_session="long1", from_session="src0001")
         self.assertIsNone(error)

@@ -2130,10 +2130,6 @@ fn first_send_title_source_strips_message_then_mention() {
     // `features::sessions` (the parser's home) instead of carrying a
     // test-local fourth copy.
     use crate::features::sessions::{SESSION_MESSAGE_BLOCK_HEADER, SESSION_MESSAGE_CONTRACT_LINES};
-    let mention_block = format!(
-        "{SESSION_MENTION_BLOCK_HEADER}\n{}\n\n",
-        ["[\"src0001\"]"].join("\n")
-    );
     // A genuine mention block: header + its contract lines + JSON array.
     let mention_inner = [
         SESSION_MENTION_BLOCK_HEADER.to_string(),
@@ -2163,7 +2159,6 @@ fn first_send_title_source_strips_message_then_mention() {
     let message_inner = format!("{message_inner}\n");
     let mention_inner = format!("{mention_inner}\n");
     let wrapped = format!("{message_inner}{mention_inner}真正的正文");
-    let _ = &mention_block;
     assert_eq!(
         first_send_title_source(&wrapped, None),
         "真正的正文",

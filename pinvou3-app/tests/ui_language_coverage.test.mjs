@@ -220,7 +220,10 @@ for (const language of ['zh', 'en', 'ja']) {
   for (const key of ['fromUnknown', 'jump', 'unavailable']) {
     assert.ok(dict[language].uiSessionMessage[key], `${language}.uiSessionMessage.${key} must exist`);
   }
-  for (const fnKey of ['from']) {
+  for (const fnKey of ['from', 'jump']) {
+    // Round-19 minor 18: `jump` is fn-shaped — a string drift crashes the
+    // card render for every attributed delivery with the suite green (the
+    // sibling section pins both its fns; this one only truthy-pinned `jump`).
     assert.equal(typeof dict[language].uiSessionMessage[fnKey], 'function', `${language}.uiSessionMessage.${fnKey} must be a function`);
   }
   // Count guard (round-15 m4): ja replaces the whole section object, so a
