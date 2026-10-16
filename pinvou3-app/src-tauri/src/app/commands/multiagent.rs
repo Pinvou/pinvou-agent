@@ -256,8 +256,19 @@ mod tests {
     fn match_source_call_sites_pass_the_unassembled_text() {
         let chat = include_str!("chat.rs");
         assert!(
-            chat.contains("super::multiagent::MatchSource(&raw_message)"),
-            "chat 发送链必须以用户原文 raw_message 作为候选匹配源"
+            // The raw text must strip the session-mention injection block
+            // first (round-13 MAJOR-1): the block's fixed English contract
+            // words (read_session / referenced sessions / instructions) are
+            // not user vocabulary, and feeding them to the n-grams would
+            // spuriously boost unrelated expert cards — same rule as titles
+            // and checkpoint labels (the added comment lines are English per
+            // CONTRIBUTING's comment-language rule, round-27 asto m6). The
+            // two assertions pin the strip-before-matching binding and the
+            // argument hand-off separately.
+            chat.contains(
+                "let match_source = super::sessions::strip_session_mention_block(&raw_message);"
+            ) && chat.contains("super::multiagent::MatchSource(match_source)"),
+            "chat 发送链必须以剥离注入块后的用户原文 raw_message 作为候选匹配源"
         );
         let interaction = include_str!("interaction.rs");
         assert!(

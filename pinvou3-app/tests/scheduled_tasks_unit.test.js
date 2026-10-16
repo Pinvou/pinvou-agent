@@ -3294,7 +3294,10 @@ async function editQueuedDroppedBeforeNotPendingRestoresOriginal() {
     steer_id: "steer-edit-dropped-not-pending",
   });
   withdraw.resolve("not_pending");
-  assert.strictEqual(await editing, false);
+  // Round-26 asto m4: the dropped-terminal-during-edit settlement emits its
+  // own truthful notice, so editQueued resolves the "noticed" sentinel (no
+  // generic queuedActionFailed flash on top).
+  assert.strictEqual(await editing, "noticed");
   await tick();
 
   const view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);
@@ -3334,7 +3337,7 @@ async function editQueuedDroppedBeforeTimeoutRestoresOriginal() {
   const withdrawTimers = timeouts.filter(function (timer) { return timer.ms === 25000; });
   assert.ok(withdrawTimers.length > 0, "queue mutation arms the bounded withdrawal timeout");
   withdrawTimers[withdrawTimers.length - 1].fn();
-  assert.strictEqual(await editing, false);
+  assert.strictEqual(await editing, "noticed");
   await tick();
 
   const view = bridge.state.getMany(['sessions', 'chat', 'scheduled']);

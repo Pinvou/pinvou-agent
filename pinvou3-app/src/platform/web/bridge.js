@@ -1499,7 +1499,14 @@ function isScheduledRunSession(sid) { return pinvouSharedweb().isScheduledRunSes
         // 自动标题复用展示层过滤：内部信封/子智能体交接不参与命名，避免 XML 痕迹进
         // sidebar。hideInternalEnvelope=true 剥离 turn_meta/system-reminder 元数据块，
         // 否则普通消息的标题会拼入尾随 turn_meta（引擎持久化为独立 text block）。
-        const titleText = firstUser ? userMessageDisplayText(firstUser.content || [], true) : "";
+        let titleText = firstUser ? userMessageDisplayText(firstUser.content || [], true) : "";
+        // The session-mention injection block (the ## Referenced chats contract
+        // at the head of a message) is not user body text and never feeds
+        // auto-titling; the single source of the contract parsing is
+        // features/chat/session-mention.js (published via the window global —
+        // classic-script bridges do not import features back).
+        const splitMention = window.__PINVOU_SESSION_MENTION__ && window.__PINVOU_SESSION_MENTION__.splitSessionMentionBlock;
+        if (splitMention) titleText = splitMention(titleText).text.trim();
         if (titleText) {
           const newTitle = titleText.slice(0, 20);
           await invoke("rename_session", { id: sid, title: newTitle });
@@ -3870,12 +3877,39 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
 
   // Return protocol (issue #406; mirrors the tauri bridge's sendMessage):
   // - true         dispatched: sent or queued for delivery.
+  // Web first turn (no session yet): a first turn already in flight blocks a
+  // duplicate admission; otherwise the first turn dispatches through its own
+  // pipeline. Returns the send verdict for the caller.
+  function maybeSubmitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload, meta) {
+    const existingFirstTurn = state.chatItems.some(function (item) {
+      return item && item.type === "user" && !!item.deliveryState;
+    });
+    if (existingFirstTurn) return false;
+    submitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload, meta);
+    return true;
+  }
+
+  // Materialization-abort recovery: the scoped restore owns the stripped body
+  // (the mention injection block never re-enters any composer or buffer). A
+  // refs-only message strips to "" (nothing restorable), but the abort
+  // semantics are unchanged — the send never dispatched and the draft is
+  // still alive — so it resolves "restored" too (round-18 MAJOR-1,
+  // superseding round-8 M1's false here): the caller's failure tail clears
+  // the provisional draft→session mapping and keeps the draft's chips
+  // scoped to the draft. Mirrors the tauri lane's inline branch.
+  function restoreAbortedMaterialization(text, draftOwner) {
+    const restoredBody = stripMentionBlockForComposerRestore(text);
+    if (!restoredBody) return "restored";
+    return restoreTaskDraft(restoredBody, draftOwner) ? "restored" : false;
+  }
+
   // - "restored"   nothing dispatched, but the text is already back in the
   //                composer (bridge-side restore) — the caller must not
   //                restore again, it would duplicate the draft.
   // - false        nothing dispatched and the text was NOT restored
   //                (notice-only early returns / admission rejected) — the
   //                caller owns putting the draft back.
+  // eslint-disable-next-line sonarjs/cognitive-complexity -- single send state machine mirroring the tauri lane (ownership guard + first-turn materialization + admission); split tracked separately
   async function sendMessage(text, meta, voiceOwner) {let pinvouSharedwebN247496Cache = null;
 function pinvouSharedwebN247496() {
   if (!pinvouSharedwebN247496Cache) pinvouSharedwebN247496Cache = window.PinvouBridgeShared.create("web:247496", { state, sid: { get value() { return sid; } } });
@@ -3905,12 +3939,7 @@ function pinvouSharedwebN247496() {
     const attachmentsPayload = readyAttachments.map(function (a) { return a.result; });
 
     if (!state.activeSessionId && IS_WEB && canInvoke("web_access_create_session_and_chat")) {
-      const existingFirstTurn = state.chatItems.some(function (item) {
-        return item && item.type === "user" && !!item.deliveryState;
-      });
-      if (existingFirstTurn) return false;
-      submitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload, meta);
-      return true;
+      return maybeSubmitFirstWebTurn(text, displayText, readyAttachments, attachmentsPayload, meta);
     }
 
     if (!state.activeSessionId) {
@@ -3925,15 +3954,32 @@ function pinvouSharedwebN247496() {
       // await) → restore against the original draft ownership; never write
       // into whatever session is currently selected. (Mirrors the tauri lane,
       // round-2 finding F3; ensureSession itself reports the real reason.)
-      // append=true: failure-recovery semantics — the user may have started
-      // the next message during the await.
       if (!materialized || state.activeSessionId !== materialized) {
         if (materialized) draftOwner.createdSessionId = materialized;
-        restoreTaskDraft(text, draftOwner);
-        // Scoped recovery owns the restore; the caller must not append again
-        // even when the text is retained in a background buffer or draft epoch.
-        return "restored";
+        // Round-27 asto MAJOR 2(a), mirrors the tauri m2(a) write: the
+        // commit-then-navigate tail COMMITS the created session to a
+        // background buffer (the draft epoch is dead) even though
+        // ensureSession returned null — report it so the send closure's
+        // verdict mapping routes the chips to the created session. The web
+        // lane has no rollback tail (desktop-only), so any null-return with
+        // a createdSessionId binding is this shape.
+        if (!materialized && draftOwner.createdSessionId && meta) {
+          meta.materializedSessionId = draftOwner.createdSessionId;
+        }
+        return restoreAbortedMaterialization(text, draftOwner);
       }
+      // Round-24 MAJOR (PR #586 review, mirrors the tauri lane): report the
+      // committed materialization through the caller-owned meta out-param —
+      // the composer's scope effect cannot observe a draft→session transition
+      // that lands while ChatView is unmounted, so the send closure records
+      // the ledger mapping itself. Lane boundary (round-27 asto MAJOR 2(b)):
+      // this covers the legacy-ensureSession first send; the optimistic
+      // web_access_create_session_and_chat first turn returns true BEFORE the
+      // create runs, so its settle precedes any materialization and no
+      // report can exist for it (async failure recovery is the retry-chip
+      // path, not a settle verdict) — disclosed in the PR's Current
+      // limitations.
+      if (meta) meta.materializedSessionId = materialized;
     }
     const sid = state.activeSessionId;
     // In-bridge submission gate (mirrors the tauri chat bridge): any future
@@ -3966,6 +4012,14 @@ function pinvouSharedwebN247496() {
       return { snapshot: consumed, payloadText, restrictTools };
     }
 function restoreUiTurnState(consumed) { return pinvouSharedwebN247496().restoreUiTurnState(consumed); }
+    // Navigation interrupted the send: the text goes back to the session it
+    // was typed in (buffer draft), never into the session now on screen —
+    // "restored" keeps the caller from prefilling it there (#406). A
+    // refs-only message restores nothing: resolve false so the caller's
+    // non-dispatch recovery keeps its chips armed (round-8 M1).
+    function abandonToOwnSession() {
+      return restoreComposerText(sid, text) ? "restored" : false;
+    }
     function queuePrepared(prepared) {
       state.queued.push(makeQueuedMessage(
         ++itemIdSeq,
@@ -3996,10 +4050,8 @@ function restoreUiTurnState(consumed) { return pinvouSharedwebN247496().restoreU
       if (state.activeSessionId !== sid) {
         // The user navigated away during the hydrate: the text goes back to
         // the session it was typed in (buffer draft), never into the session
-        // now on screen — "restored" keeps the caller from prefilling it
-        // there (issue #406).
-        restoreComposerText(sid, text);
-        return "restored";
+        // now on screen (issue #406).
+        return abandonToOwnSession();
       }
       recordAuthoritySyncDiagnostic("remote_sync_blocked_action", Object.assign({
         operation: "send",
@@ -4010,8 +4062,7 @@ function restoreUiTurnState(consumed) { return pinvouSharedwebN247496().restoreU
     // The authoritative hydrate above is asynchronous. Never let an input that
     // originated in Session A drift into Session B if the user navigated away.
     if (state.activeSessionId !== sid) {
-      restoreComposerText(sid, text);
-      return "restored";
+      return abandonToOwnSession();
     }
     if (isBusyFor(sid) || state.queued.length > 0) {
       const racedQueuePreparation = consumeUiTurnState();
@@ -4052,8 +4103,14 @@ function setComposerDraft(value) { return pinvouSharedweb().setComposerDraft(val
   // failure recovery passes append=true for separator-joined appending
   // (re-review #4 parity).
 function prefillComposer(text, append) { return pinvouSharedweb().prefillComposer(text, append); }
+  // Composer restores strip the injection block on restore — one shared
+  // implementation in bridge-shared-helpers.js now serves both platform
+  // lanes (round-8 minor 10).
+  function stripMentionBlockForComposerRestore(text) { return pinvouSharedweb().stripMentionBlockForComposerRestore(text); }
   // Session-scoped composer text restore for sends abandoned by a session
-  // switch mid-send (issue #406; mirrors the tauri bridge's restoreSteerText).
+  // switch mid-send (issue #406; mirrors the tauri bridge's restoreSteerText,
+  // including the boolean verdict: a refs-only message strips to "" and
+  // restores nothing, and the caller must not report "restored" then).
   // A bare setComposerDraft is invisible (the composer is React-local state
   // that only re-reads the store on [activeSessionId, draftEpoch]). Active
   // session: append at the store level with a "\n" separator and bump
@@ -4062,19 +4119,20 @@ function prefillComposer(text, append) { return pinvouSharedweb().prefillCompose
   // targets the active working set and would leak background text into the
   // active draft.
   function restoreComposerText(sid, text) {
-    const value = String(text || "");
-    if (!sid || !value) return;
+    const value = stripMentionBlockForComposerRestore(text);
+    if (!sid || !value) return false;
     if (sid === state.activeSessionId) {
       const current = String(state.composerDraft || "");
       setComposerDraft(current ? current + "\n" + value : value);
       state.draftEpoch = (state.draftEpoch || 0) + 1;
       notify();
-      return;
+      return true;
     }
     const buffer = sessionStates[sid];
-    if (!buffer) return;
+    if (!buffer) return false;
     const current = String(buffer.composerDraft || "");
     buffer.composerDraft = current ? current + "\n" + value : value;
+    return true;
   }
 
   // Retained recovery for a task draft whose send was abandoned mid-await:
@@ -4118,7 +4176,11 @@ function prefillComposer(text, append) { return pinvouSharedweb().prefillCompose
 
   // Scoped task-draft restore: resolves by the original ownership (session,
   // created-but-abandoned session, or the operation's voice binding), never
-  // into the unrelated active session. Returns whether the restore landed.
+  // into the unrelated active session. Returns whether the restore landed —
+  // restoreComposerText's own verdict must be honored (round-23 asto minor 1,
+  // mirrors the tauri lane): an evicted/purged background buffer restores
+  // nothing, and reporting success anyway made the caller skip its own
+  // recovery and the text was gone.
   function restoreTaskDraft(text, owner) {
     if (!owner || owner.restored) return false;
     const sid = owner.sessionId || owner.createdSessionId || voiceOperationSessionId(owner.operationId);
@@ -4127,7 +4189,9 @@ function prefillComposer(text, append) { return pinvouSharedweb().prefillCompose
     // parked forever and never adoptable by a retry.
     if (sid) {
       if (owner.operationId) completeVoiceSubmission(owner.operationId, sid, false);
-      restoreComposerText(sid, text);
+      // Honor the verdict: false means the text landed NOWHERE — keep
+      // owner.restored unset so a caller retry is not blocked.
+      if (!restoreComposerText(sid, text)) return false;
     } else if (state.activeSessionId) {
       // Retain one departed draft in memory, never in the unrelated active session.
       if (owner.operationId) completeVoiceSubmission(owner.operationId, null, false);
@@ -4407,6 +4471,14 @@ function persistPinvouReviews() { return pinvouSharedweb().persistPinvouReviews(
     Promise.resolve(syncActivePersona()).then(notify).catch(function (error) {
       console.error("[sessions] session:persona_changed refresh failed", error);
     });
+  });
+
+  // Builtin feature switches (docs/builtin-toolset-contract.md §3.3): the host
+  // emits remote_control:tools_changed after every toggle; re-dispatch the same
+  // DOM CustomEvent the desktop bridge (chat-events.js) produces so ChatView's
+  // registry subscription hot-refreshes on browser clients too.
+  listen("remote_control:tools_changed", function () {
+    try { window.dispatchEvent(new CustomEvent("pinvou:tools-changed")); } catch { /* DOM dispatch failure only affects the refresh timing */ }
   });
 
   // 所有 chat:* 事件都带 session_id(后端 spawn_event_forwarder 打的 tag)。
@@ -5685,6 +5757,14 @@ function stopMonitorPolling() { return pinvouSharedweb().stopMonitorPolling(); }
   // ── Settings ─────────────────────────────────────────────────────
 
 async function loadSettings() { return pinvouSharedweb().loadSettings(); }
+  // Builtin feature switches (docs/builtin-toolset-contract.md §3.3): the web
+  // client proxies to the same desktop host, so the registry read is exposed
+  // here too (access-policy allowlists list_builtin_features; the write side
+  // stays desktop-only). Without it the session-mention gate would be stuck
+  // fail-open in the browser while the host already removed read_session.
+  async function listBuiltinFeatures() {
+    return invoke("list_builtin_features");
+  }
 async function loadSelectedPet() { return pinvouSharedweb().loadSelectedPet(); }
 async function setSelectedPet(id) { return pinvouSharedweb().setSelectedPet(id); }
 async function loadEffectiveModelConfig(...args) { return pinvouSharedweb().loadEffectiveModelConfig.apply(null, args); }
@@ -7903,6 +7983,7 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     stopMonitorPolling,
     clearMonitorStats,
     setSelectedPet,
+    listBuiltinFeatures,
     saveSettings,
     saveSearchSettings,
     submitFeedback,
