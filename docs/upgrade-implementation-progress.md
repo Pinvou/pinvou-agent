@@ -13,22 +13,51 @@ the current overview; a completed bounded batch does not complete its whole task
 |---|---|---|
 | T01 | Implemented; independently reviewed and verified | Executable metadata/credential Schemas, byte/trust profile, reference verifier, independently verified fixed vectors and local CLI E2E |
 | T02 | Implemented; independently reviewed and verified | Closed control APIs, publication/lifecycle/selection/quality reference models and regression tests; no production service implementation |
-| T03 / T04 | Not completed | Platform/data scope, measured preparation budgets and complete platform/package qualification remain pending; follow the task graph |
+| T03 | Not completed | Platform execution/protected-storage/backup contracts; platform/data scope and measured qualification remain pending. |
+| T04 | Not completed | Independent composite packaging and verification toolchain; depends on T03 platform contracts. |
 | T05 | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
 | T06 | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
 | T07 | In progress | Signing/Root primitives and actual provider checks; complete production issuance composition remains pending |
 | T08 | In progress | Protected atomic metadata publication primitives; complete business publication workflows remain pending |
 | T09 | In progress | Bounded package/native-byte inspection; complete upload, quarantine and platform qualification remain pending |
+| T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
+| T11 | Not completed | Complete multi-platform Release/Target approval workflow and qualification integration. |
+| T12 | Not completed | Production source profiles, migration plans and Registry management. |
+| T13 | Not completed | Supported floor, prerequisite paths and historical bridge approvals. |
+| T14 | Not completed | Deployment lifecycle and first-baseline activation with atomic parent/rollout composition. |
+| T15 | Not completed | Approved automatic rollout scheduling, quality guards and controlled completion. |
+| T16 | Not completed | Explicit Stable-to-Beta/Internal atomic draft synchronization. |
 | T17 | In progress | Protected logical workflow, private initial installation, atomic handoff/live download resume and private activation Session registration; qualified check/refresh composition remains pending |
+| T18 | Not completed | Approved HTTPS file-source management and current download-info issuance. |
+| T19 | Not completed | Current qualification and three-purpose authorize/consume/cancel/status API composition over T44. |
 | T20 | In progress | Actual no-update/transaction and bounded Session/download-progress/download-resume/activation acceptance/recovery, four original HTTP batch routes and supplied client request/ACK correlation; independent task-event acceptance, durable client queue and quality contribution remain pending |
 | T21 | In progress | Scoped quality projection/control primitives; complete quality evaluation and business composition remain pending |
+| T22 | Not completed | Independent restricted unknown-consume reconciliation and protected original-request disposition. |
+| T23 | Not completed | Complete grouped quality review and controlled unfreeze. |
+| T24 | Not completed | Fixed weekly release-quality snapshots and restricted export. |
 | T25 | In progress | Privacy/deduplication primitives; weekly provider configuration and complete business composition remain pending |
 | T26 | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
-| T27 | In progress | Contract/trust/response checks and fixed control POST; complete protected client workflow remains pending |
+| T27 | In progress | Authenticated Root/public/candidate/Package/Check/Refresh/DownloadInfo/Release-renewal verification and fixed control POST; protected workflow and high-water/cache integration remain pending |
+| T28 | Not completed | Machine-wide preparation ownership and multi-user writer freezing. |
 | T29 | In progress | Download/cache/byte-verification primitives; complete host download/continuation workflow remains pending |
-| T44 | In progress | Actual protected lifecycle commands; remaining complete task acceptance/composition is not claimed |
+| T30 | Not completed | Complete encrypted backup, manual export and original-deadline local cleanup. |
+| T31 | Not completed | Trusted helper/launcher build, installation and host protection. |
+| T32 | Not completed | Client consume, original-result recovery and permanent old-execution fencing. |
+| T33 | Not completed | Actual Windows upgrade execution and qualification. |
+| T34 | Not completed | Actual Linux x64/arm64 upgrade execution and qualification. |
+| T35 | Not completed | Actual macOS Intel/Apple Silicon execution and qualification. |
+| T36 | Not completed | Protected single-hop execution, active-identity verification and local health. |
+| T37 | Not completed | Complete normal upgrade interaction across hops. |
+| T38 | Not completed | Complete silent preinstallation, restart activation and slot management. |
+| T39 | Not completed | Forced gate and related higher-version forward repair. |
+| T40 | Not completed | Machine-wide channel settings and three-language privacy/consent workflow. |
+| T41 | Not completed | Atomic legacy bootstrap migration to the new protocol. |
+| T42 | Explicitly deferred | Production deployment, operations, alerts and disaster-recovery acceptance are deferred at the owner's request |
+| T43 | Not completed | All-target real-system combined qualification and release gates. |
+| T44 | In progress | Actual lifecycle commands and private successful-authorization installation; unconsumed-backup deadlines, controlled waiting invalidation/replacement and whole-task acceptance remain pending |
+| T45 | Not completed | Approved helper/launcher evolution and restricted cleanup execution. |
+| T46 | Not completed | Actual local-mode prerequisite certification and exact evidence integration. |
 | T47 | In progress | Protected rollout lifecycle primitives; remaining complete task acceptance/composition is not claimed |
-| T10–T16, T18–T19, T22–T24, T28, T30–T43, T45–T46 | Not completed or deferred | Twenty-nine other tasks retain the task graph's dependencies; T42 deployment is explicitly deferred |
 
 Confirmed implementation decisions (2026-10-09):
 
@@ -9941,3 +9970,105 @@ in progress and thirty-one incomplete/deferred. Product 0.10.9, normative versio
 1.0, pinned V1 and CodeWhale remain unchanged. Physical platform qualification and
 deployment remain deferred. No artifact size, retry or total/cumulative download
 duration cap is introduced.
+
+## Private successful-validation installation
+
+The T44 lifecycle kernel now has a private actual processing Validate -> available
+Authorization + authorized Session installation port. It starts with real
+begin_validate and commits the success marker, authorization, parent and scope
+revision in one actual T06 transaction. Expected scope/Session/Validate revisions,
+original owner/epoch/lease, unchanged preparation, current channel, actual waiting
+activation lineage and final safe/nondecreasing SQL time are repeated. Success
+history remains readable after consume/cancel/expiry/channel changes and cannot
+reopen validation. No production T19 command, runtime writer or HTTP endpoint is
+registered; qualification, signature/custody and complete final read-set guards
+remain actual T19 owner composition responsibilities.
+
+The Go proposal check applies the unchanged full update and consume Schemas,
+including actual workflow, installer/type/backup, context/plans, preparation,
+freeze and backup data bindings. Its discarded synthetic consume shape allocates
+no recovery identity or execution right. Exact hashes alone remain insufficient
+proof of signatures/current eligibility. SQL repeats actual lifecycle bindings;
+activation re-reads the stored waiting slot and completed preinstall transaction.
+
+Additive migration 16 joins installation/capacity/recovery SQL in one digest.
+Sixty already tracked SQL files remain raw/index byte identical. The protected
+capacity projection reserves missing Attempt/Outcome/Transaction/preinstall Staged
+and a durable recovery-closure fact, plus terminal growth/cleanup/counter reserve;
+actual records are not counted twice. Exact/+1 tests cover 4096 members including
+scope, 32 MiB logical data, 1 MiB canonical refs, 1 MiB member and finite revisions.
+These internal limits do not cap artifact size, retry count or download duration.
+
+Original 62d cleanup now records an immutable recovery closure for new terminal
+authorizations, including identities with no Attempt. Cleanup and closure share
+scope locking and final nonrollback time. Repeated/concurrent scans close once;
+late recovery reconstruction remains refused even after clock rollback. Original
+Authorization/Session/Validate/Transaction/accepted-event history is retained;
+no additional archival/deletion authority is inferred. Shared native source checks
+authenticate permanent heap/columns/constraints/sole PK index/view and readonly ACL;
+optional V14/V15 source compatibility remains, and exact optional 16 is recognized.
+
+Independent reviews found and repaired native workflow binding, state-constraint
+catalogue, complete future capacity, clock-based premature reserve release,
+concurrent cleanup and extra-index cases. The final competing-outcomes test first
+proves each branch fully writes and completes T06 then rolls back; the same code
+races with original PgError identity and exact permitted conflict causes. Final
+history assertions read the actual marker independently of activeValidateId.
+
+Primary session 26972 closed with exit zero on the unchanged 26-file manifest
+810ca8701bf1566d4fead79500a59febc3db0e956d9c897aaf4eb7de22e110bd.
+Module verification, default full service tests (46 tested packages; 413 top-level
+and 830 child passes, 997 skipped tests), vet, server build and pinned V1 checks
+passed. Separate affected lifecycle tests used actual PostgreSQL and passed
+222 top-level and 359 child tests, with zero skips or failures; the native package
+took 844.944s. Go formatting, standard whitespace and all 60 existing SQL raw/index
+checks passed. All owned runtimes were zero before exclusive reviewer execution.
+An unnecessarily wide additional actual-PostgreSQL run was intentionally stopped;
+its partial results do not count as acceptance. Its only leftover isolated test
+database and associated role were verified and removed.
+
+The dependency auditor independently passed pure 42 top-level/127 child tests
+(2.701s package; 8.689s wall) and actual PostgreSQL 33 top-level/71 child tests
+(151.117s package; 158.840s wall), with zero skips/failures in those scoped runs.
+Default service tests passed the same 413 top-level/830 child tests, with 997
+skipped tests and 12 no-test packages separately recorded (177.538s wall).
+Vet (5.011s), module verification (9.294s), server build (31.369s), corrected
+pinned-artifact check (2.481s), format, whitespace and before/after source/SQL
+freezes passed. Initial runner 35294 closed nonzero only because its private
+artifact-check command omitted the required source argument; corrected remaining
+gates closed zero in 63330 without repeating passed tests. Owned runtimes were
+zero before explicit compatibility-auditor handoff. No repository source changed.
+
+The compatibility auditor independently passed pure 42 top-level/127 child tests
+(2.859s package; 9.014s wall) and the same actual PostgreSQL 33 top-level/71 child
+tests (146.603s package; 159.103s wall), with zero skips/failures in those scoped
+runs. Fresh cleared-default service tests passed 46 tested packages, 413 top-level
+and 830 child tests; 997 test skips and 12 no-test packages remain separately
+recorded (198.942s wall). Vet (9.182s), module verification (5.069s), private server
+build (31.315s), pinned V1 check with explicit source (3.147s), all 22 changed Go
+format checks, standard differences and before/after source/SQL freezes passed.
+Session 61102 closed exit zero; all owned runner, compiler, test/server and new
+Node processes were zero before returning the slot. No repository source changed.
+
+Both independent scoped final audits passed the same frozen implementation after
+the primary repaired every required finding. The service implementation is DCO
+committed and pushed as `c6b09bc7c3304a8523be6aedda154b5182ed3065` on
+`codex/t44-validation-success`; its worktree is clean and matches upstream.
+This delivers the bounded installation increment, with whole T44 still in progress.
+
+A separate independent T44 whole-task inventory identified two remaining actual
+features: durable successful-backup evidence and same-transaction original
+backupCleanupAt=terminalAt+24h for an unconsumed terminal Session; controlled
+unexpired waiting invalidation/replacement for revoked/reselected content. Both
+next scopes passed independent planning review. The backup scope uses one private
+per-Session fact with terminal growth reserve; legacy missing evidence/time remains
+explicit Unknown without a guessed deadline, placeholder member or blocked old
+cancellation/timeout. Waiting uses separate fixed control/event replay-policy
+wrappers over a private core, actual distinct original/new preinstall sources,
+atomic replacement and a final cross-step time/readback fence. These are approved
+next scopes, not implemented functionality, local deletion or whole T44 acceptance.
+
+Forty-seven tasks remain four implemented, twelve in progress and thirty-one
+incomplete/deferred. Product 0.10.9, normative 1.0, pinned V1 and CodeWhale are unchanged.
+Deployment and physical platform qualifications remain separate. Downloads retain
+no hard total/cumulative duration limit.
