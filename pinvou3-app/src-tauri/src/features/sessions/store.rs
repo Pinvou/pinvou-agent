@@ -877,9 +877,11 @@ impl SessionStore {
     /// The value comes verbatim from `DtConfig.provider` (`build_dt_config` /
     /// `engine_route_provider`), keeping the engine side the source of truth
     /// for the field semantics (foundation `SessionMetadata` model_provider /
-    /// model_provider_id). `model_provider_id` stays `None`: app routes key
-    /// the engine provider table by the resolved kind itself, so there is no
-    /// per-session exact configured provider key to record.
+    /// model_provider_id). The stamp deliberately never touches
+    /// `model_provider_id`: app routes key the engine provider table by the
+    /// resolved kind itself, so there is no per-session exact configured
+    /// provider key to record — and blindly writing `None` would erase one
+    /// if a future path ever records it.
     pub fn stamp_resolved_provider(&self, id: &str, provider: &str) -> Result<()> {
         let _mutation = self.scheduled_mutation.lock();
         let mut session = self
@@ -887,7 +889,6 @@ impl SessionStore {
             .load_session_snapshot(id)
             .with_context(|| format!("load_session({id}) for provider stamp"))?;
         session.metadata.model_provider = provider.to_string();
-        session.metadata.model_provider_id = None;
         // In-place metadata rewrite: no session created or removed, so the
         // post-persist retention rescan is skipped (round-18 MAJOR-4).
         self.persist_in_place(&session, "provider stamp")?;
