@@ -38,9 +38,12 @@ class ReleaseCachePolicyTests(unittest.TestCase):
         # saves is ~0.2-0.3GB of per-release churn against the quota.
         # Re-adding any cache write to a release job needs a fresh look at
         # the quota policy (the PR-gate namespaces must stay resident).
+        # Case-folded: GitHub resolves action repo refs case-insensitively,
+        # so `uses: Swatinem/Rust-Cache@v2` writes real caches too —
+        # casing must not be an evasion path for the absence pins.
         workflow = _without_yaml_comments(
             RELEASE_WORKFLOW.read_text(encoding="utf-8")
-        )
+        ).lower()
 
         # Fork-generic pin: any *rust-cache action (Swatinem or a fork,
         # under any version) must trip — a re-added cache under a forked
