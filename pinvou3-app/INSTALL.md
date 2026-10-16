@@ -17,7 +17,7 @@
 | 架构 | 发布资产名 | 系统基线 |
 |------|------------|----------|
 | arm64 (aarch64) | `pinvou-agent_<版本>-linux-arm64.deb` | Ubuntu 22.04+（glibc 2.35+） |
-| LoongArch64 (loong64) | `pinvou-agent_<版本>-linux-loong64.deb`（社区版资产由 CI 发布产物经 `scripts/release-deb.sh` 重新打包上传生成） | UOS V25 / deepin 23+（glibc 2.38+） |
+| LoongArch64 (loong64) | `pinvou-agent_<版本>-linux-loong64.deb`（由 release-packages.yml 的 build-linux-loongarch64 job 交叉构建并在 CI 内重命名上传；`scripts/release-deb.sh` 不适用于 loong64） | UOS V25 / deepin 23+（glibc 2.38+） |
 
 ```bash
 # <arch> 按下载的安装包替换为 arm64 或 loong64
@@ -32,7 +32,7 @@ sudo apt-get install -f
 ### UOS（统信）注意事项
 
 - UOS V25 已自带本包所需的 WebKitGTK（webkit2gtk-4.1）与 glibc 运行库，安装 deb 前无需额外准备依赖。
-- UOS 可能要求应用经过签名：第三方未签名 deb 在默认策略下会被拦截安装。遇到拦截时，需先在系统设置中开启**开发者模式**（开发者模式），或改用统信开发者证书签名后的安装包 / 应用商店分发渠道。
+- UOS 可能要求应用经过签名：第三方未签名 deb 在默认策略下会被拦截安装。遇到拦截时，需先在系统设置中开启**开发者模式**（Developer Mode），或改用统信开发者证书签名后的安装包 / 应用商店分发渠道。
 - LoongArch64 版的已知能力差异（arm64 版不受影响）：
   - 连接器 CLI（钉钉 / 飞书 / 企业微信等）上游暂未发布 loong64 安装制品，本包因此不附带连接器锁定文件：pin 校验与托管安装不可用，已在系统 PATH 中的连接器命令行工具仍可正常使用。
   - 本地向量嵌入在编译期关闭，知识库语义检索自动退化为全文检索；界面中的本地嵌入模型下载入口会显示「当前平台暂不支持本地向量嵌入模型」。

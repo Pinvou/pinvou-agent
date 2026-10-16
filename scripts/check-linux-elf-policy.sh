@@ -11,9 +11,11 @@
 # Release binaries link the build host's glibc, so a runner upgrade silently
 # raises the baseline; any ELF above the floor fails here in CI instead of
 # crashing on launch for 22.04 users. loongarch64 keeps the jammy
-# GLIBCXX_/CXXABI_ floors because its only C++ artifact (the ASR engine) is
-# built with -static-libstdc++ -static-libgcc and therefore carries no
-# GLIBCXX_/CXXABI_ version requirements at all (the main app binary is Rust).
+# GLIBCXX_/CXXABI_ floors: its dynamically-linked C++ artifacts are the
+# unofficial Node bridge build and — statically linked — the ASR engine
+# (-static-libstdc++ -static-libgcc, so no GLIBCXX_/CXXABI_ requirements at
+# all); the unofficial Node build is checked against these same floors like
+# every other ELF (the main app binary is Rust).
 # Runs on the release runner (see the
 # glibc floor guard steps in release-packages.yml) and at the end of
 # build-sensevoice-runtime.sh. Depends on dpkg/file/find/objdump/readelf,
