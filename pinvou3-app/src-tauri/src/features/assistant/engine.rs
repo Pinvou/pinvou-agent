@@ -40,7 +40,7 @@ use crate::features::assistant::engine_support::{
 use crate::features::assistant::expert_roster::{
     ExpertRosterSnapshot, cleanup_legacy_expert_projection,
 };
-use crate::features::assistant::platform::bridge::Pinvou3Bridge;
+use crate::features::assistant::platform::bridge::{Pinvou3Bridge, persisted_provider_route};
 use crate::features::assistant::turn_shell_tasks::TurnShellTaskRegistry;
 use crate::features::sessions::{
     ChatEngineState, ScheduledEngineState, ScheduledRunProfile, ScheduledTokenAccounting,
@@ -1804,19 +1804,25 @@ impl AppEngine {
         let workspace = engine_config.workspace.clone();
         let handle = spawn_engine(engine_config, &dt_config);
         // Forensic metadata only (no wire/route effect): record the provider
-        // route this spawn resolved — the exact `build_dt_config` value the
-        // engine will run on (`cfg.provider`, e.g. "moonshot") — onto the
-        // session record. The foundation's create path stamps the engine
-        // default ("deepseek") into every new record, which misleads diagnosis
-        // when the session actually rides another vendor's route. Fail-soft by
-        // contract: a stamp failure must never break or abort the spawn.
+        // route this spawn resolved onto the session record. The foundation's
+        // create path stamps the engine default ("deepseek") into every new
+        // record, which misleads diagnosis when the session actually rides
+        // another vendor's route. The canonical (kind, exact id) pair comes
+        // from `persisted_provider_route` so the record stays resolvable by
+        // the foundation's fail-closed identity resolver even when a
+        // shared-home CLI record already carries an exact id naming the
+        // previous route. Fail-soft by contract: a stamp failure must never
+        // break or abort the spawn.
         if let Some(provider) = dt_config
             .provider
             .as_deref()
             .map(str::trim)
             .filter(|provider| !provider.is_empty())
         {
-            if let Err(error) = store.stamp_resolved_provider(session_id, provider) {
+            let (kind, provider_id) = persisted_provider_route(provider);
+            if let Err(error) =
+                store.stamp_resolved_provider(session_id, &kind, provider_id.as_deref())
+            {
                 // eprintln, not log: the headless host installs no logger, so
                 // stderr is this file's diagnostic channel (the dominant
                 // existing pattern here).

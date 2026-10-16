@@ -874,21 +874,28 @@ impl SessionStore {
     /// the engine default `model_provider = "deepseek"`; the app resolves the
     /// real route only at spawn, so without this write a session riding the
     /// moonshot/zai/... wire reads back as "deepseek" and misleads diagnosis.
-    /// The value comes verbatim from `DtConfig.provider` (`build_dt_config` /
-    /// `engine_route_provider`), keeping the engine side the source of truth
-    /// for the field semantics (foundation `SessionMetadata` model_provider /
-    /// model_provider_id). The stamp deliberately never touches
-    /// `model_provider_id`: app routes key the engine provider table by the
-    /// resolved kind itself, so there is no per-session exact configured
-    /// provider key to record — and blindly writing `None` would erase one
-    /// if a future path ever records it.
-    pub fn stamp_resolved_provider(&self, id: &str, provider: &str) -> Result<()> {
+    ///
+    /// The caller supplies the canonical `(kind, exact id)` pair for the
+    /// resolved route (`bridge::persisted_provider_route`), and both fields
+    /// are written together: a record created by the CodeWhale CLI in a
+    /// shared home can carry a non-None `model_provider_id` naming the
+    /// previous route, and rewriting only the kind would leave exactly the
+    /// mismatched pair the foundation's fail-closed
+    /// `resolve_persisted_provider_identity` rejects at the next resume
+    /// (review #713 round 2) — even with both providers configured.
+    pub fn stamp_resolved_provider(
+        &self,
+        id: &str,
+        kind: &str,
+        provider_id: Option<&str>,
+    ) -> Result<()> {
         let _mutation = self.scheduled_mutation.lock();
         let mut session = self
             .manager
             .load_session_snapshot(id)
             .with_context(|| format!("load_session({id}) for provider stamp"))?;
-        session.metadata.model_provider = provider.to_string();
+        session.metadata.model_provider = kind.to_string();
+        session.metadata.model_provider_id = provider_id.map(str::to_string);
         // In-place metadata rewrite: no session created or removed, so the
         // post-persist retention rescan is skipped (round-18 MAJOR-4).
         self.persist_in_place(&session, "provider stamp")?;
