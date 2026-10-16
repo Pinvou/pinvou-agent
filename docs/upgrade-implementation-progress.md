@@ -9735,3 +9735,101 @@ twelve in progress and thirty-one incomplete/deferred. Product 0.10.9, normative
 versions 1.0, pinned V1 and CodeWhale remain unchanged. Physical platform
 qualification and deployment remain deferred; no artifact download size, retry
 or total/cumulative duration cap is introduced.
+
+## Signed DownloadInfo request/response inheritance
+
+The feature verifier now composes unchanged complete DownloadInfo request and
+response contracts with actual ordinary verification of both the current request
+Decision and new Download credential. Independent original request.scope supplies
+full product/component/installation/channel/revision/target expectations. Both
+roles require fresh supplied Root/current time, all actual signatures/exact
+policies and global denial. This differs deliberately from Refresh historical
+inputs: current file eligibility requires a currently valid Decision.
+
+Decision must offer an update for the requested actual-hop package. All nineteen
+shared qualification fields, including full metadataSet, forwardPath and update,
+match the new Download credential. Role-specific jti/key/type/audience/purpose and
+windows remain independent; no signed downloadKey or HTTP requestId is invented.
+The unchanged response contract binds packageId/size/SHA and nbf<URLexpiry<=exp;
+this verifier additionally requires supplied now<URLexpiry. Expired Decision/URL
+requires rechecking/refreshing and a fresh short-lived URL; it never terminates a
+logical download, clears cache or adds a total/cumulative/retry duration cap.
+
+The immutable SignatureCheckedDownloadResponse owns both canonical checked
+envelopes and exact original response bytes, borrows exact request/current Root
+and records supplied time. Signature-array order remains unchanged. This is no
+native-fact, protected custody, complete metadata/Registry/generation acceptance,
+active workflow/writable-session, destination approval, artifact-byte or execution
+proof. Existing network destination and complete-byte checks plus protected owners
+remain necessary before useful operations. No partial authenticated result escapes.
+
+Seven test groups execute sixty-one composed Node controls, nine positives:
+general success five, inherited qualification sixteen, independent context seven,
+package/outer binding seven, signatures twelve, windows eight and wire six.
+All nineteen common fields are covered by inheritance/context controls, including
+complete update and forwardPath; current Decision expiry is isolated with a fresh
+Download credential. Both actual thresholds, bad extras/duplicates/denial/exact
+policy, distinct role key/jti, no-update/wrong package, URL and credential expiration
+and one millisecond before, full contracts, original bytes/canonical identities,
+closed Schema and resource bounds are exercised. The oracle composes complete
+frozen assertApiContract and actual verifyEnvelope twice plus explicitly new
+normative inheritance/URL-now comparisons; it is not an unchanged frozen full
+operation. Private keys stay in Node. One App facade test exercises twelve genuine
+controls. Initial seven/61 passed (4.200s harness); naming-only clarification then
+changed old/new locals to decision_claims/download_claims before the final freeze.
+
+Both independent scoped final static audits passed the six-source freeze without
+a required finding, manifest SHA256
+eb77ed89e15abd3e2179199fbb7ad21f6fb573912834e6a38ebd948b451ff029.
+The primary's sixty-two verifier tests passed with zero failures/ignored (93.793s
+wall); new seven/61 controls took 4.160s harness. Strict all-target Clippy passed
+(9.802s wall). The default App protocol facade passed forty-eight tests, zero
+failures/ignored (19.120s harness / 190.503s wall).
+
+Codec, ordinary verifier, manifests and three locks remain unchanged. Prior
+actual codec157 including two enabled Node oracle tests retains acceptance;
+unchanged selected App/CLI graphs retain 104 packages/109 feature nodes each and
+nine identical verification-critical packages/features, with preexisting two
+ICU/zerovec patch differences already disclosed. No full-closure equivalence or
+new exhaustive codec execution is claimed. Actual CLI/App builds are not workflow
+E2E. Full protected workflow and physical qualification remain later work.
+
+The primary actual CLI-workspace backend built the production App/verifier graph
+and passed its zero-test library harness (197.329s wall), solely compilation/graph
+evidence. Four Rust format checks, architecture (21.497s), version, before/after
+six-source freeze and standard working/index whitespace all passed. Session 26960
+closed exit zero; all known primary-owned compiler/runtime/runner/Node processes
+were zero before granting the dependency auditor exclusive execution.
+
+The dependency auditor independently repeated all gates on the same freeze:
+sixty-two verifier tests passed (76.088s wall), new seven/61 controls 4.700s
+harness; strict all-target Clippy 3.455s; default App forty-eight 25.560s harness /
+35.234s wall; actual CLI backend zero-test compilation/harness 9.337s wall.
+Four Rust format checks, architecture, version, standard working/index whitespace
+and before/after six-source freeze all passed. Session 91476 closed exit zero;
+all owned runners/Cargo/compiler/Node/test processes were zero. Codec, manifests
+and three locks were explicitly unchanged; prior selected-graph evidence is
+reused rather than newly claiming equivalent entire dependency closures.
+
+The compatibility auditor independently repeated all gates on the same freeze:
+sixty-two verifier tests passed (59.893s wall), new seven/61 controls 4.810s
+harness; strict all-target Clippy 3.783s; default App forty-eight 24.410s harness /
+33.269s wall; actual CLI backend zero-test compilation/harness 8.651s wall.
+Four Rust format checks, architecture, version, normal working/index whitespace
+and before/after six-source freeze all passed. Session 11428 closed exit zero;
+all owned runner/compiler/runtime/test processes and newly spawned Node processes
+were zero. Codec, manifests and three locks were independently confirmed unchanged;
+prior actual codec and selected-graph evidence remains reused.
+
+Both reviewers passed the next bounded authenticated Release renewal plan:
+compose unchanged archived identity, ordinary current verification and complete
+immutable-business renewal binding. Historical/current Roots and proof levels
+remain distinct; strict higher revision need not be consecutive. Archive custody,
+Root lineage, full chain publication and atomic high-water replacement remain
+later protected-owner responsibilities. This plan is not delivered behavior here.
+
+Full T27 remains in progress. Forty-seven tasks remain four implemented, twelve
+in progress and thirty-one incomplete/deferred. Product 0.10.9, normative versions
+1.0, pinned V1 and CodeWhale remain unchanged. Physical platform qualification and
+deployment remain deferred. No artifact download size, retry or total/cumulative
+duration cap is introduced.
