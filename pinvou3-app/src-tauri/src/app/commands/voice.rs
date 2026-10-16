@@ -1047,6 +1047,44 @@ mod voice_postprocess_tests {
     use super::*;
 
     #[test]
+    fn explicit_asr_cli_fallback_evaluates_the_shared_override() {
+        // Executing pin for the shape pins in
+        // tests/macos_phase2_contract.test.js: a regression like
+        // `fn has_explicit_asr_cli_fallback() -> bool { false }` keeps
+        // every source-shape regex green (the doc comment still mentions
+        // has_asr_cli_override), so the gate's behavior is pinned here
+        // against the real env table.
+        let (_lock, _env) = crate::platform::test_support::locked_env(&[
+            "PINVOU3_ASR_CMD",
+            "PINVOU3_DEEPSPEECH2_CMD",
+            "PADDLESPEECH_BIN",
+        ]);
+        // SAFETY: ENV_LOCK held by locked_env above; env writes are
+        // serialized against the other env-writing tests.
+        unsafe {
+            std::env::remove_var("PINVOU3_ASR_CMD");
+            std::env::remove_var("PINVOU3_DEEPSPEECH2_CMD");
+            std::env::remove_var("PADDLESPEECH_BIN");
+        }
+        assert!(
+            !has_explicit_asr_cli_fallback(),
+            "no override configured: the CLI fallback gate must stay closed"
+        );
+        // SAFETY: ENV_LOCK held.
+        unsafe { std::env::set_var("PINVOU3_ASR_CMD", "  ") };
+        assert!(
+            !has_explicit_asr_cli_fallback(),
+            "a blank override must not count as configured"
+        );
+        // SAFETY: ENV_LOCK held.
+        unsafe { std::env::set_var("PINVOU3_ASR_CMD", "/usr/bin/pinvou-asr") };
+        assert!(
+            has_explicit_asr_cli_fallback(),
+            "a non-empty override must open the CLI fallback gate"
+        );
+    }
+
+    #[test]
     fn summarize_reduces_status_with_body_error_to_class_and_status() {
         // error_for_status_with_body errors carry the endpoint's response
         // body; the frontend-facing summary must keep only the class and

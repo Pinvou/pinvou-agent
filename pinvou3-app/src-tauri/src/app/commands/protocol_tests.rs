@@ -832,3 +832,31 @@ fn aux_stays_out_of_the_deliverables_index_and_acp_classification() {
         "is_acp_metadata and is_acp must both reject aux ids (round-36 minor 5)",
     );
 }
+
+// Round-5 review: the round-4 skipped-disclosure regression lived in THIS
+// shell (flattening the command to `Ok(impl()?.rows)`), and the core
+// contract in features::deliverables cannot pin it — a flattened shell
+// compiles cleanly and passes every core test, while the JS merge maps a
+// bare array to `{rows: [], skipped: []}`, silently re-creating the
+// empty-panel bug. The command fn is executed directly so a signature or
+// shape regression fails here, at the layer that owns it.
+#[tokio::test]
+async fn gui_command_shell_forwards_rows_and_skipped() {
+    use crate::features::deliverables::DeliverableIndex;
+
+    let (_home, host, _lock) =
+        crate::features::deliverables::gui_index_contract_tests::run_in_scratch_home();
+
+    let shell: DeliverableIndex = super::artifacts::list_deliverable_index()
+        .await
+        .expect("gui command");
+    assert_eq!(shell.rows.len(), 1, "the shell keeps the rows");
+    assert_eq!(shell.rows[0].session_id, "s-ok");
+    assert_eq!(
+        shell.skipped,
+        vec!["s-huge".to_string()],
+        "the shell must return DeliverableIndex whole, not flatten to rows"
+    );
+
+    drop(host);
+}

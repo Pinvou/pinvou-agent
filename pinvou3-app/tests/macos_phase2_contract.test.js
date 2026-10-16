@@ -204,5 +204,21 @@ assert.match(
   /pub(?:\(crate\))? fn has_asr_cli_override\(\)/,
   "the GUI gate must delegate to the shared override predicate",
 );
+// The consumer leg of the same contract: the command-layer CLI-fallback
+// gate must still call the shared predicate. Without this, a regression
+// like `fn has_explicit_asr_cli_fallback() -> bool { false }` (or dropping
+// the call at the fallback site) compiles cleanly and keeps every suite
+// green while the env overrides silently stop gating the CLI fallback.
+const voiceCommands = read("pinvou3-app/src-tauri/src/app/commands/voice.rs");
+assert.match(
+  voiceCommands,
+  /fn has_explicit_asr_cli_fallback\(\) -> bool \{[\s\S]*?has_asr_cli_override\(\)/,
+  "has_explicit_asr_cli_fallback must still evaluate the shared override predicate",
+);
+assert.match(
+  voiceCommands,
+  /if has_explicit_asr_cli_fallback\(\)/,
+  "the voice recognition fallback arm must consume the CLI-fallback gate",
+);
 
 console.log("macOS phase 2 packaging and ASR contracts: ok");

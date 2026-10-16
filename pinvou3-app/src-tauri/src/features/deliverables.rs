@@ -404,30 +404,20 @@ mod capped_record_read_tests {
 }
 
 #[cfg(test)]
-mod gui_index_contract_tests {
+pub(crate) mod gui_index_contract_tests {
     use super::{DeliverableIndex, MAX_LIST_SCAN_BYTES, list_deliverable_index_impl};
     use crate::platform::paths::tests::{ENV_LOCK, EnvVarGuard};
 
-    /// The GUI-facing contract (round-4 review): the command shell must
-    /// forward the scan's `skipped` disclosure, not just `rows`. A session
-    /// record past the 32 MiB scan cap has real deliverables on disk that
-    /// the panel will not list — if the shell dropped `skipped`, that
-    /// partial result rendered as a successful (possibly empty) index with
-    /// no notice, indistinguishable from a clean bill. Mirrors the CLI
-    /// contract's `artifacts_list_reports_unscannable_records_in_skipped_sessions`.
-    #[test]
-    fn gui_index_forwards_the_skipped_disclosure() {
-        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-        let home = tempfile::tempdir().expect("scratch home");
-        let host = EnvVarGuard::capture(&["PINVOU3_HOME"]);
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env
-        // writes are serialized against the other env-writing tests.
-        unsafe { std::env::set_var("PINVOU3_HOME", home.path()) };
-        let sessions = home.path().join("sessions");
+    /// Seeds one scannable session (one real deliverable on disk) plus one
+    /// over-cap record under `<home>/sessions`, the fixture shape shared by
+    /// the core contract below and the command-shell contract in
+    /// app::commands::protocol_tests.
+    pub(crate) fn seed_index_fixture(home: &std::path::Path) {
+        let sessions = home.join("sessions");
         std::fs::create_dir_all(&sessions).expect("seed sessions root");
 
         // A scannable session tracking one real deliverable on disk.
-        let deliverable = home.path().join("report.md");
+        let deliverable = home.join("report.md");
         std::fs::write(&deliverable, "# Report\n").expect("seed deliverable");
         let ok_record = format!(
             r#"{{"metadata":{{"id":"s-ok","title":"OK chat"}},"artifacts":[{{"storage_path":{}}}]}}"#,
@@ -442,6 +432,38 @@ mod gui_index_contract_tests {
         huge.set_len(MAX_LIST_SCAN_BYTES + 1)
             .expect("spoil fixture");
         drop(huge);
+    }
+
+    /// Holds ENV_LOCK for setup AND for the caller's asserts (parallel
+    /// env-writing tests must not repoint PINVOU3_HOME mid-scan), seeds the
+    /// fixture under a scratch PINVOU3_HOME, and returns the tempdir, the
+    /// env guard whose Drop restores the host env, and the lock guard that
+    /// keeps the env stable until the caller finishes.
+    pub(crate) fn run_in_scratch_home() -> (
+        tempfile::TempDir,
+        EnvVarGuard,
+        std::sync::MutexGuard<'static, ()>,
+    ) {
+        let lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let home = tempfile::tempdir().expect("scratch home");
+        let host = EnvVarGuard::capture(&["PINVOU3_HOME"]);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env
+        // writes are serialized against the other env-writing tests.
+        unsafe { std::env::set_var("PINVOU3_HOME", home.path()) };
+        seed_index_fixture(home.path());
+        (home, host, lock)
+    }
+
+    /// The GUI-facing contract (round-4 review): the command shell must
+    /// forward the scan's `skipped` disclosure, not just `rows`. A session
+    /// record past the 32 MiB scan cap has real deliverables on disk that
+    /// the panel will not list — if the shell dropped `skipped`, that
+    /// partial result rendered as a successful (possibly empty) index with
+    /// no notice, indistinguishable from a clean bill. Mirrors the CLI
+    /// contract's `artifacts_list_reports_unscannable_records_in_skipped_sessions`.
+    #[test]
+    fn gui_index_forwards_the_skipped_disclosure() {
+        let (_home, host, _lock) = run_in_scratch_home();
 
         let index: DeliverableIndex = list_deliverable_index_impl().expect("gui index");
         assert_eq!(index.rows.len(), 1, "the scannable session still lists");
