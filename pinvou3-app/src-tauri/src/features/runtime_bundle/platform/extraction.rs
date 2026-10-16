@@ -2039,6 +2039,43 @@ mod tests {
             "the skip path must re-tighten a permissive file, not serve it as-is"
         );
 
+        // Round-8 minor 1, testable arm: the dir cannot be CREATED (its
+        // parent is read-only) — `create_dir_all().ok()?` demotes before any
+        // write. (The `try_make_private_dir` error arm is NOT unit-reachable
+        // from the test process: as the directory's owner, a self-chmod
+        // always succeeds regardless of the current mode — the same
+        // mechanism round-7 M1 exposed; it is reachable only for a
+        // non-owner/sandboxed process, where the demote branch is the
+        // fail-closed answer.)
+        // Make the per-aux dir path itself a REGULAR FILE: create_dir_all on
+        // it fails (ENOTDIR on the json child), the writer demotes.
+        let sessions_dir = crate::platform::paths::aux_session_mcp_json("aux-mode02")
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        std::fs::create_dir_all(sessions_dir.parent().unwrap()).ok();
+        // The dir may already exist from the FIRST write leg above
+        // (aux-mode01 shares the parent): remove it so a regular file can
+        // take its place.
+        if sessions_dir.is_dir() {
+            std::fs::remove_dir_all(&sessions_dir).unwrap();
+        }
+        std::fs::write(&sessions_dir, b"not a directory").unwrap();
+        let verdict = bundle.aux_mcp_config_path_for_session("aux-mode02", "mode02");
+        let _ = std::fs::remove_file(&sessions_dir);
+        assert!(
+            verdict.is_none(),
+            "a failure to create the private dir must demote (verdict={verdict:?})"
+        );
+        assert!(
+            verdict.is_none(),
+            "a failure to create the private dir must demote, never write elsewhere"
+        );
+        assert!(
+            !crate::platform::paths::aux_session_mcp_json("aux-mode02").exists(),
+            "no config may be written behind the failed dir setup"
+        );
+
         // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
         unsafe { std::env::remove_var("PINVOU3_HOME") };
         let _ = std::fs::remove_dir_all(&tmp);

@@ -2530,7 +2530,7 @@ impl Pinvou3Bridge {
         // seam both spawn and per-turn enforcement consume) yields either:
         //   - ParentScopedRead { parent_id }: exactly ONE tool, the
         //     session-reader `read_session` pinned to the parent task via
-        //     the per-aux scoped MCP config (`--only-session <parent>`).
+        //     the per-aux scoped MCP config (`--only-session=<parent>`).
         //   - ZeroTool: the legacy zero-tool engine — the fail-closed
         //     fallback for isolated-prefix parents (`aux-sched-x` …) and
         //     for scoped-config write failures, byte-identical to the
@@ -2573,52 +2573,85 @@ impl Pinvou3Bridge {
                     // Fail closed: no scoped config file, no scoped tools —
                     // demote to the zero-tool shape (spawn config
                     // byte-identical; the per-turn reminder text is the
-                    // scoped-read form, disclosed in engine_pool).
-                    match self
-                        .bundle
-                        .aux_mcp_config_path_for_session(session_id, parent_id)
-                    {
-                        Some(path) => {
-                            // G4 note (ADR-0024 costs): the foundation ALSO
-                            // merges a workspace-level .codewhale/mcp.json
-                            // and plugin servers on top of this file — for
-                            // aux that path is neutralized by the
-                            // session-private execution root (never
-                            // user-trusted), NOT by mcp_config_path itself;
-                            // re-examine here if aux roots ever become
-                            // workspace-bound.
-                            scoped_aux_mcp_path = Some(path);
-                            (
-                                Self::aux_session_instructions(parent_id),
-                                // The single-entry list comes from the one
-                                // seam (round-5 minor 2): spawn, per-turn,
-                                // and tests share `aux_allowed_tools`
-                                // instead of re-deriving it inline.
-                                crate::features::assistant::engine_pool::aux_allowed_tools(
-                                    session_id,
-                                ),
-                            )
-                        }
-                        None => {
-                            // Round-5 minor 1: drop any stale per-aux config
-                            // a previous successful spawn left behind — the
-                            // per-turn probe (`aux_turn_allowed_tools`) keys
-                            // the scoped list on that file's presence, so a
-                            // demoted engine must not leave it readable.
-                            let stale = crate::platform::paths::aux_session_mcp_json(session_id);
-                            if stale.exists() {
-                                // A failed unlink leaves the per-turn probe
-                                // scoped for a zero-catalog engine — calls are
-                                // still rejected at execution (fail-safe), but
-                                // the half-state must be visible in the log.
-                                if let Err(error) = std::fs::remove_file(&stale) {
-                                    log::warn!(
-                                        "[bridge] aux demotion could not remove stale scoped config {}: {error}",
-                                        stale.display()
-                                    );
-                                }
+                    // scoped-read form, disclosed in engine_pool). The
+                    // feature kill-switch counts as a write failure here
+                    // (round-8 MAJOR-1): when session-mention + long-memory
+                    // are both off, `feature_disabled_tool_names` strips the
+                    // scoped tool from the catalog at the foundation's
+                    // deny-wins-allow gate, so spawning scoped would ship a
+                    // persona and a per-turn reminder promising a tool the
+                    // engine cannot see (and boot a python subprocess for
+                    // nothing); E4's server-side `feature_disabled` answer
+                    // is unreachable for GUI engines either way — the tool
+                    // never reaches the server. Demote to ZeroTool so the
+                    // prompt stays honest about the engine's real surface.
+                    let scoped_tool_denied =
+                        crate::features::marketplace::builtin::feature_disabled_tool_names()
+                            .iter()
+                            .any(|name| {
+                                name.eq_ignore_ascii_case(
+                                    crate::features::assistant::engine_pool::AUX_SCOPED_READ_TOOL,
+                                )
+                            });
+                    if scoped_tool_denied {
+                        let stale = crate::platform::paths::aux_session_mcp_json(session_id);
+                        if stale.exists() {
+                            if let Err(error) = std::fs::remove_file(&stale) {
+                                log::warn!(
+                                    "[bridge] aux kill-switch demotion could not remove stale scoped config {}: {error}",
+                                    stale.display()
+                                );
                             }
-                            (Self::AUX_ZERO_TOOL_INSTRUCTIONS.to_string(), Vec::new())
+                        }
+                        (Self::AUX_ZERO_TOOL_INSTRUCTIONS.to_string(), Vec::new())
+                    } else {
+                        match self
+                            .bundle
+                            .aux_mcp_config_path_for_session(session_id, parent_id)
+                        {
+                            Some(path) => {
+                                // G4 note (ADR-0024 costs): the foundation ALSO
+                                // merges a workspace-level .codewhale/mcp.json
+                                // and plugin servers on top of this file — for
+                                // aux that path is neutralized by the
+                                // session-private execution root (never
+                                // user-trusted), NOT by mcp_config_path itself;
+                                // re-examine here if aux roots ever become
+                                // workspace-bound.
+                                scoped_aux_mcp_path = Some(path);
+                                (
+                                    Self::aux_session_instructions(parent_id),
+                                    // The single-entry list comes from the one
+                                    // seam (round-5 minor 2): spawn, per-turn,
+                                    // and tests share `aux_allowed_tools`
+                                    // instead of re-deriving it inline.
+                                    crate::features::assistant::engine_pool::aux_allowed_tools(
+                                        session_id,
+                                    ),
+                                )
+                            }
+                            None => {
+                                // Round-5 minor 1: drop any stale per-aux config
+                                // a previous successful spawn left behind — the
+                                // per-turn probe (`aux_turn_allowed_tools`) keys
+                                // the scoped list on that file's presence, so a
+                                // demoted engine must not leave it readable.
+                                let stale =
+                                    crate::platform::paths::aux_session_mcp_json(session_id);
+                                if stale.exists() {
+                                    // A failed unlink leaves the per-turn probe
+                                    // scoped for a zero-catalog engine — calls are
+                                    // still rejected at execution (fail-safe), but
+                                    // the half-state must be visible in the log.
+                                    if let Err(error) = std::fs::remove_file(&stale) {
+                                        log::warn!(
+                                            "[bridge] aux demotion could not remove stale scoped config {}: {error}",
+                                            stale.display()
+                                        );
+                                    }
+                                }
+                                (Self::AUX_ZERO_TOOL_INSTRUCTIONS.to_string(), Vec::new())
+                            }
                         }
                     }
                 }
@@ -7431,6 +7464,79 @@ mod tests {
         assert!(
             !staged.exists(),
             "the demotion arm must unlink the stale per-aux config (round-5 minor 1)"
+        );
+
+        // SAFETY: platform::paths::tests::ENV_LOCK held via locked_env; env
+        // writes are serialized.
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
+        let _ = std::fs::remove_dir_all(&home);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Round-8 MAJOR-1: the feature kill-switch demotes the scoped spawn —
+    /// when `session-mention` + `long-memory` are both off, the foundation's
+    /// deny-wins-allow gate strips `mcp_session-reader_read_session` from
+    /// the catalog, so spawning scoped would promise a tool the engine
+    /// cannot see (and boot a python subprocess for nothing). The scoped arm
+    /// must demote to ZeroTool instead. Mutating the
+    /// `scoped_tool_denied` short-circuit to `false` turns this red.
+    #[test]
+    fn aux_spawn_demotes_when_feature_kill_switch_disables_the_scoped_tool() {
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        let home = std::env::temp_dir().join(format!(
+            "pinvou3-aux-killswitch-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        // SAFETY: platform::paths::tests::ENV_LOCK held via locked_env; env
+        // writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &home) };
+        crate::features::marketplace::mcp_catalog::ensure_package_released("session-reader")
+            .expect("seed the released session-reader package");
+        // Both union features off (the manifest's scoped-tool gate), via the
+        // real toggle so settings.json (the read side of
+        // `feature_disabled_tool_names`) is authoritative.
+        crate::features::marketplace::builtin::set_feature_enabled("session-mention", false)
+            .expect("disable session-mention");
+        crate::features::marketplace::builtin::set_feature_enabled("long-memory", false)
+            .expect("disable long-memory");
+        let bridge = fixture_bridge();
+        assert!(
+            crate::features::marketplace::builtin::feature_disabled_tool_names()
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(
+                    crate::features::assistant::engine_pool::AUX_SCOPED_READ_TOOL
+                )),
+            "the fixture must reproduce the both-off union state"
+        );
+
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-aux-killswitch-root-{}-{:p}",
+            std::process::id(),
+            &bridge
+        ));
+        let cfg = bridge.build_engine_config_for_session_roots(
+            "aux-xyz",
+            SessionRoots {
+                execution: root.join("exec"),
+                ledger: root.join("ledger"),
+                bound: false,
+            },
+        );
+        assert_eq!(
+            cfg.allowed_tools,
+            Some(Vec::new()),
+            "the kill-switch state must demote the aux spawn to zero tools"
+        );
+        assert!(
+            !cfg.features.enabled(deepseek_tui::features::Feature::Mcp),
+            "the demoted engine keeps Feature::Mcp disabled"
+        );
+        assert!(
+            !crate::platform::paths::aux_session_mcp_json("aux-xyz").exists(),
+            "no scoped config may be written (or a stale one left) for a denied tool"
         );
 
         // SAFETY: platform::paths::tests::ENV_LOCK held via locked_env; env

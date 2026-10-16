@@ -1777,6 +1777,33 @@ class ScopedReadTests(unittest.TestCase):
         self.assertEqual(error, sibling_error)
         self.assertNotIn("parent01", error)
 
+    def test_scoped_resolve_failure_returns_the_unified_denial(self):
+        # Round-8 M2(3): the `path is None` containment arm must return the
+        # SAME id-free denial (deleting the `if scoped:` early-return drops
+        # this into the id-echoing "session not found" text and turns this
+        # red; the deleted-parent leg exercises the `is_file` arm, not this
+        # one). The escape symlink resolves OUTSIDE the sessions dir.
+        (Path(self.dir) / "escaped").mkdir()
+        (Path(self.dir) / "escaped" / "target.json").write_text(
+            json.dumps({"schema_version": 1,
+                        "metadata": {"id": "target", "title": "t",
+                                     "created_at": "x", "updated_at": "x",
+                                     "message_count": 0},
+                        "messages": []}),
+            encoding="utf-8")
+        target = (Path(self.dir) / "escaped" / "target.json").resolve()
+        link = Path(self.dir) / "linkout"
+        try:
+            link.symlink_to(target)
+        except OSError:
+            self.skipTest("symlinks unavailable on this filesystem")
+        _, out_scope_error = self.read("sibling99")
+        payload, error = self.read("linkout")
+        self.assertIsNone(payload)
+        self.assertEqual(error, server.SCOPED_NOT_READABLE_ERROR)
+        self.assertEqual(error, out_scope_error)
+        self.assertNotIn("linkout", error)
+
     def test_pagination_and_cursor_work_inside_the_scope(self):
         first, error = self.read("parent01", turn_limit=2)
         self.assertIsNone(error)
@@ -1863,6 +1890,22 @@ class ScopedListTests(unittest.TestCase):
         payload, error = self.list()
         self.assertIsNone(error)
         self.assertEqual(payload["sessions"], [])
+
+    def test_scan_regression_cannot_truncate_the_pinned_entry(self):
+        # Round-8 M2(2) mechanism pin: bury the pinned record under more
+        # siblings than MAX_LIST_SCAN_ENTRIES. A scan-then-filter regression
+        # (unscoped listdirectory + membership filter) hits the scan cap and
+        # the pinned entry is dropped/truncated; the shipped scoped branch
+        # never lists the directory and returns exactly one entry regardless
+        # of sibling count.
+        for i in range(server.MAX_LIST_SCAN_ENTRIES + 5):
+            _write_session(self.dir, f"filler{i:05d}", [
+                _msg("user", _text("q")), _msg("assistant", _text("a")),
+            ], title=f"filler {i}")
+        payload, error = self.list()
+        self.assertIsNone(error)
+        self.assertEqual([entry["sessionId"] for entry in payload["sessions"]],
+                         ["parent01"])
 
     def test_invalid_scope_member_refuses_the_whole_call(self):
         # M3(a): a scope member failing its own validation must refuse the

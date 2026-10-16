@@ -5162,6 +5162,14 @@ mod scheduled_model_tests {
             let _ = aux_parent_session_id(id);
             assert_eq!(aux_tool_surface(id), AuxToolSurface::ZeroTool, "{id}");
         }
+        // Round-8 M2(4): ASCII charset-invalid ids fail closed too — the
+        // charset gate is otherwise only exercised via the multibyte arm,
+        // and a mutation swapping the real validator for a hand-written
+        // charset check survives without these rows.
+        for id in ["aux-a/b", "aux-a b", "aux-a\\b", "aux-a\u{0000}b"] {
+            assert_eq!(aux_tool_surface(id), AuxToolSurface::ZeroTool, "{id}");
+            assert_eq!(aux_allowed_tools(id), Vec::<String>::new(), "{id}");
+        }
         // Length parity with the server's MAX_SESSION_ID_LEN: a parent at the
         // cap stays scoped, one past it demotes host-side (the server would
         // refuse the pin at boot — a dead tool declaration otherwise).

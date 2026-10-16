@@ -200,4 +200,4 @@ export RUST_MIN_STACK=16777216
 
 Order: cargo lib → fmt → clippy legs → npm test:node + lint → python suite → smoke → arch-guard → fork-guard --fast. DCO sign every commit; PR-language and self-review per AGENTS.md §1 / CONTRIBUTING.md.
 
-Gate status (2026-10-14, this ARM64 box, at the round-5 head after the reviewer's rebase onto `d5852a2bf`): J1 cargo lib 3283 passed / 0 failed + fmt clean + clippy `-D warnings` clean + clippy all-targets baseline-only; J2 `npm run test:node` 1015 passed / 0 failed; J3 python session-reader suite 91 passed + smoke ALL PASS (incl. the scoped journey); J4 arch-guard passed + fork-guard `--fast` 指纹层全过.
+Gate status (2026-10-16, this ARM64 box, at the round-8 head rebased onto `007f5ea40`): J1 cargo lib + fmt clean + clippy `-D warnings` clean (counts re-measured at push time); J2 `npm run test:node` all pass; J3 python session-reader suite (incl. the round-8 mechanism pins) + smoke ALL PASS (incl. the scoped journey); J4 arch-guard passed + fork-guard `--fast` 指纹层全过. Historical snapshots: round-5 head 3283/1015/91.
