@@ -35,12 +35,16 @@ fn present_linux_main_window(
                 // 同一 GTK 主循环任务内完成映射、取消 iconic 状态和前台呈现。
                 // 避免 release 启动较快时，异步 set_focus 早于窗口 map 而被 Mutter 丢弃。
                 //
-                // Mutter 拒绝 deiconify 处于 iconic 状态的窗口（unminimize 返回 Ok
-                // 但窗口召不回来，同一实测与规避见 features/pet/pet_window.rs 的
-                // hide→show）：先 hide（withdraw）再 show，等价于新窗口映射，WM 必须
-                // 显示。仅在确实 iconic 时走这条路，可见窗口不做无谓的闪烁。gtk 0.18
-                // 未绑定 GtkWindowExt::is_iconified，用 GDK 窗口状态位等价判断
-                // （WidgetExt::window → gdk::Window::state 含 ICONIFIED）。
+                // Mutter refuses to deiconify a window that is still iconic
+                // (unminimize returns Ok but the window never comes back;
+                // same observation and hide→show workaround as
+                // features/pet/pet_window.rs): hide (withdraw) first, then
+                // show — equivalent to a fresh window map, which the WM must
+                // honor. Only a genuinely iconic window takes this path; a
+                // visible window is not made to flicker needlessly. gtk 0.18
+                // does not bind GtkWindowExt::is_iconified, so test the
+                // equivalent GDK window state bits (WidgetExt::window →
+                // gdk::Window::state contains ICONIFIED).
                 if gtk_window.window().is_some_and(|gdk_window| {
                     gdk_window
                         .state()

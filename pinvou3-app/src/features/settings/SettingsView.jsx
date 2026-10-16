@@ -1410,7 +1410,7 @@ function hasStoredCredential(record) {
       );
     };
     /** @param {{ checked: boolean, onChange: (checked: boolean) => void }} props - Switch state. */
-    const IOSSwitch = ({ checked, onChange, disabled }) => <Toggle checked={checked} onChange={onChange} disabled={disabled} size="md" />;
+    const IOSSwitch = ({ checked, onChange, disabled, 'aria-label': ariaLabel }) => <Toggle checked={checked} onChange={onChange} disabled={disabled} size="md" aria-label={ariaLabel} />;
     /** @param {{ id: string, icon: import('react').ReactNode, label: string, dot?: boolean, active: boolean, onSelect: (id: string) => void }} props - Sidebar section entry. */
     const SectionButton = ({ id, icon, label, dot, active, onSelect }) => (
       <button
@@ -1720,19 +1720,27 @@ function hasStoredCredential(record) {
     };
 
     /**
-     * 全局唤醒快捷键（默认组合 Ctrl/Cmd+Alt+P，把后台窗口置前；默认关闭）。
-     * 桌面专用：web 整节不渲染（调用方 !isWeb 门控）；globalShortcutsAvailable=false
-     * 时开关与输入框灰掉、desc 展示不支持文案。开关与组合输入共用一条 single-flight
-     * 命令通道（每次上送完整 enabled+accelerator 配置，与 ComputerUse 同款
-     * flightRef），成功才提交本地状态；"invalid"/"conflict" 把本地化错误写进
-     * 所在行的 desc 槽（conflict 的技术 message 只进 console）。enabled 请求返回
-     * disabled 且带 message（会话环境不支持）时，状态照常提交但开关行 desc 换为
-     * 不支持文案。输入框持有展示形态（formatGlobalShortcutForDisplay），
-     * savedAccelerator 保留机器规范串，脏检查比较两侧展示形态；命令成功且
-     * Rust 返回 accelerator 时才刷新镜像（disabled=会话不支持时 Rust 返回
-     * null 且磁盘保留原组合，此时本地镜像不动）。持久化归
-     * set_global_shortcut_config 独占（bridge 侧同步 settings 快照），不走
-     * update_settings。
+     * Global bring-to-front shortcut (default combo Ctrl/Cmd+Alt+P, presents
+     * the window while Pinvou runs in the background; OFF by default).
+     * Desktop-only: the web lane renders none of this section (caller !isWeb
+     * gate); with globalShortcutsAvailable=false the switch and input grey
+     * out and the desc shows the unsupported copy. The switch and the combo
+     * input share one single-flight command channel (each call submits the
+     * full enabled+accelerator config, same flightRef pattern as
+     * ComputerUse); local state commits only on success, and "invalid"/
+     * "conflict" write the localized error into the owning row's desc slot
+     * (conflict's technical message goes to console only). An enabled
+     * request answered disabled with a message (session cannot support it)
+     * still commits, but the switch row's desc turns into the unsupported
+     * copy. The input holds the display form (formatGlobalShortcutForDisplay),
+     * savedAccelerator keeps the machine-canonical string, and the dirty
+     * check compares the display forms of both; the mirror refreshes only
+     * when the command succeeded AND Rust reported an accelerator — a
+     * disabled success reports the combo the save persisted (it may have
+     * changed it), while null (unavailable session, or an unparsable draft)
+     * leaves the local mirror untouched because disk kept the old combo.
+     * Persistence is owned exclusively by set_global_shortcut_config (the
+     * bridge syncs the settings snapshot); update_settings is never used.
      * @param {{ t: object, platformCapabilities: { globalShortcutsAvailable?: boolean } }} props - Dictionary and platform capability slice.
      */
     const GlobalShortcutSettingSection = ({ t, platformCapabilities }) => {
@@ -1740,20 +1748,23 @@ function hasStoredCredential(record) {
       const slice = useBridgeState(['settings']);
       const prefs = (slice && slice.settings) || {};
       const available = !!(platformCapabilities && platformCapabilities.globalShortcutsAvailable);
-      // Rust 端 global_shortcut_enabled 默认 false：只有显式 true 才显示为开，
-      // 未加载/为空的设置一律显示为关。
+      // Rust defaults global_shortcut_enabled to false: only an explicit true
+      // shows as on; unloaded/empty settings render as off.
       const [shortcutEnabled, setShortcutEnabled] = useState(() => prefs.global_shortcut_enabled === true);
       const [savedAccelerator, setSavedAccelerator] = useState(() => normalizeGlobalShortcutDraft(prefs.global_shortcut_accelerator) || GLOBAL_SHORTCUT_DEFAULT_ACCELERATOR);
       const [draftAccelerator, setDraftAccelerator] = useState(() => formatGlobalShortcutForDisplay(savedAccelerator));
       const [actionError, setActionError] = useState('');
       const [errorSlot, setErrorSlot] = useState('toggle');
       const [pending, setPending] = useState(false);
-      // 与 ComputerUseSettingSection 相同的同步 single-flight：disabled 属性晚一拍，
-      // 双击会并发两条命令，ref 在事件处理器内先行拦截。
+      // Same synchronous single-flight as ComputerUseSettingSection: the
+      // disabled attribute lags one render, so a double-click would fire two
+      // concurrent commands — the ref intercepts inside the event handler.
       const flightRef = useRef({ busy: false });
-      // settings 分片可能晚于本节挂载才加载完成（useState 初始值只求值一次）：
-      // 在未加载 → 已加载的第一次跃迁时一次性重新播种本地镜像；提交进行中跳过，
-      // 等命令落定后的 settings 快照推送再播种。
+      // The settings slice may finish loading after this section mounts
+      // (the useState initializers evaluate once): re-seed the local mirrors
+      // exactly once on the unloaded → loaded transition; skip while a
+      // submit is in flight — the settings snapshot pushed after the command
+      // settles does the seeding then.
       const seededRef = useRef(false);
       const loadedSettings = (slice && slice.settings) || null;
       useEffect(() => {
@@ -1775,22 +1786,29 @@ function hasStoredCredential(record) {
             const status = result && result.status;
             if (status === 'registered' || status === 'disabled') {
               setShortcutEnabled(nextEnabled);
-              // Rust 返回 accelerator（registered 必有；disabled=会话不支持时为
-              // null，且磁盘保留原组合）时才刷新本地镜像；为 null 时保持原值，
-              // 不把未解析的草稿回写进 savedAccelerator（磁盘内容是权威）。
+              // Refresh the local mirror only when Rust reported an
+              // accelerator: a disabled success reports the combo the save
+              // just persisted, while null (unavailable session, or an
+              // unparsable draft) means disk kept the old combo — never
+              // write the unparsed draft into savedAccelerator (disk is
+              // authoritative).
               if (result && typeof result.accelerator === 'string' && result.accelerator) {
                 const normalized = normalizeGlobalShortcutDraft(result.accelerator);
                 setSavedAccelerator(normalized);
-                // 草稿与提交前展示形态仅差大小写/空白时折叠后同步输入框
-                // （Rust 已归一化，别让别名拼写的脏标记残留）；否则视为用户
-                // 正在编辑的组合，不覆盖。
+                // Fold the input back in sync when the draft differs from
+                // the submitted display form only by case/whitespace (Rust
+                // already normalized; do not leave an alias-spelling dirty
+                // flag behind); otherwise treat it as a combo the user is
+                // still editing and leave it alone.
                 const displayBefore = formatGlobalShortcutForDisplay(nextAccelerator);
                 if (foldGlobalShortcutDraft(draftAccelerator) === foldGlobalShortcutDraft(displayBefore)) {
                   setDraftAccelerator(formatGlobalShortcutForDisplay(normalized));
                 }
               }
-              // disabled + message 只出现在会话环境不支持（如 Wayland）时：
-              // 意愿已持久化，但要在开关行 desc 给出本地化不支持提示而非无声成功。
+              // disabled + message only happens when the session cannot
+              // support shortcuts (e.g. Wayland): the intent was persisted,
+              // but the switch row's desc must show the localized
+              // unsupported notice instead of a silent success.
               if (status === 'disabled' && nextEnabled === true && result.message) {
                 setActionError(copy.globalShortcutUnsupportedDesc);
                 setErrorSlot('toggle');
@@ -1806,7 +1824,9 @@ function hasStoredCredential(record) {
             setErrorSlot(slot);
           })
           .catch((error) => {
-            // 包装层约定不 reject（硬失败返回 null）；此处仅防御意外异常卡死飞行标志。
+            // The wrapper contract never rejects (hard failures resolve
+            // null); this only guards against an unexpected exception
+            // latching the flight flag.
             console.warn('[settings] global shortcut config failed', error);
             setActionError(copy.globalShortcutSaveFailed);
             setErrorSlot(slot);
@@ -1816,7 +1836,8 @@ function hasStoredCredential(record) {
             setPending(false);
           });
       };
-      // 脏检查比较展示形态：draft 是展示形态，savedAccelerator 是机器规范串。
+      // Dirty check compares display forms: draft holds the display form,
+      // savedAccelerator the machine-canonical string.
       const acceleratorDirty = normalizeGlobalShortcutDraft(draftAccelerator) !== formatGlobalShortcutForDisplay(savedAccelerator);
       const acceleratorPlausible = isPlausibleGlobalShortcutAccelerator(draftAccelerator);
       const toggleDesc = available
@@ -1826,11 +1847,14 @@ function hasStoredCredential(record) {
       return (
         <IOSSection title={copy.globalShortcuts}>
           <IOSRow label={copy.globalShortcutEnable} desc={toggleDesc}>
-            {/* 不可用会话仍允许把残留的 enabled=true 关掉（Rust 端 disable 刻意
-                不做可用性门槛，随时安全）；只有打开新快捷键才需要可用会话。 */}
+            {/* An unavailable session may still switch off a residual
+                enabled=true (the Rust disable path deliberately has no
+                availability gate — it is always safe); only turning the
+                shortcut ON needs a capable session. */}
             <IOSSwitch
               checked={shortcutEnabled}
               disabled={(!available && !shortcutEnabled) || pending}
+              aria-label={copy.globalShortcutEnable}
               onChange={value => applyConfig(!!value, savedAccelerator, 'toggle')}
             />
           </IOSRow>
@@ -2423,8 +2447,10 @@ function hasStoredCredential(record) {
               onToggleShortcut={handleVoiceShortcutInfoEnable}
             />
           )}
-          {/* 全局唤醒快捷键是桌面能力：web 通道既没有该命令也没有全局窗口概念，
-              整节隐藏（与通知节的 can 门控同款）。 */}
+          {/* The global shortcut is a desktop capability: the web lane has
+              neither the command nor any global-window concept, so hide the
+              whole section (same gating pattern as the notifications
+              section's can gate). */}
           {!isWeb && (
             <GlobalShortcutSettingSection t={t} platformCapabilities={platformCapabilities} />
           )}

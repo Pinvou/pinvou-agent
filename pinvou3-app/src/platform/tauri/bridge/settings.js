@@ -150,14 +150,17 @@ async function testImageInputCapability(model, baseUrl, apiKey, modelId) { retur
     });
   }
 
-  // ── 全局唤醒快捷键 ────────────────────────────────────────────────
-  // 专用 Rust 命令 set_global_shortcut_config 独占注册与持久化（不走
-  // update_settings）：success = status "registered"/"disabled"（registered
-  // 必带归一化 accelerator；disabled 且 accelerator 为 null 时——会话不支持
-  // 或携带无法解析的组合——Rust 端磁盘保留原组合）；"invalid"/"conflict"
-  // 表示注册被拒（conflict 的 message 是技术细节，仅记 console，UI 展示
-  // 本地化文案）。硬失败（IPC 异常）返回 null，调用方据此回滚开关并展示
-  // 通用失败文案。
+  // ── Global bring-to-front shortcut ────────────────────────────────
+  // The dedicated Rust command set_global_shortcut_config exclusively owns
+  // registration and persistence (update_settings is never used): success =
+  // status "registered"/"disabled", and a committed save always reports the
+  // accelerator disk now holds — including a disabled save, which may itself
+  // have changed the stored combo (null remains possible on
+  // "invalid"/"conflict", i.e. nothing was persisted). "invalid"/"conflict"
+  // mean the registration was refused (conflict's message is technical
+  // detail, console only; the UI shows localized copy). Hard failures (IPC
+  // exceptions) resolve null so the caller can roll its toggle back and show
+  // the generic failure copy.
   function setGlobalShortcutConfig(enabled, accelerator) {
     const sync = function () {
       return invoke("set_global_shortcut_config", { enabled: !!enabled, accelerator: String(accelerator || "") });
@@ -184,9 +187,10 @@ async function testImageInputCapability(model, baseUrl, apiKey, modelId) { retur
     if (state.settings) {
       // Same mechanics as the pet:enabled_changed listener above: the bridge
       // owns its settings slice; the React layer only reads it. Mirror the
-      // accelerator ONLY when Rust reports one — with null (unsupported
-      // session or an unparsable draft while disabled) disk keeps the
-      // existing combo, so the snapshot must not regress to the raw input.
+      // accelerator whenever Rust reports one — a disabled save reports the
+      // combo it just persisted, so the next toggle submits it instead of a
+      // stale mirror. (A missing accelerator must never regress the snapshot
+      // to the raw input.)
       const mirror = { global_shortcut_enabled: !!enabled };
       if (typeof result.accelerator === "string" && result.accelerator) {
         mirror.global_shortcut_accelerator = result.accelerator;

@@ -8,8 +8,11 @@ use std::sync::Mutex;
 pub struct GlobalShortcutApplyResult {
     /// "registered" | "disabled" | "invalid" | "conflict".
     pub status: String,
-    /// Canonical accelerator form when the shortcut is active; None when it
-    /// is not (invalid / disabled / conflict).
+    /// The accelerator the request left persisted: the active canonical combo
+    /// for `registered`, and the combo disk now holds for `disabled` (a
+    /// disabled save may itself change the stored combo, and both frontend
+    /// mirrors must follow or the next toggle re-submits the stale one).
+    /// `None` for `invalid` / `conflict`, which persist nothing.
     pub accelerator: Option<String>,
     /// Human-readable detail for invalid/conflict/unavailable outcomes.
     pub message: Option<String>,
@@ -20,6 +23,21 @@ impl GlobalShortcutApplyResult {
         Self {
             status: outcome.status.as_str().to_string(),
             accelerator: outcome.accelerator,
+            message: outcome.message,
+        }
+    }
+
+    /// Wire result of an apply whose persist committed: the status/message
+    /// come from the outcome, while the accelerator is always taken from the
+    /// just-persisted prefs — disk is authoritative even when the outcome
+    /// itself carries none (a disabled apply never does).
+    fn persisted(
+        outcome: crate::features::global_shortcut::ApplyOutcome,
+        prefs: crate::platform::prefs::UserPrefs,
+    ) -> Self {
+        Self {
+            status: outcome.status.as_str().to_string(),
+            accelerator: Some(prefs.global_shortcut_accelerator),
             message: outcome.message,
         }
     }
@@ -89,6 +107,11 @@ fn should_persist(status: crate::features::global_shortcut::ApplyStatus) -> bool
 /// - a persist failure rolls the registration change back best-effort (the
 ///   persisted prefs are still authoritative — replay them, on this same
 ///   blocking worker) and returns Err.
+///
+/// A committed persist always answers with the persisted accelerator (see
+/// [`GlobalShortcutApplyResult::persisted`]): a disabled save can itself
+/// change the stored combo, and the frontend mirrors only follow the
+/// response, so `None` there would strand the just-saved combo.
 #[tauri::command]
 pub(crate) async fn set_global_shortcut_config(
     app: AppHandle,
@@ -130,9 +153,14 @@ pub(crate) async fn set_global_shortcut_config(
             Ok(())
         });
         match persist {
-            // update_transaction yields the updated prefs; only its success
-            // or failure matters here.
-            Ok(_) => Ok(GlobalShortcutApplyResult::from_outcome(outcome)),
+            // update_transaction re-loads and returns the persisted prefs, so
+            // the wire result reports exactly what disk now holds — including
+            // for a successful disabled save, whose response must carry the
+            // just-persisted accelerator: the frontend only updates its saved
+            // mirror when the response contains one, and a null here would
+            // leave the mirrors stale so the next toggle re-submits the old
+            // combo over this save.
+            Ok(persisted) => Ok(GlobalShortcutApplyResult::persisted(outcome, persisted)),
             Err(persist_error) => {
                 // Roll the registration back to the still-authoritative
                 // persisted config. The transaction aborted, so disk still
@@ -200,5 +228,51 @@ mod tests {
             }),
             "serialized field names are part of the wire contract"
         );
+    }
+
+    /// A committed persist reports the PERSISTED accelerator, not the apply
+    /// outcome's — the load-bearing case is a successful disabled save: the
+    /// outcome carries no accelerator, but the save changed what disk holds,
+    /// and the frontend mirrors must follow it or the next toggle re-submits
+    /// the stale combo over this save (review round 3, both lanes).
+    #[test]
+    fn persisted_result_reports_the_persisted_accelerator() {
+        use crate::features::global_shortcut::{ApplyOutcome, ApplyStatus};
+
+        let mut prefs = crate::platform::prefs::UserPrefs::default();
+        prefs.global_shortcut_accelerator = "control+alt+KeyO".to_string();
+        let disabled = GlobalShortcutApplyResult::persisted(
+            ApplyOutcome {
+                status: ApplyStatus::Disabled,
+                accelerator: None,
+                message: None,
+            },
+            prefs.clone(),
+        );
+        assert_eq!(
+            disabled.accelerator.as_deref(),
+            Some("control+alt+KeyO"),
+            "a disabled save must report the just-persisted combo"
+        );
+        assert_eq!(disabled.status, "disabled");
+
+        let registered = GlobalShortcutApplyResult::persisted(
+            ApplyOutcome {
+                status: ApplyStatus::Registered,
+                accelerator: None,
+                message: None,
+            },
+            prefs,
+        );
+        assert_eq!(
+            registered.accelerator.as_deref(),
+            Some("control+alt+KeyO"),
+            "a registered save reports the same persisted combo"
+        );
+        // The committed-persist arm must actually WIRE this helper (a
+        // `from_outcome` there reverts to reporting the outcome's accelerator
+        // — None on a disabled save — and strands the just-saved combo). That
+        // wiring is pinned structurally from commands/tests.rs: a pin in this
+        // file could only ever match its own assert text.
     }
 }
