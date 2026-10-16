@@ -37,10 +37,12 @@ impl GlobalShortcutApplyResult {
 /// register/unregister) and the settings persist below must be atomic per
 /// command, or two racing invokes could interleave apply A → apply B →
 /// persist B → persist A and leave settings.json describing a config the
-/// plugin never applied. The startup replay is not a user of this lock —
-/// the event loop cannot dispatch webview invokes until `lib.rs` setup
-/// returns, so the replay can never overlap a command invoke (and the
-/// feature's own REGISTERED state serializes the rest).
+/// plugin never applied — [`crate::features::global_shortcut`]'s REGISTERED
+/// state serializes apply entry only, not the apply→persist pair. The startup
+/// replay is not a user of this lock — the event loop cannot dispatch webview
+/// invokes until `lib.rs` setup returns, so the replay can never overlap a
+/// command invoke; that lifecycle claim is the only reason the replay needs
+/// no lock here.
 static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 
 fn config_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -53,10 +55,14 @@ fn config_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 /// Whether an apply outcome warrants persisting the requested config:
-/// `Registered` and `Disabled` leave the plugin state matching the request,
-/// so settings.json must describe it; `Invalid` and `Conflict` changed
-/// nothing (a bad parse, or another application owns the combination), so
-/// prefs must keep describing what is actually still active.
+/// `Registered` and `Disabled` are the outcomes where the request was
+/// accepted (applied, or already in place), so settings.json must describe
+/// it; `Invalid` and `Conflict` changed nothing (a bad parse, or another
+/// application owns the combination), so prefs must keep describing what is
+/// actually still active. `Disabled` additionally covers an unavailable
+/// session: the request was refused before the plugin was touched and
+/// nothing became active — persisting `enabled` there only records the
+/// user's intent, and replays re-check availability before acting on it.
 fn should_persist(status: crate::features::global_shortcut::ApplyStatus) -> bool {
     use crate::features::global_shortcut::ApplyStatus;
     matches!(status, ApplyStatus::Registered | ApplyStatus::Disabled)
@@ -141,8 +147,13 @@ pub(crate) async fn set_global_shortcut_config(
                     prefs.global_shortcut_enabled,
                     &prefs.global_shortcut_accelerator,
                 ) {
+                    // Diagnosability: when the replay itself failed, record
+                    // what disk still holds so the divergence between the
+                    // active registration and settings.json is visible.
                     log::warn!(
-                        "global shortcut rollback after persist failure failed: {rollback_error}"
+                        "global shortcut rollback after persist failure failed: {rollback_error} (disk holds enabled={} accelerator={:?})",
+                        prefs.global_shortcut_enabled,
+                        prefs.global_shortcut_accelerator
                     );
                 }
                 Err(persist_error)
@@ -165,5 +176,29 @@ mod tests {
         assert!(should_persist(ApplyStatus::Disabled));
         assert!(!should_persist(ApplyStatus::Invalid));
         assert!(!should_persist(ApplyStatus::Conflict));
+    }
+
+    /// The wire shape is load-bearing across the language boundary: the
+    /// frontend mirror (`bridge/settings.js`) reads `status` and
+    /// `accelerator` by name, and a rename here would pass every frontend
+    /// test while silently disabling the snapshot mirror. Pin the exact
+    /// serialized keys.
+    #[test]
+    fn wire_result_serializes_the_pinned_shape() {
+        let value = serde_json::to_value(GlobalShortcutApplyResult {
+            status: "registered".to_string(),
+            accelerator: Some("control+alt+KeyP".to_string()),
+            message: None,
+        })
+        .expect("result must serialize");
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "status": "registered",
+                "accelerator": "control+alt+KeyP",
+                "message": null,
+            }),
+            "serialized field names are part of the wire contract"
+        );
     }
 }

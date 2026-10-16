@@ -93,8 +93,10 @@ pub fn reveal_startup_window(window: tauri::WebviewWindow) -> Result<bool, Strin
 ///
 /// Returns `true` only when the Linux cold-start gate DEFERRED the activation
 /// (no present task was enqueued), so callers can skip follow-up work that
-/// assumes the window is coming up; `false` when the window was presented —
-/// always `false` on non-Linux, which presents unconditionally.
+/// assumes the window is coming up; `false` in every other case — the present
+/// was attempted (Linux: enqueued to the GTK main loop or run inline, possibly
+/// failing) or the platform presents unconditionally. `false` therefore means
+/// "not deferred", not "the window is up".
 pub(crate) fn activate_main_window(window: tauri::WebviewWindow) -> bool {
     #[cfg(target_os = "linux")]
     {
