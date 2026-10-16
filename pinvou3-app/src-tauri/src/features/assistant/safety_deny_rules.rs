@@ -1980,12 +1980,11 @@ mod tests {
     /// 例拦截，语料覆盖面变化必须是有意识的。
     #[test]
     fn forkguard_deny_inventory_anchored_to_engine_sensitive_paths() {
-        use sensitive_paths::{
-            SENSITIVE_ABSOLUTE_PREFIXES, SENSITIVE_DIRECTORY_NAMES, SENSITIVE_FILE_NAMES,
-        };
+        use sensitive_paths::{SENSITIVE_ABSOLUTE_PREFIXES, SENSITIVE_FILE_NAMES};
 
-        // 直派面：内容与顺序逐项一致（语料字节不变的根据）。
-        assert_eq!(SENSITIVE_DIR_NAMES, SENSITIVE_DIRECTORY_NAMES);
+        // 直派面：`SENSITIVE_DIR_NAMES` 是引擎 `SENSITIVE_DIRECTORY_NAMES`
+        // 的 const 别名（内容与顺序即引擎面，非复制）；语料字节不变由
+        // `rule_snapshot_is_stable` 的钉数与分族断言承载。
 
         // 子集面。
         for child in SENSITIVE_CHILD_FILES {
@@ -2037,6 +2036,28 @@ mod tests {
         // `/var/log/auth.log` 已按 #87 现审头预登记：摄取前缀面采纳的
         // `/var/log/auth` 以 `starts_with` 覆盖 `.log`/轮转变体，语料无需
         // 逐词面枚举；引擎合并后上面的覆盖循环自动生效。
+
+        // 残差反向钉：登记的刻意缺席项必须仍在引擎清单内——引擎删除残差时
+        // 本钉转红，登记随之有意识更新（残差登记不得早于引擎清单腐烂）。
+        for residual in ["credentials.json", ".env"] {
+            assert!(
+                SENSITIVE_FILE_NAMES.contains(&residual),
+                "残差 {residual} 已不在引擎文件清单，登记须更新"
+            );
+        }
+        for residual in [
+            "/etc/ssh/",
+            "/root/",
+            "/var/log/auth",
+            "/var/log/auth.log",
+            "/proc/",
+            "/sys/",
+        ] {
+            assert!(
+                SENSITIVE_ABSOLUTE_PREFIXES.contains(&residual),
+                "残差 {residual} 已不在引擎前缀清单，登记须更新"
+            );
+        }
     }
 
     fn engine() -> ExecPolicyEngine {
