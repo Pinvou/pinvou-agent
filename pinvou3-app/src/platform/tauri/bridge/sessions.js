@@ -952,6 +952,12 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
     if (requestToken !== sessionSwitchRequestToken) return false;
 
     // load_session 与必要的直接会话数据均成功后，才一次性提交 active/context。
+    // r14 B1：在保存/切换前捕获「本次切换目标是否为活动会话」——durable 分支
+    // 的草稿携带只在 wasActive 时合法（回退/撤销重载的目标就是活动会话）。
+    // 跨会话冷切换（switchToSession(B) / scheduled run 打开非活动会话）时
+    // state.composerDraft 是切出会话 A 的草稿，不带门控的携带会把 A 的草稿
+    // 注入 B 的输入框（r13-M2 修复的回归形状）。
+    const wasActive = state.activeSessionId === id;
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
     if (!preserveScheduledRunContext) state.scheduledRunContext = null;
     state.scheduledTaskPendingGuide = null;
@@ -990,11 +996,12 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
       }
       saveWorkingSetTo(liveBuffer);
     } else {
-      // r13 M2：durable 分支同样不得丢未发送草稿——快路径在 :427 有同款修复
-      // 并留有注释，慢路径漏了。switchToSessionInternal(forceDurableLoad) 的
-      // 调用方（回退/撤销重载）目标是活动会话，live composerDraft 是用户
-      // 「打了一半先回退」的最新键击；跨 freshBuffer 替换携带。
-      const liveDraft = state.composerDraft || "";
+      // r13 M2 → r14 B1：durable 分支不得丢未发送草稿——但携带仅限 wasActive
+      // （回退/撤销的 forceDurableLoad 目标就是活动会话，state.composerDraft
+      // 是用户「打了一半先回退」的最新键击）。跨会话冷切换时切出会话的草稿
+      // 不得注入目标会话的 fresh buffer（那正是 r13 修复在共享路径上引入的反向
+      // 回归）；目标会话自己的驱逐暂存草稿由下方 restoreEvictedSessionDraft 恢复。
+      const liveDraft = wasActive ? (state.composerDraft || "") : "";
       sessionStates[id] = freshBuffer();
       if (liveDraft) sessionStates[id].composerDraft = liveDraft;
       // The slow-path disk rehydration bypasses getBuffer; the draft stashed at eviction time must be restored here.
