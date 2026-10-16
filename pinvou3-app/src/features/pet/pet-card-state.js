@@ -1,4 +1,4 @@
-import { dict } from '../../shared/i18n.js';
+import { dict, zhDict } from '../../shared/i18n.js';
 
 export function createPetCardUiState() {
   return {
@@ -63,14 +63,14 @@ export function petCardUiReducer(state, action) {
           replySessionId: state.retrySubmission.sessionId,
           draft: state.retrySubmission.text,
           retrySubmission: null,
-          error: action.error || dict.zh.uiPet.sendFailed,
+          error: action.error || zhDict().uiPet.sendFailed,
         };
       }
       return {
         ...state,
         pendingRequestId: null,
         retrySubmission: null,
-        error: action.error || dict.zh.uiPet.sendFailed,
+        error: action.error || zhDict().uiPet.sendFailed,
       };
 
     case 'close-reply':

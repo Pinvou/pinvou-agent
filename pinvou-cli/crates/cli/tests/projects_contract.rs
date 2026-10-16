@@ -66,7 +66,12 @@ fn bind_code_session(dir: &Path) -> String {
     drop(sessions);
     let agents = SessionAgentStore::load_or_empty();
     agents
-        .bind_code_native_session(&id, CodexWorkspaceKind::Project, Some(dir.to_path_buf()))
+        .bind_code_native_session(
+            &id,
+            CodexWorkspaceKind::Project,
+            Some(dir.to_path_buf()),
+            Vec::new(),
+        )
         .expect("bind code session");
     drop(agents);
     id
@@ -533,9 +538,15 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
         "delete must report the unassigned session"
     );
     let value = run_json(&["pinvou", "projects", "list"]);
+    // §9.9 (review #484): a deleted project's members are tombstoned as an
+    // explicit None entry instead of being removed — automatic revival into
+    // a surviving project sharing the root is forbidden; moving back is an
+    // explicit move.
     assert!(
-        value["assignments"].get(session_id.as_str()).is_none(),
-        "the assignment entry must be gone"
+        value["assignments"]
+            .get(session_id.as_str())
+            .is_some_and(|entry| entry.is_null()),
+        "the assignment entry must be tombstoned, not removed"
     );
     assert!(
         home.sessions_root()
@@ -565,8 +576,12 @@ fn projects_move_assigns_sessions_and_reports_unknowns() {
         "the refusal must disclose that the write it refused is irreversible: {error}"
     );
     let value = run_json(&["pinvou", "projects", "list"]);
+    // The explicit None tombstone from the delete above stands; the refusal
+    // itself must not flip it into an assignment.
     assert!(
-        value["assignments"].get(session_id.as_str()).is_none(),
+        value["assignments"]
+            .get(session_id.as_str())
+            .is_some_and(|entry| entry.is_null()),
         "a refused ungroup must not write an assignment entry"
     );
 
@@ -820,7 +835,12 @@ fn projects_rebind_rerun_converges_a_half_migrated_session() {
     drop(sessions);
     let agents = SessionAgentStore::load_or_empty();
     agents
-        .bind_code_native_session(&code_id, CodexWorkspaceKind::Project, Some(to.clone()))
+        .bind_code_native_session(
+            &code_id,
+            CodexWorkspaceKind::Project,
+            Some(to.clone()),
+            Vec::new(),
+        )
         .expect("move the code binding to to");
     drop(agents);
 
@@ -1495,13 +1515,16 @@ fn projects_rebind_to_an_overlapping_existing_root_is_a_typed_conflict() {
     create_project("Moving", &[&from]);
     create_project("Occupied", &[&to]);
 
-    let error = rebind(&from, &to).expect_err("rebinding onto an occupied root must refuse");
+    // §9.9 (review #484) legalizes cross-project root overlap: rebinding
+    // onto a root another project already holds is a legal, successful
+    // relocation — only the intra-set duplicate/nesting conflicts refuse.
+    let value = rebind_json(&from, &to);
     assert!(
-        error.to_string().contains("REBIND_ROOTS_CONFLICT"),
-        "the refusal must carry the typed conflict marker: {error}"
+        value["affected_project_ids"].as_array().is_some(),
+        "the relocation must report the affected project: {value}"
     );
 
-    // Both projects keep their own roots.
+    // Both projects survive; `Moving` now shares `Occupied`'s territory.
     let list = run_json(&["pinvou", "projects", "list"]);
     let roots: Vec<String> = list["projects"]
         .as_array()
@@ -1517,9 +1540,9 @@ fn projects_rebind_to_an_overlapping_existing_root_is_a_typed_conflict() {
         })
         .collect();
     assert!(
-        roots.contains(&from.to_str().unwrap().to_owned())
+        !roots.contains(&from.to_str().unwrap().to_owned())
             && roots.contains(&to.to_str().unwrap().to_owned()),
-        "both roots must survive the refused rebind: {roots:?}"
+        "the moved project must now reference the shared root: {roots:?}"
     );
 }
 
@@ -1798,4 +1821,57 @@ fn projects_rebind_keeps_a_current_to_lane_baseline_across_a_rerun() {
         !after_text.contains("between-runs.txt"),
         "the between-runs change must stay OUTSIDE the session-start reference: {after_text}"
     );
+}
+
+/// Round-40 M5: the delete's auto-grouped-member expulsion is pinned — a
+/// session auto-filed under the project's root (no explicit assignment)
+/// must land in `affected_session_ids` and get the tombstone; and a corrupt
+/// agent index fails the delete with "nothing was deleted — retry" instead
+/// of silently under-enumerating.
+#[test]
+fn projects_delete_exposes_auto_grouped_members_and_refuses_a_corrupt_index() {
+    let _lock = env_lock();
+    let home = HomeGuard::new("projects", "delete-pin", Isolation::ProductHome);
+    let root = home.path().join("proj-root");
+    std::fs::create_dir_all(&root).expect("project root");
+
+    // Create the project through the CLI itself (the lane the pin
+    // exercises) and keep the generated id.
+    let created = create_project("cli-delete-pin", &[&root]);
+    let project_id = created["id"].as_str().unwrap().to_owned();
+    // An AUTO-GROUPED member: a code session bound under the root, no
+    // explicit assignment (tier-2 only).
+    let member = bind_code_session(&root);
+
+    let value = run_json(&["pinvou", "projects", "delete", &project_id, "--yes"]);
+    let affected = report_ids(&value, "affected_session_ids");
+    assert!(
+        affected.contains(&member),
+        "the auto-grouped member must land in affected_session_ids: {value}"
+    );
+    // The project itself is gone from the listing (tombstones may keep
+    // the file present by design — retention of explicit move-outs).
+    let listing = run_json(&["pinvou", "projects", "list"]);
+    let listed: Vec<&str> = listing["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry["name"].as_str())
+        .collect();
+    assert!(
+        !listed.contains(&"cli-delete-pin"),
+        "the deleted project must not survive in the listing: {listing}"
+    );
+
+    // Corrupt-index refusal: a second project + member, then break the
+    // agent index before the delete.
+    let home2 = HomeGuard::new("projects", "delete-corrupt", Isolation::ProductHome);
+    let root2 = home2.path().join("proj-root-2");
+    std::fs::create_dir_all(&root2).expect("project root 2");
+    let created2 = create_project("cli-delete-corrupt", &[&root2]);
+    let project_id2 = created2["id"].as_str().unwrap().to_owned();
+    let _ = bind_code_session(&root2);
+    std::fs::write(home2.path().join("session-agents.json"), "{not json")
+        .expect("corrupt the agent index");
+    expect_failed(&["pinvou", "projects", "delete", &project_id2, "--yes"]);
 }

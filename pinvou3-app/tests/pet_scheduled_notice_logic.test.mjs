@@ -26,6 +26,15 @@ for (const f of ['zh.js', 'browser.js']) {
     path.join(dir, 'shared', 'i18n', f),
   );
 }
+// zh moved behind i18n.js's lazy loader (startup budget): seed the staged
+// copy synchronously so the imported module reads a filled dict.zh.
+{
+  const { readFileSync, writeFileSync } = await import('node:fs');
+  const i18nCopy = path.join(dir, 'shared', 'i18n.js');
+  let staged = readFileSync(i18nCopy, 'utf8');
+  staged += "\nimport { dictZh as __zh } from './i18n/zh.js';\ndict.zh = __zh;\n";
+  writeFileSync(i18nCopy, staged);
+}
 
 try {
 const {

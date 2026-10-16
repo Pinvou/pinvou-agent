@@ -3,9 +3,13 @@
 // ensureLanguage 按需装载。en/ja 对 zh 的叶子 key 覆盖(parity)与 ja←en 兜底
 // 由 ui_language_coverage 测试断言。
 import { dict } from '../../src/shared/i18n.js';
+import { dictZh } from '../../src/shared/i18n/zh.js';
 import { dictEn } from '../../src/shared/i18n/en.js';
 import { dictJa } from '../../src/shared/i18n/ja.js';
 
+// zh joined en/ja behind i18n.js's lazy loaders (startup budget); this
+// aggregate shim remains the static three-language surface for tests.
+dict.zh = dictZh;
 dict.en = dictEn;
 dict.ja = dictJa;
 

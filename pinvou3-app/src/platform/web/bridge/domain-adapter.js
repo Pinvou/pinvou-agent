@@ -32,7 +32,7 @@
     // 但 APP_BRIDGE_STATE_DOMAINS 的订阅列表双端共享;Web 端补一个空桩
     // (没有 bridge.projects 方法面,列表恒空),防止启动期 getMany 抛
     // "Unknown Tauri bridge state slice: projects"(栈内 #448 的根因)。
-    projects: ["projectsList"],
+    projects: ["projectsList", "projectsAssignmentDegradedAt"],
     updater: ["updateCancelling", "updateCheckError", "updateChecking", "updateDownloading", "updateError", "updateInfo", "updateProgress", "updateReady"],
     dependencies: ["deps", "depsChecking", "depsInstallError", "depsInstallProgress", "depsInstalling"]
   };
@@ -177,7 +177,14 @@
     remoteControl: {},
     artifacts: domain(["artifactInfo", "readArtifactText", "writeArtifactText", "readArtifactImageB64", "readArtifactThumbnail", "renderArtifactVisual", "openContainingFolder", "revealSessionFolder", "openScheduledTaskFolder", "openArtifactExternal", "downloadArtifact", "listDeliverableIndex", "openUserExternalUrl"]),
     attachments: domain(["addAttachmentByPath", "addPasteImage", "removeAttachment", "pickAndAttach", "uploadDeviceFiles", "resolveConversationAttachment", "openConversationAttachment", "revealConversationAttachment"]),
-    files: domain(["pickFiles", "pickFolders", "pickRebindFolder", "pickFeedbackFiles"]),
+    files: domain([
+      "pickFiles",
+      "pickFolders",
+      "pickManageFolder",
+      "pickRebindFolder",
+      "pickWorkspaceFolder",
+      "pickFeedbackFiles",
+    ]),
     personas: domain(["loadPersonas", "getPersonas", "readPersonaBody", "equipPersona", "unequipPersona", "postCardCreatorIntro", "createPersona", "updatePersona", "deletePersona"]),
     memory: domain(["loadMemoryOverview", "saveMemoryProfilePatch", "updateMemoryItem", "deleteMemoryItem", "confirmMemoryCandidate", "ignoreMemoryCandidate", "neverMemoryCandidate", "organizeMemory", "loadOrganizeHistory"]),
     // In-app upgrade is a desktop-only surface (the check/download/install/restart commands are not in the web

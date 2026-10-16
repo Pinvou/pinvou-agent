@@ -42,6 +42,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # can_run=false 的条目只做钉版抓取 + sha256 校验 + file 检查
+          # (交叉架构二进制无法在该 runner 上执行)。
           - platform: linux-arm64
             runs-on: ubuntu-22.04-arm
             resources: linux/aarch64

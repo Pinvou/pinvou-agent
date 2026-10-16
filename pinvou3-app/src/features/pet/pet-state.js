@@ -1,4 +1,4 @@
-import { dict } from '../../shared/i18n.js';
+import { dict, zhDict } from '../../shared/i18n.js';
 
 const ACTIVITY_PRIORITY = Object.freeze({
   waiting: 0,
@@ -89,16 +89,16 @@ function errorText(payload) {
 // 活动卡正文与标题兜底默认中文；UI 边界(PetWindow)按当前语言从 i18n 的
 // uiPet 命名空间注入同形 copy，键名与词条一一对应。
 const DEFAULT_ACTIVITY_COPY = Object.freeze({
-  activityThinking: dict.zh.uiPet.activityThinking,
-  activityProcessing: dict.zh.uiPet.activityProcessing,
-  activityUsingTool: dict.zh.uiPet.activityUsingTool,
-  activityCallingTool: dict.zh.uiPet.activityCallingTool,
-  activityContinuing: dict.zh.uiPet.activityContinuing,
-  activityInputNeeded: dict.zh.uiPet.activityInputNeeded,
-  activityTaskFailed: dict.zh.uiPet.activityTaskFailed,
-  activityTaskDone: dict.zh.uiPet.activityTaskDone,
-  activityStartFailed: dict.zh.uiPet.activityStartFailed,
-  activityTitleFallback: dict.zh.uiPet.activityTitleFallback,
+  activityThinking: zhDict().uiPet.activityThinking,
+  activityProcessing: zhDict().uiPet.activityProcessing,
+  activityUsingTool: zhDict().uiPet.activityUsingTool,
+  activityCallingTool: zhDict().uiPet.activityCallingTool,
+  activityContinuing: zhDict().uiPet.activityContinuing,
+  activityInputNeeded: zhDict().uiPet.activityInputNeeded,
+  activityTaskFailed: zhDict().uiPet.activityTaskFailed,
+  activityTaskDone: zhDict().uiPet.activityTaskDone,
+  activityStartFailed: zhDict().uiPet.activityStartFailed,
+  activityTitleFallback: zhDict().uiPet.activityTitleFallback,
 });
 
 /** Apply a broadcast chat/pet event to the lightweight per-session activity model. */

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef,
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { FileTypeIcon } from '../../components/files/FileTypeIcon.jsx';
 import { StatusDot } from '../../components/StatusDot.jsx';
-import { dict } from '../../shared/i18n.js';
+import { dict, zhDict } from '../../shared/i18n.js';
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
 import { useThrottledValue } from './useThrottledValue.js';
@@ -49,10 +49,10 @@ import {
 // Fallback copy derives from the zh dictionary instead of duplicating its strings here:
 // dictionary tweaks in shared/i18n propagate automatically, and a caller that forgets to
 // pass its own uiConversation now sees real zh strings rather than a hand-copied table.
-// Key-set diff (refactor): every key the timeline reads exists in dict.zh.uiConversation,
+// Key-set diff (refactor): every key the timeline reads exists in zhDict().uiConversation,
 // so no literal overlay is needed; the defensive `|| {}` only guards the impossible case
 // of a missing dict section (same style as other `x || {}` fallbacks in the codebase).
-const FALLBACK_COPY = dict.zh?.uiConversation || {};
+const FALLBACK_COPY = zhDict()?.uiConversation || {};
 
 // conversationCopy(copy) merges the fallback copy table with the caller's
 // overrides; it used to run once per component per render, so long transcripts

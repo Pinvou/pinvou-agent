@@ -8,7 +8,7 @@ import { FileColoredIcon } from '../../components/files/FileColoredIcon.jsx';
 import { invokeTauri, listenTauri, tauriEvents } from '../../platform/tauri/client.js';
 import { useSystemDarkMode } from '../../hooks/useSystemDarkMode.js';
 import { normalizeColorScheme, resolveTheme } from '../../shared/color-scheme.js';
-import { dict, ensureLanguage, initialSystemLanguage, TAG_TO_LANG } from '../../shared/i18n.js';
+import { dict, ensureLanguage, initialSystemLanguage, TAG_TO_LANG, zhDict } from '../../shared/i18n.js';
 import {
   CODE_VIEWER_ICON_BUTTON,
   CodeViewerContent,
@@ -47,7 +47,7 @@ function ReaderTabContent({ tab, state, fontSize, copy }) {
 
 export function ReaderApp() {
   const [language, setLanguage] = useState(initialSystemLanguage);
-  const copy = (dict[language] || dict.zh).uiCodexWorkspace;
+  const copy = (dict[language] || zhDict()).uiCodexWorkspace;
   const [tabs, setTabs] = useState([]);
   const [activeKey, setActiveKey] = useState('');
   const [previews, setPreviews] = useState({});
