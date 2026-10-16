@@ -704,6 +704,20 @@ and a member id whose record is absent are byte-identical to the caller —
 deleting the id would be an existence oracle for sibling ids (round-3 M3(b))."""
 
 
+SCOPED_SURFACE_TOOLS = frozenset(["read_session", "list_sessions"])
+"""The scoped aux surface (ADR-0024): parent-context READS only. Valid while
+every non-member tool could be data-scoped server-side; #627's cross-session
+send is a write and cannot be, so scoped instances neither list nor execute
+it — the server surface now matches the engine-side allowlist stance instead
+of relying on it."""
+
+SCOPED_READ_ONLY_ERROR = (
+    "tool is not available via this instance (this instance is scoped to "
+    "parent-context reads)")
+"""Out-of-surface refusal on scoped instances: same voice as
+SCOPED_NOT_READABLE_ERROR — no call arguments interpolated."""
+
+
 def read_session_history(sessions_dir, session_id, turn_limit=DEFAULT_TURN_LIMIT,
                          cursor=None, include_outputs=False,
                          max_output_chars_per_item=DEFAULT_MAX_OUTPUT_CHARS,
@@ -1291,6 +1305,14 @@ def _handle_call(req_id, params, sessions_dir, messaging_dir, tool_features, all
     if gate is not None:
         _result(req_id, _text_content(gate, is_error=True))
         return
+    if allowed_sessions is not None and name not in SCOPED_SURFACE_TOOLS:
+        # Defense in depth: the aux engine's allowlist never grants
+        # write-family tools, but this instance must also stay read-only on
+        # its own contract — a stale or hand-crafted caller gets the
+        # structured refusal instead of execution.
+        _result(req_id, _text_content(
+            {"ok": False, "error": SCOPED_READ_ONLY_ERROR}, is_error=True))
+        return
     if name == "read_session":
         session_id = str(args.get("session_id") or "").strip()
         payload, error = read_session_history(
@@ -1356,7 +1378,15 @@ def _handle(msg, sessions_dir, messaging_dir, tool_features, allowed_sessions=No
         # MCP convention: keepalive ping answers with an empty result.
         _result(req_id, {})
     elif method == "tools/list":
-        _result(req_id, {"tools": TOOL_DEFS})
+        if allowed_sessions is None:
+            _result(req_id, {"tools": TOOL_DEFS})
+        else:
+            # Scoped instances advertise the read-only surface only (ADR-0024
+            # + #627): a write tool cannot be data-scoped the way reads are,
+            # so listing it would advertise something this instance refuses
+            # to execute.
+            _result(req_id, {"tools": [
+                d for d in TOOL_DEFS if d["name"] in SCOPED_SURFACE_TOOLS]})
     elif method == "tools/call":
         _handle_call(req_id, msg.get("params"), sessions_dir, messaging_dir,
                      tool_features, allowed_sessions)

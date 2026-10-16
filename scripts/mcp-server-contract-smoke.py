@@ -167,8 +167,9 @@ def check_session_reader_scoped_journey() -> None:
             # two-token spelling the code abandoned.
             args=["--sessions-dir", sessions, "--only-session=parent01"],
         ) as rpc:
-            # tools/list is unchanged in scoped mode — the engine-side
-            # allowlist filters the catalog, not the server.
+            # Scoped mode lists the read-only surface: #627's cross-session
+            # send cannot be data-scoped the way reads are, so the scoped
+            # listing and the executable surface stay in lockstep.
             listed = rpc.call("tools/list")
             assert {tool["name"] for tool in listed["result"]["tools"]} == {
                 "read_session", "list_sessions"}
@@ -189,6 +190,18 @@ def check_session_reader_scoped_journey() -> None:
                 "name": "list_sessions", "arguments": {},
             }))
             assert [entry["sessionId"] for entry in scoped_list["sessions"]] == ["parent01"]
+
+            # The #627 send tool rides the unscoped app instance only: a
+            # scoped instance refuses it structurally (never a spool write).
+            refused = content_json(rpc.call("tools/call", {
+                "name": "send_message_to_session",
+                "arguments": {
+                    "session_id": "parent01",
+                    "title": "must never deliver",
+                    "message": "scoped instances are read-only",
+                },
+            }))
+            assert not refused["ok"] and "parent-context reads" in refused["error"]
 
     # Startup validation: an isolated-prefix pin refuses to boot (the aux
     # spawn then fails its MCP boot and carries no session-reader tools —

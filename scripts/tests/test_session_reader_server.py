@@ -2030,8 +2030,10 @@ class ScopedStdioTests(unittest.TestCase):
                 SERVER_PATH.with_name("manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(
                 init["result"]["serverInfo"]["version"], manifest["version"])
-            # tools/list is unchanged in scoped mode — the engine-side
-            # allowlist filters the catalog, not the server.
+            # Scoped mode lists the read-only surface: reads can be
+            # data-scoped server-side, #627's cross-session send cannot, so
+            # the scoped listing and the executable surface stay in lockstep
+            # (the engine-side allowlist remains the first boundary).
             tools = self._rpc(proc, "tools/list")
             self.assertEqual([tool["name"] for tool in tools["result"]["tools"]],
                              ["read_session", "list_sessions"])
@@ -2060,6 +2062,24 @@ class ScopedStdioTests(unittest.TestCase):
             self.assertTrue(payload["ok"])
             self.assertEqual([entry["sessionId"] for entry in payload["sessions"]],
                              ["parent01"])
+
+            # #627 rides the unscoped app instance only: on a scoped
+            # instance the cross-session send is neither listed nor executed —
+            # a hand-crafted call gets the read-only refusal, never a spool
+            # write (mutation: drop the guard and this turns red via the
+            # differing payload shape; the send path itself would answer ok).
+            refused = self._rpc(proc, "tools/call", {
+                "name": "send_message_to_session",
+                "arguments": {
+                    "session_id": "parent01",
+                    "title": "must never deliver",
+                    "message": "scoped instances are read-only",
+                },
+            })
+            payload = json.loads(refused["result"]["content"][0]["text"])
+            self.assertFalse(payload["ok"])
+            self.assertTrue(refused["result"]["isError"])
+            self.assertIn("parent-context reads", payload["error"])
         finally:
             proc.kill()
             proc.communicate()
