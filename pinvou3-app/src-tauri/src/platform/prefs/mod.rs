@@ -765,6 +765,23 @@ impl Default for SidebarPrefs {
     }
 }
 
+/// Chat output preferences.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ChatPrefs {
+    /// Fade-in animation for streaming assistant responses; false = new
+    /// text appears instantly.
+    pub streaming_animation: bool,
+}
+
+impl Default for ChatPrefs {
+    fn default() -> Self {
+        Self {
+            streaming_animation: true,
+        }
+    }
+}
+
 /// Global memory of pinvou's native code-session permission mode. Product
 /// semantics (settled in review):
 /// - when code mode has never been used, a new code session defaults to Plan
@@ -831,6 +848,10 @@ pub struct UserPrefs {
     pub notifications: NotificationPrefs,
     pub pet: PetPrefs,
     pub sidebar: SidebarPrefs,
+    /// Chat output behavior switches (see [`ChatPrefs`]). Absent on settings
+    /// written before this field existed; the struct-level `#[serde(default)]`
+    /// backfills the default-on value, and old builds ignore the unknown key.
+    pub chat: ChatPrefs,
     pub code_permission: CodePermissionPrefs,
     pub mode_defaults: ModeDefaultPrefs,
     /// Global Alt voice shortcut switch (native keyboard hook, currently
@@ -1807,6 +1828,90 @@ mod tests {
             // SAFETY: same as above; removal serialized under ENV_LOCK.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
+    }
+
+    /// A settings.json written before the `chat` key existed must load with
+    /// the streaming fade-in at its default-on value: the struct-level
+    /// `#[serde(default)]` on `UserPrefs` backfills the whole missing
+    /// sub-struct, so old files stay readable without a migration.
+    #[test]
+    fn load_backfills_chat_streaming_animation_when_the_key_is_missing() {
+        with_temp_home("pinvou3-prefs-chat-key-missing-default", || {
+            let settings_path = super::super::paths::settings_path();
+            // Build the fixture from a real serialization so every other field
+            // keeps its on-disk shape, then drop the sub-struct the pre-`chat`
+            // builds never wrote. A non-default sentinel field stays in the
+            // file: if the load below ever fell back to whole-file defaults
+            // (parse failure), the sentinel would read false and the
+            // assertion would expose the fallback masquerading as a backfill.
+            let mut document =
+                serde_json::to_value(UserPrefs::default()).expect("serialize default prefs");
+            let object = document
+                .as_object_mut()
+                .expect("prefs serialize to a JSON object");
+            object.insert(
+                "voice_shortcut_enabled".into(),
+                serde_json::Value::Bool(true),
+            );
+            object.remove("chat");
+            std::fs::write(
+                &settings_path,
+                serde_json::to_string_pretty(&document).expect("serialize legacy prefs"),
+            )
+            .expect("write legacy prefs");
+
+            let loaded = UserPrefs::load();
+            assert!(
+                loaded.voice_shortcut_enabled,
+                "sentinel must survive the load: a whole-file default fallback would reset it"
+            );
+            assert!(
+                loaded.chat.streaming_animation,
+                "missing chat key must fall back to the default-on streaming animation"
+            );
+        });
+    }
+
+    /// Forward compatibility inside the `chat` object: a future build may
+    /// persist fields this build does not know. Unknown keys are ignored
+    /// (no `deny_unknown_fields` on `ChatPrefs`) and the missing known field
+    /// is backfilled by `#[serde(default)]`, so the load must succeed with
+    /// the default-on value rather than failing on the unrecognized key.
+    #[test]
+    fn load_tolerates_unknown_fields_inside_the_chat_object() {
+        with_temp_home("pinvou3-prefs-chat-unknown-inner-field", || {
+            let settings_path = super::super::paths::settings_path();
+            let mut document =
+                serde_json::to_value(UserPrefs::default()).expect("serialize default prefs");
+            let object = document
+                .as_object_mut()
+                .expect("prefs serialize to a JSON object");
+            // Same sentinel contract as the missing-key test above: proves the
+            // load parsed the file instead of falling back to all-defaults.
+            object.insert(
+                "voice_shortcut_enabled".into(),
+                serde_json::Value::Bool(true),
+            );
+            object.insert(
+                "chat".into(),
+                serde_json::json!({ "some_future_field": "unused by this build" }),
+            );
+            std::fs::write(
+                &settings_path,
+                serde_json::to_string_pretty(&document).expect("serialize fixture prefs"),
+            )
+            .expect("write fixture prefs");
+
+            let loaded = UserPrefs::load();
+            assert!(
+                loaded.voice_shortcut_enabled,
+                "sentinel must survive the load: a whole-file default fallback would reset it"
+            );
+            assert!(
+                loaded.chat.streaming_animation,
+                "a chat object without the known field must backfill the default-on value"
+            );
+        });
     }
 
     /// Round-41 review: the load-time normalization persist writes the whole
@@ -3052,6 +3157,12 @@ mod tests {
             notifications: NotificationPrefs::default(),
             pet: PetPrefs::default(),
             sidebar: SidebarPrefs::default(),
+            // Non-default value: the round-trip assertion below proves the
+            // field survives a serialize→deserialize cycle (default-true would
+            // pass even if the field were dropped).
+            chat: ChatPrefs {
+                streaming_animation: false,
+            },
             code_permission: CodePermissionPrefs::default(),
             mode_defaults: ModeDefaultPrefs::default(),
             voice_shortcut_enabled: false,
@@ -3070,6 +3181,7 @@ mod tests {
         assert_eq!(parsed.theme, Theme::LiquidDark);
         assert_eq!(parsed.color_scheme, ColorScheme::Dark);
         assert_eq!(parsed.language, Language::En);
+        assert!(!parsed.chat.streaming_animation);
         assert_eq!(parsed.advanced.allow_shell, Some(false));
         assert_eq!(parsed.advanced.max_output_tokens, Some(8192));
     }

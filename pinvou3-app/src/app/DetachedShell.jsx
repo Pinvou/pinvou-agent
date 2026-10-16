@@ -20,6 +20,7 @@ const LazyToolStoreView = lazy(() => VIEW_LOADERS.toolStore().then(m => ({ defau
 const LazyCardPoolView = lazy(() => VIEW_LOADERS.cardpool().then(m => ({ default: m.CardPoolView })));
 const DetachedViewFallback = () => <div className="p-6 text-sm opacity-60">…</div>;
 import { useBridgeState } from '../hooks/useBridge.js';
+import { setStreamFadePreference } from '../features/conversation/stream-fade.js';
 import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
 import { normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
 import { listenTauri } from '../platform/tauri/client.js';
@@ -47,6 +48,16 @@ function useDetachedBase() {
   const activeTheme = resolveTheme(colorScheme, systemDark);
   const [, setPersonaI18nTick] = useState(0);
   const initRef = useRef(false);
+  // Streaming fade-in for chat responses (default on; only an explicit
+  // settings.chat.streaming_animation === false turns it off). Unlike the
+  // one-shot language/theme bootstrap below, this re-derives whenever this
+  // window's settings snapshot refreshes. Settings changes are not broadcast
+  // across windows, so an already-open detached window can lag the main
+  // window's toggle until it reloads settings (self-heals on reopen).
+  const chatStreamingAnimation = !bs || !bs.settings || !bs.settings.chat || bs.settings.chat.streaming_animation !== false;
+  useEffect(() => {
+    setStreamFadePreference(chatStreamingAnimation);
+  }, [chatStreamingAnimation]);
 
   useEffect(() => {
     if (initRef.current || !bs || !bs.settings) return;

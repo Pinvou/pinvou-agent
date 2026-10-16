@@ -39,6 +39,20 @@ for (const settingsI18nSource of settingsI18nSources) {
     'settings billing message must be provided in every UI language',
   );
 }
+// Chat streaming fade-in row: desktop-only (WebSettingsPatch has no `chat`
+// field and would hard-reject the patch), with copy present in every language.
+assert.match(
+  settingsViewSource,
+  /!isWeb && \(\s*<IOSSection title=\{t\.chatSection\}>[\s\S]*?t\.chatStreamingAnimation/,
+  'chat streaming fade-in row must exist and stay gated off the web lane',
+);
+for (const settingsI18nSource of settingsI18nSources) {
+  assert.match(
+    settingsI18nSource,
+    /chatStreamingAnimation:/,
+    'chat streaming fade-in copy must be provided in every UI language',
+  );
+}
 // Legacy handleDetect auto-fill path is deleted; only handleLocalDetect remains.
 assert.strictEqual(
   settingsViewSource.indexOf('async function handleDetect()'),
