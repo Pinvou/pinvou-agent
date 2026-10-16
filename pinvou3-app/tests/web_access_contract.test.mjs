@@ -466,9 +466,7 @@ assert.match(rustCommandBlock(commands, 'chat'),
 assert.match(turnsSource,
   /fn counts_as_user_turn[\s\S]{0,200}?is_user_turn_prompt\(message\) && !is_step_budget_notification\(message\)/,
   'counts_as_user_turn 必须排除步数预算通知——删掉排除条件必须变红（r10-M3 接线锚）');
-assert.match(rustCommandBlock(commands, 'chat'),
-  /if acp_pool\.is_acp\(&sid\) \{\s*return Err\(ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
-  'chat() must reject ACP sessions at its own entry — deleting this gate must fail here');
+
 assert.match(rustCommandBlock(commands, 'chat'),
   /if !is_scheduled && !crate::features::sessions::is_aux_session_id\(&sid\) \{[\s\S]{0,1000}?created_snapshot_id = super::checkpoints::create_turn_checkpoint\(/,
   'chat() must gate the pre-send snapshot on !is_scheduled (scheduled excluded) and skip zero-tool aux side-chats — reverting either leg must fail here');

@@ -710,7 +710,7 @@ pub async fn rewind_to_turn(
             &acp_pool,
             &session_id,
             &execution,
-            "请稍后重试回退",
+            "请先停止该会话再回退",
         )
         .await?;
         let apply_ledger = ledger.clone();
@@ -963,36 +963,52 @@ pub async fn undo_last_rewind(
     .ok_or_else(|| "没有可反悔的回退（未回退过、回退后已产生新轮次/对话被编辑，或绑定的回滚点已被最近 20 个检查点淘汰）".to_string())?;
 
     // 1) 恢复代码到本次回退绑定的 PreRestore（仅对话降级的回退无绑定，跳过
-    //    本步——degraded 语义承诺绝不动代码）。对称语义：restore 内部会再打
-    //    一次 PreRestore（内容为回退后的状态），「反悔的反悔」仍可恢复；该新
-    //    回滚点不影响本 undo 的目标选择（绑定 id 已在 undo_info 里，重试不漂移）。
-    // apply 前 ACP 复检（评审 r11 M3）：undo 的 restore 同样做 read-tree →
-    // checkout-index → clean -fd，正门后放入的同根 ACP 写入同样会被摧毁——
-    // 与 rewind 侧共用同一函数与谓词。
-    reject_if_acp_peer_busy_before_apply(
-        &store.inner(),
-        &acp_pool,
-        &session_id,
-        &execution,
-        "请稍后重试撤销",
-    )
-    .await?;
+    //    本步——degraded 语义承诺绝不动代码，也不做 ACP 复检）。对称语义：
+    //    restore 内部会再打一次 PreRestore（内容为回退后的状态），「反悔的反悔」
+    //    仍可恢复；该新回滚点不影响本 undo 的目标选择（绑定 id 已在 undo_info
+    //    里，重试不漂移）。
+    // r12 M1：与 rewind 侧同款拆开——prepare（打 PreRestore 快照，非破坏，秒级）
+    //    → ACP 复检 → apply（read-tree → checkout → clean -fd，破坏）。r11 的
+    //    摆放把复检放在整个组合之前，正门后放入的同根 ACP 写入会在 PreRestore
+    //    快照的秒级窗口内被拍进快照并被 apply 摧毁。
     if let Some(checkpoint_id) = undo_info.checkpoint_id.clone() {
-        let ledger_restore = ledger.clone();
-        let execution_restore = execution.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            checkpoints::restore_checkpoint(&ledger_restore, &execution_restore, &checkpoint_id)
-                .map_err(|error| {
-                    // 评审 r6 minor 5：与 rewind 侧同款的混合态披露——恢复中途
-                    // 失败时工作区可能部分恢复；重试安全（恢复幂等且绑定 id 固定
-                    // 在 undo_info 里，不因重打 PreRestore 漂移）。
-                    format!(
-                        "恢复回滚点失败: {error:#}。工作区当前可能处于混合状态（部分文件已恢复），请勿在此状态继续工作；直接重试撤销可重新执行恢复（幂等，目标回滚点不变）"
-                    )
-                })
+        let ledger_prepare = ledger.clone();
+        let execution_prepare = execution.clone();
+        let id_for_prepare = checkpoint_id.clone();
+        let (target_meta, _new_pre_restore) = tauri::async_runtime::spawn_blocking(move || {
+            checkpoints::prepare_restore(&ledger_prepare, &execution_prepare, &id_for_prepare, None)
         })
         .await
-        .map_err(|error| format!("恢复回滚点任务失败: {error}"))??;
+        .map_err(|error| format!("准备恢复回滚点任务失败: {error}"))?
+        .map_err(|error| format!("准备恢复回滚点失败: {error:#}"))?;
+        // apply 前 ACP 复检（r11 M3 引入；r12 M1 后移到 prepare 与 apply 之间，
+        // 与 rewind 侧完全同位）。busy peer 用可操作文案（r12 M1：统一「稍后重试」
+        // 对正在执行的 peer 只会一直失败）。
+        reject_if_acp_peer_busy_before_apply(
+            &store.inner(),
+            &acp_pool,
+            &session_id,
+            &execution,
+            "请先停止该会话再撤销",
+        )
+        .await?;
+        let ledger_apply = ledger.clone();
+        let execution_apply = execution.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            checkpoints::apply_restore(&ledger_apply, &execution_apply, &target_meta)
+        })
+        .await
+        .map_err(|error| {
+            format!("恢复回滚点任务失败: {error}。工作区可能处于混合状态（部分文件已恢复），请勿在此状态继续工作；直接重试撤销可重新执行恢复（幂等，目标回滚点不变）")
+        })?
+        .map_err(|error| {
+            // 评审 r6 minor 5：与 rewind 侧同款的混合态披露——恢复中途失败时
+            // 工作区可能部分恢复；重试安全（恢复幂等且绑定 id 固定在 undo_info
+            // 里，不因重打 PreRestore 漂移）。
+            format!(
+                "恢复回滚点失败: {error:#}。工作区当前可能处于混合状态（部分文件已恢复），请勿在此状态继续工作；直接重试撤销可重新执行恢复（幂等，目标回滚点不变）"
+            )
+        })?;
     }
     // 2) 恢复对话：被截消息追加回 transcript 尾部并删 sidecar 记录（阻塞 IO
     //    移出 async worker）。此步失败 = 代码已反悔而对话未反悔——如实报错

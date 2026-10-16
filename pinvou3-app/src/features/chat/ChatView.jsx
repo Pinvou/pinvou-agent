@@ -3744,16 +3744,29 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                 />
                 {/* 实体占位必须覆盖输入框和其上方渐变区，保证滚到底时最后一张卡
                     完整停在渐变之外，而不是虽然能滚到却被遮罩淡化。 */}
+                {/* 「撤销回退」入口（评审 r7 M1 + r12 M2）：挂在 hasMessages 块内
+                    800px 列的实体占位之前——不在 spacer 之后/之外（r12 复审证明
+                    悬浮输入区 z-20 与底部渐变会完整遮挡 spacer 之后的流内子节点，
+                    部分回退后时间线高于视口时唯一自救入口不可达）。放在 spacer
+                    之前：滚到底时位于实体占位顶部之上（176px > 渐变顶 148px），
+                    完整可见可点击。keepTurns=0 空时间线由块外副本覆盖。 */}
+                {isRewindLane && rewindUndoAvailable(rewindUndoState) && hasMessages && (
+                  <RewindUndoChip
+                    state={rewindUndoState}
+                    disabled={busy || rewinding || rewindUndoing}
+                    copy={t.uiCodex}
+                    onOpen={openRewindUndoDialog}
+                  />
+                )}
                 <div data-testid="chat-bottom-spacer" aria-hidden="true" className="w-full shrink-0"
                   style={{ height: (composerH ? composerH + 64 : 176) + 'px' }} />
               </div>
             )}
 
-            {/* 「撤销回退」入口（评审 r7 M1）：必须挂在 hasMessages 块之外——
-                keepTurns=0 的回退 + durable 重载后时间线为空、仅存的内存态「已回退」
-                pill 不持久化，块内渲染会让唯一的自救入口恰在最需要时消失。空时间线
-                下它与空态问候共存的形态对齐 code 车道（CodexAcpView 无此门）。 */}
-            {isRewindLane && rewindUndoAvailable(rewindUndoState) && (
+            {/* 空时间线副本（评审 r7 M1）：keepTurns=0 回退 + durable 重载后时间线
+                为空、仅存的内存态「已回退」pill 不持久化，块外渲染让唯一自救入口
+                在空态下仍可达。 */}
+            {isRewindLane && rewindUndoAvailable(rewindUndoState) && !hasMessages && (
               <RewindUndoChip
                 state={rewindUndoState}
                 disabled={busy || rewinding || rewindUndoing}
