@@ -19,16 +19,6 @@ LINUX_OVERLAY = ROOT / "pinvou3-app/src-tauri/config/platforms/linux/tauri.conf.
 # 都是有意决策,本测试防止无意的基线漂移。
 
 
-def _without_yaml_comments(block):
-    # Same helper as test_release_cache_policy: assertions must judge live
-    # configuration, so commented-out lines can neither satisfy a pin nor
-    # false-fail one (a policy comment merely naming the action must not
-    # turn the absence pin red).
-    return "\n".join(
-        line for line in block.splitlines() if not line.lstrip().startswith("#")
-    )
-
-
 class ReleaseLinuxFloorPolicyTests(unittest.TestCase):
     def setUp(self):
         self.workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
@@ -60,27 +50,12 @@ class ReleaseLinuxFloorPolicyTests(unittest.TestCase):
             step = self._step_block(job, "check-linux-glibc-floor.sh")
             self.assertRegex(step, rf'\.deb" {arch}\s*$')
 
-    def test_linux_builds_carry_no_rust_cache(self):
-        # The runner base and the rust-cache key had to rotate together:
-        # artifacts compiled under 24.04's glibc must not be reused by a
-        # 22.04 build (newer symbol references would leak into the release
-        # binaries) — the old -jammy suffix encoded exactly that binding.
-        # Since 2026-10-15 the release legs hold no rust-cache at all
-        # (the restore-only steps were removed, see
-        # test_release_cache_policy): release builds run fully cold, so no
-        # cross-base reuse surface is left. If a release-side cache is ever
-        # reintroduced, the runner-label/key-binding contract must come
-        # back with it. Assertions run over comment-stripped text: a
-        # policy comment merely naming the action must not false-fail the
-        # absence pin. Belt-and-braces with test_release_cache_policy's
-        # file-wide absence pin (the same mutation trips both); the
-        # per-job scoping here adds locality and keeps the
-        # runner-base/key-binding contract visible next to the floor
-        # policy it protects.
-        self.assertNotIn("Swatinem/rust-cache", _without_yaml_comments(self.x64_job))
-        self.assertNotIn(
-            "Swatinem/rust-cache", _without_yaml_comments(self.arm64_job)
-        )
+    def test_linux_builds_rotate_rust_cache_key_per_runner_baseline(self):
+        # 换 runner 基座必须换 rust-cache key:24.04 glibc 环境编译的缓存产物
+        # 复用进 22.04 构建会把高版本符号引用混进发布二进制,-jammy 后缀把
+        # 两个基座的缓存隔离。runner 标签与 cache key 必须绑定变更。
+        self.assertIn("shared-key: release-linux-x64-jammy", self.x64_job)
+        self.assertIn("shared-key: release-linux-arm64-jammy", self.arm64_job)
 
     def _step_block(self, job, needle):
         # 提取含 needle 的步骤块(步骤以 6 空格 + '- ' 开始),供单步骤断言。

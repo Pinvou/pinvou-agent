@@ -45,11 +45,4 @@ if hdiutil convert "$dmg" -format ULMO -o "$dmg.ulmo" >/dev/null; then
 else
   rm -f "$dmg.ulmo.dmg"
   echo "⚠️ ULMO conversion failed, keeping the original ${format} dmg"
-  # Surface the degradation as a workflow annotation, not just a log line
-  # (mirrors ci-memory-setup.sh's warn discipline). The echo's text is
-  # pinned by substring in test_release_size_policy.py — keep the pinned
-  # phrase intact.
-  if [ "${GITHUB_ACTIONS:-}" = "true" ]; then
-    echo "::warning::convert-dmg-ulmo: ULMO conversion failed; shipping the original ${format} dmg"
-  fi
 fi

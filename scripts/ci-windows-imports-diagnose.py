@@ -30,8 +30,7 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='repla
 
 
 def read_pe(path):
-    with open(path, 'rb') as f:
-        data = f.read()
+    data = open(path, 'rb').read()
     pe = struct.unpack_from('<I', data, 0x3C)[0]
     if data[pe:pe + 4] != b'PE\0\0':
         return None
