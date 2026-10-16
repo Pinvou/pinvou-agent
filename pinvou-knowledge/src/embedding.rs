@@ -198,6 +198,40 @@ pub fn blob_to_vec(blob: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+// 桩契约测试：与桩 impl 同形编译（其余平台的 feature 关闭构建 + loongarch64
+// 的一切构建），钉住「所有入口都返回显式平台错误、绝不触盘」——该分支此前
+// 没有任何 CI 腿编译或运行（knowledge-rust 的 feature-off 步骤运行它）。
+#[cfg(not(all(
+    feature = "local-embed",
+    not(all(target_os = "linux", target_arch = "loongarch64"))
+)))]
+#[cfg(test)]
+mod stub_tests {
+    use super::*;
+
+    #[test]
+    fn every_entry_point_returns_the_explicit_error_without_touching_disk() {
+        let error = Embedder::from_dir(Path::new("/nonexistent/pinvou-stub-probe"), "bge-m3")
+            .err()
+            .expect("stub from_dir must fail");
+        assert_eq!(error, LOCAL_EMBED_UNAVAILABLE);
+        let error = Embedder::from_env_or_dir(Some(Path::new("/nonexistent/pinvou-stub-probe")))
+            .err()
+            .expect("stub from_env_or_dir must fail");
+        assert_eq!(error, LOCAL_EMBED_UNAVAILABLE);
+        let embedder = Embedder;
+        assert_eq!(embedder.model(), "disabled");
+        assert_eq!(
+            embedder.embed(&["x".to_string()]).unwrap_err(),
+            LOCAL_EMBED_UNAVAILABLE
+        );
+        assert_eq!(
+            embedder.embed_one("x").unwrap_err(),
+            LOCAL_EMBED_UNAVAILABLE
+        );
+    }
+}
+
 pub fn cosine(left: &[f32], right: &[f32]) -> f32 {
     if left.len() != right.len() || left.is_empty() {
         return -1.0;
