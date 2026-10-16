@@ -63,6 +63,21 @@ assert.match(webBridge, /stepBudgetNotice[\s\S]{0,240}if \(utext && !stepBudgetN
 // 必须在 rerender 的 user 分支里被调用（carrier check 在 bubble 创建前）。
 assert.match(tauriBridge, /if \(isCompactionCarrierBlocks\(blocks\)\) continue;/, 'tauri bridge：压缩载体必须在用户气泡创建前被过滤——禁用该行必须变红');
 assert.match(webBridge, /if \(isCompactionCarrierBlocks\(blocks\)\) continue;/, 'web bridge：压缩载体必须在用户气泡创建前被过滤——禁用该行必须变红');
+// r13 M4：三个安全关键机制的接线 pin——变异实证均全绿。
+// 1) forceDurableLoad：删掉第四参 → 同 id 快路径假成功（r7-M3 修掉的形状）。
+assert.match(chatView, /switchToSessionInternal\(sid, true, 'chat-rewind', \{ forceDurableLoad: true \}\)/,
+  'reload 必须传 forceDurableLoad: true——删掉第四参回退重载走快路径假成功');
+// 2) filesWillRewind：改成恒 false → 确认键在预览未决时可用（破坏性文件还原绕过成本可见）。
+assert.match(rewindDialogs, /const filesWillRewind = !entry\.conversationOnly && \(!scopeChoiceable \|\| includeWorkspace\)/,
+  'filesWillRewind 的推导链必须锚定——恒 false 会让预览门形同虚设');
+// 3) scope payload：硬编码 true → 复选框变死 UI、仅对话回退不可达。
+assert.match(rewindDialogs, /onConfirm\(\{ includeWorkspace \}\)/,
+  '确认回调必须传 { includeWorkspace }——硬编码 true 复选框变死 UI');
+assert.match(controller, /includeWorkspace === false/,
+  '控制器侧必须消费 includeWorkspace === false（仅对话回退腿）');
+// 4) ChatView 注入接线：删掉 invalidateSkippedBuffer 注入 → 静默 no-op。
+assert.match(chatView, /invalidateSkippedBuffer:/,
+  'ChatView 必须注入 invalidateSkippedBuffer——删掉注入回退失效静默 no-op');
 // r12 M3：invalidateSkippedCache 的调用形状锚——变异实证：改回读执行时刻的
 // depsRef.current.sessionId（r11-M1 修掉的回归形状）当前全绿。六个调用点
 // 必须传闭包局部 sessionId（回退发起时的目标会话 id，入口现取非陈旧捕获）。
