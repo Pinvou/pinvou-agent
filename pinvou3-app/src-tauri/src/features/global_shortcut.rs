@@ -10,20 +10,25 @@
 //! whose Linux arm carries the Mutter/X11 raise workaround.
 //!
 //! Registration is driven from Rust only: the plugin is initialized once in
-//! `lib.rs` with a plugin-level handler (which survives register/unregister
-//! cycles), and this module owns exactly one shortcut at a time — unregister
-//! never goes through `unregister_all`, so shortcuts other features might
-//! register on the same plugin stay untouched. The authoritative persistence
-//! is `settings.json` (`global_shortcut_enabled` / `global_shortcut_accelerator`,
-//! written by the `set_global_shortcut_config` command); lib.rs replays them
-//! at startup — a parse failure or register conflict logs and continues, it
-//! never fails startup.
+//! `lib.rs` with no plugin-level handler, and each registration binds a
+//! per-shortcut handler via `on_shortcut` — so only a combo this module
+//! registered can ever trigger the bring-to-front (a plugin-level handler
+//! would fire for ANY shortcut registered on the shared plugin). This module
+//! owns exactly one shortcut at a time; unregister never goes through
+//! `unregister_all`, so shortcuts other features might register on the same
+//! plugin stay untouched. The authoritative persistence is `settings.json`
+//! (`global_shortcut_enabled` / `global_shortcut_accelerator`, written by the
+//! `set_global_shortcut_config` command); lib.rs replays them at startup — a
+//! parse failure or register conflict logs and continues, it never fails
+//! startup.
 //!
 //! The trigger path dispatches to the main thread (`handle_triggered` →
-//! `run_on_main_thread`): the plugin handler fires on the global-hotkey X11
-//! event thread, and the present composition crosses blocking getters that
-//! wait on the main thread, so running it on the hotkey thread would risk a
-//! circular wait against a concurrent register/unregister.
+//! `run_on_main_thread`): on Linux the plugin dispatches shortcut events on
+//! the global-hotkey X11 event thread, and the present composition crosses
+//! blocking getters that wait on the main thread, so running it on the hotkey
+//! thread would risk a circular wait against a concurrent register/unregister
+//! (on macOS/Windows events already arrive on the main thread, where the
+//! dispatch is a synchronous same-thread call).
 //!
 //! Availability is gated by `platform::capabilities::global_shortcuts_available`
 //! (Windows/macOS and X11 on Linux): on Wayland sessions the plugin's X11
@@ -33,7 +38,7 @@ use std::str::FromStr;
 use std::sync::{Mutex, OnceLock};
 
 use tauri::AppHandle;
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 // The default accelerator string is single-sourced as
 // `crate::platform::prefs::DEFAULT_GLOBAL_SHORTCUT_ACCELERATOR` (the layer
@@ -186,8 +191,18 @@ fn registered_state() -> std::sync::MutexGuard<'static, Option<RegisteredShortcu
 }
 
 fn register_shortcut(app: &AppHandle, shortcut: Shortcut) -> Result<(), String> {
+    // Per-shortcut handler (`on_shortcut`, not `register`): the handler is
+    // bound at registration time, so only THIS combo can ever trigger the
+    // bring-to-front — a plugin-level handler would fire for any shortcut
+    // registered on the shared plugin, including ones other features might
+    // add later. Triggering strictly on Pressed keeps Released a no-op (the
+    // Windows backend emits it from a poll thread).
     app.global_shortcut()
-        .register(shortcut)
+        .on_shortcut(shortcut, |app, _shortcut, event| {
+            if event.state() == ShortcutState::Pressed {
+                handle_triggered(app);
+            }
+        })
         .map_err(|error| format!("register failed: {error}"))
 }
 
@@ -292,9 +307,11 @@ pub(crate) fn apply_config(
             };
             if let Some(previous) = &previous {
                 if let Err(error) = unregister_shortcut_display(app, previous) {
-                    // Best effort: the register attempt below decides the
-                    // outcome (on Windows re-registering an OS-held combo
-                    // fails and surfaces as a conflict).
+                    // Best effort ONLY when the register below succeeds;
+                    // otherwise see the zombie residual in the Err arm (the
+                    // register attempt decides the outcome — on Windows
+                    // re-registering an OS-held combo fails and surfaces as
+                    // a conflict).
                     log::warn!("global shortcut unregister of {previous} failed: {error}");
                 }
                 *registered = None;
@@ -308,12 +325,18 @@ pub(crate) fn apply_config(
                 }
                 Err(error) => {
                     log::warn!("global shortcut register of {accelerator} failed: {error}");
-                    // Residual risk (the Replace arm's zombie, mirror of the
-                    // Unregister arm's asymmetry above): when the unregister
-                    // above ALSO failed, the old combo can still be live at
-                    // the plugin level while our bookkeeping says None — the
-                    // stale shortcut keeps firing until the next startup
-                    // replay re-applies the persisted prefs.
+                    // Zombie residual (mirror of the Unregister arm's
+                    // asymmetry above): whenever the unregister above ALSO
+                    // failed, the old combo stays live at the plugin level
+                    // regardless of this register's result — on failure it
+                    // keeps firing while our bookkeeping says None; on
+                    // success it fires ALONGSIDE the new combo while
+                    // bookkeeping and prefs record only the new one, so
+                    // "settings.json describes what is active" is broken
+                    // until the next startup replay re-applies the persisted
+                    // prefs. Near-unreachable: unregistering a registered
+                    // combo effectively cannot fail on X11/macOS, and only
+                    // Windows `UnregisterHotKey` can error at all.
                     Ok(ApplyOutcome::conflict(error))
                 }
             }
@@ -346,9 +369,10 @@ pub(crate) fn apply_saved_settings(enabled: bool, accelerator: &str) {
     }
 }
 
-/// Plugin-level handler entry (`lib.rs`): the accelerator was pressed.
-/// Only ever fires while our shortcut is registered; a missing main window
-/// (mid-teardown) is logged and ignored, never a panic.
+/// Per-shortcut handler entry (bound by [`register_shortcut`]): the
+/// registered accelerator was pressed. Only fires while our shortcut is
+/// registered; a missing main window (mid-teardown) is logged and ignored,
+/// never a panic.
 pub(crate) fn handle_triggered(app: &AppHandle) {
     // The plugin handler runs on the global-hotkey X11 event thread (Linux).
     // The bring-to-front composition crosses blocking getters that wait on

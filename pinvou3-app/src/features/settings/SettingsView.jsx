@@ -33,6 +33,7 @@ import {
 } from '../chat/voice-shortcut-settings.mjs';
 import {
   GLOBAL_SHORTCUT_DEFAULT_ACCELERATOR,
+  foldGlobalShortcutDraft,
   formatGlobalShortcutForDisplay,
   isPlausibleGlobalShortcutAccelerator,
   normalizeGlobalShortcutDraft,
@@ -1726,7 +1727,9 @@ function hasStoredCredential(record) {
      * 所在行的 desc 槽（conflict 的技术 message 只进 console）。enabled 请求返回
      * disabled 且带 message（会话环境不支持）时，状态照常提交但开关行 desc 换为
      * 不支持文案。输入框持有展示形态（formatGlobalShortcutForDisplay），
-     * savedAccelerator 保留机器规范串，脏检查比较两侧展示形态。持久化归
+     * savedAccelerator 保留机器规范串，脏检查比较两侧展示形态；命令成功且
+     * Rust 返回 accelerator 时才刷新镜像（disabled=会话不支持时 Rust 返回
+     * null 且磁盘保留原组合，此时本地镜像不动）。持久化归
      * set_global_shortcut_config 独占（bridge 侧同步 settings 快照），不走
      * update_settings。
      * @param {{ t: object, platformCapabilities: { globalShortcutsAvailable?: boolean } }} props - Dictionary and platform capability slice.
@@ -1770,14 +1773,20 @@ function hasStoredCredential(record) {
           .then((result) => {
             const status = result && result.status;
             if (status === 'registered' || status === 'disabled') {
-              // 成功才提交本地状态；savedAccelerator 存 Rust 返回的机器规范串，
-              // 输入框经 formatGlobalShortcutForDisplay 显示人类可读形态。
-              const normalized = normalizeGlobalShortcutDraft(result.accelerator) || nextAccelerator;
               setShortcutEnabled(nextEnabled);
-              setSavedAccelerator(normalized);
-              // 开关成功仅在草稿未被编辑时同步输入框，避免覆盖用户正在输入的组合。
-              if (normalizeGlobalShortcutDraft(draftAccelerator) === formatGlobalShortcutForDisplay(nextAccelerator)) {
-                setDraftAccelerator(formatGlobalShortcutForDisplay(normalized));
+              // Rust 返回 accelerator（registered 必有；disabled=会话不支持时为
+              // null，且磁盘保留原组合）时才刷新本地镜像；为 null 时保持原值，
+              // 不把未解析的草稿回写进 savedAccelerator（磁盘内容是权威）。
+              if (result && typeof result.accelerator === 'string' && result.accelerator) {
+                const normalized = normalizeGlobalShortcutDraft(result.accelerator);
+                setSavedAccelerator(normalized);
+                // 草稿与提交前展示形态仅差大小写/空白时折叠后同步输入框
+                // （Rust 已归一化，别让别名拼写的脏标记残留）；否则视为用户
+                // 正在编辑的组合，不覆盖。
+                const displayBefore = formatGlobalShortcutForDisplay(nextAccelerator);
+                if (foldGlobalShortcutDraft(draftAccelerator) === foldGlobalShortcutDraft(displayBefore)) {
+                  setDraftAccelerator(formatGlobalShortcutForDisplay(normalized));
+                }
               }
               // disabled + message 只出现在会话环境不支持（如 Wayland）时：
               // 意愿已持久化，但要在开关行 desc 给出本地化不支持提示而非无声成功。
@@ -1830,6 +1839,8 @@ function hasStoredCredential(record) {
                 onChange={e => setDraftAccelerator(e.target.value)}
                 disabled={!available || pending}
                 placeholder={copy.globalShortcutPlaceholder}
+                aria-label={copy.globalShortcutAccelerator}
+                data-testid="global-shortcut-accelerator"
                 autoCorrect="off" autoCapitalize="off" spellCheck={false}
                 className="h-8 w-36 rounded-lg border border-black/[0.12] bg-transparent px-2.5 text-[13px] leading-5 outline-none focus:border-[#007AFF] disabled:opacity-45 dark:border-white/[0.14] dark:focus:border-[#0A84FF] max-sm:w-full"
               />

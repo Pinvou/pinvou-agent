@@ -895,8 +895,8 @@ pub struct UserPrefs {
     /// canonical display form (e.g. `"control+alt+KeyP"`) so comparisons and
     /// re-registration do not depend on the input alias (`CmdOrCtrl`,
     /// casing, spacing). The default keeps the user-facing alias form
-    /// ([`DEFAULT_GLOBAL_SHORTCUT_ACCELERATOR`]); it is normalized to the
-    /// canonical form on the first apply.
+    /// (`DEFAULT_GLOBAL_SHORTCUT_ACCELERATOR`, module-level const); it is
+    /// normalized to the canonical form on the first apply.
     #[serde(default = "default_global_shortcut_accelerator")]
     pub global_shortcut_accelerator: String,
     pub computer_use: ComputerUsePrefs,

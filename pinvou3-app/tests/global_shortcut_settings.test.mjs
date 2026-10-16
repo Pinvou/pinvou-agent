@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { dict } from './helpers/i18n-all.js'; // aggregate shim: browser entry must not import this (tests only)
 import {
   GLOBAL_SHORTCUT_DEFAULT_ACCELERATOR,
+  foldGlobalShortcutDraft,
   formatGlobalShortcutForDisplay,
   isPlausibleGlobalShortcutAccelerator,
   normalizeGlobalShortcutDraft,
@@ -44,10 +45,18 @@ for (const value of implausible) {
 assert.equal(formatGlobalShortcutForDisplay('control+alt+KeyP'), 'Ctrl+Alt+P');
 assert.equal(formatGlobalShortcutForDisplay('alt+super+KeyP'), 'Alt+Cmd+P');
 assert.equal(formatGlobalShortcutForDisplay('shift+ctrl+Digit3'), 'Shift+Ctrl+3');
-assert.equal(formatGlobalShortcutForDisplay('cmdorctrl+alt+p'), 'Cmd+Alt+P');
+// cmdorctrl is an alias Rust only resolves at parse time: until the first
+// successful apply the persisted value IS the alias, and a platform-partial
+// name would mislabel it on Windows/Linux — display it platform-neutrally.
+assert.equal(formatGlobalShortcutForDisplay('cmdorctrl+alt+p'), 'Ctrl/Cmd+Alt+P');
+assert.equal(formatGlobalShortcutForDisplay('CmdOrCtrl+Alt+P'), 'Ctrl/Cmd+Alt+P');
 // Key/Digit prefixes are stripped even without modifiers; F-keys pass through.
 assert.equal(formatGlobalShortcutForDisplay('KeyF9'), 'F9');
 assert.equal(formatGlobalShortcutForDisplay('ctrl+KeyF9'), 'Ctrl+F9');
+// Numpad/Keypad tokens are never key-stripped (the generic Key rule would
+// mangle keypad5 into pad5).
+assert.equal(formatGlobalShortcutForDisplay('ctrl+alt+keypad5'), 'Ctrl+Alt+Keypad5');
+assert.equal(formatGlobalShortcutForDisplay('ctrl+NumpadAdd'), 'Ctrl+NumpadAdd');
 // Unknown named keys (F-keys, Media*, Minus/Equal, ...) pass through untouched.
 assert.equal(formatGlobalShortcutForDisplay('Ctrl+Minus'), 'Ctrl+Minus');
 assert.equal(formatGlobalShortcutForDisplay('Media+Play'), 'Media+Play');
@@ -58,6 +67,14 @@ assert.equal(formatGlobalShortcutForDisplay(''), '');
 assert.equal(formatGlobalShortcutForDisplay('   '), '');
 assert.equal(formatGlobalShortcutForDisplay(null), '');
 assert.equal(formatGlobalShortcutForDisplay(), '');
+
+// ── Alias-spelling fold: same combo modulo case/whitespace ────────────
+// String-level folding only (case + whitespace); token-level aliasing
+// (keyp ≡ p) stays Rust's parser job. Used for the post-save draft sync
+// decision, never for the value sent to the command.
+assert.equal(foldGlobalShortcutDraft('  Ctrl + alt + p  '), foldGlobalShortcutDraft('ctrl+alt+p'));
+assert.equal(foldGlobalShortcutDraft('CONTROL + Alt + KEYP'), foldGlobalShortcutDraft('control+alt+keyp'));
+assert.notEqual(foldGlobalShortcutDraft('Ctrl+Alt+P'), foldGlobalShortcutDraft('Ctrl+Alt+F9'));
 
 // ── i18n: every new uiSettings key exists in all three dictionaries, same type ──
 const keys = [
@@ -96,6 +113,10 @@ assert.match(settingsView, /global_shortcut_accelerator/);
 assert.match(settingsView, /setGlobalShortcutConfig/);
 // The section must be reachable from the general tab render tree.
 assert.match(settingsView, /<GlobalShortcutSettingSection t=\{t\} platformCapabilities=\{platformCapabilities\} \/>/);
+// The accelerator input is programmatically labelled and pinned for smoke
+// selectors (sibling convention: localPortPlaceholder input).
+assert.match(settingsView, /aria-label=\{copy\.globalShortcutAccelerator\}/);
+assert.match(settingsView, /data-testid="global-shortcut-accelerator"/);
 
 const bridge = source('platform/tauri/bridge.js');
 // Fail-closed capability default (Wayland reports the real value via get_platform_capabilities).
@@ -108,5 +129,9 @@ const bridgeSettings = source('platform/tauri/bridge/settings.js');
 // The dedicated command owns persistence (never update_settings for this feature).
 assert.match(bridgeSettings, /invoke\("set_global_shortcut_config"/);
 assert.match(bridgeSettings, /setGlobalShortcutConfig,/);
+// The snapshot mirror never regresses the accelerator to the raw input:
+// Rust reports null (disabled/unsupported or unparsable draft) and disk
+// keeps the existing combo.
+assert.match(bridgeSettings, /typeof result\.accelerator === "string" && result\.accelerator/);
 
 console.log('global_shortcut_settings: ok');
