@@ -146,3 +146,7 @@ exit = "warn"
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+# Temporary upstream calamine compatibility patch; see its provenance and removal conditions.
+[patch.crates-io]
+calamine = { path = "../third_party/rust/calamine" }

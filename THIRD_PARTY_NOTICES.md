@@ -56,6 +56,14 @@ The exact connector URLs and SHA-256 checksums are recorded in the per-platform
 compact `linux-arm64`-style names), and are
 fetched on first use by the app itself; `scripts/fetch-connectors.sh` is the CI/reviewer helper that materializes the same artifacts for verification.
 
+## Vendored calamine
+
+`third_party/rust/calamine` contains calamine 0.36.1 under the MIT License,
+with a minimal zip9 compatibility patch. Upstream attribution and the full
+license are retained in that directory. See its `UPSTREAM_SOURCE.json` for
+the official archive checksum and `PINVOU-PATCHES.md` for the patch, accepted
+filename-decoding behavior, verification boundary, and removal conditions.
+
 ## Package dependencies and SBOM
 
 Rust, npm, and other manifest-managed dependencies are recorded in the live

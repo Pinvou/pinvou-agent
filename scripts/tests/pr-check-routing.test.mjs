@@ -229,3 +229,12 @@ test("title gate enforces the convention on the live PR title (squash subject)",
     "title gate must retry-fetch the live title into $RUNNER_TEMP/pr-title and validate exactly that file",
   );
 });
+
+
+test("vendored calamine reaches all Rust consumers and its real regression target", () => {
+  for (const key of ["rust_code", "rust_dependencies", "rust_full", "cli_rust", "knowledge_rust", "knowledge_dependencies"]) {
+    assert.ok(filterPaths(workflow, key).includes("third_party/rust/calamine/**"), `${key} must cover vendored sources and fixtures`);
+  }
+  const knowledge = workflow.slice(workflow.indexOf("\n  knowledge-rust:"), workflow.indexOf("\n  rust-lint:"));
+  assert.match(knowledge, /- name: Vendored calamine ZIP compatibility\r?\n        run: cargo test --manifest-path third_party\/rust\/calamine\/Cargo\.toml --lib --test zip9_compatibility --all-features --locked/);
+});

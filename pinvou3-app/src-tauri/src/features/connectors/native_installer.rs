@@ -578,7 +578,11 @@ fn extract_zip_member<R: Read + io::Seek>(reader: R, expected: &str) -> io::Resu
     let mut archive = zip::ZipArchive::new(reader)?;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
-        if normalized_path_eq(Path::new(entry.name()), expected) {
+        let matches_expected = {
+            let name = entry.name()?;
+            normalized_path_eq(Path::new(name.as_ref()), expected)
+        };
+        if matches_expected {
             return read_limited(&mut entry, MAX_BINARY_BYTES);
         }
     }

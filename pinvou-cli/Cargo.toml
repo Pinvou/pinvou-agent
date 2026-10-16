@@ -20,3 +20,7 @@ sha2 = "0.10.9"
 thiserror = "2.0"
 tokio = { version = "1.49", default-features = false }
 windows-sys = "0.61.2"
+
+# Temporary upstream calamine compatibility patch; see its provenance and removal conditions.
+[patch.crates-io]
+calamine = { path = "../third_party/rust/calamine" }

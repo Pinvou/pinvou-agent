@@ -201,6 +201,7 @@ jobs:
           predicate-quantifier: some-with-excludes
           filters: |
             rust_code:
+              - 'third_party/rust/calamine/**'
               - '**/*.rs'
               - '**/Cargo.toml'
               - '**/Cargo.lock'
@@ -210,6 +211,7 @@ jobs:
               - '.gitmodules'
               - '.github/workflows/pr-check.yml'
             rust_dependencies:
+              - 'third_party/rust/calamine/**'
               - '**/Cargo.toml'
               - '**/Cargo.lock'
               - '**/deny.toml'
@@ -220,6 +222,7 @@ jobs:
             # isolated leaf-feature boundaries are explicitly low risk; changes
             # to their registration or app command surface still run full tests.
             rust_full:
+              - 'third_party/rust/calamine/**'
               - '**/Cargo.toml'
               - '**/Cargo.lock'
               - '**/deny.toml'
@@ -233,6 +236,7 @@ jobs:
               - '!pinvou3-app/src-tauri/src/features/personas/**'
               - '!pinvou3-app/src-tauri/src/features/pet/**'
             cli_rust:
+              - 'third_party/rust/calamine/**'
               - 'pinvou-cli/**/*.rs'
               - 'pinvou-cli/**/Cargo.toml'
               - 'pinvou-cli/**/Cargo.lock'
@@ -314,6 +318,7 @@ jobs:
               # required-gate passing on `skipped`).
               - 'docs/gaia-benchmark.md'
             knowledge_rust:
+              - 'third_party/rust/calamine/**'
               - 'pinvou-knowledge/**/*.rs'
               - 'pinvou-knowledge/Cargo.toml'
               - 'pinvou-knowledge/Cargo.lock'
@@ -325,6 +330,7 @@ jobs:
               - 'pinvou-knowledge/deploy/**'
               - '.github/workflows/pr-check.yml'
             knowledge_dependencies:
+              - 'third_party/rust/calamine/**'
               - 'pinvou-knowledge/Cargo.toml'
               - 'pinvou-knowledge/Cargo.lock'
               - 'pinvou3-app/src-tauri/deny.toml'
@@ -839,6 +845,9 @@ jobs:
 
       - name: cargo test
         run: cargo test --manifest-path pinvou-knowledge/Cargo.toml --all-features --locked
+
+      - name: Vendored calamine ZIP compatibility
+        run: cargo test --manifest-path third_party/rust/calamine/Cargo.toml --lib --test zip9_compatibility --all-features --locked
 
       - name: 部署脚本 shell 语法
         run: bash -n pinvou-knowledge/deploy/install.sh
