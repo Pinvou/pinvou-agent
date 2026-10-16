@@ -253,10 +253,14 @@ mkdir -p "$pkg_dir/usr/share/icons/hicolor/256x256@2/apps"
 install -m 0644 "$icon_256" "$pkg_dir/usr/share/icons/hicolor/256x256@2/apps/$MAIN_BINARY_NAME.png"
 
 # ---- control: fields replicated from debian.rs generate_control_file ---------
-# Exclude the top-level DEBIAN/ so only the data content counts, like the
-# bundler's total_dir_size(data_dir). Integer division by 1024 per Debian
-# policy.
-installed_size_kb=$(( $(du -sb --exclude='./DEBIAN' "$pkg_dir" | awk '{print $1}') / 1024 ))
+# Installed-Size mirrors the bundler's total_dir_size(data_dir): the byte
+# sum of the regular files under the data root, DEBIAN/ excluded. Compute
+# from inside the tree — `du --exclude` never matches an absolute operand's
+# traversal names, and `du -sb` counts directory inodes the bundler does
+# not. Integer division by 1024 per Debian policy.
+installed_size_kb=$((
+  $(cd "$pkg_dir" && find . -type f -not -path './DEBIAN/*' -printf '%s\n' | awk '{ s += $1 } END { print s }') / 1024
+))
 {
   printf 'Package: %s\n' "$PACKAGE_NAME"
   printf 'Version: %s\n' "$version"

@@ -125,40 +125,59 @@ toolchain_root="$prefix/$TRIPLE"
 toolchain_bin="$toolchain_root/bin"
 marker="$toolchain_root/$MARKER_NAME"
 
-for command_name in curl tar sha256sum; do
+for command_name in curl tar sha256sum strings; do
   command -v "$command_name" >/dev/null || fail "missing required command: $command_name"
 done
 
 host_arch="$(uname -m)"
 
+# Select the pinned asset for this host once: the generation id below (and
+# therefore the reuse check) must be computed from the SAME pin the download
+# would use.
+case "$host_arch" in
+  x86_64|amd64)
+    asset_name="$CROSS_TOOLS_ASSET_X86_64"
+    default_url="$CROSS_TOOLS_URL_X86_64"
+    pinned_sha256="$CROSS_TOOLS_SHA256_X86_64"
+    ;;
+  aarch64|arm64)
+    asset_name="$CROSS_TOOLS_ASSET_AARCH64"
+    default_url="$CROSS_TOOLS_URL_AARCH64"
+    pinned_sha256="${PINVOU_LOONG64_CROSS_TOOLS_SHA256:-}"
+    ;;
+  *) fail "unsupported host architecture: $host_arch (the release runner is x86_64)" ;;
+esac
+
+# The generation id recorded in the marker: re-pinning the tag, variant or
+# asset hash must invalidate a restored/stale tree from the previous pin.
+# On aarch64 hosts the hash comes from the environment and may legitimately
+# be absent for a plain reuse run (the fail lives in the download branch),
+# so the comparison is skipped there; the x86_64 release runner always
+# carries the pinned hash and always gets the comparison.
+expected_id=""
+if [ -n "$pinned_sha256" ]; then
+  expected_id="${CROSS_TOOLS_TAG}/${VARIANT}/${host_arch}/${pinned_sha256}"
+fi
+
 already_verified() {
   [ -f "$marker" ] || return 1
-  # The marker is only written after a sha256-verified download+unpack (see
-  # the id string built below), so trusting it here is the same trust model
-  # as the smoke test that follows; re-pinning is only needed to re-download.
+  # Trust the marker only when it names the CURRENT pin: a restore-keys
+  # fallback or a stale in-place tree from a previous generation must
+  # re-download instead of silently building with the old toolchain.
+  if [ -n "$expected_id" ] && [ "$(cat "$marker")" != "$expected_id" ]; then
+    return 1
+  fi
   [ -x "$toolchain_bin/$TRIPLE-gcc" ] || return 1
 }
 
 if [ "$force" = false ] && already_verified; then
   log "reusing verified toolchain (marker: $(cat "$marker")): $toolchain_root"
 else
-  case "$host_arch" in
-    x86_64|amd64)
-      asset_name="$CROSS_TOOLS_ASSET_X86_64"
-      default_url="$CROSS_TOOLS_URL_X86_64"
-      pinned_sha256="$CROSS_TOOLS_SHA256_X86_64"
-      ;;
-    aarch64|arm64)
-      asset_name="$CROSS_TOOLS_ASSET_AARCH64"
-      default_url="$CROSS_TOOLS_URL_AARCH64"
-      pinned_sha256="${PINVOU_LOONG64_CROSS_TOOLS_SHA256:-}"
-      [ -n "$pinned_sha256" ] || fail "no pinned sha256 for the $host_arch-hosted toolchain asset; download it once, record 'sha256sum' in this script (or pass PINVOU_LOONG64_CROSS_TOOLS_SHA256), and re-run"
-      ;;
-    *) fail "unsupported host architecture: $host_arch (the release runner is x86_64)" ;;
-  esac
+  if [ "$host_arch" != "x86_64" ] && [ "$host_arch" != "amd64" ] && [ -z "$pinned_sha256" ]; then
+    fail "no pinned sha256 for the $host_arch-hosted toolchain asset; download it once, record 'sha256sum' in this script (or pass PINVOU_LOONG64_CROSS_TOOLS_SHA256), and re-run"
+  fi
 
   asset_url="${PINVOU_LOONG64_CROSS_TOOLS_URL:-$default_url}"
-  expected_id="${CROSS_TOOLS_TAG}/${VARIANT}/${host_arch}/${pinned_sha256}"
 
   if [ "$force" = false ] && [ -e "$toolchain_root" ]; then
     log "existing tree at $toolchain_root does not match the pin (or is incomplete); re-fetching"
@@ -188,7 +207,10 @@ else
   # catch it here with a precise message.
   bundled_libc="$toolchain_root/$TRIPLE/sysroot/lib64/libc.so.6"
   [ -f "$bundled_libc" ] || fail "bundled sysroot libc missing: $bundled_libc"
-  libc_version="$(strings "$bundled_libc" | sed -n 's/^GNU C Library.*version \([0-9][0-9.]*[0-9]\)\.*$/\1/p' | head -n 1)"
+  # Dump to a file first: `strings | sed | head` under pipefail can die of
+  # SIGPIPE mid-pipeline and kill a perfectly good download.
+  strings "$bundled_libc" > "$work_dir/libc.strings"
+  libc_version="$(sed -n '/^GNU C Library.*version /{s/^GNU C Library.*version \([0-9][0-9.]*[0-9]\)\.*$/\1/p;q;}' "$work_dir/libc.strings")"
   [ "$libc_version" = "$GLIBC_VERSION" ] \
     || fail "bundled sysroot glibc is '${libc_version:-<unknown>}', expected $GLIBC_VERSION (wrong variant?)"
 
@@ -203,12 +225,16 @@ fi
 # a non-x86_64 host may set PINVOU_LOONG64_TOOLCHAIN_SKIP_SMOKE=1 to verify
 # everything else; the x86_64 runner ignores the flag.
 if [ "$host_arch" = "x86_64" ] || [ "${PINVOU_LOONG64_TOOLCHAIN_SKIP_SMOKE:-0}" != "1" ]; then
-  gcc_version="$("$toolchain_bin/$TRIPLE-gcc" --version 2>&1 | head -n 1)" \
-    || fail "$TRIPLE-gcc --version failed (x86_64 binary on a foreign-arch host: run it inside a matching-userland container, or export PINVOU_LOONG64_TOOLCHAIN_SKIP_SMOKE=1): $gcc_version"
-  case "$gcc_version" in
-    *" $GCC_VERSION"*) ;;
-    *) fail "$TRIPLE-gcc reports '$gcc_version', expected version $GCC_VERSION (pin drift)" ;;
-  esac
+  # -dumpfullversion prints only the version: no pipe truncation games (the
+  # previous `--version | head -n 1` could die of SIGPIPE under pipefail and
+  # report a healthy toolchain as broken). A foreign-arch host without a
+  # matching userland fails both invocations and gets the container hint.
+  gcc_version="$("$toolchain_bin/$TRIPLE-gcc" -dumpfullversion 2>/dev/null || true)"
+  [ -n "$gcc_version" ] || gcc_version="$("$toolchain_bin/$TRIPLE-gcc" -dumpversion 2>/dev/null || true)"
+  [ -n "$gcc_version" ] \
+    || fail "$TRIPLE-gcc did not report a version (x86_64 binary on a foreign-arch host: run it inside a matching-userland container, or export PINVOU_LOONG64_TOOLCHAIN_SKIP_SMOKE=1)"
+  [ "$gcc_version" = "$GCC_VERSION" ] \
+    || fail "$TRIPLE-gcc reports '$gcc_version', expected version $GCC_VERSION (pin drift)"
   "$toolchain_bin/$TRIPLE-gcc" -print-sysroot >/dev/null \
     || fail "$TRIPLE-gcc -print-sysroot failed"
 fi

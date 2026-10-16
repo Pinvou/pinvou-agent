@@ -493,17 +493,34 @@ jobs:
       # 由 ci-loongarch64-sysroot.sh 对逐个 .pc 模块校验。lld 不装(工具链
       # 只有 bfd);pipewire 不需要宿主 1.0.7 前缀(beige 已带 libpipewire
       # 1.2.5,sysroot 头部齐全,见 ci-libpipewire-build.sh 的适用范围)。
-      # libclang: pipewire/libspa 的 bindgen 构建脚本需要(runner 镜像虽
-      # 预装,这里显式钉住);file: 交叉构建脚本与守卫脚本的宿主依赖。
+      # libclang: libspa/pipewire 的 bindgen 构建脚本在交叉构建时会给
+      # libclang 传 --target=loongarch64-...,而 LoongArch 要 LLVM >= 16
+      # 才是主 target(jammy 档案里的 libclang 14/15 没有该 target,bindgen
+      # 直接 panic "unknown target triple")。因此钉 apt.llvm.org 的
+      # llvm-toolchain-jammy-18 套件装 libclang-18-dev,并用 LIBCLANG_PATH
+      # 短路 clang-sys 的多目录探测;目标头文件由 BINDGEN_EXTRA_CLANG_ARGS
+      # (编排脚本导出)指向 deepin sysroot。此 run 块与 pr-check.yml 的
+      # rust-loongarch64-check leg 逐字一致
+      # (test_release_loongarch64_policy 钉字节等价)。
       - name: 装 Tauri + pinvou3 Linux 系统依赖 (host 侧)
         run: |
+          set -euo pipefail
+          sudo mkdir -p /etc/apt/keyrings
+          curl --proto '=https' --tlsv1.2 --location --silent --show-error --fail \
+            --retry 3 --retry-delay 2 https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo gpg --dearmor --yes -o /etc/apt/keyrings/pinvou-llvm.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/pinvou-llvm.gpg] https://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" \
+            | sudo tee /etc/apt/sources.list.d/pinvou-llvm-18.list > /dev/null
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config cmake libclang-dev file
+            build-essential pkg-config cmake libclang-18-dev file
           # Reduce footprint at the source: orphan dependencies, apt cache packages, and index lists do not stay on the build disk.
           sudo apt-get autoremove -y --purge
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
+          # clang-sys probes several default locations; pin the discovery to
+          # the LoongArch-capable libclang this step just installed.
+          echo "LIBCLANG_PATH=/usr/lib/llvm-18/lib" >> "$GITHUB_ENV"
 
       # 两步均幂等:restore 命中时脚本自检(marker 含 tag/variant/host/sha;
       # manifest 含 glibc-floor/包清单)直接复用,未命中时下载 + sha256 校验
