@@ -24,16 +24,18 @@ pub(crate) fn resolve_artifact_path_in_workspace(raw: &str, workspace: &Path) ->
 /// own doc warned about.
 ///
 /// 引擎清单单源（CodeWhale #87 `sensitive_paths` 模块）：本清单是引擎
-/// `SENSITIVE_DIRECTORY_NAMES` ∪ `SENSITIVE_FILE_NAMES` 中 Pinvou 摄入门所需
-/// 子集的登记，下方 `const` 断言把每项锚定在引擎清单上——引擎侧改名/删除
-/// 会在编译期失败并强制同步，不再靠注释对齐。刻意的引擎残差（不登记）：
+/// `SENSITIVE_DIRECTORY_NAMES` ∪ `SENSITIVE_FILE_NAMES` ∪
+/// `SENSITIVE_COMPONENT_NAMES` 中 Pinvou 摄入门所需子集的登记，下方 `const`
+/// 断言把每项锚定在引擎清单上——引擎侧改名/删除会在编译期失败并强制同步，
+/// 不再靠注释对齐。刻意的引擎残差（不登记）：
 /// 多段目录名（`.config/gcloud` 等——本闸按「任意单个路径组件相等」比较，
 /// 多段字面量永不命中；对应敏感面由引擎 ruleset 按 `~/` 相对拼写承担）、
 /// `.azure`/`.dws`/`.tmeet` 目录、以及仅 home 根敏感的裸文件名
 /// （`credentials`/`secrets`/`.pgp`/`.gpg`/`.netrc`/`.git-credentials`——
-/// 组件面登记会误拦同名工作目录）。反过来，`id_rsa`/`id_ed25519`/`id_ecdsa`/
-/// `id_dsa` 是本闸的 app 专属组件面：引擎按 `.ssh/id_rsa` 路径拼写登记，
-/// 没有裸文件名条目（Wave 3 动机即 `~/keys/id_rsa`）。
+/// 组件面登记会误拦同名工作目录）。`id_rsa`/`id_ed25519`/`id_ecdsa`/`id_dsa`
+/// 已迁移为引擎组件面派生（`ID_COMPONENT_KEYS`：#87 评审轮给引擎补上裸
+/// `id_*` 组件面后，按常量上的预登记迁移点改为从
+/// `SENSITIVE_COMPONENT_NAMES` 编译期锚定；Wave 3 动机即 `~/keys/id_rsa`）。
 pub const BLOCKED_COMPONENTS: &[&str] = &[
     ".ssh",
     ".gnupg",
@@ -53,10 +55,10 @@ pub const BLOCKED_COMPONENTS: &[&str] = &[
 ///
 /// 引擎清单单源：本清单 ⊆ 引擎 `SENSITIVE_ABSOLUTE_PREFIXES`（const 断言
 /// 锚定）。引擎残差（`/etc/shadow-`、`/etc/shadow.bak`、`/etc/gshadow-`、
-/// `/etc/sudoers-`、`/etc/sudoers.bak`、`/etc/sudoers.d/`）是编辑器/老化备份
-/// 与碎片目录的精确词面——引擎 ruleset 的 token 面需要逐一枚举，本闸
-/// `starts_with` 语义下已被 `/etc/shadow`、`/etc/gshadow`、`/etc/sudoers`
-/// 前缀覆盖，不重复登记。
+/// `/etc/sudoers-`、`/etc/sudoers.bak`、`/etc/sudoers.d/`、`/var/log/auth.log`）
+/// 是编辑器/老化备份、碎片目录与轮变体的精确词面——引擎 ruleset 的 token 面
+/// 需要逐一枚举，本闸 `starts_with` 语义下已被 `/etc/shadow`、`/etc/gshadow`、
+/// `/etc/sudoers`、`/var/log/auth` 前缀覆盖，不重复登记。
 pub const BLOCKED_PREFIXES: &[&str] = &[
     "/etc/shadow",
     "/etc/gshadow",
@@ -133,23 +135,20 @@ pub(crate) const fn inventory_has_joined(inventory: &[&str], prefix: &str, suffi
     false
 }
 
-/// app 专属组件面：`id_*` 私钥裸文件名。引擎按 `.ssh/id_rsa` 路径拼写登记、
-/// 没有裸文件名条目，而 Wave 3 动机正是 `~/keys/id_rsa` 这类任意目录下的
-/// 密钥文件。与引擎清单保持互斥（const 断言）——引擎若将来登记裸 `id_*`，
-/// 这里应并入引擎派生面。
-///
-/// 已知演进（#87 现审头）：底座已引入组件面 `SENSITIVE_COMPONENT_NAMES`
-/// （含裸 `id_*` 与 `.dws`/`.tmeet`）。上游合并后本清单应改为从该面派生
-/// （本清单 ⊆ 该面 ∪ 既有登记残差），并退役下方互斥断言——断言只查两个
-/// 旧清单，组件面合入不会触发它，故在此预登记迁移点。
-const APP_ONLY_COMPONENTS: &[&str] = &["id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"];
+/// 引擎组件面派生的裸 `id_*` 私钥名（预登记迁移已落地）：#87 评审轮给引擎
+/// 补上 `SENSITIVE_COMPONENT_NAMES`（含裸 `id_*`）后，原「app 专属组件面 +
+/// 互斥断言」按常量上的预登记迁移点退役——四项保留在 `BLOCKED_COMPONENTS`
+/// 中，但每项编译期锚定在引擎组件面上：引擎侧改名/删除让本 crate 编译失败，
+/// 强制有意识同步；引擎组件面新增项由 forkguard 覆盖测试强制采纳或登记残差。
+/// Wave 3 动机不变：`~/keys/id_rsa` 这类任意目录下的密钥文件。
+const ID_COMPONENT_KEYS: &[&str] = &["id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"];
 
 const fn all_components_in_engine_inventory(entries: &[&str]) -> bool {
     let mut i = 0;
     while i < entries.len() {
         if !inventory_contains(sensitive_paths::SENSITIVE_DIRECTORY_NAMES, entries[i])
             && !inventory_contains(sensitive_paths::SENSITIVE_FILE_NAMES, entries[i])
-            && !inventory_contains(APP_ONLY_COMPONENTS, entries[i])
+            && !inventory_contains(sensitive_paths::SENSITIVE_COMPONENT_NAMES, entries[i])
         {
             return false;
         }
@@ -158,16 +157,10 @@ const fn all_components_in_engine_inventory(entries: &[&str]) -> bool {
     true
 }
 
-const fn app_only_disjoint_from_engine() -> bool {
+const fn all_entries_in(entries: &[&str], inventory: &[&str]) -> bool {
     let mut i = 0;
-    while i < APP_ONLY_COMPONENTS.len() {
-        if inventory_contains(
-            sensitive_paths::SENSITIVE_DIRECTORY_NAMES,
-            APP_ONLY_COMPONENTS[i],
-        ) || inventory_contains(
-            sensitive_paths::SENSITIVE_FILE_NAMES,
-            APP_ONLY_COMPONENTS[i],
-        ) {
+    while i < entries.len() {
+        if !inventory_contains(inventory, entries[i]) {
             return false;
         }
         i += 1;
@@ -189,11 +182,14 @@ const fn all_in_engine_prefixes(entries: &[&str]) -> bool {
 // 子集锚定：引擎清单任何一侧的改名/删除让本 crate 编译失败，强制有意识同步。
 const _: () = assert!(
     all_components_in_engine_inventory(BLOCKED_COMPONENTS),
-    "BLOCKED_COMPONENTS 必须逐项存在于引擎 sensitive_paths 清单或 APP_ONLY_COMPONENTS（改名/删除需同步本子集）"
+    "BLOCKED_COMPONENTS 必须逐项存在于引擎 sensitive_paths 三份清单（改名/删除需同步本子集）"
 );
 const _: () = assert!(
-    app_only_disjoint_from_engine(),
-    "引擎已登记裸 id_* 组件面——BLOCKED_COMPONENTS 应改为纯引擎派生"
+    all_entries_in(
+        ID_COMPONENT_KEYS,
+        sensitive_paths::SENSITIVE_COMPONENT_NAMES
+    ) && all_entries_in(ID_COMPONENT_KEYS, BLOCKED_COMPONENTS),
+    "裸 id_* 必须从引擎 SENSITIVE_COMPONENT_NAMES 派生且保留在 BLOCKED_COMPONENTS"
 );
 const _: () = assert!(
     all_in_engine_prefixes(BLOCKED_PREFIXES),
@@ -315,26 +311,26 @@ mod tests {
     }
 
     /// 引擎清单单源锚定（const 断言的运行期镜像 + 残差登记）：本闸两份黑名单
-    /// 是引擎 `sensitive_paths` 清单的 Pinvou 子集，引擎侧任何改名/删除同时被
-    /// 编译期断言与本用例拦截；残差（引擎有、Pinvou 不登记）与 app 专属面
-    /// （Pinvou 有、引擎无）按注释登记的集合逐项钉死，改成任何一侧都要有意识。
+    /// 是引擎 `sensitive_paths` 三份清单的 Pinvou 子集，引擎侧任何改名/删除
+    /// 同时被编译期断言与本用例拦截；残差（引擎有、Pinvou 不登记）按注释
+    /// 登记的集合逐项钉死，改成任何一侧都要有意识。引擎四个面各有覆盖方向
+    /// 循环：引擎新增条目必须被采纳或登记为残差，不再能静默漏过。
     #[test]
     fn forkguard_blocked_lists_are_the_anchored_subset_of_engine_inventory() {
         use sensitive_paths::{
-            SENSITIVE_ABSOLUTE_PREFIXES, SENSITIVE_DIRECTORY_NAMES, SENSITIVE_FILE_NAMES,
+            SENSITIVE_ABSOLUTE_PREFIXES, SENSITIVE_COMPONENT_NAMES, SENSITIVE_DIRECTORY_NAMES,
+            SENSITIVE_FILE_NAMES,
         };
 
         let in_engine = |entry: &str| {
-            SENSITIVE_DIRECTORY_NAMES.contains(&entry) || SENSITIVE_FILE_NAMES.contains(&entry)
+            SENSITIVE_DIRECTORY_NAMES.contains(&entry)
+                || SENSITIVE_FILE_NAMES.contains(&entry)
+                || SENSITIVE_COMPONENT_NAMES.contains(&entry)
         };
 
-        // 子集方向（编译期断言的镜像）：每项要么在引擎清单，要么属于钉死的
-        // app 专属组件面。
+        // 子集方向（编译期断言的镜像）：每项都在引擎三份清单内。
         for entry in BLOCKED_COMPONENTS {
-            assert!(
-                in_engine(entry) || APP_ONLY_COMPONENTS.contains(entry),
-                "{entry} 应在引擎清单或 app 专属面"
-            );
+            assert!(in_engine(entry), "{entry} 应在引擎清单");
         }
         for entry in BLOCKED_PREFIXES {
             assert!(
@@ -343,15 +339,14 @@ mod tests {
             );
         }
 
-        // app 专属组件面（引擎按 .ssh/id_rsa 路径拼写登记，无裸文件名条目；
-        // const 断言同时钉住它与引擎清单的互斥性）。
-        assert_eq!(
-            APP_ONLY_COMPONENTS,
-            &["id_rsa", "id_ed25519", "id_ecdsa", "id_dsa"]
-        );
-        for entry in APP_ONLY_COMPONENTS {
-            assert!(BLOCKED_COMPONENTS.contains(entry), "{entry} 应保留");
-            assert!(!in_engine(entry), "{entry} 若引擎已登记，可改为纯引擎派生");
+        // 引擎组件面派生的裸 id_*（预登记迁移已落地，const 断言镜像）：保留
+        // 在组件黑名单且逐项锚定在引擎组件面上。
+        for key in ID_COMPONENT_KEYS {
+            assert!(BLOCKED_COMPONENTS.contains(key), "{key} 应保留");
+            assert!(
+                SENSITIVE_COMPONENT_NAMES.contains(key),
+                "{key} 应锚定在引擎组件面"
+            );
         }
 
         // 刻意的引擎残差：目录面（多段/未采纳目录名——多段字面量在组件相等
@@ -406,7 +401,25 @@ mod tests {
             );
         }
 
-        // 前缀面残差：备份/`-` 变体与 sudoers.d 已被 starts_with 语义覆盖。
+        // 组件面残差：`.dws`/`.tmeet` 引擎按「任意组件」登记（组件面清单），
+        // 本闸不采纳——摄取前缀面无此二者、目录面残差同名登记（命令通道语料
+        // 经 SENSITIVE_DIR_NAMES 别名承担）。引擎组件面若新增条目，覆盖循环
+        // 会强制在此登记或采纳。
+        let component_residual = [".dws", ".tmeet"];
+        for residual in component_residual {
+            assert!(
+                !BLOCKED_COMPONENTS.contains(&residual),
+                "{residual} 若要登记进组件黑名单，须同步更新本残差登记"
+            );
+            assert!(
+                SENSITIVE_COMPONENT_NAMES.contains(&residual),
+                "残差登记本身必须仍在引擎组件面内: {residual}"
+            );
+        }
+
+        // 前缀面残差：备份/`-` 变体、sudoers.d 与轮变体已被 starts_with 语义
+        // 覆盖（`/var/log/auth.log` 为 #87 评审轮新增，被采纳的
+        // `/var/log/auth` 前缀覆盖）。
         for residual in [
             "/etc/shadow-",
             "/etc/shadow.bak",
@@ -414,6 +427,7 @@ mod tests {
             "/etc/sudoers-",
             "/etc/sudoers.bak",
             "/etc/sudoers.d/",
+            "/var/log/auth.log",
         ] {
             assert!(
                 !BLOCKED_PREFIXES.contains(&residual),
@@ -422,9 +436,9 @@ mod tests {
             assert!(SENSITIVE_ABSOLUTE_PREFIXES.contains(&residual));
         }
 
-        // 引擎覆盖方向：每个引擎条目必须被采纳或登记为残差。仅靠子集/互斥
-        // 断言时，引擎新增条目会静默漏过（正是单源化要暴露的漂移类）；本方
-        // 向强制引擎新增在本表显式登记（或采纳），三个面各一。
+        // 引擎覆盖方向：每个引擎条目必须被采纳或登记为残差。仅靠子集断言时，
+        // 引擎新增条目会静默漏过（正是单源化要暴露的漂移类）；本方向强制引
+        // 擎新增在本表显式登记（或采纳），四个面各一。
         for engine_dir in SENSITIVE_DIRECTORY_NAMES {
             assert!(
                 BLOCKED_COMPONENTS.contains(engine_dir) || dir_residual.contains(engine_dir),
@@ -435,6 +449,13 @@ mod tests {
             assert!(
                 BLOCKED_COMPONENTS.contains(engine_file) || file_residual.contains(engine_file),
                 "引擎文件 {engine_file} 未被采纳也不在残差登记中"
+            );
+        }
+        for engine_component in SENSITIVE_COMPONENT_NAMES {
+            assert!(
+                BLOCKED_COMPONENTS.contains(engine_component)
+                    || component_residual.contains(engine_component),
+                "引擎组件 {engine_component} 未被采纳也不在残差登记中"
             );
         }
         for engine_prefix in SENSITIVE_ABSOLUTE_PREFIXES {
