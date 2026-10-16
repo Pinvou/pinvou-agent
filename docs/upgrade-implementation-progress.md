@@ -8812,3 +8812,102 @@ fixtures, workers, processes and tool sessions closed before the runtime slot
 returned. Both independent audits pass on the same eighteen-source freeze;
 final documentation review precedes DCO commit/push. Full task counts and the
 download behavior stated above remain unchanged.
+
+## Original unaccepted transaction intake maintenance
+
+The separate service adds fixed protected-owner transaction intake cleanup for
+the existing shared namespace: v1 late-only and v2 late/live command attempts
+over one permanent original event identity. Narrow internal sizing/locking/
+wire/deletion/clock mechanisms are shared with the four existing Session
+profiles; their public API and native acceptance-marker behavior remain intact.
+The original exact Session, consumed authorization and transaction must prove
+their complete consumption association. Current Root, workflow, waiting or
+qualification cannot shorten or renew original `exp + 120000` retention.
+
+Twenty-seven Go sources are frozen, with no SQL changes. All sixty previously
+delivered SQL files retain their working bytes and index blobs. Each attempt
+uses its own actual fixed command's digest domain. Any live lease or shared
+accepted evidence retains the complete closure; only complete never-accepted
+processing intake is deleted.
+The source-inclusive 32 MiB logical budget counts all three original bodies and
+headers, with 32 intents/4096 attempts per page. Final safe nondecreasing SQL time
+follows all catalog checks; an error or unknown commit returns no speculative
+counts or cursor. Output-loss retry never creates another event acknowledgement.
+
+Both independent static reviews passed the implementation and tests after the
+primary repaired logged/rewrite source checks, complete original consumption
+associations and independent whole-command ledger counting. Real three-purpose
+native smoke passed one parent and three children, zero skips/failures (package
+28.806s). Qualified issuance and supplied physical preparation remain explicit
+fixture bridges. The first exploratory natural-expiry run failed only an
+incorrect v1 initialization fixture; it was repaired to use the existing frozen
+v1 DDL. That failed run is not final acceptance evidence. Final frozen primary
+and independent runtime evidence follows.
+
+The primary's final actual PostgreSQL selection passed three groups and sixty-
+three child cases with zero skips/failures (package 640.859s), using freshly
+rebuilt transaction and Session command/output-loss helpers. The shared original
+four-profile Session natural-expiry parent passed in 294.010s; transaction
+natural expiry passed in 294.720s with thirty-eight children; the three-purpose
+real native smoke passed in 48.850s. It proves original signed windows, natural
+native leases, otherwise-valid source faults/restoration, same-identity mixed
+command domains, exact native FK full rollback, final catalog followed by three
+faulted clocks, unchanged v1 structure, UNLOGGED persistence fault bracketed by
+actual cleanup positives, actual cross-command accepted evidence, fresh command
+output-loss/retry/runtime refusal and whole count/source-byte/cursor limits.
+Synthetic capacity proof/ciphertext padding is not signature or AEAD evidence.
+Independent whole-command ledger counts reject orphaned selected operations.
+The twenty-seven Go and sixty old SQL raw/index freeze checks remain intact.
+
+The primary's cleared-opt-in fresh default run (`-count=1`) passed 399 groups
+and 802 child cases, with 945 skipped test cases, twelve packages without tests
+and zero failures. Passed group/child counts exclude skipped cases; defaults
+are not actual integration evidence. Full vet, module verification, private
+server build, original pinned contracts, twenty-seven-file formatting/freeze,
+all sixty old SQL identities and whitespace checks passed. Both client
+workspaces passed architecture/version checks; product 0.10.9 and normative
+documents 1.0 remain unchanged. All primary runtime processes and tool sessions
+closed before independent runtime review.
+
+The independent dependency role rebuilt its own transaction maintenance command,
+output-loss helper and original no-update command. Its separate actual selection
+passed four groups and forty-three child cases with zero skips/failures (package
+305.294s): the complete transaction natural-expiry parent in 284.960s with thirty-
+eight children, plus three original native ACL/protected-owner/final page-clock
+maintenance regressions with five children. This is independent actual evidence
+on the same twenty-seven-source freeze.
+
+Its cleared-opt-in fresh full defaults (`-count=1`, package parallelism two)
+passed 399 groups and 802 children, 945 skipped tests, twelve packages without
+tests and zero failures. Full vet, modules, original pins, private server build,
+twenty-seven-file formatting/frozen working/index identities, removed old path,
+all sixty old SQL raw/index identities and whitespace checks passed. Its scoped
+code/test audit passes without remaining required findings. All owned fixtures,
+workers, compiler/test/Node/CLI/helper/runner processes and tool sessions closed
+before returning the exclusive runtime slot. The compatibility role's runtime
+verification follows separately.
+
+The independent compatibility role rebuilt its own Session maintenance command
+and output-loss helper. Its complementary actual run passed two groups and
+twenty-five children with zero skips/failures (package 324.741s): the complete
+original four-profile Session natural-expiry parent in 285.620s with twenty-two
+children, plus the new three-purpose native transaction smoke in 35.620s with
+three children. This is not another full transaction natural-expiry parent;
+the primary and dependency roles independently executed that complete parent.
+
+Its cleared-opt-in fresh defaults (`-count=1`) passed 399 groups and 802 children,
+945 skipped tests, twelve no-test package records and zero failures. Full vet,
+modules, original pins, private server build, twenty-seven Go sources' empty
+formatting and frozen working/index identities, the removed old source path,
+all sixty previous SQL raw/index identities and whitespace checks passed. The
+before/after freeze digest is identical. Its scoped code/test audit passes
+without required findings. All owned fixtures, workers, compiler/test/CLI/helper/
+runner processes and tool sessions closed before returning the exclusive runtime
+slot. Both independent code/test audits pass on the same twenty-seven-source
+freeze; final documentation review precedes DCO commit/push.
+
+Accepted-data archival, production scheduling, durable protected client queues,
+independent task-event owners and full T17/T20/T44 completion remain open. Totals
+remain four implemented, twelve in progress and thirty-one incomplete/deferred
+out of forty-seven. Deployment remains deferred. No artifact download size,
+retry or total/cumulative duration cap is introduced.
