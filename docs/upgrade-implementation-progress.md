@@ -10781,3 +10781,60 @@ grants, dependency, artifact, signing, Root or public route changes are introduc
 T25 stays in progress and totals remain 5/12/30 out of47. Product0.10.9,
 normative1.0, pinned V1 and CodeWhale are unchanged. Downloads have no hard total/
 cumulative duration or retry cap; 32MiB is not an artifact/download size limit.
+
+### T05 actual Keycloak acceptance on the combined service line
+
+Accepted source `f123be0b49f7a5aa9fd3ef638e1bbef04659c0b1` is integrated on
+the combined service line: the Go acceptance test remains its exact original
+blob, and the two Python scripts have a narrow post-import temporary-lifetime
+repair. The original management document delta is exactly 116 additive lines;
+all current content and historical evidence are preserved. Source provenance
+and repaired-file digests were verified separately.
+
+The first actual authentication case passed, but its surrounding ownership gate
+failed because Java left three empty scratch directories outside the run root.
+That attempt is not a complete acceptance pass. The repair binds Java native
+TEMP/TMP/TMPDIR and java.io.tmpdir to the owned root on initial and code10 restart.
+The fifth local regression exercises both failure paths, checks every child wait,
+and verifies scratch material and the isolated parent are empty after cleanup.
+The initial private empty directories are retained; the revised runs use a fresh
+isolated parent and do not clean or depend on shared temporary directories.
+
+Fresh root verification passed all 12 gates: verified official runtime cache,
+five Python control groups, default OIDC, actual provider, full default service,
+modules, full vet, private server build, pinned V1, formatting and both whitespace
+checks. Default OIDC passed two tests and separately skipped the opt-in provider
+case; the actual run enabled that one case with zero skips/failures
+(90.175s full harness wall, 1.46s Go case).
+Full default service passed 53 tested packages,
+488 top-level/1120 child tests
+(67.041s wall), with 565 top-level/
+606 child external opt-in skips and 12 no-test packages
+recorded separately. No opt-in skip is represented as actual provider coverage.
+
+Both independent roles gave scoped code/test review PASS and separately reran
+all six relevant gates: runtime provenance, five Python groups, default OIDC,
+actual provider and both whitespace checks. Their actual provider runs each
+passed the one real case with zero skips/failures
+(80.885s/73.568s full harness wall,
+1.21s/1.33s Go case;
+dependency/compatibility). Full source/index/status and all 69 existing SQL
+raw/index identities stayed fixed during every run. Each run closed its owned
+children and left its new temporary parent empty. Historical source-batch figures
+are separate from these combined-tree measurements.
+
+The isolated official Keycloak26.8.1/Temurin21.0.12.1+1 provider exercises actual
+password/OTP forms, signed adapter validation, single-use code and provider logout;
+the five-minute boundary is calculated from signed auth_time, not five elapsed
+minutes. Verified cache provenance covers both archive SHA256 digests, all486
+Keycloak library files and all490 Java distribution files. No credentials,
+provider logs or production realm are retained in the repository. Production
+authentication/permissions/session/SQL/dependencies/routes/UI are unchanged.
+Deployment realm/proxy/enrollment/HA acceptance remains pending. T05's previously
+implemented scope and totals5/12/30 out of47 stay unchanged. Product0.10.9,
+normative1.0, pinnedV1 and CodeWhale are unchanged. Downloads have no hard total/
+cumulative duration or retry cap; 32MiB is not an artifact/download size limit.
+
+DCO committed and pushed as `d16cd77e0558ba603201820a5a5c75306a84f192` on
+`codex/t05-keycloak-integration`; see service
+`docs/keycloak-acceptance-integration.md` for boundaries and evidence.
