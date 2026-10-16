@@ -9,9 +9,13 @@ ubuntu-22.04 and the pr-check cross leg type-checks the target per PR:
   bundler has no LoongArch variant and panics); the deb is hand-assembled;
 - the toolchain/sysroot must come from the sha256-pinned setup scripts, with
   cache keys in the release-linux-loong64-jammy shape (restore-only in the
-  release job, main-only saves in the pr-check leg);
-- the artifact/deb naming and the glibc 2.38 floor guard must match the
-  sibling Linux jobs;
+  release job, main-only saves in the pr-check leg, saves gated on setup
+  success);
+- both jobs must provision a LoongArch-capable libclang (>= 16; jammy's
+  archive tops out at a target-less 15) via the pinned apt.llvm.org llvm-18
+  suite and LIBCLANG_PATH, with a byte-identical shared run block;
+- the artifact/deb naming, the deb Depends parity with tauri.conf.json, and
+  the glibc 2.38 floor guard must match the sibling Linux jobs;
 - the pr-check leg must cargo-check all three workspaces for the target and
   be wired into required-gate like every other leg.
 
@@ -20,6 +24,7 @@ test_release_size_policy: workflow sections are split by exact job names, so
 moving or renaming a job changes the split points and fails loudly here.
 """
 
+import re
 import subprocess
 import unittest
 from pathlib import Path
@@ -57,6 +62,7 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         self.orchestrator = ORCHESTRATOR.read_text(encoding="utf-8")
         self.toolchain = TOOLCHAIN_SCRIPT.read_text(encoding="utf-8")
         self.sysroot = SYSROOT_SCRIPT.read_text(encoding="utf-8")
+        self.packager = PACKAGING_SCRIPT.read_text(encoding="utf-8")
         self.build_js = BUILD_JS.read_text(encoding="utf-8")
         self.job = self.release_workflow.split(
             "\n  build-linux-loongarch64:", maxsplit=1
@@ -102,6 +108,19 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             self.assertFalse(
                 line.strip().startswith("RUSTFLAGS:"),
                 f"the loong64 job must leave RUSTFLAGS unset, found: {line.strip()}",
+            )
+        # The orchestrator owns the actual cargo invocations, so the same
+        # prohibition applies there (its comments deliberately warn; strip
+        # them before scanning).
+        orchestrator_code = _without_comments(self.orchestrator)
+        self.assertNotIn("-fuse-ld=lld", orchestrator_code)
+        self.assertNotIn("--icf=safe", orchestrator_code)
+        self.assertNotIn("CARGO_PROFILE_RELEASE_LTO", orchestrator_code)
+        for line in orchestrator_code.splitlines():
+            stripped = line.strip()
+            self.assertFalse(
+                stripped.startswith("RUSTFLAGS=") or stripped.startswith("export RUSTFLAGS"),
+                f"the orchestrator must leave RUSTFLAGS unset, found: {stripped}",
             )
 
     def test_release_job_gives_the_cross_build_headroom(self):
@@ -213,6 +232,7 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             "PKG_CONFIG_LIBDIR=",
             "PKG_CONFIG_SYSROOT_DIR=",
             "CMAKE_TOOLCHAIN_FILE=",
+            "BINDGEN_EXTRA_CLANG_ARGS=",
         ):
             self.assertIn(required, sysroot_block)
 
@@ -242,7 +262,10 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             # script changes.
             self.assertIn(f"restore-keys: |\n            {key}", pr_job, key)
         # ... and every save step is gated to main (main writes, PRs and the
-        # release job read — the repo's rust-cache save-if convention).
+        # release job read — the repo's rust-cache save-if convention) AND to
+        # setup success: both setup scripts mkdir their target dir before
+        # downloading, so a failed setup saves a half-empty tree that would
+        # otherwise be restored forever under that exact key.
         for step in pr_job.split("\n      - name:"):
             if "actions/cache/save@" in step:
                 self.assertIn(
@@ -250,8 +273,116 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
                     step,
                     "a loong64 cache save must be main-only",
                 )
+                self.assertIn(
+                    "success()",
+                    step,
+                    "a loong64 cache save must be gated on setup success",
+                )
+                self.assertNotIn(
+                    "!cancelled()",
+                    step,
+                    "!cancelled() saves after failed setups and poisons the cache generation",
+                )
 
     # ---- pr-check cross leg ----
+
+    def test_loong64_jobs_provision_a_loongarch_capable_libclang(self):
+        # bindgen feeds `--target=loongarch64-...` to libclang on cross
+        # builds (bindgen injects the target only for cross compilation, so
+        # this pipeline is the repo's first cross-bindgen consumer).
+        # LoongArch is a primary LLVM target only from 16 on and the jammy
+        # archive ships no libclang >= 16 (14/15 lack the target), so a
+        # plain `libclang-dev` makes bindgen panic with "unknown target
+        # triple". Both jobs must pin the apt.llvm.org llvm-18 suite and
+        # steer clang-sys via LIBCLANG_PATH.
+        for label, host in (("pr-check leg", self.pr_job), ("release job", self.job_code)):
+            with self.subTest(host=label):
+                self.assertIn("apt.llvm.org/jammy/", host, label)
+                self.assertIn("llvm-toolchain-jammy-18", host, label)
+                self.assertIn("libclang-18-dev", host, label)
+                self.assertIn("LIBCLANG_PATH=/usr/lib/llvm-18/lib", host, label)
+        # The provisioning run block is a shared contract duplicated across
+        # the two workflows: it must stay byte-identical (comments stripped).
+        # Scope to the loong64 jobs — sibling jobs carry same-named steps.
+        pr_block = self._step_run_block(self.pr_job, "Install host build tools")
+        rel_block = self._step_run_block(self.job, "装 Tauri + pinvou3 Linux 系统依赖")
+        self.assertEqual(pr_block, rel_block)
+        # The orchestrator (release path) exports the same pins for the
+        # cargo builds it drives: sysroot-scoped bindgen args and the
+        # llvm-18 libclang discovery (overridable on dev hosts).
+        orchestrator_code = _without_comments(self.orchestrator)
+        self.assertIn("BINDGEN_EXTRA_CLANG_ARGS", orchestrator_code)
+        self.assertIn("/usr/lib/llvm-18/lib", orchestrator_code)
+
+    def test_changes_filters_route_the_loong64_scripts(self):
+        # The gate leg triggers on rust_full and the release contract suite
+        # reads these scripts: a script-only edit (sha re-pin, sysroot
+        # package list, packaging step) must run the legs that execute them
+        # instead of skipping everything with required-gate green on
+        # `skipped`.
+        rust_full = self.pr_check_workflow.split(
+            "\n            rust_full:", maxsplit=1
+        )[1].split("\n            cli_rust:", maxsplit=1)[0]
+        release_contract = self.pr_check_workflow.split(
+            "\n            release_contract:", maxsplit=1
+        )[1].split("\n            pet:", maxsplit=1)[0]
+        for script in (
+            "scripts/ci-loongarch64-toolchain.sh",
+            "scripts/ci-loongarch64-sysroot.sh",
+            "scripts/ci-build-linux-loongarch64.sh",
+        ):
+            self.assertIn(f"'{script}'", rust_full, script)
+        for script in (
+            "scripts/package-deb-loongarch64.sh",
+            "scripts/ci-build-linux-loongarch64.sh",
+            "scripts/ci-loongarch64-toolchain.sh",
+            "scripts/ci-loongarch64-sysroot.sh",
+        ):
+            self.assertIn(f"'{script}'", release_contract, script)
+
+    def test_packager_depends_match_the_tauri_config(self):
+        # The hand-assembled deb duplicates the bundler's Depends/Recommends
+        # (tauri-bundler reads them from bundle.linux.deb of the linux
+        # tauri.conf.json); a silent drift would stale the loong64 deb's
+        # runtime deps exactly like the drifts this packager exists to
+        # avoid. Pin the parity (whitespace/order-insensitive).
+        config = (
+            ROOT / "pinvou3-app/src-tauri/config/platforms/linux/tauri.conf.json"
+        ).read_text(encoding="utf-8")
+
+        def json_list(name):
+            match = re.search(rf'"{name}":\s*\[(.*?)\]', config, re.S)
+            self.assertIsNotNone(match, f"{name} missing from the linux tauri.conf.json")
+            return [
+                item.strip().strip('"')
+                for item in match.group(1).split(",")
+                if item.strip()
+            ]
+
+        def packager_list(name):
+            match = re.search(rf'{name}="([^"]*)"', self.packager)
+            self.assertIsNotNone(match, f"{name} missing from the packager script")
+            return [
+                item.strip()
+                for item in match.group(1).split(",")
+                if item.strip()
+            ]
+
+        self.assertListEqual(packager_list("DEPENDS"), json_list("depends"))
+        self.assertListEqual(packager_list("RECOMMENDS"), json_list("recommends"))
+
+    def _step_run_block(self, workflow, step_name):
+        # The run block of one named step, comments stripped. Both host-tools
+        # steps sit inside their job's steps at the same indentation, so the
+        # extractor scopes by the exact "- " step boundary; trailing
+        # whitespace is normalized (the next-step boundary differs between
+        # the two workflows by one trailing newline).
+        at = workflow.find(step_name)
+        self.assertGreater(at, 0, f"missing step {step_name!r}")
+        start = workflow.rfind("\n      - ", 0, at)
+        end = workflow.find("\n      - ", at)
+        block = workflow[start:] if end == -1 else workflow[start:end]
+        return _without_comments(block).split("run: |", maxsplit=1)[1].strip()
 
     def test_pr_check_leg_checks_all_three_workspaces(self):
         self.assertIn("runs-on: ubuntu-22.04\n", self.pr_job)

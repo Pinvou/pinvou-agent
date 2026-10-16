@@ -224,6 +224,17 @@ jobs:
             # isolated leaf-feature boundaries are explicitly low risk; changes
             # to their registration or app command surface still run full tests.
             rust_full:
+              # Round-1 fix wave (PR #715 review): the loong64 cross-pipeline
+              # scripts are build inputs of the rust legs — the pr-check
+              # rust-loongarch64-check leg executes the toolchain/sysroot
+              # setup scripts, and the release job's orchestrator drives the
+              # cargo builds. Without these entries a script-only edit (sha
+              # re-pin, sysroot package list, packaging step) ran NO rust
+              # leg and required-gate passed on `skipped` — the same gap the
+              # ci-libpipewire-build.sh entries below exist for.
+              - 'scripts/ci-loongarch64-toolchain.sh'
+              - 'scripts/ci-loongarch64-sysroot.sh'
+              - 'scripts/ci-build-linux-loongarch64.sh'
               - '**/Cargo.toml'
               - '**/Cargo.lock'
               - '**/deny.toml'
@@ -334,6 +345,14 @@ jobs:
               - 'pinvou3-app/src-tauri/deny.toml'
               - '.github/workflows/pr-check.yml'
             release_contract:
+              # Round-1 fix wave (PR #715 review): the loong64 packaging
+              # pipeline scripts are read (and bash -n'd) by the release
+              # policy suite, so editing one must run release-contract-test
+              # instead of skipping it with the gate green on `skipped`.
+              - 'scripts/package-deb-loongarch64.sh'
+              - 'scripts/ci-build-linux-loongarch64.sh'
+              - 'scripts/ci-loongarch64-toolchain.sh'
+              - 'scripts/ci-loongarch64-sysroot.sh'
               - 'VERSION'
               - 'scripts/sync-version.mjs'
               - 'scripts/check-linux-glibc-floor.sh'
@@ -844,6 +863,15 @@ jobs:
 
       - name: cargo test
         run: cargo test --manifest-path pinvou-knowledge/Cargo.toml --all-features --locked
+
+      # feature-off 桩契约：--no-default-features 时嵌入走显式 unsupported 桩
+      # （loongarch64 上即使 feature 全开也是同一桩，且此前没有任何腿编译过
+      # 该变体）。先编译测试目标保证桩分支不腐坏，再运行桩契约测试（过滤
+      # stub_tests：其余测试可能假设 server feature）。
+      - name: cargo check + test (feature-off embedder stub)
+        run: |
+          cargo check --manifest-path pinvou-knowledge/Cargo.toml --tests --no-default-features --features client --locked
+          cargo test --manifest-path pinvou-knowledge/Cargo.toml --lib --no-default-features --features client --locked -- embedding::stub_tests
 
       - name: 部署脚本 shell 语法
         run: bash -n pinvou-knowledge/deploy/install.sh
@@ -3030,17 +3058,34 @@ jobs:
       # (setup 步骤把 PKG_CONFIG_LIBDIR/SYSROOT_DIR 指向它)。不装 webkit
       # 主机开发包,不跑 ci-libpipewire-build.sh(beige 已带 libpipewire
       # 1.2.5,sysroot 头部齐全),lld 不装(钉死交叉工具链只有 bfd)。
-      # libclang: pipewire/libspa 的 bindgen 构建脚本需要(runner 镜像虽
-      # 预装,这里显式钉住);file: 交叉构建脚本与守卫脚本的宿主依赖。
+      # libclang: libspa/pipewire 的 bindgen 构建脚本在交叉构建时会给
+      # libclang 传 --target=loongarch64-...,而 LoongArch 要 LLVM >= 16
+      # 才是主 target(jammy 档案里的 libclang 14/15 没有该 target,bindgen
+      # 直接 panic "unknown target triple")。因此钉 apt.llvm.org 的
+      # llvm-toolchain-jammy-18 套件装 libclang-18-dev,并用 LIBCLANG_PATH
+      # 短路 clang-sys 的多目录探测;目标头文件由 BINDGEN_EXTRA_CLANG_ARGS
+      # (sysroot 脚本 print_env 导出)指向 deepin sysroot。此 run 块与
+      # release-packages.yml 的 build-linux-loongarch64 job 逐字一致
+      # (test_release_loongarch64_policy 钉字节等价)。
       - name: Install host build tools
         run: |
+          set -euo pipefail
+          sudo mkdir -p /etc/apt/keyrings
+          curl --proto '=https' --tlsv1.2 --location --silent --show-error --fail \
+            --retry 3 --retry-delay 2 https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo gpg --dearmor --yes -o /etc/apt/keyrings/pinvou-llvm.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/pinvou-llvm.gpg] https://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" \
+            | sudo tee /etc/apt/sources.list.d/pinvou-llvm-18.list > /dev/null
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential pkg-config cmake libclang-dev file
+            build-essential pkg-config cmake libclang-18-dev file
           # Reduce footprint at the source: orphan dependencies, apt cache packages, and index lists do not stay on the build disk.
           sudo apt-get autoremove -y --purge
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
+          # clang-sys probes several default locations; pin the discovery to
+          # the LoongArch-capable libclang this step just installed.
+          echo "LIBCLANG_PATH=/usr/lib/llvm-18/lib" >> "$GITHUB_ENV"
 
       # 工具链/sysroot 缓存:restore 在 setup 之前,save 在 setup 之后拆开写
       # (actions/cache 没有 rust-cache 的 save-if,用 main-only 条件实现同一
@@ -3105,17 +3150,18 @@ jobs:
           sed -n '/export in the CI step/,/^---- notes/p' "$log" \
             | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' >> "$GITHUB_ENV"
 
-      # 缓存保存:仅 main push(setup 脚本自校验失败即 step 红,不会保存
-      # 半成品;cache-hit 时无需重写同一键)。
+      # 缓存保存:仅 main push 且 setup 全部成功(success():两个 setup 脚本
+      # 都会先 mkdir 目标目录再下载,setup 失败留下的半空树若被存进 exact
+      # key,后续 restore 会永远命中这份空代;cache-hit 时无需重写同一键)。
       - name: Save loong64 cross toolchain cache
-        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.loong64-toolchain-cache.outputs.cache-hit != 'true' }}
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.loong64-toolchain-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}/.pinvou-loong64-cache/cross-tools
           key: release-linux-loong64-jammy-toolchain-${{ hashFiles('scripts/ci-loongarch64-toolchain.sh') }}
 
       - name: Save loong64 sysroot cache
-        if: ${{ !cancelled() && github.ref == 'refs/heads/main' && steps.loong64-sysroot-cache.outputs.cache-hit != 'true' }}
+        if: ${{ success() && github.ref == 'refs/heads/main' && steps.loong64-sysroot-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@v4
         with:
           path: ${{ github.workspace }}/.pinvou-loong64-cache/sysroot

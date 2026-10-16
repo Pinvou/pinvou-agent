@@ -80,7 +80,6 @@ APP_DIR="$REPO_ROOT/pinvou3-app"
 SRC_TAURI="$APP_DIR/src-tauri"
 
 TRIPLE="loongarch64-unknown-linux-gnu"
-RUST_TARGET_ENV="LOONGARCH64_UNKNOWN_LINUX_GNU"
 TOOLCHAIN_ROOT_DEFAULT="$SRC_TAURI/target/loongarch64-cross-tools/loongarch64-unknown-linux-gnu"
 SYSROOT_DEFAULT="$SRC_TAURI/target/loongarch64-sysroot"
 STAGING_ROOT="$SRC_TAURI/target/loong64-staging"
@@ -148,6 +147,20 @@ export RANLIB_loongarch64-unknown-linux-gnu="$TOOLCHAIN_BIN/$TRIPLE-gcc-ranlib"
 export STRIP="$TOOLCHAIN_BIN/$TRIPLE-strip"
 export CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER="$TOOLCHAIN_BIN/$TRIPLE-gcc"
 export PKG_CONFIG_LIBDIR PKG_CONFIG_SYSROOT_DIR CMAKE_TOOLCHAIN_FILE
+# bindgen (libspa/pipewire -sys build scripts) must bind against the target
+# sysroot's headers, not the host's /usr/include (exported by the sysroot
+# script's print_env on the pr-check path; re-exported here because this
+# script owns the release path's cargo invocations).
+export BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$sysroot"
+# bindgen dlopens libclang. LoongArch became a primary LLVM target in 16 and
+# the jammy archive ships no libclang >= 16 (its 14/15 lack the target), so
+# the release job installs libclang-18-dev from the pinned apt.llvm.org
+# llvm-toolchain-jammy-18 suite; point clang-sys's discovery at it. Dev
+# hosts with a different LLVM prefix can override LIBCLANG_PATH; a host
+# without the llvm-18 prefix falls back to clang-sys's own discovery.
+if [ -d /usr/lib/llvm-18/lib ]; then
+  export LIBCLANG_PATH="${LIBCLANG_PATH:-/usr/lib/llvm-18/lib}"
+fi
 
 # ---- rust target --------------------------------------------------------------
 # Run from the repo root: rustup resolves the active toolchain per directory

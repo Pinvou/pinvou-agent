@@ -200,7 +200,27 @@ for command_name in curl gzip dpkg dpkg-deb readelf find pkg-config strings sha2
 done
 
 sysroot_glibc_version() {
-  strings "$1" | sed -n 's/^GNU C Library.*version \([0-9][0-9.]*[0-9]\)\.*$/\1/p' | head -n 1
+  # Dump to a file first: `strings | sed | head` under pipefail can die of
+  # SIGPIPE mid-pipeline when the first match lands before the producer
+  # finishes, killing an otherwise valid sysroot probe.
+  local tmp
+  tmp="$(mktemp)"
+  strings "$1" > "$tmp" 2>/dev/null || true
+  sed -n '/^GNU C Library.*version /{s/^GNU C Library.*version \([0-9][0-9.]*[0-9]\)\.*$/\1/p;q;}' "$tmp"
+  rm -f "$tmp"
+}
+
+# Release files list per-path hashes as " <hash> <size> <path>" lines under
+# the SHA256: section; pick the hash for one index path. This authenticates
+# the Packages.gz download against the Release file — without it the index
+# (and therefore every .deb hash read FROM the index) is only protected by
+# TLS to a mirror the operator can redirect.
+release_index_sha256() {
+  awk -v want="$1" '
+    $1 == "SHA256:" { insec = 1; next }
+    /^[A-Za-z0-9][A-Za-z0-9.-]*:/ { insec = 0 }
+    insec && $3 == want { print $1; exit }
+  ' "$2"
 }
 
 # Point the CURRENT shell's pkg-config at the sysroot (exported, so the
@@ -246,8 +266,26 @@ prune_sysroot() {
       gconv perl perl-base gir-1.0 girepository-1.0 gstreamer-1.0 systemd)
   fi
   # Static archives and libtool files: the app links the sysroot
-  # dynamically; keeping .a would only bloat it.
-  find "$root" \( -name '*.a' -o -name '*.la' \) -type f -delete
+  # dynamically; keeping .a would only bloat it. Exception: GNU ld linker
+  # scripts (the text .so files, e.g. glibc's libc.so) name archive members
+  # (libc_nonshared.a, and libmvec.a via libm.so's AS_NEEDED group) that
+  # every -l resolution through those scripts requires — deleting them
+  # turns each link into a fatal "cannot find" at release-build time, which
+  # cargo check legs never catch because they do not link.
+  local keep_names keep_name
+  local keeps=()
+  keep_names="$(find "$root/usr/lib/$MULTIARCH_DIR" -maxdepth 1 -type f -name '*.so' -print0 2>/dev/null \
+    | xargs -0 -r grep -lI . 2>/dev/null \
+    | xargs -r grep -hoE '[A-Za-z0-9._+-]+\.a\b' 2>/dev/null | sort -u || true)"
+  for keep_name in $keep_names; do
+    keeps+=(${keeps[@]+"${keeps[@]}"} ! -name "$keep_name")
+  done
+  find "$root" -name '*.la' -type f -delete
+  if [ "${#keeps[@]}" -gt 0 ]; then
+    find "$root" -name '*.a' -type f "${keeps[@]}" -delete
+  else
+    find "$root" -name '*.a' -type f -delete
+  fi
 }
 
 # ---- shared extraction -------------------------------------------------------
@@ -270,6 +308,15 @@ verify_sysroot() {
   [ -f "$root/usr/include/stdio.h" ] || fail "sysroot lacks libc headers: $root/usr/include/stdio.h"
   [ -f "$root/usr/lib/$MULTIARCH_DIR/libc.so" ] \
     || fail "sysroot lacks the linker's libc.so: $root/usr/lib/$MULTIARCH_DIR/libc.so"
+  # The prune keeps the archives the linker scripts reference; assert they
+  # are really there so a prune regression fails here with a precise
+  # message instead of as "cannot find -lc_nonshared..." at link time.
+  local ref_archive
+  for ref_archive in $(grep -hoE '[A-Za-z0-9._+-]+\.a' \
+      "$root/usr/lib/$MULTIARCH_DIR/libc.so" 2>/dev/null | sort -u); do
+    [ -f "$root/usr/lib/$MULTIARCH_DIR/$ref_archive" ] \
+      || fail "linker script libc.so references $ref_archive but the sysroot lacks it (prune regression?)"
+  done
 
   local libc_so="$root/usr/lib/$MULTIARCH_DIR/libc.so.6"
   [ -f "$libc_so" ] || fail "sysroot lacks libc.so.6: $libc_so"
@@ -417,22 +464,32 @@ apt_method() {
   # community component's newer libsoup-3.0-dev Provides). First-seen
   # package wins, so main keeps priority over the extra components.
   local release_url="$mirror/dists/$suite/Release"
+  local release_file="$work_dir/Release"
+  # Keep the Release file: its SHA256 section authenticates every
+  # Packages.gz index below. Without that check the index is only protected
+  # by TLS to a mirror the operator can redirect — and every per-.deb hash
+  # is read FROM that index, so an unsigned index proves nothing.
+  curl --proto '=https' --tlsv1.2 --location --silent --show-error --fail \
+    --retry 3 --retry-delay 2 -o "$release_file" "$release_url" \
+    || fail "Release download failed: $release_url"
   local components
-  components="$(curl --proto '=https' --tlsv1.2 --location --silent --show-error --fail \
-    --retry 3 --retry-delay 2 "$release_url" \
-    | sed -n 's/^Components:[[:space:]]*//p' | tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//')"
+  components="$(sed -n 's/^Components:[[:space:]]*//p' "$release_file" | tr -s '[:space:]' ' ' | sed 's/^ //;s/ $//')"
   [ -n "$components" ] || fail "cannot read Components from $release_url (mirror/suite mismatch?)"
   log "apt method: suite $suite components: $components"
 
-  : > "$work_dir/Packages"
-  local comp
+  local comp index_url expected_index_sha
   for comp in $components; do
-    local index_url="$mirror/dists/$suite/$comp/binary-$DPKG_ARCH/Packages.gz"
+    index_url="$mirror/dists/$suite/$comp/binary-$DPKG_ARCH/Packages.gz"
     log "apt method: fetching $index_url"
     curl --proto '=https' --tlsv1.2 --location --silent --show-error --fail \
       --retry 3 --retry-delay 2 -o "$work_dir/Packages.$comp.gz" "$index_url" \
       || fail "index download failed: $index_url"
     gzip -t "$work_dir/Packages.$comp.gz" || fail "index is not valid gzip: $work_dir/Packages.$comp.gz"
+    expected_index_sha="$(release_index_sha256 "$comp/binary-$DPKG_ARCH/Packages.gz" "$release_file")"
+    [ -n "$expected_index_sha" ] \
+      || fail "Release file lists no SHA256 for $comp/binary-$DPKG_ARCH/Packages.gz (refusing an unauthenticated index)"
+    echo "$expected_index_sha  $work_dir/Packages.$comp.gz" | sha256sum --check --status \
+      || fail "Packages.gz sha256 does not match the Release file for component $comp (mirror inconsistency?)"
     zcat "$work_dir/Packages.$comp.gz" >> "$work_dir/Packages.raw"
   done
 
@@ -673,7 +730,7 @@ PYEOF
       echo "$sha  $deb_path" | sha256sum --check --status \
         || fail "sha256 mismatch for $name ($deb_path) against the index"
     else
-      echo "WARNING: index has no SHA256 for $name; skipping hash check" >&2
+      fail "index has no SHA256 for $name; refusing an unverified download"
     fi
     actual_name="$(dpkg-deb -f "$deb_path" Package 2>/dev/null || true)"
     [ "$actual_name" = "$name" ] \
@@ -694,18 +751,42 @@ PYEOF
 # ---- run ----------------------------------------------------------------------
 manifest="$output_dir/$MANIFEST_NAME"
 
+expected_source_description() {
+  case "$1" in
+    apt)    echo "apt:$mirror@$suite" ;;
+    docker) echo "docker:$docker_image" ;;
+  esac
+}
+
 already_built() {
   [ -f "$manifest" ] || return 1
   [ -f "$output_dir/$CMAKE_TOOLCHAIN_NAME" ] || return 1
   grep -Fxq "glibc-floor=$GLIBC_FLOOR" "$manifest" || return 1
   grep -Fxq "packages=$(IFS=,; echo "${DEV_PACKAGES[*]}")" "$manifest" || return 1
+  # The source identity (mirror/suite or image) is part of the generation:
+  # switching it must rebuild, not silently keep serving the previous
+  # source's tree. `auto` accepts either source it could have used.
+  case "$method" in
+    apt)    grep -Fxq "source=$(expected_source_description apt)" "$manifest" || return 1 ;;
+    docker) grep -Fxq "source=$(expected_source_description docker)" "$manifest" || return 1 ;;
+    auto)   grep -Eq "^source=(apt:$mirror@$suite|docker:$docker_image)$" "$manifest" || return 1 ;;
+  esac
 }
 
 if [ "$force" = false ] && already_built; then
-  log "reusing sysroot at $output_dir ($(head -n 2 "$manifest" | tr '\n' ' '))"
+  # Re-run the full verification on reuse as well: the manifest proves
+  # WHICH generation this is, not that the restored tree is intact (a
+  # truncated cache restore must fail here, not at link time).
+  verify_sysroot "$output_dir"
+  log "reusing verified sysroot at $output_dir ($(head -n 2 "$manifest" | tr '\n' ' '))"
 else
   SOURCE_DESCRIPTION=""
   APT_INDEX_SHA=""
+  # Never extract over a previous generation: a mismatched or partially
+  # restored tree would mix sources invisibly (dpkg-deb -x never deletes).
+  # Rebuilds start from a fresh directory.
+  rm -rf -- "$output_dir"
+  mkdir -p "$output_dir"
   case "$method" in
     docker)
       docker_method || fail "docker method failed (see above); fix the docker setup or use --method apt"
@@ -727,6 +808,8 @@ else
   verify_sysroot "$output_dir"
   cmake_file="$(write_cmake_toolchain_file "$output_dir" "$toolchain_prefix")"
 
+  # Atomic manifest: a reader (already_built) must never observe a
+  # half-written generation marker.
   {
     echo "source=$SOURCE_DESCRIPTION"
     echo "glibc-floor=$GLIBC_FLOOR"
@@ -735,7 +818,8 @@ else
       echo "index-sha256=$APT_INDEX_SHA"
     fi
     echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  } > "$manifest"
+  } > "$manifest.tmp"
+  mv "$manifest.tmp" "$manifest"
   log "sysroot ready: $output_dir (glibc $(sysroot_glibc_version "$output_dir/usr/lib/$MULTIARCH_DIR/libc.so.6"))"
   log "cmake toolchain file: $cmake_file"
 fi
@@ -748,10 +832,15 @@ PINVOU_LOONG64_SYSROOT=$output_dir
 PKG_CONFIG_LIBDIR=$output_dir/usr/lib/$MULTIARCH_DIR/pkgconfig:$output_dir/usr/share/pkgconfig:$output_dir/usr/lib/pkgconfig
 PKG_CONFIG_SYSROOT_DIR=$output_dir
 CMAKE_TOOLCHAIN_FILE=$output_dir/$CMAKE_TOOLCHAIN_NAME
+BINDGEN_EXTRA_CLANG_ARGS=--sysroot=$output_dir
 ---- notes ----
 # Do NOT set PKG_CONFIG_PATH (it appends to the host's default dirs); the
 # LIBDIR above fully replaces the search path. The host pkg-config binary
 # is used as-is (it reads foreign .pc files); no target pkg-config needed.
+# BINDGEN_EXTRA_CLANG_ARGS points bindgen (libspa/pipewire -sys build
+# scripts) at this sysroot so bindings resolve target headers instead of
+# the host's /usr/include; LIBCLANG_PATH itself is host tooling and is
+# exported by the CI job / orchestrator (libclang-18 pin).
 # The generated $CMAKE_TOOLCHAIN_NAME sets CMAKE_SYSTEM_NAME /
 # CMAKE_SYSTEM_PROCESSOR=loongarch64, the cross compilers from the
 # toolchain prefix and CMAKE_SYSROOT — exactly the interface
