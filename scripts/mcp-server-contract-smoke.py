@@ -127,13 +127,17 @@ def content_json(response: dict) -> dict:
     return json.loads(content[0]["text"])
 
 
-# ── 模型可见 schema 契约 ────────────────────────────────────────────────
-# 背景(k3 slides:[] 事故):`type:"array"` 不带 items 时,Kimi 等受限解码通道
-# 会把参数补全成最小合法值 [](实测连续 27 次发出 slides:[])。空 schema 节点
-# 在 MFJS 里没有表示、校验直接 MissingType,#683 曾因此使整个工具被静默丢弃;
-# 引擎(CodeWhale #101)如今会先把 items:{} 这一个形状修复掉,其余位置的空
-# 节点仍会弃用整个工具。两类都在这里门死:数组必须带具体类型的 items,任何
-# schema 位置不得出现空节点或本守卫无法检视的 $ref。
+# ── Model-visible schema contract ──────────────────────────────────────
+# Background (the k3 slides:[] incident): with `type: "array"` and no items,
+# constrained tool-call decoding channels (Kimi and friends) complete the
+# parameter to its minimal valid value [] (observed live: slides:[] emitted
+# 27 times in a row). An empty schema node has no MFJS representation —
+# validation fails outright with MissingType, which once made #683 silently
+# drop the whole tool; the engine (CodeWhale #101) now repairs exactly the
+# items:{} shape, but empty nodes anywhere else still discard the whole
+# tool. Both classes are gated here: arrays must carry concretely typed
+# items, and no schema position may hold an empty node or a $ref this guard
+# cannot inspect.
 _MFJS_CONCRETE_TYPES = ("string", "number", "integer", "boolean", "object", "array", "null")
 
 
@@ -142,12 +146,14 @@ def _schema_has_concrete_type(node) -> bool:
         return False
     if node.get("type") in _MFJS_CONCRETE_TYPES:
         return True
-    # anyOf/oneOf 是并集:任一分支可能被取到,所以每个分支都必须具体。
+    # anyOf/oneOf is a union: any branch may be taken, so every branch must
+    # be concrete.
     for union_key in ("anyOf", "oneOf"):
         branches = node.get(union_key)
         if isinstance(branches, list) and branches:
             return all(_schema_has_concrete_type(branch) for branch in branches)
-    # allOf 是交集:一个带具体类型的分支足以确定类型(允许 {type}+{maxLength} 这类细化)。
+    # allOf is an intersection: one concretely typed branch settles the type
+    # (refinements like {type}+{maxLength} are allowed).
     branches = node.get("allOf")
     if isinstance(branches, list) and branches:
         return any(_schema_has_concrete_type(branch) for branch in branches)
@@ -155,35 +161,38 @@ def _schema_has_concrete_type(node) -> bool:
 
 
 def _walk_tool_schema(node, path: str, offenders: list[str]) -> None:
-    """只走 schema 值位置;enum/default/const/examples 里出现的 {} 是数据,不进。"""
+    """Walk schema-value positions only; {} inside enum/default/const/examples is data, never walked."""
     if isinstance(node, bool):
-        # true 是空 schema 的语义等价物,false 在 MFJS 里同样没有表示:
-        # 与 {} 同类,失败关闭。
-        offenders.append(f"{path}: boolean schema(true/false)等同空节点,MFJS 无表示")
+        # true is semantically the empty schema, and false likewise has no
+        # MFJS representation: same class as {}, fail closed.
+        offenders.append(f"{path}: boolean schema (true/false) is semantically the empty schema; MFJS has no representation")
         return
     if not isinstance(node, dict):
         return
     if "$ref" in node:
-        # $ref 的目标内容本守卫不检视(bundled server 均为手写小 schema,直接
-        # 内联即可);不跟随是为了不让事故类藏在引用背后,失败关闭。
-        offenders.append(f"{path}: $ref 不被本守卫跟随(目标内容未检);请内联 schema")
+        # This guard never inspects a $ref target (bundled servers are small
+        # hand-written schemas — inline it); not following refs keeps the
+        # incident class from hiding behind an indirection, fail closed.
+        offenders.append(f"{path}: $ref is not followed by this guard (target uninspected); inline the schema")
         return
     if "prefixItems" in node:
-        # 与 tuple items 同族:元组语义超出已验证的 MFJS 形状集,失败关闭。
-        offenders.append(f"{path}: prefixItems(元组语义)超出已验证的 MFJS 形状集(items 须为单一 schema)")
+        # Same family as tuple items: tuple semantics are outside the MFJS
+        # shape set verified in this repo, fail closed.
+        offenders.append(f"{path}: prefixItems (tuple semantics) is outside the verified MFJS shape set (items must be a single schema)")
         return
     if not node:
-        offenders.append(f"{path}: 空 schema 节点(会被 MFJS 拒绝并静默丢工具)")
+        offenders.append(f"{path}: empty schema node (MFJS rejects it and silently drops the tool)")
         return
     if node.get("type") == "array":
         items = node.get("items")
         if isinstance(items, list):
-            # tuple 形式是合法 JSON Schema,但超出本仓验证过的 MFJS 形状集
-            # (items 须为单一 schema),按失败关闭统一禁用。
-            offenders.append(f"{path}: tuple 形式 items 超出已验证的 MFJS 形状集(items 须为单一 schema)")
+            # Tuple form is legal JSON Schema but outside the MFJS shape set
+            # verified in this repo (items must be a single schema); banned
+            # uniformly, fail closed.
+            offenders.append(f"{path}: tuple-form items is outside the verified MFJS shape set (items must be a single schema)")
         elif not _schema_has_concrete_type(items):
             offenders.append(
-                f"{path}: array 缺少带具体类型的 items(受限解码通道会补全成 [])"
+                f"{path}: array without concretely typed items (constrained decoding channels complete it to [])"
             )
     for map_key in ("properties", "patternProperties", "$defs", "definitions", "dependentSchemas"):
         subs = node.get(map_key)
@@ -209,22 +218,24 @@ def _walk_tool_schema(node, path: str, offenders: list[str]) -> None:
 
 
 def check_schema_contract(tool_id: str, tools: list) -> int:
-    """守卫全部工具的 inputSchema,返回检视的工具数。
+    """Guard every tool's inputSchema; return the number of tools walked.
 
-    返回值被 check_protocol 打进成功行:调用点一旦被删,那行 print 立即
-    NameError——没有它,守卫的接线可以在全 CI 矩阵绿着的情况下被静默拆除
-    (本文件的单测只能钉 walker 内部,钉不住调用点本身)。
+    The return value is printed into check_protocol's success line: delete
+    the call site and that print immediately raises NameError — without it
+    the guard's wiring could be silently dismantled while the whole CI
+    matrix stays green (this file's unit tests can only pin the walker's
+    internals, not the call site itself).
     """
     offenders: list[str] = []
     for tool in tools:
         schema = tool.get("inputSchema")
         name = tool.get("name", "?")
         if not isinstance(schema, dict):
-            offenders.append(f"{tool_id}.{name}: inputSchema 缺失或不是对象")
+            offenders.append(f"{tool_id}.{name}: inputSchema missing or not an object")
             continue
         _walk_tool_schema(schema, f"{tool_id}.{name}", offenders)
     assert not offenders, (
-        "模型可见 schema 违反契约:\n  " + "\n  ".join(offenders)
+        "Model-visible schema violates the contract:\n  " + "\n  ".join(offenders)
     )
     return len(tools)
 
@@ -237,7 +248,7 @@ def check_protocol(tool_id: str, expected_tools: set[str], env=None):
         actual = {tool["name"] for tool in listed["result"]["tools"]}
         assert actual == expected_tools, (tool_id, actual)
         walked = check_schema_contract(tool_id, listed["result"]["tools"])
-    print(f"✅ {tool_id}: initialize + tools/list ({len(expected_tools)}) + schema 守卫({walked} 个 inputSchema)")
+    print(f"✅ {tool_id}: initialize + tools/list ({len(expected_tools)}) + schema guard ({walked} inputSchemas walked)")
 
 
 def check_session_reader_length_cap_parity() -> None:

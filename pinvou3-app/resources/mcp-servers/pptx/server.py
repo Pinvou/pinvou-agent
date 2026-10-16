@@ -169,19 +169,24 @@ def _title_block(slide, th, title):
     rect(slide, Inches(0.9), Inches(1.55), Inches(11.5), Inches(0.025), th["light"])
 
 
-# ── 版式 ────────────────────────────────────────────────────────────────────
-# 字段读取一律 `s.get(k) or 默认` / `or []`,不要 `get(k, 默认)`:DeepSeek 严格
-# 工具模式会把 schema 里声明的可选属性改成 required+nullable(引擎的
-# enforce_strict_subset;原本就 required 的 layout 不加 nullable),模型对不用
-# 的字段会显式发 null —— dict.get 的默认值对"键存在但值为 null"不生效,会把
-# None 一路带进渲染。例外:kpi/agenda 的 num/label 数值 0 是合法数据,`or` 会
-# 把它吞掉,那里只按 None 判等回退(_item_num_label)。
+# ── Layouts ────────────────────────────────────────────────────────────────
+# Always read slide fields as `s.get(k) or default` / `or []`, never
+# `get(k, default)`: DeepSeek strict tool mode rewrites the schema-declared
+# optional properties into required+nullable (the engine's
+# enforce_strict_subset; the already-required layout gains no nullable), so
+# the model explicitly sends null for fields it does not use — and dict.get's
+# default does not apply when the key exists with a null value, carrying None
+# straight into rendering. Exception: a kpi/agenda num/label of 0 is valid
+# data that `or` would swallow, so those fall back on None only
+# (_item_num_label).
 
 def _item_num_label(it):
-    """items 的 string|{num,label} anyOf 统一取值。
+    """Unified read for the items string|{num,label} anyOf.
 
-    字符串元素按原文返回;dict 元素的 num/label 只在 None 时回退空串
-    (`or ""` 会把合法的数值 0 吞成空白卡)。渲染层对返回值不再判真值。
+    String elements are returned verbatim; a dict element's num/label fall
+    back to the empty string on None only (`or ""` would swallow a legitimate
+    numeric 0 into a blank card). Renderers must not truthiness-test the
+    return value.
     """
     if not isinstance(it, dict):
         return str(it), ""
@@ -265,9 +270,11 @@ def layout_kpi(slide, th, s):
         x = x0 + i * (card_w + gap)
         rect(slide, x, y, card_w, h, th["light"])
         rect(slide, x, y, card_w, Inches(0.12), th["primary"])
-        # schema 的 items 是 string|{num,label} anyOf(共享 agenda 通道):字符串元素
-        # 按大数字渲染,dict 的 num/label 为 null 时回退空串,都不能崩;num/label
-        # 只对 None 回退,数值 0 按数据渲染(见 _item_num_label)。
+        # The schema's items is a string|{num,label} anyOf (shared with the
+        # agenda lane): string elements render as the big number, a dict's
+        # num/label fall back to the empty string on null — neither may crash;
+        # num/label fall back on None only, a numeric 0 renders as data (see
+        # _item_num_label).
         num, label = _item_num_label(it)
         tfn = textbox(slide, x, y + Inches(0.55), card_w, Inches(1.1), MSO_ANCHOR.MIDDLE)
         para(tfn, num, 40, th["primary"], bold=True, align=PP_ALIGN.CENTER, font=th["title_font"], first=True)
@@ -664,9 +671,11 @@ TOOL_DEFS = [{
                     "- end: {layout, title, subtitle}  ← 结尾页\n"
                     "正文要有真实内容/数据,不要只放标题。"
                 ),
-                # items 必须带具体类型:无 items 的数组在 Kimi 等家的工具调用通道上
-                # 会被补全成最小合法值 [](实测 k3 连续 27 次发出 slides:[]),
-                # 结构化 items 同时给受约束解码器一个可填的形状。
+                # items must carry a concrete type: on constrained tool-call
+                # decoding channels (Kimi and friends) an itemless array is
+                # completed to its minimal valid value [] (observed live: k3
+                # emitted slides:[] 27 times in a row); structured items also
+                # give the constrained decoder a shape it can fill.
                 "items": {
                     "type": "object",
                     "required": ["layout"],
