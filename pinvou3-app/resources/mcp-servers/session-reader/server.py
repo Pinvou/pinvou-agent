@@ -728,8 +728,12 @@ def read_session_history(sessions_dir, session_id, turn_limit=DEFAULT_TURN_LIMIT
     a member of; any non-member id — sibling, aux-, sched-, eval_ — gets a
     structured not-readable error before any filesystem access. Scoped mode
     returns the SAME not-readable error for a member id whose record is
-    absent: a distinct "not found" would be an existence oracle for sibling
-    session ids (round-3 M3(b))."""
+    absent or fails path containment: a distinct "not found" would be an
+    existence oracle for sibling session ids (round-3 M3(b)). Beyond that
+    gate, a member's OWN file that is corrupt/unreadable/oversized answers
+    with the specific id-echoing error ("unreadable/too large: <id>") — the
+    id is the caller's own pin, so echoing it leaks nothing (round-9 minor
+    4, documented intent)."""
     id_error = validate_session_id(session_id)
     if id_error:
         return None, id_error

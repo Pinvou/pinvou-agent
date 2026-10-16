@@ -2585,6 +2585,12 @@ impl Pinvou3Bridge {
                     // is unreachable for GUI engines either way — the tool
                     // never reaches the server. Demote to ZeroTool so the
                     // prompt stays honest about the engine's real surface.
+                    // Honesty horizon (round-9 minor 3): this check runs at
+                    // SPAWN — toggling the switches off mid-session strips
+                    // the tool from the live catalog but the persona and
+                    // per-turn reminder keep naming it until idle-reclaim
+                    // re-runs this demote arm; enforcement stays fail-safe
+                    // (catalog + per-call gate) throughout.
                     let scoped_tool_denied =
                         crate::features::marketplace::builtin::feature_disabled_tool_names()
                             .iter()
@@ -2643,6 +2649,14 @@ impl Pinvou3Bridge {
                                     // scoped for a zero-catalog engine — calls are
                                     // still rejected at execution (fail-safe), but
                                     // the half-state must be visible in the log.
+                                    // Residual (round-9 minor 2): a hallucinated
+                                    // call from that engine resolves through the
+                                    // lazy path against the GLOBAL mcp.json
+                                    // (foundation `resolve_advertised_tool`) —
+                                    // reachable only if a user global server is
+                                    // literally named `session-reader` exposing
+                                    // `read_session`; the gates above it still
+                                    // hold.
                                     if let Err(error) = std::fs::remove_file(&stale) {
                                         log::warn!(
                                             "[bridge] aux demotion could not remove stale scoped config {}: {error}",

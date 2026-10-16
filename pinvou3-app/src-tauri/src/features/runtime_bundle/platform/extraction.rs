@@ -1399,7 +1399,11 @@ impl Pinvou3Bundle {
     /// failures are non-blocking, and a mid-session deletion has no in-app
     /// heal, so the writer judges the launch target itself rather than
     /// trusting the seed, matching `rebuild_local_mcp_entry`'s no-dead-entry
-    /// discipline; the caller fails closed to the zero-tool aux branch.
+    /// discipline; the caller fails closed to the zero-tool aux branch. The
+    /// `is_file` check is existence, not version: a stale 1.0.0 release
+    /// passes the guard and pins to the old argparse for one boot cycle
+    /// before the startup byte-compare heals it (round-9 minor 13, same
+    /// discipline as `rebuild_local_mcp_entry`).
     fn aux_session_reader_entry(parent_id: &str) -> Option<serde_json::Value> {
         let manifest =
             crate::features::marketplace::mcp_catalog::embedded_manifest("session-reader")
@@ -1416,6 +1420,15 @@ impl Pinvou3Bundle {
         {
             return None;
         }
+        // Round-9 minor 15: pin the sessions dir explicitly — without it the
+        // server resolves its default store, which under a relocated home
+        // (PINVOU3_HOME) lands elsewhere and permanently denies the pinned
+        // read (fail-closed, but surprising in dev). App-anchored like the
+        // scope pin itself.
+        args.push(format!(
+            "--sessions-dir={}",
+            crate::platform::paths::sessions_root().display()
+        ));
         args.push(format!("--only-session={parent_id}"));
         Some(serde_json::json!({
             "command": crate::features::marketplace::mcp_catalog::local_server_command(&manifest),
@@ -1941,8 +1954,10 @@ mod tests {
     /// Round-5 MAJOR-1 pin: the idempotence compare reads through the
     /// hardened primitive — a swap-in FIFO at the token path must demote
     /// (None) instead of wedging the spawn path on a bare read forever.
-    /// Reverting the compare to `std::fs::read_to_string` turns this red
-    /// (the bare read blocks on the FIFO).
+    /// Reverting the compare to `std::fs::read_to_string` DEADLOCKS this
+    /// test (the bare read parks on the FIFO forever); the CI job timeout
+    /// is what turns that into a visible failure — the in-test 500ms probe
+    /// only makes the healthy path fast.
     #[cfg(unix)]
     #[test]
     fn aux_mcp_config_demotes_on_fifo_at_token_path() {
@@ -2066,10 +2081,6 @@ mod tests {
         assert!(
             verdict.is_none(),
             "a failure to create the private dir must demote (verdict={verdict:?})"
-        );
-        assert!(
-            verdict.is_none(),
-            "a failure to create the private dir must demote, never write elsewhere"
         );
         assert!(
             !crate::platform::paths::aux_session_mcp_json("aux-mode02").exists(),

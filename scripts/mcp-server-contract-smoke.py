@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import tempfile
@@ -134,6 +135,20 @@ def check_protocol(tool_id: str, expected_tools: set[str], env=None):
         actual = {tool["name"] for tool in listed["result"]["tools"]}
         assert actual == expected_tools, (tool_id, actual)
     print(f"✅ {tool_id}: initialize + tools/list ({len(expected_tools)})")
+
+
+def check_session_reader_length_cap_parity() -> None:
+    """Round-9 minor 1: the host demotes at parent.len() > 128 citing the
+    server's MAX_SESSION_ID_LEN — pin the constant itself so a silent
+    server-side lowering re-opens the dead-tool-declaration scenario the
+    host demotion exists to prevent."""
+    source = (MCP_ROOT / "session-reader" / "server.py").read_text(
+        encoding="utf-8")
+    match = re.search(r"MAX_SESSION_ID_LEN\s*=\s*(\d+)", source)
+    assert match, "MAX_SESSION_ID_LEN must stay declared in server.py"
+    assert int(match.group(1)) == 128, (
+        "server MAX_SESSION_ID_LEN moved: update engine_pool.rs's host-side "
+        "length demote (parent.len() > 128) in lockstep")
 
 
 def check_session_reader_scoped_journey() -> None:
@@ -283,6 +298,7 @@ def main():
     # 1.1.0 — the builtin package re-releases by byte comparison
     # (ensure_package_released upgrades an existing install on mismatch).
     assert manifests["session-reader"]["version"] == "1.1.0", manifests["session-reader"]["version"]
+    check_session_reader_length_cap_parity()
     check_session_reader_scoped_journey()
 
     with RpcServer(MCP_ROOT / "weather", {"AMAP_KEY": ""}) as rpc:

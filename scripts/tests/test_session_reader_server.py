@@ -1778,31 +1778,51 @@ class ScopedReadTests(unittest.TestCase):
         self.assertNotIn("parent01", error)
 
     def test_scoped_resolve_failure_returns_the_unified_denial(self):
-        # Round-8 M2(3): the `path is None` containment arm must return the
-        # SAME id-free denial (deleting the `if scoped:` early-return drops
-        # this into the id-echoing "session not found" text and turns this
-        # red; the deleted-parent leg exercises the `is_file` arm, not this
-        # one). The escape symlink resolves OUTSIDE the sessions dir.
-        (Path(self.dir) / "escaped").mkdir()
-        (Path(self.dir) / "escaped" / "target.json").write_text(
+        # Round-9 MAJOR-2 (fixing the round-8 pin that pinned nothing): the
+        # probe id must be a MEMBER of the scope so the membership check
+        # passes and the `path is None` containment arm is actually reached —
+        # a non-member id (the round-8 "linkout") was answered by the
+        # membership check first, and deleting the containment arm's
+        # `if scoped:` early-return stayed green. Plant `parent01.json` as a
+        # symlink resolving OUTSIDE the sessions dir: the member read must
+        # still get the id-free denial, not the id-echoing "session not
+        # found: parent01".
+        # The symlink target must resolve OUTSIDE the sessions dir — a
+        # sibling inside it (the round-8 mistake) passes containment.
+        outside = tempfile.mkdtemp(prefix="pinvou3-escape-")
+        self.addCleanup(shutil.rmtree, outside, True)
+        target = Path(outside) / "elsewhere.json"
+        target.write_text(
             json.dumps({"schema_version": 1,
-                        "metadata": {"id": "target", "title": "t",
+                        "metadata": {"id": "elsewhere", "title": "t",
                                      "created_at": "x", "updated_at": "x",
                                      "message_count": 0},
                         "messages": []}),
             encoding="utf-8")
-        target = (Path(self.dir) / "escaped" / "target.json").resolve()
-        link = Path(self.dir) / "linkout"
+        (Path(self.dir) / "parent01.json").unlink()
         try:
-            link.symlink_to(target)
+            (Path(self.dir) / "parent01.json").symlink_to(target)
         except OSError:
             self.skipTest("symlinks unavailable on this filesystem")
         _, out_scope_error = self.read("sibling99")
-        payload, error = self.read("linkout")
+        payload, error = self.read("parent01")
         self.assertIsNone(payload)
         self.assertEqual(error, server.SCOPED_NOT_READABLE_ERROR)
         self.assertEqual(error, out_scope_error)
-        self.assertNotIn("linkout", error)
+        self.assertNotIn("parent01", error)
+
+    def test_scoped_oversized_member_file_is_rejected_with_id_echo(self):
+        # Round-9 minor 4: the corrupt/oversized/unreadable arms answer with
+        # an id-echoing specific error ("session file unreadable/too large:
+        # <id>") — a deliberate divergence from the one-denial story: the id
+        # is the caller's OWN pin, so echoing it leaks nothing. Pin the
+        # oversized case (the unreadable case rides the shared unscoped
+        # pins).
+        (Path(self.dir) / "parent01.json").write_bytes(b"x" * 65 * 1024 * 1024)
+        payload, error = self.read("parent01")
+        self.assertIsNone(payload)
+        self.assertIn("too large", error)
+        self.assertIn("parent01", error)
 
     def test_pagination_and_cursor_work_inside_the_scope(self):
         first, error = self.read("parent01", turn_limit=2)
@@ -2011,7 +2031,9 @@ class ScopedStdioTests(unittest.TestCase):
         env["PINVOU3_HOME"] = self.tmp.name
         proc = subprocess.Popen(
             [sys.executable, str(SERVER_PATH),
-             "--sessions-dir", self.dir, "--only-session", "parent01"],
+             # the shipped per-aux config emits the = form — drive the
+             # shipped spelling over the wire (round-8 minor 3 follow-through)
+             "--sessions-dir", self.dir, "--only-session=parent01"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding="utf-8", env=env,
         )
