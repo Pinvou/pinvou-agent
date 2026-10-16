@@ -57,7 +57,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T44 | Implemented; independently reviewed and verified | Actual protected lifecycle kernel, complete atomic commands, original retention/backup deadlines and worker/access-driven timeout convergence; T17/T19/T20 composition and deployment remain separate |
 | T45 | Not completed | Approved helper/launcher evolution and restricted cleanup execution. |
 | T46 | Not completed | Actual local-mode prerequisite certification and exact evidence integration. |
-| T47 | In progress | Protected lifecycle primitives plus actual private SN sources, same-plan approval/freeze and retained-key membership; complete command/admin/quality/publication composition remains pending |
+| T47 | In progress | Protected lifecycle persistence for actual approved frozen SN plans, permanent facts/windows and retained-source integrity; complete operation-bound command/admin/quality/publication composition remains pending |
 
 Confirmed implementation decisions (2026-10-09):
 
@@ -10355,3 +10355,71 @@ pending. T42 deployment stays explicitly deferred. Totals remain 47 tasks:
 five implemented, eleven in progress, thirty-one incomplete or deferred.
 Product 0.10.9, normative 1.0, pinned V1 and CodeWhale are unchanged. Downloads
 retain no hard total or cumulative duration limit.
+
+### T47 frozen SN lifecycle storage
+
+Actual same-plan T05-approved/T06-frozen SN plans now use original shared private
+lifecycle storage. Additive rollout_sn_state installs two fixed private invokers
+and one migration table; all 67 prior SQL raw/index entries and original native
+executable owners stay unchanged. Original null-only ports still reject real SN
+plans. Valid null-plan operation needs no optional SN namespace/provider/registry.
+
+Draft and transition authenticate complete original source/approval/receipt/
+outbox/T06 provenance before and after shared writes. Typed head/fact/window reads
+repeat current schema, storage, ACL and source integrity checks in one transaction.
+Effective search paths are checked before catalog/data access; shared tables must
+be permanent ordinary tables without RLS/inheritance. PUBLIC, column writes,
+private EXECUTE and non-owner grant options remain closed. Frozen reads take no
+plan advisory lock before a later writer's scope lock. Historical authentication
+does not reauthorize an old actor or grant execution/publication qualification.
+
+Real private transitions retain exact percentages, adjacent stages, actor/abort
+purposes, terminal revision reserve and permanent full-scope windows. Actual
+exclude-only and explicit empty groups complete approval/freeze/lifecycle flows.
+Same-base and shared-scope competitors each first complete their own write/readback
+and roll back. Races preserve original PostgreSQL causes, admit exactly one
+winner and verify exact durable head/fact/window and unchanged loser/source rows.
+Source faults occur after real draft/fact insertion; late clock faults require
+both candidate fact and updated head. Independent nontransactional markers prove
+the final guards were reached; all writes roll back, with complete positives
+before/after restoration. Real native history creates 4,101 facts and 2,051
+windows, exceeds 4,096 rows and 1 MiB, and preserves bounded old/current/source
+reads after ordinary encrypted response expiry.
+
+Both auditors independently reviewed all 13 production/test/documentation paths.
+Primary repairs closed current shared ACL/storage and typed-read/path gaps;
+stronger controls distinguish actual post-write guards from early failures.
+Initial test compilation and history-capacity controls were corrected before the
+final frozen runs. No production authority was inferred from those controls.
+
+ROOT ran the complete old/new rollout feature with actual PostgreSQL, OpenBao
+and both original Node references: 78 top-level/82 child tests, zero skips or
+failures (335.675s wall). Default service passed 48 tested packages,
+443 top-level/830 child tests (61.024s wall), with 541 top-level/588 child
+explicit integration skips recorded separately. Modules, vet, private server
+build, pinned V1, Go formatting and working/cached whitespace checks passed.
+The full source/index/status and prior 67 SQL raw/index entries stayed frozen
+through every actual run. Browser/physical platform/deployment E2E is not claimed.
+
+The dependency auditor separately reran 47 top-level/59 child tests, zero skips
+or failures (250.509s wall). The compatibility auditor separately reran
+47 top-level/59 child tests, zero skips or failures (249.933s wall).
+Each actual run included PostgreSQL, OpenBao and both original Node references,
+closed its process session and joined owned children. Each checked ROOT's gate
+logs without counting the whole-default run as its own. Both final independent
+scoped conclusions are PASS.
+
+The service increment is DCO committed and pushed as
+`b178b65e84be0f39c392a19ff4dd6355fb8c7238` on `codex/t47-sn-state`.
+The service developer boundary is recorded in `docs/rollout-sn-state.md`.
+
+T47 remains in progress. Next is a private operation-bound child write set and
+recovery in the same original outer T06 transaction/result, without an independent
+child Engine or commit. Fixed actual T14 parent/baseline, T15 approval/scheduling,
+T21 quality/contribution/freeze and T08 publication composition remain required;
+production business ports stay closed while these final guards are missing.
+Administrative workflow, measured budgets and physical qualification remain
+pending. T42 deployment remains explicitly deferred. Totals remain 47 tasks:
+five implemented, eleven in progress, thirty-one incomplete or deferred.
+Product 0.10.9, normative 1.0, pinned V1 and CodeWhale are unchanged. Downloads
+retain no hard total or cumulative elapsed limit.
