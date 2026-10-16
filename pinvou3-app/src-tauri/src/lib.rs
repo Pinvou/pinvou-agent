@@ -803,15 +803,26 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(startup_probe_plugin("startup-probe-notification"))
         .plugin(tauri_plugin_dialog::init())
-        .plugin(startup_probe_plugin("startup-probe-dialog"))
-        // System-wide bring-to-front shortcut (off by default, opt-in like
-        // the voice shortcut; default accelerator Ctrl/Cmd+Alt+P when
-        // enabled — configurable in settings). No plugin-level handler here:
-        // it would fire for ANY shortcut registered on this shared plugin.
-        // Scoping is bound per shortcut at registration time —
-        // `features::global_shortcut` registers through `on_shortcut`, whose
-        // handler triggers strictly on Pressed (Released stays a no-op) and
-        // only for the combo that registration created.
+        .plugin(startup_probe_plugin("startup-probe-dialog"));
+    // System-wide bring-to-front shortcut (off by default, opt-in like the
+    // voice shortcut; default accelerator Ctrl/Cmd+Alt+P when enabled —
+    // configurable in settings). Registered ONLY on sessions where it can
+    // work: the plugin's setup creates the X11 hotkey manager eagerly, and on
+    // a Wayland-only session that connection cannot be established — a failed
+    // plugin setup aborts the whole startup. The same availability flag gates
+    // every later apply (`features::global_shortcut`), so plugin presence and
+    // the feature gate can never disagree.
+    // No plugin-level handler here: it would fire for ANY shortcut registered
+    // on this shared plugin. Scoping is bound per shortcut at registration
+    // time — `features::global_shortcut` registers through `on_shortcut`,
+    // whose handler triggers strictly on Pressed (Released stays a no-op) and
+    // only for the combo that registration created.
+    let builder = if crate::platform::capabilities::current().global_shortcuts_available {
+        builder.plugin(tauri_plugin_global_shortcut::Builder::new().build())
+    } else {
+        builder
+    };
+    let builder = builder
         .plugin(startup_probe_plugin("startup-probe-global-shortcut"))
         .on_page_load(|webview, payload| {
             startup::mark_with_detail(

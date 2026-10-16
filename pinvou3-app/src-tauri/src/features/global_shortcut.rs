@@ -9,12 +9,13 @@
 //! is cross-platform); `platform/` holds the bring-to-front composition,
 //! whose Linux arm carries the Mutter/X11 raise workaround.
 //!
-//! Registration is driven from Rust only: the plugin is initialized once in
-//! `lib.rs` with no plugin-level handler, and each registration binds a
-//! per-shortcut handler via `on_shortcut` — so only a combo this module
-//! registered can ever trigger the bring-to-front (a plugin-level handler
-//! would fire for ANY shortcut registered on the shared plugin). This module
-//! owns exactly one shortcut at a time; unregister never goes through
+//! Registration is driven from Rust only: the plugin is initialized in
+//! `lib.rs` on sessions where it can work (the same availability flag gates
+//! every apply below) with no plugin-level handler, and each registration
+//! binds a per-shortcut handler via `on_shortcut` — so only a combo this
+//! module registered can ever trigger the bring-to-front (a plugin-level
+//! handler would fire for ANY shortcut registered on the shared plugin). This
+//! module owns exactly one shortcut at a time; unregister never goes through
 //! `unregister_all`, so shortcuts other features might register on the same
 //! plugin stay untouched. The authoritative persistence is `settings.json`
 //! (`global_shortcut_enabled` / `global_shortcut_accelerator`, written by the
@@ -32,7 +33,10 @@
 //!
 //! Availability is gated by `platform::capabilities::global_shortcuts_available`
 //! (Windows/macOS and X11 on Linux): on Wayland sessions the plugin's X11
-//! backend would silently no-op, so `apply_config` refuses to touch it.
+//! backend has no working attach target — XWayland grabs would silently do
+//! nothing, and on a pure Wayland session the backend cannot connect at all —
+//! so `apply_config` refuses before touching the plugin (and lib.rs skips the
+//! plugin registration entirely there).
 
 use std::str::FromStr;
 use std::sync::{Mutex, OnceLock};
@@ -49,9 +53,9 @@ mod platform;
 
 /// The shortcut this module currently has registered, in canonical display
 /// form. Unregistering reparses this string — safe because the canonical
-/// form is round-trip-proven (the normalization tests pin that a canonical
-/// display string parses back to the same shortcut). Written only under
-/// [`apply_config`]'s critical section.
+/// form round-trips (the `canonical_display_form_round_trips` test pins the
+/// property over non-default keys, and the default-accelerator test pins the
+/// specific value). Written only under [`apply_config`]'s critical section.
 static REGISTERED: Mutex<Option<RegisteredShortcut>> = Mutex::new(None);
 
 /// App handle captured by [`install`], used by the startup replay.
@@ -218,9 +222,10 @@ fn unregister_shortcut_display(app: &AppHandle, accelerator: &str) -> Result<(),
 /// Apply the requested configuration against the current registration.
 ///
 /// Idempotent and safe to call concurrently (startup replay and the settings
-/// command serialize on the module state): consecutive calls unregister the
-/// old shortcut before registering the new one. An `Invalid` parse or a
-/// `Conflict` leaves the registration and prefs untouched.
+/// command serialize on the module state): a Replace registers the new
+/// shortcut before dropping the old one, so a failed register leaves the
+/// previous combo working. An `Invalid` parse or a `Conflict` leaves the
+/// registration and prefs untouched.
 pub(crate) fn apply_config(
     app: &AppHandle,
     enabled: bool,
@@ -248,8 +253,11 @@ pub(crate) fn apply_config(
         None
     };
     // Availability gate BEFORE touching the plugin: on unsupported sessions
-    // (Linux Wayland) the X11 backend silently accepts registrations that do
-    // nothing, so a fake success must be avoided up front. Disabling needs no
+    // (Linux Wayland) the X11 backend cannot serve the feature — XWayland
+    // grabs would silently do nothing, and without any X server the backend
+    // has nothing to attach to — so a fake success must be avoided up front.
+    // This is the same flag lib.rs gates the plugin registration on, so a
+    // `true` here guarantees the plugin state exists. Disabling needs no
     // platform support (there is nothing registered there anyway).
     if enabled && !crate::platform::capabilities::current().global_shortcuts_available {
         return Ok(ApplyOutcome::unavailable_on_session());
@@ -279,13 +287,14 @@ pub(crate) fn apply_config(
                     Ok(ApplyOutcome::disabled())
                 }
                 Err(error) => {
-                    // Residual risk (asymmetric with the Replace arm's zombie
-                    // below): the plugin may still hold and fire the old
-                    // combo while our bookkeeping says None, so a subsequent
-                    // disable is a plan-level Noop that reports `disabled`
-                    // anyway. Keep our state consistent with our own
-                    // bookkeeping being uncertain.
-                    *registered = None;
+                    // The plugin may still hold and fire the combo, so the
+                    // bookkeeping must keep pointing at it: a retry-disable
+                    // then genuinely retries instead of planning a Noop that
+                    // would report — and persist — `disabled` while the
+                    // shortcut keeps firing. `Conflict` skips persistence, so
+                    // prefs keep saying enabled=true, which matches the
+                    // still-registered plugin state. (Realistically only
+                    // Windows `UnregisterHotKey` can error at all.)
                     log::warn!("global shortcut unregister of {previous} failed: {error}");
                     Ok(ApplyOutcome::conflict(error))
                 }
@@ -305,19 +314,25 @@ pub(crate) fn apply_config(
                     "internal: enable plan without a parsed accelerator".to_string(),
                 ));
             };
-            if let Some(previous) = &previous {
-                if let Err(error) = unregister_shortcut_display(app, previous) {
-                    // Best effort ONLY when the register below succeeds;
-                    // otherwise see the zombie residual in the Err arm (the
-                    // register attempt decides the outcome — on Windows
-                    // re-registering an OS-held combo fails and surfaces as
-                    // a conflict).
-                    log::warn!("global shortcut unregister of {previous} failed: {error}");
-                }
-                *registered = None;
-            }
+            // Register the NEW combo BEFORE dropping the old one (the plan
+            // guarantees new ≠ old, or this would be a Noop): a failed new
+            // register — the common conflict, another app owning the combo —
+            // then changes nothing, the previous shortcut keeps working, and
+            // the `Conflict` outcome plus untouched prefs stay truthful.
             match register_shortcut(app, shortcut) {
                 Ok(()) => {
+                    if let Some(previous) = &previous {
+                        if let Err(error) = unregister_shortcut_display(app, previous) {
+                            // Zombie residual: the old combo stays live at the
+                            // plugin level and fires ALONGSIDE the new one
+                            // while bookkeeping and prefs record only the new
+                            // one — self-heals at the next startup replay.
+                            // Near-unreachable: unregistering a registered
+                            // combo effectively cannot fail on X11/macOS, and
+                            // only Windows `UnregisterHotKey` can error at all.
+                            log::warn!("global shortcut unregister of {previous} failed: {error}");
+                        }
+                    }
                     *registered = Some(RegisteredShortcut {
                         accelerator: accelerator.clone(),
                     });
@@ -325,18 +340,9 @@ pub(crate) fn apply_config(
                 }
                 Err(error) => {
                     log::warn!("global shortcut register of {accelerator} failed: {error}");
-                    // Zombie residual (mirror of the Unregister arm's
-                    // asymmetry above): whenever the unregister above ALSO
-                    // failed, the old combo stays live at the plugin level
-                    // regardless of this register's result — on failure it
-                    // keeps firing while our bookkeeping says None; on
-                    // success it fires ALONGSIDE the new combo while
-                    // bookkeeping and prefs record only the new one, so
-                    // "settings.json describes what is active" is broken
-                    // until the next startup replay re-applies the persisted
-                    // prefs. Near-unreachable: unregistering a registered
-                    // combo effectively cannot fail on X11/macOS, and only
-                    // Windows `UnregisterHotKey` can error at all.
+                    // Nothing changed: any previous combo is still registered
+                    // and still working, bookkeeping untouched — the skipped
+                    // persistence keeps describing the actually-active state.
                     Ok(ApplyOutcome::conflict(error))
                 }
             }
@@ -382,7 +388,6 @@ pub(crate) fn handle_triggered(app: &AppHandle) {
     // trigger therefore dispatches the whole composition to the main thread
     // (tauri executes `run_on_main_thread` synchronously when already on it,
     // so the macOS/Windows path is unchanged).
-    let app = app.clone();
     let dispatch = app.run_on_main_thread({
         let app = app.clone();
         move || {
@@ -492,6 +497,69 @@ mod tests {
         );
         // Disable while nothing is registered: no-op.
         assert_eq!(plan_apply(false, "control+alt+KeyP", None), ApplyPlan::Noop);
+    }
+
+    #[test]
+    fn disable_plan_ignores_the_input_accelerator() {
+        // The lazy-parse contract both `apply_config` and the command rely
+        // on: disabling tolerates unparsable input because the Unregister
+        // arm binds only `previous` — the input never reaches a parse.
+        assert_eq!(
+            plan_apply(false, "not even parseable!!!", Some("control+alt+KeyP")),
+            ApplyPlan::Unregister {
+                previous: "control+alt+KeyP".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn canonical_display_form_round_trips() {
+        // Round-trip property the REGISTERED bookkeeping relies on (it
+        // reparses the stored canonical string to unregister): Display output
+        // must parse back to the very same shortcut, across modifier combos,
+        // function keys, digit keys and numpad aliases.
+        let raw_inputs = [
+            "Ctrl+Alt+F9",
+            "super+Shift+Digit0",
+            "cmd+NumpadAdd",
+            "control+alt+Numpad5",
+            "shift+MediaPlayPause",
+        ];
+        for raw in raw_inputs {
+            let shortcut = parse_accelerator(raw)
+                .unwrap_or_else(|error| panic!("fixture {raw:?} must parse: {error}"));
+            let canonical = shortcut.to_string();
+            assert_eq!(
+                parse_accelerator(&canonical).unwrap_or_else(|error| panic!(
+                    "canonical {canonical:?} must reparse: {error}"
+                )),
+                shortcut,
+                "canonical display form of {raw:?} must round-trip"
+            );
+        }
+    }
+
+    #[test]
+    fn lib_rs_registers_the_plugin_conditionally_and_handler_less() {
+        // Source pin on lib.rs (would have caught the review-fix commit that
+        // deleted the registration entirely, leaving `app.global_shortcut()`
+        // panicking on missing plugin state): the plugin MUST be registered,
+        // handler-less (per-shortcut handlers bind via `on_shortcut`; a
+        // plugin-level `with_handler` would fire for ANY combo), and gated on
+        // the same availability flag the apply path checks.
+        let lib = include_str!("../lib.rs");
+        assert!(
+            lib.contains("tauri_plugin_global_shortcut::Builder::new()"),
+            "lib.rs must register the global-shortcut plugin (state() panics otherwise)"
+        );
+        assert!(
+            !lib.contains("with_handler"),
+            "the plugin must be registered WITHOUT a plugin-level handler"
+        );
+        assert!(
+            lib.contains("global_shortcuts_available"),
+            "plugin registration must be gated on session availability"
+        );
     }
 
     #[test]

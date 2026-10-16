@@ -45,6 +45,21 @@ pub(crate) fn browser_product_enabled() -> bool {
 }
 
 pub(crate) fn current() -> DesktopCapabilities {
+    let global_shortcuts_available =
+        global_shortcuts_available_with(&|key| std::env::var(key).ok(), std::env::consts::OS);
+    // Ambiguous XWayland signal: the one available-resolution that can still
+    // yield a partially-dead registration (grabs fire only while an X11
+    // window has focus). Warn once for diagnosis; the pure decision helpers
+    // above stay side-effect free.
+    if global_shortcut_session_is_ambiguous(&|key| std::env::var(key).ok(), std::env::consts::OS) {
+        static AMBIGUOUS_SESSION_WARNED: std::sync::Once = std::sync::Once::new();
+        AMBIGUOUS_SESSION_WARNED.call_once(|| {
+            log::warn!(
+                "XDG_SESSION_TYPE=x11 with WAYLAND_DISPLAY set: global shortcuts will \
+                 only fire while an X11 window has focus"
+            );
+        });
+    }
     DesktopCapabilities {
         show_super_permission_settings: cfg!(target_os = "linux"),
         uses_bundled_dependency_installer: cfg!(target_os = "windows"),
@@ -62,10 +77,7 @@ pub(crate) fn current() -> DesktopCapabilities {
         voice_shortcut_native: cfg!(target_os = "windows"),
         paste_image_clipboard_read: cfg!(target_os = "linux"),
         local_embed_supported: !cfg!(all(target_os = "linux", target_arch = "loongarch64")),
-        global_shortcuts_available: global_shortcuts_available_with(
-            &|key| std::env::var(key).ok(),
-            std::env::consts::OS,
-        ),
+        global_shortcuts_available,
     }
 }
 
@@ -123,6 +135,16 @@ fn linux_session_allows_global_shortcuts(env: &dyn Fn(&str) -> Option<String>) -
     // XDG_SESSION_TYPE=x11 there is no confirmed X11 session, and DISPLAY
     // alone is ambiguous (XWayland sets it too) — keep the feature off.
     false
+}
+
+/// An `XDG_SESSION_TYPE=x11` session that also carries a Wayland socket: the
+/// only available-resolution where a registration can be partially dead
+/// (X11 grabs fire only while an X11 window has focus). Pure, so tests can
+/// pin it; `current()` warns once when this resolves true.
+fn global_shortcut_session_is_ambiguous(env: &dyn Fn(&str) -> Option<String>, os: &str) -> bool {
+    os == "linux"
+        && global_shortcuts_available_with(env, os)
+        && session_env(env, "WAYLAND_DISPLAY").is_some()
 }
 
 pub(crate) const fn is_windows() -> bool {
@@ -220,5 +242,32 @@ mod tests {
         assert!(!linux_session_allows_global_shortcuts(&tty));
         let empty = fake_env(&[]);
         assert!(!linux_session_allows_global_shortcuts(&empty));
+    }
+
+    #[test]
+    fn only_x11_with_a_wayland_socket_is_ambiguous() {
+        // The one available-resolution that can yield a partially-dead
+        // registration: session type says X11 while a Wayland socket is set.
+        let ambiguous = fake_env(&[
+            ("XDG_SESSION_TYPE", "x11"),
+            ("WAYLAND_DISPLAY", "wayland-0"),
+        ]);
+        assert!(global_shortcut_session_is_ambiguous(&ambiguous, "linux"));
+        let padded_socket = fake_env(&[("XDG_SESSION_TYPE", "x11"), ("WAYLAND_DISPLAY", " ")]);
+        assert!(
+            !global_shortcut_session_is_ambiguous(&padded_socket, "linux"),
+            "a whitespace-only socket is filtered by the non-empty reader"
+        );
+        // An honest X11 session or an unavailable Wayland session is not
+        // ambiguous, and neither is a socket on a non-Linux OS.
+        let plain_x11 = fake_env(&[("XDG_SESSION_TYPE", "x11")]);
+        assert!(!global_shortcut_session_is_ambiguous(&plain_x11, "linux"));
+        let wayland = fake_env(&[
+            ("XDG_SESSION_TYPE", "wayland"),
+            ("WAYLAND_DISPLAY", "wayland-0"),
+        ]);
+        assert!(!global_shortcut_session_is_ambiguous(&wayland, "linux"));
+        let empty = fake_env(&[]);
+        assert!(!global_shortcut_session_is_ambiguous(&empty, "macos"));
     }
 }
