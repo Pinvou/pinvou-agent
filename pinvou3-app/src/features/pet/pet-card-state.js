@@ -1,4 +1,4 @@
-import { dict, zhDict } from '../../shared/i18n.js';
+import { zhDict } from '../../shared/i18n.js';
 
 export function createPetCardUiState() {
   return {

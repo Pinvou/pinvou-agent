@@ -8,7 +8,7 @@ import { can, isWeb } from '../../shared/platform.js';
 import { pathBasename } from '../../shared/path-utils.js';
 import { parseUnifiedDiff, diffStats } from './unified-diff-parser.js';
 import { isShellExecutionTool } from '../../shared/shell-tools.mjs';
-import { dict, zhDict } from '../../shared/i18n.js';
+import { zhDict } from '../../shared/i18n.js';
 
 // 调用方尚未下发 t 时回退中文词典（与现状一致），接入 t 后自动多语。
 // Accepts both the sectioned copy (t.uiToolCommon) and the flat shape the
