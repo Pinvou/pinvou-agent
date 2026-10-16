@@ -5,6 +5,7 @@ mod archive;
 mod candidate;
 mod chain;
 mod check;
+mod download;
 mod envelope;
 mod error;
 mod graph;
@@ -23,6 +24,10 @@ pub use chain::{SignatureCheckedRootChain, verify_root_chain};
 pub use check::{
     CheckVerificationError, CheckVerificationInputs, SignatureCheckedCheckResponse,
     verify_check_response,
+};
+pub use download::{
+    DownloadVerificationError, DownloadVerificationInputs, SignatureCheckedDownloadResponse,
+    verify_download_info_response,
 };
 pub use error::VerificationError;
 pub use graph::{

@@ -316,3 +316,48 @@ App facade test exercises twelve genuine controls. Codec, ordinary verifier,
 manifests and three locks remain unchanged. App/CLI compilation is not workflow
 E2E; full T27 and protected acceptance remain open. No artifact download size,
 retry or total/cumulative duration limit is introduced.
+
+## Signed DownloadInfo request/response inheritance
+
+`verify_download_info_response` composes the unchanged complete DownloadInfo
+request/response contracts and actual ordinary authentication of both the current
+request Decision and new Download credential. Independent original request.scope
+supplies the complete expected product/component/installation/channel/revision/
+target identity. Each role independently requires the supplied fresh Root, exact
+policy, every actual signature, global denial and current supplied time. Inline
+envelopes receive canonical identities with existing bounds and signature array
+order preserved; exact original response bytes remain available separately.
+
+Request Decision must offer an update for the requested actual-hop package. All
+nineteen shared qualification fields, including complete metadataSet, forwardPath
+and update, must match the new Download claims. The credential's package must
+match the request and its own signed actual-hop package. Role-specific type,
+audience, purpose, jti, signing key and windows deliberately remain independent.
+The existing response contract binds packageId/size/hash and URL window to the
+credential; this verifier additionally requires the URL be current at supplied
+now. It does not invent signed downloadKey or HTTP requestId correlation.
+
+Unlike Refresh's historical request input, a file eligibility request requires a
+currently valid Decision. Expired Decision or URL requires rechecking/refreshing
+and a fresh short-lived URL, never terminating a logical download, clearing its
+cache or imposing a total/retry/cumulative duration limit. The immutable proof
+owns both canonical checked envelopes and original response bytes, borrows exact
+request/Root and records time. Native facts, metadata/Registry/generation
+acceptance, active workflow/session, destination approval and downloaded bytes
+still require their respective protected owners and T29 checks. No selection,
+fetch, installation or execution rights follow merely from this proof.
+
+Seven test groups cover sixty-one composed Node cases (nine positives): general
+success five, inherited qualification sixteen, independent context seven,
+package/outer binding seven, signatures twelve, windows eight and wire six.
+They compose complete frozen assertApiContract, actual verifyEnvelope
+twice and explicitly normative inheritance/URL-now comparisons. This is not an
+unchanged frozen full-operation oracle. Tests include every shared qualification
+field, complete scopes and update, current Decision/no-update/wrong package,
+distinct role keys/jti, both actual thresholds, bad last signatures/duplicates,
+key denial/exact role policy, URL and credential expiry/last valid millisecond,
+closed contracts and resource/wire limits. Original response bytes, canonical
+envelope identities and exact borrowed objects are checked. Private keys stay in
+Node. One narrow App facade test reuses twelve genuine controls. Codec/ordinary/manifests/locks
+remain unchanged; prior unaffected regressions retain acceptance. Actual App/CLI
+builds are not workflow E2E; full T27 and physical qualification remain open.

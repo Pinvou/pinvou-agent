@@ -151,6 +151,18 @@ pub(crate) fn verify_supplied_check_response_bytes<'a>(
     pinvou_upgrade_verifier::verify_check_response(response, operation, inputs)
 }
 
+/// Authenticate current Decision/Download inheritance; destination and active
+/// protected owner qualification remain external before any network or action.
+pub(crate) fn verify_supplied_download_response_bytes<'a>(
+    response: &[u8],
+    inputs: pinvou_upgrade_verifier::DownloadVerificationInputs<'a>,
+) -> Result<
+    pinvou_upgrade_verifier::SignatureCheckedDownloadResponse<'a>,
+    pinvou_upgrade_verifier::DownloadVerificationError,
+> {
+    pinvou_upgrade_verifier::verify_download_info_response(response, inputs)
+}
+
 /// Exactly one fixed-origin POST; a dropped/error response can have committed
 /// remotely. Owner-controlled retries and durable ACK/consume recovery remain separate.
 pub(crate) async fn send_client_request_once(
@@ -1305,6 +1317,99 @@ mod tests {
                         error.to_string(),
                         case["code"].as_str().unwrap(),
                         "wrong response refusal {name}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn feature_facade_authenticates_download_response_and_current_request_decision() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        use pinvou_upgrade_verifier::DownloadVerificationInputs;
+        let output = std::process::Command::new("node")
+            .args([
+                "--input-type=module",
+                "-e",
+                include_str!("verify/tests/download-response-oracle.mjs"),
+            ])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../specs/upgrade/v1/reference/signatures.mjs"),
+            )
+            .output()
+            .expect("Node required for composed signed-download controls");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        for name in [
+            "signed-download-info",
+            "transport-whitespace",
+            "distinct-role-jti-and-key",
+            "inherited-forward-path",
+            "inherited-update",
+            "requested-other-package",
+            "both-actual-two-signer-thresholds",
+            "credential-bad-extra-after-valid-threshold",
+            "expired-request-decision",
+            "new-download-at-expiry",
+            "url-at-expiry",
+            "url-last-valid-millisecond",
+        ] {
+            let case = cases.iter().find(|c| c["name"] == name).unwrap();
+            let root = decode_root_policy_shape(&serde_json::to_vec(&case["trustedRoot"]).unwrap())
+                .unwrap();
+            let now = decode_metadata(&serde_json::to_vec(&case["now"]).unwrap())
+                .unwrap()
+                .protocol_time_shape()
+                .unwrap();
+            let raw_request = STANDARD
+                .decode(case["requestBytes"].as_str().unwrap())
+                .unwrap();
+            let request = decode_metadata(&raw_request).unwrap();
+            let response = STANDARD
+                .decode(case["responseBytes"].as_str().unwrap())
+                .unwrap();
+            let denied: Vec<String> = serde_json::from_value(case["deniedKeyIds"].clone()).unwrap();
+            match verify_supplied_download_response_bytes(
+                &response,
+                DownloadVerificationInputs::new(&root, &request, &now).with_denied_key_ids(&denied),
+            ) {
+                Ok(proof) => {
+                    assert_eq!(
+                        case["accepted"], true,
+                        "unexpected download acceptance {name}"
+                    );
+                    assert!(std::ptr::eq(proof.supplied_root(), &root));
+                    assert!(std::ptr::eq(proof.supplied_request(), &request));
+                    assert_eq!(proof.original_response_bytes(), response);
+                    let transport = decode_metadata(&response).unwrap();
+                    let original =
+                        decode_metadata(&serde_json::to_vec(&request.value()["decision"]).unwrap())
+                            .unwrap()
+                            .canonical_bytes()
+                            .unwrap();
+                    assert_eq!(proof.decision().envelope().raw_bytes(), original);
+                    let original = decode_metadata(
+                        &serde_json::to_vec(&transport.value()["credential"]).unwrap(),
+                    )
+                    .unwrap()
+                    .canonical_bytes()
+                    .unwrap();
+                    assert_eq!(proof.download_credential().envelope().raw_bytes(), original);
+                }
+                Err(error) => {
+                    assert_eq!(
+                        case["accepted"], false,
+                        "unexpected download refusal {name}: {error}"
+                    );
+                    assert_eq!(
+                        error.to_string(),
+                        case["code"].as_str().unwrap(),
+                        "wrong download refusal {name}"
                     );
                 }
             }
