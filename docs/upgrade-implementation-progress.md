@@ -8733,3 +8733,82 @@ All owned workers, fixtures, Go/compiler/Node/CLI/helper processes and tool
 sessions closed before the exclusive runtime slot returned to the primary.
 Both independent code/test audits pass on the same final forty-three-source
 freeze. Final documentation review precedes the DCO commit and push.
+
+## Original unaccepted Session intake maintenance
+
+The separate service adds a protected-owner cleanup command for four existing
+fixed profiles: ordinary Session, download progress, download resume and
+activation Session. It removes only complete never-accepted intake closures
+after original signed credential `exp + 120000`, with no current Root/workflow
+requalification or renewed upload/action authority. Shared receipts, outbox,
+cursors, lifecycle/workflow/registration state and other commands stay intact.
+Both resume and activation acceptance markers prevent deletion; any native live
+lease retains its whole closure with full fractional timestamp precision.
+
+Serializable pages inspect at most 32 intents, 4096 operation/sidecar pairs and
+32 MiB of conservatively charged native logical row data including original
+source Session bytes. Oversized closures stay whole and cannot starve later
+keys. Safe nondecreasing SQL time is checked after the last catalog read before
+commit. Unknown commits return no speculative page result; output-loss retry
+does not create a duplicate transition or acknowledgement. Protected provenance
+hashes/ciphertext lengths are not claimed as fresh signature/AEAD verification.
+
+Eighteen new Go files and no new SQL are involved. All sixty previously delivered
+SQL files retain their working bytes and index blobs. Independent static review
+found the resume marker omission and a final-clock negative-control gap; both
+were repaired and re-reviewed before fresh actual validation. Accepted-data
+archival policy and production scheduling remain outside scope. Full T20/T44
+remains in progress; totals remain four implemented, twelve in progress and
+thirty-one incomplete/deferred out of forty-seven. Deployment remains deferred.
+No artifact size, total/cumulative download duration or retry cap is introduced.
+
+The primary's final eighteen-file actual PostgreSQL run passed one parent and
+twenty-two child cases with zero skips/failures, 295.730s (package 299.442s).
+It covers genuine signed sealed intake, natural original expiry/native leases,
+both acceptance markers, post-delete/post-catalog backward/null/unsafe time,
+ACL/binding/identity controls, exact FK full rollback, cross-profile accepted
+evidence, real command output-loss/retry/runtime refusal, and whole-closure
+4097/4096 plus source-inclusive 32 MiB/+1-byte limits and cursor progress.
+Capacity padding is explicit synthetic diagnostic data, not fresh signature or
+AEAD evidence. Activation retains the existing qualified-authorization and
+supplied physical-fact fixture bridge. Cleared defaults passed 393 groups and
+789 child cases, with 940 skipped test cases and zero failures; defaults and
+cached packages are not actual integration evidence. Full vet, modules, pins,
+server/fresh command builds, eighteen-file formatting/source identity and sixty
+unchanged old SQL raw/index checks passed. Client architecture/version checks
+also passed, keeping product version 0.10.9 and normative documents 1.0.
+
+The independent dependency role rebuilt its own maintenance command/helper and
+the original no-update command. Its actual selection passed the complete new
+natural-expiry parent and three existing maintenance regressions: four groups,
+twenty-seven child cases, zero skips/failures (package 305.630s), on the same
+eighteen-source freeze.
+
+Its cleared-opt-in fresh default run (`-count=1`) passed 393 groups and 789
+child cases with 940 skipped test cases and zero failures. The primary's raw
+952 skip records included twelve packages without tests; its skipped test case
+count is also 940. Neither default run represents actual integration execution.
+
+The dependency role's full vet, module verification, original pins, server
+build, eighteen-file formatting/frozen identities, all sixty old SQL raw/index
+identities and whitespace checks passed. Its scoped code/test audit passes
+with no remaining required finding; all owned workers, fixtures, processes and
+tool sessions closed before it returned the exclusive runtime slot.
+
+The compatibility role independently passed four complementary actual groups
+and ten child cases with zero skips/failures (package 126.798s), covering
+original maintenance, ordinary Session preservation, resume acceptance/replay
+and activation profile/sibling privileges. This focused regression run is not
+another complete natural-expiry parent. Its fresh command/config/event-PG
+defaults passed forty groups and twenty-four child cases with one opt-in helper
+skip; default evidence remains separate from actual integration execution.
+
+Its fresh full default run (`-count=1`) passed 393 groups and 789 child cases,
+940 skipped tests, twelve packages without tests and zero failures. Full vet,
+modules, original pins, server build, eighteen-file formatting/frozen identities,
+all sixty previous SQL raw/index identities and whitespace checks passed.
+Its scoped code/test audit passes with no remaining required finding. All owned
+fixtures, workers, processes and tool sessions closed before the runtime slot
+returned. Both independent audits pass on the same eighteen-source freeze;
+final documentation review precedes DCO commit/push. Full task counts and the
+download behavior stated above remain unchanged.
