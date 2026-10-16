@@ -20,9 +20,17 @@
 // One-shot fade span class; must match src/styles/base.css (.stream-fade-seg).
 const SEGMENT_CLASS = 'stream-fade-seg';
 
+// Stamped on every span the pass creates, carrying the creation clock in ms:
+// it marks the span as ours for the completion unwrap (foreign markup that
+// merely reuses the class is neutralized instead of unwrapped) and feeds the
+// completion age floor.
+const SEGMENT_MARKER_ATTR = 'data-stream-fade';
+
 // Text inside these element subtrees neither counts toward the committed
-// offset nor fades: code blocks must appear instantly (and host the code-copy
-// self-heal buttons), script/style text is not rendered.
+// offset nor fades: code (blocks and inline) must appear instantly — inline
+// code rides along because backtick-open/close transitions would otherwise
+// re-fade or mis-offset the converted text — and code blocks host the
+// code-copy self-heal buttons; script/style text is not rendered.
 const SKIP_ELEMENT_TAGS = new Set(['PRE', 'CODE', 'SCRIPT', 'STYLE']);
 
 // TreeWalker/NodeFilter constants, inlined numerically so the module also runs
@@ -35,14 +43,28 @@ const NODE_FILTER_ACCEPT = 1;
 const NODE_FILTER_REJECT = 3;
 
 // Stagger and hard cap: segment N of a pass starts N*12ms late, at most 48ms.
-// Delay plus the 150ms CSS animation must stay inside one markdown re-parse
-// tick (~180-200ms): spans are wholesale-deleted by the next innerHTML
-// replacement, and a span wiped at >=88% opacity never visibly pops. At most
-// 40 segments animate per pass and any remaining region text appears
-// instantly, bounding DOM growth on fast streams.
+// While streaming, spans are wholesale-deleted by the next innerHTML
+// replacement one re-parse tick later (~180-200ms): worst case a max-delay
+// span is wiped at (180-48)/150 = 88% of its timeline, far enough into the
+// ease-out curve that the jump to full opacity is imperceptible. The 48ms
+// delay plus the 150ms animation intentionally budget to 198ms, inside the
+// 200ms lane tick and just past the 180ms legacy one — the completion pass
+// (below) carries an age floor precisely because the terminal render is NOT
+// synchronized to the tick. At most 40 segments animate per pass and any
+// remaining region text appears instantly, bounding DOM growth on fast
+// streams.
 const SEGMENT_DELAY_STEP_MS = 12;
 const SEGMENT_DELAY_MAX_MS = 48;
 const SEGMENT_MAX_PER_PASS = 40;
+
+// Completion age floor: the stream can end at any phase within a re-parse
+// tick after the last wrap, so a completion pass may meet spans that are
+// still animating (or waiting on their stagger delay). Unwrapping those
+// would snap partially-faded text to full opacity, so young spans are left
+// in place and reaped by a deferred pass once the floor elapses; the CSS
+// `both` fill keeps them at their current opacity until then. One tick
+// covers the longest timeline (48ms delay + 150ms animation).
+const UNWRAP_MIN_AGE_MS = 200;
 
 // Fallback segmentation when Intl.Segmenter is unavailable (Safari 14.0):
 // fixed 4-character chunks; the u flag keeps surrogate pairs intact.
@@ -179,14 +201,23 @@ function collectVisibleTextNodes(container) {
 // DOM pass: wrap newly streamed text in fade spans. Idempotent and safe to
 // call after every render; after a pass the committed offset equals the
 // current text length, so a repeated call on the same DOM is a no-op.
-export function applyStreamFade(container, { streaming } = {}) {
+// `html` (optional) is the exact string the caller injects via
+// dangerouslySetInnerHTML: when it is unchanged since this container's last
+// processed pass, React skipped the write and the DOM is known-identical, so
+// the whole-tree walk is skipped. This bounds the pass on the legacy bubble
+// lane, whose no-deps effect re-runs on every render (several no-op renders
+// per throttled tick); omitting `html` keeps the always-walk behavior.
+export function applyStreamFade(container, { streaming, html } = {}) {
   if (!container) return;
   // Completed render: if the final html string equals the last throttled
   // string, React skips the dangerouslySetInnerHTML write and leftover fade
-  // spans would persist in the completed message. Unwrap them — by the time
-  // streaming ends, every span is at least one re-parse tick old (wraps only
-  // happen on html-changing renders, >=180ms apart) so its 150ms animation
-  // has finished and the unwrap is invisible.
+  // spans would persist in the completed message. Reap them — but a stream
+  // can end at any phase within a tick after the last wrap, so young spans
+  // may still be animating; unwrapFadeSpans defers those past the age floor
+  // instead of snapping partially-faded text to full opacity. (When the final
+  // html string DIFFERS, React's own write replaces the spans and there is
+  // nothing to reap; that write can catch a span mid-fade, which degrades
+  // that instant to the pre-feature behavior — the text appearing at once.)
   if (!streaming) {
     unwrapFadeSpans(container);
     fadeStateByContainer.delete(container);
@@ -200,35 +231,84 @@ export function applyStreamFade(container, { streaming } = {}) {
     fadeStateByContainer.delete(container);
     return;
   }
+  const state = fadeStateByContainer.get(container) || null;
+  if (state && state.started && html !== undefined && html === state.lastHtml) return;
   const textNodes = collectVisibleTextNodes(container);
   if (!textNodes) return;
   let total = 0;
   for (const node of textNodes) total += node.nodeValue.length;
-  const state = fadeStateByContainer.get(container) || null;
   const plan = planFadePass({
     started: Boolean(state && state.started),
     committed: state ? state.committed : 0,
     total,
   });
-  if (plan.action === 'none') return;
   if (plan.action === 'animate') wrapFadeRegion(textNodes, plan.from, total);
-  fadeStateByContainer.set(container, { started: true, committed: total });
+  // Recorded even on a 'none' pass: the (rewritten) html string was measured,
+  // so until it changes again the walk can stay skipped.
+  fadeStateByContainer.set(container, { started: true, committed: total, lastHtml: html });
 }
 
-// Completion hygiene: replace every fade span with its text so the completed
-// message DOM is pristine regardless of whether React rewrote the html.
+// Completion hygiene: replace every pass-created fade span with its text so
+// the completed message DOM is pristine regardless of whether React rewrote
+// the html — but never mid-flight. Spans younger than UNWRAP_MIN_AGE_MS are
+// left in place and reaped by a deferred pass. Elements that merely reuse the
+// class (model-emitted markup survives DOMPurify, which keeps class/style)
+// are not ours to remove: the animation hook class is stripped so their
+// content renders at once, and the element itself is preserved.
 function unwrapFadeSpans(container) {
   if (typeof container.querySelectorAll !== 'function') return;
+  const now = nowMs();
+  let hasYoungSpans = false;
   const spans = container.querySelectorAll(`.${SEGMENT_CLASS}`);
   for (const span of spans) {
     const parent = span.parentNode;
     if (!parent) continue;
+    const raw = span.getAttribute(SEGMENT_MARKER_ATTR);
+    const created = raw === null ? NaN : Number(raw);
+    if (!Number.isFinite(created)) {
+      stripFadeClass(span);
+      continue;
+    }
+    if (now - created < UNWRAP_MIN_AGE_MS) {
+      hasYoungSpans = true;
+      continue;
+    }
     // Manual unwrap of children: ParentNode#append/replaceWith are missing on
     // old WebKit and on the domino engine the unit tests use (same exemption
     // as code-block-copy.js); ChildNode#remove is universally available.
     while (span.firstChild) parent.insertBefore(span.firstChild, span);
     span.remove();
   }
+  if (hasYoungSpans) scheduleDeferredUnwrap(container);
+}
+
+const deferredUnwrapByContainer = new WeakMap();
+
+// One-shot reap for spans that were too young at completion time. Fixed delay
+// of one age floor: the pass re-checks ages, so a span that is still young
+// (a new stream re-wrapped the container meanwhile) simply defers again.
+// Unwrapping a since-detached container is a harmless no-op on a dead tree.
+function scheduleDeferredUnwrap(container) {
+  if (deferredUnwrapByContainer.has(container)) return;
+  deferredUnwrapByContainer.set(container, setTimeout(() => {
+    deferredUnwrapByContainer.delete(container);
+    unwrapFadeSpans(container);
+  }, UNWRAP_MIN_AGE_MS));
+}
+
+function stripFadeClass(span) {
+  if (span.classList && typeof span.classList.remove === 'function') {
+    span.classList.remove(SEGMENT_CLASS);
+    return;
+  }
+  const classes = String(span.getAttribute('class') || '')
+    .split(/\s+/)
+    .filter((name) => name && name !== SEGMENT_CLASS);
+  span.setAttribute('class', classes.join(' '));
+}
+
+function nowMs() {
+  return typeof Date.now === 'function' ? Date.now() : 0;
 }
 
 // Wrap the visible-text region [from, total) across the pre-collected nodes:
@@ -294,6 +374,7 @@ function wrapNodeRegion(node, startInNode, endInNode, doc, segmenter, animatedSe
     if (!target.parentNode) break;
     const span = doc.createElement('span');
     span.className = SEGMENT_CLASS;
+    span.setAttribute(SEGMENT_MARKER_ATTR, String(nowMs()));
     const delay = Math.min((animatedSegments + created) * SEGMENT_DELAY_STEP_MS, SEGMENT_DELAY_MAX_MS);
     if (delay > 0) span.setAttribute('style', `--stream-fade-delay:${delay}ms`);
     target.parentNode.replaceChild(span, target);

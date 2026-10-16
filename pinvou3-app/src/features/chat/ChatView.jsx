@@ -4799,6 +4799,25 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
       // 懒加载语言注册完成会 bump 版本号:legacy assistant 气泡由 item.text 现算
       // markdown(见下),订阅版本号让注册后本组件重渲染,历史消息恢复高亮。
       const syntaxVersion = useSyncExternalStore(subscribeSyntaxHighlight, getSyntaxHighlightVersion);
+      // The exact string the assistant bubble injects (assistant branch below)
+      // plus its parsed bubbles, hoisted here so the no-deps effect below can
+      // hand the stream-fade pass the html React actually compares against:
+      // when the string is unchanged React skipped the write and the pass can
+      // skip its whole-tree walk. Both parse calls are per-item caches (see
+      // renderLegacyMarkdownCached / parseAssistantBubblesCached), so this is a
+      // cache hit for renders that reach the branch and a no-op for other item
+      // types.
+      const assistantHtml = item.type === 'assistant'
+        ? ((!item.streaming && item.text)
+          ? renderLegacyMarkdownCached(item, item.text, syntaxVersion)
+          : (item.html || ''))
+        : null;
+      const assistantDraftLabel = item.type === 'assistant'
+        ? (/scheduled-task-draft/.test(assistantHtml) ? t.uiChatExtra.draftingScheduled : (t && t.cpDesigning))
+        : null;
+      const assistantParsed = item.type === 'assistant'
+        ? parseAssistantBubblesCached(item, assistantHtml, !!item.streaming, allowScheduledTaskDraft, assistantDraftLabel)
+        : null;
       // 代码块一键复制:assistant 气泡经 dangerouslySetInnerHTML 注入,按钮只能在
       // 提交后补挂。目标 div 在流式首帧(item.streaming && !item.html)时不渲染,
       // ref 可能为 null,因此不设 deps:每次渲染后重跑,目标挂载后的下一次渲染即
@@ -4815,8 +4834,10 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
         // Wrap text streamed since the previous render in one-shot fade spans
         // (no-op when nothing is new); runs before the observer below is
         // (re)installed and the cleanup already disconnected the previous one,
-        // so the wrap's own mutations are not self-observed.
-        applyStreamFade(target, { streaming: !!item.streaming });
+        // so the wrap's own mutations are not self-observed. `html` is the
+        // string this render injected: when unchanged, React skipped the
+        // write and the pass skips its DOM walk (see stream-fade.js).
+        applyStreamFade(target, { streaming: !!item.streaming, html: assistantParsed.cq.html || '' });
         return observeCodeCopyButtons(target, labels);
       });
 
@@ -4844,16 +4865,9 @@ const UserBubble = ({ item, sessionId, editable, t, conversationVariant, onOpenS
         // 沿用冻结的 item.html,首次渲染时未注册的语言将永久纯文本。现算结果按
         // item 缓存(见 renderLegacyMarkdownCached),重渲染零解析成本。流式消息仍
         // 走 item.html(增量渲染管线);仅存 html 无 text 的旧消息无法现算,保持
-        // 原样(其语言在启动核心集内,不受懒注册影响)。
-        const html = (!item.streaming && item.text)
-          ? renderLegacyMarkdownCached(item, item.text, syntaxVersion)
-          : (item.html || '');
-        const streamingDraftLabel = /scheduled-task-draft/.test(html) ? t.uiChatExtra.draftingScheduled : (t && t.cpDesigning);
-        // The three-pass parse chain is a pure function cached per item (see
-        // parseAssistantBubblesCached): even when the memo is defeated
-        // (streaming delta / syntaxVersion bump) only bubbles that actually
-        // changed reparse.
-        const { pd, cq } = parseAssistantBubblesCached(item, html, !!item.streaming, allowScheduledTaskDraft, streamingDraftLabel);
+        // 原样(其语言在启动核心集内,不受懒注册影响)。解析在组件顶部完成
+        // (assistantParsed,供上方 effect 复用同一 html 身份),此处只取结果。
+        const { pd, cq } = assistantParsed;
         const assistantCopyAvailable = !item.streaming
           && [item.text, item.html].some(value => String(value || '').trim());
         // 草稿是否已存入(按名字在已加载的卡池里找同名自制卡 → 派生"已存入",免单独持久化)

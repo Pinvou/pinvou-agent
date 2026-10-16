@@ -128,8 +128,9 @@ export function ConversationMarkdown({ text, className = '', onOpenExternal, onO
     // mutations are not self-observed. `streaming` joins the deps because the
     // completion flush may coincide with no html change (final text already
     // rendered) and the streaming=false pass must still run to forget the
-    // fade bookkeeping.
-    applyStreamFade(containerRef.current, { streaming });
+    // fade bookkeeping. `html` lets the pass skip its whole-tree walk when
+    // this string is unchanged (React skipped the write, DOM is identical).
+    applyStreamFade(containerRef.current, { streaming, html });
     return observeCodeCopyButtons(containerRef.current, copyLabels);
   }, [html, copyLabels, streaming]);
   const openLink = (event) => {

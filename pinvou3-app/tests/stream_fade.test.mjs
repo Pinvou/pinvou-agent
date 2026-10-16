@@ -113,11 +113,16 @@ assert.match(
 );
 
 // Wiring: both surfaces call the fade pass from their React effects with a
-// streaming flag, imported from the conversation module.
+// streaming flag and the html string they inject, imported from the
+// conversation module.
 assert.match(chatView, /import \{ applyStreamFade \} from '\.\.\/conversation\/stream-fade\.js';/);
-assert.match(chatView, /applyStreamFade\(target, \{ streaming: !!item\.streaming \}\);/);
+assert.match(chatView, /applyStreamFade\(target, \{ streaming: !!item\.streaming, html: assistantParsed\.cq\.html \|\| '' \}\);/);
 assert.match(timeline, /import \{ applyStreamFade \} from '\.\/stream-fade\.js';/);
-assert.match(timeline, /applyStreamFade\(containerRef\.current, \{ streaming \}\);/);
+assert.match(timeline, /applyStreamFade\(containerRef\.current, \{ streaming, html \}\);/);
+// The completion flush can coincide with no html change (final text already
+// rendered), so the streaming=false pass must still run: `streaming` must stay
+// a dependency of the install effect.
+assert.match(timeline, /\}, \[html, copyLabels, streaming\]\);/, 'the install effect must keep streaming (and html) as dependencies so the completion pass always runs');
 
 // The fade pass mutates the container, so it must never be wired from a
 // MutationObserver callback (recursion): the observer module must not know
@@ -138,6 +143,24 @@ function wrappedText(container) {
   return Array.from(container.querySelectorAll('.stream-fade-seg'), (span) => span.textContent).join('');
 }
 
+const nowMs = () => Date.now();
+
+// Backdate every pass-created span's creation marker so a completion pass sees
+// it as older than the unwrap age floor (simulates a stream that paused before
+// completing).
+function ageFadeSpans(container, ms = 1000) {
+  for (const span of container.querySelectorAll('.stream-fade-seg')) {
+    if (span.hasAttribute('data-stream-fade')) span.setAttribute('data-stream-fade', String(nowMs() - ms));
+  }
+}
+
+function spanDelays(container) {
+  return Array.from(container.querySelectorAll('.stream-fade-seg'), (span) => {
+    const style = span.getAttribute('style');
+    return style === null ? 0 : Number(style.match(/--stream-fade-delay:(\d+)ms/)[1]);
+  });
+}
+
 setStreamFadePreference(true);
 try {
   // First pass is a hydration baseline: nothing wrapped, state committed.
@@ -155,6 +178,16 @@ try {
     assert.equal(wrappedText(container), ' of streaming', 'only text past the committed offset fades');
     const delays = Array.from(container.querySelectorAll('.stream-fade-seg'), (span) => span.getAttribute('style'));
     assert.ok(delays.every((style) => style === null || /^--stream-fade-delay:\d+ms$/.test(style)), 'stagger style shape');
+    // No span animates an invisible fragment: every fade span carries real
+    // (non-whitespace-only) text, whitespace always riding with a neighbor.
+    for (const span of container.querySelectorAll('.stream-fade-seg')) {
+      assert.ok(!/^\s*$/.test(span.textContent), 'whitespace-only segments must never stand alone');
+    }
+    // Every pass-created span carries the creation marker the completion
+    // unwrap keys on (and foreign class-reuse does not).
+    for (const span of container.querySelectorAll('.stream-fade-seg')) {
+      assert.match(span.getAttribute('data-stream-fade') || '', /^\d+$/, 'pass-created spans must carry the creation marker');
+    }
 
     // Same DOM twice: idempotent, committed === total, no extra spans.
     applyStreamFade(container, { streaming: true });
@@ -167,18 +200,40 @@ try {
     assert.equal(container.querySelectorAll('.stream-fade-seg').length, 0);
 
     // Completion with an UNCHANGED html string: React skips the
-    // dangerouslySetInnerHTML write, so the streaming=false pass must unwrap
-    // the leftover fade spans itself (text content intact).
+    // dangerouslySetInnerHTML write, so the streaming=false pass must reap the
+    // leftover fade spans itself. Spans created within the last tick are still
+    // animating, so they are deferred past the age floor instead of being
+    // unwrapped mid-flight; aged spans unwrap synchronously.
     {
       const skipContainer = documentWithContainer('<p>grow</p>');
       applyStreamFade(skipContainer, { streaming: true }); // baseline
       skipContainer.innerHTML = '<p>grow tail</p>';
       applyStreamFade(skipContainer, { streaming: true });
-      assert.ok(skipContainer.querySelectorAll('.stream-fade-seg').length > 0, 'precondition: spans exist');
-      // html string unchanged since the last tick — no React rewrite.
+      const freshCount = skipContainer.querySelectorAll('.stream-fade-seg').length;
+      assert.ok(freshCount > 0, 'precondition: spans exist');
+      // html string unchanged since the last tick — no React rewrite. The
+      // spans are a few ms old: completion must not snap them to full opacity.
       applyStreamFade(skipContainer, { streaming: false });
-      assert.equal(skipContainer.querySelectorAll('.stream-fade-seg').length, 0, 'completion unwraps residual spans');
-      assert.equal(skipContainer.textContent, 'grow tail', 'unwrap preserves text');
+      assert.equal(skipContainer.querySelectorAll('.stream-fade-seg').length, freshCount, 'young spans survive completion unwrapped-in-place');
+      assert.equal(skipContainer.textContent, 'grow tail', 'deferral preserves text');
+      // One age floor later the deferred reap unwraps them.
+      await new Promise((resolve) => {
+        setTimeout(resolve, 280);
+      });
+      assert.equal(skipContainer.querySelectorAll('.stream-fade-seg').length, 0, 'deferred reap unwraps spans past the age floor');
+      assert.equal(skipContainer.textContent, 'grow tail', 'deferred reap preserves text');
+    }
+    {
+      // Same completion, but the stream visibly paused before ending: aged
+      // spans are past the floor and unwrap synchronously.
+      const agedContainer = documentWithContainer('<p>grow</p>');
+      applyStreamFade(agedContainer, { streaming: true }); // baseline
+      agedContainer.innerHTML = '<p>grow tail</p>';
+      applyStreamFade(agedContainer, { streaming: true });
+      ageFadeSpans(agedContainer);
+      applyStreamFade(agedContainer, { streaming: false });
+      assert.equal(agedContainer.querySelectorAll('.stream-fade-seg').length, 0, 'aged spans unwrap immediately on completion');
+      assert.equal(agedContainer.textContent, 'grow tail', 'unwrap preserves text');
     }
 
     // A fresh stream after completion re-baselines instead of replaying.
@@ -195,6 +250,66 @@ try {
     applyStreamFade(container, { streaming: true });
     assert.equal(container.querySelector('pre code').textContent, 'code text grown', 'code block untouched');
     assert.equal(wrappedText(container), 'after', 'growing code must not shift the offset nor fade');
+  }
+
+  // A bare <pre> without a <code> child is skipped exactly like fenced code,
+  // and inline <code> is skipped too (backtick-open/close transitions must not
+  // re-fade or mis-offset the converted text).
+  {
+    const container = documentWithContainer('<pre>plain</pre><p>a <code>tok</code> b</p>');
+    applyStreamFade(container, { streaming: true }); // baseline counts 'a  b' only
+    container.innerHTML = '<pre>plain grown</pre><p>a <code>tok grown</code> b tail</p>';
+    applyStreamFade(container, { streaming: true });
+    assert.equal(container.querySelector('pre').textContent, 'plain grown', 'bare pre untouched');
+    assert.equal(container.querySelectorAll('pre .stream-fade-seg').length, 0, 'nothing inside a bare pre fades');
+    assert.equal(container.querySelectorAll('code .stream-fade-seg').length, 0, 'nothing inside inline code fades');
+    assert.equal(wrappedText(container), ' tail', 'code growth must not shift the offset nor fade');
+  }
+
+  // Exact stagger values: 12ms per segment capped at 48ms. CJK fades one
+  // ideograph per segment, so a six-character region pins the step AND the
+  // cap (segments 5.. share the 48ms ceiling).
+  {
+    const container = documentWithContainer('<p>引</p>');
+    applyStreamFade(container, { streaming: true }); // baseline commits 引
+    container.innerHTML = '<p>引一二三四五六</p>';
+    applyStreamFade(container, { streaming: true });
+    assert.deepEqual(spanDelays(container), [0, 12, 24, 36, 48, 48], 'stagger step 12ms capped at 48ms');
+  }
+
+  // Model-emitted markup that merely reuses the class is not ours to remove:
+  // completion strips the animation hook class so the content renders at once,
+  // but the element, its own style, and its text are preserved. Pass-created
+  // spans (with the creation marker) still unwrap fully.
+  {
+    const container = documentWithContainer('<p>seen <span class="stream-fade-seg" style="color:red">kept</span></p>');
+    applyStreamFade(container, { streaming: true }); // baseline
+    container.innerHTML = '<p>seen <span class="stream-fade-seg" style="color:red">kept</span> tail</p>';
+    applyStreamFade(container, { streaming: true });
+    assert.ok(container.querySelectorAll('.stream-fade-seg').length >= 2, 'precondition: foreign + fresh spans coexist');
+    ageFadeSpans(container); // only affects marked spans; the foreign span stays young-looking forever
+    applyStreamFade(container, { streaming: false });
+    const foreign = container.querySelector('span[style="color:red"]');
+    assert.ok(foreign, 'foreign element preserved');
+    assert.equal(foreign.textContent, 'kept', 'foreign text preserved');
+    assert.ok(!/(^|\s)stream-fade-seg(\s|$)/.test(foreign.getAttribute('class') || ''), 'fade class stripped from foreign element');
+    assert.equal(foreign.getAttribute('style'), 'color:red', 'foreign own style untouched');
+    assert.equal(container.querySelectorAll('.stream-fade-seg').length, 0, 'pass-created spans unwrapped');
+    assert.equal(container.textContent, 'seen kept tail', 'all text preserved');
+  }
+
+  // Unchanged html since the last pass ⇒ the walk is skipped wholesale: DOM
+  // changes React did not make are not observed. A changed html string (React
+  // rewrote the container) resumes measuring.
+  {
+    const container = documentWithContainer('<p>hello</p>');
+    applyStreamFade(container, { streaming: true, html: '<p>hello</p>' }); // baseline records lastHtml
+    container.querySelector('p').appendChild(container.ownerDocument.createTextNode(' sneaky'));
+    applyStreamFade(container, { streaming: true, html: '<p>hello</p>' }); // skipped
+    assert.equal(container.querySelectorAll('.stream-fade-seg').length, 0, 'unchanged html skips the walk');
+    applyStreamFade(container, { streaming: true, html: '<p>hello sneaky</p>' }); // changed: walk resumes
+    assert.ok(container.querySelectorAll('.stream-fade-seg').length > 0, 'changed html resumes wrapping');
+    assert.equal(container.textContent, 'hello sneaky', 'resume preserves text');
   }
 
   // A whitespace-only new region is never wrapped alone.
