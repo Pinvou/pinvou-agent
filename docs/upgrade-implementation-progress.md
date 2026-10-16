@@ -10957,3 +10957,77 @@ cumulative duration or retry cap;32MiB is not an artifact/download size limit.
 DCO committed and pushed as `75deeb65729e251963fed8e4a26b24ea73022a7e` on
 `codex/t09-owned-children`; service scope/evidence is in
 `docs/artifact-owned-children-integration.md`.
+
+### T09 offline SBOM structure and signed installer digest
+
+The accepted consecutive range `eb440ad772f6cf448976edade90ce402d24fb9d3`
+through `820df61edcd7d5d10fc3cb8a81be6aed603b1e3b` is integrated as18 exact
+final Git blobs. Six existing paths matched the first parent at raw/Git levels;
+12 new paths were absent. The existing PostgreSQL artifact trust test is retained
+with accepted additions. Initial preflight caught its mistaken new-file count
+before any repository write; the corrected6/12 inventory was independently
+reviewed. The original214 additive source-document lines remain historical
+source-batch evidence, separate from these fresh combined-tree checks.
+
+All four embedded official resources/license match fixed upstream revision
+`55343ba19dee1785acf1ce9191540d5fd7b590db`, fresh public GitHub tree/blob
+identities, SHA256, accepted bytes and runtime-pinned digests. Runtime is offline
+with a closed loader and explicit1.6 support. ParseBounded adds finite caller
+capacity for non-envelope documents; metadata/JCS1MiB and other frozen grammar
+limits stay unchanged. InspectSBOMSchema uses current signed paired evidence and
+the declared version; primary binding additionally requires at least one main
+component SHA-256 and every such declaration matching signed finalInstaller.
+Dependency components cannot substitute. Equal repeated declarations remain
+supported by code/Schema; no dedicated identical-repeat fixture is claimed here.
+Hex case preserves raw identity. Failure exposes no earlier Facts or evidence.
+
+Both scoped independent code/test reviews passed with all18 source blobs and
+four official resources verified. The primary frozen affected run passed eight
+packages,53 top-level/79 child tests, zero skips/failures
+(28.075s wall), including both freshly rebuilt actual CLI tests,
+strict original envelope-cap controls, offline references/resource drift,
+version/schema refusals with earlier byte-stage positives, primary hash case/
+missing/dependency-decoy/conflict controls with Schema positives and current-deny
+rechecks. These are structure and declared byte relationships, not content trust.
+
+Actual isolated PostgreSQL17.11 passed one top-level/four child tests, zero
+skips/failures (47.644s wall), covering published Root/current deny,
+same signed upload/Schema/primary binding and adversarial storage refusal with
+restored positives. Before/after fixture database and role inventories matched:
+0 pre-existing fixture databases and
+1 pre-existing fixture role were retained. No
+new fixture database or role remained. Owner storage controls do not represent
+approved business deny commands; no production database/realm was used.
+
+Recorded PG intervals run from the pre-inventory check through Go completion;
+the verified post-inventory and frozen-source checks are outside those intervals.
+
+All12 root gates passed: two CLI builds, affected tests with both actual CLIs,
+actual PG, full default service, modules, full vet, private server build, pinnedV1,
+formatting and both whitespace checks. Default service passed
+57 tested packages,516 top-level/
+1132 child tests (93.425s wall), with
+566 top-level/606 child opt-in/unavailable-host
+skips and12 no-test packages recorded separately. Unavailable sourcefile host
+fixtures remain unverified. Each reviewer separately rebuilt both CLIs and
+passed all53/79 affected tests and actual PG1/4, zero skips/failures, plus affected
+vet, formatting and both whitespace checks: eight gates each. Their affected
+walls were 24.784s/21.597s; actual PG walls were
+19.919s/20.077s (dependency/compatibility).
+Each PG inventory was restored to the same pre-existing baseline. Independent
+runs did not repeat the root whole-default gate. All sessions/owned children
+closed; full source/index/status and all69 old SQL raw/index identities stayed
+fixed during every run. All18 imports remain exact accepted source blobs.
+
+No Node/Bao, production upload/quarantine/admission, SBOM completeness/license/
+vulnerability/SLSA/native approval or physical/deployment qualification is claimed.
+No production SQL, grant, route, dependency version, provider, Root, Session, UI,
+contract or product/normative version changed. Those full T09 workflows remain
+pending; T09 stays in progress and totals remain5/12/30 out of47. Product0.10.9,
+normative1.0, pinnedV1 and CodeWhale are unchanged; deployment stays deferred.
+Downloads have no hard total/cumulative duration or retry cap;32MiB is not an
+artifact/download-size limit.
+
+DCO committed and pushed as `f607656cf837b23806e1e19aa722dcf26ce758b2` on
+`codex/t09-sbom-integration`; service scope/evidence is in
+`docs/artifact-sbom-integration.md`.
