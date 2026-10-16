@@ -145,3 +145,46 @@ This module neither attests custody/completeness nor specifies service accepted-
 data archival, retention or deletion policy. Protected storage and complete T27
 integration remain open. No artifact download size, retry or total/cumulative
 duration cap is added.
+
+## Complete public metadata chain
+
+`verify_public_chain` composes the frozen complete public-chain operation under
+caller-supplied existing Root, independent product/component context, safe time
+and global/exact-role denied keys. Every Timestamp, Snapshot and referenced
+member uses the unchanged ordinary verifier with fresh Root, Production body
+semantics, exact role policy and every submitted signature. Role-specific denial
+applies only to that role; unrelated role entries have no effect. There is no
+high-water or Development option in this operation.
+
+Timestamp binds the exact original Snapshot reference. That authenticated
+Snapshot supplies each member's expected role and complete scope; product and
+component always come from the independent caller context. JSON-escaped bounded
+values form each complete expected Document. Exact original references and
+membership are checked before the unchanged codec's complete public-graph
+relationships: Target baseline/ordinary/bridge reachability, Release targets,
+Package identity/modes and rejection of unreachable candidate objects. Repeated
+Snapshot references still fail the original ordinary metadata semantics. An
+oversized actual-member list refuses under the same necessary Snapshot-derived
+count bound as the codec, before duplicate scanning. No separate aggregate byte
+or member limit is introduced.
+
+The immutable `SignatureCheckedPublicChain` owns checked original Timestamp,
+Snapshot and member envelopes, preserving member input order, and borrows the
+exact supplied Root with the supplied time. It exposes authenticated original
+objects rather than reproducing Node's derived targets/releases/packages arrays.
+Private successful ordinary proofs are consumed into owned envelopes; temporary
+expected contexts and denial collections do not escape. A failure returns no
+partial graph. This neither establishes protected Root/clock custody nor performs
+atomic high-water acceptance, current online qualification or execution.
+
+Five tests execute fifty-six full frozen Node cases: complete relationships (34),
+denial and isolation (9), actual signatures/thresholds (5), time (3), and exact
+policy/wire/Production (5). They include genuinely signed two-Target/two-Package
+graphs with independent exact policies and shuffled member order, second-Target
+policy/scope negatives, duplicate members/references and ordinary/bridge paths.
+Fresh signing keys remain inside Node. One App facade test exercises nine actual
+positive/negative controls. Codec, ordinary verification, dependency manifests
+and all three lockfiles remain unchanged; prior unaffected regressions retain
+acceptance. Actual App/CLI checks remain distinct from workflow E2E. Protected
+acceptance and full T27 integration remain open, with no artifact download size,
+retry or total/cumulative duration cap.

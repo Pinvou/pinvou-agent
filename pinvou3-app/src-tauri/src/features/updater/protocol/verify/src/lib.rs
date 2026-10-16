@@ -5,6 +5,7 @@ mod archive;
 mod chain;
 mod envelope;
 mod error;
+mod graph;
 mod signatures;
 mod successor;
 use envelope::parse_bound_envelope;
@@ -13,6 +14,9 @@ pub use successor::{ActiveMetadataInput, SignatureCheckedRootSuccessor, verify_r
 pub use archive::{ArchivedEnvelopeIdentity, verify_archived_package, verify_archived_release};
 pub use chain::{SignatureCheckedRootChain, verify_root_chain};
 pub use error::VerificationError;
+pub use graph::{
+    PublicChainError, PublicChainInputs, SignatureCheckedPublicChain, verify_public_chain,
+};
 use pinvou_upgrade_codec::{
     Document, PackageSemanticsMode, RootPolicyShape, RootWindowMode, SchemaCheckedEnvelope,
     SuppliedProtocolTime, assert_supplied_credential_semantics, assert_supplied_high_water,

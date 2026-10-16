@@ -92,6 +92,25 @@ pub(crate) fn verify_supplied_archived_release_bytes<'a>(
     pinvou_upgrade_verifier::verify_archived_release(bytes, archived_root, expected)
 }
 
+/// Complete public chain under independently supplied existing trust, context,
+/// safe time and denial facts. No persistent acceptance or current online rights.
+pub(crate) fn verify_supplied_public_chain_bytes<'a>(
+    timestamp_bytes: &[u8],
+    snapshot_bytes: &[u8],
+    member_bytes: &[&[u8]],
+    inputs: pinvou_upgrade_verifier::PublicChainInputs<'a>,
+) -> Result<
+    pinvou_upgrade_verifier::SignatureCheckedPublicChain<'a>,
+    pinvou_upgrade_verifier::PublicChainError,
+> {
+    pinvou_upgrade_verifier::verify_public_chain(
+        timestamp_bytes,
+        snapshot_bytes,
+        member_bytes,
+        inputs,
+    )
+}
+
 /// Exactly one fixed-origin POST; a dropped/error response can have committed
 /// remotely. Owner-controlled retries and durable ACK/consume recovery remain separate.
 pub(crate) async fn send_client_request_once(
@@ -889,6 +908,99 @@ mod tests {
                         "unexpected identity refusal {name}: {error}"
                     );
                     assert_eq!(error.to_string(), case["rustCode"].as_str().unwrap());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn feature_facade_authenticates_complete_public_chain_without_current_rights() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        use pinvou_upgrade_verifier::PublicChainInputs;
+        use std::collections::BTreeMap;
+        let output = std::process::Command::new("node")
+            .args([
+                "--input-type=module",
+                "-e",
+                include_str!("verify/tests/public-chain-oracle.mjs"),
+            ])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../specs/upgrade/v1/reference/signatures.mjs"),
+            )
+            .output()
+            .expect("Node is required for the frozen complete public-chain oracle");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        for name in [
+            "two-targets-two-packages-unordered-positive",
+            "second-target-independent-policy-refuses",
+            "second-target-complete-reference-scope-refuses",
+            "ordinary-path-reachable-positive",
+            "unreachable-candidate-leak",
+            "target-key-denied-only-for-release-still-passes",
+            "release-exact-role-deny-refuses",
+            "bad-extra-after-valid-threshold-refuses",
+            "production-incremental-package-refuses",
+        ] {
+            let case = cases.iter().find(|c| c["name"] == name).unwrap();
+            let root = decode_root_policy_shape(&serde_json::to_vec(&case["trustedRoot"]).unwrap())
+                .unwrap();
+            let context = decode_metadata(&serde_json::to_vec(&case["context"]).unwrap()).unwrap();
+            let now = decode_metadata(&serde_json::to_vec(&case["now"]).unwrap())
+                .unwrap()
+                .protocol_time_shape()
+                .unwrap();
+            let timestamp = STANDARD
+                .decode(case["timestamp"].as_str().unwrap())
+                .unwrap();
+            let snapshot = STANDARD.decode(case["snapshot"].as_str().unwrap()).unwrap();
+            let members: Vec<_> = case["members"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| STANDARD.decode(m.as_str().unwrap()).unwrap())
+                .collect();
+            let borrowed: Vec<_> = members.iter().map(Vec::as_slice).collect();
+            let denied: Vec<String> = serde_json::from_value(case["deniedKeyIds"].clone()).unwrap();
+            let role_denied: BTreeMap<String, Vec<String>> =
+                serde_json::from_value(case["deniedKeyIdsByRole"].clone()).unwrap();
+            let mut inputs =
+                PublicChainInputs::new(&root, &context, &now).with_denied_key_ids(&denied);
+            for (role, ids) in &role_denied {
+                inputs = inputs.with_role_denied_key_ids(role, ids);
+            }
+            match verify_supplied_public_chain_bytes(&timestamp, &snapshot, &borrowed, inputs) {
+                Ok(checked) => {
+                    assert_eq!(
+                        case["accepted"], true,
+                        "unexpected public-chain acceptance {name}"
+                    );
+                    assert!(std::ptr::eq(checked.supplied_root(), &root));
+                    assert_eq!(checked.members().len(), members.len());
+                    for (envelope, raw) in checked.members().iter().zip(&members) {
+                        assert_eq!(envelope.envelope().raw_bytes(), raw);
+                    }
+                }
+                Err(error) => {
+                    assert_eq!(
+                        case["accepted"], false,
+                        "unexpected public-chain refusal {name}: {error}"
+                    );
+                    let expected = match case["code"].as_str().unwrap() {
+                        "ROLE_NOT_AUTHORIZED" => "ROLE_POLICY_NOT_DECLARED",
+                        "REFERENCE_MISMATCH" => "METADATA_REFERENCE_MISMATCH",
+                        code => code,
+                    };
+                    assert_eq!(
+                        error.to_string(),
+                        expected,
+                        "wrong public-chain refusal {name}"
+                    );
                 }
             }
         }
