@@ -1215,6 +1215,25 @@ try {
     assert.equal(Array.isArray(Object.getPrototypeOf(content)), false, 'content 保持无原型对象，不得被 __proto__ 赋值改原型');
   }
 
+  // ── buildElicitationContent：无 otherAnswerKey 的自定义答案回落主 answerKey ──
+  // 自定义回复框已在 normalizeElicitationQuestions 钉死（枚举题即使没有 agent 生成的
+  // other 伴随字段也展示），该回落分支成为可达路径：自定义文本必须仍被提交，不能静默丢弃。
+  {
+    const content = buildElicitationContent([
+      { questionId: 'q1', answerKey: 'q1', otherAnswerKey: null, multiSelect: false, answers: [{ label: '其他', value: '我自己写的内容', other: true }] },
+      { questionId: 'q2', answerKey: 'q2', otherAnswerKey: null, multiSelect: true, answers: [{ label: 'A', value: 'a', other: false }, { label: '其他', value: '补充', other: true }] },
+    ]);
+    assert.equal(content.q1, '我自己写的内容', '单选无伴随字段时自定义文本回落主 answerKey');
+    assert.deepEqual(content.q2, ['a', '补充'], '多选混入自定义文本时数组保留全部答案');
+
+    // 特殊 answerKey + 无伴随字段的自定义答案：文本作为 own property 落在保留键上，不得丢。
+    const special = buildElicitationContent([
+      { questionId: 'q', answerKey: '__proto__', otherAnswerKey: null, multiSelect: false, answers: [{ label: '其他', value: 'x', other: true }] },
+    ]);
+    assert.equal(Object.prototype.hasOwnProperty.call(special, '__proto__'), true, '自定义答案回落保留键不得被 __proto__ setter 吞掉');
+    assert.equal(special['__proto__'], 'x');
+  }
+
   // ── M-E journal probe semantics lock: transport-level (endpoint active),
   // not subscriber-level ──
   // #336 changes the acp:event projection+journal gate from "a browser

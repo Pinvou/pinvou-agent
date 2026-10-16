@@ -24,9 +24,9 @@ function initialState(questions, initialAnswers, otherAnswerLabel) {
     const options = normalizedOptions(question);
     // “其他”答案判定（评审第五轮 P2）：
     //   1) 显式布尔 other 标记优先——包括明确的 false。warm 路径（restoredAnswers）保留 other
-    //      标记；若问题 allow_free_text=false 却存在名为“其他”的普通预设项（isFreeTextPlaceholderOption
-    //      过滤被 allowOther 跳过、该预设项保留），提交链路会产生 { other: false }，必须尊重它，
-    //      否则该预设项重挂载后既不高亮也看不到答案。
+    //      标记；请求路径已钉死 allowOther=true 并恒过滤“其他”占位预设（user-input-shared.js），
+    //      { label: "其他", other: false } 只可能来自钉死前的历史会话数据，仍须尊重，
+    //      否则该答案重挂载后既不高亮也看不到答案。
     //   2) 冷重载路径后端只持久化 {id,label,value}（UserInputAnswer 无 other 字段，已被剥离）；
     //      仅当该问题允许自由输入（allowOther）时才按 label 命中“其他”文案兼容判定，allowOther=false
     //      时不存在自定义答案，不应把名为“其他”的预设项误判为 other。
