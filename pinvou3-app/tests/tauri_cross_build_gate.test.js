@@ -565,24 +565,20 @@ test("prepareLinuxAsrRuntime accepts a pre-built target engine instead of buildi
 });
 
 test("prepareKnowledgeHost copies the pre-built target server without running cargo", () => {
-  const serverDestination = path.join(
-    __dirname,
-    "..",
-    "src-tauri",
-    "resources",
-    "platforms",
-    "linux",
-    "knowledge-host",
-    "pinvou-knowledge-server",
-  );
-  // The destination is the real packaged resource tree; never clobber a
-  // server a local build placed there.
-  if (fs.existsSync(serverDestination)) return;
   const triple = "loongarch64-unknown-linux-gnu";
   const tempRepo = fs.mkdtempSync(path.join(os.tmpdir(), "prebuilt-kh-"));
+  // The packaged resource root is injected too: a killed run must never
+  // leave a fixture server in the real src-tauri/resources tree for a
+  // later real build to package.
+  const packagedResourceRoot = path.join(tempRepo, "resources", "knowledge-host");
+  fs.mkdirSync(packagedResourceRoot, { recursive: true });
+  fs.writeFileSync(
+    path.join(packagedResourceRoot, "pinvou-knowledge-host-helper"),
+    "#!helper-fixture\n",
+  );
+  const serverDestination = path.join(packagedResourceRoot, "pinvou-knowledge-server");
   test.after(() => {
     fs.rmSync(tempRepo, { recursive: true, force: true });
-    fs.rmSync(serverDestination, { force: true });
   });
   const serverSource = path.join(
     tempRepo,
@@ -603,6 +599,7 @@ test("prepareKnowledgeHost copies the pre-built target server without running ca
     targetTriple: triple,
     prebuilt: true,
     repositoryRoot: tempRepo,
+    packagedResourceRoot,
     spawn: () => {
       spawnCalls += 1;
       return { status: 0 };
@@ -619,6 +616,7 @@ test("prepareKnowledgeHost copies the pre-built target server without running ca
       targetTriple: triple,
       prebuilt: true,
       repositoryRoot: notFoundRepo,
+      packagedResourceRoot,
       spawn: () => ({ status: 0 }),
     }),
     /预构建/u,

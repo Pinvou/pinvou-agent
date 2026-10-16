@@ -111,12 +111,15 @@ function prepareKnowledgeHost({
   // Injected by tests so a pre-built source can be staged outside the real
   // pinvou-knowledge/ worktree.
   repositoryRoot = path.resolve(APP_ROOT, '..'),
-} = {}) {
-  if (platform !== 'linux') return null;
-  const packagedResourceRoot = path.join(
+  // Same escape hatch for the packaged resource tree: tests must not write
+  // fixtures into the real src-tauri/resources tree (a killed run would
+  // leave a fixture file for a later real build to package).
+  packagedResourceRoot = path.join(
     APP_ROOT,
     'src-tauri', 'resources', 'platforms', 'linux', 'knowledge-host',
-  );
+  ),
+} = {}) {
+  if (platform !== 'linux') return null;
   const resourceRoot = development ? DEVELOPMENT_RESOURCE_ROOT : packagedResourceRoot;
   const helperSource = path.join(packagedResourceRoot, 'pinvou-knowledge-host-helper');
   const helper = path.join(resourceRoot, 'pinvou-knowledge-host-helper');
