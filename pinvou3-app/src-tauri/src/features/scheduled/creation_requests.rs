@@ -1273,7 +1273,9 @@ fn prune_stale_state_at(now: std::time::SystemTime) {
 /// deterministic sha256 name is replaced after the park (the
 /// retry-after-fix re-spool writes fresh bytes with a newer mtime) or
 /// vanishes; the quarantine failure applied to the previous bytes, not
-/// these.
+/// these. #680: un-parking feeds the budget GATE — the episode's parked
+/// digest identity (see `stuck_episode_audited`) admits only a payload
+/// CHANGE; a same-bytes mtime bump stays gated.
 #[derive(Default)]
 struct RetryState {
     attempts: HashMap<String, u32>,
@@ -1705,9 +1707,25 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                     if quarantine(&path) {
                         retries.attempts.remove(&name);
                     } else {
+                        // #680: park carries the record's digest identity so
+                        // the gate's rebind — not the mtime — decides what an
+                        // un-park admits: a CORRECTED payload restarts the
+                        // episode, while a same-bytes mtime bump stays gated
+                        // (an mtime-keyed fresh apply would let a 1 Hz
+                        // mtime-bumper recreate one duplicate task per poll
+                        // forever — the exact storm the gate exists to stop).
+                        let parked_digest =
+                            read_regular_bounded(&path, MAX_SPOOL_FILE_BYTES as usize)
+                                .and_then(|bytes| {
+                                    serde_json::from_slice::<SpooledCreationRequest>(&bytes).ok()
+                                })
+                                .map(|request| spool_request_digest(&request));
                         retries
                             .parked
                             .insert(name.clone(), std::time::SystemTime::now());
+                        retries
+                            .stuck_episode_audited
+                            .insert(name.clone(), parked_digest.unwrap_or_default());
                     }
                     let stem = path
                         .file_stem()
@@ -2429,13 +2447,14 @@ mod tests {
             spool.join("stuck.json").exists(),
             "the parked record stays put"
         );
-        // Round-24 minor 3: the park is no longer restart-shaped. A
-        // retry-after-fix re-spool rewrites the record at the same
-        // deterministic name with a newer mtime; the next pass must
-        // un-park and process it exactly once, and a fresh exhaustion
-        // parks the name again against the new bytes. The skip loop above
-        // (no rewrite, no un-park through 2×MAX passes) is the other half
-        // of this pin: unchanged mtime keeps the park.
+        // Round-24 minor 3, refined by #680's digest-keyed budget gate:
+        // un-parking feeds the gate, and the gate admits a payload CHANGE,
+        // not an mtime bump. A same-bytes re-spool (mtime-only here) stays
+        // gated — an mtime-keyed fresh apply would let a 1 Hz mtime-bumper
+        // recreate one duplicate task per poll forever, the exact storm
+        // the gate exists to stop. The skip loop above (no rewrite, no
+        // un-park through 2×MAX passes) is the other half of this pin:
+        // unchanged mtime keeps the park.
         let parked_at = *retries
             .parked
             .get("stuck.json")
@@ -2455,15 +2474,53 @@ mod tests {
             &mut retries,
         )
         .await;
-        // The park froze the budget at MAX (round-16 MAJOR-1: no budget
-        // left to bound a parked record), so the un-parked record gets
-        // exactly ONE fresh attempt: it applies once (store count MAX+1),
-        // its marker write fails again, MAX+1 ≥ MAX → immediate
-        // exhaustion → the name parks again against the new bytes. The
-        // load-bearing minor-3 proof is the store count: without the
-        // un-park the drain never touches the record and the count stays
-        // MAX through any number of passes (pinned by the skip loop
-        // above).
+        assert_eq!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .unwrap()
+                .len(),
+            MAX_CREATE_ATTEMPTS as usize,
+            "an mtime-only bump does not re-buy the gated budget"
+        );
+        assert_eq!(
+            retries.attempts.get("stuck.json").copied(),
+            Some(MAX_CREATE_ATTEMPTS),
+            "the gate keeps the frozen budget frozen"
+        );
+        assert!(
+            spool.join("stuck.json").exists(),
+            "the gated record stays queued"
+        );
+        // A CORRECTED payload at the same name is what re-opens the
+        // episode: the gate's digest rebind resets the budget (that pass
+        // itself skips the apply) and the following pass applies the new
+        // body on the fresh budget.
+        std::fs::write(
+            spool.join("stuck.json"),
+            spool_record_json(&[("name", serde_json::json!("更正后的名字"))]),
+        )
+        .unwrap();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(calls.clone()),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            retries.attempts.is_empty(),
+            "the corrected body resets the exhausted budget (digest rebind)"
+        );
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(calls.clone()),
+            &mut retries,
+        )
+        .await;
         assert_eq!(
             state
                 .automations
@@ -2473,16 +2530,12 @@ mod tests {
                 .unwrap()
                 .len(),
             (MAX_CREATE_ATTEMPTS + 1) as usize,
-            "the re-spooled record was processed once after the un-park"
+            "the corrected body applied once on the fresh budget"
         );
         assert_eq!(
             retries.attempts.get("stuck.json").copied(),
-            Some(MAX_CREATE_ATTEMPTS + 1),
-            "the fresh attempt burned exactly one budget unit"
-        );
-        assert!(
-            retries.parked.contains_key("stuck.json"),
-            "the fresh exhaustion parks the name again (bounded per replacement)"
+            Some(1),
+            "the fresh episode re-accrues its own budget (its marker write still fails)"
         );
     }
 
