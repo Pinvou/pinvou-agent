@@ -10838,3 +10838,64 @@ cumulative duration or retry cap; 32MiB is not an artifact/download size limit.
 DCO committed and pushed as `d16cd77e0558ba603201820a5a5c75306a84f192` on
 `codex/t05-keycloak-integration`; see service
 `docs/keycloak-acceptance-integration.md` for boundaries and evidence.
+
+### T09 owned byte capture on the combined service line
+
+Accepted source `191c9e8148f90032f878e1d337a544f83a8c007f` is integrated on
+the current service line as seven exact Git blobs. The existing command/verifier
+files and source document matched its parent, and only that source document's
+70 original additive lines were applied. Historical source-batch acceptance
+remains distinct from fresh combined-tree evidence.
+
+An owned process-memory Snapshot confirms exact source length, complete EOF and
+observed SHA256 before returning private bytes through independent ReaderAt.
+Neither source/read-buffer mutation nor concurrent reads can modify it. The
+transport owner retains blocking-read cancellation and lifetime; no detached
+reader, elapsed/retry budget or implicit production capacity is introduced.
+The isolated CLI shares the capture while retaining its flags/errors/output;
+InspectSnapshot reuses current Root/deny/Manifest checks on every inspection
+and confirms the complete observed upload identity. Old Inspect remains compatible.
+
+Both independent scoped code/test reviews passed with all seven source blobs
+and raw digests independently verified. The primary frozen affected run passed
+four packages, 28 top-level/75 child tests, zero skips/failures
+(18.099s wall), with an explicitly rebuilt actual CLI case enabled.
+Coverage includes a real33MiB-plus source, four concurrent hash readers, malformed
+Reader/EOF/cancellation controls, actual streamed HTTP body cancellation,
+signed Manifest/current-deny recheck and actual CLI subprocess output/error checks.
+This does not qualify native identity, protected storage or production HTTP upload.
+
+The first broader test invocation passed all actual Go tests but its outer helper
+rejected two unchanged sourcefile fixture skips. The helper's affected package
+selection was corrected to the agreed capture/archive/verification/CLI scope;
+no product or test source was changed. The final required affected run has zero
+skips. The full default service continues to include sourcefile: actual symlink
+creation permission and an authorized mapped remote source are unavailable, so
+those two host checks remain explicitly unverified among the default skips.
+Neither is represented as a qualification pass.
+
+All ten primary gates passed: private CLI build, affected tests with actual CLI,
+full default service, modules, full vet, private server build, pinnedV1, formatting
+and both whitespace checks. Default service passed 54 tested packages,
+494 top-level/1128 child tests
+(66.664s wall), with 565 top-level/
+606 child opt-in/unavailable-host skips and12 no-test packages
+separately recorded. Each reviewer separately rebuilt its own CLI and passed
+all affected tests (28/75, zero skips/failures, actual CLI enabled), affected vet,
+formatting and both whitespace checks: six gates each
+(15.655s/12.666s affected-test wall,
+dependency/compatibility). They did not repeat the primary full default gate.
+
+Full source/index/status and all69 existing SQL raw/index identities stayed fixed
+during every run; sessions and owned children closed. All seven imports remain
+exact source blobs. No Node/PG/Bao, production upload/admission or physical E2E
+is claimed. Persistent upload, quarantine, complete supply-chain/native inspection
+and physical platform qualification remain pending. No SQL, route, dependency,
+permission, provider, Root, contract, Session or UI changed. T09 stays in progress;
+totals remain5/12/30 out of47. Product0.10.9, normative1.0, pinnedV1 and CodeWhale
+remain unchanged; deployment stays deferred. Downloads have no hard total/
+cumulative duration or retry cap;32MiB is not an artifact/download size limit.
+
+DCO committed and pushed as `b859fb0e685cb9958a3ccf4b052f2eee9a881fd7` on
+`codex/t09-capture-integration`; service boundaries and fresh evidence are in
+`docs/artifact-capture-integration.md`.
