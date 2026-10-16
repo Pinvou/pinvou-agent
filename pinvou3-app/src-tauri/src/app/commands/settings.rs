@@ -2041,9 +2041,14 @@ mod tests {
         // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
-        let mut initial = UserPrefs::default();
-        initial.migrate_models();
-        initial.save().expect("initial settings should save");
+        // Seed disk through the production write path (the test-only
+        // UserPrefs::save was removed; mirrors the sibling concurrency
+        // tests' seeding).
+        UserPrefs::update_transaction(|initial| {
+            initial.migrate_models();
+            Ok(())
+        })
+        .expect("initial settings should save");
 
         // Explicit opt-out persists and reads back as false.
         persist_general_settings(GeneralSettingsPatch {
