@@ -1,16 +1,18 @@
-//! Actual original V1 envelope verification under caller-supplied existing Root,
+//! Original V1 envelope and single-successor checks under supplied existing Root,
 //! expected context, time and deny/high-water facts. This acquires no protected
 //! bootstrap trust, persistent acceptance, trusted clock or execution rights.
+mod envelope;
 mod error;
 mod signatures;
+mod successor;
+use envelope::parse_bound_envelope;
+pub use successor::{ActiveMetadataInput, SignatureCheckedRootSuccessor, verify_root_successor};
 
 pub use error::VerificationError;
 use pinvou_upgrade_codec::{
-    ContextBindingError, Document, InputKind, PackageSemanticsMode, RootPolicyShape,
-    RootWindowMode, SchemaCheckedEnvelope, SuppliedProtocolTime,
-    assert_supplied_credential_semantics, assert_supplied_expected_context,
-    assert_supplied_high_water, assert_supplied_metadata_semantics_in_mode,
-    decode_canonical_envelope,
+    Document, PackageSemanticsMode, RootPolicyShape, RootWindowMode, SchemaCheckedEnvelope,
+    SuppliedProtocolTime, assert_supplied_credential_semantics, assert_supplied_high_water,
+    assert_supplied_metadata_semantics_in_mode,
 };
 use std::collections::BTreeSet;
 
@@ -89,30 +91,13 @@ impl SignatureCheckedEnvelope<'_> {
 }
 
 /// Complete ordinary single-envelope checks. Root successors/archives require
-/// separate operations: no expired-history mode or incoming trust anchor exists.
+/// separate operations. This entry keeps fresh supplied Root semantics.
 pub fn verify_with_supplied_root<'a>(
     bytes: &[u8],
     inputs: VerificationInputs<'a>,
 ) -> Result<SignatureCheckedEnvelope<'a>, VerificationError> {
-    let expected_role = inputs
-        .expected
-        .value()
-        .get("role")
-        .and_then(|value| value.as_str())
-        .ok_or(VerificationError::Context(
-            ContextBindingError::InvalidExpected,
-        ))?;
-    let kind = if METADATA_ROLES.contains(&expected_role) {
-        InputKind::Metadata
-    } else {
-        InputKind::Credential
-    };
-    let envelope = decode_canonical_envelope(bytes, kind)
-        .map_err(VerificationError::Envelope)?
-        .check_full_schema()
-        .map_err(VerificationError::Schema)?;
-    assert_supplied_expected_context(&envelope, inputs.expected)
-        .map_err(VerificationError::Context)?;
+    let envelope = parse_bound_envelope(bytes, inputs.expected)?;
+    let expected_role = inputs.expected.value()["role"].as_str();
     let denied: BTreeSet<&str> = inputs.denied_key_ids.iter().map(String::as_str).collect();
     if envelope
         .envelope()
@@ -127,14 +112,14 @@ pub fn verify_with_supplied_root<'a>(
         .assert_supplied_current_window(inputs.now)
         .map_err(VerificationError::Time)?;
     let signed = envelope.envelope().signed();
-    if expected_role == "root"
+    if expected_role == Some("root")
         && signed.canonical_bytes().map_err(VerificationError::Json)?
             != inputs.root.canonical_bytes()
     {
         return Err(VerificationError::RootTransitionRequired);
     }
     let signer_ids = signatures::verify_signatures(&envelope, inputs.root)?;
-    if METADATA_ROLES.contains(&expected_role) {
+    if expected_role.is_some_and(|role| METADATA_ROLES.contains(&role)) {
         assert_supplied_metadata_semantics_in_mode(
             &envelope,
             inputs.now,

@@ -34,6 +34,7 @@ impl std::error::Error for RootPolicyError {}
 pub struct RootPolicyShape {
     canonical: Vec<u8>,
     product: String,
+    version: u64,
     policies: Vec<RolePolicyData>,
     keys: BTreeMap<String, KeyDescriptor>,
     issued_at: f64,
@@ -42,6 +43,25 @@ pub struct RootPolicyShape {
 impl RootPolicyShape {
     pub fn canonical_bytes(&self) -> &[u8] {
         &self.canonical
+    }
+    pub fn product(&self) -> &str {
+        &self.product
+    }
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+    /// Original supplied window with expiry alone permitted. This checks neither
+    /// lineage nor protected historical custody and cannot grant current rights.
+    pub fn assert_supplied_historical_window(
+        &self,
+        now: &SuppliedProtocolTime,
+    ) -> Result<(), MetadataSemanticsError> {
+        crate::metadata_semantics::root_window(
+            self.issued_at,
+            self.expires_at,
+            now,
+            RootWindowMode::AllowExpired,
+        )
     }
     /// Exact immutable descriptor from this same validated Root shape. This is
     /// not a curve validity, key authority or protected Root acceptance proof.
@@ -221,6 +241,11 @@ impl Document {
         Ok(RootPolicyShape {
             canonical,
             product,
+            // Already positive integral binary64 <= MAX_SAFE_INTEGER, so this
+            // conversion is exact and within u64 on every supported target.
+            version: root["version"]
+                .as_f64()
+                .ok_or(RootPolicyError::InvalidClaims)? as u64,
             policies: declared,
             keys: declared_keys,
             issued_at: root["issuedAt"]

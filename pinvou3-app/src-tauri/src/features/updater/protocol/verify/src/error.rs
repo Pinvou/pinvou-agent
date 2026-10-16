@@ -1,6 +1,6 @@
 use pinvou_upgrade_codec::{
     BindingError, ContextBindingError, CredentialSemanticsError, EnvelopeShapeError, Error,
-    HighWaterError, MetadataSemanticsError, PolicyLookupError, SchemaError,
+    HighWaterError, MetadataSemanticsError, PolicyLookupError, RootPolicyError, SchemaError,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,6 +15,9 @@ pub enum VerificationError {
     Credential(CredentialSemanticsError),
     HighWater(HighWaterError),
     Binding(BindingError),
+    Root(RootPolicyError),
+    RootContinuityInvalid,
+    ActiveReadSetInvalid,
     RootTransitionRequired,
     SigningKeyDenied,
     SigningKeyUnauthorized,
@@ -36,6 +39,9 @@ impl std::fmt::Display for VerificationError {
             Self::Credential(e) => return e.fmt(f),
             Self::HighWater(e) => return e.fmt(f),
             Self::Binding(e) => return e.fmt(f),
+            Self::Root(e) => return e.fmt(f),
+            Self::RootContinuityInvalid => "ROOT_CONTINUITY_INVALID",
+            Self::ActiveReadSetInvalid => "ACTIVE_READ_SET_INVALID",
             Self::RootTransitionRequired => "ROOT_TRANSITION_REQUIRED",
             Self::SigningKeyDenied => "SIGNING_KEY_DENIED",
             Self::SigningKeyUnauthorized => "SIGNING_KEY_NOT_AUTHORIZED",

@@ -23,6 +23,27 @@ pub(crate) fn verify_supplied_envelope_bytes<'a>(
     pinvou_upgrade_verifier::verify_with_supplied_root(bytes, inputs)
 }
 
+/// One continuous Root successor using independently supplied full Root context,
+/// safe time and the caller-owned complete active read set. No install/persistence.
+pub(crate) fn verify_supplied_root_successor_bytes<'a>(
+    bytes: &[u8],
+    old_root: &'a pinvou_upgrade_codec::RootPolicyShape,
+    expected_root: &pinvou_upgrade_codec::Document,
+    now: &pinvou_upgrade_codec::SuppliedProtocolTime,
+    active_metadata: &[pinvou_upgrade_verifier::ActiveMetadataInput<'_>],
+) -> Result<
+    pinvou_upgrade_verifier::SignatureCheckedRootSuccessor<'a>,
+    pinvou_upgrade_verifier::VerificationError,
+> {
+    pinvou_upgrade_verifier::verify_root_successor(
+        bytes,
+        old_root,
+        expected_root,
+        now,
+        active_metadata,
+    )
+}
+
 /// Exactly one fixed-origin POST; a dropped/error response can have committed
 /// remotely. Owner-controlled retries and durable ACK/consume recovery remain separate.
 pub(crate) async fn send_client_request_once(
@@ -586,6 +607,82 @@ mod tests {
                 pinvou_upgrade_codec::MetadataSemanticsError::IncrementalProduction
             ))
         ));
+    }
+
+    #[test]
+    fn feature_facade_checks_both_root_policies_and_active_key_retention() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        use pinvou_upgrade_verifier::ActiveMetadataInput;
+        let output = std::process::Command::new("node")
+            .args([
+                "--input-type=module",
+                "-e",
+                include_str!("verify/tests/root-successor-oracle.mjs"),
+            ])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../specs/upgrade/v1/reference/canonical-json.mjs"),
+            )
+            .output()
+            .expect("Node is required for the frozen Root successor oracle");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        for name in [
+            "distinct-old-and-next-two-of-three",
+            "old-only",
+            "next-only",
+            "all-five-metadata-roles",
+            "retired-active-key-refuses",
+            "active-package-does-not-run-production-body-semantics",
+        ] {
+            let case = cases.iter().find(|c| c["name"] == name).unwrap();
+            let old = decode_root_policy_shape(&serde_json::to_vec(&case["trustedRoot"]).unwrap())
+                .unwrap();
+            let expected =
+                decode_metadata(&serde_json::to_vec(&case["expected"]).unwrap()).unwrap();
+            let now = decode_metadata(&serde_json::to_vec(&case["now"]).unwrap())
+                .unwrap()
+                .protocol_time_shape()
+                .unwrap();
+            let bytes = URL_SAFE_NO_PAD
+                .decode(case["bytes"].as_str().unwrap())
+                .unwrap();
+            let active: Vec<_> = case["activeEnvelopes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| {
+                    (
+                        URL_SAFE_NO_PAD
+                            .decode(a["bytes"].as_str().unwrap())
+                            .unwrap(),
+                        decode_metadata(&serde_json::to_vec(&a["expected"]).unwrap()).unwrap(),
+                    )
+                })
+                .collect();
+            let inputs: Vec<_> = active
+                .iter()
+                .map(|(b, e)| ActiveMetadataInput::new(b, e))
+                .collect();
+            match verify_supplied_root_successor_bytes(&bytes, &old, &expected, &now, &inputs) {
+                Ok(checked) => {
+                    assert_eq!(case["accepted"], true, "unexpected acceptance {name}");
+                    assert!(std::ptr::eq(checked.supplied_old_root(), &old));
+                    assert_eq!(checked.envelope().envelope().raw_bytes(), bytes);
+                }
+                Err(error) => {
+                    assert_eq!(
+                        case["accepted"], false,
+                        "unexpected refusal {name}: {error}"
+                    );
+                    assert_eq!(error.to_string(), case["rustCode"].as_str().unwrap());
+                }
+            }
+        }
     }
 
     #[test]
