@@ -403,7 +403,7 @@ run_pinned_cap_test || fail=1
 
 echo
 if [[ $fail -eq 0 ]]; then
-  green "✅ fork-guard 全过：CodeWhale v0.9.12 r1 的登记主题完好。"
+  green "✅ fork-guard 全过：CodeWhale v0.9.12 r3 的登记主题完好。"
 else
   red "❌ fork-guard 失败：请对照 docs/fork-modifications.md 排查。"
 fi

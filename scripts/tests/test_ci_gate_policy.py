@@ -251,6 +251,66 @@ def _extract_job_level_if(job_block):
     return "\n".join(folded)
 
 
+_STEP_NAME = re.compile(r"^      - name: (.*)$")
+
+
+def _steps_of(job_block):
+    """Split a job block into ordered (name, step-text) pairs on exact name lines.
+
+    Each step anchors on its own `      - name: ` line rather than slicing at
+    the first occurrence of a pinned name: a decoy step whose name merely
+    *contains* a pinned name can neither capture a first-occurrence slice
+    nor evade the line-exact uniqueness pin — the two pin styles must be
+    used as a pair.
+    """
+    lines = job_block.splitlines()
+    indices = [i for i, line in enumerate(lines) if _STEP_NAME.match(line)]
+    steps = []
+    for pos, i in enumerate(indices):
+        end = indices[pos + 1] if pos + 1 < len(indices) else len(lines)
+        steps.append((_STEP_NAME.match(lines[i]).group(1), "\n".join(lines[i:end])))
+    return steps
+
+
+def _step_named(job_block, name):
+    """Return the one step whose name equals `name`.
+
+    A missing or duplicate name raises (fail closed).
+    """
+    matches = [text for step_name, text in _steps_of(job_block) if step_name == name]
+    if len(matches) != 1:
+        raise AssertionError(
+            f"expected exactly one step named {name!r}, found {len(matches)}"
+        )
+    return matches[0]
+
+
+def _step_if_tokens(step_body):
+    """Normalize a step-level `if:` value into a token stream.
+
+    Accepts folded (`if: >-`) and inline (`if: ${{ ... }}`) spellings:
+    pinning the folded scalar's layout shape would false-fail a
+    semantically identical YAML reflow — exactness lives in the token
+    stream, not the line shape. Whitespace/paren normalization also
+    applies inside string literals; fine for the pinned literals
+    ('push', 'true'), revisit before reusing this on literals containing
+    spaces or parens.
+    """
+    lines = step_body.splitlines()
+    idx = next(i for i, line in enumerate(lines) if line.strip().startswith("if:"))
+    first = lines[idx].strip()
+    head = first[len("if:"):]
+    if head.strip() not in (">-", "|-", ">", "|"):
+        return " ".join(head.split())
+    indent = len(lines[idx]) - len(lines[idx].lstrip(" "))
+    chunk = []
+    for line in lines[idx + 1:]:
+        if not line.strip() or (len(line) - len(line.lstrip(" "))) <= indent:
+            break
+        chunk.append(line)
+    return " ".join(" ".join(chunk).split())
+
+
 # Round-52 review: 每个 required-gate 消费其结果的 job 的 job 级 `if:` 全文。
 # 折叠块(cli-test/cli-lint 等)的 `${{ }}` 末行(或单行形式的行尾)被追加
 # `&& false` 时,该腿静默 skip 而 required-gate 的 success|skipped 循环照单
@@ -425,6 +485,7 @@ PINNED_GATE_STEP_NAMES = {
         "Install frontend deps (universal bundle smoke, push only)",
         "Cargo build (release-fast smoke, push only)",
         "Tauri bundle smoke (verify dmg/app packaging, bundle-chain changes only)",
+        "Prune release artifacts before the cache save (push only)",
         "Verify script (plist/usage-key/bundle targets checks, push only)",
         "Probe and export the macOS lld link flags",
     ),
@@ -2456,6 +2517,45 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("WINDOWS_RUST_CACHE", windows_rust_test)
         self.assertIn("WINDOWS_RUST_TIMING", windows_rust_test)
         self.assertNotIn("actions/setup-node", windows_rust_test)
+        # The workspaces list must be EXACTLY the three compiled entries:
+        # the app workspace, the CodeWhale regression target, and pinvou-cli
+        # (check leg + filtered regression tests). Dropping an entry
+        # cold-compiles that workspace on the slowest leg again; adding one
+        # silently rotates the exact key and grows the quota on that leg.
+        # The block
+        # is extracted from the Cargo cache STEP and bounded by indentation
+        # (entry lines are indented deeper than the sibling `with:` keys):
+        # a first-occurrence "workspaces: |" split over the whole job could
+        # be captured by a decoy echo, and an exact-indent `shared-key:`
+        # end anchor breaks silently when the `with:` keys are reordered.
+        cargo_cache_step = windows_rust_test.split(
+            "- name: Cargo cache", maxsplit=1
+        )[1].split("\n      - name:", maxsplit=1)[0]
+        self.assertIn(
+            "workspaces: |", cargo_cache_step,
+            "workspaces marker missing from the Cargo cache step — the "
+            "extraction below must fail, not widen",
+        )
+        workspaces_lines = cargo_cache_step.split(
+            "workspaces: |", maxsplit=1
+        )[1].splitlines()[1:]
+        workspaces_block = []
+        for line in workspaces_lines:
+            if line.strip() and not line.startswith("            "):
+                break
+            workspaces_block.append(line)
+        workspaces_text = "\n".join(workspaces_block)
+        workspaces_entries = sorted(
+            line.strip() for line in workspaces_block if line.strip()
+        )
+        self.assertEqual(
+            workspaces_entries,
+            ["CodeWhale", "pinvou-cli", "pinvou3-app/src-tauri"],
+            "the windows-rust-test cache must cache EXACTLY the three "
+            "compiled workspaces: a dropped entry cold-compiles its "
+            "workspace on every run, an extra entry silently rotates the "
+            "exact key and grows the quota on the slowest leg",
+        )
 
     def test_windows_regression_loop_pins_the_round43_and_round44_app_filters(self):
         # Round-44 review: six app-side cfg(windows) tests ran on no leg —
@@ -2561,7 +2661,10 @@ class CiGatePolicyTests(unittest.TestCase):
         # 2026-10-01 stable rollover to 1.99.0 invalidated the rust-cache key
         # so PR legs recompiled both workspaces cold and the link step alone
         # consumed 180 minutes (run 36919362322).
-        self.assertIn("timeout-minutes: 240", windows_rust_test)
+        # Job-level line anchor, same discipline as the macos fold pin:
+        # a bare substring is satisfied by timeout-minutes: 2400 or by a
+        # step-level 240 while the job cap reverts.
+        self.assertIn("\n    timeout-minutes: 240\n", windows_rust_test)
 
         windows_rust_test = _without_yaml_comments(
             _extract_job_block(self.pr_workflow, "windows-rust-test")
@@ -2949,10 +3052,20 @@ class CiGatePolicyTests(unittest.TestCase):
         # workflow kept "running" (cancel-failing) for weeks with zero
         # coverage. Pin each folded leg so removing one cannot go unnoticed.
         macos_job = _extract_job_block(self.pr_workflow, "macos-rust-check")
-        # mac-build died inside its own 50-minute cap; the fold replaces it
-        # with 180. Reverting to the default (360) or deleting the cap burns
-        # a hung runner for hours — the exact waste this PR removes.
-        self.assertIn("timeout-minutes: 180", macos_job)
+        # mac-build died inside its own 50-minute cap; the fold replaced it
+        # with 180 and the 2026-10-15 re-scoping (release-fast smoke gated to
+        # bundle_chain/rust_full/cli_rust pushes + release artifacts pruned
+        # from the cache save) raised it to 240: the push legs had become the
+        # merge-throughput bottleneck (p90 at 99% of the 180 cap, three
+        # timeout kills in 13 days). Reverting to the default (360) or
+        # deleting the cap burns a hung runner for hours — the exact waste
+        # this PR removes. Anchored on the 4-space job-level line: a bare
+        # substring is satisfied by 2400 or by a step-level 240 while the
+        # job cap reverts.
+        self.assertIn(
+            "\n    timeout-minutes: 240\n", macos_job,
+            "the macos-rust-check job cap must stay 240 at job level",
+        )
 
         # Full native lib regression: push-only, serial threads, locked.
         # Comment-stripped: an if-line deleted but kept "alive" in a YAML
@@ -2990,23 +3103,139 @@ class CiGatePolicyTests(unittest.TestCase):
         )
 
         # The release-fast compile smoke and the verify script stay push-only.
+        # Since 2026-10-15 the smoke additionally requires one of the
+        # bundle_chain/rust_full/cli_rust/knowledge_rust buckets:
+        # bundle_chain is load-bearing (the bundle smoke below reuses this
+        # step's aarch64 release-fast artifacts), rust_full/cli_rust mirror
+        # the job's own PR-leg Rust routing, and knowledge_rust closes the
+        # path-dep hole (src-tauri path-depends on pinvou-knowledge, whose
+        # sources never match rust_full) — without them the smoke either
+        # runs on every push (the merge-throughput bottleneck this
+        # re-scoping removed) or stops running on merges that can break the
+        # release-path compile. Extractions anchor on the EXACT pinned step
+        # name line via _step_named: a decoy step whose name merely contains
+        # a pinned name cannot capture the slice, and gutting or renaming
+        # the real step fails closed (see PINNED_GATE_STEP_NAMES for the
+        # paired line-exact uniqueness pin).
         release_fast = _without_yaml_comments(
-            macos_job.split(
-                "- name: Cargo build (release-fast", maxsplit=1
-            )[1].split("\n      - name:", maxsplit=1)[0]
+            _step_named(macos_job, "Cargo build (release-fast smoke, push only)")
         )
         self.assertIn("github.event_name == 'push'", release_fast)
+        # Pin the WHOLE gate expression, not its parts: bare-substring
+        # bucket pins stay green when a never-matching conjunct (or a
+        # typo'd ref pin) is appended to the folded if — the smoke would
+        # silently stop running while every bucket substring is still
+        # present. Normalize the value's whitespace and require the exact
+        # token stream, accepting both the folded and the inline spelling
+        # so a pure YAML reformat does not false-fail the pin.
+        smoke_if = _step_if_tokens(release_fast)
+        # Parens are padded before comparison: the folded scalar and an
+        # inline one-liner tokenize parens differently while meaning the
+        # same thing, and the exactness that matters is the conjunction
+        # structure, not paren spacing.
+        self.assertEqual(
+            " ".join(
+                smoke_if.replace("(", " ( ").replace(")", " ) ").split()
+            ),
+            "${{ github.event_name == 'push' && ( "
+            "needs.changes.outputs.bundle_chain == 'true' || "
+            "needs.changes.outputs.rust_full == 'true' || "
+            "needs.changes.outputs.cli_rust == 'true' || "
+            "needs.changes.outputs.knowledge_rust == 'true' ) }}",
+            "the release-fast smoke gate must be exactly push && the four "
+            "buckets — anything appended here silently skips the smoke",
+        )
         self.assertIn(
             "cargo build --profile release-fast --target aarch64-apple-darwin --lib",
             release_fast,
         )
-        verify_step = _without_yaml_comments(
-            macos_job.split(
-                "- name: Verify script", maxsplit=1
-            )[1].split("\n      - name:", maxsplit=1)[0]
+        # The release-profile artifacts must be pruned from the cache save:
+        # they were the bulk of the namespace's measured 3.1GB standing
+        # footprint (30% of the whole 10GB repo quota) and dead weight for
+        # every PR leg. The prune must run under always() — cache-on-failure
+        # saves failed runs too, so a failed run must not re-save the stale
+        # release dirs. target/release-fast is the host-side dir cargo pairs
+        # with every --target build; rust-cache keeps external-package units
+        # there, so it needs pruning with the per-target dirs.
+        prune_step = _without_yaml_comments(
+            _step_named(
+                macos_job,
+                "Prune release artifacts before the cache save (push only)",
+            )
         )
-        self.assertIn("always() && github.event_name == 'push'", verify_step)
+        # Exact-line if pin: a bare assertIn stays green when a
+        # never-matching conjunct is appended (the prune silently stops
+        # running and the release dirs re-land in the saved cache).
+        self.assertIn(
+            "if: ${{ always() && github.event_name == 'push' }}",
+            [line.strip() for line in prune_step.splitlines()],
+        )
+        # Pin the deletion itself, not just the directory names: replacing
+        # rm -rf with a no-op while keeping the four target strings would
+        # keep every name pin green.
+        prune_run = " ".join(
+            prune_step.split("run: >-", 1)[1].split()
+        )
+        self.assertEqual(
+            prune_run,
+            "rm -rf target/release-fast target/aarch64-apple-darwin/release-fast "
+            "target/x86_64-apple-darwin/release-fast target/universal-apple-darwin",
+        )
+        # The rm runs relative to the src-tauri workspace: repointing
+        # working-directory (e.g. to ".") makes every target a no-op match
+        # from the repo root while the command text stays byte-identical,
+        # so the directory the command runs in is pinned too.
+        self.assertIn(
+            "working-directory: pinvou3-app/src-tauri",
+            [line.strip() for line in prune_step.splitlines()],
+        )
+        # The prune only lands in the saved cache when the key generation
+        # rotates: rust-cache skips the post-job save on an exact
+        # primary-key hit, so a content-only prune can never replace the
+        # pre-rotation fat entry. The -v2 suffix is that one-time rotation.
+        # Comment-stripped: the rotation is load-bearing for the prune, so
+        # a commented-out copy of the line must not satisfy the pin.
+        stripped_macos = _without_yaml_comments(macos_job)
+        self.assertEqual(stripped_macos.count("shared-key:"), 1)
+        # Line-exact membership, not a substring: assertIn would also be
+        # satisfied by a v22-style stretch (macos-rust-check-v22), which
+        # rust-cache would mint under the v0-rust-macos-rust-check-v22-
+        # series — a prefix janitor rule A3 never matches, silently
+        # disarming the fat-save insurance for the prune invariant.
+        self.assertIn(
+            "shared-key: macos-rust-check-v2",
+            [line.strip() for line in stripped_macos.splitlines()],
+            "the rotation key must be the exact live line "
+            "shared-key: macos-rust-check-v2",
+        )
+        verify_step = _without_yaml_comments(
+            _step_named(
+                macos_job,
+                "Verify script (plist/usage-key/bundle targets checks, push only)",
+            )
+        )
+        self.assertIn(
+            "if: ${{ always() && github.event_name == 'push' }}",
+            [line.strip() for line in verify_step.splitlines()],
+        )
         self.assertIn("./scripts/run-mac-verify.sh --skip-test", verify_step)
+        # The prune must run AFTER the verify step: run-mac-verify §7's
+        # universal-bundle checks hard-fail on plist/ATS/locale/lipo defects
+        # only when the bundle smoke's artifact exists (warn-only otherwise),
+        # so a prune before verify silently disables them on every
+        # bundle_chain push. The order reads the exact step-name lines: a
+        # decoy step whose name merely contains a pinned name neither
+        # satisfies nor disturbs the lookup, and a missing pinned name
+        # fails closed.
+        step_names = [name for name, _ in _steps_of(macos_job)]
+        self.assertLess(
+            step_names.index(
+                "Verify script (plist/usage-key/bundle targets checks, push only)"
+            ),
+            step_names.index(
+                "Prune release artifacts before the cache save (push only)"
+            ),
+        )
 
         # The computer_use filtered run yields to the full leg on push (the
         # full suite executes the same tests) and keeps guarding PR legs.
@@ -3070,6 +3299,34 @@ class CiGatePolicyTests(unittest.TestCase):
 
         # Deployment-target parity with the release job.
         self.assertIn('MACOSX_DEPLOYMENT_TARGET: "11.0"', macos_job)
+
+    def test_cargo_deny_installs_stay_version_pinned(self):
+        # cargo-deny is a hard dependency gate on two jobs (knowledge-rust
+        # and rust-lint). install-action defaults to the tool's latest
+        # release when the version is unversioned, so an upstream CLI or
+        # lint-semantics change would flip a hard gate nondeterministically
+        # (same rationale as the cargo-shear pin). The two call sites keep
+        # in sync by comment only, so pin the exact set of live cargo-deny
+        # install lines across ALL workflow files; the value catcher is a
+        # regex, so quoted or oddly-spelled values are still collected and
+        # then fail the exact-set comparison: every spelling other than the
+        # pinned version — unversioned, a drifted patch (0.20.21 passes a
+        # count+prefix pin), a quoted value, an extra site in another
+        # workflow — fails.
+        deny_lines = []
+        for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            workflow = _without_yaml_comments(path.read_text(encoding="utf-8"))
+            for line in workflow.splitlines():
+                match = re.match(r"^\s*tool:\s*(.*cargo-deny.*)$", line)
+                if match:
+                    deny_lines.append((path.name, match.group(1).strip()))
+        self.assertEqual(
+            deny_lines,
+            [("pr-check.yml", "cargo-deny@0.20.2")] * 2,
+            "exactly the knowledge-rust and rust-lint call sites must "
+            "install cargo-deny, both at exactly the pinned version, "
+            "and no other workflow may install it at all",
+        )
 
     def test_macos_lld_linker_wiring_is_pinned(self):
         # The mac leg's lld linker wiring is easy to lose silently: a dropped
@@ -3341,9 +3598,11 @@ class ReleaseDiskAndImagePolicyTests(unittest.TestCase):
             self.assertIn("--min-free-gib 24", job)
             # Disk preparation must run before setup-node (the aggressive tier
             # deletes /opt/hostedtoolcache, and setup-node would re-download
-            # Node afterwards) and before the toolchain and the Rust cache
-            # land, so the free-space gate measures the disk the cold build
-            # actually gets.
+            # Node afterwards) and before the toolchain lands, so the
+            # free-space gate measures the disk the cold build actually
+            # gets. (The release jobs no longer restore a rust-cache —
+            # removed 2026-10-15, see test_release_cache_policy — so there is
+            # no cache-restore ordering left to pin.)
             self.assertLess(
                 job.index("python3 scripts/ci-rust-disk.py"),
                 job.index("uses: actions/setup-node"),
@@ -3351,10 +3610,6 @@ class ReleaseDiskAndImagePolicyTests(unittest.TestCase):
             self.assertLess(
                 job.index("python3 scripts/ci-rust-disk.py"),
                 job.index("uses: dtolnay/rust-toolchain"),
-            )
-            self.assertLess(
-                job.index("python3 scripts/ci-rust-disk.py"),
-                job.index("uses: Swatinem/rust-cache"),
             )
             self.assertIn("sudo apt-get autoremove -y --purge", job)
             self.assertIn("sudo apt-get clean", job)

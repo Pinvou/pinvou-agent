@@ -35,8 +35,9 @@ name: PR Check
 #   matrix legs under the same routing; both must pass.
 # - macos-rust-check: Native macOS compile check mirrors windows-rust-test gating; the Linux
 #   leg cannot expose platform-specific type errors. On main push it also runs the coverage
-#   folded in from the deleted mac-build.yml (full lib tests, release-fast smoke,
-#   bundle_chain-gated universal bundle smoke, mac verify script).
+#   folded in from the deleted mac-build.yml (full lib tests, release-fast smoke on
+#   bundle_chain/rust_full/cli_rust/knowledge_rust pushes, bundle_chain-gated
+#   universal bundle smoke, mac verify script).
 # - windows-codex-runtime-test:Relevant PRs exercise the browser-wrapper lifecycle,
 #   prepare Node + ACP Bridge, and verify packaged resources on native Windows.
 # - windows-rustup-repair-test: Relevant PRs corrupt a copied toolchain in an
@@ -165,10 +166,12 @@ jobs:
     # 10min: fetch-depth:0 checkout plus the memory-setup wrapper's worst case
     # (240s + 15s kill grace) must not turn the intended non-fatal degradation
     # into a hard job timeout. Since 2026-10 the fold makes this job's
-    # bundle_chain output load-bearing for the macos-rust-check bundle smoke
-    # on main pushes (a timed-out changes = silently skipped smoke), so this
-    # job now carries the same cap the folded mac-build changes job used for
-    # the identical step set.
+    # bundle_chain output load-bearing for the macos-rust-check bundle
+    # smoke on main pushes, and since 2026-10-15 the release-fast smoke
+    # needs the bundle_chain/rust_full/cli_rust/knowledge_rust outputs as
+    # well (a timed-out or failed changes job = silently skipped smokes),
+    # so this job now carries the same cap the folded mac-build changes
+    # job used for the identical step set.
     timeout-minutes: 10
     outputs:
       rust_code: ${{ steps.filter.outputs.rust_code }}
@@ -579,7 +582,7 @@ jobs:
         with:
           python-version: "3.x"
 
-      - name: Session replay auditor 测试
+      - name: Gate policy test suite (scripts/tests)
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 
       - name: Python MCP server 测试 (mcp-servers/*/test_*.py)
@@ -850,7 +853,11 @@ jobs:
         if: ${{ needs.changes.outputs.knowledge_dependencies == 'true' }}
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny
+          # Version pinned, same rationale as cargo-shear below/above:
+          # install-action defaults to latest, and upstream CLI changes
+          # (flag renames, new lint severities) would silently flip this
+          # hard gate nondeterministically.
+          tool: cargo-deny@0.20.2
 
       # 共用现有许可证/来源策略，但审计对象显式指向独立 crate。
       - name: cargo deny check
@@ -1036,7 +1043,12 @@ jobs:
         if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' && needs.changes.outputs.rust_dependencies == 'true' }}
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny
+          # Version pinned (same rationale as the cargo-shear pin): this is a
+          # hard gate on every dependency change — a floating install would
+          # let an upstream release flip its CLI or lint semantics
+          # nondeterministically. Keep in sync with the knowledge-rust
+          # cargo-deny pin.
+          tool: cargo-deny@0.20.2
       - name: cargo deny check (hard gate)
         if: ${{ env.RUN_HEAVY_RUST_CHECKS == 'true' && needs.changes.outputs.rust_dependencies == 'true' }}
         working-directory: pinvou3-app/src-tauri
@@ -1771,6 +1783,14 @@ jobs:
       - name: dev profile 内存边界覆盖(codewhale-tui O0,仅本 job)
         shell: pwsh
         run: |
+          # Explicit for parity with the content-mutating sibling pwsh
+          # steps (they set the same preference). The runner's pwsh
+          # wrapper already prepends ErrorActionPreference='stop', so a
+          # failed append already fails the step; this line only keeps
+          # the guard if the script is ever run outside that wrapper —
+          # a silent failure here would resurrect the documented 16GB
+          # rustc/LLVM OOM regression this override exists to prevent.
+          $ErrorActionPreference = "Stop"
           $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE ".cargo" }
           $config = Join-Path $cargoHome "config.toml"
           Add-Content -Path $config -Value @"
@@ -1826,11 +1846,31 @@ jobs:
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
         with:
-          # This job compiles the CodeWhale Windows-only regression target as
-          # well as the application workspace. Cache both target directories.
+          # This job compiles the CodeWhale Windows-only regression target,
+          # the application workspace, AND the pinvou-cli workspace (the
+          # check leg's `cargo check --manifest-path pinvou-cli` plus the
+          # regression leg's filtered pinvou-cli test runs). Cache all three
+          # target directories: without the CLI entry every run cold-compiled
+          # the CLI dependency tree on the slowest leg — the sibling jobs
+          # that compile it (cli-lint, macos-cli-check, rust-lint's
+          # product-backend check; cli-test shares only the registry
+          # portion via cache-targets: false) cache it in
+          # their own namespaces, which this Windows job can never restore
+          # from, so this entry is the only Windows-side warmth the CLI can
+          # get. Quota note: this grows the namespace ~1GB,
+          # offset by pruning the release artifacts out of the
+          # macos-rust-check save (see that job; its shared-key rotation
+          # lands the shrink on the first post-merge push — rust-cache
+          # skips the save on an exact key hit, so a content-only prune
+          # needs the rotation to ever replace the old fat entry). As with
+          # that rotation, adding a workspace changes only this entry's
+          # exact key (restore prefix unchanged), so the first post-merge
+          # run prefix-restores the old 2-workspace generation and both
+          # entries coexist until LRU/GC reclaims the old one.
           workspaces: |
             pinvou3-app/src-tauri
             CodeWhale
+            pinvou-cli
           # Both legs restore the established namespace on their isolated
           # runners. Only the regression leg on main may save (it owns the
           # linked app and CodeWhale test artifacts), so the split adds
@@ -2222,7 +2262,14 @@ jobs:
     # supersedes mac-build's check+test core), the release-fast compile smoke,
     # the bundle_chain-gated universal bundle smoke, and the mac verify
     # script. PR legs are unchanged (check + computer_use only), so PR wall
-    # time does not regress.
+    # time does not regress. 2026-10-15: the release-fast smoke and the
+    # release-profile artifacts were re-scoped (the smoke runs only on
+    # bundle_chain/rust_full/cli_rust/knowledge_rust pushes; the release
+    # target dirs are pruned from the cache save) after this job's push legs became the
+    # merge-throughput bottleneck — push p90 sat at 99% of the 180-minute
+    # cap with three timeout kills in 13 days, and the shared namespace
+    # (3.1GB) was 30% of the whole cache quota. See the gated step and the
+    # prune step for the respective contracts.
     if: >-
       ${{
         !cancelled() &&
@@ -2246,15 +2293,21 @@ jobs:
     # A cold check build is slow (macOS runners slower still); same rationale
     # as windows-rust-test's 240 (its 90-minute cap was once killed at the
     # link phase, see that job): a hang does not burn runner minutes
-    # indefinitely. Warm, the folded push-only legs stay far below the cap.
-    # Fully cold, the 2026-10-02 validation replay of the whole sequence
-    # (lib test → release-fast → bundle smoke) ran out of this cap inside
-    # the first bundle smoke (~181m, on a throwaway branch also carrying
-    # the #644 mold steps and the lld test-leg env); a bust is not a death
+    # indefinitely. Since 2026-10-15 the release-fast smoke only runs on
+    # bundle_chain/rust_full/cli_rust/knowledge_rust pushes (see that
+    # step), so non-Rust
+    # merges run check + full lib tests only and stay far below the cap;
+    # the cap absorbs the warm p90 of the measured 180-cap window (178.3),
+    # the three observed cap kills (181.0/183.4/183.7 minutes, censored at
+    # the cap — true durations at least that long), the shared-key
+    # rotation's one fully-cold replay of the folded sequence, and the
+    # cold-ish release-fast compile on triggered pushes now that its
+    # artifacts are pruned from
+    # the cache save (see the prune step below). A bust is not a death
     # spiral — cache-on-failure
     # below saves the partial target state and the next push converges
     # (mac-build's 50m cap had no such path: save-on-success-only).
-    timeout-minutes: 180
+    timeout-minutes: 240
     env:
       # Same as mac-build: inject the sh stack wrapper per platform (the rustc/LLVM stack
       # overflow from codewhale-tui's O2 build has actually been triggered on macOS, see
@@ -2400,8 +2453,22 @@ jobs:
         with:
           workspaces: pinvou3-app/src-tauri
           # Separate key: macOS artifacts are not interchangeable with Linux/Windows; do not
-          # share with the sibling legs.
-          shared-key: macos-rust-check
+          # share with the sibling legs. The -v2 suffix (2026-10-15) is a
+          # one-time rotation: rust-cache skips the post-job save entirely
+          # on an exact primary-key hit, so pruning the release dirs out of
+          # the save (see the prune step below) can never land while the
+          # pre-rotation fat entry still full-matches — only a key change
+          # lets the pruned generation replace it. Cost: one cold post-merge
+          # push (within the 240 cap); PR legs warm up again once that first
+          # push lands. The prune is `if: always()`, so even a run cancelled
+          # at the cap prunes before the cache-on-failure post-save — the
+          # snapshot
+          # that save takes is already pruned. The cache janitor's A3 rule
+          # insures the residual window where a save lands without the
+          # prune having run (runner forced down mid-prune), which
+          # exact-hit would otherwise pin until the next natural key
+          # rotation.
+          shared-key: macos-rust-check-v2
           # Save only on main (the sole source of warm cache); the PR side is read-only and
           # does not eat the 10GB quota.
           # cache-on-failure: a failed main push must still warm the cache —
@@ -2507,12 +2574,14 @@ jobs:
         run: npm ci --prefer-offline --no-audit
 
       # The macOS 27+ strip=none workaround (folded in from mac-build.yml) is
-      # removed: the 1.98.0 toolchain pinned in rust-toolchain.toml contains
-      # the Mach-O __LINKEDIT 8-byte alignment fix (rust#157750, LLVM backport
-      # #158410), so stripping in release/release-fast is safe again on every
-      # macOS version. release-fast also pins strip="none" explicitly in
-      # Cargo.toml now, making the injection redundant even if it returned.
-      # See release-packages.yml and docs/binary-size-optimization.md.
+      # removed: every stable toolchain since 1.98 (2026-09) contains the
+      # Mach-O __LINKEDIT 8-byte alignment fix (rust#157750, LLVM backport
+      # #158410) — rust-toolchain.toml floats stable and can never roll back
+      # below it — so stripping in release/release-fast is safe again on
+      # every macOS version. release-fast also pins strip="none" explicitly
+      # in Cargo.toml now, making the injection redundant even if it
+      # returned. See release-packages.yml and
+      # docs/binary-size-optimization.md.
 
       # The compile smoke uses release-fast (the lightweight profile defined
       # in Cargo.toml specifically for CI: lto=false, codegen-units=16,
@@ -2523,8 +2592,47 @@ jobs:
       # target dir, so the bundle's aarch64 compile leg reuses this step's
       # artifacts directly instead of recompiling the whole graph under two
       # profiles.
+      #
+      # 2026-10-15 gating: this smoke used to run on EVERY main push and, at
+      # 44-66 minutes, made this job the merge-throughput bottleneck (push
+      # p90 sat at 99% of the old 180-minute cap with three timeout kills in
+      # 13 days; push legs serialize per main). It now runs only when the
+      # push actually touched the Rust or packaging surface:
+      #   - bundle_chain: REQUIRED — the bundle smoke below reuses this
+      #     step's aarch64 release-fast artifacts;
+      #   - rust_full / cli_rust: the same Rust buckets that run this job's
+      #     PR legs (the label-gated rust_code PR leg can also run the job,
+      #     but rust_code-only paths outside the buckets are not src-tauri
+      #     compile inputs);
+      #   - knowledge_rust: src-tauri path-depends on pinvou-knowledge
+      #     (Cargo.toml), so a knowledge-only merge can break the
+      #     release-path compile even though it never runs this job's PR
+      #     legs.
+      # Together these make "every merge that could break the release-path
+      # compile still smoke-tests it" exact per push, with three known,
+      # separately-covered gaps: compile inputs outside all four buckets
+      # (tauri capabilities, the rustc-stack-wrapper, the include_str!'d
+      # JS asset — rebindErrors.js, embedded by src-tauri from the
+      # frontend tree) break the dev-profile compile too and are caught
+      # by this job's push-unconditional check/lib-test legs — NOT by
+      # bundle_chain or release builds; and a
+      # pending Rust push replaced by a docs-only push (push concurrency
+      # replaces pending runs) never runs its own smoke — the next Rust
+      # push re-runs it. Non-Rust merges skip it (their release-path
+      # breakage is still caught by bundle_chain pushes and by the full
+      # dmg/nsis/deb builds that every VERSION bump runs in
+      # release-packages).
       - name: Cargo build (release-fast smoke, push only)
-        if: ${{ github.event_name == 'push' }}
+        if: >-
+          ${{
+            github.event_name == 'push' &&
+            (
+              needs.changes.outputs.bundle_chain == 'true' ||
+              needs.changes.outputs.rust_full == 'true' ||
+              needs.changes.outputs.cli_rust == 'true' ||
+              needs.changes.outputs.knowledge_rust == 'true'
+            )
+          }}
         working-directory: pinvou3-app/src-tauri
         run: cargo build --profile release-fast --target aarch64-apple-darwin --lib
 
@@ -2561,11 +2669,45 @@ jobs:
       # covered on Linux by release-contract-test, keeping the per-second
       # macOS runner cost for the actual release path). if: always(): verify
       # still runs when an upstream folded leg failed, so the core checks
-      # cannot be skipped (verify runs --skip-test internally and does not
-      # depend on upstream artifacts).
+      # cannot be skipped (verify runs --skip-test internally; it has no
+      # ordering dependency on the steps above, but its universal-bundle
+      # checks read the bundle smoke's artifact when that exists — the
+      # prune below must stay after this step for exactly that reason).
       - name: Verify script (plist/usage-key/bundle targets checks, push only)
         if: ${{ always() && github.event_name == 'push' }}
         run: ./scripts/run-mac-verify.sh --skip-test
+
+      # The cache namespace above (restored by every PR leg) must carry
+      # dev-profile check/test artifacts only. The release-fast/universal
+      # target dirs are two full release-profile dependency graphs — the
+      # bulk of this namespace's measured 3.1GB standing footprint (30% of
+      # the whole 10GB repo quota, the single largest consumer) — and dead
+      # weight for every PR leg, which never runs release-profile steps.
+      # Prune them before rust-cache's post-job save (cache-on-failure
+      # saves on failed runs too, so the prune runs under always()) and
+      # after every consumer of those artifacts — including the verify
+      # script above, whose universal-bundle checks hard-fail on
+      # plist/ATS/locale/lipo defects only when the bundle smoke's artifact
+      # exists and are warn-only otherwise; an earlier prune would silently
+      # disable them on every bundle_chain push. target/release-fast is the
+      # host-side dir cargo pairs with every --target build (build scripts
+      # and proc macros); rust-cache retains external-package units there,
+      # so it needs pruning with the rest. Cost: the next triggered
+      # release-fast smoke recompiles cold instead of restoring warm
+      # artifacts — accepted, the smoke exists to prove the release path
+      # compiles, not to be fast. This step is `if: always()`: even a run
+      # cancelled at the timeout cap prunes before rust-cache's post-save,
+      # so the snapshot that save takes is already pruned. The cache
+      # janitor's A3 size-threshold rule insures the residual window where
+      # a save lands without this step having run (runner forced down
+      # mid-prune), which an exact-key hit would otherwise pin until the
+      # next natural key rotation.
+      - name: Prune release artifacts before the cache save (push only)
+        if: ${{ always() && github.event_name == 'push' }}
+        working-directory: pinvou3-app/src-tauri
+        run: >-
+          rm -rf target/release-fast target/aarch64-apple-darwin/release-fast
+          target/x86_64-apple-darwin/release-fast target/universal-apple-darwin
 
   windows-codex-runtime-test:
     name: windows-codex-runtime-test
@@ -2744,7 +2886,7 @@ jobs:
     runs-on: macos-15
     # A cold run compiles the whole workspace (the app crate path-dep included)
     # and 60 minutes once left little headroom on 3-vCPU runners, where the
-    # Windows analogue shares a 180-minute budget. Restored-cache runs are
+    # Windows analogue shares a 240-minute budget. Restored-cache runs are
     # incremental, but a cache miss (the first main push after this step ships,
     # or a key/lockfile change) replays the cold compile, so the cap stays a
     # cold-compile budget rather than being cut to the incremental runtime.
