@@ -213,6 +213,15 @@ pub async fn kb_model_load_after_first_frame(
     Ok(ready)
 }
 
+/// 本地嵌入不支持时下载命令必须显式拒绝的文案。与 UI 的 fail-closed 能力位
+/// (`localEmbedSupported`) 同姿态，但落在命令层：peer/API 调用或未来 UI 回归
+/// 不应把 ~568MB 模型下载完成后才在 embedder 构造处失败（ort-sys 在
+/// loongarch64 无制品，stub embedder 只能拒载）。
+fn local_embed_download_refusal(supported: bool) -> Option<String> {
+    (!supported)
+        .then(|| "本地向量嵌入模型在此平台不可用，无法下载（ort-sys 无本平台制品）".to_string())
+}
+
 /// 按需下载 + 校验 + 部署 embedding 模型，完成后热加载并刷新工具门控（免重启）。
 pub async fn kb_model_download(
     app: tauri::AppHandle,
@@ -222,6 +231,11 @@ pub async fn kb_model_download(
 ) -> Result<KbModelStatus, String> {
     use tauri::Emitter;
 
+    if let Some(refusal) =
+        local_embed_download_refusal(crate::platform::capabilities::current().local_embed_supported)
+    {
+        return Err(refusal);
+    }
     if DOWNLOADING.load(Ordering::Acquire) {
         return Err("模型正在下载中".into());
     }
@@ -628,6 +642,16 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn download_is_refused_when_local_embed_is_unsupported() {
+        // 命令层 fail-closed：能力位为 false 必须在触碰下载管线前显式拒绝。
+        let refusal = local_embed_download_refusal(false);
+        assert!(refusal.is_some());
+        assert!(refusal.unwrap().contains("本地向量嵌入模型"));
+        // 支持平台（所有受支持目标的编译期取值）不受影响。
+        assert!(local_embed_download_refusal(true).is_none());
+    }
 
     fn temporary_model_root(label: &str) -> std::path::PathBuf {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
