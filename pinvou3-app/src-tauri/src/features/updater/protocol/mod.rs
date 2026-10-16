@@ -65,6 +65,33 @@ pub(crate) fn verify_supplied_root_chain_bytes<'a>(
     )
 }
 
+/// Historical Production Package identity under caller-owned archived trust and
+/// safe time. This proof grants no current qualification or execution rights.
+pub(crate) fn verify_supplied_archived_package_bytes<'a>(
+    bytes: &[u8],
+    archived_root: &'a pinvou_upgrade_codec::RootPolicyShape,
+    expected: &pinvou_upgrade_codec::Document,
+    now: &pinvou_upgrade_codec::SuppliedProtocolTime,
+) -> Result<
+    pinvou_upgrade_verifier::ArchivedEnvelopeIdentity<'a>,
+    pinvou_upgrade_verifier::VerificationError,
+> {
+    pinvou_upgrade_verifier::verify_archived_package(bytes, archived_root, expected, now)
+}
+
+/// Historical Release identity at each original object's own issued time.
+/// Protected archive custody stays caller-owned; no current rights are granted.
+pub(crate) fn verify_supplied_archived_release_bytes<'a>(
+    bytes: &[u8],
+    archived_root: &'a pinvou_upgrade_codec::RootPolicyShape,
+    expected: &pinvou_upgrade_codec::Document,
+) -> Result<
+    pinvou_upgrade_verifier::ArchivedEnvelopeIdentity<'a>,
+    pinvou_upgrade_verifier::VerificationError,
+> {
+    pinvou_upgrade_verifier::verify_archived_release(bytes, archived_root, expected)
+}
+
 /// Exactly one fixed-origin POST; a dropped/error response can have committed
 /// remotely. Owner-controlled retries and durable ACK/consume recovery remain separate.
 pub(crate) async fn send_client_request_once(
@@ -786,6 +813,80 @@ mod tests {
                     assert_eq!(
                         case["accepted"], false,
                         "unexpected refusal {name}: {error}"
+                    );
+                    assert_eq!(error.to_string(), case["rustCode"].as_str().unwrap());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn feature_facade_preserves_distinct_historical_identity_rules() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let output = std::process::Command::new("node")
+            .args([
+                "--input-type=module",
+                "-e",
+                include_str!("verify/tests/archive-identity-oracle.mjs"),
+            ])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../specs/upgrade/v1/reference/canonical-json.mjs"),
+            )
+            .output()
+            .expect("Node is required for the frozen historical identity oracle");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        for name in [
+            "expired-root-still-identifies-package",
+            "future-root-still-refuses-package",
+            "archive-still-requires-production-full-package",
+            "release-has-no-current-now-restriction",
+            "root-issued-later-than-release-is-not-extra-policy",
+            "release-issued-after-root-expiry-is-identity-only",
+            "release-original-window-must-be-positive",
+            "package-two-actual-signatures",
+            "release-two-actual-signatures",
+            "package-one-is-insufficient",
+            "release-one-is-insufficient",
+        ] {
+            let case = cases.iter().find(|c| c["name"] == name).unwrap();
+            let root =
+                decode_root_policy_shape(&serde_json::to_vec(&case["archivedRoot"]).unwrap())
+                    .unwrap();
+            let expected =
+                decode_metadata(&serde_json::to_vec(&case["expected"]).unwrap()).unwrap();
+            let bytes = URL_SAFE_NO_PAD
+                .decode(case["bytes"].as_str().unwrap())
+                .unwrap();
+            let result = match case["operation"].as_str().unwrap() {
+                "package" => {
+                    let now = decode_metadata(&serde_json::to_vec(&case["now"]).unwrap())
+                        .unwrap()
+                        .protocol_time_shape()
+                        .unwrap();
+                    verify_supplied_archived_package_bytes(&bytes, &root, &expected, &now)
+                }
+                "release" => verify_supplied_archived_release_bytes(&bytes, &root, &expected),
+                other => panic!("unexpected archive operation {other}"),
+            };
+            match result {
+                Ok(checked) => {
+                    assert_eq!(
+                        case["accepted"], true,
+                        "unexpected identity acceptance {name}"
+                    );
+                    assert!(std::ptr::eq(checked.supplied_archived_root(), &root));
+                    assert_eq!(checked.envelope().envelope().raw_bytes(), bytes);
+                }
+                Err(error) => {
+                    assert_eq!(
+                        case["accepted"], false,
+                        "unexpected identity refusal {name}: {error}"
                     );
                     assert_eq!(error.to_string(), case["rustCode"].as_str().unwrap());
                 }

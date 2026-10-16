@@ -14,8 +14,7 @@ The caller must supply the existing Root from its trust state. Constructing
 It grants no protected persistent acceptance, trusted clock, current online
 qualification, download/install rights or durable acknowledgement. A changed
 Root returns `RootTransitionRequired`; a successor uses the separate operation
-below. Complete chains use their own operation; archive identities remain
-unimplemented.
+below. Complete chains and historical identities use their own operations.
 
 `VerificationInputs::new` defaults to production semantics. Explicit trusted
 callers may select `PackageSemanticsMode::Development`, matching the original
@@ -107,3 +106,42 @@ Separate API controls retain independent full Root context. Test private keys
 remain inside Node; the App facade uses genuine signed positive/negative controls.
 The unchanged codec regression and dependency locks retain prior acceptance;
 App/CLI graph execution does not constitute a full upgrade workflow E2E.
+
+## Historical Package and Release identities
+
+`verify_archived_package` and `verify_archived_release` verify historical signed
+identities using the caller's archived Root and independently expected complete
+context. Both require original bounded canonical bytes, complete Schema, the
+exact role policy, every actual Ed25519 signature and the configured threshold.
+Their separate immutable `ArchivedEnvelopeIdentity` preserves original bytes,
+borrows the exact archived Root and exposes verified signer IDs. It is distinct
+from ordinary fresh-envelope proofs and grants no current download, activation,
+installation, qualification or acknowledgement rights.
+
+Package verification takes supplied safe time. Archived Root expiry alone is
+allowed; the original positive bounded window and issued-at check still apply.
+Package body semantics always use Production, including the incremental-package
+restriction. No development, high-water or denial option is introduced.
+
+Release verification takes no current-time argument. It checks the Root's
+original window at that Root's own `issuedAt`, then the Release's original window
+at the Release's own `issuedAt`. It adds no cross-object issuance ordering:
+an otherwise valid Root issued after the Release or Release issued after Root
+expiry can establish historical identity. These are frozen reference semantics,
+not current eligibility. Claim-derived times are private bounded values rather
+than trusted current clock observations.
+
+Thirty-six complete frozen Node cases cover Package windows and Production (6),
+Release original time points (8), actual signatures and thresholds (8), complete
+independent context (8) and original wire limits/closed Schema (6). Historical
+positive controls additionally check ordinary verification refusal where
+applicable. Fresh private keys stay in Node. The App facade exercises eleven
+genuine positive/negative cases across both operations; CLI compilation remains
+dependency-graph evidence, not workflow E2E. Codec source and all three dependency
+locks remain unchanged, retaining their prior regression acceptance.
+
+The caller still owns protected historical Root lineage and archive consistency.
+This module neither attests custody/completeness nor specifies service accepted-
+data archival, retention or deletion policy. Protected storage and complete T27
+integration remain open. No artifact download size, retry or total/cumulative
+duration cap is added.

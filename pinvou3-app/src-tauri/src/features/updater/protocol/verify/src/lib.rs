@@ -1,6 +1,7 @@
 //! Original V1 envelope, single-successor and complete-chain checks under supplied Root,
 //! expected context, time and deny/high-water facts. This acquires no protected
 //! bootstrap trust, persistent acceptance, trusted clock or execution rights.
+mod archive;
 mod chain;
 mod envelope;
 mod error;
@@ -9,6 +10,7 @@ mod successor;
 use envelope::parse_bound_envelope;
 pub use successor::{ActiveMetadataInput, SignatureCheckedRootSuccessor, verify_root_successor};
 
+pub use archive::{ArchivedEnvelopeIdentity, verify_archived_package, verify_archived_release};
 pub use chain::{SignatureCheckedRootChain, verify_root_chain};
 pub use error::VerificationError;
 use pinvou_upgrade_codec::{
