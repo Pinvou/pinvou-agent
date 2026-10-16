@@ -3131,6 +3131,9 @@ fn stamp_resolved_provider_records_vendor_route_over_engine_default() {
         .expect("stamp resolved provider");
     let loaded = store.load(&s.metadata.id).expect("load");
     assert_eq!(loaded.metadata.model_provider, "moonshot");
+    // The stamp never writes model_provider_id (no app path records an exact
+    // id; writing unconditionally would erase one if a future path added it).
+    // Creation left it None, and it must still read None after the stamp.
     assert_eq!(loaded.metadata.model_provider_id, None);
 
     // The stamp is forensic data: it must survive an app restart.
