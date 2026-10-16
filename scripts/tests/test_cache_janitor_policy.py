@@ -156,8 +156,12 @@ class CacheJanitorPolicyTests(unittest.TestCase):
         # themselves — a single whole-script pin is satisfied by either
         # copy while the other silently no-ops (renamed variable → KeyError
         # inside the unchecked process substitution, janitor stays green).
+        # Counted on comment-stripped text: a commented-out copy of the
+        # producer line must not keep the count green while the live line
+        # is dropped.
+        live_script = _without_comment_lines(self.script)
         self.assertEqual(
-            self.script.count('JANITOR_REF="$ref" python3 -c'), 2,
+            live_script.count('JANITOR_REF="$ref" python3 -c'), 2,
             "every ref-consuming rule must pass the ref via JANITOR_REF "
             "(exactly rule A and rule A2 today) — a future rule following "
             "the pattern updates this count deliberately instead of "
@@ -165,6 +169,25 @@ class CacheJanitorPolicyTests(unittest.TestCase):
         )
         self.assertIn('JANITOR_REF="$ref" python3 -c', rule_a2)
         self.assertIn("ref = os.environ['JANITOR_REF']", rule_a2)
+        # Rule A's read side is identical to A2's, so the same asymmetry
+        # would hide there: pin both loops' consumer and filter counts on
+        # stripped text — a defaulted consumer (os.environ.get) or a
+        # flipped filter (if True) in EITHER rule must redden, not just
+        # the A2 copy the slice pins above cover.
+        self.assertEqual(
+            live_script.count("ref = os.environ['JANITOR_REF']"), 2,
+            "both loops must read the ref from the environment — a "
+            "defaulted fallback would silently scan a bogus ref",
+        )
+        self.assertEqual(
+            sum(
+                1
+                for line in live_script.splitlines()
+                if line.strip().startswith("if c['ref'] == ref: ")
+            ),
+            2,
+            "both loops' inner filter must be live: `if c['ref'] == ref: `",
+        )
         # Quote-agnostic interpolation ban: single- AND double-quoted
         # interpolation both let a quote inside a ref alter the filter
         # expression; ban every quoting spelling.
@@ -266,6 +289,60 @@ class CacheJanitorPolicyTests(unittest.TestCase):
         self.assertIn("if ! gh cache delete", delete_fn)
         self.assertIn("::warning::", delete_fn)
         self.assertIn("return 0", delete_fn)
+
+    def test_rules_run_in_documented_order(self):
+        # The per-rule pin slices are bounded by the NEXT rule's marker,
+        # so their right boundaries fail open: relocating a whole rule
+        # block (A2 past rule D, or A3 before rule D) would widen a slice
+        # to end-of-script and keep every slice pin green while the skip
+        # chains break (B/C/D would re-attempt A2's deletions and warn
+        # about a bogus concurrent eviction; A3 would lose rule D's
+        # newest-generation collapse). Pin the documented rule order
+        # itself so any block relocation trips before the slice pins can
+        # be silently dodged.
+        order = [
+            "# ---------- 规则 A:",
+            "# ---------- Rule A2:",
+            "# ---------- 规则 B:",
+            "# ---------- 规则 C:",
+            "# ---------- Rule D:",
+            "# ---------- Rule A3:",
+        ]
+        indices = [self.script.index(marker) for marker in order]
+        self.assertEqual(
+            indices,
+            sorted(indices),
+            "rule blocks must stay in documented order A < A2 < B < C < "
+            "D < A3 — relocating a block breaks the CLOSED_REFS and "
+            "DELETED_IDS skip chains while every slice pin stays green",
+        )
+
+    def test_script_stays_within_bash_32(self):
+        # The script header promises macOS bash 3.2 compatibility (no
+        # associative arrays), but the bash -n parse check runs whatever
+        # bash CI has (ubuntu 5.x), so a bash-4-only construct would pass
+        # CI and only ever break a local macOS run of the janitor. Ban
+        # the 3.2-incompatible spellings directly — the parse-level
+        # signal that PATH bash can never provide.
+        banned = (
+            (";&", "case fallthrough"),
+            ("|&", "stderr pipe shorthand"),
+            ("&>", "combined redirection"),
+            ("declare -A", "associative array"),
+            ("declare -g", "global declaration"),
+            ("declare -n", "nameref"),
+            ("local -A", "associative array via local"),
+            ("local -n", "nameref via local"),
+            ("mapfile", "mapfile builtin"),
+            ("readarray", "readarray builtin"),
+            ("coproc ", "coprocess"),
+            (",,}", "lowercase expansion"),
+            ("^^}", "uppercase expansion"),
+        )
+        for token, what in banned:
+            self.assertNotIn(
+                token, self.script, f"bash-3.2-incompatible {what}: {token}"
+            )
 
 
 if __name__ == "__main__":
