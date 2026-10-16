@@ -5,7 +5,7 @@ Tasks are completed individually only after in-scope independent code review,
 repairs, applicable tests and commit/push. Contract completion is not production
 client, service, physical platform certification or rollout readiness.
 
-Current task totals: 47 tasks; four implemented, twelve in progress and
+Current task totals: 47 tasks; five implemented, eleven in progress and
 thirty-one not completed or deferred. Detailed chronological evidence follows
 the current overview; a completed bounded batch does not complete its whole task.
 
@@ -54,7 +54,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T41 | Not completed | Atomic legacy bootstrap migration to the new protocol. |
 | T42 | Explicitly deferred | Production deployment, operations, alerts and disaster-recovery acceptance are deferred at the owner's request |
 | T43 | Not completed | All-target real-system combined qualification and release gates. |
-| T44 | In progress | Actual lifecycle commands, successful-authorization installation, durable unconsumed-backup deadlines and controlled waiting invalidation/replacement; access-driven selected-scope timeout convergence and whole-task acceptance remain pending |
+| T44 | Implemented; independently reviewed and verified | Actual protected lifecycle kernel, complete atomic commands, original retention/backup deadlines and worker/access-driven timeout convergence; T17/T19/T20 composition and deployment remain separate |
 | T45 | Not completed | Approved helper/launcher evolution and restricted cleanup execution. |
 | T46 | Not completed | Actual local-mode prerequisite certification and exact evidence integration. |
 | T47 | In progress | Protected rollout lifecycle primitives; remaining complete task acceptance/composition is not claimed |
@@ -10187,3 +10187,91 @@ Totals remain four implemented, twelve in progress and thirty-one incomplete or
 deferred across 47 tasks. Product 0.10.9, normative 1.0, pinned V1 and CodeWhale
 remain unchanged. T19/qualification composition, physical certification and
 deployment remain separate. Downloads have no hard total/cumulative deadline.
+
+## T44 access-driven convergence and whole-task acceptance (2026-10-16)
+
+Additive migration 19 commits selected-scope timeout compensation before a fresh
+protected typed observation. Session, Authorization, Transaction and Staged initial
+ports release the first connection before opening a new serializable transaction,
+including with MaxConns=1. Final business owners still recapture and CAS. Existing
+historical event observations remain read-only; this does not claim T19 HTTP wiring.
+All prior committed SQL sources remain unchanged.
+
+Independent reviews found and the primary repaired current original-result source
+compatibility, pending-phase final clock regression, typed fresh-capture SQL time
+propagation and over-reservation before terminal writes. Current complete inventory
+is bounded separately from future admission; real advance_scope writers and final
+remaining-obligation capacity stay enforced. Same original MAX-1 terminal writes
+can commit at MAX; exhausted revisions fail with whole-write rollback. Actual
+4097/4096 member controls, selected scope behind a 1000-scope global prefix, all
+three purposes, original short-expiry readback, full T06 competitors, active Validate
+fencing and precise additive catalogue/ACL guards passed.
+
+The primary complete lifecycle feature passed pure domain 44
+top-level/127 child and actual PostgreSQL 230
+top-level/312 child tests, zero skips/failures
+(1206.87s combined wall). Default service passed
+46 tested packages, 433 top-level/
+830 child tests (70.524s wall). Its explicit
+517 top-level/575 child skips and 12 no-test packages are separate
+from the zero-skip native feature result. Modules, vet, private build, pinned V1,
+Go formatting and working/cached whitespace passed. All 16 candidate paths, full
+source/index/status and 65 prior SQL raw/index entries stayed frozen through all
+nine gates. ROOT session 27674 closed exit zero with owned children joined.
+
+Final staging found two spaces on otherwise empty lines in the new SQL source.
+After the complete and both independent runs, the primary removed only those two
+spaces; SQL executable tokens and the other 15 files stayed identical. The final
+actual migration/catalogue tests passed again (31.587s wall), followed
+by cached whitespace checks and both independent read-only final delta reviews.
+Earlier frozen full-suite evidence therefore precedes this exact formatting-only
+adjustment; it is not represented as another complete rerun.
+
+Actual isolated PostgreSQL wire tests lose real COMMIT acknowledgements in both
+settlement and fresh-read phases, independently confirm committed original facts,
+then reconnect and recover the same identities without a second terminal write.
+This is database integration evidence; product HTTP, installer and deployment E2E
+are not claimed. Controlled SQL-clock tests are private fault controls, not public
+fault-injection ports or physical certification.
+
+Both independent auditors reviewed the complete frozen candidate line by line.
+The dependency auditor independently ran actual PostgreSQL C19: 18 top-level and
+26 child tests, zero skips/failures (113.861s package, 122.814s wall). Session 6706
+closed exit zero, joined its children and returned the runtime slot with zero
+owned processes. It independently checked ROOT's original complete-feature logs
+and all nine gate results; that full run is ROOT evidence, not an auditor rerun.
+
+The compatibility auditor separately ran actual PostgreSQL C19: 18 top-level
+and 26 child tests, zero skips/failures (118.984s package, 125.851s test-command
+wall). Session 42060 closed exit zero, joined its children and returned the slot
+with zero owned processes. Its separate outer verification took 129.797s wall.
+It also directly checked ROOT's complete-feature and nine-gate logs; these are
+ROOT execution evidence, not an independent whole-feature rerun. Both auditors
+passed the complete candidate and the final whole-task functional mapping.
+
+Both final inventories distinguish the independently testable T44 kernel from
+T17/T19/T20 business composition, physical certification and deployment. The full
+16 candidate hashes, source/index/status and 65 prior SQL raw/index entries remain
+unchanged within every actual run. The two-byte final SQL whitespace change is
+listed separately above. C19 final scoped and whole-task review: PASS.
+
+Both independent whole-task inventories mapped the T44 task and C sections 5-9,
+M sections 2-5, K sections 3.2/4 and D sections 10-11 to actual implementation and
+native evidence. Session initialization, unique validation, successful authorization,
+consume/cancel/expire CAS, three-purpose execution, safe new-waiting revisions,
+controlled invalidation/replacement, channel invalidation, original 24h/30d
+boundaries, 61d status closure/62d cleanup, backup deadlines and startup/periodic
+plus initial-access compensation have no remaining confirmed T44 feature gap.
+The final independent scoped and whole-task conclusions are PASS.
+
+T44 is implemented within its independently testable protected-kernel boundary.
+T17/T19/T20 must use initial settlement/observation and their own final T06 guards;
+selection, issuance, network ingress, client outbox and physical helper/slot/backup
+deletion remain those tasks. This acceptance grants no execution qualification,
+production HA acceptance or deployment authority.
+
+The service increment is DCO committed and pushed as `8908d94205bf6939701cf358c18007b9590fa2bc` on
+`codex/t44-access-convergence`. Current totals become five implemented, eleven in
+progress and thirty-one incomplete or deferred across 47 tasks. T47 continues
+next; product 0.10.9, normative 1.0, pinned V1 and CodeWhale remain unchanged.
+Downloads have no hard total or cumulative elapsed deadline.
