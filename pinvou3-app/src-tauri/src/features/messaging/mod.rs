@@ -44,7 +44,10 @@
 //!
 //! Known delivery guarantees (documented, accepted for v1):
 //! - **At-least-once, not exactly-once**: a crash between delivery and the
-//!   `.done` marker write replays the message on next boot.
+//!   `.done` marker write replays the message on next boot; a dispatch whose
+//!   engine submission already landed can also be dropped by the 30s
+//!   delivery timeout and retried into the now-running turn — two
+//!   deliveries (round-21 minor 1).
 //! - **Dedup horizon is bounded**: `.done` markers are pruned after
 //!   `RETENTION` (7 days) — a retried keyed call older than that
 //!   re-delivers.
@@ -836,8 +839,11 @@ struct RetryState {
     /// Round-8 M8: post-delivery removal failures per file (the Windows
     /// file-lock class). Unkeyed deliveries have no done-marker, so a
     /// persistently failing remove would re-deliver + re-audit every 1s
-    /// poll forever; after [`MAX_DELIVERY_ATTEMPTS`] failures the file is
-    /// quarantined to stop the loop.
+    /// poll forever. After [`MAX_DELIVERY_ATTEMPTS`] failures the file is
+    /// quarantined to stop the loop — and when the directory itself defeats
+    /// the rename (the removal failure's precondition), the exhaustion arm
+    /// falls back to a best-effort done-marker (unkeyed included) and this
+    /// streak gates re-delivery at the pre-delivery check (round-21 M-1).
     removal_failures: HashMap<String, u32>,
 }
 
@@ -845,6 +851,20 @@ impl RetryState {
     /// Whether a transiently-failing file is due for another attempt
     /// (linear backoff from `MIN_BACKOFF`, capped at `MAX_BACKOFF`).
     fn due(&self, name: &str) -> bool {
+        // Round-21 M-1: a removal-failure streak at the ceiling gates
+        // re-delivery too — the quarantine stop-gap is a rename into the
+        // same directory and can fail under the exact precondition that
+        // defeated the removal, and the pre-delivery gate must not keep
+        // dispatching full engine turns for a file nothing can retire. (A
+        // same-name re-spool onto such an exhausted file stays starved
+        // until the file vanishes from a listing — the edge of the edge.)
+        if self
+            .removal_failures
+            .get(name)
+            .is_some_and(|streak| *streak >= MAX_DELIVERY_ATTEMPTS as u32)
+        {
+            return false;
+        }
         match self.attempts.get(name) {
             Some((count, last)) => {
                 let backoff = (*count as u64 * MIN_BACKOFF.as_secs())
@@ -1192,6 +1212,24 @@ async fn process_pending_spool<D: SpoolDelivery, G: DeliveryGates>(
                             // quarantine after one failure).
                             let record = read_record_for_audit(&path);
                             quarantine(&path);
+                            // Round-21 M-1: the stop-gap must not share the
+                            // quarantine's precondition — the rename fails
+                            // under exactly what defeats the removal. Write
+                            // the done-marker best-effort even for UNKEYED
+                            // files: the marker-exists check then suppresses
+                            // re-delivery through the normal mechanic.
+                            let stem = Path::new(&name)
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or(&name);
+                            let _ = std::fs::create_dir_all(done_dir());
+                            let stop_gap = done_dir().join(format!("{stem}.json"));
+                            if let Err(marker_error) = std::fs::write(&stop_gap, b"") {
+                                log::warn!(
+                                    "[messaging] stop-gap done-marker write failed for {:?}: {marker_error}",
+                                    stop_gap
+                                );
+                            }
                             if !path.exists() {
                                 log::warn!(
                                     "[messaging] quarantining {:?} after {fails} failed removals",
@@ -2139,11 +2177,7 @@ mod spool_pipeline_tests {
         };
         let mut skip_audited = std::collections::HashSet::new();
 
-        std::fs::write(
-            spool.join("cap.json"),
-            sized_record(MAX_SPOOL_FILE_BYTES as usize),
-        )
-        .unwrap();
+        std::fs::write(spool.join("cap.json"), sized_record(65_536)).unwrap();
         let outcome = process_spool_file(
             &spool.join("cap.json"),
             &fake,
@@ -2158,11 +2192,7 @@ mod spool_pipeline_tests {
             "a valid record at exactly the cap is inside it, not oversize"
         );
 
-        std::fs::write(
-            spool.join("over.json"),
-            sized_record(MAX_SPOOL_FILE_BYTES as usize + 1),
-        )
-        .unwrap();
+        std::fs::write(spool.join("over.json"), sized_record(65_537)).unwrap();
         let outcome = process_spool_file(
             &spool.join("over.json"),
             &fake,

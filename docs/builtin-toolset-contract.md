@@ -229,8 +229,11 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   be removed after delivery, the same body re-delivers on up to ten
   consecutive ~1 Hz polls before the removal-streak arm quarantines — the
   round-18 minor-3 precision: "at-least-once" covers a bounded
-  ten-duplicate burst, and a submission slower than the ≤30s steer window
-  can double-dispatch the same turn); a steer accepted against a mid-turn target can still be
+  ten-duplicate burst; the double-dispatch window attribution (round-21
+  minor 13): an UNKEYED resubmission re-delivers at any latency (a fresh
+  uuid spool name — the ≤30s steer window is irrelevant), while a KEYED
+  resubmission double-dispatches only inside that window and only with a
+  materially different body); a steer accepted against a mid-turn target can still be
   dropped or lost by the foundation — when that turn is cancelled (the
   `chat:steer_dropped` window is not yet correlated) or when the idle
   engine is evicted/rebuilt before the steer lands, and — the third
@@ -286,7 +289,7 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   the builtin rides the app release: an updated app silently upgrades every
   existing session-reader install to the current L1 manifest (send tool
   included, feature default-on, Ask rule latent) on first boot — no
-  per-install consent step exists (round-20 minor 7, §8.4 framing);
+  per-install consent step exists (round-20 minor 7; §8 item 4 framing — round-21 minor 15: "§8.4" named a subsection that does not exist);
   an edit-resend of a delivered message keeps the ORIGINAL sender
   attribution verbatim — including body words the local user added in the
   edit — a deliberate provenance-over-accuracy trade-off: re-attributing
@@ -294,9 +297,10 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   re-arms the injection-block parsers the delivered branch exists to keep
   inert (round-19 minor 25);
   receive-side historical sender cards have no
-  "feature off" degradation yet and the `session-messaging` switch is
-  settings.json-only (no UI) — both follow the session-mention precedent and
-  land with the feature's own settings page.
+  "feature off" degradation yet (a step BACKWARD from the session-mention
+  precedent — the mention cards shipped their feature-off degradation;
+  round-21 minor 14) and the `session-messaging` switch is
+  settings.json-only (no UI); both land with the feature's own settings page.
 
 ## 7. Presentation to the model
 

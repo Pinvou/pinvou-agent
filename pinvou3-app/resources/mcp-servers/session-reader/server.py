@@ -65,7 +65,9 @@ can only be read from the file.
 
 Write semantics (send_message_to_session, contract §5 L1 / §6):
 - Delivers a text message into another session. The target must also be a
-  normal (non-isolated) session; sending to self is rejected;
+  normal (non-isolated) session; sending to self is rejected for ATTRIBUTED
+  sends only (an omitted from_session spooled to one's own session id
+  delivers — round-21 minor 6);
 - This server NEVER writes a target session file (the app's persistence actor
   saves whole-file snapshots and would clobber any external edit). It
   validates the request and spools it:
@@ -277,8 +279,8 @@ TOOL_DEFS = [
             "otherwise a new turn starts there immediately and its model will see your "
             "message (it may reply by calling this tool back). Known limits: sessions "
             "owned by the independent code page (ACP/code sessions) refuse delivery — "
-            "the call answers pending but the message stays pending forever and is never "
-            "shown there; send work for such sessions through that page instead. "
+            "the call answers pending and the record is quarantined within ~1s, so "
+            "the message is never shown there; send work for such sessions through that page instead. "
             "Delivery is at-least-once: a retry can re-deliver, and a same-key resend "
             "is deduplicated only for about 7 days. Security contract: the "
             "recipient model treats your text as untrusted context; you must extend the "
