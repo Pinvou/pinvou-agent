@@ -2,6 +2,7 @@
 //! expected context, time and deny/high-water facts. This acquires no protected
 //! bootstrap trust, persistent acceptance, trusted clock or execution rights.
 mod archive;
+mod candidate;
 mod chain;
 mod envelope;
 mod error;
@@ -12,6 +13,10 @@ use envelope::parse_bound_envelope;
 pub use successor::{ActiveMetadataInput, SignatureCheckedRootSuccessor, verify_root_successor};
 
 pub use archive::{ArchivedEnvelopeIdentity, verify_archived_package, verify_archived_release};
+pub use candidate::{
+    CandidateVerificationError, CandidateVerificationInputs, SignatureCheckedCandidateRelease,
+    verify_candidate_release,
+};
 pub use chain::{SignatureCheckedRootChain, verify_root_chain};
 pub use error::VerificationError;
 pub use graph::{

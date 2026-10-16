@@ -188,3 +188,44 @@ and all three lockfiles remain unchanged; prior unaffected regressions retain
 acceptance. Actual App/CLI checks remain distinct from workflow E2E. Protected
 acceptance and full T27 integration remain open, with no artifact download size,
 retry or total/cumulative duration cap.
+
+## Authenticated candidate Release and opening
+
+`verify_candidate_release` composes the complete frozen candidate operation from
+original Target/Release bytes, bounded opening, supplied existing Root/safe time,
+global denied keys and independent bounded caller context. That context contains
+product, component, channel, targetKey and expectedReleaseId. Both fixed-role
+expected Documents use the same independent product/component; Target scope uses
+channel/targetKey and Release scope uses expectedReleaseId. Incoming claims never
+supply the expected Release identity. Context extras are ignored after bounds.
+
+Both envelopes pass the unchanged ordinary verifier with fresh Root, complete
+Schema/context, exact policy, every actual signature and body semantics. The
+unchanged codec then requires the exact original Release hash to differ from
+the Target baseline, checks the complete nonnull seven-field opening commitment
+and requires Release target membership. Both authentications precede final
+relationship checks; multi-fault diagnostic precedence can differ from Node,
+without changing acceptance. Existing Rust opening/policy/Schema labels remain
+explicitly mapped in tests. No new high-water, role-denial or Development mode
+is added to this original candidate operation.
+
+The immutable `SignatureCheckedCandidateRelease` owns original checked Target
+and Release, borrows the exact supplied Root and records supplied time. Temporary
+independent expected Documents do not escape consumed private ordinary proofs.
+Failure returns no partial pair. This proves supplied signatures/commitment,
+not candidate selection, current online eligibility, persistent acceptance,
+protected trust/clock custody or execution permission.
+
+Five tests execute thirty-eight full frozen Node cases: opening/baseline/target
+membership (13), independent shared context/Release identity (7), actual signature
+thresholds/extras/denial (8), windows (4) and exact-policy/wire/Schema (6). Positive
+controls include a genuine candidate with empty ordinary/bridge catalogs, restored
+opening, context extras, actual two-signer Target and unrelated denied key. Every
+opening field, null/extra field, both actual signature paths, independent expected
+Release ID and component isolation have negative controls. Membership failure uses
+a genuine separately signed ARM Package reference. Private keys remain in Node.
+One App test exercises ten genuine positive/negative controls. Codec, ordinary
+verification, manifests and all three locks are unchanged; prior unaffected
+regressions retain acceptance. App/CLI checks are not workflow E2E. Protected
+acceptance and full T27 remain open. No artifact download size, retry or total/
+cumulative duration cap is introduced.

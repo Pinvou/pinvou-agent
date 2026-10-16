@@ -111,6 +111,20 @@ pub(crate) fn verify_supplied_public_chain_bytes<'a>(
     )
 }
 
+/// Actual signed candidate pair and opening under independent caller context.
+/// This neither selects a candidate nor grants persistent/current online rights.
+pub(crate) fn verify_supplied_candidate_release_bytes<'a>(
+    target_bytes: &[u8],
+    release_bytes: &[u8],
+    opening: &pinvou_upgrade_codec::Document,
+    inputs: pinvou_upgrade_verifier::CandidateVerificationInputs<'a>,
+) -> Result<
+    pinvou_upgrade_verifier::SignatureCheckedCandidateRelease<'a>,
+    pinvou_upgrade_verifier::CandidateVerificationError,
+> {
+    pinvou_upgrade_verifier::verify_candidate_release(target_bytes, release_bytes, opening, inputs)
+}
+
 /// Exactly one fixed-origin POST; a dropped/error response can have committed
 /// remotely. Owner-controlled retries and durable ACK/consume recovery remain separate.
 pub(crate) async fn send_client_request_once(
@@ -1000,6 +1014,87 @@ mod tests {
                         error.to_string(),
                         expected,
                         "wrong public-chain refusal {name}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn feature_facade_authenticates_candidate_opening_without_selecting_it() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        use pinvou_upgrade_verifier::CandidateVerificationInputs;
+        let output = std::process::Command::new("node")
+            .args([
+                "--input-type=module",
+                "-e",
+                include_str!("verify/tests/candidate-oracle.mjs"),
+            ])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../specs/upgrade/v1/reference/signatures.mjs"),
+            )
+            .output()
+            .expect("Node is required for the frozen complete candidate oracle");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        for name in [
+            "genuine-empty-catalog-candidate",
+            "opening-restored-positive",
+            "baseline-is-not-candidate",
+            "null-opening-refuses",
+            "independent-expectedReleaseId",
+            "release-cannot-switch-component",
+            "release-target-membership",
+            "bad-extra-after-valid-target-threshold",
+            "two-real-target-signatures",
+            "invalid-release-signature",
+        ] {
+            let case = cases.iter().find(|c| c["name"] == name).unwrap();
+            let root = decode_root_policy_shape(&serde_json::to_vec(&case["trustedRoot"]).unwrap())
+                .unwrap();
+            let context = decode_metadata(&serde_json::to_vec(&case["context"]).unwrap()).unwrap();
+            let opening = decode_metadata(&serde_json::to_vec(&case["opening"]).unwrap()).unwrap();
+            let now = decode_metadata(&serde_json::to_vec(&case["now"]).unwrap())
+                .unwrap()
+                .protocol_time_shape()
+                .unwrap();
+            let target = STANDARD
+                .decode(case["targetBytes"].as_str().unwrap())
+                .unwrap();
+            let release = STANDARD
+                .decode(case["releaseBytes"].as_str().unwrap())
+                .unwrap();
+            let denied: Vec<String> = serde_json::from_value(case["deniedKeyIds"].clone()).unwrap();
+            let inputs = CandidateVerificationInputs::new(&root, &context, &now)
+                .with_denied_key_ids(&denied);
+            match verify_supplied_candidate_release_bytes(&target, &release, &opening, inputs) {
+                Ok(checked) => {
+                    assert_eq!(
+                        case["accepted"], true,
+                        "unexpected candidate acceptance {name}"
+                    );
+                    assert!(std::ptr::eq(checked.supplied_root(), &root));
+                    assert_eq!(checked.target().envelope().raw_bytes(), target);
+                    assert_eq!(checked.release().envelope().raw_bytes(), release);
+                }
+                Err(error) => {
+                    assert_eq!(
+                        case["accepted"], false,
+                        "unexpected candidate refusal {name}: {error}"
+                    );
+                    let expected = match case["code"].as_str().unwrap() {
+                        "OPENING_MISMATCH" => "ROLLOUT_OPENING_MISMATCH",
+                        code => code,
+                    };
+                    assert_eq!(
+                        error.to_string(),
+                        expected,
+                        "wrong candidate refusal {name}"
                     );
                 }
             }

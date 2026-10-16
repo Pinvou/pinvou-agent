@@ -9462,3 +9462,94 @@ Both independent final audits apply to the same six-source freeze above. Final
 documentation review precedes DCO commit/push. The separately approved candidate-
 opening authentication plan remains future work, not delivered by this public-
 chain batch; protected acceptance and complete T27 boundaries remain open.
+
+## Authenticated candidate Release and complete opening
+
+The feature-owned verifier now composes the complete frozen candidate operation
+using original Target/Release bytes, bounded opening, supplied existing Root/safe
+time/global denial and independent bounded product/component/channel/targetKey/
+expectedReleaseId context. Fixed-role expected Documents share independent product
+and component; incoming claims never supply expected Release identity. Escaped
+bounded values construct the complete Target and Release scopes, ignoring only
+extra caller context after original whole-input limits.
+
+Both envelopes pass unchanged ordinary fresh-Root, full Schema/context, actual
+all-signature/exact-policy and body checks. The unchanged codec then verifies the
+exact original Release hash differs from Target baseline, all seven nonnull
+opening commitment fields and Release target membership. Both authentications
+precede final relationships; only multi-fault diagnostic precedence may differ
+from Node. Existing Rust opening/policy/Schema labels are explicitly mapped,
+without changing acceptance or original ordinary/codec behavior.
+
+The immutable candidate proof owns checked original Target/Release, borrows exact
+supplied Root and records supplied time. Temporary expected Documents do not
+escape consumed private ordinary proofs. Failure returns no partial pair. It
+proves supplied signatures and commitment, not candidate selection, protected
+trust/clock custody, atomic acceptance, current online qualification or execution.
+No high-water, role-denial or Development option is added to this operation.
+
+Five new tests execute thirty-eight full frozen Node cases: thirteen opening/
+baseline/membership, seven independent shared context/Release identity, eight
+actual signatures/thresholds/denial, four windows and six policy/wire/Schema.
+Five genuine positives include empty ordinary/bridge catalogs, restored opening,
+context extras, actual two-signer Target and irrelevant denied key. Negative
+controls mutate every opening field, null/unknown fields, both actual signature
+paths, independent expectedReleaseId/component, original windows and exact policy.
+The missing-target control uses a genuine separately signed ARM Package reference.
+Fresh private keys remain in Node. One narrow App facade test exercises ten
+actual positive/negative controls. Both final scoped static deep audits passed
+without a required finding on the same six-source freeze, manifest SHA256
+46d9dbfb89f6dff8149b7e4054ee12411cbe09ef9cf8a555b33ffae76c84770d.
+
+The primary's forty-three verifier tests passed, zero failures/ignored (66.621s
+wall), including new candidate five tests/38 cases (1.180s harness). Strict
+all-target Clippy passed (10.384s wall). Prior ordinary111, successor55, archive36,
+public-chain56, thirty new chain and fifty-five reused length-one parity cases
+remain separate regressions. Ordinary verification, codec source, manifests and
+all three locks are unchanged; prior actual codec157 tests including two enabled
+Node oracles retain acceptance without an unaffected exhaustive rerun.
+
+Full T27 remains in progress. Overall totals remain forty-seven: four implemented,
+twelve in progress, thirty-one incomplete/deferred. Product 0.10.9, normative
+document versions 1.0, pinned V1 and CodeWhale remain unchanged. Physical platform
+qualification and deployment remain deferred. No artifact download size, retry
+or total/cumulative duration cap is introduced.
+
+The primary default App facade passed forty-five tests, zero failures/ignored
+(14.160s harness, 167.052s wall). The actual CLI-workspace backend built the
+production App/verifier graph and passed its zero-test library harness (187.413s
+wall); this is compilation/graph evidence, not workflow E2E. Four-source Rust
+formatting, architecture, version, before/after six-source freeze and standard
+working/index whitespace checks passed. The unchanged actual selected App/CLI
+graph retains 104 packages/109 feature nodes each and identical nine critical
+verification packages/features; preexisting ICU/zerovec patch differences stay
+disclosed, not a claim of full closure identity.
+
+The independent dependency role's final scoped code/test audit passed without a
+required finding. Its own forty-three verifier tests passed, zero failures/
+ignored (53.970s wall); candidate five tests/38 full Node controls took 1.080s
+harness. Strict all-target Clippy passed (3.447s wall). Its default App facade
+passed forty-five tests (15.760s harness, 26.199s wall); its actual CLI backend
+zero-test library harness passed (8.818s wall), not workflow E2E. Four-source
+formatting, architecture, version, unchanged codec/manifests/three-lock baseline,
+before/after six-source freeze and standard working/index whitespace passed.
+It reused prior selected graph evidence. All owned processes/sessions closed
+before returning the sole runtime slot.
+
+The independent compatibility role's final scoped code/test audit also passed
+without a required finding. Its own forty-three verifier tests passed, zero
+failures/ignored (48.064s wall), including all five candidate tests/
+38 full Node controls. Strict all-target Clippy passed
+(3.358s wall). Its default App facade passed
+forty-five tests (17.980s harness,
+27.032s wall); its actual CLI backend zero-test library harness
+passed (8.589s wall), not workflow E2E. Four-source Rust formatting,
+architecture, version, unchanged codec/manifests/three-lock baseline, before/
+after six-source freeze and standard working/index whitespace passed. Prior
+selected graph evidence is reused without unrelated codec/benchmark reruns.
+All owned runtime processes/sessions closed before returning the exclusive slot.
+
+Both final independent audits apply to the same six-source freeze above. Final
+documentation review precedes DCO commit/push. The separately approved signed-
+Package/supplied-Release binding plan is future work, not implemented by this
+candidate batch; full T27 and protected acceptance/authority boundaries stay open.
