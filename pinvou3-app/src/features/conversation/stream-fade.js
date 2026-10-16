@@ -20,10 +20,10 @@
 // One-shot fade span class; must match src/styles/base.css (.stream-fade-seg).
 const SEGMENT_CLASS = 'stream-fade-seg';
 
-// Stamped on every span the pass creates, carrying the creation clock in ms:
-// it marks the span as ours for the completion unwrap (foreign markup that
-// merely reuses the class is neutralized instead of unwrapped) and feeds the
-// completion age floor.
+// Stamped on every span the pass creates, carrying the creation clock in ms
+// for the completion age floor. Ownership is deliberately NOT keyed on the
+// attribute: DOMPurify passes data-* attributes through, so model-emitted
+// markup could forge it — the pass-created WeakSet below is the proof.
 const SEGMENT_MARKER_ATTR = 'data-stream-fade';
 
 // Text inside these element subtrees neither counts toward the committed
@@ -67,8 +67,21 @@ const SEGMENT_MAX_PER_PASS = 40;
 const UNWRAP_MIN_AGE_MS = 200;
 
 // Fallback segmentation when Intl.Segmenter is unavailable (Safari 14.0):
-// fixed 4-character chunks; the u flag keeps surrogate pairs intact.
+// fixed 4-character chunks (the u flag keeps surrogate pairs intact), with
+// chunk boundaries repaired afterwards so a grapheme cluster is never split
+// across fade spans — ZWJ emoji sequences, variation selectors, combining
+// marks, and the two halves of a flag (regional indicator pair) would render
+// broken until the completion unwrap re-joins the text.
 const FALLBACK_SEGMENT_RE = /[\s\S]{1,4}/gu;
+const FALLBACK_ZWJ_TAIL_RE = /\u200D$/u;
+// Continuation heads: ZWJ and the two variation selectors. Deliberately a
+// code-point set, not a regex — a character class containing the combining
+// selectors misleads (no-misleading-character-class) and single-character
+// alternation is banned (sonarjs/single-character-alternation).
+const FALLBACK_CONTINUATION_HEAD_CODES = new Set([0x200d, 0xfe0e, 0xfe0f]);
+const FALLBACK_MARK_RE = /^\p{M}/u;
+const REGIONAL_INDICATOR_RE = /[\u{1F1E6}-\u{1F1FF}]/u;
+const REGIONAL_INDICATOR_HEAD_RE = /^[\u{1F1E6}-\u{1F1FF}]/u;
 const WHITESPACE_ONLY_RE = /^\s*$/;
 // Han ideographs fade one character at a time: word segmentation splits them
 // into dictionary words on full-ICU runtimes (你好) and into single characters
@@ -92,6 +105,12 @@ export function isStreamFadePreferenceEnabled() {
 // Per-container bookkeeping: committed counts visible characters already seen
 // by the user; everything before it never animates again.
 const fadeStateByContainer = new WeakMap();
+
+// Spans the pass created, as the completion unwrap's ownership proof: markup
+// (the class or a forged data-* marker) survives DOMPurify, a JS WeakSet does
+// not round-trip through serialization, so model output cannot join it.
+// Entries die with their span elements.
+const passCreatedSpans = new WeakSet();
 
 // PURE: decide what a fade pass must do from the previous bookkeeping and the
 // current visible text length. `from` is the animation region start for
@@ -118,9 +137,42 @@ export function splitFadeSegments(text, segmenter) {
   if (segmenter && typeof segmenter.segment === 'function') {
     for (const piece of segmenter.segment(value)) splitHanPerCodePoint(raw, piece.segment);
   } else {
-    for (const piece of value.match(FALLBACK_SEGMENT_RE) || []) splitHanPerCodePoint(raw, piece);
+    for (const piece of mergeFallbackChunks(value.match(FALLBACK_SEGMENT_RE) || [])) splitHanPerCodePoint(raw, piece);
   }
   return mergeWhitespaceSegments(raw);
+}
+
+// Repair naive chunk boundaries: a piece is merged into the previous one while
+// keeping them apart would split a grapheme cluster (see the fallback
+// constants above); merged pieces may exceed the base chunk size.
+function mergeFallbackChunks(chunks) {
+  const merged = [];
+  for (const chunk of chunks) {
+    let piece = chunk;
+    while (merged.length > 0 && fallbackChunkContinues(merged[merged.length - 1], piece)) {
+      piece = merged.pop() + piece;
+    }
+    merged.push(piece);
+  }
+  return merged;
+}
+
+function fallbackChunkContinues(prev, next) {
+  // ZWJ sequence spans the boundary, in either order.
+  if (FALLBACK_ZWJ_TAIL_RE.test(prev) || FALLBACK_CONTINUATION_HEAD_CODES.has(next.codePointAt(0))) return true;
+  // A combining mark always attaches to the preceding base character.
+  if (FALLBACK_MARK_RE.test(next)) return true;
+  // An odd trailing run of regional indicators means the previous piece ends
+  // with an unpaired flag half.
+  return trailingIndicatorRunIsOdd(prev) && REGIONAL_INDICATOR_HEAD_RE.test(next);
+}
+
+function trailingIndicatorRunIsOdd(text) {
+  let run = 0;
+  for (const char of text) {
+    run = REGIONAL_INDICATOR_RE.test(char) ? run + 1 : 0;
+  }
+  return run % 2 === 1;
 }
 
 // Append one raw segment, re-splitting it per code point when it contains a
@@ -244,18 +296,24 @@ export function applyStreamFade(container, { streaming, html } = {}) {
   });
   if (plan.action === 'animate') wrapFadeRegion(textNodes, plan.from, total);
   // Recorded even on a 'none' pass: the (rewritten) html string was measured,
-  // so until it changes again the walk can stay skipped.
+  // so until it changes again the walk can stay skipped. A streaming pass also
+  // gives the deferral budget a fresh start: attempts accumulate per
+  // completion episode only.
+  deferredAttemptsByContainer.delete(container);
   fadeStateByContainer.set(container, { started: true, committed: total, lastHtml: html });
 }
 
 // Completion hygiene: replace every pass-created fade span with its text so
 // the completed message DOM is pristine regardless of whether React rewrote
 // the html — but never mid-flight. Spans younger than UNWRAP_MIN_AGE_MS are
-// left in place and reaped by a deferred pass. Elements that merely reuse the
-// class (model-emitted markup survives DOMPurify, which keeps class/style)
-// are not ours to remove: the animation hook class is stripped so their
-// content renders at once, and the element itself is preserved.
-function unwrapFadeSpans(container) {
+// left in place and reaped by a deferred pass; `force` (the final deferred
+// pass, see UNWRAP_MAX_DEFERRALS) ignores ages so a stamp that can never
+// elapse — a stepped-back clock, a forged future marker — cannot pin the
+// reap in a loop. Elements the pass did not create (model-emitted markup
+// survives DOMPurify, which keeps class/style/data-*) are not ours to
+// remove: the animation hook class is stripped so their content renders at
+// once, and the element itself is preserved.
+function unwrapFadeSpans(container, force = false) {
   if (typeof container.querySelectorAll !== 'function') return;
   const now = nowMs();
   let hasYoungSpans = false;
@@ -263,13 +321,13 @@ function unwrapFadeSpans(container) {
   for (const span of spans) {
     const parent = span.parentNode;
     if (!parent) continue;
-    const raw = span.getAttribute(SEGMENT_MARKER_ATTR);
-    const created = raw === null ? NaN : Number(raw);
-    if (!Number.isFinite(created)) {
+    if (!passCreatedSpans.has(span)) {
       stripFadeClass(span);
       continue;
     }
-    if (now - created < UNWRAP_MIN_AGE_MS) {
+    const raw = span.getAttribute(SEGMENT_MARKER_ATTR);
+    const created = raw === null ? NaN : Number(raw);
+    if (!force && Number.isFinite(created) && now - created < UNWRAP_MIN_AGE_MS) {
       hasYoungSpans = true;
       continue;
     }
@@ -283,16 +341,28 @@ function unwrapFadeSpans(container) {
 }
 
 const deferredUnwrapByContainer = new WeakMap();
+const deferredAttemptsByContainer = new WeakMap();
+
+// The deferred reap must terminate even when an age never elapses: stamps are
+// wall-clock (a clock step-back pins ages negative) and model markup could
+// forge a future marker. After this many deferred passes the reap ignores
+// ages, degrading to the accepted "text appears at once" behavior instead of
+// re-arming forever.
+const UNWRAP_MAX_DEFERRALS = 2;
 
 // One-shot reap for spans that were too young at completion time. Fixed delay
 // of one age floor: the pass re-checks ages, so a span that is still young
-// (a new stream re-wrapped the container meanwhile) simply defers again.
-// Unwrapping a since-detached container is a harmless no-op on a dead tree.
+// (a new stream re-wrapped the container meanwhile) simply defers again — at
+// most UNWRAP_MAX_DEFERRALS times, after which ages are ignored. A streaming
+// pass on the container resets the budget (see applyStreamFade). Unwrapping a
+// since-detached container is a harmless no-op on a dead tree.
 function scheduleDeferredUnwrap(container) {
   if (deferredUnwrapByContainer.has(container)) return;
+  const attempts = (deferredAttemptsByContainer.get(container) || 0) + 1;
+  deferredAttemptsByContainer.set(container, attempts);
   deferredUnwrapByContainer.set(container, setTimeout(() => {
     deferredUnwrapByContainer.delete(container);
-    unwrapFadeSpans(container);
+    unwrapFadeSpans(container, attempts >= UNWRAP_MAX_DEFERRALS);
   }, UNWRAP_MIN_AGE_MS));
 }
 
@@ -375,6 +445,7 @@ function wrapNodeRegion(node, startInNode, endInNode, doc, segmenter, animatedSe
     const span = doc.createElement('span');
     span.className = SEGMENT_CLASS;
     span.setAttribute(SEGMENT_MARKER_ATTR, String(nowMs()));
+    passCreatedSpans.add(span);
     const delay = Math.min((animatedSegments + created) * SEGMENT_DELAY_STEP_MS, SEGMENT_DELAY_MAX_MS);
     if (delay > 0) span.setAttribute('style', `--stream-fade-delay:${delay}ms`);
     target.parentNode.replaceChild(span, target);

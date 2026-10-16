@@ -68,6 +68,13 @@ assert.deepEqual(splitFadeSegments('   ', null), []);
 // Surrogate pairs stay intact under the u-flag fallback ({1,4} counts code
 // points, so the emoji is never split in half).
 assert.deepEqual(splitFadeSegments('ab😀cd', null), ['ab😀c', 'd']);
+// Chunk boundaries are repaired so grapheme clusters never split: a broken
+// ZWJ sequence, half a flag, or a detached combining mark renders wrong until
+// the completion unwrap re-joins the text.
+assert.deepEqual(splitFadeSegments('a👨‍👩‍👧b', null), ['a👨‍👩‍👧b']);
+assert.deepEqual(splitFadeSegments('👨‍👩‍👧‍👦xy', null), ['👨‍👩‍👧‍👦x', 'y']);
+assert.deepEqual(splitFadeSegments('abc🇺🇸de', null), ['abc🇺🇸de']);
+assert.deepEqual(splitFadeSegments('abcd\u0301efg', null), ['abcd\u0301efg']);
 
 // ---- planFadePass (pure) ----
 
@@ -235,6 +242,25 @@ try {
       assert.equal(agedContainer.querySelectorAll('.stream-fade-seg').length, 0, 'aged spans unwrap immediately on completion');
       assert.equal(agedContainer.textContent, 'grow tail', 'unwrap preserves text');
     }
+    {
+      // A stamp that can never age — wall clock stepped back, or a forged
+      // future marker — must terminate: after UNWRAP_MAX_DEFERRALS deferred
+      // passes the reap force-unwraps instead of re-arming forever.
+      const stuckContainer = documentWithContainer('<p>grow</p>');
+      applyStreamFade(stuckContainer, { streaming: true }); // baseline
+      stuckContainer.innerHTML = '<p>grow tail</p>';
+      applyStreamFade(stuckContainer, { streaming: true });
+      for (const span of stuckContainer.querySelectorAll('.stream-fade-seg')) {
+        span.setAttribute('data-stream-fade', String(nowMs() + 3_600_000));
+      }
+      applyStreamFade(stuckContainer, { streaming: false });
+      assert.ok(stuckContainer.querySelectorAll('.stream-fade-seg').length > 0, 'precondition: never-aging spans survive the first completion');
+      await new Promise((resolve) => {
+        setTimeout(resolve, 700);
+      });
+      assert.equal(stuckContainer.querySelectorAll('.stream-fade-seg').length, 0, 'never-aging stamps are force-reaped, not looped');
+      assert.equal(stuckContainer.textContent, 'grow tail', 'force reap preserves text');
+    }
 
     // A fresh stream after completion re-baselines instead of replaying.
     container.innerHTML = '<p>hello world of streaming plus more</p>';
@@ -296,6 +322,23 @@ try {
     assert.equal(foreign.getAttribute('style'), 'color:red', 'foreign own style untouched');
     assert.equal(container.querySelectorAll('.stream-fade-seg').length, 0, 'pass-created spans unwrapped');
     assert.equal(container.textContent, 'seen kept tail', 'all text preserved');
+  }
+
+  // A forged creation marker must not upgrade model markup to pass-created:
+  // DOMPurify passes data-* attributes through, so ownership keys on the
+  // pass-created WeakSet instead — completion still neutralizes (element and
+  // text preserved, animation hook stripped) and never unwraps it.
+  {
+    const container = documentWithContainer('<p>seen <span class="stream-fade-seg" data-stream-fade="123" style="color:blue">fake</span></p>');
+    applyStreamFade(container, { streaming: true }); // baseline
+    container.innerHTML = '<p>seen <span class="stream-fade-seg" data-stream-fade="123" style="color:blue">fake</span> tail</p>';
+    applyStreamFade(container, { streaming: true });
+    applyStreamFade(container, { streaming: false });
+    const fake = container.querySelector('span[style="color:blue"]');
+    assert.ok(fake, 'forged-marker element preserved');
+    assert.equal(fake.textContent, 'fake', 'forged-marker text preserved');
+    assert.ok(!/(^|\s)stream-fade-seg(\s|$)/.test(fake.getAttribute('class') || ''), 'forged marker still stripped of the fade class');
+    assert.equal(fake.getAttribute('style'), 'color:blue', 'forged-marker own style untouched');
   }
 
   // Unchanged html since the last pass ⇒ the walk is skipped wholesale: DOM
