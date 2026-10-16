@@ -22,7 +22,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T09 | In progress | Bounded package/native-byte inspection; complete upload, quarantine and platform qualification remain pending |
 | T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
 | T11 | Not completed | Complete multi-platform Release/Target approval workflow and qualification integration. |
-| T12 | In progress | Original stable-facts identity and exact profile matching; protected Registry/version/approval, forward policies and production qualification remain pending |
+| T12 | In progress | Original stable-facts identity, exact profile matching and immutable forward-policy intersection; protected Registry/version/approval and production qualification remain pending |
 | T13 | Not completed | Supported floor, prerequisite paths and historical bridge approvals. |
 | T14 | Not completed | Deployment lifecycle and first-baseline activation with atomic parent/rollout composition. |
 | T15 | Not completed | Approved automatic rollout scheduling, quality guards and controlled completion. |
@@ -10595,3 +10595,46 @@ five implemented, twelve in progress and thirty incomplete/deferred. T42 deploym
 and physical platform/data/budget certification remain deferred or pending.
 Product 0.10.9, normative 1.0, pinned V1 and CodeWhale are unchanged; downloads
 have no hard total/cumulative duration or retry cap.
+
+### T12 immutable forward-policy content and exact selected-hop intersection
+
+The service now validates the original complete policy/edge Schemas and exact
+original objectHash(edges), preserving edge/channel order and duplicate edges.
+Every edge is checked, including unused sources. The owned parsed policy is a
+content calculation, not a protected current Registry record or approval.
+
+The matcher rechecks the actual stable-facts identity and policy bytes, then
+intersects an already selected hop with source ID, all seven hop dimensions and
+current channel. A target must be strictly higher than the source using exact
+arbitrary-length decimal components. Zero matches returns the original unavailable
+reason; duplicates or overlapping channel lists refuse as ambiguity. Neither
+failure exposes a partial edge. Unique results own exact canonical edge bytes
+and hashes. Raw/canonical 1 MiB boundaries are independently tested.
+
+The actual original Node executes 29 policy/selected-hop comparisons and all
+47 existing facts comparisons. Non-higher target refusal is independently tested
+as a Registry invariant, without claiming whole-selector parity for its earlier
+no_higher_version exit. The final primary contracts/registry run passed 19
+top-level/81 child tests with zero skips/failures (11.957s wall). Default service
+passed 49 tested packages and 465 top-level/921 child tests (85.954s wall), with
+562 top-level/606 child external opt-in skips and 12 no-test packages separately
+recorded. All nine service gates passed, including modules, full vet, build,
+pinned V1, formatting and both whitespace checks.
+
+Both independent code/test/documentation reviews gave final scoped PASS. Their
+separate contracts/registry/original-Node runs each passed 19 top-level/81 child
+tests, zero skips/failures (15.457s/14.144s wall, dependency/compatibility).
+Both froze source/index/status and all 69 existing SQL raw/index identities,
+closed sessions and joined their owned processes. Unchanged database/provider/
+browser integrations were not rerun for this calculation-only delta.
+
+The increment is DCO committed and pushed as `fe2ed92c74ab06d14f76c54fa29998f203c6604c` on
+`codex/t12-forward-policy`; service boundary/evidence is in
+`docs/registry-forward-policy.md`. Actual Registry registration must still bind
+all referenced sources, higher targets, transform/capability evidence, immutable
+ID/revision, current approval and publication. Full T12 and complete T17 path
+selection remain in progress; this result grants no host or business authority.
+No SQL, grants, route, provider or UI changes are introduced. Totals remain 47:
+five implemented, twelve in progress and thirty incomplete/deferred. Product
+0.10.9, normative 1.0, pinned V1 and CodeWhale are unchanged. Downloads have no
+hard total/cumulative duration or retry cap.
