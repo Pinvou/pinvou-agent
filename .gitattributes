@@ -26,11 +26,3 @@ pinvou3-app/src-tauri/resources/platforms/windows/chrome-devtools-mcp/.gitkeep t
 # test_ci_gate_policy.py 等):core.autocrlf=true 的 Windows checkout 转成 CRLF 后
 # 正则失配、守卫空转,与上方钩子/Shell 脚本同理钉 LF。
 .github/workflows/*.yml text eol=lf
-
-# Preserve the published Rust source/license bytes and fixed ZIP fixtures.
-third_party/rust/calamine/** -text
-
-# These unchanged upstream files retain their original archive formatting.
-third_party/rust/calamine/examples/read_hyperlinks.rs whitespace=cr-at-eol
-third_party/rust/calamine/.github/workflows/typos.yml whitespace=-blank-at-eol
-third_party/rust/calamine/examples/README.md whitespace=-blank-at-eof

@@ -833,17 +833,13 @@ fn extract_wheel(
         {
             return Err(format!(
                 "Python wheel contains a disallowed symlink: {}",
-                entry
-                    .name()
-                    .map_err(|e| format!("failed to read the wheel entry name: {e}"))?
+                entry.name()
             ));
         }
         let Some(enclosed) = entry.enclosed_name() else {
             return Err(format!(
                 "Python wheel contains an unsafe path: {}",
-                entry
-                    .name()
-                    .map_err(|e| format!("failed to read the wheel entry name: {e}"))?
+                entry.name()
             ));
         };
         let Some(relative) = wheel_install_relative_path(&enclosed) else {

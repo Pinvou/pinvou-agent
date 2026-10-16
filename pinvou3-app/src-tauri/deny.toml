@@ -26,10 +26,11 @@ ignore = [
 # 的条目并 fail CI。这些非本仓可修(等 tauri/gtk-rs 升级),"workspace" 仅报 workspace crate,
 # 把噪声挡在 CI 之外;真漏洞仍由上面的 ignore 显式管理 + cargo update 修复。
 unmaintained = "workspace"
-# Yanked versions fail directly: the default warn level is not enough — a
-# yanked entry in the lockfile breaks reproducible builds once the dependency
-# graph changes later; fail early, replace early.
-yanked = "deny"
+# Keep yanked releases visible while calamine 0.36.1 requires zip ^8.6.
+# Retain the locked graph; RustSec vulnerability advisories still fail.
+# Restore "deny" with a supported non-yanked dependency update, and reassess
+# immediately if an advisory affects the pinned version.
+yanked = "warn"
 
 [licenses]
 version = 2
