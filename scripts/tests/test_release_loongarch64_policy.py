@@ -93,24 +93,32 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         # build.js (or any bundling) itself.
         self.assertNotIn("node scripts/tauri/build.js", self.job_code)
 
-    def test_release_job_does_not_use_lld_or_override_lto(self):
+    def test_release_job_sets_remap_only_rustflags(self):
         # The pinned cross toolchain ships NO lld (bfd only): the arm64 job's
-        # -fuse-ld=lld / --icf=safe must never be copied, RUSTFLAGS stays
-        # unset, and LTO stays owned by Cargo.toml. Comment mentions of the
-        # forbidden flags are deliberate (they warn future editors) and are
-        # stripped here — only live configuration counts.
+        # -fuse-ld=lld / --icf=safe must never be copied, and LTO stays owned
+        # by Cargo.toml. RUSTFLAGS must be exactly the remap-only spelling:
+        # --remap-path-prefix is rustc-side (the macOS job sets it alone),
+        # keeps build-machine paths out of the artifact like every other
+        # release job, and needs no lld. Comment mentions of the forbidden
+        # flags are deliberate (they warn future editors) and are stripped
+        # here — only live configuration counts.
         self.assertNotIn("-fuse-ld=lld", self.job_code)
         self.assertNotIn("--icf=safe", self.job_code)
         self.assertNotIn("CARGO_PROFILE_RELEASE_LTO", self.job_code)
         self.assertNotIn("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", self.job_code)
         job_env = self.job_code.split("\n    steps:", maxsplit=1)[0]
-        for line in job_env.splitlines():
-            self.assertFalse(
-                line.strip().startswith("RUSTFLAGS:"),
-                f"the loong64 job must leave RUSTFLAGS unset, found: {line.strip()}",
-            )
-        # The orchestrator owns the actual cargo invocations, so the same
-        # prohibition applies there (its comments deliberately warn; strip
+        rustflags = [
+            line.strip()
+            for line in job_env.splitlines()
+            if line.strip().startswith("RUSTFLAGS:")
+        ]
+        self.assertEqual(
+            rustflags,
+            ['RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/"'],
+            "the loong64 job must set exactly the remap-only RUSTFLAGS",
+        )
+        # The orchestrator owns the actual cargo invocations and must not
+        # override the job's flags (its comments deliberately warn; strip
         # them before scanning).
         orchestrator_code = _without_comments(self.orchestrator)
         self.assertNotIn("-fuse-ld=lld", orchestrator_code)
@@ -232,9 +240,43 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             "PKG_CONFIG_LIBDIR=",
             "PKG_CONFIG_SYSROOT_DIR=",
             "CMAKE_TOOLCHAIN_FILE=",
-            "BINDGEN_EXTRA_CLANG_ARGS=",
+            # --target must ride along explicitly: bindgen 0.72's
+            # clang_macro_fallback PCH never sees the --target it injects
+            # for cross builds, so without this the fallback evaluates the
+            # sysroot's glibc headers as the host arch and #define-only
+            # constants like spa's SPA_ID_INVALID drop out of the bindings
+            # (libspa E0425).
+            "BINDGEN_EXTRA_CLANG_ARGS=--target=$TRIPLE --sysroot=",
         ):
             self.assertIn(required, sysroot_block)
+
+    def test_cache_reuse_never_skips_generation_checks(self):
+        # The cache-generation trust behaviors are the difference between a
+        # stale or truncated cache and a broken build — deleting any of them
+        # must fail this suite, not a release link stage:
+        # (1) the toolchain marker is only trusted when it names the CURRENT
+        #     pin (tag/variant/host/asset-hash);
+        # (2) sysroot reuse re-runs the full verification, so a truncated
+        #     restore fails at setup time, not at link time;
+        # (3) rebuilds start from a fresh tree (dpkg-deb -x never deletes,
+        #     so extracting over a previous generation would mix sources);
+        # (4) the manifest is written atomically (tmp + rename), so a reader
+        #     can never observe a half-written generation marker.
+        toolchain = _without_comments(self.toolchain)
+        sysroot = _without_comments(self.sysroot)
+        self.assertIn(
+            'expected_id="${CROSS_TOOLS_TAG}/${VARIANT}/${host_arch}/${pinned_sha256}"',
+            toolchain,
+        )
+        self.assertIn('[ "$(cat "$marker")" != "$expected_id" ]', toolchain)
+        self.assertEqual(
+            sysroot.count('verify_sysroot "$output_dir"'),
+            2,
+            "sysroot verification must run on BOTH the reuse and the rebuild path",
+        )
+        self.assertIn('rm -rf -- "$output_dir"', sysroot)
+        self.assertIn('> "$manifest.tmp"', sysroot)
+        self.assertIn('mv "$manifest.tmp" "$manifest"', sysroot)
 
     # ---- cache keys (release restore-only, pr-check main-only saves) ----
 
@@ -308,10 +350,15 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         rel_block = self._step_run_block(self.job, "装 Tauri + pinvou3 Linux 系统依赖")
         self.assertEqual(pr_block, rel_block)
         # The orchestrator (release path) exports the same pins for the
-        # cargo builds it drives: sysroot-scoped bindgen args and the
-        # llvm-18 libclang discovery (overridable on dev hosts).
+        # cargo builds it drives: sysroot-scoped bindgen args — with the
+        # explicit cross target, same rationale as the sysroot export
+        # block above — and the llvm-18 libclang discovery (overridable on
+        # dev hosts).
         orchestrator_code = _without_comments(self.orchestrator)
-        self.assertIn("BINDGEN_EXTRA_CLANG_ARGS", orchestrator_code)
+        self.assertIn(
+            'export BINDGEN_EXTRA_CLANG_ARGS="--target=$TRIPLE --sysroot=$sysroot"',
+            orchestrator_code,
+        )
         self.assertIn("/usr/lib/llvm-18/lib", orchestrator_code)
 
     def test_changes_filters_route_the_loong64_scripts(self):
@@ -386,13 +433,22 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
 
     def test_pr_check_leg_checks_all_three_workspaces(self):
         self.assertIn("runs-on: ubuntu-22.04\n", self.pr_job)
-        for workspace in ("pinvou3-app/src-tauri", "pinvou-knowledge"):
-            self.assertIn(
-                f"--manifest-path {workspace}/Cargo.toml --target "
-                "loongarch64-unknown-linux-gnu --locked",
-                self.pr_job,
-                f"the cross check must cover {workspace}",
-            )
+        self.assertIn(
+            "--manifest-path pinvou3-app/src-tauri/Cargo.toml --target "
+            "loongarch64-unknown-linux-gnu --locked",
+            self.pr_job,
+            "the cross check must cover src-tauri",
+        )
+        # knowledge additionally compiles its tests for the target: the stub
+        # contract (embedding::stub_tests) is the cfg-live path on
+        # loongarch64, so the cross leg must type-check it (execution stays
+        # on the host feature-off leg).
+        self.assertIn(
+            "--manifest-path pinvou-knowledge/Cargo.toml --target "
+            "loongarch64-unknown-linux-gnu --locked --tests",
+            self.pr_job,
+            "the cross check must cover pinvou-knowledge including its tests",
+        )
         # pinvou-cli is a virtual workspace: the check goes through
         # --workspace like the macos-cli-check compile leg.
         self.assertIn(
