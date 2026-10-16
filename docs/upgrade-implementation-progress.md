@@ -57,7 +57,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T44 | Implemented; independently reviewed and verified | Actual protected lifecycle kernel, complete atomic commands, original retention/backup deadlines and worker/access-driven timeout convergence; T17/T19/T20 composition and deployment remain separate |
 | T45 | Not completed | Approved helper/launcher evolution and restricted cleanup execution. |
 | T46 | Not completed | Actual local-mode prerequisite certification and exact evidence integration. |
-| T47 | In progress | Protected lifecycle persistence for actual approved frozen SN plans, permanent facts/windows and retained-source integrity; complete operation-bound command/admin/quality/publication composition remains pending |
+| T47 | In progress | Protected frozen SN lifecycle persistence, operation-bound child write sets and original outer T06 recovery; fixed production parent/admin/quality/publication composition remains pending |
 
 Confirmed implementation decisions (2026-10-09):
 
@@ -10423,3 +10423,78 @@ pending. T42 deployment remains explicitly deferred. Totals remain 47 tasks:
 five implemented, eleven in progress, thirty-one incomplete or deferred.
 Product 0.10.9, normative 1.0, pinned V1 and CodeWhale are unchanged. Downloads
 retain no hard total or cumulative elapsed limit.
+
+### T47 operation-bound child composition
+
+A closed private kernel now binds original lifecycle intents to the actual outer
+T06 request digest, command purpose, operation/result, epoch and lease. Original
+reservation attribution and child receipts remain protected for recovery; the
+same supplied final transaction atomically writes child lifecycle/facts/windows,
+outbox and original outer result. No child Engine or independent completion is
+introduced. Current operator commands run actual scoped T05 authorization,
+two independent reviews and dedicated fresh MFA on every channel. Recovery uses
+the protected original login metadata and actual current T05 owner, with no new
+caller identity or minted authentication time.
+
+The complete inventory measures actual source bodies and canonical references,
+including both original/current windows and their first facts. Shared immutable
+plans and SN sources are charged once; conflicting identities refuse. The same
+operation-wide 32 MiB logical bound remains separate from installer size and
+download duration. Fixed outer owners must merge their own actual source costs.
+An opaque sequential write set retains its original transaction; copied/closed
+handles cannot repeat or move execution. Only immutable plan mathematics is
+cached. Native provenance/CAS/current authority/time/owner guards remain per
+child, and full Seal rechecks actual catalog/source/head/fact/window/outbox and
+the final authorization/owner fences after every outer write.
+
+Actual controls cover coordinated wire/receipt tampering, current permission or
+approval drift, wrong purpose/epoch/lease, post-write source/index/catalog drift,
+late backward/null/unsafe clock and exact authorization expiry. Two competing
+outer operations each first reach real T06 Complete SQL and roll back, then race
+final writes against the same unchanged lifecycle: one complete durable winner,
+precise read-set or actual unique-slot refusal, no partial loser result and
+unchanged original frozen source. Identical original requests return Busy and
+later replay the same result. Worker expiry negatives require the actual
+recovered-identity Denied result; a restored original proof recovers through a
+fresh worker without caller identity. Unknown-result testing returns Unavailable
+after an actual SQL commit; it is not physical socket/HTTP ACK-loss E2E.
+
+ROOT's complete four-package actual PostgreSQL/OpenBao/two-original-Node run
+passed 103 top-level/128 child tests, zero skips/failures (668.583s wall).
+Default service passed 48 tested packages, 454 top-level/840 child tests
+(76.145s wall), with 556 top-level/601 child explicit opt-in skips and 12 no-test
+packages separately recorded. Modules, full vet, private server build, pinned V1,
+Go formatting and both whitespace gates passed: nine gates total.
+
+The dependency auditor independently ran 73 top-level/105 child tests, zero
+skips/failures (599.678s wall); the compatibility auditor separately ran the same
+selection, 73 top-level/105 child tests, zero skips/failures (599.909s wall).
+Each used actual PostgreSQL, OpenBao and both original Node references, verified
+frozen full source/index/status and all 68 previous SQL raw/index identities,
+closed its tool session and joined owned processes. Each checked ROOT's complete
+gate logs without claiming the default service run as its own. Both final scoped
+conclusions and final evidence-document reviews are PASS.
+
+The actual 64-plan SN source-union capacity cases passed in
+197.64s/199.03s/200.24s (ROOT/dependency/compatibility). A shared 100-stage plan
+with 162 actual child drafts passed full Seal, after-Seal rollback and original
+request recovery/commit in 52.71s/53.64s/55.59s. Earlier repeated plan-validation
+cost exhausted existing control leases; same-transaction immutable mathematics
+reuse repaired the cost without changing leases or removing authorization,
+provenance, source, CAS, final readback or clock checks. Early failed runs are
+not acceptance evidence. Only reviewed documentation clarifications followed
+ROOT's frozen source run; no production/test code changed afterward.
+
+The service increment is DCO committed and pushed as
+`f1efe76aad1914597b59f4dbf33fe05c4603132b` on `codex/t47-operation-kernel`.
+Its developer boundary and verification are in
+`docs/rollout-operation-kernel-plan.md` in the service repository.
+
+T47 remains in progress. Production business routes stay unavailable until fixed
+actual T14 parent/baseline, T15 approval/scheduling, T21 contribution/quality/freeze
+and T08 publication guards/writes are composed. The test-only fixed outer composer
+does not qualify those missing owners. Admin workflow, measured platform/data
+budgets and physical qualification remain pending; T42 deployment remains
+explicitly deferred. Totals remain 47 tasks: five implemented, eleven in progress,
+thirty-one incomplete or deferred. Product 0.10.9, normative 1.0, pinned V1 and
+CodeWhale stay unchanged. Downloads have no hard total/cumulative duration limit.
