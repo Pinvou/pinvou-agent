@@ -9553,3 +9553,89 @@ Both final independent audits apply to the same six-source freeze above. Final
 documentation review precedes DCO commit/push. The separately approved signed-
 Package/supplied-Release binding plan is future work, not implemented by this
 candidate batch; full T27 and protected acceptance/authority boundaries stay open.
+
+## Signed Package authentication and supplied Release binding
+
+The feature-owned verifier now implements the complete frozen Package operation
+with original Package bytes, caller-supplied canonical full-Schema Release,
+supplied existing Root/time/global denial and independent bounded product/
+component/targetKey. It finds the supplied Release target and checks every original
+reference field before authenticating Package with unchanged ordinary fresh-Root,
+full Schema/context, actual all-signature/exact-policy and Production checks.
+The unchanged codec binds target, appVersion, launcher and activation-mode subset.
+Existing closed-reference/Schema/policy labels remain explicitly mapped in tests.
+
+The original operation authenticates only Package metadata. It neither verifies
+supplied Release signatures nor checks that object's product/component/context/
+original window. Callers must independently authenticate Release before any
+qualification. The immutable SignatureCheckedPackageBinding owns checked_package,
+borrows the exact supplied_release Schema object and supplied Root, and records
+time; getters preserve those distinct proof levels. This is not a downloaded
+artifact-byte proof. No partial proof, metadata acceptance, protected custody,
+current online qualification, selection or execution permission is returned.
+There is no high-water, role-denial or Development option in this operation.
+
+Five new tests execute thirty-five complete frozen Node cases: thirteen exact
+reference/business, four supplied Release boundaries, three independent context,
+eight actual signatures/thresholds/denial and seven windows/policy/wire/Production.
+Ten positives include mode ordering/subsets, foreign product/component, expired
+or invalid-signature supplied Release, context extras, actual two-signer Package
+and irrelevant denial. All supplied Release inputs independently pass the full
+Schema/canonical factory. These positives assert only Package authenticity plus
+supplied-value binding, never authenticity of Release or current rights. Every
+reference field and Package signature path has a negative control; private keys
+stay in Node. A misleading fixture comment was clarified to describe reusing the
+original caller-owned envelope wrapper rather than re-signing mutated claims.
+One narrow App facade test exercises ten genuine positive/negative controls.
+
+Both independent final scoped static deep audits passed the same six-source
+freeze without a required finding, manifest SHA256
+e8294f10bf6e6e98d5aadf81eaddf88fdf2397cec8be734419462cc6312eb6c6.
+The primary's forty-eight verifier tests passed, zero failures/ignored (73.960s
+wall); new Package five tests/35 cases took 1.040s harness. Strict all-target
+Clippy passed (8.535s wall). Prior ordinary111, successor55, archive36, public-
+chain56, candidate38, thirty new chain and fifty-five reused length-one parity
+controls remain separate regressions. Ordinary/codec source, manifests and all
+three locks are unchanged; prior actual codec157 tests including two enabled
+Node oracles retain acceptance without rerunning an unaffected exhaustive suite.
+
+The primary default App facade passed forty-six tests (15.390s harness,
+164.679s wall), zero failures/ignored. The actual CLI-workspace backend built the
+production App/verifier graph and passed its zero-test library harness (177.813s
+wall), which is compilation/graph evidence, not workflow E2E. Four-source Rust
+formatting, architecture, version, before/after six-source freeze and standard
+working/index whitespace passed. The unchanged selected graph retains prior
+104 packages/109 feature nodes per App/CLI root and nine identical verification-
+critical packages/features; preexisting ICU/zerovec patch differences remain
+disclosed rather than a full-closure equivalence claim.
+
+The dependency auditor independently ran the same frozen six-source tree:
+forty-eight verifier tests passed (57.278s wall), including new five/35 controls
+in 1.210s harness; strict Clippy passed (3.693s). Default App forty-six passed
+(16.430s harness / 26.751s wall); actual CLI backend zero-test build/harness
+passed (9.010s). All formatting, architecture, version, standard whitespace and
+before/after freeze checks passed. Session 37308 closed exit zero; all owned
+runner/compiler/runtime processes were zero. Codec, manifests and three locks
+were explicitly unchanged; selected-graph evidence remains reused.
+
+The compatibility auditor independently repeated all gates on the same freeze:
+forty-eight verifier tests passed (53.623s wall), new five/35 controls 1.200s
+harness; strict all-target Clippy 3.249s; default App forty-six 18.440s harness /
+27.332s wall; CLI backend zero-test compilation/harness 8.542s wall. Four Rust
+format checks, architecture, version, normal working/index whitespace and both
+six-source freeze checks passed. Session 41690 closed exit zero; all auditor-owned
+runners/compiler/runtime and newly spawned Node processes were zero. Codec,
+manifests and three locks were independently confirmed unchanged; prior selected
+graph and codec evidence remains reused, not a newly run exhaustive test claim.
+
+Both auditors also passed the next bounded successful check/refresh-response
+correlation plan: complete contracts, actual new Decision/Telemetry verification
+and independently supplied request-fact binding. Its old Refresh request decision
+retains contract-only time semantics; metadata/Registry/generation acceptance and
+workflow writer CAS remain separate owners. This plan is not delivered behavior.
+
+Full T27 remains in progress. Overall forty-seven tasks still comprise four
+implemented, twelve in progress and thirty-one incomplete/deferred. Product
+0.10.9, normative document versions 1.0, pinned V1 and CodeWhale are unchanged.
+Physical platform qualification and deployment remain deferred. No artifact
+download size, retry or total/cumulative duration cap is introduced.
