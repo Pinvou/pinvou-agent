@@ -189,7 +189,7 @@ while ((m = clusterRe.exec(helpers)) !== null) {
   snapshot.clusters[m[1]] = [...m[2].matchAll(/([\w$]+): b\.([\w$]+)/g)].map((p) => `${p[1]}:${p[2]}`);
 }
 const EXPECTED_SURFACE = {
-  sharedFnCount: 308,
+  sharedFnCount: 312,
 };
 
 assert.equal(
