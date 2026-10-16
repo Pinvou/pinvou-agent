@@ -1783,12 +1783,13 @@ jobs:
       - name: dev profile 内存边界覆盖(codewhale-tui O0,仅本 job)
         shell: pwsh
         run: |
-          # Without Stop, Add-Content/Get-Content failures are non-terminating
-          # and the pwsh wrapper only propagates $LASTEXITCODE — a failed
-          # append would exit 0 and silently resurrect the documented 16GB
-          # rustc/LLVM OOM regression this override exists to prevent
-          # (the content-mutating sibling pwsh steps here set the same
-          # preference).
+          # Explicit for parity with the content-mutating sibling pwsh
+          # steps (they set the same preference). The runner's pwsh
+          # wrapper already prepends ErrorActionPreference='stop', so a
+          # failed append already fails the step; this line only keeps
+          # the guard if the script is ever run outside that wrapper —
+          # a silent failure here would resurrect the documented 16GB
+          # rustc/LLVM OOM regression this override exists to prevent.
           $ErrorActionPreference = "Stop"
           $cargoHome = if ($env:CARGO_HOME) { $env:CARGO_HOME } else { Join-Path $env:USERPROFILE ".cargo" }
           $config = Join-Path $cargoHome "config.toml"
