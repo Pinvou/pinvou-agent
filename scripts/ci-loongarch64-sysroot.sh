@@ -199,6 +199,17 @@ for command_name in curl gzip dpkg dpkg-deb readelf find pkg-config strings sha2
   command -v "$command_name" >/dev/null || fail "missing required command: $command_name"
 done
 
+# The generation identity includes this script's own content hash. The
+# workflows' restore-keys prefix fallback can restore an OLDER cache
+# generation after an edit here (the exact key hashes this file and misses;
+# the prefix fallback hits), and without this binding the reuse check would
+# accept the stale tree whenever mirror/suite/packages are unchanged — e.g.
+# a keep-list or verification-set edit silently not applying to the reused
+# sysroot. Recording the hash in the manifest and comparing it on reuse
+# turns that restore into a clean rebuild.
+self_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+self_sha256="$(sha256sum "$self_path" | awk '{print $1}')"
+
 sysroot_glibc_version() {
   # Dump to a file first: `strings | sed | head` under pipefail can die of
   # SIGPIPE mid-pipeline when the first match lands before the producer
@@ -768,6 +779,10 @@ already_built() {
   [ -f "$output_dir/$CMAKE_TOOLCHAIN_NAME" ] || return 1
   grep -Fxq "glibc-floor=$GLIBC_FLOOR" "$manifest" || return 1
   grep -Fxq "packages=$(IFS=,; echo "${DEV_PACKAGES[*]}")" "$manifest" || return 1
+  # A manifest from a different generation of this script (restore-keys
+  # fallback after a prune/verify-list edit) must rebuild — see the
+  # self_sha256 comment above.
+  grep -Fxq "script-sha256=$self_sha256" "$manifest" || return 1
   # The source identity (mirror/suite or image) is part of the generation:
   # switching it must rebuild, not silently keep serving the previous
   # source's tree. `auto` accepts either source it could have used.
@@ -819,6 +834,7 @@ else
     echo "source=$SOURCE_DESCRIPTION"
     echo "glibc-floor=$GLIBC_FLOOR"
     echo "packages=$(IFS=,; echo "${DEV_PACKAGES[*]}")"
+    echo "script-sha256=$self_sha256"
     if [ -n "$APT_INDEX_SHA" ]; then
       echo "index-sha256=$APT_INDEX_SHA"
     fi
