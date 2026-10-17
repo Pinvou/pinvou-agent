@@ -93,9 +93,12 @@ enum RateDecision {
 }
 
 // 桩构建的统一下载拒绝文案：begin_model_download（宿主服务端闸）与
-// download_model（公开 API 直连的防御纵深闸）共用同一语义与文案。
-fn local_embed_download_refusal() -> String {
-    "本地向量嵌入模型在此平台不可用，无法下载（ort-sys 无本平台制品）".to_string()
+// download_model（公开 API 直连的防御纵深闸）共用同一语义与文案。能力位
+// 作参数（与桌面端 local_embed_download_refusal 同形），宿主即可在两个
+// 方向上执行闸语义，而不是只靠 loongarch64 目标的编译期检查。
+fn local_embed_download_refusal(supported: bool) -> Option<String> {
+    (!supported)
+        .then(|| "本地向量嵌入模型在此平台不可用，无法下载（本平台缺少模型运行库制品）".to_string())
 }
 
 fn check_attempt_rate(
@@ -329,8 +332,9 @@ impl KnowledgeService {
         // 服务端孪生门（桌面端 = kb_model_download 的 local_embed_download_refusal）：
         // 桩构建里下载下来的模型永远无法加载，任何下载触发（含宿主服务的
         // 远端下载入口）都必须在触碰下载管线之前被拒绝。
-        if !crate::embedding::local_embed_available() {
-            return Err(local_embed_download_refusal());
+        if let Some(error) = local_embed_download_refusal(crate::embedding::local_embed_available())
+        {
+            return Err(error);
         }
         self.model_downloading
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -882,15 +886,14 @@ impl KnowledgeService {
         // A successful upload means the managed source is durable. Index in the
         // background so a slow parser/model cannot make the client time out and
         // retry an upload that the server already committed. With lazy model load
-        // the upload is a first-use trigger: ensure the model, then index (failure
-        // leaves the document pending, same as the old not-ready path).
+        // the upload is a first-use trigger: ensure the model, then index; a
+        // failed ensure marks the row failed (the boot backlog requeues failed
+        // rows) instead of leaving it pending forever with no visible reason.
         {
             let background = Arc::clone(self);
             let document_id = document.id;
             tokio::spawn(async move {
-                if background.ensure_model_loaded().await.is_ok() {
-                    let _ = background.index_document(document_id).await;
-                }
+                background.index_after_model_load(document_id).await;
             });
         }
         self.store
@@ -989,6 +992,23 @@ impl KnowledgeService {
                 let message = format!("索引任务异常结束：{error}");
                 let _ = self.store.mark_document_failed(document_id, &message);
                 Err(message)
+            }
+        }
+    }
+
+    /// Background tail of `upload_document`: ensure the model, then index.
+    /// A failed ensure must write the failure back to the row — on stub
+    /// builds (`local_embed_available() == false`) it is deterministic and
+    /// permanent, and an eternal `pending` row gives the owner no visible
+    /// reason. `failed` rows stay retryable: the boot backlog requeue
+    /// selects `status IN ('pending','failed')`.
+    async fn index_after_model_load(self: &Arc<Self>, document_id: i64) {
+        match self.ensure_model_loaded().await {
+            Ok(()) => {
+                let _ = self.index_document(document_id).await;
+            }
+            Err(error) => {
+                let _ = self.store.mark_document_failed(document_id, &error);
             }
         }
     }
@@ -1338,8 +1358,9 @@ impl KnowledgeService {
         // 防御纵深：公开 API 的直连调用者不经过 begin_model_download 的闸。
         // 桩构建里同样必须在安装锁/磁盘 I/O 之前拒绝，否则会白下 568 MB 后
         // 才在 Embedder::from_dir 处失败。
-        if !crate::embedding::local_embed_available() {
-            return Err(local_embed_download_refusal());
+        if let Some(error) = local_embed_download_refusal(crate::embedding::local_embed_available())
+        {
+            return Err(error);
         }
         self.download_model_with(
             crate::model_download::knowledge_model_hf_base_url_candidates,
@@ -1625,6 +1646,72 @@ mod tests {
     }
 
     #[test]
+    fn local_embed_refusal_tracks_the_capability_bit() {
+        // Same shape as the desktop twin's
+        // download_is_refused_when_local_embed_is_unsupported: the gate
+        // decision is a pure function of the compile-time capability bit, so
+        // the host executes both directions; the full-funnel stub refusals
+        // stay type-checked for the loongarch64 target by the cfg test below
+        // (service.rs is server-gated, so no host feature set compiles it
+        // with the stub).
+        assert!(local_embed_download_refusal(true).is_none());
+        let refusal = local_embed_download_refusal(false)
+            .expect("an unsupported capability must refuse downloads");
+        assert!(refusal.contains("此平台不可用"), "{refusal}");
+    }
+
+    #[tokio::test]
+    async fn upload_marks_the_document_failed_when_the_model_cannot_load() {
+        // upload's background ensure/index tail must write the failure back
+        // to the row: on stub builds every document would otherwise sit in
+        // `pending` forever with no owner-visible reason. A garbage model
+        // directory makes the load fail deterministically at ONNX parsing
+        // (offline), so the host executes the Err arm; `failed` rows stay
+        // retryable via the boot backlog (see pending_document_ids).
+        let root = tempfile::tempdir().unwrap();
+        let model_dir = root.path().join("models").join(MODEL_NAME);
+        let service = KnowledgeService::boot(root.path().join("data"), Some(model_dir.clone()))
+            .unwrap()
+            .service;
+        std::fs::create_dir_all(&model_dir).unwrap();
+        for (name, contents) in [
+            ("model.onnx", b"not-a-real-onnx".as_slice()),
+            ("tokenizer.json", b"{}".as_slice()),
+            ("config.json", b"{}".as_slice()),
+            ("special_tokens_map.json", b"{}".as_slice()),
+            ("tokenizer_config.json", b"{}".as_slice()),
+        ] {
+            std::fs::write(model_dir.join(name), contents).unwrap();
+        }
+        let collection = service
+            .create_collection(CreateCollectionRequest {
+                name: "kb".to_string(),
+                description: None,
+            })
+            .unwrap();
+        let document = service
+            .upload_document(collection.id, "note.md", b"hello".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(document.status, "pending");
+        service.index_after_model_load(document.id).await;
+        let stored = service
+            .store
+            .document(document.id, false)
+            .unwrap()
+            .expect("uploaded document must remain readable");
+        assert_eq!(stored.document.status, "failed");
+        assert!(
+            stored
+                .document
+                .error
+                .as_deref()
+                .is_some_and(|error| !error.is_empty()),
+            "a failed row must carry the reason"
+        );
+    }
+
+    #[test]
     #[cfg(not(all(
         feature = "local-embed",
         not(all(target_os = "linux", target_arch = "loongarch64"))
@@ -1642,6 +1729,9 @@ mod tests {
             .begin_model_download()
             .expect_err("stub builds must refuse model downloads");
         assert!(error.contains("此平台不可用"), "{error}");
+        // 下载文案与 embedding 桩常量必须同源:HTTP 层据此把能力缺失映射
+        // 成 503(见 server.rs 的 map_document_write_error)。
+        assert!(crate::embedding::is_local_embed_unavailable(&error));
         assert!(!service.model_downloading(), "no download may be in flight");
         // 公开 download_model 的直连调用者不经过上面的闸（防御纵深）：同样
         // 必须在任何安装锁/磁盘 I/O 之前拒绝，而不是白下 568 MB 后才失败。

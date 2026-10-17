@@ -219,7 +219,7 @@ pub async fn kb_model_load_after_first_frame(
 /// loongarch64 无制品，stub embedder 只能拒载）。
 fn local_embed_download_refusal(supported: bool) -> Option<String> {
     (!supported)
-        .then(|| "本地向量嵌入模型在此平台不可用，无法下载（ort-sys 无本平台制品）".to_string())
+        .then(|| "本地向量嵌入模型在此平台不可用，无法下载（本平台缺少模型运行库制品）".to_string())
 }
 
 /// 按需下载 + 校验 + 部署 embedding 模型，完成后热加载并刷新工具门控（免重启）。
