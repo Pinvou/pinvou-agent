@@ -844,7 +844,7 @@ fn aux_stays_out_of_the_deliverables_index_and_acp_classification() {
 async fn gui_command_shell_forwards_rows_and_skipped() {
     use crate::features::deliverables::DeliverableIndex;
 
-    let (_home, host, _lock) =
+    let (_lock, _home, _host) =
         crate::features::deliverables::gui_index_contract_tests::run_in_scratch_home();
 
     let shell: DeliverableIndex = super::artifacts::list_deliverable_index()
@@ -857,6 +857,4 @@ async fn gui_command_shell_forwards_rows_and_skipped() {
         vec!["s-huge".to_string()],
         "the shell must return DeliverableIndex whole, not flatten to rows"
     );
-
-    drop(host);
 }
