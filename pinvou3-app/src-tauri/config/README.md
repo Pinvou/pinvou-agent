@@ -8,7 +8,8 @@ config/
    ├─ linux/
    │  ├─ tauri.conf.json
    │  ├─ x86_64/tauri.conf.json
-   │  └─ aarch64/tauri.conf.json
+   │  ├─ aarch64/tauri.conf.json
+   │  └─ loongarch64/tauri.conf.json
    ├─ macos/tauri.conf.json
    └─ windows/
       ├─ tauri.conf.json
@@ -49,18 +50,31 @@ entry (`--target X` or `--target=X`, last one wins), not the host
 architecture; without `--target` the host architecture is used as before. A
 Linux cross build to a machine segment `build.js` does not know fails instead
 of silently falling back to the host. One exception: a Linux host whose own
-architecture is outside the table (anything other than x86_64/aarch64) falls
-back as well, because there the build cannot tell a cross build from a native
-one. Two sidecars can only be prepared for the
-host architecture, so a cross build must opt out of both or `build.js` stops
-before any preparation:
+architecture is outside the table (anything other than x86_64/aarch64/
+loongarch64) falls back as well, because there the build cannot tell a cross
+build from a native one. Two sidecars can only be prepared for the
+host architecture, so a cross build must resolve both or `build.js` stops
+before any preparation. Each has two acceptable resolutions:
 
 - `PINVOU3_SKIP_LINUX_ASR=1`: skip the SenseVoice runtime (it only builds
   natively) and drop its declaration from the architecture overlay;
+  alternatively `PINVOU3_LINUX_ASR_PREBUILT=1` accepts the engine a release
+  pipeline pre-built at `target/linux-asr-runtime/<arch>/sense-voice-main`
+  for the target (the declaration stays and the artifact is packaged);
 - `PINVOU3_SKIP_KNOWLEDGE_HOST=1`: skip the shared knowledge host (its cargo
-  build ignores `--target`) and drop `knowledge-host/` from the platform overlay.
+  build ignores `--target`) and drop `knowledge-host/` from the platform
+  overlay; alternatively `PINVOU3_KNOWLEDGE_HOST_PREBUILT=1` copies the
+  server the pipeline pre-built at
+  `pinvou-knowledge/target/<triple>/release/pinvou-knowledge-server` for the
+  exact `--target` triple.
 
-Only the value `1` enables a switch. The resulting package lacks the bundled
-SenseVoice engine and the shared knowledge host server. The Codex ACP Bridge is prepared
+Only the value `1` enables a switch. With the skip switches the resulting
+package lacks the bundled SenseVoice engine and the shared knowledge host
+server; with the pre-built switches both artifacts are packaged from the
+pre-placed target builds. The Codex ACP Bridge is prepared
 for the target architecture (`PINVOU3_BRIDGE_TARGET_ARCH`), running npm with a
-second, host-architecture Node.
+second, host-architecture Node. Architectures without an official nodejs.org
+distribution (loong64) fetch that Node from
+`unofficial-builds.nodejs.org` at the same pinned version, with npmmirror's
+`node-unofficial-builds` mirror as fallback; the sha256 stays pinned in
+`scripts/prepare-codex-bridge-runtime.sh`.

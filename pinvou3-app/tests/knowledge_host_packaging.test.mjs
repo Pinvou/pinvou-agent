@@ -44,7 +44,9 @@ const runDev = readFileSync(path.join(appRoot, 'run-dev.sh'), 'utf8');
 
 test('Linux package embeds the host helper and standalone server build', () => {
   assert.match(platformConfig, /resources\/platforms\/linux\/knowledge-host\//u);
-  assert.match(buildScript, /prepareKnowledgeHost\(\)/u);
+  // Packaging calls may pass cross-build options (pre-built target server);
+  // the pin is that build.js calls this step on the packaging path at all.
+  assert.match(buildScript, /prepareKnowledgeHost\(/u);
   assert.match(buildScript, /hasTauriBuildCommand/u);
   assert.match(knowledgeHostBuildScript, /chmodSync\(helper, 0o755\)/u);
   const repositoryRoot = path.resolve(appRoot, '..');

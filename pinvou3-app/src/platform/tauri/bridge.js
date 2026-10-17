@@ -221,6 +221,7 @@ function pinvouSharedtauriMain() {
       localVllmSupported: false,
       codexAcpSupported: false,
       browserNativeDisplay: false,
+      localEmbedSupported: false,
     },
     settings: null,
     selectedPet: "lingling",

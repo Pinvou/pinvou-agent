@@ -57,11 +57,23 @@ class ReleaseCachePolicyTests(unittest.TestCase):
             "policy) and the restore side was a guaranteed miss — zero "
             "release-* entries existed live when the steps were removed",
         )
+        # The save-capable actions/cache spellings are banned; the
+        # restore-only subaction is not a write and stays allowed (the
+        # loongarch64 release job restores the toolchain/sysroot keys that
+        # pr-check's push legs write — restore consumes no quota churn).
         self.assertNotIn(
-            "actions/cache",
+            "actions/cache@",
             workflow,
-            "the no-write policy covers every caching action, not just "
-            "rust-cache's restore/save flags",
+            "release jobs must not run the save-capable actions/cache "
+            "action (restore + post-job save); restore-only consumption "
+            "via actions/cache/restore@ is allowed",
+        )
+        self.assertNotIn(
+            "actions/cache/save@",
+            workflow,
+            "release jobs must not run the save-only subaction either — "
+            "restore + explicit save would reassemble the banned "
+            "save-capable flow",
         )
         # The common Rust caching sidecar by name; a renamed successor is
         # the documented residual gap above.

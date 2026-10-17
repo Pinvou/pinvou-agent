@@ -290,6 +290,38 @@ class CacheJanitorPolicyTests(unittest.TestCase):
         self.assertIn("::warning::", delete_fn)
         self.assertIn("return 0", delete_fn)
 
+    def test_rule_e_keeps_newest_loong64_generation_per_series_per_scope(self):
+        # The loongarch64 toolchain/sysroot caches use plain actions/cache
+        # keys (release-linux-loong64-jammy-{toolchain,sysroot}-<hash>), which
+        # none of rules B/C/D prefix-match: without rule E every script-hash
+        # generation would pile up on the main scope until LRU evicted the
+        # gate caches. Same structure as rule D: (series, scope) grouping,
+        # newest createdAt kept, items[1:] deleted, createdAt-less entries
+        # excluded, and rule A's scopes excluded. The slice is bounded by the
+        # next rule's marker (rule A3) so a block relocation cannot widen it
+        # to end-of-script.
+        rule_e = self.script.split("# ---------- Rule E:", maxsplit=1)[1].split(
+            "# ---------- Rule A3:", maxsplit=1
+        )[0]
+        self.assertIn("startswith('release-linux-loong64-jammy-')", rule_e)
+        self.assertIn("if not c.get('createdAt'):", rule_e)
+        # The series splits the trailing hashFiles generation segment off
+        # (rsplit on the last dash), so toolchain and sysroot stay separate
+        # series and only stale generations within one series are deleted.
+        self.assertIn("c['key'].rsplit('-', 1)", rule_e)
+        self.assertIn("groups.setdefault((series, c['ref']), [])", rule_e)
+        self.assertIn("key=lambda c: c['createdAt'], reverse=True", rule_e)
+        self.assertIn("for c in items[1:]", rule_e)
+        self.assertIn("os.environ.get('CLOSED_REFS','')", rule_e)
+        # Rule E reads the CLOSED_REFS rule A exported (before rule D, hence
+        # also before E) and is counted separately in the audit summary.
+        self.assertLess(
+            self.script.index("export CLOSED_REFS"),
+            self.script.index("# ---------- Rule E:"),
+        )
+        self.assertIn("E_loong64", self.script)
+        self.assertIn("E_loong64=$STAT_E_LOONG64", self.script)
+
     def test_rules_run_in_documented_order(self):
         # The per-rule pin slices are bounded by the NEXT rule's marker,
         # so their right boundaries fail open: relocating a whole rule
@@ -306,6 +338,7 @@ class CacheJanitorPolicyTests(unittest.TestCase):
             "# ---------- 规则 B:",
             "# ---------- 规则 C:",
             "# ---------- Rule D:",
+            "# ---------- Rule E:",
             "# ---------- Rule A3:",
         ]
         indices = [self.script.index(marker) for marker in order]
@@ -313,7 +346,7 @@ class CacheJanitorPolicyTests(unittest.TestCase):
             indices,
             sorted(indices),
             "rule blocks must stay in documented order A < A2 < B < C < "
-            "D < A3 — relocating a block breaks the CLOSED_REFS and "
+            "D < E < A3 — relocating a block breaks the CLOSED_REFS and "
             "DELETED_IDS skip chains while every slice pin stays green",
         )
 

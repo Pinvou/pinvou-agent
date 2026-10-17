@@ -4,6 +4,7 @@ const {
   lstatSync,
   mkdirSync,
   readFileSync,
+  statSync,
   writeFileSync,
 } = require('node:fs');
 const path = require('node:path');
@@ -84,17 +85,41 @@ function knowledgeHostDevelopmentConfigSpec() {
   });
 }
 
+function prebuiltServerFile(source) {
+  try {
+    return statSync(source).isFile() ? source : null;
+  } catch {
+    return null;
+  }
+}
+
 function prepareKnowledgeHost({
   platform = process.platform,
   development = false,
   spawn = spawnSync,
-} = {}) {
-  if (platform !== 'linux') return null;
-  const repositoryRoot = path.resolve(APP_ROOT, '..');
-  const packagedResourceRoot = path.join(
+  // Cross builds pass the exact `--target` triple: cargo target directories
+  // are keyed by the whole triple, and that is where the release pipeline
+  // pre-builds the server (see `prebuilt` below). Null without `--target`,
+  // which keeps native builds on the cargo path unchanged.
+  targetTriple = null,
+  // `main()` reads PINVOU3_KNOWLEDGE_HOST_PREBUILT once and passes the
+  // decision down (same single-read discipline as the skip switches): the
+  // gate and this step must never disagree about whether the target server
+  // is guaranteed to exist. Packaging only; development always builds
+  // natively for the local host.
+  prebuilt = false,
+  // Injected by tests so a pre-built source can be staged outside the real
+  // pinvou-knowledge/ worktree.
+  repositoryRoot = path.resolve(APP_ROOT, '..'),
+  // Same escape hatch for the packaged resource tree: tests must not write
+  // fixtures into the real src-tauri/resources tree (a killed run would
+  // leave a fixture file for a later real build to package).
+  packagedResourceRoot = path.join(
     APP_ROOT,
     'src-tauri', 'resources', 'platforms', 'linux', 'knowledge-host',
-  );
+  ),
+} = {}) {
+  if (platform !== 'linux') return null;
   const resourceRoot = development ? DEVELOPMENT_RESOURCE_ROOT : packagedResourceRoot;
   const helperSource = path.join(packagedResourceRoot, 'pinvou-knowledge-host-helper');
   const helper = path.join(resourceRoot, 'pinvou-knowledge-host-helper');
@@ -110,30 +135,51 @@ function prepareKnowledgeHost({
   // package so a checkout or archive that flattened modes cannot ship a
   // pkexec target that the operating system refuses to execute.
   chmodSync(helper, 0o755);
-  const manifest = path.join(repositoryRoot, 'pinvou-knowledge', 'Cargo.toml');
-  const cargoArgs = ['build', '--locked'];
-  if (!development) cargoArgs.push('--release');
-  cargoArgs.push(
-    '--manifest-path', manifest, '--bin', 'pinvou-knowledge-server',
-    // Default to all cores: knowledge-host builds in an isolated target dir that
-    // is always cold on release machines/CI, where -j 2 drags this step out to
-    // minutes; memory-constrained environments can still override via
-    // PINVOU_KNOWLEDGE_BUILD_JOBS (same name as pinvou-knowledge/deploy/install.sh).
-    '-j', process.env.PINVOU_KNOWLEDGE_BUILD_JOBS || String(os.availableParallelism()),
-  );
-  const result = spawn(
-    process.env.CARGO || 'cargo',
-    cargoArgs,
-    { cwd: repositoryRoot, stdio: 'inherit', env: process.env },
-  );
-  if (result.error) throw result.error;
-  if (result.status !== 0) throw new Error('共享知识库服务构建失败');
-
-  const profile = development ? 'debug' : 'release';
-  const source = path.join(
-    repositoryRoot,
-    'pinvou-knowledge', 'target', profile, 'pinvou-knowledge-server',
-  );
+  let source;
+  if (prebuilt) {
+    // Cross builds cannot produce the server here (the cargo build below
+    // ignores --target), so the release pipeline pre-builds it for the target
+    // triple and this step only copies it into the packaged resource tree -
+    // the same destination a native build writes. A missing artifact fails
+    // loudly: the platform overlay still declares knowledge-host/, so a
+    // silent skip would ship an empty runtime directory.
+    if (!targetTriple) {
+      // Fail on the known-misuse shape instead of probing a path with the
+      // literal `null` segment in it (unreachable from `main()`, which only
+      // sets prebuilt for cross builds where the triple is non-null).
+      throw new Error('预构建的共享知识库服务需要目标三元组：cross build 时必须传 targetTriple');
+    }
+    source = path.join(
+      repositoryRoot, 'pinvou-knowledge', 'target', targetTriple, 'release', 'pinvou-knowledge-server',
+    );
+    if (!prebuiltServerFile(source)) {
+      throw new Error(
+        `预构建的共享知识库服务不存在: ${source}（跨架构打包需先提供 ${targetTriple}`
+          + ' 的服务端二进制，或改设 PINVOU3_SKIP_KNOWLEDGE_HOST=1）',
+      );
+    }
+  } else {
+    const manifest = path.join(repositoryRoot, 'pinvou-knowledge', 'Cargo.toml');
+    const cargoArgs = ['build', '--locked'];
+    if (!development) cargoArgs.push('--release');
+    cargoArgs.push(
+      '--manifest-path', manifest, '--bin', 'pinvou-knowledge-server',
+      // Default to all cores: knowledge-host builds in an isolated target dir that
+      // is always cold on release machines/CI, where -j 2 drags this step out to
+      // minutes; memory-constrained environments can still override via
+      // PINVOU_KNOWLEDGE_BUILD_JOBS (same name as pinvou-knowledge/deploy/install.sh).
+      '-j', process.env.PINVOU_KNOWLEDGE_BUILD_JOBS || String(os.availableParallelism()),
+    );
+    const result = spawn(
+      process.env.CARGO || 'cargo',
+      cargoArgs,
+      { cwd: repositoryRoot, stdio: 'inherit', env: process.env },
+    );
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error('共享知识库服务构建失败');
+    const profile = development ? 'debug' : 'release';
+    source = path.join(repositoryRoot, 'pinvou-knowledge', 'target', profile, 'pinvou-knowledge-server');
+  }
   const destination = path.join(resourceRoot, 'pinvou-knowledge-server');
   mkdirSync(path.dirname(destination), { recursive: true });
   copyFileSync(source, destination);

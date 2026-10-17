@@ -390,11 +390,15 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       // mode='outputs' 时作为一级「产出物」视图独立渲染:固定 output 段,隐藏段切换,显示自己的标题。
       const outputsOnly = mode === 'outputs';
       const isDark = theme === 'dark';
-      const bs = useBridgeState(['knowledge', 'chat']); // 取知识模型进度和当前产物
+      const bs = useBridgeState(['knowledge', 'chat', 'platform']); // 取知识模型进度、当前产物与平台能力快照
       const canDownloadArtifacts = !isWeb || can('artifactDownload');
       const canPickHostFiles = !isWeb || can('hostFilePicker');
       const canOpenSystemFiles = !isWeb && can('externalSystemOpen');
       const canInstallKbModel = can('localModelSetup') && can('dependencyInstall');
+      // 本地 embedding 平台门控（get_platform_capabilities.localEmbedSupported）：linux/loongarch64
+      // 编译期即无 ort-sys/fastembed 制品，嵌入请求只会得到「平台不支持」。快照未到达前按
+      // false 兜底（fail closed），宁可先隐藏下载入口也不渲染一个必然失败的按钮。
+      const localEmbedSupported = !!(((bs && bs.platformCapabilities) || {}).localEmbedSupported);
 
       const [sub, setSub] = useState(outputsOnly ? 'output' : 'kb'); // 'output' | 'files' | 'kb' | 'remote'；统一知识库入口默认落本地知识库
 
@@ -804,7 +808,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         : t.kbModelStageDownload
         : t.kbModelStageDownload;
       const startModelDownload = async (repair = false) => {
-        if (!canInstallKbModel) return;
+        if (!canInstallKbModel || !localEmbedSupported) return;
         try {
           const st = await bridge.knowledge.downloadKbModel(repair);
           if (st) { setKbModel(st); kbCache.model = st; }
@@ -1260,22 +1264,29 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
             )}
             {outputPreview && <FilePreviewModal path={outputPreview.path} sessionId={outputPreview.sessionId} t={t} onClose={() => setOutputPreview(null)} />}
 
-            {sub === 'remote' && <RemoteKnowledgeView t={t} />}
+            {sub === 'remote' && <RemoteKnowledgeView t={t} localEmbedSupported={localEmbedSupported} />}
 
             {/* ============ 知识库 · embedding 模型未安装/加载中/加载失败 → gate ============ */}
+            {/* localEmbedSupported=false 的平台（linux/loongarch64）编译期即无本地 embedding：
+                整个「下载并部署」流程不可能成功，隐藏下载入口（角标/资源卡/按钮），只留平台说明。 */}
             {sub === 'kb' && !modelUsable && (
               <div className="max-w-[560px] mx-auto text-center pt-8 pb-2">
                 <div className="w-[84px] h-[84px] mx-auto rounded-[24px] grid place-items-center relative"
                   style={{ background: isDark ? 'linear-gradient(135deg,#2A2440,#1E2438)' : 'linear-gradient(135deg,#efeafe,#e3ecfb)' }}>{/* isDark dynamic-value: 保留 (linear-gradient) */}
                   <Database size={40} className="text-[#6f5cf0]" />
-                  <span className="absolute -right-1.5 -bottom-1.5 w-[30px] h-[30px] rounded-full grid place-items-center"
-                    style={{ background: 'linear-gradient(135deg,#6f5cf0,#5b6cf2)', border: `3px solid ${isDark ? '#131314' : '#fff'}`, boxShadow: '0 4px 10px rgba(108,92,231,.35)' }}>{/* isDark dynamic-value: 保留 (border 模板字符串拼色) */}
-                    <Download size={14} className="text-white" />
-                  </span>
+                  {localEmbedSupported && (
+                    <span className="absolute -right-1.5 -bottom-1.5 w-[30px] h-[30px] rounded-full grid place-items-center"
+                      style={{ background: 'linear-gradient(135deg,#6f5cf0,#5b6cf2)', border: `3px solid ${isDark ? '#131314' : '#fff'}`, boxShadow: '0 4px 10px rgba(108,92,231,.35)' }}>{/* isDark dynamic-value: 保留 (border 模板字符串拼色) */}
+                      <Download size={14} className="text-white" />
+                    </span>
+                  )}
                 </div>
-                <h2 className={`mt-5 text-[20px] font-extrabold ${ink}`}>{modelInstalled ? (modelLoading ? t.kbModelLoadingTitle : t.kbModelFailedTitle) : t.kbModelTitle}</h2>
-                <p className={`mt-2.5 mx-auto max-w-[450px] text-[13.5px] leading-relaxed ${muted}`}>{modelInstalled ? (modelLoading ? t.kbModelLoadingDesc : t.kbModelFailedDesc) : t.kbModelDesc}</p>
+                <h2 className={`mt-5 text-[20px] font-extrabold ${ink}`}>{localEmbedSupported ? (modelInstalled ? (modelLoading ? t.kbModelLoadingTitle : t.kbModelFailedTitle) : t.kbModelTitle) : t.kbEmbedUnsupported}</h2>
+                {localEmbedSupported && (
+                  <p className={`mt-2.5 mx-auto max-w-[450px] text-[13.5px] leading-relaxed ${muted}`}>{modelInstalled ? (modelLoading ? t.kbModelLoadingDesc : t.kbModelFailedDesc) : t.kbModelDesc}</p>
+                )}
 
+                {localEmbedSupported && (
                 <div className={`mt-5 mx-auto max-w-[480px] text-left rounded-2xl p-[18px] ${panel}`} style={panelShadow}>
                   <div className="flex items-center gap-3">
                     <div className="w-[46px] h-[46px] rounded-xl grid place-items-center shrink-0 bg-[#f0eefb] dark:bg-[#2A2440]"
@@ -1303,8 +1314,9 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                     ))}
                   </div>
                 </div>
+                )}
 
-                {!downloading && !modelLoading ? (
+                {localEmbedSupported && (!downloading && !modelLoading ? (
                   <div className="mt-5">
                     {modelFailed ? (
                       <div className="flex items-center justify-center gap-3">
@@ -1330,7 +1342,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                       label={modelLoading && !downloading ? t.kbModelLoading : dlStageLabel}
                     />
                   </div>
-                )}
+                ))}
               </div>
             )}
 
@@ -1368,8 +1380,12 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                     这一状态）。此前页面只剩上面的徽标，没有任何继续/修复入口——加载
                     动作只能靠用户自己想到「导入文件触发补载」。真实加载失败会清
                     deferred 并落 error，改走既有失败门（Retry/Repair），不进此分支。
-                    canInstallKbModel=false 的平台（web）没有本地模型安装能力，不渲染。 */}
-                {canInstallKbModel && modelInstalled && !modelReady && !modelLoading && !downloading && !kbPeerDownloading && (
+                    canInstallKbModel=false 的平台（web）没有本地模型安装能力，不渲染；
+                    localEmbedSupported=false 的平台（linux/loongarch64）无法加载本地
+                    embedding，同样不渲染。正常安装路径在该平台不存在已安装态，但
+                    peer/共享宿主可能留下残留模型目录（kb_tool.rs 的同款场景），此处
+                    按 fail-closed 一并隐藏。 */}
+                {localEmbedSupported && canInstallKbModel && modelInstalled && !modelReady && !modelLoading && !downloading && !kbPeerDownloading && (
                   <div className={`mb-5 rounded-2xl border p-4 border-[#dfe3ee] bg-[#f8f9fd] dark:border-white/10 dark:bg-white/[0.04] flex flex-wrap items-center justify-between gap-3`}>
                     <div className="min-w-0 flex-1">
                       <div className={`text-[14px] font-bold ${ink}`}>{t.kbModelNotLoadedTitle}</div>
