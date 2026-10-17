@@ -19,6 +19,19 @@ ignore = [
     # already resolves 0.41.0 (both the plist 1.10.0 and calamine 0.36.1
     # paths). Without an ignore entry, a future dependency downgrade below
     # 0.41 would trip the advisory and fail CI again — reassess then.
+    #
+    # RUSTSEC-2026-0367/0368/0369 (zip 8.6.0: SUID/SGID preservation,
+    # symlink escape and permission-through-symlink in the wholesale
+    # `ZipArchive::extract()` / stream-extract APIs). Patched only in
+    # zip >=9.0.0, which calamine 0.36.1 (^8.6) cannot reach; ignore is
+    # scoped on reachability: the graph never calls the wholesale
+    # extraction APIs — calamine only reads xlsx in memory, and every
+    # direct zip consumer iterates `by_index` with `enclosed_name()`
+    # guards (artifacts/native_installer/marketplace/python_dependencies).
+    # Reassess on any calamine/zip bump or new extract() call site.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
 ]
 # unmaintained 保留 "workspace":父 crate 依赖图比子模块深
 # (子模块 + Tauri GTK3/glib + fastembed),实测 unmaintained="all" 会命中 gtk-rs GTK3、
