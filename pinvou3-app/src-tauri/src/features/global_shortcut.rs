@@ -67,14 +67,26 @@ struct RegisteredShortcut {
     accelerator: String,
 }
 
-/// Parse an accelerator with the plugin's `Shortcut` parser. Shared by
-/// normalization and registration so both reject the same inputs.
+/// Parse an accelerator with the plugin's `Shortcut` parser, plus this
+/// feature's own product policy: at least one modifier. The plugin parser
+/// also accepts bare keys (`KeyP`, `F9`), but a system-wide grab of a lone
+/// letter key would swallow that keystroke in every application — too
+/// aggressive for a summon shortcut. Shared by normalization and
+/// registration so both reject the same inputs (the frontend pre-validation
+/// mirrors the policy, but the Rust layer does not trust it).
 fn parse_accelerator(raw: &str) -> Result<Shortcut, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return Err("accelerator is empty".to_string());
     }
-    Shortcut::from_str(trimmed).map_err(|error| format!("invalid accelerator {raw:?}: {error}"))
+    let shortcut = Shortcut::from_str(trimmed)
+        .map_err(|error| format!("invalid accelerator {raw:?}: {error}"))?;
+    if shortcut.mods.is_empty() {
+        return Err(format!(
+            "invalid accelerator {raw:?}: at least one modifier is required"
+        ));
+    }
+    Ok(shortcut)
 }
 
 /// Normalize an accelerator into the plugin's canonical display form (e.g.
@@ -201,6 +213,14 @@ fn register_shortcut(app: &AppHandle, shortcut: Shortcut) -> Result<(), String> 
     // registered on the shared plugin, including ones other features might
     // add later. Triggering strictly on Pressed keeps Released a no-op (the
     // Windows backend emits it from a poll thread).
+    //
+    // Known plugin-level residual (global-hotkey 0.8): on X11 the OS register
+    // round-trips through the manager's event thread, and if that thread died
+    // at creation (no reachable X server despite the session gate) the reply
+    // channel disconnects and the plugin reports Ok anyway — a "registered"
+    // outcome is only as good as the X11 connection. The availability gate
+    // (session type AND a DISPLAY socket) keeps this to narrow stale-env
+    // windows; the combo then simply never fires until the next start.
     app.global_shortcut()
         .on_shortcut(shortcut, |app, _shortcut, event| {
             if event.state() == ShortcutState::Pressed {
@@ -293,8 +313,10 @@ pub(crate) fn apply_config(
                     // would report — and persist — `disabled` while the
                     // shortcut keeps firing. `Conflict` skips persistence, so
                     // prefs keep saying enabled=true, which matches the
-                    // still-registered plugin state. (Realistically only
-                    // Windows `UnregisterHotKey` can error at all.)
+                    // still-registered plugin state. (Near-unreachable:
+                    // macOS unregister cannot fail; X11 can fail after a
+                    // keyboard-mapping change; Windows `UnregisterHotKey`
+                    // can also error.)
                     log::warn!("global shortcut unregister of {previous} failed: {error}");
                     Ok(ApplyOutcome::conflict(error))
                 }
@@ -328,8 +350,11 @@ pub(crate) fn apply_config(
                             // while bookkeeping and prefs record only the new
                             // one — self-heals at the next startup replay.
                             // Near-unreachable: unregistering a registered
-                            // combo effectively cannot fail on X11/macOS, and
-                            // only Windows `UnregisterHotKey` can error at all.
+                            // combo cannot fail on macOS; on X11 it can fail
+                            // after a keyboard-mapping change (the keycode is
+                            // re-derived from a fresh `get_keyboard_mapping`
+                            // round trip), and Windows `UnregisterHotKey` can
+                            // also error.
                             log::warn!("global shortcut unregister of {previous} failed: {error}");
                         }
                     }
@@ -463,6 +488,21 @@ mod tests {
             normalize_accelerator("Ctrl+P+Alt").is_err(),
             "key before modifier"
         );
+    }
+
+    #[test]
+    fn single_key_without_modifier_is_rejected() {
+        // Product policy, enforced at the authoritative layer (not just the
+        // frontend pre-validation): the plugin parser accepts bare keys, but
+        // a system-wide grab of a lone letter/function key would swallow
+        // that keystroke in every application. A direct IPC caller must not
+        // be able to opt into that.
+        for raw in ["KeyP", "F9", "p", "MediaPlayPause", "0"] {
+            assert!(
+                normalize_accelerator(raw).is_err(),
+                "bare key {raw:?} must be rejected: at least one modifier is required"
+            );
+        }
     }
 
     #[test]

@@ -807,9 +807,13 @@ pub fn run() {
     // System-wide bring-to-front shortcut (off by default, opt-in like the
     // voice shortcut; default accelerator Ctrl/Cmd+Alt+P when enabled —
     // configurable in settings). Registered ONLY on sessions where it can
-    // work: the plugin's setup creates the X11 hotkey manager eagerly, and on
-    // a Wayland-only session that connection cannot be established — a failed
-    // plugin setup aborts the whole startup. The same availability flag gates
+    // actually work: on Wayland the X11 grabs behind the plugin would be
+    // silently dead (XWayland's X server receives no system-wide keys), and
+    // with no X server to connect to at all the plugin's manager thread
+    // cannot attach (its connection failure is swallowed on that thread, so
+    // every later register would silently no-op rather than error — on Linux
+    // manager creation itself is infallible, which is exactly why a dead
+    // registration would go unnoticed). The same availability flag gates
     // every later apply (`features::global_shortcut`), so plugin presence and
     // the feature gate can never disagree.
     // No plugin-level handler here: it would fire for ANY shortcut registered
@@ -818,12 +822,13 @@ pub fn run() {
     // whose handler triggers strictly on Pressed (Released stays a no-op) and
     // only for the combo that registration created.
     let builder = if crate::platform::capabilities::current().global_shortcuts_available {
-        builder.plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        builder
+            .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+            .plugin(startup_probe_plugin("startup-probe-global-shortcut"))
     } else {
         builder
     };
     let builder = builder
-        .plugin(startup_probe_plugin("startup-probe-global-shortcut"))
         .on_page_load(|webview, payload| {
             startup::mark_with_detail(
                 "rust",
@@ -894,6 +899,11 @@ pub fn run() {
                 );
             }
             startup::mark("setup:plugins_ready");
+            // Log-attached; only now can a log::warn! reach the log file. The
+            // degraded-XWayland-session diagnostic is emitted here instead of
+            // inside capabilities::current(), whose first call (builder
+            // construction) runs before any logger exists.
+            crate::platform::capabilities::warn_if_global_shortcut_session_is_ambiguous();
             crate::platform::window_startup::arm_hidden_main_window_fallback(app.handle());
 
             // Linux webview(webkit2gtk)默认拒绝 getUserMedia,语音输入点麦克风会被拒。
