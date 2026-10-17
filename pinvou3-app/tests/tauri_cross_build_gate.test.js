@@ -519,24 +519,29 @@ test("prepareLinuxAsrRuntime accepts a pre-built target engine instead of buildi
   const runtime = linuxAsrRuntimeOutput("loong64");
   assert.equal(runtime.directory, "loongarch64");
   assert.equal(runtime.scriptArch, "loongarch64");
-  const engineDir = path.dirname(runtime.binaryPath);
-  const created = !fs.existsSync(runtime.binaryPath);
-  if (created) {
-    fs.mkdirSync(engineDir, { recursive: true });
-    fs.writeFileSync(runtime.binaryPath, "#!engine-fixture\n");
-  }
+  // Hermetic via the injected output root (same discipline as the
+  // knowledge-host fixture roots): the fixture must never live in the real
+  // target/linux-asr-runtime tree, where a killed run would leave an engine
+  // that PINVOU3_LINUX_ASR_PREBUILT=1 accepts, and a genuine artifact must
+  // never be at the mercy of this test's cleanup.
+  const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pinvou-asr-runtime-"));
   try {
+    const fixture = linuxAsrRuntimeOutput("loong64", { outputRoot });
+    assert.equal(path.dirname(fixture.binaryPath), path.join(outputRoot, "src-tauri", "target", "linux-asr-runtime", "loongarch64"));
+    fs.mkdirSync(path.dirname(fixture.binaryPath), { recursive: true });
+    fs.writeFileSync(fixture.binaryPath, "#!engine-fixture\n");
     let spawnCalls = 0;
     const prepared = prepareLinuxAsrRuntime({
       platform: "linux",
       architecture: "loong64",
       prebuilt: true,
+      outputRoot,
       spawn: () => {
         spawnCalls += 1;
         return { status: 0 };
       },
     });
-    assert.equal(prepared.binaryPath, runtime.binaryPath);
+    assert.equal(prepared.binaryPath, fixture.binaryPath);
     assert.equal(
       spawnCalls,
       0,
@@ -545,23 +550,22 @@ test("prepareLinuxAsrRuntime accepts a pre-built target engine instead of buildi
         + " could never reach the cached fast path",
     );
   } finally {
-    if (created) fs.rmSync(engineDir, { recursive: true, force: true });
+    fs.rmSync(outputRoot, { recursive: true, force: true });
   }
   // Without a pre-built artifact the switch must fail loudly instead of
   // silently packaging nothing (the overlay still declares the engine).
-  // Machines that really built the engine natively cannot exercise this
-  // branch; that guard keeps the test from destroying a genuine artifact.
-  if (!fs.existsSync(runtime.binaryPath)) {
-    assert.throws(
-      () => prepareLinuxAsrRuntime({
-        platform: "linux",
-        architecture: "loong64",
-        prebuilt: true,
-        spawn: () => ({ status: 0 }),
-      }),
-      /预构建/u,
-    );
-  }
+  // The injected root keeps this branch deterministic on every machine —
+  // including ones that really built the engine natively.
+  assert.throws(
+    () => prepareLinuxAsrRuntime({
+      platform: "linux",
+      architecture: "loong64",
+      prebuilt: true,
+      outputRoot,
+      spawn: () => ({ status: 0 }),
+    }),
+    /预构建/u,
+  );
 });
 
 test("prepareKnowledgeHost copies the pre-built target server without running cargo", () => {
@@ -620,5 +624,19 @@ test("prepareKnowledgeHost copies the pre-built target server without running ca
       spawn: () => ({ status: 0 }),
     }),
     /预构建/u,
+  );
+
+  // prebuilt without the triple would probe a path containing the literal
+  // `null` segment; it must fail on the missing parameter, not on a
+  // confusing "server does not exist" for target/null.
+  assert.throws(
+    () => prepareKnowledgeHost({
+      platform: "linux",
+      prebuilt: true,
+      repositoryRoot: tempRepo,
+      packagedResourceRoot,
+      spawn: () => ({ status: 0 }),
+    }),
+    /targetTriple/u,
   );
 });

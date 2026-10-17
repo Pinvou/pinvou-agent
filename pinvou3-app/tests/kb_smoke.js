@@ -1693,9 +1693,10 @@ async function chooseRemoteUploadSource(page, testId) {
       .find(b => (b.textContent || '').trim() === '本地知识库')?.click());
     await sleep(900);
   };
-  // 状态必须在文档启动时就在位：应用在 boot 时即读取 kb_model_status，之后
-  // 进入知识库视图不会重读——evaluateOnNewDocument 注册按顺序覆盖，最后一次
-  // 注册的值生效。
+  // 状态必须在文档启动时就在位：应用 boot 时读取 kb_model_status；进入知识库
+  // 视图虽会重读，但视图层的 effectiveKbModel 优先采用 boot 快照（status 非空
+  // 时压过重读结果）——所以启动值能决定首屏门控，evaluateOnNewDocument 按
+  // 注册顺序覆盖，最后一次注册的值生效。
   await page.evaluateOnNewDocument((status) => { window.__KB_MODEL_STATUS__ = status; }, deferredModelStatus);
   await page.reload({ waitUntil: 'networkidle0' });
   await gotoKbSubtab();

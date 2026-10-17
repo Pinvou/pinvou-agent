@@ -144,12 +144,16 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         # tauri-bundler panics on the loongarch64 triple (binary_arch() has
         # no LoongArch variant), so the orchestrator's tauri invocation must
         # go through build.js's `--bundles none` (translated to the CLI's
-        # --no-bundle) and the deb must be hand-assembled.
+        # --no-bundle) and the deb must be hand-assembled. Judged on
+        # comment-stripped text, like every live-configuration pin: the
+        # orchestrator's header banners name the packager three times, so a
+        # raw-text match stays green even with the live invocation deleted.
+        orchestrator_code = _without_comments(self.orchestrator)
         self.assertIn(
             'node scripts/tauri/build.js build --target "$TRIPLE" --bundles none',
-            self.orchestrator,
+            orchestrator_code,
         )
-        self.assertIn("package-deb-loongarch64.sh", self.orchestrator)
+        self.assertIn("package-deb-loongarch64.sh", orchestrator_code)
         # The build.js side of the contract: the value is wrapper-owned and
         # translated into the flag the pinned CLI actually accepts.
         self.assertIn("function extractBundlesNone", self.build_js)
@@ -187,6 +191,17 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         self.assertLess(
             code_only.index("repack-deb-xz.sh"),
             code_only.index("sha256sum"),
+        )
+
+    def test_orchestrator_bridge_node_guard_cannot_die_of_sigpipe(self):
+        # `find | grep -q` under pipefail is a race: a second match written
+        # after grep exits kills find (SIGPIPE, 141) and the `!` turns that
+        # into a spurious "no node binary" failure — the exact artifact the
+        # guard exists to protect would be reported missing. The traversal
+        # must stop at the first match.
+        self.assertIn(
+            'find "$bridge_dir" -type f -name node -print -quit | grep -q .',
+            _without_comments(self.orchestrator),
         )
 
     # ---- pinned toolchain / sysroot ----
@@ -227,6 +242,17 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
                     # leg greps it into GITHUB_ENV); dash-spelled verbatim-
                     # triple forms are allowed alongside the underscore ones.
                     self.assertRegex(line, r"^[A-Za-z_][A-Za-z0-9_-]*=")
+        def assert_block_exports(block, block_name, required):
+            # Line-anchored on purpose: the block is heredoc DATA, where a
+            # leading `#` is printed literally and the pr-check leg's
+            # `^[A-Za-z_]` grep drops the line — so a commented-out required
+            # variable must fail HERE (a bare substring match would stay
+            # green while GITHUB_ENV loses the variable).
+            self.assertTrue(
+                any(line.startswith(required) for line in block.splitlines()),
+                f"{block_name} export block is missing or commented out: {required!r}",
+            )
+
         toolchain_block = self.toolchain.split(
             "---- ci-loongarch64-toolchain: export in the CI step ----", maxsplit=1
         )[1].split("---- notes ----", maxsplit=1)[0]
@@ -235,7 +261,7 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             "CC_loongarch64_unknown_linux_gnu=",
             "CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER=",
         ):
-            self.assertIn(required, toolchain_block)
+            assert_block_exports(toolchain_block, "toolchain", required)
         sysroot_block = self.sysroot.split(
             "---- ci-loongarch64-sysroot: export in the CI step ----", maxsplit=1
         )[1].split("---- notes ----", maxsplit=1)[0]
@@ -252,7 +278,7 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             # (libspa E0425).
             "BINDGEN_EXTRA_CLANG_ARGS=--target=$TRIPLE --sysroot=",
         ):
-            self.assertIn(required, sysroot_block)
+            assert_block_exports(sysroot_block, "sysroot", required)
 
     def test_cache_reuse_never_skips_generation_checks(self):
         # The cache-generation trust behaviors are the difference between a
@@ -292,6 +318,15 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             "sysroot verification must run on BOTH the reuse and the rebuild path",
         )
         self.assertIn('rm -rf -- "$output_dir"', sysroot)
+        # The auto fallback must re-establish the fresh-tree invariant before
+        # the apt set extracts: docker_method can fail AFTER partially
+        # extracting into the output dir (dpkg-deb -x never deletes), and the
+        # fallback branch is the only path that reaches apt_method without
+        # passing the leading rm -rf again.
+        fallback = sysroot.split("auto: falling back to the direct apt method", maxsplit=1)[1]
+        fallback = fallback.split(";;", maxsplit=1)[0]
+        self.assertIn('rm -rf -- "$output_dir"', fallback)
+        self.assertIn('mkdir -p "$output_dir"', fallback)
         self.assertIn('> "$manifest.tmp"', sysroot)
         self.assertIn('mv "$manifest.tmp" "$manifest"', sysroot)
 
@@ -452,10 +487,12 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         # (2) data files are 0644; (3) the desktop entry and the three
         # hicolor icon destinations (incl. the @2 retina directory the
         # bundler derives from real pixel dimensions) are installed;
-        # (4) md5sums cover every data file; (5) Installed-Size sums
-        # regular files under the data root, DEBIAN excluded, /1024 (the
-        # bundler's total_dir_size excludes directory inodes, so `du -sb`
-        # would overstate).
+        # (4) md5sums cover every data file; (5) Installed-Size mirrors the
+        # bundler's total_dir_size — every data-root entry with DEBIAN
+        # pruned, directory inodes included (verified against the pinned
+        # tauri-cli-v2.11.4 sources), //1024; (6) the data tree is
+        # normalized to the bundler's deterministic 0755/0644 (+exec set)
+        # under umask 022 before packing.
         packager = _without_comments(self.packager)
         for executable in (
             'install -m 0755 "$app_binary"',
@@ -486,10 +523,39 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         # stripped (bundler's generate_md5sums shape).
         self.assertIn("find . -type f -not -path './DEBIAN/*' -print0", packager)
         self.assertIn("xargs -0 md5sum", packager)
-        # Installed-Size: regular files only (never directory inodes),
-        # integer division by 1024 per Debian policy.
-        self.assertIn("find . -type f -not -path './DEBIAN/*' -printf '%s\\n'", packager)
+        # Installed-Size mirrors the bundler's total_dir_size byte for byte:
+        # it sums EVERY WalkDir entry of the data root — directory inodes
+        # included (verified against the pinned tauri-cli-v2.11.4 sources,
+        # debian.rs total_dir_size: WalkDir with no file filter) — with
+        # DEBIAN pruned, //1024 per Debian policy. The prune shape must stay
+        # distinct from the md5sums find above: md5sums is files-only by
+        # dpkg's format.
+        self.assertIn(
+            "find . \\( -path './DEBIAN' -o -path './DEBIAN/*' \\) -prune -o -printf '%s\\n'",
+            packager,
+        )
         self.assertIn("/ 1024", packager)
+        # Archive-entry mode normalization (bundler parity): tar-rs emits
+        # deterministic 0755/0644 headers regardless of the build umask;
+        # without this pass the cp -a/mkdir staging under the runners' umask
+        # 0002 would ship 0775 dirs and group-writable files. All three
+        # statements must prune DEBIAN/ (its entries are chmod'd explicitly)
+        # and run before dpkg-deb assembles the archive. Order is load-
+        # bearing: the owner-exec restore must run while the original exec
+        # bit is still set, so non-exec files normalize last.
+        self.assertIn("umask 022", packager)
+        normalization = (
+            'find "$pkg_dir" -path "$control_dir" -prune -o -type d -exec chmod 0755 {} +',
+            'find "$pkg_dir" -path "$control_dir" -prune -o -type f -perm -u=x -exec chmod 0755 {} +',
+            'find "$pkg_dir" -path "$control_dir" -prune -o -type f ! -perm -u=x -exec chmod 0644 {} +',
+        )
+        for statement in normalization:
+            self.assertIn(statement, packager, statement)
+        self.assertLess(
+            packager.index(normalization[0]),
+            packager.index("dpkg-deb --root-owner-group"),
+            "the mode normalization must run before the deb is built",
+        )
 
     def test_sysroot_pins_the_verified_package_and_pc_module_lists(self):
         # The sysroot's self-verification is only as strong as the lists it
@@ -555,6 +621,10 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         leg = re.split(r"\n  [a-zA-Z]", leg, maxsplit=1)[0]
         self.assertIn("shared-key: rust-loongarch64-check", leg)
         self.assertIn("save-if: ${{ github.ref == 'refs/heads/main' }}", leg)
+        # cache-on-failure matches macos-cli-check/rust-test/windows-rust-test
+        # (round-48 rationale): without it a failed main push strands the
+        # loong64 cache cold and every later PR pays the full cross setup.
+        self.assertIn("cache-on-failure: true", leg)
 
     def _step_run_block(self, workflow, step_name):
         # The run block of one named step, comments stripped. Both host-tools
