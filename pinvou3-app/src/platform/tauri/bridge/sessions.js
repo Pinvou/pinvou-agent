@@ -6,7 +6,7 @@
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry.sessions = function (context) {let pinvouSharedtauriSessionsCache = null;
 function pinvouSharedtauriSessions() {
-  if (!pinvouSharedtauriSessionsCache) pinvouSharedtauriSessionsCache = window.PinvouBridgeShared.create("tauriSessions", { sessionStates, freshBuffer, restoreEvictedSessionDraft, state, sessionBufferTouchClock: { get value() { return sessionBufferTouchClock; }, set value(v) { sessionBufferTouchClock = v; } }, pruneScheduledSessionBuffers, pruneSessionBuffers, scheduledRunSessionOwners, scheduledRunOwnerTouchClock: { get value() { return scheduledRunOwnerTouchClock; }, set value(v) { scheduledRunOwnerTouchClock = v; } }, MAX_SCHEDULED_RUN_SESSION_OWNERS, enterDraft, setScheduledTaskError, notify, addSystemItem, bt, hydratedMessageKey, basename, switchToSessionInternal, openScheduledRunChatOnce, scheduledRunOpenInFlight, loadWorkingSetFrom, invalidateScheduledRecentRunsForSession, purgeSessionBuffer, invoke, personaPlaceholderTitles, refreshHistoryList, sessionSwitchRequestToken: { get value() { return sessionSwitchRequestToken; }, set value(v) { sessionSwitchRequestToken = v; } }, saveWorkingSetTo, loadScheduledTaskRecentRuns });
+  if (!pinvouSharedtauriSessionsCache) pinvouSharedtauriSessionsCache = window.PinvouBridgeShared.create("tauriSessions", { sessionStates, freshBuffer, restoreEvictedSessionDraft, state, sessionBufferTouchClock: { get value() { return sessionBufferTouchClock; }, set value(v) { sessionBufferTouchClock = v; } }, pruneScheduledSessionBuffers, pruneSessionBuffers, scheduledRunSessionOwners, scheduledRunOwnerTouchClock: { get value() { return scheduledRunOwnerTouchClock; }, set value(v) { scheduledRunOwnerTouchClock = v; } }, MAX_SCHEDULED_RUN_SESSION_OWNERS, enterDraft, setScheduledTaskError, notify, addSystemItem, bt, hydratedMessageKey, basename, switchToSessionInternal, openScheduledRunChatOnce, scheduledRunOpenInFlight, loadWorkingSetFrom, invalidateScheduledRecentRunsForSession, invalidateSessionBuffer, purgeSessionBuffer, invoke, personaPlaceholderTitles, refreshHistoryList, sessionSwitchRequestToken: { get value() { return sessionSwitchRequestToken; }, set value(v) { sessionSwitchRequestToken = v; } }, saveWorkingSetTo, loadScheduledTaskRecentRuns });
   return pinvouSharedtauriSessionsCache;
 }
 
@@ -223,6 +223,31 @@ function touchSessionBuffer(id, buf, scheduled) { return pinvouSharedtauriSessio
       // deletion) cleans it.
       if (onSessionBufferPurged) onSessionBufferPurged(id, "evict");
       overflow -= 1;
+    }
+  }
+  // 回退/撤销在途切走后跳过重载（useRewindController 的归属检查）时，被跳过
+  // 会话的缓存 buffer 停留在回退前快照，而 switchToSessionInternal 的快速路径
+  // 会直接复用缓存（不读盘）——切回即展示陈旧时间线、后续发送续写在旧
+  // buffer 上（评审 r8 M1）。本函数只丢弃该缓存（不做删除回调、不动暂存
+  // 草稿），使下次激活落到 durable load；与 purgeSessionBuffer 的删除语义
+  // 刻意不同。
+  function invalidateSessionBuffer(id) {
+    if (typeof id !== "string" || !id) return;
+    // 评审 r9 minor 1：暂存未发送草稿再丢缓存（本文件既定原则——淘汰不得
+    // 丢草稿）；保持与 purgeSessionBuffer 的差异：无删除回调、不动其它记账。
+    if (sessionStates[id] && typeof stashEvictedSessionDraft === "function") {
+      stashEvictedSessionDraft(id, sessionStates[id]);
+    }
+    delete sessionStates[id];
+    // 活动会话的失效必须同时作用于 live 工作集（评审 r11 M2）：只删
+    // sessionStates 条目对前台会话无效——切走时 saveWorkingSetTo 会把 live
+    // 陈旧消息回存为复活条目，切回归快路径。清 live 投影并通知重渲染：
+    // 活动场景下调用方（useRewindController 的 reloadError 路径）随后会走
+    // 重试/自然激活的 durable load 重建时间线；清空画面优于陈旧画面。
+    if (state.activeSessionId === id) {
+      state.messages = [];
+      state.chatItems = [];
+      if (typeof notify === "function") notify();
     }
   }
   function purgeSessionBuffer(id) {
@@ -927,6 +952,12 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
     if (requestToken !== sessionSwitchRequestToken) return false;
 
     // load_session 与必要的直接会话数据均成功后，才一次性提交 active/context。
+    // r14 B1：在保存/切换前捕获「本次切换目标是否为活动会话」——durable 分支
+    // 的草稿携带只在 wasActive 时合法（回退/撤销重载的目标就是活动会话）。
+    // 跨会话冷切换（switchToSession(B) / scheduled run 打开非活动会话）时
+    // state.composerDraft 是切出会话 A 的草稿，不带门控的携带会把 A 的草稿
+    // 注入 B 的输入框（r13-M2 修复的回归形状）。
+    const wasActive = state.activeSessionId === id;
     if (state.activeSessionId) saveWorkingSetTo(getBuffer(state.activeSessionId));
     if (!preserveScheduledRunContext) state.scheduledRunContext = null;
     state.scheduledTaskPendingGuide = null;
@@ -965,7 +996,14 @@ function interruptedDisplayRange(item) { return pinvouSharedtauriSessionsN47342(
       }
       saveWorkingSetTo(liveBuffer);
     } else {
+      // r13 M2 → r14 B1：durable 分支不得丢未发送草稿——但携带仅限 wasActive
+      // （回退/撤销的 forceDurableLoad 目标就是活动会话，state.composerDraft
+      // 是用户「打了一半先回退」的最新键击）。跨会话冷切换时切出会话的草稿
+      // 不得注入目标会话的 fresh buffer（那正是 r13 修复在共享路径上引入的反向
+      // 回归）；目标会话自己的驱逐暂存草稿由下方 restoreEvictedSessionDraft 恢复。
+      const liveDraft = wasActive ? (state.composerDraft || "") : "";
       sessionStates[id] = freshBuffer();
+      if (liveDraft) sessionStates[id].composerDraft = liveDraft;
       // The slow-path disk rehydration bypasses getBuffer; the draft stashed at eviction time must be restored here.
       restoreEvictedSessionDraft(id, sessionStates[id]);
       loadWorkingSetFrom(sessionStates[id]);
@@ -1197,6 +1235,10 @@ async function restoreArchivedSession(id) { return pinvouSharedtauriSessions().r
       isProtectedScheduledBuffer,
       pruneScheduledSessionBuffers,
       touchSessionBuffer,
+      // r9 B1：必须随返回对象导出——r8 只加了函数定义与共享依赖表、漏了此处，
+      // bridge.js 拿到 undefined、消费端 typeof 守卫静默吞掉整个修复（协议测试
+      // 的 Proxy 桩对 undefined 值键不敏感，只有执行真工厂才能锚定）。
+      invalidateSessionBuffer,
       purgeSessionBuffer,
       registerScheduledRunOwner,
       scheduledRunOwnerVisibleRank,

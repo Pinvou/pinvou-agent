@@ -112,6 +112,73 @@ function loadSessionsFeature(overrides) {
 
 // ── ensureSession：再进草稿不劫持 ──────────────────────────
 
+test('durable reload：同会话（wasActive）草稿存活；跨会话冷切换草稿不注入（r14 B1 回归锚定）', async () => {
+  const { api, state, sessionStates, calls } = loadSessionsFeature({
+    invoke(name, args) {
+      calls.invoke.push(name);
+      if (name === 'load_session') {
+        return Promise.resolve({
+          metadata: { id: args.id },
+          messages: [],
+          artifacts: [],
+        });
+      }
+      return Promise.resolve({});
+    },
+  });
+  // 同会话 durable 重载：草稿存活
+  state.activeSessionId = 's-a';
+  state.composerDraft = 'half-typed';
+  sessionStates['s-a'] = { loadedFromDisk: true, messages: [1], composerDraft: '' };
+  const ok1 = await api.switchToSessionInternal('s-a', null, 'test', { forceDurableLoad: true });
+  assert.equal(ok1, true, 'durable reload succeeds');
+  assert.equal(state.composerDraft, 'half-typed', '同会话 durable 重载草稿存活（r13-M2 修复本体）');
+  // 跨会话冷切换：目标会话草稿不受切出会话污染
+  state.composerDraft = 'session-a draft';
+  const ok2 = await api.switchToSessionInternal('s-b', null, 'test', { forceDurableLoad: true });
+  assert.equal(ok2, true, 'cross-session switch succeeds');
+  assert.notEqual(state.composerDraft, 'session-a draft', '跨会话冷切换不得注入切出会话的草稿（r14-B1 修复本体）');
+});
+test('invalidateSessionBuffer：活动会话失效必须清 live 工作集（r11 M2 回归锚定）', () => {
+  // r11 M2：只删 sessionStates 条目对前台会话无效——切走时 saveWorkingSetTo
+  // 回存 live 陈旧消息为复活条目。活动会话的失效必须同时清 messages/chatItems
+  // 并 notify 驱动重投影；非活动会话不动 live（防误伤 B）。
+  const { api, state, sessionStates, calls } = loadSessionsFeature();
+  // 直接构造：A 活动、B 缓存
+  state.activeSessionId = 's-active';
+  state.messages = [{ role: 'user', content: [] }];
+  state.chatItems = [{ type: 'user', text: 'stale' }];
+  sessionStates['s-active'] = { loadedFromDisk: true, messages: [1], chatItems: [2] };
+  sessionStates['s-bg'] = { loadedFromDisk: true, messages: [3], chatItems: [4] };
+  api.invalidateSessionBuffer('s-bg'); // 非活动：只删缓存
+  assert.equal(sessionStates['s-bg'], undefined, '非活动会话缓存被删');
+  assert.equal(state.messages.length, 1, '非活动失效不得清 live 工作集（防误伤）');
+  api.invalidateSessionBuffer('s-active'); // 活动：缓存 + live
+  assert.equal(sessionStates['s-active'], undefined, '活动会话缓存被删');
+  assert.equal(state.messages.length, 0, '活动会话失效必须清 live messages');
+  assert.equal(state.chatItems.length, 0, '活动会话失效必须清 live chatItems');
+  // r12 M3：活动会话失效必须 notify() 驱动重投影——被清空的 live 数组不会自动
+  // 触发 React 重渲染，画面会停留在陈旧时间线上（删掉 notify 行此前全绿）。
+  assert.ok(calls.notify >= 1, '活动会话失效必须触发 notify（r12 M3）');
+});
+test('switchToSessionInternal：真工厂导出为可调用函数（r10 M5——r8 事故类暴露）', () => {
+  const { api } = loadSessionsFeature();
+  assert.equal(typeof api.switchToSessionInternal, 'function',
+    'sessions 工厂必须导出可调用的 switchToSessionInternal（回退重注水接缝；r8 事故类别）');
+});
+test('invalidateSessionBuffer：真工厂导出为可调用函数且只丢缓存（r9 B1 回归锚定）', () => {
+  // r8 事故：函数加了定义与共享依赖表、漏了工厂返回对象——bridge 拿到
+  // undefined、typeof 守卫静默吞掉整个修复。协议套件的 Proxy 桩对 undefined
+  // 值键不敏感，必须执行真工厂断言导出值本身。
+  const { api, sessionStates } = loadSessionsFeature();
+  assert.equal(typeof api.invalidateSessionBuffer, 'function',
+    'sessions 工厂必须导出可调用的 invalidateSessionBuffer（r9 B1）');
+  sessionStates['s-stale'] = { loadedFromDisk: true, messages: [1], chatItems: [] };
+  api.invalidateSessionBuffer('s-stale');
+  assert.equal(sessionStates['s-stale'], undefined, '被跳过会话的缓存 buffer 必须被丢弃');
+  api.invalidateSessionBuffer('');
+  api.invalidateSessionBuffer(null);
+});
 test('ensureSession：create_session 等待期间再进草稿 → 不物化、返回 null', async () => {
   const rt = loadSessionsFeature();
   const create = rt.defer('create_session');

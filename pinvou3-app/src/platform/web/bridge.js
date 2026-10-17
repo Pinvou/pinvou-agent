@@ -2922,6 +2922,19 @@ function pinvouSharedwebN189622() {
   return pinvouSharedwebN189622Cache;
 }
 
+    // 压缩载体识别（评审 M2；镜像 CodeWhale history_recognition 的判定）：
+    // role=User、首块文本以压缩摘要头（当前/历史前缀）开头、其余为空或仅
+    // provenance 注释。与 tauri 车道同款。
+    function isCompactionCarrierBlocks(blocks) {
+      if (!Array.isArray(blocks) || !blocks.length || !(blocks[0] && blocks[0].type === "text")) return false;
+      const t = String(blocks[0].text || "");
+      if (!(t.indexOf("Another language model started to solve this problem") === 0
+        || t.indexOf("Conversation Summary (Auto-Generated)") === 0)) return false;
+      const rest = blocks.slice(1);
+      return rest.length === 0 || (rest.length === 1 && rest[0].type === "text"
+        && String(rest[0].text || "").trim() === "<!-- codewhale.compaction-checkpoint.v1 -->");
+    }
+
 
     state.chatItems = [];
     itemIdSeq = 0;
@@ -2994,8 +3007,21 @@ function emitPersonaAt(atOrAfter, isTail) { return pinvouSharedwebN189622().emit
       const m = state.messages[mi];
       const blocks = Array.isArray(m.content) ? m.content : [];
       if (m.role === "user") {
-        const utext = userMessageDisplayText(blocks, isScheduledRunSession(state.activeSessionId));
-        if (utext) {
+        // 压缩载体（评审 M2；与 tauri 车道同款）：后端运行时内部消息，重载时
+        // 不还原为用户气泡，避免幻影“用户轮”顶偏回退序号。
+        if (isCompactionCarrierBlocks(blocks)) continue;
+        // 工具结果载体（评审 r9 M5；与 tauri 车道同款）：含 tool_result 块的
+        // User 消息不是用户轮，工具卡由 toolMeta 回填还原，这里跳过用户气泡。
+        const toolResultCarrier = blocks.some(b => b && b.type === "tool_result");
+        const utext = toolResultCarrier
+          ? ""
+          : userMessageDisplayText(blocks, isScheduledRunSession(state.activeSessionId));
+        // 步数预算通知（r10 M3）：过滤气泡，与 Rust 计数侧（counts_as_user_turn）
+        // 同口径——否则调和门序号错位 / 假用户气泡。
+        const stepBudgetNotice = utext
+          && (utext.indexOf("Step budget soft landing:") === 0
+            || utext.indexOf("Your model-step budget was exhausted") === 0);
+        if (utext && !stepBudgetNotice) {
           // pinvouTransfer 是展示层标记、不在 messages → rerender 从转交固定措辞还原品/悟样式
           const uitem2 = { type: "user", text: utext, time: "", messageIndex: mi };
           const scene = pinvouSceneForMessagePos(mi);
@@ -5980,6 +6006,8 @@ function setModeLane(lane) { return pinvouSharedweb().setModeLane(lane); }
 function patchItemById(id, patch) { return pinvouSharedweb().patchItemById(id, patch); }
   function pushUserEcho(text, persist) {
     const item = { type: "user", text, time: timeStr() };
+    // 与 tauri 车道同款标记：前端-only 回显不计后端 turn（回退序号剔除用）。
+    if (!persist) item.frontendEcho = true;
     let message = null;
     addChatItem(item);
     if (persist) {

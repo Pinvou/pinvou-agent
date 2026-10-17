@@ -1,12 +1,12 @@
 # 代码模式「改动随对话回退」设计方案
 
 > 状态：已落地（PR #397，经两轮评审加固）。
-> 范围：**仅品悟原生代码会话（Native code lane）**；ACP 会话（Codex/Claude 外部进程）明确不做。
+> 范围：**品悟原生车道（工作模式聊天页 + 原生代码会话页，2026-10-08 门放宽）**；ACP 会话（Codex/Claude 外部进程）与定时会话明确不做。
 > 关联：`docs/adr/0006-多智能体收缩为会话内主动委派模式.md`（需修订，见 §8）、`docs/code-native-agent-完全体架构设计.md`（qiuYliangM/feat-full-code-mode 分支，本方案移植其 checkpoint 机制）。
 
 ## 1. 目标与语义定义
 
-在原生代码会话中，用户可以把会话回退到任意历史 turn 边界节点，**代码状态与对话状态一起回退**：
+在原生车道会话（工作模式与原生代码会话）中，用户可以把会话回退到任意历史 turn 边界节点，**文件状态与对话状态一起回退**（工作模式可在确认弹窗显式选择仅回退对话、文件不动）：
 
 > 「回退到第 N 轮」= 恢复第 N+1 轮 checkpoint（第 N+1 轮写入之前的工作区状态）+ 对话截断到第 N 轮末尾。
 
@@ -15,7 +15,7 @@
 - 粒度为 **turn（一轮用户消息）**，不做 turn 内中间状态、不做单文件 keep/undo。
 - 「回退到第一轮之前」（清空全部）= 恢复第 1 轮 checkpoint + 对话截断到 0，UI 文案写明。
 - 恢复单位是**执行根**，不是会话（共享执行根的语义见 §6）。
-- 代码侧可反悔（恢复前强制打 PreRestore 快照）；对话侧 v1 不可前进（被截段落存 sidecar 留恢复可能，UI 不承诺 redo）。
+- 原生车道（工作模式 + 原生 code）可反悔（恢复前强制打 PreRestore 快照）；对话侧 v1 不可前进（被截段落存 sidecar 留恢复可能，UI 不承诺 redo）。
 
 ## 2. 方案选型结论
 
@@ -45,7 +45,7 @@
 
 本方案**零 fork 改动**：checkpoint 在 app 命令层钩子，对话截断复用既有截断链路 + `Op::SyncSession` 重注水，不需要新 engine Op。无需 fork-guard 指纹变更。
 
-## 3. 代码侧：checkpoint 机制（移植）
+## 3. 代码侧（已扩展至工作模式）：checkpoint 机制（移植）
 
 数据布局（账本根下，随会话删除整体清理）：
 
@@ -67,7 +67,7 @@
 
 1. **turn 计数口径**（必须改）：feat 分支用 `messages.iter().filter(|m| m.role == "user").count() + 1`，会把 tool_result（同样以 `role="user"` 落盘）计入，导致 turn 号错位。改用 `is_user_turn_prompt` 同口径谓词（`CodeWhale/crates/tui/src/runtime_handoff.rs:637`，`deepseek_tui` 已 re-export），与 `8d4d2a991`「编辑重发三层同口径」保持一致。
 2. **模块落位**：feat 分支依赖 `code_sessions` 模块拆分，本方案不引入该重构；移植到现有 `codex_acp` 相邻位置或新建 `features/code_checkpoints/`，按架构守卫边界落位。
-3. **快照钩子**：只保留原生车道 `chat_with_reservation`（`app/commands/chat.rs`）一处，删除 ACP `codex_acp_prompt` 钩子。
+3. **快照钩子**：保留原生车道两条缝——`chat_with_reservation`（`app/commands/chat.rs`）与 `accept_plan()`（`app/commands/interaction.rs`，车道门同口径），删除 ACP `codex_acp_prompt` 钩子。
 
 ## 4. 对话侧：截断到任意 turn + engine 重注水（新增）
 
@@ -109,7 +109,7 @@ feat 分支没有的部分，本方案新增：
 |---|---|
 | 系统无 git 二进制 | 快照失败 warn 不阻断 turn；该会话无回退入口（ADR-0006 修订后合法的降级） |
 | 工作区快照失败（磁盘满等） | 同上，该轮无入口，如实记日志 |
-| 目标 turn 的 checkpoint 已被 LRU（上限 20）淘汰 | 入口按 checkpoint 可用性渲染；老节点仅允许「仅回退对话」，文案明示代码不回退 |
+| 目标 turn 的 checkpoint 已被 LRU（上限 20）淘汰 | 入口按 checkpoint 可用性渲染；老节点仅允许「仅回退对话」，文案明示文件不回退 |
 | 会话运行中 | 忙碌门拒绝回退 |
 | 临时会话（两根相同） | exclude 自递归规则已覆盖（移植自带测试） |
 | 空目录创建 | git 只跟踪文件内容，空目录不进快照、不出现在 diff 预览（固有语义，非 bug）；目录内一旦有文件即正常覆盖，回退时 `clean -fd` 连空目录一并清除，恢复语义完整。不做占位文件 hack（污染用户项目） |
@@ -137,23 +137,41 @@ feat 分支没有的部分，本方案新增：
 2. **跨会话忙碌门**：回退前按执行根查询所有会话的 turn 预约状态，任一在跑即拒绝（EnginePool 预约机制扩展为按根查询）。
 3. **如实预览 + 确认文案**：diff 预览展示将撤销的全部变更；同根存在其他会话时确认弹窗追加明确文案。
 
+**ACP 单向围栏的残余窗口（r7 M2）**：执行根互斥 flag 只覆盖原生与 scheduled
+车道的预约侧；ACP prompt 的 admit 不经 EnginePool、不读该 flag——正门
+（reject_if_peer_busy，经 agents store 的项目绑定解析 ACP peer）只能拦「检查
+时已在途」的 ACP 写入，rewind 在 apply 前另有最后一刻复检（同谓词），残余
+check-then-act 窗口为「复检返回 → apply 启动」（毫秒级）；apply 本体（秒级）
+期间新放入的 ACP 写入仍可能被 clean -fd 波及。彻底解法是把 rewind flag 暴露
+给 ACP admission（v2 评估）。
+
 ## 7. UI 与文案
 
-- 回退入口只在代码会话页（聊天页不做，与 feat 分支一致）。
+- 回退入口覆盖原生车道两页（2026-10-08 门放宽）：代码会话页与工作模式聊天页
+  （ChatView）共用 `features/conversation` 的时间线入口（RewindChip）、确认/
+  撤销弹窗与编排 hook（`useRewindController`，快照/回退按车道判定而非产品模式
+  轴）；ACP 会话与定时相关会话维持无入口。
 - 入口按 turn 边界渲染；无 checkpoint 的 turn 渲染「仅对话回退」变体或不渲染。
-- 确认弹窗三要素：将撤销的变更摘要（added/modified/deleted 计数）、对话将截断到的位置、共享执行根警示（条件出现）。
-- i18n：全部文案走 `pinvou3-app/src/shared/i18n.js`，中英日三语（移植 feat 分支已有文案并补齐对话截断部分）。
+- 确认弹窗三要素：将撤销的变更摘要（added/modified/deleted 计数 + 删除性披露）、对话将截断到的位置；错误（忙碌/混合态等后端文案）如实上屏。
+- 工作模式弹窗额外呈现「回退范围」选择项（默认勾选「同时回退工作区文件」=
+  双层回退并展示变更预览——用户手动改动与 agent 改动交织，回退代价必须在
+  决策点可见可选；取消勾选 = `conversation_only=true` 仅截断对话、文件不动，
+  撤销路径对称）。两车道共享弹窗壳：r4 评审起确认键在预览未决（加载中/失败）
+  时禁用、预览下方与撤销弹窗各有一条披露说明（删除性/反悔窗口失效条件），
+  code 车道同样生效（其「改动随对话回退」契约不变，双层仍是默认）。
+- i18n：全部文案走 `pinvou3-app/src/shared/i18n.js`，中英日三语；回退键组两
+  车道共用同一份文案，以「文件/工作区」中性表述（不再以「代码」限定回退对象）。
 
 ## 8. 需要同步的文档与决策
 
-- **修订 ADR-0006**：将「不恢复每轮快照、不强制 git 依赖」修订为「原生代码会话可选 checkpoint；git 不可用时诚实降级，不阻断对话」。
+- **修订 ADR-0006**：将「不恢复每轮快照、不强制 git 依赖」修订为「原生车道会话可选 checkpoint（2026-10-08 起含工作模式）；git 不可用时诚实降级，不阻断对话」。
 - `docs/fork-modifications.md`：无需变更（零 fork 改动），但在本设计文档留档「未复用底座 snapshot 的理由」（§2.1）。
 
 ## 9. 测试计划
 
 - Rust：移植 feat 分支 6 个 checkpoint 测试（往返/LRU/反悔/越界/嵌套两根/忽略表）；新增 turn 计数同口径测试（tool_result 不计入）、截断+sidecar 备份测试、跨会话忙碌门测试。
 - 前端：移植 `codex_checkpoints_logic.test.mjs`；新增回退编排逻辑测试（降级路径、确认文案条件）。
-- 集成：原生代码会话多轮写入 → 回退中间节点 → 验证工作区字节级一致 + 对话截断位置正确 + PreRestore 可反悔；回退后重发消息验证 engine 重注水正常。
+- 集成：原生车道会话（工作模式与代码会话）多轮写入 → 回退中间节点 → 验证工作区字节级一致 + 对话截断位置正确 + PreRestore 可反悔；回退后重发消息验证 engine 重注水正常。
 - 门禁：`architecture-guard.py`、npm 测试链、`cargo check` 零新增警告。
 
 ## 10. 实施步骤与工作量
@@ -171,25 +189,36 @@ feat 分支没有的部分，本方案新增：
 ## 11. 明确不做（v1）
 
 - ACP 会话回退（外部 agent 文件改动无记录）。
+- 定时会话的快照与回退（2026-10-08 门放宽时维持排除：sched- 轮次不走
+  chat/accept_plan 快照缝，命令族按 `SessionKind::ScheduledRun` 拒绝；与 fork
+  拒绝口径一致）。
 - turn 内/单文件粒度回退、逐 edit keep/undo。
 - 对话 redo（sidecar 仅留数据）。
 - 按会话归因回退、worktree 会话隔离（v2 独立评估）。
 - 启用底座 journal 分支（物理截断 + sidecar 已满足 v1 语义）。
-- **编辑重发与回退的整合**（2026-08-21 审阅补充）：语义上「编辑第 N 轮重发」= 回退到第 N-1 轮 + 发送，但代码会话里既有的 `Op::EditLastTurn` 只截对话、不动代码，会制造本功能要消灭的「对话没了代码还在」。在 turn 锚定的漂移问题（§12）有解之前不做整合；v1 期间代码会话的编辑重发入口如需暴露，必须同样走 checkpoint 恢复，否则禁用并引导到「回退后重发」。
+- **编辑重发与回退的整合**（2026-08-21 审阅补充；2026-10-12 更新适用范围）：语义上「编辑第 N 轮重发」= 回退到第 N-1 轮 + 发送，但 `Op::EditLastTurn` 只截对话、不动文件，会制造本功能要消灭的「对话没了文件还在」。在 turn 锚定的漂移问题（§12）有解之前不做整合；v1 期间编辑重发入口（工作模式聊天页已暴露 `edit_last_turn`（代码会话的编辑走 ACP 协议，不经此命令））如需与回退整合，必须同样走 checkpoint 恢复，否则维持现状并引导到「回退后重发」。
 
 ## 12. 已知限制（2026-08-21 设计审阅留痕；同日后两项已落地）
 
 - **compaction 摘要残留**：`merge_compaction_summary` 把压缩摘要合进 system_prompt 并持久化；回退只截 messages，system_prompt 不动——经历过压缩的会话回退后，模型上下文可能带着描述「被截掉的未来」的摘要。v1 落地最低限度方案：`rewind_to_turn` 返回 `hadCompaction`（按底座 marker 字面量检测），前端回退后如实提示「该会话经历过对话压缩，回退后上下文可能仍含早期摘要」；system_prompt 同步修正后续迭代评估。
-- **compaction 导致 turn 计数漂移**：`count_user_turns` 按当前消息序列计数，compaction 替换序列后 user prompt 数量变化，checkpoint 的 turn 号（压缩前计数）与新序列错位，chip 对齐可能失准。turn 序号漂移有三个来源（截断/压缩/编辑），本设计只处理了截断（§4 步骤 5）。彻底解法是持久化稳定 turn 锚（动存储格式），v2 评估。
+- **compaction 导致 turn 计数漂移**：`count_user_turns` 按当前消息序列计数，compaction 替换序列后 user prompt 数量变化，checkpoint 的 turn 号（压缩前计数）与新序列错位，chip 对齐可能失准。turn 序号漂移有三个来源（截断/压缩/编辑），本设计只处理了截断（§4 步骤 5）。彻底解法是持久化稳定 turn 锚（动存储格式），v2 评估。（2026-10-12 r5 评审缓解：压缩载体消息在两车道重载投影中被过滤，不再渲染为幻影用户轮；list_checkpoints 响应携带后端 count_user_turns，前端时间线计数与之不一致时不渲染回退入口——把「错点回退却报成功」降级为诚实拒绝，durable 重载后两侧计数重新对齐（比对在发送在途时容忍恰差 1 的在途轮次，busy→false 边沿收紧为精确比对——避免每轮发送期间入口整体消失）。注意对齐的只是计数——checkpoint 身份仍是压缩前登记的，压缩前打的 Turn 快照不被作废，计数通过后仍可能恢复出压缩前时代的快照（身份级错位）；彻底解法仍是持久化稳定 turn 锚，v2 评估。）
 - **代码反悔缺 UI 入口**：已落地（2026-08-21）。`rewind_undo_state`（可反悔 ⟺ sidecar 有备份 + 回退后未发新轮次/尾部未被编辑 + 绑定的回滚点仍在）+ `undo_last_rewind`（恢复代码到该次回退绑定的 PreRestore + 对话从 sidecar 还原 + engine 重建；restore 自身会再打 PreRestore，反悔可再反悔）+ 时间线「撤销回退」chip（发过新轮次自动消失）。
 - **他会话基线漂移**：共享执行根的其他会话在回退后继续创作时，其下一次快照会以被回退后的工作区为基线，其 checkpoint 序列语义已悄悄改变。无解，与 §6 的「恢复单位是执行根」声明一致。
 - **undo 目标绑定（2026-09-01 复审修复）**：早期实现以「最新 PreRestore」为反悔目标，多次回退/反悔重试后会错配到无关快照（降级回退的 undo 甚至会误动代码）。现为精确绑定：`_rewound_turns.json` 记录本次回退强制的 PreRestore id（降级记 None，undo 只还原对话），并要求当前 transcript revision 精确匹配截断时记录（turn 数相等只是弱代理，尾部被编辑即拒绝）。绑定快照被 LRU 淘汰则整体不可反悔，如实不渲染入口。
 - **敏感文件不进快照**：影子 exclude 列表含 `.env`/`.env.local`/`.env.*.local`、`*.pem`/`*.key`/私钥本体等模式（非 git 执行根没有 .gitignore 兜底，原文快照进影子 objects 并随 diff 进入 UI 链路不可接受）。模式收窄到秘密实际居住的约定：`.env.example`/`id_rsa.pub` 等常被有意提交的示例/公钥照常进快照；`.env.production` 类约定文件仍会进快照。代价是命中的文件不随回退恢复，属可接受取舍。存量影子仓库由 `ensure_repo` 的 marker 门控一次性迁移（`git rm --cached -f`，任意深度）覆盖；legacy 快照 tree 里的原文条目在 restore 时（read-tree 后）再次清除、在 diff 预览中按同模式过滤（清单与 patch 都不上屏）；历史 commit objects 里的原文随 LRU 淘汰与 gc 回收。
 - **临时会话账本暴露在执行根内**：两根相同时 `checkpoints/` 位于 agent 可见的工作目录内，agent 的 shell 可看到甚至误删它（exclude 只保证不进快照/不被 clean）。用户会无感知地失去回退能力；把账本根挪到执行根外属后续迭代，v1 记录为已知风险。
 - **undo 后对同一节点再回退退化为仅对话**：回退会作废 `turn > keep` 的全部 Turn 快照（含恢复目标 turn N+1），undo 只还原代码+对话、不重建 Turn 快照；此后再次回退到第 N 轮找不到目标快照，只能仅回退对话。同理会话的「任意轮回退」在 undo 后对中间轮（N+1 至回退前顶点）也降级——这些轮的 Turn 快照已被作废且 undo 不逆转，重新创作新轮次前只剩回滚点（PreRestore）可达的状态。方向保守正确（胜过锚到被遗弃分支），重新创作新轮次后快照自然重建。
-- **规模上限（对齐底座资源闸，2026-09-02 评审 M4 后补齐）**：执行根体积超 2GB 跳过快照（该会话如实没有回退入口，估算跳过 exclude 目录、条目数封顶 20 万）；影子仓库存储超 500MB 时裁到一半条目并 gc 收敛（LRU 裁条目不裁字节，大文件项目单靠条目数守不住）。
+- **规模上限与每轮成本模型（对齐底座资源闸，2026-09-02 评审 M4 后补齐；2026-10-12 r5 评审补记实测）**：执行根体积超 2GB 跳过快照（该会话如实没有回退入口，估算跳过 exclude 目录、条目数封顶 20 万）；影子仓库存储超 500MB 时裁到一半条目并 gc 收敛（LRU 裁条目不裁字节，大文件项目单靠条目数守不住）。**实测每轮成本**（r5 评审，快硬件）：10 万文件工作区热态每条消息增加约 0.3–0.6s（全树遍历 + `add -A` + `write-tree` 等串行 git 调用，均在持有 turn 预约的发送路径内联执行），大变更后 5–6s，单次 git 调用各有 120s 硬超时（kill-tree），但整体无 deadline/取消/进度反馈，且纯文件系统 IO（预算遍历、exclude 写入、index 保存）无任何超时（已知限制，后续迭代评估大根的体积预估与进度/取消通道）。**内容性超额断路（r5 评审 M5）**：打包体积（`count-objects -v` 的 `size-pack`）本身 ≥ 500MB 时，超额是工作区内容大且不可压缩所致、gc 无法收敛——此前该形状每轮触发「裁半 + 全量 gc」（591MB 实测单次 10s+）且条目数 1↔2 振荡；现跳过裁剪与 gc（条目仍受 20 上限约束；此模式下影子库体积随会话内容变化量增长、不设字节回收，如实记日志；近预算带的「总字节超而打包字节未超」形状仍走 gc 路径——残余已知）。**运行时 sidecar 的影子排除（r8 M2）**：非绑定会话（账本根=执行根）下，
+`pending_rewind.json` 与 `budget-disabled` 位于工作树内，被加入影子仓库的
+info/exclude——`clean -fd` 不会删除恢复中断时正在协调重试的暂记，
+`checkout-index` 也不会从旧快照复活陈旧副本（`.pinvou3/` 同款，r9 minor 7：
+含完整消息文本的会话侧数据不进 git 对象库）。绑定会话不适用（文件在工作树
+外，模式为 no-op）。
+
+**超预算/不可读根的粘性判定（r7 M4）**：首次「不在预算内」（超限/条目超上限/读取错误）即在账本根落 `budget-disabled` 标记，此后每轮短路不再重复全树遍历（此前超限形状每条消息白付一次 20 万条目级 walk + 逐目录 canonicalize，且只有 info 日志），首次升级为 warn；标记随账本根存续，删除会话即重置。**字节硬上限（r8 M3；r10 措辞修正）**：断路模式（跳过裁剪/gc）下字节回收被跳过，仓库字节量（total 与 packed 取大——断路后 gc 不再打包、增量以 loose 对象累积而 size-pack 冻结，r9 M3）达 2× 预算（1GB）即拒绝新的 Turn 快照登记（该轮入口如实降级为仅对话回退；回退路径的 PreRestore 豁免——可反悔兜底不可缺席），影子库不再只增不减。
 - **悬停入口的触屏可达性**：回退入口平时是淡色细线、hover 显形（桌面鼠标语义）；纯触屏无 hover，需首 tap 触发 `:hover` 再点按。鉴于 rewind 命令桌面专属（web 策略锚定测试锁定），v1 不为触屏加交互复杂度。
 - **Web 车道不支持**：rewind 直接改写本地文件，`rewind_to_turn`/`undo_last_rewind`/`rewind_undo_state`/`list_checkpoints`/`checkpoint_diff` 均未加入 web access-policy 的 allowed_commands，前端经 `canInvoke` 能力检查提前收口（不发必被拒的请求）。放行需单独评估（桌面执行语义），由 `codex_checkpoints_logic.test.mjs` 的策略断言锚定。
 - **秘密排除恒大小写不敏感，core.ignorecase 仅承载 git 原生语义**：为堵住大写秘密文件逃过 exclude 后被 restore 误删的链路（评审 B1），敏感模式自身写成大小写不敏感形式——info/exclude 用 `icase_gitignore_pattern` 展开的字符类（`[xX]`）、purge pathspec 恒带 `:(icase)`、预览过滤恒按 ASCII 折叠匹配——三层在任何文件系统上命中相同的大小写变体集合，不依赖影子仓库的 core.ignorecase。core.ignorecase 仍按 `fs_is_case_insensitive` 探测设置（每次 ensure 幂等校正），但只承载 git 原生大小写语义：不无条件强制 true，大小写敏感文件系统上强制不敏感会引发 git alias 冲突（`Makefile`/`makefile` 共存时 `add -A` 整体 fatal、别名新文件静默跳过、仅大小写改名记成空树，评审 M1）；探测后这些都不触发。alias 冲突发生时快照失败以 error 级日志显式上报（不再静默 warn）。残余取舍：大小写不敏感系统上仅大小写不同的改名对快照不可见、不随回退恢复。
+- **未绑定会话的附件暂存目录进入快照（2026-10-08 门放宽放大既有形状）**：两根相同（未绑定/临时会话）时，附件引用与图片暂存放 `attachments/` 于账本根=执行根内，逐轮 `add -A` 会把它们作为 blob 纳入快照并计入 500MB 预算（大附件可加速 LRU 淘汰 Turn 快照）。该形状在临时 code 会话上先于本功能存在并被接受（附件经 ingest 体积/数量上限约束）；为不改变 code 车道快照内容语义（R2），工作模式沿用同一策略、如实记录为已知成本，不新增 `attachments/` 全局排除（该排除会顺带改变绑定项目内同名目录的回退语义）。
 - **嵌套 git 仓库/submodule 在回退语义之外**：快照以 gitlink 记录嵌套仓库（内容不跟踪），restore 不 materialize 它，`clean -fd` 也不删除含 `.git` 的目录——agent 在嵌套仓库内的编辑不会被回退，turn 中 clone 出的仓库在回退后存活。changes 清单对 gitlink 条目如实标注（三语「嵌套仓库（不回退）」）。
 - **影子 git 的环境隔离（2026-09-02 评审后加固）**：影子仓库的全部 git 子进程剥离宿主 `GIT_*` 变量（`GIT_INDEX_FILE`/`GIT_OBJECT_DIRECTORY`/`GIT_DIR` 等会把内部操作重定向到无关仓库）并钉死系统/全局 gitconfig（用户全局 `core.fsmonitor=true` 会对执行根拉起守护进程）；`fs_is_case_insensitive` 的探针文件（`.Pinvou-Icase-Probe-*`）入 exclude，并发同根会话的 `add -A` 不会把它卷进快照；体积估算遇不可读目录时如实记路径级日志（调用方的「超预算」文案不再掩盖权限类失败）。

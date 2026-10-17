@@ -7,7 +7,7 @@ import {
   rewindNoticeText,
   rewindUndoAvailable,
   summarizeCheckpointChanges,
-} from '../src/features/codex/checkpoints.js';
+} from '../src/features/conversation/checkpoints.js';
 
 // ── checkpointMapByTurn：turn 序号对齐 ──────────────────────────────
 {
@@ -148,6 +148,85 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
   assert.equal(entries.get('t2').keepTurns, 1);
 }
 
+// 附件-only 轮次占序号（评审 M1 对齐 pin）：后端把附件-only 发送落盘为
+// 「包装文本 Text 块 + ImageUrl + turn_meta」——两个附件构造器对空草稿也总是
+// 生成非空包装段（"---\n用户附上了以下文件:…"），classify_user_turn_prompt
+// 只认非 turn_meta 的 Text 块 → 后端计数包含该轮（Rust 侧 pin 见
+// code_checkpoints::turns::tests::attachment_wrapped_image_turn_counts_as_user_turn）。
+// 因此前端序号必须同样把它计入：text(1) → 附件-only(2) → text(3) 的序号是
+// 1/2/3，t3 的快照对齐在 turn 3 上。若后端语义变化（裸 ImageUrl 不计数），
+// 本 pin 与 Rust fixture 的计数差即暴露两侧漂移。
+{
+  const attachOnlyTurn = { id: 't2', userItem: { type: 'user', text: '📎 ["shot.png"]', attachments: ['shot.png'] } };
+  const turns = [userTurn('t1'), attachOnlyTurn, userTurn('t3')];
+  const entries = rewindEntriesByTurnId(turns, [
+    { id: 'c1', turn: 1, kind: 'turn' },
+    { id: 'c2', turn: 2, kind: 'turn' },
+    { id: 'c3', turn: 3, kind: 'turn' },
+  ]);
+  assert.equal(entries.get('t1').keepTurns, 0);
+  assert.equal(entries.get('t2').keepTurns, 1, '附件-only 轮次消耗序号（与后端包装文本形态对齐）');
+  assert.equal(entries.get('t2').checkpoint.id, 'c2');
+  assert.equal(entries.get('t3').keepTurns, 2, '后续边界序号不漂移');
+  assert.equal(entries.get('t3').checkpoint.id, 'c3', 'text(3) 的快照对齐在 turn 3，不因附件-only 轮次降级');
+}
+
+// 前端-only 回显不占序号（评审 r5 M1）：卡片答案的 ✓ 回显是 persist=false 的
+// type:"user" chatItem（不落盘；后端以 ToolResult 归入当前 turn，不计 turn）。
+// pushUserEcho 对 !persist 标记 frontendEcho，序号构建必须剔除——否则其后所有
+// 入口序号 +1、最后一个 keepTurns == 后端 total_turns 必被预检拒绝。
+{
+  const echoTurn = { id: 'e1', userItem: { type: 'user', text: '✓ Q1: A · B', frontendEcho: true } };
+  const turns = [userTurn('t1'), userTurn('t2'), echoTurn, userTurn('t3')];
+  const entries = rewindEntriesByTurnId(turns, [
+    { id: 'c1', turn: 1, kind: 'turn' },
+    { id: 'c2', turn: 2, kind: 'turn' },
+    { id: 'c3', turn: 3, kind: 'turn' },
+  ]);
+  assert.equal(entries.has('e1'), false, '前端-only 回显不生成入口');
+  assert.equal(entries.get('t1').keepTurns, 0);
+  assert.equal(entries.get('t2').keepTurns, 1);
+  assert.equal(entries.get('t3').keepTurns, 2, '回显之后的边界序号不受顶偏');
+  assert.equal(entries.get('t3').checkpoint.id, 'c3');
+}
+
+// 计数调和门（评审 r5 M2）：backendUserTurns 与时间线数出的用户 turn 总数
+// 不一致（如压缩后前端时间线保留全部气泡、后端已收缩）→ 序号映射不可靠，
+// 整体不渲染入口（诚实拒绝）；一致时照常。null/非整数（后端未提供）不比对。
+{
+  const turns = [userTurn('t1'), userTurn('t2'), userTurn('t3')];
+  const checkpoints = [
+    { id: 'c1', turn: 1, kind: 'turn' },
+    { id: 'c2', turn: 2, kind: 'turn' },
+    { id: 'c3', turn: 3, kind: 'turn' },
+  ];
+  assert.equal(rewindEntriesByTurnId(turns, checkpoints, 3).size, 3, '一致 → 照常渲染');
+  assert.equal(rewindEntriesByTurnId(turns, checkpoints, 2).size, 0, '后端计数收缩（压缩）→ 整体不渲染');
+  assert.equal(rewindEntriesByTurnId(turns, checkpoints, 4).size, 0, '后端计数偏多同样拒绝（双向校验）');
+  assert.equal(rewindEntriesByTurnId(turns, checkpoints, null).size, 3, '未提供（null）→ 不比对');
+  assert.equal(rewindEntriesByTurnId(turns, checkpoints).size, 3, '缺省参数 → 不比对');
+  // 回显剔除与调和门叠加：回显不计数后前端总数 3 == 后端 3 → 渲染。
+  const echoTurn = { id: 'e1', userItem: { type: 'user', text: '✓ Q1: A', frontendEcho: true } };
+  const turnsWithEcho = [userTurn('t1'), echoTurn, userTurn('t2'), userTurn('t3')];
+  assert.equal(rewindEntriesByTurnId(turnsWithEcho, checkpoints, 3).size, 3, '回显剔除 + 调和一致 → 照常渲染');
+  assert.equal(rewindEntriesByTurnId(turnsWithEcho, checkpoints, 4).size, 0, '回显未剔除（计数 4 ≠ 3）→ 拒绝（调和门兜底）');
+}
+
+// busy 容忍（评审 r7 minor 9/M3b）：发送在途时前端已含乐观气泡、后端计数
+// 未 +1——恰差 1 属期望状态不触发拒绝（busy→false 边沿收紧为精确比对）；
+// 差 2 或非 busy 差 1 仍拒绝。
+{
+  const turns = [userTurn('t1'), userTurn('t2'), userTurn('t3')];
+  const checkpoints = [
+    { id: 'c1', turn: 1, kind: 'turn' },
+    { id: 'c2', turn: 2, kind: 'turn' },
+    { id: 'c3', turn: 3, kind: 'turn' },
+  ];
+  assert.equal(rewindEntriesByTurnId(turns, checkpoints, 2, { busy: true }).size, 3, 'busy 且恰差 1（在途轮次）→ 照常渲染');
+  assert.equal(rewindEntriesByTurnId(turns, checkpoints, 2).size, 0, '非 busy 差 1 → 拒绝');
+  assert.equal(rewindEntriesByTurnId(turns, checkpoints, 1, { busy: true }).size, 0, 'busy 但差 2（压缩）→ 仍拒绝');
+}
+
 // checkpoint 列表为空（系统无 git/快照全部失败）→ 整个会话无入口（设计 §5）。
 {
   const turns = [userTurn('t1'), userTurn('t2')];
@@ -223,8 +302,10 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
   assert.equal(ticks, 1);
 }
 
-// rewindNoticeText：restoredCheckpoint 非空 → 可反悔提示；degraded → 代码未回退；
-// 兜底 → 仅对话。
+// rewindNoticeText：restoredCheckpoint 非空 → 可反悔提示；degraded → 文件未回退；
+// 兜底 → 仅对话。conversationOnlyRequested（工作模式取消勾选「同时回退工作区
+// 文件」）把 degraded 的成因区分为「用户显式选择」→ 中性文案，不冒充「快照
+// 不可用」的降级。
 {
   const copy = {
     rewindNoticeDegraded: 'degraded',
@@ -235,6 +316,21 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
   assert.equal(rewindNoticeText(copy, { degraded: true, restoredCheckpoint: null }, 2), 'degraded');
   assert.equal(rewindNoticeText(copy, { degraded: false, restoredCheckpoint: { id: 'p1' } }, 2), 'restored:2');
   assert.equal(rewindNoticeText(copy, { degraded: false, restoredCheckpoint: null }, 0), 'conversationOnly');
+  // 显式仅对话（取消勾选）：degraded 结果用中性文案，与快照缺失的自动降级区分。
+  assert.equal(
+    rewindNoticeText(copy, { degraded: true, restoredCheckpoint: null }, 2, true),
+    'conversationOnly',
+  );
+  // 未显式选择（code 车道/无快照变体）保持既有降级文案。
+  assert.equal(
+    rewindNoticeText(copy, { degraded: true, restoredCheckpoint: null }, 2, false),
+    'degraded',
+  );
+  // 显式选择不改变 restored 结果（勾选确认后的双层回退仍提示可反悔）。
+  assert.equal(
+    rewindNoticeText(copy, { degraded: false, restoredCheckpoint: { id: 'p1' } }, 2, false),
+    'restored:2',
+  );
   // hadCompaction：在基础提示后如实追加压缩摘要警示，不替换基础语义；
   // false/缺省时不追加。
   assert.equal(
@@ -244,6 +340,10 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
   assert.equal(
     rewindNoticeText(copy, { degraded: true, restoredCheckpoint: null, hadCompaction: true }, 1),
     'degraded compaction-note',
+  );
+  assert.equal(
+    rewindNoticeText(copy, { degraded: true, restoredCheckpoint: null, hadCompaction: true }, 1, true),
+    'conversationOnly compaction-note',
   );
   assert.equal(
     rewindNoticeText(copy, { degraded: false, restoredCheckpoint: null, hadCompaction: true }, 0),
@@ -298,7 +398,7 @@ const userTurn = id => ({ id, userItem: { type: 'user' } });
     );
   }
   // 视图侧经 canInvoke 能力检查提前收口（不为每个 refreshKey 边沿发必被拒的请求）。
-  const checkpointsSource = readFileSync(new URL('../src/features/codex/checkpoints.js', import.meta.url), 'utf8');
+  const checkpointsSource = readFileSync(new URL('../src/features/conversation/checkpoints.js', import.meta.url), 'utf8');
   assert.match(checkpointsSource, /canInvoke\('list_checkpoints'\)/, '列表刷新必须先过 canInvoke 门');
   assert.match(checkpointsSource, /canInvoke\('checkpoint_diff'\)/, 'diff 预览必须先过 canInvoke 门');
 }

@@ -715,6 +715,31 @@ impl SessionAgentStore {
         }
     }
 
+    /// ACP 会话的项目执行根（评审 r6 M3）：ACP 会话 `mode` 恒为 Plain，
+    /// `code_project_workspace` 对其恒 None——但 Project 绑定的 agent 进程
+    /// 实际运行在 `workspace_path`。跨会话忙碌门（rewind/diff/undo 的同根
+    /// 拒绝）必须按它对根，否则 ACP peer 永远解析到会话私有目录、门结构性
+    /// 失效。原生 code 会话两法同值（kind+path 相同），临时会话返回 None。
+    pub fn acp_project_workspace(&self, session_id: &str) -> Option<PathBuf> {
+        let record = self.get(session_id);
+        if record.workspace_kind == CodexWorkspaceKind::Project {
+            record.workspace_path
+        } else {
+            None
+        }
+    }
+
+    /// 跨模块测试构造（评审 r6 M3）：checkpoints 命令层的端到端 pin 需要内存态
+    /// agents store；不触盘（path 指向不会被写的临时占位）。
+    #[cfg(test)]
+    pub fn in_memory_for_tests() -> Self {
+        Self {
+            path: std::env::temp_dir()
+                .join(format!("pinvou3-agent-store-unused-{}", std::process::id())),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
     /// The workspace path recorded by the session's code-session SIDECAR (the
     /// authoritative store for native code sessions), None when the sidecar
     /// is absent, unreadable, or not a project binding. The rebind's

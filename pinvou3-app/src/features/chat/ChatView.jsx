@@ -16,7 +16,12 @@ import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../share
 import { renderMarkdown } from '../../shared/markdown-renderer.js';
 import { createWeakCache } from '../../shared/weak-cache.js';
 import { AppIcon, DEPT_ORDER, deptLabelFor, personaText } from '../personas/persona-shared.jsx';
-import { ComposerModelSelector, ComposerToolMenu } from '../settings/composer-shared.jsx';
+// 底栏选择器懒加载（r11）：composer-shared 压缩后 ~21KB，只在用户聚焦输入框
+// 底栏时才需要；Suspense fallback 用等宽 pill 占位（PanelSuspense 同款）。
+const ComposerModelSelector = React.lazy(() => import('../settings/composer-shared.jsx')
+  .then(m => ({ default: m.ComposerModelSelector })));
+const ComposerToolMenu = React.lazy(() => import('../settings/composer-shared.jsx')
+  .then(m => ({ default: m.ComposerToolMenu })));
 import { ComposerPopover, POPOVER_SURFACE, useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
 import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { ViewErrorBoundary } from '../../shared/ViewErrorBoundary.jsx';
@@ -43,6 +48,16 @@ import {
 } from '../conversation/code-block-copy.js';
 import { applyStreamFade } from '../conversation/stream-fade.js';
 import { HomeModeSwitcher } from '../conversation/HomeModeSwitcher.jsx';
+// 工作模式回退（影子 git 快照）：共享时间线层的入口组件与编排 hook（原生
+// code 车道复用同一套，见 features/conversation）。
+import { rewindUndoAvailable } from '../conversation/checkpoints.js';
+import { useRewindController } from '../conversation/useRewindController.js';
+import { RewindChip, RewindUndoChip } from '../conversation/RewindChip.jsx';
+// 回退确认弹窗懒加载（r11）：弹窗只在用户点击入口后需要，~7KB 不占启动预算。
+const RewindConfirmDialog = React.lazy(() => import('../conversation/RewindDialogs.jsx')
+  .then(m => ({ default: m.RewindConfirmDialog })));
+const RewindUndoConfirmDialog = React.lazy(() => import('../conversation/RewindDialogs.jsx')
+  .then(m => ({ default: m.RewindUndoConfirmDialog })));
 import {
   conversationItemsForMode,
   projectDeepSeekConversation,
@@ -1576,6 +1591,70 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
         return { latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn };
       }, [chatItems, busy, ctxTokens, isScheduledTaskCreationChat, chatThinking, turnTimeline, activeSessionId, modelServiceLanguage, chatModelServiceState]);
       const { latestArtifactIds, latestArtifactIdsKey, lastUserId, conversationProjection, activeConversationTurn } = derivedConversation;
+
+      // 工作模式回退（影子 git 快照，门放宽后原生工作模式车道默认开启）：共享
+      // 编排 hook（features/conversation，原生 code 车道 CodexAcpView 复用同一套）。
+      // 车道门：定时相关会话（sched- 运行/定时创建向导）维持无快照无入口；ACP
+      // 会话不经 chat 侧栏（list_sessions 车道过滤），无需在此判断；web 端由
+      // useSessionCheckpoints 的 canInvoke 门自然关闭（桌面专属命令）。确认弹窗
+      // 用 scopeSelection 变体：工作模式的「是否同时回退工作区文件」选择项默认
+      // 勾选（双层回退），取消勾选走 conversation_only=true 仅截断对话。
+      const isRewindLane = Boolean(activeSessionId) && !isScheduledTaskCreationChat && !scheduledRunContext;
+      const {
+        checkpoints: rewindCheckpoints,
+        rewindEntries,
+        rewindTarget, rewindError, rewinding,
+        openRewindDialog, confirmRewind, cancelRewind,
+        rewindUndoState, rewindUndoEntry, rewindUndoError, rewindUndoing,
+        openRewindUndoDialog, confirmRewindUndo, cancelRewindUndo,
+        resetForSessionSwitch: resetRewindForSessionSwitch,
+      } = useRewindController({
+        sessionId: activeSessionId,
+        enabled: isRewindLane,
+        turns: conversationProjection.turns,
+        busy,
+        copy: t.uiCodex,
+        invoke: invokeTauri,
+        // 回退后按磁盘截断后的会话重注水：bridge 的会话切换内部路径 + 强制盘载
+        // （同会话 id 也重新 load_session），notify() 驱动 bs 快照更新与时间线
+        // 重投影；归属检查防止在途回退把用户切走后的新会话拉回原会话。布尔合同：
+        // 成功 true / 失败 false（不 reject），此处转换为异常交给共享编排的
+        // reload 失败路径（错误留弹窗、可重试仅补重载）。
+        reload: (sid) => {
+          if (!bridge.sessions || typeof bridge.sessions.switchToSessionInternal !== 'function') {
+            return Promise.reject(new Error(t.uiCodex.rewindReloadFailed));
+          }
+          return bridge.sessions
+            .switchToSessionInternal(sid, true, 'chat-rewind', { forceDurableLoad: true })
+            .then((ok) => {
+              if (ok !== true) throw new Error(t.uiCodex.rewindReloadFailed);
+            });
+        },
+        ownsSession: (id) => activeSessionIdRef.current === id,
+        // r8 M1：回退在途切走、重载被跳过时失效被跳过会话的缓存 buffer——
+        // 否则切回的快速路径直接复用回退前缓存，展示陈旧时间线并续写旧 buffer。
+        invalidateSkippedBuffer: (sid) => {
+          if (bridge.sessions && typeof bridge.sessions.invalidateSessionBuffer === 'function') {
+            bridge.sessions.invalidateSessionBuffer(sid);
+          }
+        },
+        // bs 订阅本身就是重投影驱动（switchToSessionInternal 结束时 notify），
+        // 无 codex lane 那样的独立 tick 需要兜底。
+        bumpTick: () => {},
+        appendNotice: (sid, text) => {
+          // 落在当前活动会话的系统提示条（controller 已按 ownsSession 校验）。
+          if (bridge.chat && typeof bridge.chat.addSystemItem === 'function') {
+            bridge.chat.addSystemItem(text);
+          }
+        },
+      });
+      // 回退/撤销弹窗与 UI busy 镜像随会话切换复位：ChatView 不按会话 remount，
+      // 不复位的话切换前打开的确认弹窗会对新会话执行旧目标的回退（与 codex
+      // 车道 [activeId] 复位同款；in-flight 记账 ref 由 hook 持有，归旧 promise
+      // 的 finally 清理）。
+      useEffect(() => {
+        resetRewindForSessionSwitch();
+      }, [activeSessionId, resetRewindForSessionSwitch]);
 
       // External entries can prefill the composer and focus its end.
       // Template/navigation entries (KnowledgeView "continue in chat",
@@ -3646,6 +3725,16 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                     busy={busy}
                     turnGapPx={16}
                     followOutputRef={autoScrollRef}
+                    renderBeforeTurn={turn => (isRewindLane && rewindEntries.has(turn.id) ? (
+                      // 工作模式 turn 边界回退入口：turn N+1 前的 chip =「回退到第 N 轮」；
+                      // 无快照的边界为「仅回退对话」变体（rewindEntriesByTurnId 判定）。
+                      <RewindChip
+                        entry={rewindEntries.get(turn.id)}
+                        disabled={busy || rewinding || rewindUndoing}
+                        copy={t.uiCodex}
+                        onOpen={openRewindDialog}
+                      />
+                    ) : null)}
                     copy={t.uiConversation}
                     agentLabel={chatViewCopy.agentName}
                     assistantAvatar={(timelineAssistantAvatar)}
@@ -3670,9 +3759,35 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                 />
                 {/* 实体占位必须覆盖输入框和其上方渐变区，保证滚到底时最后一张卡
                     完整停在渐变之外，而不是虽然能滚到却被遮罩淡化。 */}
+                {/* 「撤销回退」入口（评审 r7 M1 + r12 M2）：挂在 hasMessages 块内
+                    800px 列的实体占位之前——不在 spacer 之后/之外（r12 复审证明
+                    悬浮输入区 z-20 与底部渐变会完整遮挡 spacer 之后的流内子节点，
+                    部分回退后时间线高于视口时唯一自救入口不可达）。放在 spacer
+                    之前：滚到底时位于实体占位顶部之上（176px > 渐变顶 148px），
+                    完整可见可点击。keepTurns=0 空时间线由块外副本覆盖。 */}
+                {isRewindLane && rewindUndoAvailable(rewindUndoState) && hasMessages && (
+                  <RewindUndoChip
+                    state={rewindUndoState}
+                    disabled={busy || rewinding || rewindUndoing}
+                    copy={t.uiCodex}
+                    onOpen={openRewindUndoDialog}
+                  />
+                )}
                 <div data-testid="chat-bottom-spacer" aria-hidden="true" className="w-full shrink-0"
                   style={{ height: (composerH ? composerH + 64 : 176) + 'px' }} />
               </div>
+            )}
+
+            {/* 空时间线副本（评审 r7 M1）：keepTurns=0 回退 + durable 重载后时间线
+                为空、仅存的内存态「已回退」pill 不持久化，块外渲染让唯一自救入口
+                在空态下仍可达。 */}
+            {isRewindLane && rewindUndoAvailable(rewindUndoState) && !hasMessages && (
+              <RewindUndoChip
+                state={rewindUndoState}
+                disabled={busy || rewinding || rewindUndoing}
+                copy={t.uiCodex}
+                onOpen={openRewindUndoDialog}
+              />
             )}
 
           </div>
@@ -3709,6 +3824,42 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                 ))}
               </div>
             </div>
+          )}
+          {isRewindLane && rewindTarget && (
+            // 「回退到第 N 轮」确认弹窗（工作模式变体）：回退范围选择（默认同时
+            // 回退工作区文件，勾选时展示变更预览）+ 对话截断位置 + 错误如实上屏；
+            // 确认后 confirmRewind 走 rewind_to_turn 编排（共享 hook）。车道门与
+            // chip 一致：定时上下文激活（如定时创建向导接管当前会话）时收回弹窗。
+            <React.Suspense fallback={null}>
+            <RewindConfirmDialog
+              entry={rewindTarget}
+              previewState={rewindTarget.checkpoint
+                ? rewindCheckpoints.previews[rewindTarget.checkpoint.id]
+                : null}
+              error={rewindError}
+              busy={rewinding}
+              theme={theme}
+              copy={t.uiCodex}
+              scopeSelection
+              onCancel={cancelRewind}
+              onConfirm={confirmRewind}
+            />
+          </React.Suspense>
+          )}
+          {isRewindLane && rewindUndoEntry && (
+            // 「撤销回退」轻量确认：说明将恢复文件（有绑定回滚点时）与被截掉的
+            // N 轮对话；reloadFailed 时降级为「重试加载」语义。车道门同上。
+            <React.Suspense fallback={null}>
+            <RewindUndoConfirmDialog
+              state={rewindUndoEntry}
+              error={rewindUndoError}
+              busy={rewindUndoing}
+              theme={theme}
+              copy={t.uiCodex}
+              onCancel={cancelRewindUndo}
+              onConfirm={confirmRewindUndo}
+            />
+          </React.Suspense>
           )}
           {voiceIntroOpen && (
             <VoiceShortcutIntroModal
@@ -4131,8 +4282,12 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
                       the backend's swarm_mode_available excludes them (the
                       engine always assembles plain config there), so the
                       entry hides up front instead of erroring on click. */}
+                  <React.Suspense fallback={<span className="inline-flex h-[26px] w-16" />}>
                   <ComposerModelSelector t={t} bs={bs} onGotoSettings={onGotoModelSettings || onGotoSettings} compact={composerCompact} multiAgentAvailable={!scheduledRunContext} />
+                </React.Suspense>
+                  <React.Suspense fallback={<span className="inline-flex h-[26px] w-16" />}>
                   <ComposerToolMenu t={t} onGotoTools={onGotoTools} compact={composerCompact} activeSkill={bs && bs.activeSkill} />
+                </React.Suspense>
                   <ComposerKbSelector t={t} bs={bs} compact={composerCompact} />
                 </div>
                 <VoiceComposerButton

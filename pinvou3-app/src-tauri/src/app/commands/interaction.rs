@@ -10,8 +10,17 @@ pub async fn compact_now(
     session_id: Option<String>,
     pool: State<'_, EnginePool>,
     store: State<'_, SessionStore>,
+    acp_pool: State<'_, crate::features::codex_acp::AcpPool>,
 ) -> Result<(), String> {
     let sid = require_active_sid(session_id, &store)?;
+    // 车道门（与 chat()/accept_plan 同口径）：compact_now 在 web 侧 access-policy
+    // allowlist 内而 EnginePool 不感知 ACP——若该 id 恰有存活的原生引擎，ACP
+    // 会话 id 直发会经原生车道改写其历史（压缩不会拉起引擎：无存活引擎时直接
+    // 以 session_engine_not_running 失败，故本门为纵深防御）。桌面侧唯一调用方
+    // （代码页原生车道）自带 isNativeAgent 前置门，不受影响。
+    if acp_pool.is_acp(&sid) {
+        return Err(super::chat::ACP_CHAT_LANE_REJECTED.to_string());
+    }
     pool.compact_now(&sid)
         .await
         .map_err(|e| format!("compact_now: {e:#}"))
@@ -186,7 +195,14 @@ pub async fn accept_plan(
     display_message: Option<String>,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
+    acp_pool: State<'_, crate::features::codex_acp::AcpPool>,
 ) -> Result<SessionModeState, String> {
+    // 车道门（与 chat() 同口径）：ACP 会话的 plan 批准在外部 agent 进程内部
+    // 消化，不经本命令。现状下 ACP 会话也无法持有原生 pending plan claim
+    // （claim 失败兜底），但显式拒绝让「ACP 车道维持排除」不依赖间接论证。
+    if acp_pool.is_acp(&session_id) {
+        return Err(super::chat::ACP_CHAT_LANE_REJECTED.to_string());
+    }
     let mut reservation = pool
         .reserve_turn(&session_id)
         .map_err(|error| format!("reserve accept_plan turn: {error:#}"))?;
@@ -205,12 +221,17 @@ pub async fn accept_plan(
         .filter(|message| !message.is_empty())
         .unwrap_or_else(|| "✅ 就这么干".to_string());
     let mut created_snapshot_id: Option<String> = None;
-    let mut checkpoint_ledger_root = None;
-    if store.is_code_session(&session_id) {
-        let roots = store
-            .session_roots(&session_id)
-            .map_err(|error| format!("解析会话根失败: {error:#}"))?;
-        checkpoint_ledger_root = Some(roots.ledger.clone());
+    // roots 无条件解析（对齐 chat.rs 的形状：快照门只看车道）。未绑定会话两根
+    // 同为会话私有目录，照常可快照；解析失败对齐 chat.rs 如实报错。
+    let roots = store
+        .session_roots(&session_id)
+        .map_err(|error| format!("解析会话根失败: {error:#}"))?;
+    let checkpoint_ledger_root = Some(roots.ledger.clone());
+    // 原生车道（工作模式 + 原生 code）同款快照门：ACP 已在命令入口拒绝；
+    // scheduled 会话维持无快照（与 chat()/fork 拒绝口径一致）。
+    if store.scheduled_profile(&session_id).is_none()
+        && !crate::features::sessions::is_aux_session_id(&session_id)
+    {
         created_snapshot_id = super::checkpoints::create_turn_checkpoint(
             store.inner(),
             &session_id,

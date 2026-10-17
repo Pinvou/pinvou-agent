@@ -1,4 +1,4 @@
-// 代码会话 checkpoint / 回退的视图侧状态与纯逻辑。
+// 原生车道会话 checkpoint / 回退的视图侧状态与纯逻辑（工作模式 + 原生 code 共用）。
 //
 // Rust 侧（features/code_checkpoints + app/commands/checkpoints）在每个用户消息
 // （turn）开始时对执行根打快照并记录 turn 序号（1-based）；本模块把快照对齐到
@@ -7,7 +7,7 @@
 //
 // 对齐规则：投影 turns 中带 userItem 的用户 turn 按出现顺序计序号，与 Rust
 // count_user_turns（is_user_turn_prompt 同口径）一一对应；preamble/系统项不占
-// 序号。turn N+1 有 Turn 快照 → 该边界入口为「回退到第 N 轮」（代码+对话）；
+// 序号。turn N+1 有 Turn 快照 → 该边界入口为「回退到第 N 轮」（文件+对话）；
 // 快照缺失（LRU 淘汰/当时快照失败）→ 「仅回退对话」变体（conversationOnly）。
 // 快照创建失败的 turn 只是入口变体不同，不会错位——回退前的 diff 预览展示的
 // 始终是真实差异。
@@ -21,7 +21,7 @@ import { canInvoke } from '../../shared/platform.js';
  * turn 缺失（计数失败）的条目不参与对齐；同一 turn 取先创建者（turn 快照），
  * 回滚点（turn=None 的 preRestore）不占位。全部缺序号时不做顺序兜底：
  * 后端 resolve_rewind_plan 只认 turn 号对得上的 Turn 条目，顺序对齐出的入口
- * 承诺「代码+对话回退」必被后端拒绝——退回空 map，边界全部走「仅回退对话」
+ * 承诺「文件+对话回退」必被后端拒绝——退回空 map，边界全部走「仅回退对话」
  * 变体（诚实且可用）。
  */
 export function checkpointMapByTurn(checkpoints) {
@@ -57,11 +57,27 @@ export function summarizeCheckpointChanges(changes) {
  * entry = { keepTurns, checkpoint, conversationOnly }：
  * - keepTurns = 用户 turn 序号 - 1（「回退到第 N 轮」= 恢复第 N+1 轮快照 + 对话
  *   截断到第 N 轮；第 1 个用户 turn 的边界 keepTurns=0，即清空全部）；
- * - 该边界对应的 Turn 快照存在 → conversationOnly=false（代码+对话一起回退）；
+ * - 该边界对应的 Turn 快照存在 → conversationOnly=false（文件+对话一起回退）；
  *   快照缺失 → conversationOnly=true 的「仅回退对话」变体（设计 §5/§7）。
  * checkpoint 列表为空（系统无 git/快照全部失败）时整个会话不渲染入口（设计 §5）。
+ *
+ * 序号剔除（评审 M1）：userItem.frontendEcho 的 turn（卡片答案等前端-only 回显，
+ * 不落盘、后端以 ToolResult 归入当前 turn）不占序号——否则其后所有入口序号 +1、
+ * 最后一个必被后端 total_turns 预检拒绝。
+ *
+ * 计数调和门（评审 M2）：backendUserTurns（list_checkpoints 响应携带的后端
+ * count_user_turns）非空时，若时间线数出的用户 turn 总数与之不一致（如压缩后
+ * 前端时间线保留全部气泡而后端已收缩为载体+摘要尾），序号↔后端 turn 的映射
+ * 不再可靠——返回空 map 不渲染任何入口，把「错点成功」降级为诚实拒绝； durable
+ * 重载后时间线按收缩后的 messages 重建（载体被投影过滤），两侧计数重新对齐
+ * （注意：对齐的只是计数——checkpoint 身份仍是压缩前打的，身份级错位由
+ * 设计文档 §12 记录为 v2 议题，durable 重载不修复身份）。
+ *
+ * busy 容忍（评审 r6 minor 9）：发送在途时前端时间线已含乐观用户气泡，而后端
+ * 计数要等消息落盘才 +1——恰差 1 属期望状态，不触发拒绝（busy→false 边沿
+ * refreshKey 会重拉收紧到精确比对），避免每轮发送期间入口整体消失。
  */
-export function rewindEntriesByTurnId(turns, checkpoints) {
+export function rewindEntriesByTurnId(turns, checkpoints, backendUserTurns, { busy = false } = {}) {
   const entries = new Map();
   const list = Array.isArray(checkpoints) ? checkpoints : [];
   if (!list.length) return entries;
@@ -69,6 +85,7 @@ export function rewindEntriesByTurnId(turns, checkpoints) {
   let ordinal = 0;
   for (const turn of turns || []) {
     if (!turn || !turn.userItem || turn.id == null) continue;
+    if (turn.userItem.frontendEcho) continue;
     ordinal += 1;
     const checkpoint = byTurn.get(ordinal) || null;
     entries.set(turn.id, {
@@ -76,6 +93,10 @@ export function rewindEntriesByTurnId(turns, checkpoints) {
       checkpoint,
       conversationOnly: !checkpoint,
     });
+  }
+  if (Number.isSafeInteger(backendUserTurns) && backendUserTurns >= 0 && ordinal !== backendUserTurns) {
+    const inFlightTolerance = busy && ordinal === backendUserTurns + 1;
+    if (!inFlightTolerance) return new Map();
   }
   return entries;
 }
@@ -94,16 +115,19 @@ export function checkpointRefreshKey({ turnCount, busy }) {
 
 /**
  * 回退结果 → 时间线内联提示文案（纯函数，copy 取 uiCodex）。
- * restoredCheckpoint 非空 = 代码已恢复且自动打了 PreRestore 回滚点（可反悔）；
- * degraded = 快照不可用只截断了对话；兜底 = 仅对话回退（代码未动）。
- * hadCompaction：截断不清 system_prompt，回退后模型上下文可能仍带着描述被截
- * 轮次的压缩摘要——在基础提示后如实追加，不替换。
+ * restoredCheckpoint 非空 = 文件已恢复且自动打了 PreRestore 回滚点（可反悔）；
+ * degraded = 仅回退了对话。degraded 的两种成因由 conversationOnlyRequested
+ * 区分：调用方显式选择仅回退对话（工作模式取消勾选「同时回退工作区文件」）
+ * → rewindNoticeConversationOnly（中性文案）；快照缺失自动降级（该轮本就没有
+ * 快照）→ rewindNoticeDegraded（如实说明快照不可用）。hadCompaction：截断
+ * 不清 system_prompt，回退后模型上下文可能仍带着描述被截轮次的压缩摘要——
+ * 在基础提示后如实追加，不替换。
  */
-export function rewindNoticeText(copy, result, keepTurns) {
-  const base = result?.degraded
-    ? copy.rewindNoticeDegraded
-    : result?.restoredCheckpoint
-      ? copy.rewindNoticeRestored(keepTurns)
+export function rewindNoticeText(copy, result, keepTurns, conversationOnlyRequested = false) {
+  const base = result?.restoredCheckpoint
+    ? copy.rewindNoticeRestored(keepTurns)
+    : result?.degraded
+      ? (conversationOnlyRequested ? copy.rewindNoticeConversationOnly : copy.rewindNoticeDegraded)
       : copy.rewindNoticeConversationOnly;
   return result?.hadCompaction ? `${base} ${copy.rewindNoticeCompaction}` : base;
 }
@@ -146,7 +170,7 @@ export async function reloadSessionAfterRewind({ reload, bumpTick }) {
 
 /**
  * 会话级 checkpoint 状态：列表加载/刷新 + diff 预览缓存 + 可反悔状态。
- * `enabled` 由调用方门控（仅原生代码会话且已有 sessionId）；`refreshKey` 变化
+ * `enabled` 由调用方门控（原生车道且已有 sessionId）；`refreshKey` 变化
  * 时重新拉取（调用方应使用 checkpointRefreshKey：turns 数 + busy 边沿），让新
  * turn 的回退入口及时出现并收敛为正确变体；undoState 与列表同节奏刷新（回退
  * 后/发新轮后可见性随之收敛）。回退编排（rewind_to_turn / undo_last_rewind）
@@ -154,6 +178,9 @@ export async function reloadSessionAfterRewind({ reload, bumpTick }) {
  */
 export function useSessionCheckpoints({ sessionId, enabled, refreshKey }) {
   const [checkpoints, setCheckpoints] = useState([]);
+  // 后端权威用户 turn 计数（list_checkpoints 响应携带；评审 M2 调和门）：
+  // null = 后端未提供（旧响应/失败），调和门退化为不比对。
+  const [userTurns, setUserTurns] = useState(null);
   const [previews, setPreviews] = useState({});
   const [undoState, setUndoState] = useState(null);
   const sessionRef = useRef(sessionId);
@@ -165,18 +192,29 @@ export function useSessionCheckpoints({ sessionId, enabled, refreshKey }) {
     // 不渲染入口，不为每个 refreshKey 边沿发两个必被 access-policy 拒的请求。
     if (!id || !enabled || !canInvoke('list_checkpoints')) {
       setCheckpoints([]);
+      setUserTurns(null);
       setPreviews({});
       setUndoState(null);
       return;
     }
     try {
-      const list = await invoke('list_checkpoints', { sessionId: id });
+      const payload = await invoke('list_checkpoints', { sessionId: id });
       if (sessionRef.current === id) {
-        setCheckpoints(Array.isArray(list) ? list : []);
+        // 响应体 r5 起为 { checkpoints, userTurns }；数组形态兜底仅为容错。
+        const list = Array.isArray(payload)
+          ? payload
+          : (Array.isArray(payload?.checkpoints) ? payload.checkpoints : []);
+        const backendTurns = Number.isSafeInteger(payload?.userTurns) ? payload.userTurns : null;
+        setCheckpoints(list);
+        setUserTurns(backendTurns);
       }
     } catch {
-      // 列表失败（会话被删/索引损坏/非代码会话）不打扰主流程：该会话没有回退入口。
-      if (sessionRef.current === id) setCheckpoints([]);
+      // 列表失败（会话被删/索引损坏/非原生车道）不打扰主流程：该会话没有回退入口。
+      // userTurns 一并复位：陈旧的后端计数对着新时间线比对会产生假拒绝。
+      if (sessionRef.current === id) {
+        setCheckpoints([]);
+        setUserTurns(null);
+      }
     }
     try {
       const state = await invoke('rewind_undo_state', { sessionId: id });
@@ -202,6 +240,7 @@ export function useSessionCheckpoints({ sessionId, enabled, refreshKey }) {
       previewSessionRef.current = sessionId;
       setPreviews({});
       setCheckpoints([]);
+      setUserTurns(null);
       setUndoState(null);
     }
   }, [sessionId]);
@@ -231,7 +270,7 @@ export function useSessionCheckpoints({ sessionId, enabled, refreshKey }) {
   }, []);
 
   return useMemo(
-    () => ({ checkpoints, previews, preview, refresh, undoState }),
-    [checkpoints, previews, preview, refresh, undoState],
+    () => ({ checkpoints, userTurns, previews, preview, refresh, undoState }),
+    [checkpoints, userTurns, previews, preview, refresh, undoState],
   );
 }

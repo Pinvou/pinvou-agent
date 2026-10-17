@@ -1135,6 +1135,13 @@ function pinvouSceneForMessagePos(pos) { return pinvouSharedtauriMain().pinvouSc
   const mergeHydratedArtifacts = sessionsFeature.mergeHydratedArtifacts;
   const mergeHydratedChatItems = sessionsFeature.mergeHydratedChatItems;
   const switchToSession = sessionsFeature.switchToSession;
+  // Rewind/undo rehydration seam (work-mode ChatView): the public
+  // switchToSession fast-paths when id === activeSessionId, so a truncated
+  // transcript would not reload; the internal variant with forceDurableLoad
+  // re-reads the session from disk. Returned to feature code with that
+  // single purpose documented — returns boolean success, does NOT reject.
+  const switchToSessionInternal = sessionsFeature.switchToSessionInternal;
+  const invalidateSessionBuffer = sessionsFeature.invalidateSessionBuffer;
   const openScheduledRunChat = sessionsFeature.openScheduledRunChat;
   const exitScheduledRunChat = sessionsFeature.exitScheduledRunChat;
   const deleteSession = sessionsFeature.deleteSession;
@@ -1810,6 +1817,19 @@ function pinvouSharedtauriMainN99856() {
   return pinvouSharedtauriMainN99856Cache;
 }
 
+    // 压缩载体识别（评审 M2；镜像 CodeWhale history_recognition 的判定）：
+    // role=User、首块文本以压缩摘要头（当前/历史前缀）开头、其余为空或仅
+    // provenance 注释。与 web 车道同款。
+    function isCompactionCarrierBlocks(blocks) {
+      if (!Array.isArray(blocks) || !blocks.length || !(blocks[0] && blocks[0].type === "text")) return false;
+      const t = String(blocks[0].text || "");
+      if (!(t.indexOf("Another language model started to solve this problem") === 0
+        || t.indexOf("Conversation Summary (Auto-Generated)") === 0)) return false;
+      const rest = blocks.slice(1);
+      return rest.length === 0 || (rest.length === 1 && rest[0].type === "text"
+        && String(rest[0].text || "").trim() === "<!-- codewhale.compaction-checkpoint.v1 -->");
+    }
+
 
     state.chatItems = [];
     itemIdSeq = 0;
@@ -1880,12 +1900,25 @@ function emitPersonaAt(atOrAfter, isTail) { return pinvouSharedtauriMainN99856()
       const m = state.messages[mi];
       const blocks = Array.isArray(m.content) ? m.content : [];
       if (m.role === "user") {
+        // 压缩载体（评审 M2）：role=User 的运行时内部消息（摘要头 + provenance
+        // 注释），后端 is_compaction_checkpoint_message 判定不计 turn——重载时
+        // 不还原为用户气泡，否则时间线多一个幻影“用户轮”、回退序号被顶 +1。
+        if (isCompactionCarrierBlocks(blocks)) continue;
+        // 工具结果载体（评审 r9 M5）：含 tool_result 块的 User 消息不是用户轮
+        // （classify 按 ToolResult-first 判 NotPrompt）——如截图工具回传的
+        // [ToolResult, Text("<image …>"), ImageUrl, Text] 形态。工具卡由下方
+        // toolMeta 回填还原，这里只跳过用户气泡（否则幻影气泡渲染裸标记文本、
+        // 序号被顶 → 调和门隐藏该会话全部回退入口）。
+        const toolResultCarrier = blocks.some(b => b && b.type === "tool_result");
         // Always strip exact internal envelopes: sessions saved before the
         // persistence alignment still carry the engine-baked <turn_meta>
         // block on mid-turn steered messages, and without the filter the
         // hydrated bubble rendered the raw envelope after a restart.
-        const utext = userMessageDisplayText(blocks, true);
-        if (utext) {
+        const utext = toolResultCarrier ? "" : userMessageDisplayText(blocks, true);
+        // 步数预算通知（r10 M3）：过滤气泡，与 Rust 计数侧（counts_as_user_turn）
+        // 同口径——否则调和门序号错位 / 假用户气泡。
+        const stepBudgetNotice = utext && (utext.indexOf("Step budget soft landing:") === 0 || utext.indexOf("Your model-step budget was exhausted") === 0);
+        if (utext && !stepBudgetNotice) {
           // pinvouTransfer 是展示层标记、不在 messages → rerender 从转交固定措辞还原品/悟样式
           const uitem2 = { type: "user", text: utext, time: "", messageIndex: mi };
           // A mid-turn steer injection is no admission (no timing record):
@@ -2532,6 +2565,10 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       interruptAndSendQueued,
       cancelGeneration,
       cancelShellTask,
+      // Append a system pill to the ACTIVE session's chat items (memory-only,
+      // not persisted) and notify. Exposed for view-level inline notices that
+      // have no lane-local sink (work-mode rewind/undo results).
+      addSystemItem,
     },
     auxChat: {
       ensure: auxChatFeature.ensure,
@@ -2608,6 +2645,17 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       // sessions share the code mode's safety posture; web/remote sessions have
       // no binding concept, stub returns null).
       getSessionWorkspaceBinding,
+      // Rewind/undo rehydration (work-mode ChatView): force a durable reload of
+      // the current session from disk after rewind_to_turn / undo_last_rewind
+      // truncated/restored it (switchToSession would fast-path on the same id).
+      // Boolean contract: resolves true on success, false on failure (never
+      // rejects); desktop only (no web bridge counterpart — rewind is
+      // desktop-only, callers guard on method existence).
+      switchToSessionInternal,
+      // r8 M1：回退在途切走、重载被跳过时失效被跳过会话的缓存 buffer——否则
+      // 切回的快速路径直接复用回退前缓存，展示陈旧时间线。仅丢弃缓存，
+      // 无删除语义；desktop only（与 rewind 同域）。
+      invalidateSessionBuffer,
     },
     projects: {
       loadProjects,
