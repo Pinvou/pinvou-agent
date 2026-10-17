@@ -25,5 +25,5 @@ pub use windows_system::{
     pdf_text_missing_message, pdf_tool_exists, pdf_tool_path, presentation_pdf_missing_message,
     process_alive, read_clipboard_image, reveal_target, show_archive_dependency_check,
     show_ocr_dependency_check, show_pandoc_dependency_check, show_pdf_dependency_check,
-    startup_platform_env, system_default_open_supported,
+    startup_platform_env, system_default_open_supported, try_make_private_dir,
 };

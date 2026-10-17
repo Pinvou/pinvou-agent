@@ -46,6 +46,24 @@ child_env sanitize passes HOME/USERPROFILE through but not PINVOU3_HOME, so
 the test/dev-side PINVOU3_HOME relocation never affects engine-spawned
 instances — which is exactly why the explicit --sessions-dir argument exists.
 
+Scoped instance (--only-session <id>, ADR-0024): the auxiliary side chat's
+engine is spawned with a per-aux MCP config whose session-reader entry appends
+`--only-session=<parent_task_id>` (the `=` form — the session-id charset
+admits leading `-`, and a two-token pin would make argparse read the value as
+an option; the shipped per-aux config emits the `=` form). In that mode the scope is enforced
+process-side and app-anchored (the host derives the parent from the aux id;
+the model can never claim or widen it): read_session accepts exactly the
+scoped session id (any other id — sibling, aux-, sched-, eval_ — is a
+structured "not readable" error), and list_sessions returns exactly the
+scoped session's metadata entry (empty list when the record is absent) —
+never a directory scan. The startup validation refuses isolated-prefix ids
+(sched-/eval_/aux-, case-insensitive): a scoped instance is always pinned to
+a NORMAL parent session. tools/list is unchanged in scoped mode — the
+engine-side allowlist (allowed_tools) filters the catalog, not the server.
+The scope is stored set-ready (frozenset membership) so widening
+--only-session to multiple ids later (aux-side @-references) is a parsing
+change only.
+
 Feature-switch fallback (docs/builtin-toolset-contract.md §3.3): once a
 feature-level switch turns a feature off, its dedicated tools are removed from
 the registry and the model cannot see them; but stale contexts (old sessions
@@ -341,6 +359,30 @@ def resolve_sessions_dir(argv=None):
     if home:
         return os.path.join(home, "sessions")
     return os.path.join(os.path.expanduser("~"), ".pinvou3", "sessions")
+
+
+def resolve_only_session(argv=None):
+    """Raw --only-session value (None when absent). Validation is separate so
+    tests can drive both halves; main() refuses to start on an invalid id."""
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--only-session", default=None)
+    args, _ = parser.parse_known_args(argv)
+    return args.only_session
+
+
+def validate_only_session(session_id):
+    """Startup validation for --only-session: the scoped instance is always
+    pinned to a NORMAL parent session (charset/length per validate_session_id;
+    isolated prefixes rejected case-insensitively, ADR-0024). Returns an error
+    message or None."""
+    return validate_session_id(session_id)
+
+
+def scoped_allowed_sessions(only_session):
+    """The scope set (R2: set-ready). One id today; membership is the only
+    operation the tool handlers perform on it, so widening --only-session to
+    multiple ids later is a parsing change only."""
+    return frozenset([only_session])
 
 
 def full_tool_name(tool_name):
@@ -654,15 +696,54 @@ def _fit_turn_to_budget(shaped, budget):
         shaped["itemsTruncated"] = True
 
 
+SCOPED_NOT_READABLE_ERROR = (
+    "session is not readable via this tool (this instance is scoped to a "
+    "single session)")
+"""The ONE scoped-denial text: no session-id interpolation, so a non-member id
+and a member id whose record is absent are byte-identical to the caller —
+deleting the id would be an existence oracle for sibling ids (round-3 M3(b))."""
+
+
+SCOPED_SURFACE_TOOLS = frozenset(["read_session", "list_sessions"])
+"""The scoped aux surface (ADR-0024): parent-context READS only. Valid while
+every non-member tool could be data-scoped server-side; #627's cross-session
+send is a write and cannot be, so scoped instances neither list nor execute
+it — the server surface now matches the engine-side allowlist stance instead
+of relying on it."""
+
+SCOPED_READ_ONLY_ERROR = (
+    "tool is not available via this instance (this instance is scoped to "
+    "parent-context reads)")
+"""Out-of-surface refusal on scoped instances: same voice as
+SCOPED_NOT_READABLE_ERROR — no call arguments interpolated."""
+
+
 def read_session_history(sessions_dir, session_id, turn_limit=DEFAULT_TURN_LIMIT,
                          cursor=None, include_outputs=False,
-                         max_output_chars_per_item=DEFAULT_MAX_OUTPUT_CHARS):
-    """Reads one session's paginated history. Returns (payload, error); when error is not None the payload is None."""
+                         max_output_chars_per_item=DEFAULT_MAX_OUTPUT_CHARS,
+                         allowed_sessions=None):
+    """Reads one session's paginated history. Returns (payload, error); when error is not None the payload is None.
+
+    allowed_sessions (scoped instances, ADR-0024): a frozenset the id must be
+    a member of; any non-member id — sibling, aux-, sched-, eval_ — gets a
+    structured not-readable error before any filesystem access. Scoped mode
+    returns the SAME not-readable error for a member id whose record is
+    absent or fails path containment: a distinct "not found" would be an
+    existence oracle for sibling session ids (round-3 M3(b)). Beyond that
+    gate, a member's OWN file that is corrupt/unreadable/oversized answers
+    with the specific id-echoing error ("unreadable/too large: <id>") — the
+    id is the caller's own pin, so echoing it leaks nothing (round-9 minor
+    4, documented intent)."""
     id_error = validate_session_id(session_id)
     if id_error:
         return None, id_error
+    scoped = allowed_sessions is not None
+    if scoped and session_id not in allowed_sessions:
+        return None, SCOPED_NOT_READABLE_ERROR
     path = _resolve_session_path(sessions_dir, session_id)
     if path is None:
+        if scoped:
+            return None, SCOPED_NOT_READABLE_ERROR
         return None, "session not found: %s" % session_id
     try:
         is_file = path.is_file()
@@ -672,6 +753,8 @@ def read_session_history(sessions_dir, session_id, turn_limit=DEFAULT_TURN_LIMIT
         # below — raw OSError text embeds the absolute host path.
         return None, "session file unreadable: %s" % session_id
     if not is_file:
+        if scoped:
+            return None, SCOPED_NOT_READABLE_ERROR
         return None, "session not found: %s" % session_id
     try:
         if path.stat().st_size > MAX_SESSION_FILE_BYTES:
@@ -846,8 +929,55 @@ def _read_metadata(path):
     return None
 
 
-def list_sessions(sessions_dir, query=None, limit=DEFAULT_LIST_LIMIT):
-    """Searches sessions by title (newest first). Returns (payload, error)."""
+def _metadata_entry(session_id, metadata):
+    """One list_sessions entry. Shared by the directory-scan path and the
+    scoped path so the two shapes cannot drift apart."""
+    return {
+        "sessionId": session_id,
+        "title": _truncate(str(metadata.get("title") or ""), MAX_METADATA_FIELD_CHARS),
+        "updatedAt": _truncate(str(metadata.get("updated_at") or ""), MAX_METADATA_FIELD_CHARS),
+        # A corrupt app-written value (e.g. a string) must not kill the
+        # whole listing — coerce defensively, defaulting to 0. The shaping
+        # sits inside the caller's per-entry guard: one pathological
+        # metadata value (json Infinity, wrong type) skips that entry
+        # instead of failing the whole listing (review round-6 M6).
+        "messageCount": _coerce_int(metadata.get("message_count"), 0, 0, (1 << 31) - 1),
+        "workspace": _truncate(str(metadata.get("workspace") or ""), MAX_METADATA_FIELD_CHARS),
+    }
+
+
+def list_sessions(sessions_dir, query=None, limit=DEFAULT_LIST_LIMIT,
+                  allowed_sessions=None):
+    """Searches sessions by title (newest first). Returns (payload, error).
+
+    allowed_sessions (scoped instances, ADR-0024): no directory scan —
+    exactly one metadata entry per scoped id that exists on disk AND parses
+    (an absent, corrupt, or unreadable record all yield the empty list —
+    "empty" is NOT a parent-exists probe, only the absence of a readable
+    entry; round-7 minor 2); query/limit are not search filters here (the
+    scope pins the answer set)."""
+    if allowed_sessions is not None:
+        entries = []
+        for scoped_id in sorted(allowed_sessions):
+            scope_error = validate_session_id(scoped_id)
+            if scope_error is not None:
+                # A scope member failed its own validation: refuse the whole
+                # call — a misconfigured instance must not fall back to a
+                # directory scan.
+                return None, scope_error
+            path = _resolve_session_path(sessions_dir, scoped_id)
+            if path is None:
+                continue
+            try:
+                if not path.is_file():
+                    continue
+                metadata = _read_metadata(path)
+            except OSError:
+                continue
+            if metadata is None:
+                continue
+            entries.append(_metadata_entry(scoped_id, metadata))
+        return {"sessions": entries, "total": len(entries), "truncated": False}, None
     limit = _coerce_int(limit, DEFAULT_LIST_LIMIT, 1, MAX_LIST_LIMIT)
     needle = (query or "").strip().lower()
     entries = []
@@ -912,18 +1042,7 @@ def list_sessions(sessions_dir, query=None, limit=DEFAULT_LIST_LIMIT):
             title = str(metadata.get("title") or "")
             if needle and needle not in title.lower():
                 continue
-            entries.append({
-                "sessionId": session_id,
-                "title": _truncate(title, MAX_METADATA_FIELD_CHARS),
-                "updatedAt": _truncate(str(metadata.get("updated_at") or ""), MAX_METADATA_FIELD_CHARS),
-                # A corrupt app-written value (e.g. a string) must not kill the
-                # whole listing — coerce defensively, defaulting to 0. The
-                # shaping sits inside the same per-entry guard: one pathological
-                # metadata value (json Infinity, wrong type) skips that entry
-                # instead of failing the whole listing (review round-6 M6).
-                "messageCount": _coerce_int(metadata.get("message_count"), 0, 0, (1 << 31) - 1),
-                "workspace": _truncate(str(metadata.get("workspace") or ""), MAX_METADATA_FIELD_CHARS),
-            })
+            entries.append(_metadata_entry(session_id, metadata))
         except Exception:
             continue
     entries.sort(key=lambda item: item["updatedAt"], reverse=True)
@@ -1179,14 +1298,24 @@ def _text_content(payload, is_error=False):
     }
 
 
-def _handle_call(req_id, params, sessions_dir, messaging_dir, tool_features):
+def _handle_call(req_id, params, sessions_dir, messaging_dir, tool_features, allowed_sessions=None):
     name = (params or {}).get("name")
     args = (params or {}).get("arguments") or {}
     # Contract §3.3 fallback: a tool call from stale context gets a structured
-    # feature_disabled when all its features are off.
+    # feature_disabled when all its features are off. Unchanged in scoped mode
+    # (ADR-0024 clause 8): the aux instance rides the same session-mention +
+    # long-memory union gate, re-read per call.
     gate = feature_gate_error(name, sessions_dir, tool_features)
     if gate is not None:
         _result(req_id, _text_content(gate, is_error=True))
+        return
+    if allowed_sessions is not None and name not in SCOPED_SURFACE_TOOLS:
+        # Defense in depth: the aux engine's allowlist never grants
+        # write-family tools, but this instance must also stay read-only on
+        # its own contract — a stale or hand-crafted caller gets the
+        # structured refusal instead of execution.
+        _result(req_id, _text_content(
+            {"ok": False, "error": SCOPED_READ_ONLY_ERROR}, is_error=True))
         return
     if name == "read_session":
         session_id = str(args.get("session_id") or "").strip()
@@ -1198,12 +1327,14 @@ def _handle_call(req_id, params, sessions_dir, messaging_dir, tool_features):
             include_outputs=_parse_bool_arg(args.get("include_outputs")),
             max_output_chars_per_item=args.get(
                 "max_output_chars_per_item", DEFAULT_MAX_OUTPUT_CHARS),
+            allowed_sessions=allowed_sessions,
         )
     elif name == "list_sessions":
         payload, error = list_sessions(
             sessions_dir,
             query=args.get("query"),
             limit=args.get("limit", DEFAULT_LIST_LIMIT),
+            allowed_sessions=allowed_sessions,
         )
     elif name == "send_message_to_session":
         payload, error = send_message_to_session(
@@ -1233,7 +1364,7 @@ def _handle_call(req_id, params, sessions_dir, messaging_dir, tool_features):
         _result(req_id, _text_content(payload))
 
 
-def _handle(msg, sessions_dir, messaging_dir, tool_features):
+def _handle(msg, sessions_dir, messaging_dir, tool_features, allowed_sessions=None):
     method = msg.get("method")
     req_id = msg.get("id")
 
@@ -1251,9 +1382,18 @@ def _handle(msg, sessions_dir, messaging_dir, tool_features):
         # MCP convention: keepalive ping answers with an empty result.
         _result(req_id, {})
     elif method == "tools/list":
-        _result(req_id, {"tools": TOOL_DEFS})
+        if allowed_sessions is None:
+            _result(req_id, {"tools": TOOL_DEFS})
+        else:
+            # Scoped instances advertise the read-only surface only (ADR-0024
+            # + #627): a write tool cannot be data-scoped the way reads are,
+            # so listing it would advertise something this instance refuses
+            # to execute.
+            _result(req_id, {"tools": [
+                d for d in TOOL_DEFS if d["name"] in SCOPED_SURFACE_TOOLS]})
     elif method == "tools/call":
-        _handle_call(req_id, msg.get("params"), sessions_dir, messaging_dir, tool_features)
+        _handle_call(req_id, msg.get("params"), sessions_dir, messaging_dir,
+                     tool_features, allowed_sessions)
     else:
         _error(req_id, -32601, "method not found: %s" % _short(method))
 
@@ -1261,6 +1401,20 @@ def _handle(msg, sessions_dir, messaging_dir, tool_features):
 def main():
     sessions_dir = resolve_sessions_dir()
     messaging_dir = resolve_messaging_dir()
+    only_session = resolve_only_session()
+    if only_session is not None:
+        # Fail loud at startup: a scoped instance with an invalid pin refuses
+        # to start (the aux spawn then fails its MCP boot and the engine
+        # carries no session-reader tools — fail-closed, ADR-0024 clause 2).
+        scope_error = validate_only_session(only_session)
+        if scope_error is not None:
+            sys.stderr.write(
+                "session-reader: refusing to start: --only-session: %s\n"
+                % scope_error)
+            sys.exit(2)
+    allowed_sessions = (
+        scoped_allowed_sessions(only_session) if only_session is not None else None
+    )
     tool_features = load_tool_features()
     # Read raw bytes and decode tolerantly: a single non-UTF-8 byte on stdin
     # becomes U+FFFD (the line then fails JSON parsing and is skipped) instead
@@ -1274,7 +1428,8 @@ def main():
         except Exception:
             continue  # skip the bad line, never crash
         try:
-            _handle(msg, sessions_dir, messaging_dir, tool_features)
+            _handle(msg, sessions_dir, messaging_dir, tool_features,
+                    allowed_sessions)
         except Exception as e:
             rid = msg.get("id") if isinstance(msg, dict) else None
             if rid is not None:

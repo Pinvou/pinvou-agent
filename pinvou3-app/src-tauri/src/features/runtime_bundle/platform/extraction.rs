@@ -1383,6 +1383,129 @@ impl Pinvou3Bundle {
         }
     }
 
+    /// The aux-scoped session-reader mcp.json entry for one parent task
+    /// (ADR-0024): reuses the marketplace launch resolution — the same
+    /// resolved python command and released
+    /// `~/.pinvou3/bundles/session-reader/mcp/server.py` path an install
+    /// writes — and appends the scope pin `--only-session=<parent_id>` so
+    /// the server enforces the scope process-side. The `=` form is
+    /// deliberate: the session-id charset admits leading `-`, and a
+    /// two-token `--only-session -x` would make argparse read the pin as an
+    /// option and kill the server at boot (a dead tool declaration); the
+    /// `=` form assigns any charset-valid value verbatim (review round-3).
+    /// `None` when the embedded manifest is unavailable (a build/catalog
+    /// invariant break) or when the released `server.py` is missing — the
+    /// boot seed is skipped when the secret migration fails, seed-install
+    /// failures are non-blocking, and a mid-session deletion has no in-app
+    /// heal, so the writer judges the launch target itself rather than
+    /// trusting the seed, matching `rebuild_local_mcp_entry`'s no-dead-entry
+    /// discipline; the caller fails closed to the zero-tool aux branch. The
+    /// `is_file` check is existence, not version: a stale 1.0.0 release
+    /// passes the guard and pins to the old argparse for one boot cycle
+    /// before the startup byte-compare heals it (round-9 minor 13, same
+    /// discipline as `rebuild_local_mcp_entry`).
+    fn aux_session_reader_entry(parent_id: &str) -> Option<serde_json::Value> {
+        let manifest =
+            crate::features::marketplace::mcp_catalog::embedded_manifest("session-reader")
+                .ok()
+                .flatten()?;
+        let server_dir =
+            crate::features::marketplace::mcp_catalog::package_mcp_dir("session-reader");
+        let mut args =
+            crate::features::marketplace::mcp_catalog::local_server_args(&manifest, &server_dir);
+        if args
+            .first()
+            .map(|script| !std::path::Path::new(script).is_file())
+            .unwrap_or(true)
+        {
+            return None;
+        }
+        // Round-9 minor 15: pin the sessions dir explicitly — without it the
+        // server resolves its default store, which under a relocated home
+        // (PINVOU3_HOME) lands elsewhere and permanently denies the pinned
+        // read (fail-closed, but surprising in dev). App-anchored like the
+        // scope pin itself.
+        args.push(format!(
+            "--sessions-dir={}",
+            crate::platform::paths::sessions_root().display()
+        ));
+        args.push(format!("--only-session={parent_id}"));
+        Some(serde_json::json!({
+            "command": crate::features::marketplace::mcp_catalog::local_server_command(&manifest),
+            "args": args,
+        }))
+    }
+
+    /// Write one per-aux scoped MCP config (ADR-0024): `{"servers": …}`
+    /// containing ONLY the given app-built entries — never a copy of the
+    /// global mcp.json and never the browser wrapper (either would be a
+    /// scope escape: the aux engine would boot user servers). Generic over
+    /// the entry map (reserved interface R4): a future aux-scoped server
+    /// joins by data, not by a new writer. Idempotent (identical content →
+    /// rewrite skipped, same discipline as the work-mode config), private
+    /// (dir 0700, file 0600 via `atomic_write_private`). Returns `None` on
+    /// any failure so the aux spawn can fail closed to the zero-tool branch
+    /// instead of pointing the engine at a missing or stale file.
+    fn write_aux_mcp_config(
+        &self,
+        aux_session_id: &str,
+        servers: &serde_json::Map<String, serde_json::Value>,
+    ) -> Option<PathBuf> {
+        let path = paths::aux_session_mcp_json(aux_session_id);
+        let config = serde_json::json!({ "servers": servers });
+        let json = serde_json::to_string_pretty(&config).ok()?;
+        // The compare is the hardened read (round-5 MAJOR-1): a swap-in FIFO
+        // at the token path would wedge a bare `read_to_string` forever,
+        // blocking the spawn path with no demotion — this file's own
+        // doctrine (`load_mcp_json_for_repair`) fixed that class repo-wide.
+        // A compare miss (absent, non-regular, oversized, or simply stale
+        // content) falls through to the write side, which replaces the
+        // planted file atomically — the fail-closed contract is that a WRITE
+        // failure yields None, not that bad on-disk state does.
+        if crate::platform::filesystem::read_private_data_file(&path)
+            .map(|existing| existing == json)
+            .unwrap_or(false)
+        {
+            // Re-tighten on the skip path (round-5 minor 3): a file planted
+            // by an older writer at 0644 with identical content must not be
+            // served as-is — the 0600 invariant is per-state, not per-write.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            }
+            return Some(path);
+        }
+        let parent = path.parent()?.to_path_buf();
+        std::fs::create_dir_all(&parent).ok()?;
+        // A dir chmod failure must demote (round-5 minor 3): the dir may
+        // stay umask-permissive otherwise while the file reports success.
+        if crate::platform::os::try_make_private_dir(&parent).is_err() {
+            return None;
+        }
+        crate::platform::filesystem::atomic_write_private(&path, json.as_bytes()).ok()?;
+        Some(path)
+    }
+
+    /// The per-aux scoped session-reader MCP config path (ADR-0024): exactly
+    /// one server entry — the released session-reader pinned to the parent
+    /// task's session id via `--only-session`, written at spawn time from the
+    /// aux branch of `build_engine_config_for_session_roots` (the same
+    /// pattern as the work-mode per-session path). `None` means the scoped
+    /// config could not be produced; the caller must demote the engine to
+    /// the zero-tool aux branch (fail closed — the global mcp.json is never
+    /// a fallback here).
+    pub fn aux_mcp_config_path_for_session(
+        &self,
+        aux_session_id: &str,
+        parent_id: &str,
+    ) -> Option<PathBuf> {
+        let entry = Self::aux_session_reader_entry(parent_id)?;
+        let mut servers = serde_json::Map::new();
+        servers.insert("session-reader".to_string(), entry);
+        self.write_aux_mcp_config(aux_session_id, &servers)
+    }
+
     /// 启动自愈:`mcp.json` 里本地 python server 的 `command` 是**安装时写死**的,老条目
     /// 常是裸 `"python"`/`"python3"` —— 在没把 python 加进 PATH 的机器(或只有 python3 的
     /// Linux)上永远拉不起来(高德天气等 marketplace 工具静默失效)。每次启动重解析:凡
@@ -1664,6 +1787,350 @@ mod tests {
             std::fs::read_to_string(pkg_mcp.join("server.py")).unwrap(),
             "USER CODE",
             "上传包目录不得被内嵌重释放覆盖"
+        );
+
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// ADR-0024 per-aux scoped config (B2/B3): exactly one server entry —
+    /// the scoped session-reader — built with the marketplace launch
+    /// resolution (resolved python command + released package script) and
+    /// pinned to the parent via `--only-session`; no user servers, no
+    /// browser entry, no timeout drift; token filename (no raw session id);
+    /// private file/dir modes; identical content skips the rewrite.
+    #[test]
+    fn aux_mcp_config_writes_exactly_one_scoped_session_reader_entry() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-aux-mcp-config-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let bundle = super::Pinvou3Bundle::paths();
+
+        // The writer judges the launch target itself (round-3 MAJOR-2), so
+        // the isolated home needs the released package the way the boot seed
+        // would have produced it; the byte-compare release path is pinned
+        // separately by the `ensure_package_released` byte-compare upgrade
+        // test in `mcp_catalog.rs` (added in review round 7).
+        crate::features::marketplace::mcp_catalog::ensure_package_released("session-reader")
+            .expect("seed the released session-reader package");
+
+        let aux_id = "aux-l5cz0m8xq2k1b";
+        let parent_id = "l5cz0m8xq2k1b";
+        let path = bundle
+            .aux_mcp_config_path_for_session(aux_id, parent_id)
+            .expect("the scoped config must be writable under an isolated home");
+
+        // B3: token filename — neither the aux id nor the parent id appears
+        // anywhere in the path.
+        assert_eq!(
+            path,
+            crate::platform::paths::aux_session_mcp_json(aux_id),
+            "the scoped config path is the token-named per-aux path"
+        );
+        let path_text = path.to_string_lossy();
+        assert!(!path_text.contains(aux_id));
+        assert!(!path_text.contains(parent_id));
+
+        // B2: content — exactly one server, launch fields only.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let servers = parsed["servers"].as_object().unwrap();
+        assert_eq!(
+            servers.len(),
+            1,
+            "no user servers and no browser entry may ride in: {servers:?}"
+        );
+        let entry = servers.get("session-reader").expect("the scoped entry");
+        let mut keys: Vec<&str> = entry
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec!["args", "command"],
+            "launch fields only (no env, no timeout drift)"
+        );
+        let command = entry["command"].as_str().unwrap();
+        assert_eq!(
+            command,
+            crate::platform::paths::python_command(),
+            "the entry reuses the marketplace launch resolution (the bare python family resolves to the current runtime)"
+        );
+        let args: Vec<String> = entry["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_string())
+            .collect();
+        let script = args[0].replace('\\', "/");
+        assert!(
+            script.ends_with("session-reader/mcp/server.py"),
+            "the first arg is the released package script, got {script:?}"
+        );
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some(format!("--only-session={parent_id}").as_str()),
+            "args end with the parent pin in the = form (dash-immune)"
+        );
+
+        // B3: private modes (file 0600 via atomic_write_private, dir 0700 via
+        // make_private_dir) and idempotence — the skip branch performs no
+        // write, so a read-only directory cannot fail the second call.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let file_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(file_mode, 0o600, "the config file is private");
+            let dir_mode = std::fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(dir_mode, 0o700, "the mcp-sessions dir is private");
+            std::fs::set_permissions(
+                path.parent().unwrap(),
+                std::fs::Permissions::from_mode(0o500),
+            )
+            .unwrap();
+            let again = bundle.aux_mcp_config_path_for_session(aux_id, parent_id);
+            // Assert BEFORE restoring the dir (round-7 M1): the skip branch
+            // touches nothing, so the dir must still be 0500 here; a mutation
+            // that drops the identical-content early-return would chmod the
+            // dir back to 0700 (try_make_private_dir owns the dir) and this
+            // assertion turns red — the return value alone cannot see it.
+            let dir_mode_after = std::fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(
+                dir_mode_after, 0o500,
+                "the skip branch must not touch the directory (a rewrite path would re-chmod it)"
+            );
+            std::fs::set_permissions(
+                path.parent().unwrap(),
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .unwrap();
+            assert_eq!(
+                again.as_deref(),
+                Some(path.as_path()),
+                "identical content must skip the rewrite (no write is attempted)"
+            );
+        }
+        // A second call with identical content still yields the same path on
+        // every platform (the unix leg above proves the skip branch).
+        assert_eq!(
+            bundle
+                .aux_mcp_config_path_for_session(aux_id, parent_id)
+                .as_deref(),
+            Some(path.as_path())
+        );
+
+        // Different parents produce different files (the pin is per-aux).
+        let other = bundle
+            .aux_mcp_config_path_for_session("aux-other01", "other01")
+            .expect("second aux config");
+        assert_ne!(other, path);
+
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Round-5 MAJOR-1 pin: the idempotence compare reads through the
+    /// hardened primitive — a swap-in FIFO at the token path must demote
+    /// (None) instead of wedging the spawn path on a bare read forever.
+    /// Reverting the compare to `std::fs::read_to_string` DEADLOCKS this
+    /// test (the bare read parks on the FIFO forever); the CI job timeout
+    /// is what turns that into a visible failure — the in-test 500ms probe
+    /// only makes the healthy path fast.
+    #[cfg(unix)]
+    #[test]
+    fn aux_mcp_config_demotes_on_fifo_at_token_path() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-aux-mcp-fifo-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let bundle = super::Pinvou3Bundle::paths();
+        crate::features::marketplace::mcp_catalog::ensure_package_released("session-reader")
+            .expect("seed the released session-reader package");
+
+        let path = crate::platform::paths::aux_session_mcp_json("aux-fifo01");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let fifo = std::ffi::CString::new(path.to_string_lossy().as_bytes()).unwrap();
+        // SAFETY: mkfifo on a fresh path inside the isolated home.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+
+        let verdict = std::thread::scope(|scope| {
+            let handle =
+                scope.spawn(|| bundle.aux_mcp_config_path_for_session("aux-fifo01", "fifo01"));
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if handle.is_finished() {
+                handle.join().expect("writer thread")
+            } else {
+                panic!("the compare wedged on the FIFO — the hardened read is gone")
+            }
+        });
+        // The compare cannot prove identity on a FIFO (the hardened read
+        // refuses it), so the writer falls through and atomically REPLACES
+        // the planted file with the real config — the fail-closed contract
+        // is "no wedge, no dead entry", not "demote on bad on-disk state".
+        assert!(
+            verdict.is_some(),
+            "the write side must replace the planted FIFO with the real config"
+        );
+        let written = std::fs::metadata(&path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileTypeExt;
+            assert!(
+                !written.file_type().is_fifo(),
+                "the token path must be a regular file after the write"
+            );
+        }
+
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Round-5 minor 3 pin: the idempotent skip re-tightens a planted 0644
+    /// file with identical content instead of serving it as-is, and a
+    /// dir-chmod failure demotes (try_make_private_dir error → None).
+    #[cfg(unix)]
+    #[test]
+    fn aux_mcp_config_skip_retightens_and_dir_chmod_failure_demotes() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-aux-mcp-modes-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let bundle = super::Pinvou3Bundle::paths();
+        crate::features::marketplace::mcp_catalog::ensure_package_released("session-reader")
+            .expect("seed the released session-reader package");
+
+        use std::os::unix::fs::PermissionsExt;
+        let path = bundle
+            .aux_mcp_config_path_for_session("aux-mode01", "mode01")
+            .expect("first write");
+        // Plant the older-writer state: identical content, permissive mode.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let again = bundle
+            .aux_mcp_config_path_for_session("aux-mode01", "mode01")
+            .expect("identical content must still serve the path");
+        assert_eq!(again, path);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "the skip path must re-tighten a permissive file, not serve it as-is"
+        );
+
+        // Round-8 minor 1, testable arm: the dir cannot be CREATED (its
+        // parent is read-only) — `create_dir_all().ok()?` demotes before any
+        // write. (The `try_make_private_dir` error arm is NOT unit-reachable
+        // from the test process: as the directory's owner, a self-chmod
+        // always succeeds regardless of the current mode — the same
+        // mechanism round-7 M1 exposed; it is reachable only for a
+        // non-owner/sandboxed process, where the demote branch is the
+        // fail-closed answer.)
+        // Make the per-aux dir path itself a REGULAR FILE: create_dir_all on
+        // it fails (ENOTDIR on the json child), the writer demotes.
+        let sessions_dir = crate::platform::paths::aux_session_mcp_json("aux-mode02")
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        std::fs::create_dir_all(sessions_dir.parent().unwrap()).ok();
+        // The dir may already exist from the FIRST write leg above
+        // (aux-mode01 shares the parent): remove it so a regular file can
+        // take its place.
+        if sessions_dir.is_dir() {
+            std::fs::remove_dir_all(&sessions_dir).unwrap();
+        }
+        std::fs::write(&sessions_dir, b"not a directory").unwrap();
+        let verdict = bundle.aux_mcp_config_path_for_session("aux-mode02", "mode02");
+        let _ = std::fs::remove_file(&sessions_dir);
+        assert!(
+            verdict.is_none(),
+            "a failure to create the private dir must demote (verdict={verdict:?})"
+        );
+        assert!(
+            !crate::platform::paths::aux_session_mcp_json("aux-mode02").exists(),
+            "no config may be written behind the failed dir setup"
+        );
+
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Review round-3 MAJOR-2: the writer judges the launch target itself.
+    /// When the released `server.py` is absent (boot seed skipped on a
+    /// keyring-less machine, a log-only seed-install failure, or a
+    /// mid-session deletion), the entry builder must return `None` so the
+    /// caller demotes the aux spawn to the zero-tool branch instead of
+    /// writing a config that declares a dead tool. Deleting the
+    /// `is_file()` guard from `aux_session_reader_entry` turns this test red.
+    #[test]
+    fn aux_mcp_config_demotes_when_released_server_script_is_missing() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-aux-mcp-missing-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let bundle = super::Pinvou3Bundle::paths();
+        // The isolated home contains no released session-reader package, so
+        // the launch target cannot exist.
+        assert!(
+            !crate::features::marketplace::mcp_catalog::package_mcp_dir("session-reader")
+                .join("server.py")
+                .is_file()
+        );
+
+        assert!(
+            bundle
+                .aux_mcp_config_path_for_session("aux-l5cz0m8xq2k1b", "l5cz0m8xq2k1b")
+                .is_none(),
+            "a missing released script must demote to the zero-tool branch, never a dead entry"
+        );
+        assert!(
+            !crate::platform::paths::aux_session_mcp_json("aux-l5cz0m8xq2k1b").exists(),
+            "no config file may be written for a dead entry"
         );
 
         // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
