@@ -5,14 +5,14 @@
 // AppIcon 的头像 img 补了 loading="lazy" decoding="async"(本 PR 主题内优化)。
 import { useState } from 'react';
 import { AppWindow, Award, Briefcase, Cpu, Feather, Globe, Lock, Navigation, Palette, Radio, Terminal, TrendingUp, User } from '../../components/icons.jsx';
-import { dict } from '../../shared/i18n.js';
+import { zhDict } from '../../shared/i18n.js';
 import { personaOverlayFor } from '../../shared/persona-overlay.js';
     // iOS-style font stack shared by the Persona surfaces (5 call sites in
     // Personas/persona-shared/SavedPersonaConfirmDialog); the promo banner in
     // Personas.jsx deliberately keeps its shorter 4-font stack from main.
 export const IOS_FONT_STACK = '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif';
-    // 部门标签按当前 UI 语言取词(t.depts),中文词典(dict.zh.depts)兜底
-export function deptLabelFor(t, k) { return (t && t.depts && t.depts[k]) || (dict.zh.depts && dict.zh.depts[k]) || k; }
+    // 部门标签按当前 UI 语言取词(t.depts),中文词典(zhDict().depts)兜底
+export function deptLabelFor(t, k) { return (t && t.depts && t.depts[k]) || (zhDict().depts && zhDict().depts[k]) || k; }
     // 内置卡名称/简介按 UI 语言显示(personas-i18n.js overlay,按 id 查),中文兜底;自制卡不翻
 export function personaText(c, t) {
       const tr = personaOverlayFor(c, t && t.langTag);

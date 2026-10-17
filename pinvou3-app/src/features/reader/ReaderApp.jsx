@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check, Copy, ExternalLink, FolderOpen, Link, X,
 } from '../../components/icons.jsx';
@@ -8,7 +8,7 @@ import { FileColoredIcon } from '../../components/files/FileColoredIcon.jsx';
 import { invokeTauri, listenTauri, tauriEvents } from '../../platform/tauri/client.js';
 import { useSystemDarkMode } from '../../hooks/useSystemDarkMode.js';
 import { normalizeColorScheme, resolveTheme } from '../../shared/color-scheme.js';
-import { dict, ensureLanguage, initialSystemLanguage, TAG_TO_LANG } from '../../shared/i18n.js';
+import { dict, ensureLanguage, initialSystemLanguage, TAG_TO_LANG, zhDict } from '../../shared/i18n.js';
 import {
   CODE_VIEWER_ICON_BUTTON,
   CodeViewerContent,
@@ -47,7 +47,12 @@ function ReaderTabContent({ tab, state, fontSize, copy }) {
 
 export function ReaderApp() {
   const [language, setLanguage] = useState(initialSystemLanguage);
-  const copy = (dict[language] || dict.zh).uiCodexWorkspace;
+  // 惰性装载窗口（未经入口 ensureLanguage 预载的直接挂载）兜底空表：字符串键
+  // 渲染为空而非崩溃；生产入口 reader-main.jsx 首渲染前已装载，正常路径无感。
+  const copy = useMemo(
+    () => (dict[language] || zhDict()).uiCodexWorkspace || {},
+    [language],
+  );
   const [tabs, setTabs] = useState([]);
   const [activeKey, setActiveKey] = useState('');
   const [previews, setPreviews] = useState({});

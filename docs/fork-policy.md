@@ -1,6 +1,6 @@
 # Pinvou 对 CodeWhale 底座的 fork 维护策略
 
-> 最后更新：2026-10-15（r3 收口后过渡期：不可变 tag `pinvou-v0.9.12-r3` 仍钉在其收口 `61cb769be`，登记头随 2026-10-08/09 批次前进至 `0bc868ff0`、再随 2026-10-12/13 批次前进至 `3118c36b8a`、又随 2026-10-13/14 批次（#92/#96/#101/#102/#103/#104）前进至 `480bebf61`、再随 2026-10-14 批次（#54/#107）前进至 `803e672bb`、复随 2026-10-15 批次（#108）前进至 `13ee4dfd2`，gitlink=维护分支头并领先 tag；`verify-public-submodule.sh` 以 `TRANSITION_BASELINE` 断言过渡期钉点）
+> 最后更新：2026-10-15（过渡期已结束：workspace_roots 主题（Pinvou/CodeWhale#54）于 2026-10-14 squash 合入，登记头=维护分支头 `13ee4dfd2`（71 个登记提交、r1 之上 56 个 squash，含 #107/#108），gitlink=维护分支头；`verify-public-submodule.sh` 过渡期断言恢复绿（gitlink = 公开分支头 + tag 钉收口点的两向断言；三方相等待下次 rN 收口切 tag 后恢复）；不可变 tag `pinvou-v0.9.12-r3` 仍钉在其收口 `61cb769be`）
 > 配套：`docs/fork-modifications.md`、`scripts/fork-guard.sh`、`docs/底座升级验收清单.md`
 > English: [`docs/fork-policy.en.md`](fork-policy.en.md)
 
@@ -10,7 +10,7 @@
 - 当前 fork 基线：`Pinvou/CodeWhale:pinvou3-clean`，head `13ee4dfd2349f8ece3d2b7169031d09189cc9ec7`（领先不可变 tag `pinvou-v0.9.12-r3`，tag 仍钉在其收口 `61cb769be`），共 71 个登记提交，其中 70 个带 DCO sign-off（唯一未签：#107 squash `f27672935` 的合并提交信息未保留 sign-off 尾部，属上游合并信息缺口，已留言知会上游维护者——见 CodeWhale#107；后续登记批按实数签数登记）；不可变 tag `pinvou-v0.9.12-r1` 钉在 r1 收口 `1fafee7e26b60a59457a43bce50c63aa2ad9dbaf`（15 个提交），其后 56 个提交为 2026-09-10/11 backlog 批次、2026-09-17 批次、2026-09-18 批次、2026-09-20 批次、2026-09-21 批次（#64/#67）、2026-09-22/23 批次（#63/#65/#68/#69/#70/#71/#72/#73/#76，另含 Windows 编译修复 #77）、2026-10-02 批次（#80）、2026-10-08/09 批次（#79/#88/#89/#75/#78/#94/#95）、2026-10-12/13 批次（#90/#91/#93/#97/#98）、2026-10-13/14 批次（#92/#96/#101/#102/#103/#104）、2026-10-14 批次（#54/#107）与 2026-10-15 批次（#108）经 PR squash 合入。
 - 升级前公开回退点是不可变 tag `pinvou-v0.9.5-r13`，head `f853f8f1566c57e6be40d5439a222a932aa79ef5`；同 SHA 的本地 branch `backup/pre-v0.9.12-sync` 只作便利引用。
 - r1 已成为可消费的受保护基线；rN 收口时父仓 gitlink、维护分支和不可变 tag 指向同一 commit。
-- 过渡期豁免（2026-09-11 起）：两次 rN 收口之间，父仓 gitlink 可沿 `pinvou3-clean` 领先不可变 tag 前进；期间 `scripts/verify-public-submodule.sh` 断言 gitlink 等于公开维护分支头、不可变 tag 仍钉在其收口 commit，rN 收口时在合并头切新不可变 tag 并恢复三方相等。
+- 过渡期豁免（2026-09-11 起）：两次 rN 收口之间，父仓 gitlink 可沿 `pinvou3-clean` 领先不可变 tag 前进；期间 `scripts/verify-public-submodule.sh` 断言 gitlink 等于公开维护分支头、不可变 tag 仍钉在其收口 commit，rN 收口时在合并头切新不可变 tag 并恢复三方相等。叠层候选状态（2026-10-09 起，#484/#54）：一个**待合入的候选主题线**（重定基于公共维护头之上）也可充当过渡期 gitlink——此时 gitlink 不等于维护分支头而是包含它（`scripts/fork-guard.sh` 第 0 层断言该包含性与领先量），`verify-public-submodule` 的三方相等断言保持披露红直到候选 squash 合入、gitlink 重钉到合并头。
 - `.gitmodules` 不配置浮动 `branch`；发布后父仓 gitlink、维护分支和不可变标签必须指向同一 commit。
 - 当前维护 4 个长期主题、3 个追加减量主题与 1 个已合入维护分支的主题：
 

@@ -18,6 +18,10 @@ function cachedFormatter(locale, optsKey, opts) {
 function formatSessionDate(ts, language) {
       if (!ts) return '';
       const d = new Date(ts);
+      // Unparseable input must not throw (Intl formatters reject invalid
+      // dates): pickers deliberately treat the same input as active, so the
+      // display side degrades to empty instead of crashing the row.
+      if (Number.isNaN(d.getTime())) return '';
       const now = new Date();
       let diff = now - d;
       if (diff < 0) diff = 0; // 时钟漂移/未来时间戳 → 当「刚刚」,不出现负数

@@ -477,7 +477,19 @@ function enforceLazyChunks() {
 // out (round-18/20); the remainder is the synchronous receive-path parser,
 // which cannot defer without breaking render semantics. An in-PR trim
 // (builder split into the lazy graph) was measured net +122 B and rejected.
-export const MAIN_ENTRY_BUDGET_BYTES = 502_000;
+//
+// Round-43 (this PR): the same ceiling also absorbs the node-version
+// minification delta between local (v22) and CI (v24) toolchains — the
+// identical tree measured 499.7 kB locally and 500.6 kB on CI; only the
+// minifier output differs.
+//
+// 502_000 → 504_000 (this PR's rebase onto the #627+#714 main, measured per
+// policy): main's own web entry is now 500.69 kB on the local v22 toolchain
+// (1.3 kB under its own ceiling); this PR's feature net adds +2.10 kB
+// (500.69 → 502.79 local; CI projects ≈503.7 at the stable +0.9 kB toolchain
+// delta). The picker/grouping helpers are render-path synchronous and cannot
+// defer; the ceiling is the measured projection, not padded.
+export const MAIN_ENTRY_BUDGET_BYTES = 504_000;
 
 export function assertMainEntryBudget(bundle, budgetBytes = MAIN_ENTRY_BUDGET_BYTES) {
   const mainEntry = Object.values(bundle).find(output => (
