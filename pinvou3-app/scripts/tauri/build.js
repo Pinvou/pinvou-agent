@@ -354,6 +354,63 @@ function extractBundlesNone(args) {
 }
 
 /**
+ * The wrapper-owned `--bundles none` error for a subcommand that has no
+ * `--no-bundle`. Shared by the fail-fast validation and the translation so
+ * the wording cannot drift between the two sites.
+ */
+function bundlesNoneCommandError() {
+  return new Error(
+    "--bundles none is a wrapper-owned build request: the `bundle` subcommand has"
+      + " no --no-bundle and cannot skip bundling. Use `tauri build --bundles none`"
+      + " (compile without bundling, package yourself) or pass real bundle types.",
+  );
+}
+
+/**
+ * Absorb the wrapper-owned `--bundles none` request and validate it. The two
+ * request shapes that can never succeed fail here, from argv alone:
+ * `bundle --bundles none` (the subcommand has no --no-bundle), and a real
+ * bundle type requested NEXT to an absorbed `none` (after absorption the
+ * leftover spelling would sit next to the injected `--no-bundle`, where the
+ * CLI silently lets --no-bundle win — the same silent degradation the
+ * `none,deb` value mix above refuses).
+ *
+ * `main()` calls this before any preparation work (the sidecar steps take
+ * minutes and the outcome is knowable from argv); `prepareTauriArgs` calls
+ * it again on the same raw argv next to the translation.
+ *
+ * @param {string[]} args Full argument list passed to tauri.
+ * @returns {{args: string[], noBundle: boolean}} The args without the
+ *   request, and whether at least one `none` request was found.
+ */
+function bundlesNonePlan(args) {
+  const { args: rest, noBundle } = extractBundlesNone(args);
+  if (noBundle) {
+    const commandIndex = tauriCommandIndex(rest);
+    if (commandIndex >= 0) {
+      if (rest[commandIndex] === "bundle") throw bundlesNoneCommandError();
+      if (rest[commandIndex] === "build") {
+        // Every remaining `--bundles`/`-b` spelling carries a real bundle
+        // type: the `none` values were absorbed above.
+        const conflicting = rest.some((argument) =>
+          argument === "--bundles"
+          || argument === "-b"
+          || argument.startsWith("--bundles=")
+          || argument.startsWith("-b="));
+        if (conflicting) {
+          throw new Error(
+            "conflicting --bundles requests: a real bundle type was requested alongside"
+              + " `--bundles none`, and the CLI's --no-bundle would silently win."
+              + " Drop one of the two --bundles spellings.",
+          );
+        }
+      }
+    }
+  }
+  return { args: rest, noBundle };
+}
+
+/**
  * Machine segment of a `--target` triple -> Node `process.arch` notation.
  *
  * When adding an architecture here, the reverse machine map in
@@ -649,8 +706,12 @@ function prepareTauriArgs(
   // time. `main()` hands the raw argv here unfiltered — its own
   // `windowsBundleTargets` pre-parse is unaffected because staging returns
   // null unless the targets include "nsis" — so this is the single point
-  // where the request is translated into the CLI's `--no-bundle`.
-  const { args: withoutBundlesNone, noBundle } = extractBundlesNone(args);
+  // where the request is translated into the CLI's `--no-bundle`. The plan
+  // also fails the two never-succeedable request shapes from argv alone
+  // (bundle+none, none next to a real bundle type); `main()` already ran it
+  // for fail-fast, and re-running it here keeps the translation site honest
+  // for direct callers that bypass `main()`.
+  const { args: withoutBundlesNone, noBundle } = bundlesNonePlan(args);
   const prepared = [...withoutBundlesNone];
   const commandIndex = tauriCommandIndex(prepared);
   if (commandIndex < 0) {
@@ -710,34 +771,22 @@ function prepareTauriArgs(
   // Automatic overlays must precede explicit signing/staging overlays so the
   // caller can intentionally override or remove inherited resource mappings.
   prepared.splice(commandIndex + 1, 0, ...injected);
-  if (noBundle) {
-    // `build`-gated: the `bundle` subcommand has no `--no-bundle`, and
-    // re-emitting the absorbed request there would fail arg validation —
-    // surface that as the wrapper's own error instead. Silently dropping
-    // the request is not an option: `bundle` without it runs a FULL bundle.
-    // (`dev` falls through on purpose: it never bundles, so stripping IS
-    // the requested semantics.)
-    // Read the subcommand from `prepared`, not the raw argv: the absorbed
-    // `--bundles none` tokens shift every index after them, so when the
-    // request precedes the subcommand, an index computed on `prepared`
-    // points at the wrong token in `args`.
-    if (prepared[commandIndex] === "bundle") {
-      throw new Error(
-        "--bundles none is a wrapper-owned build request: the `bundle` subcommand has"
-          + " no --no-bundle and cannot skip bundling. Use `tauri build --bundles none`"
-          + " (compile without bundling, package yourself) or pass real bundle types.",
-      );
-    }
-    if (prepared[commandIndex] === "build") {
-      // Translate the absorbed `--bundles none` request into the flag the
-      // pinned @tauri-apps/cli 2.11.4 actually accepts (verified against
-      // `tauri build --help`: `--no-bundle`, "Skip the bundling step even if
-      // `bundle > active` is `true`"). The compiled binary stays at the cargo
-      // target dir (`target/<triple>/release/`) for the caller's own packager;
-      // value-flag pairs (`--config <spec>`) keep their value adjacency, which
-      // is why the flag is spliced before them.
-      prepared.splice(commandIndex + 1, 0, "--no-bundle");
-    }
+  // `build`-gated: `bundlesNonePlan` already threw for `bundle` (no
+  // --no-bundle there) and for a contradictory second spelling, and `dev`
+  // falls through on purpose (it never bundles, so stripping IS the
+  // requested semantics). Translate the absorbed `--bundles none` request
+  // into the flag the pinned @tauri-apps/cli 2.11.4 actually accepts
+  // (verified against `tauri build --help`: `--no-bundle`, "Skip the
+  // bundling step even if `bundle > active` is `true`"). The compiled
+  // binary stays at the cargo target dir (`target/<triple>/release/`) for
+  // the caller's own packager; value-flag pairs (`--config <spec>`) keep
+  // their value adjacency, which is why the flag is spliced before them.
+  // Read the subcommand from `prepared`, not the raw argv: the absorbed
+  // `--bundles none` tokens shift every index after them, so when the
+  // request precedes the subcommand, an index computed on `prepared`
+  // points at the wrong token in `args`.
+  if (noBundle && prepared[commandIndex] === "build") {
+    prepared.splice(commandIndex + 1, 0, "--no-bundle");
   }
   return prepared;
 }
@@ -890,6 +939,12 @@ async function main() {
 
   const isDev = args.includes("dev");
   const hasTauriBuildCommand = tauriCommandIndex(args) >= 0;
+  // Fail fast on a never-succeedable `--bundles none` request before any
+  // preparation work: `bundle` + none (and a real bundle type requested next
+  // to none) are knowable from argv alone, while the sidecar preparation
+  // below takes minutes. `prepareTauriArgs` re-runs the same plan next to
+  // the translation for callers that bypass `main()`.
+  bundlesNonePlan(args);
   // The two skip switches are read exactly once, here: the gate, the
   // preparation steps and the overlay removal (`prepareTauriArgs`) all
   // receive this one result, however many awaits lie in between. See the
@@ -1040,6 +1095,7 @@ module.exports = {
   configSpecs,
   configureIsolatedWindowsRustToolchain,
   crossBuildViolations,
+  bundlesNonePlan,
   extractBundlesNone,
   platformConfigWithoutKnowledgeHost,
   targetArchitecture,
