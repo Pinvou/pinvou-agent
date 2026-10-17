@@ -26,7 +26,7 @@ use parking_lot::Mutex;
 
 use super::SessionStore;
 use super::scheduled::{SCHEDULED_PROFILE_SCHEMA_VERSION, ScheduledProfileRegistry};
-use super::scheduled::{ScheduledEngineState, ScheduledRunProfile, ScheduledTokenAccounting};
+use super::scheduled::{ScheduledEngineState, ScheduledRunProfile};
 use super::store::{HEADLESS_SESSION_PREFIX, MAX_HEADLESS_SESSIONS, MAX_SESSIONS_PER_KIND};
 use super::validators::validate_session_id;
 use super::validators::{
@@ -999,13 +999,7 @@ impl SessionStore {
             .manager
             .load_session_snapshot(id)
             .with_context(|| format!("load scheduled session {id} for engine persistence"))?;
-        let total_tokens = match state.token_accounting {
-            ScheduledTokenAccounting::PreservePersisted => session.metadata.total_tokens,
-            ScheduledTokenAccounting::EngineCumulative {
-                base_total_tokens,
-                engine_total_tokens,
-            } => base_total_tokens.saturating_add(engine_total_tokens),
-        };
+        let total_tokens = session.metadata.total_tokens;
         let mode_label = state.mode.as_label();
 
         session.metadata.updated_at = Utc::now();

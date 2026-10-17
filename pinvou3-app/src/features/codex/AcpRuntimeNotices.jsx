@@ -124,16 +124,10 @@ export function RuntimeNotice({
     const waitingForLogin = runtimeLoginInProgress(status, operation);
     const loginUrlReady = waitingForLogin && Boolean(status.login_url);
     const agentName = status.agent_name || 'Agent';
-    const waitingTitle = copy.waitingAgentLogin
-      ? copy.waitingAgentLogin(agentName)
-      : copy.waitingLogin;
-    const signedOutTitle = copy.agentNotLoggedIn
-      ? copy.agentNotLoggedIn(agentName)
-      : copy.notLoggedIn;
+    const waitingTitle = copy.waitingAgentLogin(agentName);
+    const signedOutTitle = copy.agentNotLoggedIn(agentName);
     const loginHint = managementAvailable
-      ? copy.agentLoginHint
-        ? copy.agentLoginHint(agentName)
-        : (setupHintText(copy, status.setup_hint) || copy.loginHint)
+      ? copy.agentLoginHint(agentName)
       : copy.manageAgentOnDesktop(agentName);
     return (
       <div className="rounded-2xl border border-amber-500/20 bg-amber-500/[0.06] p-4 flex items-start gap-3">
@@ -142,7 +136,7 @@ export function RuntimeNotice({
           <div className="text-[13px] font-semibold">{waitingForLogin ? waitingTitle : signedOutTitle}</div>
           <div className="text-[12px] text-gray-500">
             {loginUrlReady
-              ? (copy.finishAgentAuth ? copy.finishAgentAuth(agentName) : copy.finishBrowserAuth)
+              ? copy.finishAgentAuth(agentName)
               : waitingForLogin
                 ? copy.openingAuth
                 : loginHint}

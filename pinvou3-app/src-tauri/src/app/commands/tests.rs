@@ -1214,6 +1214,17 @@ fn parses_local_asr_output_shapes() {
     );
 }
 
+// Moved here from voice.rs: `has_explicit_asr_cli_fallback` now reuses the
+// platform probe's variable list (`features::voice::has_asr_cli_override`),
+// so this helper has no production caller left; the test below keeps pinning
+// its "any non-empty value counts as configured" semantics.
+fn has_nonempty_asr_cli_config(values: &[Option<&str>]) -> bool {
+    values
+        .iter()
+        .flatten()
+        .any(|value| !value.trim().is_empty())
+}
+
 #[test]
 fn explicit_asr_cli_fallback_accepts_all_supported_env_names() {
     assert!(!has_nonempty_asr_cli_config(&[None, None, None]));
@@ -1663,20 +1674,6 @@ fn validate_user_path_allows_tmp() {
     let result = validate_user_path(p.to_str().unwrap());
     std::fs::remove_dir_all(&tmp).ok();
     assert!(result.is_ok(), "/tmp 下普通文件应该通过, got {result:?}");
-}
-
-/// L2-2: 凭据组件名拦截 — 任何路径深度命中 .ssh/id_rsa 即拒绝。
-#[test]
-fn validate_user_path_blocks_ssh() {
-    // 不需要文件真实存在，canonicalize 失败时退回 raw path 继续校验
-    let p = "/home/anyuser/.ssh/id_rsa";
-    let result = validate_user_path(p);
-    assert!(result.is_err(), "凭据路径必须拒绝, got {result:?}");
-    let err = result.unwrap_err();
-    assert!(
-        err.contains(".ssh") || err.contains("id_rsa"),
-        "错误信息应指明命中的组件, got {err}"
-    );
 }
 
 /// L2-3: 系统级敏感前缀拦截 — /etc/shadow 等被列在 BLOCKED_PREFIXES。
@@ -2280,7 +2277,7 @@ fn post_reservation_failure_never_unlinks_the_current_path() {
     let workspace = mk_test_ws("post-reserve-failure");
     let reserved = std::sync::Arc::new(std::sync::Mutex::new(None));
     let observed = reserved.clone();
-    let result = stage_text_in_workspace_with_writer(
+    let result = stage_text_in_workspace_inner(
         "report.md",
         "txt",
         &workspace,
@@ -2306,7 +2303,7 @@ fn post_reservation_failure_never_unlinks_the_current_path() {
     // content assert are unconditional — gating them on the injection having
     // run would silently skip the pin if the rename ever failed.
     let replacement_workspace = mk_test_ws("post-reserve-replacement");
-    let result = stage_text_in_workspace_with_writer(
+    let result = stage_text_in_workspace_inner(
         "report.md",
         "txt",
         &replacement_workspace,

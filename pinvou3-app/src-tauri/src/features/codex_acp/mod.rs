@@ -122,6 +122,9 @@ pub use crate::platform::process::GIT_IDENTITY_KEYS;
 // `MIN_CODEX_VERSION` 通过本 facade 公开再导出：同仓 `pinvou-cli` 与运行时共用
 // 同一最低版本约束，消除手工副本漂移；行为不变。
 pub use runtime::MIN_CODEX_VERSION;
+// kimi 登录失败脱敏的凭据标记表经本 facade 公开再导出：headless CLI 的登录
+// 回显 withholding 门直接复用同一列表（原先 CLI 逐字手抄、无对齐测试）。
+pub use login::KIMI_CREDENTIAL_MARKERS;
 /// The comparison itself, not only the constants: `pinvou-cli`'s `code`
 /// gates (`agents status`, override resolution) consume this so a
 /// comparison-semantics change app-side cannot drift behind a CLI-local
@@ -259,7 +262,6 @@ where
 /// created before the bundled bridge moved past 1.1.5. This is not the
 /// bundled adapter version and must not be written to `acp-state.json`.
 pub const CODEX_ACP_VERSION: &str = "1.1.5";
-pub const CODEX_ACP_SESSION_MODEL: &str = "Codex (ACP)";
 const CODEX_ACP_PACKAGE: &str = "@agentclientprotocol/codex-acp";
 /// Bundled codex-acp adapter pin. Kept separate from the legacy managed
 /// runtime directory schema above so session diagnostics report the truth.
@@ -270,9 +272,17 @@ const CODEX_ACP_ADAPTER_VERSION: &str = "1.6.2";
 /// `forkguard_declared_adapter_versions_match_the_bridge_pin` pins the invariant.
 pub const CLAUDE_ACP_VERSION: &str = "0.79.0";
 const CLAUDE_ACP_PACKAGE: &str = "@agentclientprotocol/claude-agent-acp";
-const CLAUDE_ACP_SESSION_MODEL: &str = "Claude Code (ACP)";
 const KIMI_ACP_PACKAGE: &str = "kimi acp";
-const KIMI_ACP_SESSION_MODEL: &str = "Kimi (ACP)";
+/// Single source of the persisted ACP session-model string
+/// (`"{display_name} (ACP)"`): the session creator in `app/commands/codex`
+/// writes it, `acp_session_backend` parses it back, and the headless CLI's
+/// `code sessions` family consumes it through the facade instead of a
+/// hand-copied table (the drift class the GIT_OVERRIDE_KEYS re-exports
+/// eliminate). Round-trip pinned by
+/// `acp_session_model_name_round_trips_through_acp_session_backend`.
+pub fn acp_session_model_name(backend: AgentBackend) -> String {
+    format!("{} (ACP)", backend.display_name())
+}
 /// claude-agent-acp 要求的最低 claude CLI 版本（输出形如 `2.1.163 (Claude Code)`）。
 /// `pub` 导出供同仓 `pinvou-cli` 直接引用：CLI 的 `agents status/login` 与本
 /// 运行时使用同一最低版本，消除手工副本漂移；GUI 语义不变。
@@ -538,11 +548,10 @@ async fn rebind_blocking_from_sessions<T>(
 
 /// 会话类型判定：ACP 后端直接生效；否则按创建时持久化的 `* (ACP)` 模型串兜底。
 fn acp_session_backend(backend: AgentBackend, model: &str) -> Option<AgentBackend> {
-    backend.is_acp().then_some(backend).or_else(|| match model {
-        CODEX_ACP_SESSION_MODEL => Some(AgentBackend::CodexAcp),
-        CLAUDE_ACP_SESSION_MODEL => Some(AgentBackend::ClaudeAcp),
-        KIMI_ACP_SESSION_MODEL => Some(AgentBackend::KimiAcp),
-        _ => None,
+    backend.is_acp().then_some(backend).or_else(|| {
+        AgentBackend::ACP_BACKENDS
+            .into_iter()
+            .find(|&candidate| acp_session_model_name(candidate) == model)
     })
 }
 
@@ -6125,18 +6134,54 @@ mod tests {
         );
     }
 
+    /// Round-trip pin: the model string the session creator writes
+    /// (`acp_session_model_name`, also consumed by the CLI's `code sessions`
+    /// family) parses back to the same backend, so a `display_name()` or
+    /// helper rename can never silently fall back to Deepseek.
+    #[test]
+    fn acp_session_model_name_round_trips_through_acp_session_backend() {
+        // The exact spellings already persisted into existing sessions'
+        // metadata: a display_name() rebrand must ship a migration for these
+        // strings, not silently orphan them (the derived round-trip below
+        // alone stays green through any rename).
+        assert_eq!(
+            acp_session_model_name(AgentBackend::CodexAcp),
+            "Codex (ACP)"
+        );
+        assert_eq!(
+            acp_session_model_name(AgentBackend::ClaudeAcp),
+            "Claude Code (ACP)"
+        );
+        assert_eq!(acp_session_model_name(AgentBackend::KimiAcp), "Kimi (ACP)");
+        for backend in AgentBackend::ACP_BACKENDS {
+            assert_eq!(
+                acp_session_backend(AgentBackend::Deepseek, &acp_session_model_name(backend)),
+                Some(backend)
+            );
+        }
+    }
+
     #[test]
     fn acp_session_classification_survives_missing_auxiliary_index() {
         assert_eq!(
-            acp_session_backend(AgentBackend::Deepseek, CODEX_ACP_SESSION_MODEL),
+            acp_session_backend(
+                AgentBackend::Deepseek,
+                &acp_session_model_name(AgentBackend::CodexAcp)
+            ),
             Some(AgentBackend::CodexAcp)
         );
         assert_eq!(
-            acp_session_backend(AgentBackend::Deepseek, CLAUDE_ACP_SESSION_MODEL),
+            acp_session_backend(
+                AgentBackend::Deepseek,
+                &acp_session_model_name(AgentBackend::ClaudeAcp)
+            ),
             Some(AgentBackend::ClaudeAcp)
         );
         assert_eq!(
-            acp_session_backend(AgentBackend::Deepseek, KIMI_ACP_SESSION_MODEL),
+            acp_session_backend(
+                AgentBackend::Deepseek,
+                &acp_session_model_name(AgentBackend::KimiAcp)
+            ),
             Some(AgentBackend::KimiAcp)
         );
         assert_eq!(

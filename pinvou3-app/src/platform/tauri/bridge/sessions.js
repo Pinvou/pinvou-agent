@@ -6,7 +6,7 @@
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry.sessions = function (context) {let pinvouSharedtauriSessionsCache = null;
 function pinvouSharedtauriSessions() {
-  if (!pinvouSharedtauriSessionsCache) pinvouSharedtauriSessionsCache = window.PinvouBridgeShared.create("tauriSessions", { sessionStates, freshBuffer, restoreEvictedSessionDraft, state, sessionBufferTouchClock: { get value() { return sessionBufferTouchClock; }, set value(v) { sessionBufferTouchClock = v; } }, pruneScheduledSessionBuffers, pruneSessionBuffers, scheduledRunSessionOwners, scheduledRunOwnerTouchClock: { get value() { return scheduledRunOwnerTouchClock; }, set value(v) { scheduledRunOwnerTouchClock = v; } }, MAX_SCHEDULED_RUN_SESSION_OWNERS, enterDraft, setScheduledTaskError, notify, addSystemItem, bt, hydratedMessageKey, basename, switchToSessionInternal, openScheduledRunChatOnce, scheduledRunOpenInFlight, loadWorkingSetFrom, invalidateScheduledRecentRunsForSession, purgeSessionBuffer, invoke, personaPlaceholderTitles, refreshHistoryList, sessionSwitchRequestToken: { get value() { return sessionSwitchRequestToken; }, set value(v) { sessionSwitchRequestToken = v; } }, saveWorkingSetTo, loadScheduledTaskRecentRuns });
+  if (!pinvouSharedtauriSessionsCache) pinvouSharedtauriSessionsCache = window.PinvouBridgeShared.create("tauriSessions", { sessionStates, restoreEvictedSessionDraft, state, userMessageDisplayText, evictedSessionDrafts: { get value() { return evictedSessionDrafts; } }, MAX_EVICTED_SESSION_DRAFT_CHARS: { get value() { return MAX_EVICTED_SESSION_DRAFT_CHARS; } }, MAX_EVICTED_SESSION_DRAFTS: { get value() { return MAX_EVICTED_SESSION_DRAFTS; } }, sessionBufferTouchClock: { get value() { return sessionBufferTouchClock; }, set value(v) { sessionBufferTouchClock = v; } }, pruneScheduledSessionBuffers, pruneSessionBuffers, scheduledRunSessionOwners, scheduledRunOwnerTouchClock: { get value() { return scheduledRunOwnerTouchClock; }, set value(v) { scheduledRunOwnerTouchClock = v; } }, MAX_SCHEDULED_RUN_SESSION_OWNERS, enterDraft, setScheduledTaskError, notify, addSystemItem, bt, basename, switchToSessionInternal, openScheduledRunChatOnce, scheduledRunOpenInFlight, invalidateScheduledRecentRunsForSession, purgeSessionBuffer, invoke, personaPlaceholderTitles, refreshHistoryList, sessionSwitchRequestToken: { get value() { return sessionSwitchRequestToken; }, set value(v) { sessionSwitchRequestToken = v; } }, loadScheduledTaskRecentRuns, reportSidecarReadFailure, historyRefreshTimer: { get value() { return historyRefreshTimer; }, set value(v) { historyRefreshTimer = v; } }, historyRefreshPending: { get value() { return historyRefreshPending; }, set value(v) { historyRefreshPending = v; } }, currentStreamText: { get value() { return context.currentStreamText; }, set value(v) { context.currentStreamText = v; } }, currentStreamId: { get value() { return context.currentStreamId; }, set value(v) { context.currentStreamId = v; } }, pendingAssistantText: { get value() { return context.pendingAssistantText; }, set value(v) { context.pendingAssistantText = v; } }, pendingAssistantBlocks: { get value() { return context.pendingAssistantBlocks; }, set value(v) { context.pendingAssistantBlocks = v; } }, itemIdSeq: { get value() { return context.itemIdSeq; }, set value(v) { context.itemIdSeq = v; } }, toolMeta: { get value() { return context.toolMeta; }, set value(v) { context.toolMeta = v; } }, restoreSteeredWorkingSet, saveSteeredWorkingSet });
   return pinvouSharedtauriSessionsCache;
 }
 
@@ -47,7 +47,6 @@ function pinvouSharedtauriSessions() {
     const addSystemItem = context.addSystemItem;
     const turnUsageDirty = context.turnUsageDirty;
     const basename = context.basename;
-    const isAbsPath = context.isAbsPath;
     const filterSessionArtifacts = context.filterSessionArtifacts;
     const scheduleShellPoll = context.scheduleShellPoll;
     const bt = context.bt;
@@ -69,22 +68,8 @@ function pinvouSharedtauriSessions() {
     // backend now fails a corrupt sidecar explicitly (missing stays []). Degrade
     // to [] exactly as before, just not silently — report like the scene/steered
     // readers so a durable-data defect cannot pose as "no data".
-    async function loadPersonaEventsForSession(sid) {
-      try {
-        return await invoke("get_session_persona_events", { sessionId: sid }) || [];
-      } catch (error) {
-        reportSidecarReadFailure("persona events", sid, error);
-        return [];
-      }
-    }
-    async function loadPinvouReviewsForSession(sid) {
-      try {
-        return await invoke("get_session_pinvou_reviews", { sessionId: sid }) || [];
-      } catch (error) {
-        reportSidecarReadFailure("pinvou reviews", sid, error);
-        return [];
-      }
-    }
+    function loadPersonaEventsForSession(sid) { return pinvouSharedtauriSessions().loadPersonaEventsForSession(sid); }
+    function loadPinvouReviewsForSession(sid) { return pinvouSharedtauriSessions().loadPinvouReviewsForSession(sid); }
     const MAX_SCHEDULED_SESSION_BUFFERS = 64;
     const MAX_SCHEDULED_RUN_SESSION_OWNERS = 64;
     // All-session buffer cap: each sessionStates entry holds the full
@@ -112,61 +97,29 @@ function pinvouSharedtauriSessions() {
     let scheduledRunOwnerTouchClock = 0;
     const scheduledRunOpenInFlight = Object.create(null);
     let sessionSwitchRequestToken = 0;
+    // Burst coalescing (review #463 round-20 R3): the rebind command emits one
+    // session:list_changed per affected id, and each undebounced refresh costs
+    // an IPC round trip + an O(n) backend list_sessions + a React commit — a
+    // large rebind burst translated into hundreds of full history refreshes
+    // exactly while the report dialog opens. Leading + trailing: the first
+    // event refreshes immediately (single-event semantics unchanged), events
+    // inside the window set a pending flag collapsed into ONE trailing
+    // refresh. Harnesses without timers fall back to the immediate refresh.
+    // Factory scope so the shared scheduleHistoryRefresh cell (deps literal)
+    // can close over them.
+    let historyRefreshTimer = null;
+    let historyRefreshPending = false;
     const evictedSessionDrafts = Object.create(null);
     // Returns true when the buffer's non-rehydratable state is safely retained
     // (or empty) and the caller may drop the buffer; false means eviction must
     // be skipped so the draft stays in the live buffer.
-    function stashEvictedSessionDraft(id, buf) {
-      if (!id || !buf) return true;
-      const draft = String(buf.composerDraft || "");
-      if (!draft) {
-        delete evictedSessionDrafts[id]; // input was cleared; a stale stash must not resurrect it
-        return true;
-      }
-      if (draft.length > MAX_EVICTED_SESSION_DRAFT_CHARS) return false;
-      if (!evictedSessionDrafts[id]
-          && Object.keys(evictedSessionDrafts).length >= MAX_EVICTED_SESSION_DRAFTS) return false;
-      delete evictedSessionDrafts[id]; // re-stashing moves the entry to the table tail
-      evictedSessionDrafts[id] = draft;
-      return true;
-    }
+    function stashEvictedSessionDraft(id, buf) { return pinvouSharedtauriSessions().stashEvictedSessionDraft(id, buf); }
     function restoreEvictedSessionDraft(id, buf) {
       if (!id || !buf || buf.composerDraft) return;
       const draft = evictedSessionDrafts[id];
       if (draft) buf.composerDraft = draft;
     }
-  function freshBuffer() {
-    return {
-      messages: [], chatItems: [], composerDraft: "", turnTimeline: [], activeTurnTimelineId: null, personaEvents: [], pinvouReviews: [], pinvouSceneEvents: [], artifacts: [], busy: false, queued: [],
-      loadedFromDisk: false,
-      localTurnOwned: false,
-      remoteTurnActive: false,
-      remoteTerminalSeen: false,
-      remoteAdmissionKeys: [],
-      deferredRemoteUserEvent: null,
-      remoteBaselineMessageCount: null,
-      remoteBaselineTrusted: false,
-      remoteExpectedAssistantKey: "",
-      remoteCommittedRevision: "",
-      sessionRevision: "",
-      planSnapshot: { plan: null, todos: null },
-      modeState: { mode: "yolo" },
-      thinking: { active: false, phase: "thinking", toolName: "", startedAt: 0 },
-      tokens: { input: 0, max: state.tokens.max },
-      activePersona: null, // 卡片池: 该 session 加持的专家面具(挂件用)
-      mountedCollection: null, // 知识库: 该 session 挂载的知识集 id 或 null
-      mountedCollections: [], // 多知识库挂载项 [{ collectionId, enabled }]
-      mountedCollectionsRevision: 0,
-      scheduledRunSession: false,
-      scheduledInitialTurnPhase: null,
-      lastTouched: 0,
-
-      stream: {
-        currentStreamText: "", currentStreamId: 0, pendingAssistantText: "",
-        pendingAssistantBlocks: [], itemIdSeq: 0, toolMeta: {},
-      },
-    };
-  }
+function freshBuffer() { return pinvouSharedtauriSessions().freshBuffer(); }
 function getBuffer(id) { return pinvouSharedtauriSessions().getBuffer(id); }
 function isProtectedScheduledBuffer(id, buf) { return pinvouSharedtauriSessions().isProtectedScheduledBuffer(id, buf); }
   function pruneScheduledSessionBuffers(keepId) {
@@ -263,56 +216,13 @@ function markScheduledInitialTurnActive(id) { return pinvouSharedtauriSessions()
 function markScheduledInitialTurnTerminal(id) { return pinvouSharedtauriSessions().markScheduledInitialTurnTerminal(id); }
 function beginScheduledOpenActivation(id) { return pinvouSharedtauriSessions().beginScheduledOpenActivation(id); }
 function rollbackScheduledOpenActivation(snapshot) { return pinvouSharedtauriSessions().rollbackScheduledOpenActivation(snapshot); }
-  function saveWorkingSetTo(buf) {
-    if (!buf) return;
-    buf.messages = state.messages; buf.chatItems = state.chatItems; buf.artifacts = state.artifacts;
-    buf.composerDraft = state.composerDraft || "";
-    buf.turnTimeline = state.turnTimeline;
-    buf.activeTurnTimelineId = state.activeTurnTimelineId;
-    buf.personaEvents = state.personaEvents;
-    buf.pinvouReviews = state.pinvouReviews;
-    buf.pinvouSceneEvents = state.pinvouSceneEvents;
-    buf.steeredMessages = state.steeredMessages;
-    buf.busy = buf.scheduledInitialTurnPhase === "active" ? true : state.busy;
-    buf.planSnapshot = state.planSnapshot; buf.modeState = state.modeState;
-    buf.thinking = state.thinking; buf.tokens = state.tokens; buf.queued = state.queued;
-    buf.activePersona = state.activePersona;
-    buf.mountedCollection = state.mountedCollection;
-    buf.mountedCollections = state.mountedCollections;
-    buf.mountedCollectionsRevision = state.mountedCollectionsRevision;
-    buf.stream = {
-      currentStreamText: context.currentStreamText, currentStreamId: context.currentStreamId,
-      pendingAssistantText: context.pendingAssistantText, pendingAssistantBlocks: context.pendingAssistantBlocks,
-      itemIdSeq: context.itemIdSeq, toolMeta: context.toolMeta,
-    };
-  }
-  function loadWorkingSetFrom(buf) {
-    if (!buf) return;
-    state.messages = buf.messages; state.chatItems = buf.chatItems; state.artifacts = buf.artifacts;
-    state.composerDraft = buf.composerDraft || "";
-    state.turnTimeline = buf.turnTimeline || [];
-    state.activeTurnTimelineId = buf.activeTurnTimelineId || null;
-    state.personaEvents = buf.personaEvents || [];
-    state.pinvouReviews = buf.pinvouReviews || [];
-    state.pinvouSceneEvents = buf.pinvouSceneEvents || [];
-    state.steeredMessages = buf.steeredMessages || [];
-    state.pinvouModal = null; // 切 session 关掉检阅弹窗
-    state.turnDirtyArtifacts = []; // turn 临时态,切 session 清空,别串到新 session
-    state.turnPresentedArtifacts = [];
-    state.busy = buf.scheduledInitialTurnPhase === "active" ? true : buf.busy;
-    state.planSnapshot = buf.planSnapshot; state.modeState = buf.modeState;
-    state.thinking = buf.thinking; state.tokens = buf.tokens; state.queued = buf.queued || [];
-    state.activePersona = buf.activePersona || null;
-    state.mountedCollection = buf.mountedCollection || null;
-    state.mountedCollections = Array.isArray(buf.mountedCollections)
-      ? buf.mountedCollections
-      : (state.mountedCollection == null ? [] : [{ collectionId: state.mountedCollection, enabled: true }]);
-    state.mountedCollectionsRevision = Number(buf.mountedCollectionsRevision || 0);
-    const s = buf.stream || {};
-    context.currentStreamText = s.currentStreamText || ""; context.currentStreamId = s.currentStreamId || 0;
-    context.pendingAssistantText = s.pendingAssistantText || ""; context.pendingAssistantBlocks = s.pendingAssistantBlocks || [];
-    context.itemIdSeq = s.itemIdSeq || 0; context.toolMeta = s.toolMeta || {};
-  }
+  // FE14 残余批：steered sidecar 是桌面 lane 独有的工作集字段（web 无此概念）；
+  // 共享 loadWorkingSetFrom/saveWorkingSetTo 经这两个可选钩子挂接，写入位置
+  // 与合并前逐行一致（pinvouSceneEvents 之后、其余字段之前）。
+  function restoreSteeredWorkingSet(buf) { state.steeredMessages = buf.steeredMessages || []; }
+  function saveSteeredWorkingSet(buf) { buf.steeredMessages = state.steeredMessages; }
+  function saveWorkingSetTo(buf) { return pinvouSharedtauriSessions().saveWorkingSetTo(buf); }
+  function loadWorkingSetFrom(buf) { return pinvouSharedtauriSessions().loadWorkingSetFrom(buf); }
   function hydrateWorkingSetFromSaved(buf, saved) {
     if (!buf || !saved) return;
     const completedRemoteTurn = !!buf.remoteTerminalSeen || (!!buf.remoteTurnActive && !buf.busy);
@@ -755,47 +665,11 @@ async function createNewSession() { return pinvouSharedtauriSessions().createNew
 
 function reportSessionSwitchFailure(error, errorScope) { return pinvouSharedtauriSessions().reportSessionSwitchFailure(error, errorScope); }
 
-  function hydratedMessageKey(message, hideInternalEnvelope) {
-    let blocks = message && Array.isArray(message.content) ? message.content : [];
-    if (message && message.role === "user") {
-      const resultIds = blocks.filter(function (block) {
-        return block && block.type === "tool_result" && block.tool_use_id;
-      }).map(function (block) { return block.tool_use_id; }).sort(function (a, b) { return a < b ? -1 : a > b ? 1 : 0; }); // key normalization needs lexicographic order; declare the semantics explicitly
-      if (resultIds.length) return "user:tool_results:" + resultIds.join("|");
-      return "user:text:" + userMessageDisplayText(blocks, hideInternalEnvelope);
-    }
-    if (message && message.role === "assistant") {
-      const toolIds = blocks.filter(function (block) {
-        return block && block.type === "tool_use" && block.id;
-      }).map(function (block) { return block.id; }).sort(function (a, b) { return a < b ? -1 : a > b ? 1 : 0; }); // key normalization needs lexicographic order; declare the semantics explicitly
-      if (toolIds.length) return "assistant:tool_uses:" + toolIds.join("|");
-      blocks = blocks.filter(function (block) { return !block || block.type !== "thinking"; });
-      try { return "assistant:" + JSON.stringify(blocks); } catch { /* persist the raw text on serialization failure */ }
-    }
-    try { return JSON.stringify(message); } catch { return String(message); }
-  }
+function hydratedMessageKey(message, hideInternalEnvelope) { return pinvouSharedtauriSessions().hydratedMessageKey(message, hideInternalEnvelope); }
 
 function mergeHydratedMessages(durableMessages, liveMessages, hideInternalEnvelope) { return pinvouSharedtauriSessions().mergeHydratedMessages(durableMessages, liveMessages, hideInternalEnvelope); }
 
-  function mergeHydratedArtifacts(durableArtifacts, liveArtifacts) {
-    const merged = [];
-    const seen = Object.create(null);
-    [...(durableArtifacts || []), ...(liveArtifacts || [])].forEach(function (artifact) {
-      const path = typeof artifact === "string" ? artifact : (artifact && (artifact.path || artifact.storage_path)) || "";
-      const identity = basename(path);
-      if (!path || !identity) return;
-      if (seen[identity] !== undefined) {
-        const existingIndex = seen[identity];
-        if (isAbsPath(path) && !isAbsPath(merged[existingIndex].path)) {
-          merged[existingIndex] = { path, basename: identity };
-        }
-        return;
-      }
-      seen[identity] = merged.length;
-      merged.push({ path, basename: identity });
-    });
-    return merged;
-  }
+function mergeHydratedArtifacts(durableArtifacts, liveArtifacts) { return pinvouSharedtauriSessions().mergeHydratedArtifacts(durableArtifacts, liveArtifacts); }
 
 function hydratedChatItemKey(item) { return pinvouSharedtauriSessions().hydratedChatItemKey(item); }
 
@@ -1097,31 +971,7 @@ function onSessionDeleted(listener) { return pinvouSharedtauriSessions().onSessi
     // event refreshes immediately (single-event semantics unchanged), events
     // inside the window set a pending flag collapsed into ONE trailing
     // refresh. Harnesses without timers fall back to the immediate refresh.
-    let historyRefreshTimer = null;
-    let historyRefreshPending = false;
-    function scheduleHistoryRefresh() {
-      function runRefresh() {
-        refreshHistoryList().catch(function (error) {
-          console.error("[sessions] session:list_changed refresh failed", error);
-        });
-      }
-      if (typeof setTimeout !== "function") {
-        runRefresh();
-        return;
-      }
-      if (historyRefreshTimer) {
-        historyRefreshPending = true;
-        return;
-      }
-      runRefresh();
-      historyRefreshTimer = setTimeout(function () {
-        historyRefreshTimer = null;
-        if (historyRefreshPending) {
-          historyRefreshPending = false;
-          scheduleHistoryRefresh();
-        }
-      }, 200);
-    }
+    function scheduleHistoryRefresh() { return pinvouSharedtauriSessions().scheduleHistoryRefresh(); }
     listen("session:list_changed", function (event) {
       const payload = event && event.payload || {};
       // The rebind command stamps the sessions whose persisted artifact paths
@@ -1201,8 +1051,6 @@ async function restoreArchivedSession(id) { return pinvouSharedtauriSessions().r
       registerScheduledRunOwner,
       scheduledRunOwnerVisibleRank,
       scheduledRunOwnerPriority,
-      isProtectedScheduledRunOwner,
-      pruneScheduledRunSessionOwner,
       pruneScheduledRunSessionOwners,
       isScheduledRunTerminal,
       rememberScheduledRunOwner,

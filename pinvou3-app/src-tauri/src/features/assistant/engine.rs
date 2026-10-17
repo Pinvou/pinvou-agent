@@ -1525,7 +1525,10 @@ impl TurnLifecycle {
 /// same reasoning as #483's shell-reclaim finalize bound. The caller presets
 /// the terminal to `Failed` on `None`: an unverified persistence must not be
 /// reported as clean, even though the detached save can still land later.
-async fn bounded_join_detached_on_timeout<T>(
+/// This is the single bounded-join core of the assistant lane: the pool's
+/// [`crate::features::assistant::engine_pool::bounded_join_while_holding_turn_gate`]
+/// is a thin adapter over it.
+pub(super) async fn bounded_join_detached_on_timeout<T>(
     what: &str,
     budget: std::time::Duration,
     task: tokio::task::JoinHandle<T>,

@@ -3751,14 +3751,14 @@ async fn approved_token_is_refused_on_a_display_identical_twin() {
     let raw_a = format!("Buy now{}", "a".repeat(100));
     let raw_b = format!("Buy now{}!", "a".repeat(100));
     assert_eq!(
-        platform::sanitize_name(&raw_a, MAX_LABEL_CHARS),
-        platform::sanitize_name(&raw_b, MAX_LABEL_CHARS),
+        platform::sanitize_name(&raw_a, platform::MAX_NAME_CHARS),
+        platform::sanitize_name(&raw_b, platform::MAX_NAME_CHARS),
         "test setup: the twins must share the display line"
     );
     let mut element = ElementInfo {
         name_screening_hit: true,
         role: "AXButton".to_string(),
-        name: platform::sanitize_name(&raw_a, MAX_LABEL_CHARS),
+        name: platform::sanitize_name(&raw_a, platform::MAX_NAME_CHARS),
         x: 0,
         y: 0,
         width: 16,
@@ -3781,7 +3781,7 @@ async fn approved_token_is_refused_on_a_display_identical_twin() {
 
     // The user approved the original. The model swaps in the twin — same
     // display line, different raw element — and replays the identical call.
-    element.name = platform::sanitize_name(&raw_b, MAX_LABEL_CHARS);
+    element.name = platform::sanitize_name(&raw_b, platform::MAX_NAME_CHARS);
     element.raw_binding = 222;
     fixture.mock.lock().element = Some(element);
     let twin = fixture
@@ -3810,7 +3810,7 @@ async fn approved_token_is_refused_on_a_display_identical_twin() {
     let element = ElementInfo {
         name_screening_hit: true,
         role: "AXButton".to_string(),
-        name: platform::sanitize_name(&raw_a, MAX_LABEL_CHARS),
+        name: platform::sanitize_name(&raw_a, platform::MAX_NAME_CHARS),
         x: 0,
         y: 0,
         width: 16,

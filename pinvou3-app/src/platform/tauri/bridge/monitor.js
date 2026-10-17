@@ -9,16 +9,16 @@
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["monitor"] = function (context) {let pinvouSharedtauriMonitorCache = null;
 function pinvouSharedtauriMonitor() {
-  if (!pinvouSharedtauriMonitorCache) pinvouSharedtauriMonitorCache = window.PinvouBridgeShared.create("tauriMonitor", { monitorBaseline: { get value() { return monitorBaseline; }, set value(v) { monitorBaseline = v; } }, clearMonitorBaseline, monitorIntervalId: { get value() { return monitorIntervalId; }, set value(v) { monitorIntervalId = v; } }, gpuUtilHistory: { get value() { return gpuUtilHistory; }, set value(v) { gpuUtilHistory = v; } }, pollMonitor });
+  if (!pinvouSharedtauriMonitorCache) pinvouSharedtauriMonitorCache = window.PinvouBridgeShared.create("tauriMonitor", { state, sessionStates, notify, invoke, bt, monitorBaseline: { get value() { return monitorBaseline; }, set value(v) { monitorBaseline = v; } }, clearMonitorBaseline, monitorIntervalId: { get value() { return monitorIntervalId; }, set value(v) { monitorIntervalId = v; } }, gpuUtilHistory: { get value() { return gpuUtilHistory; }, set value(v) { gpuUtilHistory = v; } }, monitorPollInFlight: { get value() { return monitorPollInFlight; }, set value(v) { monitorPollInFlight = v; } } });
   return pinvouSharedtauriMonitorCache;
 }
 
 
     const state = context.state;
+    const sessionStates = context.sessionStates;
     const notify = context.notify;
     const invoke = context.invoke;
     const bt = context.bt;
-    const sessionStates = context.sessionStates;
     let monitorIntervalId = null;
     let monitorPollInFlight = false;
     let gpuUtilHistory = [];
@@ -32,23 +32,9 @@ function pinvouSharedtauriMonitor() {
       if (storedBaseline) monitorBaseline = JSON.parse(storedBaseline);
     } catch { monitorBaseline = null; }
   // ── Monitor ──────────────────────────────────────────────────────
-  // The shared format-utils script is loaded statically; the inline fallbacks
-  // are verbatim copies of its bodies so the monitor never falls back to raw
-  // numbers when the shared script is missing.
-  const PinvouFU = window.PinvouFormatUtils || {};
-  const fmtMiB = PinvouFU.fmtMiB || function (mib) {
-    if (mib == null) return "—";
-    return mib >= 1024 ? (mib / 1024).toFixed(1) + " GB" : mib + " MB";
-  };
-  const fmtKiB = PinvouFU.fmtKiB || function (kib) {
-    if (kib == null) return "—";
-    if (kib >= 1024 * 1024) return (kib / 1024 / 1024).toFixed(1) + " GB";
-    if (kib >= 1024) return (kib / 1024).toFixed(0) + " MB";
-    return kib + " KB";
-  };
-  const fmtDuration = PinvouFU.fmtDuration || function (secs) { return secs == null ? "—" : String(secs); };
-  const fmtTok = PinvouFU.fmtTok || function (n) { return n == null ? "—" : String(n); };
-
+  // pollMonitor/appQueueSnapshot/monitorFmtEqual 与格式化 fallback 统一在
+  // shared/bridge-shared-helpers.js 的 tauriMonitor cluster（betaVersionSuffix
+  // 键两侧同值同名）；此处仅保留 lane 内转发的公开入口。
 
 function numOr0(x) { return pinvouSharedtauriMonitor().numOr0(x); }
 
@@ -58,7 +44,6 @@ function numOr0(x) { return pinvouSharedtauriMonitor().numOr0(x); }
   // → 丢弃失效基准，回落到累计值，避免负数。
   // KV 命中率(混合):本地 vLLM 用 /metrics prefix_cache(vllmKvPct);拿不到再用 usage 的
   // cache token 口径(selfKvPct,给云端/D3)。二者都按区间(扣基准)重算。
-function adjustCounters(sp, v) { return pinvouSharedtauriMonitor().adjustCounters(sp, v); }
 
   function clearMonitorBaseline() {
     monitorBaseline = null;
@@ -89,170 +74,7 @@ function adjustCounters(sp, v) { return pinvouSharedtauriMonitor().adjustCounter
     return true;
   }
 
-  function appQueueSnapshot() {
-    let waiting = state.queued ? state.queued.length : 0;
-    const busyMap = {};
-    for (const id in sessionStates) {
-      // biome-ignore lint/suspicious/noPrototypeBuiltins: Safari 14 is the floor and Object.hasOwn is unavailable; this call is already the safe form
-      if (!Object.prototype.hasOwnProperty.call(sessionStates, id)) continue;
-      if (id === state.activeSessionId) continue;
-      const buf = sessionStates[id] || {};
-      if (buf.busy) busyMap[id] = true;
-      if (Array.isArray(buf.queued)) waiting += buf.queued.length;
-    }
-    if (state.activeSessionId && state.busy) busyMap[state.activeSessionId] = true;
-    const running = Object.keys(busyMap).length;
-    return { running, waiting };
-  }
-
-  // MonitorView only consumes state.monitor._fmt (plus one level of vllmRaw
-  // nesting), so shallow equality means display equivalence. The poll runs
-  // once per second; when a snapshot is display-equivalent, skip the
-  // assignment + notify to avoid a full App re-render every second while the
-  // monitor page is open. Numeric values jitter naturally (cpu/gpu
-  // percentages etc.), so comparisons allow a 0.5 tolerance (prefer one
-  // extra notify over ever getting stuck); counters are mostly strings after
-  // toFixed/round and compare exactly. The page clock is driven by
-  // MonitorView's local 1s timer and does not depend on any poll-tick marker.
-  function monitorFmtEqual(prev, next) {
-    if (prev === next) return true;
-    if (!prev || !next) return false;
-    const numEq = function (a, b) {
-      if (a === b) return true;
-      return typeof a === "number" && typeof b === "number"
-        && Number.isFinite(a) && Number.isFinite(b)
-        && Math.abs(a - b) <= 0.5;
-    };
-    const keys = Object.keys(next);
-    if (keys.length !== Object.keys(prev).length) return false;
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i];
-      const a = prev[key];
-      const b = next[key];
-      if (a && b && typeof a === "object" && typeof b === "object") {
-        const inner = Object.keys(b);
-        if (inner.length !== Object.keys(a).length) return false;
-        let same = true;
-        for (let j = 0; j < inner.length; j++) {
-          if (!numEq(a[inner[j]], b[inner[j]])) { same = false; break; }
-        }
-        if (!same) return false;
-        continue;
-      }
-      if (!numEq(a, b)) return false;
-    }
-    return true;
-  }
-
-  // eslint-disable-next-line sonarjs/cognitive-complexity -- legacy bridge; refactor tracked separately
-  async function pollMonitor() {
-    if (monitorPollInFlight) return;
-    monitorPollInFlight = true;
-    try {
-      const snap = await invoke("get_monitor_snapshot");
-      // The previous round errored → this round must notify once so the
-      // "read failed" banner switches back to the normal panel.
-      const hadMonitorError = !!state.monitorError;
-      state.monitorError = null;
-      // GPU util sliding window
-      if (snap.gpu) {
-        gpuUtilHistory.push(snap.gpu.utilization_pct);
-        if (gpuUtilHistory.length > 5) gpuUtilHistory.shift();
-        snap.gpu._utilMax = Math.max(...[0, ...gpuUtilHistory]);
-      }
-      // 监控页「后 4 项」累计指标：TTFT/TPS/tokens 来自 app 侧自测(snap.self_perf,
-      // 任何后端都有);KV 混合(本地 vLLM prefix_cache 优先,否则 usage 口径)。
-      // 按「清除统计」基准点换算成区间值后再格式化。
-      const sadj = adjustCounters(snap.self_perf, snap.vllm);
-      // KV 显示值:本地 vLLM 的 /metrics prefix_cache 优先,拿不到用 usage cache 口径(云端)。
-      const kvShown = sadj ? (sadj.vllmKvPct == null ? (sadj.selfKvPct == null ? null : sadj.selfKvPct)
-        : sadj.vllmKvPct) : null;
-      // Format values for display
-      const vllm = snap.vllm || null;
-      const metricsApplicable = vllm ? vllm.metrics_applicable !== false : false;
-      const metricUnavailableText = bt("metricUnavailable");
-      const targetKind = vllm && vllm.target_kind ? vllm.target_kind : "invalid";
-      const vllmDisplayModel = vllm ? (vllm.model || vllm.configured_model || "—") : "—";
-      const healthStatus = vllm && vllm.health_status ? vllm.health_status : (vllm ? "verified" : "offline");
-      const appQueue = appQueueSnapshot();
-      const cpu = snap.cpu || null;
-      const cpuUsage = cpu && typeof cpu.total_usage_pct === "number" && Number.isFinite(cpu.total_usage_pct)
-        ? Math.round(Math.max(0, Math.min(100, cpu.total_usage_pct)))
-        : null;
-      const computeName = snap.gpu ? snap.gpu.name : (cpu && cpu.name ? cpu.name : bt("gpuUnavailable"));
-      snap._fmt = {
-        gpuName: computeName,
-        cpuName: cpu && cpu.name ? cpu.name : "",
-        cpuAvailable: !!cpu,
-        computeAvailable: !!(snap.gpu || cpu),
-        computeName,
-        gpuVramPct: snap.gpu && snap.gpu.vram_total_mib > 0
-          ? Math.round(snap.gpu.vram_used_mib / snap.gpu.vram_total_mib * 100) : 0,
-        gpuUtilPct: snap.gpu ? snap.gpu._utilMax : 0,
-        processorUtilPct: cpuUsage == null
-          ? (snap.gpu && snap.gpu.processor_utilization_pct != null ? snap.gpu.processor_utilization_pct : 0)
-          : cpuUsage,
-        gpuSharedMemory: snap.gpu && snap.gpu.shared_memory_used_mib != null ? fmtMiB(snap.gpu.shared_memory_used_mib) : "—",
-        gpuTemp: snap.gpu && snap.gpu.temperature_c != null ? snap.gpu.temperature_c + "°C" : null,
-        gpuPower: snap.gpu && snap.gpu.power_w != null ? snap.gpu.power_w.toFixed(1) + " W" : null,
-        gpuAvailable: !!snap.gpu,
-        gpuHasVram: !!(snap.gpu && snap.gpu.vram_total_mib > 0),
-        ramTotal: snap.ram ? fmtKiB(snap.ram.total_kib) : "—",
-        ramPct: snap.ram && snap.ram.total_kib > 0 ? Math.round(snap.ram.used_kib / snap.ram.total_kib * 100) : 0,
-        ramUsedGiB: snap.ram ? (snap.ram.used_kib / 1024 / 1024).toFixed(1) : "—",
-        swapUsed: snap.ram ? fmtKiB(snap.ram.swap_used_kib) : "—",
-        swapTotal: snap.ram ? fmtKiB(snap.ram.swap_total_kib) : "—",
-        swapPct: snap.ram && snap.ram.swap_total_kib > 0 ? Math.round(snap.ram.swap_used_kib / snap.ram.swap_total_kib * 100) : 0,
-        vllmModel: vllmDisplayModel,
-        vllmHealthStatus: healthStatus,
-        vllmOnline: vllm ? (healthStatus === "verified" && (vllm.status === "ready" || vllm.status === "busy")) : false,
-        // 云端(remote)不做健康探测(无 auth 的 /v1/models 必 401)→ 不显示 OFFLINE。
-        // 暴露原始 kind 供前端判定(别比本地化 label)。
-        vllmIsRemote: targetKind === "remote",
-        vllmMaxLen: vllm ? (metricsApplicable ? (vllm.max_model_len || "—") : (vllm.max_model_len || metricUnavailableText)) : "—",
-        // 本地推理引擎(target_kind=local)且探测窗口 < 128k(131072):监控卡给告警。
-        // 云端(remote)/v1/models 不返回 max_model_len,自然不触发。传原始值供前端拼文案。
-        vllmQueue: appQueue.running + " / " + appQueue.waiting,
-        // TTFT/TPS/tokens 一律用 app 侧自测——任何后端(vLLM/LM Studio/Ollama/云端)都有值,
-        // 不再受 metricsApplicable 门控。KV 见 kvShown(本地 prefix_cache / 云端 usage 口径),
-        // 拿不到则 "—"。队列仍归 vLLM(见 vllmQueue)。
-        vllmKv: kvShown == null ? "0%" : kvShown.toFixed(1) + "%",
-        vllmKvHasData: kvShown != null,
-        vllmTtft: sadj && sadj.ttft_count > 0
-          ? (sadj.ttft_sum_s / sadj.ttft_count).toFixed(2) + " s" : "—",
-        vllmTps: sadj && sadj.tps_time_s > 0
-          ? (sadj.tps_tokens / sadj.tps_time_s).toFixed(1) + " tok/s" : "—",
-        vllmTokTotal: sadj
-          ? fmtTok(sadj.gen) + " / " + fmtTok(sadj.prompt) : "—",
-        // 区间原始数值（已扣基准），供前端「长按清除」的数字归零插值动画用。
-        vllmRaw: sadj ? {
-          kvPct: kvShown,
-          ttftS: sadj.ttft_count > 0 ? sadj.ttft_sum_s / sadj.ttft_count : null,
-          tps: sadj.tps_time_s > 0 ? sadj.tps_tokens / sadj.tps_time_s : null,
-          gen: sadj.gen == null ? null : sadj.gen,
-          prompt: sadj.prompt == null ? null : sadj.prompt,
-        } : null,
-        appVersion: snap.app ? snap.app.pinvou3_version + bt("betaVersionSuffix") : "—",
-        uptime: snap.app ? fmtDuration(snap.app.session_uptime_secs) : "—",
-      };
-      if (snap.vllm && snap.vllm.max_model_len) {
-        state.tokens.max = snap.vllm.max_model_len;
-      }
-      // Display-equivalent snapshots neither overwrite state.monitor nor
-      // notify (must send on the first frame or after an errored round).
-      const prevFmt = state.monitor && state.monitor._fmt;
-      if (hadMonitorError || !prevFmt || !monitorFmtEqual(prevFmt, snap._fmt)) {
-        state.monitor = snap;
-        notify();
-      }
-    } catch (e) {
-      state.monitorError = e && e.message ? e.message : String(e || "monitor poll failed");
-      console.warn("monitor poll failed", e);
-      notify();
-    } finally {
-      monitorPollInFlight = false;
-    }
-  }
+async function pollMonitor() { return pinvouSharedtauriMonitor().pollMonitor(); }
 
 function startMonitorPolling() { return pinvouSharedtauriMonitor().startMonitorPolling(); }
 function stopMonitorPolling() { return pinvouSharedtauriMonitor().stopMonitorPolling(); }

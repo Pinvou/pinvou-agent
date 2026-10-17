@@ -70,22 +70,30 @@ pub(super) fn kimi_login_failure_detail(stdout: &str, stderr: &str) -> Option<St
         })
     })
 }
+/// Credential vocabulary that means "refuse to surface this detail at all":
+/// any of these in a lowercased kimi login-failure detail implies credential
+/// material in a shape `redact_secret` cannot see. `pub` (the module stays
+/// private) so the codex_acp facade can re-export it for the headless CLI's
+/// login-echo withhold gate — same sanctioned-surface pattern as the
+/// MIN_* version constants (was an unpinned inline literal).
+pub const KIMI_CREDENTIAL_MARKERS: [&str; 10] = [
+    "access_token",
+    "refresh_token",
+    "authorization:",
+    "bearer ",
+    "api_key",
+    "api-key",
+    "secret=",
+    "cookie:",
+    "user_code=",
+    "device_code=",
+];
+
 pub(super) fn sanitize_kimi_login_failure_detail(detail: &str) -> Option<String> {
     let normalized = detail.to_ascii_lowercase();
-    if [
-        "access_token",
-        "refresh_token",
-        "authorization:",
-        "bearer ",
-        "api_key",
-        "api-key",
-        "secret=",
-        "cookie:",
-        "user_code=",
-        "device_code=",
-    ]
-    .into_iter()
-    .any(|marker| normalized.contains(marker))
+    if KIMI_CREDENTIAL_MARKERS
+        .into_iter()
+        .any(|marker| normalized.contains(marker))
     {
         return None;
     }

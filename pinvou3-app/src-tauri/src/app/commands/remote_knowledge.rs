@@ -402,24 +402,15 @@ pub async fn remote_kb_documents(
     offset: Option<usize>,
 ) -> Result<Vec<Document>, String> {
     let include_deleted = include_deleted.unwrap_or(false);
-    match (limit, offset) {
-        (None, None) => {
-            state
-                .documents(&server_id, collection_id, include_deleted)
-                .await
-        }
-        (limit, offset) => {
-            state
-                .documents_page(
-                    &server_id,
-                    collection_id,
-                    include_deleted,
-                    limit,
-                    offset.unwrap_or(0),
-                )
-                .await
-        }
-    }
+    state
+        .documents_page(
+            &server_id,
+            collection_id,
+            include_deleted,
+            limit,
+            offset.unwrap_or(0),
+        )
+        .await
 }
 
 #[tauri::command]

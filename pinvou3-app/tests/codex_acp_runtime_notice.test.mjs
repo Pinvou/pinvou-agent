@@ -317,7 +317,7 @@ for (const kind of ['agent_stall_restart', 'agent_session_restarted', 'agent_ses
 }
 assert.match(
   view,
-  /redactDisplayError\(notice\.detail/,
+  /timelineDisplayError\(notice\.detail, \{ language: acpModelServiceLanguage \}/,
   'the notice detail is adapter stderr text and must be redacted like turn errors',
 );
 assert.match(

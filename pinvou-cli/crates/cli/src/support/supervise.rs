@@ -99,7 +99,7 @@ pub fn install_signal_cleanup() {
 /// exec preserves (round-40 review).
 ///
 /// Every supervised spawn site goes through this instead of a bare `spawn`.
-pub fn spawn_supervised(
+pub(crate) fn spawn_supervised(
     command: &mut std::process::Command,
 ) -> std::io::Result<std::process::Child> {
     #[cfg(unix)]
@@ -255,7 +255,7 @@ pub fn park_while_interrupt_cleanup_concludes() {
 /// still matters. Prefer the RAII `GroupGuard` over a new manual pair: the
 /// manual pairs answer the ordinary return paths only, and a panic between
 /// spawn and the paired forget used to leave the group registered.
-pub fn forget_child_group(pgid: u32) {
+pub(crate) fn forget_child_group(pgid: u32) {
     #[cfg(unix)]
     {
         imp::forget(pgid);
@@ -330,7 +330,7 @@ impl Drop for SavedInterruptMask {
 /// observed by the watcher. Spawn sites and timeout code can poll it to
 /// unwind early instead of soldiering on in a process that is about to
 /// terminate.
-pub fn sigint_seen() -> bool {
+pub(crate) fn sigint_seen() -> bool {
     #[cfg(unix)]
     {
         imp::seen()

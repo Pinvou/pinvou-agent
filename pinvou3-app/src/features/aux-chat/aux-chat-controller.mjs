@@ -11,11 +11,6 @@ import {
   subscribeAuxQuotes,
 } from './aux-quote.mjs';
 
-// Re-exported so the panel adapter (already at its import-count lint ceiling)
-// can drop its direct aux-quote import; the chip remove button is a plain
-// store action, not controller state.
-export { removeAuxQuote } from './aux-quote.mjs';
-
 /**
  * Async controller for the aux chat panel — the pure, React-free state
  * machine AuxChatPanel.jsx used to carry inline (extracted in round-30 B1 so

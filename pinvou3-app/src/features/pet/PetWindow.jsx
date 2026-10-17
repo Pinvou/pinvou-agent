@@ -10,6 +10,7 @@ import {
 import { createPetActivationState, loadActivePet } from './pet-active.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { useAutoResizeTextarea } from '../../hooks/useAutoResizeTextarea.js';
+import { useFollowMainWindowLanguage } from '../../hooks/useFollowMainWindowLanguage.js';
 import { loadImage } from './load-image.js';
 import {
   buildAnimationSequence,
@@ -71,7 +72,7 @@ import {
   resolvePet,
 } from './pet-registry.js';
 import { useReducedMotion } from '../../hooks/useReducedMotion.js';
-import { dict, ensureLanguage, initialSystemLanguage, TAG_TO_LANG } from '../../shared/i18n.js';
+import { dict } from '../../shared/i18n.js';
 import './pet.css';
 
 const TICK_MS = 600;
@@ -164,7 +165,7 @@ export default function PetWindow({
     ? Math.min(MAX_SCALE, Math.max(DEFAULT_SCALE, configuredScale))
     : DEFAULT_SCALE;
   const stateRef = useRef(createPetState());
-  const [language, setLanguage] = useState(initialSystemLanguage);
+  const language = useFollowMainWindowLanguage({ enabled: isTauriAvailable() });
   const t = dict[language] || dict.zh;
   const petCopy = t.uiPet;
   // pet.html 的 <title>/<html lang> 是静态中文,按当前语言同步一次。
@@ -290,29 +291,6 @@ export default function PetWindow({
   const activePetName = activePet
     ? (t.uiPetSettings.pets[activePet.id]?.name || activePet.name)
     : '';
-
-  useEffect(() => {
-    if (!isTauriAvailable()) return;
-    let disposed = false;
-    let unlisten = null;
-    invokeTauri('get_settings').then((settings) => {
-      const lang = TAG_TO_LANG[settings?.language] || initialSystemLanguage();
-      // en/ja 惰性词典:本窗口入口首帧只引导系统语言,落盘语言可能未装载
-      if (!disposed) ensureLanguage(lang).then((ok) => { if (ok) setLanguage(lang); }).catch(() => {});
-    }).catch(() => {});
-    tauriEvents.listen('ui:language_changed', (event) => {
-      const next = event.payload?.language;
-      // 主窗切换前已 ensure;本窗仍需各自装载(窗口间不共享 dict 装载状态)
-      if (!disposed) ensureLanguage(next).then((ok) => { if (ok) setLanguage(next); }).catch(() => {});
-    }).then((fn) => {
-      if (disposed) fn();
-      else unlisten = fn;
-    }).catch(() => {});
-    return () => {
-      disposed = true;
-      if (unlisten) unlisten();
-    };
-  }, []);
 
   const refresh = () => {
     const now = Date.now();

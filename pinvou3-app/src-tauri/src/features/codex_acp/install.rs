@@ -121,11 +121,6 @@ pub(super) fn resolve_claude_cli(adapter: Option<&Path>) -> Option<PathBuf> {
             return Some(path);
         }
     }
-    let binary = if crate::platform::capabilities::is_windows() {
-        "claude.exe"
-    } else {
-        "claude"
-    };
     if let Some((package, binary)) = claude_native_runtime(
         std::env::consts::OS,
         std::env::consts::ARCH,
@@ -143,11 +138,8 @@ pub(super) fn resolve_claude_cli(adapter: Option<&Path>) -> Option<PathBuf> {
     }
     // 官方安装脚本默认目录（unix ~/.local/bin，Windows %USERPROFILE%\.local\bin），
     // 使脚本装完后无需重启 App 即可探测到。
-    let script_installed = crate::platform::os::user_home_dir()
-        .join(".local")
-        .join("bin")
-        .join(binary);
-    if nonempty_file(&script_installed) {
+    let script_installed = official_cli_install_path(AgentBackend::ClaudeAcp);
+    if let Some(script_installed) = script_installed.filter(|path| nonempty_file(path)) {
         return Some(script_installed);
     }
     find_agent_cli_in_path(AgentBackend::ClaudeAcp)
@@ -182,19 +174,11 @@ pub(super) fn resolve_kimi_path() -> Option<PathBuf> {
             return Some(path);
         }
     }
-    let binary = if crate::platform::capabilities::is_windows() {
-        "kimi.exe"
-    } else {
-        "kimi"
-    };
     // 官方安装脚本默认目录（unix ~/.kimi-code/bin，Windows %USERPROFILE%\.kimi-code\bin）。
     // 优先于 PATH：脚本装完无需重启即可探测，且避开 PATH 中可能残留的废弃
     // Python 版 kimi-cli。
-    let script_installed = crate::platform::os::user_home_dir()
-        .join(".kimi-code")
-        .join("bin")
-        .join(binary);
-    if nonempty_file(&script_installed) {
+    let script_installed = official_cli_install_path(AgentBackend::KimiAcp);
+    if let Some(script_installed) = script_installed.filter(|path| nonempty_file(path)) {
         return Some(script_installed);
     }
     find_agent_cli_in_path(AgentBackend::KimiAcp)
@@ -318,6 +302,17 @@ pub(super) fn probe_exit_status(
         }
     }
 }
+/// (brew 包名, is_cask)。codex/claude-code 是 cask,kimi-code 是 formula。
+/// 探测(brew_package_installed)与卸载规划(providers::lifecycle)共用同一张表,
+/// 包名改动一处同步。
+pub(super) fn brew_package(backend: AgentBackend) -> Option<(&'static str, bool)> {
+    match backend {
+        AgentBackend::CodexAcp => Some(("codex", true)),
+        AgentBackend::ClaudeAcp => Some(("claude-code", true)),
+        AgentBackend::KimiAcp => Some(("kimi-code", false)),
+        AgentBackend::Deepseek => None,
+    }
+}
 /// 探测 brew 是否已安装该 Agent 的 CLI（macOS 版本过旧时走 brew upgrade）。
 /// codex/claude-code 是 cask，kimi-code 是 formula（无 --cask）；
 /// 非 macOS 平台 brew_available 恒 false。
@@ -325,11 +320,13 @@ pub(super) fn brew_package_installed(backend: AgentBackend) -> bool {
     if !platform::brew_available() {
         return false;
     }
-    let args: &[&str] = match backend {
-        AgentBackend::CodexAcp => &["list", "--cask", "codex"],
-        AgentBackend::ClaudeAcp => &["list", "--cask", "claude-code"],
-        AgentBackend::KimiAcp => &["list", "kimi-code"],
-        AgentBackend::Deepseek => return false,
+    let Some((package, is_cask)) = brew_package(backend) else {
+        return false;
+    };
+    let args: &[&str] = if is_cask {
+        &["list", "--cask", package]
+    } else {
+        &["list", package]
     };
     probe_exit_status(
         std::process::Command::new(platform::brew_bin()),
@@ -431,25 +428,38 @@ pub(super) fn path_in_npm_global(path: &Path, root: &Path, windows: bool) -> boo
     };
     path.starts_with(bin)
 }
+/// 各 Agent 官方安装脚本写入的二进制路径(codex 平台路径 / claude `~/.local/bin`、
+/// kimi `~/.kimi-code/bin`;Windows 仅可执行文件后缀不同)。CLI 解析
+/// ([`resolve_claude_cli`] / [`resolve_kimi_path`])、来源判定
+/// ([`path_install_source`]) 与卸载清理(providers::lifecycle::official_script_paths)
+/// 共用同一张表——目录改名一处同步,卸载不会漏掉旧位置。
+pub(super) fn official_cli_install_path(backend: AgentBackend) -> Option<PathBuf> {
+    let executable = if crate::platform::capabilities::is_windows() {
+        ".exe"
+    } else {
+        ""
+    };
+    match backend {
+        AgentBackend::CodexAcp => Some(platform::codex_official_install_path()),
+        AgentBackend::ClaudeAcp => Some(
+            crate::platform::os::user_home_dir()
+                .join(".local")
+                .join("bin")
+                .join(format!("claude{executable}")),
+        ),
+        AgentBackend::KimiAcp => Some(
+            crate::platform::os::user_home_dir()
+                .join(".kimi-code")
+                .join("bin")
+                .join(format!("kimi{executable}")),
+        ),
+        AgentBackend::Deepseek => None,
+    }
+}
 /// 按路径前缀判定官方脚本来源（codex/claude ~/.local/bin、kimi ~/.kimi-code/bin）。
 pub(super) fn path_install_source(backend: AgentBackend, path: &Path) -> Option<&'static str> {
-    let home = crate::platform::os::user_home_dir();
-    match backend {
-        AgentBackend::CodexAcp
-            if platform::codex_official_install_path()
-                .parent()
-                .is_some_and(|directory| path.starts_with(directory)) =>
-        {
-            Some("script")
-        }
-        AgentBackend::ClaudeAcp if path.starts_with(home.join(".local").join("bin")) => {
-            Some("script")
-        }
-        AgentBackend::KimiAcp if path.starts_with(home.join(".kimi-code").join("bin")) => {
-            Some("script")
-        }
-        _ => None,
-    }
+    let directory = official_cli_install_path(backend)?.parent()?.to_path_buf();
+    path.starts_with(directory).then_some("script")
 }
 /// installed=false 时的安装动作：探测到过旧 CLI 且来源可识别时优先包管理器
 /// upgrade (brew/npm); other sources or a missing CLI keep the default install method.

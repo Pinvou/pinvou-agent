@@ -15,7 +15,7 @@ export function createRightDockState() {
   };
 }
 
-export function mountRightDockPanel(state, panelId) {
+function mountRightDockPanel(state, panelId) {
   if (!panelId || state.mountedPanelIds.includes(panelId)) return state;
   return {
     ...state,
@@ -23,7 +23,7 @@ export function mountRightDockPanel(state, panelId) {
   };
 }
 
-export function unmountRightDockPanel(state, panelId) {
+function unmountRightDockPanel(state, panelId) {
   if (!panelId) return state;
   const mountedPanelIds = state.mountedPanelIds.filter((id) => id !== panelId);
   const visiblePanelStack = state.visiblePanelStack.filter((id) => id !== panelId);
@@ -34,7 +34,7 @@ export function unmountRightDockPanel(state, panelId) {
   return { ...state, mountedPanelIds, visiblePanelStack };
 }
 
-export function activateRightDockPanel(state, panelId) {
+function activateRightDockPanel(state, panelId) {
   if (!panelId) return state;
   const mountedPanelIds = state.mountedPanelIds.includes(panelId)
     ? state.mountedPanelIds
@@ -49,7 +49,7 @@ export function activateRightDockPanel(state, panelId) {
   return { ...state, mountedPanelIds, visiblePanelStack };
 }
 
-export function hideRightDockPanel(state, panelId) {
+function hideRightDockPanel(state, panelId) {
   if (!panelId || !state.visiblePanelStack.includes(panelId)) return state;
   return {
     ...state,
@@ -57,7 +57,7 @@ export function hideRightDockPanel(state, panelId) {
   };
 }
 
-export function setRightDockOcclusion(state, occlusionId, active) {
+function setRightDockOcclusion(state, occlusionId, active) {
   if (!occlusionId) return state;
   const current = uniquePanelIds(state.occlusionIds);
   const next = active

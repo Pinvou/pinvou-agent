@@ -35,8 +35,14 @@ pub use connectors::{
 // CLI's `upgrade_required` gates with it (the feishu floor is the live
 // one: round-49 raised it for the skill pack's command surface).
 pub use connectors::feishu::LARK_MIN_VERSION;
-pub use connectors::tmeet::TMEET_MIN_VERSION;
+pub use connectors::tmeet::{TMEET_MIN_VERSION, TMEET_NPM_SPEC};
 pub use connectors::wecom::WECOM_MIN_VERSION;
+// The CLI's connectors ima lanes and the plugins readiness table consume the
+// app's status computation instead of re-deriving it (the CLI keeps only its
+// documented credential-store degrade wrapper): the skill id, the status
+// struct and the store-parameterized status read were crate-private, which
+// forced a hand mirror of both the constant and the readiness predicate.
+pub use connectors::ima::{IMA_SKILL_ID, ImaConnectorStatus, status_with_store};
 // `pub` for the headless CLI (`pinvou artifacts list`): the deliverable
 // extension whitelist and the category mapping must be ONE table shared
 // with the GUI surface — a copy there drifts silently (the CLI's forced

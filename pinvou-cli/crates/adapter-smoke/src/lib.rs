@@ -277,18 +277,6 @@ pub struct SmokeAnalysisMaterial {
 }
 
 impl SmokeAnalysisMaterial {
-    pub fn new(tool_names: Vec<String>) -> Self {
-        let tool_events = tool_names
-            .iter()
-            .cloned()
-            .map(|name| SmokeToolEvent::new(name, false))
-            .collect();
-        Self {
-            tool_events,
-            usage: None,
-        }
-    }
-
     pub fn with_details(tool_events: Vec<SmokeToolEvent>, usage: Option<SmokeUsage>) -> Self {
         Self { tool_events, usage }
     }
@@ -385,12 +373,6 @@ impl SmokeFinding {
     }
     pub fn case_id(&self) -> Option<&str> {
         self.case_id.as_deref()
-    }
-    pub fn title(&self) -> &str {
-        &self.title
-    }
-    pub fn recommendation(&self) -> &str {
-        &self.recommendation
     }
     pub fn source(&self) -> FindingSource {
         self.source
@@ -749,9 +731,6 @@ impl ProductScore {
     }
     pub fn diagnoses(&self) -> &[ProductDiagnosis] {
         &self.diagnoses
-    }
-    pub fn is_official_score(&self) -> bool {
-        false
     }
 }
 

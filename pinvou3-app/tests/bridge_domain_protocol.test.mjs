@@ -83,15 +83,16 @@ const protocolSources = {
 
 const expectedProtocolHashes = {
   // Aux-chat domain debut: three commands — get_or_create_aux_session /
-  // discard_aux_session / chat(restrictTools:true); buffer loading reuses the
+  // discard_aux_session (since removed with its dead frontend chain) /
+  // chat(restrictTools:true); buffer loading reuses the
   // ensureSessionBufferLoaded injected by the sessions domain (the
   // load_session hash is accounted in the sessions domain).
   // Recomputed for M6: the domain gains reset() invoking the atomic
   // reset_aux_session command (one discard+recreate round trip instead of the
   // two independent invokes the frontend used to sequence).
-  // Recomputed for M7: the lane-identical bodies (ensure/snapshot/discard/
-  // reset) moved into the shared lane's auxChat cluster; this file keeps only
-  // the desktop send dispatch (the chat invoke below), so the three aux
+  // Recomputed for M7: the lane-identical bodies (ensure/snapshot/reset)
+  // moved into the shared lane's auxChat cluster; this file keeps only
+  // the desktop send dispatch (the chat invoke below), so the aux
   // management invokes now hash under the shared base.
   auxChat: '559070c284d5738a8fb60664487eb1ce96e766b92fcd786e8baa9dc7a8d461a8',
   // Batch-A dead-code/dedup sweep: byte-identical helpers shared between the web and
@@ -128,14 +129,19 @@ const expectedProtocolHashes = {
   // Recomputed for the permission onboarding row: the new
   // computer_use_permission_status invoke (settings permissionStatus) joins
   // the domain's call set.
-  computerUse: 'a681a541d4352b99d8e964e5a19f9cbaf45fd9fa9d56d5395d6c9e6c88459843',
+  // Recomputed again for the dead-code sweep: the zero-caller getStatus
+  // wrapper (computer_use_get_status invoke) was removed — refreshStatus
+  // owns the status read path.
+  computerUse: 'e0f4aadbba8ab68e1dd54f9ab172680657958d548e3c3da50a489931cf525388',
   multiAgent: 'a6d045e87f7f5f3537fdeadb262d54622edd6dcafa2c0253f0b44e7de439315d',
   // Recomputed for the shared-helper dedup combined with the rebind wave's
   // workspace_binding redaction and retry-payload changes (see batch note
   // above; recomputed against the merged tree). Verified unchanged by the
   // #576 merge: the dead-code cleanup's markResolved removal lives in the
   // shared payload, not in bridge.js's invoke/listen surface.
-  orchestration: 'fb61de464f7670ac7d42c88e1907360a1ca094058196e4f5d3ab9c7508677ab2',
+  // Recomputed for the lane-merge residual wave: persistMessagesFor (the
+  // save_session_artifacts + rename_session invokes) joined the shared base.
+  orchestration: '921bb6314f6bfaf67b2d52d9b049055382c134aea391b2109b9ae159aa65c014',
   // Recomputed for the shared-helper dedup (see batch note above).
   // Recomputed for the dead-code cleanup: the caller-less openInSystem /
   // openExternalUrl wrappers (open_in_system / open_external_url invokes) were
@@ -148,7 +154,10 @@ const expectedProtocolHashes = {
   // addPasteImageFromClipboard invoke wrapping the paste_clipboard_image
   // command (the native layer reads the WebKitGTK-invisible clipboard image
   // and saves it server-side; web lane intentionally has no such backend).
-  artifacts: '550566a1213eca4d379c2ffe48a0e09c5a60128dd7c7cc8d432f9c7e817974e1',
+  // Recomputed for the lane-merge residual wave: listDeliverableIndex
+  // (list_deliverable_index, list_workspace_files) and reconcileArtifacts
+  // (list_workspace_files, save_session_artifacts) joined the shared base.
+  artifacts: 'a0f801d8ec9ceece9c4b542a7ce2706aafeec8a8511a4cf3904f77151005f4a2',
   // Recomputed for #308 follow-ups: prefillComposer(text, append) recovery
   // entry + comment translations touching `invoke(` mentions (the extractor
   // scans raw source, so comment wording is part of the digest). Recomputed
@@ -207,7 +216,16 @@ const expectedProtocolHashes = {
   // Recomputed for the coalescing hardening: chat:done cancels its session's
   // pending notify frame, frame publishes contain subscriber throws, and the
   // flush helper documents its runSyncOnSession extent contract.
-  chat: '648ace4c24985c2cd1cb8def8e8b2a4078824586295ba7016682cd2bf733baca',
+  // Recomputed for the lane-merge wave 4: summonPinvou (summon_pinvou invoke)
+  // and resolvePinvouReview moved into the shared tauriChat/web cluster;
+  // chat.js keeps the transport-legit send path. Command surface unchanged.
+  // Recomputed for the FFE4-1 dispatch-helper unification: the
+  // remote_control:tools_changed listener now dispatches through
+  // window.PinvouToolStoreEvents.notifyComposerToolsChanged (shared
+  // tool-store-events.js), and the wave-5 chat-events DI pairs
+  // (recordTurnStarted/stream-notify/reasoning/flush families) moved into
+  // the shared tauriChatEvents/web cluster with unchanged event surface.
+  chat: 'ea1cc3caf54c8b01a3b81843ebc6efd65954c6009525ef08eb811ed640cbad1c',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
@@ -216,7 +234,9 @@ const expectedProtocolHashes = {
   // { sessionId: state.activeSessionId } to { sessionId: sid } — same
   // command surface, no new invoke or listen entries.
   // Recomputed for the shared-helper dedup (see batch note above).
-  interaction: '9b330edc21e6db76559a368cc54fd22b930c6e3fc0f714141aaa763dcb5fd0c9',
+  // Recomputed for the lane-merge residual wave: toggleSuperPerm
+  // (set_super_permission, get_super_permission_status) joined the shared base.
+  interaction: 'a4c231e1119499eae66fe3e0e36d9604393b85468398a062b1e271e5e2f19b20',
   // Recomputed for the shared-helper dedup (see batch note above).
   knowledge: 'f9e241acb18d04c8d5d7d71b18d3d0350c3264bbc50e896b0f21b0e036286868',
   // memory recomputed for the memory-maintenance feature: organize_memory +
@@ -225,10 +245,21 @@ const expectedProtocolHashes = {
   // Recomputed again for the dead-code sweep: the dead deleteMemoryPreference facade
   // (delete_memory_preference invoke) was removed; deleteMemoryItem('preference', ...)
   // still routes to the same command, so the backend surface is unchanged.
-  memory: '30cab38634446a7bef24d559db799641d115e0f07a22a28540a5fd48a9ff7347',
-  monitor: '01bf9a7c9b9b3f313cf49e975e6503627ff373caed0f4b3be07a6a98492a7c43',
+  // Recomputed for the lane-merge wave 2: applyMemoryOverview / loadMemoryOverview /
+  // updateMemoryItem / deleteMemoryItem and the F-XT7-6 resolveMemoryCandidate core
+  // (confirm/ignore/never invokes) moved into the shared tauriMemory/web cluster;
+  // memory.js keeps saveMemoryProfilePatch + organizeMemory and the 2-line trio
+  // wrappers. Runtime command surface unchanged.
+  memory: 'ca88a71d9f0f9b15f1df52cf80218694f76b2295add98e65a0d167fc88b627c8',
+  // Recomputed for the lane-merge wave 1: pollMonitor (get_monitor_snapshot
+  // invoke) moved verbatim into the shared tauriMonitor/web cluster of
+  // bridge-shared-helpers.js; monitor.js keeps only pollBackendStatus.
+  monitor: 'e63e8d5d4edf813640e08c9951a12abdbc3cad4991763d3dd956e883e277fb1c',
   // Recomputed for the shared-helper dedup (see batch note above).
-  personas: 'c168ac5ede23cb76ef6a93b5323ca4837b4d97395d5e5ca9c2eabf4eb40dd01f',
+  // Recomputed for the lane-merge wave 3: equipPersona (equip_persona /
+  // rename_session invokes) moved into the shared tauriPersonas/web cluster;
+  // personas.js keeps unequipPersona and the syncActivePersona read path.
+  personas: 'b3b4f526f422dfc503d3ef972cfac2c3c53679c1ae4636a726ca652841ef1a0e',
   // Recomputed for the voice error-code relay: web_access_rpc_respond gains
   // errorCode/errorCategory so structured VoiceCommandError identity reaches
   // the browser lane's trilingual mapping instead of only the message text.
@@ -238,9 +269,17 @@ const expectedProtocolHashes = {
   // Recomputed again for the dead-code sweep: the JS-side setWebRelayAddress
   // facade (web_access_set_relay invoke) was removed — no production caller
   // (tests/remote_control_race.test.mjs relay tests removed with it).
-  remoteControl: '3a12a5cab4a6c79aecd3772008736af138b192536564e0b64f69afeb36fd43df',
+  // Recomputed again for the dead-code sweep: the zero-caller
+  // getWebRelaySettings wrapper (web_access_relay_settings invoke) was
+  // removed — desktop SettingsView reads the webAccess state slice instead.
+  remoteControl: '5138c9579824d93de124bb291d665adad6544ad6ae722a76ab00b6e75ac08f96',
   // Recomputed for the shared-helper dedup (see batch note above).
-  scheduled: '28247031a7401d232000c469c1eed0954c2eb1265817e7d0a1a5fd5768f5871a',
+  // Recomputed for the lane-merge wave 3: createScheduledTask
+  // (create_scheduled_task), autoCreateScheduledTaskDraft,
+  // parseScheduledTaskDraftFromText and parseLooseJsonObject moved into the
+  // shared tauriScheduled/web cluster; every dropped signature still executes
+  // via the shared payload with unchanged command + payload text.
+  scheduled: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
   // Recomputed for one-click full-fidelity session log export: the tauri
   // sessions bridge gains the export_session_archive invoke wrapping the
   // export_session command (web lane intentionally has no such backend).
@@ -262,7 +301,10 @@ const expectedProtocolHashes = {
   // before degrading to []; same two commands, no new invoke or listen
   // entries (the switch-path occurrences now pass sessionId: sid like the
   // hydration ones).
-  sessions: '36c11f39253fce71a49a220ff36e544b8af22b7e2358b1fec7eda85701a880b7',
+  // Recomputed for the lane-merge residual wave: loadPersonaEventsForSession
+  // and loadPinvouReviewsForSession (get_session_persona_events /
+  // get_session_pinvou_reviews) joined the shared base.
+  sessions: '05cd089b39564eaf73d2ce67cd71a3231acb76d4357e3f28007749b6e5e02334',
   // Recomputed for the dead-code cleanup: the dead saveSettingsAndRestart
   // wrapper (save_settings_and_restart invoke) was removed — no production
   // caller; the plain saveSettings + restart_app path stays the update route.
@@ -325,9 +367,31 @@ for (const [domain, files] of Object.entries(protocolSources)) {
 // cover that text. Hash the shared file's surface with the same extractor to
 // pin payload edits inside the shared base the same way the lane files are.
 // Recomputed for M7: the auxChat cluster joined the shared base (the
-// get_or_create_aux_session / discard_aux_session / reset_aux_session invokes
+// get_or_create_aux_session / reset_aux_session invokes
 // moved here from the per-lane aux bridge copies).
-const expectedSharedBaseHash = 'ceeb3d03d8c8713d65ec1dedb907849db410bd2d8802372332c361342ea07485';
+// Recomputed for the dead-code sweep: the zero-caller raw
+// getEffectiveModelConfig, compactNow, and auxChat.discard facades were
+// removed (loadEffectiveModelConfig / auxChatReset own those flows).
+// Recomputed for the lane-merge wave 1: the monitor poll cluster
+// (get_monitor_snapshot invoke inside pollMonitor) joined the shared base.
+// Recomputed for the lane-merge wave 2: the memory overview/update/delete
+// invokes and the confirm/ignore/never pending-memory trio joined it.
+// Recomputed for the lane-merge wave 3: the scheduled create/parse cluster and
+// the personas equip flow joined it.
+// Recomputed for the lane-merge wave 4: the voice-operation state machine
+// block, encodeWav, and the Pinvou summon/resolve review flow joined it.
+// Recomputed for the lane-merge wave 5: the subscription-state value
+// reconciler, the rerenderFromMessages core, the chat-events DI families and
+// the F-FE13-2 assistant_done timeline builder joined the shared base (the
+// builder ships on the static surface, so no signature moved).
+// Recomputed for the lane-merge residual waves: the chat tool-guard/relay
+// trios (no signature motion), userMessageDisplayText, persistMessagesFor
+// (save_session_artifacts + rename_session), the session sidecar loaders
+// (get_session_persona_events / get_session_pinvou_reviews), toggleSuperPerm
+// (set/get super permission) and the artifact reconcile/deliverable-index
+// pair (list_workspace_files, save_session_artifacts, list_deliverable_index)
+// joined the shared base.
+const expectedSharedBaseHash = 'cec2121cb4c657af2d31dc0d1380dddfe195fc2f92ffad09a1592e85bf400551';
 const sharedBaseSource = fs.readFileSync(path.join(root, 'src', 'shared', 'bridge-shared-helpers.js'), 'utf8');
 const sharedBaseSignatures = [
   ...extractCalls(sharedBaseSource, 'invoke').map(call => `shared/bridge-shared-helpers.js:invoke:${call}`),

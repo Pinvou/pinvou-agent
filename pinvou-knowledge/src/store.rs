@@ -542,14 +542,6 @@ impl Store {
         Ok((document, true))
     }
 
-    pub fn list_documents(
-        &self,
-        collection_id: i64,
-        include_deleted: bool,
-    ) -> rusqlite::Result<Vec<Document>> {
-        self.list_documents_page(collection_id, include_deleted, None, 0)
-    }
-
     pub fn list_documents_page(
         &self,
         collection_id: i64,
@@ -1915,7 +1907,9 @@ mod tests {
         let second_page = store
             .list_documents_page(collection.id, false, Some(2), 2)
             .unwrap();
-        let full = store.list_documents(collection.id, false).unwrap();
+        let full = store
+            .list_documents_page(collection.id, false, None, 0)
+            .unwrap();
 
         assert_eq!(
             first_page
@@ -2036,7 +2030,7 @@ mod tests {
                         .collection(collection.id, false)?
                         .map(|value| value.id),
                     worker_store
-                        .list_documents(collection.id, false)?
+                        .list_documents_page(collection.id, false, None, 0)?
                         .into_iter()
                         .map(|value| value.id)
                         .collect::<Vec<_>>(),
@@ -2241,7 +2235,13 @@ mod tests {
             }
         );
         assert!(store.document(trashed.id, false).unwrap().is_none());
-        assert_eq!(store.list_documents(collection.id, false).unwrap().len(), 1);
+        assert_eq!(
+            store
+                .list_documents_page(collection.id, false, None, 0)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]

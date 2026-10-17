@@ -27,7 +27,7 @@ Linux 上语音输入要过三关，前两关是代码、第三关是引擎：
 开源前的内置 ASR 中间层（未随开源仓库发布）期望的后端是 `-m -a --vad`，与 SenseVoice.cpp 的 `-m -f`
 **参数不同**（是两个引擎），所以这里走 **shim** 适配，而非直接让该中间层调它。
 
-### shim 做的三件事（`scripts/asr/pinvou3-asr-shim.py`）
+### shim 做的三件事（`pinvou3-app/src-tauri/resources/platforms/linux/asr/pinvou3-asr-shim.py`）
 pinvou3 后端通过 `PINVOU3_ASR_CMD` 按 `asr --model X --lang zh --input wav` 调用 shim，shim：
 1. **ffmpeg 转码**：浏览器录音多为 48k/立体声，统一转 16k 单声道（不转会加载失败）。
 2. **调引擎**识别。

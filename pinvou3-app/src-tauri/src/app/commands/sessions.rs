@@ -848,8 +848,8 @@ where
 {
     evict_acp(session_id).await;
     // The aux session cascade must go through the gated delete first (turn
-    // gate + engine reclaim + late sweep, the same path as
-    // discard_aux_session): store.delete's cascade only removes the on-disk
+    // gate + engine reclaim + late sweep, the same path as the pool's
+    // delete_chat_session): store.delete's cascade only removes the on-disk
     // records and would leave a still-running aux engine as a handle-less
     // orphan.
     if let Some(aux_id) = store.aux_session_id(session_id) {
@@ -1370,60 +1370,6 @@ async fn get_or_create_aux_session_inner(
         .map_err(|e| format!("get_or_create_aux_session: {e:#}"))
 }
 
-/// Discard a main session's auxiliary conversation: reclaim the engine,
-/// delete the aux session, and clear the mapping. Repeated calls are
-/// idempotent (no mapping counts as already discarded).
-#[tauri::command]
-pub async fn discard_aux_session(
-    session_id: String,
-    app: AppHandle,
-    store: State<'_, SessionStore>,
-    pool: State<'_, EnginePool>,
-) -> Result<(), String> {
-    // Same folding as get_or_create_aux_session (round-30 B7): the native
-    // chain (e.g. "remove stale session dir /Users/<name>/...") must not
-    // cross the relay.
-    super::remote_control::web_session_result(
-        super::remote_control::WebSessionOperation::DiscardAuxSession,
-        discard_aux_session_inner(session_id, app, store, pool).await,
-    )
-}
-
-async fn discard_aux_session_inner(
-    session_id: String,
-    app: AppHandle,
-    store: State<'_, SessionStore>,
-    pool: State<'_, EnginePool>,
-) -> Result<(), String> {
-    // The derived-id forward query (round-30 B8): None only when the aux
-    // record is genuinely absent (NotFound-only probe), so an absent aux is
-    // the idempotent already-discarded case, and a transient stat fault reads
-    // as "present" and flows into the gated delete, which surfaces the real
-    // error instead of treating "unknown" as "nothing to discard".
-    // An `aux-` input derives no aux of its own (aux-of-aux is structurally
-    // impossible), so the probe below would silently no-op while the caller
-    // believes a discard happened — the sibling ensure/reset commands reject
-    // aux-as-parent explicitly, and so does this one (round-34 minor 2).
-    if crate::features::sessions::is_aux_session_id(&session_id) {
-        return Err(
-            "discard_aux_session: auxiliary conversations do not own an aux session; pass the main task id".to_string(),
-        );
-    }
-    let Some(aux_id) = store.aux_session_id(&session_id) else {
-        return Ok(());
-    };
-    // Same path as delete_session's Chat branch: delete_chat_session reclaims
-    // the engine inside the turn gate and calls store.delete.
-    pool.delete_chat_session(&aux_id)
-        .await
-        .map_err(|error| format!("discard_aux_session: {error:#}"))?;
-    pool.forget_session(&aux_id);
-    let payload = serde_json::json!({ "id": &aux_id });
-    let _ = app.emit("session:deleted", payload.clone());
-    crate::features::remote_control::forward_app_event(&app, "session:deleted", payload);
-    Ok(())
-}
-
 /// Atomically restart a main session's auxiliary conversation (M6): if an
 /// aux session exists, delete it through the pool's turn gate, then create a
 /// fresh one, returning the new binding. This replaces the frontend's old
@@ -1468,7 +1414,7 @@ async fn reset_aux_session_inner(
         .await
         .map_err(|e| format!("reset_aux_session: {e:#}"))?;
     reset_aux_session_finish(outcome, |aux_id| {
-        // Same post-delete notification as discard_aux_session: the aux id
+        // Same post-delete notification as the aux discard path: the aux id
         // is derived (`aux-{parent_id}`), so the fresh session reuses it and
         // the deletion event is what tells every client to drop the old
         // transcript's buffer before the next snapshot read.
@@ -1831,7 +1777,9 @@ mod pinvou_scene_event_tests {
 
 /// 扫描 session workspace 目录,返回实际存在的产物文件绝对路径(过滤隐藏/临时文件)。
 /// 前端切换 session 时用它对账 —— 让产物面板以**磁盘真相**为准,不受跟踪遗漏 /
-/// app 中途重启(内存跟踪丢失)影响。过滤规则与 file_watcher::should_skip 对齐。
+/// app 中途重启(内存跟踪丢失)影响。过滤规则直接复用 file_watcher::should_skip
+/// (单一事实源,含 workflow_audit.jsonl 基建日志——watcher 拦其 artifact:disk
+/// 事件,列表若返回它,同一文件就会"面板有、事件无"地漂移)。
 #[tauri::command]
 pub async fn list_workspace_files(
     session_id: String,
@@ -1865,15 +1813,7 @@ pub(super) fn list_workspace_files_for_session(
                     continue;
                 }
                 let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                if name.is_empty()
-                    || name.starts_with('.')
-                    || name.starts_with("~$")
-                    || name.ends_with('~')
-                    || name.ends_with(".swp")
-                    || name.ends_with(".swo")
-                    || name.ends_with(".tmp")
-                    || name.ends_with(".bak")
-                {
+                if crate::features::files::file_watcher::should_skip(name) {
                     continue;
                 }
                 out.push(path.to_string_lossy().to_string());
@@ -1945,6 +1885,54 @@ mod desktop_saved_session_contract_tests {
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 产物面板的 workspace 文件列表复用 file_watcher::should_skip 后，watcher
+    /// 拦截的基建日志（workflow_audit.jsonl）也必须从列表消失：否则同一文件
+    /// "面板有、artifact:disk 事件无"，前端对账永远对不齐。
+    #[test]
+    fn workspace_file_list_drops_the_audit_journal_and_temp_files() {
+        // with_temp_home (not a straight-line env restore): a failing assert
+        // above used to leak PINVOU3_HOME and the temp dir into every later
+        // test in this process; the harness restores both on unwind.
+        crate::platform::test_support::with_temp_home("pinvou3-workspace-file-list", || {
+            let root = std::path::PathBuf::from(
+                std::env::var("PINVOU3_HOME").expect("with_temp_home sets PINVOU3_HOME"),
+            );
+            let store = crate::features::sessions::SessionStore::boot_with_scheduled_root(
+                root.join("scheduled"),
+            )
+            .expect("session store");
+            let session = store
+                .create_new("model".to_string(), None, root.clone())
+                .expect("create session");
+            let ledger_root = store
+                .ledger_root(&session.metadata.id)
+                .expect("ledger root");
+            std::fs::create_dir_all(&ledger_root).expect("create ledger root");
+            std::fs::write(ledger_root.join("report.md"), b"hello").expect("write report");
+            std::fs::write(ledger_root.join("draft.tmp"), b"x").expect("write tmp");
+            std::fs::write(ledger_root.join("workflow_audit.jsonl"), b"{}\n")
+                .expect("write audit journal");
+
+            let files =
+                list_workspace_files_for_session(&session.metadata.id, &store).expect("list files");
+
+            assert!(
+                files.iter().any(|file| file.ends_with("report.md")),
+                "a real deliverable must stay listed: {files:?}"
+            );
+            assert!(
+                !files.iter().any(|file| file.ends_with("draft.tmp")),
+                "editor temp files must stay filtered: {files:?}"
+            );
+            assert!(
+                !files
+                    .iter()
+                    .any(|file| file.ends_with("workflow_audit.jsonl")),
+                "the audit journal is watcher-suppressed infrastructure and must not reach the artifact panel: {files:?}"
+            );
+        });
     }
 }
 

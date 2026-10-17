@@ -157,6 +157,19 @@ fn saved_model_for_probe<'a>(
     }
 }
 
+/// Shared probe-key ladder (the three probe commands): a trimmed non-empty
+/// form `api_key` wins; otherwise the saved credential for `model_id` is
+/// read. Each caller maps the read failure to its own result shape (the
+/// local-kind probe swallows it and continues credential-less; the
+/// connection/image probes surface a typed error).
+fn resolve_probe_key(api_key: &str, model_id: Option<&str>) -> Result<Option<String>, String> {
+    let provided = api_key.trim();
+    if !provided.is_empty() {
+        return Ok(Some(provided.to_string()));
+    }
+    resolve_saved_model_key(model_id)
+}
+
 fn resolve_saved_model_key(model_id: Option<&str>) -> Result<Option<String>, String> {
     let prefs = UserPrefs::load();
     let Some(model) = saved_model_for_probe(&prefs, model_id) else {
@@ -199,13 +212,6 @@ pub struct EffectiveModelConfig {
     pub env_overrides: Vec<String>,
 }
 
-fn session_model_from_prefs(
-    prefs: &UserPrefs,
-    session_model_id: Option<&str>,
-) -> Option<SavedModel> {
-    session_model_id.and_then(|id| prefs.model_by_id(id).cloned())
-}
-
 #[tauri::command]
 pub async fn get_effective_model_config(
     session_id: Option<String>,
@@ -218,7 +224,9 @@ pub async fn get_effective_model_config(
     let session_model_id = session_id
         .as_deref()
         .and_then(|id| store.session_model_id(id));
-    bridge.session_model = session_model_from_prefs(&bridge.prefs, session_model_id.as_deref());
+    bridge.session_model = session_model_id
+        .as_deref()
+        .and_then(|id| bridge.prefs.model_by_id(id).cloned());
     let mut env_overrides = Vec::new();
     if std::env::var("DEEPSEEK_MODEL").is_ok() {
         env_overrides.push("model".to_string());
@@ -350,13 +358,11 @@ pub async fn probe_local_server_kind(
     // not block the probe (continue as credential-less) — with credentials
     // missing the probe still identifies auth-free endpoints; authenticated
     // endpoints 401 into generic, the same semantics as an unreachable probe.
-    let bearer = match api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
-        Some(key) => Some(key.to_string()),
-        None => resolve_saved_model_key(model_id.as_deref())
-            .ok()
-            .flatten()
-            .map(|key| key.trim().to_string())
-            .filter(|k| !k.is_empty()),
+    let bearer = match resolve_probe_key(api_key.as_deref().unwrap_or(""), model_id.as_deref()) {
+        Ok(Some(key)) => Some(key.trim().to_string()).filter(|k| !k.is_empty()),
+        // Includes the swallowed credential-read failure: continue
+        // credential-less rather than blocking the probe.
+        _ => None,
     };
     let kind =
         crate::core::model_endpoint::probe_local_server_kind(&base_url, bearer.as_deref()).await;
@@ -636,179 +642,50 @@ fn model_connection_result(
 fn model_connection_http_result(status: reqwest::StatusCode) -> ModelConnectionTestResult {
     let status_code = status.as_u16();
     let detail = Some(format!("HTTP {status_code}"));
-    if status.is_success() {
-        return model_connection_result(
-            true,
-            "ok",
-            "连接成功，服务可用",
-            detail,
-            Some(status_code),
-        );
-    }
-    if status.is_redirection() {
-        return model_connection_result(
-            false,
-            "redirect",
-            "服务地址发生跳转，当前测试无法确认可用性",
-            detail,
-            Some(status_code),
-        );
-    }
-    match status_code {
-        400 | 422 => model_connection_result(
-            false,
-            "request_invalid",
-            "请求格式不被服务接受，请检查模型配置",
-            detail,
-            Some(status_code),
-        ),
-        401 => model_connection_result(
-            false,
-            "auth_invalid",
-            "API Key 无效，请检查后重新填写",
-            detail,
-            Some(status_code),
-        ),
-        403 => model_connection_result(
-            false,
-            "auth_forbidden",
-            "当前 API Key 没有访问权限",
-            detail,
-            Some(status_code),
-        ),
-        404 => model_connection_result(
-            false,
-            "endpoint_not_found",
-            "服务地址不正确，或该服务不支持模型列表接口",
-            detail,
-            Some(status_code),
-        ),
-        405 => model_connection_result(
-            false,
-            "method_not_allowed",
-            "服务可以访问，但不支持当前测试方式",
-            detail,
-            Some(status_code),
-        ),
-        402 => model_connection_result(
-            false,
-            "billing",
-            "账户余额不足，请充值后重试，或切换到其他模型",
-            detail,
-            Some(status_code),
-        ),
-        408 => model_connection_result(
-            false,
-            "timeout",
-            "连接超时，请检查网络或本地服务是否启动",
-            detail,
-            Some(status_code),
-        ),
-        429 => model_connection_result(
-            false,
-            "rate_limited",
-            "请求过于频繁或额度不足，请稍后再试",
-            detail,
-            Some(status_code),
-        ),
-        500..=599 => model_connection_result(
-            false,
-            "server_unavailable",
-            "服务暂时不可用，请稍后再试",
-            detail,
-            Some(status_code),
-        ),
-        _ => model_connection_result(
-            false,
-            "http_error",
-            "连接失败，请检查配置后重试",
-            detail,
-            Some(status_code),
-        ),
-    }
-}
-
-/// Shared transport-error classification (decision ladder: redact → timeout → tls → dns → refused),
-/// shared by the connection test and the image-input probe. `detail` is the redacted underlying
-/// error string; each caller generates its zh summary from the code — no single-language hardcoding in Rust.
-enum TransportClass {
-    Timeout,
-    Tls,
-    Dns,
-    Refused,
-    Network,
-}
-
-fn classify_transport_error(err: &reqwest::Error) -> (TransportClass, String) {
-    let raw = crate::platform::credential_store::redact_secret(&err.to_string());
-    let raw_lower = raw.to_lowercase();
-    let class = if err.is_timeout() {
-        TransportClass::Timeout
-    } else if raw_lower.contains("certificate")
-        || raw_lower.contains("tls")
-        || raw_lower.contains("ssl")
-    {
-        TransportClass::Tls
-    } else if raw_lower.contains("dns")
-        || raw_lower.contains("lookup")
-        || raw_lower.contains("name or service not known")
-    {
-        TransportClass::Dns
-    } else if raw_lower.contains("connection refused")
-        || raw_lower.contains("os error 10061")
-        || raw_lower.contains("actively refused")
-    {
-        TransportClass::Refused
-    } else {
-        TransportClass::Network
+    // The status ladder itself is shared with the CLI
+    // (`model_probe::model_probe_http_code`); this side only attaches the
+    // zh summary, resolved by the frontend from the code.
+    let code = crate::core::model_endpoint::model_probe_http_code(status);
+    let message = match code {
+        "ok" => "连接成功，服务可用",
+        "redirect" => "服务地址发生跳转，当前测试无法确认可用性",
+        "request_invalid" => "请求格式不被服务接受，请检查模型配置",
+        "auth_invalid" => "API Key 无效，请检查后重新填写",
+        "auth_forbidden" => "当前 API Key 没有访问权限",
+        "endpoint_not_found" => "服务地址不正确，或该服务不支持模型列表接口",
+        "method_not_allowed" => "服务可以访问，但不支持当前测试方式",
+        "billing" => "账户余额不足，请充值后重试，或切换到其他模型",
+        "timeout" => "连接超时，请检查网络或本地服务是否启动",
+        "rate_limited" => "请求过于频繁或额度不足，请稍后再试",
+        "server_unavailable" => "服务暂时不可用，请稍后再试",
+        _ => "连接失败，请检查配置后重试",
     };
-    (class, raw)
+    model_connection_result(code == "ok", code, message, detail, Some(status_code))
+}
+
+/// Shared transport-error classification: the ladder itself lives in
+/// `core::model_endpoint::model_probe_transport_code` (shared with the
+/// CLI); the connection test and the image-input probe map the returned
+/// code to their own zh summaries — no single-language hardcoding in Rust.
+fn classify_transport_error(err: &reqwest::Error) -> (&'static str, String) {
+    crate::core::model_endpoint::model_probe_transport_code(err)
 }
 
 fn model_connection_error_result(err: &reqwest::Error) -> ModelConnectionTestResult {
-    let (class, raw) = classify_transport_error(err);
+    let (code, raw) = classify_transport_error(err);
     // The detail passes the redacted underlying error through untouched;
-    // the zh summary above is resolved by the frontend from the code via
+    // the zh summary is resolved by the frontend from the code via
     // connectionMessages (a hardcoded Chinese detail prefix would mix
     // scripts in en/ja interfaces).
     let detail = Some(raw);
-    match class {
-        TransportClass::Timeout => model_connection_result(
-            false,
-            "timeout",
-            "连接超时，请检查网络或本地服务是否启动",
-            detail,
-            None,
-        ),
-        TransportClass::Tls => model_connection_result(
-            false,
-            "tls_error",
-            "安全证书校验失败，请检查代理或网络环境",
-            detail,
-            None,
-        ),
-        TransportClass::Dns => model_connection_result(
-            false,
-            "dns_failed",
-            "无法解析服务地址，请检查网络",
-            detail,
-            None,
-        ),
-        TransportClass::Refused => model_connection_result(
-            false,
-            "connection_refused",
-            "无法连接到服务，请确认本地模型服务已启动",
-            detail,
-            None,
-        ),
-        TransportClass::Network => model_connection_result(
-            false,
-            "network_error",
-            "网络连接失败，请检查网络后重试",
-            detail,
-            None,
-        ),
-    }
+    let message = match code {
+        "timeout" => "连接超时，请检查网络或本地服务是否启动",
+        "tls_error" => "安全证书校验失败，请检查代理或网络环境",
+        "dns_failed" => "无法解析服务地址，请检查网络",
+        "connection_refused" => "无法连接到服务，请确认本地模型服务已启动",
+        _ => "网络连接失败，请检查网络后重试",
+    };
+    model_connection_result(false, code, message, detail, None)
 }
 
 /// 测试连接:GET {base_url}/models(OpenAI 兼容标准端点),验 base_url + key 可达。
@@ -859,22 +736,18 @@ pub async fn probe_model_connection(
     // Anthropic 官方端点用 x-api-key + anthropic-version,不接受 Bearer。
     let is_anthropic = crate::core::model_endpoint::is_anthropic_api_url(&parsed_url);
     let mut req = client.get(parsed_url);
-    let provided_key = api_key.trim().to_string();
-    let key = if provided_key.is_empty() {
-        match resolve_saved_model_key(model_id) {
-            Ok(key) => key.unwrap_or_default(),
-            Err(e) => {
-                return model_connection_result(
-                    false,
-                    "credential_unavailable",
-                    "无法读取已保存的 API Key，请重新填写",
-                    Some(e),
-                    None,
-                );
-            }
+    let key = match resolve_probe_key(api_key, model_id) {
+        Ok(Some(key)) => key,
+        Ok(None) => String::new(),
+        Err(e) => {
+            return model_connection_result(
+                false,
+                "credential_unavailable",
+                "无法读取已保存的 API Key，请重新填写",
+                Some(e),
+                None,
+            );
         }
-    } else {
-        provided_key
     };
     if !key.trim().is_empty() {
         if is_anthropic {
@@ -1211,23 +1084,15 @@ fn classify_image_capability_http(
 }
 
 fn image_capability_transport_error(err: &reqwest::Error) -> ImageCapabilityTestResult {
-    let (class, raw) = classify_transport_error(err);
-    let summary = match class {
-        TransportClass::Timeout => format!("连接超时，请检查网络或服务是否启动: {raw}"),
-        TransportClass::Tls => format!("安全证书校验失败，请检查代理或网络环境: {raw}"),
-        TransportClass::Dns => format!("无法解析服务地址，请检查网络: {raw}"),
-        TransportClass::Refused => format!("无法连接到服务，请确认服务已启动: {raw}"),
-        TransportClass::Network => format!("网络连接失败，请检查网络后重试: {raw}"),
+    let (code, raw) = classify_transport_error(err);
+    let summary = match code {
+        "timeout" => format!("连接超时，请检查网络或服务是否启动: {raw}"),
+        "tls_error" => format!("安全证书校验失败，请检查代理或网络环境: {raw}"),
+        "dns_failed" => format!("无法解析服务地址，请检查网络: {raw}"),
+        "connection_refused" => format!("无法连接到服务，请确认服务已启动: {raw}"),
+        _ => format!("网络连接失败，请检查网络后重试: {raw}"),
     };
     image_capability_result("error", false, summary, None)
-}
-
-/// 识图探测的 URL 基准:剥掉用户 base_url 末尾的 `/chat/completions` 后缀,
-/// 后续拼接(OpenAI chat/completions、Anthropic /v1/messages)共用同一基准
-/// ——否则含后缀的 base_url 在 Anthropic 分支会拼出
-/// `.../chat/completions/v1/messages` 这类 404 路径。
-fn image_probe_base_url(base_url: &str) -> String {
-    crate::platform::prefs::model::strip_chat_completions_suffix(base_url)
 }
 
 /// 识图探测核心(设计 §7.3):POST {base_url}/chat/completions 携带内置纯色 PNG,
@@ -1253,7 +1118,7 @@ pub async fn run_image_capability_probe(
     // 不再拼出重复路径(prefs/model.rs 同一口径)。strip 后的基准同时用于
     // 协议判定与 Anthropic Messages URL 拼接(原始 base_url 若保留
     // /chat/completions 后缀,anthropic_messages_url 会拼出 404 路径)。
-    let base_url_stripped = image_probe_base_url(base_url);
+    let base_url_stripped = crate::platform::prefs::model::strip_chat_completions_suffix(base_url);
     let url = format!("{base_url_stripped}/chat/completions");
     let parsed_url = match reqwest::Url::parse(&url) {
         Ok(url) => url,
@@ -1278,21 +1143,17 @@ pub async fn run_image_capability_probe(
             return image_capability_result("error", false, format!("测试初始化失败: {e}"), None);
         }
     };
-    let provided_key = api_key.trim().to_string();
-    let key = if provided_key.is_empty() {
-        match resolve_saved_model_key(model_id) {
-            Ok(key) => key.unwrap_or_default(),
-            Err(e) => {
-                return image_capability_result(
-                    "error",
-                    false,
-                    format!("无法读取已保存的 API Key，请重新填写: {e}"),
-                    None,
-                );
-            }
+    let key = match resolve_probe_key(api_key, model_id) {
+        Ok(Some(key)) => key,
+        Ok(None) => String::new(),
+        Err(e) => {
+            return image_capability_result(
+                "error",
+                false,
+                format!("无法读取已保存的 API Key，请重新填写: {e}"),
+                None,
+            );
         }
-    } else {
-        provided_key
     };
     if is_anthropic {
         let messages_url = crate::core::model_endpoint::anthropic_messages_url(&base_url_stripped);
@@ -1612,6 +1473,36 @@ mod tests {
     }
 
     #[test]
+    fn transport_error_scrubs_url_userinfo_before_the_report() {
+        // End-to-end contract pin for `http://user:pass@host` transport
+        // failures: the detail must carry neither the URL username nor the
+        // password. `classify_transport_error` applies the CLI's two-pass
+        // `redact_error_text` composition explicitly, so the guarantee does
+        // not depend on reqwest's own Display redaction staying complete
+        // (reqwest 0.12+ redacts its top-level Display, but the scrub is the
+        // defense-in-depth both lanes share). Port 1 is refused locally, so
+        // the test stays hermetic; the timeout bounds any platform whose
+        // refusal is slower.
+        let error = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()
+            .expect("client")
+            .get("http://user:pass@127.0.0.1:1/v1")
+            .send()
+            .expect_err("connecting to port 1 must fail");
+        let (class, detail) = classify_transport_error(&error);
+        let _ = class; // class is platform-dependent (refused vs timeout); only the scrub is pinned here
+        assert!(
+            !detail.contains("user"),
+            "the transport detail must not carry the URL username: {detail}"
+        );
+        assert!(
+            !detail.contains("pass"),
+            "the transport detail must not carry the URL password: {detail}"
+        );
+    }
+
+    #[test]
     fn image_capability_http_result_402_keeps_status_and_raw_summary() {
         // The image capability probe's 402 matches the connection test's
         // semantics, but top-up guidance is UI copy: the Rust side never
@@ -1635,14 +1526,18 @@ mod tests {
     fn image_probe_base_url_feeds_anthropic_messages_url_without_suffix() {
         // 含 /chat/completions 后缀的 Anthropic base_url:协议判定与 Messages
         // URL 拼接都必须基于 strip 后的基准,否则拼出 404 路径误判 error。
-        let stripped = image_probe_base_url("https://api.anthropic.com/v1/chat/completions");
+        let stripped = crate::platform::prefs::model::strip_chat_completions_suffix(
+            "https://api.anthropic.com/v1/chat/completions",
+        );
         assert_eq!(stripped, "https://api.anthropic.com/v1");
         assert_eq!(
             crate::core::model_endpoint::anthropic_messages_url(&stripped),
             "https://api.anthropic.com/v1/messages"
         );
         // 官方 preset 形态(无后缀)不受影响。
-        let plain = image_probe_base_url("https://api.anthropic.com/v1");
+        let plain = crate::platform::prefs::model::strip_chat_completions_suffix(
+            "https://api.anthropic.com/v1",
+        );
         assert_eq!(
             crate::core::model_endpoint::anthropic_messages_url(&plain),
             "https://api.anthropic.com/v1/messages"
@@ -2088,9 +1983,11 @@ mod tests {
         // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
-        let mut initial = UserPrefs::default();
-        initial.migrate_models();
-        initial.save().expect("initial settings should save");
+        UserPrefs::update_transaction(|initial| {
+            initial.migrate_models();
+            Ok(())
+        })
+        .expect("initial settings should save");
 
         let barrier = Arc::new(Barrier::new(3));
         let theme_barrier = Arc::clone(&barrier);
@@ -2144,9 +2041,14 @@ mod tests {
         // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
 
-        let mut initial = UserPrefs::default();
-        initial.migrate_models();
-        initial.save().expect("initial settings should save");
+        // Seed disk through the production write path (the test-only
+        // UserPrefs::save was removed; mirrors the sibling concurrency
+        // tests' seeding).
+        UserPrefs::update_transaction(|initial| {
+            initial.migrate_models();
+            Ok(())
+        })
+        .expect("initial settings should save");
 
         // Explicit opt-out persists and reads back as false.
         persist_general_settings(GeneralSettingsPatch {

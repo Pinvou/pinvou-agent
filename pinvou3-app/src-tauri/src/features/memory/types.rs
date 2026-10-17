@@ -285,16 +285,15 @@ pub struct PreferenceFile {
 }
 
 #[derive(Debug, Clone)]
-pub struct TopicMutation<T> {
-    pub value: T,
-    pub cleanup_warning: Option<String>,
-}
-
-#[derive(Debug, Clone)]
 pub struct TopicRead<T> {
     pub value: T,
     pub cleanup_warning: Option<String>,
 }
+
+/// Write-path alias of [`TopicRead`] (same shape): named for the mutation
+/// returns (`update_preference` / `update_work_context`) so call sites keep
+/// their read/write distinction without a second identical struct.
+pub type TopicMutation<T> = TopicRead<T>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct TopicMigrationJournal {
@@ -417,10 +416,17 @@ pub fn profile_label_would_be_wiped(value: &str, topic: &str) -> bool {
     !value.trim().is_empty() && normalize_profile_label(value, topic).is_empty()
 }
 
+/// The default preference bucket `normalize_preference_topic` folds every
+/// unmatched (including empty) topic onto. `pub` + re-exported from
+/// `features::memory`: the CLI's add lane predicts the pending row's topic
+/// from the ORIGINAL input, so it names this value instead of hand-copies
+/// the literal (same single-sourcing rationale as the text caps).
+pub const DEFAULT_PREFERENCE_TOPIC: &str = "answer_style";
+
 pub(super) fn normalize_preference_topic(topic: &str) -> String {
     match clean_id(&clean_text(topic, 40)).as_str() {
         "answer_style" | "output_style" | "output_preference" | "reply_style" => {
-            "answer_style".to_string()
+            DEFAULT_PREFERENCE_TOPIC.to_string()
         }
         "workflow_preference" | "work_style" | "workflow" | "process" | "collaboration" => {
             "workflow_preference".to_string()
@@ -431,7 +437,7 @@ pub(super) fn normalize_preference_topic(topic: &str) -> String {
         | "report_style"
         | "ppt_style"
         | "document_style" => "document_preference".to_string(),
-        _ => "answer_style".to_string(),
+        _ => DEFAULT_PREFERENCE_TOPIC.to_string(),
     }
 }
 
@@ -458,10 +464,10 @@ pub(super) fn normalize_timed_memory_kind(kind: &str) -> String {
     }
 }
 
-pub(super) fn normalize_timed_memory_topic(kind: &str, _topic: &str) -> String {
-    // The topic input is not consumed: every kind folds onto its single
-    // canonical bucket regardless of the value (the former match arms were
-    // self-echoes whose default equaled every listed alternative).
+pub(super) fn normalize_timed_memory_topic(kind: &str) -> String {
+    // The kind alone decides the bucket: every kind folds onto its single
+    // canonical topic regardless of the input value (the former match arms
+    // were self-echoes whose default equaled every listed alternative).
     if kind == "recent_activity" {
         "completed_work".to_string()
     } else {

@@ -56,6 +56,19 @@ pub const PREFERENCE_TEXT_MAX_CHARS: usize = 120;
 pub const WORK_CONTEXT_TEXT_MAX_CHARS: usize = 160;
 pub const TIMED_TEXT_MAX_CHARS: usize = 180;
 
+/// The pending-queue content cap applied by `pending_item_from_suggestion`
+/// (and the never-pattern comparison in `blocked_by_never_memory_unlocked`).
+/// `pub` + re-exported from `features::memory` for the CLI's add/never
+/// lanes: they must measure the submitted text against the cap the store
+/// really applies, so a local literal would silently mis-report the
+/// truncation disclosure whenever the cap changes.
+pub const PENDING_CONTENT_MAX_CHARS: usize = 120;
+
+/// The never-store reason cap `never_pending_memory` applies via
+/// `clean_text(reason, NEVER_REASON_MAX_CHARS)`; re-exported for the CLI's
+/// `pending never` truncation disclosure for the same reason.
+pub const NEVER_REASON_MAX_CHARS: usize = 80;
+
 pub(super) fn turn_capture_store() -> &'static Mutex<BTreeMap<String, TurnMemoryCapture>> {
     static STORE: OnceLock<Mutex<BTreeMap<String, TurnMemoryCapture>>> = OnceLock::new();
     STORE.get_or_init(|| Mutex::new(BTreeMap::new()))
@@ -929,11 +942,14 @@ pub fn load_recent_activity() -> io::Result<Vec<TimedMemoryItem>> {
 
 pub(super) fn upsert_timed_memory_unlocked(
     kind: &str,
-    topic: &str,
+    _topic: &str,
     content: &str,
     source: &str,
     ttl_days: Option<i64>,
 ) -> io::Result<TimedMemoryItem> {
+    // `_topic` is inert: the stored topic is always
+    // `normalize_timed_memory_topic(kind)`'s single canonical bucket
+    // regardless of the input value.
     let kind = normalize_timed_memory_kind(kind);
     let now = Utc::now();
     let now_s = now.to_rfc3339();
@@ -950,7 +966,7 @@ pub(super) fn upsert_timed_memory_unlocked(
             "timed memory is empty or sensitive",
         ));
     }
-    let topic = normalize_timed_memory_topic(&kind, topic);
+    let topic = normalize_timed_memory_topic(&kind);
     let path = timed_memory_path(&kind);
     let mut items = load_timed_memory_file(&path, &kind)?;
     let id = stable_id_with_prefix(
@@ -966,7 +982,7 @@ pub(super) fn upsert_timed_memory_unlocked(
             || timed_memory_text_key(&item.text) == timed_memory_text_key(&text)
             || (item.status == "active"
                 && item.kind == kind
-                && normalize_timed_memory_topic(&kind, &item.topic) == topic
+                && normalize_timed_memory_topic(&kind) == topic
                 && timed_memory_texts_are_related(&item.text, &text))
     }) {
         existing.kind = kind.clone();
@@ -1046,8 +1062,8 @@ pub(super) fn update_timed_memory_unlocked(
     if require_active && item.status != "active" {
         return Ok(None);
     }
-    if let Some(topic) = patch.topic.as_deref() {
-        item.topic = normalize_timed_memory_topic(&kind, topic);
+    if patch.topic.is_some() {
+        item.topic = normalize_timed_memory_topic(&kind);
     }
     if let Some(text) = patch.text.as_deref() {
         let text = clean_candidate_sentence(text, TIMED_TEXT_MAX_CHARS);
@@ -1424,16 +1440,14 @@ pub fn confirm_pending_memory(id: &str) -> io::Result<Option<MemoryWriteEvent>> 
 
     match item.kind.as_str() {
         "preference" => write_preference_unlocked(item)?,
-        "profile" if item.topic == "call_name" => {
+        "profile" if matches!(item.topic.as_str(), "call_name" | "assistant_alias") => {
             let mut profile = load_profile()?;
-            profile.identity.call_name = item.content.clone();
-            profile.updated_at = now.clone();
-            profile.normalize();
-            write_json_atomic(&profile_path(), &profile)?;
-        }
-        "profile" if item.topic == "assistant_alias" => {
-            let mut profile = load_profile()?;
-            profile.identity.assistant_alias = item.content.clone();
+            let value = item.content.clone();
+            if item.topic == "call_name" {
+                profile.identity.call_name = value;
+            } else {
+                profile.identity.assistant_alias = value;
+            }
             profile.updated_at = now.clone();
             profile.normalize();
             write_json_atomic(&profile_path(), &profile)?;
@@ -1561,7 +1575,7 @@ pub fn never_pending_memory(
             pattern: item.content.clone(),
             reason: reason
                 .as_deref()
-                .map(|s| clean_text(s, 80))
+                .map(|s| clean_text(s, NEVER_REASON_MAX_CHARS))
                 .unwrap_or_default(),
             created_at: now,
         });
@@ -1880,7 +1894,7 @@ fn write_preference_unlocked(item: &PendingMemoryItem) -> io::Result<()> {
 }
 
 fn blocked_by_never_memory_unlocked(content: &str) -> io::Result<bool> {
-    let content = clean_text(content, 120);
+    let content = clean_text(content, PENDING_CONTENT_MAX_CHARS);
     if content.is_empty() {
         return Ok(false);
     }
@@ -1895,7 +1909,7 @@ fn load_never_memory_unlocked() -> io::Result<Vec<NeverMemoryItem>> {
     load_jsonl_recovering(&never_memory_path(), |item: &mut NeverMemoryItem| {
         item.id = clean_id(&item.id);
         item.pattern = clean_text(&item.pattern, 120);
-        item.reason = clean_text(&item.reason, 80);
+        item.reason = clean_text(&item.reason, NEVER_REASON_MAX_CHARS);
         !item.id.is_empty() && !item.pattern.is_empty()
     })
 }
@@ -1915,7 +1929,7 @@ fn compact_never_memory_items(items: &[NeverMemoryItem]) -> Vec<NeverMemoryItem>
             let mut item = item.clone();
             item.id = clean_id(&item.id);
             item.pattern = clean_text(&item.pattern, 120);
-            item.reason = clean_text(&item.reason, 80);
+            item.reason = clean_text(&item.reason, NEVER_REASON_MAX_CHARS);
             (!item.id.is_empty() && !item.pattern.is_empty()).then_some(item)
         })
         .collect();
@@ -2007,23 +2021,30 @@ fn timed_memory_path(kind: &str) -> PathBuf {
 fn normalize_timed_memory(item: &mut TimedMemoryItem) {
     item.id = clean_id(&item.id);
     item.kind = normalize_timed_memory_kind(&item.kind);
-    item.topic = normalize_timed_memory_topic(&item.kind, &item.topic);
+    item.topic = normalize_timed_memory_topic(&item.kind);
     item.text = clean_text(&item.text, TIMED_TEXT_MAX_CHARS);
     item.source = clean_text(&item.source, 40);
     item.status = normalize_status_active_or_archived(&item.status);
     item.ttl_days = item.ttl_days.clamp(1, 90);
 }
 
-/// Content-identity key for the timed store: joined with a single space,
-/// matching `pending_content_key` (the old "" join collapsed "a b" and "ab"
-/// into the same key). The most aggressive merging is still backed by the
-/// bigram similarity in `timed_memory_texts_are_related`.
-fn timed_memory_text_key(text: &str) -> String {
-    clean_text(text, 120)
-        .split_whitespace()
+/// Whitespace-normalized content identity: collapse every whitespace run to
+/// a single space and case-fold (the old "" join collapsed "a b" and "ab"
+/// into the same key). `pending_content_key` and `timed_memory_text_key`
+/// share this core so the two stores cannot drift apart on the identity
+/// rule. The most aggressive merging is still backed by the bigram
+/// similarity in `timed_memory_texts_are_related`.
+fn normalized_content_key(text: &str) -> String {
+    text.split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase()
+}
+
+/// Content-identity key for the timed store (inputs are already capped by
+/// `normalize_*`, the `clean_text` re-cap is defense in depth).
+fn timed_memory_text_key(text: &str) -> String {
+    normalized_content_key(&clean_text(text, 120))
 }
 
 fn timed_memory_texts_are_related(left: &str, right: &str) -> bool {
@@ -2140,7 +2161,7 @@ pub(super) fn pending_item_from_suggestion(
     if kind == "preference" {
         topic = normalize_preference_topic(&topic);
     }
-    let content = clean_text(&suggestion.content, 120);
+    let content = clean_text(&suggestion.content, PENDING_CONTENT_MAX_CHARS);
     if content.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -2189,15 +2210,7 @@ fn normalize_pending_memory(item: &mut PendingMemoryItem) {
 }
 
 fn pending_content_key(item: &PendingMemoryItem) -> String {
-    format!(
-        "{}:{}",
-        item.kind,
-        item.content
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-    )
-    .to_lowercase()
+    format!("{}:{}", item.kind, normalized_content_key(&item.content))
 }
 
 pub(super) fn write_pending_memory_unlocked(items: &[PendingMemoryItem]) -> io::Result<()> {

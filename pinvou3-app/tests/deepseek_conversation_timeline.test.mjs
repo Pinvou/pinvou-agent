@@ -24,6 +24,10 @@ copyFileSync(
   path.join(root, 'src', 'shared', 'shell-tools.mjs'),
   path.join(sharedDir, 'shell-tools.mjs'),
 );
+copyFileSync(
+  path.join(root, 'src', 'shared', 'path-utils.js'),
+  path.join(sharedDir, 'path-utils.js'),
+);
 vm.runInThisContext(
   readFileSync(path.join(root, 'src', 'shared', 'model-service-errors.js'), 'utf8'),
   { filename: 'model-service-errors.js' },

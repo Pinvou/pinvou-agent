@@ -46,7 +46,6 @@ pub struct GaiaRow {
     question: SecretText,
     reference: SecretText,
     attachment: Option<GaiaAttachment>,
-    level: u8,
 }
 
 impl GaiaRow {
@@ -54,20 +53,14 @@ impl GaiaRow {
         &self.task_id
     }
 
-    pub fn level(&self) -> u8 {
-        self.level
-    }
-
     pub fn attachment(&self) -> Option<&GaiaAttachment> {
         self.attachment.as_ref()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn question(&self) -> &SecretText {
         &self.question
     }
 
-    #[allow(dead_code)]
     pub(crate) fn reference(&self) -> &SecretText {
         &self.reference
     }
@@ -350,7 +343,6 @@ impl GaiaDataset {
                 question: SecretText::new(question),
                 reference: SecretText::new(reference),
                 attachment,
-                level,
             });
         }
         if rows.is_empty() {

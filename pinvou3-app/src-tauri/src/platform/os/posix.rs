@@ -166,8 +166,12 @@ fn connector_cli_program(cli_bin: &str, program: &str) -> OsString {
         }
         // 常见 npm 全局前缀。原 linux 实现把这段放在第二个同条件的
         // `if program == cli_bin` 块里（早退语义相同），macOS 放同块内，现统一。
+        // npm 两种大小写拼写都识别（npm 同时读 NPM_CONFIG_PREFIX 与
+        // npm_config_prefix；与下方 apply_user_npm_prefix、Windows 侧一致）。
         let mut candidates = Vec::new();
-        if let Ok(prefix) = std::env::var("NPM_CONFIG_PREFIX") {
+        if let Ok(prefix) =
+            std::env::var("NPM_CONFIG_PREFIX").or_else(|_| std::env::var("npm_config_prefix"))
+        {
             candidates.push(Path::new(&prefix).join("bin").join(program));
         }
         if let Ok(home) = std::env::var("HOME") {
@@ -341,5 +345,53 @@ mod tests {
     fn spawn_detached_and_reap_reports_missing_binary() {
         let mut command = std::process::Command::new("/nonexistent/pinvou3-reaper-test");
         assert!(spawn_detached_and_reap(&mut command).is_err());
+    }
+
+    #[test]
+    fn connector_cli_program_reads_lowercase_npm_config_prefix() {
+        // npm 同时读 NPM_CONFIG_PREFIX 与 npm_config_prefix；GUI 的其它两个
+        // 识别点（apply_user_npm_prefix、Windows 路径扫描）都读两种拼写，
+        // 这里钉住 vendor-CLI 解析也不漏小写（漏了会误报未安装/陷入重装循环，
+        // 而 CLI 侧能找到——跨端表现分叉）。
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root =
+            std::env::temp_dir().join(format!("pinvou3-posix-npm-prefix-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let bin_dir = root.join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("create prefix bin dir");
+        let shim = bin_dir.join("tmeet");
+        std::fs::write(&shim, b"#!/bin/sh\n").expect("write shim");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&shim, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod shim");
+        }
+
+        let previous_upper = std::env::var("NPM_CONFIG_PREFIX").ok();
+        let previous_lower = std::env::var("npm_config_prefix").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK is held and lib tests run
+        // with --test-threads=1; env writes are serialized in-process.
+        unsafe { std::env::remove_var("NPM_CONFIG_PREFIX") };
+        unsafe { std::env::set_var("npm_config_prefix", &root) };
+        let resolved = connector_cli_program("tmeet", "tmeet");
+        match previous_upper {
+            // SAFETY: same ENV_LOCK serialization as above.
+            Some(value) => unsafe { std::env::set_var("NPM_CONFIG_PREFIX", value) },
+            None => unsafe { std::env::remove_var("NPM_CONFIG_PREFIX") },
+        }
+        match previous_lower {
+            // SAFETY: same ENV_LOCK serialization as above.
+            Some(value) => unsafe { std::env::set_var("npm_config_prefix", value) },
+            None => unsafe { std::env::remove_var("npm_config_prefix") },
+        }
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(
+            resolved,
+            shim.into_os_string(),
+            "lowercase-only npm_config_prefix must resolve the vendor CLI shim"
+        );
     }
 }

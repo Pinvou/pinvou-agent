@@ -272,34 +272,6 @@ pub fn feature_disabled_tool_names() -> Vec<String> {
 mod tests {
     use super::*;
 
-    /// Runs the closure with PINVOU3_HOME pointing at a clean temp directory,
-    /// then restores and cleans up. Shares `platform::paths::tests::ENV_LOCK`
-    /// with prefs/store tests that mutate PINVOU3_HOME (same environment
-    /// variable, so the same lock must serialize them).
-    fn with_temp_home<F: FnOnce()>(f: F) {
-        let _g = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let dir = std::env::temp_dir().join(format!(
-            "pinvou3-builtin-test-{}-{}",
-            std::process::id(),
-            crate::platform::paths::tests::unique_suffix()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let prev = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        f();
-        match prev {
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            Some(v) => unsafe { std::env::set_var("PINVOU3_HOME", v) },
-            // SAFETY: holding platform::paths::tests::ENV_LOCK; env writes serialized in-process.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
     #[test]
     fn session_reader_is_builtin_via_embedded_manifest() {
         assert!(is_builtin_tool("session-reader"));
@@ -381,7 +353,7 @@ mod tests {
     /// the upload pipeline rejects packages claiming it (see plugin_import).
     #[test]
     fn released_manifest_builtin_claim_is_not_trusted() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-builtin-test", || {
             let mcp_dir = mcp_catalog::package_mcp_dir("custom-builtin");
             std::fs::create_dir_all(&mcp_dir).unwrap();
             std::fs::write(
@@ -430,7 +402,7 @@ mod tests {
     /// ownership; everything is enabled by default.
     #[test]
     fn registry_aggregates_session_reader_features() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-builtin-test", || {
             let registry = feature_registry();
             let ids: Vec<&str> = registry.iter().map(|f| f.id.as_str()).collect();
             assert_eq!(
@@ -466,7 +438,7 @@ mod tests {
     /// semantics against its single feature (session-messaging).
     #[test]
     fn union_semantics_gate_tool_removal() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-builtin-test", || {
             // All enabled: nothing removed.
             assert!(feature_disabled_tool_names().is_empty());
 
@@ -514,7 +486,7 @@ mod tests {
     /// carry the correct content.
     #[test]
     fn set_feature_enabled_persists_prefs_and_state_file() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-builtin-test", || {
             let registry = set_feature_enabled("session-mention", false).unwrap();
             let mention = registry.iter().find(|f| f.id == "session-mention").unwrap();
             assert!(!mention.enabled);
@@ -557,7 +529,7 @@ mod tests {
     /// succeeds and prefs (the authoritative store) reflect it.
     #[test]
     fn state_file_write_failure_does_not_fail_toggle() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-builtin-test", || {
             // Block state-file creation: `marketplace` exists as a file.
             std::fs::write(paths::pinvou3_home().join("marketplace"), b"x").unwrap();
             let registry = set_feature_enabled("session-mention", false).unwrap();
@@ -579,7 +551,7 @@ mod tests {
     /// by a crash window (prefs committed, state write lost) is healed.
     #[test]
     fn replay_feature_state_heals_stale_state_file() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-builtin-test", || {
             set_feature_enabled("session-mention", false).unwrap();
             let state_path = paths::pinvou3_home()
                 .join("marketplace")
@@ -601,7 +573,7 @@ mod tests {
     /// the two stores could interleave and persist disagreeing states.
     #[test]
     fn concurrent_feature_toggles_leave_consistent_state() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-builtin-test", || {
             let mut handles = Vec::new();
             for thread in 0..8 {
                 handles.push(std::thread::spawn(move || {
@@ -645,7 +617,7 @@ mod tests {
 
     #[test]
     fn unknown_feature_id_is_rejected() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-builtin-test", || {
             let err = set_feature_enabled("no-such-feature", false).unwrap_err();
             assert!(
                 err.contains("no-such-feature") && err.contains("session-mention"),
@@ -703,7 +675,7 @@ mod tests {
     /// (unavailable_tool_names_for).
     #[test]
     fn feature_removal_flows_into_unavailable_tool_names() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou3-builtin-test", || {
             let plain = crate::features::marketplace::unavailable_tool_names_for(
                 crate::features::marketplace::ConnectorScope::Plain,
             );

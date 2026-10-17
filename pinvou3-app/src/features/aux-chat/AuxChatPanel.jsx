@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MessageSquare, Quote, RotateCcw, Send, X } from '../../components/icons.jsx';
 import { RightDockPanel } from '../../components/layout/RightDock.jsx';
 import { bridge } from '../../hooks/useBridge.js';
+import { useAutoResizeTextarea } from '../../hooks/useAutoResizeTextarea.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { constrainChatInput } from '../../shared/chat-input-limit.js';
 import { ConversationTimeline } from '../conversation/ConversationTimeline.jsx';
@@ -11,7 +12,8 @@ import {
   auxChatHasContent,
   projectAuxChatTurns,
 } from './aux-chat-state.mjs';
-import { createAuxChatController, reconcileLiveTaskIds, removeAuxQuote } from './aux-chat-controller.mjs';
+import { removeAuxQuote } from './aux-quote.mjs';
+import { createAuxChatController, reconcileLiveTaskIds } from './aux-chat-controller.mjs';
 
 /**
  * Auxiliary chat panel (right-side RightDock): each main task gets one
@@ -124,12 +126,7 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
   // grow with the content up to the max-h-32 cap (then scroll internally) and
   // shrink back when the draft clears. Re-runs on rebind so a restored draft
   // sizes the box immediately.
-  useEffect(() => {
-    const el = composerRef.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = Math.min(Math.max(el.scrollHeight, 24), 128) + 'px';
-  }, [view.draft, sessionId]);
+  useAutoResizeTextarea(composerRef, view.draft, { min: 24, max: 128 });
 
   // Follow-state tracking, mirroring the main conversation's scroll listener:
   // scrolling up parks the follow flag, returning near the bottom resumes it.

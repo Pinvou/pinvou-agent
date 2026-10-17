@@ -11,8 +11,9 @@
 
 use std::collections::BTreeSet;
 
-/// The `'\u{` prefix every explicit sanitizer entry is spelled with in all
-/// three copies; the parser below is tight to this literal form on purpose.
+/// The `'\u{` prefix every explicit sanitizer entry is spelled with in the
+/// two remaining copies; the parser below is tight to this literal form on
+/// purpose.
 const CHAR_LITERAL: &str = "'\\u{";
 
 /// Extracts the body of the sanitizer named by its full signature text (the
@@ -81,8 +82,8 @@ fn code_points(chars: impl IntoIterator<Item = char>) -> String {
         .join(", ")
 }
 
-/// Both relations below extract the app's display-unsafe set from the same
-/// app source with the same signature; extract it once. Repo-root-relative:
+/// The display-hygiene set behind the app's stored display names, extracted
+/// once. Repo-root-relative:
 /// four `..` from this file's directory reach the repository root (same depth
 /// as cli_contract.rs's `../../../../docs`).
 fn app_display_unsafe_set() -> BTreeSet<char> {
@@ -93,30 +94,30 @@ fn app_display_unsafe_set() -> BTreeSet<char> {
     )
 }
 
-/// `plugins.rs::is_display_unsafe_char` documents itself as a mirror of the
-/// app's `features/marketplace/store.rs::is_display_unsafe_char` (crate-
-/// private there): the sets must be EQUAL, so a GUI-added invisible
-/// character can never silently bypass the CLI's import/display rejection
-/// (and vice versa — the CLI must not reject a name the GUI would store).
+/// The CLI's import/display lane no longer hand-mirrors the app's
+/// `features/marketplace/store.rs::is_display_unsafe_char`: it imports the
+/// shared (exported) predicate, so set equality is compiler-guaranteed and a
+/// GUI-side range change moves the CLI's stored-name hygiene with it. This
+/// pin keeps that wiring honest: plugins.rs must consume the shared
+/// `is_display_unsafe_char` import and must NOT re-declare a local copy (a
+/// re-added local fn would break the build via the unused import, and this
+/// assertion names the regression directly). The set-level drift protection
+/// this test used to provide for the replica is obsolete by construction.
 #[test]
-fn plugins_display_sanitizer_set_equals_the_app_set() {
-    let app = app_display_unsafe_set();
-    let plugins = unsafe_char_set(
-        include_str!("../src/plugins.rs"),
-        "fn is_display_unsafe_char(c: char) -> bool {",
-        "plugins.rs",
+fn plugins_display_sanitizer_is_the_shared_app_fn() {
+    let plugins = include_str!("../src/plugins.rs");
+    assert!(
+        plugins.contains("is_display_unsafe_char"),
+        "plugins.rs must import the shared display-hygiene predicate"
     );
     assert!(
-        !app.is_empty(),
+        !plugins.contains("fn is_display_unsafe_char"),
+        "plugins.rs must not re-declare a local is_display_unsafe_char mirror"
+    );
+    // The app-side set stays the anchor for the support.rs superset pin.
+    assert!(
+        !app_display_unsafe_set().is_empty(),
         "the app set must parse to a non-empty pin (extraction broken?)"
-    );
-    let missing: Vec<_> = app.difference(&plugins).collect();
-    let extra: Vec<_> = plugins.difference(&app).collect();
-    assert!(
-        missing.is_empty() && extra.is_empty(),
-        "plugins.rs display-hygiene set drifted from the app's set\n  app-only: {}\n  cli-only: {}",
-        code_points(missing.into_iter().copied()),
-        code_points(extra.into_iter().copied()),
     );
 }
 

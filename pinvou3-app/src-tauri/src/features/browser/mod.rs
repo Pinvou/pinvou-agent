@@ -32,6 +32,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::platform::filesystem::{MovePlainFileOutcome, PrivateFileDirectory};
 use crate::platform::paths;
+use platform::HOST_BLANK_MARKER_TAB_PREFIX;
 use platform::state::{
     NativeRequestCancel, NativeRequestClaim, NativeTabLease, RetainedAgentOperation,
 };
@@ -1296,7 +1297,7 @@ impl BrowserManager {
                 // First create a WebView2 target with a unique marker. After the host
                 // discovers and binds it, navigate the hidden surface to requested_url,
                 // then publish through lease CAS to avoid popups and wrong-tab navigation.
-                let marker = format!("about:blank#pinvou-tab-{tab_token}");
+                let marker = format!("{HOST_BLANK_MARKER_TAB_PREFIX}{tab_token}");
                 ensure_hosted_caller_live(request)?;
                 let created = self.native_surface.lock().create_tab_for_agent(
                     app,
@@ -4552,7 +4553,7 @@ impl BrowserManager {
             rand::random::<u64>(),
             rand::random::<u64>()
         );
-        let marker = format!("about:blank#pinvou-tab-{tab_token}");
+        let marker = format!("{HOST_BLANK_MARKER_TAB_PREFIX}{tab_token}");
         let created = self.native_surface.lock().create_tab_for_agent(
             app,
             browser_session_id,
@@ -4674,7 +4675,7 @@ impl BrowserManager {
         // remote page before target binding would make the strict v2 host
         // mapping disappear and break every Agent tool after the user clicks
         // the toolbar "+" button.
-        let marker = format!("about:blank#pinvou-tab-{tab_token}");
+        let marker = format!("{HOST_BLANK_MARKER_TAB_PREFIX}{tab_token}");
         let created = {
             let mut surface = self.native_surface.lock();
             surface.create_tab(app, browser_session_id, &tab_token, &marker, background)?

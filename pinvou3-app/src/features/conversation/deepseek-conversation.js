@@ -1,5 +1,6 @@
 import {
   countsAsFailedOperation,
+  isOperationItemType,
   presentConversationItems,
 } from './conversation-model.js';
 import { SHELL_TOOL_NAMES as SHELL_TOOLS } from '../../shared/shell-tools.mjs';
@@ -342,9 +343,7 @@ export function projectDeepSeekConversation({
 
   for (const turn of turns) {
     turn.presentation = presentConversationItems(turn.items);
-    const operations = turn.items.filter(item => (
-      ['command_execution', 'file_change', 'tool'].includes(item.type)
-    ));
+    const operations = turn.items.filter(item => isOperationItemType(item.type));
     turn.operationCount = operations.length;
     turn.failedOperationCount = operations.filter(countsAsFailedOperation).length;
     turn.waitingPermission = turn.items.some(item => (
