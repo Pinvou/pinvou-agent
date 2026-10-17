@@ -395,6 +395,11 @@ docker_binfmt_ready() {
 }
 
 docker_method() {
+  # Dev-only fallback (CI never registers loong64 binfmt), and it is
+  # deliberately below the apt path's standard: the image is pulled by
+  # mutable tag and per-package integrity is whatever the image's apt
+  # provides — no Release-chain hash verification. Fine for a local
+  # experimentation sysroot; never wire this into a release path.
   if ! command -v docker >/dev/null; then
     echo "[loong64-sysroot] docker not available" >&2
     return 1
