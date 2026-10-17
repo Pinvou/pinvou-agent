@@ -9266,6 +9266,29 @@ fn strip_session_message_block_impl_rejects_lookalikes_and_preserves_nesting() {
         "",
         "the matching twin agrees on the no-trailing-newline form"
     );
+    // The trailing-newline empty-body form: a bare newline after the JSON
+    // line with nothing after it strips to "" too — the `is_empty` arm
+    // behind the guards. Round-2 review: this arm had no direct pin, so a
+    // fall-through mutation shipped green (the fixture above exercises the
+    // `None` arm, not this one). The JS twin returns text: "" here as well
+    // (the split leaves a final empty line, so the blank-separator check
+    // passes and the body slice is empty).
+    let trailing_newline_empty = format!(
+        "{}\n{}\n{}\n{{\"sessionId\":\"a\",\"title\":\"t\"}}\n",
+        SESSION_MESSAGE_BLOCK_HEADER,
+        SESSION_MESSAGE_CONTRACT_LINES[0],
+        SESSION_MESSAGE_CONTRACT_LINES[1]
+    );
+    assert_eq!(
+        strip_session_message_block_impl(&trailing_newline_empty),
+        "",
+        "the empty-body form with a bare trailing newline strips to empty"
+    );
+    assert_eq!(
+        delivered_body_for_matching(&trailing_newline_empty),
+        "",
+        "the matching twin agrees on the trailing-newline empty form"
+    );
     // Round-22 review minor 5: the empty-body arm sits BEHIND the 64 KiB and
     // parse guards, matching the JS twin (splitSessionMessageBlock returns
     // the text untouched for a lookalike that fails either guard) — an

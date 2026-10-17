@@ -468,8 +468,8 @@ function enforceLazyChunks() {
 
 // The enforced gate is assertMainEntryBudget below; it sits deliberately
 // ABOVE Vite's informational 500 kB chunk warning for the web build (the
-// warning fires on every web build and is expected — the gate, not the
-// warning, is the budget). New entry work should still be split or
+// warning currently fires on every web build and is expected — the gate,
+// not the warning, is the budget). New entry work should still be split or
 // lazy-loaded. Raising this limit requires measured desktop + web
 // before/after sizes and an explicit review decision.
 //

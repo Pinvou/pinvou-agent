@@ -865,17 +865,22 @@ impl RetryState {
         // directory and can fail under the exact precondition that defeated
         // the removal, and the pre-delivery gate must not keep dispatching
         // full engine turns for a file nothing can retire. Round-22 carves
-        // out marker-bearing files below. Two accepted corners, both
-        // bounded: a carved-out file churns one bounded re-read plus a
-        // removal attempt per poll (at the ceiling also an audit re-read
-        // and a quarantine/mark attempt) and self-heals the moment the
-        // lock clears; a file whose stop-gap marker write ALSO failed
-        // stays frozen until boot, because nothing processes it and the
-        // write is never retried (the exhaustion arm warned once).
+        // out marker-bearing files below. Three accepted corners, all
+        // bounded: a carved-out file churns up to four bounded re-reads
+        // (~256 KiB at the 64 KiB spool cap — the entry read, the
+        // post-delivery re-verify, the exhaustion-arm replace re-check and
+        // the audit read) plus removal/quarantine/mark attempts per poll
+        // and self-heals the moment the lock clears; a lock held past the
+        // RETENTION window re-freezes the file until boot (the prune
+        // deletes its aged marker, so the carve-out stops applying — no
+        // re-delivery, the freeze re-engages first); a file whose stop-gap
+        // marker write ALSO failed stays frozen until boot, because
+        // nothing processes it and the write is never retried (the
+        // exhaustion arm warned once).
         if self
             .removal_failures
             .get(name)
-            .is_some_and(|streak| *streak >= MAX_DELIVERY_ATTEMPTS as u32)
+            .is_some_and(|streak| *streak >= MAX_DELIVERY_ATTEMPTS)
         {
             // Round-22 M-1: a file whose done-marker already exists is kept
             // out of delivery by the marker itself, so freezing it here
@@ -2249,14 +2254,62 @@ mod spool_pipeline_tests {
         assert_eq!(text, &content, "the display keeps the block verbatim");
     }
 
-    /// Round-22 M-3: the disclosed caps are pinned to their literals — the
-    /// retry and title tests derive fixtures from the constants, so
+    /// Round-1 review MAJOR-1 (fixed cross-file in the round-2 pass): the
+    /// type system pins the seam's parameter order but not the call-site
+    /// hand-off — `match_text`/`engine_content` are both `String`, so a
+    /// swap at the destructure, `None` for the persona body, or matching on
+    /// `engine_content` compiles clean and keeps the pure-seam test above
+    /// green. The production wiring is therefore pinned by reading the
+    /// engine_pool source FROM HERE: a cross-file include cannot match this
+    /// test's own text, which is what made the previous in-file self-pin
+    /// vacuous (every needle matched its own assert literal — the exact
+    /// defect `post_read_size_recheck_is_pinned` fixed for messaging in
+    /// round 8; the multiagent precedent is cross-file for the same
+    /// reason). The needles hard-code local identifiers, so a rename inside
+    /// `deliver_messaging_turn` ships a false red — accepted, in line with
+    /// that precedent.
+    #[test]
+    fn deliver_messaging_turn_hands_the_seam_outputs_to_the_right_consumers() {
+        let source = include_str!("../assistant/engine_pool.rs");
+        assert!(
+            source.contains("let (match_text, engine_content, display_message) =")
+                && source.contains(
+                    "assemble_delivery_turn(&content, pending_injections.persona_body());"
+                ),
+            "deliver_messaging_turn must assemble through the seam with the \
+             taken persona body (None would silently drop the first-turn \
+             persona card; swapping the two String outputs at the destructure \
+             feeds matching the persona-prefixed block — the round-7 Q2 \
+             regression class)"
+        );
+        assert!(
+            source.contains("snapshot.available_role_lines(&match_text)"),
+            "expert matching must consume the seam's stripped match_text \
+             (raw-block or engine-content matching is the round-7 Q2 \
+             regression class)"
+        );
+        assert!(
+            source.contains("pending_injections.commit();"),
+            "the taken pending injections must be committed only after the \
+             reserved turn submits (dropping the commit re-injects the full \
+             persona card on the next normal turn)"
+        );
+    }
+
+    /// Round-22 M-3: the disclosed caps are pinned to their literals —
     /// without a literal anchor any drift (10→10 000, 200→201) ships the
-    /// suite green.
+    /// suite green, because the surrounding fixtures derive from the
+    /// constants. (Round-2 review: RETENTION, the backoff pair and the
+    /// 64 KiB block cap had the same constant-derived-fixture shape.)
     #[test]
     fn disclosed_constants_are_pinned_to_their_literals() {
         assert_eq!(MAX_DELIVERY_ATTEMPTS, 10);
         assert_eq!(MAX_TITLE_CHARS, 200);
+        assert_eq!(MIN_BACKOFF, Duration::from_secs(5));
+        assert_eq!(MAX_BACKOFF, Duration::from_secs(60));
+        assert_eq!(RETENTION, Duration::from_secs(7 * 24 * 3600));
+        use crate::features::sessions::MAX_SESSION_BLOCK_JSON_LINE;
+        assert_eq!(MAX_SESSION_BLOCK_JSON_LINE, 64 * 1024);
     }
 
     /// Round-8 M6: builder → stripper round-trip lives HERE (messaging may
