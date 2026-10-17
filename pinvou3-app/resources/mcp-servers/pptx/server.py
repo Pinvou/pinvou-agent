@@ -214,7 +214,12 @@ def layout_cover(slide, th, s):
 def layout_agenda(slide, th, s):
     bg(slide, th["bg"])
     _title_block(slide, th, s.get("title") or "目录")
-    items = (s.get("items") or [])[:6]
+    raw_items = s.get("items")
+    # Non-list items and non-(str, dict) elements are schema-illegal but the
+    # JSON-string salvage path bypasses schema validation; drop them before
+    # the ordinal numbering so garbage neither renders nor consumes a slot.
+    items = [it for it in (raw_items if isinstance(raw_items, list) else [])
+             if isinstance(it, (str, dict))][:6]
     y0 = Inches(2.05)
     step = Inches(0.78)
     for i, it in enumerate(items):
@@ -238,13 +243,15 @@ def layout_bullets(slide, th, s):
     bg(slide, th["bg"])
     _title_block(slide, th, s.get("title"))
     tf = textbox(slide, Inches(1.2), Inches(2.0), Inches(11.0), Inches(4.8))
-    for i, b in enumerate(s.get("bullets") or []):
-        if b is None:
-            # Null elements are schema-illegal but the JSON-string salvage
-            # path bypasses schema validation; skip instead of rendering
-            # str(None).
+    rendered = 0
+    for b in s.get("bullets") or []:
+        if not isinstance(b, str):
+            # Non-string elements (null included) are schema-illegal but the
+            # JSON-string salvage path bypasses schema validation; skip them
+            # so no str() repr (None, True, lists, dicts) reaches the slide.
             continue
-        para(tf, "▸  " + str(b), 19, th["ink"], font=th["body_font"], space_after=14, line_spacing=1.2, first=(i == 0))
+        para(tf, "▸  " + b, 19, th["ink"], font=th["body_font"], space_after=14, line_spacing=1.2, first=(rendered == 0))
+        rendered += 1
 
 
 def layout_two_col(slide, th, s):
@@ -256,10 +263,14 @@ def layout_two_col(slide, th, s):
             tf = textbox(slide, x, Inches(2.0), Inches(5.4), Inches(0.6))
             para(tf, ctitle, 18, th["primary"], bold=True, font=th["title_font"], first=True)
         tf2 = textbox(slide, x, Inches(2.7), Inches(5.4), Inches(4.0))
-        for i, b in enumerate(items or []):
-            if b is None:
+        rendered = 0
+        for b in items if isinstance(items, list) else []:
+            if not isinstance(b, str):
+                # Same salvage-path rule as the bullets lane: skip
+                # non-string elements instead of rendering their repr.
                 continue
-            para(tf2, "•  " + str(b), 17, th["ink"], font=th["body_font"], space_after=12, line_spacing=1.2, first=(i == 0))
+            para(tf2, "•  " + b, 17, th["ink"], font=th["body_font"], space_after=12, line_spacing=1.2, first=(rendered == 0))
+            rendered += 1
 
     col(Inches(1.2), s.get("leftTitle"), s.get("left"))
     col(Inches(6.9), s.get("rightTitle"), s.get("right"))
@@ -268,7 +279,12 @@ def layout_two_col(slide, th, s):
 def layout_kpi(slide, th, s):
     bg(slide, th["bg"])
     _title_block(slide, th, s.get("title"))
-    items = (s.get("items") or [])[:4]
+    raw_items = s.get("items")
+    # Same salvage-path rule as the agenda lane: drop non-list items and
+    # non-(str, dict) elements before layout so garbage neither renders nor
+    # widens the card row.
+    items = [it for it in (raw_items if isinstance(raw_items, list) else [])
+             if isinstance(it, (str, dict))][:4]
     n = max(1, len(items))
     gap = Inches(0.4)
     total_w = Inches(11.5)
@@ -302,7 +318,10 @@ def layout_chart(slide, th, s):
     _title_block(slide, th, s.get("title"))
     ctype = _CHART_TYPES.get(s.get("chartType") or "bar", XL_CHART_TYPE.COLUMN_CLUSTERED)
     cd = CategoryChartData()
-    cd.categories = s.get("categories") or []
+    # Non-string categories are schema-illegal but the JSON-string salvage
+    # path bypasses schema validation; drop them so no str(None)/repr
+    # reaches the category axis.
+    cd.categories = [c for c in (s.get("categories") or []) if isinstance(c, str)]
     # Non-dict entries are schema-illegal but the JSON-string salvage path
     # bypasses schema validation; drop them so the legend count matches what
     # is actually drawn.
@@ -400,13 +419,11 @@ def layout_image(slide, th, s):
     bg(slide, th["bg"])
     _title_block(slide, th, s.get("title"))
     img = s.get("image")
-    bullets = s.get("bullets") or []
+    bullets = [b for b in (s.get("bullets") or []) if isinstance(b, str)]
     if bullets:
         tf = textbox(slide, Inches(0.9), Inches(2.2), Inches(5.0), Inches(4.4))
         for i, b in enumerate(bullets):
-            if b is None:
-                continue
-            para(tf, "•  " + str(b), 17, th["ink"], font=th["body_font"], space_after=12, line_spacing=1.25, first=(i == 0))
+            para(tf, "•  " + b, 17, th["ink"], font=th["body_font"], space_after=12, line_spacing=1.25, first=(i == 0))
         ix, iy, iw, ih = Inches(6.3), Inches(2.0), Inches(6.1), Inches(4.3)
     else:
         ix, iy, iw, ih = Inches(2.6), Inches(2.0), Inches(8.1), Inches(4.3)
@@ -732,7 +749,7 @@ TOOL_DEFS = [{
                         "rightTitle": {"type": "string", "description": "右栏标题(two_col)"},
                         "right": {"type": "array", "items": {"type": "string"},
                                   "description": "右栏要点(two_col)"},
-                        "chartType": {"type": "string", "enum": ["bar", "pie", "line"],
+                        "chartType": {"type": "string", "enum": ["bar", "line", "pie"],
                                       "description": "图表类型(chart)"},
                         "categories": {"type": "array", "items": {"type": "string"},
                                        "description": "类目轴(chart)"},
