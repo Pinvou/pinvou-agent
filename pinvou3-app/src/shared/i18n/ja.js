@@ -255,7 +255,7 @@ const jaBase = {
         sysStatus: 'システム状態',  gpu: 'GPU', gpuUnavail: '状態を取得できません', 
         vram: 'VRAM 使用量', core: 'コア使用率', temp: '温度', power: '消費電力', unifiedMem: 'ユニファイドメモリ',
         ram: 'システムメモリ (RAM)',
-        ctx: 'コンテキスト長',  queue: 'タスク待ち', ttft: 'TTFT', tps: 'TPS（生成速度）',          app: 'アプリサービス', 
+        ctx: 'コンテキスト長',  queue: 'タスク待ち', ttft: 'TTFT', tps: 'TPS（生成速度）',          app: 'アプリサービス',
         curVer: '現在のバージョン',  uptime: '稼働時間', runningMemory: '実行メモリ', temporaryMemory: '一時メモリ', localProcessor: 'ローカル演算', processorLoad: 'プロセッサ負荷', graphicsLoad: 'グラフィック負荷', sharedMemory: '共有メモリ', deviceTemp: 'デバイス温度', currentModel: '現在のモデル', localRunning: 'ローカル実行', remoteService: 'リモート', available: '利用可能', unavailable: '利用不可', historyReuse: '履歴再利用率',  modelReadAmount: 'モデル読込量', modelOutputAmount: 'モデル出力量', modelReadHint: '入力が多いほど応答は遅く、消費も増えます', modelOutputHint: '出力が多いほど返信は長く、消費も増えます', resetCount: 'カウントをリセット', contextHint: '保持できる会話範囲', queueHint: '処理中 / 待機中', ttftHint: '返信開始までの待ち時間', tpsHint: '返信の出力速度', reuseHint: '高いほど速く、Token も節約', totalMemory: '総メモリ',
         light: 'ライト', dark: 'ダーク', followSystem: 'システムに従う',
         
@@ -301,7 +301,7 @@ const jaBase = {
         detectingLocalVllm: '検出中…',
         
         
-        setActiveModel: 'デフォルトに設定', 
+        setActiveModel: 'デフォルトに設定',
         modelFormAddTitle: 'モデルを追加', modelFormEditTitle: 'モデルを編集', modelDisplayName: '表示名',
         testConnection: '接続テスト', testingConn: 'テスト中…', modelSaveBtn: '保存', manageModels: 'モデルを管理…',
          modelSwitchBusy: '生成中のため切り替え不可', modelNonePick: 'モデルを選択', 

@@ -256,7 +256,7 @@ export const dictEn = {
         sysStatus: 'System Status',  gpu: 'GPU', gpuUnavail: 'Unavailable', 
         vram: 'VRAM Usage', core: 'Core Usage', temp: 'Temp', power: 'Power', unifiedMem: 'Unified Memory',
         ram: 'System RAM',
-        ctx: 'Context Length',  queue: 'Task Queue', ttft: 'TTFT', tps: 'TPS (Generation Speed)',          app: 'App Service', 
+        ctx: 'Context Length',  queue: 'Task Queue', ttft: 'TTFT', tps: 'TPS (Generation Speed)',          app: 'App Service',
         curVer: 'App Version',  uptime: 'Uptime', runningMemory: 'Active Memory', temporaryMemory: 'Temporary Memory', localProcessor: 'Local Compute', processorLoad: 'Processor Load', graphicsLoad: 'Graphics Load', sharedMemory: 'Shared Memory', deviceTemp: 'Device Temp', currentModel: 'Current Model', localRunning: 'Local', remoteService: 'Remote', available: 'Available', unavailable: 'Unavailable', historyReuse: 'Reuse Rate',  modelReadAmount: 'Model Reads', modelOutputAmount: 'Model Outputs', modelReadHint: 'More input means slower responses and higher usage', modelOutputHint: 'More output means longer replies and higher usage', resetCount: 'Reset Count', contextHint: 'Conversation range kept in memory', queueHint: 'Running / waiting', ttftHint: 'Wait before the first word', tpsHint: 'Reply output speed', reuseHint: 'Higher is faster and saves tokens', totalMemory: 'Total Memory',
         light: 'Light', dark: 'Dark', followSystem: 'Follow System',
 
@@ -302,7 +302,7 @@ export const dictEn = {
         detectingLocalVllm: 'Detecting…',
 
 
-        setActiveModel: 'Set Default', 
+        setActiveModel: 'Set Default',
         modelFormAddTitle: 'Add Model', modelFormEditTitle: 'Edit Model', modelDisplayName: 'Display Name',
         testConnection: 'Test Connection', testingConn: 'Testing…', modelSaveBtn: 'Save', manageModels: 'Manage models…',
  modelSwitchBusy: 'Busy generating, cannot switch', modelNonePick: 'Select model', 
