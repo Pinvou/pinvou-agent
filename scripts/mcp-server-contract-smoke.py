@@ -566,6 +566,10 @@ def main():
 
     qcc = manifests["qcc"]
     assert qcc.get("secret_headers") in (None, [])
+    # Remote-only manifest: a command-bearing qcc manifest would silently
+    # escape both the boot contract below and the schema guard, which only
+    # sees booted stdio servers.
+    assert not qcc.get("command")
     # 可选密钥契约：qcc 明文迁移把历史凭证存放在 Bearer target 下并接线
     # bearer_token_env_var，manifest 必须声明同一 key 才能被
     # sync_secret_values 的重启重水化枚举覆盖（缺声明 = 首次重启即 401）。

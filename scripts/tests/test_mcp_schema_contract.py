@@ -7,14 +7,17 @@ if the guard itself breaks the smoke stays green (against compliant schemas
 a broken guard is exactly as silent as a good one) — only the direct unit
 tests here turn red when the guard rots. Both directions are pinned: the
 incident shape (itemless array), items:{}, untyped items, tuple items,
-prefixItems, boolean schemas, anyOf with an empty branch, and $ref must be
-red; fully typed oneOf/allOf and the real pptx schema must be green. The
-recursion lanes (additionalProperties, inside anyOf branches) each have a
-red case pinning them — the walker's recursion is not decorative, every
-lane is consumed by an assertion. The wiring (the call site itself) is
-pinned by check_schema_contract's return-value contract: check_protocol
-prints it into the success line, which raises NameError the moment the call
-site is deleted; the unit test pins the return value.
+prefixItems, boolean schemas, anyOf with an empty branch, list-typed "type"
+keywords, and $ref must be red; fully typed oneOf/allOf and the real pptx
+schema must be green. Every recursion lane — properties,
+additionalProperties, anyOf/oneOf branches, $defs/definitions, contains,
+propertyNames, not, if/then/else, dependentSchemas, draft-07 dependencies,
+unevaluatedProperties/unevaluatedItems — has a red case pinning it: the
+walker's recursion is not decorative, every lane is consumed by an
+assertion. The wiring (the call site itself) is pinned by
+check_schema_contract's return-value contract: check_protocol prints it
+into the success line, which raises NameError the moment the call site is
+deleted; the unit test pins the return value.
 
 The real-pptx-schema green case needs python-pptx to import the server
 module; in the fast-gate, unittest discover runs before python-pptx is
@@ -148,6 +151,83 @@ class SchemaContractWalkerTest(unittest.TestCase):
         self.assertIsNotNone(message)
         self.assertIn("anyOf[0]", message)
         self.assertIn("without concretely typed items", message)
+
+    def test_list_typed_type_keyword_is_red(self):
+        # Legal JSON Schema, but the engine sanitizer reads string types
+        # only: the node arrives typeless downstream and MFJS drops the tool
+        # (#683 class). Banned outright, not interpreted.
+        message = _contract_message(
+            {"type": "object", "properties": {"x": {"type": ["string"]}}})
+        self.assertIsNotNone(message)
+        self.assertIn("list-typed", message)
+
+    def test_list_typed_incident_shape_is_red(self):
+        # The incident shape encoded as a list type must not slip past the
+        # array trigger (a plain string compare would miss it).
+        message = _contract_message({"type": ["array"]})
+        self.assertIsNotNone(message)
+        self.assertIn("list-typed", message)
+
+    def test_list_typed_inside_additional_properties_is_red(self):
+        # The ban must hold at every recursion lane, not just properties.
+        message = _contract_message(
+            {"type": "object", "additionalProperties": {"type": ["array", "string"]}})
+        self.assertIsNotNone(message)
+        self.assertIn("additionalProperties", message)
+        self.assertIn("list-typed", message)
+
+    def test_itemless_array_inside_defs_is_red(self):
+        # $defs and draft-07 definitions both recurse; an unreferenced
+        # definition must not be a blind spot.
+        message = _contract_message(
+            {"type": "object",
+             "$defs": {"a": {"type": "array"}},
+             "definitions": {"b": {"type": "array"}}})
+        self.assertIsNotNone(message)
+        self.assertIn("$defs.a", message)
+        self.assertIn("definitions.b", message)
+
+    def test_itemless_array_inside_contains_is_red(self):
+        message = _contract_message({"type": "array", "items": {"type": "string"}, "contains": {"type": "array"}})
+        self.assertIsNotNone(message)
+        self.assertIn("contains", message)
+
+    def test_itemless_array_inside_property_names_is_red(self):
+        message = _contract_message({"type": "object", "propertyNames": {"type": "array"}})
+        self.assertIsNotNone(message)
+        self.assertIn("propertyNames", message)
+
+    def test_itemless_array_inside_not_and_conditionals_is_red(self):
+        message = _contract_message(
+            {"type": "object",
+             "not": {"type": "array"},
+             "if": {"type": "array"},
+             "then": {"type": "array"},
+             "else": {"type": "array"}})
+        self.assertIsNotNone(message)
+        for lane in (".not", ".if", ".then", ".else"):
+            self.assertIn(lane, message)
+
+    def test_itemless_array_inside_dependent_schemas_is_red(self):
+        message = _contract_message(
+            {"type": "object",
+             "dependentSchemas": {"a": {"type": "array"}},
+             "dependencies": {"b": {"type": "array"}, "c": ["x"]}})
+        self.assertIsNotNone(message)
+        self.assertIn("dependentSchemas.a", message)
+        self.assertIn("dependencies.b", message)
+        # Property-name-list form of draft-07 dependencies is data: absent
+        # from the offenders on purpose.
+        self.assertNotIn("dependencies.c", message)
+
+    def test_itemless_array_inside_unevaluated_keywords_is_red(self):
+        message = _contract_message(
+            {"type": "object",
+             "unevaluatedProperties": {"type": "array"},
+             "unevaluatedItems": {"type": "array"}})
+        self.assertIsNotNone(message)
+        self.assertIn("unevaluatedProperties", message)
+        self.assertIn("unevaluatedItems", message)
 
     def test_guard_wiring_returns_walked_tool_count(self):
         # Wiring pin: check_protocol consumes this return value to print the
