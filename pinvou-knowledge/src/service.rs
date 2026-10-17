@@ -92,6 +92,12 @@ enum RateDecision {
     GlobalLimited,
 }
 
+// 桩构建的统一下载拒绝文案：begin_model_download（宿主服务端闸）与
+// download_model（公开 API 直连的防御纵深闸）共用同一语义与文案。
+fn local_embed_download_refusal() -> String {
+    "本地向量嵌入模型在此平台不可用，无法下载（ort-sys 无本平台制品）".to_string()
+}
+
 fn check_attempt_rate(
     rate: &Mutex<AttemptRate>,
     source: IpAddr,
@@ -324,9 +330,7 @@ impl KnowledgeService {
         // 桩构建里下载下来的模型永远无法加载，任何下载触发（含宿主服务的
         // 远端下载入口）都必须在触碰下载管线之前被拒绝。
         if !crate::embedding::local_embed_available() {
-            return Err(
-                "本地向量嵌入模型在此平台不可用，无法下载（ort-sys 无本平台制品）".to_string(),
-            );
+            return Err(local_embed_download_refusal());
         }
         self.model_downloading
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -1331,6 +1335,12 @@ impl KnowledgeService {
     }
 
     pub async fn download_model(self: &Arc<Self>) -> Result<(), String> {
+        // 防御纵深：公开 API 的直连调用者不经过 begin_model_download 的闸。
+        // 桩构建里同样必须在安装锁/磁盘 I/O 之前拒绝，否则会白下 568 MB 后
+        // 才在 Embedder::from_dir 处失败。
+        if !crate::embedding::local_embed_available() {
+            return Err(local_embed_download_refusal());
+        }
         self.download_model_with(
             crate::model_download::knowledge_model_hf_base_url_candidates,
             || async { self.load_model_unlocked() },
@@ -1633,6 +1643,16 @@ mod tests {
             .expect_err("stub builds must refuse model downloads");
         assert!(error.contains("此平台不可用"), "{error}");
         assert!(!service.model_downloading(), "no download may be in flight");
+        // 公开 download_model 的直连调用者不经过上面的闸（防御纵深）：同样
+        // 必须在任何安装锁/磁盘 I/O 之前拒绝，而不是白下 568 MB 后才失败。
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let direct = rt
+            .block_on(async { service.download_model().await })
+            .expect_err("stub builds must refuse direct download_model calls");
+        assert!(direct.contains("此平台不可用"), "{direct}");
     }
 
     #[tokio::test]
