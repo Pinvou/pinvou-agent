@@ -503,8 +503,8 @@ jobs:
       # llvm-toolchain-jammy-18 套件装 libclang-18-dev,并用 LIBCLANG_PATH
       # 短路 clang-sys 的多目录探测;目标头文件由 BINDGEN_EXTRA_CLANG_ARGS
       # (编排脚本导出)指向 deepin sysroot。此 run 块与 pr-check.yml 的
-      # rust-loongarch64-check leg 逐字一致
-      # (test_release_loongarch64_policy 钉字节等价)。
+      # rust-loongarch64-check leg 在注释剥离后逐字一致
+      # (test_release_loongarch64_policy 按剥注释文本钉等价)。
       - name: 装 Tauri + pinvou3 Linux 系统依赖 (host 侧)
         run: |
           set -euo pipefail
