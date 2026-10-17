@@ -39,3 +39,19 @@ test('BGE model loading keeps a distinct indeterminate status', () => {
   assert.match(indicator, /animate-spin motion-reduce:animate-none/);
   assert.match(knowledgeSource, /<ModelProgressIndicator[\s\S]*?downloading=\{downloading\}[\s\S]*?percent=\{dlPct\}/);
 });
+
+test('the remote owner-model download entry is capability-gated, fail closed', () => {
+  // loongarch64 的服务端下载漏斗（begin_model_download）必然拒绝；共享知识库宿主面板的
+  // 下载按钮必须与 KnowledgeView 的模型卡同向门控：prop 为 true 才渲染，快照未到达或
+  // 渲染点漏传时隐藏，而不是渲染一个必然失败的按钮。
+  assert.match(remoteKnowledgeSource, /function RemoteKnowledgeView\(\{ t, localEmbedSupported \}\)/);
+  assert.match(remoteKnowledgeSource, /const localEmbedReady = localEmbedSupported === true;/);
+  assert.match(
+    remoteKnowledgeSource,
+    /\{isLocalHostOwner && localEmbedReady && !ownerModelStatus\?\.ready && <button/,
+  );
+  assert.match(
+    knowledgeSource,
+    /<RemoteKnowledgeView t=\{t\} localEmbedSupported=\{localEmbedSupported\} \/>/,
+  );
+});

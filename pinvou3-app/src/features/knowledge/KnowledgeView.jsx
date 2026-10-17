@@ -1264,7 +1264,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
             )}
             {outputPreview && <FilePreviewModal path={outputPreview.path} sessionId={outputPreview.sessionId} t={t} onClose={() => setOutputPreview(null)} />}
 
-            {sub === 'remote' && <RemoteKnowledgeView t={t} />}
+            {sub === 'remote' && <RemoteKnowledgeView t={t} localEmbedSupported={localEmbedSupported} />}
 
             {/* ============ 知识库 · embedding 模型未安装/加载中/加载失败 → gate ============ */}
             {/* localEmbedSupported=false 的平台（linux/loongarch64）编译期即无本地 embedding：
