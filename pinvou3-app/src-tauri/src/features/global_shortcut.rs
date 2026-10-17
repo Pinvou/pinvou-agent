@@ -476,6 +476,29 @@ mod tests {
     }
 
     #[test]
+    fn all_cmdorctrl_alias_spellings_fold_onto_one_canonical_form() {
+        // The vendored parser accepts four spellings (global-hotkey hotkey.rs:
+        // CMDORCTRL | CMDORCONTROL | COMMANDORCTRL | COMMANDORCONTROL) and
+        // the frontend pre-validation gate mirrors them; a spelling Rust
+        // dropped would otherwise surface only as a save-time invalid in the
+        // UI, so the fold is pinned in-repo for every spelling.
+        let baseline = normalize_accelerator("CmdOrCtrl+Alt+KeyO").expect("baseline alias parses");
+        for spelling in [
+            "CmdOrCtrl",
+            "CmdOrControl",
+            "CommandOrCtrl",
+            "CommandOrControl",
+        ] {
+            let combo = format!("{spelling}+Alt+KeyO");
+            assert_eq!(
+                normalize_accelerator(&combo).as_deref(),
+                Ok(baseline.as_str()),
+                "alias spelling {spelling} must fold onto the same canonical form"
+            );
+        }
+    }
+
+    #[test]
     fn empty_and_unparsable_accelerators_are_rejected() {
         assert!(normalize_accelerator("").is_err());
         assert!(normalize_accelerator("   ").is_err());
@@ -586,8 +609,15 @@ mod tests {
         // panicking on missing plugin state): the plugin MUST be registered,
         // handler-less (per-shortcut handlers bind via `on_shortcut`; a
         // plugin-level `with_handler` would fire for ANY combo), and gated on
-        // the same availability flag the apply path checks.
-        let lib = include_str!("../lib.rs");
+        // the same availability flag the apply path checks. Comment lines are
+        // stripped per the repo pin convention: commenting the registration
+        // or its gate out must not satisfy the pins (review round 5).
+        let lib: String = include_str!("../lib.rs")
+            .lines()
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
             lib.contains("tauri_plugin_global_shortcut::Builder::new()"),
             "lib.rs must register the global-shortcut plugin (state() panics otherwise)"
@@ -599,6 +629,20 @@ mod tests {
         assert!(
             lib.contains("global_shortcuts_available"),
             "plugin registration must be gated on session availability"
+        );
+        // The degraded x11+Wayland-socket session warning must actually be
+        // EMITTED from setup (after the logger attaches) — the Once-guarded
+        // warn function is dead machinery without this call (review round 5).
+        assert!(
+            lib.contains("warn_if_global_shortcut_session_is_ambiguous()"),
+            "the ambiguous-session warning must be emitted from lib.rs setup"
+        );
+        // The invoke-handler registration is repo-wide unpinned (dropping the
+        // entry 404s the command with every test green); pin at least this
+        // command's entry alongside the registration pin.
+        assert!(
+            lib.contains("commands::global_shortcut::set_global_shortcut_config,"),
+            "the command must stay registered in generate_handler"
         );
     }
 
