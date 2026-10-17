@@ -16,12 +16,19 @@
 // changes), real bundle types are untouched, and a `none` mixed with real
 // types is never silently absorbed.
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const test = require("node:test");
 
 const {
   extractBundlesNone,
   prepareTauriArgs,
 } = require("../scripts/tauri/build.js");
+
+const BUILD_SCRIPT_SOURCE = fs.readFileSync(
+  path.join(__dirname, "..", "scripts", "tauri", "build.js"),
+  "utf8",
+);
 
 const LINUX_X64 = { platform: "linux", architecture: "x64", stageRuntime: () => null };
 
@@ -203,4 +210,73 @@ test("bundle rejects the request in flag-first order too", () => {
     ),
     /--bundles none is a wrapper-owned build request/u,
   );
+});
+
+test("a real bundle type next to an absorbed none fails loudly", () => {
+  // After absorption the leftover spelling would sit next to the injected
+  // --no-bundle, where the CLI silently lets --no-bundle win — the same
+  // silent degradation the `none,deb` value mix above refuses. Every
+  // accepted spelling of the second request must fail here instead.
+  for (const second of [
+    ["--bundles", "deb"],
+    ["-b", "deb"],
+    ["--bundles=deb"],
+    ["-b=deb"],
+  ]) {
+    assert.throws(
+      () => prepareTauriArgs(
+        ["build", "--target", "loongarch64-unknown-linux-gnu", "--bundles", "none", ...second],
+        LINUX_X64,
+      ),
+      /conflicting --bundles requests/u,
+      `subcommand-first with ${second} must fail loudly`,
+    );
+    assert.throws(
+      () => prepareTauriArgs(
+        ["--bundles", "none", ...second, "build", "--target", "loongarch64-unknown-linux-gnu"],
+        LINUX_X64,
+      ),
+      /conflicting --bundles requests/u,
+      `flag-first with ${second} must fail loudly`,
+    );
+  }
+});
+
+test("dev keeps its absorb-only semantics even with a second bundles spelling", () => {
+  // dev never bundles and gets no --no-bundle, so the contradiction the
+  // build path rejects cannot arise there; the pass-through spelling stays
+  // with the CLI exactly as before this gate existed.
+  const prepared = prepareTauriArgs(
+    ["dev", "--bundles", "none", "--bundles", "deb"],
+    LINUX_X64,
+  );
+  assert.ok(!prepared.includes("--no-bundle"), `--no-bundle leaked into dev: ${prepared}`);
+  const bundlesIndex = prepared.indexOf("--bundles");
+  assert.notEqual(bundlesIndex, -1, "the pass-through --bundles must survive on dev");
+  assert.equal(prepared[bundlesIndex + 1], "deb");
+});
+
+test("repeated none spellings alone stay contradictory-free", () => {
+  const prepared = prepareTauriArgs(
+    ["--bundles", "none", "build", "--bundles=none", "--target", "loongarch64-unknown-linux-gnu"],
+    LINUX_X64,
+  );
+  assert.equal(prepared.filter((arg) => arg === "--no-bundle").length, 1);
+});
+
+test("main() validates the request before any preparation work runs", () => {
+  // The never-succeedable shapes are knowable from argv alone, while the
+  // sidecar preparation takes minutes: pin the fail-fast call ordering so a
+  // refactor cannot silently move the validation back behind the prep steps.
+  const mainBody = BUILD_SCRIPT_SOURCE.match(/\nasync function main\(\) \{\n([\s\S]*?)\n\}\n/u);
+  assert.ok(mainBody, "build.js must keep its main() entry point");
+  const planAt = mainBody[1].indexOf("bundlesNonePlan(args)");
+  assert.ok(planAt >= 0, "main() must run bundlesNonePlan(args) for fail-fast validation");
+  for (const step of ["prepareLinuxAsrRuntime(", "prepareCodexBridge(", "prepareKnowledgeHost("]) {
+    const stepAt = mainBody[1].indexOf(step);
+    assert.ok(
+      stepAt >= 0 && planAt < stepAt,
+      `bundlesNonePlan must run before ${step} so an impossible request fails fast`,
+    );
+  }
 });

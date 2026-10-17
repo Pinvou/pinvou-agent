@@ -54,4 +54,10 @@ test('the remote owner-model download entry is capability-gated, fail closed', (
     knowledgeSource,
     /<RemoteKnowledgeView t=\{t\} localEmbedSupported=\{localEmbedSupported\} \/>/,
   );
+  // 按钮被能力门隐藏时，宿主（本机）的状态行必须给出平台解释，而不是让
+  // 「尚未下载」悬空；非宿主观看者看到的仍是宿主的真实状态（remoteKbModelMissing）。
+  assert.match(
+    remoteKnowledgeSource,
+    /\(isLocalHostOwner && !localEmbedReady \? t\.kbEmbedUnsupported : t\.remoteKbModelMissing\)/,
+  );
 });
