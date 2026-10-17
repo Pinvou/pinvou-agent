@@ -174,3 +174,33 @@ test("bundle subcommand rejects the request loudly instead of mis-splicing", () 
     /--bundles none is a wrapper-owned build request/u,
   );
 });
+
+test("the request may precede the subcommand (flag-first order)", () => {
+  // The absorbed `--bundles none` tokens shift every index after them, so
+  // the subcommand lookup must run on the filtered array: flag-first
+  // orders used to read the wrong token and silently drop the request
+  // (`build`) or bypass the bundle guard (`bundle`).
+  const prepared = prepareTauriArgs(
+    ["--bundles", "none", "build", "--target", "loongarch64-unknown-linux-gnu"],
+    LINUX_X64,
+  );
+  assert.ok(prepared.includes("--no-bundle"), `missing --no-bundle: ${prepared}`);
+  assert.ok(!prepared.includes("--bundles"), `--bundles leaked: ${prepared}`);
+  assert.ok(!prepared.includes("none"), `the "none" value leaked: ${prepared}`);
+
+  const equalsForm = prepareTauriArgs(
+    ["--bundles=none", "build", "--target", "loongarch64-unknown-linux-gnu"],
+    LINUX_X64,
+  );
+  assert.ok(equalsForm.includes("--no-bundle"), `missing --no-bundle: ${equalsForm}`);
+});
+
+test("bundle rejects the request in flag-first order too", () => {
+  assert.throws(
+    () => prepareTauriArgs(
+      ["--bundles", "none", "bundle", "--target", "loongarch64-unknown-linux-gnu"],
+      LINUX_X64,
+    ),
+    /--bundles none is a wrapper-owned build request/u,
+  );
+});

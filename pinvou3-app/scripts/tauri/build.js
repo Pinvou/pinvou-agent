@@ -717,14 +717,18 @@ function prepareTauriArgs(
     // the request is not an option: `bundle` without it runs a FULL bundle.
     // (`dev` falls through on purpose: it never bundles, so stripping IS
     // the requested semantics.)
-    if (args[commandIndex] === "bundle") {
+    // Read the subcommand from `prepared`, not the raw argv: the absorbed
+    // `--bundles none` tokens shift every index after them, so when the
+    // request precedes the subcommand, an index computed on `prepared`
+    // points at the wrong token in `args`.
+    if (prepared[commandIndex] === "bundle") {
       throw new Error(
         "--bundles none is a wrapper-owned build request: the `bundle` subcommand has"
           + " no --no-bundle and cannot skip bundling. Use `tauri build --bundles none`"
           + " (compile without bundling, package yourself) or pass real bundle types.",
       );
     }
-    if (args[commandIndex] === "build") {
+    if (prepared[commandIndex] === "build") {
       // Translate the absorbed `--bundles none` request into the flag the
       // pinned @tauri-apps/cli 2.11.4 actually accepts (verified against
       // `tauri build --help`: `--no-bundle`, "Skip the bundling step even if
