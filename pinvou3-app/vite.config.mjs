@@ -466,18 +466,27 @@ function enforceLazyChunks() {
   };
 }
 
-// Deliberately keep both desktop and web below Vite's 500 kB warning boundary.
-// New entry work should be split or lazy-loaded. Raising this limit requires
-// measured desktop + web before/after sizes and an explicit review decision.
-//
-// 500_000 → 502_000 (round-21 B-1, measured per policy): the session-messaging
-// receive path adds +1.71 kB of web entry (same-base: main@007f5ea4 alone =
-// 498.54 kB web; +messaging = 500.25 kB web / 497.93 kB desktop). The
-// deferrable UI (sender card) and the send-side builder were already split
-// out (round-18/20); the remainder is the synchronous receive-path parser,
-// which cannot defer without breaking render semantics. An in-PR trim
-// (builder split into the lazy graph) was measured net +122 B and rejected.
-export const MAIN_ENTRY_BUDGET_BYTES = 502_000;
+// Startup budget, combined measured raises (round-21 B-1 on the messaging
+// side + this PR's automations residual):
+// - the session-messaging receive path adds +1.71 kB of web entry
+//   (same-base: main@007f5ea4 alone = 498.54 kB web; +messaging =
+//   500.25 kB web / 497.93 kB desktop) — the deferrable UI (sender card)
+//   and the send-side builder were already split out (rounds 18/20); the
+//   remainder is the synchronous receive-path parser, which cannot defer
+//   without breaking render semantics. An in-PR trim (builder split into
+//   the lazy graph) was measured net +122 B and rejected.
+// - the app-automations builtin measured its startup residual at
+//   500_532 B on web (500_140 on desktop) AFTER lazy-splitting everything
+//   deferrable — the result card and its parser moved to the on-demand
+//   scheduled-task-card chunk, leaving only the timeline-header summary
+//   surface whose synchronous rendering is pinned reviewed behavior.
+// The combined tree is measured at 502_181 B on web after this rebase
+// (both residuals stacked over the 498_540 B base), so this constant is
+// set to 503_000 — the next kB boundary, ~800 B of headroom; main may
+// now emit Vite's informational chunk-size warning on web, while this
+// gate remains the hard limit. Raising further requires the same measured
+// evidence plus an explicit review decision.
+export const MAIN_ENTRY_BUDGET_BYTES = 503_000;
 
 export function assertMainEntryBudget(bundle, budgetBytes = MAIN_ENTRY_BUDGET_BYTES) {
   const mainEntry = Object.values(bundle).find(output => (
