@@ -77,10 +77,11 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
     def test_release_job_cross_builds_on_x86_64(self):
         # GitHub has no loong64 hosted runner: the cross build must be pinned
         # to the x86_64 jammy image the toolchain asset's sha256 pin was
-        # recorded for (never the arm base image, never latest).
-        self.assertIn("runs-on: ubuntu-22.04\n", self.job)
-        self.assertNotIn("runs-on: ubuntu-22.04-arm", self.job)
-        self.assertNotIn("ubuntu-latest", self.job.split("\n    steps:", maxsplit=1)[0])
+        # recorded for (never the arm base image, never latest). Judged on
+        # comment-stripped job text, like every live-configuration pin.
+        self.assertIn("runs-on: ubuntu-22.04\n", self.job_code)
+        self.assertNotIn("runs-on: ubuntu-22.04-arm", self.job_code)
+        self.assertNotIn("ubuntu-latest", self.job_code.split("\n    steps:", maxsplit=1)[0])
 
     def test_release_job_invokes_the_ci_orchestrator(self):
         # Every stage (knowledge cross build, ASR cross build, tauri app
@@ -135,7 +136,7 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         # arm64 (native) gets 90 minutes; the cross build reuses the same
         # runner shape with the cross toolchain in front of it — the budget
         # is 90 * ~1.5. Pin it so the headroom cannot silently disappear.
-        self.assertIn("timeout-minutes: 135", self.job)
+        self.assertIn("timeout-minutes: 135", self.job_code)
 
     # ---- bundling contract ----
 
@@ -160,12 +161,12 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         version_ref = "${{ needs.check-version-bump.outputs.version }}"
         artifact_name = f"pinvou-agent-{version_ref}-linux-loong64"
         deb_name = f"pinvou-agent_{version_ref}-linux-loong64.deb"
-        self.assertIn(f"name: {artifact_name}\n", self.job)
+        self.assertIn(f"name: {artifact_name}\n", self.job_code)
         # Both upload paths (deb + .sha256) carry the unified name.
         self.assertEqual(self.job_code.count(deb_name), 2)
 
     def test_release_job_runs_the_loongarch64_floor_guard(self):
-        step = self._step_block(self.job, "check-linux-glibc-floor.sh")
+        step = self._step_block(self.job_code, "check-linux-glibc-floor.sh")
         self.assertRegex(step, r'check-linux-glibc-floor\.sh "[^"]+\.deb" loongarch64\s*$')
 
     def _step_block(self, job, needle):
@@ -193,15 +194,18 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
     def test_toolchain_setup_script_pins_the_asset_hash(self):
         # The release job consumes the sha256-pinned script; the pin must
         # stay in the script (a workflow-side env override could weaken it).
-        self.assertIn(TOOLCHAIN_SHA256, self.toolchain)
-        self.assertIn('GLIBC_VERSION="2.38"', self.toolchain)
-        self.assertIn('VARIANT="stable"', self.toolchain)
+        # Judged on comment-stripped text: the pin must live in code.
+        toolchain = _without_comments(self.toolchain)
+        self.assertIn(TOOLCHAIN_SHA256, toolchain)
+        self.assertIn('GLIBC_VERSION="2.38"', toolchain)
+        self.assertIn('VARIANT="stable"', toolchain)
 
     def test_sysroot_setup_script_pins_the_glibc_2_38_baseline(self):
-        self.assertIn('GLIBC_FLOOR="2.38"', self.sysroot)
-        self.assertIn('DPKG_ARCH="loong64"', self.sysroot)
+        sysroot = _without_comments(self.sysroot)
+        self.assertIn('GLIBC_FLOOR="2.38"', sysroot)
+        self.assertIn('DPKG_ARCH="loong64"', sysroot)
         # The deepin beige source is the audited glibc-2.38 baseline.
-        self.assertIn("community-packages.deepin.com/beige", self.sysroot)
+        self.assertIn("community-packages.deepin.com/beige", sysroot)
 
     def test_setup_scripts_print_the_export_block_the_pr_leg_consumes(self):
         # The pr-check leg extracts the "export in the CI step" block into
@@ -379,11 +383,14 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         # reads these scripts: a script-only edit (sha re-pin, sysroot
         # package list, packaging step) must run the legs that execute them
         # instead of skipping everything with required-gate green on
-        # `skipped`.
-        rust_full = self.pr_check_workflow.split(
+        # `skipped`. Judged on comment-stripped text: commenting a path out
+        # (a plausible filter-debugging move) must fail here, not pass the
+        # pin while the regression it guards is live.
+        stripped_workflow = _without_comments(self.pr_check_workflow)
+        rust_full = stripped_workflow.split(
             "\n            rust_full:", maxsplit=1
         )[1].split("\n            cli_rust:", maxsplit=1)[0]
-        release_contract = self.pr_check_workflow.split(
+        release_contract = stripped_workflow.split(
             "\n            release_contract:", maxsplit=1
         )[1].split("\n            pet:", maxsplit=1)[0]
         for script in (
@@ -405,7 +412,9 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         # (tauri-bundler reads them from bundle.linux.deb of the linux
         # tauri.conf.json); a silent drift would stale the loong64 deb's
         # runtime deps exactly like the drifts this packager exists to
-        # avoid. Pin the parity (whitespace/order-insensitive).
+        # avoid. Both sides carry the same source order, so the parity is
+        # pinned order-sensitive via assertListEqual (stricter, and a
+        # reorder must be a conscious change on both sides).
         config = (
             ROOT / "pinvou3-app/src-tauri/config/platforms/linux/tauri.conf.json"
         ).read_text(encoding="utf-8")
@@ -430,6 +439,122 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
 
         self.assertListEqual(packager_list("DEPENDS"), json_list("depends"))
         self.assertListEqual(packager_list("RECOMMENDS"), json_list("recommends"))
+
+    def test_packager_replicates_the_bundler_content_surface(self):
+        # The loong64 deb is hand-assembled to tauri-bundler's layout, and
+        # the Depends parity test above is the only other packager pin.
+        # Everything else that decides what a user's system looks like after
+        # `dpkg -i` is pinned here, so a packaging regression cannot ship
+        # green: (1) executables are 0755 — the app binary, the ASR engine,
+        # the asr shim (exec'd directly via PINVOU3_ASR_CMD; the repo blob
+        # is 0755 and tauri-bundler's resource copy preserves that on the
+        # amd64/arm64 debs) and the maintainer scripts (dpkg requires it);
+        # (2) data files are 0644; (3) the desktop entry and the three
+        # hicolor icon destinations (incl. the @2 retina directory the
+        # bundler derives from real pixel dimensions) are installed;
+        # (4) md5sums cover every data file; (5) Installed-Size sums
+        # regular files under the data root, DEBIAN excluded, /1024 (the
+        # bundler's total_dir_size excludes directory inodes, so `du -sb`
+        # would overstate).
+        packager = _without_comments(self.packager)
+        for executable in (
+            'install -m 0755 "$app_binary"',
+            'install -m 0755 "$asr_engine"',
+            'install -m 0755 "$APP_SRC_TAURI/resources/platforms/linux/asr/pinvou3-asr-shim.py"',
+            'install -m 0755 "$postinst_src"',
+            'install -m 0755 "$prerm_src"',
+        ):
+            self.assertIn(executable, packager, executable)
+        self.assertNotIn('install -m 0644 "$APP_SRC_TAURI/resources/platforms/linux/asr/pinvou3-asr-shim.py"', packager)
+        for data_file in (
+            'install -m 0644 "$APP_SRC_TAURI/resources/platforms/linux/asr/LICENSE-SenseVoice.cpp"',
+            'install -m 0644 "$desktop_template"',
+        ):
+            self.assertIn(data_file, packager, data_file)
+        for icon in ('$icon_32', '$icon_128', '$icon_256'):
+            self.assertIn(f'install -m 0644 "{icon}"', packager, icon)
+        # freedesktop hicolor destinations, including the bundler's @2
+        # spelling for the 256px retina icon.
+        for destination in (
+            "usr/share/applications/$PACKAGE_NAME.desktop",
+            "usr/share/icons/hicolor/32x32/apps/",
+            "usr/share/icons/hicolor/128x128/apps/",
+            "usr/share/icons/hicolor/256x256@2/apps/",
+        ):
+            self.assertIn(destination, packager, destination)
+        # md5sums over every data file, sorted for determinism, ./ prefix
+        # stripped (bundler's generate_md5sums shape).
+        self.assertIn("find . -type f -not -path './DEBIAN/*' -print0", packager)
+        self.assertIn("xargs -0 md5sum", packager)
+        # Installed-Size: regular files only (never directory inodes),
+        # integer division by 1024 per Debian policy.
+        self.assertIn("find . -type f -not -path './DEBIAN/*' -printf '%s\\n'", packager)
+        self.assertIn("/ 1024", packager)
+
+    def test_sysroot_pins_the_verified_package_and_pc_module_lists(self):
+        # The sysroot's self-verification is only as strong as the lists it
+        # checks: trimming VERIFY_PC_MODULES or the DEV_PACKAGES seed set
+        # would shrink the verification (and the dependency closure)
+        # silently. The package list is also part of the cache-generation
+        # identity (the manifest records it), so both lists are pinned in
+        # full — any edit must be a conscious, reviewed change.
+        def bash_list(script_text, name):
+            match = re.search(rf"^{name}=\(\n((?:  .*\n)+)\)", script_text, re.M)
+            self.assertIsNotNone(match, f"{name} list missing from the sysroot script")
+            return [line.strip() for line in match.group(1).splitlines() if line.strip()]
+
+        sysroot = _without_comments(self.sysroot)
+        self.assertListEqual(
+            bash_list(sysroot, "DEV_PACKAGES"),
+            [
+                "libwebkit2gtk-4.1-dev",
+                "libssl-dev",
+                "libayatana-appindicator3-dev",
+                "libpipewire-0.3-dev",
+                "libdrm-dev",
+                "libgbm-dev",
+                "libegl-dev",
+                "libdbus-1-dev",
+            ],
+        )
+        self.assertListEqual(
+            bash_list(sysroot, "VERIFY_PC_MODULES"),
+            [
+                "webkit2gtk-4.1",
+                "javascriptcoregtk-4.1",
+                "libsoup-3.0",
+                "gtk+-3.0",
+                "gdk-3.0",
+                "glib-2.0",
+                "gio-2.0",
+                "gobject-2.0",
+                "ayatana-appindicator3-0.1",
+                "openssl",
+                "libssl",
+                "libcrypto",
+                "libpipewire-0.3",
+                "libdrm",
+                "gbm",
+                "egl",
+                "dbus-1",
+            ],
+        )
+
+    def test_pr_check_leg_rust_cache_saves_on_main_only(self):
+        # The loong leg's rust-cache block is the sixth of its kind; the
+        # five sibling blocks are pinned by the gate/cache-policy suites.
+        # Dropping `save-if` would turn every PR into a cache write (quota
+        # churn the cache policy forbids); dropping the shared key would
+        # cross-pollute the host-arch caches the comment above the block
+        # warns about.
+        leg = _without_comments(self.pr_check_workflow).split(
+            "\n  rust-loongarch64-check:", maxsplit=1
+        )[1]
+        # Job-level keys sit at exactly two spaces; everything inside the
+        # job is indented deeper, so the next `  <key>:` line ends the leg.
+        leg = re.split(r"\n  [a-zA-Z]", leg, maxsplit=1)[0]
+        self.assertIn("shared-key: rust-loongarch64-check", leg)
+        self.assertIn("save-if: ${{ github.ref == 'refs/heads/main' }}", leg)
 
     def _step_run_block(self, workflow, step_name):
         # The run block of one named step, comments stripped. Both host-tools
