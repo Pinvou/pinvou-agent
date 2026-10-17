@@ -810,7 +810,13 @@ already_built() {
   case "$method" in
     apt)    grep -Fxq "source=$(expected_source_description apt)" "$manifest" || return 1 ;;
     docker) grep -Fxq "source=$(expected_source_description docker)" "$manifest" || return 1 ;;
-    auto)   grep -Eq "^source=(apt:$mirror@$suite|docker:$docker_image)$" "$manifest" || return 1 ;;
+    auto)
+      # Exact match on both accepted sources: an ERE here would read the
+      # dots in the mirror URL / image ref as any-chars and accept a
+      # manifest line that differs only at dot positions.
+      grep -Fxq "source=$(expected_source_description apt)" "$manifest" ||
+        grep -Fxq "source=$(expected_source_description docker)" "$manifest" ||
+        return 1 ;;
   esac
 }
 
@@ -841,6 +847,12 @@ else
       else
         log "auto: falling back to the direct apt method"
         rm -rf -- "${work_dir:-}"
+        # docker_method can fail AFTER it started extracting into the output
+        # dir (dpkg-deb -x never deletes), so the fallback must re-establish
+        # the fresh-tree invariant above before the apt set extracts over the
+        # partially docker-extracted remains.
+        rm -rf -- "$output_dir"
+        mkdir -p "$output_dir"
         apt_method
       fi
       ;;

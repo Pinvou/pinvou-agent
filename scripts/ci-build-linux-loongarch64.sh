@@ -225,7 +225,10 @@ install -m 0755 "$APP_BINARY" "$STAGING_ROOT/usr/bin/pinvou3-tauri"
 
 bridge_dir="$SRC_TAURI/resources/platforms/linux/codex-bridge"
 [ -d "$bridge_dir" ] || fail "codex bridge runtime not prepared: $bridge_dir"
-if ! find "$bridge_dir" -type f -name node | grep -q .; then
+# -print -quit stops at the first match: a plain `find | grep -q` can die of
+# SIGPIPE (a later match written after grep exits) and, under pipefail, the
+# guard would then reject the very artifact it exists to protect.
+if ! find "$bridge_dir" -type f -name node -print -quit | grep -q .; then
   fail "codex bridge runtime has no node binary (was it prepared for loong64?): $bridge_dir"
 fi
 cp -a "$bridge_dir" "$STAGING_ROOT/runtime/codex-bridge"
