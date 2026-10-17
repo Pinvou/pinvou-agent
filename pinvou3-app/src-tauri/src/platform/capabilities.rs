@@ -216,6 +216,17 @@ mod tests {
         assert!(!linux_session_allows_global_shortcuts(&no_display));
         let blank_display = fake_env(&[("XDG_SESSION_TYPE", "x11"), ("DISPLAY", "  ")]);
         assert!(!linux_session_allows_global_shortcuts(&blank_display));
+        // x11 + scrubbed DISPLAY + a Wayland socket stays unavailable via the
+        // x11 arm (and therefore not ambiguous — nothing gets registered to
+        // be degraded).
+        let x11_blank_display_socket = fake_env(&[
+            ("XDG_SESSION_TYPE", "x11"),
+            ("DISPLAY", " "),
+            ("WAYLAND_DISPLAY", "wayland-0"),
+        ]);
+        assert!(!linux_session_allows_global_shortcuts(
+            &x11_blank_display_socket
+        ));
     }
 
     #[test]
@@ -231,6 +242,14 @@ mod tests {
         // Session type says Wayland without any WAYLAND_DISPLAY socket.
         let type_only = fake_env(&[("XDG_SESSION_TYPE", "wayland")]);
         assert!(!linux_session_allows_global_shortcuts(&type_only));
+        // A set-but-unrecognized session type denies too, socket or not:
+        // only an x11 session type may ever grab.
+        let unrecognized_type = fake_env(&[
+            ("XDG_SESSION_TYPE", "mir"),
+            ("WAYLAND_DISPLAY", "wayland-1"),
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
+        ]);
+        assert!(!linux_session_allows_global_shortcuts(&unrecognized_type));
         // Fallback arm: unset session type, Wayland socket + runtime dir.
         let socket_only = fake_env(&[
             ("WAYLAND_DISPLAY", "wayland-1"),

@@ -27,7 +27,8 @@ pub(super) fn bring_main_window_to_front(app: &AppHandle) {
     // macOS present via show + unminimize + set_focus, with macOS unhiding
     // the app first (a Cmd+H-hidden NSApplication ignores window-level
     // calls).
-    let deferred = crate::platform::window_startup::activate_main_window(window.clone(), "global_shortcut");
+    let deferred =
+        crate::platform::window_startup::activate_main_window(window.clone(), "global_shortcut");
     if deferred {
         return;
     }

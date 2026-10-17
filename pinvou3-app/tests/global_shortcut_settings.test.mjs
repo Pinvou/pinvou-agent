@@ -78,6 +78,7 @@ assert.equal(formatGlobalShortcutForDisplay('cmdorctrl+alt+p'), 'Ctrl/Cmd+Alt+P'
 assert.equal(formatGlobalShortcutForDisplay('CmdOrCtrl+Alt+P'), 'Ctrl/Cmd+Alt+P');
 assert.equal(formatGlobalShortcutForDisplay('CmdOrControl+Alt+P'), 'Ctrl/Cmd+Alt+P');
 assert.equal(formatGlobalShortcutForDisplay('CommandOrCtrl+Alt+P'), 'Ctrl/Cmd+Alt+P');
+assert.equal(formatGlobalShortcutForDisplay('CommandOrControl+Alt+P'), 'Ctrl/Cmd+Alt+P');
 // Key/Digit prefixes are stripped even without modifiers; F-keys pass through.
 assert.equal(formatGlobalShortcutForDisplay('KeyF9'), 'F9');
 assert.equal(formatGlobalShortcutForDisplay('ctrl+KeyF9'), 'Ctrl+F9');
@@ -149,6 +150,11 @@ assert.match(settingsView, /copy\.globalShortcuts/);
 // Live disk-mirror state model: enabled derives from the snapshot (never a
 // seeded local copy that can desync from disk).
 assert.match(settingsView, /const enabled = prefs \? prefs\.global_shortcut_enabled === true : false;/);
+// The disk-truth gate requires the shortcut fields: a failed get_settings
+// leaves a truthy {theme, color_scheme, language} fallback in the slice,
+// which must keep the section disabled instead of letting a toggle submit
+// the default combo over disk (review round 5).
+assert.match(settingsView, /const prefs = rawSettings && typeof rawSettings\.global_shortcut_enabled === 'boolean'\s*\?\s*rawSettings\s*:\s*null;/);
 assert.match(settingsView, /global_shortcut_accelerator/);
 assert.match(settingsView, /setGlobalShortcutConfig/);
 // The section must be reachable from the general tab render tree.
@@ -176,16 +182,44 @@ assert.match(settingsView, /applyConfig\(enabled, globalShortcutDraftToRust\(dra
 // (localPort-row pattern) instead of wedging the button silently.
 assert.match(settingsView, /if \(!acceleratorPlausible\) \{/);
 assert.match(settingsView, /setErrorSlot\('accelerator'\)/);
-// Error-slot routing: outcome errors land in the owning row's slot, the
-// unavailable-session notice in the toggle slot.
-assert.match(settingsView, /setErrorSlot\(slot\)/);
+// Error-slot routing: outcome errors land in the owning row's slot — the
+// ternary is unique to the .then outcome arm and the routing
+// setErrorSlot(slot) must DIRECTLY follow it (a pin satisfied by the .catch
+// arm's identical pair would let outcome errors route to the wrong row,
+// review round 5); the unavailable-session notice lands in the toggle slot.
+assert.match(settingsView, /setActionError\(status === 'invalid' \? copy\.globalShortcutInvalid\s*:\s*status === 'conflict' \? copy\.globalShortcutConflict\s*:\s*copy\.globalShortcutSaveFailed\);\s*setErrorSlot\(slot\);/);
 assert.match(settingsView, /setErrorSlot\('toggle'\)/);
+// Errors render in the toggle slot on unavailable sessions too: switching a
+// residual shortcut off is the only operable action there, and a failed
+// disable must be visible instead of console-only (review round 5).
+assert.match(settingsView, /const toggleDesc = actionError && errorSlot === 'toggle'\s*\?\s*actionError\s*:\s*available \? copy\.globalShortcutEnableDesc : copy\.globalShortcutUnsupportedDesc;/);
+// The draft follows the saved combo while untouched and the post-save resync
+// folds it back in sync when it matches the submitted combo modulo
+// case/whitespace/alias spelling — the phantom-dirty-flag fix. Each
+// load-bearing piece is pinned so the machinery cannot be disabled silently
+// (review round 5: disabling the resync with `if (false)` kept the suite
+// green).
+assert.match(settingsView, /if \(editedRef\.current\) return;/);
+assert.match(settingsView, /const fold = foldGlobalShortcutDraft\(display\);\s*if \(fold === syncedFoldRef\.current\) return;\s*syncedFoldRef\.current = fold;\s*updateDraft\(display\);/);
+assert.match(settingsView, /foldGlobalShortcutDraft\(draft\) === foldGlobalShortcutDraft\(formatGlobalShortcutForDisplay\(nextAccelerator\)\)/);
+assert.match(settingsView, /editedRef\.current = false;\s*const display = formatGlobalShortcutForDisplay\(normalized\);\s*syncedFoldRef\.current = foldGlobalShortcutDraft\(display\);\s*updateDraft\(display\);/);
+// The draft seeds from the SAVED combo, not the default, so a mount with a
+// loaded snapshot never paints the default combo for a frame (review
+// round 5).
+assert.match(settingsView, /useState\(\(\) => formatGlobalShortcutForDisplay\(savedAccelerator\)\)/);
+// Typing invalidates the accelerator slot's error (localPort-row pattern):
+// a fixed-up draft must not keep showing the stale invalid copy (review
+// round 5).
+assert.match(settingsView, /if \(errorSlot === 'accelerator'\) setActionError\(''\);/);
 // The toggle submits the SAVED combo (live mirror state), not the draft.
 assert.match(settingsView, /onChange=\{value => applyConfig\(!!value, savedAccelerator, 'toggle'\)\}/);
 // A persisted-on switch stays switchable-OFF on unavailable sessions (the
 // Rust disable path is availability-independent); only turning ON requires a
 // capable session.
 assert.match(settingsView, /!available && !enabled/);
+// The section is desktop-only: hiding it behind !isWeb is part of the
+// bridge contract's desktop-only classification (review round 5).
+assert.match(settingsView, /!\s*isWeb &&\s*\(\s*<GlobalShortcutSettingSection/);
 
 const bridge = source('platform/tauri/bridge.js');
 // Fail-closed capability default (Wayland reports the real value via get_platform_capabilities).
@@ -278,6 +312,7 @@ const rustSuccessStub = (args) => {
   });
   const retried = await flaky.feature.setGlobalShortcutConfig(true, 'Ctrl+Alt+O');
   assert.equal(attempts, 2, 'a failed invoke must be retried exactly once');
+  assert.deepEqual(flaky.invoked[1][1], flaky.invoked[0][1], 'the retry must re-apply the identical config');
   assert.equal(retried && retried.status, 'registered', 'the retry response is the wrapper result');
   assert.equal(
     flaky.state.settings.global_shortcut_accelerator,
@@ -311,6 +346,30 @@ const rustSuccessStub = (args) => {
     'a null-accelerator response must not write the raw draft into the mirror',
   );
   assert.equal(harness.state.settings.global_shortcut_enabled, false);
+}
+
+{
+  // Producible failed-save shapes (review round 5): invalid/conflict carry
+  // accelerator: null and persist NOTHING — the mirror must stay untouched
+  // so the UI keeps describing the still-active state and the next toggle
+  // re-submits what is actually active. The harness previously produced only
+  // registered/disabled/throws, so a regression that mirrored failed saves
+  // passed the whole suite.
+  const conflict = createShortcutBridgeHarness({
+    respond: () => ({ status: 'conflict', accelerator: null, message: 'owned by another app' }),
+  });
+  const conflictResult = await conflict.feature.setGlobalShortcutConfig(true, 'Ctrl+Alt+O');
+  assert.equal(conflictResult && conflictResult.status, 'conflict', 'the conflict response passes through to the caller');
+  assert.equal(conflict.state.settings.global_shortcut_accelerator, 'control+alt+KeyP', 'a conflict must not touch the snapshot');
+  assert.equal(conflict.state.settings.global_shortcut_enabled, false, 'a conflict must not mirror the requested enabled');
+
+  const invalidDraft = createShortcutBridgeHarness({
+    respond: () => ({ status: 'invalid', accelerator: null, message: 'unparsable accelerator' }),
+  });
+  const invalidResult = await invalidDraft.feature.setGlobalShortcutConfig(true, 'Ctrl+Alt+O');
+  assert.equal(invalidResult && invalidResult.status, 'invalid', 'the invalid response passes through to the caller');
+  assert.equal(invalidDraft.state.settings.global_shortcut_accelerator, 'control+alt+KeyP', 'an invalid response must not touch the snapshot');
+  assert.equal(invalidDraft.state.settings.global_shortcut_enabled, false, 'an invalid response must not mirror the requested enabled');
 }
 
 console.log('global_shortcut_settings: ok');

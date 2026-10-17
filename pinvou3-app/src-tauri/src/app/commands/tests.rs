@@ -3439,8 +3439,9 @@ fn global_shortcut_persist_writes_and_lazy_parse_stay_pinned() {
         "the transaction must persist the canonical accelerator, not the raw input"
     );
     assert!(
-        source
-            .contains("Err(message) if enabled => return Ok(GlobalShortcutApplyResult::invalid(message))"),
+        source.contains(
+            "Err(message) if enabled => return Ok(GlobalShortcutApplyResult::invalid(message))"
+        ),
         "an unparsable accelerator must fail the request only when enabling"
     );
 }
