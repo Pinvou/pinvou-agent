@@ -578,7 +578,11 @@ fn extract_zip_member<R: Read + io::Seek>(reader: R, expected: &str) -> io::Resu
     let mut archive = zip::ZipArchive::new(reader)?;
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
-        if normalized_path_eq(Path::new(entry.name()), expected) {
+        let matches_expected = {
+            let name = entry.name()?;
+            normalized_path_eq(Path::new(name.as_ref()), expected)
+        };
+        if matches_expected {
             return read_limited(&mut entry, MAX_BINARY_BYTES);
         }
     }
@@ -913,5 +917,48 @@ mod tests {
             );
             assert!(!legacy.exists());
         });
+    }
+    #[test]
+    fn zip_member_extraction_keeps_unicode_and_expected_path_boundary() {
+        use std::io::Cursor;
+        use zip::{CompressionMethod, ZipWriter, write::SimpleFileOptions};
+        for method in [CompressionMethod::Stored, CompressionMethod::Deflated] {
+            let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+            for name in ["../bin/é-cli", "/bin/é-cli", "bin/é-cli"] {
+                writer
+                    .start_file(
+                        name,
+                        SimpleFileOptions::default().compression_method(method),
+                    )
+                    .unwrap();
+                writer
+                    .write_all(if name == "bin/é-cli" {
+                        b"expected"
+                    } else {
+                        b"unsafe"
+                    })
+                    .unwrap();
+            }
+            let bytes = writer.finish().unwrap().into_inner();
+            assert_eq!(
+                extract_zip_member(Cursor::new(&bytes), "bin/é-cli").unwrap(),
+                b"expected"
+            );
+            assert_eq!(
+                extract_zip_member(Cursor::new(&bytes), "missing")
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::NotFound
+            );
+        }
+    }
+
+    #[test]
+    fn zip_member_read_limit_rejects_bytes_over_the_requested_limit() {
+        assert_eq!(read_limited(&mut &b"abc"[..], 3).unwrap(), b"abc");
+        assert_eq!(
+            read_limited(&mut &b"abcd"[..], 3).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 }

@@ -1,7 +1,7 @@
 # cargo-deny 配置 —— pinvou3-app/src-tauri
 # 用法:`cargo deny check`(需 `cargo install cargo-deny`)。CI 在 pr-check.yml 里调用。
 # 四类检查:advisories(RUSTSEC 漏洞)、licenses(开源合规)、bans(重复 crate / 禁用 crate)、
-# sources(只允许 crates.io + 本地 path 依赖)。
+# sources (crates.io, local paths, and one explicitly reviewed calamine Git source).
 
 [graph]
 # 只检查本 crate 的依赖图(含 path 依赖 CodeWhale)。
@@ -26,11 +26,8 @@ ignore = [
 # 的条目并 fail CI。这些非本仓可修(等 tauri/gtk-rs 升级),"workspace" 仅报 workspace crate,
 # 把噪声挡在 CI 之外;真漏洞仍由上面的 ignore 显式管理 + cargo update 修复。
 unmaintained = "workspace"
-# Keep yanked releases visible while calamine 0.36.1 requires zip ^8.6.
-# Retain the locked graph; RustSec vulnerability advisories still fail.
-# Restore "deny" with a supported non-yanked dependency update, and reassess
-# immediately if an advisory affects the pinned version.
-yanked = "warn"
+# ZIP 9.0.4 and the fixed calamine adapter no longer require the yanked ZIP 8 release.
+yanked = "deny"
 
 [licenses]
 version = 2
@@ -68,9 +65,10 @@ wildcards = "warn"
 highlight = "all"
 
 [sources]
-# 只允许 crates.io + 本地 path 依赖。禁止任何 git/未知 registry。
+# Allow only crates.io, local paths, and the exact reviewed calamine source below.
+# Both consumers pin its full commit; other Git/registry sources remain denied.
 # 注意:[sources] 不支持 version 键(只有 [advisories]/[licenses] 支持)。
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+allow-git = ["https://github.com/zhuowp/calamine"]

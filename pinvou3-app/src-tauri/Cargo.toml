@@ -139,9 +139,9 @@ sha2 = "0.11"
 # standard annex. Already in the graph transitively, so this direct edge adds
 # no package to either lockfile.
 unicode-normalization = "0.1"
-# 8.x 与 calamine 传递引入的 zip 8.6.0 收敛为单一版本（消除旧 zip 2.x + 连带传递依赖）。
+# ZIP 9.0.4 fixes the ZIP 8 advisories; the pinned calamine adapter shares this version.
 # 仅 deflate（读 .pptx / 写技能 zip 包），关默认 feature 去掉 bzip2/lzma/zstd 等。
-zip = { version = "8", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.4", default-features = false, features = ["deflate"] }
 flate2 = "1"
 tar = "0.4"
 
@@ -176,7 +176,8 @@ walkdir = "2"
 # 电子表格解析（file_ingest 用）：读 xlsx/xls/ods 的全部工作表。
 # 0.36 拉入 quick-xml 0.41+,修 RUSTSEC-2026-0194/0195 ReDoS。
 # The quick-xml pulled in transitively by plist/tauri is unified to 0.41 too; no stale version remains in the graph.
-calamine = "0.36"
+# Minimal reviewed v0.36.1 adapter; provenance: docs/zip-dependency-security.md.
+calamine = { git = "https://github.com/zhuowp/calamine", rev = "fa0f5867a092f240b6f77d947ef25f2e3069dfbc" }
 # XLSX structure preservation: inspect OOXML cell styles, formulas, and merged
 # ranges that calamine's value-only Range intentionally does not expose.
 quick-xml = "0.41"

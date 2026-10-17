@@ -833,13 +833,17 @@ fn extract_wheel(
         {
             return Err(format!(
                 "Python wheel contains a disallowed symlink: {}",
-                entry.name()
+                entry
+                    .name()
+                    .map_err(|e| format!("failed to read the wheel entry name: {e}"))?
             ));
         }
         let Some(enclosed) = entry.enclosed_name() else {
             return Err(format!(
                 "Python wheel contains an unsafe path: {}",
-                entry.name()
+                entry
+                    .name()
+                    .map_err(|e| format!("failed to read the wheel entry name: {e}"))?
             ));
         };
         let Some(relative) = wheel_install_relative_path(&enclosed) else {
@@ -1681,6 +1685,125 @@ mod tests {
             // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn wheel_extraction_rejects_unsafe_paths_and_symlink_entries() {
+        for (index, name) in ["../escaped.py", "link.py"].iter().enumerate() {
+            let root = std::env::temp_dir().join(format!(
+                "pinvou-wheel-boundary-{}-{}",
+                std::process::id(),
+                unique_suffix()
+            ));
+            assert!(!root.exists());
+            fs::create_dir_all(root.join("environment/site-packages")).unwrap();
+            let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+            if index == 1 {
+                writer
+                    .add_symlink(&name, "../escaped.py", SimpleFileOptions::default())
+                    .unwrap();
+            } else {
+                writer
+                    .start_file(&name, SimpleFileOptions::default())
+                    .unwrap();
+                writer.write_all(b"untrusted").unwrap();
+            }
+            let wheel = root.join("untrusted.whl");
+            fs::write(&wheel, writer.finish().unwrap().into_inner()).unwrap();
+            let mut extracted = 0;
+            let error =
+                extract_wheel(&wheel, &root.join("environment"), &mut extracted).unwrap_err();
+            assert!(
+                error.contains(if index == 1 {
+                    "disallowed symlink"
+                } else {
+                    "unsafe path"
+                }),
+                "{error}"
+            );
+            assert_eq!(extracted, 0);
+            assert_eq!(
+                fs::read_dir(root.join("environment/site-packages"))
+                    .unwrap()
+                    .count(),
+                0
+            );
+            assert!(!root.join("environment/escaped.py").exists());
+            assert!(!root.join("escaped.py").exists());
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn wheel_extraction_rejects_exhausted_production_budget_before_writing() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-wheel-budget-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        assert!(!root.exists());
+        fs::create_dir_all(root.join("environment/site-packages")).unwrap();
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file("module.py", SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"x").unwrap();
+        let wheel = root.join("budget.whl");
+        fs::write(&wheel, writer.finish().unwrap().into_inner()).unwrap();
+        let mut extracted = MAX_ENVIRONMENT_BYTES;
+        assert!(
+            extract_wheel(&wheel, &root.join("environment"), &mut extracted)
+                .unwrap_err()
+                .contains("512 MiB")
+        );
+        assert_eq!(
+            fs::read_dir(root.join("environment/site-packages"))
+                .unwrap()
+                .count(),
+            0
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn wheel_extraction_contains_absolute_entry_names_without_writing_the_original_path() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-wheel-absolute-{}-{}",
+            std::process::id(),
+            unique_suffix()
+        ));
+        assert!(!root.exists());
+        let site_packages = root.join("environment/site-packages");
+        fs::create_dir_all(&site_packages).unwrap();
+        // The original absolute destination is also test-owned in case of a regression.
+        let original = root.join("absolute-entry.py");
+        let name = original.to_string_lossy().replace('\\', "/");
+        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        writer
+            .start_file(&name, SimpleFileOptions::default())
+            .unwrap();
+        writer.write_all(b"contained").unwrap();
+        let bytes = writer.finish().unwrap().into_inner();
+        let mut archive = zip::ZipArchive::new(Cursor::new(&bytes)).unwrap();
+        let enclosed = archive.by_index(0).unwrap().enclosed_name().unwrap();
+        assert!(enclosed.is_relative());
+        let expected: PathBuf = original
+            .components()
+            .filter_map(|component| match component {
+                std::path::Component::Normal(value) => Some(value),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(enclosed, expected);
+        let wheel = root.join("absolute.whl");
+        fs::write(&wheel, &bytes).unwrap();
+        let mut extracted = 0;
+        extract_wheel(&wheel, &root.join("environment"), &mut extracted).unwrap();
+        assert_eq!(extracted, 9);
+        assert_eq!(
+            fs::read(site_packages.join(expected)).unwrap(),
+            b"contained"
+        );
+        assert!(!original.exists());
         fs::remove_dir_all(root).unwrap();
     }
 }
