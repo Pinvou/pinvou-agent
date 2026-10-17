@@ -64,8 +64,9 @@
 #                                ggml cross build may fail; shipping without
 #                                ASR must be an explicit decision, so one of
 #                                the ASR arguments is effectively required).
-# Everything under runtime/ keeps its staged file modes; the app binary and
-# the ASR engine are forced to 0755.
+# Everything under runtime/ is normalized to the bundler's deterministic
+# tar-header modes before packing (see the normalization pass below); the
+# app binary and the ASR engine are forced to 0755 on install.
 #
 # Output: pinvou3_<VERSION>_loong64.deb (the bundler's product_name_version_
 # arch.deb naming), built with dpkg-deb --root-owner-group -Zxz so the
@@ -79,6 +80,10 @@
 # Linux-only by nature (needs dpkg-deb/readelf); static check: bash -n
 # scripts/package-deb-loongarch64.sh.
 set -euo pipefail
+# Deterministic archive content starts with a deterministic working
+# environment: runners run umask 0002, which would leak group-write bits
+# into everything this script creates before the normalization pass below.
+umask 022
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -255,15 +260,36 @@ install -m 0644 "$icon_128" "$pkg_dir/usr/share/icons/hicolor/128x128/apps/$MAIN
 mkdir -p "$pkg_dir/usr/share/icons/hicolor/256x256@2/apps"
 install -m 0644 "$icon_256" "$pkg_dir/usr/share/icons/hicolor/256x256@2/apps/$MAIN_BINARY_NAME.png"
 
+# ---- data-tree mode normalization (bundler parity) ---------------------------
+# tauri-bundler's tar entries carry deterministic headers regardless of the
+# build umask (tar-rs HeaderMode::Deterministic: uid/gid 0; 0755 for
+# directories and owner-executable files, 0644 for everything else; symlinks
+# untouched). dpkg-deb --root-owner-group normalizes ownership only, so the
+# on-disk staging modes would otherwise ship (cp -a trees and mkdir dirs
+# under umask 0002: 0775 dirs, group-writable files) where the amd64/arm64
+# debs carry 0755/0644. Mirror the header rule explicitly; DEBIAN/ is
+# excluded — its entries are chmod'd explicitly below. Order matters: the
+# owner-exec restore must see the ORIGINAL exec bit, so non-exec files are
+# normalized last.
+find "$pkg_dir" -path "$control_dir" -prune -o -type d -exec chmod 0755 {} +
+find "$pkg_dir" -path "$control_dir" -prune -o -type f -perm -u=x -exec chmod 0755 {} +
+find "$pkg_dir" -path "$control_dir" -prune -o -type f ! -perm -u=x -exec chmod 0644 {} +
+
 # ---- control: fields replicated from debian.rs generate_control_file ---------
-# Installed-Size mirrors the bundler's total_dir_size(data_dir): the byte
-# sum of the regular files under the data root, DEBIAN/ excluded. Compute
-# from inside the tree — `du --exclude` never matches an absolute operand's
-# traversal names, and `du -sb` counts directory inodes the bundler does
-# not. Integer division by 1024 per Debian policy.
-installed_size_kb=$((
-  $(cd "$pkg_dir" && find . -type f -not -path './DEBIAN/*' -printf '%s\n' | awk '{ s += $1 } END { print s }') / 1024
-))
+# Installed-Size mirrors the bundler's total_dir_size(data_dir) byte for
+# byte: it sums entry.metadata().len() over EVERY WalkDir entry of the data
+# root — directory inodes included (4096 apiece on ext4), symlinks as their
+# own link size. Prune DEBIAN/ the way the bundler's data root never
+# contains it, sum every remaining entry including ".", and divide by 1024
+# per Debian policy. (`du -sb` would dedupe hardlinks and rounds nothing —
+# close but not the same sum; find -printf '%s' is the plain st_size
+# WalkDir adds up. The sum stays OUTSIDE $(( )): a command substitution
+# with escaped find parens does not survive arithmetic-context parsing.)
+installed_size_bytes="$(
+  cd "$pkg_dir" && find . \( -path './DEBIAN' -o -path './DEBIAN/*' \) -prune -o -printf '%s\n' \
+    | awk '{ s += $1 } END { print s + 0 }'
+)"
+installed_size_kb=$((installed_size_bytes / 1024))
 {
   printf 'Package: %s\n' "$PACKAGE_NAME"
   printf 'Version: %s\n' "$version"
