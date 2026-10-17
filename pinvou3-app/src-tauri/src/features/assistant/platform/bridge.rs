@@ -107,7 +107,14 @@ const RESPONSES_ROUTE_PROVIDER: &str = "pinvou_responses";
 ///   provider …") — the exact stamp≠route mismatch this stamp exists to
 ///   prevent (review #713 round 3). A tombstone slug still fails closed at
 ///   resume, as it already failed at spawn; the stamp must not silently
-///   reroute it either.
+///   reroute it either;
+/// - a legacy `ollama` pin at the exact hosted endpoint rides the
+///   in-memory ollama→ollama-cloud migration, whose identity keeps the
+///   pin's exact id: the pair is `("ollama-cloud", Some("ollama"))`, the
+///   same shape the foundation's own derivation persists
+///   (`resolve_provider_identity`), so a later resume re-enters the same
+///   `[providers.ollama]` table the spawn rode instead of the built-in
+///   ollama-cloud route.
 pub(crate) fn persisted_provider_route(
     dt_config: &DtConfig,
     provider: &str,
@@ -120,6 +127,16 @@ pub(crate) fn persisted_provider_route(
         // api_provider only resolves Custom when `cfg.provider` names an
         // existing table, so the provider string is that key.
         ApiProvider::Custom => ("custom".to_string(), Some(provider.to_string())),
+        ApiProvider::OllamaCloud if provider == ApiProvider::Ollama.as_str() => {
+            // Legacy migration arm: the resolved kind is ollama-cloud but
+            // the identity's exact id stays the pin's "ollama" (the
+            // foundation's migrated-route shape in
+            // `resolve_provider_identity`).
+            (
+                ApiProvider::OllamaCloud.as_str().to_string(),
+                Some(ApiProvider::Ollama.as_str().to_string()),
+            )
+        }
         kind => {
             let key = kind.as_str();
             (key.to_string(), Some(key.to_string()))
@@ -11731,6 +11748,28 @@ mod tests {
         assert_eq!(
             persisted_provider_route(&cfg, "operator-private-pin"),
             ("deepseek".to_string(), Some("deepseek".to_string()))
+        );
+        // A legacy ollama pin at the exact hosted endpoint rides the
+        // in-memory ollama→ollama-cloud migration, and the foundation's
+        // identity derivation keeps the pin's exact id for it: stamping
+        // ("ollama-cloud", Some("ollama-cloud")) would name the built-in
+        // ollama-cloud route at resume instead of the same
+        // `[providers.ollama]` table the spawn rode.
+        let mut cfg = DtConfig::default();
+        cfg.provider = Some("ollama".to_string());
+        let providers = cfg.providers.get_or_insert_with(ProvidersConfig::default);
+        providers.ollama.base_url = Some("https://ollama.com/v1".to_string());
+        assert_eq!(
+            persisted_provider_route(&cfg, "ollama"),
+            ("ollama-cloud".to_string(), Some("ollama".to_string()))
+        );
+        // An explicit ollama-cloud pin is its own route (no migration):
+        // the kind as both fields, like any other built-in slug.
+        let mut cfg = DtConfig::default();
+        cfg.provider = Some("ollama-cloud".to_string());
+        assert_eq!(
+            persisted_provider_route(&cfg, "ollama-cloud"),
+            ("ollama-cloud".to_string(), Some("ollama-cloud".to_string()))
         );
     }
 }
