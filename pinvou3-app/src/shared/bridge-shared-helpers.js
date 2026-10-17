@@ -1980,10 +1980,12 @@
       let mapped = false;
       for (let i = 0; i < segments.length; i++) {
         const cut = foldedPrefixCutLength(norm, segments[i].fromKey);
-        if (cut >= 0 && (cut === norm.length || norm.charAt(cut) === "/")) {
-          norm = segments[i].toKey + norm.slice(cut);
-          mapped = true;
+        if (!(cut >= 0 && (cut === norm.length || norm.charAt(cut) === "/"))) {
+          continue;
         }
+
+        norm = segments[i].toKey + norm.slice(cut);
+        mapped = true;
       }
       return mapped ? norm : p;
     });

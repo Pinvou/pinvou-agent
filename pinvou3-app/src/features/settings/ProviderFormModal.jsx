@@ -307,7 +307,7 @@ export function ProviderFormModal({ agent, copy, initial, onClose, onSaved }) {
     const apiKeyAction = initial
       ? trimmedKey
         ? 'replace'
-        : (!initial.hasCredential || !keyLoaded ? 'keep' : 'delete')
+        : (initial.hasCredential && keyLoaded ? 'delete' : 'keep')
       : (trimmedKey ? 'replace' : 'keep');
     if (!trimmedKey && (!initial || !initial.hasCredential)) {
       setConfirmStep('emptyKey');

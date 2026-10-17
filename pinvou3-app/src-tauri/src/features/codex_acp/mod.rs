@@ -263,12 +263,14 @@ pub const CODEX_ACP_SESSION_MODEL: &str = "Codex (ACP)";
 const CODEX_ACP_PACKAGE: &str = "@agentclientprotocol/codex-acp";
 /// Bundled codex-acp adapter pin. Kept separate from the legacy managed
 /// runtime directory schema above so session diagnostics report the truth.
+/// Held at 1.6.x: codex-acp 2.x reworked the tool-call contract the bridge
+/// depends on; migrating needs a dedicated change, not a ride-along bump.
 const CODEX_ACP_ADAPTER_VERSION: &str = "1.6.2";
 /// Bundled `claude-agent-acp` version. It must match the pin in
 /// `scripts/codex-bridge-runtime/package.json` and its lockfile because this
 /// value is written to session `acp-state.json` as the declared adapter version.
 /// `forkguard_declared_adapter_versions_match_the_bridge_pin` pins the invariant.
-pub const CLAUDE_ACP_VERSION: &str = "0.79.0";
+pub const CLAUDE_ACP_VERSION: &str = "0.90.0";
 const CLAUDE_ACP_PACKAGE: &str = "@agentclientprotocol/claude-agent-acp";
 const CLAUDE_ACP_SESSION_MODEL: &str = "Claude Code (ACP)";
 const KIMI_ACP_PACKAGE: &str = "kimi acp";
