@@ -20,6 +20,7 @@ pub(crate) mod connectors;
 pub(crate) mod dependencies;
 pub(crate) mod diagnostics;
 pub(crate) mod files;
+pub(crate) mod global_shortcut;
 pub(crate) mod interaction;
 pub(crate) mod knowledge;
 pub(crate) mod marketplace;
