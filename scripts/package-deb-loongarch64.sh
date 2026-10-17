@@ -12,6 +12,17 @@
 # source: https://static.crates.io/crates/tauri-bundler/tauri-bundler-2.9.4.crate,
 # files src/bundle/linux/debian.rs and src/bundle/linux/freedesktop/mod.rs).
 #
+# Upstream route (removal trigger): the bundler gap is a small upstream fix —
+# an `Arch::LoongArch64` variant, the `binary_arch()` arm, and the debian
+# `=> "loong64"` mapping; `Arch::Riscv64` entered upstream exactly this way.
+# File/contribute that fix to tauri-apps/tauri and delete this script once the
+# repo's `@tauri-apps/cli` floor bundles a bundler containing it. Until then
+# this script is coupled to the pinned bundler internals below — a CLI bump
+# must re-derive the parity claims (Installed-Size semantics, tar header
+# modes, control field order, symlink handling); the policy suite pins the
+# header version against pinvou3-app/package.json so the coupling cannot
+# silently rot.
+#
 # Replicated layout (defaults resolved from the repo's tauri configs):
 #   data:    /usr/bin/pinvou3-tauri                 main binary (mainBinaryName)
 #            /usr/share/applications/pinvou3.desktop  desktopTemplate, copied verbatim
@@ -260,6 +271,23 @@ install -m 0644 "$icon_128" "$pkg_dir/usr/share/icons/hicolor/128x128/apps/$MAIN
 mkdir -p "$pkg_dir/usr/share/icons/hicolor/256x256@2/apps"
 install -m 0644 "$icon_256" "$pkg_dir/usr/share/icons/hicolor/256x256@2/apps/$MAIN_BINARY_NAME.png"
 
+# ---- symlink materialization (bundler parity) ---------------------------------
+# tauri-bundler never ships resource-tree symlinks: copy_resources goes through
+# fs::copy (which follows symlinks) per file, and create_tar_from_dir stats and
+# opens through links, so the amd64/arm64 debs carry the npm `node_modules/.bin`
+# entries as regular files — present in md5sums, counted at full target size in
+# Installed-Size. `cp -a` staging would ship them as symlinks (absent from the
+# `find -type f` md5sums, lstat-sized in Installed-Size), so materialize every
+# symlink into a copy of its target content before the parity passes below.
+# The staged npm trees contain symlink-to-file only (verified for the pinned
+# @agentclientprotocol packages); anything else fails loudly here exactly like
+# the bundler's fs::copy would.
+while IFS= read -r -d '' link; do
+  target="$(readlink -f -- "$link")" || fail "cannot resolve staged symlink: $link"
+  rm -- "$link"
+  cp -- "$target" "$link" || fail "cannot materialize staged symlink: $link"
+done < <(find "$pkg_dir" -path "$control_dir" -prune -o -type l -print0)
+
 # ---- data-tree mode normalization (bundler parity) ---------------------------
 # tauri-bundler's tar entries carry deterministic headers regardless of the
 # build umask (tar-rs HeaderMode::Deterministic: uid/gid 0; 0755 for
@@ -278,13 +306,15 @@ find "$pkg_dir" -path "$control_dir" -prune -o -type f ! -perm -u=x -exec chmod 
 # ---- control: fields replicated from debian.rs generate_control_file ---------
 # Installed-Size mirrors the bundler's total_dir_size(data_dir) byte for
 # byte: it sums entry.metadata().len() over EVERY WalkDir entry of the data
-# root — directory inodes included (4096 apiece on ext4), symlinks as their
-# own link size. Prune DEBIAN/ the way the bundler's data root never
-# contains it, sum every remaining entry including ".", and divide by 1024
-# per Debian policy. (`du -sb` would dedupe hardlinks and rounds nothing —
-# close but not the same sum; find -printf '%s' is the plain st_size
-# WalkDir adds up. The sum stays OUTSIDE $(( )): a command substitution
-# with escaped find parens does not survive arithmetic-context parsing.)
+# root — directory inodes included (4096 apiece on ext4). The data tree is
+# symlink-free by the materialization pass above (matching the bundler, whose
+# data dir only ever contains dereferenced regular files). Prune DEBIAN/ the
+# way the bundler's data root never contains it, sum every remaining entry
+# including ".", and divide by 1024 per Debian policy. (`du -sb` would dedupe
+# hardlinks and rounds nothing — close but not the same sum; find -printf '%s'
+# is the plain st_size WalkDir adds up. The sum stays OUTSIDE $(( )): a command
+# substitution with escaped find parens does not survive arithmetic-context
+# parsing.)
 installed_size_bytes="$(
   cd "$pkg_dir" && find . \( -path './DEBIAN' -o -path './DEBIAN/*' \) -prune -o -printf '%s\n' \
     | awk '{ s += $1 } END { print s + 0 }'
