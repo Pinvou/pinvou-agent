@@ -2,7 +2,7 @@
 use gtk::prelude::*;
 #[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use tauri::Manager;
 
 #[cfg(any(target_os = "linux", test))]
@@ -126,6 +126,15 @@ pub(crate) fn activate_main_window(window: tauri::WebviewWindow) -> bool {
         }
         false
     }
+
+    // macOS: a Cmd+H-hidden NSApplication reports its windows as invisible
+    // and ignores window-level show/set_focus (tao gates set_focus on
+    // isVisible), so the app must be UNHIDDEN first — AppHandle::show routes
+    // to NSApplication.unhide: and is a no-op on a visible app. Windows has
+    // no app-level hidden state; the calls below restore both hidden and
+    // minimized windows there.
+    #[cfg(target_os = "macos")]
+    let _ = window.app_handle().show();
 
     #[cfg(not(target_os = "linux"))]
     {
