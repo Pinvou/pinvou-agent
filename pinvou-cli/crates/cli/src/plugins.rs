@@ -611,7 +611,15 @@ fn translate_plugin_import_error(error: &str) -> Option<String> {
     if error.contains("symlink") {
         return Some("the package contains a symlink entry; rejected".into());
     }
-    if error.contains("伪造头部") {
+    // ZIP 9 can reject a forged size before the importer's own length check.
+    let zip_size_mismatch = error
+        .strip_prefix('读')
+        .and_then(|tail| tail.split_once(": "))
+        .is_some_and(|(context, message)| {
+            !context.trim().is_empty()
+                && message == "File is larger than its declared uncompressed size"
+        });
+    if error.contains("伪造头部") || zip_size_mismatch {
         return Some(
             "the package decompresses beyond its zip header's declared size (forged header / \
              zip bomb); rejected"
@@ -2810,6 +2818,38 @@ mod tests {
             translate_plugin_import_error("some unrelated english failure"),
             None
         );
+        let forged = "the package decompresses beyond its zip header's declared size (forged header / zip bomb); rejected";
+        assert_eq!(
+            translate_plugin_import_error(
+                "条目 实际解压大小超过 zip 头声明（疑似伪造头部/zip bomb），拒绝"
+            )
+            .as_deref(),
+            Some(forged)
+        );
+        for context in ["plugin.json", "SKILL.md", "条目"] {
+            let error = format!("读{context}: File is larger than its declared uncompressed size");
+            assert_eq!(
+                translate_plugin_import_error(&error).as_deref(),
+                Some(forged)
+            );
+        }
+        for error in [
+            "File is larger than its declared uncompressed size",
+            "读: File is larger than its declared uncompressed size",
+            "读 : File is larger than its declared uncompressed size",
+            "读plugin.json: Invalid checksum",
+            "读plugin.json: controlled unrelated invalid data",
+            "unrelated: 读plugin.json: File is larger than its declared uncompressed size",
+            "读plugin.json: File is larger than its declared uncompressed size (other failure)",
+            "读plugin.json: File is larger than its declared uncompressed size\n",
+            "读File is larger than its declared uncompressed size: unrelated failure",
+        ] {
+            assert_eq!(
+                translate_plugin_import_error(error),
+                None,
+                "must not translate: {error}"
+            );
+        }
     }
 
     #[test]
