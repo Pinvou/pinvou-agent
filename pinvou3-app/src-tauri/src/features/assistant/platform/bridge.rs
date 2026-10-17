@@ -83,6 +83,67 @@ const SEPARATE_REASONING_FIELD: &str = "separate_field";
 // pinvou3-clean as `3035a022e` and carried by the pinned head `0bc868ff0`.
 const RESPONSES_ROUTE_PROVIDER: &str = "pinvou_responses";
 
+/// Canonical persisted `(model_provider, model_provider_id)` pair for the
+/// engine route `build_dt_config` resolved (its `cfg.provider`).
+///
+/// The spawn-time stamp must write the pair the foundation's fail-closed
+/// `resolve_persisted_provider_identity` accepts at a later resume
+/// (review #713 round 2): rewriting only the kind left a shared-home
+/// CLI-created record's exact id naming the previous route, and that
+/// mismatched pair is rejected on resume even with both providers
+/// configured. The kind therefore comes from `DtConfig::api_provider` —
+/// the same resolution `Engine::new` derives the spawn's identity from —
+/// so the pair always names the route the engine actually rode:
+/// - the Responses named-custom key → generic `custom` kind + the exact
+///   table key as id (`build_dt_config` writes
+///   `[providers.pinvou_responses]`, so the id is what names that table);
+/// - a built-in slug → the kind as both fields (the exact shape
+///   `resolve_runtime_route` re-resolves a built-in route with);
+/// - any other operator pin (a raw `DEEPSEEK_PROVIDER` typo, or a legacy
+///   slug) → the kind `api_provider` resolved at spawn — the Deepseek
+///   fall-through for unparseable values, or a retired tombstone slug.
+///   Stamping the raw string instead would create a record the fail-closed
+///   resolver rejects at the next resume ("saved session requires custom
+///   provider …") — the exact stamp≠route mismatch this stamp exists to
+///   prevent (review #713 round 3). A tombstone slug still fails closed at
+///   resume, as it already failed at spawn; the stamp must not silently
+///   reroute it either;
+/// - a legacy `ollama` pin at the exact hosted endpoint rides the
+///   in-memory ollama→ollama-cloud migration, whose identity keeps the
+///   pin's exact id: the pair is `("ollama-cloud", Some("ollama"))`, the
+///   same shape the foundation's own derivation persists
+///   (`resolve_provider_identity`), so a later resume re-enters the same
+///   `[providers.ollama]` table the spawn rode instead of the built-in
+///   ollama-cloud route.
+pub(crate) fn persisted_provider_route(
+    dt_config: &DtConfig,
+    provider: &str,
+) -> (String, Option<String>) {
+    if provider == RESPONSES_ROUTE_PROVIDER {
+        return ("custom".to_string(), Some(provider.to_string()));
+    }
+    match dt_config.api_provider() {
+        // A custom landing pairs the generic kind with the exact table key:
+        // api_provider only resolves Custom when `cfg.provider` names an
+        // existing table, so the provider string is that key.
+        ApiProvider::Custom => ("custom".to_string(), Some(provider.to_string())),
+        ApiProvider::OllamaCloud if provider == ApiProvider::Ollama.as_str() => {
+            // Legacy migration arm: the resolved kind is ollama-cloud but
+            // the identity's exact id stays the pin's "ollama" (the
+            // foundation's migrated-route shape in
+            // `resolve_provider_identity`).
+            (
+                ApiProvider::OllamaCloud.as_str().to_string(),
+                Some(ApiProvider::Ollama.as_str().to_string()),
+            )
+        }
+        kind => {
+            let key = kind.as_str();
+            (key.to_string(), Some(key.to_string()))
+        }
+    }
+}
+
 // Multi-agent is an agent cluster where the main session stays the overall
 // coordinator and complex tasks nest at most one extra level — not an unbounded
 // recursive tree. Plain conversations keep the original CodeWhale caps; only
@@ -9784,6 +9845,12 @@ mod tests {
                 ApiProvider::Moonshot,
             ),
             (
+                "k3",
+                "https://api.kimi.com/coding/v1",
+                "moonshot",
+                ApiProvider::Moonshot,
+            ),
+            (
                 "tc-code-latest",
                 "https://api.lkeap.cloud.tencent.com/coding/v3/chat/completions",
                 "openai",
@@ -11637,6 +11704,72 @@ mod tests {
                 .and_then(|sub| sub.default_wall_time_secs),
             Some(86_400),
             "多智能体 dt 配置必须把默认墙钟钉到底座上限 86400s"
+        );
+    }
+
+    /// The spawn-time provider stamp must persist the canonical pair the
+    /// foundation's fail-closed `resolve_persisted_provider_identity`
+    /// re-derives at resume (review #713 round 2). Each route class maps to
+    /// the exact shape its own resolution uses — a mismatched pair (stale
+    /// exact id next to a new kind) is rejected at the next resume even with
+    /// both providers configured. The kind is resolved via
+    /// `DtConfig::api_provider`, the same source `Engine::new` derives the
+    /// spawn's identity from.
+    #[test]
+    fn persisted_provider_route_maps_each_route_class_to_its_canonical_pair() {
+        // Built-in kind: the kind as both fields — the exact shape
+        // resolve_runtime_route re-resolves a built-in route with.
+        for slug in ["moonshot", "vllm"] {
+            let mut cfg = DtConfig::default();
+            cfg.provider = Some(slug.to_string());
+            assert_eq!(
+                persisted_provider_route(&cfg, slug),
+                (slug.to_string(), Some(slug.to_string()))
+            );
+        }
+        // The Responses named-custom key is an exact table key, not a
+        // canonical kind: it pairs the generic custom kind with the key.
+        let cfg = DtConfig::default();
+        assert_eq!(
+            persisted_provider_route(&cfg, RESPONSES_ROUTE_PROVIDER),
+            (
+                "custom".to_string(),
+                Some(RESPONSES_ROUTE_PROVIDER.to_string())
+            )
+        );
+        // An unparseable operator pin (a raw DEEPSEEK_PROVIDER typo) must
+        // stamp the kind the engine actually resolved: api_provider falls
+        // through to Deepseek, so the pair stays resolvable at resume.
+        // Writing the raw string instead would create a record the
+        // fail-closed resolver rejects ("saved session requires custom
+        // provider …").
+        let mut cfg = DtConfig::default();
+        cfg.provider = Some("operator-private-pin".to_string());
+        assert_eq!(
+            persisted_provider_route(&cfg, "operator-private-pin"),
+            ("deepseek".to_string(), Some("deepseek".to_string()))
+        );
+        // A legacy ollama pin at the exact hosted endpoint rides the
+        // in-memory ollama→ollama-cloud migration, and the foundation's
+        // identity derivation keeps the pin's exact id for it: stamping
+        // ("ollama-cloud", Some("ollama-cloud")) would name the built-in
+        // ollama-cloud route at resume instead of the same
+        // `[providers.ollama]` table the spawn rode.
+        let mut cfg = DtConfig::default();
+        cfg.provider = Some("ollama".to_string());
+        let providers = cfg.providers.get_or_insert_with(ProvidersConfig::default);
+        providers.ollama.base_url = Some("https://ollama.com/v1".to_string());
+        assert_eq!(
+            persisted_provider_route(&cfg, "ollama"),
+            ("ollama-cloud".to_string(), Some("ollama".to_string()))
+        );
+        // An explicit ollama-cloud pin is its own route (no migration):
+        // the kind as both fields, like any other built-in slug.
+        let mut cfg = DtConfig::default();
+        cfg.provider = Some("ollama-cloud".to_string());
+        assert_eq!(
+            persisted_provider_route(&cfg, "ollama-cloud"),
+            ("ollama-cloud".to_string(), Some("ollama-cloud".to_string()))
         );
     }
 }

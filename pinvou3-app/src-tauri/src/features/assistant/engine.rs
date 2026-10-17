@@ -40,7 +40,7 @@ use crate::features::assistant::engine_support::{
 use crate::features::assistant::expert_roster::{
     ExpertRosterSnapshot, cleanup_legacy_expert_projection,
 };
-use crate::features::assistant::platform::bridge::Pinvou3Bridge;
+use crate::features::assistant::platform::bridge::{Pinvou3Bridge, persisted_provider_route};
 use crate::features::assistant::turn_shell_tasks::TurnShellTaskRegistry;
 use crate::features::sessions::{
     ChatEngineState, ScheduledEngineState, ScheduledRunProfile, ScheduledTokenAccounting,
@@ -1803,6 +1803,37 @@ impl AppEngine {
 
         let workspace = engine_config.workspace.clone();
         let handle = spawn_engine(engine_config, &dt_config);
+        // Record the provider route this spawn resolved onto the session
+        // record. These two fields are not wire-inert diagnostics: the
+        // foundation's CLI resume path (`resolve_exec_resume_route`) reads
+        // them when no `--provider` is passed, so this stamp is what keeps a
+        // later resume on the route the spawn actually rode. The foundation's
+        // create path stamps the engine default ("deepseek") into every new
+        // record, which misleads diagnosis when the session rides another
+        // vendor's route. The canonical (kind, exact id) pair comes from
+        // `persisted_provider_route` (kind resolved via `dt_config`) so the
+        // record stays resolvable by the foundation's fail-closed identity
+        // resolver even when a shared-home CLI record already carries an
+        // exact id naming the previous route. Fail-soft by contract: a stamp
+        // failure must never break or abort the spawn.
+        if let Some(provider) = dt_config
+            .provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|provider| !provider.is_empty())
+        {
+            let (kind, provider_id) = persisted_provider_route(&dt_config, provider);
+            if let Err(error) =
+                store.stamp_resolved_provider(session_id, &kind, provider_id.as_deref())
+            {
+                // eprintln, not log: the headless host installs no logger, so
+                // stderr is this file's diagnostic channel (the dominant
+                // existing pattern here).
+                eprintln!(
+                    "[pinvou3-app] session {session_id} resolved-provider stamp failed: {error:#}"
+                );
+            }
+        }
         let (turn_events, _) = broadcast::channel(32);
         let scheduled_unattended = Arc::new(AtomicBool::new(false));
         let forwarder = spawn_event_forwarder(

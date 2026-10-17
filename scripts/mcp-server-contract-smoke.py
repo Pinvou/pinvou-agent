@@ -127,6 +127,182 @@ def content_json(response: dict) -> dict:
     return json.loads(content[0]["text"])
 
 
+# ── Model-visible schema contract ──────────────────────────────────────
+# Background (the k3 slides:[] incident): with `type: "array"` and no items,
+# constrained tool-call decoding channels (Kimi and friends) complete the
+# parameter to its minimal valid value [] (observed live: slides:[] emitted
+# 27 times in a row). The validator on that route (MFJS, CodeWhale
+# schema_sanitize.rs) is much stricter than JSON Schema, and every deviation
+# is the same silent failure — the whole tool is dropped (MissingType /
+# UnsupportedKeyword / InvalidSchemaNode), which is how #683 lost
+# evaluate_script. The shape set below is verified against the validator
+# source at the pinned gitlink, not assumed, and this guard enforces it:
+#   - every schema position holds an object; boolean and list values are
+#     InvalidSchemaNode, empty nodes are MissingType (the engine repairs
+#     exactly the items:{} shape, nothing else);
+#   - "type", where present, must be a single concrete MFJS string:
+#     list-typed ("type": ["array"]), non-string, and unknown values arrive
+#     typeless through the engine's string-only sanitizer and die with
+#     MissingType;
+#   - a node without "type" must carry anyOf — typeless annotation-only
+#     nodes ({"description": ...}, {"enum": ...}) are MissingType;
+#   - any keyword outside MFJS's ALLOWED_KEYWORDS is rejected outright
+#     (UnsupportedKeyword), so oneOf/allOf/patternProperties/prefixItems/
+#     contains/unevaluated*/... are banned here: a bundled server must never
+#     ship a schema the validator would silently discard. $ref/$dynamicRef/
+#     $recursiveRef are banned even though MFJS allows $ref, because this
+#     guard cannot follow the target and the shape underneath would go
+#     uninspected;
+#   - anyOf keeps only the union's own siblings (MFJS InvalidKeywordValue
+#     otherwise) and every branch is walked and concretely typed; $defs
+#     interiors are walked so an unreferenced definition is no blind spot
+#     ($defs/$id are root-only for MFJS).
+_MFJS_CONCRETE_TYPES = ("string", "number", "integer", "boolean", "object", "array", "null")
+_MFJS_ALLOWED_KEYWORDS = frozenset((
+    "$id", "$ref", "$defs", "anyOf", "properties", "additionalProperties",
+    "items", "type", "enum", "required", "maxLength", "minLength",
+    "maximum", "minimum", "maxItems", "minItems", "title", "description",
+    "default",
+))
+
+
+def _schema_has_concrete_type(node) -> bool:
+    if not isinstance(node, dict) or not node:
+        return False
+    if node.get("type") in _MFJS_CONCRETE_TYPES:
+        return True
+    # anyOf is MFJS's only union: any branch may be taken, so every branch
+    # must be concrete (oneOf/allOf are not MFJS keywords at all — the
+    # keyword ban flags them before this helper is even asked).
+    branches = node.get("anyOf")
+    return isinstance(branches, list) and bool(branches) and all(
+        _schema_has_concrete_type(branch) for branch in branches)
+
+
+def _walk_tool_schema(node, path: str, offenders: list[str], is_root: bool = False) -> None:
+    """Walk schema-value positions only; {} inside enum/default/const/examples is data, never walked."""
+    if isinstance(node, bool):
+        # true is semantically the empty schema, and false is a schema
+        # position holding a non-object: MFJS rejects both
+        # (MissingType / InvalidSchemaNode), fail closed.
+        offenders.append(f"{path}: boolean schema (true/false) is semantically the empty schema; MFJS has no representation")
+        return
+    if not isinstance(node, dict):
+        # A list (or scalar) at a schema position is InvalidSchemaNode
+        # upstream — e.g. {"items": [[]]} or a list-valued property — the
+        # same whole-tool drop as every other deviation.
+        offenders.append(f"{path}: schema position holds {type(node).__name__}; MFJS requires an object")
+        return
+    if "$ref" in node or "$dynamicRef" in node or "$recursiveRef" in node:
+        # This guard never inspects a ref target (bundled servers are small
+        # hand-written schemas — inline it); not following refs keeps the
+        # incident class from hiding behind an indirection, fail closed.
+        # $dynamicRef/$recursiveRef are the same indirection class.
+        offenders.append(f"{path}: $ref/$dynamicRef/$recursiveRef is not followed by this guard (target uninspected); inline the schema")
+        return
+    if not node:
+        offenders.append(f"{path}: empty schema node (MFJS rejects it and silently drops the tool)")
+        return
+    node_type = node.get("type")
+    if isinstance(node_type, list):
+        # Legal JSON Schema, but the engine sanitizer reads string types
+        # only, so the node arrives typeless downstream and MFJS drops the
+        # tool (#683 class). Fail closed like the other unverified shapes
+        # instead of interpreting the list.
+        offenders.append(
+            f"{path}: list-typed \"type\" ({node_type!r}) is outside the verified MFJS shape set (type must be a single string)"
+        )
+    elif node_type is not None and node_type not in _MFJS_CONCRETE_TYPES:
+        # {"type": 1234} and {"type": "Array"} are the same MissingType
+        # drop as an absent type: the sanitizer reads string types only.
+        offenders.append(
+            f"{path}: \"type\" ({node_type!r}) is not a concrete MFJS string type"
+        )
+    unsupported = sorted(set(node) - _MFJS_ALLOWED_KEYWORDS)
+    if unsupported:
+        # Verified against MFJS ALLOWED_KEYWORDS: anything outside the set
+        # is UnsupportedKeyword — the validator discards the whole schema,
+        # so there is nothing to recurse into that could still matter.
+        offenders.append(
+            f"{path}: unsupported keyword(s) {unsupported} — outside the verified MFJS shape set, the validator drops the whole tool"
+        )
+    if node_type is None and "anyOf" not in node:
+        # Non-empty and typeless: annotation-only nodes ({"description":
+        # ...}, {"enum": [...]}) and typeless containers are MissingType
+        # for MFJS — the silent tool-drop class.
+        offenders.append(
+            f"{path}: no \"type\" and no anyOf — MFJS rejects typeless nodes with MissingType"
+        )
+    if "anyOf" in node:
+        # MFJS allows only title/description beside anyOf ($defs/$id at the
+        # root) and a non-empty branch list; everything else is
+        # InvalidKeywordValue / ResourceLimitExceeded.
+        allowed_siblings = {"anyOf", "title", "description"} | ({"$defs", "$id"} if is_root else set())
+        bad_siblings = sorted(set(node) - allowed_siblings)
+        if bad_siblings:
+            offenders.append(
+                f"{path}: anyOf sibling keyword(s) {bad_siblings} — MFJS allows only title/description beside anyOf"
+            )
+        branches = node.get("anyOf")
+        if not isinstance(branches, list) or not branches:
+            offenders.append(f"{path}: anyOf must be a non-empty branch list (MFJS rejects other shapes)")
+        for index, sub in enumerate(branches if isinstance(branches, list) else []):
+            _walk_tool_schema(sub, f"{path}.anyOf[{index}]", offenders)
+    elif not is_root and ("$defs" in node or "$id" in node):
+        offenders.append(
+            f"{path}: $defs/$id outside the schema root — MFJS rejects them (InvalidKeywordValue tool drop)"
+        )
+    if node_type == "array":
+        items = node.get("items")
+        if isinstance(items, list):
+            # Tuple form is legal JSON Schema but outside the MFJS shape set
+            # verified in this repo (items must be a single schema); banned
+            # uniformly, fail closed.
+            offenders.append(f"{path}: tuple-form items is outside the verified MFJS shape set (items must be a single schema)")
+        elif not _schema_has_concrete_type(items):
+            offenders.append(
+                f"{path}: array without concretely typed items (constrained decoding channels complete it to [])"
+            )
+    subs = node.get("properties")
+    if isinstance(subs, dict):
+        for name, sub in subs.items():
+            _walk_tool_schema(sub, f"{path}.properties.{name}", offenders)
+    if isinstance(node.get("additionalProperties"), dict):
+        _walk_tool_schema(node["additionalProperties"], f"{path}.additionalProperties", offenders)
+    items = node.get("items")
+    if isinstance(items, list):
+        for index, sub in enumerate(items):
+            _walk_tool_schema(sub, f"{path}.items[{index}]", offenders)
+    elif isinstance(items, dict):
+        _walk_tool_schema(items, f"{path}.items", offenders)
+    if isinstance(node.get("$defs"), dict):
+        for name, sub in node["$defs"].items():
+            _walk_tool_schema(sub, f"{path}.$defs.{name}", offenders)
+
+
+def check_schema_contract(tool_id: str, tools: list) -> int:
+    """Guard every tool's inputSchema; return the number of tools walked.
+
+    The return value is printed into check_protocol's success line: delete
+    the call site and that print immediately raises NameError — without it
+    the guard's wiring could be silently dismantled while the whole CI
+    matrix stays green (this file's unit tests can only pin the walker's
+    internals, not the call site itself).
+    """
+    offenders: list[str] = []
+    for tool in tools:
+        schema = tool.get("inputSchema")
+        name = tool.get("name", "?")
+        if not isinstance(schema, dict):
+            offenders.append(f"{tool_id}.{name}: inputSchema missing or not an object")
+            continue
+        _walk_tool_schema(schema, f"{tool_id}.{name}", offenders, is_root=True)
+    assert not offenders, (
+        "Model-visible schema violates the contract:\n  " + "\n  ".join(offenders)
+    )
+    return len(tools)
+
+
 def check_protocol(tool_id: str, expected_tools: set[str], env=None):
     with RpcServer(MCP_ROOT / tool_id, env) as rpc:
         initialized = rpc.call("initialize")
@@ -134,7 +310,12 @@ def check_protocol(tool_id: str, expected_tools: set[str], env=None):
         listed = rpc.call("tools/list")
         actual = {tool["name"] for tool in listed["result"]["tools"]}
         assert actual == expected_tools, (tool_id, actual)
-    print(f"✅ {tool_id}: initialize + tools/list ({len(expected_tools)})")
+        walked = check_schema_contract(tool_id, listed["result"]["tools"])
+        # Self-pinning success line: the printed count must equal the boot
+        # contract's tool set, so a guard that silently walks nothing (or a
+        # rewired print) cannot report a compliance it never checked.
+        assert walked == len(expected_tools), (tool_id, walked, len(expected_tools))
+    print(f"✅ {tool_id}: initialize + tools/list ({len(expected_tools)}) + schema guard ({walked} inputSchemas walked)")
 
 
 def check_session_reader_length_cap_parity() -> None:
@@ -423,6 +604,10 @@ def main():
 
     qcc = manifests["qcc"]
     assert qcc.get("secret_headers") in (None, [])
+    # Remote-only manifest: a command-bearing qcc manifest would silently
+    # escape both the boot contract below and the schema guard, which only
+    # sees booted stdio servers.
+    assert not qcc.get("command")
     # 可选密钥契约：qcc 明文迁移把历史凭证存放在 Bearer target 下并接线
     # bearer_token_env_var，manifest 必须声明同一 key 才能被
     # sync_secret_values 的重启重水化枚举覆盖（缺声明 = 首次重启即 401）。

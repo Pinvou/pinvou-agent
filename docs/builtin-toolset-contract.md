@@ -117,6 +117,16 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
 ### 4.3 Parameters
 - Minimize required parameters; optional parameters must state their default in the
   description.
+- **Model-visible schema contract** (enforced for every bundled server by the CI
+  fast-gate's `mcp-server-contract-smoke.py` schema guard, self-tested in
+  `scripts/tests/test_mcp_schema_contract.py`): a tool schema must stay inside the
+  shape set the constrained-decoding route's validator (MFJS) actually accepts —
+  every `type: array` carries concretely typed `items` (an itemless array completes
+  to `[]` under constrained decoding; the k3 slides incident), every schema node is
+  a non-empty object with a concrete string `type` (or an `anyOf` union), and no
+  keyword outside MFJS's allowed set (`oneOf`, `allOf`, `patternProperties`,
+  `prefixItems`, `contains`, `unevaluated*`, …) survives — the validator silently
+  drops the whole tool for any of these.
 - **Pagination parameters** (existing precedent, mandatory alignment): a bounded
   count parameter (`turn_limit` in `read_session`; `limit` where a listing has
   no other count semantics) + `cursor` (opaque string, server stateless) →
