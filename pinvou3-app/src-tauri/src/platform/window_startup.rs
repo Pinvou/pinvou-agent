@@ -25,8 +25,8 @@ fn should_fallback_reveal(visible_after_wait: bool) -> bool {
 #[cfg(target_os = "linux")]
 fn present_linux_main_window(
     window: tauri::WebviewWindow,
-    success_mark: &'static str,
-    error_mark: &'static str,
+    success_mark: &str,
+    error_mark: &str,
 ) -> Result<(), String> {
     let main_window = window.clone();
     window
@@ -95,13 +95,18 @@ pub fn reveal_startup_window(window: tauri::WebviewWindow) -> Result<bool, Strin
 /// Bring an already-running main window forward without bypassing the Linux
 /// cold-start readiness gate used by the hidden startup overlay.
 ///
+/// `source` labels the startup-timeline marks (`tauri:{source}_…`) so a
+/// reader can tell a second-instance launch from a global-shortcut press —
+/// both go through this shared present path and previously shared the
+/// single-instance mark names.
+///
 /// Returns `true` only when the Linux cold-start gate DEFERRED the activation
 /// (no present task was enqueued), so callers can skip follow-up work that
 /// assumes the window is coming up; `false` in every other case — the present
 /// was attempted (Linux: enqueued to the GTK main loop or run inline, possibly
 /// failing) or the platform presents unconditionally. `false` therefore means
 /// "not deferred", not "the window is up".
-pub(crate) fn activate_main_window(window: tauri::WebviewWindow) -> bool {
+pub(crate) fn activate_main_window(window: tauri::WebviewWindow, source: &str) -> bool {
     #[cfg(target_os = "linux")]
     {
         let startup_ready = MAIN_WINDOW_STARTUP_READY.load(Ordering::Acquire);
@@ -110,17 +115,17 @@ pub(crate) fn activate_main_window(window: tauri::WebviewWindow) -> bool {
             // 冷启动未完成且窗口仍隐藏：defer 而非强行 present，避免把尚未稳定的
             // 输入表面暴露给第二实例用户；前端首次提交或 8 秒兜底会负责显示窗口。
             // 边界：若前端始终不 reveal，第二实例在兜底前启动将无窗口反馈（仅日志）。
-            crate::platform::startup::mark("tauri:single_instance_activation_deferred");
+            crate::platform::startup::mark(&format!("tauri:{source}_activation_deferred"));
             return true;
         }
         if let Err(error) = present_linux_main_window(
             window,
-            "tauri:single_instance_window_presented",
-            "tauri:single_instance_window_present_error",
+            &format!("tauri:{source}_window_presented"),
+            &format!("tauri:{source}_window_present_error"),
         ) {
             crate::platform::startup::mark_with_detail(
                 "rust",
-                "tauri:single_instance_window_dispatch_error",
+                &format!("tauri:{source}_window_dispatch_error"),
                 &error,
             );
         }
@@ -138,6 +143,9 @@ pub(crate) fn activate_main_window(window: tauri::WebviewWindow) -> bool {
 
     #[cfg(not(target_os = "linux"))]
     {
+        // No startup-timeline marks here: the present is unconditional, so
+        // the source label (consumed by the Linux marks) has no use.
+        let _ = source;
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();

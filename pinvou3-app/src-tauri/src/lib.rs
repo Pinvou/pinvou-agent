@@ -796,7 +796,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
-                crate::platform::window_startup::activate_main_window(window);
+                crate::platform::window_startup::activate_main_window(window, "single_instance");
             }
         }))
         .plugin(startup_probe_plugin("startup-probe-single-instance"))
