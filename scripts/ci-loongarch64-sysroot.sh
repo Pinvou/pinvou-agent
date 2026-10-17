@@ -406,7 +406,15 @@ docker_method() {
     return 1
   fi
   local container="pinvou-sysroot-extract-$$"
-  work_dir="$(mktemp -d)"
+  # This function runs in a condition context everywhere it is invoked
+  # (`docker_method || fail` / `if docker_method`), so errexit is suspended
+  # for its whole body: every fallible line needs an explicit handler or a
+  # failure here would be swallowed and `auto` would report docker success
+  # with a half-prepared work dir.
+  work_dir="$(mktemp -d)" || {
+    echo "[loong64-sysroot] mktemp for the docker work dir failed" >&2
+    return 1
+  }
   trap 'rm -rf -- "${work_dir:-}"' EXIT
 
   log "docker method: pulling $docker_image"
@@ -435,7 +443,10 @@ docker_method() {
     docker rm -f "$container" >/dev/null 2>&1 || true
     return 1
   }
-  mkdir -p "$work_dir/debs"
+  mkdir -p "$work_dir/debs" || {
+    echo "[loong64-sysroot] cannot create the deb staging dir" >&2
+    return 1
+  }
   docker cp "$container:/var/cache/apt/archives/." "$work_dir/debs/" >&2 || {
     echo "[loong64-sysroot] docker cp of the apt cache failed" >&2
     docker rm -f "$container" >/dev/null 2>&1 || true
@@ -459,8 +470,16 @@ docker_method() {
       return 1
     fi
   done
-  extract_debs_into "$work_dir/debs" "$output_dir"
-  prune_sysroot "$output_dir"
+  extract_debs_into "$work_dir/debs" "$output_dir" || {
+    echo "[loong64-sysroot] extracting the container .debs failed" >&2
+    return 1
+  }
+  # errexit is suspended in this condition-context function: a failed prune
+  # must not leave a half-pruned tree reported as a successful docker source.
+  prune_sysroot "$output_dir" || {
+    echo "[loong64-sysroot] pruning the docker-extracted sysroot failed" >&2
+    return 1
+  }
   SOURCE_DESCRIPTION="docker:$docker_image"
 }
 
@@ -472,8 +491,10 @@ apt_method() {
   # All components of the suite, from the Release file (beige: main; crimson
   # needs main + community — crimson's libwebkit2gtk-4.1-dev depends on
   # gir1.2-soup-3.0-dev, which its main component does not ship but its
-  # community component's newer libsoup-3.0-dev Provides). First-seen
-  # package wins, so main keeps priority over the extra components.
+  # community component's newer libsoup-3.0-dev Provides). When the same
+  # package appears in several components, the highest Debian version wins
+  # (apt candidate semantics; the resolver below keeps the stanza of the
+  # winner).
   local release_url="$mirror/dists/$suite/Release"
   local release_file="$work_dir/Release"
   # Keep the Release file: its SHA256 section ties every Packages.gz index
