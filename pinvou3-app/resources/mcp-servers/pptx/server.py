@@ -716,7 +716,11 @@ TOOL_DEFS = [{
                                          "num": {"type": "string", "description": "大数字,如 68%"},
                                          "label": {"type": "string", "description": "指标说明"},
                                      },
-                                     "required": ["num"]},
+                                     # num optional: agenda pages draw their
+                                     # own ordinals, so a label-only dict is
+                                     # a natural entry; the renderer falls
+                                     # back to "".
+                                     },
                                 ],
                             },
                         },
@@ -738,11 +742,15 @@ TOOL_DEFS = [{
                             "items": {
                                 "type": "object",
                                 "properties": {
+                                    # name optional: single-series charts
+                                    # hide the legend, so a forced invented
+                                    # name is pure friction; the renderer
+                                    # falls back to "".
                                     "name": {"type": "string", "description": "系列名"},
                                     "data": {"type": "array", "items": {"type": "number"},
                                              "description": "与 categories 等长的数值"},
                                 },
-                                "required": ["name", "data"],
+                                "required": ["data"],
                             },
                         },
                         "headers": {"type": "array", "items": {"type": "string"},
