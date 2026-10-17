@@ -136,7 +136,11 @@ const cmpNames = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 // ── Shared-surface drift alarm ───────────────────────────────────────────────
 // If any of these snapshots change, a shared body, export, or forwarder was
 // added/removed: re-run the audit from the header comment and update REQUIRED.
-const helpers = read('src/shared/bridge-shared-helpers.js');
+// Normalize CRLF in memory: a Windows checkout materializes LF files as
+// CRLF, and both the freeze-shape regex below and the per-line count match
+// literal \n only (offsets stay consistent — every consumer of `helpers`
+// uses this same normalized string).
+const helpers = read('src/shared/bridge-shared-helpers.js').replace(/\r\n/g, '\n');
 // count function declarations INSIDE sharedBridgeBase only (the base span
 // runs from its declaration to the CLUSTERS table; the AST-verified count is
 // the contract — re-derive with the dep audit when it changes)
@@ -751,7 +755,9 @@ for (const file of laneFiles) {
     }
   })(ast);
   for (const site of sites) {
-    const rel = path.relative(root, file);
+    // Normalize separators: path.relative yields backslashes on Windows, and
+    // the lane classifier below matches the forward-slash source-tree prefix.
+    const rel = path.relative(root, file).split(path.sep).join('/');
     const keys = extractLiteralKeys(source, site.start);
     const expected = EXPECTED_CLUSTER_KEYS[site.name];
     assert.ok(
