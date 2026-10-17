@@ -609,4 +609,32 @@ mod tests {
         assert_eq!(ApplyStatus::Invalid.as_str(), "invalid");
         assert_eq!(ApplyStatus::Conflict.as_str(), "conflict");
     }
+
+    #[test]
+    fn window_startup_unhides_the_app_before_presenting_on_macos() {
+        // A Cmd+H-hidden NSApplication reports its windows as invisible, and
+        // tao's set_focus skips exactly then — so without an app-level
+        // unhide the summon is a silent no-op in the very background state
+        // the feature exists for (review round 5). AppHandle::show routes to
+        // NSApplication.unhide: (no-op when the app is visible).
+        // Comment-stripped and stopping before the test module, per the repo
+        // pin convention: a commented-out call must not satisfy the pin.
+        let source: String = include_str!("../platform/window_startup.rs")
+            .lines()
+            .take_while(|line| !line.trim_start().starts_with("mod tests"))
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let unhide = source
+            .find("app_handle().show()")
+            .expect("the macOS arm must unhide the app before presenting");
+        let present = source
+            .find("window.set_focus()")
+            .expect("the present path must still focus the window");
+        assert!(
+            unhide < present,
+            "the NSApp unhide must run before the window-level present"
+        );
+    }
 }

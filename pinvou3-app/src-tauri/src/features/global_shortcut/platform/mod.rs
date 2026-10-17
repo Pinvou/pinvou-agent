@@ -24,7 +24,9 @@ pub(super) fn bring_main_window_to_front(app: &AppHandle) {
     };
     // Cold-start gate + present: Linux defers while the hidden startup
     // overlay is still up and presents via GTK on the main thread; Windows/
-    // macOS do show + unminimize + set_focus.
+    // macOS present via show + unminimize + set_focus, with macOS unhiding
+    // the app first (a Cmd+H-hidden NSApplication ignores window-level
+    // calls).
     let deferred = crate::platform::window_startup::activate_main_window(window.clone());
     if deferred {
         return;
