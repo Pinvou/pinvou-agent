@@ -1767,7 +1767,7 @@ function hasStoredCredential(record) {
       const savedAccelerator = prefs
         ? (normalizeGlobalShortcutDraft(prefs.global_shortcut_accelerator) || GLOBAL_SHORTCUT_DEFAULT_ACCELERATOR)
         : GLOBAL_SHORTCUT_DEFAULT_ACCELERATOR;
-      const [draftAccelerator, setDraftAccelerator] = useState(() => formatGlobalShortcutForDisplay(GLOBAL_SHORTCUT_DEFAULT_ACCELERATOR));
+      const [draftAccelerator, setDraftAccelerator] = useState(() => formatGlobalShortcutForDisplay(savedAccelerator));
       const [actionError, setActionError] = useState('');
       const [errorSlot, setErrorSlot] = useState('toggle');
       const [pending, setPending] = useState(false);
@@ -1775,9 +1775,9 @@ function hasStoredCredential(record) {
       // disabled attribute lags one render, so a double-click would fire two
       // concurrent commands — the ref intercepts inside the event handler.
       const flightRef = useRef({ busy: false });
-      // The input follows the saved combo while the user has not typed into
-      // it (the settings snapshot may load after mount, and a racing save
-      // mirror may change the saved combo later): editedRef marks a
+      // The input follows the saved combo while the user has not typed:
+      // the settings snapshot may load after mount, and a racing save
+      // mirror may change the saved combo later. editedRef marks a
       // user-touched draft, syncedFoldRef the fold of the saved combo the
       // draft currently displays. draftRef mirrors the draft for the async
       // completion handlers, which would otherwise read a stale render-time
@@ -1862,9 +1862,13 @@ function hasStoredCredential(record) {
       // savedAccelerator the machine-canonical string.
       const acceleratorDirty = normalizeGlobalShortcutDraft(draftAccelerator) !== formatGlobalShortcutForDisplay(savedAccelerator);
       const acceleratorPlausible = isPlausibleGlobalShortcutAccelerator(draftAccelerator);
-      const toggleDesc = available
-        ? (actionError && errorSlot === 'toggle' ? actionError : copy.globalShortcutEnableDesc)
-        : copy.globalShortcutUnsupportedDesc;
+      // Errors land in the owning row's slot regardless of availability: on
+      // an unavailable session the only operable action is switching a
+      // residual shortcut off, and a failed disable must be visible instead
+      // of console-only.
+      const toggleDesc = actionError && errorSlot === 'toggle'
+        ? actionError
+        : available ? copy.globalShortcutEnableDesc : copy.globalShortcutUnsupportedDesc;
       const acceleratorDesc = actionError && errorSlot === 'accelerator' ? actionError : undefined;
       const saveAccelerator = () => {
         // Plausibility gates the click, not the button: a never-valid draft
@@ -1898,7 +1902,14 @@ function hasStoredCredential(record) {
               <input
                 type="text"
                 value={draftAccelerator}
-                onChange={e => { editedRef.current = true; updateDraft(e.target.value); }}
+                onChange={e => {
+                  editedRef.current = true;
+                  // Same pattern as the localPort row: typing invalidates
+                  // the row's error, so a fixed-up draft no longer shows
+                  // the stale invalid copy next to it.
+                  if (errorSlot === 'accelerator') setActionError('');
+                  updateDraft(e.target.value);
+                }}
                 disabled={!prefs || !available || pending}
                 placeholder={copy.globalShortcutPlaceholder}
                 aria-label={copy.globalShortcutAccelerator}
