@@ -9213,8 +9213,14 @@ fn strip_session_message_block_impl_rejects_lookalikes_and_preserves_nesting() {
     // the body stays verbatim body (one strip per pass).
     // Round-20: the inner format! is hoisted — clippy::format-in-format-args
     // is denied (-D clippy::perf) and CI's rust-lint lints all targets.
+    // Round-22 M-3: the inner block opens with the BLANK separator ("\n\n"),
+    // not a bare "\n" — a bare newline after the outer JSON line leaves the
+    // text a lookalike (missing blank separator), the strip becomes a no-op,
+    // and every assertion below passes on the unstripped input (the outer
+    // header satisfies starts_with). The !contains("a") guard is what makes
+    // the case bite: with a real strip the outer sender JSON is gone.
     let inner_nested = format!(
-        "\n{}\n{}\n{}\n{{\"sessionId\":\"b\",\"title\":\"内层\"}}\n\n内层正文",
+        "\n\n{}\n{}\n{}\n{{\"sessionId\":\"b\",\"title\":\"内层\"}}\n\n内层正文",
         SESSION_MESSAGE_BLOCK_HEADER,
         SESSION_MESSAGE_CONTRACT_LINES[0],
         SESSION_MESSAGE_CONTRACT_LINES[1]
@@ -9234,6 +9240,31 @@ fn strip_session_message_block_impl_rejects_lookalikes_and_preserves_nesting() {
             && stripped.contains("\"sessionId\":\"b\"")
             && stripped.ends_with("内层正文真正的正文"),
         "the nested header must survive verbatim inside the stripped body"
+    );
+    assert!(
+        !stripped.contains("\"sessionId\":\"a\""),
+        "exactly one strip per pass: the outer sender JSON must be consumed \
+         (a no-op strip leaves it in and ships this red)"
+    );
+
+    // The no-trailing-newline empty-body form: the JSON line may terminate
+    // the text itself — the stripper returns "" (round-22 M-3 pin; the arm
+    // previously had no test and shipped green under mutation).
+    let unterminated = format!(
+        "{}\n{}\n{}\n{{\"sessionId\":\"a\",\"title\":\"t\"}}",
+        SESSION_MESSAGE_BLOCK_HEADER,
+        SESSION_MESSAGE_CONTRACT_LINES[0],
+        SESSION_MESSAGE_CONTRACT_LINES[1]
+    );
+    assert_eq!(
+        strip_session_message_block_impl(&unterminated),
+        "",
+        "the empty-body form without a trailing newline strips to empty"
+    );
+    assert_eq!(
+        delivered_body_for_matching(&unterminated),
+        "",
+        "the matching twin agrees on the no-trailing-newline form"
     );
 
     // The matching twin agrees with the titling twin on every case

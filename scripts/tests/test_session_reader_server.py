@@ -263,7 +263,11 @@ class ReadSessionTests(unittest.TestCase):
 
     def test_charset_gate_rejects_widening_and_raw_trailing_newline(self):
         # Indirect charset pin: widening the accepted set must turn this red.
-        for bad in ["abc def", "abc.def", "会话", "..", "a/b", "", "abc\n"]:
+        # "|" is load-bearing beyond shell hygiene: it is the delimiter of
+        # the idempotency composition "<from>|<to>|<key>" (round-22 M-3) —
+        # a session id containing it would make that composition ambiguous.
+        for bad in ["abc def", "abc.def", "会话", "..", "a/b", "", "abc\n",
+                    "a|b", "|", "a|"]:
             self.assertIsNotNone(server.validate_session_id(bad), repr(bad))
         # The tools/call entry strips surrounding whitespace first (documented
         # normalization); validate_session_id itself keeps the \Z defense for

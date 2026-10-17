@@ -466,17 +466,22 @@ function enforceLazyChunks() {
   };
 }
 
-// Deliberately keep both desktop and web below Vite's 500 kB warning boundary.
-// New entry work should be split or lazy-loaded. Raising this limit requires
-// measured desktop + web before/after sizes and an explicit review decision.
+// The enforced gate is assertMainEntryBudget below; it sits deliberately
+// ABOVE Vite's informational 500 kB chunk warning for the web build (the
+// warning fires on every web build and is expected — the gate, not the
+// warning, is the budget). New entry work should still be split or
+// lazy-loaded. Raising this limit requires measured desktop + web
+// before/after sizes and an explicit review decision.
 //
-// 500_000 → 502_000 (round-21 B-1, measured per policy): the session-messaging
-// receive path adds +1.71 kB of web entry (same-base: main@007f5ea4 alone =
-// 498.54 kB web; +messaging = 500.25 kB web / 497.93 kB desktop). The
-// deferrable UI (sender card) and the send-side builder were already split
-// out (round-18/20); the remainder is the synchronous receive-path parser,
-// which cannot defer without breaking render semantics. An in-PR trim
-// (builder split into the lazy graph) was measured net +122 B and rejected.
+// 500_000 → 502_000 (round-21 B-1; decided in PR #627 and disclosed after
+// the round-22 review found the raise missing from that PR's description):
+// the session-messaging receive path adds ≈ +2 kB of web entry (same-base:
+// main@007f5ea4 alone = 498.54 kB web; merged head = 500.69 kB web /
+// 498.34 kB desktop on the current toolchain). The deferrable UI (sender
+// card) and the send-side builder were already split out (round-18/20);
+// the remainder is the synchronous receive-path parser, which cannot defer
+// without breaking render semantics. An in-PR trim (builder split into the
+// lazy graph) was measured net +122 B and rejected.
 export const MAIN_ENTRY_BUDGET_BYTES = 502_000;
 
 export function assertMainEntryBudget(bundle, budgetBytes = MAIN_ENTRY_BUDGET_BYTES) {
