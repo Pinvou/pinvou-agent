@@ -91,23 +91,39 @@ const RESPONSES_ROUTE_PROVIDER: &str = "pinvou_responses";
 /// (review #713 round 2): rewriting only the kind left a shared-home
 /// CLI-created record's exact id naming the previous route, and that
 /// mismatched pair is rejected on resume even with both providers
-/// configured. Three shapes, each reproducing the resolution the spawn
-/// itself used:
-/// - built-in kind → the kind as both fields (the exact shape
-///   `resolve_runtime_route` re-resolves a built-in route with);
+/// configured. The kind therefore comes from `DtConfig::api_provider` —
+/// the same resolution `Engine::new` derives the spawn's identity from —
+/// so the pair always names the route the engine actually rode:
 /// - the Responses named-custom key → generic `custom` kind + the exact
 ///   table key as id (`build_dt_config` writes
 ///   `[providers.pinvou_responses]`, so the id is what names that table);
-/// - an unparseable operator pin (raw `DEEPSEEK_PROVIDER`) → the id-less
-///   legacy shape, whose resume path resolves the raw string exactly as
-///   the engine resolved it at spawn.
-pub(crate) fn persisted_provider_route(provider: &str) -> (String, Option<String>) {
+/// - a built-in slug → the kind as both fields (the exact shape
+///   `resolve_runtime_route` re-resolves a built-in route with);
+/// - any other operator pin (a raw `DEEPSEEK_PROVIDER` typo, or a legacy
+///   slug) → the kind `api_provider` resolved at spawn — the Deepseek
+///   fall-through for unparseable values, or a retired tombstone slug.
+///   Stamping the raw string instead would create a record the fail-closed
+///   resolver rejects at the next resume ("saved session requires custom
+///   provider …") — the exact stamp≠route mismatch this stamp exists to
+///   prevent (review #713 round 3). A tombstone slug still fails closed at
+///   resume, as it already failed at spawn; the stamp must not silently
+///   reroute it either.
+pub(crate) fn persisted_provider_route(
+    dt_config: &DtConfig,
+    provider: &str,
+) -> (String, Option<String>) {
     if provider == RESPONSES_ROUTE_PROVIDER {
         return ("custom".to_string(), Some(provider.to_string()));
     }
-    match ApiProvider::parse(provider) {
-        Some(_) => (provider.to_string(), Some(provider.to_string())),
-        None => (provider.to_string(), None),
+    match dt_config.api_provider() {
+        // A custom landing pairs the generic kind with the exact table key:
+        // api_provider only resolves Custom when `cfg.provider` names an
+        // existing table, so the provider string is that key.
+        ApiProvider::Custom => ("custom".to_string(), Some(provider.to_string())),
+        kind => {
+            let key = kind.as_str();
+            (key.to_string(), Some(key.to_string()))
+        }
     }
 }
 
@@ -11679,34 +11695,42 @@ mod tests {
     /// re-derives at resume (review #713 round 2). Each route class maps to
     /// the exact shape its own resolution uses — a mismatched pair (stale
     /// exact id next to a new kind) is rejected at the next resume even with
-    /// both providers configured.
+    /// both providers configured. The kind is resolved via
+    /// `DtConfig::api_provider`, the same source `Engine::new` derives the
+    /// spawn's identity from.
     #[test]
     fn persisted_provider_route_maps_each_route_class_to_its_canonical_pair() {
         // Built-in kind: the kind as both fields — the exact shape
         // resolve_runtime_route re-resolves a built-in route with.
-        assert_eq!(
-            persisted_provider_route("moonshot"),
-            ("moonshot".to_string(), Some("moonshot".to_string()))
-        );
-        assert_eq!(
-            persisted_provider_route("vllm"),
-            ("vllm".to_string(), Some("vllm".to_string()))
-        );
+        for slug in ["moonshot", "vllm"] {
+            let mut cfg = DtConfig::default();
+            cfg.provider = Some(slug.to_string());
+            assert_eq!(
+                persisted_provider_route(&cfg, slug),
+                (slug.to_string(), Some(slug.to_string()))
+            );
+        }
         // The Responses named-custom key is an exact table key, not a
         // canonical kind: it pairs the generic custom kind with the key.
+        let cfg = DtConfig::default();
         assert_eq!(
-            persisted_provider_route(RESPONSES_ROUTE_PROVIDER),
+            persisted_provider_route(&cfg, RESPONSES_ROUTE_PROVIDER),
             (
                 "custom".to_string(),
                 Some(RESPONSES_ROUTE_PROVIDER.to_string())
             )
         );
-        // An unparseable operator pin (raw DEEPSEEK_PROVIDER) keeps the
-        // id-less legacy shape, whose resume path re-resolves the raw string
-        // exactly as the engine did at spawn.
+        // An unparseable operator pin (a raw DEEPSEEK_PROVIDER typo) must
+        // stamp the kind the engine actually resolved: api_provider falls
+        // through to Deepseek, so the pair stays resolvable at resume.
+        // Writing the raw string instead would create a record the
+        // fail-closed resolver rejects ("saved session requires custom
+        // provider …").
+        let mut cfg = DtConfig::default();
+        cfg.provider = Some("operator-private-pin".to_string());
         assert_eq!(
-            persisted_provider_route("operator-private-pin"),
-            ("operator-private-pin".to_string(), None)
+            persisted_provider_route(&cfg, "operator-private-pin"),
+            ("deepseek".to_string(), Some("deepseek".to_string()))
         );
     }
 }
