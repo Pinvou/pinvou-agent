@@ -21,6 +21,7 @@ pptx 工具(make_pptx)测试用例 —— 覆盖本次 PR 的可确定性核心�
   12. explicit-null optional fields are safe (DeepSeek strict mode rewrites every property required+nullable)
   13. kpi numeric 0 / agenda dict items (allowed by the schema anyOf) render as data, not swallowed by `or`
   14. null array elements (salvage path bypasses the schema) fall back instead of leaking str(None) or error pages
+  15. non-string salvage elements are dropped (reprs never render, no phantom ordinals)
 
 注意:测试把 PINVOU3_SESSION_ARTIFACTS 指向临时目录,不污染 ~/.pinvou3。
 """
@@ -378,7 +379,11 @@ def test_falsy_and_dict_items_render():
     assert "5" in texts, "kpi numeric 5 must render normally, got text frames %r" % texts
     # An agenda dict element renders as "num label", never a dict repr.
     assert "满意度" in joined and "68%" in joined, "agenda dict items must render num/label: %r" % texts
-    assert "{" not in joined and "'" not in joined, "agenda must not render a dict repr: %r" % texts
+    # Pin the exact rendered pair instead of a brace/apostrophe ban (a
+    # legitimate fixture could contain either); the dict repr would appear
+    # verbatim as "{'num': '68%', 'label': '满意度'}".
+    assert "68% 满意度" in joined, "agenda dict element must render as its num label pair, got %r" % texts
+    assert "{'num'" not in joined, "agenda must not render a dict repr: %r" % texts
     assert "前言" in joined, "agenda string elements must render verbatim"
 
 
@@ -418,6 +423,53 @@ def test_null_array_elements_are_safe():
               if getattr(shape, "has_chart", False) and shape.has_chart]
     assert len(charts) == 1, "exactly one chart must render, got %r" % len(charts)
     assert len(charts[0].plots[0].series) == 1, "the null series must be dropped, leaving 1, got %r" % len(charts[0].plots[0].series)
+
+
+# ── 15. non-string salvage garbage: the JSON-string salvage path bypasses
+#        schema validation, so any element type can arrive. Every element
+#        lane drops what it cannot render (kept in lockstep with the
+#        series/rows filters): string items where strings are expected,
+#        (str, dict) items in the shared items anyOf — dropped before the
+#        agenda ordinals are numbered, and string-only chart categories. ──
+@case("15. non-string salvage elements are dropped, never rendered as reprs or phantom slots")
+def test_non_string_salvage_elements_are_dropped():
+    deck = _deck(
+        {"layout": "bullets", "title": "标量要点", "bullets": ["文字", True, 3.5, ["嵌"], {"k": "v"}]},
+        {"layout": "two_col", "title": "两栏", "leftTitle": "左",
+         "left": {"a": 1}, "right": ["右", None, 2]},
+        {"layout": "agenda", "title": None, "items": "not-a-list"},
+        {"layout": "agenda", "title": None, "items": [None, "唯一", ["嵌"], 7]},
+        {"layout": "kpi", "title": "指标", "items": [["嵌"], {"num": "1", "label": "存活"}]},
+        {"layout": "chart", "title": "空图表", "chartType": "bar",
+         "categories": ["Q1", None, "Q3"], "series": [{"name": "系列", "data": [1, 2]}]},
+    )
+    r = server.make_pptx(theme="business-blue", slides=deck, filename="test_salvage_elements")
+    assert r.get("ok") is True, "salvage garbage must render ok=True, got %r" % r
+    assert r["slides"] == 6, "slide count must be 6, got %r" % r["slides"]
+    prs = Presentation(r["path"])
+    texts = [shape.text_frame.text
+             for slide in prs.slides for shape in slide.shapes if shape.has_text_frame]
+    joined = "\n".join(texts)
+    assert "本页渲染失败" not in joined, "no page may render as a failure: %s" % joined[:300]
+    for needle in ("True", "3.5", "['嵌']", "{'k': 'v'}", "{'a': 1}", "not-a-list", "None"):
+        assert needle not in joined, "salvage repr %r must never reach a slide, got %r" % (needle, joined[:400])
+    # Surviving real content must still render.
+    for needle in ("文字", "右", "唯一", "存活"):
+        assert needle in joined, "element %r must survive its garbage siblings, got %r" % (needle, joined[:400])
+    # A string-valued items renders nothing (no per-character ordinals), and
+    # garbage elements must not consume agenda ordinals: "唯一" is the only
+    # item on its page, so exactly one ordinal ("01") may exist there.
+    agenda_page = prs.slides[3]
+    agenda_texts = [shape.text_frame.text for shape in agenda_page.shapes if shape.has_text_frame]
+    ordinals = [t for t in agenda_texts if t in ("01", "02", "03", "04", "05", "06")]
+    assert ordinals == ["01"], "dropped elements must not consume agenda ordinals, got %r" % agenda_texts
+    # Null/garbage categories are dropped from the chart axis.
+    charts = [shape.chart for slide in prs.slides for shape in slide.shapes
+              if getattr(shape, "has_chart", False) and shape.has_chart]
+    assert len(charts) == 1, "exactly one chart must render, got %r" % len(charts)
+    plot = charts[0].plots[0]
+    got_categories = list(plot.categories)
+    assert got_categories == ["Q1", "Q3"], "null categories must be dropped, got %r" % got_categories
 
 
 # ── 跑全部 ───────────────────────────────────────────────────────────────
