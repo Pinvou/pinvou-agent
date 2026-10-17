@@ -170,19 +170,40 @@ pub(crate) async fn set_global_shortcut_config(
                 // a rollback failure is logged only — the persist error is
                 // the one worth surfacing.
                 let prefs = crate::platform::prefs::UserPrefs::load();
-                if let Err(rollback_error) = crate::features::global_shortcut::apply_config(
+                // apply_config is infallible in practice — every failure
+                // folds into an Ok outcome — so match the OUTCOME, not Err,
+                // or the only reachable rollback failures (a Conflict when
+                // the re-registered old combo is now owned elsewhere, an
+                // Invalid when disk holds an unparsable combo) would be
+                // silently swallowed and the divergence between the active
+                // registration and settings.json stays invisible.
+                let rollback = crate::features::global_shortcut::apply_config(
                     &app,
                     prefs.global_shortcut_enabled,
                     &prefs.global_shortcut_accelerator,
-                ) {
-                    // Diagnosability: when the replay itself failed, record
-                    // what disk still holds so the divergence between the
-                    // active registration and settings.json is visible.
-                    log::warn!(
+                );
+                match rollback {
+                    Err(rollback_error) => log::warn!(
                         "global shortcut rollback after persist failure failed: {rollback_error} (disk holds enabled={} accelerator={:?})",
                         prefs.global_shortcut_enabled,
                         prefs.global_shortcut_accelerator
-                    );
+                    ),
+                    Ok(rollback_outcome)
+                        if !matches!(
+                            rollback_outcome.status,
+                            crate::features::global_shortcut::ApplyStatus::Registered
+                                | crate::features::global_shortcut::ApplyStatus::Disabled
+                        ) =>
+                    {
+                        log::warn!(
+                            "global shortcut rollback after persist failure did not restore the disk state: status={} message={:?} (disk holds enabled={} accelerator={:?})",
+                            rollback_outcome.status.as_str(),
+                            rollback_outcome.message,
+                            prefs.global_shortcut_enabled,
+                            prefs.global_shortcut_accelerator
+                        );
+                    }
+                    Ok(_) => {}
                 }
                 Err(persist_error)
             }
