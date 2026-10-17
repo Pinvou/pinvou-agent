@@ -303,12 +303,19 @@ def test_slides_schema_items_pin():
     for key in ("bullets", "left", "right", "categories", "headers", "rows", "items", "series"):
         _assert_typed(props[key], "slides.items.properties.%s" % key)
     # series.data's numeric array and rows' 2-D array are the two deepest
-    # spots; pin their shapes separately.
+    # spots; pin their shapes separately. name stays optional: single-series
+    # charts hide the legend, so a forced invented name is friction, and the
+    # renderer falls back to "" either way.
     series_items = props["series"]["items"]
-    assert series_items.get("required") == ["name", "data"], "series items.required must be ['name','data'], got %r" % series_items.get("required")
+    assert series_items.get("required") == ["data"], "series items.required must be ['data'], got %r" % series_items.get("required")
     assert series_items["properties"]["data"]["items"] == {"type": "number"}, "series.data items must be number"
     assert props["rows"]["items"]["type"] == "array" and props["rows"]["items"]["items"] == {"type": "string"}, \
         "rows must be a 2-D string array, got %r" % props["rows"]
+    # The items anyOf dict branch must not require num: agenda pages draw
+    # their own ordinals, so a label-only dict is a legal entry.
+    items_anyof = props["items"]["items"]["anyOf"]
+    dict_branch = next(br for br in items_anyof if br.get("type") == "object")
+    assert "required" not in dict_branch, "items dict branch must not require num, got %r" % dict_branch.get("required")
 
 
 # ── 12. explicit-null optional-field safety (DeepSeek strict rewrites every
