@@ -9213,8 +9213,14 @@ fn strip_session_message_block_impl_rejects_lookalikes_and_preserves_nesting() {
     // the body stays verbatim body (one strip per pass).
     // Round-20: the inner format! is hoisted — clippy::format-in-format-args
     // is denied (-D clippy::perf) and CI's rust-lint lints all targets.
+    // Round-22 M-3: the inner block opens with the BLANK separator ("\n\n"),
+    // not a bare "\n" — a bare newline after the outer JSON line leaves the
+    // text a lookalike (missing blank separator), the strip becomes a no-op,
+    // and every assertion below passes on the unstripped input (the outer
+    // header satisfies starts_with). The !contains("a") guard is what makes
+    // the case bite: with a real strip the outer sender JSON is gone.
     let inner_nested = format!(
-        "\n{}\n{}\n{}\n{{\"sessionId\":\"b\",\"title\":\"内层\"}}\n\n内层正文",
+        "\n\n{}\n{}\n{}\n{{\"sessionId\":\"b\",\"title\":\"内层\"}}\n\n内层正文",
         SESSION_MESSAGE_BLOCK_HEADER,
         SESSION_MESSAGE_CONTRACT_LINES[0],
         SESSION_MESSAGE_CONTRACT_LINES[1]
@@ -9234,6 +9240,87 @@ fn strip_session_message_block_impl_rejects_lookalikes_and_preserves_nesting() {
             && stripped.contains("\"sessionId\":\"b\"")
             && stripped.ends_with("内层正文真正的正文"),
         "the nested header must survive verbatim inside the stripped body"
+    );
+    assert!(
+        !stripped.contains("\"sessionId\":\"a\""),
+        "exactly one strip per pass: the outer sender JSON must be consumed \
+         (a no-op strip leaves it in and ships this red)"
+    );
+
+    // The no-trailing-newline empty-body form: the JSON line may terminate
+    // the text itself — the stripper returns "" (round-22 M-3 pin; the arm
+    // previously had no test and shipped green under mutation).
+    let unterminated = format!(
+        "{}\n{}\n{}\n{{\"sessionId\":\"a\",\"title\":\"t\"}}",
+        SESSION_MESSAGE_BLOCK_HEADER,
+        SESSION_MESSAGE_CONTRACT_LINES[0],
+        SESSION_MESSAGE_CONTRACT_LINES[1]
+    );
+    assert_eq!(
+        strip_session_message_block_impl(&unterminated),
+        "",
+        "the empty-body form without a trailing newline strips to empty"
+    );
+    assert_eq!(
+        delivered_body_for_matching(&unterminated),
+        "",
+        "the matching twin agrees on the no-trailing-newline form"
+    );
+    // The trailing-newline empty-body form: a bare newline after the JSON
+    // line with nothing after it strips to "" too — the `is_empty` arm
+    // behind the guards. Round-2 review: this arm had no direct pin, so a
+    // fall-through mutation shipped green (the fixture above exercises the
+    // `None` arm, not this one). The JS twin returns text: "" here as well
+    // (the split leaves a final empty line, so the blank-separator check
+    // passes and the body slice is empty).
+    let trailing_newline_empty = format!(
+        "{}\n{}\n{}\n{{\"sessionId\":\"a\",\"title\":\"t\"}}\n",
+        SESSION_MESSAGE_BLOCK_HEADER,
+        SESSION_MESSAGE_CONTRACT_LINES[0],
+        SESSION_MESSAGE_CONTRACT_LINES[1]
+    );
+    assert_eq!(
+        strip_session_message_block_impl(&trailing_newline_empty),
+        "",
+        "the empty-body form with a bare trailing newline strips to empty"
+    );
+    assert_eq!(
+        delivered_body_for_matching(&trailing_newline_empty),
+        "",
+        "the matching twin agrees on the trailing-newline empty form"
+    );
+    // Round-22 review minor 5: the empty-body arm sits BEHIND the 64 KiB and
+    // parse guards, matching the JS twin (splitSessionMessageBlock returns
+    // the text untouched for a lookalike that fails either guard) — an
+    // unterminated lookalike is not a block and stays verbatim. Previously
+    // the arm ran before the guards and stripped such junk to "".
+    let junk_unterminated = format!(
+        "{}\n{}\n{}\nnot json at all",
+        SESSION_MESSAGE_BLOCK_HEADER,
+        SESSION_MESSAGE_CONTRACT_LINES[0],
+        SESSION_MESSAGE_CONTRACT_LINES[1]
+    );
+    assert_eq!(
+        strip_session_message_block_impl(&junk_unterminated),
+        junk_unterminated,
+        "an unterminated unparseable lookalike is not a block — it stays verbatim"
+    );
+    let oversize_unterminated = format!(
+        "{}\n{}\n{}\n{}",
+        SESSION_MESSAGE_BLOCK_HEADER,
+        SESSION_MESSAGE_CONTRACT_LINES[0],
+        SESSION_MESSAGE_CONTRACT_LINES[1],
+        "x".repeat(MAX_SESSION_BLOCK_JSON_LINE + 1)
+    );
+    assert_eq!(
+        strip_session_message_block_impl(&oversize_unterminated),
+        oversize_unterminated,
+        "an unterminated oversize lookalike is not a block — it stays verbatim"
+    );
+    assert_eq!(
+        delivered_body_for_matching(&junk_unterminated),
+        junk_unterminated,
+        "the matching twin agrees on unterminated lookalikes"
     );
 
     // The matching twin agrees with the titling twin on every case
