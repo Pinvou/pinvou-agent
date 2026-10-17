@@ -104,14 +104,18 @@ pub fn deliverable_category(ext: &str) -> &'static str {
 /// records are skipped with a `skipped_sessions` note instead of read.
 pub const MAX_LIST_SCAN_BYTES: u64 = 32 * 1024 * 1024;
 
-/// 「产出物」跨会话索引的装配实现（GUI `list_deliverable_index` 命令与
-/// headless CLI `artifacts list` 共用；原先 CLI 逐字手抄本实现，且在两处
-/// 分叉上 CLI 更正确——read_dir 失败不得渲染成「无交付物」，单条记录读取
-/// 必须有字节上限——现以 CLI 口径为准单一实现）。`only_session` 按文件名
-/// 短路：会话存为 `<id>.json`，单会话列举没有理由读/解析其余记录。
-/// 只读磁盘真相：文件已删则跳过；mtime/size 现取 fs；同一物理路径只留
-/// 最新（同 mtime 平局按 session_id 决出，行排序带 path 腿，输出与
-/// read_dir 顺序无关）。
+/// Assembles the cross-session deliverables index shared by the GUI
+/// `list_deliverable_index` command and the headless CLI `artifacts list`
+/// (the CLI previously carried a verbatim hand-copy of this implementation,
+/// and was the more correct side on two divergences — a failed read_dir must
+/// not render as "no deliverables", and per-record reads must be byte-capped
+/// — so its semantics are now the single implementation). `only_session`
+/// short-circuits by file name: sessions are stored as `<id>.json`, so a
+/// single-session listing has no reason to read or parse the other records.
+/// Reads disk truth only: deleted files are skipped; mtime/size come from fs
+/// live; one physical path keeps only its newest row (same-mtime ties broken
+/// by session_id, and row ordering carries the path leg, so the output is
+/// independent of read_dir order).
 pub fn deliverable_index(only_session: Option<&str>) -> Result<DeliverableIndex, String> {
     let sessions_dir = crate::platform::paths::sessions_root();
     let entries = match std::fs::read_dir(&sessions_dir) {
@@ -358,11 +362,13 @@ fn read_record_capped(path: &Path, cap: u64) -> RecordRead {
     }
 }
 
-/// GUI 命令薄壳：整店索引（无会话过滤）。read_dir 的不可判定失败如实上抛
-/// （渲染成「无交付物」正是该口径要修的假干净账）。转发整个
-/// [`DeliverableIndex`]（rows + skipped，round-4 review）：把 skipped 截在
-/// 壳外会让超限/不可读记录的交付物从面板上无声消失，看起来像一次成功的
-/// 空结果；「不完整」的提示由视图层依据 skipped 渲染。
+/// GUI command shell: whole-store index (no session filter). An undecidable
+/// read_dir failure propagates as-is — rendering it as "no deliverables" is
+/// exactly the false clean bill this contract fixes. Forwards the whole
+/// [`DeliverableIndex`] (rows + skipped, round-4 review): truncating skipped
+/// at the shell makes an over-cap/unreadable record's deliverables vanish
+/// from the panel as a successful empty result; the view renders the
+/// "incomplete" notice from skipped.
 pub(crate) fn list_deliverable_index_impl() -> Result<DeliverableIndex, String> {
     deliverable_index(None)
 }
@@ -436,13 +442,16 @@ pub(crate) mod gui_index_contract_tests {
 
     /// Holds ENV_LOCK for setup AND for the caller's asserts (parallel
     /// env-writing tests must not repoint PINVOU3_HOME mid-scan), seeds the
-    /// fixture under a scratch PINVOU3_HOME, and returns the tempdir, the
-    /// env guard whose Drop restores the host env, and the lock guard that
-    /// keeps the env stable until the caller finishes.
+    /// fixture under a scratch PINVOU3_HOME, and returns the lock guard, the
+    /// tempdir, and the env guard whose Drop restores the host env.
+    /// Destructure in that order: Rust drops bindings in reverse, so the
+    /// env restore (including on assertion unwind) always runs while the
+    /// lock is still held, and the tempdir is removed before the lock is
+    /// released — the lock is the last guard dropped.
     pub(crate) fn run_in_scratch_home() -> (
+        std::sync::MutexGuard<'static, ()>,
         tempfile::TempDir,
         EnvVarGuard,
-        std::sync::MutexGuard<'static, ()>,
     ) {
         let lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let home = tempfile::tempdir().expect("scratch home");
@@ -451,7 +460,7 @@ pub(crate) mod gui_index_contract_tests {
         // writes are serialized against the other env-writing tests.
         unsafe { std::env::set_var("PINVOU3_HOME", home.path()) };
         seed_index_fixture(home.path());
-        (home, host, lock)
+        (lock, home, host)
     }
 
     /// The GUI-facing contract (round-4 review): the command shell must
@@ -463,7 +472,7 @@ pub(crate) mod gui_index_contract_tests {
     /// contract's `artifacts_list_reports_unscannable_records_in_skipped_sessions`.
     #[test]
     fn gui_index_forwards_the_skipped_disclosure() {
-        let (_home, host, _lock) = run_in_scratch_home();
+        let (_lock, _home, _host) = run_in_scratch_home();
 
         let index: DeliverableIndex = list_deliverable_index_impl().expect("gui index");
         assert_eq!(index.rows.len(), 1, "the scannable session still lists");
@@ -477,8 +486,5 @@ pub(crate) mod gui_index_contract_tests {
             vec!["s-huge".to_string()],
             "the GUI shell must forward the skip disclosure, not drop it"
         );
-
-        // The guard's Drop restores the host env even on assert failure.
-        drop(host);
     }
 }
