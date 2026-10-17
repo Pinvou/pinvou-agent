@@ -224,7 +224,10 @@ cp -a "$staged_dir/runtime/knowledge-host/." "$resource_dir/runtime/knowledge-ho
 if [ -n "$asr_engine" ]; then
   mkdir -p "$resource_dir/runtime/asr"
   install -m 0755 "$asr_engine" "$resource_dir/runtime/asr/sense-voice-main"
-  install -m 0644 "$APP_SRC_TAURI/resources/platforms/linux/asr/pinvou3-asr-shim.py" \
+  # The shim carries a shebang and is exec'd directly via PINVOU3_ASR_CMD
+  # (voice.rs Command::new); the repo blob is 0755 and tauri-bundler's
+  # resource copy preserves that on the amd64/arm64 debs — stay in parity.
+  install -m 0755 "$APP_SRC_TAURI/resources/platforms/linux/asr/pinvou3-asr-shim.py" \
     "$resource_dir/runtime/asr/pinvou3-asr-shim.py"
   install -m 0644 "$APP_SRC_TAURI/resources/platforms/linux/asr/LICENSE-SenseVoice.cpp" \
     "$resource_dir/runtime/asr/LICENSE-SenseVoice.cpp"
