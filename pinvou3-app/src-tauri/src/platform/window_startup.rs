@@ -81,8 +81,8 @@ pub fn reveal_startup_window(window: tauri::WebviewWindow) -> Result<bool, Strin
 
         present_linux_main_window(
             window,
-            "tauri:startup_window_revealed",
-            "tauri:startup_window_reveal_error",
+            "tauri:startup_window_revealed".to_string(),
+            "tauri:startup_window_reveal_error".to_string(),
         )?;
         return Ok(true);
     }
