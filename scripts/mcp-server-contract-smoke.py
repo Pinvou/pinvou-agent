@@ -137,7 +137,9 @@ def content_json(response: dict) -> dict:
 # items:{} shape, but empty nodes anywhere else still discard the whole
 # tool. Both classes are gated here: arrays must carry concretely typed
 # items, and no schema position may hold an empty node or a $ref this guard
-# cannot inspect.
+# cannot inspect. A list-typed "type" keyword is gated too: the engine's
+# schema sanitizer reads string types only, so such a node arrives typeless
+# downstream and MFJS rejects it with the same MissingType tool-drop.
 _MFJS_CONCRETE_TYPES = ("string", "number", "integer", "boolean", "object", "array", "null")
 
 
@@ -183,7 +185,16 @@ def _walk_tool_schema(node, path: str, offenders: list[str]) -> None:
     if not node:
         offenders.append(f"{path}: empty schema node (MFJS rejects it and silently drops the tool)")
         return
-    if node.get("type") == "array":
+    node_type = node.get("type")
+    if isinstance(node_type, list):
+        # Legal JSON Schema, but the engine sanitizer reads string types
+        # only, so the node arrives typeless downstream and MFJS drops the
+        # tool (#683 class). Fail closed like the other unverified shapes
+        # instead of interpreting the list.
+        offenders.append(
+            f"{path}: list-typed \"type\" ({node_type!r}) is outside the verified MFJS shape set (type must be a single string)"
+        )
+    if node_type == "array":
         items = node.get("items")
         if isinstance(items, list):
             # Tuple form is legal JSON Schema but outside the MFJS shape set
@@ -205,8 +216,26 @@ def _walk_tool_schema(node, path: str, offenders: list[str]) -> None:
             _walk_tool_schema(sub, f"{path}.items[{index}]", offenders)
     elif isinstance(items, dict):
         _walk_tool_schema(items, f"{path}.items", offenders)
+    unevaluated_items = node.get("unevaluatedItems")
+    if isinstance(unevaluated_items, list):
+        for index, sub in enumerate(unevaluated_items):
+            _walk_tool_schema(sub, f"{path}.unevaluatedItems[{index}]", offenders)
+    elif isinstance(unevaluated_items, dict):
+        _walk_tool_schema(unevaluated_items, f"{path}.unevaluatedItems", offenders)
+    # Draft-07 `dependencies` mixes two value shapes: property-name lists
+    # (data, never walked) and schema-form dependencies (walked like
+    # dependentSchemas).
+    dependencies = node.get("dependencies")
+    if isinstance(dependencies, dict):
+        for name, sub in dependencies.items():
+            if isinstance(sub, dict):
+                _walk_tool_schema(sub, f"{path}.dependencies.{name}", offenders)
     if isinstance(node.get("additionalProperties"), dict):
         _walk_tool_schema(node["additionalProperties"], f"{path}.additionalProperties", offenders)
+    # unevaluatedProperties is a single schema (like additionalProperties),
+    # not a name→schema map.
+    if isinstance(node.get("unevaluatedProperties"), dict):
+        _walk_tool_schema(node["unevaluatedProperties"], f"{path}.unevaluatedProperties", offenders)
     for key in ("contains", "propertyNames", "not", "if", "then", "else"):
         if isinstance(node.get(key), dict):
             _walk_tool_schema(node[key], f"{path}.{key}", offenders)
