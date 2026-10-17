@@ -1,24 +1,28 @@
 // Pure client-side pre-validation for the global shortcut
 // (set_global_shortcut_config). Rust stays the authoritative parser: this
 // only filters combinations that can never register, so an inevitably
-// failing IPC round-trip is skipped. Intentionally stricter (not a gap):
-// the Rust parser also accepts single-key combos without modifiers (e.g.
-// F9), but grabbing a lone system-wide key is too aggressive — product
-// policy requires at least one modifier, so those are rejected here too.
+// failing IPC round-trip is skipped. Product policy — at least one
+// modifier — is enforced on BOTH sides: the Rust layer rejects bare keys
+// (a lone system-wide letter grab would swallow that keystroke everywhere),
+// and this gate pre-filters the same shapes so the Save flow can explain
+// them without an IPC round-trip.
 // This module never touches localStorage and emits no events —
 // bs.settings.settings and the command response are the only state sources
 // (deliberately unlike the local-mirror approach of
 // chat/voice-shortcut-settings.mjs).
 const GLOBAL_SHORTCUT_DEFAULT_ACCELERATOR = 'CmdOrCtrl+Alt+P';
 
-// Modifier vocabulary of Tauri accelerators (compared lowercase);
-// CmdOrCtrl / CommandOrControl are legal cross-platform modifier aliases.
-// meta/opt are not Rust modifier aliases but still pass pre-validation:
-// passing just costs one authoritative Rust check with a localized invalid
-// notice, while rejecting would leave Save permanently disabled with no
-// explanation.
+// Modifier vocabulary of Tauri accelerators (compared lowercase): the four
+// cross-platform alias spellings the Rust parser accepts
+// (cmdorctrl/cmdorcontrol/commandorcontrol/commandorctrl) plus the plain
+// modifiers. meta/opt are not Rust modifier aliases but still pass
+// pre-validation: passing just costs one authoritative Rust check with a
+// localized invalid notice, while rejecting would leave Save permanently
+// disabled with no explanation.
 const GLOBAL_SHORTCUT_MODIFIER_KEYS = new Set([
-  'ctrl', 'control', 'cmd', 'command', 'cmdorctrl', 'commandorcontrol', 'super', 'meta',
+  'ctrl', 'control', 'cmd', 'command',
+  'cmdorctrl', 'cmdorcontrol', 'commandorctrl', 'commandorcontrol',
+  'super', 'meta',
   'alt', 'option', 'opt', 'shift',
 ]);
 
@@ -31,12 +35,13 @@ function normalizeGlobalShortcutDraft(value) {
 // parser cannot read ("CTRL/CMD") — fold it back to the CmdOrCtrl alias
 // before pre-validation and submit, so an edit of just the trailing key
 // (Ctrl/Cmd+Alt+O) passes Rust validation instead of guaranteeing an error.
-// Every other token passes through untouched (case/whitespace are already
-// normalized by Rust).
+// Internal whitespace in the token is ignored by the compare ("Ctrl / Cmd"
+// folds too); every other token passes through untouched (case/whitespace
+// are already normalized by Rust).
 function globalShortcutDraftToRust(value) {
   return normalizeGlobalShortcutDraft(value)
     .split('+')
-    .map((part) => (part.trim().toLowerCase() === 'ctrl/cmd' ? 'CmdOrCtrl' : part.trim()))
+    .map((part) => (part.replace(/\s+/g, '').toLowerCase() === 'ctrl/cmd' ? 'CmdOrCtrl' : part.trim()))
     .join('+');
 }
 
@@ -69,7 +74,9 @@ function isPlausibleGlobalShortcutAccelerator(value) {
 // wording).
 const GLOBAL_SHORTCUT_DISPLAY_TOKENS = new Map([
   ['control', 'Ctrl'],
-  ['cmd', 'Cmd'], ['command', 'Cmd'], ['cmdorctrl', 'Ctrl/Cmd'], ['meta', 'Cmd'], ['super', 'Cmd'],
+  ['cmd', 'Cmd'], ['command', 'Cmd'],
+  ['cmdorctrl', 'Ctrl/Cmd'], ['cmdorcontrol', 'Ctrl/Cmd'], ['commandorctrl', 'Ctrl/Cmd'], ['commandorcontrol', 'Ctrl/Cmd'],
+  ['meta', 'Cmd'], ['super', 'Cmd'],
   ['alt', 'Alt'], ['option', 'Alt'], ['opt', 'Alt'],
   ['shift', 'Shift'],
 ]);
