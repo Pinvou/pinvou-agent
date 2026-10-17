@@ -4487,6 +4487,26 @@ mod tests {
         );
     }
 
+    // ZIP 9 rejects the same forged entry before our post-read length check.
+    // Derive its typed error from the controlled fixture instead of pinning
+    // the dependency's full diagnostic text or accepting an unrelated error.
+    fn assert_forged_entry_read_error(
+        zip_path: &std::path::Path,
+        entry_name: &str,
+        context: &str,
+        import_error: &str,
+    ) {
+        use std::io::Read;
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path).unwrap()).unwrap();
+        let entry = archive.by_name(entry_name).unwrap();
+        let declared = entry.size();
+        assert_eq!(declared, 0, "fixture must retain the forged size header");
+        let mut reader = entry.take(declared.saturating_add(1));
+        let read_error = reader.read_to_end(&mut Vec::new()).unwrap_err();
+        assert_eq!(read_error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(import_error, format!("读{context}: {read_error}"));
+    }
+
     /// 伪造 zip 头部（中央目录声明 size=0、压缩流真实解压非空）的条目必须被
     /// pass2 有界读取（read_zip_entry_bounded）响亮拒收，不能完整读入内存
     /// （五轮评审 M-5：旧管线与新管线 plugin_import 防护对齐）。
@@ -4521,9 +4541,26 @@ mod tests {
         let err = mgr
             .import_package_named(zip_path.to_str().unwrap(), "pkg.zip")
             .unwrap_err();
+        assert_forged_entry_read_error(&zip_path, "bomb-skill/big.txt", "条目", &err);
+        let skills = tmp.join("bundles/bomb-skill/skills");
         assert!(
-            err.contains("超过 zip 头声明"),
-            "伪造头部条目应被有界读取拒收，实际: {err}"
+            !skills.join("bomb-skill").exists(),
+            "rejected package must not be published"
+        );
+        assert!(
+            !skills.join("bomb-skill.tmp").exists(),
+            "rejected package must leave no staging tree"
+        );
+        if skills.exists() {
+            assert_eq!(
+                std::fs::read_dir(&skills).unwrap().count(),
+                0,
+                "no staging or backup entries may remain"
+            );
+        }
+        assert!(
+            mgr.bundle_store.get("bomb-skill").unwrap().is_none(),
+            "rejected package must not be registered"
         );
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -4560,9 +4597,26 @@ mod tests {
         let err = mgr
             .import_package_named(zip_path.to_str().unwrap(), "pkg.zip")
             .unwrap_err();
+        assert_forged_entry_read_error(&zip_path, "bomb-skill/SKILL.md", "SKILL.md", &err);
+        let skills = tmp.join("bundles/bomb-skill/skills");
         assert!(
-            err.contains("超过 zip 头声明"),
-            "伪造 SKILL.md 头部应被有界预读拒收，实际: {err}"
+            !skills.join("bomb-skill").exists(),
+            "rejected package must not be published"
+        );
+        assert!(
+            !skills.join("bomb-skill.tmp").exists(),
+            "rejected package must leave no staging tree"
+        );
+        if skills.exists() {
+            assert_eq!(
+                std::fs::read_dir(&skills).unwrap().count(),
+                0,
+                "no staging or backup entries may remain"
+            );
+        }
+        assert!(
+            mgr.bundle_store.get("bomb-skill").unwrap().is_none(),
+            "rejected package must not be registered"
         );
         let _ = std::fs::remove_dir_all(&tmp);
     }
