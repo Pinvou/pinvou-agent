@@ -256,7 +256,7 @@ export const dictZh = {
         sysStatus: '系统状态',  gpu: '图形处理器 (GPU)', gpuUnavail: '状态不可用', 
         vram: '显存占用', core: '计算核心', temp: '温度', power: '功耗', unifiedMem: '统一内存架构',
         ram: '系统内存 (RAM)',
-        ctx: '上下文长度',  queue: '任务排队', ttft: 'TTFT（首字延迟）', tps: 'TPS（生成速度）',          app: '应用服务', 
+        ctx: '上下文长度',  queue: '任务排队', ttft: 'TTFT（首字延迟）', tps: 'TPS（生成速度）',          app: '应用服务',
         curVer: '当前版本',  uptime: '运行时长', runningMemory: '运行内存', temporaryMemory: '临时内存', localProcessor: '本机算力', processorLoad: '处理器负载', graphicsLoad: '图形负载', sharedMemory: '共享内存', deviceTemp: '设备温度', currentModel: '当前模型', localRunning: '本地运行', remoteService: '远程服务', available: '可用', unavailable: '不可用', historyReuse: '历史复用率',  modelReadAmount: '模型阅读量', modelOutputAmount: '模型输出量', modelReadHint: '参考内容越多，响应越慢、消耗越高', modelOutputHint: '生成内容越多，回复越长、消耗越高', resetCount: '重新计数', contextHint: '可保留的对话范围', queueHint: '处理中 / 等待中', ttftHint: '开始回复前的等待', tpsHint: '回复输出速度', reuseHint: '越高越快，也更省 Token', totalMemory: '总内存',
         light: '浅色', dark: '深色', followSystem: '跟随系统',
 
@@ -302,7 +302,7 @@ export const dictZh = {
         detectingLocalVllm: '检测中…',
 
 
-        setActiveModel: '设为默认', 
+        setActiveModel: '设为默认',
         modelFormAddTitle: '添加模型', modelFormEditTitle: '编辑模型', modelDisplayName: '显示名',
         testConnection: '测试连接', testingConn: '测试中…', modelSaveBtn: '保存', manageModels: '管理模型…',
  modelSwitchBusy: '生成中，无法切换', modelNonePick: '选择模型', 
