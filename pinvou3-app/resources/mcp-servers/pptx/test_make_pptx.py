@@ -20,6 +20,7 @@ pptx 工具(make_pptx)测试用例 —— 覆盖本次 PR 的可确定性核心�
   11. slides inputSchema.items structure pinned (arrays must carry concretely typed items)
   12. explicit-null optional fields are safe (DeepSeek strict mode rewrites every property required+nullable)
   13. kpi numeric 0 / agenda dict items (allowed by the schema anyOf) render as data, not swallowed by `or`
+  14. null array elements (salvage path bypasses the schema) fall back instead of leaking str(None) or error pages
 
 注意:测试把 PINVOU3_SESSION_ARTIFACTS 指向临时目录,不污染 ~/.pinvou3。
 """
@@ -372,6 +373,44 @@ def test_falsy_and_dict_items_render():
     assert "满意度" in joined and "68%" in joined, "agenda dict items must render num/label: %r" % texts
     assert "{" not in joined and "'" not in joined, "agenda must not render a dict repr: %r" % texts
     assert "前言" in joined, "agenda string elements must render verbatim"
+
+
+# ── 14. null array elements: schema-illegal but the JSON-string salvage path
+#        bypasses schema validation, so a null element must neither leak
+#        str(None) into a slide nor crash into the per-page error guard. ──
+@case("14. null array elements render as fallbacks, never None or error pages")
+def test_null_array_elements_are_safe():
+    deck = _deck(
+        {"layout": "bullets", "title": "空要点", "bullets": ["第一", None]},
+        {"layout": "kpi", "title": "空指标",
+         "items": [None, {"num": "1", "label": "存活"}]},
+        {"layout": "agenda", "title": None, "items": [None, {"label": "只标签"}, "文字"]},
+        {"layout": "table", "title": "空表格", "headers": [None, "表头"], "rows": [None, ["格子"]]},
+        {"layout": "chart", "title": "空图表", "chartType": "bar",
+         "categories": ["Q1"], "series": [None, {"name": "系列", "data": [1]}]},
+    )
+    r = server.make_pptx(theme="business-blue", slides=deck, filename="test_null_elements")
+    assert r.get("ok") is True, "null elements must render ok=True, got %r" % r
+    assert r["slides"] == 5, "slide count must be 5, got %r" % r["slides"]
+    prs = Presentation(r["path"])
+    texts = [shape.text_frame.text
+             for slide in prs.slides for shape in slide.shapes if shape.has_text_frame]
+    cells = [cell.text
+             for slide in prs.slides for shape in slide.shapes
+             if getattr(shape, "has_table", False) and shape.has_table
+             for row in shape.table.rows for cell in row.cells]
+    joined = "\n".join(texts + cells)
+    assert "本页渲染失败" not in joined, "no page may render as a failure: %s" % joined[:300]
+    assert "None" not in joined, "str(None) must never reach a slide, got %r" % (texts + cells)
+    # The surviving sibling elements must still render (table content lives
+    # in table cells; the chart's surviving series count is read off the
+    # chart object — neither appears in plain text frames).
+    for needle in ("第一", "存活", "只标签", "文字", "格子", "表头"):
+        assert needle in joined, "element %r must survive its null siblings, got %r" % (needle, joined[:300])
+    charts = [shape.chart for slide in prs.slides for shape in slide.shapes
+              if getattr(shape, "has_chart", False) and shape.has_chart]
+    assert len(charts) == 1, "exactly one chart must render, got %r" % len(charts)
+    assert len(charts[0].plots[0].series) == 1, "the null series must be dropped, leaving 1, got %r" % len(charts[0].plots[0].series)
 
 
 # ── 跑全部 ───────────────────────────────────────────────────────────────
