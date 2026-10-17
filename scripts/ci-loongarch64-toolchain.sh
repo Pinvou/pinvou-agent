@@ -149,14 +149,21 @@ case "$host_arch" in
 esac
 
 # The generation id recorded in the marker: re-pinning the tag, variant or
-# asset hash must invalidate a restored/stale tree from the previous pin.
+# asset hash must invalidate a restored/stale tree from the previous pin —
+# and so must an edit to this script itself (extraction flags, layout): the
+# workflows' restore-keys prefix fallback can restore an OLDER cache
+# generation after such an edit (the exact key hashes this file and misses;
+# the prefix fallback hits), so the script's own content hash is part of
+# the id and a stale marker rebuilds instead of being reused.
 # On aarch64 hosts the hash comes from the environment and may legitimately
 # be absent for a plain reuse run (the fail lives in the download branch),
 # so the comparison is skipped there; the x86_64 release runner always
 # carries the pinned hash and always gets the comparison.
+self_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+self_sha256="$(sha256sum "$self_path" | awk '{print $1}')"
 expected_id=""
 if [ -n "$pinned_sha256" ]; then
-  expected_id="${CROSS_TOOLS_TAG}/${VARIANT}/${host_arch}/${pinned_sha256}"
+  expected_id="${CROSS_TOOLS_TAG}/${VARIANT}/${host_arch}/${pinned_sha256}/${self_sha256}"
 fi
 
 already_verified() {

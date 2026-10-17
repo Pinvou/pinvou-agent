@@ -255,20 +255,33 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         # stale or truncated cache and a broken build — deleting any of them
         # must fail this suite, not a release link stage:
         # (1) the toolchain marker is only trusted when it names the CURRENT
-        #     pin (tag/variant/host/asset-hash);
+        #     pin (tag/variant/host/asset-hash) AND the generating script's
+        #     own content hash, so a restore-keys fallback to an older
+        #     generation after a script edit rebuilds instead of reusing;
         # (2) sysroot reuse re-runs the full verification, so a truncated
         #     restore fails at setup time, not at link time;
         # (3) rebuilds start from a fresh tree (dpkg-deb -x never deletes,
         #     so extracting over a previous generation would mix sources);
         # (4) the manifest is written atomically (tmp + rename), so a reader
-        #     can never observe a half-written generation marker.
+        #     can never observe a half-written generation marker;
+        # (5) the sysroot manifest records the generating script's content
+        #     hash and reuse compares it — same restore-keys defense as (1).
         toolchain = _without_comments(self.toolchain)
         sysroot = _without_comments(self.sysroot)
         self.assertIn(
-            'expected_id="${CROSS_TOOLS_TAG}/${VARIANT}/${host_arch}/${pinned_sha256}"',
+            'expected_id="${CROSS_TOOLS_TAG}/${VARIANT}/${host_arch}/${pinned_sha256}/${self_sha256}"',
             toolchain,
         )
+        self.assertIn('self_sha256="$(sha256sum "$self_path"', toolchain)
         self.assertIn('[ "$(cat "$marker")" != "$expected_id" ]', toolchain)
+        self.assertIn('self_sha256="$(sha256sum "$self_path"', sysroot)
+        # Both the manifest write and the reuse-side grep must carry the
+        # script hash: removing either half silently re-enables stale reuse.
+        self.assertEqual(
+            sysroot.count('script-sha256=$self_sha256'),
+            2,
+            "the script hash must be recorded AND compared on reuse",
+        )
         self.assertEqual(
             sysroot.count('verify_sysroot "$output_dir"'),
             2,
