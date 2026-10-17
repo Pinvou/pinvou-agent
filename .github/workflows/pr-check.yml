@@ -346,9 +346,11 @@ jobs:
               - '.github/workflows/pr-check.yml'
             release_contract:
               # Round-1 fix wave (PR #715 review): the loong64 packaging
-              # pipeline scripts are read (and bash -n'd) by the release
-              # policy suite, so editing one must run release-contract-test
-              # instead of skipping it with the gate green on `skipped`.
+              # pipeline scripts are read (and bash -n'd) by the loong64
+              # release policy suite, which fast-gate runs unconditionally;
+              # these filter entries are belt-and-braces so a script-only PR
+              # also re-runs release-contract-test instead of passing the
+              # gate on `skipped`.
               - 'scripts/package-deb-loongarch64.sh'
               - 'scripts/ci-build-linux-loongarch64.sh'
               - 'scripts/ci-loongarch64-toolchain.sh'
@@ -3065,8 +3067,8 @@ jobs:
       # llvm-toolchain-jammy-18 套件装 libclang-18-dev,并用 LIBCLANG_PATH
       # 短路 clang-sys 的多目录探测;目标头文件由 BINDGEN_EXTRA_CLANG_ARGS
       # (sysroot 脚本 print_env 导出)指向 deepin sysroot。此 run 块与
-      # release-packages.yml 的 build-linux-loongarch64 job 逐字一致
-      # (test_release_loongarch64_policy 钉字节等价)。
+      # release-packages.yml 的 build-linux-loongarch64 job 在注释剥离后
+      # 逐字一致 (test_release_loongarch64_policy 按剥注释文本钉等价)。
       - name: Install host build tools
         run: |
           set -euo pipefail
@@ -3174,11 +3176,15 @@ jobs:
           # workspace 的 target 下;工具链/sysroot 在 target 之外,不被吞)。
           # 独立 shared-key 避免与宿主架构缓存互相污染;main-only 保存,
           # PR/MQ 走前缀回退,同 cli-test/macos-cli-check。
+          # cache-on-failure 同 macos-cli-check(防死循环理由):只按成功保存
+          # 会让一个挂掉的主干推送把整个 loong64 缓存命名空间冻在冷启动,
+          # 后续每个 PR 都要全额冷交叉。
           workspaces: |
             pinvou3-app/src-tauri
             pinvou-knowledge
             pinvou-cli
           shared-key: rust-loongarch64-check
+          cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # --locked:与所有 Rust leg 相同,锁文件即构建输入。check 不链接,
