@@ -143,6 +143,12 @@ function prepareKnowledgeHost({
     // the same destination a native build writes. A missing artifact fails
     // loudly: the platform overlay still declares knowledge-host/, so a
     // silent skip would ship an empty runtime directory.
+    if (!targetTriple) {
+      // Fail on the known-misuse shape instead of probing a path with the
+      // literal `null` segment in it (unreachable from `main()`, which only
+      // sets prebuilt for cross builds where the triple is non-null).
+      throw new Error('预构建的共享知识库服务需要目标三元组：cross build 时必须传 targetTriple');
+    }
     source = path.join(
       repositoryRoot, 'pinvou-knowledge', 'target', targetTriple, 'release', 'pinvou-knowledge-server',
     );

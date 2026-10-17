@@ -20,7 +20,13 @@ const LINUX_ASR_ARCHITECTURES = {
   x64: { directory: "x86_64", scriptArch: "x86_64" },
 };
 
-function linuxAsrRuntimeOutput(architecture = process.arch) {
+// `outputRoot` is the injection point for tests (same discipline as the
+// knowledge-host fixture roots): everything under it is `<outputRoot>/
+// src-tauri/target/linux-asr-runtime/<dir>/sense-voice-main`, so a test can
+// exercise the prebuilt/cross paths without writing a fake engine into the
+// real target tree, where a killed run would leave an artifact that
+// `PINVOU3_LINUX_ASR_PREBUILT=1` accepts.
+function linuxAsrRuntimeOutput(architecture = process.arch, { outputRoot = APP_ROOT } = {}) {
   const descriptor = LINUX_ASR_ARCHITECTURES[architecture];
   if (!descriptor) {
     throw new Error(`Linux SenseVoice runtime 暂不支持 ${architecture} 架构`);
@@ -28,7 +34,7 @@ function linuxAsrRuntimeOutput(architecture = process.arch) {
   return {
     ...descriptor,
     binaryPath: path.join(
-      APP_ROOT,
+      outputRoot,
       "src-tauri",
       "target",
       "linux-asr-runtime",
@@ -52,9 +58,10 @@ function prepareLinuxAsrRuntime({
   environment = process.env,
   spawn = spawnSync,
   prebuilt = false,
+  outputRoot = APP_ROOT,
 } = {}) {
   if (platform !== "linux") return null;
-  const runtime = linuxAsrRuntimeOutput(architecture);
+  const runtime = linuxAsrRuntimeOutput(architecture, { outputRoot });
   if (prebuilt) {
     // Cross builds cannot run the build script for the target architecture:
     // its requested_arch == host_arch assertion fires before its own cache
