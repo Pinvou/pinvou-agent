@@ -142,10 +142,12 @@ const ComposerKbSelector = ({
     && (collections || []).every(collection => !(collection.source === 'remote' && collection.ready !== false));
   // 平台无本地 embedding（localEmbedSupported=false，如 linux/loongarch64；能力快照
   // 到达前同样按 false 兜底）时，「先去知识库下载」的引导不成立，改用平台不支持说明。
+  // 不支持时短路两个分支：该平台上模型永远无法就绪，「仍在加载」会变成永远
+  // 无法兑现的承诺（如共享宿主残留的模型目录会让 installed=true、ready=false）。
   const localEmbedSupported = !!(bs && bs.platformCapabilities && bs.platformCapabilities.localEmbedSupported);
-  const modelBlockedCopy = modelMissing
-    ? (localEmbedSupported ? t.kbMountNoModel : t.kbEmbedUnsupported)
-    : t.kbMountNotReady;
+  const modelBlockedCopy = localEmbedSupported
+    ? (modelMissing ? t.kbMountNoModel : t.kbMountNotReady)
+    : t.kbEmbedUnsupported;
 
   function toggle() { const next = !open; setOpen(next); if (next) { refreshModelStatus(); if (collections === null) loadList(); } }
   function pick(collection) {
