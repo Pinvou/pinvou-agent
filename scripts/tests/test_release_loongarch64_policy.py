@@ -24,6 +24,7 @@ test_release_size_policy: workflow sections are split by exact job names, so
 moving or renaming a job changes the split points and fails loudly here.
 """
 
+import json
 import re
 import subprocess
 import unittest
@@ -135,8 +136,45 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
     def test_release_job_gives_the_cross_build_headroom(self):
         # arm64 (native) gets 90 minutes; the cross build reuses the same
         # runner shape with the cross toolchain in front of it — the budget
-        # is 90 * ~1.5. Pin it so the headroom cannot silently disappear.
+        # is 90 * ~1.5. Pin it so the headroom cannot silently disappear,
+        # and pin the count: GitHub's last-key-wins YAML parsing means a
+        # second live timeout-minutes would silently void the pinned value.
         self.assertIn("timeout-minutes: 135", self.job_code)
+        self.assertEqual(
+            self.job_code.count("timeout-minutes:"),
+            1,
+            "exactly one timeout budget may exist in the job",
+        )
+
+    def test_packager_header_names_the_bundled_cli_version(self):
+        # The hand packager derives its parity claims from the bundler inside
+        # @tauri-apps/cli; the dependency is caret-ranged, so a routine CLI
+        # bump could silently rot the parity (Installed-Size semantics, tar
+        # header modes, control field order, symlink handling) and the
+        # bundler can never run for this triple to expose it. Pin the
+        # header's named version to the app's actual dependency so the
+        # coupling becomes a reviewed event.
+        named = re.search(r"@tauri-apps/cli (\d+\.\d+)\.", self.packager)
+        self.assertIsNotNone(
+            named, "the packager header must name its @tauri-apps/cli baseline"
+        )
+        package_json = json.loads(
+            (ROOT / "pinvou3-app" / "package.json").read_text(encoding="utf-8")
+        )
+        spec = package_json.get("dependencies", {}).get(
+            "@tauri-apps/cli"
+        ) or package_json.get("devDependencies", {}).get("@tauri-apps/cli")
+        self.assertIsNotNone(spec, "package.json must depend on @tauri-apps/cli")
+        bundled = re.search(r"[\^~]?(\d+\.\d+)\.", spec)
+        self.assertIsNotNone(bundled, f"unexpected @tauri-apps/cli spec: {spec}")
+        self.assertEqual(
+            named.group(1),
+            bundled.group(1),
+            "the packager header's tauri-cli baseline drifted from the "
+            "bundled @tauri-apps/cli — re-derive the parity claims "
+            "(Installed-Size, tar header modes, control order, symlink "
+            "handling) against the new bundler in the same PR",
+        )
 
     # ---- bundling contract ----
 
@@ -464,11 +502,21 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             ]
 
         def packager_list(name):
-            match = re.search(rf'{name}="([^"]*)"', self.packager)
-            self.assertIsNotNone(match, f"{name} missing from the packager script")
+            # Judge comment-stripped, line-anchored text: a commented-out
+            # assignment must not satisfy the parity check (the raw-text
+            # regex here was mutation-verified hollow — commenting the line
+            # out stayed green).
+            matches = re.findall(
+                rf'(?m)^{name}="([^"]*)"$', _without_comments(self.packager)
+            )
+            self.assertEqual(
+                len(matches),
+                1,
+                f"{name} must be assigned exactly once in live code",
+            )
             return [
                 item.strip()
-                for item in match.group(1).split(",")
+                for item in matches[0].split(",")
                 if item.strip()
             ]
 
@@ -492,7 +540,8 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         # pruned, directory inodes included (verified against the pinned
         # tauri-cli-v2.11.4 sources), //1024; (6) the data tree is
         # normalized to the bundler's deterministic 0755/0644 (+exec set)
-        # under umask 022 before packing.
+        # under umask 022 before packing; (7) resource-tree symlinks are
+        # materialized first (the bundler's copy path dereferences).
         packager = _without_comments(self.packager)
         for executable in (
             'install -m 0755 "$app_binary"',
@@ -520,9 +569,13 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         ):
             self.assertIn(destination, packager, destination)
         # md5sums over every data file, sorted for determinism, ./ prefix
-        # stripped (bundler's generate_md5sums shape).
+        # stripped (bundler's generate_md5sums shape) — the sort and the
+        # strip are pinned too: the comment here used to claim them while
+        # the assertions only covered the find/xargs plumbing.
         self.assertIn("find . -type f -not -path './DEBIAN/*' -print0", packager)
+        self.assertIn("LC_ALL=C sort -z", packager)
         self.assertIn("xargs -0 md5sum", packager)
+        self.assertIn(r"sed 's#^\([0-9a-f]\{32\}  \)\./#\1#'", packager)
         # Installed-Size mirrors the bundler's total_dir_size byte for byte:
         # it sums EVERY WalkDir entry of the data root — directory inodes
         # included (verified against the pinned tauri-cli-v2.11.4 sources,
@@ -555,6 +608,41 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             packager.index(normalization[0]),
             packager.index("dpkg-deb --root-owner-group"),
             "the mode normalization must run before the deb is built",
+        )
+        # (7) Resource-tree symlinks are materialized before the parity
+        # passes: the bundler's copy path dereferences (fs::copy per
+        # resource file), so the amd64/arm64 debs carry the npm .bin entries
+        # as regular files — in md5sums, at full target size in
+        # Installed-Size — and the loong64 deb must match.
+        self.assertIn('readlink -f -- "$link"', packager)
+        self.assertIn("-type l -print0", packager)
+        self.assertIn('cp -- "$target" "$link"', packager)
+        self.assertLess(
+            packager.index("-type l -print0"),
+            packager.index(normalization[0]),
+            "symlink materialization must run before mode normalization",
+        )
+        # Control emission (mutation-verified hollow before this pin): the
+        # DEPENDS/RECOMMENDS/Installed-Size computations above are inert
+        # unless they are actually written into DEBIAN/control — deleting an
+        # emission line used to leave the suite green while shipping a deb
+        # whose control file lost the field.
+        for emission in (
+            "printf 'Package: %s\\n' \"$PACKAGE_NAME\"",
+            "printf 'Version: %s\\n' \"$version\"",
+            "printf 'Architecture: %s\\n' \"$DEB_ARCH\"",
+            "printf 'Installed-Size: %s\\n' \"$installed_size_kb\"",
+            "printf 'Maintainer: pinvou\\n'",
+            "printf 'Priority: optional\\n'",
+            "printf 'Depends: %s\\n' \"$DEPENDS\"",
+            "printf 'Recommends: %s\\n' \"$RECOMMENDS\"",
+            '} > "$control_dir/control"',
+        ):
+            self.assertIn(emission, packager, emission)
+        self.assertLess(
+            packager.index('} > "$control_dir/control"'),
+            packager.index("dpkg-deb --root-owner-group"),
+            "the control file must be written before the deb is built",
         )
 
     def test_sysroot_pins_the_verified_package_and_pc_module_lists(self):
