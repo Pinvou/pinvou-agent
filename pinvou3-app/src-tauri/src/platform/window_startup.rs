@@ -25,8 +25,10 @@ fn should_fallback_reveal(visible_after_wait: bool) -> bool {
 #[cfg(target_os = "linux")]
 fn present_linux_main_window(
     window: tauri::WebviewWindow,
-    success_mark: &str,
-    error_mark: &str,
+    // Owned marks: both are captured by the 'static main-thread closure
+    // below, so borrowed parameters cannot outlive this frame (E0521).
+    success_mark: String,
+    error_mark: String,
 ) -> Result<(), String> {
     let main_window = window.clone();
     window
@@ -55,10 +57,10 @@ fn present_linux_main_window(
                 gtk_window.show_all();
                 gtk_window.deiconify();
                 gtk_window.present();
-                crate::platform::startup::mark(success_mark);
+                crate::platform::startup::mark(&success_mark);
             }
             Err(error) => {
-                crate::platform::startup::mark_with_detail("rust", error_mark, &error.to_string())
+                crate::platform::startup::mark_with_detail("rust", &error_mark, &error.to_string())
             }
         })
         .map_err(|error| error.to_string())
@@ -120,8 +122,8 @@ pub(crate) fn activate_main_window(window: tauri::WebviewWindow, source: &str) -
         }
         if let Err(error) = present_linux_main_window(
             window,
-            &format!("tauri:{source}_window_presented"),
-            &format!("tauri:{source}_window_present_error"),
+            format!("tauri:{source}_window_presented"),
+            format!("tauri:{source}_window_present_error"),
         ) {
             crate::platform::startup::mark_with_detail(
                 "rust",
