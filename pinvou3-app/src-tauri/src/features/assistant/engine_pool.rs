@@ -4701,6 +4701,46 @@ pub(crate) fn assemble_delivery_turn(
     (match_text, engine_content, user_display_message(content))
 }
 
+#[cfg(test)]
+mod delivery_turn_wiring_pin_tests {
+    /// Round-22 review MAJOR-1: the type system pins the seam's parameter
+    /// order but not the call-site hand-off — `match_text`/`engine_content`
+    /// are both `String`, so a swap at the destructure, `None` for the
+    /// persona body, or matching on `engine_content` compiles clean and
+    /// keeps the pure-seam test
+    /// (`messaging::delivery_turn_assembly_strips_for_matching`) green.
+    /// The production wiring is therefore pinned at its source, like
+    /// `multiagent::match_source_call_sites_pass_the_unassembled_text` does
+    /// for the sibling matching path (rust-test runs on any Rust change).
+    #[test]
+    fn deliver_messaging_turn_hands_the_seam_outputs_to_the_right_consumers() {
+        let source = include_str!("engine_pool.rs");
+        assert!(
+            source.contains("let (match_text, engine_content, display_message) =")
+                && source.contains(
+                    "assemble_delivery_turn(&content, pending_injections.persona_body());"
+                ),
+            "deliver_messaging_turn must assemble through the seam with the \
+             taken persona body (None would silently drop the first-turn \
+             persona card; swapping the two String outputs at the destructure \
+             feeds matching the persona-prefixed block — the round-7 Q2 \
+             regression class)"
+        );
+        assert!(
+            source.contains("snapshot.available_role_lines(&match_text)"),
+            "expert matching must consume the seam's stripped match_text \
+             (raw-block or engine-content matching is the round-7 Q2 \
+             regression class)"
+        );
+        assert!(
+            source.contains("pending_injections.commit();"),
+            "the taken pending injections must be committed only after the \
+             reserved turn submits (dropping the commit re-injects the full \
+             persona card on the next normal turn)"
+        );
+    }
+}
+
 async fn persist_scheduled_prompt(
     store: SessionStore,
     session_id: String,

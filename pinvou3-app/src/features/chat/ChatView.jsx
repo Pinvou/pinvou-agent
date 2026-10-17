@@ -118,9 +118,11 @@ const CHAT_PANEL_LOADERS = Object.freeze({
   subagent: () => import('../multiagent/SubagentTranscriptPanel.jsx'),
   auxChat: () => import('../aux-chat/AuxChatPanel.jsx'),
   // Round-18: the sender card is deferred out of the main entry — its static
-  // copy pushed the web build past the 500 kB startup budget, and entry
-  // policy requires new entry work to be split or lazy-loaded. Prefetched on
-  // mount below, so delivered messages render without a visible delay.
+  // copy pushed the web main entry past the then-500 kB budget (the enforced
+  // gate is MAIN_ENTRY_BUDGET_BYTES, now 502 kB — see vite.config.mjs), and
+  // entry policy requires new entry work to be split or lazy-loaded.
+  // Prefetched on mount below, so delivered messages render without a
+  // visible delay.
   sessionMessageCard: () => import('./SessionMessageCard.jsx'),
 });
 const LazyArtifactsPanel = React.lazy(() => CHAT_PANEL_LOADERS.artifacts().then((m) => ({ default: m.ArtifactsPanel })));

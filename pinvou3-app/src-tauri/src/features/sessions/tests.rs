@@ -9266,6 +9266,39 @@ fn strip_session_message_block_impl_rejects_lookalikes_and_preserves_nesting() {
         "",
         "the matching twin agrees on the no-trailing-newline form"
     );
+    // Round-22 review minor 5: the empty-body arm sits BEHIND the 64 KiB and
+    // parse guards, matching the JS twin (splitSessionMessageBlock returns
+    // the text untouched for a lookalike that fails either guard) — an
+    // unterminated lookalike is not a block and stays verbatim. Previously
+    // the arm ran before the guards and stripped such junk to "".
+    let junk_unterminated = format!(
+        "{}\n{}\n{}\nnot json at all",
+        SESSION_MESSAGE_BLOCK_HEADER,
+        SESSION_MESSAGE_CONTRACT_LINES[0],
+        SESSION_MESSAGE_CONTRACT_LINES[1]
+    );
+    assert_eq!(
+        strip_session_message_block_impl(&junk_unterminated),
+        junk_unterminated,
+        "an unterminated unparseable lookalike is not a block — it stays verbatim"
+    );
+    let oversize_unterminated = format!(
+        "{}\n{}\n{}\n{}",
+        SESSION_MESSAGE_BLOCK_HEADER,
+        SESSION_MESSAGE_CONTRACT_LINES[0],
+        SESSION_MESSAGE_CONTRACT_LINES[1],
+        "x".repeat(MAX_SESSION_BLOCK_JSON_LINE + 1)
+    );
+    assert_eq!(
+        strip_session_message_block_impl(&oversize_unterminated),
+        oversize_unterminated,
+        "an unterminated oversize lookalike is not a block — it stays verbatim"
+    );
+    assert_eq!(
+        delivered_body_for_matching(&junk_unterminated),
+        junk_unterminated,
+        "the matching twin agrees on unterminated lookalikes"
+    );
 
     // The matching twin agrees with the titling twin on every case
     // (delivered_body_for_matching delegates to the same impl; the delegate

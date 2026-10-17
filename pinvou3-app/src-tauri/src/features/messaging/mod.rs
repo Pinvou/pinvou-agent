@@ -847,10 +847,12 @@ struct RetryState {
     /// file-lock class). Unkeyed deliveries have no done-marker, so a
     /// persistently failing remove would re-deliver + re-audit every 1s
     /// poll forever. After [`MAX_DELIVERY_ATTEMPTS`] failures the file is
-    /// quarantined to stop the loop — and when the directory itself defeats
-    /// the rename (the removal failure's precondition), the exhaustion arm
-    /// falls back to a best-effort done-marker (unkeyed included) and this
-    /// streak gates re-delivery at the pre-delivery check (round-21 M-1).
+    /// quarantined — and when the directory itself defeats the rename (the
+    /// removal failure's precondition), the exhaustion arm falls back to a
+    /// best-effort done-marker (unkeyed included). Round-21 froze every
+    /// exhausted file at the pre-delivery gate; round-22 carves out files
+    /// that already carry a done-marker (the marker itself suppresses
+    /// re-delivery, so only the freeze served no gate — `RetryState::due`).
     removal_failures: HashMap<String, u32>,
 }
 
@@ -859,12 +861,17 @@ impl RetryState {
     /// (linear backoff from `MIN_BACKOFF`, capped at `MAX_BACKOFF`).
     fn due(&self, name: &str) -> bool {
         // Round-21 M-1: a removal-failure streak at the ceiling gates
-        // re-delivery too — the quarantine stop-gap is a rename into the
-        // same directory and can fail under the exact precondition that
-        // defeated the removal, and the pre-delivery gate must not keep
-        // dispatching full engine turns for a file nothing can retire. (A
-        // same-name re-spool onto such an exhausted file stays starved
-        // until the file vanishes from a listing — the edge of the edge.)
+        // re-delivery — the quarantine stop-gap is a rename into the same
+        // directory and can fail under the exact precondition that defeated
+        // the removal, and the pre-delivery gate must not keep dispatching
+        // full engine turns for a file nothing can retire. Round-22 carves
+        // out marker-bearing files below. Two accepted corners, both
+        // bounded: a carved-out file churns one bounded re-read plus a
+        // removal attempt per poll (at the ceiling also an audit re-read
+        // and a quarantine/mark attempt) and self-heals the moment the
+        // lock clears; a file whose stop-gap marker write ALSO failed
+        // stays frozen until boot, because nothing processes it and the
+        // write is never retried (the exhaustion arm warned once).
         if self
             .removal_failures
             .get(name)
@@ -2138,11 +2145,6 @@ mod spool_pipeline_tests {
             )
             .await;
         }
-        assert_eq!(
-            *fake.calls.borrow(),
-            0,
-            "the done-marker suppresses re-delivery through the freeze window"
-        );
         std::fs::set_permissions(&spool, {
             use std::os::unix::fs::PermissionsExt;
             let mut p = perms.clone();
@@ -2150,6 +2152,15 @@ mod spool_pipeline_tests {
             p
         })
         .unwrap();
+        // Asserted outside the read-only window: a panic while the spool is
+        // still unwritable would leave TempHome's cleanup unable to unlink
+        // the directory. The counter is cumulative, so this still covers the
+        // whole freeze window.
+        assert_eq!(
+            *fake.calls.borrow(),
+            0,
+            "the done-marker suppressed re-delivery through the freeze window"
+        );
         // One more poll: the skip arm must run again and retire the file.
         process_pending_spool(
             &fake,
@@ -2165,6 +2176,29 @@ mod spool_pipeline_tests {
              (round-22 M-1: the round-21 gate froze it until restart)"
         );
         assert_eq!(*fake.calls.borrow(), 0, "retirement never re-delivers");
+    }
+
+    /// Round-22 review: the complementary arm of the M-1 carve-out — WITHOUT
+    /// a done-marker the ceiling still freezes. Deleting the whole gate
+    /// would otherwise re-introduce the round-8/21 1 Hz unkeyed re-delivery
+    /// loop and ship green (the carve-out had a pin; the freeze did not).
+    #[test]
+    fn streak_ceiling_still_freezes_files_without_a_done_marker() {
+        let _home = TempHome::new();
+        let mut retries = RetryState::default();
+        retries
+            .removal_failures
+            .insert("stuck.json".to_string(), MAX_DELIVERY_ATTEMPTS as u32);
+        // No `.done/stuck.json` on disk: the ceiling freeze holds.
+        assert!(!retries.due("stuck.json"));
+        // The carve-out: the same file with its marker written stays due.
+        std::fs::create_dir_all(done_dir()).unwrap();
+        std::fs::write(done_dir().join("stuck.json"), b"").unwrap();
+        assert!(retries.due("stuck.json"));
+        // Below the ceiling the gate arm is not entered (marker irrelevant).
+        *retries.removal_failures.get_mut("stuck.json").unwrap() -= 1;
+        std::fs::remove_file(done_dir().join("stuck.json")).unwrap();
+        assert!(retries.due("stuck.json"));
     }
 
     /// Round-22 M-2: the `deliver_messaging_turn` wiring, pinned at the
@@ -2191,10 +2225,28 @@ mod spool_pipeline_tests {
         let deepseek_tui::models::ContentBlock::Text { text, .. } = &display.content[0] else {
             panic!("display message must start with a text block");
         };
-        assert!(
-            text.starts_with(crate::features::sessions::SESSION_MESSAGE_BLOCK_HEADER),
-            "the transcript item keeps the delivered block (header at the very start)"
+        assert_eq!(
+            text, &content,
+            "the transcript item keeps the delivered block VERBATIM — the \
+             sender-card renderer requires the header at the very start"
         );
+        assert_eq!(
+            display.role,
+            deepseek_tui::models::Role::User,
+            "the transcript item is a user turn"
+        );
+        // Round-22 review: the None path must not grow a card either — an
+        // unconditional `unwrap_or_default` prefix ships this red.
+        let (match_text, engine_content, display) = assemble_delivery_turn(&content, None);
+        assert_eq!(match_text, "正文\n两行");
+        assert_eq!(
+            engine_content, content,
+            "no persona card without a pending injection"
+        );
+        let deepseek_tui::models::ContentBlock::Text { text, .. } = &display.content[0] else {
+            panic!("display message must start with a text block");
+        };
+        assert_eq!(text, &content, "the display keeps the block verbatim");
     }
 
     /// Round-22 M-3: the disclosed caps are pinned to their literals — the
