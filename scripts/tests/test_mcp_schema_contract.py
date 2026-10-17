@@ -2,22 +2,32 @@
 
 The guard (check_schema_contract/_walk_tool_schema) runs inside the CI
 fast-gate's mcp-server-contract-smoke.py, shape-checking every bundled
-server's tools/list result. All bundled servers are currently compliant, so
-if the guard itself breaks the smoke stays green (against compliant schemas
-a broken guard is exactly as silent as a good one) — only the direct unit
-tests here turn red when the guard rots. Both directions are pinned: the
-incident shape (itemless array), items:{}, untyped items, tuple items,
-prefixItems, boolean schemas, anyOf with an empty branch, list-typed "type"
-keywords, and $ref must be red; fully typed oneOf/allOf and the real pptx
-schema must be green. Every recursion lane — properties,
-additionalProperties, anyOf/oneOf branches, $defs/definitions, contains,
-propertyNames, not, if/then/else, dependentSchemas, draft-07 dependencies,
-unevaluatedProperties/unevaluatedItems — has a red case pinning it: the
-walker's recursion is not decorative, every lane is consumed by an
-assertion. The wiring (the call site itself) is pinned by
-check_schema_contract's return-value contract: check_protocol prints it
-into the success line, which raises NameError the moment the call site is
-deleted; the unit test pins the return value.
+server's tools/list result against the MFJS shape set verified from the
+validator source (CodeWhale schema_sanitize.rs: ALLOWED_KEYWORDS plus the
+MissingType / UnsupportedKeyword / InvalidSchemaNode raise sites): every
+schema position holds an object, "type" is a single concrete MFJS string
+(or absent in favor of anyOf with union-only siblings), and no keyword
+outside MFJS's allowed set survives — the validator drops the whole tool
+for any of these, so a bundled server that ships one loses that tool
+silently on the constrained-decoding route. All bundled servers are
+currently compliant, so if the guard itself breaks the smoke stays green
+(against compliant schemas a broken guard is exactly as silent as a good
+one) — only the direct unit tests here turn red when the guard rots. Both
+directions are pinned: the incident shape (itemless array), items:{},
+untyped items, tuple items, boolean schemas, list-typed / non-string /
+unknown "type" values, typeless annotation-only nodes, non-object schema
+values, $ref/$dynamicRef/$recursiveRef, empty or sibling-polluted anyOf,
+non-root $defs/$id, and every non-MFJS keyword (oneOf, allOf,
+patternProperties, prefixItems, contains, propertyNames, not/if/then/else,
+dependentSchemas, draft-07 dependencies, unevaluated*, contentSchema) must
+be red; typed enums, typed unions, and the real pptx schema must be green.
+Every recursion lane that survives (properties, additionalProperties,
+items, anyOf branches, $defs) has a red case pinning it: the walker's
+recursion is not decorative, every lane is consumed by an assertion. The
+wiring (the call site itself) is pinned by check_schema_contract's
+return-value contract: check_protocol asserts the returned count against
+the boot contract and prints it into the success line, which raises the
+moment the call site is deleted; the unit test pins the return value.
 
 The real-pptx-schema green case needs python-pptx to import the server
 module; in the fast-gate, unittest discover runs before python-pptx is
@@ -89,15 +99,34 @@ class SchemaContractWalkerTest(unittest.TestCase):
         self.assertIsNotNone(message)
         self.assertIn("without concretely typed items", message)
 
-    def test_fully_typed_one_of_items_is_green(self):
-        self.assertIsNone(_contract_message(
+    def test_one_of_keyword_is_red(self):
+        # MFJS has no oneOf: ALLOWED_KEYWORDS rejects it outright
+        # (UnsupportedKeyword), so a union must be spelled anyOf.
+        message = _contract_message(
             {"type": "array",
-             "items": {"oneOf": [{"type": "string"}, {"type": "null"}]}}))
+             "items": {"oneOf": [{"type": "string"}, {"type": "null"}]}})
+        self.assertIsNotNone(message)
+        self.assertIn("unsupported keyword", message)
+        self.assertIn("oneOf", message)
 
-    def test_fully_typed_all_of_items_is_green(self):
-        self.assertIsNone(_contract_message(
+    def test_all_of_keyword_is_red(self):
+        # Same as oneOf: allOf is outside the verified MFJS shape set even
+        # when every branch is fully typed.
+        message = _contract_message(
             {"type": "array",
-             "items": {"allOf": [{"type": "string"}, {"maxLength": 5}]}}))
+             "items": {"allOf": [{"type": "string"}, {"maxLength": 5}]}})
+        self.assertIsNotNone(message)
+        self.assertIn("unsupported keyword", message)
+        self.assertIn("allOf", message)
+
+    def test_pattern_properties_keyword_is_red(self):
+        # Pin the keyword ban on the last JSON-Schema name→schema map the
+        # old walker recursed into: MFJS has no patternProperties.
+        message = _contract_message(
+            {"type": "object", "patternProperties": {".*": {"type": "string"}}})
+        self.assertIsNotNone(message)
+        self.assertIn("unsupported keyword", message)
+        self.assertIn("patternProperties", message)
 
     def test_dollar_ref_is_red_as_property_and_as_items(self):
         message = _contract_message(
@@ -107,6 +136,14 @@ class SchemaContractWalkerTest(unittest.TestCase):
                             "b": {"type": "array", "items": {"$ref": "#/definitions/w"}}}})
         self.assertIsNotNone(message)
         self.assertIn("$ref", message)
+
+    def test_dynamic_and_recursive_ref_are_red(self):
+        # Same indirection class as $ref: the guard cannot inspect the
+        # target, so the shape underneath would go uninspected.
+        for keyword in ("$dynamicRef", "$recursiveRef"):
+            message = _contract_message({keyword: "#a"})
+            self.assertIsNotNone(message, keyword)
+            self.assertIn("not followed by this guard", message, keyword)
 
     def test_nested_array_without_items_is_red_at_inner_level(self):
         message = _contract_message({"type": "array", "items": {"type": "array"}})
@@ -124,9 +161,9 @@ class SchemaContractWalkerTest(unittest.TestCase):
         self.assertIsNotNone(message)
         self.assertIn("boolean schema", message)
 
-    def test_prefix_items_is_red(self):
-        # Tuple semantics, same family as tuple items: outside the verified
-        # MFJS shape set.
+    def test_prefix_items_keyword_is_red(self):
+        # Tuple semantics: legal JSON Schema, outside the verified MFJS
+        # shape set like tuple items.
         message = _contract_message(
             {"type": "array", "items": {"type": "string"},
              "prefixItems": [{"type": "string"}]})
@@ -143,8 +180,8 @@ class SchemaContractWalkerTest(unittest.TestCase):
         self.assertIn("without concretely typed items", message)
 
     def test_itemless_array_inside_union_branch_is_red(self):
-        # Pin the anyOf/oneOf branch recursion lane: any branch of a union
-        # may be taken.
+        # Pin the anyOf branch recursion lane: any branch of a union may be
+        # taken, so an itemless array in one branch is incident-shaped.
         message = _contract_message(
             {"type": "object",
              "properties": {"x": {"anyOf": [{"type": "array"}, {"type": "string"}]}}})
@@ -176,28 +213,115 @@ class SchemaContractWalkerTest(unittest.TestCase):
         self.assertIn("additionalProperties", message)
         self.assertIn("list-typed", message)
 
+    def test_non_string_type_value_is_red(self):
+        # {"type": 1234}: the sanitizer reads string types only, so this
+        # node arrives typeless and dies with MissingType.
+        message = _contract_message({"type": "object", "properties": {"x": {"type": 1234}}})
+        self.assertIsNotNone(message)
+        self.assertIn("not a concrete MFJS string type", message)
+
+    def test_non_concrete_type_string_is_red(self):
+        # {"type": "Array"} is not a concrete MFJS type (case-sensitive
+        # string compare upstream): same MissingType drop.
+        message = _contract_message({"type": "object", "properties": {"x": {"type": "Array"}}})
+        self.assertIsNotNone(message)
+        self.assertIn("not a concrete MFJS string type", message)
+
+    def test_typeless_annotation_node_is_red(self):
+        # A non-empty node with no "type" and no anyOf is MissingType for
+        # MFJS: {"description": ...} is the same silent tool-drop class as
+        # the empty node, not an "always accept" wildcard.
+        message = _contract_message(
+            {"type": "object", "properties": {"x": {"description": "y"}}})
+        self.assertIsNotNone(message)
+        self.assertIn("no \"type\" and no anyOf", message)
+
+    def test_typeless_enum_property_is_red(self):
+        # {"enum": [...]} without a type reads as "any of these" in JSON
+        # Schema but is MissingType for MFJS: the enum leaf must carry its
+        # concrete type.
+        message = _contract_message(
+            {"type": "object", "properties": {"e": {"enum": ["a", "b"]}}})
+        self.assertIsNotNone(message)
+        self.assertIn("no \"type\" and no anyOf", message)
+
+    def test_schema_list_value_is_red(self):
+        # A list at a schema position ({"items": [[]]}, a list-valued
+        # property) is InvalidSchemaNode upstream, not a silently-skipped
+        # value.
+        message = _contract_message({"type": "object", "properties": {"x": ["a"]}})
+        self.assertIsNotNone(message)
+        self.assertIn("MFJS requires an object", message)
+
+    def test_empty_anyof_branch_list_is_red(self):
+        message = _contract_message(
+            {"type": "object", "properties": {"x": {"anyOf": []}}})
+        self.assertIsNotNone(message)
+        self.assertIn("non-empty branch list", message)
+
+    def test_anyof_type_sibling_is_red(self):
+        # MFJS allows only title/description beside anyOf: a typed node with
+        # a union is InvalidKeywordValue, not an intersection.
+        message = _contract_message(
+            {"type": "object",
+             "properties": {"x": {"type": "object", "anyOf": [{"type": "string"}]}}})
+        self.assertIsNotNone(message)
+        self.assertIn("anyOf sibling", message)
+
+    def test_content_schema_keyword_is_red(self):
+        # contentSchema would otherwise be a hiding spot for an itemless
+        # array; it is simply outside the MFJS keyword set.
+        message = _contract_message(
+            {"type": "object",
+             "properties": {"r": {"type": "string", "contentSchema": {"type": "array"}}}})
+        self.assertIsNotNone(message)
+        self.assertIn("unsupported keyword", message)
+        self.assertIn("contentSchema", message)
+
+    def test_defs_outside_root_is_red(self):
+        # $defs (and $id) are root-only for MFJS; elsewhere they are
+        # InvalidKeywordValue, so a nested definition cannot act as a data
+        # side channel either.
+        message = _contract_message(
+            {"type": "object",
+             "properties": {"x": {"$defs": {}, "type": "string"}}})
+        self.assertIsNotNone(message)
+        self.assertIn("outside the schema root", message)
+
+    def test_list_typed_inside_additional_properties_is_red(self):
+        # The ban must hold at every recursion lane, not just properties.
+        message = _contract_message(
+            {"type": "object", "additionalProperties": {"type": ["array", "string"]}})
+        self.assertIsNotNone(message)
+        self.assertIn("additionalProperties", message)
+        self.assertIn("list-typed", message)
+
     def test_itemless_array_inside_defs_is_red(self):
-        # $defs and draft-07 definitions both recurse; an unreferenced
-        # definition must not be a blind spot.
+        # $defs interiors recurse (an unreferenced definition must not be a
+        # blind spot); draft-07 `definitions` is not an MFJS keyword and is
+        # named by the keyword ban itself.
         message = _contract_message(
             {"type": "object",
              "$defs": {"a": {"type": "array"}},
              "definitions": {"b": {"type": "array"}}})
         self.assertIsNotNone(message)
         self.assertIn("$defs.a", message)
-        self.assertIn("definitions.b", message)
+        self.assertIn("unsupported keyword", message)
+        self.assertIn("definitions", message)
 
-    def test_itemless_array_inside_contains_is_red(self):
+    def test_contains_keyword_is_red(self):
         message = _contract_message({"type": "array", "items": {"type": "string"}, "contains": {"type": "array"}})
         self.assertIsNotNone(message)
+        self.assertIn("unsupported keyword", message)
         self.assertIn("contains", message)
 
-    def test_itemless_array_inside_property_names_is_red(self):
+    def test_property_names_keyword_is_red(self):
         message = _contract_message({"type": "object", "propertyNames": {"type": "array"}})
         self.assertIsNotNone(message)
+        self.assertIn("unsupported keyword", message)
         self.assertIn("propertyNames", message)
 
-    def test_itemless_array_inside_not_and_conditionals_is_red(self):
+    def test_not_and_conditional_keywords_are_red(self):
         message = _contract_message(
             {"type": "object",
              "not": {"type": "array"},
@@ -205,34 +329,32 @@ class SchemaContractWalkerTest(unittest.TestCase):
              "then": {"type": "array"},
              "else": {"type": "array"}})
         self.assertIsNotNone(message)
-        for lane in (".not", ".if", ".then", ".else"):
-            self.assertIn(lane, message)
+        for keyword in ("not", "if", "then", "else"):
+            self.assertIn(f"'{keyword}'", message)
 
-    def test_itemless_array_inside_dependent_schemas_is_red(self):
+    def test_dependent_schemas_and_dependencies_keywords_are_red(self):
         message = _contract_message(
             {"type": "object",
              "dependentSchemas": {"a": {"type": "array"}},
              "dependencies": {"b": {"type": "array"}, "c": ["x"]}})
         self.assertIsNotNone(message)
-        self.assertIn("dependentSchemas.a", message)
-        self.assertIn("dependencies.b", message)
-        # Property-name-list form of draft-07 dependencies is data: absent
-        # from the offenders on purpose.
-        self.assertNotIn("dependencies.c", message)
+        self.assertIn("dependentSchemas", message)
+        self.assertIn("dependencies", message)
 
-    def test_itemless_array_inside_unevaluated_keywords_is_red(self):
+    def test_unevaluated_keywords_are_red(self):
         message = _contract_message(
             {"type": "object",
              "unevaluatedProperties": {"type": "array"},
-             "unevaluatedItems": {"type": "array"}})
+             "unevaluatedItems": True})
         self.assertIsNotNone(message)
         self.assertIn("unevaluatedProperties", message)
         self.assertIn("unevaluatedItems", message)
 
     def test_guard_wiring_returns_walked_tool_count(self):
-        # Wiring pin: check_protocol consumes this return value to print the
-        # success line, which raises NameError the moment the call site is
-        # deleted — the walker's own unit tests cannot pin the call site.
+        # Wiring pin: check_protocol asserts this return value against the
+        # boot contract and prints it into the success line, both of which
+        # raise the moment the call site is deleted — the walker's own unit
+        # tests cannot pin the call site.
         walked = smoke.check_schema_contract("t", [
             {"name": "a", "inputSchema": {"type": "string"}},
             {"name": "b", "inputSchema": {"type": "array",
@@ -245,10 +367,11 @@ class SchemaContractWalkerTest(unittest.TestCase):
         self.assertIsNotNone(message)
         self.assertIn("inputSchema", message)
 
-    def test_enum_only_and_leaf_nodes_are_green(self):
+    def test_typed_enum_and_leaf_nodes_are_green(self):
         self.assertIsNone(_contract_message(
             {"type": "object",
-             "properties": {"e": {"enum": ["a", "b"]}, "s": {"type": "string"}},
+             "properties": {"e": {"type": "string", "enum": ["a", "b"]},
+                            "s": {"type": "string"}},
              "additionalProperties": False}))
 
     @unittest.skipIf(pptx_server is None, "python-pptx not installed (cannot import the pptx server module)")
