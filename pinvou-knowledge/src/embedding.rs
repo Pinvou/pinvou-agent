@@ -189,6 +189,25 @@ pub fn local_embed_available() -> bool {
     true
 }
 
+/// Whether `error` is this module's stub "platform unsupported" refusal.
+/// The HTTP layer maps that refusal to 503 (service unavailable) instead of
+/// 400; real-impl builds never produce it, so the answer is always false.
+#[cfg(not(all(
+    feature = "local-embed",
+    not(all(target_os = "linux", target_arch = "loongarch64"))
+)))]
+pub fn is_local_embed_unavailable(error: &str) -> bool {
+    error == LOCAL_EMBED_UNAVAILABLE
+}
+
+#[cfg(all(
+    feature = "local-embed",
+    not(all(target_os = "linux", target_arch = "loongarch64"))
+))]
+pub fn is_local_embed_unavailable(_error: &str) -> bool {
+    false
+}
+
 #[cfg(all(
     feature = "local-embed",
     not(all(target_os = "linux", target_arch = "loongarch64"))
@@ -250,6 +269,11 @@ mod stub_tests {
             embedder.embed_one("x").unwrap_err(),
             LOCAL_EMBED_UNAVAILABLE
         );
+        // The HTTP layer keys its 503 mapping on this predicate; it must
+        // recognize exactly the stub refusal (server.rs
+        // map_document_write_error, service.rs local_embed_download_refusal).
+        assert!(is_local_embed_unavailable(LOCAL_EMBED_UNAVAILABLE));
+        assert!(!is_local_embed_unavailable("some unrelated load failure"));
     }
 }
 
@@ -271,5 +295,8 @@ mod real_impl_tests {
     #[test]
     fn local_embed_is_available_where_fastembed_compiles() {
         assert!(super::local_embed_available());
+        // Real-impl builds never produce the stub refusal, so the 503
+        // mapping predicate must answer false for any error text.
+        assert!(!super::is_local_embed_unavailable("any load failure"));
     }
 }
