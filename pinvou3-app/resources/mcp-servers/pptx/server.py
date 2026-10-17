@@ -183,13 +183,14 @@ def _title_block(slide, th, title):
 def _item_num_label(it):
     """Unified read for the items string|{num,label} anyOf.
 
-    String elements are returned verbatim; a dict element's num/label fall
-    back to the empty string on None only (`or ""` would swallow a legitimate
-    numeric 0 into a blank card). Renderers must not truthiness-test the
-    return value.
+    String elements are returned verbatim, except a null element falls back
+    to the empty string (same None-only rule as a dict's fields — str(None)
+    must never reach a slide); a dict element's num/label fall back to the
+    empty string on None only (`or ""` would swallow a legitimate numeric 0
+    into a blank card). Renderers must not truthiness-test the return value.
     """
     if not isinstance(it, dict):
-        return str(it), ""
+        return ("" if it is None else str(it), "")
     num, label = it.get("num"), it.get("label")
     return (
         "" if num is None else str(num),
@@ -238,6 +239,11 @@ def layout_bullets(slide, th, s):
     _title_block(slide, th, s.get("title"))
     tf = textbox(slide, Inches(1.2), Inches(2.0), Inches(11.0), Inches(4.8))
     for i, b in enumerate(s.get("bullets") or []):
+        if b is None:
+            # Null elements are schema-illegal but the JSON-string salvage
+            # path bypasses schema validation; skip instead of rendering
+            # str(None).
+            continue
         para(tf, "▸  " + str(b), 19, th["ink"], font=th["body_font"], space_after=14, line_spacing=1.2, first=(i == 0))
 
 
@@ -251,6 +257,8 @@ def layout_two_col(slide, th, s):
             para(tf, ctitle, 18, th["primary"], bold=True, font=th["title_font"], first=True)
         tf2 = textbox(slide, x, Inches(2.7), Inches(5.4), Inches(4.0))
         for i, b in enumerate(items or []):
+            if b is None:
+                continue
             para(tf2, "•  " + str(b), 17, th["ink"], font=th["body_font"], space_after=12, line_spacing=1.2, first=(i == 0))
 
     col(Inches(1.2), s.get("leftTitle"), s.get("left"))
@@ -295,7 +303,10 @@ def layout_chart(slide, th, s):
     ctype = _CHART_TYPES.get(s.get("chartType") or "bar", XL_CHART_TYPE.COLUMN_CLUSTERED)
     cd = CategoryChartData()
     cd.categories = s.get("categories") or []
-    series = s.get("series") or []
+    # Non-dict entries are schema-illegal but the JSON-string salvage path
+    # bypasses schema validation; drop them so the legend count matches what
+    # is actually drawn.
+    series = [ser for ser in (s.get("series") or []) if isinstance(ser, dict)]
     for ser in series:
         cd.add_series(ser.get("name") or "", tuple(ser.get("data") or []))
     gframe = slide.shapes.add_chart(ctype, Inches(1.0), Inches(1.95), Inches(11.3), Inches(4.85), cd)
@@ -352,7 +363,10 @@ def layout_table(slide, th, s):
     bg(slide, th["bg"])
     _title_block(slide, th, s.get("title"))
     headers = s.get("headers") or []
-    rows = s.get("rows") or []
+    # Non-list rows are schema-illegal but the JSON-string salvage path
+    # bypasses schema validation; a null row would crash len()/indexing into
+    # the per-page guard, so drop it and keep the grid consistent.
+    rows = [row for row in (s.get("rows") or []) if isinstance(row, (list, tuple))]
     ncol = len(headers) if headers else (len(rows[0]) if rows else 0)
     nrow = len(rows) + (1 if headers else 0)
     if ncol == 0 or nrow == 0:
@@ -365,13 +379,13 @@ def layout_table(slide, th, s):
     r0 = 0
     if headers:
         for j, htext in enumerate(headers):
-            _cell(tbl.cell(0, j), th["primary"], str(htext), 14, th["on_primary"], th,
+            _cell(tbl.cell(0, j), th["primary"], "" if htext is None else str(htext), 14, th["on_primary"], th,
                   bold=True, align=PP_ALIGN.LEFT if j == 0 else PP_ALIGN.CENTER)
         r0 = 1
     for ri, row in enumerate(rows):
         zebra = th["light"] if ri % 2 == 0 else th["bg"]
         for j in range(ncol):
-            val = str(row[j]) if j < len(row) else ""
+            val = ("" if row[j] is None else str(row[j])) if j < len(row) else ""
             _cell(tbl.cell(ri + r0, j), zebra, val, 13, th["ink"], th,
                   align=PP_ALIGN.LEFT if j == 0 else PP_ALIGN.CENTER)
 
@@ -390,6 +404,8 @@ def layout_image(slide, th, s):
     if bullets:
         tf = textbox(slide, Inches(0.9), Inches(2.2), Inches(5.0), Inches(4.4))
         for i, b in enumerate(bullets):
+            if b is None:
+                continue
             para(tf, "•  " + str(b), 17, th["ink"], font=th["body_font"], space_after=12, line_spacing=1.25, first=(i == 0))
         ix, iy, iw, ih = Inches(6.3), Inches(2.0), Inches(6.1), Inches(4.3)
     else:
