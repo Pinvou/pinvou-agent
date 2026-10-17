@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Check, ChevronDown, Code, Cpu, Database, Globe, MessageSquare, Plus, RefreshCw, Search, Sparkles, Users, Wrench, X } from '../../components/icons.jsx';
 import { Toggle } from '../../components/Toggle.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
@@ -1727,18 +1727,22 @@ function hasStoredCredential(record) {
      * out and the desc shows the unsupported copy. The switch and the combo
      * input share one single-flight command channel (each call submits the
      * full enabled+accelerator config, same flightRef pattern as
-     * ComputerUse); local state commits only on success, and "invalid"/
-     * "conflict" write the localized error into the owning row's desc slot
-     * (conflict's technical message goes to console only). An enabled
-     * request answered disabled with a message (session cannot support it)
-     * still commits, but the switch row's desc turns into the unsupported
-     * copy. The input holds the display form (formatGlobalShortcutForDisplay),
-     * savedAccelerator keeps the machine-canonical string, and the dirty
-     * check compares the display forms of both; the mirror refreshes only
-     * when the command succeeded AND Rust reported an accelerator — a
-     * disabled success reports the combo the save persisted (it may have
-     * changed it), while null (unavailable session, or an unparsable draft)
-     * leaves the local mirror untouched because disk kept the old combo.
+     * ComputerUse); "invalid"/"conflict" write the localized error into the
+     * owning row's desc slot (conflict's technical message goes to console
+     * only), and a failed save reverts the UI by simply not mirroring. An
+     * enabled request answered disabled with a message (session cannot
+     * support it) still commits, but the switch row's desc turns into the
+     * unsupported copy.
+     *
+     * State model: `enabled` and the saved accelerator are read LIVE from
+     * the bridge settings slice — the bridge mirror refreshes that slice
+     * after every committed save (registered or disabled, always reporting
+     * the persisted accelerator), so the UI cannot desync from disk, a
+     * failed save rolls the toggle back for free, and a pre-snapshot toggle
+     * cannot submit a stale combo: the whole section stays disabled until
+     * the slice exists. Only the accelerator input is local (display form);
+     * it follows the saved combo while untouched, and the dirty check
+     * compares display forms.
      * Persistence is owned exclusively by set_global_shortcut_config (the
      * bridge syncs the settings snapshot); update_settings is never used.
      * @param {{ t: object, platformCapabilities: { globalShortcutsAvailable?: boolean } }} props - Dictionary and platform capability slice.
@@ -1746,13 +1750,18 @@ function hasStoredCredential(record) {
     const GlobalShortcutSettingSection = ({ t, platformCapabilities }) => {
       const copy = t.uiSettings;
       const slice = useBridgeState(['settings']);
-      const prefs = (slice && slice.settings) || {};
+      // Live disk-mirror state; `null` while the settings snapshot has not
+      // loaded. Rendering interactive defaults before it arrives would let a
+      // toggle submit the default combo over whatever disk holds.
+      const prefs = (slice && slice.settings) || null;
       const available = !!(platformCapabilities && platformCapabilities.globalShortcutsAvailable);
       // Rust defaults global_shortcut_enabled to false: only an explicit true
-      // shows as on; unloaded/empty settings render as off.
-      const [shortcutEnabled, setShortcutEnabled] = useState(() => prefs.global_shortcut_enabled === true);
-      const [savedAccelerator, setSavedAccelerator] = useState(() => normalizeGlobalShortcutDraft(prefs.global_shortcut_accelerator) || GLOBAL_SHORTCUT_DEFAULT_ACCELERATOR);
-      const [draftAccelerator, setDraftAccelerator] = useState(() => formatGlobalShortcutForDisplay(savedAccelerator));
+      // shows as on; unloaded settings render as off (and stay disabled).
+      const enabled = prefs ? prefs.global_shortcut_enabled === true : false;
+      const savedAccelerator = prefs
+        ? (normalizeGlobalShortcutDraft(prefs.global_shortcut_accelerator) || GLOBAL_SHORTCUT_DEFAULT_ACCELERATOR)
+        : GLOBAL_SHORTCUT_DEFAULT_ACCELERATOR;
+      const [draftAccelerator, setDraftAccelerator] = useState(() => formatGlobalShortcutForDisplay(GLOBAL_SHORTCUT_DEFAULT_ACCELERATOR));
       const [actionError, setActionError] = useState('');
       const [errorSlot, setErrorSlot] = useState('toggle');
       const [pending, setPending] = useState(false);
@@ -1760,24 +1769,31 @@ function hasStoredCredential(record) {
       // disabled attribute lags one render, so a double-click would fire two
       // concurrent commands — the ref intercepts inside the event handler.
       const flightRef = useRef({ busy: false });
-      // The settings slice may finish loading after this section mounts
-      // (the useState initializers evaluate once): re-seed the local mirrors
-      // exactly once on the unloaded → loaded transition; skip while a
-      // submit is in flight — the settings snapshot pushed after the command
-      // settles does the seeding then.
-      const seededRef = useRef(false);
-      const loadedSettings = (slice && slice.settings) || null;
+      // The input follows the saved combo while the user has not typed into
+      // it (the settings snapshot may load after mount, and a racing save
+      // mirror may change the saved combo later): editedRef marks a
+      // user-touched draft, syncedFoldRef the fold of the saved combo the
+      // draft currently displays. draftRef mirrors the draft for the async
+      // completion handlers, which would otherwise read a stale render-time
+      // value.
+      const draftRef = useRef(draftAccelerator);
+      const editedRef = useRef(false);
+      const syncedFoldRef = useRef(foldGlobalShortcutDraft(draftAccelerator));
+      const updateDraft = useCallback((value) => {
+        draftRef.current = value;
+        setDraftAccelerator(value);
+      }, []);
       useEffect(() => {
-        if (seededRef.current || !loadedSettings || flightRef.current.busy) return;
-        seededRef.current = true;
-        setShortcutEnabled(loadedSettings.global_shortcut_enabled === true);
-        const saved = normalizeGlobalShortcutDraft(loadedSettings.global_shortcut_accelerator) || GLOBAL_SHORTCUT_DEFAULT_ACCELERATOR;
-        setSavedAccelerator(saved);
-        setDraftAccelerator(formatGlobalShortcutForDisplay(saved));
-      }, [loadedSettings]);
+        if (editedRef.current) return;
+        const display = formatGlobalShortcutForDisplay(savedAccelerator);
+        const fold = foldGlobalShortcutDraft(display);
+        if (fold === syncedFoldRef.current) return;
+        syncedFoldRef.current = fold;
+        updateDraft(display);
+      }, [savedAccelerator, updateDraft]);
       const applyConfig = (nextEnabled, nextAccelerator, slot) => {
         if (flightRef.current.busy) return;
-        if (!bridge.available || !bridge.settings || typeof bridge.settings.setGlobalShortcutConfig !== 'function') return;
+        if (!prefs || !bridge.available || !bridge.settings || typeof bridge.settings.setGlobalShortcutConfig !== 'function') return;
         flightRef.current.busy = true;
         setActionError('');
         setPending(true);
@@ -1785,24 +1801,24 @@ function hasStoredCredential(record) {
           .then((result) => {
             const status = result && result.status;
             if (status === 'registered' || status === 'disabled') {
-              setShortcutEnabled(nextEnabled);
-              // Refresh the local mirror only when Rust reported an
-              // accelerator: a disabled success reports the combo the save
-              // just persisted, while null (unavailable session, or an
-              // unparsable draft) means disk kept the old combo — never
-              // write the unparsed draft into savedAccelerator (disk is
-              // authoritative).
+              // `enabled` and `savedAccelerator` are live bridge-mirror
+              // state: the wrapper refreshed the slice before this callback
+              // ran, so both already describe the committed save, and a
+              // failed save reverts them by not mirroring at all. Only the
+              // draft needs local care: fold it back in sync when it
+              // matches the submitted combo modulo case/whitespace/alias
+              // spelling (Rust already normalized; do not leave a phantom
+              // dirty flag behind); otherwise treat it as a combo the user
+              // is still editing and leave it alone.
               if (result && typeof result.accelerator === 'string' && result.accelerator) {
                 const normalized = normalizeGlobalShortcutDraft(result.accelerator);
-                setSavedAccelerator(normalized);
-                // Fold the input back in sync when the draft differs from
-                // the submitted display form only by case/whitespace (Rust
-                // already normalized; do not leave an alias-spelling dirty
-                // flag behind); otherwise treat it as a combo the user is
-                // still editing and leave it alone.
-                const displayBefore = formatGlobalShortcutForDisplay(nextAccelerator);
-                if (foldGlobalShortcutDraft(draftAccelerator) === foldGlobalShortcutDraft(displayBefore)) {
-                  setDraftAccelerator(formatGlobalShortcutForDisplay(normalized));
+                const draft = draftRef.current;
+                if (foldGlobalShortcutDraft(draft) === foldGlobalShortcutDraft(formatGlobalShortcutForDisplay(nextAccelerator))
+                  || foldGlobalShortcutDraft(draft) === foldGlobalShortcutDraft(nextAccelerator)) {
+                  editedRef.current = false;
+                  const display = formatGlobalShortcutForDisplay(normalized);
+                  syncedFoldRef.current = foldGlobalShortcutDraft(display);
+                  updateDraft(display);
                 }
               }
               // disabled + message only happens when the session cannot
@@ -1844,16 +1860,29 @@ function hasStoredCredential(record) {
         ? (actionError && errorSlot === 'toggle' ? actionError : copy.globalShortcutEnableDesc)
         : copy.globalShortcutUnsupportedDesc;
       const acceleratorDesc = actionError && errorSlot === 'accelerator' ? actionError : undefined;
+      const saveAccelerator = () => {
+        // Plausibility gates the click, not the button: a never-valid draft
+        // (dangling separator, modifiers only) keeps Save enabled and
+        // explains itself here instead of wedging silently (same pattern as
+        // the localPort row).
+        if (!acceleratorPlausible) {
+          setActionError(copy.globalShortcutInvalid);
+          setErrorSlot('accelerator');
+          return;
+        }
+        applyConfig(enabled, globalShortcutDraftToRust(draftAccelerator), 'accelerator');
+      };
       return (
         <IOSSection title={copy.globalShortcuts}>
           <IOSRow label={copy.globalShortcutEnable} desc={toggleDesc}>
             {/* An unavailable session may still switch off a residual
                 enabled=true (the Rust disable path deliberately has no
                 availability gate — it is always safe); only turning the
-                shortcut ON needs a capable session. */}
+                shortcut ON needs a capable session. The whole section stays
+                disabled until the settings snapshot has loaded. */}
             <IOSSwitch
-              checked={shortcutEnabled}
-              disabled={(!available && !shortcutEnabled) || pending}
+              checked={enabled}
+              disabled={!prefs || (!available && !enabled) || pending}
               aria-label={copy.globalShortcutEnable}
               onChange={value => applyConfig(!!value, savedAccelerator, 'toggle')}
             />
@@ -1863,8 +1892,8 @@ function hasStoredCredential(record) {
               <input
                 type="text"
                 value={draftAccelerator}
-                onChange={e => setDraftAccelerator(e.target.value)}
-                disabled={!available || pending}
+                onChange={e => { editedRef.current = true; updateDraft(e.target.value); }}
+                disabled={!prefs || !available || pending}
                 placeholder={copy.globalShortcutPlaceholder}
                 aria-label={copy.globalShortcutAccelerator}
                 data-testid="global-shortcut-accelerator"
@@ -1874,8 +1903,8 @@ function hasStoredCredential(record) {
               <button
                 type="button"
                 data-testid="global-shortcut-save"
-                disabled={!available || pending || !acceleratorDirty || !acceleratorPlausible}
-                onClick={() => applyConfig(shortcutEnabled, globalShortcutDraftToRust(draftAccelerator), 'accelerator')}
+                disabled={!prefs || !available || pending || !acceleratorDirty}
+                onClick={saveAccelerator}
                 className="h-8 shrink-0 rounded-full bg-[#007AFF]/10 px-3 text-[13px] font-medium text-[#007AFF] transition-colors hover:bg-[#007AFF]/20 disabled:opacity-35 dark:bg-[#0A84FF]/20 dark:text-[#0A84FF]"
               >{t.uiSettingsDetail.save}</button>
             </div>
