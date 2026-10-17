@@ -15,15 +15,27 @@ import {
 // ── Pure client-side pre-validation helper ────────────────────────────
 // Rust (set_global_shortcut_config) stays authoritative; the helper only
 // filters combinations that can never register before an IPC round-trip.
+// The ≥1-modifier product policy is enforced on both sides: the Rust layer
+// rejects bare keys too (pinned by single_key_without_modifier_is_rejected
+// in features/global_shortcut.rs), this gate just explains them without an
+// IPC round-trip.
 
 assert.equal(GLOBAL_SHORTCUT_DEFAULT_ACCELERATOR, 'CmdOrCtrl+Alt+P', 'fallback combo must match the settings.json default');
+// Cross-language default pin: the Rust-side default const is the same combo.
+// (Neither side structurally sees the other; this read keeps a Rust-side
+// default change from silently desyncing the frontend fallback.)
+const prefsSource = readFileSync(new URL('../src-tauri/src/platform/prefs/mod.rs', import.meta.url), 'utf8');
+assert.match(prefsSource, /DEFAULT_GLOBAL_SHORTCUT_ACCELERATOR: &str = "CmdOrCtrl\+Alt\+P";/, 'the Rust default accelerator must stay in sync with the frontend fallback');
 
 assert.equal(normalizeGlobalShortcutDraft('  Ctrl+Alt+P  '), 'Ctrl+Alt+P');
 assert.equal(normalizeGlobalShortcutDraft(null), '');
 assert.equal(normalizeGlobalShortcutDraft(), '');
 assert.equal(normalizeGlobalShortcutDraft(42), '42');
 
-const plausible = ['Ctrl+Alt+P', 'CmdOrCtrl+Alt+P', 'CommandOrControl+P', 'Cmd+Shift+K', 'Ctrl+P', 'super+X', ' ALT+q ', ' CTRL + ALT + P '];
+// All four CmdOrCtrl alias spellings the Rust parser accepts must
+// pre-validate as the sole modifier (a missing spelling here would disable
+// Save for Rust-valid pasted input).
+const plausible = ['Ctrl+Alt+P', 'CmdOrCtrl+Alt+P', 'CommandOrControl+P', 'Cmd+Shift+K', 'Ctrl+P', 'super+X', ' ALT+q ', ' CTRL + ALT + P ', 'CmdOrControl+P', 'CommandOrCtrl+P'];
 for (const value of plausible) {
   assert.equal(isPlausibleGlobalShortcutAccelerator(value), true, `${JSON.stringify(value)} must pre-validate as plausible`);
 }
@@ -35,6 +47,7 @@ for (const value of plausible) {
 
 assert.equal(globalShortcutDraftToRust('Ctrl/Cmd+Alt+O'), 'CmdOrCtrl+Alt+O');
 assert.equal(globalShortcutDraftToRust('  ctrl/cmd + alt + o  '), 'CmdOrCtrl+alt+o');
+assert.equal(globalShortcutDraftToRust('Ctrl / Cmd + Alt + O'), 'CmdOrCtrl+Alt+O', 'internal whitespace in the display token folds too');
 assert.equal(globalShortcutDraftToRust('Ctrl+Alt+P'), 'Ctrl+Alt+P', 'non-display drafts pass through untouched');
 assert.equal(isPlausibleGlobalShortcutAccelerator('Ctrl/Cmd+Alt+O'), true, 'the untouched-default display form with an edited key must be saveable');
 
@@ -60,8 +73,11 @@ assert.equal(formatGlobalShortcutForDisplay('shift+ctrl+Digit3'), 'Shift+Ctrl+3'
 // cmdorctrl is an alias Rust only resolves at parse time: until the first
 // successful apply the persisted value IS the alias, and a platform-partial
 // name would mislabel it on Windows/Linux — display it platform-neutrally.
+// All four alias spellings map the same way.
 assert.equal(formatGlobalShortcutForDisplay('cmdorctrl+alt+p'), 'Ctrl/Cmd+Alt+P');
 assert.equal(formatGlobalShortcutForDisplay('CmdOrCtrl+Alt+P'), 'Ctrl/Cmd+Alt+P');
+assert.equal(formatGlobalShortcutForDisplay('CmdOrControl+Alt+P'), 'Ctrl/Cmd+Alt+P');
+assert.equal(formatGlobalShortcutForDisplay('CommandOrCtrl+Alt+P'), 'Ctrl/Cmd+Alt+P');
 // Key/Digit prefixes are stripped even without modifiers; F-keys pass through.
 assert.equal(formatGlobalShortcutForDisplay('KeyF9'), 'F9');
 assert.equal(formatGlobalShortcutForDisplay('ctrl+KeyF9'), 'Ctrl+F9');
@@ -116,11 +132,23 @@ for (const key of keys) {
 
 // ── Source pins: section, bridge facade and capability default ────────
 const source = relative => readFileSync(new URL(`../src/${relative}`, import.meta.url), 'utf8');
-const settingsView = source('features/settings/SettingsView.jsx');
+// Shape pins must not match text inside comments: a guard commented out in
+// the source would otherwise still satisfy every anchor (repo convention,
+// ui_language_coverage.test.mjs). Block-comment contents are blanked with
+// newlines preserved; `//` tails are dropped per line. All pins below are
+// positive, where over-stripping can only fail loudly.
+const stripComments = text => text
+  .replace(/\/\*[\s\S]*?\*\//g, comment => comment.replace(/[^\n]/g, ''))
+  .split('\n')
+  .map(line => line.replace(/\/\/.*$/, ''))
+  .join('\n');
+const settingsView = stripComments(source('features/settings/SettingsView.jsx'));
 // Section renders and reads the UserPrefs snapshot fields.
 assert.match(settingsView, /GlobalShortcutSettingSection/);
 assert.match(settingsView, /copy\.globalShortcuts/);
-assert.match(settingsView, /global_shortcut_enabled/);
+// Live disk-mirror state model: enabled derives from the snapshot (never a
+// seeded local copy that can desync from disk).
+assert.match(settingsView, /const enabled = prefs \? prefs\.global_shortcut_enabled === true : false;/);
 assert.match(settingsView, /global_shortcut_accelerator/);
 assert.match(settingsView, /setGlobalShortcutConfig/);
 // The section must be reachable from the general tab render tree.
@@ -132,14 +160,32 @@ assert.match(settingsView, /data-testid="global-shortcut-accelerator"/);
 // The enable switch carries an accessible name too (role="switch" button;
 // the row label alone is not a programmatic name).
 assert.match(settingsView, /aria-label=\{copy\.globalShortcutEnable\}/);
+// The section stays disabled until the settings snapshot exists: a toggle
+// before the snapshot loads would submit the default combo over whatever
+// disk holds.
+assert.match(settingsView, /disabled=\{!prefs \|\| \(!available && !enabled\) \|\| pending\}/);
+assert.match(settingsView, /disabled=\{!prefs \|\| !available \|\| pending\}/);
+// Same synchronous single-flight as the ComputerUse section: the disabled
+// attribute lags one render, so the ref must intercept inside the handler.
+assert.match(settingsView, /if \(flightRef\.current\.busy\) return;/);
 // The save path folds the display form back to a Rust-parseable string
 // (Ctrl/Cmd → CmdOrCtrl); sending the raw display draft would guarantee an
 // invalid error for edits of the untouched default.
-assert.match(settingsView, /applyConfig\(shortcutEnabled, globalShortcutDraftToRust\(draftAccelerator\), 'accelerator'\)/);
+assert.match(settingsView, /applyConfig\(enabled, globalShortcutDraftToRust\(draftAccelerator\), 'accelerator'\)/);
+// A never-valid draft keeps Save enabled and explains itself on click
+// (localPort-row pattern) instead of wedging the button silently.
+assert.match(settingsView, /if \(!acceleratorPlausible\) \{/);
+assert.match(settingsView, /setErrorSlot\('accelerator'\)/);
+// Error-slot routing: outcome errors land in the owning row's slot, the
+// unavailable-session notice in the toggle slot.
+assert.match(settingsView, /setErrorSlot\(slot\)/);
+assert.match(settingsView, /setErrorSlot\('toggle'\)/);
+// The toggle submits the SAVED combo (live mirror state), not the draft.
+assert.match(settingsView, /onChange=\{value => applyConfig\(!!value, savedAccelerator, 'toggle'\)\}/);
 // A persisted-on switch stays switchable-OFF on unavailable sessions (the
 // Rust disable path is availability-independent); only turning ON requires a
 // capable session.
-assert.match(settingsView, /disabled=\{\(!available && !shortcutEnabled\) \|\| pending\}/);
+assert.match(settingsView, /!available && !enabled/);
 
 const bridge = source('platform/tauri/bridge.js');
 // Fail-closed capability default (Wayland reports the real value via get_platform_capabilities).
@@ -218,8 +264,43 @@ const rustSuccessStub = (args) => {
 }
 
 {
-  // The legitimate null case (nothing persisted to report): the mirror must
-  // not regress to the raw draft input either.
+  // Retry-once contract: a failed invoke re-applies the same config (the
+  // Rust apply is idempotent per enabled+accelerator), the retry's response
+  // mirrors normally, and a persistently failing command resolves null with
+  // the snapshot untouched so the caller rolls its toggle back.
+  let attempts = 0;
+  const flaky = createShortcutBridgeHarness({
+    respond: (args) => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('ipc hiccup');
+      return rustSuccessStub(args);
+    },
+  });
+  const retried = await flaky.feature.setGlobalShortcutConfig(true, 'Ctrl+Alt+O');
+  assert.equal(attempts, 2, 'a failed invoke must be retried exactly once');
+  assert.equal(retried && retried.status, 'registered', 'the retry response is the wrapper result');
+  assert.equal(
+    flaky.state.settings.global_shortcut_accelerator,
+    'control+alt+KeyO',
+    'a retry success must mirror into the snapshot like a first-try success',
+  );
+
+  const dead = createShortcutBridgeHarness({
+    respond: () => { throw new Error('down'); },
+  });
+  const failed = await dead.feature.setGlobalShortcutConfig(true, 'Ctrl+Alt+O');
+  assert.equal(failed, null, 'a persistent failure must resolve null so the caller rolls its toggle back');
+  assert.equal(dead.state.settings.global_shortcut_enabled, false, 'a failed save must not touch the snapshot');
+}
+
+{
+  // Cross-language regression guard, NOT a producible wire shape: the Rust
+  // command persists on every registered/disabled outcome and answers with
+  // the persisted accelerator, so a committed save without one cannot happen
+  // today. The mirror must still not regress to the raw draft input if the
+  // committed-persist arm ever regressed to echoing the bare outcome (the
+  // Rust-side pin global_shortcut_persist_arm_reports_the_persisted_accelerator
+  // guards the same contract from the other side of the boundary).
   const harness = createShortcutBridgeHarness({
     respond: () => ({ status: 'disabled', accelerator: null, message: 'global shortcuts are unavailable on this session' }),
   });
