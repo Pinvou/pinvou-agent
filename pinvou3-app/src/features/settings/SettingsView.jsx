@@ -1737,7 +1737,7 @@ function hasStoredCredential(record) {
      * State model: `enabled` and the saved accelerator are read LIVE from
      * the bridge settings slice — the bridge mirror refreshes that slice
      * after every committed save (registered or disabled, always reporting
-     * the persisted accelerator), so the UI cannot desync from disk, a
+     * the persisted accelerator), so the UI derives from the disk mirror, a
      * failed save rolls the toggle back for free, and a pre-snapshot toggle
      * cannot submit a stale combo: the whole section stays disabled until
      * the slice exists. Only the accelerator input is local (display form);
@@ -1752,8 +1752,14 @@ function hasStoredCredential(record) {
       const slice = useBridgeState(['settings']);
       // Live disk-mirror state; `null` while the settings snapshot has not
       // loaded. Rendering interactive defaults before it arrives would let a
-      // toggle submit the default combo over whatever disk holds.
-      const prefs = (slice && slice.settings) || null;
+      // toggle submit the default combo over whatever disk holds. A failed
+      // get_settings leaves a truthy fallback {theme, color_scheme, language}
+      // in the slice — not disk truth for this section — so the gate also
+      // requires the shortcut fields to be present.
+      const rawSettings = (slice && slice.settings) || null;
+      const prefs = rawSettings && typeof rawSettings.global_shortcut_enabled === 'boolean'
+        ? rawSettings
+        : null;
       const available = !!(platformCapabilities && platformCapabilities.globalShortcutsAvailable);
       // Rust defaults global_shortcut_enabled to false: only an explicit true
       // shows as on; unloaded settings render as off (and stay disabled).
