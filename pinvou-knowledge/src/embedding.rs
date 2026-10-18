@@ -200,6 +200,18 @@ pub fn is_local_embed_unavailable(error: &str) -> bool {
     error == LOCAL_EMBED_UNAVAILABLE
 }
 
+/// The stub refusal text itself, for gates that must produce exactly the
+/// error the HTTP layer maps to 503 (the service-side model load) without
+/// routing through an embedder constructor. The download gate deliberately
+/// returns its own, more specific copy instead.
+#[cfg(not(all(
+    feature = "local-embed",
+    not(all(target_os = "linux", target_arch = "loongarch64"))
+)))]
+pub fn local_embed_unavailable_error() -> &'static str {
+    LOCAL_EMBED_UNAVAILABLE
+}
+
 #[cfg(all(
     feature = "local-embed",
     not(all(target_os = "linux", target_arch = "loongarch64"))
@@ -270,8 +282,10 @@ mod stub_tests {
             LOCAL_EMBED_UNAVAILABLE
         );
         // The HTTP layer keys its 503 mapping on this predicate; it must
-        // recognize exactly the stub refusal (server.rs
-        // map_document_write_error, service.rs local_embed_download_refusal).
+        // recognize exactly the stub refusal that the embedder constructors
+        // (from_dir / from_env_or_dir) and the service load path produce
+        // (server.rs map_document_write_error). The download gate's refusal
+        // is a deliberately distinct copy and is not part of that mapping.
         assert!(is_local_embed_unavailable(LOCAL_EMBED_UNAVAILABLE));
         assert!(!is_local_embed_unavailable("some unrelated load failure"));
     }

@@ -1264,6 +1264,17 @@ impl KnowledgeService {
     }
 
     pub fn load_model(&self) -> Result<(), String> {
+        // 桩构建里模型永远无法装载：在触碰跨进程安装锁与磁盘恢复之前就
+        // 返回桩常量。否则安装锁竞争（如桌面端同时操作共享模型目录）等
+        // 前置错误会替代能力缺失文案返回，HTTP 层键于桩常量的 503 映射
+        // （map_document_write_error）就会把同一能力缺失读成 400。
+        #[cfg(not(all(
+            feature = "local-embed",
+            not(all(target_os = "linux", target_arch = "loongarch64"))
+        )))]
+        if !crate::embedding::local_embed_available() {
+            return Err(crate::embedding::local_embed_unavailable_error().to_string());
+        }
         let _install_lock = crate::try_lock_knowledge_model_install(&self.model_dir)?;
         if let Some(warning) = crate::model_download::recover_model_directory(&self.model_dir)? {
             eprintln!("[knowledge] {warning}");
@@ -1729,9 +1740,9 @@ mod tests {
             .begin_model_download()
             .expect_err("stub builds must refuse model downloads");
         assert!(error.contains("此平台不可用"), "{error}");
-        // 下载文案与 embedding 桩常量必须同源:HTTP 层据此把能力缺失映射
-        // 成 503(见 server.rs 的 map_document_write_error)。
-        assert!(crate::embedding::is_local_embed_unavailable(&error));
+        // 下载闸文案是有意的独立文案（说明"下载不可为"）。503 映射键于
+        // embedding 桩常量——那个常量由装载路径返回（from_dir 或上方
+        // load_model 的早退）；下载端点自行映射 409，两者不需要同源。
         assert!(!service.model_downloading(), "no download may be in flight");
         // 公开 download_model 的直连调用者不经过上面的闸（防御纵深）：同样
         // 必须在任何安装锁/磁盘 I/O 之前拒绝，而不是白下 568 MB 后才失败。
@@ -1743,9 +1754,24 @@ mod tests {
             .block_on(async { service.download_model().await })
             .expect_err("stub builds must refuse direct download_model calls");
         assert!(direct.contains("此平台不可用"), "{direct}");
+        // 装载路径同样在任何锁/磁盘 I/O 之前拒绝,且返回与 503 映射同源的
+        // 桩常量(is_local_embed_unavailable):replace/search 据此映射 503。
+        let load_error = service.load_model().unwrap_err();
+        assert!(
+            crate::embedding::is_local_embed_unavailable(&load_error),
+            "{load_error}"
+        );
     }
 
     #[tokio::test]
+    // 真实实现方向专属：场景依赖真装载路径（跨进程锁 BUSY → 垃圾 ONNX
+    // 解析失败）。桩构建里 load_model 在锁之前就返回桩常量，这个场景不
+    // 存在（首用失败的负缓存契约由
+    // boot_does_not_load_model_and_first_use_reports_failure 覆盖）。
+    #[cfg(all(
+        feature = "local-embed",
+        not(all(target_os = "linux", target_arch = "loongarch64"))
+    ))]
     async fn model_load_failure_uses_negative_cache_then_retries_after_window() {
         // 负缓存+重试契约:失败后的窗口内,并发/后续调用复用缓存错误,不重读
         // 568MB;窗口过期后真正重跑装载。用跨进程安装锁制造可区分的失败:
