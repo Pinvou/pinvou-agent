@@ -725,7 +725,8 @@ lark-shared-identity-and-permissions.md 规定 agent 发起的增量授权必须
 - **上游全量修正(147 文件)**:reference 前置条件 `../lark-shared/SKILL.md` →
   `../../lark-shared/SKILL.md`(相对路径修正)——与本地已登记的链接化/rule-5 路径修正在
   lark-task 17 个文件上正面冲突,均保留本地「[`../../lark-shared/SKILL.md`](…)」链接化形态
-  (上游修正的路径语义本地早已具备)。
+  (上游修正的路径语义本地早已具备)。本轮新采纳的 `lark-task-sections.md` 按同一登记
+  重放为该链接化形态(lark-task 第 18 个文件)。
 - 重放裁定:lark-doc 四个 media 分册保持本地「按需策略不预读 lark-shared」前置块
   (上游仅改路径,本地形态已含正确路径);lark-base `workflow-schema.md` 保持本地
   `condition_list: null`(无条件传 null,勿传空数组)修正,上游示例仍写 `[]`,继续不跟随;

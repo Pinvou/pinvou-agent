@@ -42,7 +42,7 @@ fn lark(args: &[&str]) -> Command {
 /// Minimum acceptable lark-cli version for the skill pack's command surface.
 /// It must equal the platform locks' lark-cli pin (1.0.98 —
 /// `lark_min_version_matches_platform_lock`; the bundled skill pack itself
-/// was synced at v1.0.95, see NOTICE.md), and older installs are missing
+/// is synced at v1.0.98, see NOTICE.md), and older installs are missing
 /// dozens of taught shortcuts (e.g. `+get`/`+table-copy`),
 /// so they count as not installed and trigger the locked-version replacement —
 /// same policy as wecom/tmeet, which carry per-connector minimums and lark

@@ -98,12 +98,13 @@ const USAGE: &str =
     "usage: pinvou connectors <status|ensure-cli|enable|disable|logout|apply-skills|connect|ima>";
 
 // Round-51 review: the per-connector semantic-version floors are imported
-// from the app crate's own gates (wecom.rs 1.2.1 skill baseline, tmeet.rs
+// from the app crate's own gates (wecom.rs 1.3.4 skill baseline, tmeet.rs
 // 1.0.18 npm spec, feishu.rs 1.0.98 lock baseline) instead of re-declared —
 // a GUI-side raise moves the CLI's `upgrade_required` gates with it (the
 // same single-sourcing shape as the skill-dir and lock-JSON tables). The
-// feishu floor is the live one: this PR raised it for the skill pack's
-// command surface, so future raises are expected.
+// feishu and wecom floors are the live ones: the same sync raised them with
+// the resynced skill packs (lark 1.0.95→1.0.98, wecom 1.2.1→1.3.4), so
+// future raises are expected.
 const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.18";
 
 /// ima skill installed by `ima_connect` (mirror of ima.rs `IMA_SKILL_ID`).

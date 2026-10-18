@@ -3,7 +3,7 @@
 - npm package: dingtalk-workspace-cli
 - skill/CLI version: 1.0.64
 - 各平台 dws 二进制 SHA-256 见 `pinvou3-app/src-tauri/resources/platforms/<os>/<arch>/bundle/connectors/connectors.lock.json`（仓库相对路径；`<os>/<arch>` 取 macos/aarch64、macos/x86_64、linux/aarch64、linux/x86_64、windows/x86_64 五份，版本一致）
-- Linux ARM64 dws SHA-256: 23c5e06b3175cf3910bf4c9af960545e0f995c621e1ff0aaadf58478fb84d90c
+- Linux ARM64 dws SHA-256: 341af37528c5f13b256006e0696dedf2629a1a01f7b081fb759ba5f59bfdf391
 - license: Apache-2.0
 
 来源与更新方式（新手操作手册）：
@@ -262,7 +262,7 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 
 ### 上游结构变化（1.0.61 → 1.0.64 mono）
 
-- references 新增：`products/contract.md`（法务智能合同）、`products/html.md`（原生 HTML 文件）、`products/chat/a2ui.md`（chat A2UI 卡片子分册）、`products/dingtalk-tag/`（数字员工 5 分册）、`products/oa/{oa-leave,oa-goout,oa-overtime,oa-supply}.md`（请假/外出/加班/补卡套件工作流）与 `products/oa/template/`（表单组件/流程节点/规则全套 33 文件）、`products/oa-template-write.md`（模板创建/更新路由）、`products/whiteboard/{diff,render}.md`、`products/aitable/{aitable-api-key,aitable-comment,aitable-psql}.md`。
+- references 新增：`products/contract.md`（法务智能合同）、`products/html.md`（原生 HTML 文件）、`products/chat/a2ui.md`（chat A2UI 卡片子分册）、`products/dingtalk-tag/`（数字员工 5 分册）、`products/oa/{oa-leave,oa-goout,oa-overtime,oa-supply}.md`（请假/外出/加班/补卡套件工作流）与 `products/oa/template/`（表单组件/流程节点/规则全套 53 文件）、`products/oa-template-write.md`（模板创建/更新路由）、`products/whiteboard/{diff,render}.md`、`products/aitable/{aitable-api-key,aitable-comment,aitable-psql}.md`。
 - references 删除：`products/recruit.md`（钉钉招聘，本地与 1.0.61 基线逐字节一致，跟随上游删除，SKILL.md 产品表/意图树对应行随上游重写移除，无需重放）。
 - scripts 新增：`generate_form_component_id.py`、`generate_node_id.py`（OA 模板组件/节点 ID 生成，纯函数无 subprocess）；`aitable_import_via_task.py` 上游重写为「兼容旧入口，转交 `dws aitable +import-file`」的 95 行 shim。
 - SKILL.md 大改：新增 `contract`/`html`/`dingtalk-tag` 产品域与意图路由、互动卡片回调事件例外、MUST DO「实时个人事件例外」扩展互动卡片回调；产品总览表新增 agoal 富化行与 contract 行；Shortcut 总览按 1.0.64 catalog 重写（aitable 100→127、attendance 8→11、chat 98→102、contact 13→19、doc 45→49、whiteboard 2→3 等）。

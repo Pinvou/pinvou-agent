@@ -3,6 +3,7 @@ name: dws
 description: 【何时用:仅当用户明确指向钉钉/DingTalk(钉钉文档、钉钉日程等)时使用;泛指做文档/表格/待办/审批默认走本地工具,不要误用钉钉】用 dws CLI 管理钉钉:AI表格/AI搜问(找人首选)/目标管理(Agoal)/组织大脑/日历/通讯录/群聊与机器人消息/待办/审批/智能合同/考勤/日志(日报周报)/DING消息/钉钉文档/云盘/Markdown文件/HTML文件/AI听记/邮箱/在线电子表格(axls)/知识库/白板/开放平台文档/个人IM与OA事件订阅。用户要求操作上述钉钉产品时使用。
 cli_version: ">=1.0.64"
 metadata:
+  internal: true
   requires:
     bins: ["dws"]
   cliHelp: "dws --help"
@@ -339,3 +340,7 @@ Schema 与 Help 冲突是**契约漂移**，不得静默猜测或把两边字段
 - [references/products/pat.md](./references/products/pat.md) — PAT 浏览器策略、行为 scope 预览与授权安全要求
 - [references/capability-limits.md](./references/capability-limits.md) — 已知能力限制（doc/aitable/chat/minutes，遇到时直接告知用户不支持）
 - [references/best_practices/](./references/best_practices/) — 11 个编号场景 recipe(01 消息/02 任务/03 会议/04 文档/05 汇报/06 数据分析/07 听记/08 通讯录/09 邮件/10-11 听记发言人)+ [lite-recipes.md](./references/best_practices/lite-recipes.md) 速查;通用规范在 `_common/`
+
+Agent 使用 OpenNodes 带内容创建白板时，必须先执行 `whiteboard render`，展示 SVG 和渲染提示后停止，等待用户明确确认当前版本才能创建；修改后重新渲染和确认。不得跳过预览直接创建，最初的创建请求及创建后回读不能替代预览确认。详见白板入口的创建流程；空白创建、直接套用模板和已有白板更新不由此规则扩展。
+
+Agent 更新已有白板内容（追加、修改、删除、清空）必须先执行 `whiteboard +diff`，展示差异和风险后停止，等待用户明确确认当前差异，再用同一 sourceDigest 执行 `+update`；diff 失败或有 blocker 时不得写入。不得换原子 update 绕过，render、dry-run 和写后回读不能替代 diff。详见白板入口的更新流程。更新只设一个用户确认点：先完成所需的 render 和必需的 +diff，再把视觉预览（如有）、差异与覆盖影响一起展示并一次确认；不要在 render 后先索要确认、获准后才补做 diff 再次询问。同一目标、revision、source 和模式已获确认后，直接提交；只有这些内容变化或出现未披露的实质风险才重新确认。

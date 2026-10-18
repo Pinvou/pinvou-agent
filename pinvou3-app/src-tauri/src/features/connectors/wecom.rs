@@ -11,9 +11,9 @@
 //! events. Credentials live under `~/.config/wecom`
 //! (Windows: `%USERPROFILE%\.config\wecom`) and are removed on disconnect.
 //! Since 1.1.0 the command model was reshaped (`msg`→`message`,
-//! `schedule`→`calendar`, arguments became flags); the bundled skill tree
-//! was last synced at the wecom-cli 1.2.1 domain skills (see NOTICE-wecom.md)
-//! and every platform lock pins 1.3.4,
+//! `schedule`→`calendar`, arguments became flags); the bundled skill tree is
+//! synced at the wecom-cli 1.3.4 domain skills (see NOTICE-wecom.md) and every
+//! platform lock pins 1.3.4,
 //! so installs below [`WECOM_MIN_VERSION`] are replaced/upgraded.
 
 use std::process::Stdio;
@@ -40,8 +40,8 @@ const WECOM_CTX: CliCtx = CliCtx {
 
 /// Minimum acceptable version for the skill and auth command surface: 1.1.0
 /// reshaped the command model (`init`→`auth init`, `msg`→`message`,
-/// `schedule`→`calendar`, JSON arguments→flags); the bundled skill tree was
-/// last synced at the 1.2.1 domain skills (see NOTICE-wecom.md) and every
+/// `schedule`→`calendar`, JSON arguments→flags); the bundled skill tree is
+/// synced at the 1.3.4 domain skills (see NOTICE-wecom.md) and every
 /// platform lock pins 1.3.4, so the minimum follows the lock at 1.3.4 —
 /// installs below it must be replaced, while a minimum above a platform's
 /// lowest pinned version would cause a replace/upgrade loop on that platform.
