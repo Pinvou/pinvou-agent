@@ -185,7 +185,7 @@ export const dictEn = {
   ...browserEn,
         langTag: 'en',
         acpAgent: 'ACP Agent',
-        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', scheduledPlans: 'Scheduled tasks', monitor: 'Status', workflow: 'Workflow', multiAgent: 'Swarm Mode', multiAgentDesktopOnly: 'This swarm conversation is currently available only in the desktop app.', toolStore: 'Plugin Center', cardPool: 'Card Deck', recent: 'History',   sidebarTaskList: 'Tasks', sidebarTaskFilter: 'Filter', sidebarTaskFilterAll: 'All', sidebarTaskFilterPinned: 'Pinned', sidebarTaskFilterCode: 'Projects', sidebarTaskFilterCodeSessions: 'Code sessions', sidebarTaskFilterScheduled: 'Scheduled tasks', sidebarTaskSort: 'Sort', sidebarTaskSortPinnedFirst: 'Pinned first', sidebarTaskSortRecent: 'Recent', sidebarTaskEmpty: 'No tasks', sidebarViewAll: 'View all', sidebarSection: 'Task list', sidebarDateGrouping: 'Group by date', sidebarDateGroupingDesc: 'Group tasks by date; today stays expanded', sidebarNavExpand: 'Expand navigation', sidebarNavCollapse: 'Collapse navigation', sidebarCollapseAll: 'Collapse', sidebarExpandAll: 'Expand', sidebarTaskStyle: 'Style', sidebarResize: 'Drag to resize the sidebar; double-click to reset', settings: 'Settings', tearoffTitle: 'Detached',  mobileMore: 'More',
+        newChat: 'New chat', currentChat: 'Current chat', searchChats: 'Search chats', scheduledPlans: 'Scheduled tasks', monitor: 'Status', workflow: 'Workflow', multiAgent: 'Swarm Mode', multiAgentDesktopOnly: 'This swarm conversation is currently available only in the desktop app.', toolStore: 'Plugin Center', cardPool: 'Card Deck', recent: 'History',   sidebarTaskList: 'Tasks', sidebarTaskFilter: 'Filter', sidebarTaskFilterAll: 'All', sidebarTaskFilterPinned: 'Pinned', sidebarTaskFilterCode: 'Projects', sidebarTaskFilterCodeSessions: 'Code sessions', sidebarTaskFilterScheduled: 'Scheduled tasks', sidebarTaskSort: 'Sort', sidebarTaskSortPinnedFirst: 'Pinned first', sidebarTaskSortRecent: 'Recent', sidebarTaskEmpty: 'No tasks', sidebarViewAll: 'View all', sidebarSection: 'Task list', sidebarDateGrouping: 'Group by date', sidebarDateGroupingDesc: 'Group tasks by date; today stays expanded', chatSection: 'Chat', chatStreamingAnimation: 'Streaming fade-in', chatStreamingAnimationDesc: 'Fade in new content as AI responses stream in', sidebarNavExpand: 'Expand navigation', sidebarNavCollapse: 'Collapse navigation', sidebarCollapseAll: 'Collapse', sidebarExpandAll: 'Expand', sidebarTaskStyle: 'Style', sidebarResize: 'Drag to resize the sidebar; double-click to reset', settings: 'Settings', tearoffTitle: 'Detached',  mobileMore: 'More',
         archiveSession: 'Archive', archiveConfirmTitle: 'Archive this task?', archiveConfirmMessage: 'This task will leave the sidebar.', archiveConfirmDetail: 'The conversation and artifacts stay saved, and can be restored on the chat manager page.', archiveConfirmAction: 'Archive',
         archiveSuccess: 'Archived', archiveSuccessView: 'View',
         exportSessionArchive: 'Export session log', exportSessionDone: path => `Session log exported to ${path}`, exportSessionFailed: 'Failed to export the session log',
@@ -438,6 +438,7 @@ export const dictEn = {
         uiCodex: codexEn,
         uiAcpProviders: acpProvidersEn,
         uiProjects: { convertToProject:'Convert to project', projectNamePlaceholder:'Project name', renameProject:'Rename project', deleteProject:'Delete project', deleteConfirmLabel:'Delete this project?', deleteProjectHint:'Conversations are kept and return to ungrouped', moveToProject:'Move to project…', moveToUngrouped:'Move to ungrouped', alreadyUngrouped:'Already ungrouped', folderUnavailable:'Folder unavailable', rebindFolder:'Rebind', moveConfirmTitle:'Move conversation into this project?', moveConfirmBody:(project, folder)=>`The conversation moves into "${project}". Its folder ${folder} stays outside the project; only this conversation is filed.`, moveConfirm:'Move', searchPlaceholder:'Search projects', noProjects:'No projects yet', currentProject:'Current project', movedNotice:'Conversation moved', movedNoticeWithFolder:folder=>`Conversation moved; folder ${folder} added`, noMatchProject:'No matching projects', opFailed:'Project operation failed' , rebindTitle:'Rebind project folder', rebindConfirm:'Move and rebind', rebindSessionsHint:()=>'Every session under this folder will switch to the new directory', rebindSuccess:n=>`Rebound ${n} session(s)`, rebindUpToDate:'No sessions needed rebinding', rebindOldExistsWarn:'The original folder still exists; the two locations will point to different directories. Continue anyway?', rebindPartial:(ok, failed)=>`Rebound ${ok} sessions; ${failed} failed - retry the rest`, rebindBusyAfter:n=>`${n} sessions started a new turn during the rebind; if they misbehave, retry once when idle` , rebindCarryoverPending:n=>`${n} session(s) were moved but their runtime could not be switched yet; retry once when idle`, rebindRetryRemaining:'Retry remaining', rebindFailedSessions:'Failed sessions', rebindInProgress:'Another folder rebind is already in progress' , rebindBusyHint:'Those sessions are still running a turn. Wait for them to go idle, then retry', rebindToRoot:'That destination is the filesystem root. Pick an ordinary folder instead', rebindToNested:'The two folders cannot sit inside one another', rebindToUnusable:'That destination folder cannot be used. Pick another one', rebindRootsConflict:'That folder overlaps another project’s folder. Pick one outside the other projects’ folders', rebindRootsPersist:'Could not save the rebind to disk. Check free space and permissions, then retry', rebindRuntimeStarting:'An agent process is starting up; session state could not be checked yet. Retry in a moment', rebindLegacyTableUnsynced:'Nothing was moved: the session records could not be synced. Make the folder writable and retry', rebindLegacyTableCorrupt:'Nothing was moved: the legacy session table is corrupt. Repair or remove it, then retry', rebindRootsExpand:'Show all unavailable folders', rebindRootsCollapse:'Show only the first unavailable folder' },
+
         uiCodexWorkspace: { changes:{added:'Added',modified:'Modified',deleted:'Deleted',renamed:'Renamed',copied:'Copied',conflict:'Conflict',untracked:'Untracked',unknown:'File'}, origins:{session:'This session',preexisting:'Existed before session',preexisting_modified:'Existed before session · modified in this session',unknown:'Source not recorded'}, addedPath:path=>`Added ${path}`, addPath:path=>`Add ${path} to conversation`, added:'Added to conversation', add:'Add to conversation', back:'Back to workspace list', copyPath:'Copy relative path', reveal:'Show in file manager', open:'Open with system application', reading:'Reading…', noDiff:'No text diff to display',  unsupported:'This file does not support embedded preview.', openHint:'You can open it with a system application.', truncated:'Content is too large; only the beginning is shown.',   title:'Workspace', temporary:'Temporary workspace', refresh:'Refresh workspace', close:'Close workspace', files:'Files', changed:'Changes', search:'Search files', noFiles:'No matching files', noBaseline:'This older session has no creation baseline, so changes made by this session cannot be determined.', branch:'Branch', staged:'Staged', noChanges:'No workspace changes', copyContent:'Copy content', copied:'Copied', closeViewer:'Close preview', loadFailed:'Failed to load file', resizeWidth:'Resize viewer width', resizeHeight:'Resize viewer height', resizeCorner:'Resize viewer; double-click to restore default', fontDecrease:'Decrease font size', fontIncrease:'Increase font size', openInNewWindow:'Open in code reader', diffSuffix:'(diff)', readerTitle:'Code Reader', readerEmpty:'Choose "Open in code reader" from a workspace file preview; files accumulate here as tabs.', closeTab:'Close tab', noSessionChanges:'Once a session is created, changes made by the session will be listed here.' },
 
         checkUpdate: 'Check for Updates', checking: 'Checking…', upToDate: 'Up to date', updateCheckFailed: 'Check failed', updateInstallFailed: 'Update failed',
@@ -645,7 +646,7 @@ dictEn.uiToolDetails.tmeetSteps = [{key:'runtime',label:'Prepare runtime',sub:'U
 dictEn.uiToolDetails.showRawErrors = false;
 
 Object.assign(dictEn.uiToolDetails.tools, {
-  'session-reader':{ title:'Session Reader', subtitle:'Read-only access to other local sessions', latency:'Local', desc:'Lets AI read other Pinvou session histories on this device in paged, read-only form: after you @-reference a session in the composer, AI fetches its contents on demand (installed by default; reads local session files only, no network, nothing uploaded). Built-in plugins cannot be uninstalled; session reading can be turned off via the builtin feature switch.', welcomeQueries:['Summarize the session I referenced','Where did my last session leave off'] },
+  'session-reader':{ title:'Session Reader', subtitle:'Read access to other local sessions; can message them', latency:'Local', desc:'Lets AI read other Pinvou session histories on this device in paged, read-only form — after you @-reference a session in the composer, AI fetches its contents on demand — and deliver a message into another session as a sender card (installed by default; reads local session files only, no network, nothing uploaded; deliveries are audited). Built-in plugins cannot be uninstalled; session reading can be turned off via the builtin feature switch.', welcomeQueries:['Summarize the session I referenced','Where did my last session leave off'] },
   weather:{ title:'Amap Weather', subtitle:'Real-time weather and multi-day forecasts from Amap', desc:'Query real-time weather and multi-day forecasts for cities nationwide through the Amap Web Service API. Enter your own Amap Web Service API Key; the key is written only to this device\u2019s system credentials.', configTitle:'Amap Weather Key', configDescription:'The Key is stored only in this device\u2019s credentials and is not written to mcp.json.', configDocLabel:'Create a Web Service Key', configFields:[{key:'AMAP_KEY', label:'API Key', helpText:'Choose the \u201CWeb Service\u201D type.', placeholder:'Paste your Amap Web Service Key'}], welcomeQueries:['Weather in Hangzhou today','Will it rain in Beijing this week','What to wear in Shanghai tomorrow'] },
   iwencai:{ title:'iWenCai', subtitle:'A-share quotes, financials, screening, macro, and news', desc:'Provides 12 financial query tools based on the official iWenCai API. Enter your own iWenCai API Key; the key is written only to this device\u2019s system credentials.', configTitle:'iWenCai Key', configDescription:'The Key is stored only in this device\u2019s credentials and is not written to mcp.json.', configDocLabel:'Open iWenCai SkillHub', configFields:[{key:'IWENCAI_API_KEY', label:'API Key', helpText:'Open any official Skill and copy it from \u201CInstallation\u201D.', placeholder:'Paste your IWENCAI_API_KEY'}], welcomeQueries:['Latest Moutai share price','How is the market doing today','Bank stocks with P/E below 10','Recent rate-cut news'] },
   card3:{ title:'QQ Mail API', subtitle:'Smart email sending/receiving and thread summarization', desc:'Provides standard interfaces for sending, receiving, searching, and organizing email. Combined with an LLM, you can read mail in natural language, summarize long threads, and automatically archive and manage folders.' },
@@ -681,12 +682,14 @@ dictEn.uiBuiltinPlugins = {
   versionNote:'Updates with the app',
   dataAccessLabel:'Data access',
   levels:{ L0:'Read-only: modifies no state; content is marked untrusted', L1:'Write: produces user-visible side effects (e.g. send messages, create tasks)', L2:'Destructive: irreversible delete/overwrite; requires explicit authorization' },
-  dataAccess:{ 'sessions.read':'Local session store (read-only)' },
+  dataAccess:{ 'sessions.read':'Local session store (read-only)', 'sessions.write':'Send messages into other local sessions (write)' },
 };
 
 // Generic built-in feature degradation copy (docs/builtin-toolset-contract.md
 // §3.3 hook): reused by future feature settings pages for the "feature turned
 // off" fallback.
+
+dictEn.uiBuiltinFeatures = { disabledNotice:'This built-in feature is turned off; its entry points and capabilities are disabled.' };
 
 Object.assign(dictEn.uiCodexWorkspace, { showRawErrors:false, operationFailed:'Workspace operation failed. Please retry' });
 
@@ -890,6 +893,8 @@ dictEn.uiArtifacts = {
   diChangesLog:n=>`Design changes: ${n}`, diEmpty:'empty',
 };
 
+dictEn.uiSessionMention = { menuTitle:'Reference a session', menuEmpty:'No matching sessions', dropHint:'Drop to reference this session', chipRemove:name=>`Remove reference ${name}`, cardJump:label=>`Open session: ${label}`, cardUnavailable:'Session deleted', cardDisabled:'Feature off', disabledNotice:'Session mention is turned off; references are not sent with the message' };
+dictEn.uiSessionMessage = { from:name=>`From session: ${name}`, fromUnknown:'From another session', jump:name=>`Open session: ${name}`, unavailable:'Session deleted' };
 Object.assign(dictEn.uiAttachments, { uploading:pct=>`Uploading ${pct}%`,  deviceUploadEmpty:name=>`${name} is empty and cannot be attached`, deviceUploadUnavailable:'Uploading from this device is currently unavailable', deviceUploadInvalid:name=>`${name} is not a valid attachment`, deviceUploadFailed:name=>`${name} could not be uploaded. Try again.`, deviceUploadDigestInvalid:'The attachment integrity digest was invalid. Try again', deviceUploadIntegrityMismatch:'The attachment content was corrupted in transit. Upload it again' });
 
 Object.assign(dictEn.uiToolStore, {
@@ -1104,24 +1109,28 @@ Object.assign(dictEn.uiSettingsDetail.modelDescriptions, {
   'K3 长上下文模型':'K3 long-context model', '高速编码模型':'High-speed coding model',
   'K3 256K 上下文，价格更低':'K3 with 256K context at a lower price',
   '官方已转 Legacy，兼容保留':'Officially legacy; kept for compatibility',
-  '官方已转 Legacy，兼容高速':'Officially legacy; high-speed compatibility',
+  '官方将于 2026-11-18 下线':'Will be retired on 2026-11-18',
+  '高速款，官方将于 2026-11-18 下线':'High-speed tier, retires on 2026-11-18',
+  '官方已转 Legacy，2026-11-18 下线':'Officially legacy; retires on 2026-11-18',
+  '官方已转 Legacy，高速款 2026-11-18 下线':'Officially legacy; high-speed tier retires on 2026-11-18',
   '最新旗舰':'Latest flagship', '上代旗舰推理':'Previous-generation flagship reasoning',
   '均衡性价比':'Balanced and cost-effective', '快速高性价比':'Fast and cost-effective',
   '快速高性价比，夜间同样四折':'Fast and cost-effective, also 40% credit cost at night',
   '旗舰推理与编码':'Flagship reasoning and coding', '均衡智能与成本':'Balanced intelligence and cost',
   '低成本高并发':'Low cost, high volume', '上代旗舰':'Previous-generation flagship',
   '快速经济':'Fast and economical',
-  '速度与智能均衡':'Balanced speed and intelligence',
   '最新 Flash，均衡高性价比':'Latest Flash, balanced and cost-effective',
-  '旗舰推理（预览）':'Flagship reasoning (preview)',
+  '上代旗舰推理（预览）':'Previous-generation flagship reasoning (preview)',
+  '最新旗舰，复杂编码与推理':'Latest flagship, complex coding and reasoning',
   // Model catalog entries (src/features/settings/model-catalog.js items[].desc)
   '旗舰编码模型，全套餐支持':'Flagship coding model, all plans', '原生多模态编码模型，额度三倍':'Native multimodal coding model, 3x quota',
   '极速多模态，200 tokens/s':'Fast multimodal, 200 tokens/s',
   '历史模型，请求自动切换至 GLM-5.3':'Legacy model, requests auto-switch to GLM-5.3', '历史模型，自动切换至 GLM-5.3-Flash':'Legacy model, auto-switch to GLM-5.3-Flash',
   '历史模型，请求自动路由至 GLM-5.3':'Legacy model, requests auto-route to GLM-5.3', '历史模型，自动路由至 GLM-5.3-Flash':'Legacy model, auto-routes to GLM-5.3-Flash',
-  '旗舰编码模型，官方将于 2026-10-09 下线':'Flagship coding model, will be retired on 2026-10-09', '官方将于 2026-10-09 下线':'Will be retired on 2026-10-09',
-  '通用推理，官方将于 2026-10-09 下线':'General-purpose reasoning, will be retired on 2026-10-09',
-  '官方将于 2026-10-21 下线':'Will be retired on 2026-10-21',
+  'V4.1-Flash 原厂直供':'V4.1-Flash, first-party direct supply', '官方更多模型档':'Official "more models" tier',
+  'MiMo 全模态轻量款':'MiMo omni-modal lightweight tier',
+  '10-14 起自动路由至 v2.6-pro，10-21 失效':'Auto-routes to v2.6-pro from 2026-10-14; ids invalid from 2026-10-21',
+  '10-14 起自动路由至 v2.6-flash，10-21 失效':'Auto-routes to v2.6-flash from 2026-10-14; ids invalid from 2026-10-21',
   '多模态高性价比':'Multimodal and cost-effective', '最新多模态高性价比':'Latest multimodal, cost-effective',
   '新预览旗舰，仅订阅渠道':'New preview flagship, subscription channels only',
   'Kimi 最新旗舰':'Latest Kimi flagship', 'Kimi 编码模型':'Kimi coding model', 'MiniMax 最新旗舰':'Latest MiniMax flagship',
@@ -1134,14 +1143,21 @@ Object.assign(dictEn.uiSettingsDetail.modelDescriptions, {
   '轻量兼容款，支持图像输入':'Lightweight compatibility option, image input',
   '最新推荐，统一模型 ID 自动升级':'Latest recommended, auto-updating under one Model ID', '低成本低时延，效果比肩 2-1-pro':'Low cost, low latency, near 2-1-pro quality',
   '编程特化（预览），官方即将下线':'Coding-specialized (preview); retiring soon per official docs', '稳定通用，官方即将下线':'Stable general-purpose model; retiring soon per official docs', '最强旗舰':'Strongest flagship',
-  '编码与 Agent 新旗舰（默认）':'New coding/agent flagship (default)',
+  '近 Astra 旗舰，编码与 Agent（默认）':'Near-Astra flagship for coding and agents (default)',
+  '上代均衡旗舰':'Previous balanced flagship',
   '低价高效':'Low-cost and efficient',
   'GPT-5.6 家族旗舰，推理与编码':'GPT-5.6 family flagship, reasoning and coding',
   '最强旗舰，高难推理与长程 Agent':'Strongest flagship, hard reasoning and long-running agents',
   '官方默认推荐，复杂 Agent 编码':'Official default recommendation, complex agentic coding',
+  '新均衡款，较 Sonnet 5 快 30%+，至多省 30%':'New balanced tier: 30%+ faster than Sonnet 5, up to 30% cheaper',
   '上代旗舰，兼容保留':'Previous-generation flagship, kept for compatibility',
-  '最快，200K 上下文':'Fastest, 200K context', '上一代 Flash':'Previous-generation Flash',
-  '基线速度，兼容保留':'Baseline speed, kept for compatibility',
+  '上代均衡款，兼容保留':'Previous balanced tier, kept for compatibility',
+  '最新小旗舰，100K 以下请求较 4.5 降价 90%':'Latest small flagship: 90% below Haiku 4.5 for requests up to 100K tokens',
+  '最快，200K 上下文，Azure 端 2026-11-15 下线':'Fastest, 200K context; retires on Azure on 2026-11-15',
+  '上代稳定 Flash，仍在服务':'Previous-generation stable Flash, still served',
+  '已弃用，请求自动路由至 3.8-flash':'Deprecated; requests auto-route to 3.8-flash',
+  '已弃用，请求自动路由至 3.6-flash':'Deprecated; requests auto-route to 3.6-flash',
+  '编码模型，官方将于 2026-10-28 下线':'Coding model, will be retired on 2026-10-28',
   '旗舰，编码与 Agent 默认推荐':'Flagship, default pick for coding and agents', '上代旗舰，编码与 Agent':'Previous-generation flagship, coding and agents',
   '4.20 推理，1M 上下文':'4.20 reasoning, 1M context', '4.20 非推理，1M 上下文':'4.20 non-reasoning, 1M context',
   '快速可靠，强工具调用':'Fast and reliable, strong tool calling', '代码 Agent，256K 上下文':'Coding agent, 256K context',
@@ -1167,5 +1183,5 @@ Object.assign(dictEn.uiChat, {
   bgTasksRunning: n => `${n} background task${n === 1 ? '' : 's'} running`,
 });
 // restored: baseline catalog descriptions (referenced by the model catalog data)
-Object.assign(dictEn.uiSettingsDetail.modelDescriptions, { '本地服务默认模型': 'Default model for the local service', '高能力模型': 'High-capability model', '快速响应': 'Fast responses', '最新通用模型': 'Latest general-purpose model', '代码场景': 'Coding tasks', '高速代码场景': 'High-speed coding tasks', '稳定可用': 'Stable release', '高性价比': 'Cost-effective', '通用能力': 'General-purpose', '兼容保留': 'Compatibility option', '高速响应': 'High-speed responses', '轻量模型': 'Lightweight model'
+Object.assign(dictEn.uiSettingsDetail.modelDescriptions, { '本地服务默认模型': 'Default model for the local service', '高能力模型': 'High-capability model', '快速响应': 'Fast responses', '最新通用模型': 'Latest general-purpose model', '代码场景': 'Coding tasks', '高速代码场景': 'High-speed coding tasks', '稳定可用': 'Stable release', '高性价比': 'Cost-effective', '通用能力': 'General-purpose', '兼容保留': 'Compatibility option', '轻量模型': 'Lightweight model'
 });

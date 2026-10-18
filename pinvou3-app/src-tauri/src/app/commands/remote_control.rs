@@ -1533,7 +1533,13 @@ pub fn web_access_read_artifact_chunk(
 pub async fn web_access_update_settings(
     patch: super::settings::WebSettingsPatch,
 ) -> Result<UserPrefs, String> {
-    super::settings::persist_web_settings(patch)
+    // Round-51 review: the settings transaction holds the cross-process
+    // settings.json.lock across keychain I/O — join the blocking body on a
+    // spawn_blocking worker like the desktop settings commands.
+    super::settings::join_blocking("web_access_update_settings", move || {
+        super::settings::persist_web_settings(patch)
+    })
+    .await
 }
 
 fn scoped_artifact_path(
@@ -1865,7 +1871,8 @@ mod tests {
         ensure_web_chat_session_supported(store.mode_state(&aux.id).multi_agent).expect(
             "fresh aux sessions default to single-agent mode, and the flag cannot be \
                      flipped on them at all: set_multi_agent_mode rejects aux- ids \
-                     (round-32 minor 20), so the zero-tools invariant rests on that refusal \
+                     (round-32 minor 20), so the aux tool-surface invariant \
+                     (scoped read-only at most, ADR-0024) rests on that refusal \
                      plus the spawn pin and the per-turn gate",
         );
         store.load(&aux.id).expect("aux session loads by id");

@@ -127,7 +127,7 @@ import {
   restoreConversationScrollPosition,
 } from '../conversation/conversation-model.js';
 import { QuestionChoiceCard } from '../conversation/QuestionChoiceCard.jsx';
-import { buildUserInputAnswers, normalizeUserInputQuestions } from '../../shared/user-input-shared.js';
+import { buildUserInputAnswers, normalizeElicitationQuestions, normalizeUserInputQuestions } from '../../shared/user-input-shared.js';
 import {
   PlanLayer,
   ToolCard,
@@ -432,48 +432,13 @@ function CodexComposerConfigSelect({
 
 function ElicitationCard({ elicitation, pending, onRespond, responding, copy, conversationCopy }) {
   const request = elicitation.request || {};
-  const schema = request.requestedSchema || {};
-  const required = new Set(Array.isArray(schema.required) ? schema.required : []);
-  const fields = Object.entries(schema.properties || {});
-  const otherFields = new Map(fields
-    .filter(([, field]) => field && field._meta && field._meta.codex && field._meta.codex.isOtherAnswer)
-    .map(([id, field]) => [String(field._meta.codex.questionId || ''), { id, field }]));
-  const questions = fields.filter(([, field]) => (
-    !(field && field._meta && field._meta.codex && field._meta.codex.isOtherAnswer)
-  ));
+  // Schema → question mapping (companion other-answer folding, choice/custom-reply pin)
+  // lives in shared/user-input-shared.js next to the request_user_input normalization.
+  const questions = normalizeElicitationQuestions(
+    request.requestedSchema,
+    (conversationCopy && conversationCopy.otherPlaceholder) || '',
+  );
   const actionable = !!pending && !elicitation.resolved;
-
-  function choices(field) {
-    if (Array.isArray(field && field.oneOf)) {
-      return field.oneOf.map(option => ({
-        value: option && option.const,
-        label: option && (option.title || option.const),
-        description: option && option.description,
-      })).filter(option => option.value != null);
-    }
-    if (Array.isArray(field && field.enum)) {
-      return field.enum.map(value => ({ value, label: String(value), description: '' }));
-    }
-    return [];
-  }
-
-  const normalizedQuestions = questions.map(([id, field]) => {
-    const other = otherFields.get(id);
-    return {
-      id,
-      answerKey: id,
-      otherAnswerKey: other && other.id,
-      header: field.title || id,
-      question: field.description || '',
-      options: choices(field),
-      allowOther: Boolean(other),
-      otherPlaceholder: other && (other.field.title || (conversationCopy && conversationCopy.otherPlaceholder)),
-      required: required.has(id)
-        || Boolean(field && field._meta && field._meta.codex && field._meta.codex.isOther),
-      inputType: field.type || 'string',
-      secret: Boolean(field && field._meta && field._meta.codex && field._meta.codex.isSecret),
-    };
-  });
 
   function submit(groups) {
     // content 用无原型对象构造（见 buildElicitationContent）：answerKey 为
@@ -487,7 +452,7 @@ function ElicitationCard({ elicitation, pending, onRespond, responding, copy, co
     <QuestionChoiceCard
       title={copy.choiceTitle}
       description={request.message && request.message !== 'Input requested' ? request.message : ''}
-      questions={normalizedQuestions}
+      questions={questions}
       resolved={!actionable}
       submitting={responding}
       submitLabel={copy.submit}
@@ -508,7 +473,7 @@ function ElicitationCard({ elicitation, pending, onRespond, responding, copy, co
 }
 
 // 原生（品悟 Engine）会话的选择确认卡：chat:user_input_required → submit_user_input。
-// 选项归一化逻辑与主聊天 UserInputCard 对齐（allow_free_text / multi_select），
+// 选项归一化与自定义回复钉死与主聊天 UserInputCard 共用（shared/user-input-shared.js），
 // 但提交走显式 sessionId，不依赖 bridge 全局 activeSession。
 const NATIVE_CHAT_EVENTS = [
   'chat:user_message',

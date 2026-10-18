@@ -387,6 +387,15 @@ mod tests {
             (ModelPreset::OpenaiCompatible, "claude-haiku-4-5"),
             (ModelPreset::OpenaiCompatible, "claude-fable-5"),
             (ModelPreset::OpenaiCompatible, "claude-fable-5-1"),
+            // 2026-10-13 Anthropic additions, both image-capable per their
+            // anthropic.com announcement pages (Sonnet 5.5: beat Pokémon Red
+            // from screenshots / Chartography 61.6%; Haiku 5.5: Visual
+            // reasoning Chartography 46.4%). Neither needs a new table
+            // entry: sonnet-5-5 rides the "claude-sonnet-5" substring and
+            // haiku-5-5 the "claude-haiku" substring (which already covers
+            // the haiku-5 family).
+            (ModelPreset::OpenaiCompatible, "claude-sonnet-5-5"),
+            (ModelPreset::OpenaiCompatible, "claude-haiku-5-5"),
             // V4.1-Flash native vision (api-docs.deepseek.com/guides/vision).
             (ModelPreset::Deepseek, "deepseek-flash"),
             // The retired aliases still route to V4.1-Flash; existing configs
@@ -425,6 +434,12 @@ mod tests {
             // MiMo (2026-09-11): multimodal is mimo-v2.5; the text-only
             // mimo-v2.5-pro must not be caught by accident, hence the exact
             // equality table (see EXACT_VERIFIED_IMAGE_CAPABLE_MODELS).
+            // Note: one en-US MiMo model-list rendering shows a
+            // Full-modal Understanding cell for v2.5-pro that the zh-CN
+            // primary list lacks, against the deprecation page's text-only
+            // wording — the conservative
+            // annotation stays until the rows retire 2026-10-21 (see the
+            // frontend mimo group comment).
             (ModelPreset::Mimo, "mimo-v2.5"),
             // The 2026-09-22 V2.6 series is omni-modal; all three tiers hit
             // the "mimo-v2.6" substring entry.

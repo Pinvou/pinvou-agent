@@ -1920,7 +1920,7 @@ impl AppEngine {
         // this wrapper against the pre-token signature; the rebase union
         // adapted it). Minting here keeps the wrapper's public `bool`
         // signature for the external harnesses while the last-mile policy —
-        // and the aux zero-tool reminder merge, a no-op for headless ids —
+        // and the aux scoped-tool reminder merge, a no-op for headless ids —
         // stays in the one place it is enforced.
         super::engine_pool::forward_forced_turn_restrict(
             &self.session_id,
@@ -2293,6 +2293,9 @@ impl AppEngine {
                 system_prompt_override: false,
                 model: self.bridge.model(),
                 workspace: self.workspace.clone(),
+                // CodeWhale #54 multi-root 基建：空集经底座 normalize 后等价
+                // 单根（workspace 置于位置 0），保持既有行为。
+                workspace_roots: Vec::new(),
                 mode: AppMode::Agent,
             })
             .await?;

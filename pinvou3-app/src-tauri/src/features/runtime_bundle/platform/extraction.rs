@@ -132,7 +132,11 @@ impl Pinvou3Bundle {
     {
         paths::ensure_dirs()?;
         let version_file = paths::bundle_version_file();
-        let current = std::fs::read_to_string(&version_file).unwrap_or_default();
+        // Hardened read — family rationale on `open_private_data_file_within`. Any
+        // refusal (or absence) degrades to the empty string, so the bundle
+        // re-extracts.
+        let current =
+            crate::platform::filesystem::read_private_data_file(&version_file).unwrap_or_default();
         let bundle_changed = current.trim() != BUNDLE_VERSION;
 
         // 已下线 skills 每次启动都清理(防御性):既有装机的残留目录若不清,
@@ -309,12 +313,29 @@ impl Pinvou3Bundle {
         }
         std::fs::create_dir_all(&self.root)?;
         std::fs::create_dir_all(&self.skills_dir)?;
-        // PINVOU 自有 hooks：写入 + 加可执行位
-        std::fs::write(&self.deny_sensitive_sh, DENY_SENSITIVE_PATHS_SH)?;
-        std::fs::write(&self.deny_sensitive_ps1, DENY_SENSITIVE_PATHS_PS1)?;
-        std::fs::write(&self.multiagent_depth_guard_sh, MULTIAGENT_DEPTH_GUARD_SH)?;
-        std::fs::write(&self.multiagent_depth_guard_ps1, MULTIAGENT_DEPTH_GUARD_PS1)?;
-        std::fs::write(&self.shell_env_sh, SHELL_ENV_SH)?;
+        // PINVOU 自有 hooks：写入 + 加可执行位。加固写族文档见
+        // `open_private_data_file_within`；write 的 0600 创建模式随后被下方 0o755
+        // 循环补回可执行位。
+        crate::platform::filesystem::write_private_data_file(
+            &self.deny_sensitive_sh,
+            DENY_SENSITIVE_PATHS_SH.as_bytes(),
+        )?;
+        crate::platform::filesystem::write_private_data_file(
+            &self.deny_sensitive_ps1,
+            DENY_SENSITIVE_PATHS_PS1.as_bytes(),
+        )?;
+        crate::platform::filesystem::write_private_data_file(
+            &self.multiagent_depth_guard_sh,
+            MULTIAGENT_DEPTH_GUARD_SH.as_bytes(),
+        )?;
+        crate::platform::filesystem::write_private_data_file(
+            &self.multiagent_depth_guard_ps1,
+            MULTIAGENT_DEPTH_GUARD_PS1.as_bytes(),
+        )?;
+        crate::platform::filesystem::write_private_data_file(
+            &self.shell_env_sh,
+            SHELL_ENV_SH.as_bytes(),
+        )?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -328,7 +349,10 @@ impl Pinvou3Bundle {
                 std::fs::set_permissions(script, perm)?;
             }
         }
-        std::fs::write(&version_file, BUNDLE_VERSION)?;
+        crate::platform::filesystem::write_private_data_file(
+            &version_file,
+            BUNDLE_VERSION.as_bytes(),
+        )?;
         eprintln!(
             "[pinvou3-app] bundle extracted to {} (version {})",
             self.root.display(),
@@ -457,7 +481,25 @@ impl Pinvou3Bundle {
             if !dir.exists() {
                 continue;
             }
-            let marker = std::fs::read_to_string(dir.join(".installed-from")).unwrap_or_default();
+            // Hardened read — family rationale on `open_private_data_file_within`.
+            // 数据保底：只有"标记确实不存在"（裸残留）或"读到内容且恰为空/本市场
+            // id"才允许删除；其余任何读 refusal（symlink 不穿透、FIFO/设备、超
+            // cap、非 UTF-8、权限）一律保留目录——main 的 read_to_string 会穿透
+            // symlink 读到 upload: 内容并据此保护，硬化读把这一类变成 Err，若
+            // fail-open 成空标记会把用户内容连同目录一起删掉。
+            let marker = match crate::platform::filesystem::read_private_data_file(
+                &dir.join(".installed-from"),
+            ) {
+                Ok(content) => content,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(error) => {
+                    log::warn!(
+                        "[pinvou3-app] marketplace skill cleanup preserved '{}' (unreadable .installed-from: {error})",
+                        dir.display()
+                    );
+                    continue;
+                }
+            };
             let marker = marker.trim();
             if marker.starts_with("upload:") {
                 continue; // 用户上传的同名技能,保护不删
@@ -474,145 +516,180 @@ impl Pinvou3Bundle {
     /// 不能删除所有未知目录:未来/本地可能有自定义 MCP 工具。这里只精确处理曾经内置、
     /// 现在源码资源已经移除的 marketplace 工具。
     pub(super) fn cleanup_removed_marketplace_tools(&self) -> std::io::Result<()> {
-        {
-            let tool_id = "data_analysis";
-            // 退役 id 保护（二轮评审）：`bundles/` 已是用户上传落盘区，用户可能上传过
-            // 同名包——其 Upload 记录存在时跳过整段清理（不删登记、不删 mcp.json），
-            // 只清理确定无主的内嵌退役残留。
-            // Fail-closed like the uninstall path's `source_may_be_upload`: an
-            // unreadable store means "may be an upload" → skip the cleanup
-            // entirely (its last step deletes `bundles/<id>` wholesale).
-            let user_uploaded = Self::user_upload_record_exists(tool_id);
-            if !user_uploaded {
-                // Round-32 minor 4 (review #455): the id's import lock (the
-                // same lock the import path serializes its landing under) is
-                // held from here down — the top probe above is pre-lock and
-                // advisory only; the LOAD-BEARING piece is the under-lock
-                // re-check below (the round-31 m4 lock covered only the final
-                // re-probe + delete pair, so an Upload import completing
-                // between the top probe and the uninstall still got its
-                // just-landed pack recycled wholesale by that uninstall).
-                let import_lock =
-                    crate::features::marketplace::plugin_import::import_lock_for(tool_id);
-                let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
-                // The pre-lock probe above may have read a no-record store
-                // while an import for the same id was mid-landing (it had not
-                // committed when the probe ran, and holds this very lock
-                // until it does). Re-check under the lock before any
-                // destructive step, same defer-with-retry contract as the
-                // deletion-point arm below.
-                if Self::user_upload_record_exists(tool_id) {
+        let tool_id = "data_analysis";
+        // 退役 id 保护：`bundles/` 已是用户上传落盘区，用户可能上传过
+        // 同名包——其 Upload 记录存在时跳过整段清理（不删登记、不删 mcp.json），
+        // 只清理确定无主的内嵌退役残留。
+        // Fail-closed like the uninstall path's `source_may_be_upload`: an
+        // unreadable store means "may be an upload" → skip the cleanup
+        // entirely (its last step deletes `bundles/<id>` wholesale).
+        if Self::user_upload_record_exists(tool_id) {
+            return Ok(());
+        }
+        // The id's import lock (the
+        // same lock the import path serializes its landing under) is
+        // held from here down — the top probe above is pre-lock and
+        // advisory only; the LOAD-BEARING piece is the under-lock
+        // re-check below (the earlier, narrower lock covered only the final
+        // re-probe + delete pair, so an Upload import completing
+        // between the top probe and the uninstall still got its
+        // just-landed pack recycled wholesale by that uninstall).
+        // Landing lease over the whole sweep, before the import mutex:
+        // a same-id import landing in another process must not be
+        // uninstalled mid-landing; failure defers fail-closed.
+        let defer = |detail: &str| {
+            crate::platform::startup::mark_with_detail(
+                "rust",
+                "retired_tool_cleanup:deferred",
+                detail,
+            );
+        };
+        let mut landing_lease =
+            match crate::features::marketplace::plugin_import::open_landing_lease(tool_id) {
+                Ok(lease) => lease,
+                Err(error) => {
                     log::warn!(
-                        "[cleanup] retired tool '{tool_id}': an Upload record for the same id is \
-                         present under the import lock; keeping bundles/<id> and deferring the \
-                         residue sweep to the next startup"
+                        "[cleanup] retired tool '{tool_id}': the landing lease is \
+                     unavailable, deferring the residue sweep to the next startup: {error}"
                     );
-                    crate::platform::startup::mark_with_detail(
-                        "rust",
-                        "retired_tool_cleanup:deferred",
-                        "upload-record present under import lock",
-                    );
+                    defer("landing lease unavailable");
                     return Ok(());
                 }
-                // 廉价残留探测:所有清理面都干净时直接返回——uninstall 会无条件重写
-                // installed.json / mcp.json(manifest 声明 secret_targets 时还会清
-                // 系统 keyring),不值得每次启动都实例化 MarketplaceManager 跑一遍。
-                // 探测只读私有布局文件,不实例化管理器;BundleStore 记录的读取开销
-                // 与探测同量级,保护判定前置不亏。
-                if !Self::marketplace_tool_residue_present(tool_id) {
-                    return Ok(());
-                }
-                // 卸载失败(如今最常见的是损坏 mcp.json 拒绝写入器)必须留日志:
-                // 此前 `let _ =` 无声吞掉,损坏窗口内每个启动都静默复发。
-                let uninstall_error = crate::features::marketplace::MarketplaceManager::new()
-                    .uninstall(tool_id)
-                    .err();
-                // 禁用/隐藏残留统一走 scope 模块的单临界区 RMW 助手:一次
-                // DISABLED_BUNDLES_FILE_LOCK 内 load→retain→条件 save(#455 收敛范式),
-                // plain + code 所有 scope 的 disabled/hidden 两套集合一并清理。此前
-                // plain 走「load → 内存 retain → 条件 save」两段独立取锁的临界区,
-                // 两段之间并发写方的更新会被旧快照整表覆盖(#522,与 #455 修复的 M-6b
-                // 两段式同型)。uninstall 成功时其内部清理已覆盖本步,这次幂等复扫是
-                // 纵深防御;回滚时本步是唯一清理面,不可省——该残留不在事务快照内,
-                // 留着会让未来同名重装被误隐藏(#522)。
-                //
-                // Fail-visible (round-17 minor 1): the helper propagates persist
-                // failures (#571) — a stale entry would resurrect the retired
-                // tool inside the scope. This cleanup segment as a whole stays
-                // best-effort (the outer signature is io::Error and the
-                // surroundings are `let _ =`), so a failure is logged loudly
-                // instead of aborting the retirement.
-                // Round-26 MAJOR 1 (review #455): `tool_id` is a pack id, and
-                // on a retry boot its dir may already be gone (the previous
-                // boot uninstalled it but failed this cleanup persist) — the
-                // normalized form's gating fallback could re-own the absent id
-                // onto a foreign pack's claim and erase THAT pack's consent
-                // rows. Exact removal targets only the retired pack's rows.
-                if let Err(e) =
-                    crate::features::marketplace::scope::remove_bundle_from_disabled_scopes_exact(
-                        tool_id,
-                    )
-                {
+            };
+        let _landing_lease_guard = match landing_lease.try_write() {
+            Ok(guard) => guard,
+            // Both refusals defer fail-closed, each with its own wording.
+            Err(error) => {
+                let contended = error.kind() == std::io::ErrorKind::WouldBlock;
+                if contended {
                     log::warn!(
-                        "[runtime-bundle] persisting the post-retirement switch/visibility cleanup for {tool_id} failed (a stale entry would resurrect the retired tool in the scope): {e}"
+                        "[cleanup] retired tool '{tool_id}': an import for the same id \
+                         holds the landing lease; deferring the residue sweep to the next \
+                         startup"
                     );
-                }
-                if let Some(error) = uninstall_error {
-                    // 回滚说明工具仍登记在册:目录删除随之跳过,不销毁在册工具的
-                    // 包目录;登记与目录都是残留探测面,下次启动会重试整套清理。
-                    // 打包版 Windows GUI 无 stderr:timeline 是用户能看到这条
-                    // 推迟的唯一渠道(与 reconcile 失败的上报同一范式)。
+                } else {
                     log::warn!(
-                        "[cleanup] retired tool '{tool_id}' uninstall deferred: {error}; \
-                         retrying on the next startup"
+                        "[cleanup] retired tool '{tool_id}': the landing lease is \
+                         un-lockable, deferring the residue sweep to the next startup: {error}"
                     );
-                    crate::platform::startup::mark_with_detail(
-                        "rust",
-                        "retired_tool_cleanup:deferred",
-                        &error,
-                    );
-                    return Ok(());
                 }
-
-                let _ = std::fs::remove_dir_all(paths::bundle_mcp_servers_dir().join(tool_id));
-                // 按包聚合新布局的退役残留：`migrate_custom_mcp_layout` 会先把旧目录
-                // 搬进 bundles/<id>/mcp/，而 uninstall 的 can_redeliver=false 规则
-                // （非内嵌 id 不可重释放）保留包目录——不删则 manifest 存活、退役
-                // 工具以「自定义 MCP 卡」复活（G8a）。Upload 保护已在上方判定。
-                // Round-30 m5 (review #455): the top probe is checked ONCE, but
-                // a same-id Upload import can land in the window (the uninstall
-                // above is not instantaneous) — deleting wholesale at this
-                // point would destroy the user's unique uploaded copy, the
-                // exact loss the guard exists to prevent. Re-probe AT the
-                // deletion point, fail-closed on an unreadable store (same
-                // `source_may_be_upload` direction as the top probe): keep
-                // `bundles/<id>` and defer the residue sweep to the next
-                // startup, the same defer-with-retry contract as the
-                // uninstall-deferred arm above.
-                // Round-31 m4 (review #455), reworked by round-32 minor 4:
-                // the re-probe alone was check-then-act, and holding the
-                // import lock only here left the uninstall itself outside —
-                // an Upload import completing before this point still lost
-                // its just-landed pack to the uninstall above. The lock is
-                // now held from the decision top; this re-probe + defer arm
-                // stays as defense-in-depth for any path that ever reaches
-                // the delete without the full-span lock.
-                if Self::user_upload_record_exists(tool_id) {
-                    log::warn!(
-                        "[cleanup] retired tool '{tool_id}': an Upload record for the same id \
-                         appeared during cleanup; keeping bundles/<id> and deferring the \
-                         residue sweep to the next startup"
-                    );
-                    crate::platform::startup::mark_with_detail(
-                        "rust",
-                        "retired_tool_cleanup:deferred",
-                        "upload-record appeared mid-cleanup",
-                    );
-                    return Ok(());
-                }
-                let _ = std::fs::remove_dir_all(paths::bundles_root().join(tool_id));
+                defer(if contended {
+                    "landing lease contended"
+                } else {
+                    "landing lease un-lockable"
+                });
+                return Ok(());
+            }
+        };
+        let import_lock = crate::features::marketplace::plugin_import::import_lock_for(tool_id);
+        let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
+        // 锁序（round-52 review M2）：下面的 remove_dir_all 动的是
+        // bundles/<id>，与市场写者同持跨进程市场写锁（import_lock →
+        // 市场锁，与导入临界区同序）。acquire 阻塞等锁，取不到即真错误，
+        // 按错误传播交由启动提取失败重试。
+        let _market_write_lock =
+            crate::features::marketplace::plugin_import::MarketplaceWriteLock::acquire()
+                .map_err(|e| std::io::Error::other(format!("retired-tool cleanup lock: {e}")))?;
+        // The pre-lock probe above may have read a no-record store
+        // while an import for the same id was mid-landing (it had not
+        // committed when the probe ran, and holds this very lock
+        // until it does). Re-check under the lock before any
+        // destructive step, same defer-with-retry contract as the
+        // deletion-point arm below.
+        if Self::user_upload_record_exists(tool_id) {
+            log::warn!(
+                "[cleanup] retired tool '{tool_id}': an Upload record for the same id is \
+                 present under the import lock; keeping bundles/<id> and deferring the \
+                 residue sweep to the next startup"
+            );
+            defer("upload-record present under import lock");
+            return Ok(());
+        }
+        // 廉价残留探测:所有清理面都干净时直接返回——uninstall 会无条件重写
+        // installed.json / mcp.json(manifest 声明 secret_targets 时还会清
+        // 系统 keyring),不值得每次启动都实例化 MarketplaceManager 跑一遍。
+        // 探测只读私有布局文件,不实例化管理器;BundleStore 记录的读取开销
+        // 与探测同量级,保护判定前置不亏。
+        if !Self::marketplace_tool_residue_present(tool_id) {
+            return Ok(());
+        }
+        // Log, don't swallow, an uninstall failure (every boot would
+        // silently recur); `uninstall_leased` — the lease is held above.
+        let uninstall_error = crate::features::marketplace::MarketplaceManager::new()
+            .uninstall_leased(tool_id)
+            .err();
+        // Strip only when the uninstall did NOT fail (pinned by
+        // cleanup_keeps_consent_rows_when_uninstall_rolls_back): a
+        // rollback leaves the rows as current consent. Persist
+        // failures are logged (best-effort); removal is exact (the
+        // normalized fallback could re-own a foreign pack's rows).
+        if uninstall_error.is_none() {
+            // A same-id import registers deny-first rows BEFORE landing
+            // (the pre-land gate); a vacuous uninstall would strip them
+            // as "residue". Defer while the landing mark is present —
+            // covering the deletion legs below too. Pinned by
+            // cleanup_defers_consent_strip_while_a_same_id_import_is_mid_landing.
+            if crate::features::marketplace::plugin_import::landing_in_progress(tool_id) {
+                log::warn!(
+                    "[cleanup] retired tool '{tool_id}': an import for the same id is mid-landing; deferring the rest of the cleanup to the next startup"
+                );
+                defer("import landing mark present");
+                return Ok(());
+            } else if let Err(e) =
+                crate::features::marketplace::scope::remove_bundle_from_disabled_scopes_exact(
+                    tool_id,
+                )
+            {
+                log::warn!(
+                    "[runtime-bundle] persisting the post-retirement switch/visibility cleanup for {tool_id} failed (a stale entry would resurrect the retired tool in the scope): {e}"
+                );
             }
         }
+        if let Some(error) = uninstall_error {
+            // 回滚说明工具仍登记在册:目录删除随之跳过,不销毁在册工具的
+            // 包目录;登记与目录都是残留探测面,下次启动会重试整套清理。
+            // 打包版 Windows GUI 无 stderr:timeline 是用户能看到这条
+            // 推迟的唯一渠道(与 reconcile 失败的上报同一范式)。
+            log::warn!(
+                "[cleanup] retired tool '{tool_id}' uninstall deferred: {error}; \
+                 retrying on the next startup"
+            );
+            defer(&error);
+            return Ok(());
+        }
+
+        let _ = std::fs::remove_dir_all(paths::bundle_mcp_servers_dir().join(tool_id));
+        // 按包聚合新布局的退役残留：`migrate_custom_mcp_layout` 会先把旧目录
+        // 搬进 bundles/<id>/mcp/，而 uninstall 的 can_redeliver=false 规则
+        // （非内嵌 id 不可重释放）保留包目录——不删则 manifest 存活、退役
+        // 工具以「自定义 MCP 卡」复活（G8a）。Upload 保护已在上方判定。
+        // The top probe is checked ONCE, but
+        // a same-id Upload import can land in the window (the uninstall
+        // above is not instantaneous) — deleting wholesale at this
+        // point would destroy the user's unique uploaded copy, the
+        // exact loss the guard exists to prevent. Re-probe AT the
+        // deletion point, fail-closed on an unreadable store (same
+        // `source_may_be_upload` direction as the top probe): keep
+        // `bundles/<id>` and defer the residue sweep to the next
+        // startup, the same defer-with-retry contract as the
+        // uninstall-deferred arm above.
+        // The re-probe alone was check-then-act, and holding the
+        // import lock only here left the uninstall itself outside —
+        // an Upload import completing before this point still lost
+        // its just-landed pack to the uninstall above. The lock is
+        // now held from the decision top; this re-probe + defer arm
+        // stays as defense-in-depth for any path that ever reaches
+        // the delete without the full-span lock.
+        if Self::user_upload_record_exists(tool_id) {
+            log::warn!(
+                "[cleanup] retired tool '{tool_id}': an Upload record for the same id \
+                 appeared during cleanup; keeping bundles/<id> and deferring the \
+                 residue sweep to the next startup"
+            );
+            defer("upload-record appeared mid-cleanup");
+            return Ok(());
+        }
+        let _ = std::fs::remove_dir_all(paths::bundles_root().join(tool_id));
         Ok(())
     }
 
@@ -665,7 +742,10 @@ impl Pinvou3Bundle {
             if !path.exists() {
                 continue; // 文件不存在 = 该清理面本就干净,不算误报
             }
-            match std::fs::read_to_string(&path) {
+            // Hardened read — family rationale on `open_private_data_file_within`.
+            // A rejected read errs toward "residue present", the
+            // conservative direction.
+            match crate::platform::filesystem::read_private_data_file(&path) {
                 Ok(content) => {
                     if content.contains(tool_id) {
                         return true;
@@ -678,10 +758,13 @@ impl Pinvou3Bundle {
         }
         // mcp.json 按结构探测:server key 存在即残留;坏 json 保守视为有残留——
         // uninstall 会在写入器处拒绝并整体回滚,清理推迟到文件修复后的下次启动。
+        // Hardened read — family rationale on `open_private_data_file_within` — so
+        // this probe shares the two probes' convention above and a future
+        // edit cannot change only one of them.
         if !paths::mcp_config_path().is_file() {
             return false;
         }
-        match std::fs::read_to_string(paths::mcp_config_path())
+        match crate::platform::filesystem::read_private_data_file(&paths::mcp_config_path())
             .ok()
             .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())
         {
@@ -760,14 +843,12 @@ impl Pinvou3Bundle {
     fn cached_connector_skills_visible(
         &self,
         connector_id: &str,
-        skill_dirs: &[&str],
         state_fn: impl Fn() -> bool,
     ) -> bool {
-        let target = Self::connector_package_skills_dir(connector_id);
         state_fn()
-            && skill_dirs
-                .iter()
-                .all(|dir| target.join(dir).join("SKILL.md").is_file())
+            // Shares the consent gate's exact-name bar so the cache and the
+            // gate cannot diverge on case-variant states.
+            && crate::features::marketplace::bundle::cli_connector_skills_materialized(connector_id)
     }
 
     /// 飞书域技能门控:`show` → 解包 9 个 lark 技能到包目录;否则**删掉**它们(+ NOTICE.md)。
@@ -788,7 +869,6 @@ impl Pinvou3Bundle {
     pub(super) fn cached_feishu_skills_visible(&self) -> bool {
         self.cached_connector_skills_visible(
             "feishu",
-            &LARK_SKILL_DIRS,
             crate::platform::connector_state::feishu_skills_visible,
         )
     }
@@ -817,7 +897,6 @@ impl Pinvou3Bundle {
     pub(super) fn cached_wecom_skills_visible(&self) -> bool {
         self.cached_connector_skills_visible(
             "wecom",
-            &WECOM_SKILL_DIRS,
             crate::platform::connector_state::wecom_skills_visible,
         )
     }
@@ -837,7 +916,6 @@ impl Pinvou3Bundle {
     pub(super) fn cached_dingtalk_skills_visible(&self) -> bool {
         self.cached_connector_skills_visible(
             "dingtalk",
-            &DINGTALK_SKILL_DIRS,
             crate::platform::connector_state::dingtalk_skills_visible,
         )
     }
@@ -857,7 +935,6 @@ impl Pinvou3Bundle {
     pub(super) fn cached_tmeet_skills_visible(&self) -> bool {
         self.cached_connector_skills_visible(
             "tmeet",
-            &TMEET_SKILL_DIRS,
             crate::platform::connector_state::tmeet_skills_visible,
         )
     }
@@ -910,11 +987,16 @@ impl Pinvou3Bundle {
         // 本函数是 boot 链的 mcp.json 写方，与 GUI/headless 并发安装/卸载的写入器
         // 互斥（mcp.lock 是叶子锁，锁内不取其他市场锁）；boot 链此处无外层持锁，
         // 函数体内也无嵌套取锁。
-        crate::features::marketplace::with_mcp_json_lock(|| {
+        // 锁等待没有超时（对端冻结时本 boot 线程无限等待的既定取舍）：前后打点
+        // 圈出 mcp.lock 临界区全程——含锁等待与 upsert 本身，挂起时 startup.log
+        // 可直接定位是这一段（而非维护链其余步骤）。
+        crate::platform::startup::mark("bundle_extract:mcp_upsert:locked:start");
+        let result = crate::features::marketplace::with_mcp_json_lock(|| {
             self.ensure_builtin_mcp_servers_locked()
                 .map_err(|error| error.to_string())
-        })
-        .map_err(std::io::Error::other)
+        });
+        crate::platform::startup::mark("bundle_extract:mcp_upsert:locked:done");
+        result.map_err(std::io::Error::other)
     }
 
     fn ensure_builtin_mcp_servers_locked(&self) -> std::io::Result<()> {
@@ -975,12 +1057,17 @@ impl Pinvou3Bundle {
         if remove_browser_residue {
             servers.remove("browser");
         }
-        self.refresh_mcp_python_commands(&mut mcp, &python_cmd)?;
+        self.refresh_mcp_python_commands(&mut mcp, &python_cmd);
         // 写回前与现有文件比对:内容一致则跳过写盘(避免每次启动重写 mcp.json)。
         // 原子落盘复用 marketplace 的共享写方(write_json_pretty → write_atomic,
         // tmp+rename):裸写被崩溃打断会制造出启动维护防御的损坏文件本身。
         let json = serde_json::to_string_pretty(&mcp).map_err(std::io::Error::other)?;
-        if std::fs::read_to_string(&self.mcp_json).is_ok_and(|existing| existing == json) {
+        // Hardened read — family rationale on `open_private_data_file_within`. A
+        // refusal reads as "differs" and the locked atomic writer below
+        // takes over.
+        if crate::platform::filesystem::read_private_data_file(&self.mcp_json)
+            .is_ok_and(|existing| existing == json)
+        {
             return Ok(());
         }
         crate::features::marketplace::write_json_pretty(&self.mcp_json, &mcp)
@@ -992,12 +1079,19 @@ impl Pinvou3Bundle {
     /// (`run_mcp_startup_maintenance` 以 `mcp_json_unparseable` 把整个 upsert 挡在
     /// 备份过的坏文件之外),这条重建路径只覆盖直接调用方与防御兜底;数据保全
     /// (备份 + 整轮保持原样)优先于坏文件自动重置。
+    ///
+    /// 本加载器在 mcp.lock 临界区内、每次 boot 的内置
+    /// upsert 都会走到。原先 `is_file()` 探针后的裸 `read_to_string` 与迁移读
+    /// 此前修掉的是同一类 swap-in FIFO 楔死:探针把窗口收窄成 swap 窗口,
+    /// 但一旦在 open 前被换成 FIFO,裸读会永远阻塞在持锁的 open() 上,楔死共享
+    /// home 的所有 mcp.json 读写方。加固原语对非普通文件直接拒绝;任何
+    /// 拒绝/缺失都与探针时代的空骨架回退语义一致。
     fn load_mcp_json_for_repair(&self) -> serde_json::Value {
-        if !self.mcp_json.is_file() {
-            return serde_json::json!({"servers": {}});
+        match crate::platform::filesystem::read_private_data_file(&self.mcp_json) {
+            Ok(existing) => serde_json::from_str(&existing)
+                .unwrap_or_else(|_| serde_json::json!({"servers": {}})),
+            Err(_) => serde_json::json!({"servers": {}}),
         }
-        let existing = std::fs::read_to_string(&self.mcp_json).unwrap_or_default();
-        serde_json::from_str(&existing).unwrap_or_else(|_| serde_json::json!({"servers": {}}))
     }
 
     /// Builds a unified `browser` MCP server entry on Windows, Linux, and macOS. The entry
@@ -1158,7 +1252,11 @@ impl Pinvou3Bundle {
         }
         // Report the most recent dynamic startup failure (for example, native-host or CDP
         // readiness) only while it remains fresh for 24 hours.
-        let Ok(raw) = std::fs::read_to_string(paths::browser_last_error_json()) else {
+        // Hardened read — family rationale on `open_private_data_file_within`. A
+        // refusal reads as "no report".
+        let Ok(raw) =
+            crate::platform::filesystem::read_private_data_file(&paths::browser_last_error_json())
+        else {
             return None;
         };
         let now = std::time::SystemTime::now()
@@ -1198,14 +1296,17 @@ impl Pinvou3Bundle {
         // `[]`). Fabricating an empty object would silently remove all marketplace tools
         // from this session and leave only Browser MCP; continuing with a non-object would
         // panic at `as_object_mut().unwrap()`. The fallback loses only browser tools and
-        // preserves the global behavior.
-        let mcp: serde_json::Value = match std::fs::read_to_string(&base)
-            .ok()
-            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-        {
-            Some(v) if v.is_object() => v,
-            _ => return base,
-        };
+        // preserves the global behavior. The read is the hardened private-data read
+        // (see `open_private_data_file_within`): every spawned session reaches this path,
+        // so it must not hang the spawn.
+        let mcp: serde_json::Value =
+            match crate::platform::filesystem::read_private_data_file(&base)
+                .ok()
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            {
+                Some(v) if v.is_object() => v,
+                _ => return base,
+            };
         let has_reserved_browser = mcp
             .get("servers")
             .and_then(serde_json::Value::as_object)
@@ -1254,8 +1355,10 @@ impl Pinvou3Bundle {
             Ok(json) => {
                 // Skip an unchanged file. Every spawned session reaches this path, including
                 // Code-mode sessions that later fall back to the global configuration, so
-                // atomically replacing identical content would be needless disk I/O.
-                if std::fs::read_to_string(&work_path)
+                // atomically replacing identical content would be needless disk I/O. The
+                // compare is the hardened read (see `open_private_data_file_within`); the atomic
+                // private write below then replaces it.
+                if crate::platform::filesystem::read_private_data_file(&work_path)
                     .map(|existing| existing == json)
                     .unwrap_or(false)
                 {
@@ -1280,17 +1383,136 @@ impl Pinvou3Bundle {
         }
     }
 
+    /// The aux-scoped session-reader mcp.json entry for one parent task
+    /// (ADR-0024): reuses the marketplace launch resolution — the same
+    /// resolved python command and released
+    /// `~/.pinvou3/bundles/session-reader/mcp/server.py` path an install
+    /// writes — and appends the scope pin `--only-session=<parent_id>` so
+    /// the server enforces the scope process-side. The `=` form is
+    /// deliberate: the session-id charset admits leading `-`, and a
+    /// two-token `--only-session -x` would make argparse read the pin as an
+    /// option and kill the server at boot (a dead tool declaration); the
+    /// `=` form assigns any charset-valid value verbatim (review round-3).
+    /// `None` when the embedded manifest is unavailable (a build/catalog
+    /// invariant break) or when the released `server.py` is missing — the
+    /// boot seed is skipped when the secret migration fails, seed-install
+    /// failures are non-blocking, and a mid-session deletion has no in-app
+    /// heal, so the writer judges the launch target itself rather than
+    /// trusting the seed, matching `rebuild_local_mcp_entry`'s no-dead-entry
+    /// discipline; the caller fails closed to the zero-tool aux branch. The
+    /// `is_file` check is existence, not version: a stale 1.0.0 release
+    /// passes the guard and pins to the old argparse for one boot cycle
+    /// before the startup byte-compare heals it (round-9 minor 13, same
+    /// discipline as `rebuild_local_mcp_entry`).
+    fn aux_session_reader_entry(parent_id: &str) -> Option<serde_json::Value> {
+        let manifest =
+            crate::features::marketplace::mcp_catalog::embedded_manifest("session-reader")
+                .ok()
+                .flatten()?;
+        let server_dir =
+            crate::features::marketplace::mcp_catalog::package_mcp_dir("session-reader");
+        let mut args =
+            crate::features::marketplace::mcp_catalog::local_server_args(&manifest, &server_dir);
+        if args
+            .first()
+            .map(|script| !std::path::Path::new(script).is_file())
+            .unwrap_or(true)
+        {
+            return None;
+        }
+        // Round-9 minor 15: pin the sessions dir explicitly — without it the
+        // server resolves its default store, which under a relocated home
+        // (PINVOU3_HOME) lands elsewhere and permanently denies the pinned
+        // read (fail-closed, but surprising in dev). App-anchored like the
+        // scope pin itself.
+        args.push(format!(
+            "--sessions-dir={}",
+            crate::platform::paths::sessions_root().display()
+        ));
+        args.push(format!("--only-session={parent_id}"));
+        Some(serde_json::json!({
+            "command": crate::features::marketplace::mcp_catalog::local_server_command(&manifest),
+            "args": args,
+        }))
+    }
+
+    /// Write one per-aux scoped MCP config (ADR-0024): `{"servers": …}`
+    /// containing ONLY the given app-built entries — never a copy of the
+    /// global mcp.json and never the browser wrapper (either would be a
+    /// scope escape: the aux engine would boot user servers). Generic over
+    /// the entry map (reserved interface R4): a future aux-scoped server
+    /// joins by data, not by a new writer. Idempotent (identical content →
+    /// rewrite skipped, same discipline as the work-mode config), private
+    /// (dir 0700, file 0600 via `atomic_write_private`). Returns `None` on
+    /// any failure so the aux spawn can fail closed to the zero-tool branch
+    /// instead of pointing the engine at a missing or stale file.
+    fn write_aux_mcp_config(
+        &self,
+        aux_session_id: &str,
+        servers: &serde_json::Map<String, serde_json::Value>,
+    ) -> Option<PathBuf> {
+        let path = paths::aux_session_mcp_json(aux_session_id);
+        let config = serde_json::json!({ "servers": servers });
+        let json = serde_json::to_string_pretty(&config).ok()?;
+        // The compare is the hardened read (round-5 MAJOR-1): a swap-in FIFO
+        // at the token path would wedge a bare `read_to_string` forever,
+        // blocking the spawn path with no demotion — this file's own
+        // doctrine (`load_mcp_json_for_repair`) fixed that class repo-wide.
+        // A compare miss (absent, non-regular, oversized, or simply stale
+        // content) falls through to the write side, which replaces the
+        // planted file atomically — the fail-closed contract is that a WRITE
+        // failure yields None, not that bad on-disk state does.
+        if crate::platform::filesystem::read_private_data_file(&path)
+            .map(|existing| existing == json)
+            .unwrap_or(false)
+        {
+            // Re-tighten on the skip path (round-5 minor 3): a file planted
+            // by an older writer at 0644 with identical content must not be
+            // served as-is — the 0600 invariant is per-state, not per-write.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+            }
+            return Some(path);
+        }
+        let parent = path.parent()?.to_path_buf();
+        std::fs::create_dir_all(&parent).ok()?;
+        // A dir chmod failure must demote (round-5 minor 3): the dir may
+        // stay umask-permissive otherwise while the file reports success.
+        if crate::platform::os::try_make_private_dir(&parent).is_err() {
+            return None;
+        }
+        crate::platform::filesystem::atomic_write_private(&path, json.as_bytes()).ok()?;
+        Some(path)
+    }
+
+    /// The per-aux scoped session-reader MCP config path (ADR-0024): exactly
+    /// one server entry — the released session-reader pinned to the parent
+    /// task's session id via `--only-session`, written at spawn time from the
+    /// aux branch of `build_engine_config_for_session_roots` (the same
+    /// pattern as the work-mode per-session path). `None` means the scoped
+    /// config could not be produced; the caller must demote the engine to
+    /// the zero-tool aux branch (fail closed — the global mcp.json is never
+    /// a fallback here).
+    pub fn aux_mcp_config_path_for_session(
+        &self,
+        aux_session_id: &str,
+        parent_id: &str,
+    ) -> Option<PathBuf> {
+        let entry = Self::aux_session_reader_entry(parent_id)?;
+        let mut servers = serde_json::Map::new();
+        servers.insert("session-reader".to_string(), entry);
+        self.write_aux_mcp_config(aux_session_id, &servers)
+    }
+
     /// 启动自愈:`mcp.json` 里本地 python server 的 `command` 是**安装时写死**的,老条目
     /// 常是裸 `"python"`/`"python3"` —— 在没把 python 加进 PATH 的机器(或只有 python3 的
     /// Linux)上永远拉不起来(高德天气等 marketplace 工具静默失效)。每次启动重解析:凡
     /// command 是裸 python 家族名、或指向不存在的 python 路径,统一替换成当前
     /// `paths::python_command()`。`url` 型远程 server / 非 python command 一律不动。
     /// 直接改传入的 `mcp`(调用方负责落盘),不再独立读写文件。
-    fn refresh_mcp_python_commands(
-        &self,
-        mcp: &mut serde_json::Value,
-        resolved: &str,
-    ) -> std::io::Result<()> {
+    fn refresh_mcp_python_commands(&self, mcp: &mut serde_json::Value, resolved: &str) {
         if let Some(servers) = mcp.get_mut("servers").and_then(|s| s.as_object_mut()) {
             for (_name, entry) in servers.iter_mut() {
                 let Some(obj) = entry.as_object_mut() else {
@@ -1307,7 +1529,6 @@ impl Pinvou3Bundle {
                 }
             }
         }
-        Ok(())
     }
 
     /// command 是否是"需要重解析"的 python:裸解释器名(python/python3/pythonw[.exe]),
@@ -1466,18 +1687,28 @@ impl Pinvou3Bundle {
     /// 内容比对写:目标已存在且逐字节一致时跳过写盘,返回是否实际写入。
     /// 调用方据此决定是否还要 chmod / 后续动作——避免每次启动无条件重写
     /// 上百 KB 的 immutable bundle 资源。
+    ///
+    /// Both legs go through the hardened private-data primitives: a raw
+    /// `fs::read` hangs on a planted FIFO at the target, and a raw
+    /// `fs::write` FOLLOWS a planted symlink, clobbering the link's victim
+    /// with bundle content — the exact class the hardened primitives
+    /// refuse. An abnormal target fails the extraction loudly (absent
+    /// stays "write").
     pub(super) fn write_if_changed(
         &self,
         path: &std::path::Path,
         contents: &str,
     ) -> std::io::Result<bool> {
-        if std::fs::read(path).is_ok_and(|existing| existing == contents.as_bytes()) {
-            return Ok(false);
+        match crate::platform::filesystem::read_private_data_file_bytes(path) {
+            Ok(existing) if existing == contents.as_bytes() => return Ok(false),
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
         }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(path, contents)?;
+        crate::platform::filesystem::write_private_data_file(path, contents.as_bytes())?;
         Ok(true)
     }
 }
@@ -1556,6 +1787,350 @@ mod tests {
             std::fs::read_to_string(pkg_mcp.join("server.py")).unwrap(),
             "USER CODE",
             "上传包目录不得被内嵌重释放覆盖"
+        );
+
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// ADR-0024 per-aux scoped config (B2/B3): exactly one server entry —
+    /// the scoped session-reader — built with the marketplace launch
+    /// resolution (resolved python command + released package script) and
+    /// pinned to the parent via `--only-session`; no user servers, no
+    /// browser entry, no timeout drift; token filename (no raw session id);
+    /// private file/dir modes; identical content skips the rewrite.
+    #[test]
+    fn aux_mcp_config_writes_exactly_one_scoped_session_reader_entry() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-aux-mcp-config-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let bundle = super::Pinvou3Bundle::paths();
+
+        // The writer judges the launch target itself (round-3 MAJOR-2), so
+        // the isolated home needs the released package the way the boot seed
+        // would have produced it; the byte-compare release path is pinned
+        // separately by the `ensure_package_released` byte-compare upgrade
+        // test in `mcp_catalog.rs` (added in review round 7).
+        crate::features::marketplace::mcp_catalog::ensure_package_released("session-reader")
+            .expect("seed the released session-reader package");
+
+        let aux_id = "aux-l5cz0m8xq2k1b";
+        let parent_id = "l5cz0m8xq2k1b";
+        let path = bundle
+            .aux_mcp_config_path_for_session(aux_id, parent_id)
+            .expect("the scoped config must be writable under an isolated home");
+
+        // B3: token filename — neither the aux id nor the parent id appears
+        // anywhere in the path.
+        assert_eq!(
+            path,
+            crate::platform::paths::aux_session_mcp_json(aux_id),
+            "the scoped config path is the token-named per-aux path"
+        );
+        let path_text = path.to_string_lossy();
+        assert!(!path_text.contains(aux_id));
+        assert!(!path_text.contains(parent_id));
+
+        // B2: content — exactly one server, launch fields only.
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let servers = parsed["servers"].as_object().unwrap();
+        assert_eq!(
+            servers.len(),
+            1,
+            "no user servers and no browser entry may ride in: {servers:?}"
+        );
+        let entry = servers.get("session-reader").expect("the scoped entry");
+        let mut keys: Vec<&str> = entry
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec!["args", "command"],
+            "launch fields only (no env, no timeout drift)"
+        );
+        let command = entry["command"].as_str().unwrap();
+        assert_eq!(
+            command,
+            crate::platform::paths::python_command(),
+            "the entry reuses the marketplace launch resolution (the bare python family resolves to the current runtime)"
+        );
+        let args: Vec<String> = entry["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap().to_string())
+            .collect();
+        let script = args[0].replace('\\', "/");
+        assert!(
+            script.ends_with("session-reader/mcp/server.py"),
+            "the first arg is the released package script, got {script:?}"
+        );
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some(format!("--only-session={parent_id}").as_str()),
+            "args end with the parent pin in the = form (dash-immune)"
+        );
+
+        // B3: private modes (file 0600 via atomic_write_private, dir 0700 via
+        // make_private_dir) and idempotence — the skip branch performs no
+        // write, so a read-only directory cannot fail the second call.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let file_mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(file_mode, 0o600, "the config file is private");
+            let dir_mode = std::fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(dir_mode, 0o700, "the mcp-sessions dir is private");
+            std::fs::set_permissions(
+                path.parent().unwrap(),
+                std::fs::Permissions::from_mode(0o500),
+            )
+            .unwrap();
+            let again = bundle.aux_mcp_config_path_for_session(aux_id, parent_id);
+            // Assert BEFORE restoring the dir (round-7 M1): the skip branch
+            // touches nothing, so the dir must still be 0500 here; a mutation
+            // that drops the identical-content early-return would chmod the
+            // dir back to 0700 (try_make_private_dir owns the dir) and this
+            // assertion turns red — the return value alone cannot see it.
+            let dir_mode_after = std::fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(
+                dir_mode_after, 0o500,
+                "the skip branch must not touch the directory (a rewrite path would re-chmod it)"
+            );
+            std::fs::set_permissions(
+                path.parent().unwrap(),
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .unwrap();
+            assert_eq!(
+                again.as_deref(),
+                Some(path.as_path()),
+                "identical content must skip the rewrite (no write is attempted)"
+            );
+        }
+        // A second call with identical content still yields the same path on
+        // every platform (the unix leg above proves the skip branch).
+        assert_eq!(
+            bundle
+                .aux_mcp_config_path_for_session(aux_id, parent_id)
+                .as_deref(),
+            Some(path.as_path())
+        );
+
+        // Different parents produce different files (the pin is per-aux).
+        let other = bundle
+            .aux_mcp_config_path_for_session("aux-other01", "other01")
+            .expect("second aux config");
+        assert_ne!(other, path);
+
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Round-5 MAJOR-1 pin: the idempotence compare reads through the
+    /// hardened primitive — a swap-in FIFO at the token path must demote
+    /// (None) instead of wedging the spawn path on a bare read forever.
+    /// Reverting the compare to `std::fs::read_to_string` DEADLOCKS this
+    /// test (the bare read parks on the FIFO forever); the CI job timeout
+    /// is what turns that into a visible failure — the in-test 500ms probe
+    /// only makes the healthy path fast.
+    #[cfg(unix)]
+    #[test]
+    fn aux_mcp_config_demotes_on_fifo_at_token_path() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-aux-mcp-fifo-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let bundle = super::Pinvou3Bundle::paths();
+        crate::features::marketplace::mcp_catalog::ensure_package_released("session-reader")
+            .expect("seed the released session-reader package");
+
+        let path = crate::platform::paths::aux_session_mcp_json("aux-fifo01");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let fifo = std::ffi::CString::new(path.to_string_lossy().as_bytes()).unwrap();
+        // SAFETY: mkfifo on a fresh path inside the isolated home.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+
+        let verdict = std::thread::scope(|scope| {
+            let handle =
+                scope.spawn(|| bundle.aux_mcp_config_path_for_session("aux-fifo01", "fifo01"));
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            if handle.is_finished() {
+                handle.join().expect("writer thread")
+            } else {
+                panic!("the compare wedged on the FIFO — the hardened read is gone")
+            }
+        });
+        // The compare cannot prove identity on a FIFO (the hardened read
+        // refuses it), so the writer falls through and atomically REPLACES
+        // the planted file with the real config — the fail-closed contract
+        // is "no wedge, no dead entry", not "demote on bad on-disk state".
+        assert!(
+            verdict.is_some(),
+            "the write side must replace the planted FIFO with the real config"
+        );
+        let written = std::fs::metadata(&path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileTypeExt;
+            assert!(
+                !written.file_type().is_fifo(),
+                "the token path must be a regular file after the write"
+            );
+        }
+
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Round-5 minor 3 pin: the idempotent skip re-tightens a planted 0644
+    /// file with identical content instead of serving it as-is, and a
+    /// dir-chmod failure demotes (try_make_private_dir error → None).
+    #[cfg(unix)]
+    #[test]
+    fn aux_mcp_config_skip_retightens_and_dir_chmod_failure_demotes() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-aux-mcp-modes-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let bundle = super::Pinvou3Bundle::paths();
+        crate::features::marketplace::mcp_catalog::ensure_package_released("session-reader")
+            .expect("seed the released session-reader package");
+
+        use std::os::unix::fs::PermissionsExt;
+        let path = bundle
+            .aux_mcp_config_path_for_session("aux-mode01", "mode01")
+            .expect("first write");
+        // Plant the older-writer state: identical content, permissive mode.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let again = bundle
+            .aux_mcp_config_path_for_session("aux-mode01", "mode01")
+            .expect("identical content must still serve the path");
+        assert_eq!(again, path);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "the skip path must re-tighten a permissive file, not serve it as-is"
+        );
+
+        // Round-8 minor 1, testable arm: the dir cannot be CREATED (its
+        // parent is read-only) — `create_dir_all().ok()?` demotes before any
+        // write. (The `try_make_private_dir` error arm is NOT unit-reachable
+        // from the test process: as the directory's owner, a self-chmod
+        // always succeeds regardless of the current mode — the same
+        // mechanism round-7 M1 exposed; it is reachable only for a
+        // non-owner/sandboxed process, where the demote branch is the
+        // fail-closed answer.)
+        // Make the per-aux dir path itself a REGULAR FILE: create_dir_all on
+        // it fails (ENOTDIR on the json child), the writer demotes.
+        let sessions_dir = crate::platform::paths::aux_session_mcp_json("aux-mode02")
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        std::fs::create_dir_all(sessions_dir.parent().unwrap()).ok();
+        // The dir may already exist from the FIRST write leg above
+        // (aux-mode01 shares the parent): remove it so a regular file can
+        // take its place.
+        if sessions_dir.is_dir() {
+            std::fs::remove_dir_all(&sessions_dir).unwrap();
+        }
+        std::fs::write(&sessions_dir, b"not a directory").unwrap();
+        let verdict = bundle.aux_mcp_config_path_for_session("aux-mode02", "mode02");
+        let _ = std::fs::remove_file(&sessions_dir);
+        assert!(
+            verdict.is_none(),
+            "a failure to create the private dir must demote (verdict={verdict:?})"
+        );
+        assert!(
+            !crate::platform::paths::aux_session_mcp_json("aux-mode02").exists(),
+            "no config may be written behind the failed dir setup"
+        );
+
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Review round-3 MAJOR-2: the writer judges the launch target itself.
+    /// When the released `server.py` is absent (boot seed skipped on a
+    /// keyring-less machine, a log-only seed-install failure, or a
+    /// mid-session deletion), the entry builder must return `None` so the
+    /// caller demotes the aux spawn to the zero-tool branch instead of
+    /// writing a config that declares a dead tool. Deleting the
+    /// `is_file()` guard from `aux_session_reader_entry` turns this test red.
+    #[test]
+    fn aux_mcp_config_demotes_when_released_server_script_is_missing() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-aux-mcp-missing-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let bundle = super::Pinvou3Bundle::paths();
+        // The isolated home contains no released session-reader package, so
+        // the launch target cannot exist.
+        assert!(
+            !crate::features::marketplace::mcp_catalog::package_mcp_dir("session-reader")
+                .join("server.py")
+                .is_file()
+        );
+
+        assert!(
+            bundle
+                .aux_mcp_config_path_for_session("aux-l5cz0m8xq2k1b", "l5cz0m8xq2k1b")
+                .is_none(),
+            "a missing released script must demote to the zero-tool branch, never a dead entry"
+        );
+        assert!(
+            !crate::platform::paths::aux_session_mcp_json("aux-l5cz0m8xq2k1b").exists(),
+            "no config file may be written for a dead entry"
         );
 
         // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
@@ -2028,12 +2603,37 @@ mod tests {
         });
     }
 
-    /// #522 失败路径:uninstall 因 mcp.json 拒重置而整体回滚(字节保全契约见
-    /// ensure_extracted_preserves_corrupt_mcp_json_bytes)时,其内部 scope 清理随回滚
-    /// 被跳过——禁用/隐藏残留必须仍被外层的单临界区 RMW 调用清掉。若把这步收敛进
-    /// uninstall 成功路径,本用例转红。
+    /// The consent rows both cleanup tests seed: the pack deny-disabled in
+    /// the plain scope and hidden there too.
+    const DISABLED_ROWS: &str =
+        r#"{"scopes":{"plain":["data_analysis"]},"hidden_scopes":{"plain":["data_analysis"]}}"#;
+
+    /// Parse `disabled_bundles.json` from disk and pin both consent rows —
+    /// the cleanup tests' shared assertion plumbing.
+    fn assert_disabled_rows(path: &std::path::Path, scopes: &[&str], hidden: &[&str], ctx: &str) {
+        let file: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(file["scopes"]["plain"], serde_json::json!(scopes), "{ctx}");
+        assert_eq!(
+            file["hidden_scopes"]["plain"],
+            serde_json::json!(hidden),
+            "{ctx}"
+        );
+    }
+
+    /// When the uninstall rolls back wholesale because
+    /// mcp.json refuses the reset (byte-preservation contract see
+    /// ensure_extracted_preserves_corrupt_mcp_json_bytes), the transaction
+    /// rollback restores the record/dirs/stores wholesale — the pack is still
+    /// installed and live, so its disabled/hidden rows are the user's CURRENT
+    /// consent, not residue, and the outer cleanup step must keep them
+    /// (stripping them would silently re-enable the still-registered pack).
+    /// The residue probe keys on the record, so the next startup retries the
+    /// whole sweep; the retry leg (after mcp.json is repaired) still clears
+    /// the residue rows per the #522 contract. Reverting the strip to
+    /// "execute regardless of the uninstall outcome" turns this case red.
     #[test]
-    fn cleanup_scrubs_disabled_residue_when_uninstall_rolls_back() {
+    fn cleanup_keeps_consent_rows_when_uninstall_rolls_back() {
         crate::platform::test_support::with_temp_home("pinvou3-residue-rollback", || {
             let home = crate::platform::paths::pinvou3_home();
             let marketplace_dir = home.join("marketplace");
@@ -2044,11 +2644,7 @@ mod tests {
             )
             .unwrap();
             let disabled = home.join("disabled_bundles.json");
-            std::fs::write(
-                &disabled,
-                r#"{"scopes":{"plain":["data_analysis"]},"hidden_scopes":{"plain":["data_analysis"]}}"#,
-            )
-            .unwrap();
+            std::fs::write(&disabled, DISABLED_ROWS).unwrap();
             let bundle = super::Pinvou3Bundle::paths();
             std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
             let corrupt = r#"{"servers":{"mine":{"command":"x""#;
@@ -2056,7 +2652,8 @@ mod tests {
 
             bundle.cleanup_removed_marketplace_tools().unwrap();
 
-            // 卸载回滚:登记与 mcp.json 原样保留(数据保全契约不因清理改变)。
+            // Uninstall rollback: the record and mcp.json stay untouched (the
+            // byte-preservation contract does not change for cleanup).
             let installed: serde_json::Value = serde_json::from_str(
                 &std::fs::read_to_string(marketplace_dir.join("installed.json")).unwrap(),
             )
@@ -2064,25 +2661,105 @@ mod tests {
             assert_eq!(
                 installed,
                 serde_json::json!(["data_analysis"]),
-                "回滚后登记必须原样保留"
+                "the record must survive the rollback verbatim"
             );
             assert_eq!(
                 std::fs::read(&bundle.mcp_json).unwrap(),
                 corrupt.as_bytes(),
-                "损坏 mcp.json 必须保持字节不变"
+                "the corrupt mcp.json must stay byte-identical"
             );
-            // 禁用/隐藏残留仍被外层清理步清掉。
-            let file: serde_json::Value =
-                serde_json::from_str(&std::fs::read_to_string(&disabled).unwrap()).unwrap();
-            assert_eq!(
-                file["scopes"]["plain"],
-                serde_json::json!([]),
-                "卸载回滚后 plain 禁用残留仍必须被清掉"
+            // The pack is still installed: the disabled/hidden rows are
+            // current consent, the rollback path must not clear them.
+            assert_disabled_rows(
+                &disabled,
+                &["data_analysis"],
+                &["data_analysis"],
+                "rollback keeps the pack installed: both consent rows must survive \
+                 (clearing them silently re-enables)",
             );
-            assert_eq!(
-                file["hidden_scopes"]["plain"],
-                serde_json::json!([]),
-                "卸载回滚后 plain 隐藏残留仍必须被清掉"
+
+            // Retry leg: with mcp.json repaired, the next cleanup completes
+            // the retirement and only then clears the residue rows.
+            std::fs::write(&bundle.mcp_json, r#"{"servers":{}}"#).unwrap();
+            bundle.cleanup_removed_marketplace_tools().unwrap();
+            assert_disabled_rows(
+                &disabled,
+                &[],
+                &[],
+                "the retired entry and its hidden residue must be cleared once \
+                 the uninstall succeeds",
+            );
+        });
+    }
+
+    /// A same-id import in ANOTHER process registers
+    /// its deny-first rows BEFORE landing (the pre-land gate), and the
+    /// per-id import lock is process-local — the sweep's vacuous-uninstall
+    /// retry leg would strip those fresh rows as "residue", re-enabling the
+    /// pack as it lands. The landing journal mark is written before the
+    /// registration and is cross-process visible: while it is present the
+    /// consent-row strip defers to the next startup. The sweep holds the
+    /// landing lease across the probe and the strip, so the §3.2
+    /// check-then-act family does not apply here; what the probe really
+    /// covers is a mark the same-boot reconcile could not yet resolve — a
+    /// crashed import or a failed mark clear — whose recovery may still
+    /// complete the landing, so deferring is load-bearing.
+    #[test]
+    fn cleanup_defers_consent_strip_while_a_same_id_import_is_mid_landing() {
+        crate::platform::test_support::with_temp_home("pinvou3-residue-import-defer", || {
+            let home = crate::platform::paths::pinvou3_home();
+            let marketplace_dir = home.join("marketplace");
+            std::fs::create_dir_all(&marketplace_dir).unwrap();
+            // No install record: the concurrent import below has registered
+            // rows but not landed — the exact state the probe exists for.
+            let disabled = home.join("disabled_bundles.json");
+            std::fs::write(&disabled, DISABLED_ROWS).unwrap();
+            let bundle = super::Pinvou3Bundle::paths();
+            std::fs::create_dir_all(bundle.mcp_json.parent().unwrap()).unwrap();
+            std::fs::write(&bundle.mcp_json, r#"{"servers":{}}"#).unwrap();
+            // Plant what mark_landing writes (the import is mid-landing).
+            let mark =
+                crate::features::marketplace::plugin_import::landing_mark_path("data_analysis");
+            std::fs::create_dir_all(mark.parent().unwrap()).unwrap();
+            std::fs::write(&mark, "pending\n").unwrap();
+            // The defer must cover the deletion legs
+            // too — a same-id import in its landing→registration gap has no
+            // record yet, so the record-only re-probes below the strip would
+            // delete its just-landed dir. Plant both deletion targets.
+            let pack_dir = crate::platform::paths::bundles_root().join("data_analysis");
+            std::fs::create_dir_all(&pack_dir).unwrap();
+            std::fs::write(pack_dir.join("plugin.json"), b"{}").unwrap();
+            let mcp_dir = crate::platform::paths::bundle_mcp_servers_dir().join("data_analysis");
+            std::fs::create_dir_all(&mcp_dir).unwrap();
+            std::fs::write(mcp_dir.join("server.py"), b"pass").unwrap();
+
+            bundle.cleanup_removed_marketplace_tools().unwrap();
+
+            assert_disabled_rows(
+                &disabled,
+                &["data_analysis"],
+                &["data_analysis"],
+                "the consent strip (both rows) must defer while an import for \
+                 the id is mid-landing",
+            );
+            assert!(
+                pack_dir.is_dir() && mcp_dir.is_dir(),
+                "the deletion legs must defer with the strip — a just-landed pack dir must not be deleted behind the record-only re-probe"
+            );
+
+            // Mark gone (the import finished, or crashed and the startup
+            // reconciliation resolved it): the retry leg proceeds (#522).
+            std::fs::remove_file(&mark).unwrap();
+            bundle.cleanup_removed_marketplace_tools().unwrap();
+            assert_disabled_rows(
+                &disabled,
+                &[],
+                &[],
+                "without the in-flight mark the retry leg strips both residue rows",
+            );
+            assert!(
+                !pack_dir.exists() && !mcp_dir.exists(),
+                "the retry leg runs the deletion legs the deferred call skipped"
             );
         });
     }
@@ -2111,5 +2788,123 @@ mod tests {
             source.matches(&helper).count() >= 1,
             "退役清理必须调用 scope 模块的单临界区 RMW 助手清理所有 scope 残留"
         );
+    }
+
+    /// `load_mcp_json_for_repair` runs INSIDE the
+    /// mcp.lock critical section on the every-boot builtin upsert. A planted
+    /// FIFO at the mcp.json path must be refused by the hardened read
+    /// without blocking the lock holder (the raw `read_to_string` behind the
+    /// old `is_file()` probe wedged every mcp.json reader/writer sharing the
+    /// home). The bounded worker makes a regression to the raw read fail the
+    /// test instead of hanging the suite, mirroring the migration pin.
+    #[test]
+    #[cfg(unix)]
+    fn mcp_repair_loader_refuses_a_planted_fifo() {
+        crate::platform::test_support::with_temp_home("pinvou3-mcp-repair-fifo", || {
+            let mcp_path = crate::platform::paths::bundle_mcp_json();
+            std::fs::create_dir_all(mcp_path.parent().unwrap()).unwrap();
+            crate::platform::paths::tests::plant_fifo(&mcp_path);
+            let bundle = super::Pinvou3Bundle::paths();
+
+            let value = crate::platform::test_support::run_bounded_worker_or_abort(
+                "the in-lock mcp repair loader still blocks on a planted FIFO",
+                move || bundle.load_mcp_json_for_repair(),
+            );
+            assert_eq!(
+                value,
+                serde_json::json!({"servers": {}}),
+                "a planted FIFO must fall back to the empty skeleton, not block"
+            );
+        });
+    }
+
+    /// Both legs of the compare-write go through the hardened private-data
+    /// primitives — a planted symlink at the target must be refused (the
+    /// raw `fs::write` follows the link and clobbers its victim with bundle
+    /// content), and a planted FIFO must be refused without hanging the
+    /// boot thread. The FIFO leg runs in a bounded worker so a regression
+    /// to the raw read fails the test instead of hanging the suite.
+    #[test]
+    #[cfg(unix)]
+    fn write_if_changed_refuses_planted_symlink_and_fifo_targets() {
+        let bundle = super::Pinvou3Bundle::paths();
+        let temp = tempfile::tempdir().unwrap();
+
+        // Symlink leg.
+        let victim = temp.path().join("victim.txt");
+        std::fs::write(&victim, b"do not clobber").unwrap();
+        let link = temp.path().join("link.txt");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        let result = bundle.write_if_changed(&link, "bundle content");
+        assert!(
+            result.is_err(),
+            "a planted symlink target must be refused: {result:?}"
+        );
+        assert_eq!(
+            std::fs::read(&victim).unwrap(),
+            b"do not clobber".to_vec(),
+            "the symlink victim must stay untouched"
+        );
+
+        // FIFO leg.
+        let fifo = temp.path().join("target.fifo");
+        crate::platform::paths::tests::plant_fifo(&fifo);
+        crate::platform::test_support::assert_refused_without_hanging(
+            "write_if_changed on a planted FIFO",
+            move || bundle.write_if_changed(&fifo, "bundle content").is_err(),
+        );
+    }
+
+    /// 下架技能清理的数据保底：`.installed-from` 标记读取被拒（planted symlink /
+    /// FIFO）时目录必须原样保留。main 的 `read_to_string` 穿透 symlink 读到
+    /// `upload:` 内容会据此保护；硬化的不穿透读把这一类变成 Err——若 fail-open
+    /// 成"空标记=裸残留"口径，用户上传的同名技能连同全部内容会被误删。
+    #[test]
+    #[cfg(unix)]
+    fn cleanup_removed_marketplace_skills_preserves_dir_when_marker_read_refused() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _env = crate::platform::paths::tests::EnvVarGuard::capture(&["PINVOU3_HOME"]);
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-cleanup-refused-marker-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+        let bundle = super::Pinvou3Bundle::paths();
+        std::fs::create_dir_all(&bundle.skills_dir).unwrap();
+
+        // Symlink 腿：marker 指向别处的 upload: 记录，目录内有用户内容。
+        let uploaded = bundle.skills_dir.join("brainstorming");
+        std::fs::create_dir_all(&uploaded).unwrap();
+        std::fs::write(uploaded.join("SKILL.md"), "# user-uploaded skill\n").unwrap();
+        let victim = tmp.join("elsewhere-marker.txt");
+        std::fs::write(&victim, "upload:my.zip").unwrap();
+        std::os::unix::fs::symlink(&victim, uploaded.join(".installed-from")).unwrap();
+
+        // FIFO 腿：非 regular 标记同样必须保留目录（硬化读无阻塞拒绝，不会挂起）。
+        let fua = bundle.skills_dir.join("pua");
+        std::fs::create_dir_all(&fua).unwrap();
+        std::fs::write(fua.join("SKILL.md"), "# user content\n").unwrap();
+        crate::platform::paths::tests::plant_fifo(&fua.join(".installed-from"));
+
+        bundle.cleanup_removed_marketplace_skills().unwrap();
+
+        assert!(
+            uploaded.exists(),
+            "marker 读取被拒时必须保留目录，不得误删用户内容"
+        );
+        assert_eq!(
+            std::fs::read_to_string(uploaded.join("SKILL.md")).unwrap(),
+            "# user-uploaded skill\n",
+            "保留的目录内容必须原样"
+        );
+        assert!(fua.exists(), "FIFO 标记同样必须保留目录");
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

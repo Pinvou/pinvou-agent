@@ -624,8 +624,12 @@ try {
   assert.ok(codexCommands.includes('list_codex_acp_sessions'));
   assert.ok(codexCommands.includes('workspace_path: Option<String>'), 'Codex creation must accept an explicit project directory');
   assert.ok(codexCommands.includes('agent_id: Option<String>')
-    && /set_acp_workspace\(\s*&session\.metadata\.id,\s*backend,/.test(codexCommands),
-  'code-session creation must bind the selected ACP Agent for the lifetime of the session');
+    && codexCommands.includes('let bind_session_id')
+    && codexCommands.indexOf('let bind_session_id')
+      < codexCommands.search(/set_acp_workspace\(\s*&bind_session_id,\s*backend,/),
+  'code-session creation must bind the selected ACP Agent for the lifetime of the session '
+    + '(the binding now joins on a blocking worker; pin the moved id chain by ordering — '
+    + "indexOf('let bind_session_id') must precede its set_acp_workspace(&bind_session_id, backend, use)");
   assert.ok(codexCommands.includes('or(Some("pinvou"))'),
     'code-session creation without an explicit agent must default to the built-in Pinwu backend');
   assert.ok(codexCommands.includes('pub async fn login_acp_agent')
@@ -1209,6 +1213,25 @@ try {
     assert.equal(content['__proto__'], 'X');
     assert.equal(JSON.stringify(content), '{"constructor":"A","toString":"B","__proto__":"X"}', 'JSON 序列化不得静默丢失保留键');
     assert.equal(Array.isArray(Object.getPrototypeOf(content)), false, 'content 保持无原型对象，不得被 __proto__ 赋值改原型');
+  }
+
+  // ── buildElicitationContent：无 otherAnswerKey 的自定义答案回落主 answerKey ──
+  // 自定义回复框已在 normalizeElicitationQuestions 钉死（枚举题即使没有 agent 生成的
+  // other 伴随字段也展示），该回落分支成为可达路径：自定义文本必须仍被提交，不能静默丢弃。
+  {
+    const content = buildElicitationContent([
+      { questionId: 'q1', answerKey: 'q1', otherAnswerKey: null, multiSelect: false, answers: [{ label: '其他', value: '我自己写的内容', other: true }] },
+      { questionId: 'q2', answerKey: 'q2', otherAnswerKey: null, multiSelect: true, answers: [{ label: 'A', value: 'a', other: false }, { label: '其他', value: '补充', other: true }] },
+    ]);
+    assert.equal(content.q1, '我自己写的内容', '单选无伴随字段时自定义文本回落主 answerKey');
+    assert.deepEqual(content.q2, ['a', '补充'], '多选混入自定义文本时数组保留全部答案');
+
+    // 特殊 answerKey + 无伴随字段的自定义答案：文本作为 own property 落在保留键上，不得丢。
+    const special = buildElicitationContent([
+      { questionId: 'q', answerKey: '__proto__', otherAnswerKey: null, multiSelect: false, answers: [{ label: '其他', value: 'x', other: true }] },
+    ]);
+    assert.equal(Object.prototype.hasOwnProperty.call(special, '__proto__'), true, '自定义答案回落保留键不得被 __proto__ setter 吞掉');
+    assert.equal(special['__proto__'], 'x');
   }
 
   // ── M-E journal probe semantics lock: transport-level (endpoint active),

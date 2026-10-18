@@ -6,13 +6,20 @@
 # 当时靠人工 review 才补上。这个检查把它自动化:从此 gitlink 一动、忘了登记就直接 fail。
 #
 # 用法:  ./scripts/ci-fork-link-check.sh [base-ref]    # base 默认 origin/main
-# 退出码: 0=通过 / 1=违规(改了 gitlink 没更新 fork-modifications)
+# 退出码: 0=通过 / 1=违规(改了 gitlink 没更新 fork-modifications)或基线 diff 失败
 set -uo pipefail
 
 BASE="${1:-origin/main}"
 
-# 本 PR 相对 base 改了哪些文件(three-dot = 从 merge-base 起的 PR 实际改动)。
-changed="$(git diff --name-only "${BASE}...HEAD")"
+# Which files this PR changed vs base (three-dot = the PR's real changes
+# from the merge-base). A failed diff (missing base ref, corrupt objects)
+# must fail explicitly: this gate is a reverse grep, and an empty diff
+# would let both greps miss and pass vacuously — a compliance gate must
+# not spin idle.
+if ! changed="$(git diff --name-only "${BASE}...HEAD")"; then
+  echo "::error::git diff ${BASE}...HEAD failed (base ref missing or objects corrupt); cannot verify the fork compliance linkage."
+  exit 1
+fi
 
 gl=no; fm=no
 printf '%s\n' "$changed" | grep -qx 'CodeWhale'                  && gl=yes

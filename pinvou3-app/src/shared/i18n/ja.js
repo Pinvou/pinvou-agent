@@ -185,7 +185,7 @@ const jaBase = {
   ...browserJa,
         langTag: 'ja',
         acpAgent: 'ACP Agent',
-        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', scheduledPlans: '定期タスク', monitor: '稼働状態', workflow: 'ワークフロー', multiAgent: 'スワームモード', multiAgentDesktopOnly: 'このスワーム会話は現在デスクトップアプリでのみ利用できます。', toolStore: 'プラグインセンター', cardPool: 'カードプール', recent: '履歴',   sidebarTaskList: 'タスク一覧', sidebarTaskFilter: 'フィルター', sidebarTaskFilterAll: 'すべて', sidebarTaskFilterPinned: '固定', sidebarTaskFilterCode: 'プロジェクト', sidebarTaskFilterCodeSessions: 'コードセッション', sidebarTaskFilterScheduled: '定期タスク', sidebarTaskSort: '並び替え', sidebarTaskSortPinnedFirst: '固定を優先', sidebarTaskSortRecent: '最近の更新', sidebarTaskEmpty: 'タスクはありません', sidebarViewAll: 'すべて表示', sidebarSection: 'タスクリスト', sidebarDateGrouping: '日付でグループ化', sidebarDateGroupingDesc: 'タスクを日付ごとにまとめ、今日分を既定で展開', sidebarNavExpand: 'ナビゲーションを展開', sidebarNavCollapse: 'ナビゲーションを折りたたむ', sidebarCollapseAll: '折りたたむ', sidebarExpandAll: '展開', sidebarTaskStyle: 'スタイル', sidebarResize: 'ドラッグでサイドバーの幅を調整、ダブルクリックでリセット', settings: '設定', tearoffTitle: '切り離し',  mobileMore: 'その他',
+        newChat: '新しいチャット', currentChat: '現在のチャット', searchChats: 'チャットを検索', scheduledPlans: '定期タスク', monitor: '稼働状態', workflow: 'ワークフロー', multiAgent: 'スワームモード', multiAgentDesktopOnly: 'このスワーム会話は現在デスクトップアプリでのみ利用できます。', toolStore: 'プラグインセンター', cardPool: 'カードプール', recent: '履歴',   sidebarTaskList: 'タスク一覧', sidebarTaskFilter: 'フィルター', sidebarTaskFilterAll: 'すべて', sidebarTaskFilterPinned: '固定', sidebarTaskFilterCode: 'プロジェクト', sidebarTaskFilterCodeSessions: 'コードセッション', sidebarTaskFilterScheduled: '定期タスク', sidebarTaskSort: '並び替え', sidebarTaskSortPinnedFirst: '固定を優先', sidebarTaskSortRecent: '最近の更新', sidebarTaskEmpty: 'タスクはありません', sidebarViewAll: 'すべて表示', sidebarSection: 'タスクリスト', sidebarDateGrouping: '日付でグループ化', sidebarDateGroupingDesc: 'タスクを日付ごとにまとめ、今日分を既定で展開', chatSection: 'チャット', chatStreamingAnimation: 'ストリーミング応答のフェードイン', chatStreamingAnimationDesc: 'AIの応答のストリーミング中に、新しい内容をフェードインで表示します', sidebarNavExpand: 'ナビゲーションを展開', sidebarNavCollapse: 'ナビゲーションを折りたたむ', sidebarCollapseAll: '折りたたむ', sidebarExpandAll: '展開', sidebarTaskStyle: 'スタイル', sidebarResize: 'ドラッグでサイドバーの幅を調整、ダブルクリックでリセット', settings: '設定', tearoffTitle: '切り離し',  mobileMore: 'その他',
         archiveSession: '隠す', archiveConfirmTitle: 'このタスクを隠しますか？', archiveConfirmMessage: 'このタスクはサイドバーから外れます。', archiveConfirmDetail: '会話と成果物は削除されず、チャット管理ページから戻せます。', archiveConfirmAction: '隠す',
         archiveSuccess: '隠しました', archiveSuccessView: '表示',
         exportSessionArchive: 'セッションログを書き出す', exportSessionDone: path => `セッションログを ${path} に書き出しました`, exportSessionFailed: 'セッションログの書き出しに失敗しました',
@@ -436,6 +436,7 @@ const jaBase = {
         uiCodex: codexJa,
         uiAcpProviders: acpProvidersJa,
         uiProjects: { convertToProject:'プロジェクトに変換', projectNamePlaceholder:'プロジェクト名', renameProject:'プロジェクトの名前を変更', deleteProject:'プロジェクトを削除', deleteConfirmLabel:'このプロジェクトを削除しますか？', deleteProjectHint:'会話は削除されず、未分類に戻ります', moveToProject:'プロジェクトへ移動…', moveToUngrouped:'未分類へ移動', alreadyUngrouped:'未分類です', folderUnavailable:'フォルダー利用不可', rebindFolder:'再バインド', moveConfirmTitle:'このプロジェクトへ会話を移動しますか？', moveConfirmBody:(project, folder)=>`会話は「${project}」に移動します。フォルダー ${folder} はプロジェクトに追加されず、会話のみが整理されます。`, moveConfirm:'移動', searchPlaceholder:'プロジェクトを検索', noProjects:'プロジェクトはまだありません', currentProject:'現在のプロジェクト', movedNotice:'会話を移動しました', movedNoticeWithFolder:folder=>`会話を移動し、フォルダー ${folder} を追加しました`, noMatchProject:'一致するプロジェクトがありません', opFailed:'プロジェクト操作に失敗しました' , rebindTitle:'プロジェクトフォルダーを再バインド', rebindConfirm:'移動して再バインド', rebindSessionsHint:()=>'このフォルダー配下のすべての会話が新しいディレクトリに切り替わります', rebindSuccess:n=>`${n} 件の会話を再バインドしました`, rebindUpToDate:'再バインドが必要な会話はありませんでした', rebindOldExistsWarn:'元のフォルダーがまだ存在します。切り替えると 2 か所が別々のディレクトリを指します。続行しますか？', rebindPartial:(ok, failed)=>`${ok} 件を再バインドし、${failed} 件が失敗しました。残りは再試行できます`, rebindCarryoverPending:n=>`${n} 件の会話は移行されましたが、ランタイムをまだ切り替えられていません。アイドル後に再試行してください`, rebindBusyAfter:n=>`${n} 件の会話が再バインド中に新しいターンを開始しました。異常があればアイドル後に再試行してください` , rebindRetryRemaining:'残りを再試行', rebindFailedSessions:'失敗した会話', rebindInProgress:'別のフォルダー再バインドが実行中です' , rebindBusyHint:'これらのセッションはターン実行中です。アイドルになってから再試行してください', rebindToRoot:'ファイルシステムのルートは指定できません。通常のフォルダーを選択してください', rebindToNested:'2 つのフォルダーを互いに入れ子にすることはできません', rebindToUnusable:'選択したフォルダーは使用できません。別のフォルダーを選択してください', rebindRootsConflict:'そのフォルダーは他のプロジェクトのフォルダーと重なっています。他のプロジェクトのフォルダー外を選択してください', rebindRootsPersist:'再バインド結果をディスクに保存できませんでした。空き容量と権限を確認して再試行してください', rebindRuntimeStarting:'エージェントのプロセスが起動中のため、セッションの状態を確認できませんでした。しばらくしてから再試行してください', rebindLegacyTableUnsynced:'何も移動されていません：セッション記録の同期に失敗しました。フォルダーを書き込み可能にしてから再試行してください', rebindLegacyTableCorrupt:'何も移動されていません：従来のセッションテーブルが壊れています。修復または削除してから再試行してください', rebindRootsExpand:'すべての失効フォルダーを表示', rebindRootsCollapse:'最初の失効フォルダーのみ表示' },
+
         uiCodexWorkspace: { changes:{added:'追加',modified:'変更',deleted:'削除',renamed:'名前変更',copied:'コピー',conflict:'競合',untracked:'未追跡',unknown:'ファイル'}, origins:{session:'このセッション',preexisting:'セッション前から存在',preexisting_modified:'セッション前から存在 · このセッションで変更',unknown:'出所未記録'}, addedPath:path=>`${path} を追加済み`, addPath:path=>`${path} を会話に追加`, added:'会話に追加済み', add:'会話に追加', back:'ワークスペース一覧に戻る', copyPath:'相対パスをコピー', reveal:'ファイルマネージャーで表示', open:'システムアプリで開く', reading:'読み込み中…', noDiff:'表示できるテキスト差分はありません',  unsupported:'このファイルは内蔵プレビューに対応していません。', openHint:'システムアプリで開くことができます。', truncated:'内容が大きいため、先頭部分のみ表示しています。',   title:'ワークスペース', temporary:'一時ワークスペース', refresh:'ワークスペースを更新', close:'ワークスペースを閉じる', files:'ファイル', changed:'変更', search:'ファイルを検索', noFiles:'一致するファイルはありません', noBaseline:'この古いセッションには作成時の基準がないため、このセッションによる変更かどうか判定できません。', branch:'ブランチ', staged:'ステージ済み', noChanges:'ワークスペースに変更はありません', copyContent:'内容をコピー', copied:'コピーしました', closeViewer:'プレビューを閉じる', loadFailed:'ファイルの読み込みに失敗しました', resizeWidth:'ビューアの幅を調整', resizeHeight:'ビューアの高さを調整', resizeCorner:'ビューアのサイズを調整、ダブルクリックで初期値に戻す', fontDecrease:'文字サイズを小さく', fontIncrease:'文字サイズを大きく', openInNewWindow:'コードリーダーで開く', diffSuffix:'(差分)', readerTitle:'コードリーダー', readerEmpty:'ワークスペースのファイルプレビューから「コードリーダーで開く」を選ぶと、ファイルがここにタブとして追加されます。', closeTab:'タブを閉じる', noSessionChanges:'セッションを作成すると、そのセッションによるプロジェクトの変更がここに表示されます。' },
 
         checkUpdate: '更新を確認', checking: '確認中…', upToDate: '最新バージョンです', updateCheckFailed: '確認に失敗しました', updateInstallFailed: '更新に失敗しました',
@@ -646,7 +647,7 @@ dictJa.uiToolDetails.tmeetSteps = [{key:'runtime',label:'ランタイムを準�
 dictJa.uiToolDetails.showRawErrors = false;
 
 Object.assign(dictJa.uiToolDetails.tools, {
-  'session-reader':{ title:'セッション読み取り', subtitle:'この端末の他セッション履歴への読み取り専用アクセス', latency:'ローカル', desc:'AI がこの端末の他の Pinvou セッション履歴をページング付きの読み取り専用で参照できます：入力欄で @ セッションを引用すると、AI が必要に応じて内容を取得します（デフォルトでインストール。ローカルのセッションファイルのみを読み、ネットワーク接続もアップロードもありません）。内蔵プラグインはアンインストールできません。セッション読み取りは内蔵機能スイッチでオフにできます。', welcomeQueries:['引用したセッションを要約して','前回のセッションはどこまで進んだ？'] },
+  'session-reader':{ title:'セッション読み取り', subtitle:'この端末の他セッション履歴の読み取りと、他セッションへのメッセージ送信', latency:'ローカル', desc:'AI がこの端末の他の Pinvou セッション履歴をページング付きの読み取り専用で参照できます：入力欄で @ セッションを参照すると、AI が必要に応じて内容を取得します。また、別のセッションへメッセージを送信者カードとして届けられます（デフォルトでインストール。ローカルのセッションファイルのみを読み、ネットワーク接続もアップロードもなく、配信は監査ログに記録されます）。内蔵プラグインはアンインストールできません。セッション読み取りは内蔵機能スイッチでオフにできます。', welcomeQueries:['参照したセッションを要約して','前回のセッションはどこまで進んだ？'] },
   weather:{ title:'Amap 天気', subtitle:'Amap 地図のリアルタイム天気と多日予報', desc:'Amap Web サービス API で全国の都市のリアルタイム天気と今後数日の予報を照会します。自分の Amap Web サービス API Key を入力する必要があります。キーはこの端末のシステム認証情報にのみ保存されます。', configTitle:'Amap 天気 Key', configDescription:'Key はこの端末の認証情報にのみ保存され、mcp.json には書き込まれません。', configDocLabel:'Web サービス Key を作成', configFields:[{key:'AMAP_KEY', label:'API Key', helpText:'「Web サービス」タイプを選択してください。', placeholder:'Amap Web サービス Key を貼り付け'}], welcomeQueries:['杭州の今日の天気','北京は今週雨が降る？','上海の明日の服装'] },
   iwencai:{ title:'iWenCai（問財）', subtitle:'A 株相場、財務、銘柄スクリーニング、マクロ、ニュース', desc:'同花順問財（iWenCai）公式 API をベースに 12 の金融照会ツールを提供します。自分の問財 API Key を入力する必要があります。キーはこの端末のシステム認証情報にのみ保存されます。', configTitle:'問財 Key', configDescription:'Key はこの端末の認証情報にのみ保存され、mcp.json には書き込まれません。', configDocLabel:'問財 SkillHub を開く', configFields:[{key:'IWENCAI_API_KEY', label:'API Key', helpText:'公式 Skill の「インストール方法」からコピーしてください。', placeholder:'IWENCAI_API_KEY を貼り付け'}], welcomeQueries:['茅台の最新株価','今日の市況は？','PER 10 倍未満の銀行株','最近の利下げニュース'] },
   card3:{ title:'QQ メール API', subtitle:'スマートなメール送受信とスレッド要約', desc:'メールの送受信、検索、整理のための標準インターフェースを提供します。大規模モデルと組み合わせて、自然言語でのメール閲覧、長いスレッドの要約、フォルダーの自動アーカイブ管理が可能です。' },
@@ -682,12 +683,14 @@ dictJa.uiBuiltinPlugins = {
   versionNote:'アプリと共に更新',
   dataAccessLabel:'データアクセス範囲',
   levels:{ L0:'読み取り専用：状態を変更せず、内容は信頼できないものとして扱う', L1:'書き込み：ユーザーに見える副作用を伴う（メッセージ送信、タスク作成など）', L2:'破壊的：削除・上書きなど不可逆な操作。明示的な認可が必要' },
-  dataAccess:{ 'sessions.read':'この端末のセッションストレージ（読み取り専用）' },
+  dataAccess:{ 'sessions.read':'この端末のセッションストレージ（読み取り専用）', 'sessions.write':'この端末の他セッションへのメッセージ送信（書き込み）' },
 };
 
 // Shared copy for builtin-feature degradation (docs/builtin-toolset-contract.md
 // §3.3 hook): reused by future per-feature settings pages for the "feature
 // disabled" degradation of existing entry points.
+
+dictJa.uiBuiltinFeatures = { disabledNotice:'この内蔵機能はオフになっています。関連する入口と機能は無効です。' };
 
 Object.assign(dictJa.uiCodexWorkspace, { showRawErrors:false, operationFailed:'ワークスペースの操作に失敗しました。再試行してください' });
 
@@ -891,6 +894,8 @@ dictJa.uiArtifacts = {
   diChangesLog:n=>`デザイン変更 ${n} 件`, diEmpty:'空',
 };
 
+dictJa.uiSessionMention = { menuTitle:'セッションを参照', menuEmpty:'一致するセッションがありません', dropHint:'ドロップしてこのセッションを参照', chipRemove:name=>`参照 ${name} を削除`, cardJump:label=>`セッションを開く: ${label}`, cardUnavailable:'セッションは削除されました', cardDisabled:'機能オフ', disabledNotice:'セッション参照機能がオフのため、参照はメッセージとともに送信されません' };
+dictJa.uiSessionMessage = { from:name=>`セッションから：${name}`, fromUnknown:'別のセッションから', jump:name=>`セッションを開く：${name}`, unavailable:'セッションが削除されました' };
 Object.assign(dictJa.uiAttachments, { uploading:pct=>`アップロード中 ${pct}%`,  deviceUploadEmpty:name=>`${name} は空のため添付できません`, deviceUploadUnavailable:'現在、このデバイスから添付ファイルをアップロードできません', deviceUploadInvalid:name=>`${name} は有効な添付ファイルではありません`, deviceUploadFailed:name=>`${name} をアップロードできませんでした。もう一度お試しください。`, deviceUploadDigestInvalid:'添付ファイルの整合性ダイジェストが無効です。もう一度お試しください', deviceUploadIntegrityMismatch:'添付ファイルの内容が転送中に破損しました。再度アップロードしてください' });
 
 Object.assign(dictJa.uiToolStore, {
@@ -1105,25 +1110,30 @@ Object.assign(dictJa.uiSettingsDetail.modelDescriptions, {
   '极速多模态，200 tokens/s':'高速マルチモーダル、200 tokens/s',
   '新预览旗舰，仅订阅渠道':'新プレビューフラッグシップ、サブスクリプション専用',
   '快速高性价比，夜间同样四折':'高速で高コストパフォーマンス、夜間も通常の 40%',
-  '官方将于 2026-10-21 下线':'2026-10-21 に提供終了予定',
+  '官方将于 2026-11-18 下线':'2026-11-18 に提供終了予定',
+  '高速款，官方将于 2026-11-18 下线':'高速モデル、2026-11-18 に提供終了予定',
+  '官方已转 Legacy，2026-11-18 下线':'公式レガシー化済み。2026-11-18 に提供終了',
+  '官方已转 Legacy，高速款 2026-11-18 下线':'公式レガシー化済み。高速モデルは 2026-11-18 に提供終了',
   'K3 长上下文模型':'K3 長コンテキストモデル', '高速编码模型':'高速コーディングモデル',
   'K3 256K 上下文，价格更低':'K3 256K コンテキスト、より低価格',
   '官方已转 Legacy，兼容保留':'公式レガシー化済み。互換性のため保持',
-  '官方已转 Legacy，兼容高速':'公式レガシー化済み。高速互換',
   '最新旗舰':'最新フラッグシップ', '上代旗舰推理':'前世代フラッグシップ推論',
   '均衡性价比':'バランス型で高コストパフォーマンス', '快速高性价比':'高速で高コストパフォーマンス',
   '旗舰推理与编码':'フラッグシップ推論とコーディング', '均衡智能与成本':'知能とコストのバランス',
   '低成本高并发':'低コスト・高スループット', '上代旗舰':'前世代フラッグシップ',
   '快速经济':'高速で経済的',
-  '速度与智能均衡':'速度と知能のバランス',
   '最新 Flash，均衡高性价比':'最新 Flash、バランス型で高コストパフォーマンス',
-  '旗舰推理（预览）':'フラッグシップ推論（プレビュー）',
+  '上代旗舰推理（预览）':'前世代フラッグシップ推論（プレビュー）',
+  '最新旗舰，复杂编码与推理':'最新フラッグシップ、複雑なコーディングと推論',
   // Model catalog entries (src/features/settings/model-catalog.js items[].desc)
   '旗舰编码模型，全套餐支持':'フラッグシップコーディングモデル、全プラン対応', '原生多模态编码模型，额度三倍':'ネイティブマルチモーダルコーディングモデル、利用枠3倍',
   '历史模型，请求自动切换至 GLM-5.3':'レガシーモデル、リクエストは GLM-5.3 に自動切替', '历史模型，自动切换至 GLM-5.3-Flash':'レガシーモデル、GLM-5.3-Flash に自動切替',
   '历史模型，请求自动路由至 GLM-5.3':'レガシーモデル、リクエストは GLM-5.3 に自動ルーティング', '历史模型，自动路由至 GLM-5.3-Flash':'レガシーモデル、GLM-5.3-Flash に自動ルーティング',
-  '旗舰编码模型，官方将于 2026-10-09 下线':'フラッグシップコーディングモデル、2026-10-09 に提供終了予定', '官方将于 2026-10-09 下线':'2026-10-09 に提供終了予定',
-  '通用推理，官方将于 2026-10-09 下线':'汎用推論、2026-10-09 に提供終了予定',
+  'V4.1-Flash 原厂直供':'V4.1-Flash（公式提供）',
+  '官方更多模型档':'公式「その他のモデル」枠',
+  'MiMo 全模态轻量款':'MiMo フルモーダル軽量モデル',
+  '10-14 起自动路由至 v2.6-pro，10-21 失效':'10-14 から v2.6-pro へ自動ルーティング、10-21 に無効化',
+  '10-14 起自动路由至 v2.6-flash，10-21 失效':'10-14 から v2.6-flash へ自動ルーティング、10-21 に無効化',
   '多模态高性价比':'マルチモーダルで高コストパフォーマンス', '最新多模态高性价比':'最新マルチモーダル、高コストパフォーマンス',
   'Kimi 最新旗舰':'Kimi 最新フラッグシップ', 'Kimi 编码模型':'Kimi コーディングモデル', 'MiniMax 最新旗舰':'MiniMax 最新フラッグシップ',
   'V4.1-Flash 主力，1M 上下文，支持图片输入':'V4.1-Flash の主力モデル。1M コンテキスト、画像入力対応', '在售；官方确认 2026-09-14 后继续提供且计费不变':'販売中。公式に 2026-09-14 以降も提供継続・課金は変更なし',
@@ -1135,13 +1145,20 @@ Object.assign(dictJa.uiSettingsDetail.modelDescriptions, {
   '轻量兼容款，支持图像输入':'軽量互換モデル、画像入力対応',
   '最新推荐，统一模型 ID 自动升级':'最新の推奨モデル、統一モデル ID で自動更新', '低成本低时延，效果比肩 2-1-pro':'低コスト・低レイテンシ、2-1-pro に匹敵',
   '编程特化（预览），官方即将下线':'コーディング特化（プレビュー）。公式によりまもなく提供終了予定', '稳定通用，官方即将下线':'安定した汎用モデル。公式によりまもなく提供終了予定', '最强旗舰':'最強フラッグシップ',
-  '编码与 Agent 新旗舰（默认）':'コーディング/ Agent の新フラッグシップ（デフォルト）',
+  '近 Astra 旗舰，编码与 Agent（默认）':'Astra に匹敵するフラッグシップ、コーディングと Agent（デフォルト）',
+  '上代均衡旗舰':'前世代のバランス型フラッグシップ',
   '低价高效':'低価格かつ高速',
   'GPT-5.6 家族旗舰，推理与编码':'GPT-5.6 ファミリーのフラッグシップ、推論とコーディング',
   '最强旗舰，高难推理与长程 Agent':'最強フラッグシップ、高難度推論と長時間エージェント',
   '上代旗舰，兼容保留':'前世代フラッグシップ、互換性のため保持', '官方默认推荐，复杂 Agent 编码':'公式のデフォルト推奨、複雑なエージェントコーディング',
-  '最快，200K 上下文':'最速、200K コンテキスト', '上一代 Flash':'前世代 Flash',
-  '基线速度，兼容保留':'ベースライン速度、互換性のため保持',
+  '新均衡款，较 Sonnet 5 快 30%+，至多省 30%':'新バランスモデル、Sonnet 5 より 30%+ 高速、最大 30% 低価格',
+  '上代均衡款，兼容保留':'前世代のバランスモデル、互換性のため保持',
+  '最新小旗舰，100K 以下请求较 4.5 降价 90%':'最新の小型フラッグシップ、100K 以下のリクエストで 4.5 より 90% 低価格',
+  '最快，200K 上下文，Azure 端 2026-11-15 下线':'最速、200K コンテキスト。Azure では 2026-11-15 に提供終了予定',
+  '上代稳定 Flash，仍在服务':'前世代の安定 Flash、現在も提供中',
+  '已弃用，请求自动路由至 3.8-flash':'非推奨。リクエストは 3.8-flash へ自動ルーティング',
+  '已弃用，请求自动路由至 3.6-flash':'非推奨。リクエストは 3.6-flash へ自動ルーティング',
+  '编码模型，官方将于 2026-10-28 下线':'コーディングモデル、2026-10-28 に提供終了予定',
   '旗舰，编码与 Agent 默认推荐':'フラッグシップ、コーディングと Agent のデフォルト推奨', '上代旗舰，编码与 Agent':'前世代フラッグシップ、コーディングと Agent',
   '4.20 推理，1M 上下文':'4.20 推論、1M コンテキスト', '4.20 非推理，1M 上下文':'4.20 非推論、1M コンテキスト',
   '快速可靠，强工具调用':'高速で安定、ツール呼び出しに強い', '代码 Agent，256K 上下文':'コーディングエージェント、256K コンテキスト',
@@ -1170,5 +1187,5 @@ Object.assign(dictJa.uiChat, {
 Object.assign(dictJa.uiSettingsDetail.modelDescriptions, { '本地服务默认模型': 'ローカルサービスのデフォルトモデル'
 });
 // restored: inline catalog descriptions from jaBase (referenced by the model catalog)
-Object.assign(dictJa.uiSettingsDetail.modelDescriptions, { '高能力模型': '高性能モデル', '快速响应': '高速応答', '最新通用模型': '最新の汎用モデル', '代码场景': 'コーディング向け', '高速代码场景': '高速コーディング向け', '稳定可用': '安定版', '高性价比': 'コストパフォーマンス重視', '通用能力': '汎用', '兼容保留': '互換性オプション', '高速响应': '高速応答', '轻量模型': '軽量モデル'
+Object.assign(dictJa.uiSettingsDetail.modelDescriptions, { '高能力模型': '高性能モデル', '快速响应': '高速応答', '最新通用模型': '最新の汎用モデル', '代码场景': 'コーディング向け', '高速代码场景': '高速コーディング向け', '稳定可用': '安定版', '高性价比': 'コストパフォーマンス重視', '通用能力': '汎用', '兼容保留': '互換性オプション', '轻量模型': '軽量モデル'
 });

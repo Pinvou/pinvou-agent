@@ -24,10 +24,31 @@ use std::io::ErrorKind;
 use super::SessionStore;
 use anyhow::{Context, Result};
 use chrono::Utc;
+use parking_lot::RwLock;
 
 const SESSION_MODELS_FILE: &str = "_session_models.json";
 const PINNED_SESSIONS_FILE: &str = "_pinned_sessions.json";
 const HIDDEN_SESSIONS_FILE: &str = "_hidden_sessions.json";
+
+/// Roll an in-memory sidecar cache back to the durable state after a failed
+/// persist: the file is the cross-process truth, and a refused/failed persist
+/// must not leave this process's snapshot claiming a state the file does not
+/// hold (shared contract of `set_session_model_id` / `set_pinned` / `set_hidden`).
+fn restore_cached_entry(
+    cache: &RwLock<HashMap<String, String>>,
+    id: &str,
+    previous: Option<String>,
+) {
+    let mut map = cache.write();
+    match previous {
+        Some(previous) => {
+            map.insert(id.to_string(), previous);
+        }
+        None => {
+            map.remove(id);
+        }
+    }
+}
 
 /// Durable write for the pinned / hidden sidecars: both files carry the same
 /// shape (an array of `{ id, <ts_key> }` objects sorted by id) and the same
@@ -377,11 +398,16 @@ fn quarantine_corrupt_sidecar(file: &std::path::Path, label: &str) -> anyhow::Er
 }
 
 impl SessionStore {
+    /// Fallback tail shared by both model-id readers: a session without an
+    /// explicit override falls back to its scheduled profile's model, if any.
+    fn scheduled_profile_model_id(&self, id: &str) -> Option<String> {
+        self.scheduled_profile(id)
+            .and_then(|profile| profile.model_id)
+    }
+
     pub fn session_model_id(&self, id: &str) -> Option<String> {
-        self.session_model_override(id).or_else(|| {
-            self.scheduled_profile(id)
-                .and_then(|profile| profile.model_id)
-        })
+        self.session_model_override(id)
+            .or_else(|| self.scheduled_profile_model_id(id))
     }
 
     /// `session_model_id` resolved against the durable `_session_models.json`
@@ -407,10 +433,7 @@ impl SessionStore {
             Err(error) if error.kind() == ErrorKind::NotFound => None,
             Err(_) => self.session_models.read().get(id).cloned(),
         };
-        durable.or_else(|| {
-            self.scheduled_profile(id)
-                .and_then(|profile| profile.model_id)
-        })
+        durable.or_else(|| self.scheduled_profile_model_id(id))
     }
 
     pub fn session_model_override(&self, id: &str) -> Option<String> {
@@ -445,15 +468,7 @@ impl SessionStore {
             (previous, models.get(id).cloned())
         };
         if let Err(error) = apply_session_model_mutation(id, desired.as_deref()) {
-            let mut models = self.session_models.write();
-            match previous {
-                Some(previous) => {
-                    models.insert(id.to_string(), previous);
-                }
-                None => {
-                    models.remove(id);
-                }
-            }
+            restore_cached_entry(&self.session_models, id, previous);
             return Err(error);
         }
         Ok(())
@@ -537,37 +552,24 @@ impl SessionStore {
                 pins.remove(id);
             }
         }
-        let result = if pinned {
-            apply_timestamped_id_mutation_locked(
-                PINNED_SESSIONS_FILE,
-                "pinned_at",
-                "load_pinned_sessions",
-                &[(id, timestamp.clone())],
-                &[],
-            )
+        let (upserts, removes): (&[(&str, String)], &[&str]) = if pinned {
+            (&[(id, timestamp.clone())], &[])
         } else {
-            apply_timestamped_id_mutation_locked(
-                PINNED_SESSIONS_FILE,
-                "pinned_at",
-                "load_pinned_sessions",
-                &[],
-                &[id],
-            )
+            (&[], &[id])
         };
+        let result = apply_timestamped_id_mutation_locked(
+            PINNED_SESSIONS_FILE,
+            "pinned_at",
+            "load_pinned_sessions",
+            upserts,
+            removes,
+        );
         if let Err(error) = result {
             // Roll the in-memory cache back to the durable state: the file is
             // the cross-process truth and a refused/failed persist must not
             // leave this process's snapshot claiming a state the file does
             // not hold (same contract as `set_session_model_id`).
-            let mut pins = self.pinned_sessions.write();
-            match previous {
-                Some(previous) => {
-                    pins.insert(id.to_string(), previous);
-                }
-                None => {
-                    pins.remove(id);
-                }
-            }
+            restore_cached_entry(&self.pinned_sessions, id, previous);
             // Session ids stay out of the context: the failing sidecar
             // file, named in the error chain, identifies the write.
             return Err(error).context("persist pin state");
@@ -629,7 +631,12 @@ impl SessionStore {
     /// absence inherits the fault discipline; the cost is that a stale boot
     /// map can over-protect a session another process legitimately unpinned
     /// until this process next mutates or restarts (the safe direction).
-    pub(crate) fn durable_pinned_sessions(&self) -> Option<std::collections::HashSet<String>> {
+    /// Round-40 review: `pub` for the pinvou-cli sessions family — the CLI
+    /// archive's half-landed guard must consult the DURABLE registry (a pin
+    /// the desktop app wrote after the CLI booted is invisible to the
+    /// in-memory cache, which is also what a failed pin-clear rolls back
+    /// to), the same reader retention's sweep uses.
+    pub fn durable_pinned_sessions(&self) -> Option<std::collections::HashSet<String>> {
         let file = crate::platform::paths::sessions_root().join(PINNED_SESSIONS_FILE);
         let parsed = std::fs::read_to_string(&file).ok().and_then(|content| {
             parse_timestamped_id_map(&content, "pinned_at", "load_pinned_sessions")
@@ -679,37 +686,24 @@ impl SessionStore {
                 eprintln!("[sessions] clearing the pin while archiving failed: {error:#}");
             }
         }
-        let result = if hidden {
-            apply_timestamped_id_mutation_locked(
-                HIDDEN_SESSIONS_FILE,
-                "hidden_at",
-                "load_hidden_sessions",
-                &[(id, timestamp.clone())],
-                &[],
-            )
+        let (upserts, removes): (&[(&str, String)], &[&str]) = if hidden {
+            (&[(id, timestamp.clone())], &[])
         } else {
-            apply_timestamped_id_mutation_locked(
-                HIDDEN_SESSIONS_FILE,
-                "hidden_at",
-                "load_hidden_sessions",
-                &[],
-                &[id],
-            )
+            (&[], &[id])
         };
+        let result = apply_timestamped_id_mutation_locked(
+            HIDDEN_SESSIONS_FILE,
+            "hidden_at",
+            "load_hidden_sessions",
+            upserts,
+            removes,
+        );
         if let Err(error) = result {
             // Roll the hidden-cache entry back (same durable-truth contract
             // as `set_pinned`). The pin-clearing side effect above is
             // intentional and kept: hiding is the user's stated direction,
             // and a session that failed to hide stays unpinned either way.
-            let mut hidden_sessions = self.hidden_sessions.write();
-            match previous {
-                Some(previous) => {
-                    hidden_sessions.insert(id.to_string(), previous);
-                }
-                None => {
-                    hidden_sessions.remove(id);
-                }
-            }
+            restore_cached_entry(&self.hidden_sessions, id, previous);
             return Err(error).context("persist hidden state");
         }
         Ok(())

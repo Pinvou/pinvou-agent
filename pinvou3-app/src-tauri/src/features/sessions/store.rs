@@ -57,7 +57,9 @@ pub(crate) const MAX_SESSIONS_PER_KIND: usize = 50;
 /// language.
 pub(crate) const AUX_SESSION_TITLE: &str = "辅助对话";
 
-/// Id prefix minted by the headless `agent run` path (`agentic_{pid}_{n}`).
+/// Id prefix minted by the headless `agent run` path (the fresh ids are
+/// `agentic_{pid}_{unix_millis}_{counter}`; retention keys on the prefix
+/// only).
 ///
 /// Retention keys the headless budget on it, so the prefix is a durable
 /// contract between the runner and the sweep rather than a formatting detail;
@@ -78,9 +80,16 @@ pub(crate) const MAX_HEADLESS_SESSIONS: usize = 50;
 
 /// Placeholder title for a fresh chat session. One of the trilingual
 /// sentinels in the frontend's `DEFAULT_CHAT_TITLES`: the sidebar localizes
-/// it per UI language and the first send triggers the auto-rename. Sessions
-/// created headlessly share the same sentinel so they behave identically in
-/// the history list.
+/// it per UI language and the first send triggers the auto-rename. Headless
+/// sessions persist by default and surface in the GUI history, so they carry
+/// the same sentinel — an eval-internal label would leak untranslated into
+/// every UI language, and because the command layer's auto-rename triggers on
+/// exactly this value it would also freeze an adopted session's title forever.
+///
+/// It doubles as the agentic runner's adoption marker: a session still wearing
+/// the sentinel is untouched factory state that a failed run may delete, while
+/// any other title means a GUI user renamed it (or their first send triggered
+/// the auto-rename) and now owns it.
 pub(crate) const NEW_CHAT_TITLE: &str = "新对话";
 
 /// Marker file the code-session feature writes inside a session's directory
@@ -628,7 +637,14 @@ impl SessionStore {
     /// rebind orphan classification also uses it: only NotFound counts — a
     /// corrupt JSON is not an orphan (review #463: a parse failure must enter
     /// the failed list as retryable, never silently skipped).
-    pub(crate) fn durable_session_record_is_absent(&self, id: &str) -> bool {
+    ///
+    /// `pub`: the headless CLI's `projects` rebind consumes the same orphan
+    /// probe through the `features::sessions` re-export — the same
+    /// crate-boundary shape as the other widened rebind halves
+    /// (`workspace_binding_artifacts_exist`, `workspace_bindings_under`), so
+    /// the store owns the `<sessions root>/<id>.json` layout instead of the
+    /// CLI hand-mirroring it (round-39 review).
+    pub fn durable_session_record_is_absent(&self, id: &str) -> bool {
         if validate_session_id(id).is_err() {
             return false;
         }
@@ -907,6 +923,25 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Roll back a session record a create path just persisted after a later
+    /// step failed: delete through the public [`Self::delete`] (which takes
+    /// the `scheduled_mutation` guard — no caller of this helper holds it) and
+    /// fold a failed rollback into the returned error so the caller sees both
+    /// failures. `what` names the rollback in the message; the chat paths
+    /// surface the session id, the aux path keeps ids out of its wording (the
+    /// command layer surfaces them and the boot log prints the chain).
+    fn rollback_created_session(
+        &self,
+        id: &str,
+        error: anyhow::Error,
+        what: &str,
+    ) -> anyhow::Error {
+        match self.delete(id) {
+            Ok(()) => error,
+            Err(rollback_error) => anyhow::anyhow!("{error:#}; {what}: {rollback_error:#}"),
+        }
+    }
+
     pub fn create_new(
         &self,
         model: String,
@@ -932,13 +967,11 @@ impl SessionStore {
             self.set_session_model_id(&id, Some(mid))?;
         }
         if let Err(error) = self.save(&session) {
-            let rollback = self.delete(&id);
-            return Err(match rollback {
-                Ok(()) => error,
-                Err(rollback_error) => {
-                    anyhow::anyhow!("{error:#}; rollback Session {id}: {rollback_error:#}")
-                }
-            });
+            return Err(self.rollback_created_session(
+                &id,
+                error,
+                &format!("rollback Session {id}"),
+            ));
         }
         Ok(session)
     }
@@ -949,7 +982,7 @@ impl SessionStore {
     /// exists. Parent ids are 13-char lowercase base36 and
     /// [`validate_session_id`] accepts `[A-Za-z0-9_-]`, so the derived id is
     /// always a valid session id and always carries the `aux-` prefix the
-    /// zero-tools gates and list filters key on.
+    /// aux tool-surface gates and list filters key on.
     pub(crate) fn aux_session_id_for(parent_id: &str) -> String {
         format!("aux-{parent_id}")
     }
@@ -988,15 +1021,8 @@ impl SessionStore {
     /// must go through [`Self::get_or_create_aux_session`].
     pub(crate) fn create_aux_session(&self, parent_id: &str) -> Result<SessionMetadata> {
         // Reject aux-of-aux in the creation path itself (not only via the
-        // get-or-create wrapper): an auxiliary conversation must not own
-        // another one, and an aux session is itself a Chat kind, so the
-        // command layer's `ensure_chat_session` cannot catch it.
-        if super::validators::is_aux_session_id(parent_id) {
-            bail!("Auxiliary session '{parent_id}' cannot own an aux session");
-        }
-        if super::validators::is_sched_session_id(parent_id) {
-            bail!("Scheduled-run session '{parent_id}' cannot own an aux session");
-        }
+        // get-or-create wrapper).
+        ensure_parent_can_own_aux(parent_id)?;
         let parent = match self.load(parent_id) {
             Ok(parent) => parent,
             // A genuinely missing parent (deleted, or evicted between the
@@ -1060,15 +1086,11 @@ impl SessionStore {
             self.set_session_model_id(&id, Some(model_id))?;
         }
         if let Err(error) = self.save(&session) {
-            let rollback = self.delete(&id);
-            return Err(match rollback {
-                Ok(()) => error,
-                Err(rollback_error) => {
-                    anyhow::anyhow!(
-                        "{error:#}; rollback of the aux record failed: {rollback_error:#}"
-                    )
-                }
-            });
+            return Err(self.rollback_created_session(
+                &id,
+                error,
+                "rollback of the aux record failed",
+            ));
         }
         // The save above can trigger the retention sweep; the pair-liveness
         // ordering protects a parent whose aux record is fresh, but a
@@ -1089,17 +1111,11 @@ impl SessionStore {
             }
         };
         if parent_evicted {
-            let rollback = self.delete(&id);
-            // Ids stay out of these messages too: the command layer surfaces
-            // them to the caller and the boot log prints the chain.
-            return Err(match rollback {
-                Ok(()) => {
-                    anyhow::anyhow!("the parent session was evicted while creating its aux session")
-                }
-                Err(rollback_error) => anyhow::anyhow!(
-                    "the parent session was evicted while creating its aux session; rollback of the aux record failed: {rollback_error:#}"
-                ),
-            });
+            return Err(self.rollback_created_session(
+                &id,
+                anyhow::anyhow!("the parent session was evicted while creating its aux session"),
+                "rollback of the aux record failed",
+            ));
         }
         Ok(session.metadata)
     }
@@ -1117,12 +1133,7 @@ impl SessionStore {
     /// `ensure_chat_session` cannot catch it — the single creation entry point
     /// must reject it explicitly.
     pub fn get_or_create_aux_session(&self, parent_id: &str) -> Result<SessionMetadata> {
-        if super::validators::is_aux_session_id(parent_id) {
-            bail!("Auxiliary session '{parent_id}' cannot own an aux session");
-        }
-        if super::validators::is_sched_session_id(parent_id) {
-            bail!("Scheduled-run session '{parent_id}' cannot own an aux session");
-        }
+        ensure_parent_can_own_aux(parent_id)?;
         let aux_id = Self::aux_session_id_for(parent_id);
         match self.load(&aux_id) {
             Ok(aux) => Ok(aux.metadata),
@@ -1229,6 +1240,28 @@ impl SessionStore {
                 .unwrap_or(false)
     }
 
+    /// Three-state record probe for callers whose wrong-"absent" answer is
+    /// destructive (the failed-delete backstop sweep): `Some(false)` is a
+    /// CONFIRMED absence (NotFound), `Some(true)` a present record, and
+    /// `None` an unreadable answer (an invalid id, an unreadable chat path,
+    /// or metadata failing with anything but NotFound) the caller must
+    /// treat as "keep" — fail-closed, so a future edit must not "correct"
+    /// invalid ids toward `Some(false)`: that would sweep their directories
+    /// (round-37 review doc fix). The plain
+    /// `exists()` probe folds a permission fault or EIO into "absent", which
+    /// would sweep a live session's directory under its surviving record.
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn chat_session_record_present(&self, id: &str) -> Option<bool> {
+        let path = validate_session_id(id)
+            .ok()
+            .and_then(|_| chat_session_file(&self.manager, id).ok())?;
+        match std::fs::metadata(&path) {
+            Ok(_) => Some(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(false),
+            Err(_) => None,
+        }
+    }
+
     /// Whether the durable chat record for `id` carries any messages. The
     /// headless runner uses this to tell a zero-message stub (safe to clean
     /// up) from a ran-and-errored transcript (the only copy — keep it
@@ -1242,6 +1275,21 @@ impl SessionStore {
             .load_session_snapshot(id)
             .with_context(|| format!("load chat session {id} for stub classification"))?;
         Ok(!session.messages.is_empty())
+    }
+
+    /// Whether the session still wears the factory title ([`NEW_CHAT_TITLE`]).
+    /// A rename away from the placeholder is ownership — the adoption marker
+    /// the agentic teardown decisions consult before deleting a run's own
+    /// session. An unreadable record reports `Err` and is NOT proven
+    /// factory-titled: callers must treat unknown state as "keep".
+    #[cfg(any(feature = "benchmark-hooks", test))]
+    pub(crate) fn chat_session_factory_titled(&self, id: &str) -> Result<bool> {
+        validate_session_id(id)?;
+        let session = self
+            .manager
+            .load_session_snapshot(id)
+            .with_context(|| format!("load chat session {id} for adoption classification"))?;
+        Ok(session.metadata.title == NEW_CHAT_TITLE)
     }
 
     /// Create an empty session with a caller-provided ID, for internal runtimes that need the isolation ID determined before startup.
@@ -1283,13 +1331,11 @@ impl SessionStore {
             self.set_session_model_id(&id, Some(model_id))?;
         }
         if let Err(error) = self.save(&session) {
-            let rollback = self.delete(&id);
-            return Err(match rollback {
-                Ok(()) => error,
-                Err(rollback_error) => {
-                    anyhow::anyhow!("{error:#}; rollback Session {id}: {rollback_error:#}")
-                }
-            });
+            return Err(self.rollback_created_session(
+                &id,
+                error,
+                &format!("rollback Session {id}"),
+            ));
         }
         Ok(session)
     }
@@ -1346,12 +1392,27 @@ impl SessionStore {
 /// chain — the "record is not on disk" case. Any other failure kind must be
 /// treated as "unknown" rather than "absent", so transient IO errors are never
 /// conflated with a missing record.
-pub(super) fn is_not_found_error(error: &anyhow::Error) -> bool {
+pub(crate) fn is_not_found_error(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause
             .downcast_ref::<std::io::Error>()
             .is_some_and(|e| e.kind() == ErrorKind::NotFound)
     })
+}
+
+/// The two ownership refusals shared by `create_aux_session` and
+/// `get_or_create_aux_session`: an auxiliary conversation must not own another
+/// aux (an aux session is itself a Chat kind, so the command layer's
+/// `ensure_chat_session` cannot catch it), and a scheduled session is deleted
+/// through its automation rather than gaining an aux.
+fn ensure_parent_can_own_aux(parent_id: &str) -> Result<()> {
+    if super::validators::is_aux_session_id(parent_id) {
+        bail!("Auxiliary session '{parent_id}' cannot own an aux session");
+    }
+    if super::validators::is_sched_session_id(parent_id) {
+        bail!("Scheduled-run session '{parent_id}' cannot own an aux session");
+    }
+    Ok(())
 }
 
 /// True when `error` carries an `io::Error` of kind `InvalidData` anywhere in

@@ -6,7 +6,7 @@
 //! 确认物化等跨 store 检查也集中在此。
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::fs::{self, TryLockError};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -47,9 +47,14 @@ pub(super) fn write_lock() -> &'static Mutex<()> {
 /// Stored-text caps per store, shared by the write path (which re-cleans every
 /// incoming text) and by organize validation (which must validate against the
 /// same cap so a passing action is not silently truncated when stored).
-pub(super) const PREFERENCE_TEXT_MAX_CHARS: usize = 120;
-pub(super) const WORK_CONTEXT_TEXT_MAX_CHARS: usize = 160;
-pub(super) const TIMED_TEXT_MAX_CHARS: usize = 180;
+///
+/// `WORK_CONTEXT_TEXT_MAX_CHARS` is re-exported from `features::memory` for
+/// the CLI's `memory add` verification: comparing against a locally
+/// duplicated cap would re-create the false `memory_add_not_materialized`
+/// failure the shared normalization fixed if the cap ever changes.
+pub const PREFERENCE_TEXT_MAX_CHARS: usize = 120;
+pub const WORK_CONTEXT_TEXT_MAX_CHARS: usize = 160;
+pub const TIMED_TEXT_MAX_CHARS: usize = 180;
 
 pub(super) fn turn_capture_store() -> &'static Mutex<BTreeMap<String, TurnMemoryCapture>> {
     static STORE: OnceLock<Mutex<BTreeMap<String, TurnMemoryCapture>>> = OnceLock::new();
@@ -92,6 +97,56 @@ pub(crate) fn organize_history_path() -> PathBuf {
 
 pub(crate) fn pending_memory_path() -> PathBuf {
     paths::user_memory_pending()
+}
+
+/// Cross-process single-flight lock for the organize pass. The in-process
+/// `organize::ORGANIZE_IN_FLIGHT` guard only serializes runs inside one
+/// process; the GUI (manual button / scheduled task) and a CLI
+/// `pinvou memory organize` in another process could still interleave their
+/// destructive apply phases, each acting on its own up-to-75-second-old
+/// snapshot, which the apply phase's re-check cannot repair. The lock file
+/// lives in the per-user memory directory — the same home as
+/// `organize_history.json` and the store files — so every entry point of the
+/// same user competes for one lock.
+pub(crate) fn organize_lock_path() -> PathBuf {
+    paths::user_memory_dir().join(".organize.lock")
+}
+
+/// Cross-surface busy marker: carried in the anyhow message
+/// `organize_memory_with_llm` fails with while `.organize.lock` is held, so
+/// the CLI (`pinvou memory organize`) can map the feature-layer lock
+/// contention onto its documented `memory_organize_busy` refusal by value
+/// instead of a duplicated literal. `pub` (not `pub(crate)`) exactly for
+/// that consumer; the GUI and the scheduled lane never match on the text
+/// (a scheduled organize records the busy failure as an ordinary failed
+/// run, with the message preserved in the run record).
+pub const ORGANIZE_LOCK_BUSY: &str = "another organize pass is already running";
+
+/// Try-acquire the cross-process organize pass lock
+/// ([`organize_lock_path`]). Uses the OS advisory file lock through the
+/// std-stabilized `File::try_lock` (flock on Unix, LockFileEx on Windows)
+/// — the same class of primitive the install locks use — no new
+/// dependency, no unsafe guard construction. The returned file handle IS
+/// the guard: holding it for the scope of the pass covers every exit path
+/// — early errors, cancellation, success — with no manual release. No
+/// explicit `unlock()`: the OS advisory lock is bound to the file
+/// descriptor and the kernel releases it when the handle drops (closes),
+/// the same discipline the settings transaction lock documents. The lock
+/// file itself is never deleted: only the OS lock on an open handle
+/// decides, so a file left behind by a crashed process never blocks the
+/// next pass. Try semantics: a second pass while one is in flight fails
+/// immediately with [`ORGANIZE_LOCK_BUSY`] on `WouldBlock` instead of
+/// queueing behind the running pass's up to 75-second LLM call.
+pub(crate) fn try_lock_organize_pass() -> io::Result<std::fs::File> {
+    let file = crate::platform::filesystem::open_lock_file_with_dirs(&organize_lock_path())?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(TryLockError::WouldBlock) => Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            ORGANIZE_LOCK_BUSY,
+        )),
+        Err(TryLockError::Error(error)) => Err(error),
+    }
 }
 
 pub(crate) fn never_memory_path() -> PathBuf {
@@ -1287,7 +1342,13 @@ pub fn enqueue_memory_candidate(suggestion: MemorySuggestion) -> io::Result<Pend
     Ok(item)
 }
 
-pub(super) fn confirmed_pending_memory_is_materialized(item: &PendingMemoryItem) -> bool {
+/// Whether a confirmed pending item actually landed in its target store.
+/// The confirm path marks the item confirmed even when the profile-shaped
+/// preference skip in `write_preference_unlocked` deliberately wrote
+/// nothing; surfacing the helper lets the CLI report that no-op honestly
+/// instead of printing success (the GUI review pipeline has its own
+/// post-confirm view).
+pub fn confirmed_pending_memory_is_materialized(item: &PendingMemoryItem) -> bool {
     if item.status != PENDING_STATUS_CONFIRMED {
         return false;
     }
@@ -1305,7 +1366,7 @@ pub(super) fn confirmed_pending_memory_is_materialized(item: &PendingMemoryItem)
             .unwrap_or(false),
         "preference" => {
             let topic = normalize_preference_topic(&item.topic);
-            load_preferences()
+            list_preferences()
                 .map(|prefs| {
                     prefs.iter().any(|pref| {
                         normalize_preference_topic(&pref.topic) == topic
@@ -1710,7 +1771,11 @@ pub(super) fn delete_preference_unlocked(id: &str) -> io::Result<bool> {
     Ok(false)
 }
 
-pub(super) fn load_preferences() -> io::Result<Vec<PreferenceFile>> {
+/// The shared preference read for both surfaces: the same self-heal-on-read
+/// reconcile as the GUI command, without its `cleanup_warning` (the warning
+/// surfaces through [`list_preferences_with_cleanup`], which the CLI's
+/// list/doctor lanes use directly).
+pub fn list_preferences() -> io::Result<Vec<PreferenceFile>> {
     list_preferences_with_cleanup().map(|result| result.value)
 }
 

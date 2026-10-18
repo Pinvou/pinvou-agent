@@ -436,13 +436,13 @@ test("chatview: the task lane consumes only its own draft and maps restored to n
   const chatViewSource = read("src/features/chat/ChatView.jsx");
   assert.match(
     chatViewSource,
-    /sendChatMessage\(constrained\.text, \{ \.\.\.context, draftOwner: owner \}\)/,
+    /sendChatMessage\(outgoingText, \{ \.\.\.context, draftOwner: owner \}\)/,
     "the task lane must pass the draft owner through sendChatMessage",
   );
   assert.match(
     chatViewSource,
-    /return result === 'restored' \? false : result;/,
-    "a restored delivery must read as not accepted, without restoring twice",
+    /return result === 'restored' \|\| result === 'restored-materialized' \? false : result;/,
+    "a restored delivery (including restored-after-commit, round-25 asto MAJOR 3) must read as not accepted, without restoring twice",
   );
   assert.match(
     chatViewSource,
@@ -869,11 +869,13 @@ test("sends: dispatched sends settle their voice operation as accepted in both l
   const funnelStart = chatViewSource.indexOf("const sendChatMessage = useCallback(async (text, voiceContext) => {");
   const resolveAnchor = chatViewSource.indexOf("bridge.voice.getVoiceOperationId(activeSessionId || null, 'chat')", funnelStart);
   const beginAnchor = chatViewSource.indexOf("bridge.voice.beginVoiceSubmission(operationId)", funnelStart);
-  const dispatchAnchor = chatViewSource.indexOf("dispatchChatMessage(text, { voiceOperationId: operationId }, voiceContext?.draftOwner)", funnelStart);
+  const metaAnchor = chatViewSource.indexOf("const meta = { voiceOperationId: operationId };", funnelStart);
+  const dispatchAnchor = chatViewSource.indexOf("dispatchChatMessage(text, meta, voiceContext?.draftOwner)", funnelStart);
   assert.ok(funnelStart >= 0, "the ChatView send funnel must exist");
   assert.ok(resolveAnchor > funnelStart, "sendChatMessage must resolve the parked chat-lane operation id");
   assert.ok(beginAnchor > resolveAnchor, "sendChatMessage must begin the submission before dispatching");
-  assert.ok(dispatchAnchor > beginAnchor, "sendChatMessage must pass the operation id into dispatchChatMessage");
+  assert.ok(metaAnchor > beginAnchor, "sendChatMessage must build the meta funnel object before dispatching");
+  assert.ok(dispatchAnchor > metaAnchor, "sendChatMessage must pass the meta object into dispatchChatMessage");
   assert.match(
     chatViewSource,
     /!== voiceOwner\.draftEpoch\)\)\) \{[\s\S]{0,300}?pendingModeScopeMigrationRef\.current = null;[\s\S]{0,100}?return false;/,

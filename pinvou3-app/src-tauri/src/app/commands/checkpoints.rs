@@ -295,10 +295,11 @@ fn busy_peer_on_same_execution_root(
         if metadata.id == session_id {
             continue;
         }
-        // Aux side-chat sessions are zero-tool by construction (PR #433): they
-        // can never write files, so the gate's premise — a peer engine leaving
-        // half-written files in the shared execution root — is structurally
-        // false for them. In production the exclusion is defense-in-depth:
+        // Aux side-chat sessions have no writer surface by construction
+        // (PR #433; ADR-0024 leaves them at most one scoped READ-only tool):
+        // they can never write files, so the gate's premise — a peer engine
+        // leaving half-written files in the shared execution root — is
+        // structurally false for them. In production the exclusion is defense-in-depth:
         // `SessionStore::session_roots` resolves an aux id to its private
         // `sessions/aux-<id>/workspace` (no codex record, no workspace-binding
         // sidecar is ever written for aux), so an aux root can never equal
@@ -868,8 +869,9 @@ mod tests {
 
     /// An aux session (aux-) is not intercepted even when bound to the same
     /// execution root and streaming an answer (PR #433 round-20 Major-1):
-    /// under zero-tools semantics it cannot write files into the directory,
-    /// so the busy gate's premise structurally does not hold for it. Note
+    /// under the scoped-read-only semantics it cannot write files into the
+    /// directory, so the busy gate's premise structurally does not hold for
+    /// it. Note
     /// (round-22 correction): the production root resolver always returns
     /// None for aux ids (no codex record, and no workspace binding sidecar is
     /// written), so the aux root always resolves to the private

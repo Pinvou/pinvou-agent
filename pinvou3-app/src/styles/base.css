@@ -505,6 +505,20 @@
     @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
     .streaming-cursor::after { content:"▊"; animation:blink 1s step-end infinite; margin-left:2px; }
 
+    /* Streaming text fade-in. Streamed markdown is wholesale-replaced via
+       dangerouslySetInnerHTML every ~180ms tick, so animating the message
+       container itself would replay the whole text on every tick. A JS pass
+       (src/features/conversation/stream-fade.js) wraps ONLY the text past the
+       already-seen committed offset in one-shot .stream-fade-seg spans with a
+       per-span stagger delay; seen text stays plain and never re-animates.
+       Plain CSS like ts-modal-in/voice-pop-in (no tailwindcss-animate plugin);
+       opacity only, per the Safari 14 webview floor. */
+    @keyframes streamFadeIn { from { opacity:0; } to { opacity:1; } }
+    .stream-fade-seg { animation: streamFadeIn 0.15s ease-out both; animation-delay: var(--stream-fade-delay, 0ms); }
+    @media (prefers-reduced-motion: reduce) {
+      .stream-fade-seg { animation: none; }
+    }
+
     /* Tool Store */
     .no-scrollbar::-webkit-scrollbar { display: none; }
     .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }

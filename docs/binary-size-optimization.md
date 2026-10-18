@@ -31,8 +31,9 @@ The macOS 27 dyld added an 8-byte LINKEDIT string-pool alignment check, and
 the strip output of rustc 1.96/1.97 was misaligned (proc-macro dylib dlopen
 rejected → E0463), so CI injected `strip=none` on macOS 27+ runners. The bug
 was fixed in LLVM and backported into **rustc 1.98.0**
-(rust-lang/rust#157750, #158410; toolchain pinned in
-`pinvou3-app/src-tauri/rust-toolchain.toml`). The workaround steps in both
+(rust-lang/rust#157750, #158410; every stable toolchain since 1.98 carries the
+fix — `pinvou3-app/src-tauri/rust-toolchain.toml` floats `stable` and can
+never roll back below it). The workaround steps in both
 workflows are removed and macOS artifacts return to the same
 zero-symbol-table state as Linux/Windows.
 

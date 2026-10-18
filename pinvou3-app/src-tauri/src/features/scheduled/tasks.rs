@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use crate::features::assistant::engine_pool::EnginePool;
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::features::scheduled::executor::{ScheduledChatExecutor, current_yolo_allow_shell};
-use crate::features::sessions::SessionStore;
+use crate::features::sessions::{SessionStore, is_not_found_error};
 use crate::platform::prefs::UserPrefs;
 
 const DELETE_CANCEL_TIMEOUT: Duration = Duration::from_secs(15);
@@ -105,11 +105,8 @@ pub struct ScheduledTaskState {
     operation_locks: ParkingMutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
     pool: Option<EnginePool>,
     fallback_model: String,
-    #[allow(dead_code)]
     scheduler_cancel: Option<CancellationToken>,
-    #[allow(dead_code)]
     scheduler_handle: Option<tokio::task::JoinHandle<()>>,
-    #[allow(dead_code)]
     retention_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
@@ -457,9 +454,6 @@ impl ScheduledTaskState {
     ) -> Result<ScheduledTaskDto, String> {
         let _operation = self.lock_operation(&id).await;
         let manager = self.automations.lock().await;
-        let _current_exists = manager
-            .get_automation(&id)
-            .map_err(|err| format!("Failed to update scheduled task '{id}': {err}"))?;
         let requested_model_update = input.model.clone();
         let requested_model_id = input.model_id.clone();
         let requires_model_binding = requested_model_id.is_some();
@@ -588,11 +582,13 @@ impl ScheduledTaskState {
             .map_err(|err| format!("Failed to run scheduled task '{id}': {err}"))?;
         let session_titles = scheduled_session_titles(&self.sessions)
             .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
-        Ok(map_scheduled_run(
+        Ok(map_scheduled_run_with_task(
             run,
             &self.sessions,
             &self.read_state,
             &session_titles,
+            None,
+            None,
         ))
     }
 
@@ -918,19 +914,24 @@ impl ScheduledTaskState {
     }
 }
 
-fn default_automation_model(bridge: Option<&Pinvou3Bridge>) -> String {
+/// The active model configured in the user's saved prefs, if any; both model
+/// selectors below layer their own fallbacks on top of this read.
+fn prefs_model() -> Option<String> {
     UserPrefs::load()
         .active_model()
         .map(|model| model.model.clone())
+}
+
+fn default_automation_model(bridge: Option<&Pinvou3Bridge>) -> String {
+    prefs_model()
         .or_else(|| bridge.map(Pinvou3Bridge::model))
         .unwrap_or_else(|| "default-model".to_string())
 }
 
+/// The model new automation runs resolve to right now: the saved active
+/// model, else the caller's already-computed fallback.
 fn current_automation_model(fallback: &str) -> String {
-    UserPrefs::load()
-        .active_model()
-        .map(|model| model.model.clone())
-        .unwrap_or_else(|| fallback.to_string())
+    prefs_model().unwrap_or_else(|| fallback.to_string())
 }
 
 /// 会话归属判定的可注入核心：`session_exists` 决定 thread_id 是否仍指向一个
@@ -1283,15 +1284,6 @@ fn map_scheduled_task_from_manager(
     ))
 }
 
-fn map_scheduled_run(
-    record: AutomationRunRecord,
-    sessions: &SessionStore,
-    read_state: &ScheduledRunReadStore,
-    session_titles: &HashMap<String, String>,
-) -> ScheduledRunDto {
-    map_scheduled_run_with_task(record, sessions, read_state, session_titles, None, None)
-}
-
 fn map_scheduled_run_with_task(
     record: AutomationRunRecord,
     sessions: &SessionStore,
@@ -1600,13 +1592,30 @@ pub async fn list_scheduled_tasks(
         .iter()
         .map(|record| record.id.clone())
         .collect::<HashSet<_>>();
-    if let Err(error) = state.model_bindings.compact(&current_ids) {
+    // The listing above is a snapshot: a CLI task landing between it and the
+    // compact merge would be retain-deleted (the kind loss silently
+    // downgrades the task to an unattended chat run), so liveness for
+    // unlisted ids is confirmed against the definitions still on disk — the
+    // foundation re-reads each def per `get_automation`, which is exactly
+    // the freshness compact's deletion oracle needs. A miss must be
+    // distinguished from an error (round-36 review): `get_automation` also
+    // fails on read I/O, a parse failure, or a newer schema — collapsing
+    // those into "not live" would delete a kind record whose definition
+    // still exists, the unsafe direction this oracle exists to prevent.
+    // Walk the wrapped chain: a NotFound source is a genuine miss, every
+    // other error lingers — fail closed, the same direction as the
+    // scanner's walk-error veto.
+    let is_live = |id: &str| match manager.get_automation(id) {
+        Ok(_) => true,
+        Err(error) => !is_not_found_error(&error),
+    };
+    if let Err(error) = state.model_bindings.compact(&current_ids, is_live) {
         log::warn!("Unable to compact scheduled model bindings: {error:#}");
     }
-    if let Err(error) = state.task_kinds.compact(&current_ids) {
+    if let Err(error) = state.task_kinds.compact(&current_ids, is_live) {
         log::warn!("Unable to compact scheduled task kinds: {error:#}");
     }
-    if let Err(error) = state.ui_metadata.compact(&current_ids) {
+    if let Err(error) = state.ui_metadata.compact(&current_ids, is_live) {
         log::warn!("Unable to compact scheduled task UI metadata: {error:#}");
     }
     let session_titles = scheduled_session_titles(&state.sessions)
@@ -1833,7 +1842,6 @@ pub fn scheduled_task_chat_prompt() -> Result<String, String> {
 #[allow(clippy::await_holding_lock)]
 mod tests {
     use super::*;
-    use parking_lot::RwLock;
 
     #[test]
     fn scheduled_limits_do_not_apply_the_two_minute_foundation_idle_cutoff() {
@@ -1896,6 +1904,42 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("create temp home");
         dir
+    }
+
+    /// A `ScheduledTaskState` with no task runtime over the caller's temp
+    /// `PINVOU3_HOME`: boots the session store and opens the four sidecar
+    /// stores and the automation manager at their production paths. Callers
+    /// hold ENV_LOCK and have already pointed `PINVOU3_HOME` at the temp dir.
+    fn state_without_task_manager() -> ScheduledTaskState {
+        let sessions = SessionStore::boot().expect("session store");
+        sessions
+            .reconcile_scheduled_profiles()
+            .expect("reconcile scheduled profiles");
+        ScheduledTaskState {
+            automations: Arc::new(tokio::sync::Mutex::new(
+                AutomationManager::open(scheduled_automation_root()).expect("automations"),
+            )),
+            task_manager: None,
+            sessions,
+            read_state: ScheduledRunReadStore::open(
+                crate::platform::paths::scheduled_run_read_state_path(),
+            )
+            .expect("read state"),
+            model_bindings: ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
+                .expect("model bindings"),
+            task_kinds: ScheduledTaskKindStore::open(scheduled_task_kinds_path())
+                .expect("task kinds"),
+            ui_metadata: ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
+                .expect("ui metadata"),
+            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
+                .expect("history archive"),
+            operation_locks: ParkingMutex::new(HashMap::new()),
+            pool: None,
+            fallback_model: default_automation_model(None),
+            scheduler_cancel: None,
+            scheduler_handle: None,
+            retention_handle: None,
+        }
     }
 
     // ── VersionedJsonStore<T> 通用核心(合并三 store) ──────────────────
@@ -2090,6 +2134,53 @@ mod tests {
         assert_eq!(reloaded.kind_for("automation-1"), None);
         let cleared = ScheduledTaskKindStore::open(path).expect("reopen cleared store");
         assert_eq!(cleared.kind_for("automation-1"), None);
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn kind_lookup_honors_a_record_written_by_another_process_after_open() {
+        // 该 sidecar 由 CLI(`pinvou scheduled create --kind memory-organize`)
+        // 与本进程共同拥有,而 registry 只在 open() 读一次;基础设施的扫描却每
+        // tick 重新从磁盘读取任务定义。因此 app 启动后由 CLI 写入的 kind 必须
+        // 仍被看见——否则该任务会被当作普通 chat 任务,以无人值守的全权限 Yolo
+        // 会话执行它的 kind 专用提示词,正是不安全的那个方向。
+        let dir = temp_home();
+        let path = dir.join("foreign-writer-task-kinds.json");
+        let store = ScheduledTaskKindStore::open(path.clone()).expect("open kind store");
+        assert_eq!(
+            store.kind_lookup_for("automation-cli"),
+            ScheduledTaskKindLookup::Chat,
+            "nothing on disk yet"
+        );
+
+        // Written straight to the path, bypassing this handle: exactly what the
+        // separate CLI process does.
+        std::fs::write(
+            &path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schema_version": SCHEDULED_TASK_KIND_SCHEMA_VERSION,
+                "tasks": {
+                    "automation-cli": {
+                        "kind": SCHEDULED_TASK_KIND_MEMORY_ORGANIZE,
+                        "updated_at": "2026-01-01T00:00:00Z"
+                    }
+                }
+            }))
+            .expect("serialize foreign registry"),
+        )
+        .expect("write foreign registry");
+
+        assert_eq!(
+            store.kind_lookup_for("automation-cli"),
+            ScheduledTaskKindLookup::MemoryOrganize,
+            "a kind record written after open() must not degrade to a chat task"
+        );
+        assert_eq!(
+            store.kind_lookup_for("automation-missing"),
+            ScheduledTaskKindLookup::Chat,
+            "an id that is absent on disk too is still an ordinary chat task"
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -2966,37 +3057,7 @@ mod tests {
         let previous = std::env::var("PINVOU3_HOME").ok();
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        let sessions = SessionStore::boot().expect("session store");
-        sessions
-            .reconcile_scheduled_profiles()
-            .expect("reconcile scheduled profiles");
-        let read_state =
-            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
-                .expect("read state");
-        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
-            .expect("model bindings");
-        let task_kinds =
-            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
-        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
-            .expect("ui metadata");
-        let manager = AutomationManager::open(scheduled_automation_root()).expect("automations");
-        let state = ScheduledTaskState {
-            automations: Arc::new(tokio::sync::Mutex::new(manager)),
-            task_manager: None,
-            sessions,
-            read_state,
-            model_bindings,
-            task_kinds,
-            ui_metadata,
-            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
-                .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
-            pool: None,
-            fallback_model: default_automation_model(None),
-            scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
-        };
+        let state = state_without_task_manager();
         let created = state
             .create_for_test(CreateScheduledTaskInput {
                 name: "测试计划".to_string(),
@@ -3047,37 +3108,7 @@ mod tests {
         let previous = std::env::var("PINVOU3_HOME").ok();
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        let sessions = SessionStore::boot().expect("session store");
-        sessions
-            .reconcile_scheduled_profiles()
-            .expect("reconcile scheduled profiles");
-        let read_state =
-            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
-                .expect("read state");
-        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
-            .expect("model bindings");
-        let task_kinds =
-            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
-        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
-            .expect("ui metadata");
-        let manager = AutomationManager::open(scheduled_automation_root()).expect("automations");
-        let state = ScheduledTaskState {
-            automations: Arc::new(tokio::sync::Mutex::new(manager)),
-            task_manager: None,
-            sessions,
-            read_state,
-            model_bindings,
-            task_kinds,
-            ui_metadata,
-            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
-                .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
-            pool: None,
-            fallback_model: default_automation_model(None),
-            scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
-        };
+        let state = state_without_task_manager();
 
         // 无 cwds 的任务是一等公民并直接激活；工作间由 automation_id 自动分配。
         let created = state
@@ -3145,37 +3176,7 @@ mod tests {
         let previous = std::env::var("PINVOU3_HOME").ok();
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        let sessions = SessionStore::boot().expect("session store");
-        sessions
-            .reconcile_scheduled_profiles()
-            .expect("reconcile scheduled profiles");
-        let read_state =
-            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
-                .expect("read state");
-        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
-            .expect("model bindings");
-        let task_kinds =
-            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
-        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
-            .expect("ui metadata");
-        let manager = AutomationManager::open(scheduled_automation_root()).expect("automations");
-        let state = ScheduledTaskState {
-            automations: Arc::new(tokio::sync::Mutex::new(manager)),
-            task_manager: None,
-            sessions,
-            read_state,
-            model_bindings,
-            task_kinds,
-            ui_metadata,
-            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
-                .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
-            pool: None,
-            fallback_model: default_automation_model(None),
-            scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
-        };
+        let state = state_without_task_manager();
 
         let created = state
             .create_for_test(CreateScheduledTaskInput {
@@ -3281,37 +3282,7 @@ mod tests {
             "{\"language\":\"zh-Hans\",\"memory_enabled\":true}",
         )
         .expect("write settings");
-        let sessions = SessionStore::boot().expect("session store");
-        sessions
-            .reconcile_scheduled_profiles()
-            .expect("reconcile scheduled profiles");
-        let read_state =
-            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
-                .expect("read state");
-        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
-            .expect("model bindings");
-        let task_kinds =
-            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
-        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
-            .expect("ui metadata");
-        let manager = AutomationManager::open(scheduled_automation_root()).expect("automations");
-        let state = ScheduledTaskState {
-            automations: Arc::new(tokio::sync::Mutex::new(manager)),
-            task_manager: None,
-            sessions,
-            read_state,
-            model_bindings,
-            task_kinds,
-            ui_metadata,
-            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
-                .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
-            pool: None,
-            fallback_model: default_automation_model(None),
-            scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
-        };
+        let state = state_without_task_manager();
 
         // Junk kind: the rejection error matches the mode-check style, and nothing is
         // persisted at all.
@@ -3433,37 +3404,7 @@ mod tests {
         let previous = std::env::var("PINVOU3_HOME").ok();
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        let sessions = SessionStore::boot().expect("session store");
-        sessions
-            .reconcile_scheduled_profiles()
-            .expect("reconcile scheduled profiles");
-        let read_state =
-            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
-                .expect("read state");
-        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
-            .expect("model bindings");
-        let task_kinds =
-            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
-        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
-            .expect("ui metadata");
-        let manager = AutomationManager::open(scheduled_automation_root()).expect("automations");
-        let state = ScheduledTaskState {
-            automations: Arc::new(tokio::sync::Mutex::new(manager)),
-            task_manager: None,
-            sessions,
-            read_state,
-            model_bindings,
-            task_kinds,
-            ui_metadata,
-            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
-                .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
-            pool: None,
-            fallback_model: default_automation_model(None),
-            scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
-        };
+        let state = state_without_task_manager();
 
         let created = state
             .create_for_test(CreateScheduledTaskInput {
@@ -3539,37 +3480,7 @@ mod tests {
         let previous = std::env::var("PINVOU3_HOME").ok();
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        let sessions = SessionStore::boot().expect("session store");
-        sessions
-            .reconcile_scheduled_profiles()
-            .expect("reconcile scheduled profiles");
-        let read_state =
-            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
-                .expect("read state");
-        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
-            .expect("model bindings");
-        let task_kinds =
-            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
-        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
-            .expect("ui metadata");
-        let manager = AutomationManager::open(scheduled_automation_root()).expect("automations");
-        let state = ScheduledTaskState {
-            automations: Arc::new(tokio::sync::Mutex::new(manager)),
-            task_manager: None,
-            sessions,
-            read_state,
-            model_bindings,
-            task_kinds,
-            ui_metadata,
-            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
-                .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
-            pool: None,
-            fallback_model: default_automation_model(None),
-            scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
-        };
+        let state = state_without_task_manager();
         let expected_allow_shell = current_yolo_allow_shell();
 
         let created = state
@@ -3791,37 +3702,7 @@ mod tests {
         let previous = std::env::var("PINVOU3_HOME").ok();
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        let sessions = SessionStore::boot().expect("session store");
-        sessions
-            .reconcile_scheduled_profiles()
-            .expect("reconcile scheduled profiles");
-        let read_state =
-            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
-                .expect("read state");
-        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
-            .expect("model bindings");
-        let task_kinds =
-            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
-        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
-            .expect("ui metadata");
-        let manager = AutomationManager::open(scheduled_automation_root()).expect("automations");
-        let state = ScheduledTaskState {
-            automations: Arc::new(tokio::sync::Mutex::new(manager)),
-            task_manager: None,
-            sessions,
-            read_state,
-            model_bindings,
-            task_kinds,
-            ui_metadata,
-            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
-                .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
-            pool: None,
-            fallback_model: default_automation_model(None),
-            scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
-        };
+        let state = state_without_task_manager();
 
         let error = state
             .create_for_test(CreateScheduledTaskInput {
@@ -3869,37 +3750,7 @@ mod tests {
         let previous = std::env::var("PINVOU3_HOME").ok();
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        let sessions = SessionStore::boot().expect("session store");
-        sessions
-            .reconcile_scheduled_profiles()
-            .expect("reconcile scheduled profiles");
-        let read_state =
-            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
-                .expect("read state");
-        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
-            .expect("model bindings");
-        let task_kinds =
-            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
-        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
-            .expect("ui metadata");
-        let manager = AutomationManager::open(scheduled_automation_root()).expect("automations");
-        let state = ScheduledTaskState {
-            automations: Arc::new(tokio::sync::Mutex::new(manager)),
-            task_manager: None,
-            sessions,
-            read_state,
-            model_bindings,
-            task_kinds,
-            ui_metadata,
-            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
-                .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
-            pool: None,
-            fallback_model: default_automation_model(None),
-            scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
-        };
+        let state = state_without_task_manager();
         let created = state
             .create_for_test(CreateScheduledTaskInput {
                 name: "valid mode".to_string(),
@@ -4005,11 +3856,13 @@ mod tests {
             error: None,
         };
 
-        let owned = serde_json::to_value(map_scheduled_run(
+        let owned = serde_json::to_value(map_scheduled_run_with_task(
             owned_run.clone(),
             &store,
             &read_state,
             &session_titles,
+            None,
+            None,
         ))
         .expect("serialize owned run");
         assert_eq!(
@@ -4020,7 +3873,7 @@ mod tests {
         assert!(owned.get("outputPaths").is_none());
         assert!(owned.get("messageId").is_none());
 
-        let mismatched = serde_json::to_value(map_scheduled_run(
+        let mismatched = serde_json::to_value(map_scheduled_run_with_task(
             AutomationRunRecord {
                 automation_id: "automation-2".to_string(),
                 ..owned_run.clone()
@@ -4028,6 +3881,8 @@ mod tests {
             &store,
             &read_state,
             &session_titles,
+            None,
+            None,
         ))
         .expect("serialize mismatched run");
         assert!(
@@ -4041,11 +3896,13 @@ mod tests {
         )
         .expect("remove scheduled session payload");
         session_titles.remove(&saved.metadata.id);
-        let missing_payload = serde_json::to_value(map_scheduled_run(
+        let missing_payload = serde_json::to_value(map_scheduled_run_with_task(
             owned_run,
             &store,
             &read_state,
             &session_titles,
+            None,
+            None,
         ))
         .expect("serialize run with missing session payload");
         assert!(
@@ -4276,37 +4133,7 @@ mod tests {
         let previous = std::env::var("PINVOU3_HOME").ok();
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        let sessions = SessionStore::boot().expect("session store");
-        sessions
-            .reconcile_scheduled_profiles()
-            .expect("reconcile scheduled profiles");
-        let read_state =
-            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
-                .expect("read state");
-        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
-            .expect("model bindings");
-        let task_kinds =
-            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
-        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
-            .expect("ui metadata");
-        let manager = AutomationManager::open(scheduled_automation_root()).expect("automations");
-        let state = ScheduledTaskState {
-            automations: Arc::new(tokio::sync::Mutex::new(manager)),
-            task_manager: None,
-            sessions,
-            read_state,
-            model_bindings,
-            task_kinds,
-            ui_metadata,
-            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
-                .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
-            pool: None,
-            fallback_model: default_automation_model(None),
-            scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
-        };
+        let state = state_without_task_manager();
         let created = state
             .create_for_test(CreateScheduledTaskInput {
                 name: "serialized delete".to_string(),
@@ -4364,37 +4191,7 @@ mod tests {
         let previous = std::env::var("PINVOU3_HOME").ok();
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        let sessions = SessionStore::boot().expect("session store");
-        sessions
-            .reconcile_scheduled_profiles()
-            .expect("reconcile scheduled profiles");
-        let read_state =
-            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
-                .expect("read state");
-        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
-            .expect("model bindings");
-        let task_kinds =
-            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
-        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
-            .expect("ui metadata");
-        let manager = AutomationManager::open(scheduled_automation_root()).expect("automations");
-        let mut state = ScheduledTaskState {
-            automations: Arc::new(tokio::sync::Mutex::new(manager)),
-            task_manager: None,
-            sessions,
-            read_state,
-            model_bindings,
-            task_kinds,
-            ui_metadata,
-            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
-                .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
-            pool: None,
-            fallback_model: default_automation_model(None),
-            scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
-        };
+        let mut state = state_without_task_manager();
         let created = state
             .create_for_test(CreateScheduledTaskInput {
                 name: "cleanup failure".to_string(),
@@ -4420,10 +4217,8 @@ mod tests {
             created.id.clone(),
             HashSet::from(["viewed-run".to_string()]),
         );
-        state.read_state = ScheduledRunReadStore {
-            path: Arc::new(blocking_parent.join("read-state.json")),
-            registry: Arc::new(RwLock::new(registry)),
-        };
+        state.read_state =
+            ScheduledRunReadStore::from_registry(blocking_parent.join("read-state.json"), registry);
 
         let deleted = state
             .delete_for_test(created.id.clone())
@@ -4460,37 +4255,7 @@ mod tests {
         let previous = std::env::var("PINVOU3_HOME").ok();
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        let sessions = SessionStore::boot().expect("session store");
-        sessions
-            .reconcile_scheduled_profiles()
-            .expect("reconcile scheduled profiles");
-        let read_state =
-            ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
-                .expect("read state");
-        let model_bindings = ScheduledTaskModelBindingStore::open(scheduled_model_bindings_path())
-            .expect("model bindings");
-        let task_kinds =
-            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("task kinds");
-        let ui_metadata = ScheduledTaskUiMetadataStore::open(scheduled_task_ui_metadata_path())
-            .expect("ui metadata");
-        let manager = AutomationManager::open(scheduled_automation_root()).expect("automations");
-        let state = ScheduledTaskState {
-            automations: Arc::new(tokio::sync::Mutex::new(manager)),
-            task_manager: None,
-            sessions,
-            read_state,
-            model_bindings,
-            task_kinds,
-            ui_metadata,
-            history_archive: ScheduledHistoryArchiveStore::open(scheduled_history_archive_path())
-                .expect("history archive"),
-            operation_locks: ParkingMutex::new(HashMap::new()),
-            pool: None,
-            fallback_model: default_automation_model(None),
-            scheduler_cancel: None,
-            scheduler_handle: None,
-            retention_handle: None,
-        };
+        let state = state_without_task_manager();
         let input = |kind: Option<String>| CreateScheduledTaskInput {
             name: "记忆整理".to_string(),
             prompt: "整理长期记忆".to_string(),

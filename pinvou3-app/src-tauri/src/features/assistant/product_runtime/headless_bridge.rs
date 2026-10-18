@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -29,7 +29,7 @@ use crate::features::assistant::product_runtime::eval_tool_policy::{
     EvalToolPolicy, resolve_eval_policy,
 };
 use crate::features::assistant::product_runtime::{
-    EnginePoolRuntime, EvalSuiteModelGuard, SessionSpec, TurnInput,
+    EnginePoolRuntime, EvalSuiteModelGuard, SessionSpec, TurnInput, note_stderr,
 };
 use crate::features::{knowledge, sessions::SessionStore};
 
@@ -429,24 +429,20 @@ impl Drop for PrepareCleanupGuard {
 
 impl ProductHeadlessBackend {
     pub fn from_runtime(runtime: Arc<dyn ProductRuntimePort>) -> Self {
-        Self {
-            runtime,
-            runtime_sessions: Arc::new(Mutex::new(HashMap::new())),
-            private_outputs: Arc::new(Mutex::new(PrivateOutputs::default())),
-            attachment_workspaces: Arc::new(Mutex::new(HashMap::new())),
-            tool_policies: Arc::new(Mutex::new(HashMap::new())),
-            suite_model_identity: None,
-        }
+        Self::with_suite_model_identity(runtime, None)
     }
 
-    fn with_identity(runtime: Arc<dyn ProductRuntimePort>, identity: SuiteModelIdentity) -> Self {
+    fn with_suite_model_identity(
+        runtime: Arc<dyn ProductRuntimePort>,
+        identity: Option<SuiteModelIdentity>,
+    ) -> Self {
         Self {
             runtime,
             runtime_sessions: Arc::new(Mutex::new(HashMap::new())),
             private_outputs: Arc::new(Mutex::new(PrivateOutputs::default())),
             attachment_workspaces: Arc::new(Mutex::new(HashMap::new())),
             tool_policies: Arc::new(Mutex::new(HashMap::new())),
-            suite_model_identity: Some(identity),
+            suite_model_identity: identity,
         }
     }
 
@@ -458,12 +454,12 @@ impl ProductHeadlessBackend {
             suite_model.identity().model.clone(),
         )
         .map_err(|_| anyhow::anyhow!("unsafe suite model identity"))?;
-        Ok(Self::with_identity(
+        Ok(Self::with_suite_model_identity(
             Arc::new(EnginePoolPort {
                 runtime,
                 suite_model,
             }),
-            identity,
+            Some(identity),
         ))
     }
 
@@ -563,13 +559,16 @@ impl ProductHeadlessBackend {
         Ok(())
     }
 
-    async fn fail_run_locked<T>(
+    /// Shared teardown behind `fail_run_locked` / `finish_failed_run_locked`:
+    /// drop the session's private state, close the runtime once, and remove
+    /// the id slot only while it still holds THIS session (the `Arc::ptr_eq`
+    /// guard keeps a newer session reusing the id slot intact).
+    async fn teardown_failed_run(
         &self,
         session_id: &str,
         runtime_session: &RuntimeSession,
         mut state: tokio::sync::OwnedMutexGuard<RuntimeSessionState>,
-        error: AgentBackendError,
-    ) -> Result<T, AgentBackendError> {
+    ) {
         let _workspace = self.take_private_session_state(session_id);
         let _ = self.close_runtime_locked(session_id, &mut state).await;
         let closed = *state == RuntimeSessionState::Closed;
@@ -584,6 +583,34 @@ impl ProductHeadlessBackend {
                 }
             }
         }
+    }
+
+    /// Roll back a failed prepare tail (both `prepare` registration failures
+    /// below): drop the private state registered so far and close the runtime
+    /// session. When the close fails the cleanup guard stays armed so its
+    /// Drop retries the close on unwind.
+    async fn abort_failed_prepare(
+        &self,
+        cleanup: &mut PrepareCleanupGuard,
+        session_id: &str,
+        code: &'static str,
+    ) -> AgentBackendError {
+        let _ = self.take_private_session_state(session_id);
+        if self.close_runtime_session(session_id).await.is_ok() {
+            cleanup.disarm();
+        }
+        backend_error(code)
+    }
+
+    async fn fail_run_locked<T>(
+        &self,
+        session_id: &str,
+        runtime_session: &RuntimeSession,
+        state: tokio::sync::OwnedMutexGuard<RuntimeSessionState>,
+        error: AgentBackendError,
+    ) -> Result<T, AgentBackendError> {
+        self.teardown_failed_run(session_id, runtime_session, state)
+            .await;
         Err(error)
     }
 
@@ -591,25 +618,13 @@ impl ProductHeadlessBackend {
         &self,
         session_id: &str,
         runtime_session: &RuntimeSession,
-        mut state: tokio::sync::OwnedMutexGuard<RuntimeSessionState>,
+        state: tokio::sync::OwnedMutexGuard<RuntimeSessionState>,
         turn: ProductTurnOutcome,
         failure_code: &str,
         elapsed: Duration,
     ) -> Result<AgentTaskOutcome, AgentBackendError> {
-        let _workspace = self.take_private_session_state(session_id);
-        let _ = self.close_runtime_locked(session_id, &mut state).await;
-        let closed = *state == RuntimeSessionState::Closed;
-        drop(state);
-        if closed {
-            if let Ok(mut sessions) = self.runtime_sessions.lock() {
-                if sessions
-                    .get(session_id)
-                    .is_some_and(|current| Arc::ptr_eq(current, runtime_session))
-                {
-                    sessions.remove(session_id);
-                }
-            }
-        }
+        self.teardown_failed_run(session_id, runtime_session, state)
+            .await;
         let mut outcome = AgentTaskOutcome::failed(elapsed, failure_code)
             .with_model_request_metrics(turn.model_requests);
         if let Some(usage) = turn.usage {
@@ -661,15 +676,29 @@ impl ProductHeadlessBackend {
 
 /// Upper bound on staged attachments; shared with the agent request path so
 /// the two headless pipelines cannot drift apart.
-pub(crate) const MAX_STAGED_ATTACHMENTS: usize = 16;
+/// `pub` for the headless CLI's `agent run --attach` pre-boot gate
+/// (round-40 review): the CLI refuses over-cap attachments BEFORE the
+/// windowless host boots — the exact "doomed after expensive setup" the
+/// engine-side `validate_attachments` check runs too late to prevent — and
+/// consumes these constants rather than drifting copies.
+pub const MAX_STAGED_ATTACHMENTS: usize = 16;
 /// Per-attachment size cap in bytes (20 MiB).
 /// Same cap the staging copier (`copy_bounded` at the shared call sites)
 /// enforces: tied to `file_ingest::MAX_FILE_BYTES` at compile time so the
 /// request validator and the copier cannot drift apart.
-pub(crate) const MAX_STAGED_ATTACHMENT_BYTES: u64 =
-    crate::features::files::file_ingest::MAX_FILE_BYTES;
+/// Deliberately an INDEPENDENT literal, not an alias of
+/// `files::file_ingest::MAX_FILE_BYTES`: the two caps guard different sides
+/// of the same handoff (validate before staging, bounded copy during).
+/// Round-51 review: the constant moved to `attachments.rs` (an
+/// unconditionally compiled module) as the single definition — the old
+/// second literal here plus the benchmark-hooks-only compile-time assert
+/// left the tie unpinned in default GUI builds. This re-export keeps the
+/// established paths (`pinvou3_lib::headless_bridge::…` for the CLI's
+/// `agent_task`, the `agentic_task` import) valid; an alias can never
+/// drift.
+pub use crate::features::assistant::attachments::MAX_STAGED_ATTACHMENT_BYTES;
 /// Aggregate size cap across one attachment batch (100 MiB).
-pub(crate) const MAX_STAGED_ATTACHMENTS_TOTAL_BYTES: u64 = 100 * 1024 * 1024;
+pub const MAX_STAGED_ATTACHMENTS_TOTAL_BYTES: u64 = 100 * 1024 * 1024;
 
 fn is_safe_attachment_name(name: &str) -> bool {
     !name.is_empty()
@@ -984,11 +1013,9 @@ impl HeadlessAgentBackend for ProductHeadlessBackend {
             .map(|mut policies| policies.insert(id.clone(), policy).is_none())
             .unwrap_or(false);
         if !policy_inserted {
-            let _ = self.take_private_session_state(&id);
-            if self.close_runtime_session(&id).await.is_ok() {
-                cleanup.disarm();
-            }
-            return Err(backend_error("prepare_failed"));
+            return Err(self
+                .abort_failed_prepare(&mut cleanup, &id, "prepare_failed")
+                .await);
         }
         if let Some(workspace) = workspace {
             let inserted = if let Ok(mut workspaces) = self.attachment_workspaces.lock() {
@@ -998,11 +1025,9 @@ impl HeadlessAgentBackend for ProductHeadlessBackend {
                 false
             };
             if !inserted {
-                let _ = self.take_private_session_state(&id);
-                if self.close_runtime_session(&id).await.is_ok() {
-                    cleanup.disarm();
-                }
-                return Err(backend_error("attachment_staging_failed"));
+                return Err(self
+                    .abort_failed_prepare(&mut cleanup, &id, "attachment_staging_failed")
+                    .await);
             }
         }
         cleanup.disarm();
@@ -1105,32 +1130,22 @@ impl HeadlessAgentBackend for ProductHeadlessBackend {
                     SafeRunStatus::Failed,
                     started,
                 );
-                if staged_workspace.is_some() && error.to_string() == "unsupported_tool_policy" {
-                    return self
-                        .fail_run_locked(
-                            session_id,
-                            &runtime_session,
-                            runtime_state,
-                            backend_error("attachments_runtime_unsupported"),
-                        )
-                        .await;
-                }
-                for code in [
-                    "attachments_runtime_unsupported",
-                    "attachment_staging_failed",
-                ] {
-                    if error.to_string() == code {
-                        return self
-                            .fail_run_locked(
-                                session_id,
-                                &runtime_session,
-                                runtime_state,
-                                backend_error(code),
-                            )
-                            .await;
+                // A failed guard on "unsupported_tool_policy" falls through to
+                // classify_product_failure, whose exact-match arm returns
+                // "unsupported_tool_policy" — the pre-collapse if/for arms
+                // mapped identically.
+                let error_text = error.to_string();
+                let failure_code = match error_text.as_str() {
+                    "unsupported_tool_policy" if staged_workspace.is_some() => {
+                        "attachments_runtime_unsupported"
                     }
-                }
-                let failure_code = classify_product_failure(&error.to_string());
+                    // Exact-code arms re-yield the 'static literals: binding the
+                    // matched text would carry error_text's non-static borrow,
+                    // which backend_error(&'static str) rejects.
+                    "attachments_runtime_unsupported" => "attachments_runtime_unsupported",
+                    "attachment_staging_failed" => "attachment_staging_failed",
+                    _ => classify_product_failure(&error_text),
+                };
                 return self
                     .fail_run_locked(
                         session_id,
@@ -1331,6 +1346,28 @@ impl PrivateOutputResolver for ProductHeadlessBackend {
     }
 }
 
+/// Debug-only fail-fast for the windowless host: refuse to resolve the real
+/// user data home. In-process callers (tests, harnesses) that forget to set
+/// PINVOU3_HOME would otherwise boot `SessionStore` against the real
+/// `~/.pinvou3` — junk sessions, plus the boot retention sweep silently
+/// evicting the user's oldest real sessions (the observed incident). The
+/// predicate mirrors the store's home resolver (`platform::paths::pinvou3_home`
+/// reads `std::env::var`, so a non-UTF-8 value falls back to the real home
+/// and an empty value resolves `sessions/` relative to the CWD) — only a
+/// set, non-empty UTF-8 value opens the gate. The gate is
+/// debug-only on purpose: release CLI users legitimately run with
+/// PINVOU3_HOME unset against the real home, and the GUI boots via
+/// `SessionStore::boot_for_process_startup` (lib.rs), never through here.
+#[cfg(debug_assertions)]
+fn ensure_isolated_debug_home() -> Result<()> {
+    match std::env::var("PINVOU3_HOME") {
+        Ok(home) if !home.is_empty() => Ok(()),
+        _ => anyhow::bail!(
+            "run_windowless_host refuses the real user data home in debug builds: set PINVOU3_HOME to an isolated, non-empty temp dir (see platform::test_support::with_temp_home)"
+        ),
+    }
+}
+
 /// Shared bootstrap of the windowless product host: rustls/env/tokio/the
 /// single generate_context expansion, the store boot sequence, `build_pool`,
 /// and finally handing `EnginePool + SessionStore` to the work closure. Both
@@ -1343,14 +1380,9 @@ where
     Work: FnOnce(EnginePool, SessionStore) -> WorkFuture + Send + 'static,
     WorkFuture: Future<Output = Result<T>> + Send + 'static,
 {
-    crate::install_rustls_provider();
-    crate::ensure_release_env();
-    crate::startup_process_env();
-    let async_runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .thread_stack_size(16 * 1024 * 1024)
-        .build()
-        .context("build headless async runtime")?;
+    #[cfg(debug_assertions)]
+    ensure_isolated_debug_home()?;
+    let async_runtime = claim_headless_host_runtime()?;
     tauri::async_runtime::set(async_runtime.handle().clone());
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
     // Reuse lib.rs's single generate_context expansion point: a second
@@ -1358,40 +1390,188 @@ where
     // _EMBED_INFO_PLIST (embed_plist) link errors on macOS.
     let mut context = crate::build_tauri_context();
     context.config_mut().app.windows.clear();
-    let app = tauri::Builder::default()
-        .setup(move |app| {
-            // Same order as the GUI host (the lib.rs
-            // `disabled_bundles_migration` marks): the fresh-vs-upgrade
-            // verdict must be read and frozen before first-startup writes
-            // such as SessionStore boot / engine spawn (sessions/, default
-            // settings.json) — otherwise a brand-new home directory first
-            // touched by a windowless host freezes a polluted "upgrade"
-            // verdict, plain flips back to fully open, and later GUI starts
-            // respect the already-frozen marker (review #455 blocking item 3).
-            let _ = crate::features::marketplace::scope::load_disabled_bundles();
-            if let Ok(resource_dir) = app.path().resource_dir() {
-                crate::platform::paths::set_runtime_resource_dir(resource_dir);
-            }
-            let store = SessionStore::boot().context("boot headless session store")?;
-            store.load_session_models();
-            store.load_pinned_sessions();
-            store.load_hidden_sessions();
-            app.manage(store.clone());
-            let pool = build_pool(app.handle().clone(), store.clone())?;
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                let result = work(pool, store).await;
-                let _ = result_tx.send(result);
-                handle.exit(0);
-            });
-            Ok(())
-        })
-        .build(context)
-        .context("build windowless Pinvou host")?;
-    app.run_return(|_, _| {});
-    result_rx
-        .blocking_recv()
-        .context("headless host exited before work completed")?
+    // The bootstrap and the event loop run on the caller's MAIN thread. In
+    // embedded environments where tauri's EventLoop refuses a non-main
+    // thread — and on any other bootstrap fault — the unwind used to take
+    // the whole process down with exit 101, outside the 0/1/2 exit-code
+    // contract every pinvou-cli family documents. Contained here at the
+    // single shared bootstrap, so EVERY host lane (monitor, knowledge,
+    // voice, agent task, benchmarks, the organize lanes) degrades to an
+    // ordinary Err; the two per-call-site catch_unwind wraps this replaces
+    // covered only their own lanes.
+    let host_outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<T> {
+        let app = tauri::Builder::default()
+            .setup(move |app| {
+                // Same order as the GUI host (the lib.rs
+                // `disabled_bundles_migration` marks): the fresh-vs-upgrade
+                // verdict must be read and frozen before first-startup writes
+                // such as SessionStore boot / engine spawn (sessions/, default
+                // settings.json) — otherwise a brand-new home directory first
+                // touched by a windowless host freezes a polluted "upgrade"
+                // verdict, plain flips back to fully open, and later GUI starts
+                // respect the already-frozen marker (review #455 blocking item 3).
+                // The shared helper mirrors a freeze-persist failure onto the
+                // startup timeline.
+                crate::features::marketplace::scope::load_disabled_bundles_startup_mirrored();
+                if let Ok(resource_dir) = app.path().resource_dir() {
+                    crate::platform::paths::set_runtime_resource_dir(resource_dir);
+                }
+                let store = SessionStore::boot().context("boot headless session store")?;
+                store.load_session_models();
+                store.load_pinned_sessions();
+                store.load_hidden_sessions();
+                app.manage(store.clone());
+                // The kb tools' visibility predicate consults these two
+                // services (same single source as the GUI, lib.rs); without
+                // managing them here the headless policy saw `None` on every
+                // spawn and denied kb_search/kb_open_source even with a fully
+                // indexed local KB or mounted remote collections. Both
+                // constructions are best-effort, exactly like the GUI's:
+                // a failed init logs and leaves the tools denied.
+                match knowledge::KnowledgeService::new(&knowledge::default_db_path()) {
+                    Ok(service) => {
+                        app.manage(service);
+                    }
+                    // `note_stderr`, not a bare eprintln!: a closed stderr
+                    // (the headless CLI's `2>&1 | head`) turns a plain
+                    // eprintln! into a panic, which the catch_unwind around
+                    // .setup() would degrade into a failed run — this arm is
+                    // the documented log-and-leave-tools-denied degrade.
+                    Err(error) => note_stderr(&format!(
+                        "[headless] knowledge service init failed: {error:#}"
+                    )),
+                }
+                match crate::features::remote_knowledge::RemoteKnowledgeService::load(
+                    crate::features::remote_knowledge::RemoteKnowledgeService::default_path(),
+                ) {
+                    Ok(service) => {
+                        app.manage(service);
+                    }
+                    Err(error) => {
+                        // Same closed-stderr panic hazard as above.
+                        note_stderr(&format!(
+                            "[headless] remote knowledge service init failed: {error}"
+                        ))
+                    }
+                }
+                let pool = build_pool(app.handle().clone(), store.clone())?;
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    // The work future runs on a nested task so a panic inside
+                    // it surfaces as a JoinError instead of being swallowed
+                    // by tokio: an unguarded panic would skip the send and
+                    // the exit below, and the caller would block on
+                    // `run_return`'s windowless event loop forever, outside
+                    // the 0/1/2 exit contract. The teardown's deliberate
+                    // re-raise after a pinned restore lands here too and
+                    // degrades to an ordinary Err like any other fault.
+                    let joined = tauri::async_runtime::spawn(work(pool, store));
+                    let result = match joined.await {
+                        Ok(result) => result,
+                        Err(join_error) => {
+                            Err(anyhow::anyhow!("windowless work failed: {join_error}"))
+                        }
+                    };
+                    let _ = result_tx.send(result);
+                    handle.exit(0);
+                });
+                Ok(())
+            })
+            .build(context)
+            .context("build windowless Pinvou host")?;
+        app.run_return(|_, _| {});
+        Ok(result_rx
+            .blocking_recv()
+            .context("headless host exited before work completed")??)
+    }));
+    match host_outcome {
+        Ok(result) => result,
+        Err(panic) => {
+            let detail = panic
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| {
+                    panic
+                        .downcast_ref::<&str>()
+                        .map(|reason| (*reason).to_owned())
+                })
+                .unwrap_or_else(|| "unknown panic".to_owned());
+            Err(anyhow::anyhow!("windowless host panicked: {detail}"))
+        }
+    }
+}
+
+/// Process latch for the at-most-once precondition shared by BOTH host
+/// lanes — [`run_bare_host`] and [`run_windowless_host`] (round-43 review
+/// doc fix: the comment used to name only the bare lane).
+static BARE_HOST_TAKEN: AtomicBool = AtomicBool::new(false);
+
+/// The bootstrap shared by BOTH host lanes above: the process env setup
+/// (rustls, release env, startup process env), the [`BARE_HOST_TAKEN`]
+/// at-most-once latch (bailing with the lane-collision message), and the
+/// shared multi-thread tokio runtime build. The caller alone performs
+/// `tauri::async_runtime::set` on the returned runtime's handle, keeping
+/// each host's local flow readable. (round-47 review: the lane-collision
+/// message used to blame run_bare_host even when the windowless lane took
+/// the latch first)
+fn claim_headless_host_runtime() -> anyhow::Result<tokio::runtime::Runtime> {
+    crate::install_rustls_provider();
+    crate::ensure_release_env();
+    crate::startup_process_env();
+    // Same as the GUI host (lib.rs run()): the startup timeline must be
+    // initialized before the freeze read in the setup closure — this host
+    // attaches no log plugin either, so without the file sink the
+    // freeze-persist CRITICAL below would reach only stderr and the
+    // "the startup timeline is the only durable channel" claim would be
+    // false exactly where it matters.
+    crate::platform::startup::init();
+    if BARE_HOST_TAKEN
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        anyhow::bail!(
+            "a windowless host lane (run_windowless_host or run_bare_host) already ran in this process: tauri::async_runtime::set panics on a second runtime, and both helpers share one latch and must stay the process's only host lanes"
+        );
+    }
+    let async_runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(16 * 1024 * 1024)
+        .build()
+        .context("build headless async runtime")?;
+    Ok(async_runtime)
+}
+
+/// Bare async host for lanes that need the app crate's runtime environment
+/// (rustls, release env, the shared multi-thread tokio runtime with
+/// `tauri::async_runtime` wired) but touch neither the engine pool nor the
+/// session store: the remote-knowledge network lanes and the monitor
+/// probes. Booting the full windowless product host for these built a whole
+/// Tauri context and ran `SessionStore::boot` — whose retention sweep can
+/// evict the user's oldest sessions, a destructive side effect a status
+/// command must not carry — for closures that ignore both handles, and it
+/// made the lanes need a display on headless Linux (the Tauri event loop).
+/// No event loop and no app context here: the work future runs on the
+/// runtime directly as one spawned task, whose JoinHandle contains panics
+/// as the same "headless work failed" JoinError as any other fault. One
+/// hard precondition, unlike the windowless
+/// product host (which contains its whole boot): the WORK future is
+/// panic-contained, but the boot itself is not — `tauri::async_runtime::set`
+/// panics if a runtime was already initialized in this process, so this
+/// helper must stay at-most-once per process and never run beside another
+/// host lane.
+pub fn run_bare_host<T, Work, WorkFuture>(work: Work) -> Result<T>
+where
+    T: Send + 'static,
+    Work: FnOnce() -> WorkFuture + Send + 'static,
+    WorkFuture: Future<Output = Result<T>> + Send + 'static,
+{
+    let async_runtime = claim_headless_host_runtime()?;
+    tauri::async_runtime::set(async_runtime.handle().clone());
+    let joined = async_runtime.spawn(work());
+    match async_runtime.block_on(joined) {
+        Ok(result) => result,
+        Err(join_error) => Err(anyhow::anyhow!("headless work failed: {join_error}")),
+    }
 }
 
 pub fn run_headless_host<T, Work, WorkFuture>(work: Work) -> Result<T>
@@ -1407,8 +1587,11 @@ where
     })
 }
 
-/// Build an EnginePool with the same tool_policy combination as the GUI. The
-/// tool_factory intentionally stays narrower than the GUI's: computer_use is
+/// Build an EnginePool with the same tool_policy combination as the GUI:
+/// `unavailable_tool_names` plus the kb pair gated by the same
+/// `KnowledgeService::kb_tools_usable` predicate over the services the
+/// windowless setup manages above. The tool_factory intentionally stays
+/// narrower than the GUI's: computer_use is
 /// not constructed here because headless hosts have no consent UI to answer
 /// its grant/confirm prompts (the tool would be unusable and unsupervised).
 /// The `agentic_task` headless host reuses this constructor so agentic turns
@@ -1428,10 +1611,22 @@ pub(crate) fn build_pool(app: tauri::AppHandle, store: SessionStore) -> Result<E
     });
     let tool_policy: ToolPolicy = Arc::new(|app| {
         let mut tools = crate::features::marketplace::unavailable_tool_names();
-        let kb_usable = app
-            .try_state::<knowledge::KnowledgeService>()
-            .map(|service| service.has_indexed_content() && service.semantic_ready())
-            .unwrap_or(false);
+        // The GUI's single-source predicate (KnowledgeService::kb_tools_usable
+        // via lib.rs): visibility tracks CONTENT/CONNECTIONS, deliberately not
+        // the embedding model's load state — a visibility that fluctuates with
+        // the model makes the snapshot recalc write kb_search into disallowed
+        // and the tool's on-demand self-heal reload unreachable. The old
+        // headless formula (`has_indexed_content() && semantic_ready()`) was
+        // both a different rule and moot: no service was managed here, so kb
+        // tools were denied on every headless run.
+        let kb_usable = knowledge::KnowledgeService::kb_tools_usable(
+            app.try_state::<knowledge::KnowledgeService>()
+                .map(|service| service.has_indexed_content())
+                .unwrap_or(false),
+            app.try_state::<crate::features::remote_knowledge::RemoteKnowledgeService>()
+                .map(|service| service.has_connections())
+                .unwrap_or(false),
+        );
         if !kb_usable {
             tools.extend(["kb_search".to_owned(), "kb_open_source".to_owned()]);
         }
@@ -1650,10 +1845,35 @@ mod tests {
         async fn close(&self, _session_id: &str) -> anyhow::Result<()> {
             Ok(())
         }
+
+        async fn run_with_policy(
+            &self,
+            _session_id: &str,
+            _prompt: &str,
+            _policy: ProductToolPolicy,
+        ) -> anyhow::Result<ProductTurnOutcome> {
+            // The trait default already fails closed without touching the
+            // counter; record the consult, then reproduce the same bail.
+            self.run_calls.fetch_add(1, Ordering::Relaxed);
+            anyhow::bail!("unsupported_tool_policy")
+        }
+
+        async fn run_with_staged_attachments_and_policy(
+            &self,
+            _session_id: &str,
+            _prompt: &str,
+            _staged_workspace: &std::path::Path,
+            _policy: ProductToolPolicy,
+        ) -> anyhow::Result<ProductTurnOutcome> {
+            // Same boundary consult for the staged-attachments lane: record
+            // the call, then fail closed with the trait default's error.
+            self.run_calls.fetch_add(1, Ordering::Relaxed);
+            anyhow::bail!("unsupported_tool_policy")
+        }
     }
 
     #[tokio::test]
-    async fn policy_defaults_fail_closed_without_calling_legacy_runtime() {
+    async fn policy_run_lanes_fail_closed_at_the_runtime_boundary() {
         let runtime = LegacyRuntime::default();
 
         let error = runtime
@@ -1665,7 +1885,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), "unsupported_tool_policy");
-        assert_eq!(runtime.run_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(runtime.run_calls.load(Ordering::Relaxed), 1);
 
         let workspace = tempfile::tempdir().unwrap();
         let error = runtime
@@ -1678,7 +1898,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.to_string(), "unsupported_tool_policy");
-        assert_eq!(runtime.run_calls.load(Ordering::Relaxed), 0);
+        assert_eq!(runtime.run_calls.load(Ordering::Relaxed), 2);
     }
 
     #[derive(Default)]
@@ -2579,5 +2799,106 @@ mod tests {
         pending.abort();
         assert!(pending.await.unwrap_err().is_cancelled());
         runtime.close_called.notified().await;
+    }
+
+    /// Last line of defense for the session-test-leak bug class: any
+    /// in-process caller that boots the windowless host without
+    /// PINVOU3_HOME must fail fast here, because the store would otherwise
+    /// silently resolve the real `~/.pinvou3` — junk sessions plus the boot
+    /// retention sweep evicting the user's oldest real sessions (the
+    /// observed incident). Debug-only: release CLI users legitimately run
+    /// with PINVOU3_HOME unset against the real home, and the GUI boots via
+    /// `SessionStore::boot_for_process_startup` (lib.rs), never through
+    /// here.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn windowless_host_refuses_unset_pinvou3_home_in_debug() {
+        use crate::platform::test_support::locked_env;
+
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME", "HOME", "USERPROFILE"]);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK via locked_env; env writes serialized in-process.
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
+        // If the gate below is ever dropped, these redirects keep the
+        // resulting store boot off the real user home (`user_home_dir()`
+        // prefers HOME on macOS/Linux and USERPROFILE on Windows) while the
+        // assertion still fails.
+        let fake_home = std::env::temp_dir().join(format!(
+            "pinvou3-headless-gate-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        std::fs::create_dir_all(&fake_home).unwrap();
+        // SAFETY: holding platform::paths::tests::ENV_LOCK via locked_env.
+        unsafe { std::env::set_var("HOME", &fake_home) };
+        // SAFETY: holding platform::paths::tests::ENV_LOCK via locked_env.
+        unsafe { std::env::set_var("USERPROFILE", &fake_home) };
+
+        // The macOS tao event loop cannot be created off the main thread and
+        // a headless Linux CI runner has no display: past the gate, the host
+        // dies inside `Builder::build` before any store boot. catch_unwind
+        // turns that panic — and any other unrelated failure, or a full
+        // success — into one string the assertion can reject.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            super::run_windowless_host(|_pool, _store| async move { Ok::<(), anyhow::Error>(()) })
+        }));
+        let description = match outcome {
+            Ok(Ok(())) => "the host booted and completed without error".to_owned(),
+            Ok(Err(error)) => format!("{error:#}"),
+            Err(payload) => match payload.downcast_ref::<&str>() {
+                Some(message) => (*message).to_owned(),
+                None => payload
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .unwrap_or_else(|| "opaque panic payload".to_owned()),
+            },
+        };
+        // Clean up before asserting so the temp home does not leak when the
+        // assertion fails.
+        let _ = std::fs::remove_dir_all(&fake_home);
+        assert!(
+            description.contains("PINVOU3_HOME"),
+            "run_windowless_host must fail fast on an unset PINVOU3_HOME in debug builds; got: {description}"
+        );
+    }
+
+    /// The gate itself must open on an isolated temp home, so a host caller
+    /// that did its isolation duty is not refused. Asserted on the gate
+    /// helper rather than through `run_windowless_host`: past the gate the
+    /// full host runs (tao event loop cannot leave the main thread on macOS,
+    /// headless Linux CI has no display), so the public path has no cheap
+    /// success to reach — the caller-visible pass condition is pinned by
+    /// `windowless_host_refuses_unset_pinvou3_home_in_debug` above.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn isolated_debug_home_gate_opens_with_temp_pinvou3_home() {
+        use crate::platform::test_support::with_temp_home;
+
+        with_temp_home("headless-gate-open", || {
+            assert!(
+                super::ensure_isolated_debug_home().is_ok(),
+                "an isolated temp PINVOU3_HOME must pass the debug home gate"
+            );
+        });
+    }
+
+    /// An EMPTY PINVOU3_HOME must not open the gate: the store's resolver
+    /// would take the value verbatim and root `sessions/` relative to the
+    /// process CWD — the same silent-misdirection class this gate refuses,
+    /// just onto the repo dir instead of the real home. Pinned on the gate
+    /// helper (same reasoning as the gate-opens test above).
+    #[cfg(debug_assertions)]
+    #[test]
+    fn isolated_debug_home_gate_refuses_empty_pinvou3_home() {
+        use crate::platform::test_support::locked_env;
+
+        let (_lock, _env) = locked_env(&["PINVOU3_HOME"]);
+        // SAFETY: holding platform::paths::tests::ENV_LOCK via locked_env; env writes serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", "") };
+        let error = super::ensure_isolated_debug_home()
+            .expect_err("an empty PINVOU3_HOME must not pass the debug home gate");
+        assert!(
+            format!("{error:#}").contains("PINVOU3_HOME"),
+            "the refusal must name the offending variable: {error:#}"
+        );
     }
 }

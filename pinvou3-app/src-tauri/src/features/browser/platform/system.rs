@@ -49,7 +49,13 @@ impl PlatformWebviewConfig for SystemWebviewConfig {
         // support a custom path, but Tauri still uses it as the key for an isolated
         // WebContext. The implementation keeps the system-default persistent
         // WKWebsiteDataStore for macOS 11 compatibility; custom identifiers require 14+.
-        Ok(builder.data_directory(data_directory.to_path_buf()))
+        let builder = builder.data_directory(data_directory.to_path_buf());
+        // The "obsolete browser" downgrades are specific to WKWebView, whose
+        // factory user agent drops the Safari/Version tokens; the other ports
+        // keep their system defaults.
+        #[cfg(target_os = "macos")]
+        let builder = builder.user_agent(&super::macos::wkwebview_user_agent());
+        Ok(builder)
     }
 
     fn reset(&mut self) {

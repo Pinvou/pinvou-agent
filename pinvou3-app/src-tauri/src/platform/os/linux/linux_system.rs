@@ -5,7 +5,9 @@ use std::process::Command;
 use super::linux_path;
 
 // Shared Unix helpers come from posix.rs, matching the Wave 3 linux_path.rs deduplication.
-pub use super::super::posix::{bundled_node, make_private_dir, process_alive};
+pub use super::super::posix::{
+    bundled_node, make_private_dir, process_alive, try_make_private_dir,
+};
 
 pub fn open_target(target: impl AsRef<OsStr>, label: &str) -> Result<(), String> {
     super::super::posix::spawn_detached_and_reap(Command::new("xdg-open").arg(target.as_ref()))

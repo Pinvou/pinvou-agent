@@ -1711,16 +1711,38 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             (ModelPreset::Qwen, "qwen3.7-flash", 1_000_000),
             (ModelPreset::Qwen, "qwen3.6-flash", 1_000_000),
             // New Token Plan rows (auto / the 0813 snapshot / v4.1-flash) and
-            // the Qwen Coding Plan group's exact-version rows: ids not covered
-            // by the base chain fall to the Qwen preset fallback (131,072),
-            // while the deepseek rows ride the base v4 heuristic.
+            // legacy/unmatched ids (qwen3-coder-plus / qwen3-coder-next left
+            // the Qwen Coding Plan group on 2026-10-13; the only remaining
+            // bare glm-5 row is the Alibaba Coding Plan group, and no
+            // GLM-preset group lists it): ids not covered by the base chain
+            // fall to the Qwen preset fallback (131,072). The bare deepseek
+            // rows ride the base v4 heuristic; the vendor-prefixed
+            // deepseek/deepseek-flash spelling lacks the "v4" substring, so
+            // it is anchored in core::model_context instead.
             (ModelPreset::Qwen, "auto", 131_072),
             (ModelPreset::Qwen, "deepseek-v4-pro-0813", 1_000_000),
             (ModelPreset::Qwen, "deepseek-v4.1-flash", 1_000_000),
+            // The 2026-10-13 Token Plan additions: the current primary
+            // deepseek spellings ride the same base v4 heuristic (the -0813
+            // alias above stays pinned), the vendor-prefixed
+            // deepseek/deepseek-flash is anchored in core::model_context
+            // (no "v4" substring, no vendor-prefix tolerance), and
+            // mimo-v2.6-flash rides the core::model_context supplemental
+            // table — pinned here so the settings-page rows stay covered by
+            // this charter.
+            (ModelPreset::Qwen, "deepseek-v4-pro-202606", 1_000_000),
+            (ModelPreset::Qwen, "deepseek-v4-flash-202605", 1_000_000),
+            (ModelPreset::Qwen, "deepseek/deepseek-flash", 1_000_000),
+            (ModelPreset::Qwen, "mimo-v2.6-flash", 1_000_000),
             (ModelPreset::Qwen, "qwen3.6-plus", 131_072),
             (ModelPreset::Qwen, "qwen3-coder-plus", 131_072),
             (ModelPreset::Qwen, "qwen3-coder-next", 131_072),
             (ModelPreset::Qwen, "glm-5", 131_072),
+            // The 2026-10-13 Alibaba Coding Plan addition rides the
+            // PINVOU_KNOWN row (officially 1M; listed here so the
+            // settings-page row is covered by this charter too, same as the
+            // opus-5-5 precedent below).
+            (ModelPreset::Qwen, "qwen3.5-plus", 1_000_000),
             // Doubao: evolving is already 1M; the 2-1 -260628 generation and
             // the 2-0 snapshots are officially 256k, while the -260915
             // snapshots moved to 1024k (volcengine 1330310, re-checked
@@ -1813,6 +1835,13 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             (ModelPreset::Openai, "gpt-6-sol", 1_050_000),
             (ModelPreset::Openai, "gpt-6-luna", 1_050_000),
             (ModelPreset::Gemini, "gemini-3.8-flash", 1_048_576),
+            // The 2026-10-13 GA flagship joins the catalog: the base gemini
+            // exact rows stop at 3.7/3.1 (no gemini-4 row), so the
+            // core::model_context override table fills it in — official
+            // unified 1M context (ai.google.dev gemini-4-argon model page,
+            // checked 2026-10-14); listed here so the settings-page row is
+            // covered by this charter too.
+            (ModelPreset::Gemini, "gemini-4-argon", 1_048_576),
             // Anthropic models covered by the base catalog (haiku 200K) and the
             // PINVOU_OVERRIDES entries (opus-5 / fable-5-1 both 1M) go through
             // resolved_context_window; preset fallbacks are covered by the prefs
@@ -1827,6 +1856,12 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             // listed here so the settings-page row is covered by this
             // charter too).
             (ModelPreset::Anthropic, "claude-opus-5-5", 1_000_000),
+            // The 2026-10-13 settings rows: both officially 1M (the whole
+            // 5.5 generation, per the models-overview comparison table) via
+            // their PINVOU_OVERRIDES anchors; listed here so the
+            // settings-page rows are covered by this charter too.
+            (ModelPreset::Anthropic, "claude-sonnet-5-5", 1_000_000),
+            (ModelPreset::Anthropic, "claude-haiku-5-5", 1_000_000),
         ];
         for (preset, model, expected) in cases {
             assert_eq!(
@@ -1863,7 +1898,7 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
     /// page displayed 1M for exactly this reason). This test turns "changing a
     /// default must pass the resolution chain" into an explicit gate; the
     /// expected values are the vendor official figures and, together with
-    /// `default_model_matches_vendor_docs_2026_09` and the frontend
+    /// `default_model_matches_vendor_docs_2026_10_13` and the frontend
     /// MODEL_PRESET_DEFS lock tests, form a three-layer default-value defense.
     #[test]
     fn preset_default_models_resolve_engine_context_window() {
@@ -1889,8 +1924,8 @@ vllm:time_to_first_token_seconds_sum{engine=\"0\",model_name=\"qwen36_35b_256k\"
             // frontend), but as a default_model() output it must likewise pass
             // the shared resolution entry (base gpt-5.6 exact list → 1.05M).
             (ModelPreset::OpenaiCompatible, 1_050_000),
-            // Since 2026-09-29 the Openai preset default is gpt-6-sol — the
-            // (Openai, 1_050_000) row above covers it via the shared
+            // Since 2026-10-13 the Openai preset default is gpt-6.1-sol —
+            // the (Openai, 1_050_000) row above covers it via the shared
             // core::model_context override anchor. The openai_responses
             // custom-endpoint fallback prefills the same id and must resolve
             // through the same entry.
