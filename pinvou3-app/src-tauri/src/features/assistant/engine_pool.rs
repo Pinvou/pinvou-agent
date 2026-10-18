@@ -4084,9 +4084,17 @@ impl EnginePool {
     /// idle / not loaded → dispatch immediately, the scheduled-task wake
     /// precedent). Follows `send_user_message`'s shape minus its benchmark
     /// gate, and additionally checks out persona injection (a messaging wake
-    /// is a first-class turn, not a bare send); the session's own mode
+    /// is a first-class turn, not a bare send); the session's mode
     /// governs the turn. (Round-18 minor 20: the old "mirrors" wording
     /// overstate the equivalence.)
+    ///
+    /// r15 M4 disclosure: this dispatch path delivers a real turn to a
+    /// work-mode session but does NOT produce a snapshot — the snapshot
+    /// seam lives only at chat.rs and interaction.rs (accept_plan). The
+    /// delivered turn counts on the rewind surface (persisted user message
+    /// → counts_as_user_turn) but the UI can only offer a conversation-only
+    /// chip; workspace changes made during this turn cannot be rewound past.
+    /// Hooking this path into the snapshot seam is a tracked follow-up.
     pub(crate) async fn deliver_messaging_turn(
         &self,
         session_id: &str,

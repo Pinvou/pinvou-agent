@@ -456,8 +456,8 @@ assert.match(commands,
 // 评审 r7 M3(c)：chat() 本体的 ACP gate 必须按调用点形状钉住（此前的 pin
 // 只锚定了常量定义，删掉 gate 本体可全绿通过）。
 assert.match(rustCommandBlock(commands, 'chat'),
-  /if acp_pool\.is_acp\(&sid\) \{\s*return Err\(ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
-  'chat() must reject ACP sessions at its own entry — deleting this gate must fail here');
+  /require_active_sid[\s\S]{0,80}if acp_pool\.is_acp\(&sid\) \{\s*return Err\(ACP_CHAT_LANE_REJECTED\.to_string\(\)\);/,
+  'chat() must reject ACP sessions at its own entry (after require_active_sid) — deleting this gate must fail here (r15 M6: anchored to the entry shape, not the shared seam body)');
 // r11 M4：counts_as_user_turn 的接线点 pin——删掉 is_step_budget_notification
 // 排除（回滚为纯 is_user_turn_prompt）后序号双侧失配、调和门隐藏全部入口。
 // 快照序号的计数链走 create_turn_checkpoint → checkpoints::count_user_turns →

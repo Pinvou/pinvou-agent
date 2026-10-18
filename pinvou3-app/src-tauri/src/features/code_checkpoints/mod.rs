@@ -566,6 +566,12 @@ fn git_bounded(
         if let Some(work_tree) = work_tree {
             command.arg(format!("--work-tree={}", work_tree.display()));
         }
+        // r15 M3：影子仓库位于 agent 可写的工作树内（非绑定布局），其 config 文件可被追加
+        // [core] fsmonitor = <任意命令> 等键——文本写入即命令执行，绕过工具审批。所有命令统一钉死这三个执行面：
+        // fsmonitor（命令执行）、hooksPath（hook 执行）、attributesFile（任意过滤器）。
+        command.arg("-c").arg("core.fsmonitor=false");
+        command.arg("-c").arg("core.hooksPath=");
+        command.arg("-c").arg("core.attributesFile=");
         command.args(arguments);
         crate::platform::process::output_with_timeout_and_kill_tree(command, GIT_COMMAND_TIMEOUT)
             .map_err(|error| run_error(&error))
@@ -1010,18 +1016,29 @@ fn turn_snapshot_hard_stopped(repo_bytes: u64, packed_bytes: u64, kind: Checkpoi
 /// 文件或账本自身照进影子树。fail-closed：staged 里出现账本路径即中止（不
 /// 产出被污染的快照）；敏感文件由既有 purge 处理（迁移/restore 各跑一次，
 /// 此处不清——`add -A` 每轮跑会双写）。
-fn validate_no_ledger_paths_staged(repo: &Path, work_tree: &Path) -> Result<()> {
-    let staged = git_ok(repo, work_tree, &["diff", "--cached", "--name-only"])?;
-    for line in staged.lines() {
-        let path = line.trim();
-        if path.starts_with("checkpoints/")
-            || path == "pending_rewind.json"
-            || path == "budget-disabled"
-        {
-            bail!(
-                "checkpoint staged path {path} detected: worktree .gitignore negation may have pierced the ledger exclusion; refusing to snapshot",
-            );
-        }
+/// add -A 后的 staged 校验（评审 r14 M-B → r15 M1/M2 收紧）：worktree
+/// .gitignore 的否定行（!checkpoints/ 、!.env 、!.pinvou3/）可击穿
+/// info/exclude 的排除——把敏感文件、账本自身或会话侧数据照进影子树。
+/// 用 git 自身的 pathspec 匹配（避免手写 gitignore 语义），命中即 bail。
+fn validate_no_sensitive_paths_staged(repo: &Path, work_tree: &Path) -> Result<()> {
+    // 与 ensure_repo 的动态排除集同源：账本 + secret + .pinvou3/（会话侧数据，
+    // 含完整用户消息文本的 conversation-attachments.json）。SECRET_EXCLUDES
+    // 的 glob 语义由 git pathspec 原样处理。
+    let mut pathspecs: Vec<&str> = vec![
+        "checkpoints/",
+        "pending_rewind.json",
+        "budget-disabled",
+        ".pinvou3/",
+    ];
+    pathspecs.extend_from_slice(SECRET_EXCLUDES);
+    let mut args: Vec<&str> = vec!["diff", "--cached", "--name-only", "--"];
+    args.extend(pathspecs.iter().copied());
+    let staged = git_ok(repo, work_tree, &args)?;
+    let first = staged.lines().find(|l| !l.trim().is_empty());
+    if let Some(path) = first {
+        bail!(
+            "checkpoint staged sensitive path {path} detected: worktree .gitignore negation may have pierced the exclusion; refusing to snapshot",
+        );
     }
     Ok(())
 }
@@ -1060,8 +1077,8 @@ fn create_checkpoint_preserving(
     // add -A 全量暂存（影子 index），write-tree 取内容树；与上一条 commit 的树相同
     // 则复用（空 turn 不产生冗余快照内容，但 meta 仍按新 turn 登记，保持对齐）。
     git_ok(&repo, &execution_root, &["add", "-A"])?;
-    validate_no_ledger_paths_staged(&repo, &execution_root)?;
-    validate_no_ledger_paths_staged(&repo, &execution_root)?;
+    validate_no_sensitive_paths_staged(&repo, &execution_root)?;
+    validate_no_sensitive_paths_staged(&repo, &execution_root)?;
     let tree = git_ok(&repo, &execution_root, &["write-tree"])?
         .trim()
         .to_string();
