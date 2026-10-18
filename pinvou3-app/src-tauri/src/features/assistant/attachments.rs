@@ -836,6 +836,9 @@ mod read_only_prompt_tests {
         );
         assert!(without_tools.contains("image_analyze` 不可用"));
         assert!(!without_tools.contains("必须先**调用"));
+        // 不依赖加粗标记的否定钉：文案改写去掉 `**` 后，命令模板不得随披露一起
+        // 悄悄回来。
+        assert!(!without_tools.contains("image_analyze(image_path="));
         let with_tools = build_read_only_message_with_attachments(
             "inspect".into(),
             vec![img],
