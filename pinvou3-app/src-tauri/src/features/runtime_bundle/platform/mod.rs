@@ -189,8 +189,8 @@ pub(crate) use crate::platform::connector_skills::{
 /// contract/html/dingtalk-tag domains plus the oa template suite, the
 /// one-stop `aitable +import-file` shortcut retires the import-script
 /// path, server-side `record stats`/`psql` analytics routing, shortcut
-/// counts re-measured against the pinned 1.0.64 binary (todo doc still
-/// says 21, binary measures 20); lark skills 1.0.95 → 1.0.98: sheets
+/// counts re-measured against the pinned 1.0.64 binary (upstream's todo
+/// doc still says 21; the shipped table follows the measured binary: 20); lark skills 1.0.95 → 1.0.98: sheets
 /// SKILL.md rewritten upstream (condensed speed table, 9 editing rules,
 /// +filter-view/+history/+range-copy commands, sheets_df.py renamed
 /// lark_sheets_df.py), lark-task prerequisite links path-fixed upstream
