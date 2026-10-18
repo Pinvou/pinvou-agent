@@ -86,6 +86,14 @@ pub struct ScopedChunkHit {
     pub hit: ChunkHit,
 }
 
+/// 对话检索结果 + 查询向量是否计算失败（嵌入器挂载但 `embed_one` 报错；未挂载
+/// 不算——那条降级路径由调用方在检索前披露）。调用方据此补模型可见的降级警告。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatRetrievalOutcome {
+    pub hits: Vec<ScopedChunkHit>,
+    pub embed_query_failed: bool,
+}
+
 pub(super) enum ImportIngestOutcome {
     Completed,
     Skipped,
@@ -900,14 +908,39 @@ impl L1Store {
         query: &str,
         k: usize,
     ) -> rusqlite::Result<Vec<ScopedChunkHit>> {
+        Ok(self
+            .retrieve_for_chat_multi_outcome(collection_ids, query, k)?
+            .hits)
+    }
+
+    /// [`Self::retrieve_for_chat_multi`] 带降级披露：嵌入器已挂载但本次查询向量
+    /// 计算失败时 `embed_query_failed` 为真（本次静默降级纯 FTS）。嵌入器未挂载
+    /// 的降级不算（那是"未安装/未加载"路径，由调用方在检索前统一披露），调用方
+    /// 须把真值转成模型可见的警告，否则模型会把关键词结果当全量作答。
+    pub fn retrieve_for_chat_multi_outcome(
+        &self,
+        collection_ids: &[i64],
+        query: &str,
+        k: usize,
+    ) -> rusqlite::Result<ChatRetrievalOutcome> {
         let q = query.trim();
         if q.is_empty() || collection_ids.is_empty() {
-            return Ok(Vec::new());
+            return Ok(ChatRetrievalOutcome {
+                hits: Vec::new(),
+                embed_query_failed: false,
+            });
         }
         let lim = if k == 0 { 5 } else { k };
-        let query_vector = self
-            .embedder()
-            .and_then(|embedder| embedder.embed_one(q).ok());
+        let (query_vector, embed_query_failed) = match self.embedder() {
+            Some(embedder) => match embedder.embed_one(q) {
+                Ok(vector) => (Some(vector), false),
+                Err(error) => {
+                    eprintln!("[knowledge] 对话检索查询向量计算失败（降级纯全文）: {error}");
+                    (None, true)
+                }
+            },
+            None => (None, false),
+        };
         let mut unique_ids = Vec::new();
         for collection_id in collection_ids.iter().copied().filter(|id| *id > 0) {
             if !unique_ids.contains(&collection_id) {
@@ -959,7 +992,10 @@ impl L1Store {
             });
         }
         merged.truncate(lim);
-        Ok(merged)
+        Ok(ChatRetrievalOutcome {
+            hits: merged,
+            embed_query_failed,
+        })
     }
 
     fn retrieve_for_chat_with_vector(

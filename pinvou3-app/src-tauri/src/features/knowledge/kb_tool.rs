@@ -36,6 +36,13 @@ const KB_REMOTE_SOURCE_TIMEOUT: Duration = Duration::from_secs(12);
 /// 余量取 120s。
 const KB_MODEL_RELOAD_TIMEOUT_SECS: u64 = 120;
 
+/// kb_search 语义降级的模型可见披露：四条触发路径（重载失败 / 重载超时 / 模型
+/// 未安装 / 查询向量计算失败）共用同一句式，差异只在括号内的原因。单独成函数
+/// 便于测试钉住文案（缺披露时模型会把关键词结果当全量作答）。
+fn semantic_degraded_warning(reason: &str) -> String {
+    format!("语义检索暂不可用（{reason}），本次为关键词检索，结果可能不全")
+}
+
 fn source_ref(document_id: i64, ord: i64) -> String {
     format!("kbdoc:{document_id}:chunk:{}", ord.max(0))
 }
@@ -295,35 +302,36 @@ impl ToolSpec for KbSearchTool {
                     let reload =
                         super::model_download::reload_installed_embedder_leased(kb.inner());
                     match timeout(Duration::from_secs(KB_MODEL_RELOAD_TIMEOUT_SECS), reload).await {
-                        Ok(Ok(_)) => {}
+                        Ok(Ok(true)) => {}
+                        Ok(Ok(false)) => {
+                            // 外层 installed 检查通过、租约内复查却发现目录缺失/
+                            // 不完整（TOCTOU）：与「未安装」同因同果，同一口径披露。
+                            eprintln!("[knowledge] kb_search 前复查发现嵌入模型缺失（降级纯全文）");
+                            warnings.push(semantic_degraded_warning("嵌入模型未安装"));
+                        }
                         Ok(Err(error)) => {
                             eprintln!(
                                 "[knowledge] kb_search 前重载模型失败（降级纯全文）: {error}"
                             );
-                            warnings.push(
-                                "语义检索暂不可用（嵌入模型加载失败），本次为关键词检索，结果可能不全".into(),
-                            );
+                            warnings.push(semantic_degraded_warning("嵌入模型加载失败"));
                         }
                         Err(_) => {
                             eprintln!(
                                 "[knowledge] kb_search 前重载模型超时（{}s，降级纯全文；后台加载继续，下次检索恢复语义）",
                                 KB_MODEL_RELOAD_TIMEOUT_SECS
                             );
-                            warnings.push(
-                                "语义检索暂不可用（嵌入模型加载超时），本次为关键词检索，结果可能不全".into(),
-                            );
+                            warnings.push(semantic_degraded_warning("嵌入模型加载超时"));
                         }
                     }
                 } else if !kb.semantic_ready() {
-                    warnings.push(
-                        "语义检索暂不可用（嵌入模型未安装），本次为关键词检索，结果可能不全".into(),
-                    );
+                    warnings.push(semantic_degraded_warning("嵌入模型未安装"));
                 }
                 let l1 = kb.l1().clone();
                 let q = query.clone();
                 let local_ids = collection_ids.clone();
                 match tauri::async_runtime::spawn_blocking(move || {
-                    let hits = l1.retrieve_for_chat_multi(&local_ids, &q, KB_INJECT_TOP_K)?;
+                    let outcome =
+                        l1.retrieve_for_chat_multi_outcome(&local_ids, &q, KB_INJECT_TOP_K)?;
                     let collections: Vec<(i64, String)> = local_ids
                         .into_iter()
                         .map(|collection_id| {
@@ -335,11 +343,20 @@ impl ToolSpec for KbSearchTool {
                             (collection_id, name)
                         })
                         .collect();
-                    Ok::<_, rusqlite::Error>((hits, collections))
+                    Ok::<_, rusqlite::Error>((
+                        outcome.hits,
+                        collections,
+                        outcome.embed_query_failed,
+                    ))
                 })
                 .await
                 {
-                    Ok(Ok((hits, collections))) => {
+                    Ok(Ok((hits, collections, embed_query_failed))) => {
+                        if embed_query_failed {
+                            // 模型挂载着但本次查询向量算不出来（l1 侧已 eprintln）：
+                            // 本次静默降级纯 FTS，与其它降级路径同一口径披露。
+                            warnings.push(semantic_degraded_warning("嵌入调用失败"));
+                        }
                         for (rank, scoped) in hits.into_iter().enumerate() {
                             let hit = scoped.hit;
                             let name = scoped
@@ -700,6 +717,26 @@ mod tests {
             Some(("cube/server:1".to_string(), 7, 42, 3))
         );
         assert!(parse_remote_source_ref("kbremote:bad:7:42:chunk:-1").is_none());
+    }
+
+    /// 语义降级披露文案钉死：四条触发路径（重载失败/超时、模型未安装、查询向量
+    /// 计算失败）共用同一句式，只差括号内原因。去掉披露时模型会把纯 FTS 的
+    /// 部分结果当全量作答，空结果脚本又会教它断言「未找到」——双重误导。
+    #[test]
+    fn semantic_degraded_warning_pins_disclosure_copy() {
+        assert_eq!(
+            semantic_degraded_warning("嵌入模型未安装"),
+            "语义检索暂不可用（嵌入模型未安装），本次为关键词检索，结果可能不全"
+        );
+        for reason in ["嵌入模型加载失败", "嵌入模型加载超时", "嵌入调用失败"]
+        {
+            let warning = semantic_degraded_warning(reason);
+            assert!(
+                warning.starts_with("语义检索暂不可用（")
+                    && warning.contains("），本次为关键词检索，结果可能不全"),
+                "降级披露句式漂移: {warning}"
+            );
+        }
     }
 
     /// The kb_search (production unified search) result header must also carry
