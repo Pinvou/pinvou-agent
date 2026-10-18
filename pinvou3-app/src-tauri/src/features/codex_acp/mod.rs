@@ -6659,6 +6659,24 @@ mod tests {
             prepare.contains(&format!("CLAUDE_SDK_VERSION=\"{claude_sdk_pinned}\"")),
             "prepare-codex-bridge-runtime.sh must match the locked Claude SDK version"
         );
+        // A hand-stale lock must not pass while the manifest pins a newer
+        // adapter: the installed `node_modules` entry is what actually runs.
+        let codex_locked =
+            lock["packages"]["node_modules/@agentclientprotocol/codex-acp"]["version"]
+                .as_str()
+                .expect("codex-acp lock pin");
+        assert_eq!(
+            codex_locked, CODEX_ACP_ADAPTER_VERSION,
+            "the lockfile must pin the declared codex-acp version"
+        );
+        let claude_locked = lock["packages"]["node_modules/@agentclientprotocol/claude-agent-acp"]
+            ["version"]
+            .as_str()
+            .expect("claude-agent-acp lock pin");
+        assert_eq!(
+            claude_locked, CLAUDE_ACP_VERSION,
+            "the lockfile must pin the declared claude-agent-acp version"
+        );
     }
 
     #[tokio::test]
