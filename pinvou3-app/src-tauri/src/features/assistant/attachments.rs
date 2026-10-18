@@ -514,8 +514,8 @@ fn push_text_attachment_section(
             } else {
                 out.push_str(
                     "**以下代码块是文件完整内容,可直接使用,不需要再调 `read` 或 `file_search` 重新读取。**\
-                     如需保存修改版本,用 `write` 写到 \
-                     PINVOU3_WORKSPACE 下;单个文件过大时拆分为多个有明确用途的文件。\n",
+                     如需保存修改版本,用 `write` 以相对路径写到当前工作区(即每轮元信息的 \
+                     `Current workspace` 目录);单个文件过大时拆分为多个有明确用途的文件。\n",
                 );
             }
             out.push_str("```\n");
@@ -562,6 +562,8 @@ fn push_attachment_header(out: &mut String, a: &crate::features::files::file_ing
 /// 图片拷进 workspace 后引导 LLM 调 image_analyze 读图(Qwen3.6 有视觉能力);
 /// 文本类附件按 token 预算分流:小→全量内联,大→落盘+路径+预览(见常量注释)。
 /// `reference_absolute` 见 `staged_reference`；普通对话与 scheduled 传 false。
+/// `image_tools_allowed=false`(如 GAIA offline 策略禁 `image_analyze`)时,图片段
+/// 改为如实告知无法读图,不得引导模型调用不存在的工具。
 fn build_message_with_attachments_in_dir_with_access(
     text: String,
     attachments: Vec<crate::features::files::file_ingest::IngestResult>,
@@ -569,6 +571,7 @@ fn build_message_with_attachments_in_dir_with_access(
     attachment_dir: &str,
     reference_absolute: bool,
     read_only_tools: bool,
+    image_tools_allowed: bool,
 ) -> String {
     if attachments.is_empty() {
         return text;
@@ -593,16 +596,26 @@ fn build_message_with_attachments_in_dir_with_access(
             }) {
                 Some(rel) => {
                     let rel = staged_reference(workspace, &rel, reference_absolute);
-                    out.push_str(&format!(
-                        "🖼 用户附了一张图片,存在 workspace 的 `{rel}`。\n\
-                        ⚠️ 你现在**看不到这张图的任何内容**,对图里有什么**一无所知**。\
-                        在调用 image_analyze 工具并拿到返回结果之前,你**绝对不能**描述、\
-                        猜测或编造图里有什么——包括「这是什么」「帅吗」「什么颜色」「是不是某某文档」\
-                        这类**任何**关于图的问题。凭空作答=幻觉,是严重错误。\n\
-                        要回答**任何**跟这张图有关的问题,**必须先**调用:\n\
-                        `image_analyze(image_path=\"{rel}\", prompt=\"<按用户问题要看的,如:描述这张图/读出文字/这是什么>\")`\n\
-                        拿到工具返回的描述后,再据此如实回答用户。\n",
-                    ));
+                    if image_tools_allowed {
+                        out.push_str(&format!(
+                            "🖼 用户附了一张图片,存在 workspace 的 `{rel}`。\n\
+                            ⚠️ 你现在**看不到这张图的任何内容**,对图里有什么**一无所知**。\
+                            在调用 image_analyze 工具并拿到返回结果之前,你**绝对不能**描述、\
+                            猜测或编造图里有什么——包括「这是什么」「帅吗」「什么颜色」「是不是某某文档」\
+                            这类**任何**关于图的问题。凭空作答=幻觉,是严重错误。\n\
+                            要回答**任何**跟这张图有关的问题,**必须先**调用:\n\
+                            `image_analyze(image_path=\"{rel}\", prompt=\"<按用户问题要看的,如:描述这张图/读出文字/这是什么>\")`\n\
+                            拿到工具返回的描述后,再据此如实回答用户。\n",
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "🖼 用户附了一张图片(已存到 `{rel}`)。\n\
+                            ⚠️ 本任务的工具策略没有图片查看工具(`image_analyze` 不可用),\
+                            你**无法获知**这张图的内容。基于消息里的其他文本证据作答;\
+                            若答案必须看图,请如实说明本次无法处理。\
+                            **绝对不要**描述、猜测或编造图里有什么。凭空作答=幻觉,是严重错误。\n",
+                        ));
+                    }
                 }
                 None => {
                     out.push_str(
@@ -645,6 +658,7 @@ pub(crate) fn build_message_with_attachments_in_dir(
         attachment_dir,
         reference_absolute,
         false,
+        true,
     )
 }
 
@@ -663,10 +677,14 @@ pub(crate) fn build_message_with_attachments(
 /// Restricted evaluation entry point. Attachment evidence is identical to the
 /// product path, but tool guidance never advertises write, shell, or code
 /// execution capabilities that the evaluation policy forbids.
+/// `image_tools_allowed` mirrors the same policy for `image_analyze`: when the
+/// policy excludes it, the image section discloses that instead of commanding
+/// a call the model cannot make.
 pub(crate) fn build_read_only_message_with_attachments(
     text: String,
     attachments: Vec<crate::features::files::file_ingest::IngestResult>,
     workspace: &std::path::Path,
+    image_tools_allowed: bool,
 ) -> String {
     build_message_with_attachments_in_dir_with_access(
         text,
@@ -675,6 +693,7 @@ pub(crate) fn build_read_only_message_with_attachments(
         "attachments",
         false,
         true,
+        image_tools_allowed,
     )
 }
 
@@ -769,6 +788,7 @@ mod read_only_prompt_tests {
             "inspect".into(),
             vec![attachment("A | B\n1 | 2".into(), 10)],
             workspace.path(),
+            true,
         );
 
         assert!(prompt.contains("当前会话只有只读工具"));
@@ -784,12 +804,46 @@ mod read_only_prompt_tests {
             "inspect".into(),
             vec![attachment("row\n".repeat(20_000), 50_000)],
             workspace.path(),
+            true,
         );
 
         assert!(prompt.contains("read(path=..., offset=..., limit=...)"));
         assert!(prompt.contains("不要请求 bash、代码执行、write 或 edit"));
         assert!(!prompt.contains("bash(command="));
         assert!(!prompt.contains("`write`"));
+    }
+
+    #[test]
+    fn offline_policy_image_discloses_unavailability_instead_of_commanding_image_analyze() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(workspace.path().join("attachments")).unwrap();
+        let staged = workspace.path().join("attachments/photo.png");
+        std::fs::write(&staged, b"png").unwrap();
+        let img = IngestResult {
+            kind: "image".into(),
+            basename: "photo.png".into(),
+            path: staged.to_string_lossy().into_owned(),
+            markdown: None,
+            token_estimate: 0,
+            byte_size: 64,
+            warning: None,
+        };
+        let without_tools = build_read_only_message_with_attachments(
+            "inspect".into(),
+            vec![img.clone()],
+            workspace.path(),
+            false,
+        );
+        assert!(without_tools.contains("image_analyze` 不可用"));
+        assert!(!without_tools.contains("必须先**调用"));
+        let with_tools = build_read_only_message_with_attachments(
+            "inspect".into(),
+            vec![img],
+            workspace.path(),
+            true,
+        );
+        assert!(with_tools.contains("**必须先**调用"));
+        assert!(with_tools.contains("image_analyze(image_path="));
     }
 }
 
