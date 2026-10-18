@@ -1268,7 +1268,9 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
 
             {/* ============ 知识库 · embedding 模型未安装/加载中/加载失败 → gate ============ */}
             {/* localEmbedSupported=false 的平台（linux/loongarch64）编译期即无本地 embedding：
-                整个「下载并部署」流程不可能成功，隐藏下载入口（角标/资源卡/按钮），只留平台说明。 */}
+                整个「下载并部署」流程不可能成功，隐藏下载入口（角标/资源卡/按钮），只留平台说明。
+                web 端能力快照永远缺失，阻塞通常只是「宿主桌面端尚未安装模型」——宿主平台本身
+                可能支持，所以归因到桌面端（kbEmbedWebTitle/Desc）而不是宣称平台不支持。 */}
             {sub === 'kb' && !modelUsable && (
               <div className="max-w-[560px] mx-auto text-center pt-8 pb-2">
                 <div className="w-[84px] h-[84px] mx-auto rounded-[24px] grid place-items-center relative"
@@ -1281,9 +1283,9 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                     </span>
                   )}
                 </div>
-                <h2 className={`mt-5 text-[20px] font-extrabold ${ink}`}>{localEmbedSupported ? (modelInstalled ? (modelLoading ? t.kbModelLoadingTitle : t.kbModelFailedTitle) : t.kbModelTitle) : t.kbEmbedUnsupported}</h2>
-                {localEmbedSupported && (
-                  <p className={`mt-2.5 mx-auto max-w-[450px] text-[13.5px] leading-relaxed ${muted}`}>{modelInstalled ? (modelLoading ? t.kbModelLoadingDesc : t.kbModelFailedDesc) : t.kbModelDesc}</p>
+                <h2 className={`mt-5 text-[20px] font-extrabold ${ink}`}>{localEmbedSupported ? (modelInstalled ? (modelLoading ? t.kbModelLoadingTitle : t.kbModelFailedTitle) : t.kbModelTitle) : (isWeb ? t.kbEmbedWebTitle : t.kbEmbedUnsupported)}</h2>
+                {(localEmbedSupported || isWeb) && (
+                  <p className={`mt-2.5 mx-auto max-w-[450px] text-[13.5px] leading-relaxed ${muted}`}>{localEmbedSupported ? (modelInstalled ? (modelLoading ? t.kbModelLoadingDesc : t.kbModelFailedDesc) : t.kbModelDesc) : t.kbEmbedWebDesc}</p>
                 )}
 
                 {localEmbedSupported && (

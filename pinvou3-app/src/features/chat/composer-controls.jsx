@@ -9,6 +9,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { BookOpen, Check, ChevronDown, ClipboardList, X, Zap } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
+import { isWeb } from '../../shared/platform.js';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { invokeTauri, isTauriAvailable } from '../../platform/tauri/client.js';
 
@@ -144,10 +145,12 @@ const ComposerKbSelector = ({
   // 到达前同样按 false 兜底）时，「先去知识库下载」的引导不成立，改用平台不支持说明。
   // 不支持时短路两个分支：该平台上模型永远无法就绪，「仍在加载」会变成永远
   // 无法兑现的承诺（如共享宿主残留的模型目录会让 installed=true、ready=false）。
+  // web 端快照永远缺失，但阻塞通常只是「宿主桌面端尚未安装模型」——归因到
+  // 桌面端而不是宣称平台不支持（KnowledgeView 知识库门同向）。
   const localEmbedSupported = !!(bs && bs.platformCapabilities && bs.platformCapabilities.localEmbedSupported);
   const modelBlockedCopy = localEmbedSupported
     ? (modelMissing ? t.kbMountNoModel : t.kbMountNotReady)
-    : t.kbEmbedUnsupported;
+    : (isWeb ? t.kbEmbedWebTitle : t.kbEmbedUnsupported);
 
   function toggle() { const next = !open; setOpen(next); if (next) { refreshModelStatus(); if (collections === null) loadList(); } }
   function pick(collection) {

@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const knowledgeSource = await readFile(new URL('../src/features/knowledge/KnowledgeView.jsx', import.meta.url), 'utf8');
 const remoteKnowledgeSource = await readFile(new URL('../src/features/remote-knowledge/RemoteKnowledgeView.jsx', import.meta.url), 'utf8');
+const composerControlsSource = await readFile(new URL('../src/features/chat/composer-controls.jsx', import.meta.url), 'utf8');
 
 test('shared knowledge dialogs portal their full-viewport overlay to document.body', () => {
   assert.match(remoteKnowledgeSource, /import \{ createPortal \} from 'react-dom';/);
@@ -59,5 +60,24 @@ test('the remote owner-model download entry is capability-gated, fail closed', (
   assert.match(
     remoteKnowledgeSource,
     /\(isLocalHostOwner && !localEmbedReady \? t\.kbEmbedUnsupported : t\.remoteKbModelMissing\)/,
+  );
+});
+
+test('the web kb gate attributes the blocker to the desktop app, not the platform', () => {
+  // web 客户端无法安装本地模型，能力快照永远缺失；但阻塞通常只是「宿主
+  // 桌面端尚未安装模型」——宿主平台本身可能是支持的。知识库门与撰写器
+  // 挂载引导必须走 isWeb 分支归因到桌面端（kbEmbedWebTitle/Desc），桌面
+  // fail-closed 窗口与 loongarch64 平台保持平台文案（kbEmbedUnsupported）。
+  for (const [name, source] of [['KnowledgeView', knowledgeSource], ['composer', composerControlsSource]]) {
+    assert.match(
+      source,
+      /isWeb \? t\.kbEmbedWebTitle : t\.kbEmbedUnsupported/u,
+      `${name} must route the no-capability copy through the web attribution branch`,
+    );
+  }
+  assert.match(
+    knowledgeSource,
+    /\(localEmbedSupported \|\| isWeb\)[\s\S]*?t\.kbEmbedWebDesc/u,
+    'the web gate must render the desktop-setup explanation where the desktop gate renders its own',
   );
 });
