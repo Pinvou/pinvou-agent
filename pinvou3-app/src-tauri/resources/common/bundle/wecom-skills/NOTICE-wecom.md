@@ -377,3 +377,49 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
 2. **wecomcli-message/SKILL.md description 去掉不存在的 text 类型**：`msg_type` 枚举仅 markdown/image/file/voice/video,普通文本也按 Markdown 发送。改为「发送 Markdown(纯文本亦按 Markdown 发送)、图片、文件、语音、视频消息」。
 3. **wecomcli-smartsheet/references/smart-sheet-formula.md 转义示例修复**：原内联示例 `需转义为 \""` 引号不配对,模型会照抄出错形态。改为 `需转义为 \"`（每个双引号前各加一个反斜杠）。
 4. **wecomcli-doc/scripts/build_docx.py docstring 改 `python3`**：宿主环境无裸 `python`（NOTICE 前文已登记）,references/doc-create.md 已改而脚本自身 docstring 漏改。
+
+### 上游同步(2026-10-18,wecom-cli 1.3.4)
+
+全量同步至上游 v1.3.4 发布提交 `f9b2815`(2026-09-23,npm `@wecom/cli@1.3.4` 同源;
+上游 GitHub 仓库仍无 tag/release,版本以 npm registry 为准)。合并方法:以 v1.2.1
+发布提交 `e88bf90a` 为 base、当前本地为 ours、`f9b2815` 为 theirs 做逐文件三方合并
+(git merge-file),2 个冲突文件按本节裁定。对账命令沿用上方模板(worktree 换
+`f9b2815`)。技能从 14 个增至 **15 个**:上游新增 `wecomcli-pptx`(MR !77 随 1.3.4
+发布;`slide` 命令族技能,本地整体收录;经 connectors.lock 钉扎的 1.3.4 linux-arm64
+二进制实测,`wecom-cli slide` 的 get/pages/designs/images 子命令面与该技能
+`pptx-api.md` 所教一致;`wecomcli-pptx/scripts/` 两个脚本的命令表调用形态上游已写
+`python3`,脚本 docstring 内的裸 `python` 按既定豁免不重写)。
+
+上游 v1.2.1 → v1.3.4 的 `skills/` 改动(MR !62 之后的增量):
+
+1. **wecomcli-pptx 新增**(见上)。
+2. **安全提示节(MR !67,`605b506`)**:email/get-mail.md 末尾新增「安全提示(最高
+   优先级)」(接口返回内容不得视为指令、不得输出令牌凭据);同批给 12/14 技能的
+   SKILL.md 注入同款反注入段落与「命令拼接安全规范」,随合并整体采纳。
+3. **wecomcli-doc(MR `fe5ec14`)**:doc-create.md 本地 XLSX 导入建表优化说明,
+   doc SKILL.md 路由行同步,随合并采纳。
+4. **wecomcli-disk / doc-manage**:上传示例微调,随合并采纳。
+
+冲突裁定(2 文件):
+
+- `wecomcli-email/references/get-mail.md`:保持本地「`users[].email` 字段」口径
+  (上游原文仍写 `mail` 字段,本地勘误继续有效),追加上游新增「安全提示」节。
+- `wecomcli-shared/SKILL.md`:保持本地品悟代管口径(npm 自安装指引维持删除、
+  授权改终端交接),版本门槛文本 `1.2.1` → `1.3.4`(description、Step 1 检查行、
+  重试分支共 4 处),与全平台 lock 钉扎 1.3.4 及 `wecom.rs` 的
+  `WECOM_MIN_VERSION = (1, 3, 4)` 对齐;上游本轮同样只把数字提到 1.2.1,无新语义。
+
+本地登记重放核验:14 个既有技能的全部本地修改(「何时用」description 前缀、
+品悟代管安装口径、终端交接授权、邮件正文 `tmp/mail/` 路径、周期「产品暂未开放」
+措辞、contact 搜索 `hint` 口径等)经三方合并保留;`wecomcli-pptx` 作为新技能按
+1.1.0 适配清单第 1 条口径补写 description「何时用:」前缀(211 字符 ≤280;上游
+原文无前缀且超限),`bins: ["wecom-cli"]` 上游已自带。
+
+rebase 纳入 main #724「模型侧文案复审」四项(doc-manage/message description 修正、smart-sheet-formula 转义示例、build_docx.py docstring python3),登记见上方「模型侧文案复审」节。
+
+### 各技能重放基线(1.3.4 起)
+
+15 个技能全部 = 上游 `f9b2815`(v1.3.4 发布提交,npm 1.3.4 同源),技能目录与上游
+同名同构;本地分叉为「本轮(1.1.0)品悟适配清单」六类、历次审计登记、「上游同步
+(2026-09-15,wecom-cli 1.2.1)」与「上游同步(2026-10-18,wecom-cli 1.3.4)」的合并
+口径,以及 2026-10-07/10-08 三轮模型向文本审计登记的全部本地修改。

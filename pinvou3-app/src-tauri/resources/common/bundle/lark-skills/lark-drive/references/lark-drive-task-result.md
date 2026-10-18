@@ -1,7 +1,7 @@
 
 # drive +task_result
 
-> **前置条件：** 先阅读 [`../lark-shared/SKILL.md`](../../lark-shared/SKILL.md) 了解认证、全局参数和安全规则。
+> **前置条件：** 先阅读 [`../../lark-shared/SKILL.md`](../../lark-shared/SKILL.md) 了解认证、全局参数和安全规则。
 
 查询异步任务结果。该 shortcut 聚合了导入、导出、Drive 文件/文件夹移动/删除、Wiki 节点 / 文档迁入 Wiki、Wiki 节点移出 Wiki、Wiki 删除等多种异步任务的结果查询，统一接口方便调用。
 
@@ -263,12 +263,12 @@ lark-cli drive +task_result --scenario import --ticket <IMPORT_TICKET>
 ### 配合 +move 使用
 
 ```bash
-# 1. 移动文件夹（异步操作）
+# 1. 移动文件夹
 lark-cli drive +move --file-token <FOLDER_TOKEN> --type folder --folder-token <TARGET_FOLDER_TOKEN>
-# 若轮询窗口内完成：直接返回 ready=true
+# 已完成时返回 ready=true，无需继续查询
 # 若内置轮询结束仍未完成：返回 ready=false、task_id 和 next_command
 
-# 2. 轮询移动结果
+# 2. 仅在 ready=false 时继续查询
 lark-cli drive +task_result --scenario task_check --task-id <TASK_ID>
 ```
 

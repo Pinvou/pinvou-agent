@@ -99,7 +99,7 @@ const USAGE: &str =
 
 // Round-51 review: the per-connector semantic-version floors are imported
 // from the app crate's own gates (wecom.rs 1.2.1 skill baseline, tmeet.rs
-// 1.0.18 npm spec, feishu.rs 1.0.95 lock baseline) instead of re-declared —
+// 1.0.18 npm spec, feishu.rs 1.0.98 lock baseline) instead of re-declared —
 // a GUI-side raise moves the CLI's `upgrade_required` gates with it (the
 // same single-sourcing shape as the skill-dir and lock-JSON tables). The
 // feishu floor is the live one: this PR raised it for the skill pack's
@@ -4552,7 +4552,7 @@ mod tests {
             // these tests pin the EXECUTION verdict, not the version gate,
             // and a below-baseline fake would now be refused by
             // `cli_installed` before the execution check could run.
-            std::fs::write(&fake, "#!/bin/sh\necho 'fake 1.0.95'\n").unwrap();
+            std::fs::write(&fake, "#!/bin/sh\necho 'fake 1.0.98'\n").unwrap();
             let mode = if executable { 0o755 } else { 0o644 };
             std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(mode)).unwrap();
             // Round-37: HOME joins the sandbox — the vendor resolution

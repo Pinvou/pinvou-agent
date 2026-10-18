@@ -34,11 +34,11 @@ lark-sheets、lark-im、lark-task、lark-wiki、lark-base。
 
 1. 查钉扎版本:读
    `pinvou3-app/src-tauri/resources/platforms/<os>/<arch>/bundle/connectors/connectors.lock.json`
-   (5 份,任一即可,版本字段一致)中 `name: "lark-cli"` 的 `version`(当前 1.0.95)。
+   (5 份,任一即可,版本字段一致)中 `name: "lark-cli"` 的 `version`(当前 1.0.98)。
 2. 拉上游源:上游 tag 带 `v` 前缀,即
    `https://github.com/larksuite/cli/archive/refs/tags/v<version>.tar.gz`
-   (上次基线 v1.0.87,本次 v1.0.95),解压后取其 `skills/<域>`(上游仓库共 28 个 lark-* 域,
-   v1.0.95 新增 lark-meeting,仍未收录;
+   (上次基线 v1.0.95,本次 v1.0.98),解压后取其 `skills/<域>`(上游仓库共 28 个 lark-* 域,
+   lark-meeting 等仍未收录;
    品悟只收录上述 9 域;其余域一律「未随包收录」,文档中提及须按「技能未随包
    收录 + CLI 命令直给」口径,不复制其目录)。
 3. 以该 tag 为三方合并基线,按下文登记逐条重放本地修改后,保留本 NOTICE。
@@ -710,3 +710,36 @@ lark-shared-identity-and-permissions.md 规定 agent 发起的增量授权必须
 
 1. **lark-shared/SKILL.md description「何时用」扩围**：原描述把本技能范围限为「仅在其他 lark-* 技能遇到认证/授权/身份/配置问题时,或首次使用 lark-cli 时」,但 lark-im/drive/wiki/sheets/task 五个技能正文以「CRITICAL — 开始前 MUST 先 read」要求在任何操作前前置读取本技能,`ok==true` 输出契约、`--as` 身份、exit 10 审批等规则也是每次调用都需要的。描述是触发/路由面,窄描述会诱导模型在常规操作中降权这些规则。改为「…遇到认证/授权/身份/配置问题、**被要求前置读取**,或首次使用 lark-cli 时」(272 字)。同时存在的 lark-doc「不预读」vs 其余五技能「MUST 预读」的三种前置策略分歧,属产品策略选择,本轮未统一,仅消除描述与实际用途的矛盾。
 2. **lark-doc/SKILL.md description 画板句更正**：原文「内嵌表格、多维表格、画板先提取 token 再切对应 skill」承诺画板有对应技能路由,但正文（与包内事实）是 lark-whiteboard 技能未随包收录、走 CLI 直连。改为「内嵌表格、多维表格先提取 token 切对应 skill;画板无技能,CLI 直连」(280 字,符合包内描述长度约定)。
+
+### 同步记录(2026-10-18 → v1.0.98)
+
+- 基线:v1.0.95 → v1.0.98。合并方法:以 v1.0.95 上游 `skills/` 为 base、当前本地为 ours、
+  v1.0.98 上游为 theirs 做逐文件三方合并(git merge-file),28 个冲突文件按本节登记裁定。
+- **上游结构变化(收录 9 域内)**:lark-sheets 上游大改——SKILL.md 重写为「场景 → 命令速查
+  (三列精简表)+ 9 条编辑准则」新形态,新增 `+filter-view-create`/`+history-list`/
+  `+history-revert`/`+range-copy`/`+cells-merge` 等命令与 AI 公式(`=AI(prompt,range)`)指引;
+  `scripts/sheets_df.py` 改名 `lark_sheets_df.py`(本地跟随,`workbook.md`/
+  `write-cells.md` 两处脚本指针同步改名);`references/lark-sheets-legacy-command-migration.md`
+  上游删除(本地与基线逐字节一致,跟随删除);新增 `references/lark-base-view.md`、
+  `references/lark-task-sections.md`(任务分区)。非收录域 lark-apps 新增 export 分册,不涉及。
+- **上游全量修正(147 文件)**:reference 前置条件 `../lark-shared/SKILL.md` →
+  `../../lark-shared/SKILL.md`(相对路径修正)——与本地已登记的链接化/rule-5 路径修正在
+  lark-task 17 个文件上正面冲突,均保留本地「[`../../lark-shared/SKILL.md`](…)」链接化形态
+  (上游修正的路径语义本地早已具备)。
+- 重放裁定:lark-doc 四个 media 分册保持本地「按需策略不预读 lark-shared」前置块
+  (上游仅改路径,本地形态已含正确路径);lark-base `workflow-schema.md` 保持本地
+  `condition_list: null`(无条件传 null,勿传空数组)修正,上游示例仍写 `[]`,继续不跟随;
+  `lark-doc/SKILL.md`/`lark-base/SKILL.md`/`lark-sheets/SKILL.md` 保持本地【何时用】description
+  形态并纳入上游新增语义(doc 补「`/page/<token>` 是妙搭应用非云文档」路由并纳入 main #724 画板句更正「画板无技能,CLI 直连」,280 字符;
+  sheets 补「区域复制/排序/填充、筛选视图/下拉列表、公式校验与历史回滚、本地 Excel/CSV
+  导入导出」与「多维表格改用 lark-base」,271 字符;base 仅跟随上游 `version: 1.2.23`,
+  description 不变),三份 description 均 ≤280(契约规则 6);`lark-sheets-batch-update.md`
+  下拉配色「`--highlight=false` 时 `--colors` 被忽略」本地口径保持(上游同句未修复);
+  `+find` 隐藏别名注、`+table-get` 可选过滤注、tmp/ 临时文件纪律(lark-shared 安全规则指针)、
+  「两种图片别选错」等本地审查修正或随上游精简形态保留语义、或在新速查表行内重放。
+- high-risk-write 清单随上游补 `+history-revert`(整表回滚到历史版本,异步,回滚后用
+  `+history-revert-status` 轮询)——上游 1.0.98 新命令,非回潮。
+- 回潮扫描:`Read 工具`/`read_file`/`File(`/裸 `python scripts/` 全部零命中;
+  新脚本 `lark_sheets_df.py` 无裸 python。
+- 契约:`pinvou3-app/tests/connector_skills_contract.test.js` 全量通过(含规则 5 阻断式
+  auth login 扫描、规则 6 description ≤280、规则 10 participant 归一化扫描)。

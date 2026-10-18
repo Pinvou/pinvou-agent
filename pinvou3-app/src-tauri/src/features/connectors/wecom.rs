@@ -4,15 +4,16 @@
 //! **纯扫码**接入(不需管理员建自建应用、不需手填 CorpID/Secret)。
 //! 公共管道见 [`crate::features::connectors::connector_cli`];本文件只有企微特有的薄声明 + 单段连接编排。
 //!
-//! Connection flow (wecom-cli ≥1.2.1): `wecom-cli auth init --noninteractive
+//! Connection flow (wecom-cli ≥1.3.4): `wecom-cli auth init --noninteractive
 //! --no-browser` runs persistently → grab the QR-code URL → the user scans →
 //! once the process exits, `auth show --status` decides readiness.
 //! Progress is reported via the `wecom:qr` / `wecom:connected` / `wecom:error`
 //! events. Credentials live under `~/.config/wecom`
 //! (Windows: `%USERPROFILE%\.config\wecom`) and are removed on disconnect.
 //! Since 1.1.0 the command model was reshaped (`msg`→`message`,
-//! `schedule`→`calendar`, arguments became flags); the current skill baseline
-//! is the wecom-cli 1.2.1 domain skills and every platform lock pins 1.2.1,
+//! `schedule`→`calendar`, arguments became flags); the bundled skill tree
+//! was last synced at the wecom-cli 1.2.1 domain skills (see NOTICE-wecom.md)
+//! and every platform lock pins 1.3.4,
 //! so installs below [`WECOM_MIN_VERSION`] are replaced/upgraded.
 
 use std::process::Stdio;
@@ -39,13 +40,14 @@ const WECOM_CTX: CliCtx = CliCtx {
 
 /// Minimum acceptable version for the skill and auth command surface: 1.1.0
 /// reshaped the command model (`init`→`auth init`, `msg`→`message`,
-/// `schedule`→`calendar`, JSON arguments→flags); the skill baseline is now
-/// 1.2.1 and every platform lock pins 1.2.1, so the minimum is 1.2.1 —
+/// `schedule`→`calendar`, JSON arguments→flags); the bundled skill tree was
+/// last synced at the 1.2.1 domain skills (see NOTICE-wecom.md) and every
+/// platform lock pins 1.3.4, so the minimum follows the lock at 1.3.4 —
 /// installs below it must be replaced, while a minimum above a platform's
 /// lowest pinned version would cause a replace/upgrade loop on that platform.
 /// `pub` + the facade re-export: single-sourced with the CLI's connectors
 /// family (round-51 review, same rationale as `LARK_MIN_VERSION`).
-pub const WECOM_MIN_VERSION: (u64, u64, u64) = (1, 2, 1);
+pub const WECOM_MIN_VERSION: (u64, u64, u64) = (1, 3, 4);
 
 fn wecom(args: &[&str]) -> std::process::Command {
     WECOM_CTX.cli(args)
@@ -71,7 +73,7 @@ fn wecom_cli_version() -> Option<(u64, u64, u64)> {
     parse_wecom_version(&so).or_else(|| parse_wecom_version(&se))
 }
 
-/// Whether a wecom-cli is installed and ≥ 1.2.1 (minimum acceptable version);
+/// Whether a wecom-cli is installed and ≥ 1.3.4 (minimum acceptable version);
 /// older versions count as not installed and trigger the online replacement.
 fn wecom_cli_present() -> bool {
     wecom_cli_version()
@@ -94,7 +96,7 @@ pub(crate) fn is_ready() -> bool {
 
 // ───────────────────────────── Tauri commands ─────────────────────────────
 
-/// Bootstrap: on first use (or when the installed CLI is below the 1.2.1
+/// Bootstrap: on first use (or when the installed CLI is below the 1.3.4
 /// minimum acceptable version), download and verify the locked wecom-cli
 /// version; returns immediately when a sufficient CLI is present, and an
 /// old CLI in the managed directory is replaced outright on lock-hash mismatch.
@@ -199,7 +201,7 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
     // directory, so the real auth QR PNG is written into a temp dir. The stdout
     // URL is the /ai/qc/gen landing page (which would ask the user to scan
     // again) and cannot be encoded as the QR directly; only the PNG QR reaches
-    // authorization in one scan. Any CLI that reaches this point is ≥1.2.1
+    // authorization in one scan. Any CLI that reaches this point is ≥1.3.4
     // (wecom_ensure_cli's version gate force-replaces older ones), so the
     // self-drawn fallback only covers PNG write failure / poll timeout.
     let qr_dir = std::env::temp_dir().join(format!(

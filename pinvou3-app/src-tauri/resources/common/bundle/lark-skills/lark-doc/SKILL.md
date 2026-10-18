@@ -1,7 +1,7 @@
 ---
 name: lark-doc
 version: 1.0.1
-description: "【何时用:仅当用户明确指向飞书/Lark(发到飞书、飞书文档等)时使用;泛指做个文档或PPT或表格或方案默认走本地工具,不要误用飞书】飞书云文档(Docx/Wiki)与思维笔记内容操作:读取、创建、编辑文档,插入或下载图片附件,查询或回滚历史版本。用户给出文档 URL/token(含 doubao.com 的 /docx/、/wiki/)时使用,按 URL 路径/token 而非域名路由;内嵌表格、多维表格先提取 token 切对应 skill;画板无技能,CLI 直连。文档评论走 lark-drive;表格或 Base 内部数据操作不在本 skill。"
+description: "【何时用:仅当用户明确指向飞书/Lark(发到飞书、飞书文档等)时使用;泛指做个文档或PPT或表格或方案默认走本地工具,不要误用飞书】飞书云文档(Docx/Wiki)与思维笔记内容操作:读取、创建、编辑文档,插入或下载图片附件,查询/回滚历史版本。用户给出文档 URL/token(/docx/、/wiki/ 等)时使用,按路径/token 路由;`/page/<token>` 是妙搭应用非云文档;内嵌表格/多维表格提取 token 切对应 skill;画板无技能,CLI 直连。评论走 lark-drive;表格/Base 内部数据操作不在本 skill。"
 metadata:
   requires:
     bins: ["lark-cli"]

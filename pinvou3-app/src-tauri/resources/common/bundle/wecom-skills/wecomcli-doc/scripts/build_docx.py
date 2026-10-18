@@ -10,9 +10,8 @@ Workflow::
        （action 取值 / params 字段名 / 类型 / 取值范围）。
        任何偏差立即抛 ``TypeError``（"类型错误，无法执行"）。
     2. 校验通过后，再创建 docx 并按 action 派发到 ``DocxBuilder``。
-    3. 通过本地文件系统写出 ``.docx``，输出路径自动选取于
-       ``WECOMAGENT_WRITABLE_DIRS`` 的第一个目录；同名文件会追加
-       ``_1`` / ``_2`` … 后缀避免覆盖。
+    3. 通过本地文件系统写出 ``.docx``，默认输出到 JSONL 文件所在目录的
+       ``docx/`` 子目录；同名文件会追加时间戳与进程号后缀避免覆盖。
 
 Usage::
 
@@ -22,8 +21,6 @@ Usage::
 from __future__ import annotations
 
 import argparse
-import base64
-import functools
 import io
 import json
 import os
@@ -462,97 +459,22 @@ def _spec_validate_command(cmd: Any, line_no: int) -> tuple[str, dict]:
 
 
 # ===========================================================================
-# Sandboxed local IO helpers
+# Local IO helpers
 # ===========================================================================
-#
-# 所有 fs 读写都限制在
-# ``WECOMAGENT_READABLE_DIRS`` / ``WECOMAGENT_WRITABLE_DIRS`` 限定
-# （JSON 数组：``[{"path": "/abs/dir", "label": "..."}]``）。
-
-ENV_READABLE = "WECOMAGENT_READABLE_DIRS"
-ENV_WRITABLE = "WECOMAGENT_WRITABLE_DIRS"
 
 # 读入 / 写出文件的大小硬上限：30 MiB。
 # - 读入：避免一次性把巨型 JSONL 拉进内存撑爆进程；
-# - 写出：避免生成过大的 .docx 写入磁盘（base64 后体积更大）。
+# - 写出：避免生成过大的 .docx 写入磁盘。
 MAX_FILE_SIZE_BYTES = 30 * 1024 * 1024
 
 
-@functools.lru_cache(maxsize=None)
-def _parse_roots(env_name: str) -> tuple[str, ...]:
-    """Parse a JSON-array env var into a tuple of realpath roots (cached)."""
-    raw = os.environ.get(env_name, "")
-    if not raw:
-        raise RuntimeError(f"环境变量 {env_name} 未设置或为空")
-    parsed = json.loads(raw)
-    if not isinstance(parsed, list):
-        raise RuntimeError(
-            f"{env_name} 必须是 JSON 数组，实际为 {type(parsed).__name__}"
-        )
-    roots: list[str] = []
-    for it in parsed:
-        if isinstance(it, str):
-            it = json.loads(it)
-        if not isinstance(it, dict):
-            raise RuntimeError(
-                f"{env_name} 元素必须是 dict 或 dict 的 JSON 字符串，"
-                f"实际为 {type(it).__name__}"
-            )
-        p = it.get("path")
-        if not isinstance(p, str) or not p.strip():
-            raise RuntimeError(f"{env_name} 元素缺少有效的 path 字段: {it!r}")
-        roots.append(os.path.realpath(p.strip()))
-    if not roots:
-        raise RuntimeError(f"环境变量 {env_name} 解析后为空")
-    return tuple(roots)
-
-
-def _reject_relative_segments(path: str) -> None:
-    """Reject path strings that include ``.`` or ``..`` segments such as
-    ``./foo``, ``../bar`` or ``/abs/path/../x``.
-
-    Although ``os.path.realpath`` would silently normalize these away,
-    accepting them would bypass the contract that callers must hand in
-    explicit, fully-qualified paths inside the sandboxed roots — and
-    could be abused to escape the intended directory in edge cases where
-    symlinks are present.
-    """
-    if not path:
-        return
-    for seg in path.replace("\\", "/").split("/"):
-        if seg in (".", ".."):
-            raise ValueError(
-                f"路径不允许包含 './' 或 '../' 这类相对路径片段: {path!r}"
-            )
-
-
-def _ensure_within(path: str, env_name: str) -> str:
-    """Realpath ``path`` and ensure it lies within one of ``env_name``'s roots."""
-    if not path:
-        raise ValueError("path 不能为空")
-    _reject_relative_segments(path)
-    real = os.path.realpath(path)
-    roots = _parse_roots(env_name)
-    for root in roots:
-        try:
-            common = os.path.commonpath([real, root])
-        except ValueError:
-            continue
-        if common == root:
-            return real
-    raise PermissionError(
-        f"路径越权: {real} 不在 {env_name} 范围 {roots} 之内"
-    )
-
-
 def _read_text(path: str) -> str:
-    """Read a UTF-8 text file from an allowed readable directory.
+    """Read a UTF-8 text file without applying directory restrictions.
 
     最多读取 ``MAX_FILE_SIZE_BYTES + 1`` 字节，以便在不把超大文件
     整体载入内存的前提下判断是否超限。
     """
-    real = _ensure_within(path, ENV_READABLE)
-    with open(real, "rb") as f:
+    with open(path, "rb") as f:
         data = f.read(MAX_FILE_SIZE_BYTES + 1)
     if len(data) > MAX_FILE_SIZE_BYTES:
         raise ValueError(
@@ -562,38 +484,17 @@ def _read_text(path: str) -> str:
     return data.decode("utf-8")
 
 
-def _write_b64(path: str, data_b64: str, overwrite: bool = False) -> None:
-    """Write a base64-encoded binary blob to an allowed writable directory.
-
-    这里在写入前对路径做 ``os.path.islink`` 检查并显式拒绝：
-      - 检查 ``path``（原始入参）：拦截 "目标位置本身就是软链" 的常见情况；
-      - 检查 ``real``（realpath 结果）：作为防御纵深，覆盖悬挂软链 /
-        竞态等 realpath 仍可能返回软链的边缘情况。
-    """
-    real = _ensure_within(path, ENV_WRITABLE)
-    if os.path.islink(path) or os.path.islink(real):
-        raise PermissionError(
-            f"拒绝写入符号链接以避免跨目录覆盖: {path!r}"
-        )
-    data = base64.b64decode(data_b64, validate=True)
+def _write_bytes(path: str, data: bytes) -> None:
+    """Write binary data without applying directory restrictions."""
     if len(data) > MAX_FILE_SIZE_BYTES:
         raise ValueError(
-            f"输出文件过大：解码后 {len(data)} 字节，"
+            f"输出文件过大：{len(data)} 字节，"
             f"超过上限 {MAX_FILE_SIZE_BYTES} 字节（30 MiB）"
         )
 
-    parent = os.path.dirname(real)
+    parent = os.path.dirname(os.path.abspath(path))
     os.makedirs(parent, exist_ok=True)
-
-    # 创建父目录后再次解析路径，防止目录在检查和写入之间变为软链。
-    real = _ensure_within(path, ENV_WRITABLE)
-    if os.path.islink(path) or os.path.islink(real):
-        raise PermissionError(
-            f"拒绝写入符号链接以避免跨目录覆盖: {path!r}"
-        )
-
-    mode = "wb" if overwrite else "xb"
-    with open(real, mode) as f:
+    with open(path, "xb") as f:
         f.write(data)
 
 
@@ -736,10 +637,10 @@ class DocxBuilder:
     def save(self, path: str) -> None:
         """Persist the document to the local filesystem.
 
-        ``overwrite=False`` enforces the "never clobber an existing .docx"
+        Exclusive-create mode enforces the "never clobber an existing .docx"
         guarantee that ``_pick_output_path`` makes when picking the filename.
 
-        在编码 / 写入之前校验序列化后的 docx 体积不得超过
+        在写入之前校验序列化后的 docx 体积不得超过
         ``MAX_FILE_SIZE_BYTES``；超限直接抛 ``ValueError`` 中止保存。
         """
         buf = io.BytesIO()
@@ -750,8 +651,7 @@ class DocxBuilder:
                 f"输出文件过大：序列化后 {size} 字节，"
                 f"超过上限 {MAX_FILE_SIZE_BYTES} 字节（30 MiB）"
             )
-        data_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        _write_b64(path, data_b64, overwrite=False)
+        _write_bytes(path, buf.getvalue())
 
     # -- 2. Page setup ----------------------------------------------------
 
@@ -1317,14 +1217,16 @@ def run_jsonl(spec_path: str, output: str) -> str:
 
 
 def _pick_output_path(spec_path: str) -> str:
-    """Pick a non-conflicting ``.docx`` path under the writable root.
+    """Pick a non-conflicting path beside the JSONL file.
 
-    Filename derives from the spec's stem (``report.jsonl`` → ``report.docx``);
-    on conflict a timestamp suffix is appended to avoid overwriting.
+    The document is written to a ``docx/`` subdirectory of the JSONL file's
+    directory. Its filename derives from the spec's stem
+    (``report.jsonl`` → ``report.docx``); on conflict a timestamp suffix is
+    appended to avoid overwriting.
     """
-    target_dir = os.path.join(_parse_roots(ENV_WRITABLE)[0], "docx")
-    target_dir = _ensure_within(target_dir, ENV_WRITABLE)
-    stem = Path(spec_path).stem or "document"
+    spec = Path(spec_path).expanduser().resolve()
+    target_dir = str(spec.parent / "docx")
+    stem = spec.stem or "document"
     if not re.fullmatch(r"[A-Za-z0-9_.\-]{1,128}", stem):
         stem = "document"
 
@@ -1350,7 +1252,7 @@ def main() -> None:
 
     try:
         output = _pick_output_path(args.spec)
-    except Exception as e:
+    except Exception:
         print("Error: failed to pick output path")
         sys.exit(2)
 
@@ -1360,9 +1262,6 @@ def main() -> None:
         # 上游 JSONL 校验抛出的 SpecTypeError(继承 TypeError)，统一
         # 转译成 "类型错误，无法执行" 提示。
         print(f"Error: 类型错误，无法执行: {e}", file=sys.stderr)
-        sys.exit(2)
-    except PermissionError:
-        print("Error: 路径不在允许范围内", file=sys.stderr)
         sys.exit(2)
     except Exception:
         print("Error: 执行失败，请检查输入文件格式或稍后重试", file=sys.stderr)

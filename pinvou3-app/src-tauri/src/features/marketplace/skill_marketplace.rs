@@ -4836,7 +4836,7 @@ mod tests {
 
     /// 企微 0.1.9 退役目录（msg/schedule）迁移走删除而非搬移：搬进
     /// `bundles/wecom/skills/` 后门控的 legacy 清理（只扫旧扁平目录）够不到，
-    /// 退役技能会永久残留并被物化进会话（五轮评审必修 3）。14 个新名正常搬移。
+    /// 退役技能会永久残留并被物化进会话（五轮评审必修 3）。15 个新名正常搬移。
     #[test]
     fn migrate_deletes_retired_wecom_skills_instead_of_moving() {
         with_temp_home("pinvou3-skillmigrate", || {

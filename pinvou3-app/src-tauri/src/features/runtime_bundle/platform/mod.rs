@@ -183,7 +183,25 @@ pub(crate) use crate::platform::connector_skills::{
 /// Skill trees are excluded from the content hash, so the semantic bump is
 /// required for connected users to refresh at startup (otherwise the refresh
 /// waits for the post-first-frame refresh_connector_auth_gates backfill).
-pub const BUNDLE_VERSION: &str = concat!("0.33-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.34: third-party connector skill trees re-synced to the upgraded CLI
+/// pins (no behavior change outside the trees; BUNDLE_VERSION must move so
+/// connected installs re-extract). dws skills 1.0.61 → 1.0.64: new
+/// contract/html/dingtalk-tag domains plus the oa template suite, the
+/// one-stop `aitable +import-file` shortcut retires the import-script
+/// path, server-side `record stats`/`psql` analytics routing, shortcut
+/// counts re-measured against the pinned 1.0.64 binary (todo doc still
+/// says 21, binary measures 20); lark skills 1.0.95 → 1.0.98: sheets
+/// SKILL.md rewritten upstream (condensed speed table, 9 editing rules,
+/// +filter-view/+history/+range-copy commands, sheets_df.py renamed
+/// lark_sheets_df.py), lark-task prerequisite links path-fixed upstream
+/// under the local linkified form; wecom skills 1.2.1 → 1.3.4: new
+/// wecomcli-pptx skill (documents the binary's `slide` surface, 15th
+/// skill), upstream anti-injection "安全提示" sections adopted, shared
+/// version-gate text raised to 1.3.4. tmeet skills re-verified against
+/// upstream v1.0.18 (still latest; only registered local modifications
+/// differ). All replayed local normalizations are registered in the four
+/// NOTICE files. Next free slot after 0.33.
+pub const BUNDLE_VERSION: &str = concat!("0.34-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
 /// skeleton = identity / baseline / user memory (placeholder) / tool-and-fact discipline /
