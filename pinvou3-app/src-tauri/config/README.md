@@ -78,3 +78,10 @@ distribution (loong64) fetch that Node from
 `unofficial-builds.nodejs.org` at the same pinned version, with npmmirror's
 `node-unofficial-builds` mirror as fallback; the sha256 stays pinned in
 `scripts/prepare-codex-bridge-runtime.sh`.
+
+A loongarch64 cross build must additionally pass `--bundles none` (tauri
+CLI 2.x supports `--no-bundle`; `build.js` translates the request):
+tauri-bundler cannot bundle this triple and panics on it, so the loong64 deb
+is produced separately by `scripts/package-deb-loongarch64.sh` in the
+release pipeline. Omitting the flag compiles everything and then dies in
+the bundler.
