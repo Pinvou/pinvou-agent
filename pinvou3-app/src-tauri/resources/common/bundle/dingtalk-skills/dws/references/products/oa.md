@@ -953,4 +953,3 @@ dws oa approval create-instance --request '{"processCode":"PROC-xxx","deptId":-1
 ### 创建和更新模板路由
 
 用户要创建或更新审批模板时，继续读取 [oa-template-write.md](oa-template-write.md)。不要凭本文件直接组装 `--schema-content` 或 `--process-config`。
-

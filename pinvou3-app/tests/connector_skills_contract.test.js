@@ -52,7 +52,7 @@ for (const f of docs) {
     "comments-guide",
     "core-operations",
   ]) {
-    // Real dws 1.0.61 quick command (reads the doc whiteboard OpenNodes
+    // Real dws 1.0.64 quick command (reads the doc whiteboard OpenNodes
     // snapshot; see the whiteboard.md command table), unrelated to the
     // lark-side whiteboard +query removed in lark-cli 1.0.87 — exempted
     // per domain. Rationale registered in NOTICE-dingtalk.md (rule 9's

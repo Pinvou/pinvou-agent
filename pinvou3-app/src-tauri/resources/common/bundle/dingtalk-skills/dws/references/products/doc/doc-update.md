@@ -103,7 +103,7 @@ Flags:
 
 ### 自动分片行为
 
-当内容超过 10000 字符时，CLI 自动执行：
+当内容超过 30000 字符时，CLI 自动执行：
 
 1. **create**: 先创建空文档拿 `nodeId`，再切分后逐片 append
 2. **update (overwrite)**: 第一片用 overwrite，后续片用 append

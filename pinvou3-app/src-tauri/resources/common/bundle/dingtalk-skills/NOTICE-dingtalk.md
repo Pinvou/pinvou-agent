@@ -11,7 +11,7 @@
 1. 查当前版本：读任一 `connectors.lock.json` 中 `name: "dws"` 的 `version`（当前 1.0.64）。
 2. 拉技能源：GitHub Releases 资产，URL 模式
    `https://github.com/DingTalk-Real-AI/dingtalk-workspace-cli/releases/download/v<version>/dws-skills.zip`（当前 v1.0.64；版本号带 `v` 前缀）。
-3. 取 mono 形态：zip 解压后顶层为 `NOTICE`、`mono/`、`multi/` 三部分——品悟收录的是 **`mono/` 子目录**（单一 `dws/SKILL.md` 入口 + references/ + scripts/，LICENSE 与 NOTICE 在 mono/ 内也各有一份）；顶层与 `mono/` 内容经 diff 确认一致，`multi/`（dingtalk-chat/ 等 14 个子 skill 布局）不随包分发。核对 zip 真伪可对照同 Release 的 `checksums.txt`。
+3. 取 mono 形态：zip 解压后顶层为 `NOTICE`、`mono/`、`multi/` 三部分——品悟收录的是 **`mono/` 子目录**（单一 `dws/SKILL.md` 入口 + references/ + scripts/，LICENSE 与 NOTICE 在 mono/ 内也各有一份）；顶层与 `mono/` 内容经 diff 确认一致，`multi/`（dingtalk-chat/ 等 16 个子 skill 布局）不随包分发。核对 zip 真伪可对照同 Release 的 `checksums.txt`。
 4. 以该 zip 的 `mono/` 为三方合并基线，按下文登记逐条重放本地修改后，保留本声明。
 
 Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首次使用时按 lock 在线下载、校验并安装到用户目录。凭证由官方 CLI 管理。
@@ -276,7 +276,7 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 
 ### 重放清单（本次逐条重放并核验）
 
-- 头部登记 9 条：1 description 重写——重放（保持【何时用】形态并纳入 1.0.64 新产品域「智能合同」「HTML文件」，250 字符 ≤280；`cli_version` 升 `>=1.0.64`，metadata.requires.bins/cliHelp 不变）；2 脚本能力描述——重放；3 --dry-run 表述——上游按脚本说明参数，无需重放；4 agoal 行——上游已修复（见上）；5 警告块压缩——重放；6 --yes 去重——重放；7 核心流程 0-3 步——重放；8 MUST DO 括号注——重放；9 best_practices 单行汇总——重放。
+- 头部登记 9 条：1 description 重写——重放（保持【何时用】形态并纳入 1.0.64 新产品域「智能合同」「HTML文件」，252 字符 ≤280；`cli_version` 升 `>=1.0.64`，metadata.requires.bins/cliHelp 不变）；2 脚本能力描述——重放；3 --dry-run 表述——上游按脚本说明参数，无需重放（见新增登记 4 的勘误）；4 agoal 行——上游已修复（见上）；5 警告块压缩——重放；6 --yes 去重——重放；7 核心流程 0-3 步——重放；8 MUST DO 括号注——重放；9 best_practices 单行汇总——重放。
 - git 历史两处：`attendance.md`/`minutes.md` 工具名 `read` 口径与 `attendance_report_common.py` URL 哈希 sha256 保持（全包 `Read 工具`/`read_file`/`File(` 扫描零命中）。
 - 真实性审查补录（mono 形态适配、channel-login 不收录——上游 1.0.64 仍随包发布，继续不收录）、第四轮 metadata/何时用、第四轮工具依赖（`--jq` 直出等 6 条）、第六轮语义扫描 5 条（minutes「品悟应用」锚定、sheet-filter 括注删除等）、第七轮脚本审计（`errors='replace'`、safe_file_name、Pillow 兜底；新脚本 generate_*.py 无 subprocess 面，仅 usage 输出 python3 化 1 处）、PR #359（oa/simple 确认门禁 --yes，全包 `dws oa approval approve|reject|revoke` 可执行行扫描零缺 --yes）、PR #437 各条（批量上限调和、串行口径、弃用迁移 drive search/list、置信度单一事实源、attendance 收敛、qa 各项）、1.0.61 同步新增登记 5 条（drive 三分册 `read` 前置块、dev.md mono 口径、doc.md/doc-update.md 回读硬约束、冲突保留项、whiteboard +query 豁免）、模型向文本审计 3 条（`calendar attendee` 全包扫描零 calendar 语境残留、考勤行无 P0/P1、认证「交给用户终端」4 文件口径）：全部保持。
 - 冲突裁定保留本地口径处：`06-data-analytics.md` read-aitable/generate-data-report/create-aitable-record 采用上游 1.0.64 服务端分析重写（`record stats`/`group-stats`/`aitable psql`/`+import-file` 均经二进制 `--help` 实测存在；create 行 `python3 scripts/import_records.py` 重放 python3），update-aitable-record 行保持本地「建议 ≤30、硬上限 100」批量口径；`07-minutes.md` 采纳上游 `+speaker-insights`/`+export-pack` 新段落，lite 指针保持本地 lite-recipes.md「#7」形态；`attendance.md` 采纳上游新增 8 个请假/外出/加班/出差预检节（leave-types/leave-duration/leave-check/补卡校验/外出时长/同行人班次/复杂加班规则），「导入排班记录」节保持本地脚本收敛形态；`dev.md` 采纳上游 MCP endpoint/timeout 新表，「multi skill」尾注重放为 mono 口径；`oa.md` 保持本地脚本表（python3 + 确认语义 + simple.md 速查指针），追加上游「创建和更新模板路由」节（指向新 oa-template-write.md）；`drive.md` 采纳上游权限读写分工新口径（写 add/update/remove 限文档空间节点；list/get-setting 兼顾钉盘文件，较本地单行更精细，本地行注销）；`SKILL.md` 产品总览表保持 dev 行并按字母序插入上游 contract 行。
@@ -285,12 +285,15 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 
 ### 本次新增本地修改登记（下次 sync 需重放）
 
-1. `SKILL.md` frontmatter description 纳入「智能合同」「HTML文件」两个 1.0.64 新产品域（250 字符）。
+1. `SKILL.md` frontmatter description 纳入「智能合同」「HTML文件」两个 1.0.64 新产品域（252 字符）。
 2. `scripts/generate_form_component_id.py` 运行时 usage 输出 `python` → `python3`（1 处；`generate_node_id.py` 无 usage 行，无需改动）。
 3. `references/products/dev.md` MCP 新表尾行「完整生命周期……见 multi skill 的 `references/dev/mcp.md`」重放为 mono 口径（命令级入参用 `dws mcp --help`、`dws dev mcp --help` 查看）。
+4. `references/products/todo.md` 自动化脚本表 `todo_batch_create.py` 行恢复上游 `--dry-run` 用法与其下 planDigest 确认门段落（上游 1.0.64 原文逐字重放，`python` 按 1.0.61 登记 python3 化）——头部登记第 3 条「--dry-run 表述无需重放」的前提是上游段落随合并保留，实际被三方合并丢失，本轮修复后该前提恢复成立；`references/best_practices/02-task.md` batch-create-todo 行同步补 `--dry-run`/`--confirm-digest` 步骤（上游该行同为裸执行，本地补齐以与脚本确认门一致，与「单批超 30 条须用户确认」并存）。
+5. `references/products/attendance.md` 「全局参数说明」`--timeout <秒>` 注保持本地（上游无此行；下文写操作示例的 `--timeout 10` 依赖它）。
+6. `references/products/mail.md` batch-delete 示例行 `--yes` 与「⚠️ 危险操作」CAUTION 块保持本地（上游无；CLI 对该命令不强制确认门，确认是技能层要求，PR #437 登记 #8 口径），Flags 表未动。
 
 ### 遗留观察项（自 1.0.61 结转 + 本轮新增）
 
 - `chat message send` flag 重命名后上游 `conventions.md` ID 边界表口径：1.0.64 未再核对（文件本轮无上游改动），下版 sync 关注。
-- doc 分片阈值实测项结转（本轮未实机写入验证；上游 1.0.64 doc.md/doc-update.md 相关行随合并保持 1.0.61 口径）。
+- doc 分片阈值实测项结转（本轮未实机写入验证；`doc-update.md` 分片行已由 1.0.61 残留的 10000 修正为上游/`doc.md` 一致的 30000 口径，实机阈值仍待下版 sync 验证）。
 - 本轮 Shortcut 计数实测：上游文档表仅 `todo` 一项与二进制不符（文档 21、实测 20，与 1.0.61 相同），已按实测写 20；其余 19 项与上游文档一致。

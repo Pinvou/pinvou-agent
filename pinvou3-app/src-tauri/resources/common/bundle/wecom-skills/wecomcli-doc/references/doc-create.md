@@ -14,8 +14,7 @@
 
 **用法约定**：
 
-- JSONL 须写入宿主可读目录（`WECOMAGENT_READABLE_DIRS`），否则报路径越权
-- 产物固定写入可写目录的 `docx/` 子目录，实际路径以脚本 stdout 的 `Successfully built` 行为准
+- 产物写入 JSONL 所在目录的 `docx/` 子目录，实际路径以脚本 stdout 的 `Successfully built` 行为准
 - spec 文件名建议用 ASCII 字符并与目标文档标题一致（非 ASCII 词干会被替换为 `document`）
 
 # JSONL 书写规范

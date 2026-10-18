@@ -11,7 +11,6 @@
 | `markdown diff` | 比较远程历史版本，或远程版本与本地草稿 |
 | `markdown overwrite` | 全量覆盖已有 `.md` 文件 |
 | `markdown patch` | 按字面量或 RE2 正则局部替换 |
-| `markdown diff` | 比较历史版本之间 / 远程与本地文件的差异 |
 | `markdown comment list` | 读取 Markdown 文件的新体系全文和划词评论 |
 
 ## 读取 Markdown

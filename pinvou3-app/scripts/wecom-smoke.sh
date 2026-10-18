@@ -57,7 +57,7 @@ fi
 echo "[3] 各域授权探测(只读;授权域应响应,未授权域报权限错)"
 # 域=CLI 顶层子命令:doc-manage 技能的命令实跑在 doc 域下,chat 有域无技能目录。
 # 用退出码判定可用性——错误输出也带 Usage 行,grep Usage 会把不存在的域误报可用。
-for d in contact doc chat mail disk media message meeting sheet smartpage smartsheet calendar todo; do
+for d in contact doc chat mail disk media message meeting sheet smartpage smartsheet calendar todo slide; do
   OUT="$("$CLI" "$d" --help 2>&1)"; d_rc=$?
   if echo "$OUT" | grep -Eq '权限|暂不支持|未授权'; then sk "$d 域未授权"
   elif echo "$OUT" | grep -q 'unrecognized subcommand'; then no "$d 域不存在(CLI 无此子命令)"

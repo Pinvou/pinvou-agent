@@ -223,6 +223,8 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
    「必须单行/不得空行」改为「建议单行,解析器容忍空行、`#` 与 `//`
    注释行、多行 pretty-print」(解析器实测),同文件残留「必须/要压缩到
    单行」两处同步收口;`color_hex` 补「可选前导 `#`」。
+   (2026-10-18 勘误:本条沙箱部分自 1.3.4 起退役不再重放,见「上游同步
+   (2026-10-18,wecom-cli 1.3.4)」的登记注销;其余口径继续有效。)
 7. **media upload `voice` 补「源文件仅支持 AMR」**(message 技能同约束镜像)。
 8. **get-mail.md 返回示例补 `ori_mail_id`**(schema 实证;上游文档明文该
    字段用于对应回请求的 `mail_id`)。
@@ -411,10 +413,22 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
 
 本地登记重放核验:14 个既有技能的全部本地修改(「何时用」description 前缀、
 品悟代管安装口径、终端交接授权、邮件正文 `tmp/mail/` 路径、周期「产品暂未开放」
-措辞、contact 搜索 `hint` 口径等)经三方合并保留;`wecomcli-pptx` 作为新技能按
+措辞、contact 搜索 `hint` 口径等)经三方合并保留,**唯一例外是下段注销的 1.1.0
+适配清单第 6 条 build_docx.py 沙箱层**(随上游同区域重写一并移除,不属遗漏);
+`wecomcli-pptx` 作为新技能按
 1.1.0 适配清单第 1 条口径补写 description「何时用:」前缀(211 字符 ≤280;上游
 原文无前缀且超限),`bins: ["wecom-cli"]` 上游已自带。
 
+登记注销(2026-10-18 勘误,1.3.4 起):「本轮(1.1.0)品悟适配清单」第 6 条中
+build_docx.py 的 `WECOMAGENT_READABLE_DIRS`/`WECOMAGENT_WRITABLE_DIRS` 路径
+containment 部分**退役,不再重放**——上游 v1.2.1→v1.3.4 增量已整体移除该沙箱机制,
+输出位置改为「JSONL 所在目录的 `docx/` 子目录」,本仓宿主代码从未设置 `WECOMAGENT_*`
+环境变量(src-tauri 与 pinvou-cli 全量零引用),该层从未实际生效;同条目其余口径
+(「建议单行,解析器容忍空行/注释行/pretty-print」、spec 文件名 ASCII 建议——脚本
+仍把非 ASCII 词干替换为 `document`、`color_hex` 可选前导 `#`)继续有效。
+`wecomcli-doc/references/doc-create.md`「用法约定」已同步改为上游契约:删除
+「路径越权」虚构错误路径与「可写目录」表述,产物位置以 stdout `Successfully built`
+行为准。
 rebase 纳入 main #724「模型侧文案复审」四项(doc-manage/message description 修正、smart-sheet-formula 转义示例、build_docx.py docstring python3),登记见上方「模型侧文案复审」节。
 
 ### 各技能重放基线(1.3.4 起)

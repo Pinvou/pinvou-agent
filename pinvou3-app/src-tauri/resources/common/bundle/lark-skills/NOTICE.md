@@ -734,7 +734,10 @@ lark-shared-identity-and-permissions.md 规定 agent 发起的增量授权必须
   形态并纳入上游新增语义(doc 补「`/page/<token>` 是妙搭应用非云文档」路由并纳入 main #724 画板句更正「画板无技能,CLI 直连」,280 字符;
   sheets 补「区域复制/排序/填充、筛选视图/下拉列表、公式校验与历史回滚、本地 Excel/CSV
   导入导出」与「多维表格改用 lark-base」,271 字符;base 仅跟随上游 `version: 1.2.23`,
-  description 不变),三份 description 均 ≤280(契约规则 6);`lark-sheets-batch-update.md`
+  description 不变),三份 description 均 ≤280(契约规则 6)。勘误(2026-10-18):doc 的
+  272 字符形态合并时把 2026-07-26 登记的 doubao.com 路由锚点挤掉了,现恢复为
+  「(含 doubao.com 的 /docx/、/wiki/)时按路径/token 路由」279 字符形态,仍 ≤280;
+  `lark-sheets-batch-update.md`
   下拉配色「`--highlight=false` 时 `--colors` 被忽略」本地口径保持(上游同句未修复);
   `+find` 隐藏别名注、`+table-get` 可选过滤注、tmp/ 临时文件纪律(lark-shared 安全规则指针)、
   「两种图片别选错」等本地审查修正或随上游精简形态保留语义、或在新速查表行内重放。
