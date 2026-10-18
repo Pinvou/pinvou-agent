@@ -5,8 +5,8 @@ Tasks are completed individually only after in-scope independent code review,
 repairs, applicable tests and commit/push. Contract completion is not production
 client, service, physical platform certification or rollout readiness.
 
-Current task totals: 47 tasks; five implemented, twelve in progress and
-thirty not completed or deferred. Detailed chronological evidence follows
+Current task totals: 47 tasks; five implemented, thirteen in progress and
+twenty-nine not completed or deferred. Detailed chronological evidence follows
 the current overview; a completed bounded batch does not complete its whole task.
 
 | Task | Status | Delivery / outstanding dependency |
@@ -24,7 +24,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T11 | Not completed | Complete multi-platform Release/Target approval workflow and qualification integration. |
 | T12 | In progress | Original stable-facts identity, exact profile matching and immutable forward-policy intersection; protected Registry/version/approval and production qualification remain pending |
 | T13 | Not completed | Supported floor, prerequisite paths and historical bridge approvals. |
-| T14 | Not completed | Deployment lifecycle and first-baseline activation with atomic parent/rollout composition. |
+| T14 | In progress | Protected configuration drafts with actual UI/API/recovery; qualified parents, publication, scheduling and first-baseline activation remain pending. |
 | T15 | Not completed | Approved automatic rollout scheduling, quality guards and controlled completion. |
 | T16 | Not completed | Explicit Stable-to-Beta/Internal atomic draft synchronization. |
 | T17 | In progress | Bounded original initial selection, protected logical workflow/initial installation, atomic handoff/live resume and private activation Session; qualified protected check/refresh composition remains pending |
@@ -12379,3 +12379,67 @@ deferred. Downloads have no hard total/cumulative duration or retry cap; the
 
 DCO committed and pushed as `1cbf50297b4b57e517159c782fdd416f7672058b` on
 `codex/t47-missing-owner-fences`; evidence: `docs/rollout-missing-owner-hardening.md`.
+
+## 2026-10-18: T14 protected configuration-draft authoring
+
+Delivered the separate service's complete bounded configuration-authoring workflow:
+original V1 create, exact current-head edit, protected point/list/history queries,
+permanent minimal original-result locator, and Chinese/English/Japanese UI.
+T14 is now in progress; this increment does not qualify declared Release/Target
+references, publish parents, submit, schedule, activate, switch the first baseline
+or create runnable Rollout children. These remain dependencies of the full task.
+Totals are five implemented, thirteen in progress and twenty-nine incomplete or
+deferred out of 47. No other task is promoted by this batch.
+
+Every mutation uses actual T05 current authority and the original T06 owner,
+closed native intent/authentication and exact source CAS. The atomic write set
+includes the owned head/history/result, protected audit/outbox and T06 result.
+Unattended recovery never renews its retained proof; the active composition merges actual
+event and draft registrations into one worker, detects missing processing owners,
+and joins owned work before pool shutdown. Disabling draft admission retains
+queries and recovery. Schema provisioning is an explicit owner-only utility.
+
+The browser retains exact original wire/key/public SHA before sending, separates
+fresh credentials, preserves uncertain results, and keeps the latest explicit
+refusal diagnostic before releasing its exact key. Corrupt or SHA-invalid local
+diagnostics refuse new work; late responses across actor/scope changes cannot
+release a later request. Current/historical references stay distinct, and current
+grants can refresh without reloading the page. Local session storage is plaintext,
+not cross-user confidentiality. No generic command dispatch or default account.
+
+The first complete focused run passed both actual Go groups (browser and CLI),
+zero skips/failures, in 46.282s; inner Playwright passed both tests in 23.9s.
+After a final frontend self-review unified same-actor identity refresh in App,
+the new build and all three actual groups (new draft browser, existing management
+browser and CLI) passed again, zero skips/failures, in 61.842s. The browser also
+checks the access page after live permission refresh; all Go/SQL/protocol bytes
+remain identical to the full-regression backend.
+It covers actual HTTPS, signed generated OIDC, protected provisioning, UI edit
+content, original-response loss/reload recovery, read-only/actor/scope isolation,
+live grant refresh, bounded list/history, malformed and SHA-corrupt storage,
+and settlement of a delayed actual fetched Response before comparing a new
+pending request and retrying it. This adapter seam is not physical network ACK
+qualification. CLI acceptance proves exact idempotent initialize/runtime check;
+fresh DDL is tested through the native initializer. A separate actual sealed
+event/interrupted-draft shared worker test retains original proofs, advances
+consistent epochs and writes each original result once.
+
+Final affected actual regression: 12 tested packages, 125 top-level/436 child passes, 2 top-level/0 child skips, 0/0 failures (363.854s).
+Final cleared-opt-in default regression: 74 tested packages, 721 top-level/1701 child passes, 654 top-level/651 child skips, 0/0 failures (329.783s);
+13 no-test packages. The two affected-suite skips are the deployed Keycloak acceptance opt-in and
+parent-only crash-process helper. Default opt-in/host skips do not stand in for
+real feature acceptance. Module verification, complete vet, private
+server build, original V1 pin, formatting and both whitespace gates passed.
+All source/index/status and 69 previously committed SQL files stayed frozen
+through native runs; the preexisting generated PostgreSQL inventory remained
+1 database/2 roles before and after. Earlier red, timed-out and interrupted
+harness evidence was retained privately and is not counted as accepted work.
+
+Both independent roles performed scoped line-by-line static code/test/document
+reviews; the primary repaired findings and the roles rechecked to PASS.
+Evidence: UpdateServer `docs/deployment-drafts.md`.
+Service DCO commit `bcb1cc8de90ce39d74684ef24d0b337e5c37efb9` pushed on `codex/t14-deployment-drafts`.
+Product 0.10.12, normative 1.0 and pinned V1 source revision remain unchanged.
+CodeWhale stays `c08c8c022a31aa4bd4a5a146887690de99495786`; no fork behavior change.
+Deployment remains deferred. Downloads retain no hard total/cumulative duration
+or retry cap; 32 MiB is only the joined atomic business-inventory bound.
