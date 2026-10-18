@@ -12086,3 +12086,104 @@ applies only to joined atomic inventory, never artifact or expanded-output size.
 
 DCO committed and pushed as `05dd49638f9b09956efc8ca320785fe1b53eeba2` on
 `codex/t09-zstandard`; evidence: `docs/artifact-zstandard-integration.md`.
+
+### T09 original Mach-O byte inspection
+
+Eight new primary source/test files add thin Mach-O64 little-endian and ordinary
+big-endian FAT_MAGIC (32-bit architecture table) physical observations, a complete
+standalone unsigned inspection CLI and current signed helper/launcher composition.
+No historical code/documentation import or new dependency is involved. Existing
+seventy-seven protected paths and sixty-nine SQL raw/index identities remain fixed.
+
+The parser bounds every fat table/slice, rejects table/slice aliases, slice overlap
+and misalignment, and binds original CPU/subtype fields to the exact thin slice.
+Commands consume the complete declared table with exact counts/sizes/alignment;
+LC_SEGMENT_64 records preserve raw 16-byte names, backed segment/section bytes and
+complete 8-byte relocation records. Zero-fill types 1/12/18 have no file payload.
+Empty unused offsets remain declarations; valid segment/header/section aliases
+remain supported. Unknown commands retain complete opaque identities; external
+references, loader/dyld/symbol/encryption/code-signature semantics are unverified.
+Whole original source identities include overlays. Other recognized class/endian/
+fat64 profiles explicitly refuse Unsupported; empty fat is Invalid. Zero-command
+thin images, duplicate CPU slices and mixed declared filetypes are observations,
+not architecture/loader qualification policy.
+
+All caller capacities are positive: source bytes, architecture count, per-image
+command count and per-image total sections across segments. They do not establish
+aggregate work/heap or production preparation budgets. Immutable snapshots, safe
+span arithmetic and context-polled hashing retain original bytes; every failure,
+including late second-slice and final cancellation, returns a literal zero report.
+The CLI requires five capacity flags including snapshot memory, gives fixed
+errors, handles short/sticky writers and same-path original restoration, and
+executes no inspected image. InspectMachONative accepts only explicit helper,
+helperArtifact or launcher roles through existing current package/native checks,
+requires the corresponding signed format and exact owned identity, and discards
+all earlier facts on failure. Complete package semantics already require role/
+format binding; the local guard preserves this boundary explicitly. finalInstaller
+refuses before protected source access: the frozen macOS installer enum is DMG,
+not a new macho enum. Synthetic claims certify neither helper behavior nor trust.
+
+Before integration, pinned Go1.27.2 cross-built a private minimal Go program for
+darwin/amd64 and darwin/arm64 with CGO disabled (21.110s/18.522s). The complete
+originals are 1,210,448 and 1,178,770 bytes. A clearly synthetic 2,395,282-byte fat
+wrapper contains both byte-exact originals at aligned offsets. Fixed source/tool
+hashes and build provenance remain private. Python struct/hashlib and Go debug/macho
+independently agreed with every report field and original span hash: Intel 13/15,
+ARM 14/15 and combined 27/30 commands/sections. No target image was executed.
+The neutral initial run retained one failing test expectation: XOR of the magic
+selected a recognized unsupported 32-bit profile. Changing only the negative magic
+to an invalid value yielded 7 top-level/31 child passes, no production change.
+The complete initial red result remains retained; separate recognized-profile
+negatives remain. Both independent prerequisite reviews passed before integration.
+
+Primary self-review and both independent line-level audits passed after adding a
+decisive two-segment cumulative section-capacity test: each segment fits alone,
+total cap 2 succeeds, cap 1 returns Limit with zero report, and original restoration
+matches. Import grouping and explanatory comments were the other primary cleanup.
+The first repository actual run retained one failing test expectation: a request
+cancelled before package inspection correctly returned the structured archive
+cancelled failure, while the new test expected the later capture.Cancelled. Zero
+facts were already confirmed. Primary asserted its exact failure type, code and
+original entry, retaining zero facts. An intermediate nonexistent-sentinel assertion was caught in static review
+and corrected before any compilation or execution. Both independent reviews
+passed. All initial logs and the red summary remain retained.
+The final acceptance below is a fresh complete run, not mixed initial results.
+ROOT passed 18 serial gates including seven own inspector builds, affected actuals,
+unchanged actual PG, whole default, modules/full vet/server build/V1 pins, full
+licenses for both existing dependency modules, formatting and diffs. Affected tests passed
+22 packages, 266 top-level/394 child
+cases (66.394s), zero failures and one unavailable actual-AR tool skip.
+All 58 required named groups passed, including all five Mach-O groups. Seven
+Mach-O built E2E children, prior PE 6/ELF 5/Debian 7 children and the three-codec CLI
+matrix passed. Whole default passed 71 packages,
+675 top-level/1395 child cases (196.839s),
+zero failures, 621 top-level/606 child opt-in or
+unavailable-host skips and 12 no-test packages separately disclosed.
+PG passed 1/4 with zero skips/failures (26.648s), preserving
+0 preexisting fixture databases and
+1 role. This unchanged plain-member current-trust
+regression is not Mach-O/database qualification.
+
+Each independent reviewer passed 15 own serial gates and seven builds, the same
+affected counts/58 groups/one AR skip and PG 1/4 without skips/failures, modules,
+affected vet, existing licenses, format and diffs. Dependency/compatibility affected
+intervals were 122.752s/65.02s,
+PG intervals 26.423s/23.082s.
+PG intervals include pre-inventory through Go completion, excluding post-inventory
+and freeze checks. Reviewers did not repeat whole default. All stage children and
+sessions closed; source/index/status, 77 protected paths, 69 SQL, 4 official SBOM
+resources and 29 fixed fixtures stayed frozen throughout actuals. Actual AR and
+sourcefile symlink/mapped-drive host fixtures remain unverified.
+
+This batch establishes original physical byte observations, not Apple codesign,
+notarization, native loading, approved CPU coverage, Pinvou publisher/helper
+qualification, DMG acceptance, Artifact admission or installation authority.
+No SQL, grant, route, provider, UI, frozen contract or product-version change.
+XZ maintenance remains owner-pending; this batch does not implement XZ.
+T09 remains in progress; totals stay 5 implemented/12 in progress/30 incomplete
+or deferred of 47. Product 0.10.9, normative 1.0, pinned V1/CodeWhale stay fixed.
+Deployment remains deferred. Downloads have no hard total/cumulative duration or
+retry cap. The 32 MiB bound applies only to joined atomic business inventory.
+
+DCO committed and pushed as `7602824a794fc3c3557e4fdd204a4950da792809` on
+`codex/t09-macho`; evidence: `docs/artifact-macho-integration.md`.
