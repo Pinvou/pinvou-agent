@@ -962,7 +962,16 @@ const NAV_PREFETCH = {
         };
       }, []);
       // 工具商店/卡片用 Tailwind dark: 变体(darkMode:'class'),全局挂 <html>.dark 让其随 app 主题切换
-      useEffect(() => { document.documentElement.classList.toggle('dark', activeTheme === 'dark'); }, [activeTheme]);
+      useEffect(() => {
+        document.documentElement.classList.toggle('dark', activeTheme === 'dark');
+        // 桌面端把解析后的配色写回 localStorage,作为 index.html 首帧前置
+        // class 脚本的启动缓存(authoritative color_scheme 在 settings.json,
+        // 异步到达;无缓存时深色冷启会闪白)。web 端 handleSetTheme 自己持久化
+        // 用户选择(system/light/dark),这里若覆盖会毁掉「跟随系统」。
+        if (!isWeb) {
+          try { window.localStorage.setItem(COLOR_SCHEME_STORAGE_KEY, activeTheme); } catch { /* storage may be unavailable */ }
+        }
+      }, [activeTheme]);
       const [language, setLanguage] = useState(() => {
         const systemLanguage = initialSystemLanguage();
         if (!isWeb) return systemLanguage;
