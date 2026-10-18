@@ -4108,6 +4108,7 @@ const NAV_PREFETCH = {
                 <LazyUpdateNoticeButton
                   bs={bs}
                   t={t}
+                  sidebarOffset={isCompactShell ? 0 : (isSidebarOpen ? sidebarWidth : 68)}
                   onShowChangelog={() => {
                     // Same settings entry path as the sidebar gear (openSettingsSection records the
                     // return view and lets navigateFromScheduledRun own the view transition).

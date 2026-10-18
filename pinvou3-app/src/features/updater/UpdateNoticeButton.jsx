@@ -3,7 +3,7 @@ import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { RefreshCw, X } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 
-export const UpdateNoticeButton = ({ bs, t, onShowChangelog }) => {
+export const UpdateNoticeButton = ({ bs, t, onShowChangelog, sidebarOffset = 0 }) => {
   // update-notice-logic.js 是 index.html 经典脚本;若未来改为延迟注入,这里
   // 必须容忍未就绪(无更新 UI 缺席一轮渲染即可),不能白屏。
   // 早退 return 必须放在全部 hooks 之后:logic 未就绪时直接 return 会跳过
@@ -46,8 +46,11 @@ export const UpdateNoticeButton = ({ bs, t, onShowChangelog }) => {
     if (onShowChangelog) onShowChangelog();
   };
 
+  // Anchored just right of the sidebar column (sidebarOffset from the app shell)
+  // so the card can never cover the sidebar footer buttons; 0 keeps the legacy
+  // left-4 spot on shells without a persistent sidebar (compact/mobile).
   return (
-    <div data-update-notice-card="true" className={`fixed left-4 bottom-4 z-[70] w-[260px] p-3.5 backdrop-blur-xl rounded-2xl border shadow-xl shrink-0 transition-all duration-300 bg-white/85 border-gray-200/60 text-gray-800 dark:bg-[#1c1c21]/85 dark:border-white/[0.06] dark:text-gray-200 dark:shadow-2xl`}>
+    <div data-update-notice-card="true" className={`fixed bottom-4 z-[70] w-[260px] p-3.5 backdrop-blur-xl rounded-2xl border shadow-xl shrink-0 transition-all duration-300 bg-white/85 border-gray-200/60 text-gray-800 dark:bg-[#1c1c21]/85 dark:border-white/[0.06] dark:text-gray-200 dark:shadow-2xl`} style={{ left: (sidebarOffset || 0) + 16 }}>
       <div className="flex items-center gap-3 mb-3">
         <div className={`w-10 h-10 rounded-[10px] border shadow-inner flex items-center justify-center shrink-0 overflow-hidden relative transition-colors duration-300 bg-gradient-to-br from-gray-100 to-gray-50 border-gray-200/80 dark:bg-gradient-to-br dark:from-[#2c2c35] dark:to-[#1a1a20] dark:border-white/[0.08]`}>
           <PinvouLogo className="h-6 w-6" />
