@@ -5,8 +5,8 @@ Tasks are completed individually only after in-scope independent code review,
 repairs, applicable tests and commit/push. Contract completion is not production
 client, service, physical platform certification or rollout readiness.
 
-Current task totals: 47 tasks; five implemented, thirteen in progress and
-twenty-nine not completed or deferred. Detailed chronological evidence follows
+Current task totals: 47 tasks; five implemented, fourteen in progress and
+twenty-eight not completed or deferred. Detailed chronological evidence follows
 the current overview; a completed bounded batch does not complete its whole task.
 
 | Task | Status | Delivery / outstanding dependency |
@@ -21,7 +21,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T08 | In progress | Protected atomic metadata publication primitives; complete business publication workflows remain pending |
 | T09 | In progress | Bounded package/native-byte inspection; complete upload, quarantine and platform qualification remain pending |
 | T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
-| T11 | Not completed | Complete multi-platform Release/Target approval workflow and qualification integration. |
+| T11 | In progress | Protected multi-platform Release drafts with actual UI/API/history/recovery; frozen assembly, qualification and Release/Target approval remain pending. |
 | T12 | In progress | Original stable-facts identity, exact profile matching and immutable forward-policy intersection; protected Registry/version/approval and production qualification remain pending |
 | T13 | Not completed | Supported floor, prerequisite paths and historical bridge approvals. |
 | T14 | In progress | Protected configuration drafts with actual UI/API/recovery; qualified parents, publication, scheduling and first-baseline activation remain pending. |
@@ -12443,3 +12443,46 @@ Product 0.10.12, normative 1.0 and pinned V1 source revision remain unchanged.
 CodeWhale stays `c08c8c022a31aa4bd4a5a146887690de99495786`; no fork behavior change.
 Deployment remains deferred. Downloads retain no hard total/cumulative duration
 or retry cap; 32 MiB is only the joined atomic business-inventory bound.
+
+
+### T11: protected multi-platform Release drafts (2026-10-18)
+
+Service commit `7c49fac1b88550c449a420623548490ae5f01131` is committed and pushed on
+`codex/t11-release-drafts`. Actual multi-target create/edit, authenticated
+current/history queries, original-result reconciliation, explicit restricted
+initialization and the three-language management workflow are delivered. Only
+draft state exists; Package/certification references remain declarations.
+Assembly, qualification, target review/approval/revocation, Release closure and
+cancellation, and publication remain open. T11 remains in progress.
+
+Current protected T05 rights cover the product/component parent and every target
+in the original old/new union. Native audit authentication, original CAS/proof,
+session and owner fencing guard the atomic history/result/audit/outbox/T06 commit.
+The permanent minimal locator does not reopen expired full acknowledgements.
+Original browser wire/key/digest survive unknown responses and scope changes;
+unavailable storage blocks transmission. Shared utility extraction preserves the
+existing Deployment namespaces and behavior.
+
+Broad actual native coverage passed 42 groups/137 children; later runtime and
+HTTP/CLI composition passed 77 groups/147 children with three opt-in skips.
+Subsequent actual HTTPS, CLI, admission-off recovery, prior Deployment browser/CLI
+and the strengthened write-only original-CAS native case passed. The first new
+browser run failed on a nested label. After primary repairs and stronger actual
+JSON-settlement observation, all four Release browser cases passed (37.785-second
+targeted Go invocation), followed by the existing management browser (30.188
+seconds). Both independent scoped code reviews passed the repaired sources.
+
+Final defaults with integration opt-ins cleared passed 751 groups and
+1730 children, with 1333 skipped cases and zero failures. Module verification,
+full vet, private server build, original pinned artifact comparison, affected-source
+formatting and whitespace checks passed. An untouched historical Rollout
+boundaries test retains its original formatting issue; whole-tree formatting is
+not claimed clean. Defaults are separate from actual integration acceptance.
+All 76 previously committed SQL files stayed unchanged;
+owned native fixtures restored their original inventory. Generated signed OIDC
+and response-adapter faults do not certify deployed IdP ceremonies, physical
+networks, hosts or deployment.
+
+Documents 1.0, product 0.10.12 and the CodeWhale gitlink remain unchanged. Downloads
+have no hard total/cumulative duration or retry cap; 32 MiB still bounds only
+joined atomic business inventory. No artifact/download size cap is introduced.
