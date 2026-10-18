@@ -6,6 +6,10 @@ import React from 'react';
 // 默认整页口径(viewLoadFailed/viewReload);variant="panel" 是面板槽位口径
 // (panelLoadFailed,嵌进面板位而非占满视图,ChatView 懒面板等局部挂载用)。
 // `heading` overrides the default title (the settings boundary keeps its own failure heading; all others fall back to viewLoadFailed).
+// `resetKey`: when it changes (e.g. the app shell switches views), a tripped
+// boundary clears its error so the next view renders normally. Without it, the
+// app shell's single persistent view boundary stays tripped forever after one
+// failed chunk and every later view switch only moves the sidebar highlight.
 // 文案均走 i18n 三语,不引入单语言硬编码。
 export class ViewErrorBoundary extends React.Component {
   constructor(props) {
@@ -15,6 +19,12 @@ export class ViewErrorBoundary extends React.Component {
 
   static getDerivedStateFromError(error) {
     return { error };
+  }
+
+  componentDidUpdate(prevProps) {
+    if (this.state.error && this.props.resetKey !== prevProps.resetKey) {
+      this.setState({ error: null });
+    }
   }
 
   componentDidCatch(error, info) {

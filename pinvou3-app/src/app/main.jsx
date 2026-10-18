@@ -3801,8 +3801,10 @@ const NAV_PREFETCH = {
 
             {/* 单一常驻 Suspense 边界:React 19 下切视图时旧视图在本边界内被替换,
                 chunk 未就绪(未被预取覆盖的入口)保持旧视图不闪 fallback;失败由
-                ViewErrorBoundary 兜底(reload 重试绕开 React.lazy 的失败缓存)。 */}
-            <ViewErrorBoundary t={t}>
+                ViewErrorBoundary 兜底(reload 重试绕开 React.lazy 的失败缓存)。
+                resetKey=currentView:某视图 chunk 失败仅锁该次渲染,切走时边界
+                复位,其余视图不受一次失败牵连。 */}
+            <ViewErrorBoundary t={t} resetKey={currentView}>
               <Suspense fallback={<ViewFallback />}>
             {currentView === 'monitor' && <LazyMonitorView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'settings' && (
