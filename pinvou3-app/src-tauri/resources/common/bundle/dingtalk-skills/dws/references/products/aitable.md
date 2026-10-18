@@ -474,7 +474,7 @@ dws aitable record create --base-id <BASE_ID> --table-id <TABLE_ID> \
 |------|------|
 | [bulk_add_fields.py](../../scripts/bulk_add_fields.py) | 批量添加字段 |
 | [import_records.py](../../scripts/import_records.py) | 从 JSON/CSV 批量导入记录 |
-| [aitable_import_via_task.py](../../scripts/aitable_import_via_task.py) | 文件级导入/自动建表场景（prepare→OSS PUT→import data 全流程） |
+| [aitable_import_via_task.py](../../scripts/aitable_import_via_task.py) | 兼容旧入口：转交 `dws aitable +import-file` 导入 CSV/XLSX/XLS；先向用户展示迁移范围与回退方案，确认后加 `--confirmed` 执行（新场景直接用 `aitable +import-file`） |
 | [aitable_export_via_task.py](../../scripts/aitable_export_via_task.py) | 文件导出（export_data 轮询 + 下载） |
 | [upload_attachment.py](../../scripts/upload_attachment.py) | 上传附件到 AI 表格记录 |
 

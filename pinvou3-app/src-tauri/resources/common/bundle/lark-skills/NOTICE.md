@@ -730,6 +730,10 @@ lark-shared-identity-and-permissions.md 规定 agent 发起的增量授权必须
 - 重放裁定:lark-doc 四个 media 分册保持本地「按需策略不预读 lark-shared」前置块
   (上游仅改路径,本地形态已含正确路径);lark-base `workflow-schema.md` 保持本地
   `condition_list: null`(无条件传 null,勿传空数组)修正,上游示例仍写 `[]`,继续不跟随;
+  勘误(2026-10-18 复核):上游 1.0.98 已把 ChangeRecordTrigger 示例改为真实条件组
+  (「预计工时」>0 的 AndCondition 数组,不再是 `[]`/null),本条「上游示例仍写 []」
+  前提失效,该示例现跟随上游 1.0.98 原文(与同表「condition_list|是|不能为空」一致);
+  `null` 形态仅保留于字段表标注「否」的可空示例(AddRecordTrigger),勿传空数组口径不变;
   `lark-doc/SKILL.md`/`lark-base/SKILL.md`/`lark-sheets/SKILL.md` 保持本地【何时用】description
   形态并纳入上游新增语义(doc 补「`/page/<token>` 是妙搭应用非云文档」路由并纳入 main #724 画板句更正「画板无技能,CLI 直连」,280 字符;
   sheets 补「区域复制/排序/填充、筛选视图/下拉列表、公式校验与历史回滚、本地 Excel/CSV

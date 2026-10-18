@@ -389,7 +389,8 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
 `f9b2815`)。技能从 14 个增至 **15 个**:上游新增 `wecomcli-pptx`(MR !77 随 1.3.4
 发布;`slide` 命令族技能,本地整体收录;经 connectors.lock 钉扎的 1.3.4 linux-arm64
 二进制实测,`wecom-cli slide` 的 get/pages/designs/images 子命令面与该技能
-`pptx-api.md` 所教一致;`wecomcli-pptx/scripts/` 两个脚本的命令表调用形态上游已写
+`pptx-api.md` 所教一致(该文档约束 3 另教的 `slide shapes get` 为上游文档超写、
+钉扎二进制不支持,按其自身「先探边」协议处理);`wecomcli-pptx/scripts/` 两个脚本的命令表调用形态上游已写
 `python3`,脚本 docstring 内的裸 `python` 按既定豁免不重写)。
 
 上游 v1.2.1 → v1.3.4 的 `skills/` 改动(MR !62 之后的增量):
@@ -413,13 +414,15 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
 
 本地登记重放核验:14 个既有技能的全部本地修改(「何时用」description 前缀、
 品悟代管安装口径、终端交接授权、邮件正文 `tmp/mail/` 路径、周期「产品暂未开放」
-措辞、contact 搜索 `hint` 口径等)经三方合并保留,**唯一例外是下段注销的 1.1.0
-适配清单第 6 条 build_docx.py 沙箱层**(随上游同区域重写一并移除,不属遗漏);
+措辞、contact 搜索 `hint` 口径等)经三方合并保留,**唯一例外是下段注销的
+「文档缺陷修复(2026-09-05,全量第二轮:十个技能)」第 6 条 build_docx.py 沙箱层**(随上游同区域重写一并移除,不属遗漏;勘误 2026-10-18:本句原误指「1.1.0
+适配清单第 6 条」,该条实为 shared 技能 bins frontmatter,与 build_docx.py 无关);
 `wecomcli-pptx` 作为新技能按
 1.1.0 适配清单第 1 条口径补写 description「何时用:」前缀(211 字符 ≤280;上游
 原文无前缀且超限),`bins: ["wecom-cli"]` 上游已自带。
 
-登记注销(2026-10-18 勘误,1.3.4 起):「本轮(1.1.0)品悟适配清单」第 6 条中
+登记注销(2026-10-18 勘误,1.3.4 起):「文档缺陷修复(2026-09-05,全量第二轮:
+十个技能)」第 6 条中
 build_docx.py 的 `WECOMAGENT_READABLE_DIRS`/`WECOMAGENT_WRITABLE_DIRS` 路径
 containment 部分**退役,不再重放**——上游 v1.2.1→v1.3.4 增量已整体移除该沙箱机制,
 输出位置改为「JSONL 所在目录的 `docx/` 子目录」,本仓宿主代码从未设置 `WECOMAGENT_*`

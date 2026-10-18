@@ -291,6 +291,9 @@ Pinvou3 随应用内置并按用户连接状态门控该 skill；dws CLI 在首�
 4. `references/products/todo.md` 自动化脚本表 `todo_batch_create.py` 行恢复上游 `--dry-run` 用法与其下 planDigest 确认门段落（上游 1.0.64 原文逐字重放，`python` 按 1.0.61 登记 python3 化）——头部登记第 3 条「--dry-run 表述无需重放」的前提是上游段落随合并保留，实际被三方合并丢失，本轮修复后该前提恢复成立；`references/best_practices/02-task.md` batch-create-todo 行同步补 `--dry-run`/`--confirm-digest` 步骤（上游该行同为裸执行，本地补齐以与脚本确认门一致，与「单批超 30 条须用户确认」并存）。
 5. `references/products/attendance.md` 「全局参数说明」`--timeout <秒>` 注保持本地（上游无此行；下文写操作示例的 `--timeout 10` 依赖它）。
 6. `references/products/mail.md` batch-delete 示例行 `--yes` 与「⚠️ 危险操作」CAUTION 块保持本地（上游无；CLI 对该命令不强制确认门，确认是技能层要求，PR #437 登记 #8 口径），Flags 表未动。
+7. `references/best_practices/07-minutes.md` meeting-followup 行批量分支同步补确认门步骤：裸调用 `python3 scripts/todo_batch_create.py todos.json` 改为先 `--dry-run` 预览、按回显 `planDigest` 以 `--confirm-digest <PLAN_DIGEST> --yes` 正式执行（上游 1.0.64 该行同为裸执行，与登记 4 的 02-task.md 行同口径补齐；旧裸调用形态不再重放）。
+8. `references/products/aitable.md` 脚本表 `aitable_import_via_task.py` 行由「文件级导入/自动建表场景（prepare→OSS PUT→import data 全流程）」改为 shim 实况口径（转交 `+import-file`、`--confirmed` 专门确认、新场景直接用 `aitable +import-file`）——PR #437 补登的原行描述 1.0.63 及以前的旧实现，上游 1.0.64 重写为 shim 后该行未随同步（见上方 1.0.64 scripts 新增条第 shim 句）。
+9. 补录（既往本地修改，历史轮次遗漏登记，本轮对账发现）：`references/best_practices/04-document.md` 「文档插入图片」行「3 步一体化：获取凭证 → PUT OSS → 插入块；（可选）`doc read` 回读确认」为本地收敛口径（上游 1.0.61/1.0.64 均为「4 步一体化……自动回读验证；检查 verified=true / partial success」），保持本地形态；`doc/doc-create.md` 内 `../sheet.md#意图表` 死锚改指 `#常用闭环`（原锚标题在 base 与上游 sheet.md 均不存在，本轮修复）。
 
 ### 遗留观察项（自 1.0.61 结转 + 本轮新增）
 

@@ -171,7 +171,18 @@
 {
   "table_name": "任务表",
   "trigger_control_list": [],
-  "condition_list": null
+  "condition_list": [
+    {
+      "conjunction": "and",
+      "conditions": [
+        {
+          "field_name": "预计工时",
+          "operator": "isGreater",
+          "value": [{ "value_type": "number", "value": 0 }]
+        }
+      ]
+    }
+  ]
 }
 ```
 
