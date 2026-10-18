@@ -215,8 +215,8 @@ try {
   fs.writeFileSync(
     bridgeEntrypoint,
     [
-      'spawn(`"${codexPath}" app-server`, { shell: true, env: spawnEnv })',
-      'spawn(process.execPath, [bundledCodexPath, "app-server"], { env: spawnEnv })',
+      "(0, import_cross_spawn.default)(codexPath, appServerStartupArgs, { env: spawnEnv })",
+      "spawn(process.execPath, [bundledCodexPath, ...appServerStartupArgs], { env: spawnEnv })",
     ].join("\n"),
   );
   hideWindowsChildProcesses(bridgeEntrypoint);

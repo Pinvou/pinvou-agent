@@ -53,14 +53,20 @@ const CLAUDE_BRIDGE_PACKAGE_JSON = path.join(
 const MARKER_NAME = "manifest.json";
 const PREPARE_FORMAT_VERSION = 4;
 const MINIMUM_NODE_MAJOR = 20;
+// Spawn sites inside @agentclientprotocol/codex-acp dist/index.js (verbatim,
+// minified output). Since 2.x the win32 branch goes through cross-spawn with an
+// args array and no shell string; the bundled fallback spreads
+// appServerStartupArgs. Both must stay unique single occurrences in the bundle;
+// hideWindowsChildProcesses rewrites exactly these two (the POSIX ternary
+// branch never runs on win32, mirroring the 1.x patch scope).
 const CODEX_PATH_SPAWN =
-  'spawn(`"${codexPath}" app-server`, { shell: true, env: spawnEnv })';
+  "(0, import_cross_spawn.default)(codexPath, appServerStartupArgs, { env: spawnEnv })";
 const HIDDEN_CODEX_PATH_SPAWN =
-  'spawn(`"${codexPath}" app-server`, { shell: true, env: spawnEnv, windowsHide: true })';
+  "(0, import_cross_spawn.default)(codexPath, appServerStartupArgs, { env: spawnEnv, windowsHide: true })";
 const BUNDLED_CODEX_SPAWN =
-  'spawn(process.execPath, [bundledCodexPath, "app-server"], { env: spawnEnv })';
+  "spawn(process.execPath, [bundledCodexPath, ...appServerStartupArgs], { env: spawnEnv })";
 const HIDDEN_BUNDLED_CODEX_SPAWN =
-  'spawn(process.execPath, [bundledCodexPath, "app-server"], { env: spawnEnv, windowsHide: true })';
+  "spawn(process.execPath, [bundledCodexPath, ...appServerStartupArgs], { env: spawnEnv, windowsHide: true })";
 const WINDOWS_NPM_CI_ARGS = [
   "ci",
   "--prefer-offline",
