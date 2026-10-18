@@ -11621,3 +11621,108 @@ applies only to joined atomic business inventory, not artifacts or downloads.
 
 DCO committed and pushed as `7ff8a99611ea04ca6ed5ae9614a98d8c0a029394` on
 `codex/t09-control`; scope/evidence is in `docs/artifact-control-integration.md`.
+
+### T09 standalone Debian byte/declaration inspection command
+
+Two new command code/test paths were initially imported exactly from
+14b71f40af4fa792ee34e704f770a70899bcb5ab (parent ea0121b5). Its historical
+artifact-verification-plan.md with 86 added lines was omitted because its
+XZ/Zstandard combined-tree evidence is not current acceptance. Both imported
+files have separate primary adaptation proofs; neither is claimed source-exact
+after adaptation. Production removes the four unavailable codec flags and their
+capacity checks; tests use codec-keyed expectations and current supported inputs.
+Prior accepted control/TAR/codec code and documentation remain unchanged.
+
+upgrade-debian-inspect opens a supported ordinary descriptor through sourcefile,
+captures bounded owned bytes, then performs complete framing/decoding/two TARs/
+unique regular root control/required declaration inspection. Success emits one
+JSON report with installer, stored/expanded/control identities, exact TAR member
+counts, format and three declaration values. No archive paths or other fields.
+This standalone command supplies unsigned byte/declaration observations; it
+does not invoke current signed Manifest verification or grant native app/version/
+architecture/publisher approval, Artifact admission or installation authority.
+
+All 22 registered capacity arguments must be positive. Their logical copy,
+dictionary and report meanings follow the accepted adapters, not aggregate heap
+or production preparation budgets. For the small frozen supported fixtures only:
+
+```sh
+go run ./cmd/upgrade-debian-inspect \
+  --package-bytes 2097152 --package-memory-bytes 2097152 --version-bytes 16 \
+  --stored-control-bytes 2097152 --stored-control-memory-bytes 2097152 \
+  --stored-data-bytes 2097152 --stored-data-memory-bytes 2097152 \
+  --expanded-control-bytes 2097152 --expanded-control-memory-bytes 2097152 \
+  --expanded-data-bytes 2097152 --expanded-data-memory-bytes 2097152 \
+  --lzma-dictionary-bytes 4096 \
+  --control-tar-bytes 2097152 --control-tar-member-bytes 2097152 \
+  --data-tar-bytes 2097152 --data-tar-member-bytes 2097152 \
+  --control-record-bytes 1024 --control-record-memory-bytes 1024 \
+  --ar-members 10 --control-tar-members 1000 --data-tar-members 1000 \
+  --control-record-fields 20 fixture.deb
+```
+
+Exit 0 means complete JSON/help, 2 means invalid arguments, 1 means source,
+inspection, cancellation or output failure. Fixed diagnostics omit private
+arguments/source/writer details. Short/failed writes fail even if a later writer
+call would succeed. Output-device failure can leave truncated bytes; callers
+must require exit 0 and complete JSON. Owned snapshots resist later path
+replacement, but do not certify arbitrary concurrent same-size writes. Existing
+sourcefile OS support/remote mount/symlink limitations remain; no protected staging,
+link following, extraction or execution is introduced.
+
+The initial root runner passed the artifact and SBOM builds, then stopped at
+provenance build because a helper edit mistakenly supplied two packages to one
+non-directory output. No feature or PG test had started. Source/index stayed
+unchanged; the command was corrected to its one intended target. The original
+failure is retained separately. Accepted root evidence combines those first two
+passed stages with thirteen resumed stages, reusing the two hash-checked original
+build outputs for actual tests. Each reviewer uses the corrected normal helper
+and builds all four of its own binaries.
+
+Both independent scoped line-level code/test reviews and primary self-review
+passed. Root passed 15 gates: four own inspector builds, affected tests, isolated
+actual PG regression, whole default, modules/full vet/server build/V1 pins,
+cache-license, formatting and two diffs. Affected tests passed
+15 packages, 167 top-level/314 child
+cases, zero failures (62.409s), with exactly one unavailable actual-AR
+tool skip. All 31 required actual groups passed: prior 28 plus frozen supported
+CLI matrix, public-XZ exact refusal and built E2E. The supported matrix checks
+every reported byte identity, count and declaration for gzip/bzip2/LZMA.
+Built E2E passed seven named invocations: synthetic success, invalid arguments,
+late missing required field, the three frozen supported originals and public-XZ
+refusal. Both run() and binary require exact Unsupported and zero stdout for XZ.
+All missing/zero/negative capacities, help, source/copy/field limits, cancellation,
+same-source restoration, replacement isolation and broken/short writer cases
+passed. The 60-second test-child allowance is not a production download limit.
+
+Root whole default passed 64 tested packages,
+601 top-level/1348 child cases (208.318s);
+596 top-level/606 child opt-in/unavailable-host skips
+and 12 no-test packages are separate. Root unchanged plain-member/current-trust
+PG regression passed 1/4 with zero skips/failures (23.628s interval),
+not new CLI/database qualification. Each reviewer passed 12 own gates with four
+builds, the same affected counts/31 actual groups/one AR skip, PG 1/4 zero skips/
+failures, modules, affected vet, cache-license, fmt and diffs. Dependency and
+compatibility affected walls were 42.798s/
+45.742s, PG intervals
+29.845s/21.0s.
+PG intervals include pre-inventory through Go completion, excluding post-inventory
+and freeze checks; other command walls exclude freeze checks. Inventories kept
+0 pre-existing fixture databases and
+1 existing role unchanged with no new
+resources left. Reviewers did not repeat root whole default. All stage children/
+sessions closed. Full source/index/status, 29 protected prior paths, 69 SQL raw/
+index identities, four official SBOM resources, fourteen fixed fixture files and
+module/license proofs stayed fixed; independent Python codec/TAR/control audits
+passed without filesystem extraction. Actual AR and sourcefile symlink/mapped-drive
+host fixtures remain unverified.
+
+No dependency/SQL/grant/route/provider/UI/contract/product-version change. XZ
+maintenance remains owner-pending; no candidate XZ/Zstandard code was imported.
+Full T09 remains in progress; totals stay 5 implemented, 12 in progress and
+30 incomplete/deferred of 47. Product 0.10.9, normative 1.0, pinned V1 and CodeWhale
+stay unchanged; deployment deferred. Downloads have no hard total/cumulative
+duration or retry cap. The 32 MiB bound is joined atomic inventory only.
+
+DCO committed and pushed as `76519974e414745b32c00f62c937a30dee00bcf7` on
+`codex/t09-debian-cli`; scope/evidence is in `docs/artifact-debian-cli-integration.md`.
