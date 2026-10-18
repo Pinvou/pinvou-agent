@@ -89,7 +89,7 @@ doc_format/
 
 ### 步骤 4: 调用套用 MCP 工具
 
-使用 `tencent-docs` MCP Server 对应的 MCP 工具 `doc.ai_format_pure_text` 调用套用 API，传入前面步骤的结果，生成在线腾讯文档链接。
+使用 `tdoc-doc` 服务对应的 MCP 工具 `doc.ai_format_pure_text` 调用套用 API（本包所有 `doc.*` 工具均经 `tdoc-doc` 服务调用），传入前面步骤的结果，生成在线腾讯文档链接。
 
 **MCP 工具参数：**
 - `title`: 文档标题（步骤 1 的输出）

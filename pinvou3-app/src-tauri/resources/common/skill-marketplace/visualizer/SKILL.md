@@ -40,7 +40,7 @@ Pinvou 的聊天正文会转义或清理 `<script>`，所以不要把带 Chart.j
 必须按以下流程交付：
 1. 用 `write` 写出一个 `.html` 文件，文件内容可以是完整可打开 HTML，必须包含可执行的 Chart.js 脚本。
 2. 用 `bash` 运行本技能目录下的校验器：
-   `python <visualizer-skill-dir>/scripts/validate_visualizer_html.py <artifact.html> --json`
+   `python3 <visualizer-skill-dir>/scripts/validate_visualizer_html.py <artifact.html> --json`
    其中 `<visualizer-skill-dir>` 是 `load_skill` 返回的 Source 所在目录。
 3. 如果校验失败，读取错误列表，重写 `.html`，再次运行校验器；不要展示失败产物。
 4. 只有校验通过后，才能调用 `mcp_pinvou3_present_artifact(path, title)` 展示产物卡（内置 MCP 工具默认延迟加载：工具列表里没有它时先 `tool_search` 激活；`tool_search` 返回 `mcp_boot` connecting（MCP 服务仍在启动）就等待数秒重试，connecting 消失后仍搜不到，才算产物卡后端本轮不可用——在回复里说明即可）。
