@@ -11726,3 +11726,126 @@ duration or retry cap. The 32 MiB bound is joined atomic inventory only.
 
 DCO committed and pushed as `76519974e414745b32c00f62c937a30dee00bcf7` on
 `codex/t09-debian-cli`; scope/evidence is in `docs/artifact-debian-cli-integration.md`.
+
+### T09 original ELF physical observations and same-TAR selection
+
+Eight new code/test paths were initially imported exactly from four consecutive
+source commits f009438ef3895524b52aa99f7fbe7141a0281b69,
+25efea0a9ba8360f00708bc1b159cfa2d67c2c9c,
+04a5cbc8a0f300cd870f5934507710877673d2f7 and
+310bb926d080266592007bcf9a168d58e2903e15. Their historical combined-tree
+artifact-verification-plan.md changes (262 added lines) were omitted. The first
+parent's PE functionality is not imported. Six paths remain source-exact; only
+the signed-composition and CLI consumers' tests were adapted, with separate
+initial/final proofs. All four production files remain source-exact. Existing
+TAR/control/codecs and current signed verification remain unchanged.
+
+elf.Inspect observes complete owned ELF64 little-endian current-version bytes.
+Known 64/56/64-byte header/table widths, ordinary numbering, explicit positive
+source/program/section limits and every nonempty physical backed span are
+checked before hashing. Overflow-safe span checks precede integer conversion.
+Reports retain raw header/table/entry fields and original SHA-256 identities;
+aliases remain separate declarations. NULL programs/sections and NOBITS sections
+have empty Data identities while their unused raw fields remain declarations.
+ELF32, big-endian and extended/reserved numbering return Unsupported. No loader,
+name resolution, relocation, decompression, alignment or virtual-memory policy,
+machine/app/version/publisher approval, signature authentication or admission is
+inferred. The bounds describe logical source/counts and fixed hash scratch, not
+aggregate heap/work or a production preparation budget. Repeated aliased spans
+may be hashed separately. A 33 MiB overlay positive is not an artifact size cap.
+
+tar.CaptureRegular freshly inspects the entire same immutable TAR, including
+later entries, terminators and the full trailer, before selecting exactly one
+1..256-byte declaration name. Every same-name competitor counts regardless of
+type. Only ordinary regular declarations are captured; the legacy zero-type
+trailing-slash directory form refuses. No prefix/case/path normalization, host
+path, link following, extraction or execution is involved. Captured original
+payload and member identity must agree, including empty-file and 33 MiB positive
+controls. InspectELFDebianInstaller first preserves current signed installer,
+complete control/data TAR and required control guards, then reselects one member
+from those same owned data bytes and binds its ELF identity. No default binary
+location is supplied. Every late error/cancellation returns the literal zero
+composite, discarding all earlier signed/native/member facts.
+
+upgrade-elf-inspect is a standalone unsigned physical-observation command. It
+uses the existing ordinary-descriptor sourcefile adapter and owned capture,
+requires four positive capacities, and emits one complete JSON on success:
+
+```sh
+go run ./cmd/upgrade-elf-inspect \
+  --source-bytes 67108864 --snapshot-memory-bytes 67108864 \
+  --programs 128 --sections 128 fixture.elf
+```
+
+These example values are test capacities, not selected production defaults.
+Exit 0 means complete JSON/help, 2 invalid arguments, 1 source/inspection/context/
+output failure. Fixed diagnostics do not expose private arguments/source/writer
+details. Sticky short/error/negative/overlong writes fail; a failed device may
+leave truncated bytes, so callers must require exit 0 and complete JSON. Existing
+sourcefile host/remote/symlink limitations and same-size concurrent-write caveat
+remain. No protected staging or execution is added. The CLI does not invoke the
+signed-composition API or confer Artifact admission/installation authority.
+
+Two new fixed private fixture files extend the prior fourteen to sixteen:
+the original public hello ELF is 31448 bytes, SHA-256:
+1aab5d66fba9313733ca534dc9693f262532ab696eb9d29cc70978c5e1c7078c;
+its unchanged public data TAR is 256000 bytes, SHA-256:
+f0c28e66b1a4d548ff77e392ae277fbba70683818a19ae97c51fbdd6ba46c1b5,
+with the exact ./usr/bin/hello payload at offset 2048 among 143 members.
+A new synthetic gzip DEB repack is 61722 bytes, SHA-256:
+c5890508f2e3989fd8fdd0d326bedc48762645011653581e48128b4a0a79ae20.
+It carries unchanged public raw control/data TARs; isolated synthetic signed
+claims bind the new container bytes. It is not the original public DEB or a
+publisher signature. The original public 53080-byte whole XZ DEB remains unchanged
+and is an exact Unsupported/literal-zero negative after current signed/framing
+positive controls. No XZ support is claimed. Python tarfile/struct/hashlib/gzip
+independently derives/verifies the raw spans, all 13 program/30 section fields
+and hashes and deterministic gzip repack, without filesystem archive extraction
+or execution. Go debug/elf independently checks all reported raw projections.
+A genuine 52-byte ELF32 reference-positive is explicitly unsupported by this API.
+
+Primary self-review and both independent scoped line-level code/test audits
+passed. Root passed 16 gates: five own inspector builds, affected tests, isolated
+actual PG regression, whole default, modules/full vet/server build/V1 pins,
+cache-license, formatting and two diffs. Affected tests passed
+17 packages, 185 top-level/319 child
+cases, zero failures (62.864s), with exactly one unavailable actual-AR
+tool skip. All 37 required actual groups passed, including the prior 31 and six
+ELF groups. Actual ELF binary E2E passed five mandatory named children: synthetic
+success, invalid arguments, invalid framing, same-path restoration and frozen
+original. Prior Debian seven built children and three supported-codec projections
+also passed. Missing/zero/negative/overflow capacities, physical truncation/
+overflow, unsupported profiles, duplicated/nonregular names, identity binding,
+replacement isolation, final cancellation and failed writers passed. Test-child
+allowances are not production download limits.
+
+Root whole default passed 66 tested packages,
+613 top-level/1348 child cases (200.366s);
+602 top-level/606 child opt-in/unavailable-host skips
+and 12 no-test packages are separate. The unchanged plain-member/current-trust
+PG regression passed 1/4, zero skips/failures (32.84s interval), not
+new ELF/database qualification. Each independent reviewer passed 13 own gates
+with five builds, the same affected counts/37 required groups/one AR skip, PG 1/4
+zero skips/failures, modules, affected vet, license, formatting and diffs.
+Dependency/compatibility affected walls were
+94.045s/121.508s;
+PG intervals 30.638s/26.833s.
+PG intervals run from pre-inventory through Go completion, excluding post-inventory
+and freeze checks; other command walls exclude freeze checks. Inventories kept
+0 pre-existing fixture databases and
+1 existing role unchanged, leaving no new resources.
+Reviewers did not repeat root whole default. All actual children/sessions closed.
+Full source/index/status, 32 protected prior paths, 69 SQL raw/index identities,
+four official SBOM resources, sixteen fixtures and module/license proofs stayed
+fixed during actuals. Actual AR and sourcefile symlink/mapped-drive host fixtures
+remain unverified.
+
+No dependency/SQL/grant/route/provider/UI/contract/product-version change. XZ
+maintenance remains owner-pending, and candidate XZ/Zstandard/PE code is absent.
+Full T09 remains in progress; totals stay 5 implemented, 12 in progress and 30
+incomplete/deferred of 47. Product 0.10.9, normative 1.0, pinned V1 and CodeWhale
+stay unchanged; deployment deferred. Downloads have no hard total/cumulative
+duration or retry cap. The 32 MiB bound is joined atomic inventory only.
+
+DCO committed and pushed as `e50ad4b39538fc32856a08e9f7277baafe787fbf` on
+`codex/t09-elf`; scope/evidence is in `docs/artifact-elf-integration.md`.
