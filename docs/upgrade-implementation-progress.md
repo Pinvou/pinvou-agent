@@ -11979,3 +11979,110 @@ or retry cap. The 32 MiB bound is joined atomic inventory only.
 
 DCO committed and pushed as `1adce90a4f144fe67385058e724a3a2c6b772060` on
 `codex/t09-pe`; scope/evidence is in `docs/artifact-pe-integration.md`.
+
+### T09 bounded Zstandard and Debian stored-member integration
+
+Five new adapter/test/license paths integrate source commits
+78d1eac1f2308957efcbb8dc051a5d402d832e3d and
+a7c5844656f5f80df5bc243791b6a7459418dd48, with six narrow current-tree changes:
+go.mod/go.sum, generic compression error classification, Debian window/dispatch,
+isolated mislabeled-codec refusal and the appended current signed composition.
+Separate original/final proofs retain 5 source-exact new paths,
+0 formatting-only new paths and all six existing-path adaptations.
+Historical combined-tree documentation (111 added lines) and all XZ code remain
+omitted. Existing XZ Unsupported negatives and all earlier implementation remain.
+
+The only new direct dependency is github.com/klauspost/compress v1.20.3,
+the official latest stable when checked, requiring Go1.25 and no transitive
+modules. Official proxy/checksum-database receipts, complete 474-file cached
+module versus official ZIP/Go dirhash, both sums and complete upstream LICENSE
+and internal xxhash MIT license were verified and retained. No SDK patch/fork.
+The existing github.com/ulikunitz/xz v0.5.17 remains LZMA-only here.
+
+DecodeZstandard consumes complete original frames/concatenations/skippable frames
+through EOF, enabling checksums, concurrency1, low-memory mode and disabling
+DecodeAll shortcut. No external dictionary is supplied. Empty raw input refuses;
+valid empty/skippable frames remain supported. Stored, expanded source/copy and
+explicit window limits are separate per member. The full pinned history ring
+window+2*(min(window,128KiB)+16) must fit host int before conversion. Streaming
+MaxWindow and MaxMemory both bound the window, including SingleSegment content
+size; they do not bound all heap/work or choose production preparation budgets.
+Known SDK window/decoder-size errors conservatively classify as Limit, not proof
+that caller capacity alone caused failure; missing dictionaries are Unsupported,
+other codec errors fixed invalid. The shared private helper preserves only exact
+Limit/Unsupported classifications. Every failure returns nil output; Debian and
+current signed composition discard all earlier framing/control/signed facts.
+
+Before repository mutation, a neutral offline private module compared 2,372
+cases against independent Python3.14/libzstd: all four fixed originals, every
+truncated prefix, sixteen skippable magics, concatenations, header/block/checksum
+mutations, trailing bytes, dictionaries and explicit window/copy/cancellation
+controls. Of 31 independently legal inputs, 24 matched adapter hashes/sizes and
+seven explicit policy refusals retained nil output. All 2,341 independently
+invalid inputs refused. The Go child exited 0; the recorded 70.345s
+evaluation interval includes Go execution, result comparison and frozen-source
+verification.
+Its initial harness exited 1 because four zero-length prefix aliases were
+misclassified as SDK overacceptance. The complete red record is retained. A
+report-only correction applied the already-known empty-input SDK exception
+by actual input length; all five empty aliases were refused by the adapter.
+No runtime result changed, no rerun was substituted, and no nonempty SDK
+overacceptance or adapter mismatch remained. Both independent reviews accepted
+this correction before import.
+
+Five additional private fixed files extend twenty-one to twenty-six fixtures:
+945/63/13/1075-byte independent Zstandard frames and a synthetic 548-byte Debian
+package (SHA-256 5956a14a81aeb0e58bfbfd2ccdb4da06c60e8ed112ae0eccd12265311e6834ba).
+Its exact control.tar.zst/data.tar.zst are 197/157 bytes, each expanding to the
+same previously independent 10,240-byte TAR identity. Python/libzstd/hashlib and
+AR arithmetic rechecked all bytes without extraction or execution. The 33 MiB
+expanded positive is independent of the 32 MiB joined atomic inventory limit.
+Synthetic signed claims bind bytes, not native app/version/architecture/publisher
+qualification, Artifact admission or installation authority.
+
+Primary self-review and both independent scoped line-level audits passed.
+ROOT passed 17 gates: six own inspector builds, affected tests, unchanged actual
+PG regression, whole default, modules/full vet/server build/V1 pins, both module
+license checks, formatting and two diffs. Affected tests passed 20
+packages, 245 top-level/341 child cases (75.54s),
+zero failures and exactly one unavailable actual-AR tool skip. All 53 required
+named groups passed, including the two new actual Debian/Zstandard API and
+current signed compositions; PE six/ELF five/Debian seven built E2E children and
+the existing three-codec CLI report matrix passed. Whole default passed
+69 packages, 658 top-level/1364 child cases
+(196.142s), zero failures, 617 top-level/606 child
+opt-in/unavailable-host skips and 12 no-test packages separately disclosed.
+PG passed 1/4, zero skips/failures (32.13s), preserving
+0 existing fixture databases and
+1 existing role. This is the unchanged plain-member
+current-trust PG regression, not new Zstandard/database qualification.
+
+Each reviewer passed 14 own serial gates, six builds, the same affected counts/
+53 named groups/one AR skip, PG1/4 with zero skips/failures, modules, affected vet,
+both license checks, format and diffs. Dependency/compatibility affected times
+were 66.773s/67.447s;
+PG intervals 25.851s/25.576s.
+PG intervals include pre-inventory through Go completion, excluding post-inventory
+and freeze checks. Reviewers did not repeat whole default. All children/sessions
+closed. Source/index/status, 65 unchanged protected paths, six changed-path
+original/final proofs and 69 existing SQL raw/index identities,
+four official SBOM resources, twenty-six fixtures and earlier repair/module
+proofs stayed fixed during actuals. Actual AR and sourcefile symlink/mapped-drive
+host fixtures remain unverified.
+
+The pinned SDK has generic diagnostics on some malformed-input paths, including
+truncated frame-content-size fields; complete stderr silence is not claimed,
+and global stderr is untouched.
+The existing Debian CLI has no explicit Zstandard window option: its 22-capacity
+interface and three-codec positive matrix are unchanged. This batch adds internal
+API/current signed composition, not positive CLI Zstandard support. Later CLI
+integration must address compatibility and diagnostic behavior separately.
+No XZ implementation, SQL/grant/route/provider/UI/contract/product-version change.
+XZ dependency maintenance remains owner-pending. Full T09 stays in progress;
+totals remain 5 implemented/12 in progress/30 incomplete or deferred of 47.
+Product 0.10.9, normative 1.0, pinned V1/CodeWhale stay fixed; deployment deferred.
+Downloads have no hard total/cumulative duration or retry cap. The 32 MiB bound
+applies only to joined atomic inventory, never artifact or expanded-output size.
+
+DCO committed and pushed as `05dd49638f9b09956efc8ca320785fe1b53eeba2` on
+`codex/t09-zstandard`; evidence: `docs/artifact-zstandard-integration.md`.
