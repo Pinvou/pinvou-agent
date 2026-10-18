@@ -21,7 +21,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T08 | In progress | Protected atomic metadata publication primitives; complete business publication workflows remain pending |
 | T09 | In progress | Bounded package/native-byte inspection; complete upload, quarantine and platform qualification remain pending |
 | T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
-| T11 | In progress | Protected multi-platform Release drafts with actual UI/API/history/recovery; frozen assembly, qualification and Release/Target approval remain pending. |
+| T11 | In progress | Protected multi-platform drafts, actual UI/API/history/recovery and authenticated target-record migration; assembly execution, qualification and Release/Target approval remain pending. |
 | T12 | In progress | Original stable-facts identity, exact profile matching and immutable forward-policy intersection; protected Registry/version/approval and production qualification remain pending |
 | T13 | Not completed | Supported floor, prerequisite paths and historical bridge approvals. |
 | T14 | In progress | Protected configuration drafts with actual UI/API/recovery; qualified parents, publication, scheduling and first-baseline activation remain pending. |
@@ -12486,3 +12486,31 @@ networks, hosts or deployment.
 Documents 1.0, product 0.10.12 and the CodeWhale gitlink remain unchanged. Downloads
 have no hard total/cumulative duration or retry cap; 32 MiB still bounds only
 joined atomic business inventory. No artifact/download size cap is introduced.
+
+
+### T11: authenticated target-record migration (2026-10-19)
+
+Service `37572f4970c60198f28805d4853f768c106b3b22` is DCO committed and pushed on
+`codex/t11-release-drafts`. Explicit schema-owner migration authenticates original
+V1 complete parent bytes and audit MACs before atomic V2 target backfill. Original
+SQL/ABI, history, pending proofs and acknowledgements remain compatible. Runtime
+startup never migrates; obsolete heads, wrong keys, coherent replacement sources
+and missing installed children refuse without healing or partial migration writes.
+
+Two independent scoped code reviews passed after primary repairs. Actual isolated
+PostgreSQL tests cover the original V1 pending owner's epoch-2 recovery without
+proof refresh, old committed replay, current editing, source rewind/rollback and
+installed missing-child refusal/restoration. Actual CLI subprocess acceptance
+covers initialize/check/migrate/check/idempotent migrate. Default regression
+passed 763 top-level/1781 child tests, 1335 opt-in skips and zero failures; defaults
+are separate from the actual acceptance. Modules, full vet, server build, pins,
+affected formatting and whitespace passed. The unrelated unchanged rollout
+formatting baseline remains out of scope. All 85 prior SQL files stayed intact;
+owned database fixtures restored their original inventory.
+
+The assembled-record model and logical approval binding are groundwork, not an
+installed Assemble owner, approval preparation, HTTP route or UI. T11 remains in
+progress; totals remain five implemented/fourteen in progress/twenty-eight
+incomplete or deferred of 47. Product 0.10.12, documents 1.0 and CodeWhale remain
+fixed. Deployment is deferred; downloads retain no hard total/cumulative duration
+or retry cap, and 32 MiB applies only to joined atomic business inventory.
