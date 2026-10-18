@@ -152,9 +152,11 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         # bump could silently rot the parity (Installed-Size semantics, tar
         # header modes, control field order, symlink handling) and the
         # bundler can never run for this triple to expose it. Pin the
-        # header's named version to the app's actual dependency so the
-        # coupling becomes a reviewed event.
-        named = re.search(r"@tauri-apps/cli (\d+\.\d+)\.", self.packager)
+        # header's named version to the app's actual dependency at FULL
+        # major.minor.patch precision: a caret range admits patch bumps
+        # that still rebuild the bundler binary, so the re-derivation duty
+        # triggers on any version change, not just minor ones.
+        named = re.search(r"@tauri-apps/cli (\d+\.\d+\.\d+)", self.packager)
         self.assertIsNotNone(
             named, "the packager header must name its @tauri-apps/cli baseline"
         )
@@ -165,7 +167,7 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             "@tauri-apps/cli"
         ) or package_json.get("devDependencies", {}).get("@tauri-apps/cli")
         self.assertIsNotNone(spec, "package.json must depend on @tauri-apps/cli")
-        bundled = re.search(r"[\^~]?(\d+\.\d+)\.", spec)
+        bundled = re.search(r"[\^~]?(\d+\.\d+\.\d+)", spec)
         self.assertIsNotNone(bundled, f"unexpected @tauri-apps/cli spec: {spec}")
         self.assertEqual(
             named.group(1),
