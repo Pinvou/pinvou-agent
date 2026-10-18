@@ -213,6 +213,7 @@ tmeet
   | `control waiting-room` | 等候室管理（移入会议/移回等候室/移出踢出）；`expel` 等同踢人，执行前必须列明目标成员 |
   | `auth logout` | 清除本地登录凭证 |
   | `record permission-apply-commit` | 正式提交录制权限申请，会触发审批流程（必须先执行 `record permission-apply-prepare` 并向用户展示申请信息确认）|
+  | `event stop --force` | 强制停止本机 bus 守护进程（写操作）；不带 `--force` 的 `event stop` 不在确认范围 |
 
   **确认流程**：
   1. 向用户展示即将执行的操作及关键信息（使用 `meeting_code` 会议号标识会议，不得展示 `meeting_id`）；涉及成员时，成员的回显格式遵循「响应处理规则」中的「成员回显格式」；

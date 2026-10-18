@@ -263,3 +263,8 @@ description、认证节、命令树新增 `minutes` / `app` / `event` 三个子�
 版本由 `tmeet.rs` 的 `TMEET_NPM_SPEC` 钉扎（本次同步后即为
 `@tencentcloud/tmeet@1.0.18`），实际登录由 `auth login --no-browser` 完成
 （该 flag 在 1.0.15/1.0.18 help 中均存在），文档描述与品悟用法不矛盾。
+
+
+## 2026-10-18 本地修改（模型侧文案复审,下次 sync 需重放）
+
+1. **SKILL.md「必须二次确认」表补 `event stop --force` 行**：命令树标注（`stop`：`--force` 为写操作,需二次确认）与确认表不一致,表漏列该命令（上游 v1.0.18 已知缺陷,前次登记为「下版 sync 若上游仍未修则补行」,本轮落地）。新增行：`event stop --force`｜强制停止本机 bus 守护进程（写操作）；不带 `--force` 的 `event stop` 不在确认范围。
