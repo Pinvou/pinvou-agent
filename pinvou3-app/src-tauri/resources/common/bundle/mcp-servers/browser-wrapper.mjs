@@ -2211,7 +2211,7 @@ function spawnMcpChild(port) {
     // page-id routing alone can list pages but cannot build an authoritative host
     // targetId mapping, falsely reporting a successfully shown new tab as failed.
     ...(hostedWebView2
-      ? ['--experimental-page-id-routing', '--experimental-structured-content']
+      ? ['--page-id-routing', '--experimental-structured-content']
       : []),
     ...EXTRA_ARGS,
   ];
