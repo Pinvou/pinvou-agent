@@ -405,8 +405,9 @@ pub const MODE_EXECUTE_MD: &str = "\
 ## Mode: Execute
 
 Tools run without per-call approval — the user has already authorized
-execution. Produce files and run commands now, then verify and report.
-If a gated write call is rejected, do not retry it: present the change
+execution. Unless the turn's `<system-reminder>` marks a read-only
+(planning) mode, produce files and run commands now, then verify and
+report. If a gated write call is rejected, do not retry it: present the change
 in your reply and wait for the user to decide.
 Follow each message's `<system-reminder>`.";
 
