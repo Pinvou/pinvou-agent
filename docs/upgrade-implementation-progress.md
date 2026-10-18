@@ -11849,3 +11849,133 @@ duration or retry cap. The 32 MiB bound is joined atomic inventory only.
 
 DCO committed and pushed as `e50ad4b39538fc32856a08e9f7277baafe787fbf` on
 `codex/t09-elf`; scope/evidence is in `docs/artifact-elf-integration.md`.
+
+### T09 original PE, resource and version-byte observations
+
+Twenty-five new code/test paths integrate the connected original PE/resource/
+Windows-version observation capability from ten consecutive source commits,
+38934c7dfb2b537c0f0ed0b3cffb8694a570f834 through
+93312cd7c1b519beb7666df5819feca8886afb34. Historical combined-tree
+artifact-verification-plan.md changes (785 added lines) were omitted.
+Separate original/final proofs retain 22 source-exact
+paths, three primary adaptations and 0 formatting-only
+paths. The two CLI files add the final pre-output context check, independent
+completed-prefix cancellation proof, overflow arguments and six mandatory named
+built children. The signed-PE test alone adds an independent native-bytes/PE-prefix
+control proving its existing final poll; production wrapper behavior is unchanged.
+Formatting-only paths: none. Existing accepted ELF/TAR/control/codecs remain fixed.
+
+pe.Inspect bounds ordinary PE32/PE32+ DOS/COFF/optional headers, all raw sections
+and embedded WIN_CERTIFICATE spans on complete owned bytes. Sections preserve
+declaration order; nonempty physical overlaps refuse before hashing. Certificate
+identities include each complete declared dwLength, separately checking external
+eight-byte zero alignment. Embedded bytes are opaque, with no DER, Authenticode,
+catalog/publisher, loader or NSIS-content authentication. Complete overlays stay
+in the original source identity. Unknown machines remain declarations.
+
+Resource RVA backing must be a unique complete original interval in headers or
+one section's positive VirtualSize/raw-size intersection, within the uint32 RVA
+domain. Every partial competing virtual claim also refuses; no BSS zero-fill,
+cross-section stitching or guessed loading is introduced. The complete declared
+resource tree is traversed iteratively with entry/depth/UTF-16-name capacities,
+strict exact sibling order and checked physical metadata/data spans. Cyclic or
+shared directories are outside the supported tree profile; shared names/data
+remain observations. No assumed type/name/language lookup depth or defaults.
+Caller selectors freeze before callbacks; complete trees precede exact selection
+and owned-byte capture. Empty resources retain owned empty snapshots.
+
+Windows version APIs separately observe known VS_VERSION_INFO framing and its
+52-byte fixed words, a complete bounded physical block tree, exact opaque value
+selection, and the explicit uint16 inner-record boundary with separately hashed
+opaque tail. Four-part version fields, text values, translations and timestamps
+are declarations without normalization, native key authority or trustworthy time.
+Current signed Manifest/Root/deny/FullPack/native-byte guards precede signed PE
+and selected version-resource composition, using the same owned bytes and exact
+identity equality. Every late error/cancellation returns literal zero, discarding
+earlier signed/native/resource/record facts. No approved app/version/architecture/
+publisher mapping, NSIS installer validity, Artifact admission or installation
+authority is added. Logical copy/count limits and repeated tree/hash work are
+not aggregate heap/work or selected production preparation budgets.
+
+upgrade-pe-inspect is a standalone unsigned physical-observation command with
+five explicitly positive capacities and one JSON result:
+
+```sh
+go run ./cmd/upgrade-pe-inspect \
+  --source-bytes 16777216 --snapshot-memory-bytes 16777216 \
+  --optional-header-bytes 4096 --sections 96 --certificates 8 fixture.exe
+```
+
+These are fixture example capacities, not production defaults. Exit 0 means
+complete JSON/help, 2 invalid arguments, 1 source/inspection/context/output
+failure. Fixed diagnostics avoid private argument/source/writer details; sticky
+short/invalid writes fail. A failed output device may leave truncated bytes, so
+callers must require exit 0 and complete JSON. Existing sourcefile host/symlink/
+remote-mount limitations and arbitrary concurrent same-size-write caveat remain.
+The command does not invoke current signed composition or execute its input.
+
+Five new fixed private files extend sixteen fixtures to twenty-one. Original
+Go-built PE bytes are 5933568 bytes, SHA-256:
+4312ec15cca353f54c259ffdad7c015ca6be56826e632c96a86cc852fe34faab;
+the original system PE is 360448 bytes, SHA-256:
+49f096cbf9337b0a80bde835d29be41bc9371057c4ff6c72f8a36158c29cfa3a.
+Its original Resource directory is 123344 bytes; the complete version resource
+is 884 bytes, SHA-256:
+3f16cbab55f8bb20ceadf8fd3802ae7ea05a5866176c65e11ecb835ab1e406a6;
+the inner record is 880 bytes, SHA-256:
+d1543f915d5efbd6e0728c74abe97db54f3151e7a2210f1fd86d005679ed0362,
+followed by four opaque original zero bytes. Independent Python struct/hashlib
+checks all original PE spans, 39 resource directories/69 entries/31 leaves,
+exact [16,1,1033] resource at file offset 351512 and all 13 version blocks.
+Windows version.dll data APIs independently compare only the 52-byte fixed
+value; MUI/native data behavior is not whole-record/raw-byte qualification.
+Go debug/pe independently checks physical section and complete CLI projections.
+This batch reads both original images as data without executing them. Signed nsis/app/version
+claims around them are isolated synthetic byte-binding fixtures, not publisher
+signatures or proof that either is an approved NSIS/Pinvou installer.
+
+Primary self-review and both independent scoped line-level code/test audits
+passed. Root passed 17 gates: six own inspector builds, affected tests, isolated
+actual PG regression, whole default, modules/full vet/server build/V1 pins,
+license, formatting and two diffs. Affected tests passed 20
+packages, 236 top-level/341 child cases, zero failures
+(90.334s), with exactly one unavailable actual-AR tool skip.
+All 51 required named groups passed: prior 37, thirteen new fixture/binary opt-in
+groups and one mandatory original-source PE CLI control. PE built E2E passed
+six mandatory children: synthetic success, invalid arguments/framing, same-path
+restoration and both fixed originals. Prior ELF five, Debian seven and supported
+codec three projections also passed. Physical/late certificate/resource/block/
+capacity/ordering/ambiguous backing/RVA-boundary refusals, frozen selector/source
+isolation, independently calibrated final cancellation, failed writers and
+33 MiB positives passed. Test time allowances do not limit production downloads.
+
+Root whole default passed 69 packages,
+651 top-level/1364 child cases (195.639s),
+with 615 top-level/606 child opt-in/unavailable-host
+skips and 12 no-test packages separately disclosed. The unchanged plain-member/
+current-trust PG regression passed 1/4, zero skips/failures (27.92s),
+not new PE/database qualification. Each independent reviewer passed 14 own gates,
+six builds and the same affected counts/51 required groups/one AR skip, PG 1/4
+zero skips/failures, modules, affected vet, license, fmt and diffs. Dependency/
+compatibility affected walls were 64.199s/
+72.053s; PG intervals
+27.435s/30.292s.
+PG intervals include pre-inventory through Go completion, excluding post-inventory
+and freeze checks; other command walls exclude freeze checks. Inventory retained
+0 existing fixture databases and
+1 existing role with no new resources left.
+Reviewers did not repeat root whole default. All stage children/sessions closed.
+Full source/index/status, 41 protected prior paths, 69 SQL raw/index identities,
+four official SBOM resources, twenty-one fixtures and prior module/license/repair
+proofs stayed fixed during actuals. Actual AR and sourcefile symlink/mapped-drive
+host fixtures remain unverified.
+
+No dependency/SQL/grant/route/provider/UI/contract/product-version change. XZ
+maintenance remains owner-pending; XZ/Zstandard candidates are absent. Full T09
+remains in progress; totals stay 5 implemented/12 in progress/30 incomplete or
+deferred of 47. Product 0.10.9, normative 1.0, pinned V1 and CodeWhale remain
+unchanged; deployment deferred. Downloads have no hard total/cumulative duration
+or retry cap. The 32 MiB bound is joined atomic inventory only.
+
+DCO committed and pushed as `1adce90a4f144fe67385058e724a3a2c6b772060` on
+`codex/t09-pe`; scope/evidence is in `docs/artifact-pe-integration.md`.
