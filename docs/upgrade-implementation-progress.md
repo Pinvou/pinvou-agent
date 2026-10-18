@@ -12292,3 +12292,90 @@ expanded output or these explicit inspection capacities.
 
 DCO committed and pushed as `41c920166ef251838c4b49cd43dce8cdda733a5b` on
 `codex/t09-zstandard-cli`; evidence: `docs/artifact-zstandard-cli-integration.md`.
+
+### T47 refuse lifecycle writes without final business owners
+
+An independent whole-card audit identified an incomplete T47 guard obligation.
+The original canonical intent, T05 approval, T06 owner epoch and caller watermark
+do not authenticate purpose-specific actual parent/baseline, quality, freeze,
+observation or atomic publication state. Those fixed final owners are not yet
+installed. Runtime SQL permissions and absent business routes remain valuable,
+but cannot substitute for the kernel's own missing-owner refusal.
+
+All seven existing exported lifecycle writer methods now return the existing
+Unavailable error and zero result before receiver/transaction access. Exported
+OperationWriteSet Apply/Seal do the same, including nil, zero, nonzero and copied
+handles. Existing signatures/type remain available. No public dispatcher,
+always-refusing operations.Command, enabling flag, callback registry, fake parent
+or blanket approval was added. Plan/SN draft/freeze and read workflows stay usable.
+
+The implementations in four existing production files are retained as private
+storage primitives. Mechanical comparison after the planned name/type redirects
+confirms unchanged body logic. Existing storage, recovery, clock, source, CAS,
+capacity and concurrency controls still exercise these private primitives. Six
+cross-feature quality test calls use an explicitly test-only schema-owner fixture
+instead of a public writer. They establish local source facts, never actual parent
+or business qualification. No production quality logic was changed.
+
+Three new actual PostgreSQL groups collectively cover the missing-owner boundary.
+Public-writer and complete-candidate Seal groups each exercise both null-SN and
+frozen-SN paths; the uninstalled-purpose routing group uses a null-SN fixture.
+Public-writer refusals use real frozen plans, approved original Start intent and
+processing T06 root/receipt fixtures. Transactions commit after refusals, with
+full protected-owner row hashes before/after and transaction-local write deltas,
+so rollback cannot hide a public write. Closed uninstalled business purposes
+leave no operation; this checks routing only, not final-owner authentication.
+For Seal, a complete private child/outbox candidate first seals successfully and
+rolls back as a positive control. Rebuilding the same complete candidate and
+calling public Seal/nonzero/copied handles refuses without row/write changes.
+Diagnostic raw candidates are rolled back and the original owner hashes restored.
+
+The first focused run retained a failing test assertion: an absolute transaction
+write counter was not zero after private fixture preparation. Public calls still
+returned exact Unavailable/zero. Primary corrected the assertion to compare the
+counter delta after that preparation, retained committed full-owner row checks,
+and added the complete-candidate Seal positive/refusal control requested during
+independent review. No production behavior was loosened. Initial red logs and
+source/inventory proofs remain private. Revised focused actuals passed 3 top-level
+and 34 child cases with zero skips/failures (36.213s).
+
+Primary self-review and both independent scoped line-level audits passed. ROOT
+then passed nine serial gates against the frozen revised tree. Full rollout and
+quality actuals passed six packages, 129 top-level/173 child,
+zero skips/failures (879.322s), using actual PostgreSQL/OpenBao
+and the four original Node reference projections. Full default service regression
+passed 71 tested packages, 678 top-level/1395 child,
+zero failures (174.683s). Its 625 top-level/
+610 child opt-in or host skips and 12 no-test packages are
+separately disclosed; default skips do not stand in for the actual feature run.
+Modules, full vet, private server build, original V1 pins, formatting and both
+whitespace checks also passed.
+
+Each independent reviewer then owned a separate serial six-gate run: actual
+affected feature paths, modules, affected vet, format and both whitespace checks.
+Dependency passed 84 top-level/106 child (438.643s);
+compatibility passed 84 top-level/106 child (452.106s).
+Both passed six packages with zero skips/failures, all three new groups and the
+selected unchanged original positive/fault/recovery/reference/quality controls.
+Their selectors exclude unchanged bulk capacity/fanout/permanent-history stress;
+ROOT's full feature actual includes it. Reviewers did not repeat whole default.
+Every stage/session and owned native child closed before slot handoff. Source,
+index and status stayed frozen throughout actuals; all 69 committed SQL files
+retain exact raw and index bytes. PostgreSQL inventories before/after each actual
+were identical, including 1 preexisting fixture database(s)
+and 2 role(s). These are preserved baselines, not newly leaked
+fixtures or a claim that the baseline inventory was empty.
+
+Two prior kernel documents carry explicit current-entry-point notes; their earlier
+private mechanism acceptance does not imply complete final business guards.
+No SQL, grant, route, provider, UI, dependency, frozen contract or version change.
+T47 remains in progress: the next integration must install real fixed final
+owners and authenticate their actual state in the original atomic operation.
+This repair does not complete parent publication or authorize a running Rollout.
+Totals remain 5 implemented/12 in progress/30 incomplete or deferred of 47.
+Product 0.10.9, normative 1.0 and pinned V1/CodeWhale remain fixed. Deployment stays
+deferred. Downloads have no hard total/cumulative duration or retry cap; the
+32 MiB bound applies only to joined atomic business inventory.
+
+DCO committed and pushed as `1cbf50297b4b57e517159c782fdd416f7672058b` on
+`codex/t47-missing-owner-fences`; evidence: `docs/rollout-missing-owner-hardening.md`.
