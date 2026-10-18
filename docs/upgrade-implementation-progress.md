@@ -12187,3 +12187,108 @@ retry cap. The 32 MiB bound applies only to joined atomic business inventory.
 
 DCO committed and pushed as `7602824a794fc3c3557e4fdd204a4950da792809` on
 `codex/t09-macho`; evidence: `docs/artifact-macho-integration.md`.
+
+### T09 complete Debian Zstandard inspection CLI
+
+One narrow existing command change and one dedicated new test add explicit
+Zstandard window capacity to upgrade-debian-inspect. The existing main_test.go,
+all 22 required legacy capacity flags and the prior gzip/bzip2/LZMA CLI matrix
+remain byte/behavior compatible. A related correction retracts the earlier SDK
+diagnostic claim in its prior integration document. No historical source import
+or new module.
+
+--zstandard-window-bytes is optional for legacy input. Explicit occurrence requires
+a positive int64 before source access; zero/negative values return fixed capacity
+errors, nonnumbers/overflow return fixed argument errors. Omitting it preserves
+legacy calls and supplies no implicit Zstandard window. Zstandard input still
+requires a supported explicit bound through the existing decoder; positive values
+outside that profile are runtime Invalid, not evidence of a capacity violation.
+Supported smaller windows can produce exact Limit. The window is independently
+applied to each member, not aggregate memory/work or a production default.
+The help text describes this conditional argument. All original required flags
+stay required, including the legacy LZMA capacity; no defaults were invented.
+
+The complete original stored control/data frames, expanded TARs and exact control
+record are observed through the existing immutable pipeline. XZ remains
+Unsupported; format names never select a fallback decoder. Invalid framing,
+control/data codec faults, missing window and late window limits produce zero
+stdout; same-path restoration must match the complete independently frozen JSON.
+The command neither installs nor extracts, authenticates a publisher, approves
+application/architecture declarations nor admits an Artifact.
+
+Two new fixed synthetic DEBs extend 29 to 31 fixtures. The 548-byte larger-window
+input (SHA-256 f26c9d08c0f430cc213832cccf9e5eeedcbb27406b088155b9aa5a7483eb66c8)
+differs from the previous 548-byte original at only data's window descriptor:
+1024 to 2048. Control remains byte-exact at 1024. The 1024 refusal therefore occurs
+after valid control decoding; 2048 gives the complete original projection. The
+568-byte skippable input (SHA-256 af1c8e966e0c0392441c512fe012445ad729572038884386976a68528e6ba0c8)
+prefixes each member with 11 exact bytes: a skippable header and 3-byte payload;
+AR sizes/padding are independently rebuilt. Python/libzstd, struct/hashlib and
+in-memory tarfile confirm both original 10240-byte TAR identities and 109-byte
+control record. Both prerequisite reviews verified exact bytes before integration.
+These are synthetic codec/CLI controls, not original distribution packages.
+
+The first repository actual run retained one failing test expectation: the legal
+skippable CLI succeeded, but emitted no process stderr instead of the four lines
+expected after static review. Both the initial two-line and later four-line
+assumptions incorrectly treated package-scoped println as Go's built-in printer.
+The pinned SDK's own println/printf definitions log only when debug flags are
+enabled; debug/debugDecoder/debugEncoder are all false in the unchanged module.
+A separate probe using the same owned CLI confirmed legal skip exit 0/empty stderr
+and malformed truncated-content-size exit 1/zero stdout/only the fixed 34-byte CLI
+invalid diagnostic. Both probe children joined; no SDK or production repair.
+
+Primary corrected only test expectations and added truncated-content-size cases
+to direct and built refusals. Successful built originals now require exactly empty
+process stderr and full independently measured JSON. Malformed fixed controls
+require exactly the CLI diagnostic and no stdout. No stderr redirection or relaxed
+matching. A narrow correction in the prior Zstandard integration document retracts
+its earlier generic-SDK-stderr assertion. This correction supersedes the earlier chronological
+progress statement; its historical entry remains intact. These concrete observations
+do not promise global silence for every possible failure. Initial actual red logs,
+source/guard proofs and the intermediate static assumptions remain retained. Final
+acceptance below is a fresh complete run after both reviewers rechecked the actual
+SDK function definitions; no initial green results are mixed into it.
+
+Primary self-review and both independent line-level code/test audits passed.
+ROOT passed 18 serial gates with seven own inspector builds, affected actuals,
+unchanged actual PG, whole default, modules/full vet/server build/V1 pins, full
+licenses for both existing dependency modules, formatting and two diffs.
+Affected tests passed 22 packages,
+270 top-level/407 child cases (58.509s),
+zero failures and exactly one unavailable actual-AR tool skip. All 61 required
+named groups passed, including three new Zstandard CLI groups. Seven new built
+children and three complete new reports passed alongside unchanged Mach-O 7,
+PE 6/ELF 5/Debian 7 built children and the prior three-codec report matrix.
+Whole default passed 71 packages,
+676 top-level/1395 child cases (180.798s),
+zero failures, 624 top-level/606 child opt-in or
+unavailable-host skips and 12 no-test packages separately disclosed.
+PG passed 1/4 with zero skips/failures (22.938s), preserving
+0 preexisting fixture databases and
+1 role. This is the unchanged plain-member current
+trust regression, not Zstandard/database or publication qualification.
+
+Each independent reviewer passed 15 own serial gates and seven builds, the same
+affected counts/61 groups/one AR skip, new and old E2E matrices, PG 1/4 without
+skips/failures, modules, affected vet, existing licenses, format and diffs.
+Dependency/compatibility affected intervals were
+53.492s/56.151s,
+PG intervals 21.741s/21.375s.
+PG intervals include pre-inventory through Go completion, excluding post-inventory
+and freeze checks. Reviewers did not repeat whole default. All sessions/stage
+children closed; source/index/status, 84 protected paths, 69 SQL raw/index,
+both changed-path original index/raw and current code/document proofs,
+4 official SBOM resources and 31 fixtures stayed fixed throughout actuals.
+Actual AR and sourcefile symlink/mapped-drive host fixtures remain unverified.
+
+No SQL, grant, route, provider, UI, frozen contract or product-version change.
+XZ dependency maintenance remains owner-pending and unimplemented. T09 remains
+in progress; totals stay 5 implemented/12 in progress/30 incomplete or deferred
+of 47. Product 0.10.9, normative 1.0, pinned V1/CodeWhale stay fixed; deployment
+remains deferred. Downloads have no hard total/cumulative duration or retry cap.
+The 32 MiB bound applies only to joined atomic business inventory, never artifacts,
+expanded output or these explicit inspection capacities.
+
+DCO committed and pushed as `41c920166ef251838c4b49cd43dce8cdda733a5b` on
+`codex/t09-zstandard-cli`; evidence: `docs/artifact-zstandard-cli-integration.md`.
