@@ -11515,3 +11515,109 @@ business inventory, not artifacts or downloads.
 
 DCO committed and pushed as `7105e81b4cf07a9c19edb2700f5f10a66a22d5db` on
 `codex/t09-tar`; scope/evidence is in `docs/artifact-tar-integration.md`.
+
+### T09 Debian control and required identity declarations
+
+Twelve new code/test paths were selected from consecutive source commits
+6ef51a5c653e9b7f626026d9899be9f2e5ec4da2,
+4815e0b8bba5dda3a8bb0f36fc67bca07aa3cc7d,
+087fbe1b95b645fa736ddf563035d868ba77e34c and
+ea0121b53847779d4b4c51d875016d45923a591f. Their first parent is e152ab2b;
+the integrated baseline preserves the separately accepted TAR and codec repairs.
+The historical artifact-verification-plan.md and its 227 added lines were omitted:
+its combined-tree codec assumptions/results are not current evidence. All twelve
+paths were initially exact raw/Git imports after absence checks. Six production
+files and two standalone tests stay exact; four consumer tests have separately
+recorded primary adaptations to the supported codecs. No whole-tree merge.
+
+ParseControl observes one owned UTF-8 binary-control stanza, retaining original
+field spelling and value/continuation lines. ASCII field names follow Debian
+Policy 5.1, with case-folded uniqueness; LF/CRLF, final EOF without newline and
+horizontal-whitespace separators are explicit. Orphan continuations, comments,
+second stanzas, wholly empty values, invalid UTF-8, disallowed ASCII controls,
+DEL and stray CR refuse without earlier fields. Other valid UTF-8 values stay
+opaque. Source/memory capacities bound each logical copied source, field count
+bounds cardinality; none is a combined heap or aggregate preparation budget.
+Chunked source copy and successful return check context. A real 33 MiB opaque
+value passed caller-selected capacity and failed one-byte lower logical memory.
+
+InspectControl first observes both complete TARs, then selects exactly one root
+control or ./control physical regular/legacy-zero member. Duplicate names/aliases,
+missing roots and links/special types refuse. Nested/absolute paths are not root
+aliases. Exact member offset/size are captured from the owned expanded bytes,
+their identity is compared and lexical parsing uses that captured snapshot.
+ReadIdentity reparses owned bytes and requires Package, Version and Architecture
+each as one nonempty line, trimming only horizontal whitespace. It does not
+consume mutable returned maps or guess defaults. InspectIdentity preserves the
+complete control composition and checks both record identities. All late errors
+and cancellation return zero earlier framing/parsed fields and no captured bytes.
+
+The two verifier compositions apply existing current signed Manifest/Root/deny/
+native-byte/framing guards first, then observe the same Native.Bytes and check
+whole-source identity again. Signed claims in tests are synthetic byte bindings.
+Package/version/architecture remain declarations: no field-specific grammar,
+version ordering, approved app/architecture mapping or publisher trust is granted.
+No extraction, path resolution, link following, script execution or installation.
+Existing APIs, codecs, routes, SQL, dependencies, grants and providers are unchanged.
+
+All previous twelve whole/codec/TAR fixtures and two new raw control records
+remained fixed. Independent Python tarfile read control payloads without filesystem
+extraction; email.parser independently checked field counts and three declarations.
+Public control: 757 bytes, SHA-256
+27ee01d2de09a1a678763c41013d4d1aa47e6985230ca08f414e903a237fd163,
+13 fields, hello/2.10-3/amd64. Synthetic control: 109 bytes, SHA-256
+d557a48d2711f6984cb7b3c4bfa4d67e95db4da68e14fd967d0199d7a6253d79,
+4 fields, independent-fixture/0.0.1/all; independently decoded gzip/bzip2/LZMA
+originals yield identical raw control bytes. Public raw-control positives rely
+on independently decoded raw TAR bytes, not whole-XZ support.
+
+Both named whole-DEB matrices require gzip, bzip2 and LZMA children. Four signed
+positive groups use frozen bzip2/LZMA packages. Two public-XZ negatives first pass
+current signed/framing verification, then require exact Unsupported and zero
+earlier control/identity facts. XZ remains deferred pending its explicit owner
+maintenance decision; no candidate XZ or Zstandard integration was imported.
+
+Both independent scoped line-level code/test reviews and primary self-review
+passed. Root passed 14 gates: three own CLI builds, affected native tests, actual
+isolated PG regression, whole default, modules, full vet, server build, V1 pins,
+cache/license proof, changed formatting and two whitespace checks. Affected tests
+passed 14 packages, 160 top-level/304
+child cases, zero failures (53.905s wall), with exactly one unavailable
+actual-AR-tool skip. All 28 required actual groups passed: the prior 18, eight new
+positive control/identity groups and two public-XZ refusals. The previous 167
+LZMA EOF and 40 long-gzip cases remain enabled and passed. Lexical, malformed/
+duplicate/second-stanza, alias/type/capture, missing/folded required fields,
+current deny, capacity, cancellation/nil, projection isolation and restoration
+cases passed. Whole default passed 63 tested packages,
+597 top-level/1348 child cases (252.123s);
+593 top-level/606 child opt-in/unavailable-host skips
+and 12 no-test packages are separate. Host sourcefile symlink/mapped-drive
+fixtures and actual AR-tool output remain unverified.
+
+Actual unchanged plain-member/current-trust PG regression passed 1 top-level/
+4 child tests, zero skips/failures (34.008s recorded interval), with
+0 pre-existing fixture databases and
+1 pre-existing fixture role unchanged before/after.
+This is not new PG control/identity qualification. Each reviewer separately
+passed 11 gates: own three CLI builds, affected tests with the same counts,
+28 actual groups/one AR skip, PG 1/4 zero skips/failures, modules, affected vet,
+cache/license proof, fmt and diffs. Dependency/compatibility affected walls were
+50.385s/48.505s;
+PG intervals 22.205s/25.226s.
+PG intervals run from pre-inventory through Go completion, excluding post-inventory
+and freeze checks; other command walls exclude freeze checks. Reviewers did not
+repeat root whole-default. All owned stage children/sessions closed; PG inventory
+was restored. Full source/index/status, 69 prior SQL raw/index identities,
+16 protected paths (including prior six codec repairs, six TAR paths and its doc),
+four official SBOM resources, 14 fixtures and module/license/checksum proofs stayed
+fixed during each actual run.
+
+No Artifact admission, protected staging, native qualification, physical platform
+or deployment acceptance is supplied. Full T09 remains in progress; totals stay
+5 implemented, 12 in progress and 30 incomplete/deferred of 47. Product 0.10.9,
+normative 1.0, pinned V1 and CodeWhale stay unchanged; deployment remains deferred.
+Downloads have no hard total/cumulative duration or retry cap. The 32 MiB bound
+applies only to joined atomic business inventory, not artifacts or downloads.
+
+DCO committed and pushed as `7ff8a99611ea04ca6ed5ae9614a98d8c0a029394` on
+`codex/t09-control`; scope/evidence is in `docs/artifact-control-integration.md`.
