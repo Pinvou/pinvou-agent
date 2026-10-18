@@ -287,6 +287,13 @@ pub fn process_alive(_pid: u32) -> bool {
 /// Unsupported platforms do not provide a portable directory-permission primitive.
 pub fn make_private_dir(_path: &Path) {}
 
+/// Unsupported platforms report success: there is no permission primitive
+/// to fail (the caller's fail-closed path is meaningful only where chmod
+/// exists).
+pub fn try_make_private_dir(_path: &Path) -> Result<(), std::io::Error> {
+    Ok(())
+}
+
 /// The macOS WebView carries image items natively in paste events, so no
 /// native clipboard fallback is needed; always returns `None` (the
 /// `pasteImageClipboardRead` capability is false on macOS).

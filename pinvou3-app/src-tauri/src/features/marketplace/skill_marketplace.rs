@@ -57,12 +57,10 @@ pub(crate) const RETIRED_SKILL_NAMES: &[&str] = &[
 
 #[derive(Debug, Clone)]
 struct SkillManifest {
-    /// 市场 key(前端/卸载用)
+    /// 市场 key(前端/卸载用),也是 MARKETPLACE_DIR 下的子目录名
     id: &'static str,
     /// = SKILL.md frontmatter name = 落盘目录名
     skill_name: &'static str,
-    /// MARKETPLACE_DIR 下的子目录名
-    source_dir: &'static str,
     title: &'static str,
     subtitle: &'static str,
     description: &'static str,
@@ -77,7 +75,6 @@ fn preset_manifests() -> &'static [SkillManifest] {
         SkillManifest {
             id: "government-writing",
             skill_name: "government-writing",
-            source_dir: "government-writing",
             title: "党政机关公文写作",
             subtitle: "通知/意见等法定文种，套话术、层级序号、自检",
             description: "撰写规范的党政机关公文（通知、意见…）：内置文种结构骨架、固定话术库、层级序号体系与立账核账自检，产出结构化公文内容。配合插件中心的「公文写作」工具即可直出 GB/T 9704 合规 .docx。",
@@ -87,7 +84,6 @@ fn preset_manifests() -> &'static [SkillManifest] {
         SkillManifest {
             id: "pptx",
             skill_name: "pptx",
-            source_dir: "pptx",
             title: "PPT 生成",
             subtitle: "本地直出可编辑 PowerPoint，套主题模板、真图表、带封面",
             description: "本地直出可编辑 PowerPoint（.pptx）：先列大纲确认，再按内容自动选主题（9 套）产结构化 deck，渲染器套主题模板生成真·可编辑图表、自带封面缩略图的演示文稿，数据不出机。配合插件中心的「PPT 生成」工具即可直出 .pptx。",
@@ -97,7 +93,6 @@ fn preset_manifests() -> &'static [SkillManifest] {
         SkillManifest {
             id: "visualizer",
             skill_name: "visualizer",
-            source_dir: "visualizer",
             title: "数据分析可视化",
             subtitle: "Chart.js 仪表盘 / 图表分析 / HTML 可视化",
             description: "将结构化数据、表格汇总和业务指标转成符合 Pinvou 宿主体验的 HTML 可视化仪表盘。默认使用 Chart.js、无障碍 canvas、自定义图例、扁平配色，并通过 .html 产物卡交付。",
@@ -107,7 +102,6 @@ fn preset_manifests() -> &'static [SkillManifest] {
         SkillManifest {
             id: "package-author",
             skill_name: "package-author",
-            source_dir: "package-author",
             title: "插件包标准化",
             subtitle: "把技能/MCP/函数整理成可上传的标准插件包",
             description: "把散乱的技能（SKILL.md）、MCP 服务或它们的组合整理成 Pinvou 商店可导入的标准插件包：补 plugin.json、补 mcp/manifest.json、补 SKILL.md frontmatter、生成图标、校验命名与布局，最后产出目录或 zip。",
@@ -117,7 +111,6 @@ fn preset_manifests() -> &'static [SkillManifest] {
         SkillManifest {
             id: "skill-author",
             skill_name: "skill-author",
-            source_dir: "skill-author",
             title: "技能创建",
             subtitle: "用户描述一句话，生成规范的 SKILL.md 技能",
             description: "把用户的一句话描述变成一个可用的技能（SKILL.md 目录）：生成 name/description/正文指令，校验命名与结构；需要交付成可上传插件包时，可继续按「插件包标准化」规则补 plugin.json、图标并导出标准包，最后询问用户是否安装。",
@@ -127,7 +120,6 @@ fn preset_manifests() -> &'static [SkillManifest] {
         SkillManifest {
             id: "ima-skills",
             skill_name: "ima-skills",
-            source_dir: "ima-skills",
             title: "腾讯 ima",
             subtitle: "IMA OpenAPI 笔记 / 知识库读取、写入、检索",
             description: "接入腾讯 ima OpenAPI，用本机凭据调用官方接口管理 IMA 笔记与知识库。凭据由 Pinvou 工具市场写入本机系统凭据，不需要在对话里粘贴 Token。",
@@ -137,7 +129,6 @@ fn preset_manifests() -> &'static [SkillManifest] {
         SkillManifest {
             id: "tencent-docs-skill",
             skill_name: "tencent-docs",
-            source_dir: "tencent-docs-skill",
             title: "腾讯文档",
             subtitle: "在线文档/表格/幻灯片/智能表格 创建、编辑、管理",
             description: "腾讯文档官方 MCP Skill（v1.0.41 适配版）：配合插件中心「腾讯文档 MCP」连接器使用，内置官方品类路由（智能文档/Word/Excel/PPT/思维导图/流程图/智能表格）与完整工具 API 参考。Token 由连接器写入本机系统凭据。",
@@ -145,6 +136,34 @@ fn preset_manifests() -> &'static [SkillManifest] {
             color: "bg-gradient-to-b from-blue-500 to-indigo-600",
         },
     ]
+}
+
+/// Preset alias: one preset names its marketplace id
+/// differently from its frontmatter skill_name / on-disk directory
+/// (tencent-docs-skill <-> tencent-docs) — one package, two names. The
+/// consent vocabulary (card id, stored deny entries, gate registrations)
+/// uses the marketplace id while the materialization layer scans directory
+/// names, so the admission side must try the id alias for a directory that
+/// no owner claim covers, or the standalone preset's deny entry never
+/// matches and the skill materializes into initialized DenyAll scopes
+/// despite the recorded deny (fail-open).
+///
+/// Deliberately NOT folded into `bundle::skill_owner_package`: for this
+/// preset the owning MCP package id (tencent-docs) collides with the
+/// directory name string itself, and that function also normalizes MCP
+/// package ids on the save/remove paths, where aliasing would cross-fire
+/// and rewrite one package's consent entries into the other's vocabulary.
+pub(crate) fn preset_id_for_skill_name(skill_name: &str) -> Option<&'static str> {
+    preset_manifests()
+        .iter()
+        .find(|m| m.skill_name == skill_name && m.id != m.skill_name)
+        .map(|m| m.id)
+}
+
+/// Shared error copy for an unknown preset skill id, so the feature layer and
+/// the command layer (which resolves the same lookup) surface one message.
+pub(crate) fn unknown_preset_skill_error(skill_id: &str) -> String {
+    format!("未知预置技能 '{skill_id}'")
 }
 
 // 前端展示态 ------------------------------------------------------------------
@@ -393,8 +412,10 @@ impl SkillMarketplaceManager {
     /// a directory-tree SHA-256 fingerprint per installed preset skill
     /// (`preset_update_available`); these paths only care about install state.
     /// Lenient read: a per-entry IO failure counts as "not installed" and is
-    /// swallowed — fine for display/list paths, fail-open for a consent gate.
-    /// The DenyAll default computation must use `installed_skill_ids_strict`.
+    /// swallowed — fine for display/list paths. In the consent gate a miss
+    /// errs toward "not known", i.e. toward REGISTRATION (over-denial,
+    /// fail-closed), so the leniency is safe there too. The
+    /// DenyAll default computation must still use `installed_skill_ids_strict`.
     pub fn installed_skill_ids(&self) -> Vec<String> {
         let mut out: Vec<String> = preset_manifests()
             .iter()
@@ -518,13 +539,13 @@ impl SkillMarketplaceManager {
     pub fn install(&self, skill_id: &str) -> Result<(), String> {
         let m = self
             .preset(skill_id)
-            .ok_or_else(|| format!("未知预置技能 '{skill_id}'"))?;
+            .ok_or_else(|| unknown_preset_skill_error(skill_id))?;
         if RETIRED_SKILL_NAMES.contains(&m.skill_name) {
             return Err(format!("技能名 '{}' 与已下线内置冲突", m.skill_name));
         }
         let src = MARKETPLACE_DIR
-            .get_dir(m.source_dir)
-            .ok_or_else(|| format!("嵌入资源缺失: {}", m.source_dir))?;
+            .get_dir(m.id)
+            .ok_or_else(|| format!("嵌入资源缺失: {}", m.id))?;
 
         let dest = self.package_skill_dir(m.skill_name);
         // bundles/<owner>/skills/<name> is joined from the root, so it always
@@ -535,13 +556,25 @@ impl SkillMarketplaceManager {
                 dest.display()
             ));
         };
+        // Round-51 review: install was the one preset-skill lane that held no
+        // `import_lock_for` at all — its fixed `{}.tmp` staging and the
+        // remove-dest → rename tail could interleave with a concurrent
+        // uninstall / display-meta edit in-process, and with ANY second
+        // process (the CLI's `plugins skills install`) cross-process. Hold
+        // the same id lock as uninstall/import_legacy/display-meta, keyed on
+        // the destination name, plus the cross-process market file lock, in
+        // the shared order (import_lock → market file lock → store file
+        // lock) through the end of the function.
+        let import_lock = super::plugin_import::import_lock_for(m.skill_name);
+        let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
+        let _market_lock = super::plugin_import::MarketplaceWriteLock::acquire_map_err()?;
         std::fs::create_dir_all(parent).map_err(|e| format!("创建包 skills 目录: {e}"))?;
         let staged = parent.join(format!("{}.tmp", m.skill_name));
         let _ = std::fs::remove_dir_all(&staged);
         std::fs::create_dir_all(&staged).map_err(|e| format!("创建暂存目录: {e}"))?;
 
         let result = (|| -> Result<String, String> {
-            extract_embedded_subdir(src, m.source_dir, &staged)
+            extract_embedded_subdir(src, m.id, &staged)
                 .map_err(|e| format!("解包嵌入资源: {e}"))?;
             // 校验 SKILL.md 存在 + name 与预期一致
             let name =
@@ -562,33 +595,49 @@ impl SkillMarketplaceManager {
             }
         };
 
+        // 登记（预置 source=Preset + 内容指纹；更新走同一 install 管线，
+        // upsert_preserving 保留首次安装时间）。
+        let mut record =
+            super::store::BundleRecord::installed_now(m.id, super::store::BundleSource::Preset);
+        record.content_fingerprint = Some(fingerprint);
+        self.land_staged_and_register(&staged, &dest, m.skill_name, record, "install")
+    }
+
+    /// Land the staged skill dir at `dest` and register it: delete-then-rename
+    /// (abort rather than leave a half-deleted old dir; same discipline as
+    /// mcp_catalog::release_package), sweep other physical copies (one skill keeps
+    /// exactly one market copy), upsert the store record (failure only logs; the
+    /// landed directory is authoritative). Caller holds the per-id import lock;
+    /// any failure removes `staged`.
+    fn land_staged_and_register(
+        &self,
+        staged: &Path,
+        dest: &Path,
+        skill_name: &str,
+        record: super::store::BundleRecord,
+        ctx: &str,
+    ) -> Result<(), String> {
         // 与 mcp_catalog::release_package 同一纪律：删旧目录失败即中止（吞错误
         // 会让"删一半"的残缺目录静默残留，rename 也必然失败）。
         if dest.exists() {
-            std::fs::remove_dir_all(&dest).map_err(|e| {
-                let _ = std::fs::remove_dir_all(&staged);
+            std::fs::remove_dir_all(dest).map_err(|e| {
+                let _ = std::fs::remove_dir_all(staged);
                 format!("清理旧技能目录失败（已中止，原目录可能部分删除）: {e}")
             })?;
         }
-        std::fs::rename(&staged, &dest).map_err(|e| {
-            let _ = std::fs::remove_dir_all(&staged);
+        std::fs::rename(staged, dest).map_err(|e| {
+            let _ = std::fs::remove_dir_all(staged);
             format!("落盘: {e}")
         })?;
 
         // 一个技能只留一份市场副本：清扫认领翻转滞留/双份安装的其余物理副本
         // （F2：独立安装后又装 companion MCP；F3：迁移 kept 留下的双份）。
-        self.sweep_duplicate_skill_dirs(m.skill_name, &dest);
+        self.sweep_duplicate_skill_dirs(skill_name, dest);
 
-        // 登记（预置 source=Preset + 内容指纹；更新走同一 install 管线，
-        // upsert_preserving 保留首次安装时间）。失败只记日志，目录落盘仍是权威。
-        let mut record =
-            super::store::BundleRecord::installed_now(m.id, super::store::BundleSource::Preset);
-        record.content_fingerprint = Some(fingerprint);
+        // 失败只记日志，目录落盘仍是权威。
+        let id = record.id.clone();
         if let Err(e) = self.bundle_store.upsert_preserving(record) {
-            log::warn!(
-                "[skill-marketplace] bundles.json 镜像写入失败（install {}）: {e}",
-                m.id
-            );
+            log::warn!("[skill-marketplace] bundles.json 镜像写入失败（{ctx} {id}）: {e}");
         }
         Ok(())
     }
@@ -677,6 +726,21 @@ impl SkillMarketplaceManager {
     /// rehome/orphan/stale-record heuristics must never touch package-owned
     /// content, otherwise user uploads are destroyed within two launches.
     pub fn self_heal_skills(&self, builtin_released: &[&str]) -> SkillSelfHealReport {
+        // 锁序：认领归位/去重、孤儿与退役目录删除、瘫记录清理动的是 bundles/
+        // 下的市场目录与登记，与市场写者同持跨进程市场写锁（boot 从 extraction
+        // 进入时未持其他市场锁，这里是真实获取；flock 之上有事务锁的调用方按
+        // 持有深度 join），store file_lock 在其后取。本函数返回报告而非
+        // Result：获取失败只能警告并按空报告跳过本轮——自愈每个启动周期重跑，
+        // 锁只在写者秒级暂存窗口内被占用，缺一轮安全，不得因此中断启动。
+        let _market_write_lock = match super::plugin_import::MarketplaceWriteLock::acquire() {
+            Ok(lock) => lock,
+            Err(e) => {
+                log::warn!(
+                    "[skill-marketplace] 创建市场写入锁失败，本轮自愈对账跳过（下个启动周期重试）: {e}"
+                );
+                return SkillSelfHealReport::default();
+            }
+        };
         let mut report = SkillSelfHealReport::default();
         // Fail-closed when the store is unreadable OR missing: a missing
         // bundles.json yields an empty record set that is indistinguishable
@@ -853,7 +917,41 @@ impl SkillMarketplaceManager {
     /// 删除——整个 `bundles/<id>/` 搬入回收站（用户唯一副本，可恢复/手动彻底
     /// 删除）；companion 技能随属主 MCP 包整包回收，其候选目录已随包搬离，
     /// 下方循环自然跳过、结尾清登记即可（recycle-aware）。
-    pub fn uninstall(&self, skill_id: &str) -> Result<(), String> {
+    ///
+    /// Returns whether an installation was actually torn down (a store record
+    /// was present, candidate content was deleted, or an Upload package was
+    /// recycled). A vacuous `Ok(false)` — nothing on disk and no record — lets
+    /// callers keep the deny entries: stripping them there would remove the
+    /// deny-first consent entry a concurrent same-id install may have just
+    /// registered (its install record lands after the gate) and re-enable the
+    /// skill as it lands. Same guard as the MCP tool uninstall's
+    /// `removed_install_record == false` legs.
+    pub fn uninstall(&self, skill_id: &str) -> Result<bool, String> {
+        let dir_name = self.precheck_uninstall(skill_id)?;
+        // From here the same-id import lock is held to the end of the
+        // critical section: the unified import, the legacy import, and the
+        // display edit (`update_display_meta`) share this one lock and lock
+        // order (import lock → store file lock).
+        // The one guard spans the whole teardown (`uninstall_locked`); for
+        // `uninstall_and_strip_scope` that same guard also spans the scope
+        // strip — the strip never runs after the lock-protected teardown
+        // returned.
+        // Disclosed residual: process-local mutex — a
+        // cross-process UNIFIED IMPORT of the same id (which holds the
+        // landing lease this lane does not take) can still recycle a
+        // just-landed standalone pack between landing and record upsert;
+        // registered in §3.2 alongside the install twin above.
+        let import_lock = super::plugin_import::import_lock_for(skill_id);
+        let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
+        self.uninstall_locked(skill_id, &dir_name)
+    }
+
+    /// Pre-lock validation shared by `uninstall` and
+    /// `uninstall_and_strip_scope`: the builtin guard,
+    /// the id → directory resolution, and the name safety check run before
+    /// the per-id import lock is taken, so a refusal never touches the lock.
+    /// Returns the resolved on-disk directory name.
+    fn precheck_uninstall(&self, skill_id: &str) -> Result<String, String> {
         // Builtin guard (docs/builtin-toolset-contract.md §3.1, defense in
         // depth): a builtin package's companion skill must not be removable
         // through the skill lane either — builtin exposure changes go through
@@ -873,13 +971,23 @@ impl SkillMarketplaceManager {
         if !is_safe_skill_name(&dir_name) {
             return Err(format!("非法技能名 '{dir_name}'"));
         }
-        // 自此持同 id import_lock 至函数尾：与统一导入/遗留导入/展示编辑
-        // （update_display_meta）共用同一把锁、同一锁序（import_lock → store
-        // file_lock）。此前并发卸载不持锁，展示编辑「读备份 → 写 SKILL.md」
-        // 临界区可能被卸载插队（编辑成功返回而目录已删，仅注释披露的窄窗口）。
-        let import_lock = super::plugin_import::import_lock_for(skill_id);
-        let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
-        let legacy = self.legacy_skills_dir.join(&dir_name);
+        Ok(dir_name)
+    }
+
+    /// The lock-protected teardown of `uninstall`: deletes the on-disk
+    /// copies and the bundles.json mirror entry, and reports whether an
+    /// installation was actually torn down (see `uninstall`'s contract).
+    /// Caller MUST hold the per-id `import_lock_for(skill_id)`; split out of
+    /// `uninstall` so `uninstall_and_strip_scope` can hold ONE guard across
+    /// this teardown and its scope strip.
+
+    fn uninstall_locked(&self, skill_id: &str, dir_name: &str) -> Result<bool, String> {
+        // Round-51 review: the in-process mutex held by the caller cannot see
+        // the CLI's second process — hold the same cross-process market lock
+        // every market mutator holds (order: import_lock → market file lock →
+        // store file lock).
+        let _market_lock = super::plugin_import::MarketplaceWriteLock::acquire_map_err()?;
+        let legacy = self.legacy_skills_dir.join(dir_name);
 
         // Upload 独立技能包回收（必须先于一切物理删除；fail-closed 与 MCP 卸载
         // 同口径：bundles.json 读不出按可能 Upload 处理 —— 中止卸载报错，不照删
@@ -887,9 +995,10 @@ impl SkillMarketplaceManager {
         let record = self.bundle_store.get(skill_id).map_err(|e| {
             format!("读取 bundles.json 失败，中止卸载 {skill_id}（fail-closed）: {e}")
         })?;
+        let record_present = record.is_some();
         if let Some(record) = record {
             if matches!(record.source, super::store::BundleSource::Upload(_)) {
-                let owner = super::bundle::skill_owner_package(&dir_name);
+                let owner = super::bundle::skill_owner_package(dir_name);
                 let pkg_dir = self.packages_root.join(skill_id);
                 if owner == skill_id && pkg_dir.is_dir() {
                     // Standalone uploaded skill package: move the whole
@@ -918,7 +1027,7 @@ impl SkillMarketplaceManager {
                         }
                         return Err(format!("移入回收站失败（{skill_id}）: {e}"));
                     }
-                    return Ok(());
+                    return Ok(true);
                 }
                 if owner != skill_id && pkg_dir.is_dir() {
                     // Upload 登记且包目录仍在，但属主被其他已装包认领（例如回收
@@ -936,7 +1045,7 @@ impl SkillMarketplaceManager {
         }
 
         let mut deleted_any = false;
-        for dir in self.package_candidate_dirs(&dir_name) {
+        for dir in self.package_candidate_dirs(dir_name) {
             if !dir.is_dir() {
                 continue;
             }
@@ -965,7 +1074,61 @@ impl SkillMarketplaceManager {
                 "[skill-marketplace] failed to delete bundles.json mirror entry (uninstall {skill_id}): {e}"
             );
         }
-        Ok(())
+        Ok(record_present || deleted_any)
+    }
+
+    /// Uninstall plus the caller-side scope strip, with the per-id import
+    /// lock held across BOTH: the teardown and the strip share one critical
+    /// section, so a deny-first registration a concurrent same-id install
+    /// makes after this function returns survives, and the strip can never
+    /// delete a just-registered fresh entry. The residual is the same
+    /// in-section window the MCP tool lane has: a gate that reads the store
+    /// in the instant between the record removal and the strip still
+    /// registers and is then stripped (microsecond scale, fail-open,
+    /// disclosed in capability-governance §3.2). A vacuous `Ok(false)`
+    /// strips nothing; a refused strip only logs (the leftover entry fails
+    /// closed). The strip targets the pre-teardown owner snapshot via the
+    /// exact form. Only for teardown paths with no outer transaction lock
+    /// (ima logout); the skill command lane keeps its own post-return strip
+    /// with a pre-teardown owner snapshot (its callers are the ones that
+    /// know the owner), and the tool uninstall's companion legs strip inside
+    /// `cleanup_uninstalled_tool_state` instead.
+
+    /// Uninstall plus the caller-side scope strip, with the per-id import
+    /// lock held across BOTH: the teardown and the strip share one critical
+    /// section, so a deny-first registration a concurrent same-id install
+    /// makes after this function returns survives, and the strip can never
+    /// delete a just-registered fresh entry. The residual is the same
+    /// in-section window the MCP tool lane has: a gate that reads the store
+    /// in the instant between the record removal and the strip still
+    /// registers and is then stripped (microsecond scale, fail-open,
+    /// disclosed in capability-governance §3.2). A vacuous `Ok(false)`
+    /// strips nothing; a refused strip only logs (the leftover entry fails
+    /// closed). The strip targets the pre-teardown owner snapshot via the
+    /// exact form. Only for teardown paths with no outer transaction lock
+    /// (ima logout); the skill command lane keeps its own post-return strip
+    /// with a pre-teardown owner snapshot (its callers are the ones that
+    /// know the owner), and the tool uninstall's companion legs strip inside
+    /// `cleanup_uninstalled_tool_state` instead.
+    pub fn uninstall_and_strip_scope(&self, skill_id: &str) -> Result<bool, String> {
+        let dir_name = self.precheck_uninstall(skill_id)?;
+        let import_lock = super::plugin_import::import_lock_for(skill_id);
+        let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
+        // Exact-form rule: the rows were owned by the
+        // pre-teardown owner mapping, so snapshot it while the claims are
+        // alive — re-normalizing the id after `uninstall_locked` deleted the
+        // directories is hijackable by a foreign claim. Today's only caller
+        // passes `ima-skills`, whose owner is the dir-independent hard rule
+        // (`ima-skills` → `ima`), so behavior is unchanged; this closes the
+        // latent hazard for a future caller with a generic skill id.
+        let owner = crate::features::marketplace::bundle::skill_owner_package(skill_id);
+        let torn_down = self.uninstall_locked(skill_id, &dir_name)?;
+        if torn_down {
+            if let Err(error) = super::scope::remove_bundle_from_disabled_scopes_exact(&owner) {
+                log::warn!("[skill-marketplace] scope cleanup for {skill_id} skipped: {error}");
+            }
+        }
+        Ok(torn_down)
     }
 
     /// Test-only scaffolding: imports a user-uploaded zip skill package
@@ -1057,6 +1220,15 @@ impl SkillMarketplaceManager {
         if is_preset_skill_name(&name) {
             return Err(format!("技能名 '{name}' 与市场预置技能冲突，请改名后重试"));
         }
+        // Same vocabulary guard as the plugin-package pipeline: an upload
+        // keyed under a preset MARKET id would make the consent gate treat
+        // the real preset as already known and fold the alias vocabulary
+        // onto the upload.
+        if is_preset_market_id(&name) {
+            return Err(format!(
+                "skill name '{name}' conflicts with a marketplace preset skill id; rename and retry"
+            ));
+        }
         let owner = super::bundle::skill_owner_package(&name);
         if owner != name {
             return Err(format!(
@@ -1081,6 +1253,10 @@ impl SkillMarketplaceManager {
         // plugin_import 统一路径的 M-4 口径对齐。
         let import_lock = super::plugin_import::import_lock_for(&name);
         let _import_lock_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
+        // Round-51 review: cross-process market lock (same order as every
+        // market mutator; the CLI's `plugins skills` lanes are a second
+        // process against the same staged paths).
+        let _market_lock = super::plugin_import::MarketplaceWriteLock::acquire_map_err()?;
         // pass2:写出 skill_root 子树到 staged（上传技能独立成包：bundles/<name>/skills/）
         let dest = self.packages_root.join(&name).join("skills").join(&name);
         // Same as above: joined from the root, so a parent always exists;
@@ -1167,29 +1343,14 @@ impl SkillMarketplaceManager {
         // 落盘改写段已自暂存前持同 id import_lock（见上）：与 update_display_meta
         // 的 SKILL.md 读改写段、与统一导入的 rename/重基线互斥，rename/清扫/
         // 重基线整段在锁内完成。
-        // 与 preset install 同一纪律：删旧目录失败即中止，不留"删一半"残缺目录。
-        if dest.exists() {
-            std::fs::remove_dir_all(&dest).map_err(|e| {
-                let _ = std::fs::remove_dir_all(&staged);
-                format!("清理旧技能目录失败（已中止，原目录可能部分删除）: {e}")
-            })?;
-        }
-        std::fs::rename(&staged, &dest).map_err(|e| {
-            let _ = std::fs::remove_dir_all(&staged);
-            format!("落盘: {e}")
-        })?;
-        // 一个技能只留一份市场副本：清扫认领翻转滞留/双份安装的其余物理副本。
-        self.sweep_duplicate_skill_dirs(&name, &dest);
         // 登记（上传 source=Upload(zip 展示名) + 内容指纹，记录 id = 落盘技能名，
-        // 与 import_legacy 的反推口径一致；`.installed-from` 标记已退役）。失败只记日志。
+        // 与 import_legacy 的反推口径一致；`.installed-from` 标记已退役）。
         let mut record = super::store::BundleRecord::installed_now(
             name.clone(),
             super::store::BundleSource::Upload(display_name.to_string()),
         );
         record.content_fingerprint = Some(fingerprint);
-        if let Err(e) = self.bundle_store.upsert_preserving(record) {
-            log::warn!("[skill-marketplace] bundles.json 镜像写入失败（import {name}）: {e}");
-        }
+        self.land_staged_and_register(&staged, &dest, &name, record, "import")?;
         // 包内容整体替换后，旧包的 SKILL.md 原说明备份（若有）随之失效——
         // upsert_preserving 原样保留 extra，备份里存的是**旧包**的引擎口径原值，
         // 不清掉会让之后的「清覆盖恢复」把旧描述写进新包。导入即重基线。
@@ -1222,6 +1383,10 @@ impl SkillMarketplaceManager {
         // 取，避免「门禁读到的旧记录在同步段被重导入整体替换」的插队。
         let import_lock = super::plugin_import::import_lock_for(bundle_id);
         let _import_guard = import_lock.lock().unwrap_or_else(|p| p.into_inner());
+        // Round-51 review: cross-process market lock (same order as every
+        // market mutator; the CLI's `plugins` lanes are a second process
+        // against the same directories).
+        let _market_lock = super::plugin_import::MarketplaceWriteLock::acquire_map_err()?;
         // 门禁必须在回写之前：先挡住预置/内置包与未登记 id，避免改写非上传包
         // 的技能内容；set_display_meta 内同口径兜底（防 TOCTOU）。
         let record = self
@@ -1234,12 +1399,11 @@ impl SkillMarketplaceManager {
             ));
         }
         super::store::validate_display_meta(display_name, display_description)?;
+        // None = 不动 SKILL.md（只更新展示字段）；Some("") = 清覆盖恢复备份；
+        // Some(非空) = 回写新说明。
         if let Some(desc) = display_description.map(str::trim) {
-            if desc.is_empty() {
-                self.sync_display_description(bundle_id, SyncDesc::Restore)?;
-            } else {
-                self.sync_display_description(bundle_id, SyncDesc::Set(desc))?;
-            }
+            let desc = if desc.is_empty() { None } else { Some(desc) };
+            self.sync_display_description(bundle_id, desc)?;
         }
         self.bundle_store
             .set_display_meta(bundle_id, display_name, display_description)
@@ -1252,7 +1416,9 @@ impl SkillMarketplaceManager {
     /// 多技能包、纯 MCP 包、目录缺失一律跳过（返回 Ok(())，不报错）。改文件后
     /// 重算**整包目录**内容指纹并经 upsert_preserving 补写登记（保留
     /// extra/来源/首装时间——display_* 覆盖与说明备份都在 extra，一并保留）。
-    fn sync_display_description(&self, bundle_id: &str, dir: SyncDesc<'_>) -> Result<(), String> {
+    ///
+    /// `desc`：Some = 回写新说明值；None = 清覆盖，从备份恢复 frontmatter 原值。
+    fn sync_display_description(&self, bundle_id: &str, desc: Option<&str>) -> Result<(), String> {
         let skills_dir = self.packages_root.join(bundle_id).join("skills");
         let Ok(rd) = std::fs::read_dir(&skills_dir) else {
             return Ok(()); // 非按包布局（纯 MCP 包/旧扁平残留）→ 跳过
@@ -1276,8 +1442,8 @@ impl SkillMarketplaceManager {
         if !md_path.is_file() {
             return Ok(());
         }
-        match dir {
-            SyncDesc::Set(desc) => {
+        match desc {
+            Some(desc) => {
                 let content = std::fs::read_to_string(&md_path)
                     .map_err(|e| format!("读取 {} 失败: {e}", md_path.display()))?;
                 // 先纯校验/改写（rewrite 无 IO）：值不可单行表达（含引号/反斜杠等）
@@ -1298,7 +1464,7 @@ impl SkillMarketplaceManager {
                 self.write_skill_md_and_fingerprint(bundle_id, &md_path, content, new_content)?;
                 Ok(())
             }
-            SyncDesc::Restore => {
+            None => {
                 // 无备份（从未回写过，或非单技能包形态）→ 不动文件。
                 let Some(backup) = self.bundle_store.skill_desc_backup(bundle_id)? else {
                     return Ok(());
@@ -1341,15 +1507,7 @@ impl SkillMarketplaceManager {
         }
         crate::platform::filesystem::atomic_write_private(md_path, new_content.as_bytes())
             .map_err(|e| format!("写入 {} 失败: {e}", md_path.display()))?;
-        self.refresh_package_fingerprint(bundle_id)
-    }
-
-    /// 重算 `bundles/<id>/` 整包目录内容指纹并补写登记（**整包口径**，与
-    /// plugin_import 的登记基线一致——算技能子目录会把上传包的整包指纹静默
-    /// 缩窄，未来任何按整包口径重算比对的完整性校验都会对编辑过的包永久误报）。
-    /// 走 `update_content_fingerprint_if_exists` 单锁 RMW：登记已不在（并发
-    /// 卸载）则跳过，且不会把已删记录按 stale 快照复活。
-    fn refresh_package_fingerprint(&self, bundle_id: &str) -> Result<(), String> {
+        // 整包口径指纹（算技能子目录会静默缩窄上传包的整包指纹，按整包口径比对的完整性校验会对编辑过的包永久误报）+ `update_content_fingerprint_if_exists` 单锁 RMW（登记已不在（并发卸载）则跳过，不复活已删记录）。
         let fingerprint = dir_fingerprint(&self.packages_root.join(bundle_id))?;
         self.bundle_store
             .update_content_fingerprint_if_exists(bundle_id, &fingerprint)
@@ -1375,6 +1533,22 @@ impl SkillMarketplaceManager {
     /// - 目标已存在或 rename 失败 → 保留旧位置并 warn（读路径 `find_skill_dir`
     ///   对旧位置有回退，迁移下个启动周期自愈）。
     pub fn migrate_flat_skills_layout(&self) -> SkillsMigrationReport {
+        // 锁序：旧扁平目录搬移与退役/断连残留删除动的是 bundles/ 下的市场
+        // 目录，与市场写者同持跨进程市场写锁（boot 从 extraction 进入时未持
+        // 其他市场锁，这里是真实获取；flock 之上有事务锁的调用方按持有深度
+        // join），迁移补写指纹的 store file_lock 在其后取。本函数返回报告而
+        // 非 Result：获取失败只能警告并按空报告跳过本轮——迁移幂等、每个
+        // 启动周期重跑，锁只在写者秒级暂存窗口内被占用，缺一轮安全，不得
+        // 因此中断启动。
+        let _market_write_lock = match super::plugin_import::MarketplaceWriteLock::acquire() {
+            Ok(lock) => lock,
+            Err(e) => {
+                log::warn!(
+                    "[skill-marketplace] 创建市场写入锁失败，本轮技能布局迁移跳过（下个启动周期重试）: {e}"
+                );
+                return SkillsMigrationReport::default();
+            }
+        };
         let mut report = SkillsMigrationReport::default();
         let Ok(rd) = std::fs::read_dir(&self.legacy_skills_dir) else {
             return report;
@@ -1397,10 +1571,16 @@ impl SkillMarketplaceManager {
                 continue;
             }
             let target = self.migration_skill_dir(&name, &legacy_companions);
-            let marker = std::fs::read_to_string(dir.join(INSTALLED_FROM_MARKER))
-                .unwrap_or_default()
-                .trim()
-                .to_string();
+            // Hardened open: boot-path read; a planted
+            // FIFO at the marker would otherwise block the migration.
+            // Refused (non-regular) reads empty → the same
+            // not-marked-for-preservation treatment as an absent marker.
+            let marker = crate::platform::filesystem::read_private_data_file(
+                &dir.join(INSTALLED_FROM_MARKER),
+            )
+            .unwrap_or_default()
+            .trim()
+            .to_string();
             if marker.is_empty() {
                 // 企微 0.1.9 退役目录（msg/schedule）：不搬移、直接删除——它们已
                 // 不在内置清单（cli_bundle_of_skill 反查不命中），且无论连接器
@@ -1676,8 +1856,20 @@ fn legacy_companion_owners() -> std::collections::HashMap<String, String> {
     };
     for entry in rd.flatten() {
         let manifest_path = entry.path().join("manifest.json");
-        let Ok(content) = std::fs::read_to_string(&manifest_path) else {
-            continue;
+        // This runs on the boot migration thread;
+        // a planted FIFO at a manifest path must refuse through the hardened
+        // primitive (skip the dir, same as corrupt/missing) instead of
+        // blocking `open()`.
+        let content = match crate::platform::filesystem::read_private_data_file(&manifest_path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => {
+                log::warn!(
+                    "[skill-marketplace] legacy companion manifest read refused ({}): {e}",
+                    manifest_path.display()
+                );
+                continue;
+            }
         };
         let Ok(manifest) = serde_json::from_str::<super::types::ToolManifest>(&content) else {
             continue;
@@ -1761,7 +1953,13 @@ fn collect_disk_files_under(
             .unwrap_or(&path)
             .to_string_lossy()
             .replace('\\', "/");
-        out.push((rel, std::fs::read(&path)?));
+        // The fingerprint walk feeds the update
+        // probe and the display-edit path; a FIFO planted as a non-SKILL.md
+        // file in an installed tree must refuse through the hardened
+        // primitive (surfaces as a fingerprint/read error like any other IO
+        // failure) instead of blocking `read()` forever.
+        let bytes = crate::platform::filesystem::read_private_data_file_bytes(&path)?;
+        out.push((rel, bytes));
     }
     Ok(())
 }
@@ -1816,9 +2014,9 @@ pub(crate) fn dir_fingerprint(dir: &Path) -> Result<String, String> {
 
 /// 嵌入资源（预置技能当前版本）的内容指纹；嵌入目录缺失 → None。
 fn embedded_skill_fingerprint(m: &SkillManifest) -> Option<String> {
-    let dir = MARKETPLACE_DIR.get_dir(m.source_dir)?;
+    let dir = MARKETPLACE_DIR.get_dir(m.id)?;
     let mut files: Vec<(String, Vec<u8>)> = Vec::new();
-    collect_embedded_files(dir, m.source_dir, &mut files);
+    collect_embedded_files(dir, m.id, &mut files);
     Some(fingerprint_of(&mut files))
 }
 
@@ -1840,7 +2038,10 @@ fn read_skill_name(md_path: &Path) -> Option<String> {
 
 /// 解析 SKILL.md frontmatter 的 `name:`(前两个 `---` 之间的第一个顶层 name 行)。
 /// `pub(crate)`：统一插件导入（plugin_import）的裸技能回退复用同一解析口径。
-pub(crate) fn read_skill_name_from_str(content: &str) -> Option<String> {
+/// `pub` (round-41 review): the CLI's `plugins skills install/import` uses
+/// the very frontmatter reader the GUI pipeline runs, so a fallback-name
+/// decision cannot drift between surfaces.
+pub fn read_skill_name_from_str(content: &str) -> Option<String> {
     let mut lines = content.lines();
     if lines.next()?.trim() != "---" {
         return None;
@@ -2164,6 +2365,38 @@ fn restore_frontmatter_description(content: &str, backup: &str) -> Result<String
     replace_top_level_description(content, &new_lines, backup)
 }
 
+/// Frontmatter scaffolding shared by the description writers: split into lines
+/// with the closing-`---` index validated (both writers reject the same two
+/// malformed shapes, same messages). Returns `(lines, fm_end,
+/// had_trailing_newline)`; `fm_end` is the closing `---` line index.
+fn split_frontmatter(content: &str) -> Result<(Vec<&str>, usize, bool), String> {
+    let had_trailing_newline = content.ends_with('\n');
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.first().map(|l| l.trim()) != Some("---") {
+        return Err("SKILL.md 缺 frontmatter（首行非 ---），拒绝回写".to_string());
+    }
+    // 前两个 --- 区间为 frontmatter；缺结束标记 = 畸形 frontmatter，拒绝改。
+    let Some(fm_end) = lines
+        .iter()
+        .skip(1)
+        .position(|l| l.trim() == "---")
+        .map(|p| p + 1)
+    else {
+        return Err("SKILL.md frontmatter 缺结束 ---，拒绝回写".to_string());
+    };
+    Ok((lines, fm_end, had_trailing_newline))
+}
+
+/// 把改写后的行按原文件换行风格与尾随换行拼回全文（[`split_frontmatter`]
+/// 拆分结果的逆操作）。
+fn rejoin_content(lines: Vec<String>, newline: &str, had_trailing_newline: bool) -> String {
+    let mut s = lines.join(newline);
+    if had_trailing_newline {
+        s.push_str(newline);
+    }
+    s
+}
+
 /// 把顶层 description 行替换为 `new_lines`（单行 plain 或块状多行），Set 回写与
 /// Restore 共用：frontmatter 边界判定（前两个 `---`）、旧块状续行消费、插入
 /// 位置选择（嵌套 description 时插 frontmatter 末尾——last-wins）与全部结构
@@ -2180,20 +2413,7 @@ fn replace_top_level_description(
     } else {
         "\n"
     };
-    let had_trailing_newline = content.ends_with('\n');
-    let lines: Vec<&str> = content.lines().collect();
-    if lines.first().map(|l| l.trim()) != Some("---") {
-        return Err("SKILL.md 缺 frontmatter（首行非 ---），拒绝回写".to_string());
-    }
-    // 前两个 --- 区间为 frontmatter；缺结束标记 = 畸形 frontmatter，拒绝改。
-    let Some(fm_end) = lines
-        .iter()
-        .skip(1)
-        .position(|l| l.trim() == "---")
-        .map(|p| p + 1)
-    else {
-        return Err("SKILL.md frontmatter 缺结束 ---，拒绝回写".to_string());
-    };
+    let (lines, fm_end, had_trailing_newline) = split_frontmatter(content)?;
 
     let mut out: Vec<String> = Vec::with_capacity(lines.len() + 1);
     out.push(lines[0].to_string());
@@ -2287,10 +2507,7 @@ fn replace_top_level_description(
     for l in &lines[fm_end..] {
         out.push((*l).to_string());
     }
-    let mut s = out.join(newline);
-    if had_trailing_newline {
-        s.push_str(newline);
-    }
+    let s = rejoin_content(out, newline, had_trailing_newline);
     // 结构守卫：改写后行视图（第一个整行 --- 边界内）不得残留多个顶层
     // description。输入侧显式重复键（都替换成新值仍留两行）、或块状续行里的
     // 裸 `---` 让部分旧 description 落在写入器行边界外未被替换——这两种畸形
@@ -2310,13 +2527,6 @@ fn replace_top_level_description(
     Ok(s)
 }
 
-/// [`SkillMarketplaceManager::sync_display_description`] 的方向参数：
-/// `Set` = 回写新说明值；`Restore` = 清覆盖时从备份恢复 frontmatter 原值。
-enum SyncDesc<'a> {
-    Set(&'a str),
-    Restore,
-}
-
 /// 删除 SKILL.md frontmatter 里的顶层 description 行（含块状续行）——恢复
 /// 「原本没有 description」的空备份哨兵用。与 [`rewrite_frontmatter_description`]
 /// 同一套结构守卫（frontmatter 边界、多重定义拒绝、块状续行消费）；嵌套缩进的
@@ -2327,19 +2537,7 @@ fn remove_frontmatter_description(content: &str) -> Result<String, String> {
     } else {
         "\n"
     };
-    let had_trailing_newline = content.ends_with('\n');
-    let lines: Vec<&str> = content.lines().collect();
-    if lines.first().map(|l| l.trim()) != Some("---") {
-        return Err("SKILL.md 缺 frontmatter（首行非 ---），拒绝回写".to_string());
-    }
-    let Some(fm_end) = lines
-        .iter()
-        .skip(1)
-        .position(|l| l.trim() == "---")
-        .map(|p| p + 1)
-    else {
-        return Err("SKILL.md frontmatter 缺结束 ---，拒绝回写".to_string());
-    };
+    let (lines, fm_end, had_trailing_newline) = split_frontmatter(content)?;
 
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
     out.push(lines[0].to_string());
@@ -2377,10 +2575,7 @@ fn remove_frontmatter_description(content: &str) -> Result<String, String> {
     for l in &lines[fm_end..] {
         out.push((*l).to_string());
     }
-    let mut s = out.join(newline);
-    if had_trailing_newline {
-        s.push_str(newline);
-    }
+    let s = rejoin_content(out, newline, had_trailing_newline);
     // 结构守卫：删行后行视图不得残留任何顶层 description（显式重复键只删一个
     // 会留一个——畸形输入拒绝，口径同 rewrite_frontmatter_description）。
     if count_top_level_description_lines(&s) > 0 {
@@ -2408,26 +2603,21 @@ fn is_engine_block_marker(value: &str) -> bool {
 /// `description` 单词行对三方都不是 description，不得计入（计入会让守卫对
 /// 合法输入误报「多重定义」拒绝回写）。
 fn count_top_level_description_lines(content: &str) -> usize {
-    let lines: Vec<&str> = content.lines().collect();
-    let Some(fm_end) = lines
-        .iter()
-        .skip(1)
-        .position(|l| l.trim() == "---")
-        .map(|p| p + 1)
-    else {
-        return 0;
-    };
-    lines[1..fm_end]
-        .iter()
-        .filter(|l| {
-            let lt = l.trim();
-            lt.len() == l.len()
-                && lt
-                    .split_once(':')
-                    // 键名 trim 后再比对，口径同读端/引擎（`description : x` 也算）
-                    .is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case("description"))
+    split_frontmatter(content)
+        .map(|(lines, fm_end, _)| {
+            lines[1..fm_end]
+                .iter()
+                .filter(|l| {
+                    let lt = l.trim();
+                    lt.len() == l.len()
+                        && lt
+                            .split_once(':')
+                            // 键名 trim 后再比对，口径同读端/引擎（`description : x` 也算）
+                            .is_some_and(|(k, _)| k.trim().eq_ignore_ascii_case("description"))
+                })
+                .count()
         })
-        .count()
+        .unwrap_or(0)
 }
 
 /// 值按 YAML plain scalar 写是否不安全（需双引号包裹）。保守口径：宁可多引。
@@ -2523,6 +2713,16 @@ pub(crate) fn is_preset_skill_name(skill_name: &str) -> bool {
         .any(|m| m.skill_name == skill_name)
 }
 
+/// Whether `name` collides with a preset skill's MARKET id — the id install
+/// records and deny entries are keyed under. Upload channels must reject
+/// such ids up front: a record or deny entry under a preset market id makes
+/// the consent gate treat the real preset as already known (its install
+/// skips registration — fail-open), and read-time normalization would fold
+/// the preset's alias vocabulary onto the upload.
+pub(crate) fn is_preset_market_id(name: &str) -> bool {
+    preset_manifests().iter().any(|m| m.id == name)
+}
+
 /// On-disk copies of `skill_name` under `<packages_root>/*/skills/` whose
 /// package dir name differs from `own_pkg` (staging dirs like `<id>.tmp` /
 /// `<id>.old` are excluded by the component-id check). Upload channels use
@@ -2605,7 +2805,9 @@ pub(crate) fn ensure_skill_restorable(restoring_pkg: &str, skill_name: &str) -> 
 /// 把任意字符串（文件名 stem 等）净化为合法技能名：非 `[a-zA-Z0-9_-]` 字符 → `-`，
 /// 掐头去尾的 `-` 去掉、截 64；空结果兜底 "skill"。`pub(crate)`：单 .md 导入的
 /// 文件名兜底命名用。
-pub(crate) fn sanitize_skill_name(name: &str) -> String {
+/// `pub` (round-41 review): the CLI import fallback names skills through
+/// the same sanitizer the GUI stores, byte-for-byte.
+pub fn sanitize_skill_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
         .map(|c| {
@@ -3084,7 +3286,11 @@ mod tests {
             std::fs::create_dir_all(&mcp_dir).unwrap();
             std::fs::write(
                 mcp_dir.join("manifest.json"),
-                r#"{"id":"session-reader","name":"s","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":[],"builtin":true,"companion_skills":["trip-notes"]}"#,
+                crate::features::marketplace::tests::tool_manifest_fixture(
+                    "session-reader",
+                    "s",
+                    r#""mcp_tools":[],"command":"python","args":[],"builtin":true,"companion_skills":["trip-notes"]"#,
+                ),
             )
             .unwrap();
             let store_file = crate::platform::paths::pinvou3_home()
@@ -3099,10 +3305,11 @@ mod tests {
             assert!(builtin_claims_skill("trip-notes"));
             assert!(builtin_claims_skill("skill:trip-notes"));
             // End-to-end wiring pin (review round-4 minor 1): the guard lives
-            // in `uninstall` itself, so a real call through the default-roots
-            // manager must hit the same rejection — deleting the
-            // `builtin_claims_skill` block there turns this red (new() takes
-            // no ENV_LOCK, so it is safe inside with_temp_home).
+            // in `uninstall`'s precheck (`precheck_uninstall`, shared with
+            // `uninstall_and_strip_scope`), so a real call through the
+            // default-roots manager must hit the same rejection — deleting
+            // the `builtin_claims_skill` block there turns this red (new()
+            // takes no ENV_LOCK, so it is safe inside with_temp_home).
             let mgr = SkillMarketplaceManager::new();
             let err = mgr.uninstall("trip-notes").unwrap_err();
             assert!(
@@ -3114,6 +3321,133 @@ mod tests {
             // predicate assertions pin the rejection; constructing the
             // manager here would deadlock — `with_roots` takes ENV_LOCK,
             // which with_temp_home already holds.
+        });
+    }
+
+    /// Shared blocked-worker harness for the per-id import-lock pins: locks
+    /// `lock`, spawns `lane` on a worker, samples whether the worker stayed
+    /// parked for the bounded contention window, runs
+    /// `observe_while_parked` mid-flight (before the lock is released), then
+    /// releases the lock, waits out the lane, and joins the worker. Bounded:
+    /// a regressed lane that skips the lock completes inside the window
+    /// (`parked = false`); a correct one stays parked on the mutex. The
+    /// worker is always drained (and joined) BEFORE the caller can assert on
+    /// the result, so the env restore can never race a still-running lane
+    /// onto the real home.
+    fn blocked_worker_on_import_lock<R, F, O>(
+        lock: &std::sync::Mutex<()>,
+        lane: F,
+        observe_while_parked: O,
+    ) -> (bool, Result<R, String>)
+    where
+        R: Send + 'static,
+        F: FnOnce() -> Result<R, String> + Send + 'static,
+        O: FnOnce(),
+    {
+        let guard = lock.lock().unwrap_or_else(|p| p.into_inner());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let result = lane();
+            tx.send(result).expect("worker should send its result");
+        });
+        let parked = rx.recv_timeout(std::time::Duration::from_secs(2)).is_err();
+        observe_while_parked();
+        drop(guard);
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the lane completes once the lock is released");
+        worker.join().expect("worker should finish");
+        (parked, result)
+    }
+
+    /// The skill lane's consent strip must run while the per-id import lock
+    /// is still held: a strip that runs before the lock
+    /// is taken can delete a deny-first registration a concurrent same-id
+    /// install just made. Behavioral twin on the file's blocked-worker
+    /// harness (`blocked_worker_on_import_lock`, mod.rs's
+    /// `uninstall_waits_for_the_cross_process_landing_lease`): a
+    /// real pack is installed, the owner row the strip must remove is
+    /// seeded, and the fixture holds the per-id lock while the
+    /// uninstall-and-strip runs on a worker. While parked the worker must
+    /// NOT have touched the row (the discriminator that catches a pre-lock
+    /// strip); after the release the teardown completes and the row is gone.
+    #[test]
+    fn uninstall_and_strip_scope_strips_under_import_lock() {
+        with_temp_home("pinvou3-skill-strip-lock", || {
+            let id = "visualizer";
+            SkillMarketplaceManager::new()
+                .install(id)
+                .expect("fixture: the preset skill installs");
+            // The deny-first row the strip must remove, seeded under the
+            // same owner mapping the strip targets (the exact form).
+            let owner = crate::features::marketplace::bundle::skill_owner_package(id);
+            crate::features::marketplace::scope::save_disabled_bundles_for(
+                crate::features::marketplace::ConnectorScope::Plain,
+                std::slice::from_ref(&owner),
+            )
+            .expect("fixture: the owner row seeds");
+            let plain_rows = || {
+                crate::features::marketplace::scope::load_disabled_bundles_for(
+                    crate::features::marketplace::ConnectorScope::Plain,
+                )
+            };
+            assert!(
+                plain_rows().iter().any(|row| row == &owner),
+                "fixture: the owner row is live before the teardown"
+            );
+
+            // The peer-lane shape: hold the per-id import lock the helper
+            // must take before it strips.
+            let lock = crate::features::marketplace::plugin_import::import_lock_for(id);
+            let mut row_while_parked = false;
+            let (parked, result) = blocked_worker_on_import_lock(
+                &lock,
+                move || SkillMarketplaceManager::new().uninstall_and_strip_scope(id),
+                || {
+                    row_while_parked = plain_rows().iter().any(|row| row == &owner);
+                },
+            );
+            assert!(
+                parked,
+                "the uninstall-and-strip must wait while the fixture holds the per-id import lock"
+            );
+            assert!(
+                row_while_parked,
+                "the consent strip must not run before the import lock is held"
+            );
+            result.expect("the uninstall-and-strip succeeds after waiting out the peer lane");
+            assert!(
+                !plain_rows().iter().any(|row| row == &owner),
+                "the strip removed the owner row under the import lock"
+            );
+        });
+    }
+
+    /// The preset install pipeline must hold the same
+    /// per-id import lock the uninstall / display-edit / unified-import
+    /// lanes hold. A lock excludes only lock-takers: an unlocked install
+    /// racing a lock-holding uninstall can rename its dirs back in and
+    /// upsert an `installed=true` record after the uninstall's consent
+    /// strip — a persistent fail-open the record-with-content known-clause
+    /// then vouches for on every future gate run. Behaviorally pinned with
+    /// the mod.rs uninstall-lease test's blocked-worker pattern: while a
+    /// fixture holds the lock, install must stay parked.
+    #[test]
+    fn install_waits_for_the_per_id_import_lock() {
+        with_temp_home("pinvou3-skill-install-lock", || {
+            // The uninstall lane's shape: the fixture holds the per-id lock
+            // across the lane's whole body.
+            let lock = crate::features::marketplace::plugin_import::import_lock_for("visualizer");
+            let (parked, result) = blocked_worker_on_import_lock(
+                &lock,
+                || SkillMarketplaceManager::new().install("visualizer"),
+                || (),
+            );
+            assert!(
+                parked,
+                "install must wait while a same-id lane holds the per-id import lock"
+            );
+            result.expect("install succeeds after waiting out the peer lane");
         });
     }
 
@@ -3855,7 +4189,11 @@ mod tests {
         std::fs::create_dir_all(m_dir.join("mcp")).unwrap();
         std::fs::write(
             m_dir.join("mcp/manifest.json"),
-            r#"{"id":"m","name":"M","description":"d","version":"1","icon":"x","category":"c","mcp_tools":[],"command":"python","args":["server.py"],"companion_skills":["up-skill"]}"#,
+            crate::features::marketplace::tests::tool_manifest_fixture(
+                "m",
+                "M",
+                r#""mcp_tools":[],"command":"python","args":["server.py"],"companion_skills":["up-skill"]"#,
+            ),
         )
         .unwrap();
         let foreign = m_dir.join("skills/up-skill");

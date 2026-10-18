@@ -55,6 +55,7 @@ import {
 import { ViewErrorBoundary } from '../shared/ViewErrorBoundary.jsx';
 import { ChatView } from '../features/chat/ChatView.jsx';
 import { createPinvouModeScopeKey, savePinvouModeState } from '../features/chat/pinvou-mode-state.js';
+import { setStreamFadePreference } from '../features/conversation/stream-fade.js';
 import { WebConnectionStatus } from '../features/web/WebConnectionStatus.jsx';
 import { VoiceShortcutRouter } from '../features/voice-composer/VoiceShortcutRouter.jsx';
 import { createPetActivationGuard } from '../features/pet/activation-guard.js';
@@ -2904,6 +2905,13 @@ const NAV_PREFETCH = {
         if (bridge.available) bridge.settings.saveSettings({ sidebar: { date_grouping: !!enabled } });
       }
 
+      // Streaming fade-in toggle: a pure UI preference persisted to
+      // settings.chat.streaming_animation; the animation module itself is
+      // synced by the effect watching the derived value below.
+      function handleSetChatStreamingAnimation(enabled) {
+        if (bridge.available) bridge.settings.saveSettings({ chat: { streaming_animation: !!enabled } });
+      }
+
       // 移动壳层派生数据：顶栏标题跟随当前视图（对话态显示会话标题）；
       // 未读红点与侧栏入口同源，避免两套提醒逻辑漂移。
       const scheduledUnread = !!(bs && ((bs.scheduledTasks || []).some(task => task.hasUnreadRuns)
@@ -2923,6 +2931,14 @@ const NAV_PREFETCH = {
 
       // 侧栏任务列表按日期折叠(默认开;settings.sidebar.date_grouping === false 时平铺)
       const sidebarDateGrouping = !bs || !bs.settings || !bs.settings.sidebar || bs.settings.sidebar.date_grouping !== false;
+      // Streaming fade-in for chat responses (default on; only an explicit
+      // settings.chat.streaming_animation === false turns it off).
+      const chatStreamingAnimation = !bs || !bs.settings || !bs.settings.chat || bs.settings.chat.streaming_animation !== false;
+      // Keep the animation module in sync with the resolved preference (also
+      // covers the default-on state before the first settings snapshot lands).
+      useEffect(() => {
+        setStreamFadePreference(chatStreamingAnimation);
+      }, [chatStreamingAnimation]);
       // 一键折叠/展开「任务列表」下的全部分组:直接写入各组的展开 map,
       // 不引入总开关变量;按钮状态由当前可见组的真实聚合推导——
       // 全部展开显示「折叠」,其余(含全折叠/混合)显示「展开」,
@@ -3108,6 +3124,8 @@ const NAV_PREFETCH = {
         onGotoSettings: () => openSettingsSection('general'),
         onGotoModelSettings: () => openSettingsSection('model'),
         onGotoTools: () => navigateFromScheduledRun('toolStore'),
+        // Reference-card navigation (session mention): reuse the sidebar's session switch (with view routing and browser transition).
+        onSwitchSession: handleSwitchSession,
         browserDockOpen: browserPaneOpen,
         onOpenBrowserDock: openBrowserDock,
       };
@@ -3803,6 +3821,8 @@ const NAV_PREFETCH = {
                   t={t}
                   sidebarDateGrouping={sidebarDateGrouping}
                   onSidebarDateGroupingChange={handleSetSidebarDateGrouping}
+                  chatStreamingAnimation={chatStreamingAnimation}
+                  onChatStreamingAnimationChange={handleSetChatStreamingAnimation}
                   updateFocusTick={settingsUpdateFocusTick}
                   initialSection={settingsInitialSection}
                   onCloseSettings={() => navigateFromScheduledRun(settingsReturnViewRef.current || 'chat')}

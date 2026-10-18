@@ -1,0 +1,4177 @@
+//! Contract tests for the `code` family (GUI-parity project).
+//!
+//! Parse-level coverage runs against the typed command tree. Execute-level
+//! coverage only touches pure-storage paths: every hermetic test runs against
+//! a throwaway `PINVOU3_HOME` (plus an isolated `CODEWHALE_HOME`-style secrets
+//! root and `$HOME` so the provider config writers never touch the developer's
+//! real CLI configuration) and boots the feature-layer stores directly — the
+//! same standalone constructors the CLI uses. The workspace tests shell out to
+//! the `git` binary (a build prerequisite) to build fixture repositories; no
+//! engine, network, model, or display is involved in the default tests.
+//!
+//! Network/engine paths (login against a real vendor CLI, ACP installs and
+//! model probes, one-shot ACP turns) are covered by `#[ignore]` opt-in tests
+//! or by asserting the stable honest error codes.
+
+mod common;
+
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use common::{
+    EnvGuard, HomeGuard, Isolation, command_error, env_lock, execute_error, parsed_debug, run,
+    run_json, usage_error,
+};
+use pinvou_cli::{CliError, CliOutcome, ExitCode, OutputMode, parse_args};
+use pinvou3_lib::features::code_checkpoints as checkpoints;
+use pinvou3_lib::features::codex_acp::workspace as app_workspace;
+use pinvou3_lib::features::codex_acp::{CodexWorkspaceKind, SessionAgentStore};
+use pinvou3_lib::features::sessions::SessionStore;
+
+/// The family's sandbox home: the shared provider-home preset
+/// ([`common::Isolation::ProviderHome`] — the file secret backend under
+/// `<root>/codewhale`, `HOME`/`USERPROFILE`/`HOMEDRIVE`+`HOMEPATH` all at
+/// `<root>/home`), with the `$HOME` subtree pre-created the way the original
+/// guard did (the provider config writers root `~/.codex`/`~/.claude` there,
+/// and the gitconfig fixtures write into it directly). Tests that mutate the
+/// process-global environment hold [`common::env_lock`] for their whole body.
+fn sandbox_home(label: &str) -> HomeGuard {
+    let home = HomeGuard::new("code", label, Isolation::ProviderHome);
+    std::fs::create_dir_all(home.path().join("home")).unwrap();
+    home
+}
+
+/// Derives a uniquely-named, NOT-yet-created scratch path under the system
+/// temp dir (`pinvou-cli-code-<label>-<pid>-<nanos>`) — the shared scaffold
+/// for fixture repositories, fake vendor binaries and the real-binary login
+/// fixtures. The absent-home fixture must receive a nonexistent path.
+fn scratch_root(label: &str) -> PathBuf {
+    common::unique_root(&format!("pinvou-cli-code-{label}"))
+}
+
+/// Removes a scratch directory on drop (panic-safe cleanup for fake CLI bins).
+struct ScratchDir(PathBuf);
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Runs a command the family's `require_yes` gate must refuse: executes it and
+/// asserts the refusal is the usage-class error naming `--yes`. The
+/// per-command gate tests stay — this only collapses their shared assertion
+/// shape on top of the common usage helper.
+fn yes_gate_error(arguments: &[&str]) {
+    let message = common::assert_usage(arguments);
+    assert!(
+        message.contains("--yes"),
+        "{arguments:?}: the refusal must name the flag: {message}"
+    );
+}
+
+/// The two symlink-escape refusals' shared assertion: the diff must refuse
+/// with the host-failure exit code (exit 1), the message must name the
+/// symlink escape, and the secret's bytes must not reach it. Shared by the
+/// non-git and git arms so the git arm carries the same exit-code pin.
+fn assert_symlink_escape_refused(result: Result<CliOutcome, CliError>, secret: &Path) {
+    let error = result.expect_err("an escaping symlink must be refused");
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = error.to_string();
+    assert!(
+        message.contains("symlink") && message.contains("escapes the workspace"),
+        "the refusal must name the symlink escape: {message}"
+    );
+    assert!(
+        !message.contains("TOP SECRET"),
+        "the secret at {} must not leak into the error: {message}",
+        secret.display()
+    );
+}
+
+/// Creates one chat session directly through `SessionStore::boot` (no
+/// session-agents binding) and returns its id — the plain-chat fixture and
+/// the ACP-sentinel-model fixture (whose sidecar record is deliberately
+/// never written).
+fn create_chat_session(model: &str, cwd: &Path) -> String {
+    let store = SessionStore::boot().unwrap();
+    store
+        .create_new(model.to_owned(), None, cwd.to_path_buf())
+        .unwrap()
+        .metadata
+        .id
+}
+
+/// Creates one chat session and binds it as a native code session (the same
+/// feature-layer calls the GUI `create_codex_acp_session` command makes for
+/// the "pinvou" backend) with an optional bound project directory. Temporary
+/// sessions get their private execution directory created, mirroring the
+/// GUI's `ensure_codex_workspace_root`.
+fn create_code_session_fixture(project: Option<&Path>) -> String {
+    let id = create_chat_session("test-model", &std::env::temp_dir());
+    let agents = SessionAgentStore::load_or_empty();
+    match project {
+        Some(project) => agents
+            .bind_code_native_session(
+                &id,
+                CodexWorkspaceKind::Project,
+                Some(project.to_path_buf()),
+            )
+            .expect("bind project code session"),
+        None => {
+            agents
+                .bind_code_native_session(&id, CodexWorkspaceKind::Temporary, None)
+                .expect("bind temporary code session");
+            let workspace = SessionStore::boot()
+                .unwrap()
+                .session_roots(&id)
+                .unwrap()
+                .execution;
+            std::fs::create_dir_all(workspace).expect("create temporary workspace");
+        }
+    }
+    id
+}
+
+/// Creates one chat session bound to the codex ACP backend with a project
+/// workspace (the same `set_acp_workspace` call the GUI session creation
+/// makes for external agents).
+fn create_acp_session_fixture(project: &Path) -> String {
+    let id = create_chat_session("Codex (ACP)", project);
+    let agents = SessionAgentStore::load_or_empty();
+    agents
+        .set_acp_workspace(
+            &id,
+            pinvou3_lib::features::codex_acp::AgentBackend::CodexAcp,
+            CodexWorkspaceKind::Project,
+            Some(project.to_path_buf()),
+        )
+        .expect("bind acp workspace");
+    id
+}
+
+/// Seeds a two-turn transcript by editing the persisted `SavedSession` JSON
+/// (the CLI counts user turns from the same store file).
+fn seed_two_turn_transcript(id: &str) {
+    let home = PathBuf::from(std::env::var_os("PINVOU3_HOME").unwrap());
+    let path = home.join("sessions").join(format!("{id}.json"));
+    let mut value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    value["messages"] = serde_json::json!([
+        {"role": "user", "content": [{"type": "text", "text": "turn one"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "answer one"}]},
+        {"role": "user", "content": [{"type": "text", "text": "turn two"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "answer two"}]},
+    ]);
+    std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
+}
+
+/// Builds the shared fixture-owned git invocation: run in `root`, pinned away
+/// from any ambient configuration with the same isolation as the production
+/// `git_command` (a developer's global/system config — aliases, hooks,
+/// credential helpers — must not decide what a fixture observes or whether
+/// the fixture repository builds). The callers keep their own error
+/// semantics on top of this spine.
+fn fixture_git_command(root: &Path, arguments: &[&str]) -> std::process::Command {
+    let mut command = std::process::Command::new("git");
+    command
+        .current_dir(root)
+        .args(arguments)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+        );
+    command
+}
+
+/// Reads repository state back with a *fixture-owned* git invocation, pinned
+/// away from any ambient configuration. Assertions about what the CLI did to a
+/// repository must not be decided by the same configuration the CLI honours,
+/// otherwise a test that writes a global gitconfig could observe its own
+/// filters instead of the stored objects.
+fn fixture_git(root: &Path, arguments: &[&str]) -> String {
+    let output = fixture_git_command(root, arguments)
+        .output()
+        .unwrap_or_else(|error| panic!("fixture git {arguments:?}: {error}"));
+    assert!(
+        output.status.success(),
+        "fixture git {arguments:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// Runs one fixture-owned git invocation with the same ambient-gitconfig
+/// isolation as `fixture_git`: `true` on success, `false` ONLY when the git
+/// binary itself is missing (the environment-skip case), and a panic for a
+/// present-but-failing git — a broken fixture, a shim that errors, or a
+/// regressed config isolation is a test failure, not an environment skip.
+fn fixture_git_ok(root: &Path, arguments: &[&str]) -> bool {
+    match fixture_git_command(root, arguments).output() {
+        Ok(output) if output.status.success() => true,
+        Ok(output) => panic!(
+            "fixture git {arguments:?} failed (a present-but-failing git is a \
+             test failure, not an environment skip): {}",
+            String::from_utf8_lossy(&output.stderr)
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => panic!("fixture git {arguments:?} could not be spawned: {error}"),
+    }
+}
+
+/// Stages `paths` and commits `message` in a fixture repository, with the
+/// `-c user.name`/`-c user.email` identity prefixes INSIDE the invocation —
+/// the same ambient-config isolation as [`fixture_git_command`], so a
+/// developer's global identity cannot decide what the fixture records. A
+/// failing git is a panic (a broken fixture), never a silent skip: by the
+/// time a scaffold commits, `init_git_repo` already proved git is present.
+fn fixture_commit(root: &Path, message: &str, paths: &[&str]) {
+    for path in paths {
+        assert!(
+            fixture_git_ok(root, &["add", path]),
+            "fixture add {path} failed"
+        );
+    }
+    assert!(
+        fixture_git_ok(
+            root,
+            &[
+                "-c",
+                "user.name=test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                message,
+            ]
+        ),
+        "fixture commit failed"
+    );
+}
+
+/// Initializes a git repository with `main` + `feature` branches and one
+/// committed file; returns `None` when git is unavailable, printing a visible
+/// skip line so a green run cannot hide an environment gap.
+fn init_git_repo(label: &str) -> Option<PathBuf> {
+    let root = scratch_root(&format!("repo-{label}"));
+    std::fs::create_dir_all(&root).unwrap();
+    // Same ambient-gitconfig isolation as the production `git_command`: a
+    // developer's global/system config (aliases, hooks, credential helpers)
+    // must not decide whether the fixture repository builds.
+    // Round-42 review: only a MISSING git binary (spawn io::Error) may skip
+    // the test — a PRESENT-but-failing git (a broken fixture, a shim that
+    // errors, a regressed config isolation) used to be swallowed into the
+    // same silent skip, green-boarding the destructive checkout --yes gate
+    // and every other git-dependent pin. A failing git now fails the test;
+    // `fixture_git_ok` answers false only for the missing binary.
+    let run = |args: &[&str]| fixture_git_ok(&root, args);
+    let skip = |reason: &str| -> Option<PathBuf> {
+        eprintln!("skipping: git unavailable ({reason})");
+        None
+    };
+    if !run(&["init", "-b", "main"]) {
+        return skip("git init failed");
+    }
+    if !run(&["config", "user.email", "test@example.com"]) || !run(&["config", "user.name", "test"])
+    {
+        return skip("repo config failed");
+    }
+    std::fs::write(root.join("tracked.txt"), "v1\n").unwrap();
+    for args in [
+        &["add", "."][..],
+        &["commit", "-m", "init"][..],
+        &["branch", "feature"][..],
+    ] {
+        if !run(args) {
+            return skip("fixture commit failed");
+        }
+    }
+    Some(root)
+}
+
+// ── parse-level coverage ────────────────────────────────────────────────────
+
+/// Builds one `pinvou code providers add` argv: the command spine is spelled
+/// once and `extra` carries the case's own flags verbatim. Shared by the
+/// parse tables and the execute-level `run`/`run_json` lanes; every call
+/// site keeps its own assertions so a regression names its exact case.
+fn add(agent: &'static str, extra: &[&'static str]) -> Vec<&'static str> {
+    let mut arguments = vec!["pinvou", "code", "providers", "add", "--agent", agent];
+    arguments.extend_from_slice(extra);
+    arguments
+}
+
+/// [`add`]'s update-lane twin: builds one `pinvou code providers update <id>`
+/// argv with the same spine-spelled-once discipline.
+fn update<'a>(id: &'a str, agent: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
+    let mut arguments = vec![
+        "pinvou",
+        "code",
+        "providers",
+        "update",
+        id,
+        "--agent",
+        agent,
+    ];
+    arguments.extend_from_slice(extra);
+    arguments
+}
+
+/// The claude model-slot ids the gates name — the same set the production
+/// code iterates from the imported `CLAUDE_MODEL_SLOTS` — spelled once so
+/// the "valid slots:" message pins build from the list instead of
+/// hand-copying it.
+const VALID_SLOTS: [&str; 5] = ["opus", "sonnet", "haiku", "fable", "subagent"];
+
+/// Interleaves the five `SLOT=MODEL` pair values with the `--model-slot`
+/// flag each pair rides on: all `&'static str`, so the returned fragment
+/// splices into the `&[&str]` argv scaffolds (`add`/`update`) verbatim.
+fn claude_slot_args(pairs: [&str; 5]) -> Vec<&str> {
+    pairs
+        .into_iter()
+        .flat_map(|pair| ["--model-slot", pair])
+        .collect()
+}
+
+#[test]
+fn every_code_subcommand_parses() {
+    let _env_guard = common::env_lock();
+    let valid: Vec<Vec<&str>> = vec![
+        vec!["pinvou", "code", "agents", "list"],
+        vec!["pinvou", "code", "agents", "status", "codex"],
+        vec!["pinvou", "code", "agents", "install", "claude"],
+        vec!["pinvou", "code", "login", "kimi"],
+        vec!["pinvou", "code", "login", "claude", "--code", "abcd-1234"],
+        vec!["pinvou", "code", "logout", "codex"],
+        vec!["pinvou", "code", "providers", "list"],
+        vec!["pinvou", "code", "providers", "list", "--agent", "codex"],
+        add(
+            "codex",
+            &[
+                "--name",
+                "Relay",
+                "--base-url",
+                "https://api.example.com/v1",
+                "--wire-api",
+                "openai",
+                "--model",
+                "gpt-test",
+                "--context-window",
+                "128000",
+                "--api-key-env",
+                "MY_KEY",
+            ],
+        ),
+        // The docs row pins the app parser's alias acceptance
+        // (`openai_compatible`/`chat`): a regression narrowing the CLI
+        // spellings to `openai` alone must fail here, not in the field.
+        add(
+            "codex",
+            &[
+                "--name",
+                "Relay",
+                "--base-url",
+                "https://api.example.com/v1",
+                "--wire-api",
+                "openai_compatible",
+                "--api-key-env",
+                "MY_KEY",
+            ],
+        ),
+        add(
+            "codex",
+            &[
+                "--name",
+                "Relay",
+                "--base-url",
+                "https://api.example.com/v1",
+                "--wire-api",
+                "chat",
+                "--api-key-env",
+                "MY_KEY",
+            ],
+        ),
+        add(
+            "claude",
+            &[
+                vec!["--name", "Relay", "--base-url", "https://api.example.com"],
+                claude_slot_args([
+                    "opus=o1",
+                    "sonnet=s1",
+                    "haiku=h1",
+                    "fable=f1",
+                    "subagent=su1",
+                ]),
+                vec!["--api-key-env", "MY_KEY"],
+            ]
+            .concat(),
+        ),
+        add(
+            "kimi",
+            &[
+                "--name",
+                "Relay",
+                "--base-url",
+                "https://api.example.com",
+                "--api-key-stdin",
+            ],
+        ),
+        update("pv-1234567890ab", "codex", &["--name", "Renamed"]),
+        update("pv-1234567890ab", "claude", &["--delete-key"]),
+        vec![
+            "pinvou",
+            "code",
+            "providers",
+            "remove",
+            "pv-1234567890ab",
+            "--agent",
+            "kimi",
+            "--yes",
+        ],
+        vec![
+            "pinvou",
+            "code",
+            "providers",
+            "switch",
+            "codex",
+            "pv-1234567890ab",
+        ],
+        vec!["pinvou", "code", "providers", "switch-official", "claude"],
+        vec![
+            "pinvou",
+            "code",
+            "providers",
+            "export",
+            "--agent",
+            "codex",
+            "--output",
+            "out.json",
+        ],
+        vec![
+            "pinvou",
+            "code",
+            "providers",
+            "import",
+            "--agent",
+            "codex",
+            "in.json",
+        ],
+        update("pv-1234567890ab", "kimi", &["--context-window", "64000"]),
+        vec!["pinvou", "code", "sessions", "list"],
+        vec!["pinvou", "code", "sessions", "info", "s-1"],
+        vec!["pinvou", "code", "sessions", "timeline", "s-1"],
+        vec!["pinvou", "code", "workspace", "list", "s-1"],
+        vec!["pinvou", "code", "workspace", "list", "s-1", "src"],
+        vec!["pinvou", "code", "workspace", "search", "s-1", "main"],
+        vec!["pinvou", "code", "workspace", "preview", "s-1", "README.md"],
+        vec!["pinvou", "code", "workspace", "changes", "s-1"],
+        vec!["pinvou", "code", "workspace", "diff", "s-1"],
+        vec!["pinvou", "code", "workspace", "diff", "s-1", "src/main.rs"],
+        vec!["pinvou", "code", "workspace", "branches", "s-1"],
+        // `--yes` is accepted by the parser in every mode; it is enforced at
+        // execute level, so the flagless forms must keep parsing too (the
+        // caller has to reach the `require_yes` message, not a usage string).
+        vec![
+            "pinvou",
+            "code",
+            "workspace",
+            "checkout",
+            "s-1",
+            "feature",
+            "--mode",
+            "carry",
+        ],
+        vec![
+            "pinvou",
+            "code",
+            "workspace",
+            "checkout",
+            "s-1",
+            "feature",
+            "--mode",
+            "carry",
+            "--yes",
+        ],
+        vec![
+            "pinvou",
+            "code",
+            "workspace",
+            "checkout",
+            "s-1",
+            "feature",
+            "--mode",
+            "stash",
+            "--yes",
+        ],
+        vec![
+            "pinvou",
+            "code",
+            "workspace",
+            "checkout",
+            "s-1",
+            "feature",
+            "--mode",
+            "commit",
+            "--message",
+            "wip",
+            "--yes",
+        ],
+        vec!["pinvou", "code", "checkpoints", "list", "s-1"],
+        vec!["pinvou", "code", "checkpoints", "diff", "s-1", "c1-123"],
+        vec![
+            "pinvou",
+            "code",
+            "checkpoints",
+            "rewind",
+            "s-1",
+            "1",
+            "--yes",
+        ],
+        vec!["pinvou", "code", "checkpoints", "rewind", "s-1", "0"],
+        vec!["pinvou", "code", "checkpoints", "undo", "s-1"],
+        vec![
+            "pinvou",
+            "code",
+            "run",
+            "codex",
+            "--workspace",
+            ".",
+            "--prompt",
+            "hello",
+        ],
+        vec![
+            "pinvou",
+            "code",
+            "run",
+            "claude",
+            "--workspace",
+            "/tmp",
+            "--prompt-file",
+            "p.md",
+            "--timeout-secs",
+            "30",
+        ],
+        vec!["pinvou", "code", "permissions", "s-1"],
+        vec!["pinvou", "code", "respond", "s-1", "req-1", "allow"],
+        vec!["pinvou", "code", "respond", "s-1", "req-1", "deny"],
+    ];
+    for arguments in &valid {
+        let debug = parsed_debug(arguments);
+        assert!(debug.starts_with("Code("), "{arguments:?} -> {debug}");
+    }
+
+    // --output json flows through the family dispatch.
+    let parsed = parse_args(["pinvou", "--output", "json", "code", "agents", "list"].to_vec())
+        .expect("global output flag");
+    assert_eq!(parsed.output(), OutputMode::Json);
+}
+
+#[test]
+fn invalid_code_usage_exits_two_and_names_valid_values() {
+    let _env_guard = common::env_lock();
+    let invalid: Vec<Vec<&str>> = vec![
+        vec!["pinvou", "code"],
+        vec!["pinvou", "code", "bogus"],
+        // Unknown agent names must be refused with the valid set.
+        vec!["pinvou", "code", "agents", "status", "gemini"],
+        vec!["pinvou", "code", "login", "deepseek"],
+        vec!["pinvou", "code", "logout"],
+        add("gpt", &["--name", "n", "--base-url", "https://a.com"]),
+        add("codex", &[]),
+        // A keyless add is a usage error (the usage text marks the key
+        // source required): it would create a provider that only fails at
+        // the next switch.
+        add("codex", &["--name", "n", "--base-url", "https://a.com"]),
+        // Round-51 review: a repeated slot id used to be silently last-wins
+        // at the downstream HashMap insert — refused at parse like every
+        // other repeated flag in this parser.
+        add(
+            "codex",
+            &[
+                "--name",
+                "n",
+                "--base-url",
+                "https://a.com",
+                "--api-key-env",
+                "MY_KEY",
+                "--model-slot",
+                "sonnet=s1",
+                "--model-slot",
+                "sonnet=s2",
+            ],
+        ),
+        // Round-51 review: the env-var-NAME parse gates — a pasted literal
+        // secret must be refused at parse (never ride argv), for the login
+        // --code-env lane and the providers --api-key-env lane alike (the
+        // resolve_secret belt re-gates at runtime; these pins hold the
+        // parse-time contract the gate comments claim).
+        vec![
+            "pinvou",
+            "code",
+            "login",
+            "claude",
+            "--code-env",
+            "sk-live-pasted-literal",
+        ],
+        vec![
+            "pinvou",
+            "code",
+            "providers",
+            "add",
+            "--agent",
+            "codex",
+            "--name",
+            "n",
+            "--base-url",
+            "https://a.com",
+            "--api-key-env",
+            "1BAD-NAME",
+        ],
+        // Round-51 review: the positive-integer gate on --context-window is
+        // a parse refusal (0 would otherwise reach the store's own zh
+        // validation through the store_error boundary this family pins
+        // everywhere else).
+        add(
+            "codex",
+            &[
+                "--name",
+                "n",
+                "--base-url",
+                "https://a.com",
+                "--api-key-env",
+                "MY_KEY",
+                "--context-window",
+                "0",
+            ],
+        ),
+        add("codex", &["--name", "n"]),
+        add(
+            "codex",
+            &[
+                "--name",
+                "n",
+                "--base-url",
+                "https://a.com",
+                "--wire-api",
+                "grpc",
+            ],
+        ),
+        add(
+            "codex",
+            &[
+                "--name",
+                "n",
+                "--base-url",
+                "https://a.com",
+                "--api-key-env",
+                "A",
+                "--api-key-stdin",
+            ],
+        ),
+        vec![
+            "pinvou",
+            "code",
+            "providers",
+            "update",
+            "--agent",
+            "codex",
+            "--name",
+            "n",
+        ],
+        vec![
+            "pinvou",
+            "code",
+            "providers",
+            "remove",
+            "pv-1",
+            "--agent",
+            "codex",
+            "--bogus",
+        ],
+        vec!["pinvou", "code", "providers", "switch", "codex"],
+        vec![
+            "pinvou",
+            "code",
+            "providers",
+            "export",
+            "--output",
+            "o.json",
+        ],
+        vec!["pinvou", "code", "providers", "import"],
+        vec!["pinvou", "code", "providers", "probe", "pv-1"],
+        vec!["pinvou", "code", "providers", "bogus"],
+        vec!["pinvou", "code", "sessions"],
+        vec!["pinvou", "code", "sessions", "bogus"],
+        vec!["pinvou", "code", "sessions", "info"],
+        vec!["pinvou", "code", "sessions", "timeline", "s-1", "--full"],
+        vec!["pinvou", "code", "workspace"],
+        vec!["pinvou", "code", "workspace", "list"],
+        vec![
+            "pinvou",
+            "code",
+            "workspace",
+            "list",
+            "s-1",
+            "src",
+            "--bogus",
+        ],
+        vec!["pinvou", "code", "workspace", "search", "s-1"],
+        vec!["pinvou", "code", "workspace", "preview", "s-1"],
+        // checkout without --mode is a usage error naming the valid values
+        // (the GUI always sends an explicit mode from its selector).
+        vec!["pinvou", "code", "workspace", "checkout", "s-1", "feature"],
+        vec![
+            "pinvou",
+            "code",
+            "workspace",
+            "checkout",
+            "s-1",
+            "feature",
+            "--mode",
+            "discard",
+        ],
+        vec![
+            "pinvou",
+            "code",
+            "workspace",
+            "checkout",
+            "s-1",
+            "feature",
+            "--mode",
+            "commit",
+        ],
+        // Option-like branch names are refused at parse time so they can never
+        // reach git as options (mirror of the GUI branch-name validation).
+        vec![
+            "pinvou",
+            "code",
+            "workspace",
+            "checkout",
+            "s-1",
+            "--force",
+            "--mode",
+            "carry",
+        ],
+        vec!["pinvou", "code", "workspace", "branches"],
+        // rewind without --yes parses but execute refuses (exit 2 via
+        // require_yes); everything else here is a parse error.
+        vec!["pinvou", "code", "checkpoints", "list"],
+        vec!["pinvou", "code", "checkpoints", "diff", "s-1"],
+        vec![
+            "pinvou",
+            "code",
+            "checkpoints",
+            "rewind",
+            "s-1",
+            "x",
+            "--yes",
+        ],
+        vec!["pinvou", "code", "checkpoints", "bogus"],
+        vec!["pinvou", "code", "run", "codex"],
+        vec!["pinvou", "code", "run", "codex", "--workspace", "."],
+        vec![
+            "pinvou",
+            "code",
+            "run",
+            "codex",
+            "--workspace",
+            ".",
+            "--prompt",
+            "a",
+            "--prompt-file",
+            "b",
+        ],
+        vec![
+            "pinvou",
+            "code",
+            "run",
+            "codex",
+            "--workspace",
+            ".",
+            "--prompt-file",
+            "b",
+            "--timeout-secs",
+            "x",
+        ],
+        vec!["pinvou", "code", "permissions"],
+        vec!["pinvou", "code", "respond", "s-1", "req-1"],
+        vec!["pinvou", "code", "respond", "s-1", "req-1", "maybe"],
+        vec!["pinvou", "code", "../escape", "x"],
+        // Round-40 review: the run timeout ceiling (7 days) and the 0
+        // refusal are parse-level — the in-module constant test pins only
+        // the clamp equality, so deleting the check here stayed green.
+        vec![
+            "pinvou",
+            "code",
+            "run",
+            "codex",
+            "--workspace",
+            ".",
+            "--prompt-file",
+            "b",
+            "--timeout-secs",
+            "0",
+        ],
+        vec![
+            "pinvou",
+            "code",
+            "run",
+            "codex",
+            "--workspace",
+            ".",
+            "--prompt-file",
+            "b",
+            "--timeout-secs",
+            "604801",
+        ],
+        // Round-40 review: flag-shaped tokens in the non-session id slots
+        // are usage errors, not exit-1 store lookups.
+        vec!["pinvou", "code", "providers", "switch", "codex", "--model"],
+        vec!["pinvou", "code", "checkpoints", "diff", "s-1", "--yes"],
+        vec!["pinvou", "code", "respond", "s-1", "--deny", "allow"],
+        // Round-52 review: an unknown --model-slot slot id used to parse
+        // fine and be silently dropped downstream (the add gate only checks
+        // that the REQUIRED slots are present), so the refusal fires at
+        // parse in both lanes.
+        add(
+            "claude",
+            &[
+                "--name",
+                "Relay",
+                "--base-url",
+                "https://api.example.com",
+                "--model-slot",
+                "bogus=x",
+                "--model-slot",
+                "sonnet=s1",
+                "--model-slot",
+                "opus=o1",
+                "--model-slot",
+                "haiku=h1",
+                "--model-slot",
+                "fable=f1",
+                "--model-slot",
+                "subagent=su1",
+                "--api-key-env",
+                "MY_KEY",
+            ],
+        ),
+        update("pv-1234567890ab", "claude", &["--model-slot", "bogus=x"]),
+    ];
+    for arguments in &invalid {
+        // The common helper asserts the exit-2 usage class for every case.
+        usage_error(arguments);
+    }
+
+    // The agent error message names the valid agents.
+    let message = usage_error(&["pinvou", "code", "agents", "status", "gemini"]);
+    assert!(
+        message.contains("codex") && message.contains("claude") && message.contains("kimi"),
+        "unknown agent error must name codex|claude|kimi: {message}"
+    );
+    // The checkout mode error names the valid modes.
+    let message = usage_error(&[
+        "pinvou",
+        "code",
+        "workspace",
+        "checkout",
+        "s-1",
+        "feature",
+        "--mode",
+        "discard",
+    ]);
+    assert!(
+        message.contains("carry") && message.contains("stash") && message.contains("commit"),
+        "mode error must name carry|stash|commit: {message}"
+    );
+}
+
+#[test]
+fn rewind_without_yes_is_a_usage_error() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("rewind-needs-yes");
+    let id = create_code_session_fixture(None);
+    yes_gate_error(&["pinvou", "code", "checkpoints", "rewind", &id, "0"]);
+}
+
+#[test]
+fn logout_and_undo_without_yes_are_usage_errors() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("logout-undo-need-yes");
+    let id = create_code_session_fixture(None);
+
+    // logout erases the vendor CLI's stored credentials, so it gates on --yes.
+    yes_gate_error(&["pinvou", "code", "logout", "codex"]);
+
+    // undo restores the working tree and rewrites the transcript, like rewind.
+    yes_gate_error(&["pinvou", "code", "checkpoints", "undo", &id]);
+}
+
+// ── execute-level coverage (pure storage, temp PINVOU3_HOME) ────────────────
+
+#[test]
+fn code_sessions_list_zero_state_and_filters_code_sessions() {
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("sessions-list");
+
+    // Zero state: empty listing, valid JSON shape.
+    let outcome = run(&["pinvou", "code", "sessions", "list"]).expect("zero-state list");
+    assert_eq!(outcome.exit_code, ExitCode::Success);
+    assert_eq!(outcome.stdout, "");
+    let value = run_json(&["pinvou", "code", "sessions", "list"]);
+    assert_eq!(value["sessions"].as_array().unwrap().len(), 0);
+
+    // A plain chat session and an archived code session are filtered out; the
+    // freshly bound code session is listed with its agent + workspace.
+    let _plain = create_chat_session("plain", &std::env::temp_dir());
+    let code_id = create_code_session_fixture(None);
+    run_json(&["pinvou", "sessions", "archive", &code_id]);
+    let value = run_json(&["pinvou", "code", "sessions", "list"]);
+    assert_eq!(value["sessions"].as_array().unwrap().len(), 0);
+    run_json(&["pinvou", "sessions", "restore", &code_id]);
+    let value = run_json(&["pinvou", "code", "sessions", "list"]);
+    let rows = value["sessions"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], code_id.as_str());
+    assert_eq!(rows[0]["agent_id"], "pinvou");
+    assert_eq!(rows[0]["workspace_available"], true);
+    assert_eq!(
+        rows[0]["workspace_path"],
+        home.sessions_root()
+            .join(&code_id)
+            .join("workspace")
+            .display()
+            .to_string()
+    );
+
+    // Unknown session ids fail with a host error.
+    let error = run(&["pinvou", "code", "sessions", "info", "missing-session"]).unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+}
+
+#[test]
+fn code_sessions_info_and_timeline_read_persisted_state() {
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("sessions-info");
+    let project = home.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let id = create_acp_session_fixture(&project);
+
+    let value = run_json(&["pinvou", "code", "sessions", "info", &id]);
+    assert_eq!(value["agent_id"], "codex");
+    assert_eq!(value["agent_name"], "Codex");
+    assert_eq!(value["workspace_kind"], "project");
+    assert_eq!(value["workspace_path"], project.display().to_string());
+    assert_eq!(value["workspace_available"], true);
+
+    // Timeline reads the same append-only JSONL the GUI's AcpPool writes;
+    // a session without one yields an empty listing.
+    let outcome = run(&["pinvou", "code", "sessions", "timeline", &id]).expect("empty timeline");
+    assert_eq!(outcome.stdout, "");
+    let session_dir = home.sessions_root().join(&id);
+    std::fs::create_dir_all(&session_dir).unwrap();
+    // The first two lines use the exact envelope the GUI's AcpPool journal
+    // writes (AcpEventEnvelope: camelCase fields, `event.type`); the last
+    // event uses the legacy snake_case spelling so the human renderer's
+    // fallback is pinned too.
+    std::fs::write(
+        session_dir.join("acp-timeline.jsonl"),
+        format!(
+            "{{\"version\":1,\"sessionId\":\"{id}\",\"seq\":2,\"timestamp\":\"t2\",\"event\":{{\"type\":\"turn_finished\",\"data\":{{}}}}}}\n\
+             {{\"version\":1,\"sessionId\":\"{id}\",\"seq\":1,\"timestamp\":\"t1\",\"turnId\":\"turn-1\",\"event\":{{\"type\":\"turn_started\",\"data\":{{}}}}}}\n\
+             {{\"version\":1,\"session_id\":\"{id}\",\"seq\":3,\"timestamp\":\"t3\",\"turn_id\":\"turn-2\",\"event\":{{\"event_type\":\"turn_finished\",\"data\":{{}}}}}}\n\
+             not-json-at-all\n"
+        ),
+    )
+    .unwrap();
+    let value = run_json(&["pinvou", "code", "sessions", "timeline", &id]);
+    let events = value["events"].as_array().unwrap();
+    assert_eq!(events.len(), 3, "malformed lines are skipped");
+    assert_eq!(events[0]["seq"], 1);
+    assert_eq!(events[0]["turnId"], "turn-1");
+    assert_eq!(
+        events[1].pointer("/event/type"),
+        Some(&serde_json::json!("turn_finished"))
+    );
+    let outcome = run(&["pinvou", "code", "sessions", "timeline", &id]).expect("human timeline");
+    // Both the event-type and turn-id columns render for the camelCase
+    // envelope and the legacy snake_case spelling (a missing turnId renders
+    // "-" — envelopes without an active turn exist).
+    assert_eq!(outcome.stdout.lines().count(), 3);
+    assert!(
+        outcome.stdout.contains("turn_started"),
+        "timeline should contain the turn_started event"
+    );
+    assert!(
+        outcome.stdout.contains("turn-1"),
+        "timeline should contain the turn id column"
+    );
+    assert!(
+        outcome
+            .stdout
+            .lines()
+            .all(|line| line.split('\t').nth(2).is_some_and(|kind| !kind.is_empty())),
+        "timeline event-type column must never be silently empty"
+    );
+}
+
+/// `workspace_path` in `code sessions list` and `code sessions info` is
+/// user-controlled store data: the session-agents record names the bound
+/// project directory, and a POSIX filename may legally carry `\t`, `\n`, or
+/// ESC — a tab would invent a seventh table column and ESC must not reach
+/// the terminal. So the HUMAN renderings collapse the cell through the same
+/// row sanitizer as the module's other store-fed cells (providers'
+/// id/name/base_url, workspace changes' `relative_path`), while the JSON
+/// output keeps the verbatim path for scripts.
+#[test]
+fn code_sessions_human_output_collapses_control_characters_in_workspace_path() {
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("code-ws-path-controls");
+
+    // A hostile (but POSIX-legal) project directory name; the fixture binds
+    // it verbatim into the session-agents record, exactly where the
+    // `workspace_path` cell is read from.
+    let project = home.path().join("project\tpoison\x1bdir").join("nested");
+    std::fs::create_dir_all(&project).unwrap();
+    let id = create_acp_session_fixture(&project);
+    // The CLI resolves bound paths through canonicalize on read paths
+    // elsewhere; the record itself keeps what the bind call wrote. Expect
+    // the recorded form and pin it so a later canonicalization change fails
+    // here loudly instead of silently changing the contract.
+    let recorded = project.display().to_string();
+    let collapsed = recorded.replace(['\t', '\x1b'], " ");
+
+    // info: the human block collapses; JSON keeps the verbatim path.
+    let outcome = run(&["pinvou", "code", "sessions", "info", &id]).expect("human info");
+    assert_eq!(outcome.exit_code, ExitCode::Success);
+    assert!(
+        !outcome.stdout.contains('\t') && !outcome.stdout.contains('\x1b'),
+        "info human block must carry no raw tab/ESC: {:?}",
+        outcome.stdout
+    );
+    assert!(
+        outcome
+            .stdout
+            .lines()
+            .any(|line| line == format!("workspace: {collapsed}")),
+        "the workspace line must render the collapsed path: {:?}",
+        outcome.stdout
+    );
+    let value = run_json(&["pinvou", "code", "sessions", "info", &id]);
+    assert_eq!(value["workspace_path"], serde_json::json!(recorded));
+
+    // list: the row stays one six-column TSV line with the collapsed path
+    // in the last cell; JSON keeps the verbatim path.
+    let outcome = run(&["pinvou", "code", "sessions", "list"]).expect("human list");
+    assert_eq!(outcome.exit_code, ExitCode::Success);
+    assert_eq!(
+        outcome.stdout.lines().count(),
+        1,
+        "one session must render as exactly one row: {:?}",
+        outcome.stdout
+    );
+    let columns: Vec<&str> = outcome.stdout.split('\t').collect();
+    assert_eq!(
+        columns.len(),
+        6,
+        "the list row layout changed: {:?}",
+        outcome.stdout
+    );
+    assert_eq!(columns[5], collapsed, "{:?}", outcome.stdout);
+    assert!(
+        !outcome.stdout.contains('\x1b'),
+        "ESC must not reach the terminal: {:?}",
+        outcome.stdout
+    );
+    let value = run_json(&["pinvou", "code", "sessions", "list"]);
+    assert_eq!(
+        value["sessions"][0]["workspace_path"],
+        serde_json::json!(recorded)
+    );
+}
+
+/// The 32 MiB journal cap must be enforced at the boundary: at exactly
+/// MAX_TIMELINE_BYTES the journal still reads, one byte more is the explicit
+/// "too large" failure. The read is bounded (`File::take`), so the second
+/// run also proves the CLI never slurped the oversized file to decide.
+#[test]
+fn sessions_timeline_cap_is_enforced_at_the_boundary() {
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("timeline-cap-boundary");
+    let project = home.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let id = create_acp_session_fixture(&project);
+    let session_dir = home.sessions_root().join(&id);
+    std::fs::create_dir_all(&session_dir).unwrap();
+    const MAX_TIMELINE_BYTES: u64 = 32 * 1024 * 1024;
+    // One envelope whose size we pad to exactly the cap with a spacing
+    // comment on the data line (malformed-after-prefix lines are skipped only
+    // if they fail to parse — a valid JSON line still counts, so the padding
+    // must itself parse. A single huge valid line is the simplest form.)
+    let prefix = "{\"seq\":1,\"timestamp\":\"t1\",\"turnId\":\"t-1\",\"event\":{\"type\":\"turn_started\",\"data\":{\"pad\":\"".to_string();
+    // Closes the pad string, then the data, event, and envelope objects.
+    let suffix = "\"}}}\n";
+    let pad_len = MAX_TIMELINE_BYTES as usize - prefix.len() - suffix.len();
+    let journal = format!("{prefix}{}{suffix}", "p".repeat(pad_len));
+    assert_eq!(
+        journal.len() as u64,
+        MAX_TIMELINE_BYTES,
+        "fixture must sit exactly at the cap"
+    );
+    std::fs::write(session_dir.join("acp-timeline.jsonl"), &journal).unwrap();
+
+    // At exactly the cap: a full parse, all events rendered.
+    let value = run_json(&["pinvou", "code", "sessions", "timeline", &id]);
+    assert_eq!(value["events"].as_array().unwrap().len(), 1);
+    let outcome =
+        run(&["pinvou", "code", "sessions", "timeline", &id]).expect("at-cap journal still reads");
+    assert_eq!(outcome.stdout.lines().count(), 1);
+
+    // One byte more: the explicit runaway-journal failure, not a slurp.
+    let over = format!("{journal}x");
+    std::fs::write(session_dir.join("acp-timeline.jsonl"), &over).unwrap();
+    let error = run(&["pinvou", "code", "sessions", "timeline", &id])
+        .expect_err("an over-cap journal must fail explicitly");
+    assert!(
+        // The message states the measured size against the limit (the
+        // round-36 fix for the off-by-one: a journal of exactly limit+1
+        // bytes used to be told it was "over limit+1").
+        error.to_string().contains("33554433 bytes")
+            && error.to_string().contains("over the 33554432-byte limit"),
+        "the runaway-journal failure must name the size and the limit: {error}"
+    );
+}
+
+/// A session whose persisted JSON model is an ACP model name but whose
+/// session-agents sidecar record is missing (the sidecar-loss fallback) must
+/// be accepted everywhere `code sessions list` accepts it: listed with the
+/// model-derived agent label, readable through `info`, and its missing
+/// journal reported as an empty timeline success.
+#[test]
+fn sidecar_lost_acp_session_is_listed_and_readable() {
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("sidecar-lost-acp");
+    let project = home.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    // A plain chat session whose model name is the ACP sentinel: no
+    // session-agents.json record is ever written for it.
+    let id = create_chat_session("Codex (ACP)", &project);
+
+    // list shows it with the degraded workspace and the derived agent.
+    let value = run_json(&["pinvou", "code", "sessions", "list"]);
+    let rows = value["sessions"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], id.as_str());
+    assert_eq!(rows[0]["agent_id"], "codex");
+    assert_eq!(rows[0]["workspace_available"], false);
+
+    // info succeeds on the same fallback with the identical label.
+    let value = run_json(&["pinvou", "code", "sessions", "info", &id]);
+    assert_eq!(value["agent_id"], "codex");
+    assert_eq!(value["agent_name"], "Codex");
+    assert_eq!(value["workspace_available"], false);
+
+    // and the missing journal is an empty success, not an error.
+    let outcome = run(&["pinvou", "code", "sessions", "timeline", &id]).expect("empty timeline");
+    assert_eq!(outcome.stdout, "");
+    let value = run_json(&["pinvou", "code", "sessions", "timeline", &id]);
+    assert_eq!(value["events"].as_array().unwrap().len(), 0);
+}
+
+/// Plain (non-code) chat sessions are refused by `info` and `timeline` with
+/// the same stable error the workspace commands use (timeline used to report
+/// an empty success for any existing session).
+#[test]
+fn sessions_info_and_timeline_refuse_plain_chat_sessions() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("info-timeline-gate");
+    let plain = create_chat_session("plain", &std::env::temp_dir());
+    for action in ["info", "timeline"] {
+        let error = run(&["pinvou", "code", "sessions", action, &plain]).unwrap_err();
+        assert_eq!(error.exit_code(), ExitCode::Failed, "{action}: {error}");
+        assert!(
+            error.to_string().contains("code_session_not_found"),
+            "{action}: {error}"
+        );
+    }
+}
+
+#[test]
+fn workspace_list_search_preview_round_trip_with_fixture_session() {
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("workspace-read");
+    let project = home.path().join("project");
+    std::fs::create_dir_all(project.join("src")).unwrap();
+    std::fs::create_dir_all(project.join("node_modules")).unwrap();
+    std::fs::write(project.join("src/main.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(project.join("README.md"), "# fixture\n").unwrap();
+    std::fs::write(project.join("node_modules/index.js"), "ignored").unwrap();
+    let id = create_code_session_fixture(Some(&project));
+
+    // list hides ignored directories and reports entries with kinds.
+    let value = run_json(&["pinvou", "code", "workspace", "list", &id]);
+    let entries = value["entries"].as_array().unwrap();
+    let names: Vec<&str> = entries
+        .iter()
+        .filter_map(|entry| entry["name"].as_str())
+        .collect();
+    assert!(names.contains(&"src"));
+    assert!(names.contains(&"README.md"));
+    assert!(!names.contains(&"node_modules"), "ignored dirs are hidden");
+    assert_eq!(value["relativePath"], "");
+
+    // Sub-directory listing.
+    let value = run_json(&["pinvou", "code", "workspace", "list", &id, "src"]);
+    assert_eq!(value["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(value["entries"][0]["name"], "main.rs");
+
+    // search matches relative paths case-insensitively.
+    let value = run_json(&["pinvou", "code", "workspace", "search", &id, "readme"]);
+    assert_eq!(value["results"].as_array().unwrap().len(), 1);
+    assert_eq!(value["results"][0]["relativePath"], "README.md");
+
+    // preview returns text content for text files.
+    let value = run_json(&["pinvou", "code", "workspace", "preview", &id, "README.md"]);
+    assert_eq!(value["kind"], "text");
+    assert_eq!(value["text"], "# fixture\n");
+    assert_eq!(value["relativePath"], "README.md");
+
+    // Path escapes are refused; missing paths fail with host errors.
+    let error = run(&["pinvou", "code", "workspace", "list", &id, "../escape"]).unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+    let error = run(&["pinvou", "code", "workspace", "preview", &id, "missing.md"]).unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+}
+
+/// `workspace search` must report when the app module's SEARCH_LIMIT cut the
+/// result list, mirroring the `truncated` flag of `workspace list`.
+#[test]
+fn workspace_search_reports_truncation_past_the_limit() {
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("search-truncated");
+    let project = home.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    // One match past the app module's SEARCH_LIMIT (300) plus one non-match.
+    for index in 0..301 {
+        std::fs::write(project.join(format!("needle-{index:03}.txt")), "x\n").unwrap();
+    }
+    std::fs::write(project.join("other.md"), "x\n").unwrap();
+    let id = create_code_session_fixture(Some(&project));
+
+    let value = run_json(&["pinvou", "code", "workspace", "search", &id, "needle"]);
+    assert_eq!(value["results"].as_array().unwrap().len(), 300);
+    assert_eq!(value["truncated"], serde_json::json!(true));
+
+    // A short result set is not reported as truncated.
+    let value = run_json(&["pinvou", "code", "workspace", "search", &id, "other"]);
+    assert_eq!(value["results"].as_array().unwrap().len(), 1);
+    assert_eq!(value["truncated"], serde_json::json!(false));
+}
+
+#[test]
+fn workspace_git_changes_diff_branches_against_fixture_repo() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("workspace-git");
+    let Some(project) = init_git_repo("changes") else {
+        return; // git unavailable in the environment
+    };
+    let id = create_code_session_fixture(Some(&project));
+
+    // branches: both local branches listed, main current, clean tree.
+    let value = run_json(&["pinvou", "code", "workspace", "branches", &id]);
+    assert_eq!(value["git"], true);
+    assert_eq!(value["current"], "main");
+    let branches: Vec<&str> = value["branches"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|value| value.as_str())
+        .collect();
+    assert!(branches.contains(&"main") && branches.contains(&"feature"));
+    assert_eq!(value["dirtyCount"], 0);
+
+    // changes: an untracked file shows up with its origin classified.
+    std::fs::write(project.join("new.txt"), "added by fixture\n").unwrap();
+    let value = run_json(&["pinvou", "code", "workspace", "changes", &id]);
+    assert_eq!(value["git"], true);
+    assert_eq!(value["baselineAvailable"], false);
+    let changes = value["changes"].as_array().unwrap();
+    assert_eq!(changes.len(), 1);
+    assert_eq!(changes[0]["relativePath"], "new.txt");
+    assert_eq!(changes[0]["status"], "untracked");
+    assert_eq!(changes[0]["staged"], false);
+
+    // diff of the untracked file renders the synthetic new-file diff.
+    let value = run_json(&["pinvou", "code", "workspace", "diff", &id, "new.txt"]);
+    assert!(
+        value["text"]
+            .as_str()
+            .unwrap()
+            .contains("+added by fixture"),
+        "untracked diff must carry the synthetic new-file hunk"
+    );
+    assert_eq!(value["relativePath"], "new.txt");
+
+    // diff of a modified tracked file contains the '+' hunk.
+    std::fs::write(project.join("tracked.txt"), "v2\n").unwrap();
+    let value = run_json(&["pinvou", "code", "workspace", "diff", &id, "tracked.txt"]);
+    assert!(value["text"].as_str().unwrap().contains("+v2"));
+
+    // diff without a file concatenates the per-file diffs.
+    let value = run_json(&["pinvou", "code", "workspace", "diff", &id]);
+    let text = value["text"].as_str().unwrap();
+    assert!(
+        text.contains("+v2") && text.contains("+added by fixture"),
+        "the combined diff must contain both per-file hunks"
+    );
+
+    // checkout without a dirty tree: carry switches branches cleanly. The
+    // confirmed form is the only one that reaches git — see
+    // `workspace_checkout_requires_yes_before_touching_the_tree`.
+    let value = run_json(&[
+        "pinvou",
+        "code",
+        "workspace",
+        "checkout",
+        &id,
+        "feature",
+        "--mode",
+        "carry",
+        "--yes",
+    ]);
+    assert_eq!(value["checkedOut"], "feature");
+    assert_eq!(value["branches"]["current"], "feature");
+    let value = run_json(&["pinvou", "code", "workspace", "branches", &id]);
+    assert_eq!(value["current"], "feature");
+
+    // checkout validation: unknown branches fail at execute level.
+    let error = run(&[
+        "pinvou",
+        "code",
+        "workspace",
+        "checkout",
+        &id,
+        "missing-branch",
+        "--mode",
+        "carry",
+        "--yes",
+    ])
+    .unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Failed, "missing-branch");
+
+    // commit mode requires a non-empty --message (parse-level exit 2, the
+    // class the common helper asserts).
+    usage_error(&[
+        "pinvou",
+        "code",
+        "workspace",
+        "checkout",
+        &id,
+        "main",
+        "--mode",
+        "commit",
+    ]);
+}
+
+/// `workspace checkout` moves the user's working tree in every mode, so it
+/// carries the same `--yes` gate as `logout` / `providers remove` /
+/// `checkpoints rewind` / `checkpoints undo`, and the gate runs before any
+/// side effect: none of the modes below may reach git.
+///
+/// Also pins the gate against the obvious bypasses. The tree is dirty here —
+/// the state the GUI refuses to switch without its confirmation dialog, and the
+/// state where the three modes diverge (carry / stash push / add + commit) — so
+/// a gate applied only on the clean fast path would show up. And the branch
+/// name is checked *after* the gate: an unconfirmed command must not get as far
+/// as reporting whether the branch exists.
+#[test]
+fn workspace_checkout_requires_yes_before_touching_the_tree() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("checkout-yes");
+    let Some(project) = init_git_repo("checkout-yes") else {
+        return;
+    };
+    let id = create_code_session_fixture(Some(&project));
+    std::fs::write(project.join("tracked.txt"), "dirty\n").unwrap();
+    std::fs::write(project.join("untracked.txt"), "new\n").unwrap();
+
+    for mode in ["carry", "stash", "commit"] {
+        let mut arguments = vec![
+            "pinvou",
+            "code",
+            "workspace",
+            "checkout",
+            id.as_str(),
+            "feature",
+            "--mode",
+            mode,
+        ];
+        if mode == "commit" {
+            arguments.extend(["--message", "wip"]);
+        }
+        yes_gate_error(&arguments);
+    }
+
+    // Nothing moved: still on main, the dirty content is untouched, no stash
+    // entry exists and no commit was added.
+    let value = run_json(&["pinvou", "code", "workspace", "branches", &id]);
+    assert_eq!(value["current"], "main");
+    assert_eq!(
+        std::fs::read_to_string(project.join("tracked.txt")).unwrap(),
+        "dirty\n"
+    );
+    assert!(project.join("untracked.txt").is_file());
+    assert_eq!(fixture_git(&project, &["stash", "list"]).trim(), "");
+    assert_eq!(
+        fixture_git(&project, &["log", "--format=%s"]).trim(),
+        "init"
+    );
+
+    // The gate precedes branch validation: an unknown branch is still the
+    // `--yes` usage error (exit 2), not a branch failure (exit 1).
+    let error = run(&[
+        "pinvou",
+        "code",
+        "workspace",
+        "checkout",
+        &id,
+        "missing-branch",
+        "--mode",
+        "carry",
+    ])
+    .expect_err("an unconfirmed checkout must be refused");
+    assert_eq!(error.exit_code(), ExitCode::Usage, "{error}");
+
+    // With `--yes` the same command runs and the dirty content survives the
+    // stash round trip, proving the refusals came from the gate alone.
+    let value = run_json(&[
+        "pinvou",
+        "code",
+        "workspace",
+        "checkout",
+        &id,
+        "feature",
+        "--mode",
+        "stash",
+        "--yes",
+    ]);
+    assert_eq!(value["checkedOut"], "feature");
+    assert_eq!(
+        std::fs::read_to_string(project.join("tracked.txt")).unwrap(),
+        "dirty\n"
+    );
+}
+
+// The whole-workspace diff must keep its payload within DIFF_LIMIT and say
+// so: a workspace whose changes each diff over the cap answers with
+// `truncated: true` and text within the bound, never an unbounded
+// concatenation.
+#[test]
+fn whole_workspace_diff_reports_truncation_over_the_cap() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("workspace-diff-cap");
+    let Some(project) = init_git_repo("diff-cap") else {
+        return; // git unavailable in the environment
+    };
+    let id = create_code_session_fixture(Some(&project));
+
+    // Two modified tracked files whose diffs each exceed DIFF_LIMIT (1 MiB):
+    // the per-file lane caps each text at the cap, and the whole-workspace
+    // lane cuts the concatenation at the cap again.
+    let big = format!("v2 {}\n", "x".repeat(1024 * 1024 + 4096));
+    std::fs::write(project.join("tracked.txt"), &big).unwrap();
+    let big2 = format!("v3 second-file {}\n", "y".repeat(1024 * 1024 + 4096));
+    std::fs::write(project.join("tracked2.txt"), &big2).unwrap();
+    let value = run_json(&["pinvou", "code", "workspace", "diff", &id]);
+    assert_eq!(value["truncated"], serde_json::json!(true));
+    let text = value["text"].as_str().unwrap();
+    assert!(text.len() <= 1024 * 1024, "len={}", text.len());
+    // Those cap markers are the whole output-pinned contract. The loop's
+    // early break (stop diffing once the payload is over the cap) bounds the
+    // per-file diff WORK before the final cut, but it is deliberately
+    // output-invisible: every per-file diff is already capped at DIFF_LIMIT
+    // in its own right, so diffing both files and truncating afterwards
+    // yields a byte-identical payload to breaking early. That work- and
+    // memory-boundedness is a performance property, not an observable one,
+    // so no assertion claims it here.
+}
+
+/// The capped reader must keep draining past the cap: a diff that exceeds
+/// the cap by MORE than one pipe buffer used to park git on a full pipe
+/// forever (the reader had stopped, the stderr thread never saw EOF, and the
+/// lane has no deadline). The sibling test's overhang is ~4 KiB — under the
+/// pipe buffer — so it cannot distinguish draining from stopping; this one
+/// overhangs by 512 KiB and fails fast on a watchdog instead of hanging CI.
+#[test]
+fn whole_workspace_diff_drains_a_diff_exceeding_the_cap_by_more_than_a_pipe() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("diff-cap-overhang");
+    let Some(project) = init_git_repo("diff-cap-overhang") else {
+        return; // git unavailable in the environment
+    };
+    let id = create_code_session_fixture(Some(&project));
+    let big = format!("v2 {}\n", "x".repeat(1024 * 1024 + 512 * 1024));
+    std::fs::write(project.join("tracked.txt"), &big).unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = parse_args([
+            "pinvou",
+            "code",
+            "workspace",
+            "diff",
+            &id,
+            "tracked.txt",
+            "--output",
+            "json",
+        ])
+        .and_then(pinvou_cli::execute);
+        let _ = tx.send(result);
+    });
+    let result = rx.recv_timeout(std::time::Duration::from_secs(90)).expect(
+        "the diff must finish — a hang here means the capped reader \
+                 stopped draining past the cap and parked git on a full pipe",
+    );
+    let outcome = result.expect("over-cap diff executes");
+    let value: serde_json::Value = serde_json::from_str(&outcome.stdout).expect("single-line json");
+    assert_eq!(value["truncated"], serde_json::json!(true));
+    // The body is cut at DIFF_LIMIT; the section header rides on top.
+    assert!(
+        value["text"].as_str().unwrap().len() <= 1024 * 1024 + 4096,
+        "the capped body must stay at the cap plus framing"
+    );
+}
+
+/// The per-file diff lane composes the staged and unstaged sections for one
+/// file ("# staged" first, then "# unstaged") — the composition branch is
+/// distinct from the unstaged-only and untracked cases pinned above and was
+/// historically untested.
+#[test]
+fn per_file_diff_composes_staged_and_unstaged_sections() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("diff-staged");
+    let Some(project) = init_git_repo("diff-staged") else {
+        return; // git unavailable in the environment
+    };
+    let id = create_code_session_fixture(Some(&project));
+
+    // Stage one version, then modify the file further: the per-file diff
+    // must render both sections against the committed baseline.
+    std::fs::write(project.join("tracked.txt"), "v2 staged\n").unwrap();
+    assert!(
+        fixture_git_ok(&project, &["add", "tracked.txt"]),
+        "git add must succeed"
+    );
+    std::fs::write(project.join("tracked.txt"), "v2 staged\nv3 unstaged\n").unwrap();
+
+    let value = run_json(&["pinvou", "code", "workspace", "diff", &id, "tracked.txt"]);
+    assert_eq!(value["truncated"], serde_json::json!(false));
+    let text = value["text"].as_str().unwrap();
+    let staged_at = text.find("# staged").expect("staged section header");
+    let unstaged_at = text.find("# unstaged").expect("unstaged section header");
+    assert!(
+        staged_at < unstaged_at,
+        "the staged section must come before the unstaged section"
+    );
+    assert!(text.contains("+v2 staged"), "staged hunk: {text}");
+    assert!(text.contains("+v3 unstaged"), "unstaged hunk: {text}");
+}
+
+/// The per-file diff lane stays a CLI mirror on purpose (bounded untracked
+/// reads, English section copy, whole-workspace composition are CLI-specific),
+/// so its output is differentially pinned against the app module on the same
+/// fixture tree: identical `truncated` flags and identical git diff bodies.
+/// Unix-only (the clean filter below is a shell command).
+///
+/// The comparison is run **with a global gitconfig actually present** in the
+/// guarded `HOME`, and that is the load-bearing part. `HomeGuard` points `HOME`
+/// at a fresh empty directory, so a run with no `~/.gitconfig` compares the two
+/// implementations under the one configuration where a config divergence cannot
+/// show: the app module strips `GIT_CONFIG_*` from its child and would read
+/// nothing either way. The config written here (a `filter.<driver>.clean`
+/// driver named by `.gitattributes` — the shape `git lfs install` writes)
+/// changes the rendered diff, so any future attempt to pin the gitconfig away
+/// on the CLI side turns this equality assertion red instead of passing
+/// vacuously.
+#[cfg(unix)]
+#[test]
+fn workspace_diff_stays_pinned_to_the_app_module_on_a_fixture() {
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("diff-pin");
+    // Both sides must resolve the user's config the same way, so no ambient
+    // GIT_CONFIG_* may survive into either child: the app module removes these
+    // keys, and so does the CLI, but the developer's shell could still define
+    // them for *this* process and skew the `git config` probes run in-process.
+    let _git_env = EnvGuard::remove(&["GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM"]);
+    std::fs::write(
+        home.path().join("home").join(".gitconfig"),
+        "[filter \"pinvoudemo\"]\n\tclean = sed s/v2/CLEANED/\n\tsmudge = cat\n",
+    )
+    .unwrap();
+    let Some(project) = init_git_repo("diff-pin") else {
+        return; // git unavailable in the environment
+    };
+    let id = create_code_session_fixture(Some(&project));
+    std::fs::write(
+        project.join(".gitattributes"),
+        "tracked.txt filter=pinvoudemo\n",
+    )
+    .unwrap();
+    std::fs::write(project.join("tracked.txt"), "v2\n").unwrap();
+    std::fs::write(project.join("untracked.txt"), "brand new\n").unwrap();
+    // A file committed at HEAD and left untouched (round-40 review): this
+    // case used to fall through to the synthetic new-file diff on BOTH
+    // surfaces (both git diffs empty + the file exists → `untracked_diff`),
+    // reporting the whole content as added from /dev/null. The ambient-config
+    // isolation is the shared `fixture_git_ok` helper — the same isolation
+    // `init_git_repo` applies.
+    std::fs::write(project.join("unchanged.txt"), "same\n").unwrap();
+    for args in [
+        &["add", "unchanged.txt"][..],
+        &["commit", "-m", "unchanged"][..],
+    ] {
+        assert!(
+            fixture_git_ok(&project, args),
+            "fixture commit of unchanged.txt failed"
+        );
+    }
+
+    // Sanity: the filter really is in effect, so the equality below is being
+    // asserted on a diff that the global config decided. Without the config
+    // the hunk would read `+v2`.
+    let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "tracked.txt"]);
+    assert!(
+        cli["text"].as_str().unwrap().contains("+CLEANED"),
+        "the user's global clean filter must apply to the CLI diff lane: {}",
+        cli["text"]
+    );
+
+    // Modified tracked file: both render one section-header line followed by
+    // the same git diff.
+    let app = app_workspace::workspace_diff(&id, &project, "tracked.txt")
+        .expect("app diff for the modified tracked file");
+    assert_eq!(cli["relativePath"], app.relative_path);
+    assert_eq!(cli["truncated"], app.truncated);
+    let body = |text: &str| text.lines().skip(1).collect::<Vec<_>>().join("\n");
+    assert_eq!(
+        body(cli["text"].as_str().unwrap()),
+        body(&app.text),
+        "the CLI diff body must match the app module's line for line"
+    );
+
+    // Tracked and unmodified (round-40 review): both answer with NO diff —
+    // the fallthrough used to synthesize a new-file diff asserting a change
+    // that does not exist.
+    let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "unchanged.txt"]);
+    assert_eq!(
+        cli["text"].as_str().unwrap(),
+        "",
+        "a tracked, unmodified file has no diff: {}",
+        cli["text"]
+    );
+    let app = app_workspace::workspace_diff(&id, &project, "unchanged.txt")
+        .expect("app diff for the unchanged tracked file");
+    assert_eq!(app.text, "", "the app module must agree: no diff");
+
+    // Untracked file: both synthesize the same new-file diff, byte for byte.
+    let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "untracked.txt"]);
+    let app = app_workspace::workspace_diff(&id, &project, "untracked.txt")
+        .expect("app diff for the untracked file");
+    assert_eq!(cli["truncated"], app.truncated);
+    assert_eq!(
+        cli["text"].as_str().unwrap(),
+        app.text,
+        "untracked synthetic diffs must be identical"
+    );
+}
+
+/// Round-40 review M5: the non-git diff arm resolves files through the
+/// workspace path, so a symlink INSIDE the workspace pointing OUTSIDE it
+/// (`notes.md -> ~/.ssh/id_ed25519`) must be refused the same way the GUI
+/// preview lane refuses it (`resolve_existing_path` →
+/// `ensure_path_within_workspace`), not read through. The lexical `..`/
+/// `starts_with` checks cannot see the link, so containment is re-checked
+/// on the canonicalized pair. Unix-only: `std::os::unix::fs::symlink`.
+#[cfg(unix)]
+#[test]
+fn workspace_diff_refuses_a_symlink_that_escapes_a_non_git_workspace() {
+    use std::os::unix::fs::symlink;
+
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("diff-symlink");
+    let project = home.path().join("project-diff-symlink");
+    std::fs::create_dir_all(&project).unwrap();
+    let id = create_code_session_fixture(Some(&project));
+
+    // Control: a plain file inside the workspace still diffs.
+    std::fs::write(project.join("inside.txt"), "plain\n").unwrap();
+    let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "inside.txt"]);
+    assert!(
+        cli["text"].as_str().unwrap().contains("plain"),
+        "an inside file must still diff: {}",
+        cli["text"]
+    );
+
+    // The attack: a workspace path that resolves to the (simulated) secret
+    // outside the workspace. The diff must refuse, naming the symlink, and
+    // the secret must never reach the output.
+    let secret = home.path().join("home").join("secret.txt");
+    std::fs::write(&secret, "TOP SECRET\n").unwrap();
+    symlink(&secret, project.join("leak.md")).unwrap();
+    assert_symlink_escape_refused(
+        run(&[
+            "pinvou",
+            "code",
+            "workspace",
+            "diff",
+            &id,
+            "leak.md",
+            "--output",
+            "json",
+        ]),
+        &secret,
+    );
+}
+
+/// Round-48 review MAJOR: the GIT arm of `workspace diff` resolved untracked
+/// files through the LEXICAL workspace path — an untracked symlink planted
+/// in the agent-writable workspace (`leak.md -> ~/.ssh/id_ed25519`) dumped
+/// the target's bytes as a synthetic new-file diff, and the aggregate
+/// whole-workspace diff amplified it. The round-48 fix mirrors the app's
+/// root fix: canonicalize → containment re-check → read the CANONICAL path.
+/// A workspace-LOCAL untracked symlink still diffs through its (inside-root)
+/// target, and the tracked-ness oracle is exit-code aware so a git failure
+/// answers "tracked" (no fabricated addition). Unix-only: `std::os::unix::fs::symlink`.
+#[cfg(unix)]
+#[test]
+fn workspace_diff_refuses_a_symlink_that_escapes_a_git_workspace() {
+    use std::os::unix::fs::symlink;
+
+    let _env_guard = common::env_lock();
+    let Some(project) = init_git_repo("diff-git-symlink") else {
+        eprintln!(
+            "skipping workspace_diff_refuses_a_symlink_that_escapes_a_git_workspace: git unavailable"
+        );
+        return;
+    };
+    let id = create_code_session_fixture(Some(&project));
+    // A tracked commit so the repo has a HEAD (the tracked-unmodified arm).
+    std::fs::write(project.join("tracked.txt"), "hello\n").unwrap();
+    fixture_commit(&project, "init", &["tracked.txt"]);
+
+    // Control: a plain untracked file inside the workspace still diffs.
+    std::fs::write(project.join("inside.txt"), "plain\n").unwrap();
+    let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "inside.txt"]);
+    assert!(
+        cli["text"].as_str().unwrap().contains("plain"),
+        "an inside untracked file must still diff: {}",
+        cli["text"]
+    );
+
+    // The tracked-unmodified arm stays silent through the exit-code-aware
+    // oracle.
+    let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "tracked.txt"]);
+    assert_eq!(
+        cli["text"].as_str().unwrap(),
+        "",
+        "a tracked unmodified file has no diff: {}",
+        cli["text"]
+    );
+
+    // The attack: an untracked symlink resolving OUTSIDE the workspace. The
+    // diff must refuse, naming the symlink, and the secret must never reach
+    // the output — including through the aggregate whole-workspace lane.
+    let secret = std::env::temp_dir().join(format!(
+        "pinvou-cli-git-symlink-secret-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(&secret, "TOP SECRET\n").unwrap();
+    symlink(&secret, project.join("leak.md")).unwrap();
+    assert_symlink_escape_refused(
+        run(&[
+            "pinvou",
+            "code",
+            "workspace",
+            "diff",
+            &id,
+            "leak.md",
+            "--output",
+            "json",
+        ]),
+        &secret,
+    );
+
+    // A workspace-LOCAL untracked symlink still diffs through its canonical
+    // (inside-root) target.
+    std::fs::write(project.join("inner.txt"), "inner bytes\n").unwrap();
+    symlink("inner.txt", project.join("inner-link.md")).unwrap();
+    let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "inner-link.md"]);
+    assert!(
+        cli["text"].as_str().unwrap().contains("inner bytes"),
+        "a local untracked symlink must diff via its canonical target: {}",
+        cli["text"]
+    );
+    let _ = std::fs::remove_file(&secret);
+}
+
+/// Round-51 review: the tracked-ness oracle must match the path LITERALLY —
+/// `--` disables option parsing but not pathspec globbing, so an untracked
+/// `a*x.txt` used to match the tracked `abx.txt`, answer "tracked", and lose
+/// its diff silently. The `:(literal)` prefix (both surfaces) makes the
+/// glob-shaped untracked file diff like any other untracked file.
+/// Round-52 review: the same prefix on the DIFF arm is pinned by the
+/// tracked second half below — a plain pathspec there would glob the
+/// modified alias target's hunks into the answer, which the untracked arm
+/// alone cannot observe.
+#[cfg(unix)]
+#[test]
+fn workspace_diff_diffs_an_untracked_glob_shaped_filename() {
+    let _env_guard = common::env_lock();
+    let Some(project) = init_git_repo("diff-glob-filename") else {
+        eprintln!(
+            "skipping workspace_diff_diffs_an_untracked_glob_shaped_filename: git unavailable"
+        );
+        return;
+    };
+    let id = create_code_session_fixture(Some(&project));
+    std::fs::write(project.join("abx.txt"), "tracked\n").unwrap();
+    fixture_commit(&project, "init", &["abx.txt"]);
+
+    std::fs::write(project.join("a*x.txt"), "glob-shaped untracked\n").unwrap();
+    let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "a*x.txt"]);
+    assert!(
+        cli["text"]
+            .as_str()
+            .unwrap()
+            .contains("glob-shaped untracked"),
+        "an untracked glob-metacharacter filename must diff, not vanish: {}",
+        cli["text"]
+    );
+
+    // Round-52 review: the untracked arm above cannot see a lost
+    // `:(literal)` prefix — with plain glob pathspecs the synthetic
+    // untracked fallback supplies the same text. Track the glob-shaped
+    // file and modify BOTH it and the alias target: with the literal
+    // prefix the diff renders a*x.txt's own hunks only, while a plain
+    // `a*x.txt` pathspec globs onto the modified abx.txt too and its
+    // unrelated hunks leak into the answer — red below.
+    fixture_commit(&project, "track the glob-shaped file", &["a*x.txt"]);
+    std::fs::write(
+        project.join("a*x.txt"),
+        "glob-shaped untracked\nglob-modified\n",
+    )
+    .unwrap();
+    std::fs::write(project.join("abx.txt"), "tracked\nalias-modified\n").unwrap();
+    let cli = run_json(&["pinvou", "code", "workspace", "diff", &id, "a*x.txt"]);
+    let text = cli["text"].as_str().unwrap();
+    assert!(
+        text.contains("glob-modified"),
+        "the tracked glob-shaped file's own modification must diff: {text}"
+    );
+    assert!(
+        !text.contains("abx.txt") && !text.contains("alias-modified"),
+        "the alias target's hunks must not leak through a glob match: {text}"
+    );
+}
+
+/// The git-environment isolation behind the CLI workspace lanes is the app's
+/// `GIT_OVERRIDE_KEYS`, imported through the `features::codex_acp` facade —
+/// not a local copy. A former local mirror in `code.rs` had drifted three
+/// keys behind the app's list (`GIT_NOGLOB_PATHSPECS`,
+/// `GIT_ICASE_PATHSPECS`, `GIT_EXTERNAL_DIFF`) with nothing enforcing the
+/// "keep the two in step" comment, and the drift was invisible: the only
+/// `git diff` call sites carry `--no-ext-diff`, so the missing keys could not
+/// be observed through behavior. This contract test pins that the imported
+/// list still carries the three keys the mirror lost, so an app-side removal
+/// (which would silently reintroduce the drift) turns the build's test run
+/// red instead.
+#[test]
+fn git_override_keys_kept_in_step_with_the_app_list() {
+    use pinvou3_lib::features::codex_acp::GIT_OVERRIDE_KEYS;
+
+    for key in [
+        "GIT_NOGLOB_PATHSPECS",
+        "GIT_ICASE_PATHSPECS",
+        "GIT_EXTERNAL_DIFF",
+    ] {
+        assert!(
+            GIT_OVERRIDE_KEYS.contains(&key),
+            "the app's strip list no longer carries {key}; the CLI workspace lanes would \
+             silently lose the isolation a former local mirror had already lost"
+        );
+    }
+}
+
+/// The workspace read and mutate lanes act on the user's real checkout, so they
+/// must see the repository the user's own git sees — the GUI's contract
+/// (`codex_acp::workspace` → `platform::process::strip_git_override_env`).
+/// Pinning `~/.gitconfig`/`/etc/gitconfig` away is not a harmless
+/// strengthening: `core.excludesFile` stops being honoured, so files the user
+/// globally ignores become `??` entries, a tree the GUI calls clean enters the
+/// stash/commit path, and `--mode commit`'s `git add -A` commits them.
+///
+/// Unix-only: the fixture writes an excludes file into the guarded `HOME`.
+#[cfg(unix)]
+#[test]
+fn workspace_checkout_honours_the_users_global_gitconfig() {
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("git-global-config");
+    let _git_env = EnvGuard::remove(&["GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM"]);
+    let guarded_home = home.path().join("home");
+    std::fs::write(guarded_home.join("globalignore"), "ignored-by-global.txt\n").unwrap();
+    std::fs::write(
+        guarded_home.join(".gitconfig"),
+        format!(
+            "[core]\n\texcludesFile = {}\n",
+            guarded_home.join("globalignore").display()
+        ),
+    )
+    .unwrap();
+    let Some(project) = init_git_repo("git-global-config") else {
+        return; // git unavailable in the environment
+    };
+    let id = create_code_session_fixture(Some(&project));
+    std::fs::write(project.join("ignored-by-global.txt"), "private\n").unwrap();
+
+    // With the user's excludes honoured the tree is clean, so `--mode commit`
+    // takes the clean fast path and commits nothing. With the config pinned
+    // away the file would be an untracked change, `git add -A` would stage it
+    // and a second commit would appear on main.
+    let value = run_json(&[
+        "pinvou",
+        "code",
+        "workspace",
+        "checkout",
+        &id,
+        "feature",
+        "--mode",
+        "commit",
+        "--message",
+        "wip",
+        "--yes",
+    ]);
+    assert_eq!(value["checkedOut"], "feature");
+    assert_eq!(
+        value["branches"]["dirtyCount"], 0,
+        "a globally ignored file must not count as a workspace change"
+    );
+    assert_eq!(
+        fixture_git(&project, &["log", "--format=%s", "main"]).trim(),
+        "init",
+        "the globally ignored file must not have been committed"
+    );
+    assert!(
+        fixture_git(&project, &["ls-tree", "-r", "--name-only", "main"])
+            .lines()
+            .all(|name| name != "ignored-by-global.txt"),
+        "the globally ignored file must not be tracked"
+    );
+    assert!(project.join("ignored-by-global.txt").is_file());
+}
+
+/// A change row the whole-workspace diff cannot render must be reported, not
+/// dropped. Dropping it renders exactly like "this file has no changes", so the
+/// caller cannot tell a clean file from a failed one and exits 0 either way.
+///
+/// Unix-only: the undiffable file is made undiffable with `chmod 000`, and the
+/// test skips itself when that does not actually deny reads (running as root).
+#[cfg(unix)]
+#[test]
+fn whole_workspace_diff_reports_files_it_cannot_diff() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("diff-failure");
+    let Some(project) = init_git_repo("diff-failure") else {
+        return;
+    };
+    let id = create_code_session_fixture(Some(&project));
+    // One file that diffs normally, so the failure is reported *alongside* the
+    // successful diffs rather than instead of them.
+    std::fs::write(project.join("tracked.txt"), "v2\n").unwrap();
+    let unreadable = project.join("unreadable.txt");
+    std::fs::write(&unreadable, "secret\n").unwrap();
+    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&unreadable).is_ok() {
+        eprintln!("skipping: the process can read a 0o000 file (running as root?)");
+        let _ = std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o644));
+        return;
+    }
+
+    let value = run_json(&["pinvou", "code", "workspace", "diff", &id]);
+    // Restore before asserting so a failing assertion still leaves a
+    // removable fixture directory.
+    std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    let failures = value["failures"].as_array().expect("failures array");
+    assert_eq!(
+        failures.len(),
+        1,
+        "the undiffable file must be reported: {value}"
+    );
+    assert_eq!(failures[0]["relativePath"], "unreadable.txt");
+    assert!(
+        failures[0]["error"].as_str().is_some_and(|e| !e.is_empty()),
+        "the failure must carry the underlying error: {value}"
+    );
+    let text = value["text"].as_str().unwrap();
+    assert!(
+        text.contains("# diff failed: unreadable.txt"),
+        "human output must carry the failure marker too: {text}"
+    );
+    assert!(
+        text.contains("+v2"),
+        "the other files must still be diffed: {text}"
+    );
+}
+
+#[test]
+fn workspace_stash_mode_round_trips_dirty_changes() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("workspace-stash");
+    let Some(project) = init_git_repo("stash") else {
+        return;
+    };
+    let id = create_code_session_fixture(Some(&project));
+    std::fs::write(project.join("tracked.txt"), "dirty\n").unwrap();
+    let value = run_json(&[
+        "pinvou",
+        "code",
+        "workspace",
+        "checkout",
+        &id,
+        "feature",
+        "--mode",
+        "stash",
+        "--yes",
+    ]);
+    assert_eq!(value["checkedOut"], "feature");
+    // The stash was popped after the switch: the dirty content survived.
+    assert_eq!(
+        std::fs::read_to_string(project.join("tracked.txt")).unwrap(),
+        "dirty\n"
+    );
+}
+
+#[test]
+fn workspace_requires_a_code_session() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("workspace-gate");
+    // A plain (non-code) session is refused.
+    let plain = create_chat_session("plain", &std::env::temp_dir());
+    let error = run(&["pinvou", "code", "workspace", "branches", &plain]).unwrap_err();
+    assert!(
+        error.to_string().contains("code_session_not_found"),
+        "{error}"
+    );
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    // Missing sessions are refused before any workspace resolution.
+    let error = run(&["pinvou", "code", "workspace", "branches", "missing-session"]).unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+}
+
+#[test]
+fn checkpoints_list_zero_state_and_full_rewind_undo_round_trip() {
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("checkpoints");
+    let project = home.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let id = create_code_session_fixture(Some(&project));
+    seed_two_turn_transcript(&id);
+
+    // Zero state: no checkpoints yet.
+    let outcome = run(&["pinvou", "code", "checkpoints", "list", &id]).expect("zero checkpoints");
+    assert_eq!(outcome.stdout, "");
+    let value = run_json(&["pinvou", "code", "checkpoints", "list", &id]);
+    assert_eq!(value["checkpoints"].as_array().unwrap().len(), 0);
+
+    // Snapshot the execution root at turn boundaries (the same feature calls
+    // the GUI chat flow makes): the turn-1 snapshot captures turn-one.txt, the
+    // turn-2 snapshot captures both files. The store gets the same execution
+    // root resolver the app startup and the CLI install, so the two roots
+    // match the CLI's resolution exactly.
+    let store = SessionStore::boot().unwrap();
+    let agents = SessionAgentStore::load_or_empty();
+    store.set_execution_root_resolver(std::sync::Arc::new(move |session_id: &str| {
+        agents.code_project_workspace(session_id)
+    }));
+    let roots = store.session_roots(&id).unwrap();
+    // The GUI snapshots at the START of each turn, so the turn-1 snapshot
+    // captures the pre-turn state and the turn-2 snapshot captures turn 1's
+    // changes ("rewind to the end of turn 1" restores the turn-2 snapshot).
+    let turn1 = checkpoints::create_checkpoint(
+        &roots.ledger,
+        &roots.execution,
+        Some(1),
+        checkpoints::CheckpointKind::Turn,
+        "turn one",
+    )
+    .expect("create turn-1 checkpoint");
+    std::fs::write(project.join("turn-one.txt"), "first\n").unwrap();
+    let _turn2 = checkpoints::create_checkpoint(
+        &roots.ledger,
+        &roots.execution,
+        Some(2),
+        checkpoints::CheckpointKind::Turn,
+        "turn two",
+    )
+    .expect("create turn-2 checkpoint");
+    std::fs::write(project.join("turn-two.txt"), "second\n").unwrap();
+    drop(store);
+
+    let value = run_json(&["pinvou", "code", "checkpoints", "list", &id]);
+    let listed = value["checkpoints"].as_array().unwrap();
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0]["id"], turn1.id.as_str());
+    assert_eq!(listed[1]["kind"], "turn");
+
+    // diff reports what a rewind to the turn-1 snapshot (the pre-turn state)
+    // would undo: both turns' files.
+    let value = run_json(&["pinvou", "code", "checkpoints", "diff", &id, &turn1.id]);
+    let diff = &value["diff"];
+    assert_eq!(diff["checkpoint"]["id"], turn1.id.as_str());
+    let paths: Vec<&str> = diff["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|change| change["path"].as_str())
+        .collect();
+    assert!(
+        paths.contains(&"turn-one.txt") && paths.contains(&"turn-two.txt"),
+        "{paths:?}"
+    );
+
+    // rewind to the end of turn 1: restores the snapshot and truncates the
+    // transcript to one user turn. The result carries the forced PreRestore
+    // rollback point (undo bookkeeping), not the consumed target snapshot.
+    let value = run_json(&["pinvou", "code", "checkpoints", "rewind", &id, "1", "--yes"]);
+    assert_eq!(value["rewoundTurns"], 1);
+    assert_eq!(value["degraded"], false);
+    let pre_restore = value["restoredCheckpoint"]["id"]
+        .as_str()
+        .expect("rewind reports its PreRestore rollback point")
+        .to_owned();
+    assert_eq!(value["restoredCheckpoint"]["kind"], "preRestore");
+    assert_ne!(pre_restore, turn1.id.as_str());
+    assert!(
+        !project.join("turn-two.txt").exists(),
+        "rewind removed the file"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("turn-one.txt")).unwrap(),
+        "first\n"
+    );
+    let store = SessionStore::boot().unwrap();
+    let session = store.load(&id).unwrap();
+    assert_eq!(session.messages.len(), 2, "transcript truncated to turn 1");
+    drop(store);
+
+    // The rewind bookkeeping left an undoable record bound to its PreRestore
+    // snapshot; undo restores both code and transcript.
+    let value = run_json(&["pinvou", "code", "checkpoints", "undo", &id, "--yes"]);
+    assert_eq!(value["restoredMessages"], 2);
+    assert_eq!(
+        value["restoredCheckpoint"].as_str().map(str::to_string),
+        Some(pre_restore.clone()),
+        "undo restores the rewind's bound rollback point"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("turn-two.txt")).unwrap(),
+        "second\n"
+    );
+    let store = SessionStore::boot().unwrap();
+    let session = store.load(&id).unwrap();
+    assert_eq!(session.messages.len(), 4, "transcript fully restored");
+    drop(store);
+
+    // A second undo is honestly refused: the record was consumed.
+    let error = run(&["pinvou", "code", "checkpoints", "undo", &id, "--yes"]).unwrap_err();
+    assert!(error.to_string().contains("no_undoable_rewind"), "{error}");
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+
+    // Rewinding past the current turn count fails before touching anything.
+    let error = run(&["pinvou", "code", "checkpoints", "rewind", &id, "9", "--yes"]).unwrap_err();
+    assert!(error.to_string().contains("cannot_rewind"), "{error}");
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+
+    // Rewinding to a turn without a snapshot fails honestly.
+    let error = run(&["pinvou", "code", "checkpoints", "rewind", &id, "1", "--yes"]).unwrap_err();
+    assert!(error.to_string().contains("checkpoint_missing"), "{error}");
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+}
+
+#[test]
+fn checkpoints_refuse_non_native_code_sessions() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("checkpoints-gate");
+    // ACP sessions have no native checkpoints (by design in ACP).
+    let project = scratch_root("acp-gate");
+    std::fs::create_dir_all(&project).unwrap();
+    let id = create_acp_session_fixture(&project);
+    let error = run(&["pinvou", "code", "checkpoints", "list", &id]).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("code_checkpoints_requires_native_code_session"),
+        "{error}"
+    );
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    // Invalid checkpoint ids are usage errors.
+    let native = create_code_session_fixture(None);
+    let error = run(&[
+        "pinvou",
+        "code",
+        "checkpoints",
+        "diff",
+        &native,
+        "../escape",
+    ])
+    .unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+
+    // Round-52 review: a MISSING session must answer the not-found class
+    // every sibling lane gives, not the native-session refusal — the
+    // persisted record lookup answers false for a missing id, so the gate
+    // used to misdiagnose a typo'd id as a non-code session.
+    let error = run(&["pinvou", "code", "checkpoints", "list", "missing-session"]).unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    let message = error.to_string();
+    assert!(
+        message.contains("load_session(\"missing-session\")")
+            || message.contains("load_session(missing-session)"),
+        "the not-found answer must come from the existence probe: {message}"
+    );
+    assert!(
+        !message.contains("code_checkpoints_requires_native_code_session"),
+        "a missing session is not a non-code session: {message}"
+    );
+}
+
+#[test]
+fn providers_round_trip_against_temp_home() {
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("providers");
+    let _key = EnvGuard::set(&[(
+        "PINVOU_CLI_TEST_ROUNDTRIP_KEY",
+        Some("sk-test-roundtrip-1234567890"),
+    )]);
+    let store_path = home.path().join("acp-providers.json");
+
+    // Zero-state list is valid JSON for every agent.
+    let value = run_json(&["pinvou", "code", "providers", "list"]);
+    assert_eq!(value["agents"].as_array().unwrap().len(), 3);
+
+    // add persists into acp-providers.json (GUI DTO: id, name, base_url...).
+    let value = run_json(&add(
+        "codex",
+        &[
+            "--name",
+            "Relay A",
+            "--base-url",
+            "https://api.example.com/v1/",
+            "--wire-api",
+            "openai",
+            "--model",
+            "gpt-test",
+            "--context-window",
+            "128000",
+            "--api-key-env",
+            "PINVOU_CLI_TEST_ROUNDTRIP_KEY",
+        ],
+    ));
+    assert_eq!(value["action"], "added");
+    let added_id = value["provider"]["id"].as_str().unwrap().to_owned();
+    let _keyring = KeyringCleanup {
+        agent: "codex",
+        provider_id: added_id.clone(),
+    };
+    assert!(
+        added_id.starts_with("pv-"),
+        "code providers add should print a pv_-prefixed GUI id"
+    );
+    assert_eq!(value["provider"]["name"], "Relay A");
+    assert_eq!(value["provider"]["base_url"], "https://api.example.com/v1");
+    let raw = std::fs::read_to_string(&store_path).unwrap();
+    assert!(raw.contains("Relay A"));
+    assert!(
+        !raw.to_lowercase().contains("api_key"),
+        "the store never persists plaintext keys"
+    );
+
+    // list shows the stored entry.
+    let value = run_json(&["pinvou", "code", "providers", "list", "--agent", "codex"]);
+    let providers = value["providers"]["providers"].as_array().unwrap();
+    assert_eq!(providers.len(), 1);
+    assert_eq!(providers[0]["id"], added_id.as_str());
+    assert_eq!(providers[0]["hasCredential"], true);
+    assert_eq!(
+        value["providers"]["currentProviderId"],
+        serde_json::Value::Null
+    );
+
+    // update renames the entry (merge with existing fields).
+    let value = run_json(&update(&added_id, "codex", &["--name", "Relay B"]));
+    assert_eq!(value["action"], "updated");
+    assert_eq!(value["provider"]["name"], "Relay B");
+    assert_eq!(
+        value["provider"]["base_url"], "https://api.example.com/v1",
+        "unspecified fields keep their stored values"
+    );
+
+    // import merges entries (no keys in the fixture file: hermetic).
+    let import_file = home.path().join("import.json");
+    std::fs::write(
+        &import_file,
+        r#"[{"name":"Imported","baseUrl":"https://relay.example.com","wireApi":"anthropic"}]"#,
+    )
+    .unwrap();
+    let value = run_json(&[
+        "pinvou",
+        "code",
+        "providers",
+        "import",
+        "--agent",
+        "codex",
+        import_file.to_str().unwrap(),
+    ]);
+    assert_eq!(value["result"]["imported"], 1);
+    let raw = std::fs::read_to_string(&store_path).unwrap();
+    assert!(raw.contains("Imported"));
+
+    // Round-42 review: a parseable-but-wrong-shape document must be refused
+    // in ENGLISH by the CLI pre-check, not by the store's Chinese parse
+    // chain ("导入文件不是有效的 Provider JSON") — the round-37 boundary
+    // rule extends to the array shape and the error stays ascii-only.
+    for shape in ["{}", "[1]", "5", "\"text\""] {
+        std::fs::write(&import_file, shape).unwrap();
+        let error = run(&[
+            "pinvou",
+            "code",
+            "providers",
+            "import",
+            "--agent",
+            "codex",
+            import_file.to_str().unwrap(),
+        ])
+        .unwrap_err();
+        assert_eq!(error.exit_code(), ExitCode::Failed);
+        let message = error.to_string();
+        assert!(
+            message.contains("JSON array"),
+            "shape {shape} must be refused in English by the pre-check: {message}"
+        );
+        assert!(
+            message.is_ascii(),
+            "no Chinese store chain may surface through the import lane: {message}"
+        );
+    }
+    // Restore the valid fixture so the rest of the flow is untouched.
+    std::fs::write(
+        &import_file,
+        r#"[{"name":"Imported","baseUrl":"https://relay.example.com","wireApi":"anthropic"}]"#,
+    )
+    .unwrap();
+
+    // switch without a stored key fails honestly and leaves the state alone;
+    // the imported provider is the hermetic keyless one (the add above now
+    // carries a credential, as the usage text always required).
+    let listing = run_json(&["pinvou", "code", "providers", "list", "--agent", "codex"]);
+    let providers = listing["providers"]["providers"].as_array().unwrap();
+    let imported_id = providers
+        .iter()
+        .find(|entry| entry["name"] == "Imported")
+        .expect("the imported provider is listed")["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let error = run(&[
+        "pinvou",
+        "code",
+        "providers",
+        "switch",
+        "codex",
+        &imported_id,
+    ])
+    .unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    // Round-41 review M4: the keyless-switch refusal is the family's own
+    // English mirror (stable code, ASCII-only), not the store's untranslated
+    // "Provider 未配置 API key，无法切换" this flow used to leak.
+    let message = error.to_string();
+    assert!(
+        message.contains("provider_api_key_missing"),
+        "the keyless switch must carry the stable code: {message}"
+    );
+    assert!(
+        message.is_ascii(),
+        "store messages are mirrored in English at this boundary: {message}"
+    );
+    let raw = std::fs::read_to_string(&store_path).unwrap();
+    assert!(
+        !raw.contains("current_provider_id"),
+        "a failed switch must not persist a current provider"
+    );
+
+    // export writes the JSON payload to --output.
+    let export_file = home.path().join("export.json");
+    let value = run_json(&[
+        "pinvou",
+        "code",
+        "providers",
+        "export",
+        "--agent",
+        "codex",
+        "--output",
+        export_file.to_str().unwrap(),
+    ]);
+    assert_eq!(value["output"], export_file.display().to_string());
+    assert_eq!(value["containsPlaintextKeys"], true);
+    let exported = std::fs::read_to_string(&export_file).unwrap();
+    assert!(exported.contains("Relay B"));
+    // Round-43 review: pin the secret-resolution lane by its output — the
+    // payload flag is hardcoded, so only the key bytes prove the export
+    // carried the resolved credential.
+    assert!(
+        exported.contains("sk-test-roundtrip-1234567890"),
+        "the exported file must carry the resolved plaintext key"
+    );
+
+    // remove --yes deletes the entry; the store stays parseable.
+    let value = run_json(&[
+        "pinvou",
+        "code",
+        "providers",
+        "remove",
+        &added_id,
+        "--agent",
+        "codex",
+        "--yes",
+    ]);
+    assert_eq!(value["removed"], true);
+    let value = run_json(&["pinvou", "code", "providers", "list", "--agent", "codex"]);
+    let providers = value["providers"]["providers"].as_array().unwrap();
+    assert_eq!(providers.len(), 1, "only the imported entry remains");
+    assert_eq!(providers[0]["name"], "Imported");
+
+    // remove without --yes is refused before any mutation.
+    yes_gate_error(&[
+        "pinvou",
+        "code",
+        "providers",
+        "remove",
+        &added_id,
+        "--agent",
+        "codex",
+    ]);
+}
+
+#[test]
+fn providers_switch_official_is_hermetic_without_state() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("providers-official");
+    // With no provider ever switched, restoring the official login is a
+    // stateless no-op against the isolated CLI home (never the developer's).
+    let outcome = run(&["pinvou", "code", "providers", "switch-official", "codex"])
+        .expect("switch-official succeeds on a fresh home");
+    assert_eq!(outcome.exit_code, ExitCode::Success);
+    let value = run_json(&["pinvou", "code", "providers", "switch-official", "claude"]);
+    assert_eq!(value["action"], "switched_official");
+}
+
+// ── honest host-bound error contracts ───────────────────────────────────────
+
+#[test]
+fn engine_bound_paths_return_stable_honest_errors() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("host-bound");
+    let id = create_code_session_fixture(None);
+
+    for (arguments, expected_code) in [
+        (
+            vec![
+                "pinvou",
+                "code",
+                "run",
+                "codex",
+                "--workspace",
+                ".",
+                "--prompt",
+                "hi",
+            ],
+            "code_run_requires_product_host",
+        ),
+        (
+            vec![
+                "pinvou",
+                "code",
+                "run",
+                "codex",
+                "--workspace",
+                ".",
+                "--prompt-file",
+                "prompt.md",
+            ],
+            "code_run_requires_product_host",
+        ),
+        (
+            vec!["pinvou", "code", "agents", "install", "codex"],
+            "code_install_requires_product_host",
+        ),
+        (
+            vec![
+                "pinvou",
+                "code",
+                "providers",
+                "probe",
+                "pv-1",
+                "--agent",
+                "codex",
+            ],
+            "code_probe_requires_product_host",
+        ),
+        (
+            vec!["pinvou", "code", "permissions", id.as_str()],
+            "code_permissions_requires_product_host",
+        ),
+        (
+            vec!["pinvou", "code", "respond", id.as_str(), "req-1", "allow"],
+            "code_respond_requires_product_host",
+        ),
+    ] {
+        let error = run(&arguments).expect_err(&arguments.join(" "));
+        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
+        assert!(
+            error.to_string().contains(expected_code),
+            "{arguments:?} -> {error}"
+        );
+    }
+
+    // permissions/respond refuse unconditionally: the product-host error
+    // fires even for a charset-valid session id that does not exist (the id
+    // shape is enforced at parse time), and the refusal must not boot the
+    // session store — boot runs the destructive retention sweep, so a command
+    // that can never succeed must not touch it. Point PINVOU3_HOME at a path
+    // that does not exist: any store access would either create the sessions
+    // root or fail with a store error instead of the stable host-bound code.
+    // HomeGuard::drop restores the original root on the way out.
+    let absent_home = scratch_root("absent");
+    // SAFETY: this test holds ENV_LOCK for its whole body.
+    unsafe {
+        std::env::set_var("PINVOU3_HOME", &absent_home);
+    }
+    for (arguments, expected_code) in [
+        (
+            vec!["pinvou", "code", "permissions", "missing-session"],
+            "code_permissions_requires_product_host",
+        ),
+        (
+            vec![
+                "pinvou",
+                "code",
+                "respond",
+                "missing-session",
+                "req-1",
+                "allow",
+            ],
+            "code_respond_requires_product_host",
+        ),
+    ] {
+        let error = run(&arguments).expect_err(&arguments.join(" "));
+        assert_eq!(error.exit_code(), ExitCode::Failed, "{arguments:?}");
+        assert!(
+            error.to_string().contains(expected_code),
+            "{arguments:?} -> {error}"
+        );
+    }
+    assert!(
+        !absent_home.exists(),
+        "permissions/respond must not boot the session store: {absent_home:?} was created"
+    );
+}
+
+// ── opt-in network/engine paths ─────────────────────────────────────────────
+
+/// Opt-in (requires the real vendor CLI on PATH and network access):
+/// `cargo test -p pinvou-cli --test code_contract -- --ignored login_streams_vendor_cli_flow`
+/// Spawns the same `codex login`-style command the GUI's login flow runs and
+/// verifies the URL/device-code extraction pipeline against live output.
+#[test]
+#[ignore = "spawns the real vendor CLI and needs network; run explicitly with --ignored"]
+fn login_streams_vendor_cli_flow() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("ignored-login");
+    let outcome = run(&["pinvou", "code", "login", "codex"]);
+    match outcome {
+        Ok(outcome) => assert!(outcome.stdout.contains("login codex")),
+        Err(error) => {
+            let message = error.to_string();
+            assert!(
+                message.contains("code_login_cli_missing")
+                    || message.contains("code_login_failed")
+                    || message.contains("code_login_timeout"),
+                "unexpected login error: {message}"
+            );
+        }
+    }
+}
+
+/// The stable `code_login_cli_missing` refusal, pinned always-on and
+/// hermetically (its only carrier used to be the networked `#[ignore]` test
+/// above): with the codex override env dangling, the sandbox home free of
+/// managed installs, and PATH scrubbed to an empty dir, the resolution order
+/// (override → managed dir → official install → PATH) finds nothing and the
+/// login lane refuses BEFORE any spawn — no vendor process, no network
+/// probe. `code_login_timeout` stays quarantined in the ignored test: it
+/// needs a really hanging vendor CLI. Unix-only like the sibling fake-vendor
+/// login lanes: the sandbox cannot isolate Windows' `LOCALAPPDATA`
+/// official-install lookup, so "nothing resolves" is only provable where the
+/// resolution sources are the override, `$HOME`, and `PATH`.
+#[test]
+#[cfg(unix)]
+fn login_refuses_with_the_stable_cli_missing_code_before_any_spawn() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("login-cli-missing");
+    let empty_path = scratch_root("login-cli-missing-path");
+    std::fs::create_dir_all(&empty_path).unwrap();
+    let _bin = ScratchDir(empty_path.clone());
+    let _path = EnvGuard::set(&[("PATH", Some(empty_path.to_str().unwrap()))]);
+    // A dangling codex override: the nonempty-file filter drops it, so the
+    // resolution must fall through the managed dir and PATH — and find
+    // nothing there either.
+    let _override = EnvGuard::set(&[(
+        "PINVOU3_CODEX_PATH",
+        Some(empty_path.join("no-such-codex").to_str().unwrap()),
+    )]);
+
+    let error = run(&["pinvou", "code", "login", "codex"]).unwrap_err();
+    assert!(
+        error.to_string().starts_with("code_login_cli_missing"),
+        "{error}"
+    );
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+}
+
+/// Re-derives the execution-root lock filename (FNV-1a over the canonical
+/// root). This pins the on-disk lock keying: two CLI processes mutating the
+/// same project directory through *different* sessions must collide on the
+/// same lock file.
+fn root_lock_path(canonical_root: &Path) -> PathBuf {
+    fn stable(root: &Path) -> String {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for byte in root.to_string_lossy().as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        format!("{hash:016x}")
+    }
+    std::env::var_os("PINVOU3_HOME")
+        .map(PathBuf::from)
+        .expect("PINVOU3_HOME sandboxed")
+        .join("locks")
+        .join(format!("code-root-{}.lock", stable(canonical_root)))
+}
+
+/// Opens the lock file; the test keeps the write guard in its own frame (the
+/// guard must outlive the command under test or the lock is already free).
+fn open_lock(path: &Path) -> fd_lock::RwLock<std::fs::File> {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .unwrap();
+    fd_lock::RwLock::new(file)
+}
+
+/// The shared lock-table argvs: the four mutating commands every session-lock
+/// test drives (rewind / undo / diff / workspace checkout, in that order —
+/// each row's expected code is `{action}_{suffix}` where the suffix selects
+/// the busy vs broken-lock-file twin).
+fn lock_case_argv(id: &str) -> Vec<Vec<&str>> {
+    vec![
+        vec!["pinvou", "code", "checkpoints", "rewind", id, "1", "--yes"],
+        vec!["pinvou", "code", "checkpoints", "undo", id, "--yes"],
+        vec!["pinvou", "code", "checkpoints", "diff", id, "abc"],
+        // Confirmed on purpose: the point of this row is the lock error, and
+        // `require_yes` runs first.
+        vec![
+            "pinvou",
+            "code",
+            "workspace",
+            "checkout",
+            id,
+            "main",
+            "--mode",
+            "stash",
+            "--yes",
+        ],
+    ]
+}
+
+#[test]
+fn session_lock_reports_busy_for_every_mutating_command() {
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("lock-session-busy");
+    let id = create_code_session_fixture(None);
+    seed_two_turn_transcript(&id);
+
+    // Hold the advisory lock a second CLI process would hold.
+    let lock_path = home
+        .path()
+        .join("locks")
+        .join(format!("code-session-{id}.lock"));
+    let mut lock = open_lock(&lock_path);
+    let _guard = lock.try_write().expect("test acquires the contended lock");
+
+    for (arguments, action) in lock_case_argv(&id)
+        .into_iter()
+        .zip(["rewind", "undo", "diff", "checkout"])
+    {
+        let code = format!("{action}_busy");
+        let error = run(&arguments).expect_err("the held lock must fail the mutation");
+        assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+        assert!(
+            error.to_string().contains(code.as_str()),
+            "expected {code} in: {error}"
+        );
+    }
+    drop(_guard);
+    drop(lock);
+
+    // With the lock released the mutation passes the busy gate (and fails
+    // later on the empty rewind state) — proving the busy error came from the
+    // lock and that the failed attempts mutated nothing.
+    let error = run(&["pinvou", "code", "checkpoints", "undo", &id, "--yes"])
+        .expect_err("no rewind record exists");
+    assert!(error.to_string().contains("no_undoable_rewind"), "{error}");
+    let store = SessionStore::boot().unwrap();
+    let session = store.load(&id).unwrap();
+    assert_eq!(session.messages.len(), 4, "transcript untouched");
+}
+
+/// The docs row promises `{action}_lock` when the lock FILE itself cannot
+/// be taken; every lock test only pinned the `_busy` twin (a held lock).
+/// `locks/` as a regular file makes opening any lock path ENOTDIR — a
+/// non-WouldBlock error — which is exactly the `_lock` arm (round-37
+/// review).
+#[test]
+fn lock_file_failures_report_the_stable_lock_codes() {
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("lock-file-broken");
+    let id = create_code_session_fixture(None);
+    seed_two_turn_transcript(&id);
+
+    // Replace the locks directory with a regular file AFTER the fixtures
+    // booted (the store may create it); every subsequent lock open fails
+    // with ENOTDIR.
+    let locks = home.path().join("locks");
+    std::fs::remove_dir_all(&locks).ok();
+    std::fs::write(&locks, b"not a directory").unwrap();
+
+    for (arguments, action) in lock_case_argv(&id)
+        .into_iter()
+        .zip(["rewind", "undo", "diff", "checkout"])
+    {
+        let code = format!("{action}_lock");
+        let error = run(&arguments).expect_err("the broken lock must fail the mutation");
+        assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+        assert!(
+            error.to_string().contains(code.as_str()),
+            "expected {code} in: {error}"
+        );
+    }
+}
+
+#[test]
+fn execution_root_lock_blocks_a_second_session_on_the_same_project() {
+    let _env_guard = common::env_lock();
+    let home = sandbox_home("lock-root-busy");
+    let project = home.path().join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let id_a = create_code_session_fixture(Some(&project));
+    let id_b = create_code_session_fixture(Some(&project));
+    seed_two_turn_transcript(&id_a);
+    seed_two_turn_transcript(&id_b);
+
+    // Session A's rewind holds the project's root lock while it works. In this
+    // single-process test the lock file is held externally, which is exactly
+    // what a concurrent `pinvou code checkpoints rewind A` looks like to a
+    // second process rewinding session B on the same directory.
+    let canonical = std::fs::canonicalize(&project).unwrap();
+    let mut lock = open_lock(&root_lock_path(&canonical));
+    let _guard = lock.try_write().expect("test acquires the contended lock");
+
+    let error = run(&[
+        "pinvou",
+        "code",
+        "checkpoints",
+        "rewind",
+        &id_b,
+        "1",
+        "--yes",
+    ])
+    .expect_err("the held root lock must fail the rewind");
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    assert!(error.to_string().contains("rewind_busy"), "{error}");
+    assert!(
+        error.to_string().contains("project directory"),
+        "the busy error must name the shared project directory: {error}"
+    );
+
+    // Session A's own lock is free, so the session gate passes and only the
+    // root gate trips — the two locks are independent.
+    drop(_guard);
+    drop(lock);
+    let error = run(&[
+        "pinvou",
+        "code",
+        "checkpoints",
+        "rewind",
+        &id_b,
+        "1",
+        "--yes",
+    ])
+    .expect_err("no checkpoints exist yet");
+    assert!(error.to_string().contains("checkpoint_missing"), "{error}");
+}
+
+// ---- round-3 fixes: export permissions, login code-source guards ----
+
+/// Removes a providers fixture's credential entry even when the test panics.
+/// Round-41 review: this guard predates `HomeGuard` forcing
+/// `CODEWHALE_SECRET_BACKEND=file` — with that selection in place the add
+/// lanes write the SANDBOX file store, never the real OS keychain, so the
+/// leak class this guard closed (round-37) cannot recur; the guard stays as
+/// defense-in-depth for runs that opt out of the forced backend, and for
+/// documentation of the drop-order discipline. Drop order matters: declared after
+/// `_env_guard`/`_home`, it runs while ENV_LOCK is still held and
+/// `PINVOU3_HOME` still names the sandbox, so `remove` sees the sandboxed
+/// store (the keyring itself is process-global) and deletes exactly the
+/// fixture's reference. Best-effort: failures are ignored — the suite must
+/// not fail during unwind.
+struct KeyringCleanup {
+    agent: &'static str,
+    provider_id: String,
+}
+
+impl Drop for KeyringCleanup {
+    fn drop(&mut self) {
+        // Round-38 review: this argv carried `--delete-key`, which `providers
+        // remove` does not parse — the guard failed at parse_args and deleted
+        // nothing, so every add lane kept leaking its fixture key into the
+        // developer's real keychain it was written to clean. `remove` deletes
+        // the stored credential reference by itself.
+        if let Ok(parsed) = pinvou_cli::parse_args(vec![
+            "pinvou",
+            "code",
+            "providers",
+            "remove",
+            self.provider_id.as_str(),
+            "--agent",
+            self.agent,
+            "--yes",
+        ]) {
+            let _ = pinvou_cli::execute(parsed);
+        }
+    }
+}
+
+// Round-38 review: the 0600 assertion needs `std::os::unix`, and this file
+// is auto-discovered as a test target on Windows too — the missing gate
+// broke the whole binary's compile there (the round-36 VerdictEnvGuard
+// class again).
+#[cfg(unix)]
+#[test]
+fn providers_export_refuses_to_overwrite_and_creates_fresh_destinations_0600() {
+    use std::os::unix::fs::PermissionsExt;
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("export-refuse");
+    let _key = EnvGuard::set(&[(
+        "PINVOU_CLI_TEST_EXPORT_KEY",
+        Some("sk-test-export-key-1234567890"),
+    )]);
+
+    let added = run_json(&add(
+        "codex",
+        &[
+            "--name",
+            "Exported relay",
+            "--base-url",
+            "https://api.example.com/v1/",
+            "--wire-api",
+            "openai",
+            "--model",
+            "gpt-test",
+            "--api-key-env",
+            "PINVOU_CLI_TEST_EXPORT_KEY",
+        ],
+    ));
+    assert_eq!(added["action"], "added");
+    let _keyring = KeyringCleanup {
+        agent: "codex",
+        provider_id: added["provider"]["id"]
+            .as_str()
+            .expect("added provider id")
+            .to_owned(),
+    };
+
+    // Round-18 finding: an existing destination used to be truncated with
+    // plaintext keys and exit 0 (the only overwrite-permitting export in the
+    // CLI). The family now matches `sessions export` / `plugins export`:
+    // an exclusive create, so a pre-existing file is refused untouched and
+    // the refusal carries the family's Failed exit class.
+    let target = _home.path().join("pre-existing-export.json");
+    std::fs::write(&target, "do not destroy me\n").unwrap();
+    let mode_before = std::fs::metadata(&target).unwrap().permissions().mode();
+    let error = run(&[
+        "pinvou",
+        "code",
+        "providers",
+        "export",
+        "--agent",
+        "codex",
+        "--output",
+        target.to_str().unwrap(),
+    ])
+    .expect_err("an existing destination must be refused, not overwritten");
+    assert_eq!(error.exit_code(), ExitCode::Failed, "{error}");
+    assert!(
+        error.to_string().contains("refusing to overwrite"),
+        "the refusal must say what it refused to do: {error}"
+    );
+    assert!(
+        error.to_string().contains(&target.display().to_string()),
+        "the refusal must name the destination: {error}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "do not destroy me\n",
+        "the refused destination must be byte-for-byte untouched"
+    );
+    let mode_after = std::fs::metadata(&target).unwrap().permissions().mode();
+    assert_eq!(
+        mode_after & 0o777,
+        mode_before & 0o777,
+        "a refused destination keeps its mode"
+    );
+
+    // The fresh-create lane still lands 0600: `create_new` guarantees the
+    // open is the create, so `mode` applies to exactly this file.
+    let fresh = _home.path().join("fresh-export.json");
+    let value = run_json(&[
+        "pinvou",
+        "code",
+        "providers",
+        "export",
+        "--agent",
+        "codex",
+        "--output",
+        fresh.to_str().unwrap(),
+    ]);
+    assert_eq!(value["containsPlaintextKeys"], true);
+    let mode = std::fs::metadata(&fresh).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600, "an exported key file must be 0600");
+    let exported_fresh = std::fs::read_to_string(&fresh).unwrap();
+    assert!(
+        exported_fresh.contains("Exported relay"),
+        "the fresh export must carry the provider payload"
+    );
+    // Round-43 review: the export's entire purpose is the plaintext key —
+    // `containsPlaintextKeys` is hardcoded `true` in the payload, so only
+    // the key BYTES in the file pin the secret-resolution lane (a
+    // resolution that silently returned empty would otherwise keep this
+    // test green while exporting a keyless file).
+    assert!(
+        exported_fresh.contains("sk-test-export-key-1234567890"),
+        "the exported file must carry the resolved plaintext key"
+    );
+}
+
+#[test]
+fn code_login_rejects_conflicting_code_sources() {
+    let message = usage_error(&[
+        "pinvou",
+        "code",
+        "login",
+        "claude",
+        "--code",
+        "C",
+        "--code-stdin",
+    ]);
+    assert!(message.contains("only one of"), "{message}");
+}
+
+#[test]
+fn code_login_rejects_a_missing_code_env_and_non_claude_codes() {
+    // The execute path reads environment variables (`--code-env` resolution)
+    // while sibling tests set_var under ENV_LOCK, so this test must hold the
+    // same lock.
+    let _env_guard = common::env_lock();
+    let error = execute_error(&[
+        "pinvou",
+        "code",
+        "login",
+        "claude",
+        "--code-env",
+        "PINVOU_CLI_TEST_UNSET_CODE_VAR",
+    ]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(error.to_string().contains("is not set"), "{error}");
+
+    let error = execute_error(&["pinvou", "code", "login", "codex", "--code", "C"]);
+    assert_eq!(error.exit_code(), ExitCode::Usage);
+
+    // Round-41 review: an env-var value with content problems (control
+    // characters here, over-length in the sibling cap test) is a CONTENT
+    // failure — exit 1 with the family's code, not usage. Only the argv
+    // `--code` lane is usage-class.
+    // Panic-safe restore: the guard re-seats the previous state on every
+    // exit path, same ENV_LOCK discipline as the sibling lanes.
+    let _bad_code = EnvGuard::set(&[("PINVOU_CLI_TEST_BAD_CODE_VAR", Some("bad\u{7}code"))]);
+    let error = execute_error(&[
+        "pinvou",
+        "code",
+        "login",
+        "claude",
+        "--code-env",
+        "PINVOU_CLI_TEST_BAD_CODE_VAR",
+    ]);
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    assert!(
+        error.to_string().contains("code_login_code_invalid"),
+        "{error}"
+    );
+}
+
+/// Writes `body` to `dir/name` and marks it executable — the shared
+/// create+chmod scaffold for the fake vendor CLI scripts.
+#[cfg(unix)]
+fn write_fake_vendor(dir: &Path, name: &str, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let script = dir.join(name);
+    std::fs::write(&script, body).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+/// Spawns the real `pinvou` binary against the scratch `root` (the sandbox
+/// store/secrets/home variables plus the caller's override pairs), with piped
+/// stdout/stderr and stdin piped or null — the shared fixture of the
+/// login-streaming tests that must observe the process while it is live.
+#[cfg(unix)]
+fn spawn_pinvou(
+    root: &Path,
+    arguments: &[&str],
+    env_pairs: &[(&str, &Path)],
+    piped_stdin: bool,
+) -> std::process::Child {
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_pinvou"));
+    command
+        .args(arguments)
+        .env("PINVOU3_HOME", root)
+        .env("CODEWHALE_HOME", root.join("codewhale"))
+        .env("HOME", root.join("home"))
+        .env("PINVOU_NO_COLOR", "1")
+        .stdin(if piped_stdin {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    for (name, value) in env_pairs {
+        command.env(name, value);
+    }
+    command.spawn().expect("the pinvou binary must spawn")
+}
+
+/// Takes over `child`'s piped stderr: spawns the line-reader thread that
+/// forwards every line into the returned channel and, for failure
+/// diagnostics, into the returned shared tail. The channel closes at EOF.
+#[cfg(unix)]
+fn pump_stderr(
+    child: &mut std::process::Child,
+) -> (
+    std::sync::mpsc::Receiver<String>,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    use std::io::BufRead as _;
+
+    let stderr = child.stderr.take().expect("stderr is piped");
+    let tail = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let reader = tail.clone();
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stderr).lines() {
+            match line {
+                Ok(line) => {
+                    reader
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .push(line.clone());
+                    if tx.send(line).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+    (rx, tail)
+}
+
+/// Receives stderr lines until `satisfied` names one (or `deadline_secs`
+/// pass, or the pump hangs up), returning every line seen. The caller owns
+/// the predicate and the follow-up assertions; this loop only owns the
+/// deadline discipline.
+#[cfg(unix)]
+fn wait_for_line(
+    rx: &std::sync::mpsc::Receiver<String>,
+    deadline_secs: u64,
+    mut satisfied: impl FnMut(&str) -> bool,
+) -> Vec<String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(deadline_secs);
+    let mut seen: Vec<String> = Vec::new();
+    while std::time::Instant::now() < deadline {
+        match rx.recv_timeout(std::time::Duration::from_millis(250)) {
+            Ok(line) => {
+                let done = satisfied(&line);
+                seen.push(line);
+                if done {
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    seen
+}
+
+/// Writes a scripted `codex` stand-in into a fresh bin directory (argv logged
+/// to `seen-args.txt` for spawn assertions) and returns the directory and the
+/// script path. `version_snippet` runs for `--version` and `login_snippet`
+/// for `login` (each must end in its own exit); any other subcommand exits 1.
+#[cfg(unix)]
+fn write_fake_codex(label: &str, version_snippet: &str, login_snippet: &str) -> (PathBuf, PathBuf) {
+    let bin = scratch_root(&format!("fake-codex-{label}"));
+    std::fs::create_dir_all(&bin).unwrap();
+    let args_file = bin.join("seen-args.txt");
+    let script = write_fake_vendor(
+        &bin,
+        "codex",
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" >> {}\nif [ \"$1\" = \"--version\" ]; then {}\nfi\nif [ \"$1\" = \"login\" ]; then {}\nfi\nexit 1\n",
+            args_file.display(),
+            version_snippet,
+            login_snippet
+        ),
+    );
+    (bin, script)
+}
+
+#[test]
+#[cfg(unix)]
+fn login_drives_the_real_vendor_spawn_path() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("fake-login");
+    // A scripted codex stand-in driven through the real override-resolution
+    // and spawn path: the override must pass the version gate (a real
+    // `--version` probe), the login child must receive its argv exactly once
+    // (the doubled-argv regression was invisible to empty-PATH tests), and
+    // the allow-listed login URL must be captured into the JSON result.
+    // Cleanup runs through drop guards so a failed assertion cannot leak the
+    // PATH override or the scratch bin into sibling tests.
+    let (bin, script) = write_fake_codex(
+        "login",
+        "echo \"codex 1.2.0\"; exit 0",
+        "echo \"signin with this URL:\"; echo \"https://auth.openai.com/authorize?o=fake\"; \
+         echo \"user code: ABCD-EFGH\"; exit 0",
+    );
+    let args_file = bin.join("seen-args.txt");
+    let _bin = ScratchDir(bin);
+    // The post-login `codex_authenticated` probe short-circuits without
+    // spawning when any of these ambient credentials is exported, which
+    // would break the exact spawn counts asserted below on a machine that
+    // carries them. Round-36 review minor: remove all three for the run.
+    let _ambient_keys = EnvGuard::remove(&[
+        "OPENAI_API_KEY",
+        "OPENAI_CODEX_ACCESS_TOKEN",
+        "CODEX_ACCESS_TOKEN",
+    ]);
+    let _codex_path = EnvGuard::set(&[("PINVOU3_CODEX_PATH", Some(script.to_str().unwrap()))]);
+
+    let value = run_json(&["pinvou", "code", "login", "codex"]);
+    assert_eq!(
+        value["status"], "completed",
+        "the login result must report status completed"
+    );
+    assert_eq!(
+        value["login_url"], "https://auth.openai.com/authorize?o=fake",
+        "the allow-listed login URL must be captured"
+    );
+
+    // The version-gate probe and the post-login authenticated probe are
+    // separate spawns; a doubled argv (Command::args appends, so a second
+    // .args call would double every argument) would repeat each spawn's
+    // arguments: the gate probe would log "--version" twice and the login
+    // and probe spawns would log "login" three times instead of two.
+    let seen = std::fs::read_to_string(&args_file).unwrap();
+    let count = |needle: &str| seen.lines().filter(|line| *line == needle).count();
+    assert_eq!(
+        count("--version"),
+        1,
+        "gate probe argv must not double: {seen}"
+    );
+    assert_eq!(
+        count("login"),
+        2,
+        "login argv must be passed exactly once: {seen}"
+    );
+    assert_eq!(count("status"), 1, "probe argv must not double: {seen}");
+}
+
+/// A vendor CLI that prints the login URL and then exits non-zero must not
+/// lose the URL: it is the only actionable part of the failed flow (the
+/// timeout path already keeps it).
+#[test]
+#[cfg(unix)]
+fn login_failure_keeps_the_captured_login_url() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("login-failed-url");
+    let (bin, script) = write_fake_codex(
+        "login-failure",
+        "echo \"codex 1.2.0\"; exit 0",
+        "echo \"signin with this URL:\"; echo \"https://auth.openai.com/authorize?o=fake\"; exit 3",
+    );
+    let _bin = ScratchDir(bin);
+    let _codex_path = EnvGuard::set(&[("PINVOU3_CODEX_PATH", Some(script.to_str().unwrap()))]);
+
+    let error = run(&["pinvou", "code", "login", "codex"]).unwrap_err();
+    assert_eq!(error.exit_code(), ExitCode::Failed);
+    let message = error.to_string();
+    assert!(
+        message.contains("code_login_failed"),
+        "the login failure must carry the code_login_failed prefix"
+    );
+    assert!(
+        message.contains("https://auth.openai.com/authorize?o=fake"),
+        "the captured login URL must survive the failure path: {message}"
+    );
+}
+
+/// A vendor CLI whose `--version` probe fails is a distinct state from a
+/// genuinely too-old version: the JSON must say `version_probe_failed` and
+/// the install gate must stay closed.
+#[test]
+#[cfg(unix)]
+fn version_probe_failure_is_reported_and_fails_the_gate() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("version-probe-failed");
+    let (bin, _script) = write_fake_codex("probe-failure", "exit 7", "exit 1");
+    // Resolve through PATH: the override route is rejected by the gate
+    // itself before a probe failure could ever be reported.
+    let _path = EnvGuard::set(&[("PATH", Some(bin.to_str().unwrap()))]);
+    let _bin = ScratchDir(bin);
+
+    let value = run_json(&["pinvou", "code", "agents", "status", "codex"]);
+    assert_eq!(value["cli_found"], true);
+    assert_eq!(value["version"], serde_json::Value::Null);
+    assert_eq!(value["version_probe_failed"], true);
+    assert_eq!(value["version_supported"], false);
+    assert_eq!(value["installed"], false);
+}
+
+/// The claude login must survive a child that floods its own stdout around
+/// consuming stdin: the code write runs on its own thread and the drains own
+/// the pipes from the start, so no stdin/stdout interleaving can park the
+/// flow past the deadline. The fake answers `auth login` (the claude argv),
+/// reads a stdin line, emits far more than the OS pipe buffer, then exits —
+/// the watchdog assertion below trips if any stdin/stdout coordination
+/// regresses into a hang. (It cannot discriminate the historical
+/// write-before-drains ordering on unix — a ≤4097-byte write always fits the
+/// pipe buffer — which is why that ordering was eliminated structurally: the
+/// write is detached, so even a blocked write cannot stall the deadline
+/// loop, and the loop kills the child.)
+///
+/// Survival alone is not the contract: the fake also answers `auth status`
+/// (exit 0), so the post-login probe passes and the flow must land on the
+/// same `completed` JSON status the sibling stdin-ordering test pins — the
+/// flood must degrade nothing, not merely terminate.
+#[test]
+#[cfg(unix)]
+fn claude_login_completes_when_the_child_floods_stdout_around_stdin() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("claude-login-stdin-flood");
+    let bin = scratch_root("fake-claude-stdin-flood");
+    std::fs::create_dir_all(&bin).unwrap();
+    let script = write_fake_vendor(
+        &bin,
+        "claude",
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"2.1.163 (Claude Code)\"; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then\n  read -r line\n  awk 'BEGIN{for(i=0;i<20000;i++) printf \"%s\", \"012345678901234567890123456789\"}'\n  echo\n  echo \"flood done\"\n  exit 0\nfi\nexit 1\n",
+    );
+    let _bin = ScratchDir(bin);
+    let _claude_path =
+        EnvGuard::set(&[("PINVOU3_CLAUDE_CLI_PATH", Some(script.to_str().unwrap()))]);
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = parse_args([
+            "pinvou",
+            "code",
+            "login",
+            "claude",
+            "--code",
+            "SRCRT-LOGIN-CODE-42",
+            "--output",
+            "json",
+        ])
+        .and_then(pinvou_cli::execute);
+        let _ = tx.send(result);
+    });
+    let result = rx
+        .recv_timeout(std::time::Duration::from_secs(90))
+        .expect("claude login must complete well under the 600 s deadline — a hang here is an stdin/stdout coordination regression");
+    // The flooded transcript must not carry the raw code anywhere a harness
+    // could re-read (the JSON outcome is the script-visible part).
+    let outcome = result.expect("the flood must not change the login outcome");
+    assert!(
+        !outcome.stdout.contains("SRCRT-LOGIN-CODE-42"),
+        "the authorization code must not surface in the report: {}",
+        outcome.stdout
+    );
+    let value: serde_json::Value =
+        serde_json::from_str(outcome.stdout.trim()).expect("single-line JSON login result");
+    assert_eq!(
+        value["status"], "completed",
+        "the flood must not change the outcome the sibling login pins: {value}"
+    );
+}
+
+/// The vendor login transcript is echoed once, redacted — and a short,
+/// non-secret-shaped code the vendor CLI echoes back must not survive the
+/// echo. `redact_secret`'s heuristic alone would leave it in (the value is
+/// not key-shaped); the exact-value strip is what removes it. Driven through
+/// the real binary because the echo goes to the process's own stderr, in
+/// human mode.
+#[test]
+#[cfg(unix)]
+fn login_echo_strips_the_authorization_code_the_heuristic_would_miss() {
+    let root = scratch_root("login-echo");
+    std::fs::create_dir_all(root.join("home")).unwrap();
+    let _root = ScratchDir(root.clone());
+
+    // The fake claude answers the version gate, consumes the stdin code, and
+    // echoes it back on stdout — the exact shape the strip exists for: the
+    // value is too short and un-shaped for `redact_secret` to catch.
+    let script = write_fake_vendor(
+        &root,
+        "claude",
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"2.1.163 (Claude Code)\"; exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then\n  read -r line\n  echo \"auth code received: $line\"\n  exit 0\nfi\nexit 1\n",
+    );
+
+    // A short, plain code: un-shaped for the secret heuristic (the echoed
+    // copy under the strip must read [REDACTED] instead).
+    const CODE: &str = "SRCRT-SHORT-99";
+    let output = spawn_pinvou(
+        &root,
+        &["code", "login", "claude", "--code", CODE],
+        &[("PINVOU3_CLAUDE_CLI_PATH", &script)],
+        false,
+    )
+    .wait_with_output()
+    .expect("the pinvou binary must run");
+    let stderr_text = String::from_utf8_lossy(&output.stderr);
+    let stdout_text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stderr_text.contains("[REDACTED]"),
+        "the echoed transcript must carry the stripped form: {stderr_text}"
+    );
+    assert!(
+        !stderr_text.contains(CODE) && !stdout_text.contains(CODE),
+        "the raw code must not survive anywhere: stderr={stderr_text:?} stdout={stdout_text:?}"
+    );
+}
+
+/// The authorize link and the device code must reach the terminal WHILE the
+/// vendor CLI is still running. kimi's flow is the motivating case: the child
+/// deliberately stays alive until the user opens
+/// `https://www.kimi.com/code/authorize_device?user_code=...`, and the wait is
+/// bounded at 1800 s, so artefacts published only at child exit are published
+/// far too late to act on.
+///
+/// Driven through the real binary because `note!` writes to the process's own
+/// stderr, which the in-process helpers cannot capture: the test reads the
+/// spawned CLI's stderr incrementally and then asserts the CLI is STILL
+/// RUNNING — the fake vendor CLI prints both artefacts and sleeps for 30 s, so
+/// "seen while alive" is exactly the property that used to fail.
+#[test]
+#[cfg(unix)]
+fn login_streams_the_link_and_device_code_before_the_child_exits() {
+    let root = scratch_root("login-stream");
+    std::fs::create_dir_all(root.join("home")).unwrap();
+    let _root = ScratchDir(root.clone());
+
+    // kimi resolves its override (`PINVOU3_KIMI_ACP_BIN`) without a version
+    // gate, so the fake only has to answer `login`. It prints the authorize
+    // link (which carries `user_code=`) and a separate code prompt, then
+    // sleeps — standing in for a vendor CLI waiting on the user.
+    let script = write_fake_vendor(
+        &root,
+        "kimi",
+        "#!/bin/sh\nif [ \"$1\" = \"login\" ]; then\n  echo \"Open https://www.kimi.com/code/authorize_device?user_code=WXYZ-7788 to authorize\"\n  echo \"then enter code: WXYZ-7788\"\n  sleep 30\n  exit 0\nfi\nexit 1\n",
+    );
+
+    let mut child = spawn_pinvou(
+        &root,
+        &["code", "login", "kimi", "--output", "json"],
+        &[("PINVOU3_KIMI_ACP_BIN", &script)],
+        false,
+    );
+    let (rx, _tail) = pump_stderr(&mut child);
+
+    // Well inside the fake's 30 s sleep: if this budget is spent the child has
+    // not exited either, so a failure here is a genuine "nothing streamed".
+    let mut saw_url = false;
+    let mut saw_code = false;
+    let seen = wait_for_line(&rx, 20, |line| {
+        saw_url |= line.contains("https://www.kimi.com/code/authorize_device?user_code=WXYZ-7788");
+        saw_code |= line.contains("device code") && line.contains("WXYZ-7788");
+        saw_url && saw_code
+    });
+    // Sampled before the kill: the CLI must still be inside its wait loop,
+    // which is what makes the artefacts above actionable rather than a
+    // post-mortem transcript dump.
+    let still_waiting = child
+        .try_wait()
+        .expect("try_wait on the spawned CLI")
+        .is_none();
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(
+        saw_url,
+        "the authorize link must be streamed to stderr while the vendor CLI runs; saw: {seen:?}"
+    );
+    assert!(
+        saw_code,
+        "the device code must be streamed to stderr while the vendor CLI runs; saw: {seen:?}"
+    );
+    assert!(
+        still_waiting,
+        "the artefacts must arrive BEFORE the child exits — the CLI had already finished, so \
+         this proves nothing about live streaming; saw: {seen:?}"
+    );
+    // Each artefact exactly once, even though the link reaches the extractor
+    // twice (the URL line and the code line both match) and both pipes are
+    // scanned.
+    let link_notes = seen
+        .iter()
+        .filter(|line| line.starts_with("login link: "))
+        .count();
+    let code_notes = seen
+        .iter()
+        .filter(|line| line.starts_with("device code: "))
+        .count();
+    assert_eq!(
+        link_notes, 1,
+        "the login link must be announced once: {seen:?}"
+    );
+    assert_eq!(
+        code_notes, 1,
+        "the device code must be announced once: {seen:?}"
+    );
+}
+
+/// `providers add --agent claude` requires EVERY slot in the app's
+/// `CLAUDE_MODEL_SLOTS`, not merely a non-empty set: a partial set used to
+/// pass the CLI's English gate and then surface the store's Chinese
+/// "required field" message through `store_error`.
+#[test]
+fn providers_add_claude_rejects_a_partial_model_slot_set() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("claude-partial-slots");
+    let error = run(&add(
+        "claude",
+        &[
+            "--name",
+            "Relay",
+            "--base-url",
+            "https://api.example.com",
+            "--model-slot",
+            "sonnet=claude-sonnet-4",
+            "--api-key-env",
+            "PINVOU_TEST_KEY_THAT_IS_NEVER_SET",
+        ],
+    ))
+    .expect_err("a partial claude slot set must be refused before the store is reached");
+    let message = error.to_string();
+    assert!(
+        message.contains("missing: opus, haiku, fable, subagent"),
+        "the error must name every missing slot: {message}"
+    );
+    assert!(
+        message.contains(&format!("valid slots: {}", VALID_SLOTS.join(", "))),
+        "the error must make the slot set discoverable: {message}"
+    );
+}
+
+/// Round-52 review: an unknown slot id must be refused at parse (exit 2)
+/// with a message that names the valid set — the slot used to parse fine
+/// and be silently dropped, because the add gate only checks that the
+/// REQUIRED slots are present.
+#[test]
+fn providers_refuse_an_unknown_model_slot_naming_the_valid_set() {
+    let _env_guard = env_lock();
+    let _home = sandbox_home("claude-unknown-slot");
+    for arguments in [
+        add(
+            "claude",
+            &[
+                "--name",
+                "Relay",
+                "--base-url",
+                "https://api.example.com",
+                "--model-slot",
+                "sonnet=s1",
+                "--model-slot",
+                "bogus=x",
+                "--api-key-env",
+                "MY_KEY",
+            ],
+        ),
+        update("pv-1234567890ab", "claude", &["--model-slot", "bogus=x"]),
+    ] {
+        let error = command_error(&arguments);
+        assert_eq!(error.exit_code(), ExitCode::Usage, "{arguments:?}");
+        let message = error.to_string();
+        assert!(
+            message.contains("unknown --model-slot slot 'bogus'"),
+            "the refusal must name the offending slot: {message}"
+        );
+        assert!(
+            message.contains(&format!("valid slots: {}", VALID_SLOTS.join(", "))),
+            "the refusal must make the slot set discoverable: {message}"
+        );
+    }
+}
+
+/// The update lane's claude gate works on the MERGED slot set: a legacy
+/// record stored without `model_slots` (pre-slots build, hand-edited store),
+/// updated with no `--model-slot`, must be refused by the English gate
+/// before the store's own (Chinese) required-slot validation is reached.
+/// Regression pin for the round-27 fix: only the ADD lane was pinned, so
+/// deleting the merged-set gate went green.
+#[test]
+fn providers_update_claude_rejects_a_legacy_record_without_slots() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("claude-legacy-slots");
+    // The ADD lane (positive seeding) requires the secret env to be set; the
+    // update refusal below never reaches the credential layer.
+    let _key = EnvGuard::set(&[(
+        "PINVOU_CLI_TEST_SLOTS_KEY",
+        Some("sk-test-slots-1234567890"),
+    )]);
+    let store_path = _home.path().join("acp-providers.json");
+
+    // Seed a CURRENT-build claude record (all five slots).
+    let added = run_json(&add(
+        "claude",
+        &[
+            vec!["--name", "Relay", "--base-url", "https://api.example.com"],
+            claude_slot_args([
+                "opus=claude-opus-4",
+                "sonnet=claude-sonnet-4",
+                "haiku=claude-haiku-4",
+                "fable=claude-fable-4",
+                "subagent=claude-subagent-4",
+            ]),
+            vec!["--api-key-env", "PINVOU_CLI_TEST_SLOTS_KEY"],
+        ]
+        .concat(),
+    ));
+    assert_eq!(added["action"], "added");
+    let provider_id = added["provider"]["id"].as_str().unwrap().to_owned();
+    let _keyring = KeyringCleanup {
+        agent: "claude",
+        provider_id: provider_id.clone(),
+    };
+
+    // Degrade it to a legacy record: same shape, `model_slots` gone.
+    let mut store: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&store_path).unwrap()).unwrap();
+    let stripped = strip_claude_slots(&mut store, &provider_id);
+    assert!(
+        stripped,
+        "the seeded claude record must be found in the store"
+    );
+    std::fs::write(&store_path, store.to_string()).unwrap();
+
+    // Update with no --model-slot: the merged set is empty → the English
+    // gate refuses before the store is reached.
+    let error = run(&update(&provider_id, "claude", &["--name", "Renamed"]))
+        .expect_err("a legacy claude record updated without slots must be refused");
+    let message = error.to_string();
+    assert!(
+        message.contains("providers update: claude requires --model-slot"),
+        "the update lane must carry the English slot gate: {message}"
+    );
+    assert!(
+        message.contains("missing: opus, sonnet, haiku, fable, subagent"),
+        "the merged-empty set must name every slot as missing: {message}"
+    );
+    assert!(
+        !message.contains("store_error"),
+        "the store's Chinese validation must never surface: {message}"
+    );
+
+    // Positive control: the same update WITH the full merged set succeeds.
+    let updated = run_json(&update(
+        &provider_id,
+        "claude",
+        &[
+            vec!["--name", "Renamed"],
+            claude_slot_args([
+                "opus=claude-opus-4",
+                "sonnet=claude-sonnet-4",
+                "haiku=claude-haiku-4",
+                "fable=claude-fable-4",
+                "subagent=claude-subagent-4",
+            ]),
+        ]
+        .concat(),
+    ));
+    assert_eq!(updated["action"], "updated");
+}
+
+/// Strips `model_slots` from the claude record with `id` in the store value.
+fn strip_claude_slots(store: &mut serde_json::Value, provider_id: &str) -> bool {
+    fn walk(value: &mut serde_json::Value, provider_id: &str) -> bool {
+        match value {
+            serde_json::Value::Object(map) => {
+                let is_target = map
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|id| id == provider_id);
+                if is_target && map.remove("model_slots").is_some() {
+                    return true;
+                }
+                map.values_mut().any(|child| walk(child, provider_id))
+            }
+            serde_json::Value::Array(items) => {
+                items.iter_mut().any(|child| walk(child, provider_id))
+            }
+            _ => false,
+        }
+    }
+    walk(store, provider_id)
+}
+
+/// The store's other user-reachable validation rules also fail with Chinese
+/// text; the English mirrors in `providers_save` keep every one of them off
+/// the terminal. Each case here used to surface the lib's message through
+/// `store_error`.
+#[test]
+fn providers_save_mirrors_the_stores_remaining_rules_in_english() {
+    let _env_guard = common::env_lock();
+    let _home = sandbox_home("providers-english-mirrors");
+    let _key = EnvGuard::set(&[(
+        "PINVOU_CLI_TEST_RULES_KEY",
+        Some("sk-test-rules-1234567890"),
+    )]);
+
+    // Refined model slots are claude-only (`--model-slot` on codex/kimi).
+    let error = run(&add(
+        "codex",
+        &[
+            "--name",
+            "Relay",
+            "--base-url",
+            "https://api.example.com",
+            "--model-slot",
+            "sonnet=claude-sonnet-4",
+            "--api-key-env",
+            "PINVOU_CLI_TEST_RULES_KEY",
+        ],
+    ))
+    .expect_err("--model-slot must be refused for non-claude agents");
+    let message = error.to_string();
+    assert!(
+        message.contains("only supported for the claude agent"),
+        "must name the claude-only rule: {message}"
+    );
+    assert!(message.is_ascii(), "must stay English: {message}");
+
+    // A blank --name on the update lane (the add lane rejects it at parse
+    // time; the store trims it into an invalid empty name).
+    let value = run_json(&add(
+        "codex",
+        &[
+            "--name",
+            "Relay",
+            "--base-url",
+            "https://api.example.com",
+            "--api-key-env",
+            "PINVOU_CLI_TEST_RULES_KEY",
+        ],
+    ));
+    let added_id = value["provider"]["id"].as_str().unwrap().to_owned();
+    // The add above SUCCEEDED, so the fixture key sits in the sandbox's
+    // FILE-backed credential store (`HomeGuard` forces
+    // `CODEWHALE_SECRET_BACKEND=file`; the real keychain is not touched).
+    // Round-39 review: no cleanup was registered —
+    // every green run orphaned one `sk-test-rules-*` entry, the exact leak
+    // class round-37 closed elsewhere. Drop order puts this before
+    // `_env_guard`/`_home`, so `remove` still sees the sandboxed store.
+    let _keyring = KeyringCleanup {
+        agent: "codex",
+        provider_id: added_id.clone(),
+    };
+    let error = run(&update(&added_id, "codex", &["--name", "   "]))
+        .expect_err("a blank --name must be refused in English");
+    let message = error.to_string();
+    assert!(
+        message.contains("--name must not be blank"),
+        "must name the blank-name rule: {message}"
+    );
+    assert!(message.is_ascii(), "must stay English: {message}");
+
+    // A --base-url that is not a full http(s) address.
+    let error = run(&update(
+        &added_id,
+        "codex",
+        &["--base-url", "ftp://relay.example.com"],
+    ))
+    .expect_err("a non-http(s) base URL must be refused in English");
+    let message = error.to_string();
+    assert!(
+        message.contains("--base-url must be a full http(s):// address"),
+        "must name the base URL rule: {message}"
+    );
+    assert!(message.is_ascii(), "must stay English: {message}");
+
+    // remove of an unknown id: the store's delete path fails with a Chinese
+    // "not found" message.
+    let error = run(&[
+        "pinvou",
+        "code",
+        "providers",
+        "remove",
+        "pv-nonexistent",
+        "--agent",
+        "codex",
+        "--yes",
+    ])
+    .expect_err("removing an unknown provider must fail in English");
+    let message = error.to_string();
+    assert!(
+        message.contains("provider_not_found"),
+        "must use the stable not-found discriminator: {message}"
+    );
+    assert!(message.is_ascii(), "must stay English: {message}");
+}
+
+/// `--message` is the one flag allowed a `--`-prefixed value, which let
+/// `--message --yes` swallow the confirmation flag and fail much later with
+/// the generic "pass --yes to confirm". The swallowed-flag spelling is now
+/// named at parse time; every other `--`-prefixed message keeps working.
+#[test]
+fn workspace_checkout_message_refuses_to_swallow_the_yes_flag() {
+    let message = usage_error(&[
+        "pinvou",
+        "code",
+        "workspace",
+        "checkout",
+        "s-1",
+        "feature",
+        "--mode",
+        "commit",
+        "--message",
+        "--yes",
+    ]);
+    assert!(
+        message.contains("--message consumed --yes"),
+        "the error must name the flag --message ate: {message}"
+    );
+
+    // Regression guard for the exemption itself: a message that merely starts
+    // with `--` (and is not one of this command's boolean flags) still parses.
+    parse_args([
+        "pinvou",
+        "code",
+        "workspace",
+        "checkout",
+        "s-1",
+        "feature",
+        "--mode",
+        "commit",
+        "--message",
+        "--wip: dashes are legal in a commit message",
+        "--yes",
+    ])
+    .expect("a --prefixed commit message that is not a boolean flag must still parse");
+}
+
+// ---- round-18 fixes: login kill guard, --code-stdin ordering ----
+
+/// Round-18 finding 2: `code login` put its vendor child in a dedicated
+/// process group (`support::set_process_group`) and installed no kill guard,
+/// so a Ctrl-C that killed this CLI orphaned a kimi login that can
+/// legitimately run to 1800 s. The fix brackets the child's lifetime with
+/// `support::supervise::spawn_supervised` (registration) / `forget_child_group`.
+///
+/// Observed through the real binary, the same seam
+/// `login_streams_the_link_and_device_code_before_the_child_exits` uses —
+/// the guard only exists in a process whose `main` installed
+/// `install_signal_cleanup`, which the in-process `run()` helpers never do.
+/// The fake kimi prints the authorize link (so the wait loop starts), then
+/// parks a grandchild `sleep` in the same group (`sleep 30 & wait`) — the
+/// group is what the orphan hazard is about, not just the lead process —
+/// and the test interrupts the CLI with a real SIGINT.
+#[test]
+#[cfg(unix)]
+fn login_interrupt_takes_the_vendor_child_group_down_with_the_cli() {
+    let root = scratch_root("login-guard");
+    std::fs::create_dir_all(root.join("home")).unwrap();
+    let _root = ScratchDir(root.clone());
+
+    // kimi resolves its override (`PINVOU3_KIMI_ACP_BIN`) without a version
+    // gate. The fake prints the link so the CLI enters its bounded wait, then
+    // stays alive with a grandchild — exactly the shape a terminal interrupt
+    // used to orphan. Only the CLI's failure returns early; the fake always
+    // records the pids so the test can police leftovers on any path.
+    let script = write_fake_vendor(
+        &root,
+        "kimi",
+        &format!(
+            "#!/bin/sh\nif [ \"$1\" = \"login\" ]; then\n  echo $$ > {vendor}\n  sleep 30 &\n  echo $! > {grandchild}\n  echo \"Open https://www.kimi.com/code/authorize_device?user_code=GUARD-9911 to authorize\"\n  wait $!\n  exit 0\nfi\nexit 1\n",
+            vendor = root.join("vendor.pid").display(),
+            grandchild = root.join("grandchild.pid").display(),
+        ),
+    );
+
+    let mut child = spawn_pinvou(
+        &root,
+        &["code", "login", "kimi", "--output", "json"],
+        &[("PINVOU3_KIMI_ACP_BIN", &script)],
+        false,
+    );
+    let (rx, _tail) = pump_stderr(&mut child);
+
+    // The link on stderr means the CLI is inside its wait loop with a live
+    // vendor child — the only state in which the guard has anything to do.
+    let mut saw_url = false;
+    let seen = wait_for_line(&rx, 20, |line| {
+        saw_url |= line.starts_with("login link: https://www.kimi.com/");
+        saw_url
+    });
+    if !saw_url {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("the login link must be live before the interrupt; saw: {seen:?}");
+    }
+    let vendor: u32 = std::fs::read_to_string(root.join("vendor.pid"))
+        .ok()
+        .and_then(|pid| pid.trim().parse().ok())
+        .expect("the fake vendor must record its pid");
+    let grandchild: u32 = std::fs::read_to_string(root.join("grandchild.pid"))
+        .ok()
+        .and_then(|pid| pid.trim().parse().ok())
+        .expect("the fake vendor must record its grandchild pid");
+    let alive = |pid: u32| {
+        // SAFETY: kill(2) with signal 0 is a pure existence probe.
+        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    };
+    assert!(
+        alive(vendor),
+        "the vendor child must be live at interrupt time"
+    );
+    assert!(
+        alive(grandchild),
+        "the grandchild must be live at interrupt time"
+    );
+
+    // The interrupt itself: SIGINT to the CLI process only. The vendor is in
+    // its own group, so nothing about this signal reaches it unless the CLI
+    // forwards it — which is the entire finding.
+    // SAFETY: kill(2) delivering SIGINT to the process this test spawned.
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGINT);
+    }
+    let _status = child.wait().expect("the interrupted CLI must be waitable");
+    // How the CLI itself reports the interrupt is a race the module owns, not
+    // this wiring: the watcher keeps the conventional 128+N re-raise for the
+    // case where nothing else ends the process first, but the login loop's
+    // own 100 ms `try_wait` poll may observe the SIGTERM'd vendor dying first
+    // and return its `code_login_failed` outcome (exit 1) while the watcher
+    // is still inside its grace. Either way the CLI ends here — the promise
+    // this test pins is the one the finding names: the vendor group does not
+    // survive the CLI.
+
+    // The guard's actual promise: the whole vendor group goes down with the
+    // CLI (SIGTERM at forward time; the module's SIGKILL escalation only
+    // matters for a child that traps SIGTERM — this fake's `sh` and `sleep`
+    // do not), instead of being orphaned to run out its 30 s park. The
+    // SIGTERM forward happens in the watcher's first phase, before any
+    // grace, so the group is expected dead well inside this bound.
+    let gone_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while (alive(vendor) || alive(grandchild)) && std::time::Instant::now() < gone_deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let verdict = (!alive(vendor), !alive(grandchild));
+    if !verdict.0 || !verdict.1 {
+        // Red leftovers: the orphaned members must not outlive the test.
+        // SAFETY: cleanup-only SIGKILLs of processes this test planted.
+        unsafe {
+            libc::kill(vendor as libc::pid_t, libc::SIGKILL);
+            libc::kill(grandchild as libc::pid_t, libc::SIGKILL);
+        }
+        panic!(
+            "an interrupt that killed the CLI must take the vendor group with it; \
+             vendor gone: {}, grandchild gone: {}",
+            verdict.0, verdict.1
+        );
+    }
+}
+
+/// Round-18 finding 3, verified real and fixed (not the round-17 lateness
+/// fix, which only made the URL stream at child exit): `--code-stdin` used
+/// to collect the code at the top of `login`, i.e. strictly before the child
+/// existed — before the CLI could print the authorize URL — and then close
+/// the child's stdin after one write. The fix is two-phase like the GUI's
+/// `submit_agent_login_code`: the CLI reads its own stdin only after the
+/// login link has been announced on stderr, forwards the code once, and
+/// keeps the child's stdin open for the rest of the flow.
+///
+/// Driven through the real binary with a fake claude (`auth status` → 0 for
+/// the post-login probe, `auth login` → prints the link). The test holds the
+/// CLI's stdin itself: it sends nothing until the link is on stderr, so a
+/// pre-spawn reader would deadlock on an empty pipe and never print the
+/// link — the ordering claim is exactly what the first assertion pins. The
+/// fake then reads the code line off its own stdin, records it, and runs a
+/// bounded second read: an immediate EOF there would mean stdin was closed
+/// after the write (the finding's second half).
+#[test]
+#[cfg(unix)]
+fn login_code_stdin_waits_for_the_link_before_the_code_and_keeps_stdin_open() {
+    use std::io::Write as _;
+
+    let root = scratch_root("login-code-stdin");
+    std::fs::create_dir_all(root.join("home")).unwrap();
+    let _root = ScratchDir(root.clone());
+
+    let marker = root.join("received.txt");
+    // The fake's `auth login` prints the link, reads one code line off its
+    // stdin, and records it. An EOF watcher then parks on the CLI↔vendor
+    // pipe and records an EOF the instant one arrives: that watcher IS the
+    // close-after-write assertion. A plain `( read … ) &` cannot do this —
+    // a POSIX shell points every background job's stdin at /dev/null, so
+    // the watcher would report an instant EOF no matter what the CLI does —
+    // hence `exec 3<&0` in the foreground first: fd 3 is inherited by the
+    // background job untouched, and it is the real pipe.
+    //
+    // A healthy run writes `code:`, then (nothing from the watcher while the
+    // CLI holds claude's stdin open), then `vendor-exit` when the 2.5 s park
+    // ends, and only then `stdin-eof` — the CLI releases the held-open pipe
+    // after its loop observes this exit. A close-after-write CLI emits
+    // `stdin-eof` immediately after `code:`, well before `vendor-exit`.
+    let script = write_fake_vendor(
+        &root,
+        "claude",
+        &format!(
+            "#!/bin/sh\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then exit 0; fi\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"login\" ]; then\n  echo \"Open https://claude.com/cai/oauth/authorize?state=fake to authorize\"\n  read line\n  printf 'code:%s\\n' \"$line\" > {marker}\n  exec 3<&0\n  ( read second <&3 || printf 'stdin-eof\\n' >> {marker} ) &\n  sleep 2.5\n  echo vendor-exit >> {marker}\n  exit 0\nfi\nexit 1\n",
+            marker = marker.display(),
+        ),
+    );
+
+    let mut child = spawn_pinvou(
+        &root,
+        &[
+            "code",
+            "login",
+            "claude",
+            "--code-stdin",
+            "--output",
+            "json",
+        ],
+        &[("PINVOU3_CLAUDE_CLI_PATH", &script)],
+        true,
+    );
+    let (rx, tail) = pump_stderr(&mut child);
+    // parked on an empty pipe here, so this deadline receiving nothing IS
+    // the red outcome (HEAD collected the code before the child existed).
+    let mut saw_url = false;
+    let seen = wait_for_line(&rx, 20, |line| {
+        saw_url |= line.starts_with("login link: https://claude.com/");
+        saw_url
+    });
+    if !saw_url {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "the link must be live before the invoker's stdin is consumed \
+             (the code was collected before the child could print it); saw: {seen:?}"
+        );
+    }
+
+    // Only now, with the link visible, does the invoker hold a code at all.
+    {
+        let mut stdin = child.stdin.take().expect("stdin is piped");
+        stdin
+            .write_all(b"fake-authorize-code-4711\n")
+            .expect("the test must deliver the code after the link");
+        // EOF: the CLI's `--*-stdin` lanes read to EOF like every other
+        // secret lane (`--api-key-stdin`); dropping the write end is the
+        // terminal user's Ctrl-D.
+    }
+    let output = child
+        .wait_with_output()
+        .expect("the CLI must finish the login");
+    let tail = tail
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let value: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("single-line JSON login result: {stdout}");
+    assert_eq!(
+        value["status"], "completed",
+        "the two-phase flow must complete: {stdout}"
+    );
+    assert_eq!(
+        value["login_url"], "https://claude.com/cai/oauth/authorize?state=fake",
+        "the JSON must still capture the link"
+    );
+
+    let received = std::fs::read_to_string(&marker).unwrap_or_default();
+    assert!(
+        received.starts_with("code:fake-authorize-code-4711"),
+        "the code delivered after the link must be forwarded to the child: {received:?}\
+         \n--- CLI stderr events ---\n{tail:?}\
+         \n--- CLI stderr raw ---\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    // Strict marker order: stdin-eof must come AFTER vendor-exit — the CLI
+    // holds claude's stdin open through the whole wait and releases it only
+    // once its loop has observed the vendor's exit. An EOF earlier than
+    // vendor-exit is the close-after-write defect still present.
+    let position = |needle: &str| received.lines().position(|line| line.trim() == needle);
+    let vendor_exit = position("vendor-exit").expect("the vendor must record its exit");
+    assert!(
+        position("stdin-eof").is_none_or(|eof| eof > vendor_exit),
+        "the child's stdin must stay open for the whole wait: an EOF arrived before the \
+         vendor exited (close-after-write, the finding's second half); marker: {received:?}\
+         \n--- CLI stderr events ---\n{tail:?}\
+         \n--- CLI stderr raw ---\n{}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+// ── round-18: providers update --delete-key requires --yes ─────────────────
+//
+// A stored credential's deletion is a destructive one-way action: the family
+// already gates `providers remove` behind `--yes`, and the round-18 review
+// found `update --delete-key` running ungated. The gate must refuse BEFORE
+// any secret resolution or store mutation (the usage exit must not depend on
+// stdin or network), mirroring `models edit --clear-api-key`'s ordering.
+#[test]
+fn providers_update_delete_key_requires_yes() {
+    let _env_guard = common::env_lock();
+    // HomeGuard drops last, resetting PINVOU3_HOME itself.
+    let _home = sandbox_home("delete-key-gate");
+    // Round-38 review: restore the variable on every exit path like the
+    // sibling secret lanes' guards, instead of leaking the seeded value to
+    // parallel tests for the rest of the run (the seed `set_var` below
+    // happens after this capture-and-remove).
+    let _key = EnvGuard::remove(&["PINVOU_TEST_DELETE_KEY_SECRET"]);
+
+    // Seed one provider with a key, so `--delete-key` has a real target.
+    // SAFETY: the suite's ENV_LOCK is held for the whole test (same contract
+    // as every other env-mutating lane in this file); no threads are racing,
+    // and the variable is process-local to this test binary.
+    unsafe { std::env::set_var("PINVOU_TEST_DELETE_KEY_SECRET", "sk-gate-test-value") };
+    let value = run_json(&add(
+        "codex",
+        &[
+            "--name",
+            "Gate A",
+            "--base-url",
+            "https://api.example.com/v1/",
+            "--wire-api",
+            "openai",
+            "--model",
+            "gpt-test",
+            "--context-window",
+            "128000",
+            "--api-key-env",
+            "PINVOU_TEST_DELETE_KEY_SECRET",
+        ],
+    ));
+    let added_id = value["provider"]["id"].as_str().unwrap().to_owned();
+    // The add succeeded, so the fixture key is in the real keychain on dev
+    // machines; the test's own final `--delete-key --yes` normally cleans
+    // it, but a mid-test panic used to orphan the entry (round-39 review).
+    let _keyring = KeyringCleanup {
+        agent: "codex",
+        provider_id: added_id.clone(),
+    };
+
+    // Refusal without --yes: exit 2-style usage error, store untouched.
+    yes_gate_error(&update(added_id.as_str(), "codex", &["--delete-key"]));
+
+    // Ordering control: with the secret source UNSET, the refusal must still
+    // be the --yes gate and not a resolution failure — proving the gate runs
+    // before any secret resolution, exactly as the comment above claims. The
+    // variable is restored so the --yes lane below sees the seeded state.
+    unsafe { std::env::remove_var("PINVOU_TEST_DELETE_KEY_SECRET") };
+    yes_gate_error(&update(added_id.as_str(), "codex", &["--delete-key"]));
+    unsafe { std::env::set_var("PINVOU_TEST_DELETE_KEY_SECRET", "sk-gate-test-value") };
+
+    // The refusal persisted nothing: the credential is still configured.
+    let value = run_json(&["pinvou", "code", "providers", "list", "--agent", "codex"]);
+    let providers = value["providers"]["providers"].as_array().unwrap();
+    let entry = providers
+        .iter()
+        .find(|entry| entry["id"] == added_id.as_str())
+        .expect("the refused update must not have removed the provider");
+    assert_eq!(
+        entry["hasCredential"], true,
+        "the refused update must not have dropped the key"
+    );
+
+    // With --yes the deletion proceeds.
+    let value = run_json(&update(
+        added_id.as_str(),
+        "codex",
+        &["--delete-key", "--yes"],
+    ));
+    assert_eq!(value["action"], "updated");
+
+    let value = run_json(&["pinvou", "code", "providers", "list", "--agent", "codex"]);
+    let providers = value["providers"]["providers"].as_array().unwrap();
+    let entry = providers
+        .iter()
+        .find(|entry| entry["id"] == added_id.as_str())
+        .expect("the provider row must survive a key deletion");
+    assert_eq!(entry["hasCredential"], false, "key gone after --yes");
+}
+
+/// Round-36 review minor: `--workspace` passes the session-id alphabet, so
+/// `code sessions info --workspace` with the id forgotten became an exit-1
+/// store lookup; it must be refused as usage, naming the real mistake.
+#[test]
+fn flag_shaped_token_in_the_session_id_slot_is_a_usage_error() {
+    let message = usage_error(&["pinvou", "code", "sessions", "info", "--workspace"]);
+    assert!(
+        message.contains("flag-shaped"),
+        "the refusal must name the flag-shaped token: {message}"
+    );
+}

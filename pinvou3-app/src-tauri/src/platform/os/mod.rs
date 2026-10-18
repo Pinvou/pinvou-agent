@@ -49,5 +49,5 @@ pub use interface::{
     reveal_target, show_archive_dependency_check, show_ocr_dependency_check,
     show_pandoc_dependency_check, show_pdf_dependency_check, spawn_detached_and_reap,
     startup_platform_env, super_permission_is_enabled, super_permission_turn_reminder,
-    system_default_open_supported, user_home_dir, validate_upload_location,
+    system_default_open_supported, try_make_private_dir, user_home_dir, validate_upload_location,
 };

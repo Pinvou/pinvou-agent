@@ -16,7 +16,9 @@ use crate::features::connectors::skill_gate::ConnectorGate;
 
 const ID: &str = "tmeet";
 const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.18";
-const TMEET_MIN_VERSION: (u64, u64, u64) = (1, 0, 18);
+/// `pub` + the facade re-export: single-sourced with the CLI's connectors
+/// family (round-51 review, same rationale as `LARK_MIN_VERSION`).
+pub const TMEET_MIN_VERSION: (u64, u64, u64) = (1, 0, 18);
 
 const TMEET_CTX: CliCtx = CliCtx {
     cli_bin: "tmeet",

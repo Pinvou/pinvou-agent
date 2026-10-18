@@ -194,6 +194,37 @@ pub fn package_mcp_dir(id: &str) -> PathBuf {
     paths::bundles_root().join(id).join("mcp")
 }
 
+/// Resolve a local manifest's launch args against a released package dir:
+/// the `server.py` placeholder becomes the released script's absolute path,
+/// every other argument passes through verbatim. Shared by the install
+/// writer (`add_to_mcp_json` local branch), the startup rebuild validator,
+/// and the per-aux scoped session-reader config writer (ADR-0024) so every
+/// mcp.json producer judges the same launch target.
+pub fn local_server_args(manifest: &ToolManifest, server_dir: &Path) -> Vec<String> {
+    manifest
+        .args
+        .iter()
+        .map(|a| {
+            if a == "server.py" || a.ends_with("/server.py") {
+                server_dir.join("server.py").to_string_lossy().to_string()
+            } else {
+                a.clone()
+            }
+        })
+        .collect()
+}
+
+/// The command a local mcp.json entry launches: the bare python family resolves to
+/// the current runtime, anything else is the manifest value verbatim. Shared by
+/// the same three producers as [`local_server_args`].
+pub fn local_server_command(manifest: &ToolManifest) -> String {
+    if manifest.command == "python" || manifest.command == "python3" {
+        paths::python_command()
+    } else {
+        manifest.command.clone()
+    }
+}
+
 /// 释放包内容到 `bundles/<id>/mcp/`（staged + 原子 rename，与技能 install 同范式）。
 /// 返回包内容指纹（写 BundleStore 记录用）；不在内嵌目录 → Ok(None)（调用方回退
 /// 旧布局）。内容指纹跳过旧布局残留标记，与技能指纹同一口径。
@@ -201,6 +232,18 @@ pub fn release_package(id: &str) -> Result<Option<String>, String> {
     let Some(spec) = spec_for(id) else {
         return Ok(None);
     };
+    // Round-51 review: the fixed `.mcp.tmp` staging and the remove-dest →
+    // rename tail below are shared paths with the CLI's second process —
+    // hold the same cross-process market lock every market mutator holds.
+    // Round-52 review M1: every current caller enters holding that lock
+    // already (install_inner / repair / reconcile hoist it above the
+    // transaction lock; the skill uninstall lane holds it directly), so the
+    // acquire below joins by hold depth on the same thread — no fresh fd, no
+    // block. It stays as the cross-process fail-safe for a future caller,
+    // with one hard rule (see `MARKETPLACE_TRANSACTION_LOCK`'s doc): such a
+    // caller must NOT already hold the transaction lock — TXN→market is the
+    // ABBA direction this lock order exists to prevent.
+    let _market_lock = super::plugin_import::MarketplaceWriteLock::acquire_map_err()?;
     let mcp_dir = package_mcp_dir(id);
     // bundles/<id>/mcp is joined from bundles_root() and always has a parent;
     // still return an error as the fallback.
@@ -322,5 +365,54 @@ mod tests {
         }
         // 12 known embedded packages
         assert_eq!(MCP_PACKAGES.len(), 12);
+    }
+
+    /// ADR-0024 E6: the byte-compare upgrade leg — an existing 1.0.0 install
+    /// (content mismatch vs the embedded 1.1.0 package) is re-released and
+    /// reports `true`; an up-to-date install reports `false` and is left
+    /// byte-identical. This is the "mismatch-rewrite" behavior the aux
+    /// config tests seed through.
+    #[test]
+    fn ensure_package_released_upgrades_a_stale_install_byte_compare() {
+        let _g = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-mcp-release-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        // Fresh release: created, reports true.
+        assert!(ensure_package_released("session-reader").expect("first release"));
+        let server_py = package_mcp_dir("session-reader").join("server.py");
+        let current = std::fs::read_to_string(&server_py).expect("released server.py");
+
+        // Idempotent re-release: byte-compare equal, reports false, untouched.
+        let before = std::fs::metadata(&server_py).unwrap();
+        assert!(!ensure_package_released("session-reader").expect("idempotent"));
+        let after = std::fs::metadata(&server_py).unwrap();
+        assert_eq!(
+            before.modified().ok(),
+            after.modified().ok(),
+            "an up-to-date install must not be rewritten"
+        );
+
+        // Stale install (1.0.0 shape: any byte drift): re-released, true.
+        std::fs::write(&server_py, "# stale 1.0.0 content\n").unwrap();
+        assert!(ensure_package_released("session-reader").expect("upgrade"));
+        assert_eq!(
+            std::fs::read_to_string(&server_py).unwrap(),
+            current,
+            "the stale install must be byte-restored to the embedded package"
+        );
+
+        // SAFETY: the caller's test holds platform::paths::tests::ENV_LOCK throughout; env writes are serialized in-process.
+        unsafe { std::env::remove_var("PINVOU3_HOME") };
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

@@ -82,10 +82,10 @@ assert.match(
 );
 assert.equal(
   (tauriChatBridgeSource.match(
-    /if \(state\.activeSessionId !== sid\) \{\s*abandonPreparedAttachments\(\);\s*(?:\/\/[^\n]*\n\s*)*restoreSteerText\(sid, text\);\s*return "restored";/g,
+    /return abandonToOwnSession\(\);/g,
   ) || []).length,
   4,
-  'every navigation-interrupted send branch must release attachments and return the draft to its own session (#406), leaving no stale chip for the next session',
+  'every navigation-interrupted send branch must release attachments and route its return on the restore verdict (#406; round-8 M1 — refs-only resolves false so the caller keeps the chips armed), leaving no stale chip for the next session',
 );
 assert.match(desktopUploadSource, /workspace\.join\("attachments"\)/);
 assert.match(desktopUploadSource, /draft_attachment_workspace/);

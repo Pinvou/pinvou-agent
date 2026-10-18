@@ -59,7 +59,12 @@ pub(crate) fn strip_all_git_env(command: &mut Command) {
 /// Once `GIT_CONFIG_COUNT` is removed, the `GIT_CONFIG_KEY_n`/
 /// `GIT_CONFIG_VALUE_n` numbered pairs become ineffective, so the numbered
 /// keys need no enumeration.
-const GIT_OVERRIDE_KEYS: [&str; 25] = [
+///
+/// `pub` so the same-repo `pinvou-cli` workspace lanes can import it through
+/// the `features::codex_acp` facade re-export instead of mirroring the list
+/// (a CLI-side mirror had already drifted by three keys); the GUI's own
+/// callers keep using it through the crate-private strip_git_override_env.
+pub const GIT_OVERRIDE_KEYS: [&str; 25] = [
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_INDEX_FILE",
@@ -105,7 +110,12 @@ const GIT_OVERRIDE_KEYS: [&str; 25] = [
     "GIT_CONFIG_VALUE_0",
 ];
 
-const GIT_IDENTITY_KEYS: [&str; 6] = [
+/// Published through the `features::codex_acp` facade for the same-repo
+/// `pinvou-cli`'s commit lane: the CLI must strip the exact identity list the
+/// GUI's commit lane strips, or an ambient `GIT_AUTHOR_*` could outrank the
+/// `-c user.name=` the CLI passes (same drift-prevention as
+/// `GIT_OVERRIDE_KEYS` above); behavior is unchanged.
+pub const GIT_IDENTITY_KEYS: [&str; 6] = [
     "GIT_AUTHOR_NAME",
     "GIT_AUTHOR_EMAIL",
     "GIT_AUTHOR_DATE",
@@ -136,7 +146,27 @@ fn external_command_for(executable: &Path, windows: bool) -> Command {
 
 /// 构造隐藏窗口的外部 CLI 命令。Windows npm 生成的 `.cmd` / `.bat` shim
 /// 必须经 `cmd /D /S /C`，否则探测、登录或启动 Agent 时会被当成原生可执行文件。
-pub(crate) fn external_command(executable: &Path) -> Command {
+/// Shared with the pinvou-cli kill tree (`support.rs` Windows arm) through
+/// the targeted `platform::external_command` re-export — the `process`
+/// module itself stays crate-private. The point of sharing is *resolution
+/// parity*, not hardening: `external_application_path` only normalizes
+/// `\\?\`/UNC spellings and returns a bare name like `taskkill` verbatim,
+/// so a bare-name caller resolves exactly as it does for the GUI's own
+/// `kill_pid_tree` (app dir → CWD → System32 → PATH). A caller that needs a
+/// planted-`taskkill.exe`-in-CWD defense must resolve
+/// `%SystemRoot%\System32\taskkill.exe` itself — this helper deliberately
+/// does not invent a stricter PATH policy the GUI does not have.
+///
+/// The Windows `.cmd`/`.bat` branch keeps the manual `cmd /D /S /C` wrap
+/// (unlike the CLI's own `build_command`, which delegates to std's hardened
+/// batch quoting): these shims NEED the cmd interpretation to run at all
+/// — an npm `.cmd` spawned directly is treated as a non-executable image —
+/// and every current caller passes a fixed, first-party-resolved path with
+/// no attacker-shaped argument material, so the BatBadBut argument-quoting
+/// class the CLI pin guards against has no vector here. If a caller ever
+/// forwards external arguments through this helper, route that caller
+/// through `build_command`'s std delegation instead of extending the wrap.
+pub fn external_command(executable: &Path) -> Command {
     external_command_for(executable, crate::platform::capabilities::is_windows())
 }
 

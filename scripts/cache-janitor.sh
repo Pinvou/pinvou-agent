@@ -4,6 +4,18 @@
 # 删除规则:
 #   A. 已关闭/已合并 PR(refs/pull/N/merge)作用域的全部缓存
 #      (PR 作用域缓存互不可见,PR 关闭后即死重;PR 状态查询失败一律保留)
+#   A2. merge-queue residual scopes (refs/heads/gh-readonly-queue/**): queue
+#      entries are one-shot merge trees; once an entry completes (merged or
+#      kicked out) its ref is no longer readable and the scope's caches are
+#      dead weight. During lockfile churn the queue mints several node-cache
+#      copies that rule A (refs/pull/* only) never sees — without A2 they
+#      would wait for the 7-day unused-entry GC.
+#   A3. over-threshold v0-rust-macos-rust-check-v2-* snapshots: a save that
+#      skipped the prune (runner forced down mid-prune) freezes unpruned
+#      release dirs under the rotated key (cache-on-failure), and an
+#      exact-key hit then skips every later re-save — only a delete lets
+#      the pruned generation land. See the rule's block comment for the
+#      threshold rationale.
 #   B. codeql-overlay 每种语言每个作用域只保留最新 1 份(CodeQL 只消费最新 base)
 #   C. node-cache 每个平台每个作用域只保留最新 1 份(同平台旧 lockfile 哈希
 #      仅有 restore-keys 前缀回退价值,留最新即可)
@@ -44,10 +56,17 @@ done
 
 # 删除计数(按规则分组统计,便于审计日志;不用关联数组以兼容 macOS bash 3.2)
 STAT_A_CLOSED_PR=0
+STAT_A2_QUEUE=0
 STAT_B_CODEQL=0
 STAT_C_NODE=0
 STAT_D_RUST_GEN=0
+STAT_A3_FAT=0
 DELETED_BYTES=0
+# Entries already deleted (or counted) by an earlier rule this run, so a
+# later rule over the same enumeration snapshot never re-attempts them
+# (rule A2's CLOSED_REFS fold works at scope level; this works at entry
+# level for rules that delete individual entries, like D and A3).
+DELETED_IDS=""
 
 delete_cache() { # $1=id $2=key $3=size_bytes $4=rule
   local id="$1" key="$2" size="$3" rule="$4"
@@ -63,11 +82,14 @@ delete_cache() { # $1=id $2=key $3=size_bytes $4=rule
   # 仅在删除成功后计数(dry-run 为预估),避免删除失败仍计入"已释放"导致审计虚高
   case "$rule" in
     A_closed_pr)  STAT_A_CLOSED_PR=$(( STAT_A_CLOSED_PR + 1 )) ;;
+    A2_queue)     STAT_A2_QUEUE=$(( STAT_A2_QUEUE + 1 )) ;;
     B_codeql)     STAT_B_CODEQL=$(( STAT_B_CODEQL + 1 )) ;;
     C_node)       STAT_C_NODE=$(( STAT_C_NODE + 1 )) ;;
     D_rust_gen)   STAT_D_RUST_GEN=$(( STAT_D_RUST_GEN + 1 )) ;;
+    A3_fat_save)  STAT_A3_FAT=$(( STAT_A3_FAT + 1 )) ;;
   esac
   DELETED_BYTES=$(( DELETED_BYTES + size ))
+  DELETED_IDS="$DELETED_IDS $id"
 }
 
 echo "== 枚举缓存(dry-run=$DRY_RUN) =="
@@ -95,13 +117,55 @@ for ref in $PR_REFS; do
   CLOSED_REFS="$CLOSED_REFS $ref"
   while IFS=$'\t' read -r id size key; do
     delete_cache "$id" "$key" "$size" "A_closed_pr"
-  done < <(python3 -c "
-import json
+  done < <(JANITOR_REF="$ref" python3 -c "
+import json, os
+ref = os.environ['JANITOR_REF']
 for c in json.load(open('/tmp/cache-janitor-list.json')):
-    if c['ref'] == '$ref': print(f\"{c['id']}\t{c['sizeInBytes']}\t{c['key']}\")
+    if c['ref'] == ref: print(f\"{c['id']}\t{c['sizeInBytes']}\t{c['key']}\")
 ")
 done
 export CLOSED_REFS
+
+# ---------- Rule A2: merge-queue residual scopes ----------
+# gh-readonly-queue/* refs are one-shot merge trees: once a queue entry
+# completes (merged or kicked out) its ref is no longer readable and the
+# scope's caches are dead weight. During lockfile churn (deps branches,
+# rustc bumps) the queue mints several node-cache copies; rule A only
+# looks at refs/pull/*, so these residuals would otherwise wait for the
+# 7-day unused-entry GC. Unlike rule A, no state lookup is needed here:
+# existence equals residual (an active queue entry's cache is still inside
+# its 7-day window; deleting it only costs the next queue build a cache
+# miss — an npm re-download, or a cold compile for a Rust entry — never
+# a correctness issue).
+echo "== Rule A2: merge-queue residual scopes =="
+QUEUE_REFS=$(python3 -c "
+import json
+refs = {c['ref'] for c in json.load(open('/tmp/cache-janitor-list.json')) if c['ref'].startswith('refs/heads/gh-readonly-queue/')}
+for r in sorted(refs): print(r)
+")
+for ref in $QUEUE_REFS; do
+  echo "  cleaning queue residual $ref"
+  while IFS=$'\t' read -r id size key; do
+    delete_cache "$id" "$key" "$size" "A2_queue"
+  done < <(JANITOR_REF="$ref" python3 -c "
+import json, os
+ref = os.environ['JANITOR_REF']
+for c in json.load(open('/tmp/cache-janitor-list.json')):
+    if c['ref'] == ref: print(f\"{c['id']}\t{c['sizeInBytes']}\t{c['key']}\")
+")
+done
+# Scopes deleted by A2 fold into CLOSED_REFS: rules B/C/D read the same
+# enumeration snapshot, and without the skip they would re-issue deletes
+# for ids A2 just deleted and print a misleading "concurrent eviction"
+# warning (rule A uses the same mechanism to skip its own deletions).
+# The variable is already exported (rule A); the append updates the
+# exported value, so no second export is needed.
+# The ref reaches the inner python through the JANITOR_REF environment
+# variable instead of interpolation into single-quoted python source:
+# interpolation would let a quote inside a ref alter the filter
+# expression's meaning, while the environment route is always a plain
+# string equality comparison (rule A hardened the same way).
+CLOSED_REFS="$CLOSED_REFS $QUEUE_REFS"
 
 # ---------- 规则 B:codeql-overlay 每语言留最新 1 份 ----------
 echo "== 规则 B:codeql-overlay 去重 =="
@@ -169,7 +233,9 @@ for c in entries:
     # platform ∈ {Linux, Darwin, Windows_NT}. The series name is the
     # shared-key segment: everything after v0-rust- and before the first
     # platform marker (e.g. rust-lint-v2 / windows-rust-test /
-    # release-linux-x64-jammy). Group by (series, scope) and keep the newest
+    # macos-rust-check-v2; the release-* series died with the release-side
+    # cache removal on 2026-10-15). Group by (series, scope) and keep the
+    # newest
     # createdAt generation per group; older generations are worthless for
     # restore-keys prefix fallback (it always hits the newest) — pure quota
     # weight.
@@ -186,6 +252,59 @@ for group, items in groups.items():
     for c in items[1:]: print(f\"{c['id']}\t{c['sizeInBytes']}\t{c['key']}\")
 ")
 
+# ---------- Rule A3: over-threshold macos-rust-check-v2 snapshots ----------
+# The macOS cache key rotated on 2026-10-15 together with a prune step that
+# drops the release dirs from the saved entry (pr-check.yml); A3 insures
+# that invariant. On the paths that matter the insurance never fires: the
+# prune is `if: always() && push`, so even a run cancelled at the timeout
+# cap prunes before the cache-on-failure post-save, and a runner-level
+# death kills the post-save too. A fat v2-series entry can therefore only
+# come from a save that skipped the prune (runner forced down mid-prune,
+# e.g. the cancel grace expiring during the rm, or a future step reorder
+# regressing the order) — and exact-hit then skips every later re-save,
+# pinning the fat content until the next natural key rotation (a
+# dependency-surface merge). A v2-series entry at or above FAT_SAVE_BYTES
+# is by construction not a healthy save; delete it.
+# Threshold provenance: a projection, not a measurement — the Linux
+# analog rust-test-v2 (same dev targets) holds ~1.4-1.5GB and the macOS
+# entry is expected to shed the release dirs (~1.75GB of the pre-rotation
+# 3.1GB), so ~1.3GB is the working estimate; calibrate against the first
+# post-merge generations and raise FAT_SAVE_BYTES if the real dev
+# footprint approaches the threshold. A false positive deletes the only
+# warm generation on every daily run, each costing one cold bucket push
+# — the same cost as deleting a real fat snapshot, which is why the
+# threshold is biased toward the fat side. Rule D has already collapsed
+# the series to its newest generation by the time A3 runs, so deleting a
+# fat newest leaves no older restore-keys fallback; bounded to that same
+# one cold push and narrow (needs lockfile churn plus a fat snapshot
+# inside one daily interval), sparing a thin older generation is a
+# possible refinement, deliberately not built. Entries an earlier rule
+# deleted are skipped so a fat older generation is not attempted twice
+# (which would print a bogus concurrent-eviction warning). No ref/scope
+# condition, on purpose: v2 saves are main-only today (save-if pins
+# refs/heads/main in pr-check.yml) — revisit A3 if that ever widens.
+echo "== Rule A3: over-threshold macos-rust-check-v2 snapshots =="
+FAT_SAVE_BYTES=2000000000
+while IFS=$'\t' read -r id size key; do
+  delete_cache "$id" "$key" "$size" "A3_fat_save"
+done < <(JANITOR_FAT_BYTES="$FAT_SAVE_BYTES" JANITOR_DELETED_IDS="$DELETED_IDS" python3 -c "
+import json, os
+threshold = int(os.environ['JANITOR_FAT_BYTES'])
+deleted = set(os.environ.get('JANITOR_DELETED_IDS', '').split())
+for c in json.load(open('/tmp/cache-janitor-list.json')):
+    if str(c['id']) in deleted:
+        continue
+    if c['key'].startswith('v0-rust-macos-rust-check-v2-') and c['sizeInBytes'] >= threshold:
+        print(f\"{c['id']}\t{c['sizeInBytes']}\t{c['key']}\")
+")
+
 echo "== 汇总 =="
-echo "A_closed_pr=$STAT_A_CLOSED_PR B_codeql=$STAT_B_CODEQL C_node=$STAT_C_NODE D_rust_gen=$STAT_D_RUST_GEN"
+# A3 deleting anything is either the one-shot reclamation of a frozen fat
+# snapshot or — if it recurs run after run — the false-positive drift
+# mode (the real dev footprint has grown past FAT_SAVE_BYTES); surface
+# both loudly, a recurring annotation is the recalibration signal.
+if [ "$STAT_A3_FAT" -gt 0 ] && [ "${GITHUB_ACTIONS:-}" = "true" ]; then
+  echo "::warning::rule A3 deleted $STAT_A3_FAT over-threshold macos-rust-check-v2 snapshot(s); recurring on consecutive runs means the pruned dev footprint has drifted past FAT_SAVE_BYTES — recalibrate the threshold"
+fi
+echo "A_closed_pr=$STAT_A_CLOSED_PR A2_queue=$STAT_A2_QUEUE B_codeql=$STAT_B_CODEQL C_node=$STAT_C_NODE D_rust_gen=$STAT_D_RUST_GEN A3_fat_save=$STAT_A3_FAT"
 echo "释放空间约 $(( DELETED_BYTES / 1048576 ))MB(dry-run=$DRY_RUN)"

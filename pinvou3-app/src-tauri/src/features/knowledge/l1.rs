@@ -257,6 +257,50 @@ impl L1Store {
         Ok(())
     }
 
+    /// Returns whether the row existed (round-37 review: the CLI's
+    /// update lane must not report success for a collection a concurrent
+    /// delete removed between its pre-check and this write). Partial
+    /// variant of [`Self::update_collection`]: only the provided
+    /// columns join the SET list (plus the `updated_at` stamp). Round-45
+    /// review: the CLI's update lane used to read-merge-write the whole row,
+    /// so a concurrent rename between its read and write was silently
+    /// reverted by stale merged values — a partial UPDATE leaves columns the
+    /// caller omitted (and concurrent edits to them) untouched, while the
+    /// rows-affected return still catches a concurrent delete.
+    pub fn update_collection_fields(
+        &self,
+        id: i64,
+        name: Option<&str>,
+        category: Option<&str>,
+        description: Option<&str>,
+    ) -> rusqlite::Result<bool> {
+        let mut set_clauses: Vec<String> = Vec::new();
+        let mut values: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        for (column, value) in [
+            ("name", name),
+            ("category", category),
+            ("description", description),
+        ] {
+            if let Some(value) = value {
+                set_clauses.push(format!("{}=?{}", column, values.len() + 1));
+                values.push(Box::new(value.to_owned()));
+            }
+        }
+        set_clauses.push(format!("updated_at=?{}", values.len() + 1));
+        values.push(Box::new(now()));
+        values.push(Box::new(id));
+        let sql = format!(
+            "UPDATE collections SET {} WHERE id=?{}",
+            set_clauses.join(","),
+            values.len()
+        );
+        let changed = self.conn.lock().execute(
+            &sql,
+            rusqlite::params_from_iter(values.iter().map(|v| v.as_ref())),
+        )?;
+        Ok(changed > 0)
+    }
+
     /// 删知识集 + 其全部文档/块（chunks_fts 由触发器同步）。
     pub fn delete_collection(&self, id: i64) -> rusqlite::Result<()> {
         let mut c = self.conn.lock();
@@ -289,6 +333,22 @@ impl L1Store {
     }
 
     // ───────────────────────── 文档 ─────────────────────────
+
+    /// Row shape shared by every `documents JOIN collections` read below.
+    fn document_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Document> {
+        Ok(Document {
+            id: r.get(0)?,
+            collection_id: r.get(1)?,
+            coll_name: r.get(2)?,
+            path: r.get(3)?,
+            name: r.get(4)?,
+            ext: r.get(5)?,
+            size: r.get(6)?,
+            mtime: r.get(7)?,
+            parse_status: r.get(8)?,
+            n_chunks: r.get(9)?,
+        })
+    }
 
     /// 库里是否存在任意已入库文档（任一知识集）。用于「知识库为空时隐藏
     /// kb_search/kb_open_source 工具」门控：
@@ -325,21 +385,7 @@ impl L1Store {
              ORDER BY d.parsed_at DESC, d.id DESC LIMIT ?2"
         };
         let mut stmt = c.prepare(sql)?;
-        let map = |r: &rusqlite::Row<'_>| -> rusqlite::Result<Document> {
-            Ok(Document {
-                id: r.get(0)?,
-                collection_id: r.get(1)?,
-                coll_name: r.get(2)?,
-                path: r.get(3)?,
-                name: r.get(4)?,
-                ext: r.get(5)?,
-                size: r.get(6)?,
-                mtime: r.get(7)?,
-                parse_status: r.get(8)?,
-                n_chunks: r.get(9)?,
-            })
-        };
-        let rows = stmt.query_map(params![collection_id, lim], map)?;
+        let rows = stmt.query_map(params![collection_id, lim], Self::document_from_row)?;
         rows.collect()
     }
 
@@ -356,20 +402,7 @@ impl L1Store {
              FROM documents d JOIN collections c ON c.id=d.collection_id \
              WHERE d.id=?1 AND d.collection_id=?2 AND d.parse_status='parsed'",
             params![document_id, collection_id],
-            |r| {
-                Ok(Document {
-                    id: r.get(0)?,
-                    collection_id: r.get(1)?,
-                    coll_name: r.get(2)?,
-                    path: r.get(3)?,
-                    name: r.get(4)?,
-                    ext: r.get(5)?,
-                    size: r.get(6)?,
-                    mtime: r.get(7)?,
-                    parse_status: r.get(8)?,
-                    n_chunks: r.get(9)?,
-                })
-            },
+            Self::document_from_row,
         )
         .optional()
     }
@@ -403,8 +436,8 @@ impl L1Store {
 
     /// 插入或更新一条文档记录，返回 doc id。
     /// Test-only fixture seeding: production ingestion goes through the
-    /// resumable `ingest_import_item` staging pipeline, which has its own
-    /// document upsert.
+    /// resumable `ingest_import_item` staging pipeline, whose upsert
+    /// (`upsert_import_document`) this wraps so the SQL cannot drift.
     #[cfg(test)]
     pub fn upsert_document(
         &self,
@@ -415,28 +448,22 @@ impl L1Store {
         size: i64,
         mtime: i64,
     ) -> rusqlite::Result<i64> {
-        let c = self.conn.lock();
-        c.execute(
-            "INSERT INTO documents(collection_id,path,name,ext,size,mtime,parse_status,parsed_at) \
-             SELECT ?1,?2,?3,?4,?5,?6,'pending',0 \
-             WHERE EXISTS(SELECT 1 FROM collections WHERE id=?1) \
-             ON CONFLICT(collection_id,path) DO UPDATE SET \
-               name=excluded.name,ext=excluded.ext,size=excluded.size,mtime=excluded.mtime",
-            params![collection_id, path, name, ext, size, mtime],
-        )?;
-        c.query_row(
-            "SELECT id FROM documents WHERE collection_id=?1 AND path=?2",
-            params![collection_id, path],
-            |r| r.get(0),
-        )
+        let mut c = self.conn.lock();
+        let tx = c.transaction()?;
+        let doc_id = upsert_import_document(&tx, collection_id, path, name, ext, size, mtime)?;
+        tx.commit()?;
+        Ok(doc_id)
     }
 
-    /// 删除文档及其块。
-    pub fn remove_document(&self, doc_id: i64) -> rusqlite::Result<()> {
+    /// 删除文档及其块。Returns whether the document existed (round-37
+    /// review: the CLI's remove lane must not report success for a
+    /// document a concurrent delete removed between its pre-check and
+    /// this write; the GUI's delete has always been a silent no-op).
+    pub fn remove_document(&self, doc_id: i64) -> rusqlite::Result<bool> {
         let c = self.conn.lock();
         c.execute("DELETE FROM chunks WHERE document_id=?1", params![doc_id])?;
-        c.execute("DELETE FROM documents WHERE id=?1", params![doc_id])?;
-        Ok(())
+        let deleted = c.execute("DELETE FROM documents WHERE id=?1", params![doc_id])?;
+        Ok(deleted > 0)
     }
 
     /// Whether the document exists (headless callers reject unknown ids with
@@ -1036,16 +1063,16 @@ fn rrf_score(rank: usize) -> f64 {
 fn rrf_merge(fts: Vec<ChunkHit>, vec: Vec<ChunkHit>, k: usize) -> Vec<ChunkHit> {
     let mut score: HashMap<String, f64> = HashMap::new();
     let mut keep: HashMap<String, ChunkHit> = HashMap::new();
-    for (rank, h) in fts.iter().enumerate() {
-        let key = format!("{}#{}", dedupe_path_key(&h.doc_path), h.ord);
-        *score.entry(key.clone()).or_insert(0.0) += rrf_score(rank);
-        keep.entry(key).or_insert_with(|| h.clone());
-    }
-    for (rank, h) in vec.iter().enumerate() {
-        let key = format!("{}#{}", dedupe_path_key(&h.doc_path), h.ord);
-        *score.entry(key.clone()).or_insert(0.0) += rrf_score(rank);
-        keep.entry(key).or_insert_with(|| h.clone());
-    }
+    // 每一路按各自从 0 计的排名给分，两路合并。
+    let mut add_stream = |hits: &[ChunkHit]| {
+        for (rank, h) in hits.iter().enumerate() {
+            let key = format!("{}#{}", dedupe_path_key(&h.doc_path), h.ord);
+            *score.entry(key.clone()).or_insert(0.0) += rrf_score(rank);
+            keep.entry(key).or_insert_with(|| h.clone());
+        }
+    };
+    add_stream(&fts);
+    add_stream(&vec);
     let mut merged: Vec<ChunkHit> = keep
         .into_iter()
         .map(|(key, mut h)| {
@@ -1075,6 +1102,42 @@ mod tests {
     fn mem() -> L1Store {
         let store = Store::open_in_memory().unwrap();
         L1Store::new(store.conn_arc()) // Unit test: plain full-text only, no embedding
+    }
+
+    /// Round-45 review: the CLI's update lane used to read-merge-write the
+    /// whole row, so a concurrent rename between its read and write was
+    /// silently reverted. The partial UPDATE must leave omitted columns (and
+    /// concurrent edits to them) untouched while keeping the rows-affected
+    /// not-found semantics.
+    #[test]
+    fn partial_collection_update_leaves_omitted_columns_untouched() {
+        let l1 = mem();
+        let id = l1
+            .create_collection("原始名", Some("cat"), Some("desc"))
+            .unwrap();
+        // Simulate the concurrent writer: a rename lands between the CLI's
+        // read and its write (the writer itself uses the partial form, so it
+        // does not clobber the other columns either).
+        l1.update_collection_fields(id, Some("并发改名"), None, None)
+            .unwrap();
+        assert!(
+            l1.update_collection_fields(id, None, None, Some("新描述"))
+                .unwrap()
+        );
+        let row = l1
+            .list_collections()
+            .unwrap()
+            .into_iter()
+            .find(|collection| collection.id == id)
+            .unwrap();
+        assert_eq!(row.name, "并发改名");
+        assert_eq!(row.category.as_deref(), Some("cat"));
+        assert_eq!(row.description.as_deref(), Some("新描述"));
+        // An unknown id still reports not-found through rows-affected.
+        assert!(
+            !l1.update_collection_fields(999_999, Some("x"), None, None)
+                .unwrap()
+        );
     }
 
     #[test]

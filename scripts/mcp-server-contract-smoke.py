@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import tempfile
@@ -28,13 +29,14 @@ class RpcServer:
         server_dir: Path,
         env: dict[str, str] | None = None,
         timeout_s: float | None = None,
+        args: list[str] | None = None,
     ):
         child_env = os.environ.copy()
         child_env.update(env or {})
         self.server_dir = server_dir
         self.timeout_s = timeout_s or float(os.environ.get("PINVOU3_MCP_RPC_TIMEOUT_SECS", "10"))
         self.proc = subprocess.Popen(
-            [sys.executable, "server.py"],
+            [sys.executable, "server.py", *(args or [])],
             cwd=server_dir,
             env=child_env,
             stdin=subprocess.PIPE,
@@ -135,6 +137,102 @@ def check_protocol(tool_id: str, expected_tools: set[str], env=None):
     print(f"✅ {tool_id}: initialize + tools/list ({len(expected_tools)})")
 
 
+def check_session_reader_length_cap_parity() -> None:
+    """Round-9 minor 1: the host demotes at parent.len() > 128 citing the
+    server's MAX_SESSION_ID_LEN — pin the constant itself so a silent
+    server-side lowering re-opens the dead-tool-declaration scenario the
+    host demotion exists to prevent."""
+    source = (MCP_ROOT / "session-reader" / "server.py").read_text(
+        encoding="utf-8")
+    match = re.search(r"MAX_SESSION_ID_LEN\s*=\s*(\d+)", source)
+    assert match, "MAX_SESSION_ID_LEN must stay declared in server.py"
+    assert int(match.group(1)) == 128, (
+        "server MAX_SESSION_ID_LEN moved: update engine_pool.rs's host-side "
+        "length demote (parent.len() > 128) in lockstep")
+
+
+def check_session_reader_scoped_journey() -> None:
+    """ADR-0024 scoped instance (--only-session): the aux engine's shape."""
+    with tempfile.TemporaryDirectory(prefix="pinvou3-scoped-smoke-") as sessions:
+        def write_session(sid: str, user: str, answer: str) -> None:
+            (Path(sessions) / f"{sid}.json").write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "metadata": {
+                        "id": sid, "title": f"session {sid}",
+                        "created_at": "2026-10-08T00:00:00Z",
+                        "updated_at": "2026-10-08T00:00:00Z",
+                        "message_count": 2,
+                    },
+                    "messages": [
+                        {"role": "user", "content": [{"type": "text", "text": user}]},
+                        {"role": "assistant", "content": [{"type": "text", "text": answer}]},
+                    ],
+                }, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+        write_session("parent01", "父任务的问题", "父任务的回答")
+        write_session("sibling02", "别的会话", "不该被读到")
+
+        with RpcServer(
+            MCP_ROOT / "session-reader",
+            # The shipped per-aux config emits the = form (dash-immune);
+            # the wire journey must drive the shipped form, not the
+            # two-token spelling the code abandoned.
+            args=["--sessions-dir", sessions, "--only-session=parent01"],
+        ) as rpc:
+            # Scoped mode lists the read-only surface: #627's cross-session
+            # send cannot be data-scoped the way reads are, so the scoped
+            # listing and the executable surface stay in lockstep.
+            listed = rpc.call("tools/list")
+            assert {tool["name"] for tool in listed["result"]["tools"]} == {
+                "read_session", "list_sessions"}
+
+            ok = content_json(rpc.call("tools/call", {
+                "name": "read_session",
+                "arguments": {"session_id": "parent01"},
+            }))
+            assert ok["ok"] and ok["turns"][0]["userText"] == "父任务的问题"
+
+            denied = content_json(rpc.call("tools/call", {
+                "name": "read_session",
+                "arguments": {"session_id": "sibling02"},
+            }))
+            assert not denied["ok"] and "not readable" in denied["error"]
+
+            scoped_list = content_json(rpc.call("tools/call", {
+                "name": "list_sessions", "arguments": {},
+            }))
+            assert [entry["sessionId"] for entry in scoped_list["sessions"]] == ["parent01"]
+
+            # The #627 send tool rides the unscoped app instance only: a
+            # scoped instance refuses it structurally (never a spool write).
+            refused = content_json(rpc.call("tools/call", {
+                "name": "send_message_to_session",
+                "arguments": {
+                    "session_id": "parent01",
+                    "title": "must never deliver",
+                    "message": "scoped instances are read-only",
+                },
+            }))
+            assert not refused["ok"] and "parent-context reads" in refused["error"]
+
+    # Startup validation: an isolated-prefix pin refuses to boot (the aux
+    # spawn then fails its MCP boot and carries no session-reader tools —
+    # fail-closed).
+    proc = subprocess.Popen(
+        [sys.executable, "server.py", "--only-session", "aux-parent01"],
+        cwd=MCP_ROOT / "session-reader",
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, encoding="utf-8",
+    )
+    _, stderr = proc.communicate(timeout=10)
+    assert proc.returncode == 2, "an isolated-prefix pin must refuse to start with exit 2"
+    assert "--only-session" in stderr and "not readable" in stderr, stderr
+    print("✅ session-reader: scoped instance (--only-session) 全旅程 + 隔离前缀拒启")
+
+
 def check_rpc_timeout() -> None:
     with tempfile.TemporaryDirectory(prefix="pinvou-mcp-hung-") as tmp:
         server_dir = Path(tmp)
@@ -191,10 +289,17 @@ def main():
         "pptx": {"make_pptx"},
         "gongwen": {"make_gongwen"},
         "wecom-bot": {"send_text", "send_markdown", "send_news", "send_image", "send_file"},
-        "session-reader": {"read_session", "list_sessions"},
+        "session-reader": {"read_session", "list_sessions", "send_message_to_session"},
     }
     for tool_id, names in expected.items():
         check_protocol(tool_id, names)
+
+    # E6 (ADR-0024): the scoped-mode behavior addition ships as manifest
+    # 1.1.0 — the builtin package re-releases by byte comparison
+    # (ensure_package_released upgrades an existing install on mismatch).
+    assert manifests["session-reader"]["version"] == "1.1.0", manifests["session-reader"]["version"]
+    check_session_reader_length_cap_parity()
+    check_session_reader_scoped_journey()
 
     with RpcServer(MCP_ROOT / "weather", {"AMAP_KEY": ""}) as rpc:
         result = content_json(rpc.call("tools/call", {"name": "get_weather", "arguments": {"city": "杭州"}}))
@@ -226,6 +331,37 @@ def main():
             deleted = content_json(rpc.call("tools/call", {"name": "delete_note", "arguments": {"path": "测试/自动化", "confirm": True}}))
             assert deleted.get("type") == "obsidian_deleted" and not Path(vault, "测试", "自动化.md").exists()
     print("✅ obsidian: 创建/读取/搜索/人在环删除全旅程")
+
+    with tempfile.TemporaryDirectory(prefix="pinvou-session-reader-send-") as home:
+        sessions = Path(home, "sessions")
+        sessions.mkdir(parents=True)
+        for sid, title in (("src0001", "源会话"), ("tgt0001", "目标会话")):
+            (sessions / f"{sid}.json").write_text(json.dumps({
+                "metadata": {"id": sid, "title": title, "updated_at": "2026-09-28T00:00:00Z", "message_count": 1},
+                "messages": [],
+            }, ensure_ascii=False), encoding="utf-8")
+        with RpcServer(MCP_ROOT / "session-reader", {"PINVOU3_HOME": home}) as rpc:
+            sent = content_json(rpc.call("tools/call", {
+                "name": "send_message_to_session",
+                "arguments": {"to_session": "tgt0001", "text": "跨会话交接", "from_session": "src0001", "idempotency_key": "k1"},
+            }))
+            assert sent.get("delivery") == "pending" and sent.get("toSession") == "tgt0001", sent
+            duplicate = content_json(rpc.call("tools/call", {
+                "name": "send_message_to_session",
+                "arguments": {"to_session": "tgt0001", "text": "跨会话交接", "from_session": "src0001", "idempotency_key": "k1"},
+            }))
+            assert duplicate.get("duplicate") is True, duplicate
+            spooled = sorted(Path(home, "messaging", "spool").glob("*.json"))
+            assert len(spooled) == 1, spooled
+            record = json.loads(spooled[0].read_text(encoding="utf-8"))
+            assert record["to_session"] == "tgt0001" and record["from_session"] == "src0001", record
+            assert record["from_title"] == "源会话" and record["text"] == "跨会话交接", record
+            isolated = content_json(rpc.call("tools/call", {
+                "name": "send_message_to_session",
+                "arguments": {"to_session": "sched-run1", "text": "hi"},
+            }))
+            assert "not readable" in isolated.get("error", ""), isolated
+    print("✅ session-reader: 跨会话消息校验/幂等/隔离前缀全旅程")
 
     with tempfile.TemporaryDirectory(prefix="pinvou-artifacts-") as artifacts:
         env = {"PINVOU3_SESSION_ARTIFACTS": artifacts}

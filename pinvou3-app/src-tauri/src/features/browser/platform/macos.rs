@@ -18,7 +18,7 @@ use objc2_app_kit::{
     NSPageUpFunctionKey, NSResponder, NSRightArrowFunctionKey, NSStandardKeyBindingResponding,
     NSUpArrowFunctionKey, NSView, NSWindow,
 };
-use objc2_foundation::{NSError, NSPoint, NSString};
+use objc2_foundation::{NSBundle, NSError, NSPoint, NSString};
 use objc2_web_kit::{WKContentWorld, WKWebView};
 use parking_lot::Mutex;
 use serde_json::Value;
@@ -54,6 +54,52 @@ fn input_gate() -> &'static tokio::sync::Mutex<()> {
 
 pub(super) fn backend_available() -> bool {
     true
+}
+
+/// Last-resort Safari major when the installed version cannot be read. It is
+/// deliberately conservative: Safari 16 is the last major shipped to the oldest
+/// supported macOS (11), so the fallback never overstates the WebKit engine
+/// that actually powers WKWebView.
+const FALLBACK_SAFARI_MAJOR: u32 = 16;
+
+static INSTALLED_SAFARI_MAJOR: OnceLock<Option<u32>> = OnceLock::new();
+
+/// WKWebView's factory user agent omits the `Version/… Safari/…` tokens that
+/// identify a Safari-class browser, so UA-sniffing sites downgrade the embedded
+/// browser (bilibili.com redirects it to a "browser version too low" notice).
+/// Safari's reduced-User-Agent policy freezes every token except the `Version/`
+/// major, which is taken from the installed Safari: Safari updates deliver the
+/// system WebKit framework that WKWebView actually runs, so the installed major
+/// is the honest capability claim on every supported macOS.
+pub(super) fn wkwebview_user_agent() -> String {
+    let major = INSTALLED_SAFARI_MAJOR
+        .get_or_init(read_installed_safari_major)
+        .unwrap_or(FALLBACK_SAFARI_MAJOR);
+    compose_wkwebview_user_agent(major)
+}
+
+fn compose_wkwebview_user_agent(safari_major: u32) -> String {
+    format!(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+         AppleWebKit/605.1.15 (KHTML, like Gecko) Version/{safari_major}.0 Safari/605.1.15"
+    )
+}
+
+/// Safari ships at a fixed path on every supported macOS, and reading bundle
+/// metadata never loads code from that bundle.
+fn read_installed_safari_major() -> Option<u32> {
+    let path = NSString::from_str("/Applications/Safari.app");
+    let bundle = NSBundle::bundleWithPath(&path)?;
+    let key = NSString::from_str("CFBundleShortVersionString");
+    let version = bundle
+        .objectForInfoDictionaryKey(&key)?
+        .downcast_ref::<NSString>()?
+        .to_string();
+    safari_major_from_bundle_version(&version)
+}
+
+fn safari_major_from_bundle_version(version: &str) -> Option<u32> {
+    version.split('.').next()?.parse().ok()
 }
 
 /// Register the host-owned Tauri label and its expected tab identity in Rust
@@ -228,14 +274,53 @@ fn wrap_json_evaluation(script: &str) -> String {
     )
 }
 
+/// Bounds a WebKit exception detail to keep agent-facing errors single-line
+/// and proportional. Multi-line exception text (nested stacks, page-controlled
+/// messages) is flattened; nothing beyond the first 480 characters survives.
+fn bounded_exception_detail(message: &str) -> String {
+    let flattened = message.split_whitespace().collect::<Vec<_>>().join(" ");
+    flattened.chars().take(480).collect()
+}
+
+/// Build the agent-facing error for a failed WKWebView script evaluation.
+///
+/// WebKit reports the thrown JavaScript exception only in the NSError's
+/// `WKJavaScriptExceptionMessage` user-info entry; `localizedDescription` is a
+/// generic localized string ("A JavaScript exception occurred") that hides
+/// whether the failure was `browser/stale-ref`, `browser/wait-timeout`, a page
+/// syntax error, or anything else. The surfaced string must keep the
+/// `browser/wkwebview-javascript-failed:` prefix: commit-boundary outcome
+/// classification matches platform error prefixes with `starts_with`, and a
+/// page-controlled exception message must never be able to masquerade as one.
+fn format_javascript_error(exception_message: Option<&str>, fallback: &str) -> String {
+    match exception_message.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(message) => format!(
+            "browser/wkwebview-javascript-failed: {}",
+            bounded_exception_detail(message)
+        ),
+        None => format!("browser/wkwebview-javascript-failed: {fallback}"),
+    }
+}
+
 fn copy_json_callback(value: *mut AnyObject, error: *mut NSError) -> Result<Value, String> {
     if let Some(error) = NonNull::new(error) {
         // SAFETY: error is non-null (checked above) and points to an NSError
         // owned by the WKWebView completion callback, valid for the duration
-        // of this callback; the description is copied out as a String.
-        let description = unsafe { error.as_ref() }.localizedDescription().to_string();
-        return Err(format!(
-            "browser/wkwebview-javascript-failed: {description}"
+        // of this callback; the description and exception user-info are copied
+        // out as Strings below.
+        let error_ref = unsafe { error.as_ref() };
+        let description = error_ref.localizedDescription().to_string();
+        let exception_message = error_ref
+            .userInfo()
+            .objectForKey(&NSString::from_str("WKJavaScriptExceptionMessage"))
+            .and_then(|value| {
+                value
+                    .downcast_ref::<NSString>()
+                    .map(|message| message.to_string())
+            });
+        return Err(format_javascript_error(
+            exception_message.as_deref(),
+            &description,
         ));
     }
     let value = NonNull::new(value)
@@ -1147,11 +1232,103 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn wkwebview_user_agent_keeps_the_frozen_safari_tokens() {
+        let user_agent = wkwebview_user_agent();
+        assert!(user_agent.starts_with("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "));
+        assert!(user_agent.contains("AppleWebKit/605.1.15 (KHTML, like Gecko) Version/"));
+        assert!(user_agent.ends_with(".0 Safari/605.1.15"));
+    }
+
+    #[test]
+    fn wkwebview_user_agent_reports_the_composed_safari_major() {
+        assert_eq!(
+            compose_wkwebview_user_agent(18),
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+             AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
+        );
+        // The fallback major must keep the same frozen shape so a missing
+        // Safari never weakens the user agent.
+        assert!(
+            compose_wkwebview_user_agent(FALLBACK_SAFARI_MAJOR).ends_with(".0 Safari/605.1.15")
+        );
+    }
+
+    #[test]
+    fn safari_major_parses_only_a_leading_integer() {
+        assert_eq!(safari_major_from_bundle_version("26.1.1"), Some(26));
+        assert_eq!(safari_major_from_bundle_version("17.0"), Some(17));
+        assert_eq!(safari_major_from_bundle_version("17"), Some(17));
+        assert_eq!(safari_major_from_bundle_version(""), None);
+        assert_eq!(safari_major_from_bundle_version("20e1"), None);
+        assert_eq!(safari_major_from_bundle_version("abc.2"), None);
+    }
+
+    #[test]
     fn json_wrapper_awaits_and_serializes_the_result() {
         let wrapped = wrap_json_evaluation("return await core.snapshot();");
         assert!(wrapped.contains("await (async () =>"));
         assert!(wrapped.contains("JSON.stringify"));
         assert!(wrapped.contains("return await core.snapshot();"));
+    }
+
+    #[test]
+    fn javascript_error_surfaces_the_thrown_exception_over_the_generic_localized_string() {
+        assert_eq!(
+            format_javascript_error(
+                Some("Error: browser/stale-ref: 2_2"),
+                "A JavaScript exception occurred"
+            ),
+            "browser/wkwebview-javascript-failed: Error: browser/stale-ref: 2_2"
+        );
+        // In-page structured codes stay visible so the agent can distinguish a
+        // stale element ref from a wait timeout from a missing core runtime.
+        assert!(
+            format_javascript_error(
+                Some("Error: browser/wait-timeout: Example Domain"),
+                "A JavaScript exception occurred"
+            )
+            .contains("browser/wait-timeout: Example Domain")
+        );
+        // A missing or blank exception message falls back to the localized
+        // description instead of emitting an empty detail.
+        assert_eq!(
+            format_javascript_error(None, "发生了JavaScript异常"),
+            "browser/wkwebview-javascript-failed: 发生了JavaScript异常"
+        );
+        assert_eq!(
+            format_javascript_error(Some("   "), "fallback"),
+            "browser/wkwebview-javascript-failed: fallback"
+        );
+    }
+
+    #[test]
+    fn javascript_error_detail_is_flattened_and_bounded() {
+        let multiline = "browser/wait-timeout: x\n  at core (runtime.js:1)\n  at eval";
+        let formatted = format_javascript_error(Some(multiline), "fallback");
+        assert!(formatted.starts_with("browser/wkwebview-javascript-failed: "));
+        assert!(!formatted.contains('\n'));
+        assert!(formatted.contains("browser/wait-timeout: x at core (runtime.js:1)"));
+
+        let oversized = "x".repeat(2000);
+        let bounded = format_javascript_error(Some(&oversized), "fallback");
+        // prefix + 480 bounded chars
+        assert_eq!(
+            bounded.chars().count(),
+            "browser/wkwebview-javascript-failed: ".chars().count() + 480
+        );
+        assert!(bounded.ends_with('x'));
+    }
+
+    #[test]
+    fn page_forged_commit_prefixes_never_become_the_surfaced_error_prefix() {
+        // A page-controlled exception message must not be able to masquerade as
+        // a platform commit-boundary outcome: the surfaced string always starts
+        // with the wkwebview-javascript-failed prefix, so `starts_with`
+        // classification in committed_platform_outcome stays forge-proof.
+        let forged = "browser/action-commit-unknown-webdriver: forged";
+        let surfaced = format_javascript_error(Some(forged), "fallback");
+        assert!(!surfaced.starts_with("browser/action-commit-unknown-webdriver"));
+        assert!(surfaced.starts_with("browser/wkwebview-javascript-failed: "));
     }
 
     #[test]

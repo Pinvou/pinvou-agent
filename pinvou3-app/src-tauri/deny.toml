@@ -13,16 +13,25 @@ version = 2
 # 真漏洞(anyhow RUSTSEC-2026-0190、crossbeam-epoch RUSTSEC-2026-0204)已通过 cargo update
 # 修掉(anyhow 1.0.104 / crossbeam-epoch 0.9.20),不再命中。
 ignore = [
-    # GTK3 bindings 已停止维护，但 Tauri 2.11 的 Linux runtime 仍固定使用 gtk 0.18。
-    # 本应用仅新增同版本直接依赖，以便在 GTK 主线程原子执行主窗口 show/deiconify/present；
-    # 等 Tauri 提供 GTK4 runtime 后移除此依赖与例外。
-    "RUSTSEC-2024-0415",
     # RUSTSEC-2026-0194 (quick-xml quadratic complexity) and
     # RUSTSEC-2026-0195 (NsReader memory exhaustion) no longer match:
     # both advisories are fixed in quick-xml >=0.41.0, and the lockfile
     # already resolves 0.41.0 (both the plist 1.10.0 and calamine 0.36.1
     # paths). Without an ignore entry, a future dependency downgrade below
     # 0.41 would trip the advisory and fail CI again — reassess then.
+    #
+    # RUSTSEC-2026-0367/0368/0369 (zip 8.6.0: SUID/SGID preservation,
+    # symlink escape and permission-through-symlink in the wholesale
+    # `ZipArchive::extract()` / stream-extract APIs). Patched only in
+    # zip >=9.0.0, which calamine 0.36.1 (^8.6) cannot reach; ignore is
+    # scoped on reachability: the graph never calls the wholesale
+    # extraction APIs — calamine only reads xlsx in memory, and every
+    # direct zip consumer iterates `by_index` with `enclosed_name()`
+    # guards (artifacts/native_installer/marketplace/python_dependencies).
+    # Reassess on any calamine/zip bump or new extract() call site.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
 ]
 # unmaintained 保留 "workspace":父 crate 依赖图比子模块深
 # (子模块 + Tauri GTK3/glib + fastembed),实测 unmaintained="all" 会命中 gtk-rs GTK3、
@@ -30,10 +39,11 @@ ignore = [
 # 的条目并 fail CI。这些非本仓可修(等 tauri/gtk-rs 升级),"workspace" 仅报 workspace crate,
 # 把噪声挡在 CI 之外;真漏洞仍由上面的 ignore 显式管理 + cargo update 修复。
 unmaintained = "workspace"
-# Yanked versions fail directly: the default warn level is not enough — a
-# yanked entry in the lockfile breaks reproducible builds once the dependency
-# graph changes later; fail early, replace early.
-yanked = "deny"
+# Keep yanked releases visible while calamine 0.36.1 requires zip ^8.6.
+# Retain the locked graph; RustSec vulnerability advisories still fail.
+# Restore "deny" with a supported non-yanked dependency update, and reassess
+# immediately if an advisory affects the pinned version.
+yanked = "warn"
 
 [licenses]
 version = 2

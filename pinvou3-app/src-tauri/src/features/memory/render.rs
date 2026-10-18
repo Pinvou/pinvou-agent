@@ -21,7 +21,7 @@ use super::util::{collapse_whitespace, push_if_present, write_text_atomic};
 
 pub(crate) fn render_memory_block() -> stdio::Result<(String, Vec<InjectedMemoryItem>)> {
     let profile = io::load_profile()?;
-    let preferences = io::load_preferences()?;
+    let preferences = io::list_preferences()?;
     let work_context = io::load_work_context()?;
     let current_focus = io::load_current_focus()?;
     let recent_activity = io::load_recent_activity()?;

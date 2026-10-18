@@ -145,9 +145,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
         bridge.models.saveModel(next)
           .then(() => { setOpen(false); setEffortSaveError(''); })
           .catch((error) => {
-            const message = (error && error.message)
-              ? error.message
-              : ((t && t.saveModelFailed) || '保存失败');
+            const message = (error && error.message) ? error.message : t.saveModelFailed;
             setEffortSaveError(message);
           });
       }
@@ -562,10 +560,15 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
               // generation failure rolls back to backend truth (re-read the
               // disabled/visibility/project-skills tri-state) instead of replaying
               // the local snapshot; the pending uncommitted "on" is inverted by
-              // pre-toggle membership.
+              // pre-toggle membership. bumpPendingVersion recomputes the
+              // pending-dependent row locks immediately instead of waiting for
+              // the backend-truth refetch to land (or for an unrelated render);
+              // the optimistic switch itself is only corrected when the
+              // refetch succeeds.
               if (!writeGateRef.current.isCurrent(id, generation)) return;
               refreshToolsMenu(() => true);
               if (wasPending) pending.ids.add(id); else pending.ids.delete(id);
+              bumpPendingVersion();
               const copy = t && t.uiToolStore && t.uiToolStore.operationFailedWith;
               setToggleError(copy ? copy(String(error)) : String(error));
             });
@@ -589,6 +592,7 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
             if (!writeGateRef.current.isCurrent(TOGGLE_WRITE_KEY_PROJECT_SKILLS, generation)) return;
             refreshToolsMenu(() => true);
             pending.projectSkills = wasPending;
+            bumpPendingVersion();
             const copy = t && t.uiToolStore && t.uiToolStore.operationFailedWith;
             setToggleError(copy ? copy(String(error)) : String(error));
           });

@@ -1,5 +1,28 @@
 use super::prelude::*;
-use crate::platform::credential_store::{CredentialReference, CredentialStore};
+use crate::platform::credential_store::{
+    CREDENTIAL_STORE_UNAVAILABLE_ERROR, CredentialReference, CredentialStore,
+};
+use crate::platform::prefs::MODEL_API_KEY_ENV_OVERRIDE;
+
+/// Round-51 review: the settings transaction holds the cross-process
+/// settings.json.lock across keychain I/O (the CLI's models family writes
+/// the same transaction from a second process), and the sibling blocking
+/// calls (the ACP section-lock passes, `SessionAgentStore::remove`) poll a
+/// cross-process lock for up to its timeout — so the async command layer
+/// joins each blocking body on a `spawn_blocking` worker instead of parking
+/// a runtime worker that also drives the engine session pumps (the same
+/// rationale as round-50's codex.rs conversion). One helper for the join
+/// scaffolding shared by every converted command: run `body` on a blocking
+/// worker and map a failed join to `<label> 任务失败: {error}`.
+pub(super) async fn join_blocking<T, F>(label: &str, body: F) -> Result<T, String>
+where
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(body)
+        .await
+        .map_err(|error| format!("{label} 任务失败: {error}"))?
+}
 
 /// 从 disk 读最新 UserPrefs。
 /// 注意走 disk 而非 engine.bridge.prefs——如果用户手改 settings.json，
@@ -15,8 +38,8 @@ fn prepare_prefs_for_save(
 ) -> Result<(UserPrefs, Vec<CredentialReference>), String> {
     prefs.normalize_saved_model_metadata();
     let migration = prefs.migrate_plaintext_api_keys_with_store(store);
-    if !migration.failed_model_ids.is_empty() || !migration.failed_search_providers.is_empty() {
-        return Err("credential store unavailable; please reconfigure API Key".to_string());
+    if migration.has_failures() {
+        return Err(CREDENTIAL_STORE_UNAVAILABLE_ERROR.to_string());
     }
     // The migration DEFERS destructive keyring deletes (see the search
     // Delete arm in `migrate_plaintext_api_keys_with_store`): surface them so
@@ -203,7 +226,7 @@ pub async fn get_effective_model_config(
     if std::env::var("DEEPSEEK_BASE_URL").is_ok() {
         env_overrides.push("base_url".to_string());
     }
-    let env_api_key = std::env::var("DEEPSEEK_API_KEY")
+    let env_api_key = std::env::var(MODEL_API_KEY_ENV_OVERRIDE)
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false);
     if env_api_key {
@@ -378,7 +401,14 @@ pub async fn reveal_model_api_key(id: String) -> Result<Option<String>, String> 
 #[tauri::command]
 pub async fn save_model(model: SavedModel, pool: State<'_, EnginePool>) -> Result<(), String> {
     let model_id = model.id.clone();
-    save_model_inner(model, &SystemCredentialStore::new())?;
+    // Round-51 review: the settings transaction holds the cross-process
+    // settings.json.lock across keychain I/O (the CLI's models family writes
+    // the same transaction from a second process), so the blocking body
+    // joins a spawn_blocking worker — the same rationale as round-50's
+    // codex.rs conversion: these runtime workers also drive the engine
+    // session pumps.
+    let store = SystemCredentialStore::new();
+    join_blocking("save_model", move || save_model_inner(model, &store)).await?;
     pool.mark_model_updated(&model_id);
     Ok(())
 }
@@ -426,7 +456,10 @@ pub(super) fn save_model_inner(
 /// 删一条模型。至少保留一条;删到当前 active 会自动回退列表首条。
 #[tauri::command]
 pub async fn delete_model(id: String) -> Result<(), String> {
-    delete_model_inner(&id, &SystemCredentialStore::new())
+    // Round-51 review: same cross-process settings-lock rationale as
+    // [`save_model`] — join the blocking transaction on a worker.
+    let store = SystemCredentialStore::new();
+    join_blocking("delete_model", move || delete_model_inner(&id, &store)).await
 }
 
 pub(super) fn delete_model_inner(id: &str, store: &dyn CredentialStore) -> Result<(), String> {
@@ -470,15 +503,20 @@ pub(super) fn delete_model_inner(id: &str, store: &dyn CredentialStore) -> Resul
 /// 时的模型,想换在该会话的 chip 里切。
 #[tauri::command]
 pub async fn set_active_model(id: String) -> Result<(), String> {
-    UserPrefs::update_transaction(|prefs| {
-        if prefs.model_by_id(&id).is_none() {
-            return Err(format!("model not found: {id}"));
-        }
-        prefs.advanced.active_model_id = Some(id);
-        Ok(())
+    // Round-51 review: same cross-process settings-lock rationale as
+    // [`save_model`] — join the blocking transaction on a worker.
+    join_blocking("set_active_model", move || {
+        UserPrefs::update_transaction(|prefs| {
+            if prefs.model_by_id(&id).is_none() {
+                return Err(format!("model not found: {id}"));
+            }
+            prefs.advanced.active_model_id = Some(id);
+            Ok(())
+        })
+        .map(|_| ())
+        .map_err(|e| sanitize_command_error("set_active_model", e))
     })
-    .map(|_| ())
-    .map_err(|e| sanitize_command_error("set_active_model", e))
+    .await
 }
 
 /// 切某会话当前模型(聊天 chip 热切):写 per-session 绑定 + evict 该会话 engine,
@@ -1337,6 +1375,7 @@ pub struct GeneralSettingsPatch {
     pub memory_enabled: Option<bool>,
     pub notifications: Option<NotificationPrefs>,
     pub sidebar: Option<SidebarPrefs>,
+    pub chat: Option<ChatPrefs>,
     pub advanced: Option<AdvancedPrefs>,
 }
 
@@ -1358,7 +1397,10 @@ pub struct WebSettingsPatch {
 /// Phase C 会做 in-place engine restart（处理 in-flight turn）。
 #[tauri::command]
 pub async fn update_settings(patch: GeneralSettingsPatch) -> Result<UserPrefs, String> {
-    persist_general_settings(patch)
+    // Round-51 review: the settings transaction holds the cross-process
+    // settings.json.lock across keychain I/O — join the blocking body on a
+    // spawn_blocking worker like the sibling model commands.
+    join_blocking("update_settings", move || persist_general_settings(patch)).await
 }
 
 fn apply_general_settings_patch(current: &mut UserPrefs, patch: GeneralSettingsPatch) {
@@ -1379,6 +1421,9 @@ fn apply_general_settings_patch(current: &mut UserPrefs, patch: GeneralSettingsP
     }
     if let Some(sidebar) = patch.sidebar {
         current.sidebar = sidebar;
+    }
+    if let Some(chat) = patch.chat {
+        current.chat = chat;
     }
     if let Some(mut advanced) = patch.advanced {
         // The model list and active model have dedicated write commands; an advanced-settings patch built from a
@@ -1495,20 +1540,19 @@ pub(super) fn persist_web_settings_inner(
 /// 仅更新搜索配置。模型等其他偏好始终以磁盘最新值为准，避免前端旧快照整份回写。
 #[tauri::command]
 pub async fn update_search_settings(search: SearchPrefs) -> Result<UserPrefs, String> {
-    persist_search_settings(search)
+    // Round-51 review: same cross-process settings-lock rationale as
+    // [`save_model`] — join the blocking transaction on a worker.
+    join_blocking("update_search_settings", move || {
+        persist_search_settings(search)
+    })
+    .await
 }
 
-/// Unified post-save restart finalization. Restart bypasses RunEvent::Exit, so persist and close
-/// the browser host and reap child processes first; `saved_label` only keeps each command's own log wording.
-async fn persist_and_restart<S>(
-    app: tauri::AppHandle,
-    saved_label: &str,
-    persister: impl FnOnce() -> Result<S, String>,
-) -> Result<(), String> {
-    persister()?;
+/// Post-save restart finalization — call only after the save has committed: a failed persist must
+/// never restart. Restart bypasses RunEvent::Exit, so close the browser host and reap child
+/// processes before exiting; `saved_label` only keeps each command's own log wording.
+async fn restart_after_save(app: tauri::AppHandle, saved_label: &str) -> Result<(), String> {
     eprintln!("[pinvou3-app] {saved_label} saved, restarting app...");
-    // Restart bypasses RunEvent::Exit, so persist and close the browser host and reap child
-    // processes first.
     crate::prepare_app_restart(&app).await;
     app.restart();
 }
@@ -1519,10 +1563,15 @@ pub async fn save_search_settings_and_restart(
     search: SearchPrefs,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    persist_and_restart(app, "search settings", move || {
+    // The settings transaction holds the cross-process settings.json.lock
+    // across keychain I/O — join it on a spawn_blocking worker like the
+    // sibling commands ([`update_search_settings`]); the restart below only
+    // runs once the persist has succeeded.
+    join_blocking("save_search_settings", move || {
         persist_search_settings(search)
     })
-    .await
+    .await?;
+    restart_after_save(app, "search settings").await
 }
 // 凭据状态迁移(`mark_*` / `clear_plaintext_key`)自 prefs 的密封 trait 提供。
 use crate::platform::prefs::CredentialStateOps;
@@ -2081,5 +2130,85 @@ mod tests {
             // SAFETY: same as above; restore-side removal serialized under ENV_LOCK.
             None => unsafe { std::env::remove_var("PINVOU3_HOME") },
         }
+    }
+
+    #[test]
+    fn chat_streaming_animation_patch_round_trips_and_survives_unrelated_patches() {
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let old_home = std::env::var_os("PINVOU3_HOME");
+        let tmp = std::env::temp_dir().join(format!(
+            "pinvou3-chat-animation-round-trip-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &tmp) };
+
+        let mut initial = UserPrefs::default();
+        initial.migrate_models();
+        initial.save().expect("initial settings should save");
+
+        // Explicit opt-out persists and reads back as false.
+        persist_general_settings(GeneralSettingsPatch {
+            chat: Some(ChatPrefs {
+                streaming_animation: false,
+            }),
+            ..Default::default()
+        })
+        .expect("chat patch should save");
+        let disabled = UserPrefs::load();
+        assert!(
+            !disabled.chat.streaming_animation,
+            "an explicit chat opt-out must round-trip through settings.json"
+        );
+
+        // A later patch that does not mention `chat` (whole-sub-struct replace
+        // per field) must not resurrect the user's opt-out.
+        persist_general_settings(GeneralSettingsPatch {
+            sidebar: Some(SidebarPrefs {
+                date_grouping: false,
+            }),
+            ..Default::default()
+        })
+        .expect("sidebar patch should save");
+        let reloaded = UserPrefs::load();
+        assert!(
+            !reloaded.chat.streaming_animation,
+            "an unrelated sidebar patch must preserve the chat opt-out"
+        );
+        assert!(!reloaded.sidebar.date_grouping);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        match old_home {
+            // SAFETY: holding the crate-level ENV_LOCK (acquired on this test's first line); env writes are serialized.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: same as above; restore-side removal serialized under ENV_LOCK.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+    }
+
+    /// The chat preference is desktop-only: `WebSettingsPatch` (the only
+    /// settings surface the web UI can drive) has no `chat` field and
+    /// `deny_unknown_fields` must hard-reject a patch that carries it,
+    /// instead of silently ignoring it. The transport boundary matters more
+    /// than the field itself — a web client must never be able to flip the
+    /// key even if a future field rename leaves the UI row gated wrong.
+    #[test]
+    fn web_settings_patch_rejects_the_chat_key() {
+        let rejected = serde_json::from_value::<WebSettingsPatch>(serde_json::json!({
+            "chat": { "streaming_animation": false },
+        }));
+        assert!(
+            rejected.is_err(),
+            "WebSettingsPatch must hard-reject the desktop-only chat key"
+        );
+        // Positive control: the authorized web fields still deserialize.
+        let accepted = serde_json::from_value::<WebSettingsPatch>(serde_json::json!({
+            "memory_enabled": true,
+        }));
+        assert!(
+            accepted.is_ok(),
+            "web-authorized settings fields must keep deserializing"
+        );
     }
 }

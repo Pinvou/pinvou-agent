@@ -371,7 +371,10 @@ pub(super) fn read_code_session_sidecar(
 }
 
 /// 删除原生代码会话 sidecar（会话删除时调用）。
-pub(super) fn remove_code_session_sidecar(store_path: &Path, session_id: &str) {
+///
+/// Returns whether the sidecar file was actually removed, so callers that
+/// count or log the removal stay silent when there was nothing to remove.
+pub(super) fn remove_code_session_sidecar(store_path: &Path, session_id: &str) -> bool {
     let sidecar = code_session_sidecar_path(store_path, session_id);
     match fs::remove_file(&sidecar) {
         Ok(()) => {
@@ -382,12 +385,16 @@ pub(super) fn remove_code_session_sidecar(store_path: &Path, session_id: &str) {
             if let Some(parent) = sidecar.parent() {
                 let _ = fs::remove_dir(parent);
             }
+            true
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => eprintln!(
-            "[pinvou3-app] 清理原生代码会话 sidecar 失败（{}）: {error:#}",
-            sidecar.display()
-        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            eprintln!(
+                "[pinvou3-app] 清理原生代码会话 sidecar 失败（{}）: {error:#}",
+                sidecar.display()
+            );
+            false
+        }
     }
 }
 
@@ -454,6 +461,24 @@ pub struct SessionAgentStore {
     records: Arc<RwLock<HashMap<String, SessionAgentRecord>>>,
 }
 
+/// Outcome of the durable-owner-record probe: does `sessions/<id>.json`
+/// still exist? The path derivation and the stat judgment live in exactly
+/// one place (`SessionAgentStore::owner_record_state`) so the read side
+/// (rebind lanes) and the deletion side (boot prune, backfill gate) cannot
+/// drift; each caller maps this state onto its own disposition.
+pub(super) enum OwnerRecordState {
+    /// The durable record exists as a regular file. (A non-file entry at
+    /// the record path counts as absent — the app never creates one, so a
+    /// stray directory there is not a durable record.)
+    Live,
+    /// No durable record: the path is gone, or it is not a regular file.
+    NotFound,
+    /// The id fails validation, so the record path was not probed at all.
+    InvalidId,
+    /// A non-NotFound stat error: the record's state is unknowable.
+    ProbeError(std::io::ErrorKind),
+}
+
 impl SessionAgentStore {
     pub fn load() -> Result<Self> {
         let path = crate::platform::paths::pinvou3_home().join("session-agents.json");
@@ -474,9 +499,13 @@ impl SessionAgentStore {
 
     /// 外部 Agent ACP 是可选能力，它的辅助索引损坏时不能阻断 Pinvou 主程序启动。
     ///
-    /// 加载失败时不主动覆盖原始文件；但随后任何一次 `persist`（包括启动时
-    /// `AcpPool::new` 恢复缺失的 ACP 记录、或用户创建/更新会话）都会用新内容
-    /// 替换它，损坏的内容不会长期保留。
+    /// 加载失败时不主动覆盖原始文件。Round-51 review 更正：自 round-48 起
+    /// 所有 mutator 都经 `lock_and_reload` 在锁下重读整个索引，损坏的索引
+    /// 会让它们 fail-closed 拒绝（防止 GUI 用解析不了的旧内容覆盖一次 CLI
+    /// rebind），而不是本注释旧版所说的「下一次 persist 自愈」——启动时的
+    /// restore/backfill 恢复路径持同一把锁，也被同一拒绝挡住。修复方式是
+    /// 按错误提示手工删除/修复 `session-agents.json`；本函数仅留给不写索引
+    /// 的只读调用方兜底启动。
     pub fn load_or_empty() -> Self {
         match Self::load() {
             Ok(store) => store,
@@ -488,6 +517,18 @@ impl SessionAgentStore {
                     records: Arc::new(RwLock::new(HashMap::new())),
                 }
             }
+        }
+    }
+
+    /// 一个不读盘的空实例，仅供只需要索引路径的调用方使用。Round-45 review：
+    /// `sessions delete` 只需要 `path()`，其删除通道
+    /// （`remove_for_second_process`）本来就会在锁下重读整个索引；经
+    /// `load_or_empty` 取路径会把启动恢复的「starting empty」stderr 行带进
+    /// CLI 的失败输出，正好污染用户必须手工修复的那个场景。
+    pub fn empty_without_loading() -> Self {
+        Self {
+            path: crate::platform::paths::pinvou3_home().join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -519,6 +560,15 @@ impl SessionAgentStore {
             .get(session_id)
             .cloned()
             .unwrap_or_default()
+    }
+
+    /// Snapshot of the in-memory index's session ids. `load` is all-or-nothing
+    /// (an unparsable file leaves the map empty) and every persist rewrites
+    /// the file from this same state, so iterating memory is iterating the
+    /// state that would be persisted — the boot prune walks this set instead
+    /// of reaching into the on-disk format.
+    pub(super) fn session_ids(&self) -> Vec<String> {
+        self.records.read().keys().cloned().collect()
     }
 
     /// Returns session ids bound to the given project workspace for
@@ -570,6 +620,7 @@ impl SessionAgentStore {
         if kind == CodexWorkspaceKind::Temporary && workspace_path.is_some() {
             anyhow::bail!("临时会话不能保存项目工作目录");
         }
+        let _section = self.lock_and_reload()?;
         {
             let mut records = self.records.write();
             let record = records.entry(session_id.to_string()).or_default();
@@ -612,6 +663,7 @@ impl SessionAgentStore {
         if kind == CodexWorkspaceKind::Temporary && workspace_path.is_some() {
             anyhow::bail!("临时会话不能保存项目工作目录");
         }
+        let _section = self.lock_and_reload()?;
         {
             let mut records = self.records.write();
             let record = records.entry(session_id.to_string()).or_default();
@@ -786,35 +838,51 @@ impl SessionAgentStore {
     /// rebind scan/write passes gate on it the same way so a dead session is
     /// never rewritten and never classified Rebound.
     fn binding_owner_exists(&self, session_id: &str) -> bool {
+        match self.owner_record_state(session_id) {
+            OwnerRecordState::Live => true,
+            // Round-24 minor 2 (was round-20 minor 10 + round-21 SF-3):
+            // a non-NotFound stat error is treated as LIVE and logged.
+            // The conservative direction here is inclusion, not death: a
+            // transient EACCES blip must not silently drop a live
+            // session from the scan, both write passes, the fence and
+            // the post-lane rescan while the run reports success. A
+            // session included on a stale probe whose reads then fail is
+            // reported failed (retryable) by the passes themselves.
+            OwnerRecordState::ProbeError(kind) => {
+                eprintln!(
+                    "[codex] rebind owner probe failed, treating the session as live (io kind: {kind})"
+                );
+                true
+            }
+            // Read-side disposition: an invalid id owns nothing.
+            OwnerRecordState::NotFound | OwnerRecordState::InvalidId => false,
+        }
+    }
+
+    /// The shared owner-record probe (see `OwnerRecordState`): one path
+    /// derivation and one stat judgment for every caller. The test seam
+    /// (`OWNER_PROBE_DEAD_IDS`) applies to every consumer by construction.
+    pub(super) fn owner_record_state(&self, session_id: &str) -> OwnerRecordState {
         #[cfg(test)]
         if let Ok(armed) = OWNER_PROBE_DEAD_IDS.lock() {
             if armed.iter().any(|sid| sid == session_id) {
-                return false;
+                return OwnerRecordState::NotFound;
             }
         }
-        crate::features::sessions::validate_session_id(session_id).is_ok()
-            && match code_session_sidecar_root(&self.path)
-                .join(format!("{session_id}.json"))
-                .metadata()
-            {
-                Ok(meta) => meta.is_file(),
-                // Round-24 minor 2 (was round-20 minor 10 + round-21 SF-3):
-                // a non-NotFound stat error is treated as LIVE and logged.
-                // The conservative direction here is inclusion, not death: a
-                // transient EACCES blip must not silently drop a live
-                // session from the scan, both write passes, the fence and
-                // the post-lane rescan while the run reports success. A
-                // session included on a stale probe whose reads then fail is
-                // reported failed (retryable) by the passes themselves.
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-                Err(error) => {
-                    eprintln!(
-                        "[codex] rebind owner probe failed, treating the session as live (io kind: {})",
-                        error.kind()
-                    );
-                    true
-                }
+        if crate::features::sessions::validate_session_id(session_id).is_err() {
+            return OwnerRecordState::InvalidId;
+        }
+        match code_session_sidecar_root(&self.path)
+            .join(format!("{session_id}.json"))
+            .metadata()
+        {
+            Ok(meta) if meta.is_file() => OwnerRecordState::Live,
+            Ok(_) => OwnerRecordState::NotFound,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                OwnerRecordState::NotFound
             }
+            Err(error) => OwnerRecordState::ProbeError(error.kind()),
+        }
     }
 
     /// Directory rebind (broken-link repair): translates every project
@@ -853,6 +921,22 @@ impl SessionAgentStore {
         if from == to {
             return Ok(RebindWorkspacePrefixOutcome::default());
         }
+        // Round-41 review: `projects rebind` reaches this lane from a second
+        // process (the CLI), so the index rewrite carries the same discipline
+        // as `remove_for_second_process`: cross-process section lock → fresh
+        // reload → mutate → persist. Without it, this whole-table persist
+        // writes the store's BOOT-ERA snapshot: a GUI session bind landing
+        // while the rebind runs is silently dropped from the index (ACP
+        // sessions keep no workspace sidecar after bind, so nothing restores
+        // it — the run exits 0 and the loss is undisclosed), and a corrupt
+        // index is replaced by a (near-)empty table instead of being
+        // refused. The lock is held across the sidecar passes too — they
+        // consult the reloaded index memory through `binding_owner_exists`.
+        // Round-42 review: the residual is now closed from the other side —
+        // every GUI mutator that whole-table-persists runs the same
+        // lock-and-reload discipline (see `lock_and_reload`), so no surface
+        // persists a stale boot-era table over a peer's committed write.
+        let _section = self.lock_and_reload()?;
         let mut affected: Vec<(String, PathBuf)> = Vec::new();
         let mut sidecar_final_stale: Vec<String> = Vec::new();
         // Original bindings of the mutated records, kept so a persist
@@ -1133,6 +1217,13 @@ impl SessionAgentStore {
         &self,
         targets: &[(String, PathBuf)],
     ) -> Result<Vec<String>> {
+        // Round-42 review: same whole-table-persist hazard as the other GUI
+        // mutators — the repair runs right after `rebind_workspace_prefix`
+        // released the section lock, so a concurrent writer in that window
+        // would be reverted by this whole-table persist. Lock + fresh reload
+        // covers the read phase and the `commit_index_rekeys` write (which
+        // stays lock-free for its in-rebind caller).
+        let _section = self.lock_and_reload()?;
         let mut rekeys = Vec::new();
         {
             let records = self.records.read();
@@ -1160,6 +1251,7 @@ impl SessionAgentStore {
         model_id: Option<String>,
         config_values: HashMap<String, String>,
     ) -> Result<()> {
+        let _section = self.lock_and_reload()?;
         {
             let mut records = self.records.write();
             let record = records.entry(session_id.to_string()).or_default();
@@ -1184,6 +1276,7 @@ impl SessionAgentStore {
         config_id: &str,
         value_id: &str,
     ) -> Result<()> {
+        let _section = self.lock_and_reload()?;
         {
             let mut records = self.records.write();
             let record = records.entry(session_id.to_string()).or_default();
@@ -1200,6 +1293,7 @@ impl SessionAgentStore {
     }
 
     pub fn clear_acp_config_value(&self, session_id: &str, config_id: &str) -> Result<()> {
+        let _section = self.lock_and_reload()?;
         {
             let mut records = self.records.write();
             let Some(record) = records.get_mut(session_id) else {
@@ -1219,7 +1313,8 @@ impl SessionAgentStore {
         &self,
         session_id: &str,
         recovered: SessionAgentRecord,
-    ) -> Result<()> {
+        source_holds_recovery: impl Fn() -> bool,
+    ) -> Result<bool> {
         if !recovered.backend.is_acp()
             || recovered
                 .acp_session_id
@@ -1228,24 +1323,125 @@ impl SessionAgentStore {
         {
             anyhow::bail!("恢复的 ACP 会话索引不完整");
         }
+        let _section = self.lock_and_reload()?;
         {
             let mut records = self.records.write();
             if records
                 .get(session_id)
                 .is_some_and(|record| record.backend.is_acp())
             {
-                return Ok(());
+                return Ok(false);
+            }
+            // Round-44 review: the recovery record was read outside the
+            // section lock, and a CLI `sessions delete` landing in the
+            // window removes the session (and its acp-state.json) before
+            // this insert. Re-verify the source under the lock so the boot
+            // pass cannot mint an orphan ACP record for a deleted session.
+            if !source_holds_recovery() {
+                return Ok(false);
             }
             records.insert(session_id.to_string(), recovered);
         }
-        self.persist()
+        self.persist()?;
+        Ok(true)
     }
 
     pub fn remove(&self, session_id: &str) -> Result<()> {
-        self.records.write().remove(session_id);
+        let _section = self.lock_and_reload()?;
+        // Most purged sessions (plain chats) have no index entry; without
+        // this short-circuit every such purge would rewrite the whole index
+        // file for nothing, serialized inside the purge flow. It must sit
+        // AFTER `lock_and_reload`: only the fresh disk table proves durable
+        // absence. An in-memory miss on a boot-era snapshot proves nothing
+        // — a prior call whose persist failed leaves the entry on disk
+        // while memory already dropped it, and short-circuiting on that
+        // state would make the removal silently unretryable.
+        if self.records.write().remove(session_id).is_none() {
+            return Ok(());
+        }
         self.persist()?;
         // 删除会话时同步清理权威 sidecar，避免残留的 sidecar 让重建后的索引
         // 误恢复一个已删除的原生代码会话。
+        remove_code_session_sidecar(&self.path, session_id);
+        Ok(())
+    }
+
+    /// Round-42 review: every whole-table persist must observe the disk
+    /// truth under the cross-process section lock. The persist rewrites the
+    /// entire `session-agents.json` from memory, so a mutator running on a
+    /// boot-era snapshot silently reverts another process's committed write
+    /// (a routine GUI config write erasing the CLI `projects rebind` index,
+    /// or a GUI bind resurrecting a CLI-deleted record). Same discipline as
+    /// the round-37/40 reviews closed for the providers store and
+    /// [`Self::remove_for_second_process`]: section lock → fresh reload →
+    /// mutate → persist, and a corrupt index is REFUSED instead of being
+    /// replaced by a stale-table persist. Returns the section guard — the
+    /// caller mutates `self.records` and calls `self.persist()` while it is
+    /// held. `rebind_workspace_prefix` takes the lock + fresh reload FIRST
+    /// through this helper and only then translates the paths, and
+    /// [`Self::commit_index_rekeys`] stays lock-free because its other
+    /// caller already holds the lock.
+    fn lock_and_reload(&self) -> Result<Option<std::fs::File>> {
+        let lock_path = self.path.with_extension("json.lock");
+        let section = super::cross_process_section_lock(&lock_path, "session-agents");
+        if self.path.exists() {
+            let raw = std::fs::read_to_string(&self.path)
+                .with_context(|| format!("读取 {} 失败", self.path.display()))?;
+            let fresh: HashMap<String, SessionAgentRecord> =
+                serde_json::from_str::<AgentStoreFile>(&raw)
+                    .with_context(|| format!("解析 {} 失败", self.path.display()))?
+                    .sessions;
+            let mut records = self.records.write();
+            *records = fresh;
+        }
+        Ok(section)
+    }
+
+    /// Second-process removal for the CLI's `sessions delete`
+    /// (round-40 review). The GUI lane above is always the boot-owner of
+    /// this store; the CLI is not, and the `load_or_empty` → `remove` →
+    /// `persist` sequence it used had two loss windows: a GUI session
+    /// creation landing between the CLI's load and persist was dropped
+    /// from the index by the whole-table persist, and an index that turned
+    /// corrupt was loaded as an EMPTY map whose persist threw away every
+    /// remaining record. Same discipline as the round-37 review closed for
+    /// `AcpConfigDefaultsStore`: cross-process section lock → fresh reload
+    /// → mutate → persist, and a corrupt index is REFUSED instead of being
+    /// replaced by an empty-table persist. A missing index returns
+    /// `Ok(())` without creating the file: `sessions delete` must not be
+    /// the thing that creates `session-agents.json` in a home that never
+    /// ran an ACP session.
+    pub fn remove_for_second_process(&self, session_id: &str) -> Result<()> {
+        if !self.path.exists() {
+            return Ok(());
+        }
+        let lock_path = self.path.with_extension("json.lock");
+        let _section = super::cross_process_section_lock(&lock_path, "session-agents");
+        // Round-44 review: this mutator exists for the second process (the
+        // CLI), so its failure chain must be CLI-English — a zh context here
+        // surfaces verbatim through `pinvou sessions delete` output.
+        let raw = fs::read_to_string(&self.path).with_context(|| {
+            format!(
+                "failed to read the shared session-agent index {}: it stays untouched",
+                self.path.display()
+            )
+        })?;
+        let mut fresh: HashMap<String, SessionAgentRecord> =
+            serde_json::from_str::<AgentStoreFile>(&raw)
+                .with_context(|| {
+                    format!(
+                        "failed to parse the shared session-agent index {}: it stays untouched",
+                        self.path.display()
+                    )
+                })?
+                .sessions;
+        fresh.remove(session_id);
+        {
+            let mut records = self.records.write();
+            *records = fresh;
+        }
+        self.persist()?;
+        // 同 `remove`：删除后清理权威 sidecar（幂等）。
         remove_code_session_sidecar(&self.path, session_id);
         Ok(())
     }
@@ -1255,14 +1451,41 @@ impl SessionAgentStore {
     /// 两类来源：sidecar 持久化修复前构建创建的存量会话从未写过 sidecar；绑定时
     /// sidecar 写失败只记日志未补写。索引记录 `code_session=true` 而 sidecar 缺失
     /// 时按索引补写；返回成功补写的数量（写失败已逐条记日志，不计入）。
-    pub fn backfill_missing_code_session_sidecars(&self) -> usize {
+    ///
+    /// Ghost gate: index entries whose durable record `<id>.json` was already
+    /// deleted by retention are skipped as dead instead of being backfilled —
+    /// otherwise every boot would mass-"resurrect" long-evicted sessions as
+    /// dirs containing only `code-session.json`. This gate only skips and
+    /// counts; removing the entry itself belongs to the boot scan's prune.
+    /// The probe keeps `binding_owner_exists`'s conservative semantics: only
+    /// a real NotFound counts as dead, so a transient stat error never keeps
+    /// a live session from being backfilled.
+    pub fn backfill_missing_code_session_sidecars(&self) -> Result<usize> {
+        // Round-43 review: the boot-era snapshot must not decide which
+        // sidecars are "missing" — a CLI `sessions delete` landing after
+        // this process booted removes the record AND its sidecar, and
+        // backfilling from the stale table would recreate it for a
+        // deleted session, which the next boot's restore pass then turns
+        // back into an index record. Same section discipline as every
+        // other boot-pass mutator; a corrupt index refuses (fail-closed)
+        // instead of backfilling against an unreadable table.
+        let _section = self.lock_and_reload()?;
         let records = self.records.read().clone();
         let mut backfilled = 0usize;
+        let mut skipped_dead = 0usize;
         for (session_id, record) in records {
             if !record.mode.is_code() {
                 continue;
             }
             if read_code_session_sidecar(&self.path, &session_id).is_some() {
+                continue;
+            }
+            // Ghost gate: an entry whose durable record was deleted by
+            // retention gets no backfilled sidecar — that would resurrect a
+            // ghost dir under sessions/<id>/; removing the entry itself
+            // belongs to the boot scan's prune.
+            if !self.binding_owner_exists(&session_id) {
+                skipped_dead += 1;
                 continue;
             }
             if write_code_session_sidecar(
@@ -1275,7 +1498,12 @@ impl SessionAgentStore {
                 eprintln!("[pinvou3-app] 回填原生代码会话 sidecar: {session_id}");
             }
         }
-        backfilled
+        if skipped_dead > 0 {
+            eprintln!(
+                "[pinvou3-app] backfill skipped {skipped_dead} native code session entries without a live owner record"
+            );
+        }
+        Ok(backfilled)
     }
 
     /// 从权威 sidecar 恢复原生代码会话记录（辅助索引缺失/损坏时的兜底）。
@@ -1284,11 +1512,35 @@ impl SessionAgentStore {
     /// 依据，辅助索引只负责加速。恢复成功即持久化回 `session-agents.json`，
     /// 使后续读取不再依赖 sidecar。返回是否真实发生了恢复：索引已持有
     /// code 模式记录时返回 `Ok(false)`，调用方不得把它计入恢复信号。
-    pub fn restore_missing_code_session_record(
-        &self,
-        session_id: &str,
-        recovered: CodeSessionSidecar,
-    ) -> Result<bool> {
+    ///
+    /// Round-44 review: the caller's enumeration snapshot is only a
+    /// pre-filter (a missing sidecar at scan time skips the call entirely);
+    /// the record is rebuilt from the sidecar bytes re-read under the
+    /// section lock, so both stale directions of the enumeration close — a
+    /// sidecar removed by a peer `sessions delete`, and a sidecar rewritten
+    /// onto a new root by a peer `projects rebind`.
+    pub fn restore_missing_code_session_record(&self, session_id: &str) -> Result<bool> {
+        // Round-43 review: this is the last whole-table-persisting mutator
+        // outside the section discipline (its ACP twin
+        // `restore_missing_acp_record` already runs it). Without the
+        // lock-and-reload, the GUI boot pass persists its boot-era table
+        // and silently reverts a CLI `sessions delete` / `projects rebind`
+        // that committed between this process's `load_or_empty` and this
+        // recovery — resurrecting the deleted record. Taking the lock here
+        // also moves the code/ACP checks onto the fresh table, so they
+        // decide on disk truth instead of the boot snapshot.
+        let _section = self.lock_and_reload()?;
+        // The caller enumerated sidecars outside the section lock, so the
+        // snapshot can be stale in BOTH directions: a concurrent
+        // `sessions delete` removes the sidecar (restoring from the
+        // enumeration copy would re-create exactly the record the delete
+        // erased), and a concurrent `projects rebind` REWRITES the sidecar
+        // onto the new root (restoring from the enumeration copy would
+        // re-insert the pre-rebind binding the rebind just moved). Re-read
+        // the authoritative sidecar under the lock and rebuild from it.
+        let Some(recovered) = read_code_session_sidecar(&self.path, session_id) else {
+            return Ok(false);
+        };
         let record = SessionAgentRecord {
             backend: AgentBackend::Deepseek,
             workspace_kind: recovered.workspace_kind,
@@ -1407,6 +1659,25 @@ impl AcpConfigDefaultsStore {
             .unwrap_or_default()
     }
 
+    /// Reload-backed read for the session-spawn path (round-40 review).
+    /// `get` answers from the boot-era memory map; the CLI's `code` family
+    /// rewrites `acp-agent-defaults.json` from a second process — the exact
+    /// second writer this store's section lock was built for — so a GUI
+    /// session created after that rewrite spawned with the STALE default
+    /// mode while every mutator already ran fresh. The reload reuses
+    /// [`Self::reload_into`]'s in-memory semantics WITHOUT the cross-process
+    /// section lock: a read needs no exclusion because the writers persist
+    /// by atomic rename, so a concurrent reader sees the old or the new
+    /// file whole, never torn — worst case it answers the pre-write
+    /// snapshot, which is exactly the staleness it exists to remove.
+    pub fn get_after_reload(&self, backend: AgentBackend) -> HashMap<String, String> {
+        {
+            let mut records = self.records.write();
+            Self::reload_into(&mut records, &self.path);
+        }
+        self.get(backend)
+    }
+
     pub fn has_backend(&self, backend: AgentBackend) -> bool {
         self.records.read().contains_key(&backend)
     }
@@ -1415,12 +1686,34 @@ impl AcpConfigDefaultsStore {
         if !backend.is_acp() {
             anyhow::bail!("不能为非 ACP Agent 保存配置默认值");
         }
-        self.records
-            .write()
-            .entry(backend)
-            .or_default()
-            .insert(config_id.to_string(), value_id.to_string());
-        self.persist()
+        // Round-37 review MAJOR: the CLI's `code` family mutates this store
+        // from a second process (and the GUI holds it for its whole
+        // lifetime), so the in-memory write must not persist the boot-era
+        // snapshot over the peer's committed writes. Same discipline as the
+        // providers store: cross-process section lock → reload → mutate →
+        // persist.
+        let _section = self.section_lock();
+        {
+            let mut records = self.records.write();
+            Self::reload_into(&mut records, &self.path);
+            records
+                .entry(backend)
+                .or_default()
+                .insert(config_id.to_string(), value_id.to_string());
+            // Round-54 audit A4: persist INSIDE the write guard. A
+            // get_after_reload acquiring the guard in the release-to-persist
+            // window used to reload the disk map over the not-yet-persisted
+            // insert, and this fn's persist then wrote the stomped map — the
+            // saved default silently lost in memory AND on disk (the
+            // reader's own answer was fine; the side effect was the loss).
+            // The providers store closed the same shape with persist_locked;
+            // now a reader either orders before the mutate or after the
+            // persist.
+            Self::persist_locked(&records, &self.path)?;
+        }
+        #[cfg(test)]
+        set_persist_park_point();
+        Ok(())
     }
 
     pub fn set_all_if_absent(
@@ -1431,28 +1724,89 @@ impl AcpConfigDefaultsStore {
         if !backend.is_acp() || values.is_empty() {
             return Ok(false);
         }
+        // Round-37 review MAJOR: same cross-process discipline as `set` —
+        // the boot migration can run while the other surface mutates, and a
+        // persist of the boot-era snapshot would revert it.
+        let _section = self.section_lock();
         {
             let mut records = self.records.write();
+            Self::reload_into(&mut records, &self.path);
             if records.contains_key(&backend) {
                 return Ok(false);
             }
             records.insert(backend, values);
+            // Round-54 audit A4: persist under the write guard — same
+            // lost-update window as `set` (see its comment).
+            Self::persist_locked(&records, &self.path)?;
         }
-        self.persist()?;
         Ok(true)
     }
 
-    fn persist(&self) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
+    /// Cross-process section lock over the reload→mutate→persist window,
+    /// same shape as the providers store's (round-37 review MAJOR): the
+    /// CLI's `code` family mutates this store from a second process, and a
+    /// whole-table persist of a boot-era snapshot would silently revert the
+    /// peer's writes.
+    fn section_lock(&self) -> Option<std::fs::File> {
+        let lock_path = self.path.with_extension("json.lock");
+        super::cross_process_section_lock(&lock_path, "acp-agent-defaults")
+    }
+
+    /// Best-effort reload of the disk state into an ALREADY-HELD write
+    /// guard, matching the providers store's `reload_into` semantics: an
+    /// unreadable/unparsable file keeps the in-memory state (and a file
+    /// that turned corrupt after boot is quarantined once, `.invalid`
+    /// sibling, so the next persist cannot silently destroy the peer's
+    /// only copy).
+    fn reload_into(records: &mut HashMap<AgentBackend, HashMap<String, String>>, path: &Path) {
+        let Ok(raw) = fs::read_to_string(path) else {
+            return;
+        };
+        let Ok(file) = serde_json::from_str::<AcpConfigDefaultsFile>(&raw) else {
+            let mut name = path.file_name().unwrap_or_default().to_os_string();
+            name.push(".invalid");
+            let quarantine = path.with_file_name(name);
+            if !quarantine.exists() {
+                let _ = fs::copy(path, &quarantine);
+            }
+            return;
+        };
+        *records = file.agents;
+    }
+
+    // Round-1 review m3: the read-snapshot `persist()` wrapper that survived
+    // the A4 fix had ZERO remaining callers (both mutators persist under
+    // the write guard via `persist_locked`) — deleted rather than kept,
+    // because a future caller reaching for it would silently reintroduce
+    // the exact release-then-persist lost-update shape A4 closed.
+
+    /// Writes the defaults file from an ALREADY-CAPTURED map: `set` /
+    /// `set_all_if_absent` pass the write-guarded records so the persist
+    /// lands inside the same critical section as the mutate (round-54
+    /// audit A4). This is the store's only persist path.
+    fn persist_locked(
+        records: &HashMap<AgentBackend, HashMap<String, String>>,
+        path: &Path,
+    ) -> Result<()> {
+        // `atomic_write` stages inside the target's parent, so the directory
+        // must exist first (unchanged from the hand-rolled writer).
+        if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let tmp = self.path.with_extension("json.tmp");
         let value = AcpConfigDefaultsFile {
             version: CONFIG_DEFAULTS_VERSION,
-            agents: self.records.read().clone(),
+            agents: records.clone(),
         };
-        fs::write(&tmp, serde_json::to_vec_pretty(&value)?)?;
-        fs::rename(&tmp, &self.path)?;
+        // Round-51 review: the hand-rolled pid-suffixed tmp+rename carried
+        // no fsync, so power loss could land a truncated/empty
+        // `acp-agent-defaults.json`. `atomic_write` provides the unique
+        // per-writer staging name this comment already demanded (pid +
+        // timestamp — the same cross-process rule: the CLI's `code` family
+        // mutates this store from a second process, and a fixed `.tmp` name
+        // would let two surfaces rename each other's half-written file into
+        // place), the fsync-before-rename the sibling stores migrated for,
+        // and the same two-arm tmp cleanup.
+        crate::platform::filesystem::atomic_write(path, &serde_json::to_vec_pretty(&value)?)?;
         Ok(())
     }
 }
@@ -1476,6 +1830,33 @@ pub fn validate_codex_project_workspace(path: &Path) -> Result<PathBuf> {
 }
 
 #[cfg(test)]
+pub(crate) mod set_persist_park {
+    //! Test-only seam for the lost-update regression test: `set` parks at
+    //! the point after its critical section so the test can run
+    //! `get_after_reload` in exactly the window the round-54 audit's
+    //! lost-update interleave needs (with the fix, the persist has already
+    //! run inside the guard by the time the park signals).
+
+    use std::sync::mpsc::Sender;
+    use std::sync::{Condvar, Mutex};
+
+    pub static ARMED: Mutex<Option<Sender<()>>> = Mutex::new(None);
+    pub static RELEASE: Mutex<bool> = Mutex::new(false);
+    pub static RELEASE_CV: Condvar = Condvar::new();
+}
+
+#[cfg(test)]
+fn set_persist_park_point() {
+    if let Some(tx) = set_persist_park::ARMED.lock().unwrap().take() {
+        let _ = tx.send(());
+        let mut released = set_persist_park::RELEASE.lock().unwrap();
+        while !*released {
+            released = set_persist_park::RELEASE_CV.wait(released).unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1484,6 +1865,91 @@ mod tests {
     fn touch_owner_record(store_path: &Path, session_id: &str) {
         let record = code_session_sidecar_root(store_path).join(format!("{session_id}.json"));
         fs::write(record, "{}").unwrap();
+    }
+
+    /// Temp directory plus a fresh empty [`SessionAgentStore`] over
+    /// `session-agents.json` inside it — one call per store instance in the
+    /// lock-and-reload tests below. The directory keeps the module's
+    /// existing `pinvou3-<tag>-{pid}` on-disk naming shape (the trailing
+    /// `-` stays in `tag`) and is recreated fresh per call so parallel
+    /// tests never share a directory. Same shape as the providers test
+    /// module's `section_test_dir` + `tmp_store`.
+    fn store_fixture(tag: &str) -> (PathBuf, SessionAgentStore) {
+        let root = std::env::temp_dir().join(format!("{tag}{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = store_at(&root.join("session-agents.json"));
+        (root, store)
+    }
+
+    /// A fresh empty store over `path` — the second-process stand-in for
+    /// tests that need two independent in-memory tables over the same
+    /// on-disk index (a second `store_fixture` call would wipe the
+    /// directory the first store already committed to).
+    fn store_at(path: &Path) -> SessionAgentStore {
+        SessionAgentStore {
+            path: path.to_path_buf(),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// Round-54 audit A4: `set` must persist INSIDE the write guard. A
+    /// `get_after_reload` running in the guard-release-to-persist window
+    /// reloads the disk map over the not-yet-persisted insert and the
+    /// subsequent persist writes the stomped map — the saved default is
+    /// silently lost in memory and on disk. The park seam makes the
+    /// interleave deterministic: the worker signals at the seam, the main
+    /// thread reloads, and the value must survive both the reload and the
+    /// eventual persist.
+    #[test]
+    fn set_survives_concurrent_get_after_reload() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou-acp-defaults-lost-update-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let path = root.join("acp-agent-defaults.json");
+        let store = AcpConfigDefaultsStore {
+            path: path.clone(),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        let worker_store = AcpConfigDefaultsStore {
+            path: path.clone(),
+            records: Arc::clone(&store.records),
+        };
+
+        // Seed the disk first: reload_into is a no-op while the file is
+        // absent, so the audited stomp (a reload REPLACING the memory map)
+        // needs an existing file with sibling content to restore.
+        store
+            .set(AgentBackend::CodexAcp, "config-0", "model-0")
+            .expect("seed set must succeed");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        *set_persist_park::ARMED.lock().unwrap() = Some(tx);
+        let handle = std::thread::spawn(move || {
+            worker_store
+                .set(AgentBackend::CodexAcp, "config-a", "model-b")
+                .expect("set under the park must succeed");
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(30))
+            .expect("worker reached the park point");
+        let seen = store.get_after_reload(AgentBackend::CodexAcp);
+        assert_eq!(
+            seen.get("config-a").map(String::as_str),
+            Some("model-b"),
+            "get_after_reload in the park window must observe the concurrent set"
+        );
+        *set_persist_park::RELEASE.lock().unwrap() = true;
+        set_persist_park::RELEASE_CV.notify_all();
+        handle.join().unwrap();
+        // And the disk truth carries it after everything settles.
+        let reread = store.get_after_reload(AgentBackend::CodexAcp);
+        assert_eq!(reread.get("config-a").map(String::as_str), Some("model-b"));
+        // Reset the seam so a future second park test arms from a clean
+        // RELEASE (round-1 review nit: the static is never reset otherwise).
+        *set_persist_park::RELEASE.lock().unwrap() = false;
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1825,6 +2291,216 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    /// Round-42 review: every GUI mutator that whole-table-persists must
+    /// reload the disk truth under the cross-process section lock first.
+    /// A GUI store instance boot-loaded before the CLI committed its writes
+    /// used to persist that stale boot-era table back over them — a routine
+    /// config write silently reverted a completed `projects rebind` (and a
+    /// bind resurrected a CLI-deleted record), with no error anywhere.
+    #[test]
+    fn gui_mutators_reload_under_the_section_lock_instead_of_persisting_a_stale_table() {
+        let (root, gui) = store_fixture("pinvou3-session-agents-lock-reload-test-");
+        let path = gui.path.clone();
+        gui.set_acp_session("gui-session", "acp-1".to_string(), None, HashMap::new())
+            .unwrap();
+        // The CLI is a separate process committing after the GUI booted.
+        let cli = store_at(&path);
+        cli.set_acp_session("cli-session", "acp-2".to_string(), None, HashMap::new())
+            .unwrap();
+
+        // The GUI's routine config write must observe the CLI's committed
+        // record instead of reverting it with the boot-era table.
+        gui.set_acp_config_value("gui-session", "model", "glm-5")
+            .unwrap();
+        let on_disk: AgentStoreFile = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(
+            on_disk.sessions.contains_key("cli-session"),
+            "a GUI config write must not revert the CLI's committed record: {:?}",
+            on_disk.sessions.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            on_disk.sessions["gui-session"]
+                .acp_config_values
+                .get("model"),
+            Some(&"glm-5".to_string())
+        );
+
+        // Same discipline for remove: a stale-table persist must not
+        // resurrect the CLI-side removed record.
+        cli.remove_for_second_process("cli-session").unwrap();
+        gui.bind_code_native_session("gui-session", CodexWorkspaceKind::Temporary, None)
+            .unwrap();
+        let on_disk: AgentStoreFile = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(
+            !on_disk.sessions.contains_key("cli-session"),
+            "a GUI bind must not resurrect a CLI-removed record: {:?}",
+            on_disk.sessions.keys().collect::<Vec<_>>()
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Round-43 review: `restore_missing_code_session_record` is the boot
+    /// pass's whole-table-persisting mutator, so it must run the same
+    /// lock-and-reload discipline — a peer record committed after this
+    /// process booted must survive the recovery persist, and a corrupt
+    /// index must be refused instead of being overwritten.
+    #[test]
+    fn restore_missing_code_session_record_observes_the_section_truth() {
+        let (root, gui) = store_fixture("pinvou3-restore-code-record-lock-test-");
+        let path = gui.path.clone();
+        gui.bind_code_native_session("booted-session", CodexWorkspaceKind::Temporary, None)
+            .unwrap();
+        // The sidecar this boot pass will restore from (index record
+        // missing — the recovery lane's premise).
+        assert!(write_code_session_sidecar(
+            &path,
+            "recovered-session",
+            CodexWorkspaceKind::Temporary,
+            None
+        ));
+        // A peer process commits a fresh bind after the GUI booted.
+        let peer = store_at(&path);
+        peer.bind_code_native_session("peer-session", CodexWorkspaceKind::Temporary, None)
+            .unwrap();
+
+        gui.restore_missing_code_session_record("recovered-session")
+            .unwrap();
+
+        let on_disk: AgentStoreFile = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(
+            on_disk.sessions.contains_key("peer-session"),
+            "the recovery persist must not revert the peer's committed bind: {:?}",
+            on_disk.sessions.keys().collect::<Vec<_>>()
+        );
+        assert!(on_disk.sessions.contains_key("recovered-session"));
+
+        // A sidecar removed together with its session after the boot pass
+        // enumerated it must not be restored from the stale copy.
+        peer.bind_code_native_session("deleted-session", CodexWorkspaceKind::Temporary, None)
+            .unwrap();
+        peer.remove_for_second_process("deleted-session").unwrap();
+        assert_eq!(
+            gui.restore_missing_code_session_record("deleted-session")
+                .unwrap(),
+            false,
+            "a sidecar deleted with its session must not restore the deleted record"
+        );
+        let on_disk: AgentStoreFile = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(!on_disk.sessions.contains_key("deleted-session"));
+
+        // Fail-closed on a corrupt index, same as the other lock-and-reload
+        // mutators.
+        fs::write(&path, "{not json").unwrap();
+        assert!(
+            gui.restore_missing_code_session_record("recovered-session")
+                .is_err(),
+            "a corrupt index must be refused, not replaced by a stale-table persist"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Round-44 review: the under-lock re-check guards the DELETE direction
+    /// of the stale enumeration, but a concurrent `projects rebind` REWRITES
+    /// the sidecar onto the new root. Restoring from the passed-in copy
+    /// would re-insert the pre-rebind binding while the sidecar (and the
+    /// rebind receipt) already say otherwise. The recovery must rebuild the
+    /// record from the sidecar bytes read under the section lock.
+    #[test]
+    fn restore_missing_code_session_record_rebuilds_from_the_rewritten_sidecar() {
+        let (root, gui) = store_fixture("pinvou3-restore-code-record-rewrite-test-");
+        let path = gui.path.clone();
+        // What the boot pass enumerated: an orphan sidecar bound to the old
+        // temporary workspace (no index record — the recovery lane's premise).
+        assert!(write_code_session_sidecar(
+            &path,
+            "rebound-session",
+            CodexWorkspaceKind::Temporary,
+            None
+        ));
+        // A peer `projects rebind` commits between the enumeration and the
+        // restore: the sidecar is rewritten onto the new project root.
+        let rebound_root = root.join("rebound-project");
+        fs::create_dir_all(&rebound_root).unwrap();
+        assert!(write_code_session_sidecar(
+            &path,
+            "rebound-session",
+            CodexWorkspaceKind::Project,
+            Some(rebound_root.clone())
+        ));
+
+        assert!(
+            gui.restore_missing_code_session_record("rebound-session")
+                .unwrap(),
+            "an orphan sidecar must still restore"
+        );
+
+        let on_disk: AgentStoreFile = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let restored = &on_disk.sessions["rebound-session"];
+        assert_eq!(restored.workspace_kind, CodexWorkspaceKind::Project);
+        assert_eq!(
+            restored.workspace_path.as_deref(),
+            Some(rebound_root.as_path())
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Round-43 review: the sidecar backfill decides "missing" from the
+    /// table, so it must reload under the section lock — backfilling from
+    /// the boot-era snapshot would re-create the sidecar of a session a
+    /// peer deleted (record and sidecar together), which the next boot's
+    /// restore pass would turn back into an index record.
+    #[test]
+    fn sidecar_backfill_does_not_resurrect_a_peer_deleted_session() {
+        let (root, gui) = store_fixture("pinvou3-backfill-lock-test-");
+        let path = gui.path.clone();
+        gui.bind_code_native_session("legacy-session", CodexWorkspaceKind::Temporary, None)
+            .unwrap();
+        // A pre-sidecar-persist build's legacy record: index in, sidecar
+        // out — exactly what the backfill exists to heal.
+        remove_code_session_sidecar(&path, "legacy-session");
+        // The peer deletes the session (record and sidecar) after boot.
+        let peer = store_at(&path);
+        peer.remove_for_second_process("legacy-session").unwrap();
+
+        let backfilled = gui.backfill_missing_code_session_sidecars().unwrap();
+
+        assert_eq!(backfilled, 0);
+        assert!(
+            read_code_session_sidecar(&path, "legacy-session").is_none(),
+            "backfill must not re-create the sidecar of a deleted session"
+        );
+        let on_disk: AgentStoreFile = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert!(!on_disk.sessions.contains_key("legacy-session"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Round-42 review: the lock-and-reload lanes refuse a corrupt index
+    /// (fail-closed) instead of persisting a stale table over it, matching
+    /// `remove_for_second_process` and `rebind_workspace_prefix`.
+    #[test]
+    fn gui_mutators_refuse_a_corrupt_index_instead_of_persisting_over_it() {
+        let (root, store) = store_fixture("pinvou3-session-agents-corrupt-refusal-test-");
+        let path = store.path.clone();
+        store
+            .set_acp_session("session-1", "acp-1".to_string(), None, HashMap::new())
+            .unwrap();
+        fs::write(&path, "{not json").unwrap();
+        let corrupt_bytes = fs::read(&path).unwrap();
+
+        assert!(
+            store
+                .set_acp_config_value("session-1", "model", "glm-5")
+                .is_err(),
+            "a corrupt index must be refused, not replaced by a stale-table persist"
+        );
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            corrupt_bytes,
+            "the refused write must leave the corrupt file untouched"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn started_acp_session_cannot_be_rebound_to_code_native() {
         let root = std::env::temp_dir().join(format!(
@@ -2051,6 +2727,108 @@ mod tests {
         fs::remove_dir_all(&root).unwrap();
     }
 
+    /// Round-41 review: the rebind is a second-process wholesale write, so it
+    /// must reload the index under the section lock instead of persisting its
+    /// boot-era snapshot. A GUI session bind landing after the rebind
+    /// process booted (s2 below) has no workspace sidecar to restore it —
+    /// the whole-table persist used to drop it silently.
+    #[test]
+    fn rebind_workspace_prefix_persists_a_record_bound_after_this_process_booted() {
+        let (root, store) = store_fixture("pinvou3-codex-rebind-second-process-");
+        // `store` is the rebind process: its memory holds only s1 (the
+        // boot-era snapshot).
+        let from = root.join("from");
+        let to = root.join("to");
+        fs::create_dir_all(from.join("sub")).unwrap();
+        fs::create_dir_all(&to).unwrap();
+        store
+            .set_acp_workspace(
+                "s1",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Project,
+                Some(from.clone()),
+            )
+            .unwrap();
+
+        // The GUI bind landing mid-rebind: s2 enters the on-disk index only
+        // (ACP sessions keep no workspace sidecar after bind). The record is
+        // built through a real `set_acp_workspace` on a scratch store so the
+        // serialized shape stays the production one, then spliced into the
+        // index the way the GUI's own persist would have.
+        let scratch_store = store_at(&root.join("scratch-index.json"));
+        scratch_store
+            .set_acp_workspace(
+                "s2",
+                AgentBackend::CodexAcp,
+                CodexWorkspaceKind::Project,
+                Some(from.join("sub")),
+            )
+            .unwrap();
+        let mut index: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&store.path).unwrap()).unwrap();
+        let scratch: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&scratch_store.path).unwrap()).unwrap();
+        index["sessions"]["s2"] = scratch["sessions"]["s2"].clone();
+        fs::write(&store.path, serde_json::to_string_pretty(&index).unwrap()).unwrap();
+        // ACP sessions keep no workspace sidecar, but the owner-existence
+        // gate reads a record file in the sidecar root — create the root the
+        // way a native session's bind would have.
+        fs::create_dir_all(code_session_sidecar_root(&store.path)).unwrap();
+        touch_owner_record(&store.path, "s1");
+        touch_owner_record(&store.path, "s2");
+
+        let outcome = store.rebind_workspace_prefix(&from, &to).unwrap();
+        let mut ids: Vec<&str> = outcome
+            .affected
+            .iter()
+            .map(|(sid, _)| sid.as_str())
+            .collect();
+        ids.sort_unstable();
+        assert_eq!(ids, vec!["s1", "s2"]);
+
+        // Both records survive the whole-table persist, moved onto `to`.
+        let persisted: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&store.path).unwrap()).unwrap();
+        assert_eq!(
+            persisted["sessions"]["s1"]["workspace_path"].as_str(),
+            Some(to.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            persisted["sessions"]["s2"]["workspace_path"].as_str(),
+            Some(to.join("sub").to_string_lossy().as_ref()),
+            "a bind landing after this process booted must not be dropped by the rebind persist"
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Round-41 review: a corrupt index must fail the rebind (fail-closed,
+    /// like `remove_for_second_process` and the plain lane's
+    /// REBIND_LEGACY_TABLE_CORRUPT), not be replaced by an (near-)empty
+    /// table persist that throws away every recoverable record.
+    #[test]
+    fn rebind_workspace_prefix_refuses_a_corrupt_index_instead_of_emptying_it() {
+        let (root, store) = store_fixture("pinvou3-codex-rebind-corrupt-index-");
+        let from = root.join("from");
+        let to = root.join("to");
+        fs::create_dir_all(&from).unwrap();
+        fs::create_dir_all(&to).unwrap();
+        fs::write(&store.path, "{ not json").unwrap();
+
+        let outcome = store.rebind_workspace_prefix(&from, &to);
+        assert!(
+            outcome.is_err(),
+            "a corrupt index must be refused, not rewritten"
+        );
+        assert_eq!(
+            fs::read_to_string(&store.path).unwrap(),
+            "{ not json",
+            "the corrupt file is left untouched for recovery"
+        );
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
     #[test]
     fn rebind_repairs_index_sidecar_disagreement_on_a_rekeyed_rerun() {
         // review #463 round-8 minor 9: run 1 (from→to) delivers the index but
@@ -2151,11 +2929,14 @@ mod tests {
 
         // The run-2 persist-failure end state, constructed directly: the index
         // move rolled back to its pre-run value (`to`), the sidecar write
-        // survived (`to2`).
+        // survived (`to2`). Persisted, because round-41's fresh reload reads
+        // the DISK state — the real run-2 scenario had `to` on disk (run-1
+        // delivered it), not just in memory.
         {
             let mut records = store.records.write();
             records.get_mut("s1").unwrap().workspace_path = Some(to.clone());
         }
+        store.persist().unwrap();
         persist_code_session_sidecar(
             &code_session_sidecar_path(&store.path, "s1"),
             &CodeSessionSidecar {
@@ -2741,6 +3522,7 @@ mod tests {
                     workspace_path: Some(root.clone()),
                     mode: SessionMode::Plain,
                 },
+                || true,
             )
             .unwrap();
 
@@ -2753,6 +3535,34 @@ mod tests {
         assert_eq!(
             recovered.acp_config_values.get("reasoning_effort"),
             Some(&"high".to_string())
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// Round-44 review: a `sessions delete` landing between the boot pass's
+    /// recovery read and the section lock removes the acp-state source; the
+    /// restore must report "nothing recovered" instead of minting an orphan
+    /// ACP index record for the deleted session.
+    #[test]
+    fn restore_missing_acp_record_refuses_when_the_source_vanished_under_the_lock() {
+        let (root, store) = store_fixture("pinvou3-acp-restore-source-gone-test-");
+        let path = store.path.clone();
+        let recovered = || SessionAgentRecord {
+            backend: AgentBackend::ClaudeAcp,
+            acp_session_id: Some("acp-session-1".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            store
+                .restore_missing_acp_record("session-1", recovered(), || false)
+                .unwrap(),
+            false,
+            "a vanished recovery source must not restore"
+        );
+        assert!(
+            !path.exists(),
+            "a refused restore must not persist anything: {:?}",
+            fs::read_to_string(&path)
         );
         fs::remove_dir_all(&root).unwrap();
     }
@@ -2867,9 +3677,8 @@ mod tests {
             records: Arc::new(RwLock::new(HashMap::new())),
         };
         assert!(!recovered_store.is_code_session("session-1"));
-        let sidecar = read_code_session_sidecar(recovered_store.path(), "session-1").unwrap();
         recovered_store
-            .restore_missing_code_session_record("session-1", sidecar)
+            .restore_missing_code_session_record("session-1")
             .unwrap();
         let record = recovered_store.get("session-1");
         assert!(record.mode.is_code());
@@ -2897,7 +3706,6 @@ mod tests {
         store
             .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
             .unwrap();
-        let sidecar = read_code_session_sidecar(store.path(), "session-1").unwrap();
         // ACP 会话已占用该 session：恢复必须拒绝，不能覆盖。
         store
             .set_acp_workspace(
@@ -2907,9 +3715,19 @@ mod tests {
                 Some(root.clone()),
             )
             .unwrap();
+        // Round-43 review: `set_acp_workspace` cleans the sidecar on success;
+        // the ACP-ownership refusal exists for the residual left behind when
+        // that cleanup failed (the boot scan cleans it later), so re-create
+        // the sidecar to exercise the refusal against the fresh table.
+        assert!(write_code_session_sidecar(
+            store.path(),
+            "session-1",
+            CodexWorkspaceKind::Project,
+            Some(root.clone())
+        ));
         assert!(
             store
-                .restore_missing_code_session_record("session-1", sidecar)
+                .restore_missing_code_session_record("session-1")
                 .is_err()
         );
         assert!(store.get("session-1").backend.is_acp());
@@ -2939,6 +3757,50 @@ mod tests {
     }
 
     #[test]
+    fn remove_retries_durable_cleanup_after_a_failed_persist() {
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-remove-persist-retry-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        store
+            .bind_code_native_session("session-1", CodexWorkspaceKind::Temporary, None)
+            .unwrap();
+        store
+            .bind_code_native_session("session-2", CodexWorkspaceKind::Temporary, None)
+            .unwrap();
+
+        // Review #690 (discussion_r4258007878): a persist failure between
+        // the in-memory removal and the durable rewrite leaves exactly this
+        // residue — the map already dropped the entry while the index file
+        // and the sidecar still hold it. The failing write itself is not
+        // fault-injected here (the fault boundary lives below the store);
+        // the residue state it leaves is arranged directly. The next
+        // remove — the purge flow's retry — must not accept memory absence
+        // as durable success.
+        store.records.write().remove("session-1");
+        assert!(read_code_session_sidecar(store.path(), "session-1").is_some());
+        store.remove("session-1").unwrap();
+
+        // The retry performed the full durable cleanup: the reloaded index
+        // no longer holds the removed entry ...
+        let index: serde_json::Value =
+            serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+        assert!(index["sessions"].get("session-1").is_none());
+        assert!(read_code_session_sidecar(store.path(), "session-1").is_none());
+        // ... and the unaffected survivor is intact on disk and in memory.
+        assert!(index["sessions"].get("session-2").is_some());
+        assert!(store.is_code_session("session-2"));
+        assert!(read_code_session_sidecar(store.path(), "session-2").is_some());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
     fn code_native_sidecar_rejects_malformed_kind_path_combination() {
         let root = std::env::temp_dir().join(format!(
             "pinvou3-code-native-sidecar-malformed-test-{}",
@@ -2950,28 +3812,33 @@ mod tests {
             path: root.join("session-agents.json"),
             records: Arc::new(RwLock::new(HashMap::new())),
         };
+        // Round-44 review: the restore validates the combination it reads
+        // from the on-disk sidecar (the passed-in copy is gone from the
+        // signature), so the malformed fixtures must be written to disk —
+        // a corrupt/foreign-written sidecar is exactly what the guard
+        // protects against now.
         // 项目 kind 但缺路径：恢复必须拒绝。
-        let missing_path = CodeSessionSidecar {
-            version: CODE_SESSION_SIDECAR_VERSION,
-            workspace_kind: CodexWorkspaceKind::Project,
-            workspace_path: None,
-            bound_at: None,
-        };
+        assert!(write_code_session_sidecar(
+            store.path(),
+            "session-1",
+            CodexWorkspaceKind::Project,
+            None
+        ));
         assert!(
             store
-                .restore_missing_code_session_record("session-1", missing_path)
+                .restore_missing_code_session_record("session-1")
                 .is_err()
         );
         // 临时 kind 但带路径：恢复必须拒绝。
-        let with_path = CodeSessionSidecar {
-            version: CODE_SESSION_SIDECAR_VERSION,
-            workspace_kind: CodexWorkspaceKind::Temporary,
-            workspace_path: Some(root.clone()),
-            bound_at: None,
-        };
+        assert!(write_code_session_sidecar(
+            store.path(),
+            "session-2",
+            CodexWorkspaceKind::Temporary,
+            Some(root.clone())
+        ));
         assert!(
             store
-                .restore_missing_code_session_record("session-2", with_path)
+                .restore_missing_code_session_record("session-2")
                 .is_err()
         );
         assert!(!store.is_code_session("session-1"));
@@ -2994,21 +3861,27 @@ mod tests {
         store
             .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
             .unwrap();
-        let sidecar = read_code_session_sidecar(store.path(), "session-1").unwrap();
-        // 模拟辅助索引丢失后的首次恢复：真实恢复，返回 true。
+        // 模拟辅助索引丢失后的首次恢复：真实恢复，返回 true。Round-43 review:
+        // the restore lane now reloads the disk table under the section lock,
+        // so the lost-index premise must hold on disk (record removed from
+        // the file, authoritative sidecar kept).
+        let mut lost_index: AgentStoreFile =
+            serde_json::from_slice(&fs::read(store.path()).unwrap()).unwrap();
+        lost_index.sessions.remove("session-1");
+        fs::write(store.path(), serde_json::to_string(&lost_index).unwrap()).unwrap();
         let recovered_store = SessionAgentStore {
             path: store.path().to_path_buf(),
             records: Arc::new(RwLock::new(HashMap::new())),
         };
         assert!(
             recovered_store
-                .restore_missing_code_session_record("session-1", sidecar.clone())
+                .restore_missing_code_session_record("session-1")
                 .unwrap()
         );
         // 索引已完好：再次调用是早退，不得被误计为恢复信号。
         assert!(
             !recovered_store
-                .restore_missing_code_session_record("session-1", sidecar)
+                .restore_missing_code_session_record("session-1")
                 .unwrap()
         );
         fs::remove_dir_all(&root).unwrap();
@@ -3029,6 +3902,9 @@ mod tests {
         store
             .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
             .unwrap();
+        // session-1's durable record is still present (not evicted by
+        // retention): a missing sidecar is still backfilled from the index.
+        touch_owner_record(store.path(), "session-1");
         // 非代码会话不参与回填。
         store
             .set_acp_workspace(
@@ -3038,16 +3914,37 @@ mod tests {
                 None,
             )
             .unwrap();
+        // Replicate the leftover shape after a retention eviction: the index
+        // says code_session=true, but both the durable record <id>.json and
+        // the session dir <id>/ are gone (retention cleanup never touches
+        // the agents index).
+        store
+            .bind_code_native_session("session-3", CodexWorkspaceKind::Project, Some(root.clone()))
+            .unwrap();
+        fs::remove_dir_all(code_session_sidecar_root(store.path()).join("session-3")).unwrap();
         // 模拟存量会话/绑定时写失败：索引记录 code_session=true 但 sidecar 缺失。
         fs::remove_file(code_session_sidecar_path(store.path(), "session-1")).unwrap();
-        assert_eq!(store.backfill_missing_code_session_sidecars(), 1);
+        // Only session-1, whose durable record is still present, is
+        // backfilled; session-3 is a ghost entry and must be skipped — no
+        // rebuilt dir under sessions/<id>/, no fabricated sidecar (the very
+        // source of the boot-time mass resurrection of evicted sessions).
+        // Removing the leftover entry belongs to the boot scan's prune.
+        assert_eq!(store.backfill_missing_code_session_sidecars().unwrap(), 1);
         let sidecar = read_code_session_sidecar(store.path(), "session-1")
             .expect("sidecar should be backfilled");
         assert_eq!(sidecar.version, CODE_SESSION_SIDECAR_VERSION);
         assert_eq!(sidecar.workspace_kind, CodexWorkspaceKind::Project);
         assert_eq!(sidecar.workspace_path.as_deref(), Some(root.as_path()));
-        // 幂等：sidecar 完好、非代码会话都不补写。
-        assert_eq!(store.backfill_missing_code_session_sidecars(), 0);
+        // The ghost entry stays dead: no sidecar, no resurrected session dir.
+        assert!(
+            !code_session_sidecar_root(store.path())
+                .join("session-3")
+                .exists()
+        );
+        assert!(read_code_session_sidecar(store.path(), "session-3").is_none());
+        // Idempotent: intact sidecars, non-code sessions and ghost entries
+        // are all left alone.
+        assert_eq!(store.backfill_missing_code_session_sidecars().unwrap(), 0);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -3066,6 +3963,9 @@ mod tests {
         store
             .bind_code_native_session("session-1", CodexWorkspaceKind::Project, Some(root.clone()))
             .unwrap();
+        // Durable record still present: only an old-version sidecar treated
+        // as missing goes through the backfill rewrite.
+        touch_owner_record(store.path(), "session-1");
         // 写入高于当前支持版本的 sidecar：拒读并按缺失处理，不能静默按 v1 解析。
         let future = CodeSessionSidecar {
             version: CODE_SESSION_SIDECAR_VERSION + 1,
@@ -3080,7 +3980,7 @@ mod tests {
         .unwrap();
         assert!(read_code_session_sidecar(store.path(), "session-1").is_none());
         // 按缺失处理 → 回填自愈按索引重写为当前版本。
-        assert_eq!(store.backfill_missing_code_session_sidecars(), 1);
+        assert_eq!(store.backfill_missing_code_session_sidecars().unwrap(), 1);
         let sidecar = read_code_session_sidecar(store.path(), "session-1").unwrap();
         assert_eq!(sidecar.version, CODE_SESSION_SIDECAR_VERSION);
         assert_eq!(sidecar.workspace_path.as_deref(), Some(root.as_path()));
