@@ -1193,7 +1193,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                                           <div className={`text-[17px] leading-[23px] font-semibold flex-1 min-w-0 truncate ${ink}`} title={o.name}>{o.name}</div>
                                           <span className="h-6 min-w-[48px] px-2.5 rounded-full inline-flex items-center justify-center text-[11px] font-normal tracking-[0.02em] shrink-0 text-[#0066CC] dark:text-[#8DB7FF] bg-[rgba(0,122,255,.08)] dark:bg-[rgba(10,132,255,.10)]">{String(o.ext || '').toUpperCase().slice(0, 4)}</span>
                                         </div>
-                                        <div className={`flex items-center gap-2 text-[13px] mt-2 text-[#6E6E73] dark:text-[#AEAEB2]`}><span>{fmtOutputDate(o.mtime)}</span><i className="w-1 h-1 rounded-full bg-current opacity-40"></i><span className="truncate">{o.source || t.kbSubOutput}</span></div>
+                                        <div className={`flex items-center gap-2 text-[13px] mt-2 text-[#6E6E73] dark:text-[#AEAEB2]`}><span className="whitespace-nowrap shrink-0">{fmtOutputDate(o.mtime)}</span><i className="w-1 h-1 rounded-full bg-current opacity-40 shrink-0"></i><span className="truncate">{o.source || t.kbSubOutput}</span></div>
                                         <OutputActions o={o} t={t} continueOutput={continueOutput} newOutputProject={newOutputProject} openFolder={openFolder} canOpenSystemFiles={canOpenSystemFiles} canDownloadArtifacts={canDownloadArtifacts} />
                                       </div>
                                     </article>
