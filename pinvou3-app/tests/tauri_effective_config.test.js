@@ -44,10 +44,10 @@ const {
   isPreparedRoot,
 } = require("../scripts/tauri/chrome-devtools-mcp.js");
 
-assert.equal(ADAPTER_VERSION, "pinvou-target-id-v1");
+assert.equal(ADAPTER_VERSION, "pinvou-target-id-v2");
 assert.equal(
   ADAPTED_RESPONSE_SHA256,
-  "e08698ba25c72b304152da1de99005d2415b9034c7edd46615d942dac174e0a6",
+  "e348995ef1aaa11c89bf1f07baa54bcfd10a2cc48831d9c14718258d648589e9",
 );
 const thirdPartyNotices = fs.readFileSync(
   path.join(__dirname, "..", "..", "THIRD_PARTY_NOTICES.md"),
@@ -93,13 +93,13 @@ assert.deepEqual(
     "function createStructuredPage(mcpPage) {",
     "    const entry = {",
     "        id: mcpPage.id,",
-    "        url: mcpPage.pptrPage.url(),",
+    "        url: mcpPage.url(),",
     "    };",
     "}",
   ].join("\n");
   const adaptedSource = originalSource.replace(
-    "        id: mcpPage.id,\n        url: mcpPage.pptrPage.url(),",
-    "        id: mcpPage.id,\n        target_id: mcpPage.pptrPage.target()._targetId,\n        url: mcpPage.pptrPage.url(),",
+    "        id: mcpPage.id,\n        url: mcpPage.url(),",
+    "        id: mcpPage.id,\n        target_id: mcpPage.targetId,\n        url: mcpPage.url(),",
   );
   const fixtureSha256 = crypto.createHash("sha256").update(adaptedSource).digest("hex");
   fs.writeFileSync(responsePath, originalSource);
@@ -108,7 +108,7 @@ assert.deepEqual(
   const adapted = fs.readFileSync(responsePath, "utf8");
   assert.equal(adapted, adaptedSource);
   assert.equal(
-    adapted.split("target_id: mcpPage.pptrPage.target()._targetId").length - 1,
+    adapted.split("target_id: mcpPage.targetId").length - 1,
     1,
   );
   assert.equal(
