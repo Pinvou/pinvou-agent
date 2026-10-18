@@ -212,13 +212,16 @@ if [ -n "$asr_engine" ]; then
 fi
 # Best-effort sweep of the staged runtime tree (shell scripts and data files
 # are skipped by the ELF filter): catches a mis-staged node or knowledge
-# server with a precise filename before packaging.
+# server with a precise filename before packaging. -xtype follows symlinks,
+# so an ELF staged behind a link (npm .bin style) is checked here too; links
+# to directories are skipped here and abort loudly later in the
+# materialization pass, and dangling links die at the same later pass.
 while IFS= read -r -d '' elf; do
   file_out="$(file -b "$elf")"
   case "$file_out" in
     ELF*) assert_loongarch_elf "$elf" ;;
   esac
-done < <(find "$staged_dir/runtime" -type f -print0)
+done < <(find "$staged_dir/runtime" -xtype f -print0)
 
 work_dir="$(mktemp -d)"
 trap 'rm -rf -- "$work_dir"' EXIT
