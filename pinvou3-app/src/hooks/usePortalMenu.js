@@ -19,7 +19,11 @@ export function usePortalMenu({ width = 176, height = 184 } = {}) {
     const top = rect.bottom + 6 + height > window.innerHeight
       ? Math.max(8, rect.top - height - 6)
       : Math.max(8, rect.bottom + 6);
-    setMenuStyle({ left, top, width });
+    // minWidth keeps the nominal footprint for short zh/en labels; the box is
+    // allowed to grow with longer localized items (ja entries exceed 176px and
+    // were glyph-clipped by the fixed width) up to a viewport-safe cap, since
+    // the consumer menus are overflow-hidden.
+    setMenuStyle({ left, top, minWidth: width, maxWidth: Math.max(width, window.innerWidth - left - 8) });
   };
   const toggleMenu = (e) => {
     e.stopPropagation();
