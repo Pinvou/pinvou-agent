@@ -803,6 +803,18 @@ expected_source_description() {
 already_built() {
   [ -f "$manifest" ] || return 1
   [ -f "$output_dir/$CMAKE_TOOLCHAIN_NAME" ] || return 1
+  # The cached CMake toolchain file pins absolute compiler paths. The
+  # manifest proves WHICH sysroot generation this is, not that the toolchain
+  # tree the file points at still exists — a moved or pruned cross-tools
+  # install would only fail far downstream at cmake time. Re-verify the
+  # referenced compilers; a miss triggers the rebuild path, whose
+  # write_cmake_toolchain_file fails with the actionable prefix message.
+  compilers="$(sed -nE 's/^set\(CMAKE_C(XX)?_COMPILER "(.*)"\)$/\2/p' "$output_dir/$CMAKE_TOOLCHAIN_NAME")" ||
+    return 1
+  [ -n "$compilers" ] || return 1
+  while IFS= read -r compiler; do
+    [ -x "$compiler" ] || return 1
+  done <<< "$compilers"
   grep -Fxq "glibc-floor=$GLIBC_FLOOR" "$manifest" || return 1
   grep -Fxq "packages=$(IFS=,; echo "${DEV_PACKAGES[*]}")" "$manifest" || return 1
   # A manifest from a different generation of this script (restore-keys
