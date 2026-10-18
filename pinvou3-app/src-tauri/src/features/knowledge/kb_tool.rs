@@ -300,14 +300,24 @@ impl ToolSpec for KbSearchTool {
                             eprintln!(
                                 "[knowledge] kb_search 前重载模型失败（降级纯全文）: {error}"
                             );
+                            warnings.push(
+                                "语义检索暂不可用（嵌入模型加载失败），本次为关键词检索，结果可能不全".into(),
+                            );
                         }
                         Err(_) => {
                             eprintln!(
                                 "[knowledge] kb_search 前重载模型超时（{}s，降级纯全文；后台加载继续，下次检索恢复语义）",
                                 KB_MODEL_RELOAD_TIMEOUT_SECS
                             );
+                            warnings.push(
+                                "语义检索暂不可用（嵌入模型加载超时），本次为关键词检索，结果可能不全".into(),
+                            );
                         }
                     }
+                } else if !kb.semantic_ready() {
+                    warnings.push(
+                        "语义检索暂不可用（嵌入模型未安装），本次为关键词检索，结果可能不全".into(),
+                    );
                 }
                 let l1 = kb.l1().clone();
                 let q = query.clone();
