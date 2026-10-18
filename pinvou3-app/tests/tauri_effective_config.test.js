@@ -514,6 +514,19 @@ assert.ok(
   buildSource.indexOf("prepareLinuxAsrRuntime(") < buildSource.indexOf("writeEffectiveArtifacts("),
   "Linux packaging must prepare the architecture-specific SenseVoice runtime before manifest generation",
 );
+// The knowledge host also has a dev-path call (`development: true`), so a
+// bare prepareKnowledgeHost( match cannot prove the packaging path is wired:
+// pin the packaging-path guard, and the before-manifest ordering with it.
+assert.match(
+  buildSource,
+  /if \(!skipKnowledgeHost\) prepareKnowledgeHost\(/u,
+  "Linux packaging must still prepare the knowledge host",
+);
+assert.ok(
+  buildSource.indexOf("if (!skipKnowledgeHost) prepareKnowledgeHost(")
+    < buildSource.indexOf("writeEffectiveArtifacts("),
+  "Linux packaging must prepare the knowledge host before manifest generation",
+);
 // Cross builds must be able to skip ASR (SenseVoice only builds natively).
 assert.match(buildSource, /skipLinuxAsr/u, "the ASR step must stay skippable for cross builds");
 // The mapping tests above prove that a given targetArch injects the right

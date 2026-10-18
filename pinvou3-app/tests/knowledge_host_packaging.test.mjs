@@ -45,7 +45,9 @@ const runDev = readFileSync(path.join(appRoot, 'run-dev.sh'), 'utf8');
 test('Linux package embeds the host helper and standalone server build', () => {
   assert.match(platformConfig, /resources\/platforms\/linux\/knowledge-host\//u);
   // Packaging calls may pass cross-build options (pre-built target server);
-  // the pin is that build.js calls this step on the packaging path at all.
+  // the pin is that build.js reaches this step at all — the dev path matches
+  // this loose form too, so the packaging-path guard and its before-manifest
+  // ordering are pinned in tauri_effective_config.test.js.
   assert.match(buildScript, /prepareKnowledgeHost\(/u);
   assert.match(buildScript, /hasTauriBuildCommand/u);
   assert.match(knowledgeHostBuildScript, /chmodSync\(helper, 0o755\)/u);
