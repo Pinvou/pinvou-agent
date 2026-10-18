@@ -645,7 +645,10 @@ mod tests {
 
     #[test]
     fn download_is_refused_when_local_embed_is_unsupported() {
-        // 命令层 fail-closed：能力位为 false 必须在触碰下载管线前显式拒绝。
+        // 命令层 fail-closed 的决策函数在此双向执行；把它接到命令体第一条
+        // 语句（先于 DOWNLOADING 状态、安装锁与一切磁盘 I/O）是读码验证的
+        // 位置事实——命令宏生成的包装以 State 形参为入参，本 harness 无法
+        // 构造，命令体本身不可调用。
         let refusal = local_embed_download_refusal(false);
         assert!(refusal.is_some());
         assert!(refusal.unwrap().contains("本地向量嵌入模型"));
