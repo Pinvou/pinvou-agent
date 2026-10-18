@@ -4,7 +4,7 @@ description: 腾讯文档（docs.qq.com）-在线云文档平台，是创建、�
 homepage: https://docs.qq.com/home
 version: 1.0.41-pinvou2
 author: tencent-docs
-source: https://cdn.addon.tencentsuite.com/static/tencent-docs.zip（官方 1.0.41；Pinvou 适配：原版命令行调用方式改为内置 MCP 工具名 tencent-docs/tdoc-slide/tdoc-doc/tdoc-sheet，移除授权脚本与文件导入/OCR 外部依赖脚本，get_slide_info.sh 改为 stdin 喂响应的纯 jq 归并器，移除 slidep 全局安装脚本 setup.js，大图上传兜底改为引导用户自行走开放平台 OpenAPI、模型不经手 OAuth 凭证）
+source: https://cdn.addon.tencentsuite.com/static/tencent-docs.zip（官方 1.0.41；Pinvou 适配：原版命令行调用方式改为内置 MCP 工具名 tencent-docs/tdoc-slide/tdoc-doc/tdoc-sheet，移除授权脚本与文件导入/OCR 外部依赖脚本，get_slide_info.sh 改为 stdin 喂响应的纯 jq 归并器，移除 slidep 全局安装脚本 setup.js，大图上传兜底改为引导用户自行走开放平台 OpenAPI、模型不经手 OAuth 凭证；2026-10-18 模型侧文案对齐：description 收敛为仅在线文档意图、400007 VIP URL 第二个 `?` 改 `&`、doc_format README 步骤 4 归属 tdoc-doc 服务、slideengine 的 slide_set_design 改直传并禁止写本地 .md 回读、sidebar-pptx-generator 脚本 docstring 示例改 python3）
 ---
 
 # 腾讯文档 MCP 使用指南

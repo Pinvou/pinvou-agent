@@ -268,3 +268,4 @@ description、认证节、命令树新增 `minutes` / `app` / `event` 三个子�
 ## 2026-10-18 本地修改（模型侧文案复审,下次 sync 需重放）
 
 1. **SKILL.md「必须二次确认」表补 `event stop --force` 行**：命令树标注（`stop`：`--force` 为写操作,需二次确认）与确认表不一致,表漏列该命令（上游 v1.0.18 已知缺陷,前次登记为「下版 sync 若上游仍未修则补行」,本轮落地）。新增行：`event stop --force`｜强制停止本机 bus 守护进程（写操作）；不带 `--force` 的 `event stop` 不在确认范围。
+2. **`scripts/agent_init.py` docstring 用法行修正**：原文 `python info_init.py --agent <agent-name> --model <model-name>` 既有裸 `python`（宿主环境无裸 `python`,同 wecom 包 build_docx.py 口径）又残留旧文件名 `info_init.py`,模型照抄必失败。改为 `python3 agent_init.py --agent <agent-name> --model <model-name>`（脚本自身有 `#!/usr/bin/env python3` shebang,口径一致）。
