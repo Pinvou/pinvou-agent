@@ -11400,3 +11400,118 @@ business inventory.
 
 DCO committed and pushed as `e1bba99a91b0033d3630e70a379e2e2f75f2b44c` on
 `codex/t09-lzma`; scope/evidence is in `docs/artifact-lzma-integration.md`.
+
+### T09 ordinary TAR and current signed Debian pair inspection
+
+Six new code/test paths were selected from consecutive source commits
+e41c587b62cd9f7e2be0384b2dd853144ee25c35 and
+e152ab2b3e26006ce20ce46030e370c6c9814045. Their first parent contains codec
+work that has not been integrated. The seventh changed path, the historical
+artifact-verification-plan.md with 119 added documentation lines, was deliberately
+omitted; its earlier combined-tree results and codec scope are not current evidence.
+All six new paths were initially imported as exact raw/Git blobs after absence
+checks. Three production files and the standalone TAR test remain exact; two
+consumer test files have separately recorded primary adaptations to supported
+codecs. No whole-branch merge or historical-plan overwrite was performed.
+
+The ordinary TAR adapter observes immutable owned bytes without extraction,
+link following, permission changes or execution. Explicit source/payload/member
+capacities are distinct from aggregate preparation policy. Ordinary V7/USTAR/GNU
+headers use the actual Go 1.27.2 standard parser for checksum and numeric fields.
+PAX, GNU long names/links, sparse formats, STAR and unknown types are Unsupported
+before hidden extension parsing. A valid header accompanied by ErrInsecurePath
+remains observable because declarations are never host paths; ambient GODEBUG and
+host filepath rules do not change these byte observations. Original legacy type
+is retained, while normalized SDK type controls body rules; non-file bodies fail.
+Physical spans use remaining-length checks before arithmetic, each payload is
+hashed with fixed 32 KiB scratch and context checks, and complete source EOF
+requires two terminal blocks plus only whole zero blocks thereafter. Duplicate
+names retain distinct physical spans. Failures return zero Report, not partial
+earlier members. Names, links and modes remain untrusted declarations.
+
+Debian InspectTars preserves the same owned original installer through framing,
+stored capture, decoding and both complete TAR reports. Control/data TAR limits
+are independent; late data failure discards earlier control and framing facts.
+The verifier first applies current signed Manifest/Root/deny/native-byte guards,
+then inspects the same Native.Bytes and checks the whole-source identity again.
+Later failure or cancellation returns no earlier signed facts or expanded pair.
+Existing inspection/decoding APIs are unchanged; no new authority is granted.
+
+Primary test adaptations remove references to unintegrated XZ/Zstandard fields
+and success cases. The actual whole-DEB TAR matrix requires gzip, bzip2 and LZMA,
+with three separately identified child cases. Actual signed positives use frozen
+bzip2 and LZMA originals. The public XZ package is a precise negative: original
+signed/framing verification first succeeds with its XZ member labels, followed
+by exact Unsupported and zero earlier facts from the TAR composition. Standalone
+inspection of its independently decoded raw TAR files does not mean that whole
+XZ decoding is supported. XZ integration remains deferred pending an explicit
+dependency-maintenance decision; no candidate XZ code was imported.
+
+Both independent scoped line-level code/test reviews passed. Primary passed
+14 gates: three own CLI builds, affected tests, actual isolated PG, whole default,
+modules, full vet, server build, pinned V1, license/cache proof, formatting and
+both whitespace checks. Affected tests passed 14 packages, 136 top-level/
+298 child cases, zero failures (46.756s wall), with exactly one explicit
+unavailable actual-AR-tool skip. Eighteen required actual cases passed: the prior
+13 plus standalone TAR fixtures, the supported DEB TAR matrix, signed bzip2/LZMA
+TAR compositions and the precise public-XZ refusal. Original 167 LZMA EOF and
+40 long-gzip cases remain enabled and passed. Ordinary header types, V7/GNU,
+ambient host path policy, STAR refusal, numeric MaxInt64/negative/invalid values,
+header-only bodies, late checksum/tail/terminator errors, all explicit capacities,
+cancel/nil handling, owned isolation and restoration passed. A real 33 MiB TAR
+payload passed its caller-selected capacity and failed one-below; it does not
+inherit the unrelated atomic business inventory bound.
+
+Twelve original fixture files stayed fixed: the prior six whole/codec files and
+six raw TAR files. Python tarfile independently observed 152 ordinary members in
+four supported raw files and accepted the two extension references which this
+adapter explicitly refuses. Public control/data TAR bytes were rederived with
+independent liblzma from the exact frozen original public DEB and matched the
+10240/256000-byte raw sources (3/143 members). USTAR/GNU each have 10240 bytes
+and 3 members. No package or archive was extracted, installed or executed; no
+publisher, native identity or deployment permission is attested by these fixtures.
+
+The initial root runner completed three builds and affected tests, then stopped
+before running a PG test because the pre-inventory connection was refused. The
+existing isolated local PG 17.11 test cluster had stopped; its owned test-data
+path, version and loopback port were verified and the fixture was restarted.
+Source and index were unchanged. Accepted root evidence combines those first
+four passed stages with ten resumed stages, retaining the original environment
+failure diagnostics separately. Production deployment was not changed.
+Actual PG passed 1 top-level/4 child tests, zero skips/failures
+(28.287s recorded interval). This is unchanged plain-member/current-trust
+regression, not new PG TAR qualification. Before/after inventories matched:
+0 pre-existing fixture databases and
+1 pre-existing fixture role preserved, with no new
+fixture resources left. Whole default passed 63 tested packages,
+583 top-level/1348 child cases (172.426s wall).
+Its 583 top-level/606 child opt-in/unavailable-host
+skips and 12 no-test packages are separate. Sourcefile symlink/mapped-drive host
+fixtures and actual AR-tool output remain unverified.
+
+Each reviewer passed 11 gates with own three CLI builds, the same affected counts,
+18 required actual cases/one AR skip, PG 1/4 zero skips/failures, modules, affected
+vet, license/cache proof, formatting and two whitespace checks. Dependency and
+compatibility affected walls were 43.297s/
+43.162s; PG intervals were
+24.459s/20.739s. PG intervals
+include pre-inventory through Go completion, excluding post-inventory and frozen
+checks; other command walls exclude frozen checks. Reviewers did not repeat the
+root whole-default suite. All sessions and owned stage children closed, with PG
+inventories restored. Full source/index/status, all 69 prior SQL identities,
+four official SBOM resources, 12 fixtures, go.mod/go.sum, the historical plan,
+the prior six gzip/LZMA repair paths and new source/repair identities stayed fixed.
+The pinned module cache, official-checksum proof and retained license matched.
+
+No control text/path/script interpretation, extraction, native app/version/
+architecture/publisher authentication, protected staging, execution, Artifact
+admission or physical/deployment qualification is supplied. No existing codec,
+dependency, SQL/grant/route/provider/Root/Session/UI/contract/version change.
+Full T09 stays in progress; totals remain 5 implemented, 12 in progress and 30
+incomplete/deferred of 47. Product 0.10.9, normative 1.0, pinned V1 and CodeWhale
+stay unchanged; deployment remains deferred. Downloads have no hard total or
+cumulative duration or retry cap. The 32 MiB limit applies only to joined atomic
+business inventory, not artifacts or downloads.
+
+DCO committed and pushed as `7105e81b4cf07a9c19edb2700f5f10a66a22d5db` on
+`codex/t09-tar`; scope/evidence is in `docs/artifact-tar-integration.md`.
