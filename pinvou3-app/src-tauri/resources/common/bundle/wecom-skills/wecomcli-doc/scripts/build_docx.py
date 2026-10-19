@@ -16,7 +16,7 @@ Workflow::
 
 Usage::
 
-    python build_docx.py <spec.jsonl>
+    python3 build_docx.py <spec.jsonl>
 """
 
 from __future__ import annotations

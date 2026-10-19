@@ -405,8 +405,9 @@ pub const MODE_EXECUTE_MD: &str = "\
 ## Mode: Execute
 
 Tools run without per-call approval — the user has already authorized
-execution. Produce files and run commands now, then verify and report.
-If a gated write call is rejected, do not retry it: present the change
+execution. Unless the turn's `<system-reminder>` marks a read-only
+(planning) mode, produce files and run commands now, then verify and
+report. If a gated write call is rejected, do not retry it: present the change
 in your reply and wait for the user to decide.
 Follow each message's `<system-reminder>`.";
 
@@ -1046,6 +1047,34 @@ mod tests {
             "MODE_EXECUTE_MD dropped its promise prohibition only because the shared skeleton carries it"
         );
         assert!(!MODE_EXECUTE_MD.contains("promise of future action"));
+    }
+
+    /// MODE_EXECUTE_MD 是全模式静态层（plan 回合也会看到），条件从句把只读回合
+    /// 的执行命令让位给 per-turn reminder——钉住从句，防止回退成无条件祈使句
+    /// （plan 回合会被静态层指挥「立刻写文件跑命令」，与只读 reminder 打架）。
+    #[test]
+    fn mode_execute_defers_to_read_only_turn_reminders() {
+        assert!(
+            MODE_EXECUTE_MD.contains("Unless the turn's `<system-reminder>` marks a read-only")
+        );
+        assert!(MODE_EXECUTE_MD.contains("(planning) mode"));
+        assert!(
+            !MODE_EXECUTE_MD.contains("execution. Produce files"),
+            "unconditional produce-files imperative must stay gone"
+        );
+    }
+
+    /// 共享骨架的定时红线钉死：模型确实没有任何调度工具（deny 规则还封了
+    /// crontab/schtasks/systemctl 路径）,但 bash 的回合内 `cmd &` 仍然可用——
+    /// 措辞必须限定「回合结束后」,不得写成无条件的「无后台运行能力」。
+    #[test]
+    fn shared_skeleton_pins_no_scheduling_red_line() {
+        assert!(
+            INSTRUCTIONS_SHARED_MD
+                .contains("你没有定时执行、回合结束后继续运行或稍后主动发消息的能力")
+        );
+        assert!(INSTRUCTIONS_SHARED_MD.contains("定时任务功能"));
+        assert!(!INSTRUCTIONS_SHARED_MD.contains("你没有定时、后台运行"));
     }
 
     fn run_depth_guard(bundle: &Pinvou3Bundle, tool: &str, args: &str) -> std::process::Output {

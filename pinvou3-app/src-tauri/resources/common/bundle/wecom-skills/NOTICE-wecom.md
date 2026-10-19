@@ -369,3 +369,11 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
   `auth show --status` 复核授权状态。
 - 此为本地修改,下次 sync 需重放;wecomcli-shared 其余步骤(状态检查、
   ID 外露约束等)未改动。
+
+
+## 2026-10-18 本地修改（模型侧文案复审,下次 sync 需重放）
+
+1. **wecomcli-doc-manage/SKILL.md description 范围收敛**：原「适用所有企微文档类型」与正文适用范围（改名/成员/加入规则仅支持 doc/sheet/smartsheet/smartpage 四类）矛盾,会为「改 PPT 权限」类请求诱导错误路由。改为「搜索支持各类企微文档;改名/成员权限/加入规则仅支持 doc/sheet/smartsheet/smartpage」。
+2. **wecomcli-message/SKILL.md description 去掉不存在的 text 类型**：`msg_type` 枚举仅 markdown/image/file/voice/video,普通文本也按 Markdown 发送。改为「发送 Markdown(纯文本亦按 Markdown 发送)、图片、文件、语音、视频消息」。
+3. **wecomcli-smartsheet/references/smart-sheet-formula.md 转义示例修复**：原内联示例 `需转义为 \""` 引号不配对,模型会照抄出错形态。改为 `需转义为 \"`（每个双引号前各加一个反斜杠）。
+4. **wecomcli-doc/scripts/build_docx.py docstring 改 `python3`**：宿主环境无裸 `python`（NOTICE 前文已登记）,references/doc-create.md 已改而脚本自身 docstring 漏改。

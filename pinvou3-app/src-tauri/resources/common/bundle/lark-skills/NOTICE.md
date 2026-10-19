@@ -704,3 +704,9 @@ lark-shared-identity-and-permissions.md 规定 agent 发起的增量授权必须
 指向 lark-shared 的描述句不能替围栏里的可执行行解围;第 7 轮外部复审
 补齐 blockquoted 围栏 `> ``` ` 的状态翻转与围栏分支对非 `--scope`
 阻塞形态的覆盖,历史形状均已钉为必失败固定装置)。
+
+
+## 2026-10-18 本地修改（模型侧文案复审,下次 sync 需重放）
+
+1. **lark-shared/SKILL.md description「何时用」扩围**：原描述把本技能范围限为「仅在其他 lark-* 技能遇到认证/授权/身份/配置问题时,或首次使用 lark-cli 时」,但 lark-im/drive/wiki/sheets/task 五个技能正文以「CRITICAL — 开始前 MUST 先 read」要求在任何操作前前置读取本技能,`ok==true` 输出契约、`--as` 身份、exit 10 审批等规则也是每次调用都需要的。描述是触发/路由面,窄描述会诱导模型在常规操作中降权这些规则。改为「…遇到认证/授权/身份/配置问题、**被要求前置读取**,或首次使用 lark-cli 时」(272 字)。同时存在的 lark-doc「不预读」vs 其余五技能「MUST 预读」的三种前置策略分歧,属产品策略选择,本轮未统一,仅消除描述与实际用途的矛盾。
+2. **lark-doc/SKILL.md description 画板句更正**：原文「内嵌表格、多维表格、画板先提取 token 再切对应 skill」承诺画板有对应技能路由,但正文（与包内事实）是 lark-whiteboard 技能未随包收录、走 CLI 直连。改为「内嵌表格、多维表格先提取 token 切对应 skill;画板无技能,CLI 直连」(280 字,符合包内描述长度约定)。

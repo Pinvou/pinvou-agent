@@ -1818,7 +1818,7 @@
 
 #### 写入方式（直接调用 MCP 工具）
 
-调用 `mcp_tdoc-slide_slide_set_design`，将 DESIGN.md 全文传入 `design_md` 字段。DESIGN.md 通常较大（数千甚至上万字），建议先将全文写入本地 .md 文件，再用 shell 命令读取内容后传入，避免手工拼接超长字符串出错。
+调用 `mcp_tdoc-slide_slide_set_design`，将 DESIGN.md 全文直接作为 `design_md` 字段传入（与 slide/entry.md 工作流一致）。**禁止**先把全文写入本地 .md 文件再用 shell 读取回传——那会造成同一 DESIGN 内容重复注入。
 
 #### 参数说明
 

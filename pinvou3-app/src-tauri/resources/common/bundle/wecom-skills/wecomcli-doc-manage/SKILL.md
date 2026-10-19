@@ -1,6 +1,6 @@
 ---
 name: wecomcli-doc-manage
-description: 何时用:仅当用户明确指向企业微信文档的公共管理(搜索/改名/成员权限/加入规则)时使用;本地文件管理默认走本地工具。适用所有企微文档类型;新建 doc 走 wecomcli-doc、新建在线表格走 wecomcli-sheet、智能表格 CRUD 走 wecomcli-smartsheet、生成智能文档走 wecomcli-smartpage;「看过哪些文档/浏览历史」走本技能。
+description: 何时用:仅当用户明确指向企业微信文档的公共管理(搜索/改名/成员权限/加入规则)时使用;本地文件管理默认走本地工具。搜索支持各类企微文档;改名/成员权限/加入规则仅支持 doc/sheet/smartsheet/smartpage;新建 doc 走 wecomcli-doc、新建在线表格走 wecomcli-sheet、智能表格 CRUD 走 wecomcli-smartsheet、生成智能文档走 wecomcli-smartpage;「看过哪些文档/浏览历史」走本技能。
 metadata:
   requires:
     bins: ["wecom-cli"]

@@ -10,14 +10,14 @@ doc_image_extractor.py
 
 用法：
     # 单个文件
-    python doc_image_extractor.py <文档路径> [输出目录]
+    python3 doc_image_extractor.py <文档路径> [输出目录]
 
     # 多个文件
-    python doc_image_extractor.py file1.pptx file2.docx file3.xlsx [输出目录]
+    python3 doc_image_extractor.py file1.pptx file2.docx file3.xlsx [输出目录]
 
     # 批量扫描目录
-    python doc_image_extractor.py --dir <目录路径> [输出目录]
-    python doc_image_extractor.py -d <目录路径> [输出目录]
+    python3 doc_image_extractor.py --dir <目录路径> [输出目录]
+    python3 doc_image_extractor.py -d <目录路径> [输出目录]
 """
 
 import sys

@@ -23,7 +23,7 @@ metadata:
 - 不要猜测字段名/参数值，操作前必须先查询确认
 
 ## 严格要求 (MUST DO)
-- 所有命令必须加 `--format json` 以获取可解析输出
+- 所有命令必须加 `--format json`（默认输出即 json,显式携带以防默认值变化,确保可解析）
 - 危险操作必须先向用户确认，用户同意后才加 `--yes` 执行
 - 直接调用 dws 批量接口（如 `record update`）时单次硬上限 100 条（各 record 分册同）；Agent 直连建议每批 ≤30 条以便失败重试；使用 [scripts/import_records.py](./scripts/import_records.py) 批量导入时按脚本默认 50 条/批（其 `DEFAULT_BATCH_SIZE=50`，上限 100）
 - 所有命令必须**严格遵循**对应产品参考文档里面规定的参数格式（参数与参数值之间用空格隔开）
