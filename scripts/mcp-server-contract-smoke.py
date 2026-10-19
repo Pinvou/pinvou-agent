@@ -878,6 +878,13 @@ def main():
                             "ok": True,
                             "task_id": "sim-%s" % spool_id[:8],
                             "task_name": request.get("name"),
+                            # Round-26 M6(c): the Rust watcher coerces a
+                            # create's paused null to false BEFORE digesting
+                            # (unwrap_or(false)) — digesting the raw spool
+                            # value here made the smoke marker's digest
+                            # diverge from production for every default
+                            # create, so an identical keyed replay
+                            # false-flagged payload_mismatch below.
                             "request_digest": _server_module.spool_request_digest(
                                 request.get("kind"),
                                 task_id=request.get("task_id"),
@@ -885,7 +892,12 @@ def main():
                                 prompt=request.get("prompt"),
                                 rrule=request.get("rrule"),
                                 model_id=request.get("model_id"),
-                                paused=request.get("paused"),
+                                paused=(
+                                    False
+                                    if request.get("kind") == "create"
+                                    and request.get("paused") is None
+                                    else request.get("paused")
+                                ),
                             ),
                         }, ensure_ascii=False), encoding="utf-8")
                         path.unlink()
@@ -907,6 +919,22 @@ def main():
             # 积压与在途都被排水，spool 清空、.done 留有两条标记。
             assert not list(Path(home, "task-requests", "spool").glob("*.json"))
             assert len(list(Path(home, "task-requests", "spool", ".done").glob("*.json"))) == 2
+            # Round-26 M6(c): a keyed replay against a WATCHER-DRAINED key
+            # must answer the recorded duplicate with NO payload_mismatch —
+            # the marker's digest is the one production's watcher would
+            # write, so the server's coerced replay digest matches it.
+            replay = content_json(rpc.call("tools/call", {
+                "name": "create_scheduled_task",
+                "arguments": {
+                    "name": "早报", "prompt": "汇总新闻",
+                    "rrule": "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30",
+                    "from_session": "src0001",
+                    "idempotency_key": "k1",
+                },
+            }))
+            assert replay.get("ok") is True and replay.get("taskId", "").startswith("sim-"), replay
+            assert replay.get("duplicate") is True, replay
+            assert replay.get("payload_mismatch") is False, replay
             # list：只投影安全字段，绝不带 prompt（§3.1）；watcher 未真建任务，store 为空。
             listed = content_json(rpc.call("tools/call", {"name": "list_scheduled_tasks"}))
             assert listed.get("ok") is True and listed.get("total") == 0, listed

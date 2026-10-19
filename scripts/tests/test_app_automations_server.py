@@ -158,6 +158,36 @@ class RruleValidationTests(unittest.TestCase):
             "an ordinary local minute must pass",
         )
 
+    def test_validate_rrule_drives_the_dst_gate_end_to_end(self):
+        """Round-26 M6(a): the gap/ambiguous parity above is pinned on the
+        HELPER only — deleting the production call inside `validate_rrule`
+        (the round-24 minor 2 fix site) kept the whole suite green. This
+        drives a DST ONCE wall time through the production entry with the
+        zone injected the way production resolves it ($TZ)."""
+        import zoneinfo
+
+        try:
+            zoneinfo.ZoneInfo("America/New_York")
+        except Exception:
+            self.skipTest("no IANA tz database on this host")
+        old_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "America/New_York"
+        try:
+            _, gap_error = server.validate_rrule("FREQ=ONCE;AT=2026-03-08T02:30")
+            _, amb_error = server.validate_rrule("FREQ=ONCE;AT=2026-11-01T01:30")
+            normalized, ok_error = server.validate_rrule("FREQ=ONCE;AT=2027-06-01T09:30")
+        finally:
+            if old_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_tz
+        self.assertIsNotNone(gap_error, "the spring-forward gap must be rejected")
+        self.assertIn("does not exist", gap_error)
+        self.assertIsNotNone(amb_error, "the fall-back overlap must be rejected")
+        self.assertIn("ambiguous", amb_error)
+        self.assertIsNone(ok_error, "an ordinary future local minute must pass")
+        self.assertIn("2027-06-01T09:30", normalized)
+
     def test_out_of_range_and_unknown_fields_rejected(self):
         for rrule in [
             "FREQ=HOURLY;INTERVAL=0",
@@ -1434,6 +1464,31 @@ class StdioContractTests(unittest.TestCase):
             self.assertFalse(payload["ok"])
             self.assertIn("CRON", payload["error"])
             self.assertNotIn(self.tmp, response["result"]["content"][0]["text"])
+        finally:
+            proc.kill()
+            proc.communicate()
+
+    def test_stdio_create_with_task_id_is_rejected_through_the_binding(self):
+        """Round-26 M6(b): the create task_id rejection was pinned only
+        BELOW the stdio binding — the round-24 regression (dropping
+        `task_id=args.get("task_id")` from the `_handle_call` create arm)
+        left every suite green while a caller-supplied task_id was
+        silently ignored on the wire. Drive the real stdio server so the
+        binding itself is covered."""
+        proc = self._spawn()
+        try:
+            response = self._rpc(proc, "tools/call", {
+                "name": "create_scheduled_task",
+                "arguments": {
+                    "name": "x", "prompt": "y",
+                    "rrule": "FREQ=HOURLY;INTERVAL=1",
+                    "task_id": "task-123",
+                },
+            })
+            self.assertTrue(response["result"]["isError"])
+            payload = json.loads(response["result"]["content"][0]["text"])
+            self.assertFalse(payload["ok"])
+            self.assertIn("invalid task_id", payload["error"])
         finally:
             proc.kill()
             proc.communicate()
