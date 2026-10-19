@@ -791,14 +791,14 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
       }
       if (!tool.backendId) {
         return (
-          <button type="button" {...actionAttrs} disabled className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold bg-slate-100 dark:bg-[#1C1C1E] border border-slate-200 dark:border-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed`}>
+          <button type="button" {...actionAttrs} disabled className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'min-w-20 px-3 py-1.5 text-[14px] whitespace-nowrap'} rounded-full font-bold bg-slate-100 dark:bg-[#1C1C1E] border border-slate-200 dark:border-slate-700 text-slate-400 dark:text-slate-500 cursor-not-allowed`}>
             {T.comingSoon}
           </button>
         );
       }
       if (busy) {
         return (
-          <button type="button" {...actionAttrs} disabled className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold opacity-50 cursor-wait bg-slate-100 dark:bg-[#1C1C1E] border border-slate-200 dark:border-slate-700 text-slate-500`}>
+          <button type="button" {...actionAttrs} disabled className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'min-w-20 px-3 py-1.5 text-[14px] whitespace-nowrap'} rounded-full font-bold opacity-50 cursor-wait bg-slate-100 dark:bg-[#1C1C1E] border border-slate-200 dark:border-slate-700 text-slate-500`}>
             ...
           </button>
         );
@@ -810,8 +810,8 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
       // 同样回退旧分支 —— 回退分支 Phase 3 清理。
       if (Array.isArray(tool.actions)) {
         const btnCls = {
-          primary: `${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`,
-          danger: `${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-slate-100 dark:bg-[#2C2C2E] border border-slate-200 dark:border-slate-700 text-[#FF3B30] dark:text-[#FF453A] hover:bg-slate-200 dark:hover:bg-[#3A3A3C]`,
+          primary: `${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'min-w-20 px-3 py-1.5 text-[14px] whitespace-nowrap'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`,
+          danger: `${isLg ? 'px-10 py-2.5 text-[15px]' : 'min-w-20 px-3 py-1.5 text-[14px] whitespace-nowrap'} rounded-full font-bold transition-all active:scale-95 bg-slate-100 dark:bg-[#2C2C2E] border border-slate-200 dark:border-slate-700 text-[#FF3B30] dark:text-[#FF453A] hover:bg-slate-200 dark:hover:bg-[#3A3A3C]`,
           outline: `${isLg ? 'px-6 py-2.5 text-[15px]' : 'px-4 py-1.5 text-[13px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-50 dark:bg-blue-500/10 border border-blue-200 dark:border-blue-500/30 text-blue-600 dark:text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-500/20 whitespace-nowrap`,
         };
         const specs = {
@@ -860,7 +860,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
           <button type="button"
             {...actionAttrs}
             onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, true); }}
-            className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-slate-100 dark:bg-[#2C2C2E] border border-slate-200 dark:border-slate-700 text-[#FF3B30] dark:text-[#FF453A] hover:bg-slate-200 dark:hover:bg-[#3A3A3C]`}
+            className={`${isLg ? 'px-10 py-2.5 text-[15px]' : 'min-w-20 px-3 py-1.5 text-[14px] whitespace-nowrap'} rounded-full font-bold transition-all active:scale-95 bg-slate-100 dark:bg-[#2C2C2E] border border-slate-200 dark:border-slate-700 text-[#FF3B30] dark:text-[#FF453A] hover:bg-slate-200 dark:hover:bg-[#3A3A3C]`}
           >
             {connectorLike ? T.disconnect : T.uninstall}
           </button>
@@ -889,7 +889,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
           <button type="button"
             {...actionAttrs}
             onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, false); }}
-            className={`${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`}
+            className={`${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'min-w-20 px-3 py-1.5 text-[14px] whitespace-nowrap'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`}
           >
             {retry ? T.reauthorize : T.connect}
           </button>
@@ -900,7 +900,7 @@ const tc = (t) => (t && t.uiToolCommon) || dict.zh.uiToolCommon;
         <button type="button"
           {...actionAttrs}
           onClick={(e) => { e.stopPropagation(); onAction(tool.backendId, false); }}
-          className={`${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'w-20 py-1.5 text-[14px]'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`}
+          className={`${isLg ? 'px-10 py-2.5 text-[15px] shadow-md shadow-blue-500/20' : 'min-w-20 px-3 py-1.5 text-[14px] whitespace-nowrap'} rounded-full font-bold transition-all active:scale-95 bg-blue-600 hover:bg-blue-700 text-white`}
         >
           {connectorLike ? (hasConfig ? T.configure : T.connect) : (hasConfig ? T.configure : T.install)}
         </button>

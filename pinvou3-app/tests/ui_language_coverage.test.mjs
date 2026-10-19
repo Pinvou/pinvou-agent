@@ -93,6 +93,26 @@ for (const language of ['zh', 'en', 'ja']) {
       `${language}.uiBuiltinPlugins.dataAccess.sessions.write must exist`,
     );
   }
+  // 2026-10-18 visual sweep pins. dictJa spreads dictEn, so the section loop
+  // above cannot see ja-only gaps: a ja-missing top-level key silently falls
+  // back to English at runtime — exactly how the knowledge embed chip leaked.
+  // Pin the chip keys with their real ja strings, and keep the monitor
+  // banner's raw-error interpolation retired.
+  for (const language of ['zh', 'en', 'ja']) {
+    assert.ok(dict[language].kbEmbedOn, `${language}.kbEmbedOn must exist`);
+    assert.ok(dict[language].kbEmbedOff, `${language}.kbEmbedOff must exist`);
+    assert.ok(dict[language].uiMonitor.readFailed, `${language}.uiMonitor.readFailed must exist`);
+    assert.ok(
+      !('readError' in dict[language].uiMonitor),
+      `${language}.uiMonitor.readError must stay retired (raw error text must not reach user copy)`,
+    );
+  }
+  assert.equal(dict.ja.kbEmbedOff, '意味検索未設定 · 全文検索のみ');
+  assert.notEqual(
+    dict.ja.kbEmbedOn,
+    dict.en.kbEmbedOn,
+    'ja kbEmbedOn must be translated, not the English fallback',
+  );
   // All 23 uiAuxChat keys are pinned (round-14 minor-3: the list previously
   // covered 13, so sendingHint/bindingHint and the six quote* keys could be
   // deleted from every dictionary with the suite green — and quoteChipCount's

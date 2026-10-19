@@ -3733,7 +3733,7 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
             className={`absolute ${isWeb ? 'bottom-2 sm:bottom-8' : 'bottom-8'} inset-x-0 z-20`}
             style={responsiveGutterStyle}
           >
-            <div className="max-w-[800px] w-full mx-auto">
+            <div className="max-w-[800px] w-full mx-auto" data-testid="chat-composer-box">
               {COMPUTER_USE_ENABLED && (
                 <ComputerUseBanner slice={computerUseSlice} copy={computerUseCopy} />
               )}
