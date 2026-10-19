@@ -1108,7 +1108,8 @@ mod tests {
         assert_eq!(value["install_source"], json!("npm"));
         assert_eq!(value["update_available"], json!(true));
         assert_eq!(value["update_required"], json!(true));
-        // 终局缺省不序列化（skip_serializing_if），出现时带 ok/cancelled 两字段
+        // 终局缺省不序列化（skip_serializing_if），出现时带 ok/cancelled 字段，
+        // 失败结局另带本次错误链 error（成功/取消时 skip）。
         assert!(value.get("install_finished").is_none());
         let mut finished = status.clone();
         finished.install_finished = Some(install_outcome_for_result(true, None));
@@ -1116,6 +1117,16 @@ mod tests {
         assert_eq!(
             value["install_finished"],
             json!({ "ok": true, "cancelled": false })
+        );
+        let mut failed = status.clone();
+        failed.install_finished = Some(install_outcome_for_result(
+            false,
+            Some("npm install failed: EBUSY"),
+        ));
+        let value = serde_json::to_value(&failed).expect("serialize failed install_finished");
+        assert_eq!(
+            value["install_finished"],
+            json!({ "ok": false, "cancelled": false, "error": "npm install failed: EBUSY" })
         );
 
         let mut cli_ready_without_bridge = status.clone();
@@ -1142,35 +1153,40 @@ mod tests {
     }
 
     /// 终局映射：成功直通 ok；失败时按错误链里的取消标记区分「已取消」与
-    /// 「失败」，与等待侧/前端的取消收口同一判定（不依赖中文文案子串）。
+    /// 「失败」，与等待侧/前端的取消收口同一判定（不依赖中文文案子串）；
+    /// 失败（非取消）额外携带本次错误链供自愈回显。
     #[test]
     pub(super) fn install_outcome_maps_success_and_cancellation() {
         assert_eq!(
             install_outcome_for_result(true, None),
             InstallFinishedInfo {
                 ok: true,
-                cancelled: false
+                cancelled: false,
+                error: None
             }
         );
         assert_eq!(
-            install_outcome_for_result(false, Some("install_cancelled:kimi 安装已取消"),),
+            install_outcome_for_result(false, Some("install_cancelled:kimi 安装已取消")),
             InstallFinishedInfo {
                 ok: false,
-                cancelled: true
+                cancelled: true,
+                error: None
             }
         );
         assert_eq!(
             install_outcome_for_result(false, Some("npm install failed: EBUSY")),
             InstallFinishedInfo {
                 ok: false,
-                cancelled: false
+                cancelled: false,
+                error: Some("npm install failed: EBUSY".to_string())
             }
         );
         assert_eq!(
             install_outcome_for_result(false, None),
             InstallFinishedInfo {
                 ok: false,
-                cancelled: false
+                cancelled: false,
+                error: None
             }
         );
     }
@@ -1512,14 +1528,21 @@ pub(super) fn clear_install_outcome(app: &AppHandle, backend: AgentBackend) {
 
 /// 终局映射（纯函数，供单测）：ok 直通；失败时错误链包含取消标记即「已取消」，
 /// 与等待侧的取消收口（前端按结构化标记归为 cancelled，不进红错区）同一判定。
+/// 失败（非取消）时携带本次错误链，供跨挂载自愈回显失败原因。
 pub(super) fn install_outcome_for_result(
     ok: bool,
     error_detail: Option<&str>,
 ) -> InstallFinishedInfo {
+    let cancelled =
+        !ok && error_detail.is_some_and(|detail| detail.contains(INSTALL_CANCELLED_MARKER));
     InstallFinishedInfo {
         ok,
-        cancelled: !ok
-            && error_detail.is_some_and(|detail| detail.contains(INSTALL_CANCELLED_MARKER)),
+        cancelled,
+        error: if !ok && !cancelled {
+            error_detail.map(str::to_string)
+        } else {
+            None
+        },
     }
 }
 

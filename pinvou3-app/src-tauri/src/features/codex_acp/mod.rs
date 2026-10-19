@@ -1018,11 +1018,15 @@ pub struct CodexAcpStatus {
 }
 
 /// 安装/升级的整体终局：ok=false 时前端映射「失败」，cancelled=true 映射
-/// 「已取消」（不进红错区，与等待侧的取消收口一致）。
+/// 「已取消」（不进红错区，与等待侧的取消收口一致）。失败（非取消）时
+/// error 携带本次安装的错误链：跨挂载自愈据此回显失败原因——部分失败
+/// 路径不写 runtime_errors，status.error 未必是本次失败的原因。
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct InstallFinishedInfo {
     pub ok: bool,
     pub cancelled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// 安装终局共享 store（tauri managed state）：install_agent 收口时记录该
@@ -1542,6 +1546,11 @@ pub struct AcpPool {
     acp_metadata_backends: Arc<parking_lot::RwLock<HashMap<String, AgentBackend>>>,
     session_store: SessionStore,
     installing_agents: Arc<parking_lot::RwLock<HashSet<AgentBackend>>>,
+    /// install_agent 活动期登记（入口登记、终局记录后注销）：覆盖 preflight
+    /// 与命令后 probe/finalize 窗口，配合 installing_agents 让 status.installing
+    /// 满足「installing=false ⇒ install_finished 已就位」，前端跨挂载自愈的
+    /// 轮询不会在两态间隙提前停摆（见 ProvidersSection 自愈 effect）。
+    install_active: Arc<parking_lot::RwLock<HashSet<AgentBackend>>>,
     /// 安装子进程 pid 注册表：取消安装时按 pid 杀进程树。
     install_children: Arc<parking_lot::Mutex<HashMap<AgentBackend, u32>>>,
     /// 取消标记：取消命令写入，安装等待侧在失败出口消费并以「安装已取消」收尾。
@@ -1574,8 +1583,9 @@ pub struct AcpPool {
 }
 
 /// 同一 Agent 的安装/升级互斥，不同 Agent 的状态与任务彼此隔离。
-/// guard 在外部命令完成后显式 drop，使随后返回的 status 已恢复 installing=false；
-/// 提前返回或 panic 时 Drop 仍会兜底清理。
+/// guard 只覆盖外部命令本身，在外部命令完成后显式 drop：authenticated 门禁
+/// 随之解除，status.installing 则由 install_active 活动期登记继续覆盖到终局
+/// 记录完成（见 install_agent）；提前返回或 panic 时 Drop 仍会兜底清理。
 struct AgentInstallGuard {
     installing_agents: Arc<parking_lot::RwLock<HashSet<AgentBackend>>>,
     backend: AgentBackend,
@@ -1599,6 +1609,20 @@ impl AgentInstallGuard {
 impl Drop for AgentInstallGuard {
     fn drop(&mut self) {
         self.installing_agents.write().remove(&self.backend);
+    }
+}
+
+/// install_agent 活动期 guard：入口登记，终局记录完成后注销（提前返回或
+/// panic 时 Drop 兜底）。与 AgentInstallGuard 互补——后者只覆盖外部命令
+/// 本身，本 guard 保证 status.installing 从命令入口一直覆盖到终局落库。
+struct InstallActiveGuard {
+    install_active: Arc<parking_lot::RwLock<HashSet<AgentBackend>>>,
+    backend: AgentBackend,
+}
+
+impl Drop for InstallActiveGuard {
+    fn drop(&mut self) {
+        self.install_active.write().remove(&self.backend);
     }
 }
 
@@ -1856,6 +1880,7 @@ impl AcpPool {
             acp_metadata_backends: Arc::new(parking_lot::RwLock::new(acp_metadata_backends)),
             session_store,
             installing_agents: Arc::new(parking_lot::RwLock::new(HashSet::new())),
+            install_active: Arc::new(parking_lot::RwLock::new(HashSet::new())),
             install_children: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             install_cancelled: Arc::new(parking_lot::Mutex::new(HashSet::new())),
             login_states: Arc::new(parking_lot::RwLock::new(HashMap::new())),
@@ -2140,7 +2165,11 @@ impl AcpPool {
             .unwrap_or_default();
         if backend == AgentBackend::KimiAcp {
             let kimi = self.cli_probe_for(backend);
-            let installing = self.installing_agents.read().contains(&backend);
+            // status.installing 覆盖 install_agent 活动全程（含 preflight 与
+            // 命令后 probe/finalize 窗口）；authenticated 门禁仍只看安装锁——
+            // 活动窗口内 CLI 探测照常进行，不该把已装好的 Agent 显示成未认证。
+            let guard_installing = self.installing_agents.read().contains(&backend);
+            let installing = guard_installing || self.install_active.read().contains(&backend);
             let kimi_version = kimi.as_ref().and_then(|cli| cli.version.clone());
             let install_source = kimi
                 .as_ref()
@@ -2152,7 +2181,7 @@ impl AcpPool {
             let cli_ready = kimi.is_some() && version_supported;
             let installed = cli_ready;
             let authenticated = !login.in_progress
-                && !installing
+                && !guard_installing
                 && kimi
                     .as_ref()
                     .is_some_and(|cli| self.cached_agent_authenticated(backend, &cli.path));
@@ -2283,9 +2312,14 @@ impl AcpPool {
         };
         // 登录命令运行期间不要再启动同一 CLI 的 auth status。部分 CLI 会让两条
         // 命令争用凭证锁，原来的 750ms 状态轮询因此可能拖住 Tauri 的 IPC/UI。
-        let installing = self.installing_agents.read().contains(&backend);
+        // status.installing 覆盖 install_agent 活动全程（含 preflight 与命令后
+        // probe/finalize 窗口），满足「installing=false ⇒ install_finished 已就位」；
+        // authenticated 门禁仍只看安装锁——活动窗口内探测照常进行，不该把已
+        // 认证的 Agent 显示成未认证。
+        let guard_installing = self.installing_agents.read().contains(&backend);
+        let installing = guard_installing || self.install_active.read().contains(&backend);
         let authenticated = !login.in_progress
-            && !installing
+            && !guard_installing
             && match backend {
                 AgentBackend::CodexAcp => codex.as_ref().is_some_and(|resolved| {
                     self.cached_agent_authenticated(backend, &resolved.probe_path)
@@ -2752,13 +2786,26 @@ impl AcpPool {
         if !backend.is_acp() {
             bail!("Agent 不是 ACP 后端: {agent_id}");
         }
-        // 本次开始前清掉上一次的终局：install_finished 只表达「最近一次」
-        // 安装的结局，避免陈旧结局被前端自愈逻辑误用。
+        // 本次开始前清掉上一次的终局与陈旧取消标记（取消可能落在 preflight
+        // 等尚未 spawn 的窗口，安装随后失败退出时标记无人消费）：install_finished
+        // 只表达「最近一次」安装的结局，避免陈旧结局/取消标记被本轮误用。
         clear_install_outcome(&self.app, backend);
+        self.install_cancelled.lock().remove(&backend);
+        // 活动期登记：status.installing 自入口起为 true，直到终局记录完成后
+        // 才注销——preflight 与命令后 probe/finalize 窗口内不会出现
+        // 「installing=false 且终局未就位」的间隙，重挂载前端的安装轮询因此
+        // 不会提前停摆（见 ProvidersSection 跨挂载自愈）。
+        let install_active_guard = InstallActiveGuard {
+            install_active: self.install_active.clone(),
+            backend,
+        };
         let result = self.install_agent_inner(backend, action).await;
         // 收口记录真实结局。命令返回值只送达发起时的前端实例——安装期间
         // 设置面板被关闭/切走时该实例已卸载，重挂载的前端只能从 status 的
         // install_finished 感知终局（见 ProvidersSection 跨挂载自愈）。
+        // 先记录终局、再退出活动期：即便并发安装在本窗口重复进入（会被
+        // guard 串行拒绝），其入口清除与本轮记录的交错也不会让 status 同时
+        // 缺 installing 与 install_finished 两态。
         let outcome = install_outcome_for_result(
             result.is_ok(),
             result
@@ -2768,6 +2815,7 @@ impl AcpPool {
                 .as_deref(),
         );
         record_install_outcome(&self.app, backend, outcome);
+        drop(install_active_guard);
         result
     }
 
@@ -3174,17 +3222,22 @@ impl AcpPool {
 
     /// 取消正在进行的 Agent CLI 安装：写入取消标记并按登记的 pid 杀进程树。
     /// 等待侧检测到取消标记后以「安装已取消」收尾，installing 随其出口恢复 false。
+    /// preflight / 命令后收尾窗口（活动期已登记，外部命令尚未 spawn 或已退出）
+    /// 没有 pid 可杀：标记留给 spawn 后的登记补检消费，或在下一轮安装入口清除。
     pub async fn cancel_agent_install(&self, agent_id: &str) -> Result<CodexAcpStatus> {
         let backend = AgentBackend::parse(Some(agent_id))?;
         if !backend.is_acp() {
             bail!("Agent 不是 ACP 后端: {agent_id}");
         }
-        if !self.installing_agents.read().contains(&backend) {
+        let guard_held = self.installing_agents.read().contains(&backend);
+        if !guard_held && !self.install_active.read().contains(&backend) {
             bail!("{} 当前没有正在进行的安装", backend.display_name());
         }
         self.install_cancelled.lock().insert(backend);
-        if let Some(pid) = self.install_children.lock().get(&backend).copied() {
-            kill_install_process_tree(pid);
+        if guard_held {
+            if let Some(pid) = self.install_children.lock().get(&backend).copied() {
+                kill_install_process_tree(pid);
+            }
         }
         Ok(self.status_for_async(backend).await)
     }

@@ -1313,9 +1313,11 @@ fn project_acp_status_for_web(
     status.login_url = None;
     status.login_code = None;
     status.error = None;
-    // 安装命令行与输出可能含内部镜像源或主机路径，仅桌面端展示。
+    // 安装命令行与输出可能含内部镜像源或主机路径，仅桌面端展示；安装终局
+    // 的 error 字段同为错误链，随 error 一并仅桌面端展示。
     status.install_command = None;
     status.install_latest_line = None;
+    status.install_finished = None;
     status
 }
 
