@@ -1237,7 +1237,7 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
         if marker is not None:
             if marker.get("ok") is True:
                 # Round-22 M2: literal true only (see the entry check).
-                # Round-9 M1: a keyed poll accepts an ok:true marker ONLY
+                # Round-9 M1: a poll accepts an ok:true marker ONLY
                 # with a digest binding that matches THIS call's payload —
                 # the entry check got the rule in round-8, the poll loop
                 # did not, so a digest-less stale marker answered
@@ -1245,7 +1245,14 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
                 # digest gate re-applied the divergent re-spooled body (a
                 # second task, verified by execution). Non-terminal here
                 # means keep polling → the honest pending answer.
-                if idempotency_key is not None and not from_terminal_entry:
+                # Round-26 M1: the binding is required for UNKEYED polls
+                # too — the gate used to fire on keyed calls only, so a
+                # planted digest-less {"ok":true} marker answered a forged
+                # receipt to an unkeyed call while the watcher (which
+                # never accepted that marker) applied the request for
+                # real. The requested digest exists on every call (keyed
+                # or not), so one rule now covers both.
+                if not from_terminal_entry:
                     polled_digest = marker.get("request_digest")
                     if not (
                         isinstance(polled_digest, str)

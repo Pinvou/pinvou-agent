@@ -420,6 +420,41 @@ class CreateSpoolAndResultTests(unittest.TestCase):
         self.assertEqual(payload.get("delivery"), "pending", payload)
         self.assertIsNone(payload.get("taskId"), payload)
 
+    def test_unkeyed_call_refuses_digestless_ok_marker(self):
+        """Round-26 M1: the poll-loop digest gate used to fire on keyed
+        calls only, so a planted digest-less {"ok":true} marker answered an
+        unkeyed create with a forged receipt ("taskId":"ATTACKER-ID")
+        while the watcher — which requires the binding on the same shape —
+        applied the request for real (a fabricated receipt plus a
+        duplicate task). The gate now covers every call: the forged
+        marker keeps the honest pending answer."""
+        forged_id = "0f9c1d2e3a4b5c6d7e8f0a1b2c3d4e5f"
+        marker_dir = Path(self.requests, "spool", ".done")
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        (marker_dir / ("%s.json" % forged_id)).write_text(
+            json.dumps({"ok": True, "task_id": "ATTACKER-ID", "task_name": "伪造"}),
+            encoding="utf-8",
+        )
+
+        class _FixedUuid4:
+            hex = forged_id
+
+        real_uuid4 = server.uuid.uuid4
+        old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 0.2
+        try:
+            server.uuid.uuid4 = lambda: _FixedUuid4
+            payload, error = server.create_scheduled_task(
+                **self._create_kwargs(from_session="reqsrc01")
+            )
+        finally:
+            server.uuid.uuid4 = real_uuid4
+            server.RESULT_WAIT_SECONDS = old_wait
+        self.assertIsNone(error)
+        self.assertTrue(payload["ok"], payload)
+        self.assertEqual(payload.get("delivery"), "pending", payload)
+        self.assertIsNone(payload.get("taskId"), payload)
+
     def test_marker_reader_refuses_non_regular_and_oversize(self):
         """Round-15 REQUIRED-5: _read_result_marker's lstat/S_ISREG/cap gate
         is behaviorally pinned — a symlink (never followed), a FIFO-shaped
