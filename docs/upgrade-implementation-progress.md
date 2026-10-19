@@ -17,7 +17,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T04 | Not completed | Independent composite packaging and verification toolchain; depends on T03 platform contracts. |
 | T05 | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
 | T06 | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
-| T07 | In progress | Signing/Root primitives and actual provider checks; complete production issuance composition remains pending |
+| T07 | In progress | Signing/Root primitives, actual provider checks and explicit public-anchor bootstrap tooling; reviewed runtime workflows and complete production issuance remain pending |
 | T08 | In progress | Protected atomic metadata publication primitives; complete business publication workflows remain pending |
 | T09 | In progress | Bounded package/native-byte inspection; complete upload, quarantine and platform qualification remain pending |
 | T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
@@ -12558,3 +12558,31 @@ approval/lifecycle work. Totals remain five implemented/fourteen in progress/
 twenty-eight incomplete or deferred of 47. Documents 1.0, product 0.10.12 and
 CodeWhale stay fixed. Deployment is deferred. Downloads have no hard total or
 cumulative duration/retry cap; 32 MiB still bounds only joined atomic inventory.
+
+T07/T08 explicit public trust bootstrap tool (2026-10-19):
+
+- Service commit `8c85d71` adds four fixed CLI actions: independently initialize
+  the existing signing and metadata schemas, check the actual runtime login, and
+  provision an independently obtained public initial Root body. Owner and runtime
+  connections remain separate; no HTTP process provisions its own trust.
+- Strict bounded public-body parsing rejects envelopes, unknown fields, duplicate
+  keys and oversized input. The existing owner validates policy and validity with
+  PostgreSQL time. Exact retries preserve trust; conflicting bodies or IDs and
+  runtime provisioning are refused. Initialization does not create product
+  catalogs, components, deny state or published Root material. All 93 previously
+  committed SQL files are unchanged. No private key or deployment is involved.
+- Two independent reviewers passed after the primary role repaired two negative
+  test controls: expiry is tested before the first anchor with zero rows before
+  and after refusal; duplicate keys are tested on an otherwise complete valid
+  Root. The selected run passed two unit tests and one actual PostgreSQL 17/separate
+  CLI process acceptance test, with no skip/failure; fixture database/role
+  inventory was restored.
+- Final repository checks passed: module verification, normal all-package tests
+  (770 top-level and 1,781 nested passes; 681 top-level and 664 nested opt-in skips;
+  zero failures), vet, service build, pinned-contract verification, affected-file
+  formatting and whitespace checks. The opt-in skips are not actual acceptance.
+  Applicable CLI acceptance was run separately; no browser behavior changed.
+- T07/T08 remain in progress. Reviewed catalog initialization, external-public-Root
+  genesis publication and component-registration HTTP/UI workflows are next;
+  published metadata sources, independent private custody, complete issuance and
+  deployment acceptance remain separate pending work. Totals remain 5/14/28 of 47.
