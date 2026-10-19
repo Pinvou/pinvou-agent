@@ -574,7 +574,13 @@ impl ScheduledTaskState {
         // caller's error text; a present-but-unreadable record keeps the
         // retry-classified wrap (the miss may be transient).
         if let Err(err) = manager.get_automation(&id) {
-            if format!("{err:#}").contains("No such file") {
+            // Round-17 M2: classify by ErrorKind, not OS text — Windows'
+            // ENOENT Display ("The system cannot find the file specified.",
+            // fully localized on non-English installs) never contained
+            // "No such file", so the unknown-task update kept the plain
+            // Display wrap and burned the whole budget. The cross-platform
+            // helper is already in scope here.
+            if is_not_found_error(&err) {
                 return Err(format!("scheduled task not found: {id}"));
             }
             return Err(format!("Failed to update scheduled task '{id}': {err}"));
@@ -788,9 +794,17 @@ impl ScheduledTaskState {
         // cancellation-style outer timeout could release the gate midway through
         // the archive-then-delete sequence, allowing update/run-now into partial state.
         let _operation = self.lock_operation(&id).await;
-        self.delete_task_inner(&id)
-            .await
-            .map_err(|err| format!("Failed to delete scheduled task '{id}': {err:#}"))
+        self.delete_task_inner(&id).await.map_err(|err| {
+            // Round-17 M2: classify the miss by ErrorKind here, like the
+            // update pre-check — the watcher's poison classifier matches
+            // rendered TEXT ("No such file"), which Windows' localized
+            // ENOENT Display never contains, so an unknown-task delete
+            // regressed to retry-classified and burned the budget.
+            if is_not_found_error(&err) {
+                return format!("scheduled task not found: {id}");
+            }
+            format!("Failed to delete scheduled task '{id}': {err:#}")
+        })
     }
 
     async fn run_task_now(&self, id: String) -> Result<ScheduledRunDto, String> {
@@ -4139,13 +4153,15 @@ mod tests {
         // name, model, paused — so the docstring's "reverting any restore
         // leg turns this red" is actually true (the round-6 form set only
         // the name, leaving the model/status legs unpinned).
+        // Round-17 m7: prompt and rrule are restorable too — set them, or
+        // the rollback's prompt/rrule legs stay unexercised.
         let error = state
             .update_for_test(
                 created.id.clone(),
                 UpdateScheduledTaskInput {
                     name: Some("改名后".to_string()),
-                    prompt: None,
-                    rrule: None,
+                    prompt: Some("更新后的提示词".to_string()),
+                    rrule: Some("FREQ=HOURLY;INTERVAL=4".to_string()),
                     cwds: None,
                     model: Some("m-9".to_string()),
                     model_id: None,
@@ -4184,6 +4200,103 @@ mod tests {
             unsafe { std::env::set_var("PINVOU3_HOME", previous) };
         } else {
             // SAFETY: ENV_LOCK held.
+            unsafe { std::env::remove_var("PINVOU3_HOME") };
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn probe_stamp_sequence() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_home();
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        let path = scheduled_task_kinds_path();
+        eprintln!("[probe] path={:?} exists_at_open={}", path, path.exists());
+        let kinds = ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("kind store");
+        eprintln!("[probe] after open, file exists={}", path.exists());
+        {
+            let foreign = ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("foreign");
+            foreign
+                .set_kind_with_target("automation-cli", SCHEDULED_TASK_KIND_SESSION_MESSAGE, "target009")
+                .expect("foreign write");
+            eprintln!("[probe] after foreign write, file exists={} len={:?}", path.exists(), std::fs::metadata(&path).map(|m| m.len()));
+        }
+        eprintln!("[probe] before stale set, file exists={} len={:?}", path.exists(), std::fs::metadata(&path).map(|m| m.len()));
+        let result = kinds.set_kind_with_target("automation-1", SCHEDULED_TASK_KIND_SESSION_MESSAGE, "target001");
+        eprintln!("[probe] stale set result: {:?}", result.as_ref().map(|_| "Ok").map_err(|e| format!("{e:#}")));
+        assert!(result.is_ok());
+        if let Some(v) = previous {
+            // SAFETY: ENV_LOCK held; env writes are serialized.
+            unsafe { std::env::set_var("PINVOU3_HOME", v) };
+        } else {
+            // SAFETY: ENV_LOCK held; env writes are serialized.
+            unsafe { std::env::remove_var("PINVOU3_HOME") };
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Round-17 M1: `set_kind_with_target` skipped the reload discipline
+    /// every sibling mutator keeps — this sidecar is co-owned by the
+    /// `pinvou` CLI, and a foreign kinds write landing after this handle's
+    /// open made every persist refuse ("task-kinds changed on disk"), so a
+    /// VALID create/retarget retried 3× and quarantined. The mutator now
+    /// reloads first; deleting that reload turns this red.
+    #[test]
+    fn set_kind_with_target_survives_a_foreign_kinds_write() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_home();
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        let kinds =
+            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("kind store");
+        // The foreign writer: a second handle over the same sidecar (the
+        // CLI's own view) writes a DIFFERENT automation and drops — the
+        // first handle's cached version stamp is now stale.
+        {
+            let foreign = ScheduledTaskKindStore::open(scheduled_task_kinds_path())
+                .expect("foreign kind store");
+            foreign
+                .set_kind_with_target(
+                    "automation-cli",
+                    SCHEDULED_TASK_KIND_SESSION_MESSAGE,
+                    "target009",
+                )
+                .expect("foreign write");
+        }
+        kinds
+            .set_kind_with_target(
+                "automation-1",
+                SCHEDULED_TASK_KIND_SESSION_MESSAGE,
+                "target001",
+            )
+            .expect("a stale handle must reload past a foreign kinds write");
+        match kinds.kind_lookup_for("automation-1") {
+            ScheduledTaskKindLookup::SessionMessage { target_session } => {
+                assert_eq!(target_session, "target001");
+            }
+            other => panic!("unexpected kind entry after the foreign write: {other:?}"),
+        }
+        match kinds.kind_lookup_for("automation-cli") {
+            ScheduledTaskKindLookup::SessionMessage { target_session } => {
+                assert_eq!(
+                    target_session, "target009",
+                    "the reload must merge the foreign write, not clobber it"
+                );
+            }
+            other => panic!("the foreign write must survive the reload: {other:?}"),
+        }
+        if let Some(v) = previous {
+            // SAFETY: ENV_LOCK held; env writes are serialized.
+            unsafe { std::env::set_var("PINVOU3_HOME", v) };
+        } else {
+            // SAFETY: ENV_LOCK held; env writes are serialized.
             unsafe { std::env::remove_var("PINVOU3_HOME") };
         }
         let _ = std::fs::remove_dir_all(&dir);

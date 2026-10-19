@@ -3574,6 +3574,62 @@ mod tests {
         );
     }
 
+    /// Round-17 m3: the DELETE twin of the unknown-task pin above. The
+    /// delete path has no update-style pre-check — its miss is classified
+    /// at the domain's error mapping (round-17 M2: by ErrorKind via
+    /// `is_not_found_error`, not by the OS text that Windows localizes
+    /// away) — so removing the "not found" mapping turns this red on
+    /// every platform.
+    #[tokio::test]
+    async fn unknown_task_delete_poisons_at_attempt_1() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(
+            spool.join("ghost.json"),
+            spool_record_json(&[
+                ("kind", serde_json::json!("delete")),
+                ("task_id", serde_json::json!("nosuch99")),
+                ("name", serde_json::Value::Null),
+                ("prompt", serde_json::Value::Null),
+                ("rrule", serde_json::Value::Null),
+                ("paused", serde_json::Value::Null),
+            ]),
+        )
+        .unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(
+            failed_dir().join("ghost.json").exists(),
+            "an unknown-task delete must quarantine on attempt 1"
+        );
+        assert!(!spool.join("ghost.json").exists());
+        assert_eq!(
+            retries.attempts.get("ghost.json").copied(),
+            None,
+            "attempt-1 poison must not buy retry budget"
+        );
+        let marker: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(done_dir().join("ghost.json")).expect("failure marker"),
+        )
+        .unwrap();
+        assert_eq!(marker["ok"], false);
+        assert!(
+            marker["error"]
+                .as_str()
+                .unwrap()
+                .contains("scheduled task not found: nosuch99"),
+            "{marker}"
+        );
+    }
+
     #[tokio::test]
     async fn tampered_message_target_is_quarantined() {
         let _home = TempHome::new();

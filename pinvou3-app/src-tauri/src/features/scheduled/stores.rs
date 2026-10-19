@@ -1450,6 +1450,14 @@ impl VersionedJsonStore<ScheduledTaskKindRegistry> {
         if target_session.trim().is_empty() {
             bail!("target session cannot be empty");
         }
+        // Round-17 M1: the reload discipline every sibling mutator keeps —
+        // this sidecar is co-owned by the `pinvou` CLI (which rewrites the
+        // whole file), and `persist`'s refusal guard premises itself on "a
+        // concurrent writer landed between the reload and this persist".
+        // Without the reload that premise can never hold: a foreign kinds
+        // write landing after boot makes every valid create/retarget here
+        // fail the stamp check, re-apply, and quarantine.
+        self.reload_if_changed();
         let mut registry = self.registry.write();
         let previous = registry.tasks.get(automation_id).cloned();
         registry.tasks.insert(
