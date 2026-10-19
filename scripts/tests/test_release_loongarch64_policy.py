@@ -453,8 +453,16 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         # emulate ld's resolution for EVERY text script, not just libc.so,
         # so a regression fails at setup time with the missing path named.
         sysroot = _without_comments(self.sysroot)
-        self.assertIn('[ -e "$root/lib" ] || ln -s usr/lib "$root/lib"', sysroot)
-        self.assertIn('[ -e "$root/lib64" ] || ln -s usr/lib64 "$root/lib64"', sysroot)
+        # The fold must run before the whitelists (folded content is then
+        # pruned by the same size discipline), handle all three shapes
+        # (missing → alias, shipped symlink → keep, real dir → fold), and
+        # end with /lib and /lib64 as symlinks into usr/.
+        self.assertIn('merge_into_usr_lib lib\n  merge_into_usr_lib lib64', sysroot)
+        self.assertIn('if [ ! -e "$root/$d" ]; then', sysroot)
+        self.assertIn('ln -s "usr/$d" "$root/$d"', sysroot)
+        self.assertIn('[ -L "$root/$d" ]', sysroot)
+        self.assertIn('cp -a "$root/$d/." "$root/usr/$d/"', sysroot)
+        self.assertIn('rm -rf -- "$root/$d"', sysroot)
         # The aliases only resolve if the whitelist prune keeps usr/lib64
         # (the loader symlink's home): a verified-red harness round caught
         # the usr-level whitelist deleting it and leaving /lib64 dangling.

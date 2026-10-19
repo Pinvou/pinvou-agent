@@ -245,6 +245,37 @@ pkg_config_env() {
 # ---- shared post-extraction: whitelist prune (Qomicex #215 size discipline) --
 prune_sysroot() {
   local root="$1"
+  # Usrmerge fold + aliases: deepin is usrmerged, so its packages ship
+  # runtime files only under usr/lib and usr/lib64 — but glibc's libc.so
+  # linker script references the historical absolute paths
+  # (/lib/loongarch64-linux-gnu/libc.so.6, /lib64/ld-linux-loongarch-
+  # lp64d.so.1; verified against libc6-dev 2.38-6deepin13+rb1). GNU ld
+  # resolves those against --sysroot when it opens the script from inside
+  # the sysroot, so /lib and /lib64 must exist and lead to usr/lib /
+  # usr/lib64. A real /lib or /lib64 directory shipped by ANY package of
+  # the closure (the first release run proved at least one does: the alias
+  # alone left /lib/loongarch64-linux-gnu/libc.so.6 unresolvable) must be
+  # folded into usr/ first — a real directory would silently shadow the
+  # alias and hide libc.so.6 behind it. Folding overwrites same-named
+  # files (dpkg never double-ships one path; pre-usrmerge leftovers equal
+  # their usr copies), and a package-shipped SYMLINK /lib is already the
+  # correct alias and is kept as-is.
+  merge_into_usr_lib() {
+    local d="$1"
+    if [ ! -e "$root/$d" ]; then
+      ln -s "usr/$d" "$root/$d"
+      return 0
+    fi
+    if [ -L "$root/$d" ]; then
+      return 0
+    fi
+    mkdir -p "$root/usr/$d"
+    cp -a "$root/$d/." "$root/usr/$d/"
+    rm -rf -- "$root/$d"
+    ln -s "usr/$d" "$root/$d"
+  }
+  merge_into_usr_lib lib
+  merge_into_usr_lib lib64
   # Whitelist: usr/include, usr/lib, usr/lib64, usr/share/pkgconfig, lib,
   # lib64. Everything else (etc, bin, sbin, var, usr/bin, docs, man,
   # locales, gir typelibs, gtk-doc, dbus system configs, udev rules, ...)
@@ -283,17 +314,6 @@ prune_sysroot() {
       libLLVM.so.* libLLVM-*.so libgallium*.so libz3.so.* \
       gconv perl perl-base gir-1.0 girepository-1.0 gstreamer-1.0 systemd)
   fi
-  # Usrmerge aliases: deepin is usrmerged, so its packages ship runtime files
-  # only under usr/lib and usr/lib64 — but glibc's libc.so linker script
-  # references the historical absolute paths (/lib/loongarch64-linux-gnu/
-  # libc.so.6, /lib64/ld-linux-loongarch-lp64d.so.1; verified against
-  # libc6-dev 2.38-6deepin13+rb1). GNU ld resolves those against --sysroot
-  # when it opens the script from inside the sysroot, so the aliases must
-  # exist in the tree or every final link dies on "cannot open .../libc.so.6"
-  # after a full compile. Kept out of the way if a future source really does
-  # ship a root-level /lib (dpkg-deb -x preserves package symlinks as-is).
-  [ -e "$root/lib" ] || ln -s usr/lib "$root/lib"
-  [ -e "$root/lib64" ] || ln -s usr/lib64 "$root/lib64"
   # Static archives and libtool files: the app links the sysroot
   # dynamically; keeping .a would only bloat it. Exception 1: GNU ld linker
   # scripts (the text .so files, e.g. glibc's libc.so) name archive members
