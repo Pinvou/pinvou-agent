@@ -683,20 +683,22 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
   const STREAM_RENDER_THROTTLE_MS = 180;
   const BACKGROUND_STREAM_RENDER_THROTTLE_MS = 1000;
   const streamRenderTimers = Object.create(null); // sid → trailing-edge render timer
+  const renderedStreamText = new WeakMap(); // bubble identity → last successfully rendered text
   let lastForegroundSessionId = state.activeSessionId || null;
 
   function renderStreamItemHtml() {
     const item = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
     if (!item) return false;
     item.text = context.currentStreamText;
+    if (renderedStreamText.get(item) === context.currentStreamText) return false;
     item.html = renderMarkdown(context.currentStreamText);
+    renderedStreamText.set(item, context.currentStreamText);
     return true;
   }
 
-  // Only callable inside the synchronous body of
-  // onSessionEvent/runSyncOnSession: state.activeSessionId has been routed
-  // to the event's session there, making it a valid timer-table key that
-  // maps one-to-one onto the working set.
+  // The active session must name the installed working set: either inside
+  // onSessionEvent/runSyncOnSession, or in host notify after routing restores
+  // the foreground working set. That session is also the timer-table key.
   function flushPendingStreamRender() {
     const sid = state.activeSessionId;
     if (sid && streamRenderTimers[sid]) {
@@ -720,7 +722,13 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     const sid = state.activeSessionId || null;
     if (sid === lastForegroundSessionId) return;
     if (!sid) { lastForegroundSessionId = null; return; }
-    flushPendingStreamRender();
+    try {
+      flushPendingStreamRender();
+    } catch (error) {
+      console.error("[chat] active stream preview refresh failed", error);
+      lastForegroundSessionId = null;
+      return; // retry on the next host publication without rejecting session activation
+    }
     lastForegroundSessionId = sid;
     cancelPendingStreamNotify(sid);
   }
@@ -845,19 +853,21 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
       // The bubble's first delta (html still empty) renders immediately;
       // later deltas only accumulate text and leave the html to the
       // throttle's trailing edge
-      if (!item.html) item.html = renderMarkdown(context.currentStreamText);
+      if (!item.html) renderStreamItemHtml();
       item.streaming = true;
     } else {
       // New bubble needed (after tool card)
       context.currentStreamId = ++context.itemIdSeq;
-      state.chatItems.push({
+      const nextItem = {
         id: context.currentStreamId,
         type: "assistant",
         text: context.currentStreamText,
         html: renderMarkdown(context.currentStreamText),
         time: timeStr(),
         streaming: true,
-      });
+      };
+      renderedStreamText.set(nextItem, context.currentStreamText);
+      state.chatItems.push(nextItem);
     }
     scheduleStreamRender(e.payload && e.payload.session_id || state.activeSessionId);
     scheduleStreamNotify(e.payload && e.payload.session_id || state.activeSessionId, firstDelta);

@@ -11,7 +11,7 @@ import { createNativeStreamHarness, nativeStreamSources } from '../tests/helpers
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const arguments_ = process.argv.slice(2);
-const options = { '--baseline-ref': 'HEAD', '--samples': '30', '--output': 'tmp/native-stream-performance.json' };
+const options = { '--baseline-ref': 'fcb700f853a32b2900af73451814589af8e9fe79', '--samples': '30', '--output': 'tmp/native-stream-performance.json' };
 for (let index = 0; index < arguments_.length; index += 2) {
   const key = arguments_[index];
   if (!Object.hasOwn(options, key) || !arguments_[index + 1]) throw new Error(`Invalid argument: ${key}`);

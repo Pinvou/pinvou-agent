@@ -21,14 +21,72 @@ test('activating a background stream publishes current HTML synchronously and ca
   h.advance(40);
   h.emit('s1', 'chat:delta', { text: ' **latest**' });
   h.advance(50);
+  const notifications = h.notificationCount;
   h.activate('s1');
+  assert.equal(h.notificationCount, notifications + 1);
   assert.equal(h.snapshots.at(-1).html, marked.parse('first **latest**'));
   const renders = h.renders.length;
   h.advance(1200);
   assert.equal(h.renders.length, renders, 'activation must cancel the old background timer');
+  assert.equal(h.notificationCount, notifications + 1, 'activation must cancel the older pending publication');
   h.emit('s1', 'chat:delta', { text: ' foreground' });
   h.advance(1400);
   assert.equal(h.state.chatItems[0].html, marked.parse('first **latest** foreground'));
+});
+
+for (const frames of [true, false]) test(`a still-background preview publishes at its 1000ms edge (frames=${frames})`, () => {
+  const h = createNativeStreamHarness({ frames });
+  h.emit('s1', 'chat:delta', { text: 'first' });
+  h.advance(40);
+  h.emit('s1', 'chat:delta', { text: ' latest' });
+  h.advance(80);
+  const notifications = h.notificationCount;
+  h.advance(999);
+  assert.equal(h.notificationCount, notifications);
+  assert.equal(h.view('s1').chatItems[0].html, marked.parse('first'));
+  h.advance(1000);
+  assert.equal(h.view('s1').chatItems[0].html, marked.parse('first latest'));
+  assert.equal(h.notificationCount, notifications);
+  h.advance(frames ? 1016 : 1032);
+  assert.equal(h.notificationCount, notifications + 1, 'the trailing preview must publish through the shared scheduler');
+  assert.equal(h.state.activeSessionId, 's0');
+});
+
+test('activating an unchanged first-delta preview does not parse it again', () => {
+  const h = createNativeStreamHarness();
+  h.emit('s1', 'chat:delta', { text: '**already current**' });
+  h.advance(40);
+  const renders = h.renders.length;
+  h.activate('s1');
+  assert.equal(h.snapshots.at(-1).html, marked.parse('**already current**'));
+  assert.equal(h.renders.length, renders);
+});
+
+test('switching repeatedly between stalled current previews does not reparse accumulated text', () => {
+  const h = createNativeStreamHarness();
+  const text = '**stalled** '.repeat(4096);
+  for (const sid of ['s0', 's1']) h.emit(sid, 'chat:delta', { text });
+  h.advance(40);
+  for (const sid of ['s0', 's1']) h.emit(sid, 'chat:delta', { text: ' latest' });
+  h.advance(1200);
+  const renders = h.renders.length;
+  for (const sid of ['s1', 's0', 's1', 's0']) {
+    h.activate(sid);
+    assert.equal(h.snapshots.at(-1).html, marked.parse(text + ' latest'));
+  }
+  assert.equal(h.renders.length, renders);
+});
+
+test('render tracking is isolated across sessions with identical stream text', () => {
+  const h = createNativeStreamHarness();
+  for (const sid of ['s0', 's1']) {
+    h.emit(sid, 'chat:delta', { text: 'first' });
+    h.emit(sid, 'chat:delta', { text: ' latest' });
+  }
+  h.activate('s1');
+  h.activate('s0');
+  assert.equal(h.renders.length, 4);
+  for (const sid of ['s0', 's1']) assert.equal(h.view(sid).chatItems[0].html, marked.parse('first latest'));
 });
 
 test('same-session notifications preserve the foreground render budget', () => {
@@ -60,7 +118,7 @@ test('returning from a draft refreshes even when the previous conversation ID is
   assert.equal(h.snapshots.at(-1).html, marked.parse('first latest'));
 });
 
-test('activation retries a failed preview before publishing a stale snapshot', () => {
+test('activation isolates a preview failure and retries on the next publication', () => {
   let fail = false;
   const h = createNativeStreamHarness({ render(text) {
     if (fail) { fail = false; throw new Error('synthetic renderer failure'); }
@@ -69,9 +127,29 @@ test('activation retries a failed preview before publishing a stale snapshot', (
   h.emit('s1', 'chat:delta', { text: 'first' });
   h.emit('s1', 'chat:delta', { text: ' latest' });
   fail = true;
-  assert.throws(() => h.activate('s1'), /synthetic renderer failure/);
+  assert.doesNotThrow(() => h.activate('s1'));
+  assert.equal(h.errors.length, 1);
+  assert.equal(h.snapshots.at(-1).text, 'first latest');
   h.notify();
   assert.equal(h.snapshots.at(-1).html, marked.parse('first latest'));
+});
+
+test('returning to the previous session after a failed activation refreshes pending text', () => {
+  let fail = false;
+  const h = createNativeStreamHarness({ render(text) {
+    if (fail) { fail = false; throw new Error('synthetic renderer failure'); }
+    return marked.parse(text);
+  } });
+  h.emit('s0', 'chat:delta', { text: 'front' });
+  h.emit('s1', 'chat:delta', { text: 'back' });
+  h.emit('s1', 'chat:delta', { text: ' latest' });
+  fail = true;
+  assert.doesNotThrow(() => h.activate('s1'));
+  h.emit('s0', 'chat:delta', { text: ' pending' });
+  h.activate('s0');
+  assert.equal(h.errors.length, 1);
+  assert.equal(h.snapshots.at(-1).text, 'front pending');
+  assert.equal(h.snapshots.at(-1).html, marked.parse('front pending'));
 });
 
 test('hosts without timers retain synchronous full-content rendering', () => {
