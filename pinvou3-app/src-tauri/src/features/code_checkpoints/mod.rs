@@ -1021,18 +1021,22 @@ fn turn_snapshot_hard_stopped(repo_bytes: u64, packed_bytes: u64, kind: Checkpoi
 /// info/exclude 的排除——把敏感文件、账本自身或会话侧数据照进影子树。
 /// 用 git 自身的 pathspec 匹配（避免手写 gitignore 语义），命中即 bail。
 fn validate_no_sensitive_paths_staged(repo: &Path, work_tree: &Path) -> Result<()> {
-    // 与 ensure_repo 的动态排除集同源：账本 + secret + .pinvou3/（会话侧数据，
-    // 含完整用户消息文本的 conversation-attachments.json）。SECRET_EXCLUDES
-    // 的 glob 语义由 git pathspec 原样处理。
-    let mut pathspecs: Vec<&str> = vec![
+    // r16 M1：pathspec 从 secret_pathspecs() 派生——裸字面（.env/id_rsa）在
+    // git pathspec 只命中仓库根，须加 **/ 前缀覆盖子目录；恒带 :(icase)
+    // 覆盖大小写变体（与 purge 层同口径，三层不变量不被第四层打破）。
+    let mut pathspecs: Vec<String> = secret_pathspecs();
+    for ledger in [
         "checkpoints/",
         "pending_rewind.json",
         "budget-disabled",
         ".pinvou3/",
-    ];
-    pathspecs.extend_from_slice(SECRET_EXCLUDES);
+    ] {
+        pathspecs.push(ledger.to_string());
+        pathspecs.push(format!(":(icase)**/{ledger}"));
+    }
+    let refs: Vec<&str> = pathspecs.iter().map(|s| s.as_str()).collect();
     let mut args: Vec<&str> = vec!["diff", "--cached", "--name-only", "--"];
-    args.extend(pathspecs.iter().copied());
+    args.extend(refs);
     let staged = git_ok(repo, work_tree, &args)?;
     let first = staged.lines().find(|l| !l.trim().is_empty());
     if let Some(path) = first {
@@ -1077,7 +1081,6 @@ fn create_checkpoint_preserving(
     // add -A 全量暂存（影子 index），write-tree 取内容树；与上一条 commit 的树相同
     // 则复用（空 turn 不产生冗余快照内容，但 meta 仍按新 turn 登记，保持对齐）。
     git_ok(&repo, &execution_root, &["add", "-A"])?;
-    validate_no_sensitive_paths_staged(&repo, &execution_root)?;
     validate_no_sensitive_paths_staged(&repo, &execution_root)?;
     let tree = git_ok(&repo, &execution_root, &["write-tree"])?
         .trim()

@@ -330,11 +330,16 @@ pub async fn web_access_list_sessions(
 #[tauri::command]
 pub async fn web_access_list_archived_sessions(
     store: State<'_, SessionStore>,
+    acp_pool: State<'_, crate::features::codex_acp::AcpPool>,
 ) -> Result<Vec<super::sessions::HiddenSessionListItem>, String> {
     let mut sessions = web_session_result(
         WebSessionOperation::ListArchivedSessions,
         super::sessions::list_archived_sessions(store).await,
     )?;
+    // r16 M2: archived ACP session ids must not surface to web clients
+    // (the metadata redaction keeps the id verbatim; combined with the
+    // case-alias bypass this gives web clients a launchpad).
+    sessions.retain(|s| !acp_pool.is_acp(&s.metadata.id));
     for session in &mut sessions {
         session.metadata = super::codex::redact_session_metadata_for_web(session.metadata.clone());
     }
