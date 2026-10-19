@@ -802,14 +802,25 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
         execution_root,
         &["config", "core.ignorecase", ignorecase],
     )?;
-    // r17 B1：filter 命令执行面——worktree `.gitattributes` 写 `*.txt filter=pwn` +
-    // 影子 repo config（unbound 布局下在 agent 可写范围）追加
-    // `[filter "pwn"] clean = <cmd>` 即以 app 权限执行任意命令。r15 M3 的
-    // `-c core.attributesFile=` 只清全局属性源，管不住 worktree 内嵌的
-    // .gitattributes。ensure_repo 每轮运行：枚举并移除 config 中的全部
-    // filter.* 节（agent 在两轮 git 调用之间的写入是文件级防御的固有竞态
-    // 面，与 info/exclude 重写同级）。
-    let filter_sections = git_ok(
+    // r19 B1：命令执行面三重防御——worktree `.gitattributes` 写 filter/diff/merge/
+    // encoding 属性 + 影子 repo config（agent 可写）或 promisor/partialclone/
+    // sshCommand/protocol.ext 键可驱动任意命令执行。
+    // 1) info/attributes 最高优先级 `* !filter` 等四条钉死 worktree 属性引用
+    //    （probe 验证有效：即使 config 里有 filter 定义，`!filter` 属性使其不被调用）。
+    // 2) 移除 config 中的 filter/extensions/remote/protocol 危险键（r17 的实现
+    //    是死代码：`--name-only --get-regexp` 输出 `filter.pwn.clean`（key 名，
+    //    无空格），`find(' ')` 恒 None；修复为截取最后一个点之前的节名）。
+    // 3) 未来加固方向：将影子仓库移出 agent 可写根。
+    let info_attrs = repo.join("info").join("attributes");
+    if let Some(parent) = info_attrs.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    fs::write(
+        &info_attrs,
+        "* !filter\n* !diff\n* !merge\n* !working-tree-encoding\n",
+    )
+    .context("写入 info/attributes 失败")?;
+    let dangerous_keys = git_ok(
         &repo,
         execution_root,
         &[
@@ -817,14 +828,52 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
             "--local",
             "--name-only",
             "--get-regexp",
-            "^filter\\.",
+            r"^(filter\.|extensions\.partialclone|remote\.[^.]+\.promisor|remote\.[^.]+\.url|core\.sshCommand|protocol\.)",
         ],
     )
     .unwrap_or_default();
-    for line in filter_sections.lines() {
-        let entry = line.trim();
-        if let Some(section_end) = entry.find(' ') {
-            let section = &entry[..section_end];
+    for line in dangerous_keys.lines() {
+        let key = line.trim();
+        if key.is_empty() {
+            continue;
+        }
+        // r19 B1: `--name-only` outputs `filter.pwn.clean`; the section is
+        // `filter.pwn` — trim the last dotted component. For top-level keys
+        // like `core.sshCommand`, the section is `core`.
+        let section = match key.rfind('.') {
+            Some(idx) if idx > 0 => {
+                let candidate = &key[..idx];
+                // The section itself may contain dots (e.g. `filter.pwn`);
+                // strip trailing `.clean`/`.smudge`/`.url` etc by finding the
+                // section/subsection boundary. Git sections are `a.b` or
+                // `a."b c"`; `filter.pwn.clean` → section `filter.pwn`.
+                // Check if the candidate still looks like a subsection key
+                // (not a known leaf like clean/smudge/required/url/promisor/
+                // sshCommand/partialclone/allow).
+                const LEAVES: [&str; 8] = [
+                    "clean",
+                    "smudge",
+                    "required",
+                    "url",
+                    "promisor",
+                    "sshCommand",
+                    "partialclone",
+                    "allow",
+                ];
+                if let Some(dot2) = candidate.rfind('.') {
+                    let possible_leaf = &candidate[dot2 + 1..];
+                    if LEAVES.contains(&possible_leaf) {
+                        &candidate[..dot2]
+                    } else {
+                        candidate
+                    }
+                } else {
+                    candidate
+                }
+            }
+            _ => key,
+        };
+        if !section.is_empty() {
             let _ = git(
                 &repo,
                 execution_root,
@@ -1430,12 +1479,12 @@ pub fn apply_restore(
         .context("写回 checkpoint 文件失败")?;
     // r17 M2：clean 的 -e 排除压过 ignore 规则——worktree .gitignore 的
     // 否定行（!.env）可让真实密钥文件在 restore 的 clean -fd 中被物理删除。
-    // 排除集与 validate/purge 同源（SECRET_EXCLUDES + 账本四路径），账本腿
-    // 同时防「旧树含 checkpoints/ + !checkpoints/ 否定 → 覆写活账本」。
+    // r19 M5：-e 排除集必须用与 info/exclude 同款的大小写字符类形式——裸字面
+    // 是大小写敏感的，.ENV / ID_RSA 变体可穿透。账本腿同理。
     let mut clean_args: Vec<String> = vec!["clean".into(), "-fd".into()];
     for pattern in SECRET_EXCLUDES {
         clean_args.push("-e".into());
-        clean_args.push(pattern.to_string());
+        clean_args.push(icase_gitignore_pattern(pattern));
     }
     for ledger in [
         "checkpoints",
@@ -1444,7 +1493,7 @@ pub fn apply_restore(
         ".pinvou3",
     ] {
         clean_args.push("-e".into());
-        clean_args.push(format!("{ledger}/**"));
+        clean_args.push(icase_gitignore_pattern(&format!("{ledger}/**")));
     }
     let clean_refs: Vec<&str> = clean_args.iter().map(|s| s.as_str()).collect();
     git_ok(&repo, &execution_root, &clean_refs).context("清理快照后新建文件失败")?;
