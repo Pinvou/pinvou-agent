@@ -1049,11 +1049,14 @@ pub fn resolve_secret(
     Ok(None)
 }
 
-/// Single home for the two-pass error scrub: strip URL userinfo first, then
-/// the secret-shaped token patterns. Order is load-bearing and pinned by
-/// monitor's `redact_scrubs_url_userinfo_before_token_shapes` and models'
-/// `transport_error_scrubs_url_userinfo_before_the_report` once they route
-/// through here.
+/// Single home for the two-pass error scrub: strip URL userinfo FIRST, then
+/// apply the secret-shaped token patterns. The URL pass must run first: a
+/// credential-bearing URL long enough to trip the generic token branch would
+/// otherwise be matched wholesale and lose the host, so the composition IN
+/// THIS ORDER is the contract (the GUI's `model_probe_transport_code` runs
+/// the identical pair). Monitor's `redact` routes through here and pins the
+/// host-preserving behavior (`redact_scrubs_url_userinfo_before_token_shapes`);
+/// `models probe`'s transport-error pin covers the same composition e2e.
 pub(crate) fn redact_error_text(rendered: &str) -> String {
     pinvou3_lib::platform::credential_store::redact_secret(
         &pinvou3_lib::platform::redact_url_credentials_in_text(rendered),
