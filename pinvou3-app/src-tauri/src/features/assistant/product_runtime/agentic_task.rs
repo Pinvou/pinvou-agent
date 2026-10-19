@@ -1220,8 +1220,9 @@ fn ensure_model_exists(model_id: &str) -> Result<()> {
 /// be an ordinary chat session. Scheduled-run sessions have their own
 /// automation authority and never host external agentic turns; native code
 /// sessions are rejected on their durable sidecar (see below) because this
-/// host cannot resolve their scope; ACP sessions do not live in this store
-/// and fail the existence check first.
+/// host cannot resolve their scope; ACP sessions ARE ordinary store records
+/// (created with a "(ACP)" model suffix) and must be refused by metadata
+/// probe (r16 M3) before any native-engine turn can rewrite ACP history.
 fn ensure_existing_chat_session(store: &SessionStore, session_id: &str) -> Result<()> {
     if !store.chat_session_record_exists(session_id) {
         anyhow::bail!("agent_session_not_found: session '{session_id}' does not exist");
@@ -1248,6 +1249,19 @@ fn ensure_existing_chat_session(store: &SessionStore, session_id: &str) -> Resul
             "agent_session_not_chat: session '{session_id}' is a native code session; \
              headless runs cannot resolve its scope"
         );
+    }
+    // r16 M3: ACP sessions are ordinary store records (created by
+    // create_codex_acp_session_with_workspace_binding via store.create_new
+    // with a "{name} (ACP)" model suffix) — the existence check above
+    // passes. Driving a native-engine turn on an ACP session rewrites its
+    // history in the wrong lane; probe the model string and refuse.
+    if let Ok(metadata) = store.load(session_id) {
+        if metadata.model.ends_with("(ACP)") {
+            anyhow::bail!(
+                "agent_session_not_chat: session '{session_id}' is an ACP session; \
+                 headless runs cannot target ACP histories"
+            );
+        }
     }
     match store.session_kind(session_id)? {
         SessionKind::Chat => Ok(()),
