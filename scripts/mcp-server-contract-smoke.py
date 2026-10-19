@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import re
@@ -153,6 +154,20 @@ def content_json(response: dict) -> dict:
 #     $recursiveRef are banned even though MFJS allows $ref, because this
 #     guard cannot follow the target and the shape underneath would go
 #     uninspected;
+#   - a keyword that survives the whitelist must still be admissible for its
+#     node's type (mfjs_keyword_allowed_for_type): `default` on an array or
+#     `enum`/`default` on an object is InvalidKeywordValue — the same silent
+#     drop (review #713 round 7, P2-3). Enum and default literals must match
+#     their node's type; required must name unique declared properties;
+#     minLength/maxLength (string), minItems/maxItems (array), and
+#     minimum/maximum (number/integer) reject foreign types, out-of-range
+#     literals, and inverted ranges (InvalidRange);
+#   - the parameters root must be a typed object without composition
+#     (RootMustBeObject);
+#   - the validator's resource budgets are mirrored exactly (anyOf ≤ 10
+#     branches, ≤ 100 total properties, property depth ≤ 5, ≤ 500 total enum
+#     values, ≤ 64 structural depth, ≤ 120000 encoded bytes) —
+#     ResourceLimitExceeded drops the tool like every other deviation.
 #   - anyOf keeps only the union's own siblings (MFJS InvalidKeywordValue
 #     otherwise) and every branch is walked and concretely typed; $defs
 #     interiors are walked so an unreferenced definition is no blind spot
@@ -164,6 +179,81 @@ _MFJS_ALLOWED_KEYWORDS = frozenset((
     "maximum", "minimum", "maxItems", "minItems", "title", "description",
     "default",
 ))
+# Per-type keyword admissibility, mirroring mfjs_keyword_allowed_for_type in
+# schema_sanitize.rs: a keyword surviving the whitelist is still
+# InvalidKeywordValue when its node's type does not admit it — `default` on
+# an array and `enum`/`default` on an object are the same silent tool drop
+# (review #713 round 7, P2-3). type/title/description are admissible on
+# every node and root $defs/$id on the root, handled by the other rules.
+_MFJS_KEYWORDS_FOR_TYPE = {
+    "object": ("properties", "required", "additionalProperties"),
+    "array": ("items", "minItems", "maxItems"),
+    "string": ("enum", "default", "minLength", "maxLength"),
+    "number": ("enum", "default", "minimum", "maximum"),
+    "integer": ("enum", "default", "minimum", "maximum"),
+    "boolean": ("default",),
+    "null": ("default",),
+}
+# Resource budgets, mirroring the validator constants exactly
+# (ResourceLimitExceeded raise sites in schema_sanitize.rs).
+_MFJS_MAX_ANY_OF_ITEMS = 10
+_MFJS_MAX_OBJECT_DEPTH = 5
+_MFJS_MAX_TOTAL_PROPERTIES = 100
+_MFJS_MAX_TOTAL_ENUM_VALUES = 500
+_MFJS_MAX_SCHEMA_BYTES = 120_000
+_MFJS_MAX_STRUCTURAL_DEPTH = 64
+_MFJS_MAX_SAFE_INTEGER = 9_007_199_254_740_991
+# Property names the validator refuses outright (InvalidKeywordValue).
+_MFJS_RESERVED_PROPERTY_NAMES = frozenset(
+    ("$defs", "$ref", "anyOf", "required", "additionalProperties"))
+
+
+def _mfjs_is_number(value) -> bool:
+    """A JSON number; bool is an int in Python but not a number for serde."""
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and (not isinstance(value, float) or math.isfinite(value)))
+
+
+def _mfjs_is_integer_value(value) -> bool:
+    """mfjs_integer_value: finite, integral, |v| ≤ 2^53-1."""
+    return (_mfjs_is_number(value) and float(value).is_integer()
+            and abs(float(value)) <= _MFJS_MAX_SAFE_INTEGER)
+
+
+def _mfjs_is_u64(value) -> bool:
+    return (isinstance(value, int) and not isinstance(value, bool)
+            and 0 <= value <= 2 ** 64 - 1)
+
+
+_MFJS_ENUM_VALUE_MATCHERS = {
+    "string": lambda values: all(isinstance(value, str) for value in values),
+    "integer": lambda values: all(_mfjs_is_integer_value(value) for value in values),
+    "number": lambda values: all(_mfjs_is_number(value) for value in values),
+}
+
+_MFJS_DEFAULT_VALUE_MATCHERS = {
+    "boolean": lambda value: isinstance(value, bool),
+    "null": lambda value: value is None,
+    "string": lambda value: isinstance(value, str),
+    "number": _mfjs_is_number,
+    "integer": _mfjs_is_integer_value,
+}
+
+
+class _MfjsBudget:
+    """Whole-document counters for one inputSchema walk — the validator's
+    MfjsValidationState. Property/enum totals accumulate across every node,
+    so they cannot be carried by the recursion itself; each overflow is
+    reported once."""
+
+    def __init__(self, root):
+        self.total_properties = 0
+        self.total_enum_values = 0
+        self.properties_budget_reported = False
+        self.enum_budget_reported = False
+        # serde_json::to_vec(parameters).len() at the validator's entry.
+        self.encoded_bytes = len(json.dumps(
+            root, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
 
 
 def _schema_has_concrete_type(node) -> bool:
@@ -179,7 +269,8 @@ def _schema_has_concrete_type(node) -> bool:
         _schema_has_concrete_type(branch) for branch in branches)
 
 
-def _walk_tool_schema(node, path: str, offenders: list[str], is_root: bool = False) -> None:
+def _walk_tool_schema(node, path, offenders, is_root=False, property_depth=0,
+                      structural_depth=0, budget=None):
     """Walk schema-value positions only; {} inside enum/default/const/examples is data, never walked."""
     if isinstance(node, bool):
         # true is semantically the empty schema, and false is a schema
@@ -203,6 +294,15 @@ def _walk_tool_schema(node, path: str, offenders: list[str], is_root: bool = Fal
     if not node:
         offenders.append(f"{path}: empty schema node (MFJS rejects it and silently drops the tool)")
         return
+    if structural_depth > _MFJS_MAX_STRUCTURAL_DEPTH:
+        offenders.append(
+            f"{path}: structural depth {structural_depth} exceeds the MFJS budget of {_MFJS_MAX_STRUCTURAL_DEPTH} (ResourceLimitExceeded drops the tool)")
+    if is_root and (node.get("type") != "object" or "anyOf" in node):
+        # validate_mfjs_parameters (RootMustBeObject): a function parameters
+        # document must be a typed object without composition; the
+        # constrained route drops the whole tool otherwise.
+        offenders.append(
+            f"{path}: root must be type \"object\" without anyOf (MFJS RootMustBeObject drops the tool)")
     node_type = node.get("type")
     if isinstance(node_type, list):
         # Legal JSON Schema, but the engine sanitizer reads string types
@@ -226,6 +326,12 @@ def _walk_tool_schema(node, path: str, offenders: list[str], is_root: bool = Fal
         offenders.append(
             f"{path}: unsupported keyword(s) {unsupported} — outside the verified MFJS shape set, the validator drops the whole tool"
         )
+    for annotation in ("title", "description"):
+        if annotation in node and not isinstance(node[annotation], str):
+            offenders.append(
+                f"{path}: {annotation} must be a string (MFJS InvalidKeywordValue drops the tool)")
+    if "$id" in node and not isinstance(node["$id"], str):
+        offenders.append(f"{path}: $id must be a string (MFJS InvalidKeywordValue drops the tool)")
     if node_type is None and "anyOf" not in node:
         # Non-empty and typeless: annotation-only nodes ({"description":
         # ...}, {"enum": [...]}) and typeless containers are MissingType
@@ -235,8 +341,8 @@ def _walk_tool_schema(node, path: str, offenders: list[str], is_root: bool = Fal
         )
     if "anyOf" in node:
         # MFJS allows only title/description beside anyOf ($defs/$id at the
-        # root) and a non-empty branch list; everything else is
-        # InvalidKeywordValue / ResourceLimitExceeded.
+        # root) and a non-empty branch list within the union budget;
+        # everything else is InvalidKeywordValue / ResourceLimitExceeded.
         allowed_siblings = {"anyOf", "title", "description"} | ({"$defs", "$id"} if is_root else set())
         bad_siblings = sorted(set(node) - allowed_siblings)
         if bad_siblings:
@@ -246,12 +352,99 @@ def _walk_tool_schema(node, path: str, offenders: list[str], is_root: bool = Fal
         branches = node.get("anyOf")
         if not isinstance(branches, list) or not branches:
             offenders.append(f"{path}: anyOf must be a non-empty branch list (MFJS rejects other shapes)")
+        elif len(branches) > _MFJS_MAX_ANY_OF_ITEMS:
+            offenders.append(
+                f"{path}: anyOf has {len(branches)} branches — MFJS allows at most {_MFJS_MAX_ANY_OF_ITEMS} (ResourceLimitExceeded drops the tool)")
         for index, sub in enumerate(branches if isinstance(branches, list) else []):
-            _walk_tool_schema(sub, f"{path}.anyOf[{index}]", offenders)
-    elif not is_root and ("$defs" in node or "$id" in node):
-        offenders.append(
-            f"{path}: $defs/$id outside the schema root — MFJS rejects them (InvalidKeywordValue tool drop)"
-        )
+            _walk_tool_schema(sub, f"{path}.anyOf[{index}]", offenders,
+                              property_depth=property_depth,
+                              structural_depth=structural_depth + 1, budget=budget)
+    else:
+        if not is_root and ("$defs" in node or "$id" in node):
+            offenders.append(
+                f"{path}: $defs/$id outside the schema root — MFJS rejects them (InvalidKeywordValue tool drop)"
+            )
+        if node_type in _MFJS_CONCRETE_TYPES:
+            # These per-node rules run in the validator only after the type
+            # is established (everything past the MissingType raise), so
+            # nodes already flagged typeless or non-concrete get no second
+            # flag here.
+            allowed = {"type", "title", "description"} | set(_MFJS_KEYWORDS_FOR_TYPE[node_type])
+            if is_root:
+                allowed |= {"$defs", "$id"}
+            stray = sorted(set(node) - allowed)
+            if stray:
+                offenders.append(
+                    f"{path}: keyword(s) {stray} not permitted on type \"{node_type}\" — MFJS InvalidKeywordValue drops the tool")
+            if "enum" in node and "enum" in _MFJS_KEYWORDS_FOR_TYPE[node_type]:
+                values = node["enum"]
+                if not isinstance(values, list) or not values:
+                    offenders.append(
+                        f"{path}: enum must be a non-empty array (MFJS InvalidKeywordValue drops the tool)")
+                else:
+                    if not _MFJS_ENUM_VALUE_MATCHERS[node_type](values):
+                        offenders.append(
+                            f"{path}: enum values do not all match type \"{node_type}\" (MFJS InvalidKeywordValue drops the tool)")
+                    if budget is not None:
+                        budget.total_enum_values += len(values)
+                        if (budget.total_enum_values > _MFJS_MAX_TOTAL_ENUM_VALUES
+                                and not budget.enum_budget_reported):
+                            budget.enum_budget_reported = True
+                            offenders.append(
+                                f"{path}: {budget.total_enum_values} total enum values exceed the MFJS budget of {_MFJS_MAX_TOTAL_ENUM_VALUES} (ResourceLimitExceeded drops the tool)")
+            if ("default" in node and node_type in _MFJS_DEFAULT_VALUE_MATCHERS
+                    and not _MFJS_DEFAULT_VALUE_MATCHERS[node_type](node["default"])):
+                # validate_mfjs_default: object/array nodes cannot carry a
+                # default at all (flagged by the per-type rule above).
+                offenders.append(
+                    f"{path}: default does not match type \"{node_type}\" (MFJS InvalidDefault drops the tool)")
+            for lo_kw, hi_kw in (("minLength", "maxLength"), ("minItems", "maxItems"),
+                                 ("minimum", "maximum")):
+                lo, hi = node.get(lo_kw), node.get(hi_kw)
+                if lo is None and hi is None:
+                    continue
+                if lo_kw == "minLength":
+                    expected_type, literal_ok = "string", _mfjs_is_u64
+                elif lo_kw == "minItems":
+                    expected_type, literal_ok = "array", _mfjs_is_u64
+                else:
+                    expected_type = "number/integer"
+                    literal_ok = (_mfjs_is_integer_value if node_type == "integer"
+                                  else _mfjs_is_number)
+                type_ok = (node_type in ("number", "integer")
+                           if expected_type == "number/integer"
+                           else node_type == expected_type)
+                if not type_ok:
+                    offenders.append(
+                        f"{path}: {lo_kw}/{hi_kw} require type \"{expected_type}\" (MFJS InvalidRange drops the tool)")
+                elif not ((lo is None or literal_ok(lo)) and (hi is None or literal_ok(hi))):
+                    offenders.append(
+                        f"{path}: {lo_kw}/{hi_kw} hold an out-of-range literal (MFJS InvalidRange drops the tool)")
+                elif lo is not None and hi is not None and lo > hi:
+                    offenders.append(
+                        f"{path}: {lo_kw} must not exceed {hi_kw} (MFJS InvalidRange drops the tool)")
+            if node_type == "object":
+                properties = node.get("properties")
+                if properties is not None and not isinstance(properties, dict):
+                    offenders.append(
+                        f"{path}: properties must be an object (MFJS InvalidKeywordValue drops the tool)")
+                additional = node.get("additionalProperties")
+                if additional is not None and not isinstance(additional, (bool, dict)):
+                    offenders.append(
+                        f"{path}: additionalProperties must be a boolean or a schema object (MFJS InvalidKeywordValue drops the tool)")
+                required = node.get("required")
+                if required is not None:
+                    if not isinstance(properties, dict):
+                        offenders.append(
+                            f"{path}: required requires a properties object (MFJS InvalidKeywordValue drops the tool)")
+                    elif (not isinstance(required, list)
+                            or not all(isinstance(entry, str) and entry for entry in required)):
+                        offenders.append(
+                            f"{path}: required must be a list of non-empty property names (MFJS InvalidKeywordValue drops the tool)")
+                    elif (len(required) != len(set(required))
+                            or any(entry not in properties for entry in required)):
+                        offenders.append(
+                            f"{path}: required must name unique declared properties (MFJS InvalidKeywordValue drops the tool)")
     if node_type == "array":
         items = node.get("items")
         if isinstance(items, list):
@@ -265,19 +458,49 @@ def _walk_tool_schema(node, path: str, offenders: list[str], is_root: bool = Fal
             )
     subs = node.get("properties")
     if isinstance(subs, dict):
+        if budget is not None:
+            budget.total_properties += len(subs)
+            if (budget.total_properties > _MFJS_MAX_TOTAL_PROPERTIES
+                    and not budget.properties_budget_reported):
+                budget.properties_budget_reported = True
+                offenders.append(
+                    f"{path}: {budget.total_properties} total properties exceed the MFJS budget of {_MFJS_MAX_TOTAL_PROPERTIES} (ResourceLimitExceeded drops the tool)")
         for name, sub in subs.items():
-            _walk_tool_schema(sub, f"{path}.properties.{name}", offenders)
+            if not name or name in _MFJS_RESERVED_PROPERTY_NAMES:
+                offenders.append(
+                    f"{path}.properties.{name!r}: property name is empty or reserved (MFJS InvalidKeywordValue drops the tool)")
+            if property_depth + 1 > _MFJS_MAX_OBJECT_DEPTH:
+                offenders.append(
+                    f"{path}.properties.{name}: property nesting deeper than {_MFJS_MAX_OBJECT_DEPTH} (MFJS ResourceLimitExceeded drops the tool)")
+            _walk_tool_schema(sub, f"{path}.properties.{name}", offenders,
+                              property_depth=property_depth + 1,
+                              structural_depth=structural_depth + 1, budget=budget)
     if isinstance(node.get("additionalProperties"), dict):
-        _walk_tool_schema(node["additionalProperties"], f"{path}.additionalProperties", offenders)
+        _walk_tool_schema(node["additionalProperties"], f"{path}.additionalProperties", offenders,
+                          property_depth=property_depth,
+                          structural_depth=structural_depth + 1, budget=budget)
     items = node.get("items")
     if isinstance(items, list):
         for index, sub in enumerate(items):
-            _walk_tool_schema(sub, f"{path}.items[{index}]", offenders)
+            _walk_tool_schema(sub, f"{path}.items[{index}]", offenders,
+                              property_depth=property_depth,
+                              structural_depth=structural_depth + 1, budget=budget)
     elif isinstance(items, dict):
-        _walk_tool_schema(items, f"{path}.items", offenders)
+        _walk_tool_schema(items, f"{path}.items", offenders,
+                          property_depth=property_depth,
+                          structural_depth=structural_depth + 1, budget=budget)
     if isinstance(node.get("$defs"), dict):
         for name, sub in node["$defs"].items():
-            _walk_tool_schema(sub, f"{path}.$defs.{name}", offenders)
+            if not name or "/" in name:
+                offenders.append(
+                    f"{path}.$defs.{name!r}: definition name must be non-empty and \"/\"-free (MFJS InvalidKeywordValue drops the tool)")
+            # Definitions validate with the property depth reset to 0, like
+            # the validator's $defs arm.
+            _walk_tool_schema(sub, f"{path}.$defs.{name}", offenders,
+                              property_depth=0,
+                              structural_depth=structural_depth + 1, budget=budget)
+    elif is_root and "$defs" in node:
+        offenders.append(f"{path}: $defs must be an object (MFJS InvalidKeywordValue drops the tool)")
 
 
 def check_schema_contract(tool_id: str, tools: list) -> int:
@@ -287,7 +510,10 @@ def check_schema_contract(tool_id: str, tools: list) -> int:
     the call site and that print immediately raises NameError — without it
     the guard's wiring could be silently dismantled while the whole CI
     matrix stays green (this file's unit tests can only pin the walker's
-    internals, not the call site itself).
+    internals, not the call site itself). The walk mirrors the validator's
+    whole rule set — shape, per-type keyword admissibility, enum/default
+    value typing, bounds, required⊆properties, and the resource budgets —
+    so a schema this guard accepts is not one the validator would drop.
     """
     offenders: list[str] = []
     for tool in tools:
@@ -296,7 +522,11 @@ def check_schema_contract(tool_id: str, tools: list) -> int:
         if not isinstance(schema, dict):
             offenders.append(f"{tool_id}.{name}: inputSchema missing or not an object")
             continue
-        _walk_tool_schema(schema, f"{tool_id}.{name}", offenders, is_root=True)
+        budget = _MfjsBudget(schema)
+        if budget.encoded_bytes > _MFJS_MAX_SCHEMA_BYTES:
+            offenders.append(
+                f"{tool_id}.{name}: inputSchema encodes to {budget.encoded_bytes} bytes — over the MFJS budget of {_MFJS_MAX_SCHEMA_BYTES} (ResourceLimitExceeded drops the tool)")
+        _walk_tool_schema(schema, f"{tool_id}.{name}", offenders, is_root=True, budget=budget)
     assert not offenders, (
         "Model-visible schema violates the contract:\n  " + "\n  ".join(offenders)
     )
