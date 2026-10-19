@@ -2,8 +2,8 @@
 
 > 英文镜像：[`app-automations-定时任务创建工具-设计与验收.en.md`](./app-automations-定时任务创建工具-设计与验收.en.md)（按 CONTRIBUTING 对新开发者文档的英文要求补充；两文内容一一对应，分歧以中文原文为准）。
 > 状态：**已实施**（设计定稿 2026-09-29，随本分支落地；§9 为 CRUD 阶段增补，同样已实施）。配套契约：`docs/builtin-toolset-contract.md`（§9 注册表行已由 "not initiated" 更新为已注册）。
-> 基线：`luzeyang-dev`（0a9fb107e）——本设计依赖 builtin 工具集契约、`session-reader` 包与 `features/messaging`（PR 尚未合入 main），实施分支须链接在该依赖之后。
-> 实现模式：完全复用 `send_message_to_session`（26b575a17）的 "MCP 工具 + spool + 应用侧 watcher" 骨架，**新开能力族** `app-automations`，零 CodeWhale 内容变更（分支上的 fork 登记册刷新与 gitlink 追平提交随评审推进落地，见 `docs/fork-modifications.md`）。
+> 基线：`main`——本设计依赖 builtin 工具集契约、`session-reader` 包与 `features/messaging`（撰写时三者经 luzeyang-dev 线评审、尚未合入 main；现已全部落地：messaging 经 #627，session-reader 内建经 #585/#586）。
+> 实现模式：完全复用 `send_message_to_session`（`features/messaging`，经 #627 落地）的 "MCP 工具 + spool + 应用侧 watcher" 骨架，**新开能力族** `app-automations`，零 CodeWhale 内容变更（gitlink 随基座 main 的 #721 对齐）。
 > 用法：实施前逐节评审；实施后按 §5 验收矩阵逐项验收，P0 全过才算完成；矩阵编号被 §6 的测试映射反向引用。
 
 ---
@@ -78,7 +78,7 @@
 
 **步骤 2 — Rust 注册**：`MCP_PACKAGES` 加项（include_str! 两文件）、`len()==12→13`；`DEFAULT_INSTALLED_MCP_TOOLS`（`marketplace/mod.rs:613`）加 id；`builtin.rs`/`types.rs` 镜像 session-reader 的清单与特性注册表测试。
 
-**步骤 3 — 创建 watcher**：`ScheduledTaskState` 克隆化（步骤见 §3.3）；`ScheduledTaskState::start_creation_watcher（creation_requests.rs）` 用 `tauri::async_runtime::spawn`（勿用 tokio::spawn，a6d135840 教训），select! cancel/sleep(1s)，`boot_runtime` 末尾启动、句柄挂 state、Drop 取消；单文件处理逻辑见 §3.2。
+**步骤 3 — 创建 watcher**：`ScheduledTaskState` 克隆化（步骤见 §3.3）；`ScheduledTaskState::start_creation_watcher（creation_requests.rs）` 用 `tauri::async_runtime::spawn`（勿用 tokio::spawn——原因与教训写在 `creation_requests.rs` 的 `start_creation_watcher` 文档与模块头），select! cancel/sleep(1s)，`boot_runtime` 末尾启动、句柄挂 state、Drop 取消；单文件处理逻辑见 §3.2。
 
 **步骤 4 — Ask 规则**：`bridge.rs:215` 旁加 `pub const SCHEDULED_TASK_CREATE_TOOL`；`scope_deny_ruleset_with`(~:2358) push `ToolAskRule::new(...)`；list 工具不加（L0）。注：当前产品所有会话固定全自动审批，规则暂不弹窗（为审批分化 S-1 预留）；无人值守的递归自改由引擎侧 `unattended_disallowed_tools` 确定性拒绝（watcher 的 `check_sender_session_id` 隔离前缀拒绝只是 claimed-string 过滤器——from_session 可省略且未认证）。更新 bridge.rs 规则集测试（4209–4470 一带）。
 

@@ -2,8 +2,8 @@
 
 > English mirror of [`app-automations-定时任务创建工具-设计与验收.md`](./app-automations-定时任务创建工具-设计与验收.md); the Chinese original is authoritative on any divergence. Added per `CONTRIBUTING.md`'s English requirement for new developer documentation.
 > Status: **implemented** (design finalized 2026-09-29, landed with this branch; §9 is the CRUD-stage addendum, also implemented). Companion contract: `docs/builtin-toolset-contract.md` (the §9 registry row has been updated from "not initiated" to registered).
-> Baseline: `luzeyang-dev` (`0a9fb107e`) — this design depends on the builtin toolset contract, the `session-reader` package, and `features/messaging` (PRs not yet merged to main); the implementation branch must be stacked behind those dependencies.
-> Implementation pattern: fully reuses the "MCP tool + spool + app-side watcher" skeleton of `send_message_to_session` (`26b575a17`), opens a **new capability family** `app-automations`, zero CodeWhale content changes (the fork-register refresh and gitlink-chase commits ride on the branch per review progression — see `docs/fork-modifications.md`).
+> Baseline: `main` — this design depends on the builtin toolset contract, the `session-reader` package, and `features/messaging` (at writing time all three were reviewed on the luzeyang-dev line, not yet merged to main; all have since landed: messaging via #627, session-reader built-in via #585/#586).
+> Implementation pattern: fully reuses the "MCP tool + spool + app-side watcher" skeleton of `send_message_to_session` (`features/messaging`, landed via #627), opens a **new capability family** `app-automations`, zero CodeWhale content changes (the gitlink follows the base main's #721).
 > Usage: review section by section before implementation; after implementation, accept item by item against the §5 acceptance matrix — the feature is complete only when every P0 row passes; matrix ids are back-referenced by the §6 test mapping.
 
 ---
@@ -78,7 +78,7 @@ App-side watcher (new module under features/scheduled, 1s poll)
 
 **Step 2 — Rust registration**: add the `MCP_PACKAGES` entry (include_str! of both files), `len()==12→13`; add the id to `DEFAULT_INSTALLED_MCP_TOOLS` (`marketplace/mod.rs:613`); `builtin.rs`/`types.rs` mirror session-reader's manifest and feature-registry tests.
 
-**Step 3 — Creation watcher**: make `ScheduledTaskState` cloneable (steps in §3.3); `ScheduledTaskState::start_creation_watcher (creation_requests.rs)` spawned via `tauri::async_runtime::spawn` (not `tokio::spawn` — the a6d135840 lesson), `select!` cancel/sleep(1s), started at the end of `boot_runtime`, handle parked on state, Drop cancels; per-record handling per §3.2.
+**Step 3 — Creation watcher**: make `ScheduledTaskState` cloneable (steps in §3.3); `ScheduledTaskState::start_creation_watcher (creation_requests.rs)` spawned via `tauri::async_runtime::spawn` (not `tokio::spawn` — the reason and the lesson are documented in `creation_requests.rs`'s `start_creation_watcher` doc and the module header), `select!` cancel/sleep(1s), started at the end of `boot_runtime`, handle parked on state, Drop cancels; per-record handling per §3.2.
 
 **Step 4 — Ask rules**: add `pub const SCHEDULED_TASK_CREATE_TOOL` next to `bridge.rs:215`; `scope_deny_ruleset_with`(~:2358) pushes `ToolAskRule::new(...)`; the list tool gets none (L0). Note: the current product pins every session to full-auto approval, so the rules do not prompt today (reserved for approval differentiation S-1); unattended recursive self-modification is deterministically rejected by the engine-side `unattended_disallowed_tools` (the watcher's `check_sender_session_id` isolated-prefix rejection is only a claimed-string filter — `from_session` may be omitted and is unauthenticated). Update the bridge.rs ruleset tests (the 4209–4470 region).
 
