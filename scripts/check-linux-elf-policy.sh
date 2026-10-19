@@ -1,12 +1,22 @@
 #!/usr/bin/env bash
-# Validate the target architecture and the Ubuntu 22.04 dynamic-symbol
-# floors of every ELF under a file or directory:
-#   GLIBC_   <= 2.35   (jammy glibc 2.35; overridable via the third argument)
+# Validate the target architecture and the dynamic-symbol floors of every ELF
+# under a file or directory. The GLIBC_ floor is per arch (see the floor map
+# below); GLIBCXX_/CXXABI_ keep the Ubuntu 22.04 (jammy) values everywhere:
+#   GLIBC_   <= 2.35   amd64/arm64: jammy glibc 2.35 (overridable via the
+#                      third argument)
+#   GLIBC_   <= 2.38   loongarch64: deepin 23/25 and UOS V25 both ship
+#                      glibc 2.38; that is the deb's baseline
 #   GLIBCXX_ <= 3.4.30 (jammy libstdc++, gcc 12)
 #   CXXABI_  <= 1.3.13 (jammy libstdc++, gcc 12)
 # Release binaries link the build host's glibc, so a runner upgrade silently
 # raises the baseline; any ELF above the floor fails here in CI instead of
-# crashing on launch for 22.04 users. Runs on the release runner (see the
+# crashing on launch for 22.04 users. loongarch64 keeps the jammy
+# GLIBCXX_/CXXABI_ floors: its dynamically-linked C++ artifacts are the
+# unofficial Node bridge build and — statically linked — the ASR engine
+# (-static-libstdc++ -static-libgcc, so no GLIBCXX_/CXXABI_ requirements at
+# all); the unofficial Node build is checked against these same floors like
+# every other ELF (the main app binary is Rust).
+# Runs on the release runner (see the
 # glibc floor guard steps in release-packages.yml) and at the end of
 # build-sensevoice-runtime.sh. Depends on dpkg/file/find/objdump/readelf,
 # all preinstalled on ubuntu runners; meaningful only on Linux, use bash -n
@@ -14,22 +24,28 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 <file-or-directory> <amd64|arm64> [glibc-floor]" >&2
+  echo "usage: $0 <file-or-directory> <amd64|arm64|loongarch64> [glibc-floor]" >&2
   exit 2
 }
 
 scan_root="${1:-}"
 expected_arch="${2:-}"
-glibc_floor="${3:-2.35}"
+glibc_floor_arg="${3:-}"
 glibcxx_floor="3.4.30"
 cxxabi_floor="1.3.13"
 
 [ -n "$scan_root" ] && [ -e "$scan_root" ] || usage
+# readelf Machine: string per arch (binutils maps EM_LOONGARCH to
+# "LoongArch", not "LoongArch64" — identical on jammy's binutils 2.38 and
+# newer). The glibc floor is part of the same map so a new arch cannot be
+# added without choosing its baseline explicitly.
 case "$expected_arch" in
-  amd64) expected_machine="Advanced Micro Devices X86-64" ;;
-  arm64) expected_machine="AArch64" ;;
+  amd64)       expected_machine="Advanced Micro Devices X86-64"; default_glibc_floor="2.35"; baseline_label="Ubuntu 22.04" ;;
+  arm64)       expected_machine="AArch64";                       default_glibc_floor="2.35"; baseline_label="Ubuntu 22.04" ;;
+  loongarch64) expected_machine="LoongArch";                     default_glibc_floor="2.38"; baseline_label="deepin 23/25 / UOS V25 (glibc 2.38)" ;;
   *) usage ;;
 esac
+glibc_floor="${glibc_floor_arg:-$default_glibc_floor}"
 
 for command_name in dpkg file find objdump readelf; do
   command -v "$command_name" >/dev/null || {
@@ -127,7 +143,7 @@ done < <(
   exit 1
 }
 [ "$failed" -eq 0 ] || {
-  echo "FAIL: 存在架构错误或超出 Ubuntu 22.04 基线的 ELF(见上)" >&2
+  echo "FAIL: 存在架构错误或超出 ${baseline_label} 基线的 ELF(见上)" >&2
   exit 1
 }
 echo "PASS: $elf_count 个 ELF 为 $expected_arch，且满足 GLIBC_ ≤ $glibc_floor / GLIBCXX_ ≤ $glibcxx_floor / CXXABI_ ≤ $cxxabi_floor"

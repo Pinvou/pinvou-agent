@@ -26,8 +26,13 @@ class ReleaseSizePolicyTests(unittest.TestCase):
 
     Prevents later changes from quietly dropping these flags or reverting the
     profiles:
-    - Linux release builds must carry lld + --icf=safe + remap-path-prefix;
-    - the deb must be repacked as xz -9, with repacking before sha256;
+    - the amd64/arm64 release builds must carry lld + --icf=safe + remap-path-
+      prefix; the loongarch64 build must NOT pick up lld flags (its pinned
+      cross toolchain ships bfd only — copying them would fail every link)
+      and must not override LTO;
+    - the deb must be repacked as xz -9, with repacking before sha256
+      (amd64/arm64 in the workflow, loongarch64 inside its orchestrator
+      script);
     - the macOS dmg must get the ULMO compression upgrade;
     - the macOS 27+ strip=none workaround (obsolete since rustc 1.98.0) must
       not come back;
@@ -53,7 +58,7 @@ class ReleaseSizePolicyTests(unittest.TestCase):
     def test_linux_jobs_keep_icf_and_remap_rustflags(self):
         for start, end in (
             ("\n  build-linux-x64:", "\n  build-linux-arm64:"),
-            ("\n  build-linux-arm64:", "\n  build-windows-x64:"),
+            ("\n  build-linux-arm64:", "\n  build-linux-loongarch64:"),
         ):
             job_env = self.job(start, end).split("\n    steps:", maxsplit=1)[0]
             # lld: thin LTO is executed by rustc itself, but BFD link OOMs on
@@ -74,10 +79,43 @@ class ReleaseSizePolicyTests(unittest.TestCase):
                 if line.strip().startswith("RUSTFLAGS:"):
                     self.assertNotIn("-C remap-path-prefix", line, start)
 
+    def test_loongarch64_job_must_not_copy_lld_rustflags(self):
+        # The pinned loong64/cross-tools asset ships NO lld (bfd ld only —
+        # see scripts/ci-loongarch64-toolchain.sh). Copying the arm64 job's
+        # -fuse-ld=lld (or the lld-only --icf=safe) would fail every link;
+        # RUSTFLAGS carries only the rustc-side --remap-path-prefix and LTO
+        # stays in Cargo.toml (thin LTO runs inside rustc and is
+        # linker-independent).
+        job = self.job("\n  build-linux-loongarch64:", "\n  build-windows-x64:")
+        # Only live configuration counts: the job's comments deliberately name
+        # the forbidden flags to warn future editors (same rule as the
+        # cache-policy suite's comment-stripped pins).
+        job_code = "\n".join(
+            line for line in job.splitlines() if not line.lstrip().startswith("#")
+        )
+        self.assertNotIn("-fuse-ld=lld", job_code)
+        self.assertNotIn("--icf=safe", job_code)
+        self.assertNotIn("CARGO_PROFILE_RELEASE_LTO", job_code)
+        self.assertNotIn("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", job_code)
+        job_env = job_code.split("\n    steps:", maxsplit=1)[0]
+        # RUSTFLAGS must be exactly the remap-only spelling: build-machine
+        # paths leave the artifact like every other release job, while the
+        # lld-specific link flags stay out (the cross toolchain is bfd-only).
+        rustflags = [
+            line.strip()
+            for line in job_env.splitlines()
+            if line.strip().startswith("RUSTFLAGS:")
+        ]
+        self.assertEqual(
+            rustflags,
+            ['RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/"'],
+            "the loongarch64 job must set exactly the remap-only RUSTFLAGS",
+        )
+
     def test_linux_jobs_repack_deb_as_xz_before_sha256(self):
         for start, end in (
             ("\n  build-linux-x64:", "\n  build-linux-arm64:"),
-            ("\n  build-linux-arm64:", "\n  build-windows-x64:"),
+            ("\n  build-linux-arm64:", "\n  build-linux-loongarch64:"),
         ):
             job_text = self.job(start, end)
             repack_call = "scripts/repack-deb-xz.sh"
@@ -92,6 +130,48 @@ class ReleaseSizePolicyTests(unittest.TestCase):
             # The glibc floor guard still runs on the final repacked artifact
             # (dpkg-deb -x reads xz natively).
             self.assertIn("check-linux-glibc-floor.sh", job_text, start)
+
+    def test_loongarch64_repack_and_floor_guard_live_in_the_orchestrator(self):
+        # The loong64 job delegates the whole pipeline to
+        # scripts/ci-build-linux-loongarch64.sh; the repack (gzip-6 → xz -9,
+        # same as the amd64/arm64 jobs) and the glibc floor guard must run
+        # there BEFORE the artifact sha256 is computed, and the workflow job
+        # must re-run the floor guard on the renamed artifact before upload
+        # (same 重命名→守护→上传 sequence as build-linux-arm64).
+        orchestrator = (ROOT / "scripts" / "ci-build-linux-loongarch64.sh").read_text(
+            encoding="utf-8"
+        )
+        code_only = "\n".join(
+            line for line in orchestrator.splitlines() if not line.lstrip().startswith("#")
+        )
+        # The orchestrator consumes the shared helpers through $SCRIPT_DIR,
+        # so the pins match on the script file names.
+        self.assertIn("repack-deb-xz.sh", code_only)
+        self.assertIn("check-linux-glibc-floor.sh", code_only)
+        self.assertIn("loongarch64", code_only)
+        # Inside the orchestrator the order is repack → floor guard → sha256,
+        # so the checksum covers the final repacked, guarded bytes.
+        self.assertLess(
+            code_only.index("repack-deb-xz.sh"),
+            code_only.index("sha256sum"),
+            "the orchestrator must repack before hashing the deb",
+        )
+        self.assertLess(
+            code_only.index("check-linux-glibc-floor.sh"),
+            code_only.index("sha256sum"),
+            "the orchestrator's floor guard must run before the sha256 footer",
+        )
+        # The workflow job mirrors build-linux-arm64's 重命名→守护→上传
+        # sequence: the rename step hashes the final bytes, the guard step
+        # (before upload) judges exactly those bytes.
+        job = self.job("\n  build-linux-loongarch64:", "\n  build-windows-x64:")
+        self.assertIn("scripts/ci-build-linux-loongarch64.sh", job)
+        self.assertIn("check-linux-glibc-floor.sh", job)
+        self.assertLess(
+            job.index("check-linux-glibc-floor.sh"),
+            job.index("uses: actions/upload-artifact@"),
+            "the job's floor guard must run before upload",
+        )
 
     def test_repack_script_uses_max_compression(self):
         # Only executable lines count (counterexamples inside comments don't).

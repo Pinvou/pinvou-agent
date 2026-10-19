@@ -113,7 +113,10 @@ function injectSource() {
       window.__TAURI_INVOKES__.push({cmd:cmd,args:args||{}});
       switch(cmd){
         case 'get_settings': return Promise.resolve({theme:'liquid-light',language:'zh-Hans'});
-        case 'get_platform_capabilities': return Promise.resolve({codexAcpSupported:true,browserNativeDisplay:true,localModelSetup:true,dependencyInstall:true});
+        // localEmbedSupported must be explicit: the desktop bridge defaults
+        // the capability to false (fail-closed) until the snapshot lands, so
+        // a missing key silently gates the knowledge download/repair UI.
+        case 'get_platform_capabilities': return Promise.resolve({codexAcpSupported:true,browserNativeDisplay:true,localModelSetup:true,localEmbedSupported:true,dependencyInstall:true});
         case 'get_effective_model_config': return Promise.resolve({model:'qwen36_35b_256k',base_url:'http://127.0.0.1:8000/v1',api_key_set:false});
         case 'list_sessions': return Promise.resolve(SESSIONS);
         case 'list_codex_acp_sessions': return Promise.resolve(CODEX_SESSIONS);

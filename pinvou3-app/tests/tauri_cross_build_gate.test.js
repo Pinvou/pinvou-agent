@@ -19,8 +19,11 @@ const {
   crossBuildViolations,
   main,
   platformConfigWithoutKnowledgeHost,
+  prepareKnowledgeHost,
+  prepareLinuxAsrRuntime,
   targetArchitecture,
 } = require("../scripts/tauri/build.js");
+const { linuxAsrRuntimeOutput } = require("../scripts/tauri/linux-asr-runtime.js");
 
 const cross = (over = {}) => ({
   platform: "linux",
@@ -49,6 +52,26 @@ test("cross build passes only with both switches set", () => {
     crossBuildViolations(cross({ skipLinuxAsr: true, skipKnowledgeHost: true })),
     [],
   );
+});
+
+// The pre-built switches are the alternative resolution of the same two
+// decisions: the release pipeline pre-builds the target artifacts, the
+// preparation steps accept them, and the overlay declarations stay so the
+// artifacts are actually packaged.
+test("a cross build with both target artifacts pre-built needs no skip switches", () => {
+  assert.deepEqual(
+    crossBuildViolations(cross({ prebuiltLinuxAsr: true, prebuiltKnowledgeHost: true })),
+    [],
+  );
+});
+
+test("each pre-built switch replaces exactly its own skip switch", () => {
+  const knowledgeOnly = crossBuildViolations(cross({ prebuiltLinuxAsr: true }));
+  assert.equal(knowledgeOnly.length, 1);
+  assert.match(knowledgeOnly[0], /PINVOU3_SKIP_KNOWLEDGE_HOST/u);
+  const asrOnly = crossBuildViolations(cross({ prebuiltKnowledgeHost: true }));
+  assert.equal(asrOnly.length, 1);
+  assert.match(asrOnly[0], /PINVOU3_SKIP_LINUX_ASR/u);
 });
 
 test("non-cross builds are never blocked", () => {
@@ -123,7 +146,9 @@ const LINUX_X64 = { platform: "linux", hostArch: "x64" };
 test("a Linux cross build to an unknown machine segment fails instead of falling back", () => {
   // Counter-examples use segments unlikely to ever be supported; riscv64 is a
   // plausible future target and would turn this test red on its own.
-  for (const triple of ["loongarch64-unknown-linux-gnu", "armv7-unknown-linux-gnueabihf"]) {
+  // loongarch64 used to be the canonical example here and is a recognized
+  // architecture now - see the test below.
+  for (const triple of ["armv7-unknown-linux-gnueabihf"]) {
     assert.throws(
       () => targetArchitecture(["build", `--target=${triple}`], LINUX_X64),
       (error) => {
@@ -141,6 +166,26 @@ test("a Linux cross build to an unknown machine segment fails instead of falling
       },
     );
   }
+});
+
+test("loongarch64 is a recognized Linux target architecture", () => {
+  // deepin/UOS V25 ships loong64; Node's process.arch word for LoongArch64
+  // builds is the same word as the dpkg architecture, while the Rust triple
+  // spells the machine segment loongarch64. A Linux x64 host cross-building
+  // it is recognized (the gate above still demands a resolution for the
+  // sidecars), and a native loongarch64 host no longer lands in the
+  // "cannot tell cross from native" fallback either.
+  assert.equal(
+    targetArchitecture(["build", "--target=loongarch64-unknown-linux-gnu"], LINUX_X64),
+    "loong64",
+  );
+  assert.equal(
+    targetArchitecture(
+      ["build", "--target=loongarch64-unknown-linux-gnu"],
+      { platform: "linux", hostArch: "loong64" },
+    ),
+    "loong64",
+  );
 });
 
 test("universal-apple-darwin keeps falling back to the host architecture", () => {
@@ -162,14 +207,16 @@ test("universal-apple-darwin keeps falling back to the host architecture", () =>
 });
 
 test("the unknown-architecture failure is limited to real cross builds", () => {
-  const unknown = ["build", "--target=loongarch64-unknown-linux-gnu"];
+  // riscv64 is the canonical unsupported example now (loongarch64 graduated
+  // to the architecture table; if riscv64 is ever added, pick another).
+  const unknown = ["build", "--target=riscv64-unknown-linux-gnu"];
   // Non-Linux hosts: the host-only sidecars are not on those packaging paths.
   assert.equal(targetArchitecture(unknown, { platform: "win32", hostArch: "x64" }), null);
   assert.equal(targetArchitecture(unknown, { platform: "darwin", hostArch: "arm64" }), null);
-  // A host arch outside the table: building loongarch64 on loongarch64 is
+  // A host arch outside the table: building riscv64 on riscv64 is
   // native, and there is no way to tell whether the build is cross.
   assert.equal(
-    targetArchitecture(unknown, { platform: "linux", hostArch: "loongarch64" }),
+    targetArchitecture(unknown, { platform: "linux", hostArch: "riscv64" }),
     null,
   );
   // Without --target the machine segment is never examined.
@@ -292,7 +339,12 @@ test("main() really stops at the gate instead of discarding the violations", asy
     () => runMainAs(CROSS_ARGV, {
       platform: "linux",
       arch: FAKE_HOST_ARCH,
-      env: { PINVOU3_SKIP_LINUX_ASR: undefined, PINVOU3_SKIP_KNOWLEDGE_HOST: undefined },
+      env: {
+        PINVOU3_SKIP_LINUX_ASR: undefined,
+        PINVOU3_SKIP_KNOWLEDGE_HOST: undefined,
+        PINVOU3_LINUX_ASR_PREBUILT: undefined,
+        PINVOU3_KNOWLEDGE_HOST_PREBUILT: undefined,
+      },
     }),
     (error) => {
       assert.match(
@@ -320,7 +372,12 @@ test("main() feeds the switches into the gate: one switch still blocks, naming o
     () => runMainAs(CROSS_ARGV, {
       platform: "linux",
       arch: FAKE_HOST_ARCH,
-      env: { PINVOU3_SKIP_LINUX_ASR: undefined, PINVOU3_SKIP_KNOWLEDGE_HOST: "1" },
+      env: {
+        PINVOU3_SKIP_LINUX_ASR: undefined,
+        PINVOU3_SKIP_KNOWLEDGE_HOST: "1",
+        PINVOU3_LINUX_ASR_PREBUILT: undefined,
+        PINVOU3_KNOWLEDGE_HOST_PREBUILT: undefined,
+      },
     }),
     (error) => {
       assert.match(error.message, /PINVOU3_SKIP_LINUX_ASR/u, error.message);
@@ -446,5 +503,140 @@ test("a broken JSON file is reported by name", () => {
   assert.throws(
     () => configWithoutResources(file, ["x"]),
     (error) => error.message.includes("broken.json"),
+  );
+});
+
+// ---- Pre-built cross artifacts ----
+//
+// The gate's pre-built switches only make sense if the preparation steps
+// really accept the target artifacts: a switch that satisfied the gate while
+// the step still built for the host would ship the original wrong package
+// through another door. The tests below pin both seams. They must not touch
+// real build outputs, so each one backs off when a genuine artifact is
+// already present.
+
+test("prepareLinuxAsrRuntime accepts a pre-built target engine instead of building", () => {
+  const runtime = linuxAsrRuntimeOutput("loong64");
+  assert.equal(runtime.directory, "loongarch64");
+  assert.equal(runtime.scriptArch, "loongarch64");
+  // Hermetic via the injected output root (same discipline as the
+  // knowledge-host fixture roots): the fixture must never live in the real
+  // target/linux-asr-runtime tree, where a killed run would leave an engine
+  // that PINVOU3_LINUX_ASR_PREBUILT=1 accepts, and a genuine artifact must
+  // never be at the mercy of this test's cleanup.
+  const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), "pinvou-asr-runtime-"));
+  try {
+    const fixture = linuxAsrRuntimeOutput("loong64", { outputRoot });
+    assert.equal(path.dirname(fixture.binaryPath), path.join(outputRoot, "src-tauri", "target", "linux-asr-runtime", "loongarch64"));
+    fs.mkdirSync(path.dirname(fixture.binaryPath), { recursive: true });
+    fs.writeFileSync(fixture.binaryPath, "#!engine-fixture\n");
+    let spawnCalls = 0;
+    const prepared = prepareLinuxAsrRuntime({
+      platform: "linux",
+      architecture: "loong64",
+      prebuilt: true,
+      outputRoot,
+      spawn: () => {
+        spawnCalls += 1;
+        return { status: 0 };
+      },
+    });
+    assert.equal(prepared.binaryPath, fixture.binaryPath);
+    assert.equal(
+      spawnCalls,
+      0,
+      "a pre-built engine must skip the build script: its requested_arch =="
+        + " host_arch assertion fires before its own cache reuse, so a cross build"
+        + " could never reach the cached fast path",
+    );
+  } finally {
+    fs.rmSync(outputRoot, { recursive: true, force: true });
+  }
+  // Without a pre-built artifact the switch must fail loudly instead of
+  // silently packaging nothing (the overlay still declares the engine).
+  // The injected root keeps this branch deterministic on every machine —
+  // including ones that really built the engine natively.
+  assert.throws(
+    () => prepareLinuxAsrRuntime({
+      platform: "linux",
+      architecture: "loong64",
+      prebuilt: true,
+      outputRoot,
+      spawn: () => ({ status: 0 }),
+    }),
+    /预构建/u,
+  );
+});
+
+test("prepareKnowledgeHost copies the pre-built target server without running cargo", () => {
+  const triple = "loongarch64-unknown-linux-gnu";
+  const tempRepo = fs.mkdtempSync(path.join(os.tmpdir(), "prebuilt-kh-"));
+  // The packaged resource root is injected too: a killed run must never
+  // leave a fixture server in the real src-tauri/resources tree for a
+  // later real build to package.
+  const packagedResourceRoot = path.join(tempRepo, "resources", "knowledge-host");
+  fs.mkdirSync(packagedResourceRoot, { recursive: true });
+  fs.writeFileSync(
+    path.join(packagedResourceRoot, "pinvou-knowledge-host-helper"),
+    "#!helper-fixture\n",
+  );
+  const serverDestination = path.join(packagedResourceRoot, "pinvou-knowledge-server");
+  test.after(() => {
+    fs.rmSync(tempRepo, { recursive: true, force: true });
+  });
+  const serverSource = path.join(
+    tempRepo,
+    "pinvou-knowledge",
+    "target",
+    triple,
+    "release",
+    "pinvou-knowledge-server",
+  );
+  fs.mkdirSync(path.dirname(serverSource), { recursive: true });
+  fs.writeFileSync(serverSource, "#!server-fixture\n");
+  const notFoundRepo = fs.mkdtempSync(path.join(os.tmpdir(), "prebuilt-kh-missing-"));
+  test.after(() => fs.rmSync(notFoundRepo, { recursive: true, force: true }));
+
+  let spawnCalls = 0;
+  const prepared = prepareKnowledgeHost({
+    platform: "linux",
+    targetTriple: triple,
+    prebuilt: true,
+    repositoryRoot: tempRepo,
+    packagedResourceRoot,
+    spawn: () => {
+      spawnCalls += 1;
+      return { status: 0 };
+    },
+  });
+  assert.equal(spawnCalls, 0, "pre-built mode must not run cargo");
+  assert.equal(prepared.configSpec, null, "packaging mode has no dev config spec");
+  assert.equal(prepared.serverPath, serverDestination);
+  assert.ok(fs.existsSync(serverDestination), "the target server must land in the packaged resources");
+
+  assert.throws(
+    () => prepareKnowledgeHost({
+      platform: "linux",
+      targetTriple: triple,
+      prebuilt: true,
+      repositoryRoot: notFoundRepo,
+      packagedResourceRoot,
+      spawn: () => ({ status: 0 }),
+    }),
+    /预构建/u,
+  );
+
+  // prebuilt without the triple would probe a path containing the literal
+  // `null` segment; it must fail on the missing parameter, not on a
+  // confusing "server does not exist" for target/null.
+  assert.throws(
+    () => prepareKnowledgeHost({
+      platform: "linux",
+      prebuilt: true,
+      repositoryRoot: tempRepo,
+      packagedResourceRoot,
+      spawn: () => ({ status: 0 }),
+    }),
+    /targetTriple/u,
   );
 });

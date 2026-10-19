@@ -18,6 +18,11 @@ pub(crate) struct DesktopCapabilities {
     /// composer pastes fall back to a native clipboard read; the macOS/Windows
     /// WebViews carry image items natively and need no fallback.
     pub(crate) paste_image_clipboard_read: bool,
+    /// In-process local knowledge-base embedding (fastembed/ONNX). ort-sys
+    /// ships no loongarch64 artifacts, so the embedder is compiled out on
+    /// linux/loongarch64; every local-embed request there degrades to the
+    /// explicit unsupported error on the knowledge model status instead.
+    pub(crate) local_embed_supported: bool,
 }
 
 fn browser_product_enabled_for(os: &str) -> bool {
@@ -50,6 +55,7 @@ pub(crate) fn current() -> DesktopCapabilities {
         browser_agent_automation: browser_product_enabled(),
         voice_shortcut_native: cfg!(target_os = "windows"),
         paste_image_clipboard_read: cfg!(target_os = "linux"),
+        local_embed_supported: !cfg!(all(target_os = "linux", target_arch = "loongarch64")),
     }
 }
 

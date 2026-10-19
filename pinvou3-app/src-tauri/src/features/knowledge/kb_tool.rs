@@ -298,7 +298,14 @@ impl ToolSpec for KbSearchTool {
                 // 统一协调）：并发 kb_search 等待先行加载后短路，不重复读
                 // ~570MB，也不与模型下载的目录替换竞态。外层限时兜底，超时/
                 // 失败均降级纯全文，不阻断本次检索。
-                if !kb.semantic_ready() && super::model_download::model_installed() {
+                // 本地嵌入不支持的平台（loongarch64）即使残留模型目录（peer
+                // 安装/恢复的旧状态）也不必尝试重载：stub embedder 在触盘前
+                // 就返回显式错误，跳过可省去每次检索的完整性探测 + 租约 +
+                // spawn_blocking + 错误日志这条纯开销路径。
+                if !kb.semantic_ready()
+                    && crate::platform::capabilities::current().local_embed_supported
+                    && super::model_download::model_installed()
+                {
                     let reload =
                         super::model_download::reload_installed_embedder_leased(kb.inner());
                     match timeout(Duration::from_secs(KB_MODEL_RELOAD_TIMEOUT_SECS), reload).await {

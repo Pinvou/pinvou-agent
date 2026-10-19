@@ -92,6 +92,21 @@ enum RateDecision {
     GlobalLimited,
 }
 
+// 桩构建的统一下载拒绝文案：begin_model_download（宿主服务端闸）与
+// download_model（公开 API 直连的防御纵深闸）共用同一语义与文案。能力位
+// 作参数（与桌面端 local_embed_download_refusal 同形），宿主即可在两个
+// 方向上执行闸语义，而不是只靠 loongarch64 目标的编译期检查。
+// 文案遵循 CONTRIBUTING 的诊断语言约定（英文），并刻意区别于 embedding
+// 桩常量（409 下载拒绝 ≠ 503 装载不可用，is_local_embed_unavailable 只
+// 认后者）。
+fn local_embed_download_refusal(supported: bool) -> Option<String> {
+    (!supported).then(|| {
+        "local embedding model download is unavailable on this platform (no embedding \
+         runtime artifacts for this architecture)"
+            .to_string()
+    })
+}
+
 fn check_attempt_rate(
     rate: &Mutex<AttemptRate>,
     source: IpAddr,
@@ -320,6 +335,13 @@ impl KnowledgeService {
     }
 
     pub fn begin_model_download(&self) -> Result<(), String> {
+        // 服务端孪生门（桌面端 = kb_model_download 的 local_embed_download_refusal）：
+        // 桩构建里下载下来的模型永远无法加载，任何下载触发（含宿主服务的
+        // 远端下载入口）都必须在触碰下载管线之前被拒绝。
+        if let Some(error) = local_embed_download_refusal(crate::embedding::local_embed_available())
+        {
+            return Err(error);
+        }
         self.model_downloading
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map(|_| ())
@@ -870,15 +892,14 @@ impl KnowledgeService {
         // A successful upload means the managed source is durable. Index in the
         // background so a slow parser/model cannot make the client time out and
         // retry an upload that the server already committed. With lazy model load
-        // the upload is a first-use trigger: ensure the model, then index (failure
-        // leaves the document pending, same as the old not-ready path).
+        // the upload is a first-use trigger: ensure the model, then index; a
+        // failed ensure marks the row failed (the boot backlog requeues failed
+        // rows) instead of leaving it pending forever with no visible reason.
         {
             let background = Arc::clone(self);
             let document_id = document.id;
             tokio::spawn(async move {
-                if background.ensure_model_loaded().await.is_ok() {
-                    let _ = background.index_document(document_id).await;
-                }
+                background.index_after_model_load(document_id).await;
             });
         }
         self.store
@@ -977,6 +998,23 @@ impl KnowledgeService {
                 let message = format!("索引任务异常结束：{error}");
                 let _ = self.store.mark_document_failed(document_id, &message);
                 Err(message)
+            }
+        }
+    }
+
+    /// Background tail of `upload_document`: ensure the model, then index.
+    /// A failed ensure must write the failure back to the row — on stub
+    /// builds (`local_embed_available() == false`) it is deterministic and
+    /// permanent, and an eternal `pending` row gives the owner no visible
+    /// reason. `failed` rows stay retryable: the boot backlog requeue
+    /// selects `status IN ('pending','failed')`.
+    async fn index_after_model_load(self: &Arc<Self>, document_id: i64) {
+        match self.ensure_model_loaded().await {
+            Ok(()) => {
+                let _ = self.index_document(document_id).await;
+            }
+            Err(error) => {
+                let _ = self.store.mark_document_failed(document_id, &error);
             }
         }
     }
@@ -1232,6 +1270,17 @@ impl KnowledgeService {
     }
 
     pub fn load_model(&self) -> Result<(), String> {
+        // 桩构建里模型永远无法装载：在触碰跨进程安装锁与磁盘恢复之前就
+        // 返回桩常量。否则安装锁竞争（如桌面端同时操作共享模型目录）等
+        // 前置错误会替代能力缺失文案返回，HTTP 层键于桩常量的 503 映射
+        // （map_document_write_error）就会把同一能力缺失读成 400。
+        #[cfg(not(all(
+            feature = "local-embed",
+            not(all(target_os = "linux", target_arch = "loongarch64"))
+        )))]
+        if !crate::embedding::local_embed_available() {
+            return Err(crate::embedding::local_embed_unavailable_error().to_string());
+        }
         let _install_lock = crate::try_lock_knowledge_model_install(&self.model_dir)?;
         if let Some(warning) = crate::model_download::recover_model_directory(&self.model_dir)? {
             eprintln!("[knowledge] {warning}");
@@ -1323,6 +1372,13 @@ impl KnowledgeService {
     }
 
     pub async fn download_model(self: &Arc<Self>) -> Result<(), String> {
+        // 防御纵深：公开 API 的直连调用者不经过 begin_model_download 的闸。
+        // 桩构建里同样必须在安装锁/磁盘 I/O 之前拒绝，否则会白下 568 MB 后
+        // 才在 Embedder::from_dir 处失败。
+        if let Some(error) = local_embed_download_refusal(crate::embedding::local_embed_available())
+        {
+            return Err(error);
+        }
         self.download_model_with(
             crate::model_download::knowledge_model_hf_base_url_candidates,
             || async { self.load_model_unlocked() },
@@ -1606,7 +1662,130 @@ mod tests {
         assert!(cached.is_err(), "negative cache still reports the failure");
     }
 
+    #[test]
+    fn local_embed_refusal_tracks_the_capability_bit() {
+        // Same shape as the desktop twin's
+        // download_is_refused_when_local_embed_is_unsupported: the gate
+        // decision is a pure function of the compile-time capability bit, so
+        // the host executes both directions; the full-funnel stub refusals
+        // stay type-checked for the loongarch64 target by the cfg test below
+        // (service.rs is server-gated, so no host feature set compiles it
+        // with the stub).
+        assert!(local_embed_download_refusal(true).is_none());
+        let refusal = local_embed_download_refusal(false)
+            .expect("an unsupported capability must refuse downloads");
+        assert!(
+            refusal.contains("unavailable on this platform"),
+            "{refusal}"
+        );
+    }
+
     #[tokio::test]
+    async fn upload_marks_the_document_failed_when_the_model_cannot_load() {
+        // upload's background ensure/index tail must write the failure back
+        // to the row: on stub builds every document would otherwise sit in
+        // `pending` forever with no owner-visible reason. A garbage model
+        // directory makes the load fail deterministically at ONNX parsing
+        // (offline), so the host executes the Err arm; `failed` rows stay
+        // retryable via the boot backlog (see pending_document_ids).
+        let root = tempfile::tempdir().unwrap();
+        let model_dir = root.path().join("models").join(MODEL_NAME);
+        let service = KnowledgeService::boot(root.path().join("data"), Some(model_dir.clone()))
+            .unwrap()
+            .service;
+        std::fs::create_dir_all(&model_dir).unwrap();
+        for (name, contents) in [
+            ("model.onnx", b"not-a-real-onnx".as_slice()),
+            ("tokenizer.json", b"{}".as_slice()),
+            ("config.json", b"{}".as_slice()),
+            ("special_tokens_map.json", b"{}".as_slice()),
+            ("tokenizer_config.json", b"{}".as_slice()),
+        ] {
+            std::fs::write(model_dir.join(name), contents).unwrap();
+        }
+        let collection = service
+            .create_collection(CreateCollectionRequest {
+                name: "kb".to_string(),
+                description: None,
+            })
+            .unwrap();
+        let document = service
+            .upload_document(collection.id, "note.md", b"hello".to_vec())
+            .await
+            .unwrap();
+        assert_eq!(document.status, "pending");
+        service.index_after_model_load(document.id).await;
+        let stored = service
+            .store
+            .document(document.id, false)
+            .unwrap()
+            .expect("uploaded document must remain readable");
+        assert_eq!(stored.document.status, "failed");
+        assert!(
+            stored
+                .document
+                .error
+                .as_deref()
+                .is_some_and(|error| !error.is_empty()),
+            "a failed row must carry the reason"
+        );
+    }
+
+    #[test]
+    #[cfg(not(all(
+        feature = "local-embed",
+        not(all(target_os = "linux", target_arch = "loongarch64"))
+    )))]
+    fn model_download_refuses_on_stub_embedder_without_starting_the_pipeline() {
+        // 服务端下载门（与桌面端 local_embed_download_refusal 同语义）：桩
+        // 构建里下载注定无法加载,必须在触碰 DOWNLOADING 状态之前拒绝,否则
+        // 状态视图会显示一个永远卡住的「下载中」。
+        assert!(!crate::embedding::local_embed_available());
+        let root = tempfile::tempdir().unwrap();
+        let service = KnowledgeService::boot(root.path().to_path_buf(), None)
+            .unwrap()
+            .service;
+        let error = service
+            .begin_model_download()
+            .expect_err("stub builds must refuse model downloads");
+        assert!(error.contains("unavailable on this platform"), "{error}");
+        // 下载闸文案是有意的独立文案（说明"下载不可为"）。503 映射键于
+        // embedding 桩常量——那个常量由装载路径返回（from_dir 或上方
+        // load_model 的早退）；下载端点自行映射 409，两者不需要同源。
+        // 钉住这个「不同源」：文案漂移成桩常量会把 409 拒绝误入 503 语义。
+        assert!(
+            !crate::embedding::is_local_embed_unavailable(&error),
+            "{error}"
+        );
+        assert!(!service.model_downloading(), "no download may be in flight");
+        // 公开 download_model 的直连调用者不经过上面的闸（防御纵深）：同样
+        // 必须在任何安装锁/磁盘 I/O 之前拒绝，而不是白下 568 MB 后才失败。
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let direct = rt
+            .block_on(async { service.download_model().await })
+            .expect_err("stub builds must refuse direct download_model calls");
+        assert!(direct.contains("unavailable on this platform"), "{direct}");
+        // 装载路径同样在任何锁/磁盘 I/O 之前拒绝,且返回与 503 映射同源的
+        // 桩常量(is_local_embed_unavailable):replace/search 据此映射 503。
+        let load_error = service.load_model().unwrap_err();
+        assert!(
+            crate::embedding::is_local_embed_unavailable(&load_error),
+            "{load_error}"
+        );
+    }
+
+    #[tokio::test]
+    // 真实实现方向专属：场景依赖真装载路径（跨进程锁 BUSY → 垃圾 ONNX
+    // 解析失败）。桩构建里 load_model 在锁之前就返回桩常量，这个场景不
+    // 存在（首用失败的负缓存契约由
+    // boot_does_not_load_model_and_first_use_reports_failure 覆盖）。
+    #[cfg(all(
+        feature = "local-embed",
+        not(all(target_os = "linux", target_arch = "loongarch64"))
+    ))]
     async fn model_load_failure_uses_negative_cache_then_retries_after_window() {
         // 负缓存+重试契约:失败后的窗口内,并发/后续调用复用缓存错误,不重读
         // 568MB;窗口过期后真正重跑装载。用跨进程安装锁制造可区分的失败:

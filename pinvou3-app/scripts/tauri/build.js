@@ -305,6 +305,112 @@ function windowsBundleTargets(args) {
 }
 
 /**
+ * Remove every `--bundles none` request from `args` and report whether at
+ * least one was present.
+ *
+ * `none` is a value owned by this wrapper, not by the Tauri CLI: the pinned
+ * @tauri-apps/cli 2.11.4 rejects it at arg-parse time ("error: invalid value
+ * 'none'" — its `--bundles` possible values on Linux are deb/rpm/appimage),
+ * and tauri-bundler could not bundle it anyway (`binary_arch()` has no
+ * LoongArch variant and panics on the loongarch64 triple). It means "run the
+ * full pipeline (frontend, sidecar preparation, tauri build) but skip
+ * bundling", for pipelines that assemble the installer themselves — the
+ * loong64 release build hands the compiled binary to
+ * `scripts/package-deb-loongarch64.sh`. The CLI's own equivalent is
+ * `--no-bundle` ("Skip the bundling step even if `bundle > active` is
+ * `true`"), which `prepareTauriArgs` injects in its place.
+ *
+ * Accepted spellings mirror `windowsBundleTargets` (`--bundles none`,
+ * `-b none`, plus the `=` forms). A `none` mixed with real bundle types
+ * (`--bundles none,deb`) is deliberately NOT absorbed: it stays in the args
+ * and fails at the CLI's value validation, exactly like any other unknown
+ * bundle type, instead of silently degrading to no-bundle.
+ *
+ * @param {string[]} args Full argument list passed to tauri.
+ * @returns {{args: string[], noBundle: boolean}} The args without the
+ *   request, and whether at least one `none` request was found.
+ */
+function extractBundlesNone(args) {
+  const rest = [];
+  let none = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (
+      (argument === "--bundles" || argument === "-b")
+      && args[index + 1] === "none"
+    ) {
+      none = true;
+      index += 1;
+    } else if (
+      argument === "--bundles=none"
+      || argument === "-b=none"
+    ) {
+      none = true;
+    } else {
+      rest.push(argument);
+    }
+  }
+  return { args: rest, noBundle: none };
+}
+
+/**
+ * The wrapper-owned `--bundles none` error for a subcommand that has no
+ * `--no-bundle`. Shared by the fail-fast validation and the translation so
+ * the wording cannot drift between the two sites.
+ */
+function bundlesNoneCommandError() {
+  return new Error(
+    "--bundles none is a wrapper-owned build request: the `bundle` subcommand has"
+      + " no --no-bundle and cannot skip bundling. Use `tauri build --bundles none`"
+      + " (compile without bundling, package yourself) or pass real bundle types.",
+  );
+}
+
+/**
+ * Absorb the wrapper-owned `--bundles none` request and validate it. The two
+ * request shapes that can never succeed fail here, from argv alone:
+ * `bundle --bundles none` (the subcommand has no --no-bundle), and a real
+ * bundle type requested NEXT to an absorbed `none` (after absorption the
+ * leftover spelling would sit next to the injected `--no-bundle`, where the
+ * CLI silently lets --no-bundle win — the same silent degradation the
+ * `none,deb` value mix above refuses).
+ *
+ * `main()` calls this before any preparation work (the sidecar steps take
+ * minutes and the outcome is knowable from argv); `prepareTauriArgs` calls
+ * it again on the same raw argv next to the translation.
+ *
+ * @param {string[]} args Full argument list passed to tauri.
+ * @returns {{args: string[], noBundle: boolean}} The args without the
+ *   request, and whether at least one `none` request was found.
+ */
+function bundlesNonePlan(args) {
+  const { args: rest, noBundle } = extractBundlesNone(args);
+  if (noBundle) {
+    const commandIndex = tauriCommandIndex(rest);
+    if (commandIndex >= 0) {
+      if (rest[commandIndex] === "bundle") throw bundlesNoneCommandError();
+      if (rest[commandIndex] === "build") {
+        // Every remaining `--bundles`/`-b` spelling carries a real bundle
+        // type: the `none` values were absorbed above.
+        const conflicting = rest.some((argument) =>
+          argument === "--bundles"
+          || argument === "-b"
+          || argument.startsWith("--bundles=")
+          || argument.startsWith("-b="));
+        if (conflicting) {
+          throw new Error(
+            "conflicting --bundles requests: a real bundle type was requested alongside"
+              + " `--bundles none`, and the CLI's --no-bundle would silently win."
+              + " Drop one of the two --bundles spellings.",
+          );
+        }
+      }
+    }
+  }
+  return { args: rest, noBundle };
+}
+
+/**
  * Machine segment of a `--target` triple -> Node `process.arch` notation.
  *
  * When adding an architecture here, the reverse machine map in
@@ -315,6 +421,7 @@ const TARGET_MACHINE_ARCHITECTURES = {
   aarch64: "arm64",
   amd64: "x64",
   arm64: "arm64",
+  loongarch64: "loong64",
   x86_64: "x64",
 };
 
@@ -328,37 +435,19 @@ const TARGET_MACHINE_ARCHITECTURES = {
 const HOST_FALLBACK_TARGET_TRIPLES = new Set(["universal-apple-darwin"]);
 
 /**
- * Parse the target architecture (Node notation) from `--target <triple>`.
+ * Extract the `--target <triple>` value (`--target X` or `--target=X`); the
+ * last occurrence wins, matching cargo's override semantics.
  *
- * Cross builds must pick overlays by the target architecture, not the host
- * one: otherwise `--target aarch64-unknown-linux-gnu` applies the x86_64
- * overlay, which references resources of the wrong architecture and misses
- * what the target overlay actually packages.
- *
- * Accepts `--target X` and `--target=X`; the last occurrence wins, matching
- * cargo's override semantics. Returns null without `--target`, so callers
- * fall back to `process.arch` and the native build is unchanged.
- *
- * An unknown machine segment (`riscv64gc-...`, `armv7-...`) must not return
- * null as well: the cross-build gate lets `!targetArch` through, so overlays,
- * the ASR runtime and the knowledge host would silently fall back to the host
- * architecture - exactly the "target main binary, host-architecture sidecars"
- * package the gate exists to prevent. That case throws. Two exceptions still
- * fall back, because neither is a cross build to an unknown architecture:
- * triples in HOST_FALLBACK_TARGET_TRIPLES (darwin hosts), and hosts whose own
- * arch is not in the table (a native riscv64 build, say), where we cannot tell
- * whether the build is cross at all. Only Linux hosts are gated: the sidecars
- * that are prepared for the host architecture exist only on that path.
+ * The parsing rules and their error messages are shared with
+ * `targetArchitecture`, which consumes the machine segment. `main()` also uses
+ * the full triple to locate pre-built cross artifacts: cargo target
+ * directories are keyed by the whole triple, not by the machine segment.
  *
  * @param {string[]} args Full argument list passed to tauri.
- * @param {{platform?: string, hostArch?: string}} [options] Host platform and arch.
- * @returns {string|null} "arm64" / "x64", or null when falling back is allowed.
- * @throws {Error} A Linux host cross-builds to a machine segment not in the table.
+ * @returns {string|null} The triple, or null without `--target`.
+ * @throws {Error} `--target` is present without a usable value.
  */
-function targetArchitecture(
-  args,
-  { platform = process.platform, hostArch = process.arch } = {},
-) {
+function targetTriple(args) {
   let triple = null;
   for (let i = 0; i < args.length; i += 1) {
     if (args[i] === "--target") {
@@ -380,6 +469,42 @@ function targetArchitecture(
       triple = value;
     }
   }
+  return triple;
+}
+
+/**
+ * Parse the target architecture (Node notation) from `--target <triple>`.
+ *
+ * Cross builds must pick overlays by the target architecture, not the host
+ * one: otherwise `--target aarch64-unknown-linux-gnu` applies the x86_64
+ * overlay, which references resources of the wrong architecture and misses
+ * what the target overlay actually packages.
+ *
+ * Reuses the `--target` parsing of `targetTriple` (accepts `--target X` and
+ * `--target=X`, last occurrence wins). Returns null without `--target`, so
+ * callers fall back to `process.arch` and the native build is unchanged.
+ *
+ * An unknown machine segment (`riscv64gc-...`, `armv7-...`) must not return
+ * null as well: the cross-build gate lets `!targetArch` through, so overlays,
+ * the ASR runtime and the knowledge host would silently fall back to the host
+ * architecture - exactly the "target main binary, host-architecture sidecars"
+ * package the gate exists to prevent. That case throws. Two exceptions still
+ * fall back, because neither is a cross build to an unknown architecture:
+ * triples in HOST_FALLBACK_TARGET_TRIPLES (darwin hosts), and hosts whose own
+ * arch is not in the table (a native riscv64 build, say), where we cannot tell
+ * whether the build is cross at all. Only Linux hosts are gated: the sidecars
+ * that are prepared for the host architecture exist only on that path.
+ *
+ * @param {string[]} args Full argument list passed to tauri.
+ * @param {{platform?: string, hostArch?: string}} [options] Host platform and arch.
+ * @returns {string|null} "arm64" / "loong64" / "x64", or null when falling back is allowed.
+ * @throws {Error} A Linux host cross-builds to a machine segment not in the table.
+ */
+function targetArchitecture(
+  args,
+  { platform = process.platform, hostArch = process.arch } = {},
+) {
+  const triple = targetTriple(args);
   if (!triple) return null;
   if (platform === "darwin" && HOST_FALLBACK_TARGET_TRIPLES.has(triple)) return null;
   const machine = triple.split("-")[0];
@@ -394,14 +519,15 @@ function targetArchitecture(
       + " and the shared knowledge host for the host architecture, silently producing a"
       + " package whose main binary targets one architecture while its sidecars target"
       + " another. To support this architecture, extend all of the following (missing (2)"
-      + " or (4) silently reintroduces a wrong package; missing (1), (3) or (5) fails the"
+      + " or (4) silently reintroduces a wrong package; missing (1), (3), (5) or (6) fails the"
       + " build loudly): (1) TARGET_MACHINE_ARCHITECTURES in this file; (2)"
       + " ARCHITECTURE_CONFIG_NAMES in scripts/tauri/platform-config.js (without it"
       + " platformArchitectureConfigPath returns null and the whole architecture overlay is"
       + " skipped); (3) the matching architecture overlay under src-tauri/config/platforms/linux/;"
       + " (4) the Node arch -> machine map in scripts/tauri/codex-bridge.js (without it the"
       + " bridge script falls back to uname -m and packages a host-architecture Node);"
-      + " (5) the target list in scripts/prepare-codex-bridge-runtime.sh. If the triple has"
+      + " (5) the target list in scripts/prepare-codex-bridge-runtime.sh; (6) the"
+      + " LINUX_ASR_ARCHITECTURES table in scripts/tauri/linux-asr-runtime.js. If the triple has"
       + " no single target architecture (like universal binaries, darwin hosts only), add it"
       + " to HOST_FALLBACK_TARGET_TRIPLES instead.",
   );
@@ -499,8 +625,8 @@ function platformConfigWithoutKnowledgeHost(configPath) {
  * When the target architecture differs from the host, check that every step
  * that can only prepare host-architecture artifacts has been dealt with.
  *
- * This is a hard failure, not a warning, because the symptoms without the
- * skip switches are late or silent:
+ * This is a hard failure, not a warning, because the symptoms without a
+ * decision are late or silent:
  *   - without `PINVOU3_SKIP_LINUX_ASR`, the SenseVoice script is asked for
  *     the host architecture, so its `requested_arch == host_arch` assertion
  *     passes; the build only stops later at the effective-config resource
@@ -511,11 +637,20 @@ function platformConfigWithoutKnowledgeHost(configPath) {
  *     overlay expects it, and it is packaged into the other architecture's
  *     deb with no warning at all.
  *
+ * Each sidecar has two acceptable resolutions, and they are alternatives for
+ * the same decision: skip the step (and drop its resource declaration), or
+ * guarantee the target-architecture artifact up front via the matching
+ * `PINVOU3_*_PREBUILT=1` switch. The pre-built route keeps the overlay
+ * declaration, so the artifact is actually packaged; `main()` hands the
+ * preparation steps the same decision (the ASR step then requires the
+ * engine at `target/linux-asr-runtime/<machine>/sense-voice-main`, the
+ * knowledge host copies from `pinvou-knowledge/target/<triple>/release/`).
+ *
  * The codex bridge is not on this list: it prepares the target architecture
  * (`PINVOU3_BRIDGE_TARGET_ARCH` in `prepare-codex-bridge-runtime.sh`), so a
  * cross build produces a correct package without skipping it.
  *
- * @param {object} options Target/host architecture and the two skip switches.
+ * @param {object} options Target/host architecture and the skip/pre-built switches.
  * @returns {string[]} Descriptions of the violations; empty when the build is fine.
  */
 function crossBuildViolations({
@@ -524,19 +659,23 @@ function crossBuildViolations({
   hostArch,
   skipLinuxAsr,
   skipKnowledgeHost,
+  prebuiltLinuxAsr = false,
+  prebuiltKnowledgeHost = false,
 }) {
   if (platform !== "linux" || !targetArch || targetArch === hostArch) return [];
   const problems = [];
-  if (!skipLinuxAsr) {
+  if (!skipLinuxAsr && !prebuiltLinuxAsr) {
     problems.push(
       "the SenseVoice speech-recognition runtime can only be built natively on the target"
-        + " architecture; set PINVOU3_SKIP_LINUX_ASR=1 for cross builds",
+        + " architecture; set PINVOU3_SKIP_LINUX_ASR=1 for cross builds, or pre-build the"
+        + " engine for the target architecture and set PINVOU3_LINUX_ASR_PREBUILT=1",
     );
   }
-  if (!skipKnowledgeHost) {
+  if (!skipKnowledgeHost && !prebuiltKnowledgeHost) {
     problems.push(
       "the shared knowledge host build ignores --target and only produces host-architecture"
-        + " binaries; set PINVOU3_SKIP_KNOWLEDGE_HOST=1 for cross builds",
+        + " binaries; set PINVOU3_SKIP_KNOWLEDGE_HOST=1 for cross builds, or pre-build the"
+        + " server for the target triple and set PINVOU3_KNOWLEDGE_HOST_PREBUILT=1",
     );
   }
   return problems;
@@ -562,7 +701,18 @@ function prepareTauriArgs(
     skipKnowledgeHost = process.env.PINVOU3_SKIP_KNOWLEDGE_HOST === "1",
   } = {},
 ) {
-  const prepared = [...args];
+  // Absorb the wrapper-owned `--bundles none` request (see the helper doc):
+  // the value never reaches the Tauri CLI, which rejects it at arg-parse
+  // time. `main()` hands the raw argv here unfiltered — its own
+  // `windowsBundleTargets` pre-parse is unaffected because staging returns
+  // null unless the targets include "nsis" — so this is the single point
+  // where the request is translated into the CLI's `--no-bundle`. The plan
+  // also fails the two never-succeedable request shapes from argv alone
+  // (bundle+none, none next to a real bundle type); `main()` already ran it
+  // for fail-fast, and re-running it here keeps the translation site honest
+  // for direct callers that bypass `main()`.
+  const { args: withoutBundlesNone, noBundle } = bundlesNonePlan(args);
+  const prepared = [...withoutBundlesNone];
   const commandIndex = tauriCommandIndex(prepared);
   if (commandIndex < 0) {
     // dev 不注入 packaging overlay。macOS 复用平台 overlay 保持原生顶栏一致；
@@ -621,6 +771,23 @@ function prepareTauriArgs(
   // Automatic overlays must precede explicit signing/staging overlays so the
   // caller can intentionally override or remove inherited resource mappings.
   prepared.splice(commandIndex + 1, 0, ...injected);
+  // `build`-gated: `bundlesNonePlan` already threw for `bundle` (no
+  // --no-bundle there) and for a contradictory second spelling, and `dev`
+  // falls through on purpose (it never bundles, so stripping IS the
+  // requested semantics). Translate the absorbed `--bundles none` request
+  // into the flag the pinned @tauri-apps/cli 2.11.4 actually accepts
+  // (verified against `tauri build --help`: `--no-bundle`, "Skip the
+  // bundling step even if `bundle > active` is `true`"). The compiled
+  // binary stays at the cargo target dir (`target/<triple>/release/`) for
+  // the caller's own packager; value-flag pairs (`--config <spec>`) keep
+  // their value adjacency, which is why the flag is spliced before them.
+  // Read the subcommand from `prepared`, not the raw argv: the absorbed
+  // `--bundles none` tokens shift every index after them, so when the
+  // request precedes the subcommand, an index computed on `prepared`
+  // points at the wrong token in `args`.
+  if (noBundle && prepared[commandIndex] === "build") {
+    prepared.splice(commandIndex + 1, 0, "--no-bundle");
+  }
   return prepared;
 }
 
@@ -772,12 +939,25 @@ async function main() {
 
   const isDev = args.includes("dev");
   const hasTauriBuildCommand = tauriCommandIndex(args) >= 0;
+  // Fail fast on a never-succeedable `--bundles none` request before any
+  // preparation work: `bundle` + none (and a real bundle type requested next
+  // to none) are knowable from argv alone, while the sidecar preparation
+  // below takes minutes. `prepareTauriArgs` re-runs the same plan next to
+  // the translation for callers that bypass `main()`.
+  bundlesNonePlan(args);
   // The two skip switches are read exactly once, here: the gate, the
   // preparation steps and the overlay removal (`prepareTauriArgs`) all
   // receive this one result, however many awaits lie in between. See the
   // parameter comment in `prepareTauriArgs` for what a mismatch costs.
   const skipLinuxAsr = process.env.PINVOU3_SKIP_LINUX_ASR === "1";
   const skipKnowledgeHost = process.env.PINVOU3_SKIP_KNOWLEDGE_HOST === "1";
+  // The pre-built switches are the alternative resolution of the same two
+  // decisions (see crossBuildViolations): they keep the overlay declarations
+  // and make the preparation steps accept a target-architecture artifact
+  // instead of building one. Read once here and passed down, like the skip
+  // switches.
+  const prebuiltLinuxAsr = process.env.PINVOU3_LINUX_ASR_PREBUILT === "1";
+  const prebuiltKnowledgeHost = process.env.PINVOU3_KNOWLEDGE_HOST_PREBUILT === "1";
   const additionalConfigs = [];
   // Dev compiles with cargo exactly like build/bundle, so a partially
   // installed toolchain must be repaired before `tauri dev` too; the wrapper
@@ -818,9 +998,11 @@ async function main() {
   }
   if (hasTauriBuildCommand) {
     const hostArch = process.arch;
+    const triple = targetTriple(args);
     // An unknown machine segment throws here (see `targetArchitecture`)
     // instead of reaching the gate, which lets a null target through.
     const targetArch = targetArchitecture(args);
+    const isCrossBuild = targetArch !== null && targetArch !== hostArch;
 
     // Cross-build consistency gate: fail now rather than ship a package
     // with sidecars of the wrong architecture.
@@ -830,6 +1012,8 @@ async function main() {
       hostArch,
       skipLinuxAsr,
       skipKnowledgeHost,
+      prebuiltLinuxAsr,
+      prebuiltKnowledgeHost,
     });
     if (violations.length > 0) {
       const detail = violations.map((line) => `  - ${line}`).join("\n");
@@ -840,9 +1024,12 @@ async function main() {
 
     // SenseVoice can only be built natively on the target architecture
     // (build-sensevoice-runtime.sh requires requested_arch == host_arch and
-    // links the host glibc), so cross builds skip it explicitly; the overlay
-    // declaration is removed in prepareTauriArgs.
-    if (!skipLinuxAsr) prepareLinuxAsrRuntime();
+    // links the host glibc). Cross builds request the target architecture:
+    // either the pipeline pre-built the engine and set
+    // PINVOU3_LINUX_ASR_PREBUILT=1 (the step then requires it), or the
+    // script's architecture assertion fails fast; the overlay declaration is
+    // removed in prepareTauriArgs only when the step is skipped.
+    if (!skipLinuxAsr) prepareLinuxAsrRuntime(isCrossBuild ? { architecture: targetArch, prebuilt: prebuiltLinuxAsr } : {});
     // The bridge prepares the target architecture: it compiles nothing, it
     // only downloads, verifies and unpacks the official Node tarball, so a
     // cross build can produce a correct package. Without a target the script
@@ -852,8 +1039,10 @@ async function main() {
     prepareWindowsCodexBridge(windowsBridgeOptions);
     // The shared knowledge host builds host-architecture binaries (cargo build
     // without --target), which would be wrong inside another architecture's
-    // package; same class of problem as SenseVoice.
-    if (!skipKnowledgeHost) prepareKnowledgeHost();
+    // package; same class of problem as SenseVoice. Cross builds either skip
+    // it or, with PINVOU3_KNOWLEDGE_HOST_PREBUILT=1, copy the server the
+    // pipeline pre-built for the exact target triple.
+    if (!skipKnowledgeHost) prepareKnowledgeHost(isCrossBuild ? { targetTriple: triple, prebuilt: prebuiltKnowledgeHost } : {});
     if (process.platform === "win32") {
       additionalConfigs.push(WINDOWS_BRIDGE_CONFIG_PATH);
     }
@@ -906,6 +1095,8 @@ module.exports = {
   configSpecs,
   configureIsolatedWindowsRustToolchain,
   crossBuildViolations,
+  bundlesNonePlan,
+  extractBundlesNone,
   platformConfigWithoutKnowledgeHost,
   targetArchitecture,
   chromeDevtoolsMcpEnvironment,
@@ -926,6 +1117,7 @@ module.exports = {
   prepareTauriArgs,
   runTauri,
   supportsChromeDevtoolsMcp,
+  targetTriple,
   tauriRuntimeEnvironment,
   tauriCommandIndex,
   windowsBundleTargets,
