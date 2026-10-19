@@ -2881,6 +2881,17 @@ mod tests {
                 // 3) Complete prerequisites (Windows vendor, Linux WebKitWebDriver, or macOS
                 //    WKWebView BrowserCore, plus wrapper and Node.js) generate a session-specific
                 //    file. Unreleased platforms must still fail closed.
+                // Round-8 review minor: snapshot the gate vars through the
+                // panic-safe guard BEFORE seeding them — the straight-line
+                // remove_var tail never ran on a mid-test panic, leaking the
+                // three values to later tests. (with_temp_home already holds
+                // ENV_LOCK, so locked_env's non-reentrant lock is not an
+                // option here; capture is the lock-free half of that pair.)
+                let _gate_env = crate::platform::test_support::EnvRestore::capture(&[
+                    "PINVOU3_CDMCP_BIN",
+                    "PINVOU3_WEBKIT_WEBDRIVER_BIN",
+                    "PINVOU3_RESOURCE_DIR",
+                ]);
                 let fake_bin =
                     std::path::PathBuf::from(&paths::pinvou3_home()).join("fake-cdmcp-entry.js");
                 std::fs::write(&fake_bin, "#!/usr/bin/env node\n").unwrap();
@@ -3069,13 +3080,6 @@ mod tests {
                         "a globally user-owned browser name must not degrade the embedded browser or inject an error"
                     );
                 }
-
-                // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
-                unsafe { std::env::remove_var("PINVOU3_CDMCP_BIN") };
-                // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
-                unsafe { std::env::remove_var("PINVOU3_WEBKIT_WEBDRIVER_BIN") };
-                // SAFETY: holding platform::paths::tests::ENV_LOCK; in-process env writes are serialized.
-                unsafe { std::env::remove_var("PINVOU3_RESOURCE_DIR") };
             },
         );
     }

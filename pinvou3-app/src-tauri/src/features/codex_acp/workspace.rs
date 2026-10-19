@@ -2802,37 +2802,27 @@ mod tests {
             return;
         };
         fs::write(root.path().join("file.txt"), "v1-dirty").unwrap();
-        let _guard = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let previous: Vec<(&str, Option<String>)> = [
+        // Round-8 review minor: snapshot-and-restore through the shared
+        // panic-safe guard — a panic inside checkout_workspace_branch used to
+        // leak the seeded GIT_* values to later tests (a straight-line restore
+        // never runs on unwind).
+        let (_env_lock, _env) = crate::platform::test_support::locked_env(&[
             "GIT_AUTHOR_NAME",
             "GIT_AUTHOR_EMAIL",
             "GIT_COMMITTER_NAME",
             "GIT_COMMITTER_EMAIL",
-        ]
-        .iter()
-        .map(|key| (*key, std::env::var(key).ok()))
-        .collect();
-        // SAFETY: platform::paths::tests::ENV_LOCK is held; lib tests run with
-        // --test-threads=1, env writes are serialized in-process.
+        ]);
+        // SAFETY: locked_env holds platform::paths::tests::ENV_LOCK; lib tests
+        // run with --test-threads=1, env writes are serialized in-process.
         unsafe { std::env::set_var("GIT_AUTHOR_NAME", "env-author") };
         unsafe { std::env::set_var("GIT_COMMITTER_NAME", "env-committer") };
-        let switched = checkout_workspace_branch(
+        let result = checkout_workspace_branch(
             root.path(),
             "feature",
             BranchSwitchMode::Commit,
             Some("wip: identity"),
-        );
-        for (key, value) in &previous {
-            match value {
-                // SAFETY: same ENV_LOCK serialization as above.
-                Some(value) => unsafe { std::env::set_var(key, value) },
-                // SAFETY: same ENV_LOCK serialization as above.
-                None => unsafe { std::env::remove_var(key) },
-            }
-        }
-        let result = switched.expect("commit-mode switch must succeed");
+        )
+        .expect("commit-mode switch must succeed");
         assert_eq!(result.current.as_deref(), Some("feature"));
         let author = git_output(root.path(), &["log", "-1", "--format=%an", "main"]).unwrap();
         assert_eq!(
