@@ -281,9 +281,10 @@ prune_sysroot() {
   # locales, gir typelibs, gtk-doc, dbus system configs, udev rules, ...)
   # is irrelevant to compiling/linking and is removed. The lib64 keeps are
   # load-bearing, not conservative: glibc's libc.so script AS_NEEDEDs the
-  # loader at /lib64/ld-linux-loongarch-lp64d.so.1 and usr/lib64 (a symlink
-  # into usr/lib on deepin) must survive for the usrmerge alias below to
-  # resolve it — deleting usr/lib64 turns every link into a fatal "cannot
+  # loader at /lib64/ld-linux-loongarch-lp64d.so.1 and usr/lib64 (a real
+  # directory on deepin, holding the relative loader symlink into
+  # usr/lib/loongarch64-linux-gnu) must survive for the usrmerge alias below
+  # to resolve it — deleting usr/lib64 turns every link into a fatal "cannot
   # open /lib64/..." after a full compile.
   find "$root" -mindepth 1 -maxdepth 1 ! -name usr ! -name lib ! -name lib64 \
     -exec rm -rf -- {} +
@@ -548,9 +549,12 @@ docker_method() {
     echo "[loong64-sysroot] extracting the container .debs failed" >&2
     return 1
   }
-  # errexit is suspended in this condition-context function: a failed prune
-  # must not leave a half-pruned tree reported as a successful docker source.
-  prune_sysroot "$output_dir" || {
+  # errexit is suspended for the WHOLE function body when called in a
+  # condition context, so a mid-prune failure (cp/ln/rm) would not abort on
+  # its own and only the last command's status would propagate: run the
+  # prune inside an errexit-restoring subshell so a failed prune cannot
+  # leave a half-pruned tree reported as a successful docker source.
+  ( set -euo pipefail; prune_sysroot "$output_dir" ) || {
     echo "[loong64-sysroot] pruning the docker-extracted sysroot failed" >&2
     return 1
   }

@@ -98,7 +98,7 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         # build.js (or any bundling) itself.
         self.assertNotIn("node scripts/tauri/build.js", self.job_code)
 
-    def test_release_job_sets_remap_only_rustflags(self):
+    def test_release_job_keeps_forbidden_linker_flags_out(self):
         # The pinned cross toolchain ships NO lld (bfd only): the arm64 job's
         # -fuse-ld=lld / --icf=safe must never be copied, and LTO stays owned
         # by Cargo.toml. Comment mentions of the forbidden flags are
@@ -115,8 +115,10 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         # absolute GROUP paths only resolve under the sysroot). Neither can
         # ride in RUSTFLAGS: cargo gives a set RUSTFLAGS precedence over
         # CARGO_TARGET_<triple>_RUSTFLAGS (verified: the target-scoped value
-        # is silently dropped when both are set), and RUSTFLAGS also reaches
-        # every host build-script link where a loong64 --sysroot is fatal.
+        # is silently dropped when both are set), so the target units would
+        # silently lose the sysroot link-arg. With --target, host
+        # build-script units receive no rustflags at all — the shadowing
+        # alone is what makes a job-level RUSTFLAGS fatal here.
         # So the job must not set RUSTFLAGS anywhere (job env, step env, or a
         # run-block export) and the orchestrator must own exactly one
         # target-scoped export carrying both flags.
@@ -476,6 +478,14 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         )
         self.assertIn(
             "for keep_name in libpthread.a libdl.a librt.a libutil.a libanl.a; do",
+            sysroot,
+        )
+        # The verify side asserts the SAME compat-stub list (sysroot.sh's
+        # verify_sysroot loop); the two lists are hand-maintained twins, so
+        # pin both — drift between them would let one side keep a stub the
+        # other stops checking (or vice versa) without anything going red.
+        self.assertIn(
+            "for compat_archive in libpthread.a libdl.a librt.a libutil.a libanl.a; do",
             sysroot,
         )
         self.assertIn('grep -hoE \'/[A-Za-z0-9._/-]+\\.so[0-9.]*\' "$script"', sysroot)

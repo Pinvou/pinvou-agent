@@ -59,9 +59,10 @@
 # CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS (remap +
 # --sysroot link-arg, see the export block below). They must not ride in
 # RUSTFLAGS: cargo gives a set RUSTFLAGS precedence over the target-scoped
-# variable (the target units would silently lose the sysroot link-arg), and
-# RUSTFLAGS also reaches every host build-script link where a loong64
-# --sysroot is fatal. The pinned cross toolchain ships NO lld — only bfd ld
+# variable, so the target units would silently lose the sysroot link-arg
+# (with --target, host build-script units receive no rustflags at all —
+# the shadowing alone is what makes a job-level RUSTFLAGS fatal here).
+# The pinned cross toolchain ships NO lld — only bfd ld
 # — so the arm64 job's -fuse-ld=lld must never be copied in any spelling.
 #
 # Env knobs: PINVOU_LOONG64_TOOLCHAIN_PREFIX / PINVOU_LOONG64_SYSROOT (reuse
@@ -141,8 +142,10 @@ PKG_CONFIG_SYSROOT_DIR="$sysroot"
 # is a runtime `not a valid identifier` error (bash -n accepts it), which
 # would kill the release build before step 3. The verbatim-triple form is
 # read by nothing. cargo only knows the underscore form for the linker. gcc
-# resolves its bundled glibc sysroot from its own path (relocatable), so no
-# SYSROOT/--sysroot flag is needed for plain rust/cargo compilation.
+# resolves its bundled glibc sysroot from its own path (relocatable), so
+# compilation needs no --sysroot; the -C link-arg=--sysroot in the target
+# flags below exists for the LINK step (the sysroot libc.so script's absolute
+# GROUP paths), not for rustc's own header/crate resolution.
 export PINVOU_LOONG64_TOOLCHAIN_PREFIX="$toolchain_root"
 export CC_loongarch64_unknown_linux_gnu="$TOOLCHAIN_BIN/$TRIPLE-gcc"
 export CXX_loongarch64_unknown_linux_gnu="$TOOLCHAIN_BIN/$TRIPLE-g++"
@@ -302,10 +305,11 @@ toolchain: $toolchain_root
 sysroot: $sysroot
 # CI step exports (recompute at consumption time; see also the env blocks
 # printed by the two setup scripts):
-#   CC/CXX/AR/RANLIB_loongarch64_unknown_linux_gnu (+ verbatim-triple forms),
+#   CC/CXX/AR/RANLIB_loongarch64_unknown_linux_gnu, STRIP,
 #   CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER,
 #   CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS,
-#   PKG_CONFIG_LIBDIR, PKG_CONFIG_SYSROOT_DIR, CMAKE_TOOLCHAIN_FILE
+#   PKG_CONFIG_LIBDIR, PKG_CONFIG_SYSROOT_DIR, CMAKE_TOOLCHAIN_FILE,
+#   BINDGEN_EXTRA_CLANG_ARGS, LIBCLANG_PATH (llvm-18 prefix when present)
 #   (all set inside this script for its children; a workflow that runs the
 #   setup scripts directly exports the same values from their output).
 #   RUSTFLAGS must stay unset (cargo would let it shadow the target-scoped
