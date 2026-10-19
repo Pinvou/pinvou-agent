@@ -1874,9 +1874,11 @@ pub(crate) mod tests {
     // Display, so the e2e probe in settings.rs cannot fail against a
     // single-pass regression). The userinfo here carries no digit, so the
     // token-shape pass alone cannot catch it: only the URL-userinfo pass
-    // does, and the order is load-bearing (same composition as the CLI's
-    // support::redact_error_text, order-pinned by
-    // redact_scrubs_url_userinfo_before_token_shapes).
+    // does. For this digit-less input the two passes commute, so the pin
+    // asserts the COMPOSITION of both passes (identical to the CLI's
+    // support::redact_error_text), not their order; order observability and
+    // its pin live on the CLI side (URLs long enough to trip the generic
+    // token branch).
     #[test]
     fn transport_scrub_composition_strips_url_userinfo_before_token_shapes() {
         // The URL path carries no digit anywhere: the generic >= 24 chars +
@@ -1905,11 +1907,14 @@ pub(crate) mod tests {
             !scrubbed.contains("sk-proj-abcd1234"),
             "bearer token survived: {scrubbed}"
         );
-        // The credential-bearing URL run is redacted wholesale (fail-closed —
-        // the host is not preserved either).
+        // The [REDACTED] here comes from the token arm's secret-shaped match,
+        // not from a wholesale URL fail-close: the URL pass strips only the
+        // userinfo and the host survives. This assert is therefore satisfied
+        // by the token arm alone — the alice/letmein asserts above are what
+        // bind the URL pass.
         assert!(
             scrubbed.contains("[REDACTED]"),
-            "the credential-bearing URL run must be redacted: {scrubbed}"
+            "the bearer token must be token-redacted: {scrubbed}"
         );
     }
 
