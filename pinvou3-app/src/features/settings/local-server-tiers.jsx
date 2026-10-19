@@ -116,8 +116,16 @@ export function useModelReasoningTierState({ model, storedEffort = null, baseUrl
   const probeKindForRoute = model && model.preset === 'local_vllm'
     ? (probedKind === 'tachyon' ? 'tachyon' : null)
     : probedKind;
+  // local_vllm 预设没有 pending 隐藏窗：未探测路线已知是 vllm wire，pending 期
+  // 直接给静态四档（默认 low），探测返回 tachyon 才切 ['off','low','medium',
+  // 'max']。手动添加本地模型的表单契约（settings_ui_smoke ⑥.5b）要求档位
+  // 立即可见且默认选中「低」，pending 期隐藏档位会让保存写入显式 high、绕过
+  // bridge 的本地默认档约束；隐藏窗是 ⑥.5d 为 openai_compatible「引擎类型
+  // 未知」端点设计的，不适用于已知 wire 的本地预设。这也消除了 pending 窗
+  // 内保存把 reasoning_effort 写成 null 的问题。
+  const pendingHidesTiers = probePending && model?.preset !== 'local_vllm';
   const reasoningEffortTiers = isLocalCompatible
-    ? (probePending ? [] : (localReasoningTiers(model.model, probeKindForRoute) || []))
+    ? (pendingHidesTiers ? [] : (localReasoningTiers(model.model, probeKindForRoute) || []))
     : (model ? (reasoningEffortTiersForModel(model) || []) : []);
   // Local routes (vllm preset / local-compatible endpoints) hit the "always-thinking,
   // no-control" knowledge table: the effort-tier area shows an "always on" hint instead of

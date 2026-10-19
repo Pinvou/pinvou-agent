@@ -944,6 +944,75 @@ mod tests {
     /// the hit-count pins across two calls run under the crate ENV_LOCK so
     /// a concurrent cache-clearing core test (same lock) can never wipe an
     /// entry in between.
+    /// /metrics 拉取携带与 /v1/models 同源 bearer（round-1 评审 minor 补钉）：以
+    /// `--api-key` 启动的本地引擎（如驭光 Tachyon）对裸 GET 会 401，修复前落
+    /// metrics_unavailable 误诊。mock 逐路径记录 Authorization，两个方向都钉：
+    /// 有 key 时两路径同带 `Bearer secret`；keyless 时不带任何 Authorization。
+    #[tokio::test]
+    async fn metrics_fetch_carries_the_same_origin_bearer() {
+        use crate::core::model_endpoint::models_mock;
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let metrics_body = "vllm:num_requests_running 1\nvllm:num_requests_waiting 0\n".to_string();
+        // The snapshot's health request goes through `models_probe_url`,
+        // which appends `/models` directly on a bare-host base (no `/v1`).
+        let mock = models_mock::spawn(&[
+            (
+                "/models",
+                200,
+                r#"{"object":"list","data":[{"id":"qwen3.8","max_model_len":131072}]}"#.into(),
+            ),
+            ("/metrics", 200, metrics_body.clone()),
+        ]);
+        let snap = snapshot_for_model_config(
+            &mock.base_url,
+            Some("qwen3.8".to_string()),
+            ModelPreset::LocalVllm,
+            Some("secret"),
+            None,
+        )
+        .await
+        .expect("snapshot with key");
+        assert_eq!(
+            mock.auth_for("/models").as_deref(),
+            Some("Bearer secret"),
+            "the health probe keeps the existing bearer semantics"
+        );
+        assert_eq!(
+            mock.auth_for("/metrics").as_deref(),
+            Some("Bearer secret"),
+            "/metrics must carry the same-origin bearer (--api-key servers 401 a bare GET)"
+        );
+        assert_eq!(
+            snap.status,
+            VllmStatus::Busy,
+            "metrics body parses once authorized (running=1 surfaces as Busy)"
+        );
+
+        let mock = models_mock::spawn(&[
+            (
+                "/models",
+                200,
+                r#"{"object":"list","data":[{"id":"qwen3.8","max_model_len":131072}]}"#.into(),
+            ),
+            ("/metrics", 200, metrics_body),
+        ]);
+        let snap = snapshot_for_model_config(
+            &mock.base_url,
+            Some("qwen3.8".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            None,
+        )
+        .await
+        .expect("snapshot keyless");
+        assert_eq!(
+            mock.auth_for("/metrics"),
+            None,
+            "keyless servers must not receive an Authorization header"
+        );
+        assert_eq!(snap.status, VllmStatus::Busy);
+    }
+
     #[tokio::test]
     async fn local_native_display_window_ps_then_show_then_stop() {
         use crate::core::model_endpoint::models_mock;
