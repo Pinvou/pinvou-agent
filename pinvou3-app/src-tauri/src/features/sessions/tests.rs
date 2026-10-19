@@ -4891,6 +4891,7 @@ fn rewind_truncates_at_turn_boundary_with_interleaved_tool_results() {
     store
         .update_messages(&id, messages.clone())
         .expect("seed transcript");
+    let original_revision = transcript_revision(&messages).expect("revision");
 
     let outcome = store
         .truncate_to_user_turn(&id, 1, None)
@@ -4904,14 +4905,15 @@ fn rewind_truncates_at_turn_boundary_with_interleaved_tool_results() {
         "保留第 1 轮全部消息（含 tool_result 交错段）"
     );
 
-    // sidecar backup: truncation time and the removed messages are complete;
-    // the post-truncation revision is recorded (the undo precise-recheck
-    // condition) and bound to the code rollback point (not passed this time
-    // → None).
+    // sidecar backup: truncation time, original revision, and the removed
+    // messages are complete; the post-truncation revision is recorded (the
+    // undo precise-recheck condition) and bound to the code rollback point
+    // (not passed this time → None).
     let records = rewound_records(&id);
     assert_eq!(records.len(), 1);
     let record = &records[0];
     assert!(!record.rewound_at.is_empty());
+    assert_eq!(record.original_revision, original_revision);
     assert_eq!(record.kept_turns, 1);
     assert_eq!(
         record.truncated_revision,
@@ -4919,6 +4921,87 @@ fn rewind_truncates_at_turn_boundary_with_interleaved_tool_results() {
     );
     assert_eq!(record.pre_restore_checkpoint_id, None);
     assert_eq!(record.removed_messages, messages[4..]);
+}
+
+/// New-writer/old-reader compatibility (round-7 review P2): older binaries
+/// define `RewoundTurnsRecord` with a REQUIRED `originalRevision` (no serde
+/// default), and the CLI shares this sidecar with the desktop app. A map
+/// written without the field used to fail deserialization as a whole and get
+/// quarantined, taking every session's undo backups down with it. The field
+/// must therefore keep being written per record, and legacy values must
+/// survive a rewrite performed while backing up another session.
+#[test]
+fn rewound_sidecar_stays_readable_by_older_readers() {
+    let (store, _g) = isolated_store();
+    let session_a = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create a");
+    let id_a = session_a.metadata.id.clone();
+    let session_b = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create b");
+    let id_b = session_b.metadata.id.clone();
+
+    // Session A keeps a record as an OLDER binary wrote it (required field,
+    // no truncatedRevision yet); session B gets truncated by THIS build, so
+    // the read-modify-write re-persists the whole map.
+    let legacy_removed: Vec<Message> = vec![user_text("旧第二轮"), assistant_text("旧答二")];
+    let legacy = serde_json::json!({
+        id_a.clone(): [{
+            "rewoundAt": "2026-10-19T00:00:00Z",
+            "originalRevision": "legacy-sha",
+            "keptTurns": 1,
+            "removedMessages": legacy_removed,
+        }]
+    });
+    let sidecar = paths::sessions_root().join("_rewound_turns.json");
+    std::fs::write(&sidecar, serde_json::to_vec_pretty(&legacy).expect("json"))
+        .expect("write legacy sidecar");
+
+    let messages_b = vec![
+        user_text("第一轮"),
+        assistant_text("答一"),
+        user_text("第二轮"),
+        assistant_text("答二"),
+    ];
+    store
+        .update_messages(&id_b, messages_b.clone())
+        .expect("seed transcript b");
+    store
+        .truncate_to_user_turn(&id_b, 1, None)
+        .expect("rewind b to turn 1");
+
+    // The exact reader shape of an older binary: originalRevision REQUIRED.
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct OldReaderRecord {
+        #[allow(dead_code)]
+        rewound_at: String,
+        #[allow(dead_code)]
+        original_revision: String,
+        #[allow(dead_code)]
+        kept_turns: u32,
+        #[allow(dead_code)]
+        removed_messages: Vec<Message>,
+    }
+    let bytes = std::fs::read(&sidecar).expect("read rewritten sidecar");
+    let old_reader_map: std::collections::HashMap<String, Vec<OldReaderRecord>> =
+        serde_json::from_slice(&bytes).expect("old reader parses the whole map");
+
+    assert_eq!(old_reader_map.len(), 2, "both sessions stay in the map");
+    // A missing originalRevision here is exactly the regression: the old
+    // reader would have rejected the map above instead of returning it.
+    assert_eq!(
+        old_reader_map[&id_a][0].original_revision, "legacy-sha",
+        "a legacy record's value must survive the rewrite verbatim"
+    );
+    let new_record = rewound_records(&id_b);
+    assert_eq!(new_record.len(), 1);
+    assert_eq!(
+        new_record[0].original_revision,
+        transcript_revision(&messages_b).expect("pre-truncation revision"),
+        "original_revision must be the full pre-truncation transcript revision"
+    );
 }
 
 /// N=0 = rewind to before the first turn; the transcript is fully truncated.

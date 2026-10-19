@@ -454,6 +454,12 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       // oversized record silently shrinking the panel must not read as a
       // successful empty index (round-4 review).
       const [outputsSkipped, setOutputsSkipped] = useState(kbCache.outputsSkipped);
+      // True when the last index refresh REJECTED (sessions root unreadable,
+      // transport down) — a total scan failure, distinct from the partial
+      // `outputsSkipped` signal above. The last successful table stays
+      // rendered underneath; a rejection must not read as a clean empty
+      // index (round-6 review P2).
+      const [outputsScanError, setOutputsScanError] = useState(false);
       const [outCat, setOutCat] = useState('all');
       const [outQuery, setOutQuery] = useState('');
       const [outView, setOutView] = useState('list');
@@ -534,11 +540,18 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         // the module-level cache once it resolves, or it would undo the
         // cleanup (setOutputs after unmount is a no-op and harmless).
         if (outputsDisposedRef.current) return;
+        // null = the refresh REJECTED (sessions root unreadable, transport
+        // down): a total failure must not read as a clean bill (round-6
+        // review P2). The rejected refresh re-lists the retained cache below
+        // (the sig compare then no-ops, keeping the last successful table)
+        // and raises the scan-error banner with a retry action instead of
+        // silently degrading to an empty/partial list.
+        const scanFailed = !res;
         // The command returns { rows, skipped }: rows are the listable
         // deliverables, skipped names the session records the scan could not
         // read — the "incomplete ≠ empty" disclosure the panel renders.
-        const nextList = res && Array.isArray(res.rows) ? res.rows : [];
-        const nextSkipped = res && Array.isArray(res.skipped) ? res.skipped : [];
+        const nextList = scanFailed ? kbCache.outputs : (res && Array.isArray(res.rows) ? res.rows : []);
+        const nextSkipped = scanFailed ? kbCache.outputsSkipped : (res && Array.isArray(res.skipped) ? res.skipped : []);
         const nextSig = outputListSig(nextList);
         if (nextSig !== outputsSigRef.current) {
           outputsSigRef.current = nextSig;
@@ -551,6 +564,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
           setOutputsSkipped(nextSkipped);
           kbCache.outputsSkipped = nextSkipped;
         }
+        setOutputsScanError(scanFailed);
         setOutputsLoaded(true);
         kbCache.outputsLoaded = true;
       }, []);
@@ -1192,6 +1206,17 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                     deliverables are missing from every branch below —
                     including the "empty" one, which must not read as a
                     clean bill. */}
+                {/* Total-failure disclosure (round-6 review): a rejected
+                    refresh (unreadable sessions root, transport down) must
+                    not read as a clean empty index. The listing below keeps
+                    the last successful result and the banner offers a
+                    retry. */}
+                {outputsScanError && (
+                  <div className="mb-4 px-4 py-2.5 rounded-[14px] text-[13px] leading-[18px] bg-[rgba(214,69,69,.08)] text-[#9A3B3B] dark:bg-[rgba(214,69,69,.12)] dark:text-[#E08A8A] flex items-center justify-between gap-3">
+                    <span>{t.kbOutScanError}</span>
+                    <button type="button" onClick={() => refreshOutputs()} className={`px-3 py-1 rounded-full text-[12px] font-bold shrink-0 ${soft}`}>{t.kbOutRetry}</button>
+                  </div>
+                )}
                 {outputsLoaded && outputsSkipped.length > 0 && (
                   <div className="mb-4 px-4 py-2.5 rounded-[14px] text-[13px] leading-[18px] bg-[rgba(224,119,58,.08)] text-[#9A5B23] dark:bg-[rgba(224,119,58,.12)] dark:text-[#E0A477]">
                     {t.kbOutSkippedNotice(outputsSkipped.length)}

@@ -130,3 +130,23 @@ test('deliverables index discloses unscannable session records instead of render
     assert.match(source, /kbOutSkippedNotice: \(n\) =>/);
   }
 });
+
+test('a rejected deliverables refresh renders an error with retry over the last successful table', async () => {
+  // A total scan failure (unreadable sessions root, transport down) must
+  // not flatten into a successful empty index: refreshOutputs re-lists the
+  // retained cache (the sig compare then no-ops, keeping the last
+  // successful table) and raises the scan-error state; the localized
+  // banner with a retry action renders above the same branches (round-6
+  // review P2).
+  assert.match(knowledgeSource, /const scanFailed = !res;/);
+  assert.match(knowledgeSource, /scanFailed \? kbCache\.outputs :/);
+  assert.match(knowledgeSource, /setOutputsScanError\(scanFailed\)/);
+  assert.match(knowledgeSource, /\{outputsScanError && \(/);
+  assert.match(knowledgeSource, /\{t\.kbOutScanError\}/);
+  assert.match(knowledgeSource, /onClick=\{\(\) => refreshOutputs\(\)\}[^>]*>\{t\.kbOutRetry\}/);
+  for (const lang of ['zh', 'en', 'ja']) {
+    const source = await readFile(new URL(`../src/shared/i18n/${lang}.js`, import.meta.url), 'utf8');
+    assert.match(source, /kbOutScanError: '/);
+    assert.match(source, /kbOutRetry: '/);
+  }
+});
