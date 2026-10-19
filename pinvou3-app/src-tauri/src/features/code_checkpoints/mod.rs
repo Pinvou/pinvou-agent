@@ -802,6 +802,36 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
         execution_root,
         &["config", "core.ignorecase", ignorecase],
     )?;
+    // r17 B1：filter 命令执行面——worktree `.gitattributes` 写 `*.txt filter=pwn` +
+    // 影子 repo config（unbound 布局下在 agent 可写范围）追加
+    // `[filter "pwn"] clean = <cmd>` 即以 app 权限执行任意命令。r15 M3 的
+    // `-c core.attributesFile=` 只清全局属性源，管不住 worktree 内嵌的
+    // .gitattributes。ensure_repo 每轮运行：枚举并移除 config 中的全部
+    // filter.* 节（agent 在两轮 git 调用之间的写入是文件级防御的固有竞态
+    // 面，与 info/exclude 重写同级）。
+    let filter_sections = git_ok(
+        &repo,
+        execution_root,
+        &[
+            "config",
+            "--local",
+            "--name-only",
+            "--get-regexp",
+            "^filter\\.",
+        ],
+    )
+    .unwrap_or_default();
+    for line in filter_sections.lines() {
+        let entry = line.trim();
+        if let Some(section_end) = entry.find(' ') {
+            let section = &entry[..section_end];
+            let _ = git(
+                &repo,
+                execution_root,
+                &["config", "--local", "--remove-section", section],
+            );
+        }
+    }
     // 排除列表 = 忽略目录（原样）+ 敏感模式（恒大小写不敏感的字符类形式）。
     // 三层防护必须同向（评审 B1）：exclude（本文件）让 .ENV 类变体永不进
     // 快照、且因「被 ignored」不受 clean -fd 波及；purge pathspec（恒 icase）
@@ -1021,18 +1051,24 @@ fn turn_snapshot_hard_stopped(repo_bytes: u64, packed_bytes: u64, kind: Checkpoi
 /// info/exclude 的排除——把敏感文件、账本自身或会话侧数据照进影子树。
 /// 用 git 自身的 pathspec 匹配（避免手写 gitignore 语义），命中即 bail。
 fn validate_no_sensitive_paths_staged(repo: &Path, work_tree: &Path) -> Result<()> {
-    // r16 M1：pathspec 从 secret_pathspecs() 派生——裸字面（.env/id_rsa）在
-    // git pathspec 只命中仓库根，须加 **/ 前缀覆盖子目录；恒带 :(icase)
-    // 覆盖大小写变体（与 purge 层同口径，三层不变量不被第四层打破）。
-    let mut pathspecs: Vec<String> = secret_pathspecs();
+    // r16 M1 → r17 M1 收紧：(1) 全部 secret 模式（含嵌入式 glob 如 .env.*.local）
+    // 统一派生 :(icase)**/ 变体——嵌入式 glob 的裸形态不跨 /，深/浅层否定可绕；
+    // (2) 尾斜杠账本（checkpoints/、.pinvou3/）的 **/<name>/ 形状在 git pathspec
+    // 匹配空集（死代码），改用无尾斜杠 + /** 双形状；(3) diff 路径接同一校验。
+    let mut pathspecs: Vec<String> = Vec::new();
+    for pattern in SECRET_EXCLUDES {
+        pathspecs.push(format!(":(icase){pattern}"));
+        pathspecs.push(format!(":(icase)**/{pattern}"));
+    }
     for ledger in [
-        "checkpoints/",
+        "checkpoints",
         "pending_rewind.json",
         "budget-disabled",
-        ".pinvou3/",
+        ".pinvou3",
     ] {
-        pathspecs.push(ledger.to_string());
-        pathspecs.push(format!(":(icase)**/{ledger}"));
+        let dir = format!(":(icase)**/{ledger}");
+        pathspecs.push(dir.clone());
+        pathspecs.push(format!("{dir}/**"));
     }
     let refs: Vec<&str> = pathspecs.iter().map(|s| s.as_str()).collect();
     let mut args: Vec<&str> = vec!["diff", "--cached", "--name-only", "--"];
@@ -1392,7 +1428,26 @@ pub fn apply_restore(
         .context("清理快照中的敏感文件条目失败")?;
     git_ok(&repo, &execution_root, &["checkout-index", "-f", "-a"])
         .context("写回 checkpoint 文件失败")?;
-    git_ok(&repo, &execution_root, &["clean", "-fd"]).context("清理快照后新建文件失败")?;
+    // r17 M2：clean 的 -e 排除压过 ignore 规则——worktree .gitignore 的
+    // 否定行（!.env）可让真实密钥文件在 restore 的 clean -fd 中被物理删除。
+    // 排除集与 validate/purge 同源（SECRET_EXCLUDES + 账本四路径），账本腿
+    // 同时防「旧树含 checkpoints/ + !checkpoints/ 否定 → 覆写活账本」。
+    let mut clean_args: Vec<String> = vec!["clean".into(), "-fd".into()];
+    for pattern in SECRET_EXCLUDES {
+        clean_args.push("-e".into());
+        clean_args.push(pattern.to_string());
+    }
+    for ledger in [
+        "checkpoints",
+        "pending_rewind.json",
+        "budget-disabled",
+        ".pinvou3",
+    ] {
+        clean_args.push("-e".into());
+        clean_args.push(format!("{ledger}/**"));
+    }
+    let clean_refs: Vec<&str> = clean_args.iter().map(|s| s.as_str()).collect();
+    git_ok(&repo, &execution_root, &clean_refs).context("清理快照后新建文件失败")?;
     Ok(())
 }
 
@@ -1622,6 +1677,9 @@ pub fn diff_checkpoint(
     let repo = ensure_repo(ledger_root, &execution_root)?;
     // add -A 让影子 index 反映当前执行根，diff --cached <commit> 即「快照→现在」。
     git_ok(&repo, &execution_root, &["add", "-A"])?;
+    // r17 M1(c)：diff 路径的 add -A 同样需要 staged 校验——被否定的 index
+    // 持久留存会让后续每个快照的校验都 bail（无自愈）。
+    validate_no_sensitive_paths_staged(&repo, &execution_root)?;
     let raw_status = git_ok(
         &repo,
         &execution_root,
