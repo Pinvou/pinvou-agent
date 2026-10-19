@@ -12688,3 +12688,27 @@ T07 approved online key-material management (2026-10-19):
   composition follow. Documents 1.0, product 0.10.12 and CodeWhale are unchanged.
   Deployment stays deferred. Downloads retain no hard total/cumulative duration
   or retry cap; 32 MiB bounds only joined atomic inventory, never downloads.
+
+
+T07 explicit issuer storage tooling (2026-10-19):
+
+- Service commit `a93514f` adds fixed `upgrade-trust initialize-issuers` and
+  `check-issuers` actions. Installation uses the explicit owner login/runtime
+  role; checking uses only the runtime login and authenticates the actual
+  metadata-source and issuer storage protections. It never repairs storage.
+- Initialization reuses the original schema owner, including its explicit ACL
+  normalization. Neither action registers providers, enables groups, installs
+  issuance storage or asserts complete production signing readiness.
+- Independent scoped static review passed. Separate-process CLI acceptance on
+  actual PostgreSQL passed with zero skips: missing-schema check leaves no DDL,
+  repeated install/check works, owner/runtime separation and migration/privilege
+  drift refuse, exact restoration passes, and business/issuance state stays absent.
+- Final modules/default tests (777 top-level and 1,781 nested passes; 688 top-level
+  and 664 nested explicit opt-in skips; zero failures), vet, build and pinned
+  contracts passed. A final formatting failure in one new file was normalized;
+  affected formatting and whitespace then passed. All 93 prior SQL files stayed
+  unchanged, and the actual fixture restored its database/role inventory.
+- Totals remain 5 implemented / 14 in progress / 28 incomplete or deferred of 47.
+  Online issuer controls and Root retention composition are still in progress.
+  Documents 1.0, product 0.10.12 and CodeWhale are unchanged. Deployment remains
+  deferred; downloads have no hard total/cumulative duration or retry cap.
