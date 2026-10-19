@@ -430,7 +430,8 @@ def test_null_array_elements_are_safe():
 #        lane drops what it cannot render (kept in lockstep with the
 #        series/rows filters): string items where strings are expected,
 #        (str, dict) items in the shared items anyOf — dropped before the
-#        agenda ordinals are numbered, and string-only chart categories. ──
+#        agenda ordinals are numbered, and string-only chart categories —
+#        with every series dropping the same positions as the labels. ──
 @case("15. non-string salvage elements are dropped, never rendered as reprs or phantom slots")
 def test_non_string_salvage_elements_are_dropped():
     deck = _deck(
@@ -441,7 +442,7 @@ def test_non_string_salvage_elements_are_dropped():
         {"layout": "agenda", "title": None, "items": [None, "唯一", ["嵌"], 7]},
         {"layout": "kpi", "title": "指标", "items": [["嵌"], {"num": "1", "label": "存活"}]},
         {"layout": "chart", "title": "空图表", "chartType": "bar",
-         "categories": ["Q1", None, "Q3"], "series": [{"name": "系列", "data": [1, 2]}]},
+         "categories": ["Q1", None, "Q3"], "series": [{"name": "系列", "data": [10, 20, 30]}]},
     )
     r = server.make_pptx(theme="business-blue", slides=deck, filename="test_salvage_elements")
     assert r.get("ok") is True, "salvage garbage must render ok=True, got %r" % r
@@ -463,13 +464,19 @@ def test_non_string_salvage_elements_are_dropped():
     agenda_texts = [shape.text_frame.text for shape in agenda_page.shapes if shape.has_text_frame]
     ordinals = [t for t in agenda_texts if t in ("01", "02", "03", "04", "05", "06")]
     assert ordinals == ["01"], "dropped elements must not consume agenda ordinals, got %r" % agenda_texts
-    # Null/garbage categories are dropped from the chart axis.
+    # Null/garbage categories are dropped from the chart axis, and every
+    # series drops the SAME positions its labels drop: Q3 must keep its own
+    # value (30), not the shifted 20 — read labels and values back together
+    # off the saved file (already-shortened data cannot catch the shift).
     charts = [shape.chart for slide in prs.slides for shape in slide.shapes
               if getattr(shape, "has_chart", False) and shape.has_chart]
     assert len(charts) == 1, "exactly one chart must render, got %r" % len(charts)
     plot = charts[0].plots[0]
     got_categories = list(plot.categories)
     assert got_categories == ["Q1", "Q3"], "null categories must be dropped, got %r" % got_categories
+    got_values = [float(v) for v in plot.series[0].values]
+    assert got_values == [10.0, 30.0], \
+        "series values must drop the dropped label positions, got %r" % got_values
 
 
 # ── 跑全部 ───────────────────────────────────────────────────────────────

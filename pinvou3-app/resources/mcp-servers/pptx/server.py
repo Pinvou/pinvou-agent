@@ -318,16 +318,25 @@ def layout_chart(slide, th, s):
     _title_block(slide, th, s.get("title"))
     ctype = _CHART_TYPES.get(s.get("chartType") or "bar", XL_CHART_TYPE.COLUMN_CLUSTERED)
     cd = CategoryChartData()
-    # Non-string categories are schema-illegal but the JSON-string salvage
-    # path bypasses schema validation; drop them so no str(None)/repr
-    # reaches the category axis.
-    cd.categories = [c for c in (s.get("categories") or []) if isinstance(c, str)]
+    # A non-list categories node is schema-illegal but the JSON-string salvage
+    # path bypasses schema validation; drop it like the series/rows lanes
+    # (iterating a dict or string would otherwise mint phantom labels).
+    raw_categories = s.get("categories")
+    raw_categories = raw_categories if isinstance(raw_categories, list) else []
+    # Non-string categories are dropped together with the SAME position in
+    # every series' data: labels and values must shift atomically, or a
+    # surviving category silently re-labels its neighbour's value
+    # (["Q1", None, "Q3"] + [10, 20, 30] would otherwise label 20 with Q3).
+    keep = [i for i, c in enumerate(raw_categories) if isinstance(c, str)]
+    cd.categories = [raw_categories[i] for i in keep]
     # Non-dict entries are schema-illegal but the JSON-string salvage path
     # bypasses schema validation; drop them so the legend count matches what
     # is actually drawn.
     series = [ser for ser in (s.get("series") or []) if isinstance(ser, dict)]
     for ser in series:
-        cd.add_series(ser.get("name") or "", tuple(ser.get("data") or []))
+        data = ser.get("data") or []
+        cd.add_series(ser.get("name") or "",
+                      tuple(data[i] for i in keep if i < len(data)))
     gframe = slide.shapes.add_chart(ctype, Inches(1.0), Inches(1.95), Inches(11.3), Inches(4.85), cd)
     chart = gframe.chart
     chart.has_legend = (len(series) > 1) or (ctype == XL_CHART_TYPE.PIE)
