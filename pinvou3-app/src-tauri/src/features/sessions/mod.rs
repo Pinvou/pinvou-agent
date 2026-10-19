@@ -86,12 +86,9 @@ pub(crate) fn strip_session_message_block_impl(text: &str) -> &str {
             _ => return text,
         }
     }
-    let json_end = match rest.find('\n') {
-        Some(index) => index,
-        // The JSON line terminating the string is the empty-body form
-        // (tolerated, never produced by the delivery side).
-        None => return "",
-    };
+    // A JSON line that terminates the text is the empty-body form
+    // (tolerated, never produced by the delivery side).
+    let json_end = rest.find('\n').unwrap_or(rest.len());
     let json_line = &rest[..json_end];
     // Round-8 M6: the two guards the round-7 move silently dropped (the JS
     // twin kept both) — the 64 KiB bound, and the parse itself: an
@@ -105,7 +102,15 @@ pub(crate) fn strip_session_message_block_impl(text: &str) -> &str {
         Ok(value) if value.is_object() => {}
         _ => return text,
     }
-    let after_json = &rest[json_end + 1..];
+    // The empty-body forms (JSON line terminating the text, or a trailing
+    // newline with nothing after) sit behind the guards, matching the JS
+    // twin: previously this arm ran first and an unterminated oversize or
+    // unparseable lookalike stripped to "" while the same lookalike with a
+    // trailing newline kept the text verbatim (round-22 review minor 5).
+    let after_json = match rest.get(json_end + 1..) {
+        Some(after) => after,
+        None => return "",
+    };
     if after_json.is_empty() {
         return "";
     }
