@@ -154,6 +154,11 @@ pub struct KbModelStatus {
     pub error: Option<String>,
     /// 正在下载/部署中。
     pub downloading: bool,
+    /// 本机平台是否支持本地向量嵌入（与命令层下载/装载闸同一能力源）。
+    /// false 是权威的"此设备永远无法加载模型"信号：前端据此放行
+    /// 全文检索姿态（可建库/导入/挂载，检索走既有 FTS 降级），而不是把
+    /// 知识库永久锁死在下载门后。旧后端不下发该字段 → 前端按未知处理。
+    pub local_embed_supported: bool,
     /// 下载包近似大小（展示用）。
     pub size_bytes: u64,
     /// 安装占用近似大小（展示用）。
@@ -177,6 +182,7 @@ pub(crate) fn current_status(service: &KnowledgeService) -> KbModelStatus {
         ),
         error,
         downloading: DOWNLOADING.load(Ordering::Relaxed),
+        local_embed_supported: crate::platform::capabilities::current().local_embed_supported,
         size_bytes: DISPLAY_DOWNLOAD_BYTES,
         installed_bytes: DISPLAY_DOWNLOAD_BYTES,
         version: MODEL_VERSION.to_string(),

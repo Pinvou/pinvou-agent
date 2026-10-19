@@ -57,9 +57,11 @@ test('the remote owner-model download entry is capability-gated, fail closed', (
   );
   // 按钮被能力门隐藏时，宿主（本机）的状态行必须给出平台解释，而不是让
   // 「尚未下载」悬空；非宿主观看者看到的仍是宿主的真实状态（remoteKbModelMissing）。
+  // 平台证明不支持时本地化能力说明优先于后端原始诊断（先能力位、后 error），
+  // 顺序反过来就会让诊断文本顶掉用户语言里的解释。
   assert.match(
     remoteKnowledgeSource,
-    /\(isLocalHostOwner && !localEmbedReady \? t\.kbEmbedUnsupported : t\.remoteKbModelMissing\)/,
+    /\{isLocalHostOwner && !localEmbedReady \? t\.kbEmbedUnsupported : \(ownerModelStatus\?\.error \|\|/,
   );
 });
 
@@ -79,5 +81,33 @@ test('the web kb gate attributes the blocker to the desktop app, not the platfor
     knowledgeSource,
     /\(localEmbedSupported \|\| isWeb\)[\s\S]*?t\.kbEmbedWebDesc/u,
     'the web gate must render the desktop-setup explanation where the desktop gate renders its own',
+  );
+});
+
+test('a proven-unsupported platform opens the full-text knowledge posture', () => {
+  // 后端状态携带权威能力位（localEmbedSupported，与命令层下载/装载闸同一来
+  // 源）。false = 本设备编译期即无本地嵌入，模型永远无法就绪：知识库必须以
+  // 既有全文降级姿态直接可用（可建库/导入/挂载，kb_search 走 FTS），而不是
+  // 被永久锁死在下载门后。字段缺失（旧快照/mock/能力未知）按未知 → 维持既
+  // 有模型门（fail closed 只对"放行"方向反转：这里要求严格 === false）。
+  assert.match(
+    knowledgeSource,
+    /const platformEmbedUnsupported = !!\(effectiveKbModel && effectiveKbModel\.localEmbedSupported === false\);/,
+    'KnowledgeView must derive the posture from the backend status capability bit',
+  );
+  assert.match(
+    knowledgeSource,
+    /const modelUsable = \(modelInstalled && \(modelReady \|\| modelDeferred\)\) \|\| platformEmbedUnsupported;/,
+    'the proven-unsupported platform must open the library (full-text posture) instead of the download gate',
+  );
+  assert.match(
+    composerControlsSource,
+    /const platformEmbedUnsupported = !!\(modelStatus && modelStatus\.localEmbedSupported === false\);/,
+    'the composer must read the capability bit from the refreshed model status',
+  );
+  assert.match(
+    composerControlsSource,
+    /const modelBlocked = !platformEmbedUnsupported && \(modelMissing \|\| modelNotReady\);/,
+    'local collection mounting must stay available on a proven-unsupported platform',
   );
 });

@@ -788,7 +788,13 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       // 语义检索按既有口径退化为全文（embedInfo.enabled=false 徽标已表达）。
       const modelDeferred = !!(effectiveKbModel && effectiveKbModel.deferredNoUsage);
       const modelFailed = modelInstalled && modelReadyKnown && !modelReady && !modelLoading && !modelDeferred;
-      const modelUsable = modelInstalled && (modelReady || modelDeferred);
+      // 后端状态里权威的能力位（与命令层下载/装载闸同一来源）：false = 本设备
+      // 编译期即无本地嵌入（loongarch64），模型永远无法就绪——知识库按既有的
+      // 全文检索降级姿态直接可用（可建库/导入/挂载，kb_search 走 FTS，见
+      // local_collection_mount_allowed），不再把整个库永久锁死在下载门后。
+      // 字段缺失（旧快照/mock/能力未知）按未知处理 → 维持既有模型门。
+      const platformEmbedUnsupported = !!(effectiveKbModel && effectiveKbModel.localEmbedSupported === false);
+      const modelUsable = (modelInstalled && (modelReady || modelDeferred)) || platformEmbedUnsupported;
       const dlProg = kbm.progress || null;
       const downloading = !!kbm.downloading;
       // 对端（共享知识库宿主等）正在安装模型：本窗口「立即加载」此刻只会撞锁失败。
@@ -1010,7 +1016,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                     isDark={isDark}
                     segments={[
                       { key: 'files', label: t.kbSubFiles, count: total ? total.toLocaleString() : null },
-                      { key: 'kb', label: t.kbSubKb, count: modelInstalled ? (colls.length || null) : null },
+                      { key: 'kb', label: t.kbSubKb, count: (modelInstalled || platformEmbedUnsupported) ? (colls.length || null) : null },
                       { key: 'remote', label: t.kbSubRemote },
                     ]}
                   />

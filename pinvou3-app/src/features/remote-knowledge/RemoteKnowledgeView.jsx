@@ -2138,7 +2138,11 @@ function RemoteKnowledgeView({ t, localEmbedSupported }) {
                       <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#EAF2FF] text-[#0B57D0] dark:bg-[#172B49] dark:text-[#A8C7FA]"><Database size={18} /></div>
                       <div className="min-w-0 flex-1">
                         <h3 className={`text-[15px] font-bold ${ink}`}>{t.remoteKbModelTitle}</h3>
-                        <p className={`mt-1 text-[13px] leading-5 ${ownerModelStatus?.error ? 'text-[#d63a3a]' : muted}`}>{ownerModelStatus?.error || (ownerModelStatus?.ready ? t.remoteKbModelReady : ownerModelStatus?.downloading ? t.remoteKbModelDownloading : (isLocalHostOwner && !localEmbedReady ? t.kbEmbedUnsupported : t.remoteKbModelMissing))}</p>
+                        {/* 平台证明不支持本地嵌入时，能力说明（本地化文案）优先于
+                            后端原始诊断——宿主面板的下载入口本就被能力门隐藏，
+                            残留目录的加载失败只是同一事实的英文回声，不该用
+                            诊断文本顶掉用户语言里的解释（其余场景诊断仍优先）。 */}
+                        <p className={`mt-1 text-[13px] leading-5 ${isLocalHostOwner && !localEmbedReady ? muted : (ownerModelStatus?.error ? 'text-[#d63a3a]' : muted)}`}>{isLocalHostOwner && !localEmbedReady ? t.kbEmbedUnsupported : (ownerModelStatus?.error || (ownerModelStatus?.ready ? t.remoteKbModelReady : ownerModelStatus?.downloading ? t.remoteKbModelDownloading : t.remoteKbModelMissing))}</p>
                       </div>
                       {/* 下载入口被 localEmbedReady 隐藏时（本机平台无本地嵌入，下载
                           在宿主侧也注定被拒），状态行改用平台不支持说明而不是让
