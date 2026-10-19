@@ -136,7 +136,7 @@ test('a rejected deliverables refresh renders an error with retry over the last 
   // not flatten into a successful empty index: refreshOutputs re-lists the
   // retained cache (the sig compare then no-ops, keeping the last
   // successful table) and raises the scan-error state; the localized
-  // banner with a retry action renders above the same branches (round-6
+  // banner with a retry action renders above the same branches (round-7
   // review P2).
   assert.match(knowledgeSource, /const scanFailed = !res;/);
   assert.match(knowledgeSource, /scanFailed \? kbCache\.outputs :/);

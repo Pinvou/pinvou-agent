@@ -1,4 +1,4 @@
-/** Deliverables index total-failure contract (round-6 review P2): the shared
+/** Deliverables index total-failure contract (round-7 review P2): the shared
  * tauriArtifacts cluster must propagate a rejected scan (unreadable sessions
  * root, transport down) as a rejection so the Knowledge panel can render an
  * error over its last successful table — flattening it to

@@ -4030,7 +4030,7 @@
     // unreadable, transport down) and must propagate to the caller: the
     // Knowledge panel renders an error over its last successful table.
     // Swallowing it into { rows: [], skipped: [] } made an unreadable root
-    // read as a clean empty index (round-6 review P2).
+    // read as a clean empty index (round-7 review P2).
     const raw = await invoke("list_deliverable_index");
     const disk = raw && Array.isArray(raw.rows) ? raw.rows : [];
     const skipped = raw && Array.isArray(raw.skipped) ? raw.skipped : [];

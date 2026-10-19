@@ -458,7 +458,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       // transport down) — a total scan failure, distinct from the partial
       // `outputsSkipped` signal above. The last successful table stays
       // rendered underneath; a rejection must not read as a clean empty
-      // index (round-6 review P2).
+      // index (round-7 review P2).
       const [outputsScanError, setOutputsScanError] = useState(false);
       const [outCat, setOutCat] = useState('all');
       const [outQuery, setOutQuery] = useState('');
@@ -541,7 +541,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         // cleanup (setOutputs after unmount is a no-op and harmless).
         if (outputsDisposedRef.current) return;
         // null = the refresh REJECTED (sessions root unreadable, transport
-        // down): a total failure must not read as a clean bill (round-6
+        // down): a total failure must not read as a clean bill (round-7
         // review P2). The rejected refresh re-lists the retained cache below
         // (the sig compare then no-ops, keeping the last successful table)
         // and raises the scan-error banner with a retry action instead of
@@ -1206,7 +1206,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                     deliverables are missing from every branch below —
                     including the "empty" one, which must not read as a
                     clean bill. */}
-                {/* Total-failure disclosure (round-6 review): a rejected
+                {/* Total-failure disclosure (round-7 review): a rejected
                     refresh (unreadable sessions root, transport down) must
                     not read as a clean empty index. The listing below keeps
                     the last successful result and the banner offers a
