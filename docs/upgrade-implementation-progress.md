@@ -21,7 +21,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T08 | In progress | Protected atomic metadata publication primitives; complete business publication workflows remain pending |
 | T09 | In progress | Bounded package/native-byte inspection; complete upload, quarantine and platform qualification remain pending |
 | T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
-| T11 | In progress | Protected multi-platform drafts, actual UI/API/history/recovery and authenticated target-record migration; assembly execution, qualification and Release/Target approval remain pending. |
+| T11 | In progress | Protected multi-platform drafts and reviewed content freezing with actual UI/API/history/recovery; package qualification and Release/Target lifecycle approval remain pending. |
 | T12 | In progress | Original stable-facts identity, exact profile matching and immutable forward-policy intersection; protected Registry/version/approval and production qualification remain pending |
 | T13 | Not completed | Supported floor, prerequisite paths and historical bridge approvals. |
 | T14 | In progress | Protected configuration drafts with actual UI/API/recovery; qualified parents, publication, scheduling and first-baseline activation remain pending. |
@@ -12514,3 +12514,47 @@ progress; totals remain five implemented/fourteen in progress/twenty-eight
 incomplete or deferred of 47. Product 0.10.12, documents 1.0 and CodeWhale remain
 fixed. Deployment is deferred; downloads retain no hard total/cumulative duration
 or retry cap, and 32 MiB applies only to joined atomic business inventory.
+
+### T11: independently reviewed content freezing (2026-10-19)
+
+Service `d5ac0200d64eb3e5ff7c0daddb08ca24a100cda1` is DCO committed and pushed
+on `codex/t11-release-drafts`. The complete operator workflow prepares an exact
+parent/complete-target content change, obtains one real independent T05 review,
+and executes the frozen AssembleRelease command through authenticated HTTP and
+the three-language admin. Reviewers cannot execute their own reviewed command,
+even with full write permissions. Assembly freezes the original source refs and
+content, advances the parent once and blocks subsequent editing. It does not
+qualify declared packages/certificates or approve/publish Release Targets.
+
+Explicit owner migration adds V3 after the authenticated V2 migration. All 88
+prior committed SQL sources remain intact; startup does not migrate or heal data.
+V3 keeps both assembly recovery owners registered when admission is disabled.
+T06 optionally obtains the native final result and seals/completes it in the same
+transaction as domain, audit and outbox writes, preserving legacy Apply owners.
+Replay authenticates the original actual prepared change or assembled history
+and keyed MAC. Permanent original commit locators remain available under current
+read-only authority after encrypted response cleanup, without reopening an ACK.
+
+Two independent scoped code reviews passed after primary repairs. Targeted
+actual PostgreSQL coverage verifies final-result rollback/retry/fencing/lost ACK,
+V3 migration, source-fault refusal/exact restoration, stale original CAS proof,
+independent approval and read-only lookup after 24-hour cleanup. Subsequent V3,
+HTTPS and actual CLI acceptance passed five groups with no skips or failures.
+The new actual browser case passed all three languages, corrupt refusal storage
+with zero writes, confirmed committed-response loss, exact original replay,
+actual JSON settlement after a scope unmount, independent review and frozen
+editing refusal. All four original Release draft browser cases also passed.
+The first new browser run exposed a test locator mismatch; only that locator was
+repaired and the new case rerun. Failed attempts are not counted as passing.
+
+Final defaults passed 768 top-level/1781 child tests, with 1344 explicit opt-in
+skips and zero failures; these are separate from actual acceptance. Modules,
+full vet, private server build, pinned contracts, affected Go formatting and
+whitespace passed. The unrelated existing rollout formatting baseline stayed
+unchanged, and generated database fixtures restored their original inventory.
+
+T11 remains in progress pending qualification and the remaining Release/Target
+approval/lifecycle work. Totals remain five implemented/fourteen in progress/
+twenty-eight incomplete or deferred of 47. Documents 1.0, product 0.10.12 and
+CodeWhale stay fixed. Deployment is deferred. Downloads have no hard total or
+cumulative duration/retry cap; 32 MiB still bounds only joined atomic inventory.
