@@ -5,8 +5,8 @@ Tasks are completed individually only after in-scope independent code review,
 repairs, applicable tests and commit/push. Contract completion is not production
 client, service, physical platform certification or rollout readiness.
 
-Current task totals: 47 tasks; five implemented, sixteen in progress and
-twenty-six not completed or deferred. Detailed chronological evidence follows
+Current task totals: 47 tasks; five implemented, seventeen in progress and
+twenty-five not completed or deferred. Detailed chronological evidence follows
 the current overview; a completed bounded batch does not complete its whole task.
 
 | Task | Status | Delivery / outstanding dependency |
@@ -19,7 +19,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T06 | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
 | T07 | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop, permanent material fencing, OpenBao physical-stop recovery, authenticated Root/history/original-document catalog and genesis-only role-scoped key deny; active issuance and emergency publication composition remain pending |
 | T08 | In progress | Reviewed genesis catalog/component management, protected atomic publication primitives and actual genesis-only append-only signing-key deny; active metadata and other business publication workflows remain pending |
-| T09 | In progress | Bounded package/native-byte inspection, immutable storage, authenticated upload/recovery, ZIP inspection/UI and current-trust Package/evidence CLI and admin inspection; formal validation, admission, quarantine and platform qualification remain pending |
+| T09 | In progress | Bounded package/native-byte inspection, immutable storage, authenticated upload/recovery, ZIP inspection/UI, current-trust Package/evidence inspection and authenticated final-installer structure/internal-version admin observations; formal validation, admission, quarantine and platform qualification remain pending |
 | T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
 | T11 | In progress | Protected multi-platform drafts, reviewed content freezing and cancellation of assembled declarations with complete unchanged draft children; package qualification and Release/Target lifecycle approval/publication remain pending. |
 | T12 | In progress | Original stable-facts identity, exact profile matching and immutable forward-policy intersection; protected Registry/version/approval and production qualification remain pending |
@@ -43,7 +43,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T30 | Not completed | Complete encrypted backup, manual export and original-deadline local cleanup. |
 | T31 | Not completed | Trusted helper/launcher build, installation and host protection. |
 | T32 | Not completed | Client consume, original-result recovery and permanent old-execution fencing. |
-| T33 | Not completed | Actual Windows upgrade execution and qualification. |
+| T33 | In progress | Reviewed Windows same-object embedded Authenticode evidence library/read-only CLI, shared relative-handle custody and retained T29 job compatibility; protected host, publisher policy, installation/slot execution and platform qualification remain pending. |
 | T34 | Not completed | Actual Linux x64/arm64 upgrade execution and qualification. |
 | T35 | Not completed | Actual macOS Intel/Apple Silicon execution and qualification. |
 | T36 | Not completed | Protected single-hop execution, active-identity verification and local health. |
@@ -13350,3 +13350,80 @@ Parallel T29 and genesis-only T07/T08 delivery (2026-10-20):
   26 incomplete or deferred. Product stays 0.10.12, normative documents stay 1.0,
   CodeWhale is unchanged and deployment remains deferred. Downloads still have
   no hard total/cumulative deadline or retry-count cap; 32 MiB is metadata only.
+
+
+## Parallel T09 and Windows T33 evidence delivery (2026-10-20)
+
+Two separate worktrees developed the service and client workflows concurrently.
+After self-review, immutable source snapshots allowed two non-author line-by-line
+reviews to overlap final author tests. PostgreSQL/browser suites and the shared
+Cargo target had explicit exclusive owners. Frozen-source repairs received
+narrow re-review and fresh affected tests; final integration checked the exact
+candidate trees before signed-off commits and ordinary pushes.
+
+- T09 adds an authenticated HTTP and three-language administration workflow over
+  the actual received upload. Two short SERIALIZABLE reads authenticate original
+  receipt/birth/audit sources, current permissions/session, Root/history, deny
+  and SQL time; byte capture and parsing stay outside the transactions. The
+  final read runs after parser success and failure. Changed authority or sources
+  discard earlier facts and diagnostics without business writes.
+- The observer binds actual upload, signed Manifest, FullPack and final-installer
+  sizes/hashes. Windows returns original PE/resource/four-part version facts;
+  Debian returns complete parsed control declarations. These are not approved
+  product-version mappings, NSIS authenticity, native publisher verification or
+  Artifact admission. DMG and unsupported encodings remain explicit refusals.
+- Independent review caught a Debian declaration mismatch: the existing parser
+  permits internal TAB, whereas the new UI initially rejected it. The repaired
+  production validator accepts that domain and retains other control/UTF-8
+  limits. Actual signed HTTP responses and original receipts enter the real
+  validator. PE observation also reuses one complete private resource tree and
+  independently captures/hashes its leaves; 64-leaf success and 4090-leaf report
+  capacity refusal preserve complete results or no report.
+- Final T09 integration passes all nine gates: default Go tests report 866
+  top-level and 1897 nested passes, 736 top-level and 675 nested explicit opt-in
+  skips, zero failures. Fresh PostgreSQL/HTTPS/signed-OIDC/Chrome acceptance,
+  including the old Package HTTP workflow, passes four top-level and 19 nested
+  cases with zero skips/failures. All 104 existing SQL Git blobs remain unchanged;
+  two pre-existing checkout EOL differences are not claimed as raw equality.
+- T33 adds a complete explicit read-only library/CLI for actual embedded Windows
+  signature observations. Same-object ReOpenFile sharing, relative-handle path
+  custody, full pre/post hashes and identity checks retain the real file through
+  native state CLOSE. Fixed no-UI/cache-only whole-chain policy has no online or
+  test-root fallback. Each embedded signature is verified separately; SDK state
+  and evidence have bounded ownership and lossless FILETIME strings.
+- The shared updater custody leaf preserves T29 error/API/Identity serialization
+  and namespace behavior. An actual pre-extraction production executable creates
+  an original job; the new executable returns identical status/cache results,
+  refuses damaged journals without healing them, still rescans retained bytes,
+  and recovers after exact restoration. CI adds both new leaves on Linux/Windows
+  while retaining full regression routing for unknown/high-risk paths.
+- Independent review caught default tests requiring this machine's cached signer
+  chain. The repaired defaults compare real hFile/NULL-path observations without
+  requiring a cached positive. Missing/error evidence rules use explicit pure
+  fixtures; the separate strict native positive remains opt-in and actually ran.
+  A fresh Windows host with an empty cache was not tested.
+- Final core integration passes all 20 gates. Actual Windows tests pass one
+  custody case, eight native library cases plus two CLI groups, and ten T29
+  library cases plus two CLI groups. The one default opt-in case is explicitly
+  ignored there and passes separately with genuine complete cached chains and
+  timestamps. Legacy-job compatibility, strict positive, Clippy, formatting,
+  production builds, architecture/version/72 CI-policy tests and whitespace pass.
+  macOS target checks are compile-only and do not establish native execution.
+- The final production CLI also observes genuine Python executable bytes with
+  native status zero but chain error 0x01000040: the result stays unknown and all
+  qualification, installation, execution-object and trusted-deadline flags stay
+  false. No cache is cleared and no certificate store, service or system date
+  is configured.
+- Both code batches pass two scoped independent reviews. All 25 service source
+  paths and 28 client paths match their reviewed raw bytes. During code acceptance,
+  the client's 2863 protected files retained Git content; 213 checkout differences
+  were only EOL.
+  Service commit 1b38e81e38a80351e5ecb1444bc0c526dcb8f272 and client commit
+  3c2b3263611551c461816ba44416ef76779a0efe are pushed with the exact tested trees.
+  T09/T33 remain in progress; publisher policy, protected host, installation and
+  platform certification are not delivered by these observation workflows.
+
+Current totals are 5 implemented / 17 in progress / 25 incomplete or deferred.
+Product remains 0.10.12, normative documents 1.0 and CodeWhale unchanged;
+deployment remains deferred. Downloads retain no hard total/cumulative deadline
+or retry-count cap, and 32 MiB remains business metadata rather than a blob cap.
