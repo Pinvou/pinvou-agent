@@ -108,6 +108,31 @@ test('失败分支:源码注入桩 loader 验证 false + 清挂起 + 可重试',
   delete globalThis.__stubEn;
 });
 
+// Round-47 M6: 生产入口的调用点钉——helper 在隔离态被钉还不够,三个入口
+// (main/pet-main/reader-main)必须真的经由 ensureLanguageWithZhFallback
+// 引导;退回裸 ensureLanguage(...) 正是 round-46 M1 修掉的白屏类。
+test('引导兜底:三个入口都经 ensureLanguageWithZhFallback 引导', async () => {
+  const fs = await import('node:fs');
+  const read = (p) => fs.readFileSync(new URL(p, import.meta.url), 'utf8');
+  for (const entry of [
+    '../src/app/main.jsx',
+    '../src/app/pet-main.jsx',
+    '../src/app/reader-main.jsx',
+  ]) {
+    const source = read(entry);
+    assert.match(
+      source,
+      /ensureLanguageWithZhFallback\(/,
+      `${entry} 必须经引导兜底装载语言`,
+    );
+    assert.doesNotMatch(
+      source,
+      /(?<!With)ensureLanguage\((?:__storedLang \|\| __initialLang|initialSystemLanguage\(\))\)/,
+      `${entry} 不得退回裸 ensureLanguage 引导`,
+    );
+  }
+});
+
 // 引导兜底(round-46 M1):入口的降级装载链。旧 `dict[language] || dict.zh`
 // 是死腿——zh 只在语言=zh 时才装载,en/ja 用户 chunk 失败时该腿永远空,首帧
 // t.uiMainApp 解引用 undefined 即白屏。ensureLanguageWithZhFallback 让 zh 在

@@ -187,45 +187,58 @@ pub async fn list_sessions(
             && !acp_pool.agents().is_code_session(&m.id)
             && !store.is_hidden(&m.id)
     });
-    Ok(metas
-        .into_iter()
-        .map(|metadata| {
-            let title_attachment_names = session_title_attachment_names(&store, &metadata);
-            // On a read-cache miss the sidecar is re-read; the list is ≤50
-            // entries. Bound sessions stay resident once backfilled, while
-            // unbound sessions get no negative caching — each refresh still
-            // costs on the order of ≤2 syscalls × 50 (acceptable; review #464
-            // nit: the comment must not exaggerate this as "resident after a
-            // single N-read pass").
-            let workspace_binding = store
-                .session_workspace_binding(&metadata.id)
-                .map(|path| path.display().to_string());
-            // The keychain snapshot exists only once bound; a sidecar cold read
-            // (same order of magnitude as the binding).
-            // Round-30 minor 5: the projection goes through
-            // compose_workspace_roots — the same delivery-time re-check the
-            // codex lane applies (round-21 M1's "display == engine-effective"
-            // invariant) — so a soft-kept root that later resolves to a
-            // dropped widening target does not display as accessible while
-            // the engine drops it.
-            let workspace_roots = if workspace_binding.is_some() {
-                crate::compose_workspace_roots(acp_pool.agents(), &store, &projects, &metadata.id)
-                    .iter()
-                    .map(|path| path.display().to_string())
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            SessionListItem {
-                pinned: store.is_pinned(&metadata.id),
-                pinned_at: store.pinned_at(&metadata.id),
-                title_attachment_names,
-                workspace_binding,
-                workspace_roots,
-                metadata,
-            }
-        })
-        .collect())
+    // Round-47 M11: the per-session projection is disk-bound work — a sidecar
+    // cold read plus compose_workspace_roots' canonicalize walk per extra
+    // root, per bound session, on the once-per-turn-end refresh cadence
+    // (session:list_changed / chat:done). It rides the blocking lane like
+    // create_session's durable work (round-40 M7 / the #695 convention)
+    // instead of stalling async-runtime tasks.
+    let store = store.inner().clone();
+    let agents = acp_pool.agents().clone();
+    let projects = projects.inner().clone();
+    crate::features::codex_acp::on_blocking_labeled("list_sessions", move || {
+        Ok(metas
+            .into_iter()
+            .map(|metadata| {
+                let title_attachment_names = session_title_attachment_names(&store, &metadata);
+                // On a read-cache miss the sidecar is re-read; the list is ≤50
+                // entries. Bound sessions stay resident once backfilled, while
+                // unbound sessions get no negative caching — each refresh still
+                // costs on the order of ≤2 syscalls × 50 (acceptable; review #464
+                // nit: the comment must not exaggerate this as "resident after a
+                // single N-read pass").
+                let workspace_binding = store
+                    .session_workspace_binding(&metadata.id)
+                    .map(|path| path.display().to_string());
+                // The keychain snapshot exists only once bound; a sidecar cold read
+                // (same order of magnitude as the binding).
+                // Round-30 minor 5: the projection goes through
+                // compose_workspace_roots — the same delivery-time re-check the
+                // codex lane applies (round-21 M1's "display == engine-effective"
+                // invariant) — so a soft-kept root that later resolves to a
+                // dropped widening target does not display as accessible while
+                // the engine drops it.
+                let workspace_roots = if workspace_binding.is_some() {
+                    crate::compose_workspace_roots(&agents, &store, &projects, &metadata.id)
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                SessionListItem {
+                    pinned: store.is_pinned(&metadata.id),
+                    pinned_at: store.pinned_at(&metadata.id),
+                    title_attachment_names,
+                    workspace_binding,
+                    workspace_roots,
+                    metadata,
+                }
+            })
+            .collect::<Vec<SessionListItem>>())
+    })
+    .await
+    .map_err(|e| format!("list_sessions: {e:#}"))
 }
 
 /// Session-mention injection block contract (the JS builder in
@@ -2159,12 +2172,12 @@ mod web_projection_tests {
                 "secret-project".to_string(),
                 "very-secret-extra".to_string()
             ],
-            "钥匙串快照过 Web 边界同样必须逐项降级为末级目录名"
+            "the keychain snapshot must likewise degrade every entry to its leaf name at the web boundary"
         );
         assert_eq!(
             item.workspace_binding.as_deref(),
             Some("secret-project"),
-            "workspace_binding 过 Web 边界必须降级为末级目录名"
+            "workspace_binding must degrade to leaf names at the web boundary"
         );
 
         // Unbound sessions (None) are unaffected; the Windows form likewise

@@ -37,6 +37,7 @@ const ProjectGroupHeader = lazy(() =>
 const WorkspacePickerDialog = lazy(() =>
   import('../features/projects/WorkspacePickerDialog.jsx').then(m => ({ default: m.WorkspacePickerDialog })));
 import { computePickerRows, pickerPrimaryRoot, pickerProjectRoots, workspaceNoticeTone } from '../features/projects/workspacePickerState.js';
+import { boundDraftNoticeMode as boundDraftNoticeModeOf } from '../features/chat/bound-draft-mode.js';
 import { removeRootPlan, rootAlreadyPresent, rootConflictsWithExisting, rootPathOf } from '../features/projects/manageFoldersState.js';
 const ManageProjectFoldersDialog = lazy(() =>
   import('../features/projects/ManageProjectFoldersDialog.jsx').then(m => ({ default: m.ManageProjectFoldersDialog })));
@@ -2173,11 +2174,9 @@ const App = () => {
       // "visibility" wording for a conversation that then ran plan (and the
       // inverse overclaim under work-default=plan/code-default=yolo). The
       // codex lane keeps the draft agent's own mode (correct since round-9).
-      const chatLaneGrantMode = () => (
-        bridge.sessions && typeof bridge.sessions.boundDraftMode === 'function'
-          ? bridge.sessions.boundDraftMode()
-          : ((bs && bs.modeState && bs.modeState.mode) || null)
-      );
+      // round-47 M5: resolver body shared with ChatView (features/chat/
+      // bound-draft-mode.js) — one body, no drift twin.
+      const chatLaneGrantMode = () => boundDraftNoticeModeOf(bridge, bs);
       // Same-weight grant notice for every entry that grants folder access
       // without the picker's expansion panel (§9.4). Codex-lane channels for
       // a third-party ACP agent say "recorded" instead: the §6 stage-gate

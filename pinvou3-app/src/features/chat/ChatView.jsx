@@ -8,6 +8,7 @@ import { sceneStatusKey } from './scene_status_key.js';
 import { AlertTriangle, ArrowLeft, BarChart2, Brain, Briefcase, Check, ChevronDown, ChevronRight, ClipboardList, Copy, Edit2, FileText, Globe, ImageIcon, MessageSquare, Monitor, Package, Paperclip, PinIcon, Presentation, Send, Sparkles, StopCircle, Terminal, Upload, X, Zap } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 import { useCopyFlash } from '../../hooks/useCopyFlash.js';
+import { boundDraftNoticeMode as boundDraftNoticeModeOf } from './bound-draft-mode.js';
 import { useAutoResizeTextarea } from '../../hooks/useAutoResizeTextarea.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -2962,12 +2963,9 @@ const ToolWelcomeCard = ({ toolId, t, onSend }) => {
       // flips to exactly that mode when the pick lands. The snapshot still
       // shows the unbound draft's mode at notice time. Older hosts without
       // the query keep the previous snapshot read.
-      function boundDraftNoticeMode() {
-        if (bridge.sessions && typeof bridge.sessions.boundDraftMode === 'function') {
-          return bridge.sessions.boundDraftMode();
-        }
-        return (bs && bs.modeState && bs.modeState.mode) || null;
-      }
+      // round-47 M5: the resolver body lives in features/chat/bound-draft-mode.js
+      // (shared with main.jsx's chatLaneGrantMode) — one body, no drift twin.
+      const boundDraftNoticeMode = () => boundDraftNoticeModeOf(bridge, bs);
       async function handleModeChipSwitch(target, { isPlan }) {
         if (!bridge.available || !bridge.interaction) return;
         if (target === 'plan' && !isPlan) {

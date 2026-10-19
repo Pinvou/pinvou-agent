@@ -18,7 +18,10 @@ test('project-row new-session channel wiring (F4)', () => {
   assert.match(header, /data-testid="project-new-session"/, '按钮可定位');
   assert.doesNotMatch(header, /__TAURI__|invoke\(/, '组头组件不碰 Tauri 全局');
   // 宿主:cwd = 项目记忆主根,钥匙串 = 项目全量根,车道跟随当前页。
-  assert.match(main, /const handleProjectNewSession[\s\S]*?pickerPrimaryRoot\(project\)[\s\S]*?pickerProjectRoots\(project\)/, '项目通道 cwd/roots 解析');
+  // Round-47 M4: 双窗边界收紧——无界惰性匹配的首腿可漂到 handler 外更早的
+  // pickerPrimaryRoot(1890 一带),roots 腿再漂到后续无关调用,删掉 handler
+  // 体内的解析行测试仍绿(变异已证)。锚在定义点、窗口限定在函数体内。
+  assert.match(main, /const handleProjectNewSession[\s\S]{0,400}?pickerPrimaryRoot\(project\)[\s\S]{0,200}?pickerProjectRoots\(project\)/, '项目通道 cwd/roots 解析');
   // 侧栏接线:桌面守门 + 纯标签项目(无根)不渲染死入口(review #484 M3)。
   assert.match(main, /onNewSession: bridge\.projects && pickerProjectRoots\(group\)\.length > 0 \? \(\) => handleProjectNewSession\(group\.projectId\) : undefined/, '侧栏接线(桌面守门+无根门控)');
   // 授权告知同重量(§9.4):不经选择器的直达通道也要在授权一刻给出分模式告知。
@@ -31,7 +34,13 @@ test('project-row new-session channel wiring (F4)', () => {
   assert.match(main, /handleProjectNewSession[\s\S]*?setSettingsToast\(workspaceGrantNotice\(\s*currentView === 'codex' \? activeLaneMode\(\) : chatLaneGrantMode\(\),\s*roots\.length,\s*currentView === 'codex' && \(codexLaneDeliveryReported \? codexLaneDeliveryLimited : true\),?\s*\)\)/, '项目行新对话的授权告知');
   // The chat-lane mode must come from the bridge's post-binding resolution,
   // not the unbound render-scope snapshot (review #484 round-11 M6).
-  assert.match(main, /chatLaneGrantMode = \(\) => \(\s*bridge\.sessions && typeof bridge\.sessions\.boundDraftMode === 'function'\s*\? bridge\.sessions\.boundDraftMode\(\)/, 'chat 车道授权告知读取绑定后模式');
+  assert.match(main, /chatLaneGrantMode = \(\) => boundDraftNoticeModeOf\(bridge, bs\)/, 'chat 车道授权告知读取绑定后模式');
+  // Round-47 M5: 解析器唯一实体在共享模块,主窗与 ChatView 都是薄委托——
+  // 双侧钉死,防止任何一侧退回本地复本(漂移向量)。
+  const chatViewSrc = read('src', 'features', 'chat', 'ChatView.jsx');
+  assert.match(main, /import \{ boundDraftNoticeMode as boundDraftNoticeModeOf \} from '\.\.\/features\/chat\/bound-draft-mode\.js'/, '主窗委托共享解析器');
+  assert.match(chatViewSrc, /import \{ boundDraftNoticeMode as boundDraftNoticeModeOf \} from '\.\/bound-draft-mode\.js'/, 'ChatView 委托共享解析器');
+  assert.match(chatViewSrc, /const boundDraftNoticeMode = \(\) => boundDraftNoticeModeOf\(bridge, bs\)/, 'ChatView 授权告知读取绑定后模式');
   // Round-5 M2:chat 车道有活动会话时,桥层 setDraftWorkspace 是静默 no-op
   // (activeSessionId 非空直接 return false),项目行「+」曾经点击无任何反馈。
   // 修法:applyWorkspaceTarget 的 chat 分支先进草稿(与 handleNewChat 同路

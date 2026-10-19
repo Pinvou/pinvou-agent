@@ -734,7 +734,7 @@ fn align_probe_busy(
 /// from-spelled roots would be written back into the just-translated session keychain);
 /// temporary/scheduled sessions without a bound workspace get ALIGN_NO_WORKSPACE.
 /// Idempotent: when the keychain already matches exactly, returns applied=false,
-/// reason=no_change。
+/// reason=no_change.
 ///
 /// The two gates' deliberate divergence (round-19 minor 7 cross-reference, pin:
 /// `align_persists_a_project_ancestor_root_by_design`; delivery pin
@@ -914,7 +914,7 @@ pub async fn align_session_to_project(
 }
 
 /// The three stores `align_session_to_project` depends on (extracted so command-level tests bypass
-/// Tauri State/AppHandle)。
+/// Tauri State/AppHandle).
 pub(crate) struct AlignStores<'a> {
     pub projects: &'a ProjectStore,
     pub sessions: &'a SessionStore,
@@ -3114,6 +3114,47 @@ mod tests {
     }
 
     /// align's active-turn fence: rejects when busy and writes nothing.
+
+    #[test]
+    fn align_initial_busy_probe_pins_all_four_inputs() {
+        // Round-47 M9: the initial busy probe (before the blocking worker)
+        // had no site pin — the helper test covered only the pure OR logic,
+        // so swapping any probe input to `false` (e.g. dropping the
+        // compaction window from the INITIAL check) shipped green while
+        // busy turns slipped past into the align kernel.
+        let window = production_source();
+        let start = window
+            .find("let acp_blocking = acp_pool")
+            .expect("the initial align probe block must exist");
+        let block = window_upto(window, start, 1400);
+        assert!(
+            block.contains("let busy = align_probe_busy("),
+            "the initial probe must feed align_probe_busy: {block}"
+        );
+        for (probe, label) in [
+            (
+                "rebind_blocking_sessions(std::slice::from_ref(&session_id))",
+                "the acp rebind probe",
+            ),
+            (
+                "engines.is_turn_active(&session_id)",
+                "the active-turn probe",
+            ),
+            (
+                "engines.is_scheduled_turn_running(&session_id)",
+                "the scheduled-turn probe",
+            ),
+            (
+                "engines.is_compaction_in_flight(&session_id)",
+                "the compaction probe",
+            ),
+        ] {
+            assert!(
+                block.contains(probe),
+                "the initial busy probe must keep {label}: {block}"
+            );
+        }
+    }
 
     #[test]
     fn align_error_rendering_keeps_typed_markers_at_the_head() {
@@ -5493,12 +5534,35 @@ mod tests {
             .find("if let Some(engine) = engines.handle_for(&session_id).await {")
             .expect("the align live-push block must exist");
         let block = window_upto(window, start, 4200);
-        let busy_leg = block
-            .find("outcome.live_push_failed = true;")
-            .expect("the busy-recheck leg must set the flag");
-        let sync_leg = block
-            .rfind("outcome.live_push_failed = true;")
-            .expect("the last failure leg must set the flag");
+        // Round-47 M8: first-vs-last (find/rfind) let a deleted middle leg
+        // pass — pin the COUNT and anchor every leg to its producing arm so
+        // deleting any one of the three reddens.
+        let leg_count = block.matches("outcome.live_push_failed = true;").count();
+        assert_eq!(
+            leg_count, 3,
+            "exactly three live-push failure legs: {block}"
+        );
+        for (arm, label) in [
+            (
+                "busy_now || acp_state_unreadable",
+                "the post-await busy recheck",
+            ),
+            (".sync_session(session_id.clone()", "the sync_session error"),
+            ("error.root_cause()", "the load error"),
+        ] {
+            let arm_at = block.find(arm).unwrap_or_else(|| {
+                panic!("the {label} producing arm must exist in the live-push block: {block}")
+            });
+            let leg_at = block[arm_at..]
+                .find("outcome.live_push_failed = true;")
+                .unwrap_or_else(|| {
+                    panic!("the {label} arm must set the flag in the same block: {block}")
+                });
+            assert!(
+                leg_at < 600,
+                "the {label} leg must sit near its producing arm (found {leg_at} chars away)"
+            );
+        }
         assert!(
             block.contains("is_compaction_in_flight"),
             "the post-await recheck must still count the compaction window"
@@ -5507,6 +5571,12 @@ mod tests {
             block.contains(".sync_session(session_id.clone()"),
             "the push leg must exist in the same block"
         );
+        let busy_leg = block
+            .find("outcome.live_push_failed = true;")
+            .expect("the busy-recheck leg must set the flag");
+        let sync_leg = block
+            .rfind("outcome.live_push_failed = true;")
+            .expect("the last failure leg must set the flag");
         assert!(
             busy_leg < sync_leg,
             "the failure legs must all live inside the live-push block"

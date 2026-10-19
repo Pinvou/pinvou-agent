@@ -11,9 +11,11 @@ import { personaOverlayFor } from '../../shared/persona-overlay.js';
     // Personas/persona-shared/SavedPersonaConfirmDialog); the promo banner in
     // Personas.jsx deliberately keeps its shorter 4-font stack from main.
 export const IOS_FONT_STACK = '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif';
-    // 部门标签按当前 UI 语言取词(t.depts),中文词典(zhDict().depts)兜底
+    // Department labels follow the UI language (t.depts) with the zh dictionary
+    // (zhDict().depts) as the fallback.
 export function deptLabelFor(t, k) { return (t && t.depts && t.depts[k]) || (zhDict().depts && zhDict().depts[k]) || k; }
-    // 内置卡名称/简介按 UI 语言显示(personas-i18n.js overlay,按 id 查),中文兜底;自制卡不翻
+    // Built-in card name/bio render per UI language (personas-i18n.js overlay,
+    // keyed by id) with zh fallback; user-made cards are never translated.
 export function personaText(c, t) {
       const tr = personaOverlayFor(c, t && t.langTag);
       if (!tr) return c || {};

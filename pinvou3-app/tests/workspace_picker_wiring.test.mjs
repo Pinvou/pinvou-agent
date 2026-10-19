@@ -27,6 +27,12 @@ test('workspace picker wiring contract', () => {
   for (const prop of ['onSelectProject={handlePickerSelectProject}', 'onTemporary={handlePickerTemporary}', 'onBrowse={handlePickerBrowse}', 'onBrowseExcluded']) {
     assert.ok(main.includes(prop), `选择器回调 ${prop}`);
   }
+  // Round-47 M7: 重入守卫与失败上报——选择器应用路径的两个守卫此前零钉。
+  // in-flight 引用门控(重复选择/浏览竞态不得并发应用)与失败上报(静默成功
+  // 是过度授权方向的对偶)都必须存在于宿主接线。
+  assert.match(main, /const applyInFlightRef = useRef\(false\)/, '应用路径 in-flight 守卫存在');
+  assert.match(main, /applyInFlightRef\.current[\s\S]{0,200}?= false/, '应用完成后复位 in-flight 守卫');
+  assert.match(main, /const reportPickerApplyFailure[\s\S]{0,300}?setSettingsToast/, '应用失败上报走设置 toast');
   // 浏览通道:ensure 物化/锚定复用先行,排除列表(无 outcome)走如实告知分支。
   assert.match(main, /ensureFolderProjects\(\[folder\]\)/, '浏览通道先 ensure');
   assert.match(main, /setPickerExcluded\(folder\)/, '排除列表分支');

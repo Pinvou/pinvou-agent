@@ -488,6 +488,15 @@ fn list(output: OutputMode) -> Result<CliOutcome, CliError> {
 /// project.
 fn create(name: &str, roots: Vec<PathBuf>, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store = open_store()?;
+    // Round-47 M12: root-accepting writers hold `rebind_fence` — the GUI's
+    // create does (app commands/projects.rs, review #464 round-6 finding 6),
+    // and this PR's own round-40 M4 rationale (same durable assignment map
+    // via GUI or CLI) closes the class for update/delete; create joins them
+    // (a create landing mid-rebind would re-add a `from`-prefixed root after
+    // the rebind's snapshot).
+    let _fence = store
+        .rebind_fence()
+        .map_err(|error| project_error("create", error))?;
     let project = store
         .create_project(name.to_owned(), roots)
         .map_err(|error| project_error("create", error))?;
