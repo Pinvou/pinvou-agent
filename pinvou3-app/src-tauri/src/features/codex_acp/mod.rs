@@ -2080,16 +2080,25 @@ impl AcpPool {
         {
             return true;
         }
-        // r16 M2: case-alias leg. On case-insensitive filesystems (APFS/NTFS)
-        // a variant of the id resolves to the same session record; the
-        // exact-match lookups above all miss, letting a web client bypass
-        // the ACP lane fence via id case variants. Mirror the alias-
-        // defeating precedent of is_aux_session_id/is_sched_session_id.
+        // r16 M2 → r17 M3: case-alias leg. On case-insensitive filesystems
+        // (APFS/NTFS) a variant of the id resolves to the same session
+        // record; the exact-match lookups above all miss, letting a web
+        // client bypass the ACP lane fence via id case variants. Mirror the
+        // alias-defeating precedent of is_aux_session_id/is_sched_session_id.
+        // r17 M3: scan both the in-memory map AND the durable agents index —
+        // the map only fills at pool construction and on list commands, so a
+        // freshly-created ACP session (before any list) is invisible to the
+        // map scan but present in the durable session-agents.json store.
         let lower = session_id.to_lowercase();
         self.acp_metadata_backends
             .read()
             .keys()
             .any(|known| known.to_lowercase() == lower)
+            || self
+                .agents
+                .session_ids()
+                .iter()
+                .any(|known| known.to_lowercase() == lower && self.agents.backend(known).is_acp())
     }
 
     pub fn backend(&self, session_id: &str) -> AgentBackend {
