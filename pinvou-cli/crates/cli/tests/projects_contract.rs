@@ -1501,12 +1501,13 @@ fn projects_rebind_to_a_missing_destination_is_a_typed_refusal() {
     );
 }
 
-/// Round-40 review: rebinding onto another project's existing root would
-/// produce overlapping project roots — the preflight partition refuses with
-/// the typed `REBIND_ROOTS_CONFLICT` copy before any session binding moves.
-/// Like the missing-destination arm above, this arm had no contract test.
+/// §9.9 (review #484) legalized CROSS-project root overlap: rebinding onto
+/// a root another project already holds is a legal relocation. Round-46 M3
+/// renamed this test — its round-40 name/doc promised the typed
+/// `REBIND_ROOTS_CONFLICT` refusal while §9.9 flipped the body to assert
+/// success; the intra-set nesting arm is pinned separately below.
 #[test]
-fn projects_rebind_to_an_overlapping_existing_root_is_a_typed_conflict() {
+fn projects_rebind_to_another_projects_root_relocates_per_s9_9() {
     let _env_guard = env_lock();
     let _home = HomeGuard::new("projects", "rebind-roots-conflict", Isolation::ProductHome);
     let from = make_root_dir("rebind-conflict-from");
@@ -1546,8 +1547,55 @@ fn projects_rebind_to_an_overlapping_existing_root_is_a_typed_conflict() {
     );
 }
 
+/// Round-46 M3: the typed `REBIND_ROOTS_CONFLICT` arm — the only rebind
+/// refusal §9.9 keeps — had no CLI exercise after the overlap flip above
+/// renamed this arm's former host. Rebinding a root INTO the same project's
+/// other root nests the target set and must refuse with the typed marker
+/// before any binding moves.
+#[test]
+fn projects_rebind_into_own_sibling_root_is_a_typed_conflict() {
+    let _env_guard = env_lock();
+    let _home = HomeGuard::new("projects", "rebind-roots-nested", Isolation::ProductHome);
+    let first = make_root_dir("rebind-nested-first");
+    let second = make_root_dir("rebind-nested-second");
+    let inner_path = second.join("inner");
+    std::fs::create_dir_all(&inner_path).unwrap();
+    let inner = TempRoot(std::fs::canonicalize(&inner_path).unwrap());
+
+    create_project("Nesting", &[&first, &second]);
+
+    let error = expect_failed(&rebind_argv(&first, &inner));
+    assert!(
+        error.to_string().contains("REBIND_ROOTS_CONFLICT"),
+        "the intra-set nesting refusal must stay typed: {error}"
+    );
+
+    // Refused before any movement: the project still holds its original roots.
+    let list = run_json(&["pinvou", "projects", "list"]);
+    let roots: Vec<String> = list["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|project| {
+            project["roots"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|root| root["path"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        roots.contains(&first.to_str().unwrap().to_owned())
+            && roots.contains(&second.to_str().unwrap().to_owned())
+            && !roots.contains(&inner.to_str().unwrap().to_owned()),
+        "a refused rebind must leave every original root in place: {roots:?}"
+    );
+}
+
 /// Round-40 review: tier-2 auto-group resolution (workspace bound under a
-/// project root, no explicit assignment, longest root wins) had no positive
+/// project root, no explicit assignment, §9.9 (position, id) first-match)
+/// had no positive
 /// contract test — only the negative ungroup refusals exercised the wiring.
 /// A regression there (passing the session-record path instead of the
 /// session's workspace, or the `Some(None)` short-circuit leaking into tier

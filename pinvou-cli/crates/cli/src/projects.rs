@@ -751,8 +751,10 @@ fn path_is_under_root(path: &Path, root: &Path) -> bool {
 /// The project a session currently resolves to, mirroring the frontend's
 /// `resolveSessionProjectId` (`features/projects/projectGrouping.js`): tier 1
 /// is the explicit assignment, tier 2 is auto-grouping by the session's bound
-/// workspace directory, longest root winning so a nested project root cannot
-/// be stolen by a shallower one.
+/// workspace directory under the §9.9 rule — projects ordered by
+/// (position, id), first root match wins (round-46 M3: this used to resolve
+/// by longest root, a rule the frontend retired; the parity claim below was
+/// false until the rules matched).
 ///
 /// The Rust store exposes tier 1 only, and only as the whole map: the
 /// per-session `assignment_of` is `#[cfg(test)]`, so the production reader is
@@ -780,19 +782,18 @@ fn resolved_project_id(
         Some(Some(_)) | None => {}
     }
     let workspace = session_workspace_path(sessions, session_id)?;
-    let mut best: Option<(&str, usize)> = None;
-    for project in &projects {
-        for root in &project.roots {
-            if !path_is_under_root(&workspace, root) {
-                continue;
-            }
-            let depth = root.as_os_str().len();
-            if best.is_none_or(|(_, best_depth)| depth > best_depth) {
-                best = Some((project.id.as_str(), depth));
-            }
-        }
-    }
-    best.map(|(project_id, _)| project_id.to_owned())
+    // §9.9: the (position, id) display order decides, first root match wins.
+    let mut ordered: Vec<_> = projects.iter().collect();
+    ordered.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
+    ordered
+        .into_iter()
+        .find(|project| {
+            project
+                .roots
+                .iter()
+                .any(|root| path_is_under_root(&workspace, root))
+        })
+        .map(|project| project.id.clone())
 }
 
 /// Mirror of `move_session_to_project` (storage-only subset): the assignment

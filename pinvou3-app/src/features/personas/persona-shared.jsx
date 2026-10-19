@@ -1,8 +1,8 @@
-// 人格卡共享件:ChatView / tool-renderers / SubagentTranscriptPanel 等主 chunk
-// 消费的小件(头像块、部门配色、多语言取名)从 Personas.jsx 抽出,使卡池视图
-// (CardPoolView/PersonaEditorModal)可独立成懒加载 chunk,不再把
-// 主 chunk 的常驻引用一并拖进卡池。内容与 Personas.jsx 原实现的唯一差异:
-// AppIcon 的头像 img 补了 loading="lazy" decoding="async"(本 PR 主题内优化)。
+// Persona-card shared pieces: the small widgets (avatar block, department
+// colors, multilingual naming) consumed by the main chunk (ChatView /
+// tool-renderers / SubagentTranscriptPanel) were extracted from
+// Personas.jsx so the card-pool views (CardPoolView/PersonaEditorModal) can
+// be a standalone lazy chunk instead of pinning them into the main entry.
 import { useState } from 'react';
 import { AppWindow, Award, Briefcase, Cpu, Feather, Globe, Lock, Navigation, Palette, Radio, Terminal, TrendingUp, User } from '../../components/icons.jsx';
 import { zhDict } from '../../shared/i18n.js';

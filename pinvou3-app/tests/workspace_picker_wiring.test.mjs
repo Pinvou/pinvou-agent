@@ -19,7 +19,10 @@ test('workspace picker wiring contract', () => {
 
   // 选择器由宿主(main.jsx)挂载,行数据经 computePickerRows(热视图)。
   assert.match(main, /<WorkspacePickerDialog[\s\S]*?rows=\{workspacePickerRows\}/, '选择器挂载在宿主');
-  assert.match(main, /computePickerRows\(\{[\s\S]*?assignments/, '热视图由 computePickerRows 计算');
+  // Round-46 M4: 边界收紧到 200 字符并钉死变量名——无界惰性匹配会漂移重锚到
+  // 文件后文无关的 assignments(如 sidebarProjectsData.assignments),删掉
+  // computePickerRows 的 assignments 实参后测试仍绿(变异已证死钉)。
+  assert.match(main, /computePickerRows\(\{[\s\S]{0,200}?assignments: projectsListAssignments/, '热视图由 computePickerRows 计算');
   // 四条路径回调齐备。
   for (const prop of ['onSelectProject={handlePickerSelectProject}', 'onTemporary={handlePickerTemporary}', 'onBrowse={handlePickerBrowse}', 'onBrowseExcluded']) {
     assert.ok(main.includes(prop), `选择器回调 ${prop}`);

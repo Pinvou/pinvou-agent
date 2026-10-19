@@ -1,5 +1,7 @@
-// 中文 UI 词典。zh 全量内嵌:启动即用,不经 ensureLanguage。en/ja 对 zh 全部
-// 叶子 key 的覆盖由 tests/ui_language_coverage.test.mjs 强制(parity 断言)。
+// 中文 UI 词典。自启动预算拆分(round-41)起 zh 与 en/ja 一致走惰性装载
+// (ensureLanguage('zh'));各入口经 ensureLanguageWithZhFallback 在首选语言
+// 装载失败时以 zh 兜底。en/ja 对 zh 全部叶子 key 的覆盖由
+// tests/ui_language_coverage.test.mjs 强制(parity 断言)。
 // 维护约定:新增 key 三处同步;ja 以 en 兜底(i18n/ja.js 内 spread)。
 // i18n.js 聚合 shim 与 Node 契约测试(ui_language_coverage)静态 import 全部三语,拆分仅影响浏览器 chunk。
 

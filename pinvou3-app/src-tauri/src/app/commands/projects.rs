@@ -745,6 +745,21 @@ fn align_probe_busy(
 /// member session's cwd (the §9.7 declaration semantics), so the `[cwd, ancestor]` shape is
 /// deliberately allowed here — the ancestor is vouched for by the project's existence, not
 /// by the caller's say-so.
+/// Round-46 M5: the kernel's typed markers (`ALIGN_BUSY` /
+/// `ALIGN_NO_WORKSPACE`) are classified by prefix in the frontend
+/// (`startsWith`), so the generic command prefix must not bury them —
+/// marker errors render verbatim, everything else keeps the context
+/// prefix. The command-shell busy arm above was already returned
+/// unwrapped; this closes the asymmetry for the kernel legs.
+fn render_align_error(e: anyhow::Error) -> String {
+    let rendered = format!("{e:#}");
+    if rendered.starts_with("ALIGN_") {
+        rendered
+    } else {
+        format!("align_session_to_project: {rendered}")
+    }
+}
+
 #[tauri::command]
 pub async fn align_session_to_project(
     session_id: String,
@@ -816,7 +831,7 @@ pub async fn align_session_to_project(
             .map_err(|e| anyhow::anyhow!(e))
         })
         .await
-        .map_err(|e| format!("align_session_to_project: {e:#}"))?
+        .map_err(render_align_error)?
     };
     // Released after the read+write pair, before the engine-push awaits: a
     // concurrent rebind must not wait on live-engine I/O (sibling pattern).
@@ -3099,6 +3114,30 @@ mod tests {
     }
 
     /// align's active-turn fence: rejects when busy and writes nothing.
+
+    #[test]
+    fn align_error_rendering_keeps_typed_markers_at_the_head() {
+        // Round-46 M5: the frontend classifies by prefix (startsWith), so the
+        // command-layer wrap must not prefix marker errors — the kernel legs
+        // (ALIGN_NO_WORKSPACE / ALIGN_BUSY) ride the same wrap as generic
+        // failures, and only the latter keep the command context.
+        assert_eq!(
+            render_align_error(anyhow::anyhow!(
+                "ALIGN_BUSY: an active turn is in progress, retry when the session is idle"
+            )),
+            "ALIGN_BUSY: an active turn is in progress, retry when the session is idle"
+        );
+        assert_eq!(
+            render_align_error(anyhow::anyhow!(
+                "ALIGN_NO_WORKSPACE: session has no bound workspace (temporary sessions cannot align)"
+            )),
+            "ALIGN_NO_WORKSPACE: session has no bound workspace (temporary sessions cannot align)"
+        );
+        assert_eq!(
+            render_align_error(anyhow::anyhow!("store read failed")),
+            "align_session_to_project: store read failed"
+        );
+    }
 
     #[test]
     fn align_busy_fence_rejects_without_writing() {

@@ -104,10 +104,23 @@ export function createLatestLanguageGate(ensure = ensureLanguage) {
 }
 
 // zh-fallback readers (pet/persona/tool-common/reader/timeline): tolerate
-// the lazy-load window — the boot ensureLanguage fills dict.zh before the
-// app renders, but node-side component tests may render earlier.
+// the lazy-load window — the boot sequence (ensureLanguageWithZhFallback)
+// fills the preferred language, and zh when that chunk fails; node-side
+// component tests may render before any load, hence the {} tail.
 export function zhDict() {
   return dict.zh || {};
+}
+
+// Boot language sequence shared by every entry (main/pet/reader): load the
+// preferred language; if its chunk cannot load (offline web, stale hashed
+// chunk after a redeploy), load zh so the render-path leg
+// `dict[language] || zhDict()` degrades to Chinese copy instead of
+// undefined. Returns the ready language ('en'|'ja'|'zh') or null when even
+// zh failed (nothing renderable — a white screen is then honest).
+export async function ensureLanguageWithZhFallback(lang) {
+  if (await ensureLanguage(lang)) return lang;
+  if (await ensureLanguage('zh')) return 'zh';
+  return null;
 }
 
 export { dict, LANG_TO_TAG, TAG_TO_LANG, languageFromLocaleTags, initialSystemLanguage, SEARCH_KEY_PROVIDERS };

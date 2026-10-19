@@ -9,7 +9,12 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-const STORE_VERSION: u32 = 5;
+// Round-46 M2: bumped 5 -> 6 — this PR persists two new per-record fields
+// (workspace_roots, explicit_ancestor_roots); a pre-PR binary sharing the
+// home would strip them on its own whole-table persists. The gate makes an
+// older binary refuse the newer index instead (rebuild from sidecars, not
+// data loss), so every index reader must check it, not just load().
+const STORE_VERSION: u32 = 6;
 const CONFIG_DEFAULTS_VERSION: u32 = 1;
 /// 原生代码会话 sidecar 的 schema 版本；未来字段演进时用于迁移。
 /// Round-41 M4: 2 adds the `explicit_ancestor_roots` provenance field (the
@@ -613,28 +618,38 @@ pub(super) enum OwnerRecordState {
 }
 
 impl SessionAgentStore {
+    /// Round-46 M2: the newer-schema refusal every index reader must apply
+    /// (load + both reload paths). An unchecked newer index would be
+    /// re-persisted stamped with the CURRENT version — a silent schema
+    /// downgrade defeating the gate's refusing-to-overwrite purpose.
+    fn assert_index_schema(file: &AgentStoreFile) -> Result<()> {
+        if file.version > STORE_VERSION {
+            anyhow::bail!(
+                "session-agents.json uses a newer schema ({} > {}); refusing to overwrite — the index is rebuildable from the per-session sidecars",
+                file.version,
+                STORE_VERSION
+            );
+        }
+        Ok(())
+    }
+
     pub fn load() -> Result<Self> {
-        let path = crate::platform::paths::pinvou3_home().join("session-agents.json");
+        Self::load_from(crate::platform::paths::pinvou3_home().join("session-agents.json"))
+    }
+
+    /// Round-46 M2: load() with an injectable path so the schema gate is
+    /// pinnable on this path too (the global home is not test-safe).
+    fn load_from(path: std::path::PathBuf) -> Result<Self> {
         let records = if path.exists() {
             let raw = fs::read_to_string(&path)
                 .with_context(|| format!("读取 {} 失败", path.display()))?;
             let file = serde_json::from_str::<AgentStoreFile>(&raw)
                 .with_context(|| format!("解析 {} 失败", path.display()))?;
-            // Round-41 M4: the version gate the load path never enforced.
-            // The round-40 fields (workspace_roots/explicit_ancestor_roots)
-            // are serde-default tolerant READ-side, but a pre-PR binary
-            // sharing the home silently strips them on its own whole-table
-            // persists; refusing the newer schema keeps the new binary from
-            // racing that strip (the projects.json schema-2 rationale,
-            // mirrored — the index is rebuildable from sidecars, so
-            // refusing costs a rebuild, not data).
-            if file.version > STORE_VERSION {
-                anyhow::bail!(
-                    "session-agents.json uses a newer schema ({} > {}); refusing to overwrite — the index is rebuildable from the per-session sidecars",
-                    file.version,
-                    STORE_VERSION
-                );
-            }
+            // Round-41 M4 introduced the gate; round-46 M2 moved it into the
+            // shared assertion so the reload paths enforce the same refusal
+            // (rationale: pre-PR binaries strip the round-40 fields on
+            // whole-table persists; refusing costs a sidecar rebuild).
+            Self::assert_index_schema(&file)?;
             file.sessions
         } else {
             HashMap::new()
@@ -2127,10 +2142,13 @@ impl SessionAgentStore {
         if self.path.exists() {
             let raw = std::fs::read_to_string(&self.path)
                 .with_context(|| format!("读取 {} 失败", self.path.display()))?;
-            let fresh: HashMap<String, SessionAgentRecord> =
-                serde_json::from_str::<AgentStoreFile>(&raw)
-                    .with_context(|| format!("解析 {} 失败", self.path.display()))?
-                    .sessions;
+            let file = serde_json::from_str::<AgentStoreFile>(&raw)
+                .with_context(|| format!("解析 {} 失败", self.path.display()))?;
+            // Round-46 M2: reload paths adopt-and-persist under the CURRENT
+            // version stamp — a newer-schema file slipping through here is
+            // downgraded silently on the caller's next persist.
+            Self::assert_index_schema(&file)?;
+            let fresh = file.sessions;
             let mut records = self.records.write();
             *records = fresh;
         }
@@ -2166,15 +2184,17 @@ impl SessionAgentStore {
                 self.path.display()
             )
         })?;
-        let mut fresh: HashMap<String, SessionAgentRecord> =
-            serde_json::from_str::<AgentStoreFile>(&raw)
-                .with_context(|| {
-                    format!(
-                        "failed to parse the shared session-agent index {}: it stays untouched",
-                        self.path.display()
-                    )
-                })?
-                .sessions;
+        let file = serde_json::from_str::<AgentStoreFile>(&raw).with_context(|| {
+            format!(
+                "failed to parse the shared session-agent index {}: it stays untouched",
+                self.path.display()
+            )
+        })?;
+        // Round-46 M2: same schema refusal as load/lock_and_reload — the CLI
+        // lane rewrites the whole table, so a newer-schema file must stop
+        // here instead of being re-persisted under the current stamp.
+        Self::assert_index_schema(&file)?;
+        let mut fresh = file.sessions;
         fresh.remove(session_id);
         {
             let mut records = self.records.write();
@@ -5738,6 +5758,67 @@ mod tests {
         let sidecar = read_code_session_sidecar(store.path(), "session-1").unwrap();
         assert_eq!(sidecar.version, CODE_SESSION_SIDECAR_VERSION);
         assert_eq!(sidecar.workspace_path.as_deref(), Some(root.as_path()));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn index_schema_gate_covers_load_and_both_reload_paths() {
+        // Round-46 M2: a newer-schema index must be refused by EVERY reader —
+        // load() and both reload paths. Historically only load() checked; the
+        // reload paths adopted the table and the next whole-table persist
+        // stamped it with the CURRENT version, a silent schema downgrade that
+        // defeated the gate's refusing-to-overwrite purpose.
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-index-schema-gate-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let store = SessionAgentStore {
+            path: root.join("session-agents.json"),
+            records: Arc::new(RwLock::new(HashMap::new())),
+        };
+        store
+            .bind_code_native_session(
+                "session-1",
+                CodexWorkspaceKind::Project,
+                Some(root.clone()),
+                Vec::new(),
+            )
+            .unwrap();
+        // 同一索引文件仅把版本戳改为未来值:三门都必须因版本门拒绝,而非解析失败。
+        let raw = fs::read_to_string(store.path()).unwrap();
+        let mut bumped: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        bumped["version"] = serde_json::json!(STORE_VERSION + 1);
+        fs::write(store.path(), bumped.to_string()).unwrap();
+
+        assert!(
+            SessionAgentStore::load_from(store.path().to_path_buf()).is_err(),
+            "load must refuse a newer-schema index"
+        );
+        assert!(
+            store.lock_and_reload().is_err(),
+            "lock_and_reload must refuse instead of adopting the newer table"
+        );
+        let before = fs::read_to_string(store.path()).unwrap();
+        assert!(
+            store.remove_for_second_process("session-1").is_err(),
+            "the CLI removal lane must refuse a newer-schema index"
+        );
+        assert_eq!(
+            fs::read_to_string(store.path()).unwrap(),
+            before,
+            "a refused removal leaves the index untouched"
+        );
+
+        // 版本戳回到当前值后三门全部通过——版本门是唯一拒因。
+        let mut current: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        current["version"] = serde_json::json!(STORE_VERSION);
+        fs::write(store.path(), current.to_string()).unwrap();
+        assert!(SessionAgentStore::load_from(store.path().to_path_buf()).is_ok());
+        assert!(store.lock_and_reload().is_ok());
+        assert!(store.remove_for_second_process("session-1").is_ok());
+
         fs::remove_dir_all(&root).unwrap();
     }
 

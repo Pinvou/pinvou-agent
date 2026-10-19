@@ -24,7 +24,7 @@ import { bridge, useBridgeState, usePlatformCapability, activeModelIsLocal, shou
 import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewport.js';
 import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
 import { COLOR_SCHEME_STORAGE_KEY, normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
-import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG } from '../shared/i18n.js';
+import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, ensureLanguageWithZhFallback, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG, zhDict } from '../shared/i18n.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
 import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfirm, WORKSPACE_KIND_BOUND } from '../features/projects/projectGrouping.js';
 import { interpretFolderEnsureOutcomes } from '../features/projects/folderEnsure.js';
@@ -1183,8 +1183,9 @@ const App = () => {
         return () => { disposed = true; if (un) un(); };
       }, []);
 
-      // 兜底 zh:词典 chunk 装载失败时按 zh 渲染而非白屏(与 PetWindow/ReaderApp 同口径)。
-      const t = dict[language] || dict.zh;
+      // 兜底 zh 是活腿:入口 ensureLanguageWithZhFallback 在首选语言 chunk 装载
+      // 失败时已装载 zh,此处 zhDict() 因此非空(两者都失败才落空表,见该函数注释)。
+      const t = dict[language] || zhDict();
       // The desk-pet reply consumption loop (mounted once) reads a latest-ref mirror of current-language error copy.
       const petI18nTextRef = useRef(null);
       petI18nTextRef.current = t.uiMainApp;
@@ -4734,9 +4735,9 @@ const App = () => {
     const root = createRoot(document.querySelector('#root'));
     window.__PINVOU_STARTUP__.mark('react:create_root_done');
     const __q = new URLSearchParams(window.location.search);
-    // 首帧语言引导:zh 词典内嵌(Promise 已 resolve,仅一个微任务),en/ja 系统
-    // 用户先取惰性词典 chunk 再首渲染,保证 t = dict[language] 首帧即有效。
-    // 装载失败(资源损坏)按 zh 兜底渲染,不空白。
+    // 首帧语言引导:三种语言一致走惰性 chunk;先取所选语言词典再首渲染,
+    // 保证 t = dict[language] 首帧即有效。装载失败(离线/重部署后哈希失效)
+    // 时降级装载 zh,渲染腿 dict[language] || zhDict() 以中文兜底而非白屏。
     const __initialLang = initialSystemLanguage();
     const __storedLang = (() => {
       if (!isWeb) return null;
@@ -4745,7 +4746,7 @@ const App = () => {
         return value && ['zh', 'en', 'ja'].includes(value) ? value : null;
       } catch { return null; }
     })();
-    ensureLanguage(__storedLang || __initialLang).catch(() => {}).then(function () {
+    ensureLanguageWithZhFallback(__storedLang || __initialLang).then(function () {
       if (__q.get('detached') === '1') {
         window.__PINVOU_DETACHED__ = true;
         root.render(

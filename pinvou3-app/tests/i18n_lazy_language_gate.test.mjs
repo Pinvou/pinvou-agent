@@ -108,6 +108,37 @@ test('失败分支:源码注入桩 loader 验证 false + 清挂起 + 可重试',
   delete globalThis.__stubEn;
 });
 
+// 引导兜底(round-46 M1):入口的降级装载链。旧 `dict[language] || dict.zh`
+// 是死腿——zh 只在语言=zh 时才装载,en/ja 用户 chunk 失败时该腿永远空,首帧
+// t.uiMainApp 解引用 undefined 即白屏。ensureLanguageWithZhFallback 让 zh 在
+// 首选语言失败时真实装载,渲染腿 dict[language] || zhDict() 因此活。
+test('引导兜底:首选语言 chunk 失败时降级装载 zh,渲染腿以中文兜底', async () => {
+  const fs = await import('node:fs');
+  const zhUrl = new URL('../src/shared/i18n/zh.js', import.meta.url).href;
+  const inject = (enStub, zhStub) => {
+    let source = fs.readFileSync(new URL('../src/shared/i18n.js', import.meta.url), 'utf8');
+    // 函数形式的替换值:动态字符串直接作为 replacement 会被
+    // unicorn/no-unsafe-string-replacement 拦下($ 模式风险)。
+    if (enStub) source = source.replace("en: () => import('./i18n/en.js'),", () => `en: () => ${enStub},`);
+    if (zhStub) source = source.replace("zh: () => import('./i18n/zh.js'),", () => `zh: () => ${zhStub},`);
+    source = source.replace("import { dictZh } from './i18n/zh.js';", () => `import { dictZh } from '${zhUrl}';`);
+    return 'data:text/javascript;charset=utf-8,' + encodeURIComponent(source + `\n// fallback-${Math.random().toString(36).slice(2)}`);
+  };
+
+  // en 恒败,zh 走真实装载(data: URL 实例内的惰性装载器须指绝对路径)。
+  const good = await import(inject("Promise.reject(new Error('stub: chunk unreachable'))", `import('${zhUrl}')`));
+  const ready = await good.ensureLanguageWithZhFallback('en');
+  assert.equal(ready, 'zh', 'en chunk 失败应降级装载 zh');
+  assert.ok(!good.dict.en, '失败的 en 不得装箱');
+  assert.ok(good.zhDict().newChat, 'zh 兜底装载后 zhDict() 非空');
+  assert.equal((good.dict.en || good.zhDict()).newChat, '新对话', '渲染腿降级到中文词条而非 undefined');
+  assert.equal(await good.ensureLanguageWithZhFallback('zh'), 'zh', '首选即 zh 时直接命中');
+
+  // 双失败:en 与 zh 都不可达,返回 null(无可渲染词典,白屏是诚实的终态)。
+  const dead = await import(inject("Promise.reject(new Error('stub: en unreachable'))", "Promise.reject(new Error('stub: zh unreachable'))"));
+  assert.equal(await dead.ensureLanguageWithZhFallback('en'), null, 'zh 也失败时应返回 null 而非 reject');
+});
+
 test('en/ja 惰性 chunk 在浏览器口径下不进首屏(静态扫描 i18n.js 不 import en/ja)', async () => {
   const fs = await import('node:fs');
   const source = fs.readFileSync(new URL('../src/shared/i18n.js', import.meta.url), 'utf8');
