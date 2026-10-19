@@ -122,7 +122,9 @@ function injectSource() {
         case 'list_codex_acp_sessions': return Promise.resolve(CODEX_SESSIONS);
         case 'get_acp_agent_status': return Promise.resolve({agent_id:args.agentId||'codex',installed:true,node_supported:true,authenticated:true});
         case 'get_codex_acp_session_info': return Promise.resolve({session_id:args.sessionId,models:[],current_model_id:'',modes:null,config_options:[]});
-        case 'get_codex_acp_timeline': return Promise.resolve([
+        case 'get_codex_acp_timeline':
+          if(window.__ACP_TIMELINE_DEFER__) return new Promise(resolve=>{window.__ACP_TIMELINE_RESOLVE__=resolve;});
+          return Promise.resolve([
           {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:1,timestamp:'2026-08-04T01:00:00Z',event:{type:'user_message',data:{content:[{type:'text',text:'Test copy layout'}]}}},
           {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:2,timestamp:'2026-08-04T01:00:01Z',event:{type:'turn_started',data:{status:'running'}}},
           {version:1,sessionId:'codex-1',turnId:'copy-turn',seq:3,timestamp:'2026-08-04T01:00:02Z',event:{type:'agent_message_chunk',data:{update:{content:{type:'text',text:'Codex copy layout'}}}}},
@@ -1507,6 +1509,48 @@ async function expand(page) {
       && !codexCompletedOverflow.controlsAfter
       && !codexCompletedOverflow.detailsAfter,
     JSON.stringify(codexCompletedOverflow));
+
+  // Refetch an authoritative snapshot after a gap while another live event
+  // arrives. Snapshot duplicates win; missing history and the live tail survive.
+  await page.evaluate(async () => {
+    window.__ACP_TIMELINE_DEFER__ = true;
+    const payload = {version:1,sessionId:'codex-1',turnId:'recovery-turn',seq:18,
+      timestamp:'2026-08-04T01:02:01Z',event:{type:'agent_message_chunk',data:{content:{type:'text',text:'live-stale-marker'}}}};
+    for (const handler of (window.__TAURI_EVENT_HANDLERS__['acp:event'] || [])) await handler({ payload });
+  });
+  await page.waitForFunction(() => typeof window.__ACP_TIMELINE_RESOLVE__ === 'function', { timeout: 10000 });
+  await page.evaluate(async () => {
+    const envelope = (seq, type, data) => ({version:1,sessionId:'codex-1',turnId:'recovery-turn',seq,
+      timestamp:'2026-08-04T01:02:02Z',event:{type,data}});
+    const payload = envelope(19, 'agent_message_chunk', {content:{type:'text',text:'live-tail-marker'}});
+    for (const handler of (window.__TAURI_EVENT_HANDLERS__['acp:event'] || [])) await handler({ payload });
+    const resolve = window.__ACP_TIMELINE_RESOLVE__;
+    window.__ACP_TIMELINE_DEFER__ = false;
+    window.__ACP_TIMELINE_RESOLVE__ = null;
+    resolve([
+      envelope(17, 'user_message', {content:[{type:'text',text:'snapshot-gap-question'}]}),
+      envelope(18, 'agent_message_chunk', {content:{type:'text',text:'snapshot-authority-marker'}}),
+    ]);
+  });
+  await page.waitForFunction(() => {
+    const text = document.querySelector('[data-conversation-turn="recovery-turn"]')?.textContent || '';
+    return text.includes('snapshot-authority-marker') && text.includes('live-tail-marker') && !text.includes('live-stale-marker');
+  }, { timeout: 10000 });
+  const recoveredSnapshot = await page.evaluate(async () => {
+    const payload = {version:1,sessionId:'codex-1',turnId:'recovery-turn',seq:20,
+      timestamp:'2026-08-04T01:02:03Z',event:{type:'turn_completed',data:{status:'Completed',error:null}}};
+    for (const handler of (window.__TAURI_EVENT_HANDLERS__['acp:event'] || [])) await handler({ payload });
+    await new Promise(resolve => { requestAnimationFrame(() => requestAnimationFrame(resolve)); });
+    const text = document.querySelector('[data-conversation-turn="recovery-turn"]')?.textContent || '';
+    return { snapshotWins: text.includes('snapshot-authority-marker') && !text.includes('live-stale-marker'),
+      gapHealed: text.includes('snapshot-gap-question'), tailCount: text.split('live-tail-marker').length - 1,
+      oldHistory: Boolean(document.querySelector('[data-conversation-turn="copy-turn"]')),
+      toolsRetained: document.querySelector('[data-conversation-turn="overflow-turn"] [data-testid="conversation-tool-group-summary"]')?.textContent.trim() === '执行步骤 · 1 项' };
+  });
+  rec('ACP snapshot gap recovery preserves authoritative duplicates, old history and in-flight live tail',
+    recoveredSnapshot.snapshotWins && recoveredSnapshot.gapHealed && recoveredSnapshot.tailCount === 1
+      && recoveredSnapshot.oldHistory && recoveredSnapshot.toolsRetained,
+    JSON.stringify(recoveredSnapshot));
 
   await clickText(page, '查看全部'); await sleep(400);
   const managedActiveState = await page.evaluate(() => {
