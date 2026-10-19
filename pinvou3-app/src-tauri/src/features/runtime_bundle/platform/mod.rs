@@ -37,7 +37,7 @@ static DINGTALK_SKILLS_DIR: Dir<'_> =
 static TMEET_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/tmeet-skills");
 
-// 连接器技能目录表（飞书 lark 9 + 企微 14 新名 + 0.1.9 legacy 名 + 钉钉/腾讯会议
+// 连接器技能目录表（飞书 lark 9 + 企微 15 新名 + 0.1.9 legacy 名 + 钉钉/腾讯会议
 // mono skill）已下沉到 `crate::platform::connector_skills` 作为单一真相源：
 // marketplace 注册表（wecom 卡 skills 列表）、扁平布局迁移、`cli_bundle_of_skill`
 // 反查与 `legacy_cli_records` 首启登记与本模块的门控写/删共用（五轮评审必修 3：
@@ -2749,7 +2749,7 @@ mod tests {
             assert!(!bundle.skills_dir.join(d).exists(), "{d} 应被清理");
         }
 
-        // 显示门控:同样先清 legacy(开头无条件清理),再解包 14 个当前技能
+        // 显示门控:同样先清 legacy(开头无条件清理),再解包 15 个当前技能
         for d in WECOM_LEGACY_SKILL_DIRS {
             std::fs::create_dir_all(bundle.skills_dir.join(d)).unwrap();
         }
