@@ -2504,6 +2504,39 @@ async function expand(page) {
     }
   });
 
+  // A background preview may be throttled, but the first published snapshot
+  // after activating it must already contain the latest rendered content.
+  const backgroundPreviewActivation = await page.evaluate(async () => {
+    const bridge = window.TauriBridge;
+    const emit = (name, payload) => {
+      for (const handler of window.__TAURI_EVENT_HANDLERS__[name] || []) {
+        handler({ payload: { session_id: 's1', ...payload } });
+      }
+    };
+    await bridge.sessions.switchToSession('s-browser-b');
+    emit('chat:turn_started', { status: 'Running' });
+    emit('chat:delta', { text: 'background-switch-marker' });
+    emit('chat:delta', { text: ' **latest**' });
+    const observed = [];
+    const unsubscribe = bridge.state.subscribe('chat', () => {
+      const snapshot = bridge.state.getMany(['chat', 'sessions']);
+      if (snapshot.activeSessionId !== 's1') return;
+      const item = snapshot.chatItems.find(candidate => String(candidate.text || '').includes('background-switch-marker'));
+      if (item) observed.push({ text: item.text, html: item.html });
+    });
+    try { await bridge.sessions.switchToSession('s1'); }
+    finally { unsubscribe(); }
+    emit('chat:done', { status: 'Completed' });
+    return { first: observed[0], notifications: observed.length };
+  });
+  await page.evaluate(() => window.__uiWait__(() => document.body.innerText.includes('background-switch-marker'), 2000));
+  const backgroundPreviewVisible = await page.evaluate(() => document.body.innerText.includes('background-switch-marker'));
+  rec('background activation publishes the latest preview before the first subscriber snapshot',
+    backgroundPreviewVisible &&
+      backgroundPreviewActivation.first?.text === 'background-switch-marker **latest**' &&
+      backgroundPreviewActivation.first?.html?.includes('<strong>latest</strong>'),
+    JSON.stringify({ ...backgroundPreviewActivation, visible: backgroundPreviewVisible }));
+
   // ⑤b 收纳成功 toast 的「前往查看」必须直达对话管理页并展开「已收纳」面板，且按钮不折行。
   await expand(page); await sleep(200);
   const archiveMenuOpened = await page.evaluate(() => {

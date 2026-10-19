@@ -63,8 +63,8 @@ function pinvouSharedtauriChatEvents() {
 
     // Stream text can arrive much faster than a WebView can paint. Publish at
     // most once per animation frame, with a bounded timer fallback for hidden
-    // or throttled windows. Entries are isolated per session because active
-    // and background sessions may stream concurrently.
+    // or throttled windows. Entries retain per-session cancellation, but one
+    // publication covers all pending streams in the visible host snapshot.
     const STREAM_NOTIFY_MAX_WAIT_MS = 32;
     const pendingStreamNotifications = Object.create(null);
 
@@ -103,25 +103,16 @@ function pinvouSharedtauriChatEvents() {
       pendingStreamNotifications[sid] = pending;
       function publish() {
         if (pendingStreamNotifications[sid] !== pending) return;
-        cancelPendingStreamNotify(sid);
-        let didRun = false;
-        const wasBackground = sid !== state.activeSessionId;
-        // A throwing subscriber must not escape as an unhandled rAF/timer
-        // error (the synchronous first-delta path keeps the dispatch-loop
-        // throw semantics). runSyncOnSession's finally restores the working
-        // set before the error lands here.
+        Object.keys(pendingStreamNotifications).forEach(cancelPendingStreamNotify);
+        // The synchronous event router has already saved every affected
+        // buffer and restored the visible working set before this callback.
+        // Publish that coherent host snapshot once, even if one of the
+        // original stream owners was evicted. Do not re-enter a background
+        // working set merely to issue a suppressed notification.
         try {
-          runSyncOnSession(sid, function () {
-            didRun = true;
-            immediateNotify();
-          });
+          immediateNotify();
         } catch (error) {
           console.error("[chat] coalesced stream notify failed", error);
-        }
-        // runSyncOnSession suppresses callbacks while a background working set
-        // is installed. Refresh the visible session list after it restores.
-        if (didRun && wasBackground) {
-          try { immediateNotify(); } catch (error) { console.error("[chat] coalesced stream notify failed", error); }
         }
       }
       if (typeof window.requestAnimationFrame === "function") {
@@ -690,7 +681,9 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
   // per session: active and background sessions can stream simultaneously,
   // and a shared timer would render the wrong working set.
   const STREAM_RENDER_THROTTLE_MS = 180;
+  const BACKGROUND_STREAM_RENDER_THROTTLE_MS = 1000;
   const streamRenderTimers = Object.create(null); // sid → trailing-edge render timer
+  let lastForegroundSessionId = state.activeSessionId || null;
 
   function renderStreamItemHtml() {
     const item = state.chatItems.find(function (it) { return it.id === context.currentStreamId; });
@@ -718,6 +711,20 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
     return renderStreamItemHtml();
   }
 
+  // Called by the host after background routing has restored the visible
+  // working set, before subscribers capture it. A newly visible stream must
+  // never wait for its longer background preview timer. Ordinary same-session
+  // publications keep their existing foreground render budget.
+  function refreshActiveStreamRender() {
+    if (isNotifySuppressed()) return;
+    const sid = state.activeSessionId || null;
+    if (sid === lastForegroundSessionId) return;
+    if (!sid) { lastForegroundSessionId = null; return; }
+    flushPendingStreamRender();
+    lastForegroundSessionId = sid;
+    cancelPendingStreamNotify(sid);
+  }
+
   function scheduleStreamRender(sid) {
     // Without a sid, or when the host has no timers (some test sandboxes),
     // fall back to the old render-per-delta behavior.
@@ -737,8 +744,13 @@ function finalizeStreamingReasoning(index) { return pinvouSharedtauriChatEvents(
         if (!context.currentStreamId || !context.currentStreamText) return;
         rendered = renderStreamItemHtml();
       });
-      if (rendered) notify(); // background sessions are suppressed inside runSyncOnSession; notify once more
-    }, STREAM_RENDER_THROTTLE_MS);
+      if (rendered) {
+        // Keep the visible preview's existing immediate publication after
+        // parsing; only background render completions share a later frame.
+        if (sid === state.activeSessionId) notify();
+        else scheduleStreamNotify(sid, false);
+      }
+    }, isNotifySuppressed() ? BACKGROUND_STREAM_RENDER_THROTTLE_MS : STREAM_RENDER_THROTTLE_MS);
   }
 
   function cancelStreamRenderTimers(purgedSid) {
@@ -1589,6 +1601,7 @@ function normalizeMountedCollections(value) { return pinvouSharedtauriChatEvents
       // Called from bridge.js on session buffer eviction/deletion to cancel
       // the pending trailing edge for that sid
       cancelStreamRenderTimers,
+      refreshActiveStreamRender,
     };
   };
 })();
