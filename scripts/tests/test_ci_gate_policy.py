@@ -700,6 +700,28 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertNotIn("if:", linux.split("- name: Check independent upgrade cache object adaptation", 1)[1].split("\n      - name:", 1)[0])
         self.assertIn("matrix.phase == 'regression'", windows.split("- name: Check native Windows upgrade cache objects", 1)[1].split("\n      - name:", 1)[0])
 
+    def test_download_job_leaf_has_mandatory_linux_and_windows_gates(self):
+        block = self.pr_workflow.split("            rust_code:", 1)[1].split("            rust_dependencies:", 1)[0]
+        patterns = _extract_quoted_paths(block)
+        root = "pinvou3-app/src-tauri/src/features/updater/download/workflow/"
+        for path in ("src/platform/mod.rs", "tests/platform/process.rs", "Cargo.toml", "Cargo.lock"):
+            self.assertTrue(_matches_paths_filter(root + path, patterns))
+        linux = self.pr_workflow.split("\n  rust-lint:", 1)[1].split("\n  rust-test:", 1)[0]
+        windows = self.pr_workflow.split("\n  windows-rust-test:", 1)[1].split("\n  macos-rust-check:", 1)[0]
+        for job, name in ((linux, "Check independent upgrade download jobs"),
+                          (windows, "Check native Windows upgrade download jobs")):
+            step = job.split("- name: " + name, 1)[1].split("\n      - name:", 1)[0]
+            self.assertIn("working-directory: " + root.rstrip("/"), step)
+            self.assertIn("CARGO_BUILD_JOBS: '2'", step)
+            self.assertNotIn("continue-on-error:", step)
+            for command in ("cargo fmt -- --check", "cargo clippy --locked --all-targets -- -D warnings", "cargo test --locked -- --test-threads=1"):
+                self.assertIn(command, step)
+            self.assertNotIn("--include-ignored", step)
+        step = linux.split("- name: Check independent upgrade download jobs", 1)[1].split("\n      - name:", 1)[0]
+        self.assertNotIn("if:", step)
+        self.assertIn("matrix.phase == 'regression'", windows.split("- name: Check native Windows upgrade download jobs", 1)[1].split("\n      - name:", 1)[0])
+        self.assertIn("specs/upgrade/v1 ci --ignore-scripts", windows)
+
     def test_read_only_cache_byte_controls_run_on_native_windows(self):
         job = self.pr_workflow.split("\n  windows-rust-test:", 1)[1].split("\n  macos-rust-check:", 1)[0]
         step = job.split("- name: Check native Windows upgrade byte verification", 1)[1].split("\n      - name:", 1)[0]
@@ -2741,7 +2763,13 @@ class CiGatePolicyTests(unittest.TestCase):
         )
         self.assertIn("WINDOWS_RUST_CACHE", windows_rust_test)
         self.assertIn("WINDOWS_RUST_TIMING", windows_rust_test)
-        self.assertNotIn("actions/setup-node", windows_rust_test)
+        # The independent download-job signatures use the frozen Node oracle.
+        # Keep that prerequisite off the check leg; no app/npm build is added.
+        self.assertEqual(windows_rust_test.count("uses: actions/setup-node@"), 1)
+        for name in ("Set up Node for native download job controls",
+                     "Install native download job reference dependencies",
+                     "Check native Windows upgrade download jobs"):
+            self.assertEqual(phase_of[name], "regression")
         # The workspaces list must be EXACTLY the three compiled entries:
         # the app workspace, the CodeWhale regression target, and pinvou-cli
         # (check leg + filtered regression tests). Dropping an entry
