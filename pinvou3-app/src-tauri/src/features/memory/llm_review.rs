@@ -1029,7 +1029,7 @@ fn memory_review_reasoning_dialect(
     use crate::core::reasoning_dialect::{
         ReasoningDialect, kimi_supports_disabled_thinking, reasoning_dialect_from_base_url,
     };
-    if provider == "vllm" || preset == ModelPreset::LocalVllm {
+    if provider == "vllm" || provider == "tachyon" || preset == ModelPreset::LocalVllm {
         return ReasoningDialect::VllmChatTemplate;
     }
     if provider == "deepseek" || preset == ModelPreset::Deepseek {

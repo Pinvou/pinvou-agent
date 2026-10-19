@@ -1135,7 +1135,17 @@ impl Pinvou3Bridge {
             .map(|m| m.preset)
             .unwrap_or_else(|| self.prefs.advanced.model_preset.unwrap_or_default());
         match preset {
-            ModelPreset::LocalVllm => "vllm".to_string(),
+            // The probe is the ground truth of what is actually running: a
+            // LocalVllm-preset entry pointed at a Tachyon (驭光) server (the
+            // local-detect flow used to save probed Tachyon candidates with
+            // this preset, and hand-typed entries land here too) must not ride
+            // the vllm arm — Tachyon's tier ladder differs (`high` is a 400,
+            // `max` maps to xhigh), so a wrong arm would re-expose the exact
+            // tiers this PR exists to fix.
+            ModelPreset::LocalVllm => match self.probed_local_kind {
+                Some(LocalServerKind::Tachyon) => "tachyon".to_string(),
+                _ => "vllm".to_string(),
+            },
             ModelPreset::Deepseek => "deepseek".to_string(),
             ModelPreset::Kimi => "moonshot".to_string(),
             ModelPreset::Doubao => "volcengine".to_string(),
@@ -3070,9 +3080,9 @@ impl Pinvou3Bridge {
             );
         }
         cfg.default_text_model = Some(model);
-        // Local models (vLLM / probed Ollama) default to the lowest thinking
-        // tier (see request_reasoning_effort); everything else defaults to
-        // high.
+        // Local models (vLLM / Tachyon / probed Ollama) default to the lowest
+        // thinking tier (see request_reasoning_effort); everything else
+        // defaults to high.
         cfg.reasoning_effort = self.request_reasoning_effort();
         // Default turn budget: the subagent default step count matches the
         // main turn (2000, i.e. the foundation hard cap). `agent` calls that
@@ -10382,6 +10392,38 @@ mod tests {
             Some(SEPARATE_REASONING_FIELD)
         );
         assert_eq!(providers.tachyon.base_url.as_deref(), Some("http://127.0.0.1:8000/v1"));
+    }
+
+    /// LocalVllm 预设条目实际指向 Tachyon 服务器（本地检测流程历史存量与手填
+    /// 条目都会这样落库）：探测是运行真值，provider 必须跟随探测落 tachyon
+    /// 方言，而不是被预设臂钉死在 vllm（vllm 档表会把 max 降级成 high——
+    /// 恰是 Tachyon 上会 400 的值）。
+    #[test]
+    fn local_vllm_preset_follows_a_tachyon_probe() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::LocalVllm,
+            "qwen3.8",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        // 未探测时保持既有 LocalVllm → vllm 语义（探测前不改变任何行为）。
+        assert_eq!(bridge.provider(), "vllm");
+        bridge.probed_local_kind = Some(LocalServerKind::Tachyon);
+        assert_eq!(bridge.provider(), "tachyon");
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("low"));
+        let cfg = bridge.build_dt_config();
+        assert_eq!(
+            cfg.api_provider(),
+            deepseek_tui::config::ApiProvider::Tachyon
+        );
     }
 
     /// Tachyon 的存量/显式 high 必须防御性归一为 medium（high 会 400），

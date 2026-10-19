@@ -231,7 +231,11 @@ fn local_port_of(base_url: &str) -> Option<u16> {
 fn local_model_provider(kind: LocalServerKind, port: Option<u16>) -> (&'static str, &'static str) {
     match kind {
         LocalServerKind::Vllm => ("vllm", "vLLM"),
-        LocalServerKind::Tachyon => ("tachyon", "驭光引擎 (Tachyon)"),
+        // 驭光 is the engine's Chinese brand name. Keep the label
+        // language-neutral like the other engine names in this table (the
+        // label reaches the UI verbatim): Latin name first, brand
+        // parenthesized — no Chinese prose for en/ja users.
+        LocalServerKind::Tachyon => ("tachyon", "Tachyon (驭光)"),
         LocalServerKind::Ollama => ("ollama", "Ollama"),
         LocalServerKind::LmStudio => ("lm_studio", "LM Studio"),
         LocalServerKind::Sglang => ("sglang", "SGLang"),

@@ -1914,6 +1914,23 @@ function normalizeStoredReasoningEffort(model, stored) {
   if (canonical === 'off' && reasoningProviderForModel(model) === 'openai_responses') {
     canonical = 'low';
   }
+  // 本地路由（vllm preset / 探测驱动的 loopback 兼容端点）的存量 `max` 逐字保留，
+  // 不落静态四档表之外的降级路径：探测为 tachyon（驭光）时档表是
+  // ['off','low','medium','max']，max 是真实最深档（wire 映射 xhigh）；静态
+  // normalization 表无 probe 语境、只认 vllm 四档，若在这里把 max 归一成默认
+  // low，设置表单重新打开再保存会把用户选的最深档静默改写为最低档。探测为
+  // vllm 等其他本地引擎时 wire 方言把 max 映射为有效值（如 high），同样无需
+  // 客户端降级；展示高亮由 probe 档表决定（不含 max 的表显示无高亮，不改值）。
+  // always-thinking 知识表命中（如本地 kimi-k3 的 ['low','high']）不在此例——
+  // 表外档维持既有的"归一到最低允许档"语义。
+  const storedValueProvider = reasoningProviderForModel(model);
+  if (
+    canonical === 'max'
+    && (storedValueProvider === 'vllm' || storedValueProvider === 'local')
+    && !alwaysThinkingSpecForModel(model && model.model)
+  ) {
+    return 'max';
+  }
   if (canonical && tiers.includes(canonical)) return canonical;
   return defaultReasoningEffortForModel(model) || tiers[0] || null;
 }

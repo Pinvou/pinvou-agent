@@ -870,7 +870,10 @@ fn voice_reasoning_dialect(
     model: &str,
 ) -> crate::core::reasoning_dialect::ReasoningDialect {
     use crate::core::reasoning_dialect::ReasoningDialect;
-    if provider == "vllm" || preset == crate::platform::prefs::ModelPreset::LocalVllm {
+    if provider == "vllm"
+        || provider == "tachyon"
+        || preset == crate::platform::prefs::ModelPreset::LocalVllm
+    {
         return ReasoningDialect::VllmChatTemplate;
     }
     if provider == "deepseek" || preset == crate::platform::prefs::ModelPreset::Deepseek {

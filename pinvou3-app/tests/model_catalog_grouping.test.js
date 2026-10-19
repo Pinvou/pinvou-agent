@@ -951,6 +951,16 @@ test('local routes hitting the knowledge table: tiers/defaults/stored-value norm
   const qwenLocal = { preset: 'local_vllm', model: 'qwen3-32b' };
   assert.deepStrictEqual([...reasoningEffortTiersForModel(qwenLocal)], ['off', 'low', 'medium', 'high']);
   assert.strictEqual(defaultReasoningEffortForModel(qwenLocal), 'low');
+  // tachyon（驭光）probed 的本地兼容端点：静态归一只认 vllm 四档，但存量 max
+  // 必须逐字保留（tachyon 档表含 max，wire 映射 xhigh）——静默归一成默认 low
+  // 会让设置表单重开再保存把最深档改写为最低档；别名 xhigh 归一到 max 同理。
+  // 知识表命中的本地模型（k3）维持"表外档归一到最低允许档"的既有语义。
+  const tachyonLocal = { preset: 'openai_compatible', model: 'qwen3.8', base_url: 'http://127.0.0.1:8000/v1' };
+  assert.strictEqual(normalizeStoredReasoningEffort(tachyonLocal, 'max'), 'max');
+  assert.strictEqual(normalizeStoredReasoningEffort(tachyonLocal, 'xhigh'), 'max');
+  assert.strictEqual(normalizeStoredReasoningEffort(k3Local, 'max'), 'low');
+  // 展示层：probe 出的 tachyon 档表高亮 max 正确
+  assert.strictEqual(reasoningEffortDisplayForTiers('max', [...localProbeTiersForKind('tachyon')]), 'max');
   // exact cloud routes are unaffected: z.ai first-party glm-5.3 is still off/high/max
   const glmCloud = { preset: 'glm', vendor: 'glm', model: 'glm-5.3', base_url: 'https://api.z.ai/api/paas/v4' };
   assert.deepStrictEqual([...reasoningEffortTiersForModel(glmCloud)], ['off', 'high', 'max']);
