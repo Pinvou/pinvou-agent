@@ -437,7 +437,8 @@ jobs:
       PINVOU_LOONG64_TOOLCHAIN_PREFIX: ${{ github.workspace }}/.pinvou-loong64-cache/cross-tools/loongarch64-unknown-linux-gnu
       PINVOU_LOONG64_SYSROOT: ${{ github.workspace }}/.pinvou-loong64-cache/sysroot
       # Rust 旗标由编排脚本按 target 作用域导出(CARGO_TARGET_*_RUSTFLAGS:
-      # remap + -C link-arg=--sysroot,都只属于目标单元)。此处刻意不设
+      # remap + -C link-arg=--sysroot + -C link-arg=-B(deepin multiarch
+      # startfile 目录),都只属于目标单元)。此处刻意不设
       # RUSTFLAGS:cargo 的优先级是已设 RUSTFLAGS 完全压过 target 专属变量,
       # 目标单元会静默丢掉 sysroot 链接旗标——仅此一条就足以致命(--target
       # 交叉构建下宿主 build-script 单元本就收不到任何 rustflags)。

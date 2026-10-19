@@ -111,8 +111,14 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
 
     def test_rust_flags_are_target_scoped_never_global(self):
         # The target units need --remap-path-prefix (artifact-path parity)
-        # AND -C link-arg=--sysroot (the deepin libc.so linker script's
-        # absolute GROUP paths only resolve under the sysroot). Neither can
+        # AND the two link-args: -C link-arg=--sysroot (the deepin libc.so
+        # linker script's absolute GROUP paths only resolve under the
+        # sysroot) and -C link-arg=-B<sysroot>/usr/lib/loongarch64-linux-gnu/
+        # (a command-line --sysroot replaces the toolchain's bundled one, so
+        # the gcc driver drops the bundled startfile prefixes and searches
+        # only the deepin tree, which keeps Scrt1.o/crti.o solely under the
+        # Debian multiarch dir the unknown-triple gcc never searches — see
+        # test_cross_links_find_the_deepin_startfiles). None of these can
         # ride in RUSTFLAGS: cargo gives a set RUSTFLAGS precedence over
         # CARGO_TARGET_<triple>_RUSTFLAGS (verified: the target-scoped value
         # is silently dropped when both are set), so the target units would
@@ -121,7 +127,7 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         # alone is what makes a job-level RUSTFLAGS fatal here.
         # So the job must not set RUSTFLAGS anywhere (job env, step env, or a
         # run-block export) and the orchestrator must own exactly one
-        # target-scoped export carrying both flags.
+        # target-scoped export carrying the remap and both link-args.
         self.assertNotIn("RUSTFLAGS", self.job_code)
         orchestrator_code = _without_comments(self.orchestrator)
         self.assertNotIn("-fuse-ld=lld", orchestrator_code)
@@ -137,12 +143,51 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             export_lines,
             [
                 'CARGO_TARGET_RUSTFLAGS="--remap-path-prefix=$REPO_ROOT=/ '
-                '-C link-arg=--sysroot=$sysroot"',
+                '-C link-arg=--sysroot=$sysroot '
+                '-C link-arg=-B$sysroot/usr/lib/loongarch64-linux-gnu/"',
                 'export CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS='
                 '"$CARGO_TARGET_RUSTFLAGS"',
             ],
             "the orchestrator must own exactly the two-line target-scoped "
-            "rust-flag export (remap + sysroot link-arg)",
+            "rust-flag export (remap + sysroot link-arg + multiarch "
+            "startfile -B)",
+        )
+
+    def test_cross_links_find_the_deepin_startfiles(self):
+        # A command-line --sysroot re-roots the gcc driver's startfile search
+        # off the toolchain's bundled tree onto the deepin one, which keeps
+        # Scrt1.o/crti.o only under usr/lib/loongarch64-linux-gnu/ — a dir
+        # the unknown-triple gcc never searches (its configured multiarch is
+        # its own triple). Both link surfaces must hand the driver that dir:
+        # the rust target flags as a -B link-arg (trailing slash = directory
+        # form; a -B dir also reaches ld as -L, putting the multiarch libc.so
+        # script and compat archives on the -l path), and the generated cmake
+        # toolchain file as *_LINKER_FLAGS_INIT (the ASR build passes
+        # CMAKE_SYSROOT and its first try_compile link would die the same
+        # way). verify_sysroot must assert the startfiles exist so a prune
+        # regression fails at setup time with the object named — the
+        # check-only pr-check legs never run a link.
+        #
+        # The cmake side rides in CMAKE_C/CXX_FLAGS_INIT (on compile AND
+        # link lines) rather than *_LINKER_FLAGS_INIT: the ASR build pins
+        # -DCMAKE_EXE_LINKER_FLAGS in cross mode, and a command-line -D
+        # cache entry silently drops a toolchain-file INIT seed.
+        build = _without_comments(self.orchestrator)
+        sysroot = _without_comments(self.sysroot)
+        self.assertIn("-C link-arg=-B$sysroot/usr/lib/loongarch64-linux-gnu/", build)
+        for lang in ("C", "CXX"):
+            self.assertIn(f"CMAKE_{lang}_FLAGS_INIT", sysroot)
+        self.assertEqual(
+            sysroot.count("-B$root/usr/lib/$MULTIARCH_DIR/"),
+            2,
+            "both cmake language-flag variants must carry the same -B "
+            "startfile dir",
+        )
+        self.assertIn(
+            "for startfile in Scrt1.o crt1.o crti.o crtn.o; do",
+            sysroot,
+            "verify_sysroot must assert the C startfiles the cross driver "
+            "selects by its own rules",
         )
 
     def test_release_job_gives_the_cross_build_headroom(self):

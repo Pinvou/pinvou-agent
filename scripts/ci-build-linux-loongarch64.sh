@@ -56,14 +56,14 @@
 #      script must not be pointed at the deb directly.
 #
 # Rust flags are target-scoped: this script exports them as
-# CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS (remap +
-# --sysroot link-arg, see the export block below). They must not ride in
-# RUSTFLAGS: cargo gives a set RUSTFLAGS precedence over the target-scoped
-# variable, so the target units would silently lose the sysroot link-arg
-# (with --target, host build-script units receive no rustflags at all —
-# the shadowing alone is what makes a job-level RUSTFLAGS fatal here).
-# The pinned cross toolchain ships NO lld — only bfd ld
-# — so the arm64 job's -fuse-ld=lld must never be copied in any spelling.
+# CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS (remap + the
+# --sysroot and -B link-args, see the export block below). They must not
+# ride in RUSTFLAGS: cargo gives a set RUSTFLAGS precedence over the
+# target-scoped variable, so the target units would silently lose the
+# sysroot link-arg (with --target, host build-script units receive no
+# rustflags at all — the shadowing alone is what makes a job-level
+# RUSTFLAGS fatal here). The pinned cross toolchain ships NO lld — only bfd
+# ld — so the arm64 job's -fuse-ld=lld must never be copied in any spelling.
 #
 # Env knobs: PINVOU_LOONG64_TOOLCHAIN_PREFIX / PINVOU_LOONG64_SYSROOT (reuse
 # prepared trees), PINVOU_LOONG64_SYSROOT_METHOD and the mirror overrides
@@ -175,14 +175,23 @@ if [ -d /usr/lib/llvm-18/lib ]; then
 fi
 
 # ---- target-unit rust flags ---------------------------------------------------
-# Exactly two flags, both target-scoped on purpose (see the header): the
-# remap keeps build-machine paths out of the shipped loong64 artifacts (same
-# spelling and purpose as every other release job), and the link-arg points
-# the final links at the deepin sysroot so the libc.so linker script's
-# absolute GROUP paths resolve (with the usrmerge aliases the sysroot script
-# creates; without --sysroot ld opens them verbatim on the build host and
-# dies). Word-splitting is intentional — rustflags are consumed the same way.
-CARGO_TARGET_RUSTFLAGS="--remap-path-prefix=$REPO_ROOT=/ -C link-arg=--sysroot=$sysroot"
+# Three flags, all target-scoped on purpose (see the header): the remap keeps
+# build-machine paths out of the shipped loong64 artifacts (same spelling and
+# purpose as every other release job), and the two link-args serve the LINK
+# step. --sysroot points the final links at the deepin sysroot so the libc.so
+# linker script's absolute GROUP paths resolve (with the usrmerge aliases the
+# sysroot script creates; without it ld opens them verbatim on the build host
+# and dies). The -B dir is the other half of that same re-rooting: a
+# command-line --sysroot replaces the toolchain's bundled one, so the gcc
+# driver drops the bundled startfile prefixes and searches only the new tree,
+# which keeps Scrt1.o/crti.o solely under usr/lib/loongarch64-linux-gnu/ — a
+# Debian multiarch dir the unknown-triple gcc never searches (its configured
+# multiarch is its own triple), so every link dies on "cannot find Scrt1.o".
+# A -B dir is searched for startfiles verbatim (trailing slash = directory
+# form) and is also handed to ld as -L, putting the multiarch libc.so script
+# and compat archives on the -l search path. Word-splitting is intentional —
+# rustflags are consumed the same way.
+CARGO_TARGET_RUSTFLAGS="--remap-path-prefix=$REPO_ROOT=/ -C link-arg=--sysroot=$sysroot -C link-arg=-B$sysroot/usr/lib/loongarch64-linux-gnu/"
 export CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="$CARGO_TARGET_RUSTFLAGS"
 
 # ---- rust target --------------------------------------------------------------

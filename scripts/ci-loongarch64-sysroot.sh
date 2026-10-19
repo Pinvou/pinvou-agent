@@ -399,6 +399,19 @@ verify_sysroot() {
       || fail "sysroot lacks the glibc compat stub $compat_archive (prune regression?)"
   done
 
+  # The C startfiles are likewise named by no script and no -l flag: the gcc
+  # driver selects them by its own rules (Scrt1.o/crti.o/crtn.o for -pie,
+  # crt1.o for -no-pie). Assert them so a prune regression fails at setup
+  # time with the object named instead of as "cannot find Scrt1.o" at the
+  # first link (which the check-only pr-check legs never run). The -B
+  # startfile dir the cross build passes (build script rustflags and the
+  # generated cmake toolchain file) points exactly here.
+  local startfile
+  for startfile in Scrt1.o crt1.o crti.o crtn.o; do
+    [ -f "$root/usr/lib/$MULTIARCH_DIR/$startfile" ] \
+      || fail "sysroot lacks the C startfile $startfile (prune regression?)"
+  done
+
   local libc_so="$root/usr/lib/$MULTIARCH_DIR/libc.so.6"
   [ -f "$libc_so" ] || fail "sysroot lacks libc.so.6: $libc_so"
   machine="$(LC_ALL=C readelf -h "$libc_so" 2>/dev/null | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')"
@@ -443,6 +456,20 @@ write_cmake_toolchain_file() {
     echo "set(CMAKE_SYSTEM_NAME Linux)"
     echo "set(CMAKE_SYSTEM_PROCESSOR loongarch64)"
     echo "set(CMAKE_SYSROOT \"$root\")"
+    # CMAKE_SYSROOT re-roots the gcc driver's startfile search onto this tree
+    # (same effect as the build script's --sysroot link-arg), and this tree
+    # keeps Scrt1.o/crti.o only under usr/lib/$MULTIARCH_DIR — a Debian
+    # multiarch dir the unknown-triple cross gcc never searches, so every
+    # cmake link (including the try_compile compiler checks, the very first
+    # thing project() runs) would die on "cannot find Scrt1.o". Hand the
+    # driver the same -B dir the rust target flags carry (trailing slash =
+    # directory form) via the language flags: they appear on compile AND
+    # link lines, and unlike CMAKE_EXE_LINKER_FLAGS they survive the
+    # -DCMAKE_EXE_LINKER_FLAGS the ASR build passes in cross mode
+    # (build-sensevoice-runtime.sh pins -static-libstdc++ -static-libgcc
+    # there, which would silently drop a *_LINKER_FLAGS_INIT seed).
+    echo "set(CMAKE_C_FLAGS_INIT \"-B$root/usr/lib/$MULTIARCH_DIR/\")"
+    echo "set(CMAKE_CXX_FLAGS_INIT \"-B$root/usr/lib/$MULTIARCH_DIR/\")"
     echo "set(CMAKE_C_COMPILER \"$prefix/bin/$TRIPLE-gcc\")"
     echo "set(CMAKE_CXX_COMPILER \"$prefix/bin/$TRIPLE-g++\")"
     echo "set(CMAKE_AR \"$prefix/bin/$TRIPLE-gcc-ar\")"
