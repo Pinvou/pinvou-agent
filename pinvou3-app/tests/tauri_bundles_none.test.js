@@ -242,6 +242,64 @@ test("a real bundle type next to an absorbed none fails loudly", () => {
   }
 });
 
+test("a space-separated bundle type following the absorbed none fails loudly", () => {
+  // The CLI's `--bundles` is multi-value (`Vec<BundleFormat>` with
+  // num_args(0..)), so `--bundles none deb` is ONE option with two values.
+  // Absorbing only `none` would leave `deb` as a bare runner positional that
+  // fails deep inside cargo with an "unexpected argument" error that never
+  // mentions --bundles; the wrapper names the conflict itself, with the same
+  // message as a second --bundles spelling.
+  for (const bundleType of ["deb", "rpm", "appimage"]) {
+    assert.throws(
+      () => prepareTauriArgs(
+        ["build", "--target", "loongarch64-unknown-linux-gnu", "--bundles", "none", bundleType],
+        LINUX_X64,
+      ),
+      /conflicting --bundles requests/u,
+      `subcommand-first with a bare ${bundleType} must fail loudly`,
+    );
+    assert.throws(
+      () => prepareTauriArgs(
+        ["--bundles", "none", bundleType, "build", "--target", "loongarch64-unknown-linux-gnu"],
+        LINUX_X64,
+      ),
+      /conflicting --bundles requests/u,
+      `flag-first with a bare ${bundleType} must fail loudly`,
+    );
+  }
+  // The wrapper runs on every host while the CLI filters its possible values
+  // per host platform, so the recognized set covers all platforms' words.
+  for (const bundleType of ["msi", "nsis", "dmg", "app", "ios", "updater"]) {
+    assert.throws(
+      () => prepareTauriArgs(["build", "--bundles", "none", bundleType], LINUX_X64),
+      /conflicting --bundles requests/u,
+      `a bare ${bundleType} must fail loudly`,
+    );
+  }
+});
+
+test("a non-bundle token after the absorbed none is not a conflict", () => {
+  // The follower check must fire only on the CLI's bundle-type words: the
+  // `--` runner-argument passthrough and flag values keep working.
+  const prepared = prepareTauriArgs(
+    ["build", "--bundles", "none", "--", "--frozen"],
+    LINUX_X64,
+  );
+  assert.ok(prepared.includes("--no-bundle"), `missing --no-bundle: ${prepared}`);
+  assert.deepEqual(prepared.slice(-2), ["--", "--frozen"]);
+});
+
+test("dev keeps absorb-only semantics with a bare bundle type after none", () => {
+  // dev never bundles and gets no --no-bundle, so the contradiction the build
+  // path rejects cannot arise there either; the follower passes through
+  // untouched, exactly like a second --bundles spelling on dev (pinned above).
+  const prepared = prepareTauriArgs(["dev", "--bundles", "none", "deb"], LINUX_X64);
+  assert.ok(!prepared.includes("--no-bundle"), `--no-bundle leaked into dev: ${prepared}`);
+  assert.ok(!prepared.includes("--bundles"), `--bundles leaked into dev: ${prepared}`);
+  assert.ok(!prepared.includes("none"), `the "none" value leaked into dev: ${prepared}`);
+  assert.ok(prepared.includes("deb"), `the follower must pass through on dev: ${prepared}`);
+});
+
 test("dev keeps its absorb-only semantics even with a second bundles spelling", () => {
   // dev never bundles and gets no --no-bundle, so the contradiction the
   // build path rejects cannot arise there; the pass-through spelling stays
