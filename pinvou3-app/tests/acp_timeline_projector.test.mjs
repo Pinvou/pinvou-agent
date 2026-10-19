@@ -113,6 +113,28 @@ test('sequence gaps and global-only appends do not discard events', () => {
   assert.deepEqual(project(events), projectAcpTimeline(events));
 });
 
+test('non-finite or missing appended sequence values retain full replay ordering', () => {
+  for (const seq of [NaN, undefined, Infinity]) {
+    const project = createAcpTimelineProjector();
+    const initial = [event(1, 'agent_message_chunk', text('first'))];
+    project(initial);
+    const events = [...initial, event(seq, 'agent_message_chunk', text('second'), 'b')];
+    assert.deepEqual(project(events), projectAcpTimeline(events));
+    const next = [...events, event(3, 'agent_message_chunk', text('third'), 'c')];
+    assert.deepEqual(project(next), projectAcpTimeline(next));
+  }
+});
+
+test('a truthy non-array input does not poison a subsequent array projection', () => {
+  const project = createAcpTimelineProjector();
+  const invalid = 'x'; // iterable for full replay, but lacks the array cache's every()
+  assert.deepEqual(project(invalid), projectAcpTimeline(invalid));
+  const events = [event(1, 'agent_message_chunk', text('first'))];
+  assert.deepEqual(project(events), projectAcpTimeline(events));
+  const next = [...events, event(2, 'turn_started', {}, 'b')];
+  assert.deepEqual(project(next), projectAcpTimeline(next));
+});
+
 test('prototype-named turn IDs retain the authoritative global-event fallback', () => {
   for (const id of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
     const project = createAcpTimelineProjector();

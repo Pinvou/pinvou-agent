@@ -12,7 +12,7 @@ import { acpEvent, acpHistory } from '../tests/helpers/acp-timeline-fixture.mjs'
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const arguments_ = process.argv.slice(2);
-const options = { '--baseline-ref': 'HEAD', '--samples': '30', '--output': 'tmp/acp-timeline-performance.json' };
+const options = { '--baseline-ref': 'HEAD', '--samples': '30', '--output': path.join(os.tmpdir(), 'pinvou-agent', 'acp-timeline-performance.json') };
 for (let index = 0; index < arguments_.length; index += 2) {
   const key = arguments_[index];
   if (!Object.hasOwn(options, key) || !arguments_[index + 1]) throw new Error(`Invalid argument: ${key}`);
