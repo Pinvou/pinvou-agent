@@ -86,10 +86,20 @@ test('projects domain is fully wired (feature -> slice -> app)', () => {
     'projects feature must publish its snapshot on state.projectsList',
   );
   const featureWrites = [...feature.matchAll(/state\.(\w+)\s*=/g)].map((entry) => entry[1]);
-  assert.deepEqual(
-    [...new Set(featureWrites)].sort((a, b) => a.localeCompare(b)),
-    ['projectsList'],
-    'projects feature must only write the fields its domain declares',
+  // The contract is "the feature writes only fields its domain DECLARES" —
+  // judged against STATE_SLICE_FIELDS.projects (the declaration this test
+  // itself verifies below), not a second hardcoded copy that would silently
+  // drift from it (round-36: projectsAssignmentDegradedAt joined the
+  // declared domain for the degraded create-channel notice).
+  for (const written of new Set(featureWrites)) {
+    assert.ok(
+      sliceFields.projects.includes(written),
+      `projects feature must only write the fields its domain declares (state.${written} is not declared)`,
+    );
+  }
+  assert.ok(
+    featureWrites.includes('projectsList'),
+    'projects feature must publish its snapshot on state.projectsList',
   );
   assert.ok(
     sliceFields.projects.includes('projectsList'),

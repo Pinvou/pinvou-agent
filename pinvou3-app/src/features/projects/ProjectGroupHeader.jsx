@@ -5,7 +5,7 @@
 // hook) to keep sidebar interaction idioms uniform.
 import { useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, ChevronDown, Edit2, FolderPlus, MoreHorizontal, Trash2, X } from '../../components/icons.jsx';
+import { Check, ChevronDown, Edit2, FolderOpen, FolderPlus, MoreHorizontal, Plus, Trash2, X } from '../../components/icons.jsx';
 import { usePortalMenu } from '../../hooks/usePortalMenu.js';
 import { capUnavailableRootsForDisplay, PROJECT_SESSION_DRAG_TYPE } from './projectGrouping.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
@@ -24,6 +24,12 @@ const ProjectGroupHeader = ({
   onConvert,
   onRename,
   onDelete,
+  // Project channel (§9.9): the project group header's dedicated "new
+  // session" entry — cwd = the project's remembered primary root, keychain =
+  // all of the project's roots at that moment; no picker detour.
+  onNewSession,
+  // Manage-folders panel (§4) entry.
+  onManage,
   onDropSession,
   onRebind,
   // One badge entry per unavailable root (per-root rebind): projects with
@@ -46,8 +52,13 @@ const ProjectGroupHeader = ({
   // Menu gating and edit-submit decisions live in
   // ./projectGroupHeaderState.js (pure functions, covered by unit tests).
   const hasMenu = groupHeaderHasMenu(kind, { onConvert, onRename, onDelete });
+  // Flip budget derived from the real menu: 3 items at h-9 (36px) + 8px
+  // vertical padding = 116 for project groups (the old 96 under-counted by
+  // one item and clipped the destructive "Delete project" row near the
+  // viewport bottom; review #484 round-13 minor 3). Non-project groups keep
+  // the single-item 48.
   const { menuOpen, menuStyle, closeMenu, toggleMenu } = usePortalMenu({
-    height: kind === 'project' ? 96 : 48,
+    height: kind === 'project' ? 116 : 48,
   });
 
   // HTML5 drop-target handlers for the sidebar session drag; kept out of the
@@ -95,6 +106,12 @@ const ProjectGroupHeader = ({
         <button type="button" className={menuItemCls} onClick={() => { closeMenu(); startConvert(); }}>
           <FolderPlus size={15} />
           <span>{t.uiProjects.convertToProject}</span>
+        </button>
+      )}
+      {kind === 'project' && onManage && (
+        <button type="button" className={menuItemCls} onClick={() => { closeMenu(); onManage(); }}>
+          <FolderOpen size={15} />
+          <span>{t.uiProjects.manageFolders}</span>
         </button>
       )}
       {kind === 'project' && onRename && (
@@ -246,6 +263,24 @@ const ProjectGroupHeader = ({
           {!showAllUnavailableRoots && <span>+{hiddenCount}</span>}
           <ChevronDown size={11} className={`shrink-0 transition-transform ${showAllUnavailableRoots ? '' : '-rotate-90'}`} />
         </button>
+      )}
+      {/* Project channel (§9.9): dedicated "new conversation" entry — cwd =
+          the project's remembered primary root, keychain = the project's full
+          root set. Reveal matches the menu button's contract: hover/touch,
+          and group-focus-within so keyboard focus keeps it in the tab order. */}
+      {kind === 'project' && onNewSession && (
+        <div className="hidden group-hover/header:flex group-focus-within/header:flex max-sm:flex items-center shrink-0">
+          <button
+            type="button"
+            data-testid="project-new-session"
+            title={t.uiProjects.newSessionHere}
+            disabled={busy}
+            onClick={(e) => { e.stopPropagation(); onNewSession(); }}
+            className="w-5 h-5 rounded-full flex items-center justify-center text-[#5F6368] hover:bg-[#D3E7DB] dark:text-[#A8C7FA] dark:hover:bg-[#1F2A3D] disabled:opacity-50"
+          >
+            <Plus size={12} />
+          </button>
+        </div>
       )}
       {hasMenu && (
         // max-sm keeps the actions reachable without hover (touch, narrow

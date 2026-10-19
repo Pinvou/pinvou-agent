@@ -17,11 +17,15 @@ async function freshGate() {
   return mod;
 }
 
-test('已装载语言(zh 内嵌)同步路径返回 true', async () => {
+test('zh 装载后同步路径返回 true(启动预算拆分后走惰性装载)', async () => {
   const { ensureLanguage, dict } = await freshGate();
+  // zh 自启动预算拆分(round-41)起与 en/ja 一致走惰性装载——装载完成后
+  // 同步命中(第二次 ensureLanguage 立即 resolve,dict.zh 就位)。
+  const first = await ensureLanguage('zh');
+  assert.equal(first, true);
   assert.equal(typeof dict.zh, 'object');
-  const ok = await ensureLanguage('zh');
-  assert.equal(ok, true);
+  const second = await ensureLanguage('zh');
+  assert.equal(second, true);
 });
 
 test('未知语言与原型链键返回 false 且不抛错', async () => {

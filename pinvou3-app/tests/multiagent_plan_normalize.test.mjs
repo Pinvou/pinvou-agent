@@ -638,7 +638,11 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
   const sessionsBridgeSource = read('src', 'platform', 'tauri', 'bridge', 'sessions.js');
   assert.match(
     sessionsBridgeSource,
-    /pendingMultiAgent = state\.pendingDraftMultiAgent === true;[\s\S]{0,900}set_multi_agent_mode/,
+    // 1200 (was 900): the round-18 workspace merge interleaves the draft
+    // workspace/roots/projectId cleanup between the toggle consume and the
+    // backend call; the contract itself is unchanged — the staged intent is
+    // read-then-cleared and lands on the materialized session id.
+    /pendingMultiAgent = state\.pendingDraftMultiAgent === true;[\s\S]{0,1200}set_multi_agent_mode/,
     '寄存的开关意图在首条消息物化会话时落后端',
   );
   assert.match(
@@ -658,6 +662,34 @@ test('开关 UI 挂在模型列表下方，经 interaction 桥调后端', () => 
     i18nSource,
     /关闭不影响在跑的子智能体|turning it off never interrupts running subagents|オフにしても実行中のサブエージェントは中断されない/,
     '不得再保留与 ADR-0006 和实际回收行为相反的旧文案',
+  );
+  // Round-19 minor 11: the typed ALIGN_NO_WORKSPACE marker is mapped to copy
+  // in BOTH lanes (the contract comments say callers map typed markers); the
+  // alignNoWorkspace key must exist in all three locales.
+  assert.equal(
+    (i18nSource.match(/alignNoWorkspace:/g) || []).length, 3,
+    'alignNoWorkspace 文案必须三语齐备（此前 ALIGN_NO_WORKSPACE 落到通用失败文案，与 acpClient 的契约注释相悖）',
+  );
+  // Round-32 minor 13: the count above is distribution-insensitive (a 2+1+0
+  // split across locales passes) — slice each locale's uiKeychain section
+  // and require the key in every one, the workspace_picker_wiring pattern.
+  for (const locale of ['zh', 'en', 'ja']) {
+    const localeSource = read('src', 'shared', 'i18n', `${locale}.js`);
+    const start = localeSource.indexOf('uiKeychain: {');
+    const section = localeSource.slice(start, localeSource.indexOf('},', start));
+    assert.ok(
+      section.includes('alignNoWorkspace:'),
+      `${locale} 的 uiKeychain 必须携带 alignNoWorkspace（计数式断言对 2+1+0 分布不敏感）`,
+    );
+  }
+  const alignLanesSource = [
+    read('src', 'features', 'chat', 'ChatView.jsx'),
+    read('src', 'features', 'codex', 'CodexAcpView.jsx'),
+  ].join('\n');
+  assert.match(
+    alignLanesSource,
+    /startsWith\('ALIGN_NO_WORKSPACE'\)/,
+    '两条车道都必须映射 ALIGN_NO_WORKSPACE 而非只映射 ALIGN_BUSY',
   );
   assert.match(
     modeStateSource,

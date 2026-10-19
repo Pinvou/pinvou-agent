@@ -377,6 +377,13 @@ fn removed_cap_env_warning(gate: &std::sync::OnceLock<()>) -> bool {
     warned
 }
 
+/// Session keychain snapshot resolver closure (the full accessible root set
+/// locked at creation, §6). Injected for the same reason as
+/// [`crate::features::sessions::ExecutionRootResolver`]: the bridge cannot
+/// reach SessionStore/AcpPool.
+pub type WorkspaceRootsResolver =
+    std::sync::Arc<dyn Fn(&str) -> Vec<std::path::PathBuf> + Send + Sync>;
+
 #[derive(Clone)]
 pub struct Pinvou3Bridge {
     pub prefs: UserPrefs,
@@ -430,6 +437,11 @@ pub struct Pinvou3Bridge {
     /// artifacts) is unaffected and is still decided uniformly by the `ledger`
     /// field of `SessionStore::session_roots`.
     pub execution_root_resolver: Option<ExecutionRootResolver>,
+    /// Session keychain-snapshot resolver: the full accessible-root set
+    /// locked at session creation (empty = single-root semantics). Injected
+    /// once at the same place as the execution-root resolver (composition
+    /// root, once the AcpPool is ready).
+    pub workspace_roots_resolver: Option<WorkspaceRootsResolver>,
     /// Native code session predicate (code_session=true, covering both
     /// temporary and project-bound forms). Used for rendering the work/code
     /// branches of instructions and for tool shaping; lib.rs shares the same
@@ -469,6 +481,10 @@ impl std::fmt::Debug for Pinvou3Bridge {
             .field(
                 "execution_root_resolver",
                 &self.execution_root_resolver.as_ref().map(|_| "Some(..)"),
+            )
+            .field(
+                "workspace_roots_resolver",
+                &self.workspace_roots_resolver.as_ref().map(|_| "Some(..)"),
             )
             .field(
                 "code_session_predicate",
@@ -616,6 +632,7 @@ impl Pinvou3Bridge {
             probed_local_kind: None,
             native_window_recheck: false,
             execution_root_resolver: None,
+            workspace_roots_resolver: None,
             code_session_predicate: None,
             external_acp_session_predicate: None,
             image_analyze_always: false,
@@ -862,6 +879,24 @@ impl Pinvou3Bridge {
     /// is ready.
     pub fn set_execution_root_resolver(&mut self, resolver: ExecutionRootResolver) {
         self.execution_root_resolver = Some(resolver);
+    }
+
+    /// Inject the keychain-snapshot resolver; assembled by the app
+    /// composition root at the same place as the execution-root resolver.
+    pub fn set_workspace_roots_resolver(&mut self, resolver: WorkspaceRootsResolver) {
+        self.workspace_roots_resolver = Some(resolver);
+    }
+
+    /// The keychain snapshot locked at session creation (§6): the full
+    /// accessible-root set; empty when no resolver is injected or the session
+    /// has no snapshot (legacy/temporary sessions) — after base normalization
+    /// this is equivalent to `workspace`, leaving the single-root status quo
+    /// unchanged.
+    pub fn session_workspace_roots(&self, session_id: &str) -> Vec<std::path::PathBuf> {
+        self.workspace_roots_resolver
+            .as_ref()
+            .map(|resolver| resolver(session_id))
+            .unwrap_or_default()
     }
 
     /// Inject the native code session predicate (the same SessionAgentStore
@@ -2258,8 +2293,9 @@ impl Pinvou3Bridge {
             terminal_chrome_enabled,
             advisor_config,
             subagent_state_root,
-            // CodeWhale #54 新增：父仓尚未消费多根授权，解构忽略（见下方
-            // EngineConfig 字面量的空集适配）。
+            // v0.9.12 workspace_roots foundation field: this stage only
+            // enumerates the default shape; the real per-session keychain is
+            // assigned in `build_engine_config_for_session_roots`.
             workspace_roots: _,
         } = EngineConfig::default();
 
@@ -2290,8 +2326,9 @@ impl Pinvou3Bridge {
             // pinvou3 override
             model: self.model(),
             workspace: self.workspace.clone(),
-            // CodeWhale #54 多根授权基建：空集经底座 normalize 后等价单根
-            // （workspace 置于位置 0），保持既有行为。
+            // Compile-time convergence: empty set = primary root only (the
+            // single-root status quo); multi-root keychains are assigned per
+            // session in `build_engine_config_for_session_roots`.
             workspace_roots: Vec::new(),
             session_id: None,
             allow_shell: self.allow_shell(),
@@ -2622,6 +2659,18 @@ impl Pinvou3Bridge {
             Vec::new()
         } else {
             self.session_instructions(session_id)
+        };
+        // Keychain snapshot (§6): the roots locked at creation; empty = single root
+        // (base normalize reduces to [workspace]; the base dedups cwd-first). Aux sessions carry
+        // no keychain — empty reads as single-root after base normalize.
+        // Round-21 should-fix 5: the exclusion used to be incidental (the
+        // aux lanes simply never write a snapshot); pin it explicitly so a
+        // stray snapshot written under an aux id can never widen the aux
+        // sandbox, as this comment has always claimed.
+        cfg.workspace_roots = if is_aux {
+            Vec::new()
+        } else {
+            self.session_workspace_roots(session_id)
         };
         // The skill discovery root points at the composed directory per
         // session (skill dual-scope governance: directory content = the
@@ -3991,6 +4040,7 @@ impl Pinvou3Bridge {
             execution_root_resolver: None,
             code_session_predicate: None,
             external_acp_session_predicate: None,
+            workspace_roots_resolver: None,
             image_analyze_always: false,
         }
     }
@@ -4062,6 +4112,43 @@ mod tests {
 
     fn fixture_bridge() -> Pinvou3Bridge {
         Pinvou3Bridge::test_fixture(None)
+    }
+
+    /// Round-34 minor 13: the aux force-empty arm is load-bearing — a
+    /// resolver that DOES return roots for an `aux-` id must still deliver
+    /// an empty keychain (deleting the guard reds this).
+    #[test]
+    fn aux_session_keychain_stays_empty_even_when_the_resolver_returns_roots() {
+        let mut bridge = fixture_bridge();
+        bridge.set_workspace_roots_resolver(std::sync::Arc::new(|_session_id: &str| {
+            vec![
+                std::path::PathBuf::from("/definitely/aux/roots"),
+                std::path::PathBuf::from("/more/aux/roots"),
+            ]
+        }));
+        let roots = crate::features::sessions::SessionRoots {
+            execution: std::path::PathBuf::from("/tmp/aux-exec"),
+            ledger: std::path::PathBuf::from("/tmp/aux-ledger"),
+            bound: true,
+        };
+        let cfg = bridge.build_engine_config_for_session_roots("aux-1", roots);
+        assert!(
+            cfg.workspace_roots.is_empty(),
+            "the aux arm must force-empty regardless of the resolver's answer"
+        );
+        // The non-aux arm still consumes the resolver (the same fixture
+        // proves the resolver is not simply dead).
+        let roots = crate::features::sessions::SessionRoots {
+            execution: std::path::PathBuf::from("/tmp/main-exec"),
+            ledger: std::path::PathBuf::from("/tmp/main-ledger"),
+            bound: true,
+        };
+        let cfg = bridge.build_engine_config_for_session_roots("main-1", roots);
+        assert_eq!(
+            cfg.workspace_roots.len(),
+            2,
+            "non-aux consumes the resolver"
+        );
     }
 
     #[test]
@@ -5024,7 +5111,6 @@ mod tests {
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
                     sandbox_mode: None,
-                    // CodeWhale #54：空集保持历史单根判定。
                     workspace_roots: Vec::new(),
                 })
                 .unwrap()
@@ -5081,7 +5167,6 @@ mod tests {
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
                     sandbox_mode: None,
-                    // CodeWhale #54：空集保持历史单根判定。
                     workspace_roots: Vec::new(),
                 })
                 .unwrap()
@@ -5146,7 +5231,6 @@ mod tests {
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
                     sandbox_mode: None,
-                    // CodeWhale #54：空集保持历史单根判定。
                     workspace_roots: Vec::new(),
                 })
                 .unwrap()
@@ -5384,7 +5468,6 @@ mod tests {
                     path: None,
                     ask_for_approval: codewhale_execpolicy::AskForApproval::Never,
                     sandbox_mode: None,
-                    // CodeWhale #54：空集保持历史单根判定。
                     workspace_roots: Vec::new(),
                 })
                 .unwrap()

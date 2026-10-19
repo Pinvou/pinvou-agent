@@ -68,7 +68,7 @@
     remoteControl: ["webAccess"],
     updater: ["updateCancelling", "updateCheckError", "updateChecking", "updateDownloading", "updateError", "updateInfo", "updateProgress", "updateReady"],
     dependencies: ["deps", "depsChecking", "depsInstallError", "depsInstallProgress", "depsInstalling"],
-    projects: ["projectsList"],
+    projects: ["projectsList", "projectsAssignmentDegradedAt"],
   };
 
   function ensureCells(deps) {

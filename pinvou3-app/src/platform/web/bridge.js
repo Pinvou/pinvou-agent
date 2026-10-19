@@ -278,9 +278,14 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
     updateCancelling: false,  // 用户点了取消,据此把后端「已取消下载」当正常而非错误
     // projects 域桌面专属;Web 端不挂载该切片数据,但 domain-adapter 的
     // fields 注册表中留了键位。桩必须与桌面快照同形
-    // (state.projectsList = { projects, assignments, loadedAt },见
-    // tauri/bridge/projects.js),否则分组读到 undefined 只能靠防御性兜底。
-    projectsList: { projects: [], assignments: {}, loadedAt: null },
+    // (state.projectsList = { projects, assignments, neverMaterializeRoots,
+    // loadedAt } — see tauri/bridge/projects.js), otherwise grouping reads
+    // undefined and can only fall back defensively.
+    projectsList: { projects: [], assignments: {}, neverMaterializeRoots: [], loadedAt: null },
+    // Round-36 P2b: seeded for the desktop-only projects domain's degraded
+    // create-channel notice bump (web never writes it — the field exists so
+    // the shared slice shape stays identical across platforms).
+    projectsAssignmentDegradedAt: 0,
     // 依赖体检(设置页): deps = [{key, installed, apt}], null = 尚未检测
     deps: null,
     depsChecking: false,
@@ -453,6 +458,8 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       fileMediaFilterName: "Images and videos",
       kbPickFolderTitle: "Choose a folder to import into the knowledge base",
       rebindPickFolderTitle: "Choose the folder to rebind this project to",
+      manageAddFolderTitle: "Choose a folder to add to the project",
+      workspacePickFolderTitle: "Choose a workspace folder",
       metricUnavailable: "Not provided",
       betaVersionSuffix: " (Beta)",
       memoryWriteFailed: "Failed to write memory: ",
@@ -575,6 +582,8 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       fileMediaFilterName: "画像と動画",
       kbPickFolderTitle: "知識ベースにインポートするフォルダーを選択",
       rebindPickFolderTitle: "このプロジェクトの再バインド先フォルダーを選択",
+      manageAddFolderTitle: "プロジェクトに追加するフォルダーを選択",
+      workspacePickFolderTitle: "ワークスペースフォルダーを選択",
       metricUnavailable: "未提供",
       betaVersionSuffix: " (ベータ版)",
       memoryWriteFailed: "メモリの書き込みに失敗：",
@@ -697,6 +706,8 @@ function renderMarkdown(text) { return pinvouSharedweb().renderMarkdown(text); }
       fileMediaFilterName: "图片和视频",
       kbPickFolderTitle: "选择要导入知识库的文件夹",
       rebindPickFolderTitle: "选择重绑定项目的新文件夹",
+      manageAddFolderTitle: "选择要添加到项目的文件夹",
+      workspacePickFolderTitle: "选择工作区文件夹",
       metricUnavailable: "未提供",
       betaVersionSuffix: " (内测版)",
       memoryWriteFailed: "记忆写入失败：",
@@ -6283,6 +6294,20 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     if (!selected) return null;
     return Array.isArray(selected) ? (selected[0] || null) : selected;
   }
+  // Round-35 M4: the workspace channels' dedicated single-select pickers,
+  // same surface as the desktop bridge.
+  async function pickManageFolder() {
+    if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return null; }
+    const selected = await dialogOpen({ directory: true, multiple: false, title: bt("manageAddFolderTitle") });
+    if (!selected) return null;
+    return Array.isArray(selected) ? (selected[0] || null) : selected;
+  }
+  async function pickWorkspaceFolder() {
+    if (!dialogOpen) { addSystemItem(bt("filePickUnavailable")); return null; }
+    const selected = await dialogOpen({ directory: true, multiple: false, title: bt("workspacePickFolderTitle") });
+    if (!selected) return null;
+    return Array.isArray(selected) ? (selected[0] || null) : selected;
+  }
   async function pickFeedbackFiles() {
     if (!dialogOpen) return [];
     const selected = await dialogOpen({
@@ -6520,7 +6545,9 @@ function appendVoiceText(base, text) { return pinvouSharedweb().appendVoiceText(
     // 通用宿主文件选择器（知识库、反馈等功能继续复用）。
     pickFiles,
     pickFolders,
+    pickManageFolder,
     pickRebindFolder,
+    pickWorkspaceFolder,
     pickFeedbackFiles,
     // 卡片池: 专家面具
     loadPersonas,
