@@ -17,7 +17,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T04 | Not completed | Independent composite packaging and verification toolchain; depends on T03 platform contracts. |
 | T05 | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
 | T06 | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
-| T07 | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop and actual Root retention; complete issuance and emergency deny composition remain pending |
+| T07 | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop, permanent material fencing and OpenBao physical-stop recovery, with actual Root retention; complete issuance and emergency deny composition remain pending |
 | T08 | In progress | Reviewed genesis catalog/component management and protected atomic publication primitives; complete business publication workflows remain pending |
 | T09 | In progress | Bounded package/native-byte inspection, immutable storage, authenticated upload/recovery, ZIP inspection/UI and current-trust Package/evidence CLI and admin inspection; formal validation, admission, quarantine and platform qualification remain pending |
 | T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
@@ -13019,3 +13019,52 @@ T09 authenticated current package and evidence inspection (2026-10-19):
   Documents 1.0, product 0.10.12 and CodeWhale remain unchanged. Deployment stays
   deferred; downloads have no hard total/cumulative duration or retry cap, and
   32 MiB continues to bound atomic business metadata rather than file bytes.
+
+T07 reviewed permanent material-stop management (2026-10-19):
+
+- Service commit `0d3590f` adds five fixed private HTTP routes, explicit storage
+  initialization/check commands and a Chinese/English/Japanese administration
+  workflow for timestamp/snapshot/target on exact product/component scopes with
+  null channel/target. It composes the existing retirement kernel and T05/T06.
+- Current scoped authority, fresh MFA and two independent non-author approvals
+  bind the exact original capture. Execution atomically creates the permanent
+  material fence, stops every affected whole group without lowering its threshold,
+  and records one physical job. Its original ACK remains fenced-and-queued even
+  after the separately queried physical state becomes stopped.
+- A separate OpenBao stop credential is loaded lazily and frozen per attempt.
+  Capability checks cover exact key read/rotate/config and forbidden signing,
+  export, backup and trim paths, including legal algorithm/version subpaths.
+  Missing token/network cannot prevent logical fencing. Actual registered
+  provider identity is checked before fencing and throughout recovery.
+- The independent physical worker preserves unknown results and the original
+  SQL lease. It reserves at most one unused successor and raises the original
+  signing floor while retaining version-one public verification material.
+  Disabling the profile cannot hide processing T06 work or unfinished physical
+  jobs, including with an absent retirement namespace or unsupported old purpose.
+- The UI preserves original wire before transmission and one accepted original
+  per material; wrong path/body slots and damaged hashes fail closed without
+  discarding recovery bytes. Read-authorized new preparation previews actual
+  material before allocating a key. Delayed material/role ABA and scope recreation
+  cannot display old responses; tests consume the real JSON and real digest.
+- Both final scoped independent static reviews pass after primary repairs.
+  Frozen actual PostgreSQL/OpenBao/CLI core acceptance passes 11 top-level
+  and 9 nested tests; actual TLS/signed-OIDC/HTTP/browser management
+  acceptance passes 4 top-level and 2 nested tests. Both have
+  zero failures and skips. Controls cover original preparation/execution ACK
+  loss, exact replay, current permissions, independent approvals, whole threshold-
+  two groups, legal extra permission refusal, same-key public retention/floor,
+  and actual rotate/config ACK loss with admission-closed fresh-owner recovery
+  after the unchanged natural two-minute lease. Fresh runtime is not OS-crash
+  evidence. The exact OpenBao 2.7 signing-floor rejection is required alongside
+  physical key facts; an arbitrary HTTP 500 never counts as successful stopping.
+- Default tests pass 824 top-level/1816 nested cases; 713
+  top-level/669 nested explicit opt-in/fixture skips are reported
+  separately, with zero failures. Modules, vet, server/trust CLI builds, pinned
+  contracts, admin build, five focused UI contracts, three trust CLI cross-builds,
+  formatting and whitespace pass. All 97 prior SQL files and frozen source/index/
+  status remain unchanged. Cross-compilation does not certify native execution.
+- T07 remains in progress: production custody, full issuance and emergency
+  deny/publication composition are separate. Totals stay 5 implemented / 14 in
+  progress / 28 incomplete or deferred of 47. Documents 1.0, product 0.10.12 and
+  CodeWhale are unchanged. Deployment stays deferred; downloads have no hard
+  total/cumulative elapsed or retry cap. The 32 MiB bound remains metadata only.
