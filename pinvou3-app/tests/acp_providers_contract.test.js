@@ -542,6 +542,63 @@ assert.ok(
   '安装进度必须走共享 store，且安装收口后清除'
 );
 
+// ---------------------------------------------------------------- 8.2 安装终局跨挂载自愈
+
+// 安装期间设置面板被关闭/切走时发起实例已卸载，install_acp_agent 的返回值
+// 送达不了任何挂载中的组件——后端必须在收口时把真实结局记入共享 store 并
+// 由 status 带回（install_finished，下次安装开始时清除），前端重挂载恢复的
+// 「进行中」阶段据此收敛为终态，不能永久停留在「下载安装中」。
+assert.ok(
+  MOD.includes('pub install_finished: Option<InstallFinishedInfo>')
+    && MOD.includes('struct InstallOutcomeStore'),
+  'status 必须携带安装终局字段 install_finished（跨挂载自愈数据源）'
+);
+assert.ok(
+  MOD.includes('fn install_outcome_for_result'),
+  '终局映射必须是纯函数（取消标记判定可单测）'
+);
+assert.ok(
+  MOD.includes('clear_install_outcome(&self.app, backend)')
+    && MOD.includes('record_install_outcome(&self.app, backend, outcome)'),
+  'install_agent 入口必须先清除旧终局、返回前记录本次终局'
+);
+assert.ok(
+  MOD.includes('fill_install_outcome(&self.app, backend, &mut status)'),
+  'status 构建必须带回 install_finished'
+);
+// 前端自愈：仅当「进行中阶段 + 非本实例发起（busy 不匹配）+ 后端未在安装 +
+// 卡片属于当前 Agent」时按终局收敛；三个终态都必须被映射。
+{
+  const healStart = PROVIDERS_SECTION.indexOf('跨挂载安装自愈');
+  assert.ok(healStart > 0, '前端必须实现跨挂载安装自愈（ProvidersSection）');
+  const heal = PROVIDERS_SECTION.slice(healStart, healStart + 1600);
+  assert.match(
+    heal,
+    /status\.install_finished/,
+    '自愈必须消费 status.install_finished'
+  );
+  assert.match(
+    heal,
+    /status\.installing/,
+    '后端仍在安装时不得自愈（终局未记录，防误收敛）'
+  );
+  assert.match(
+    heal,
+    /busy === 'install:' \+ activeAgent/,
+    '本实例发起的安装仍走 await 收口路径，不走自愈'
+  );
+  assert.match(
+    heal,
+    /outcome\.cancelled \? 'cancelled' : outcome\.ok \? 'done' : 'failed'/,
+    '自愈必须把终局映射为 cancelled/done/failed 三态'
+  );
+  assert.match(
+    heal,
+    /status\.error/,
+    '失败自愈必须回显后端记录的失败原因（与发起实例的 catch 分支对齐）'
+  );
+}
+
 // ---------------------------------------------------------------- 9. Claude 细化模型槽位 + env 生效值（改动 5）
 
 // 槽位定义：mod.rs 提供 CLAUDE_MODEL_SLOTS（opus/sonnet/haiku/fable/subagent → env 键）

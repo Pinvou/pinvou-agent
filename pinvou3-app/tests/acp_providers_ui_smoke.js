@@ -67,6 +67,9 @@ function injectSource() {
     var envConflicts = [];
     var envEffectiveEntries = [];
     var nextProviderSeq = 0;
+    // 跨挂载安装自愈测试：install promise 挂起到 resolvePendingInstall，
+    // 模拟真实安装进行中设置面板被关闭/切走的窗口期
+    var pendingInstalls = {};
     var statusByAgent = {
       codex: { agent_id: 'codex', agent_name: 'Codex', installed: true, authenticated: true, version: '0.144.6', update_available: false, update_required: false, install_action: 'none', bridge_ready: true, setup_hint: null },
       claude: { agent_id: 'claude', agent_name: 'Claude Code', installed: true, authenticated: true, version: '2.0.0', update_available: false, update_required: false, install_action: 'none', bridge_ready: true, setup_hint: null },
@@ -98,7 +101,12 @@ function injectSource() {
             effectiveEntries: [],
           }, agentState));
         }
-        case 'get_acp_agent_status': return Promise.resolve(statusByAgent[args.agentId] || null);
+        // 与真实后端一致：每次返回新对象（Rust 逐次序列化）。原地返回同一
+        // 引用会让 React setState 按引用去重，status 更新触发不了 effect。
+        case 'get_acp_agent_status': {
+          var statusSnapshot = statusByAgent[args.agentId];
+          return Promise.resolve(statusSnapshot ? Object.assign({}, statusSnapshot) : null);
+        }
         case 'save_acp_provider': {
           var state = providersByAgent[args.agent] || (providersByAgent[args.agent] = { currentProviderId: null, providers: [] });
           // 新建按计数器分配唯一 id：固定 id 会让多次新增产生重复卡片/React key
@@ -130,7 +138,9 @@ function injectSource() {
           return Promise.resolve({ imported: 1, idConflicts: 0, skipped: 0 });
         // 一次性模型探针：smoke 不验证探针内容，返回 null（前端静默回退占位快照）
         case 'probe_acp_agent_models': return Promise.resolve(null);
-        case 'install_acp_agent': return Promise.resolve(statusByAgent[args.agent]);
+        // 挂起而不是立即 resolve：真实安装要等装完才返回，挂起才能覆盖
+        // 「安装期间组件被卸载」的窗口（见文件末尾跨挂载自愈步骤）
+        case 'install_acp_agent': return new Promise(function (resolve) { pendingInstalls[args.agent] = resolve; });
         case 'cancel_acp_agent_install': statusByAgent[args.agent].installing = false; return Promise.resolve(statusByAgent[args.agent]);
         case 'uninstall_acp_agent': statusByAgent[args.agent].installed = false; return Promise.resolve(statusByAgent[args.agent]);
         case 'login_acp_agent': return Promise.resolve(statusByAgent[args.agentId]);
@@ -169,6 +179,25 @@ function injectSource() {
         var status = statusByAgent[agent];
         status.installing = installing;
         if (installing) status.installed = false;
+      },
+      // 跨挂载安装自愈测试钩子：setInstallScenario 直接改写 status 字段
+      // （installed/installing/install_finished 等），emitInstallProgress
+      // 派发 acp:install-progress 事件，resolvePendingInstall 收口挂起的
+      // install promise（模拟安装命令返回）。
+      setInstallScenario: function (agent, patch) {
+        Object.assign(statusByAgent[agent], patch);
+      },
+      emitInstallProgress: function (agent, kind, value) {
+        return Promise.all((handlers['acp:install-progress'] || []).slice().map(function (handler) {
+          return handler({ payload: { agent: agent, kind: kind, value: value } });
+        }));
+      },
+      resolvePendingInstall: function (agent) {
+        var resolve = pendingInstalls[agent];
+        if (resolve) {
+          delete pendingInstalls[agent];
+          resolve(statusByAgent[agent]);
+        }
       },
     };
     window.__TAURI__ = {
@@ -530,6 +559,60 @@ async function clickSettingsSection(page, label) {
   rec('⑲ 取消后安装入口恢复可用', await page.evaluate(() => {
     const button = document.querySelector('[data-testid="acp-cli-install-update"]');
     return !!button && !button.disabled && !document.querySelector('[data-testid="acp-cli-install-cancel"]');
+  }));
+
+  // 跨挂载安装自愈：安装期间切走设置分区（ProvidersSection 卸载，结束态只
+  // 送达已卸载的发起实例）→ 重挂载恢复的「下载安装中」卡片必须按后端
+  // status.install_finished 收敛为终态，不能永久停留在进行中。
+  await page.evaluate(() => window.__ACP_PROVIDERS_TEST__.setInstallScenario('codex', {
+    installed: false,
+    installing: false,
+    install_finished: null,
+  }));
+  await page.evaluate(() => document.querySelector('[data-testid="acp-provider-refresh"]').click());
+  await sleep(400);
+  await page.evaluate(() => document.querySelector('[data-testid="acp-cli-install-update"]').click());
+  await sleep(300);
+  // 后端登记安装锁并推送首条 command 事件（前端切换为「下载安装中」）
+  await page.evaluate(() => window.__ACP_PROVIDERS_TEST__.setInstallScenario('codex', {
+    installing: true,
+    install_command: 'curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash',
+  }));
+  await page.evaluate(() => window.__ACP_PROVIDERS_TEST__.emitInstallProgress(
+    'codex', 'command', 'curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash',
+  ));
+  await sleep(300);
+  rec('⑳ 安装中卡片出现', await page.evaluate(() => {
+    const card = document.querySelector('[data-testid="acp-cli-install-progress"]');
+    return !!card && (card.textContent || '').includes('下载安装中');
+  }));
+  // 切走再切回：ProvidersSection 卸载重挂载，进行中阶段从模块缓存恢复
+  await clickSettingsSection(page, '通用');
+  await clickSettingsSection(page, '模型');
+  await page.click('[data-testid="settings-model-tab-acp"]');
+  await sleep(500);
+  rec('㉑ 重挂载后卡片恢复进行中', await page.evaluate(() => {
+    const card = document.querySelector('[data-testid="acp-cli-install-progress"]');
+    return !!card && (card.textContent || '').includes('下载安装中');
+  }));
+  // 后端收口：installing=false + install_finished=ok。发起实例已卸载，
+  // 重挂载实例必须据此把卡片收敛为「完成」而不是永久「下载安装中」。
+  await page.evaluate(() => window.__ACP_PROVIDERS_TEST__.setInstallScenario('codex', {
+    installing: false,
+    installed: true,
+    install_finished: { ok: true, cancelled: false },
+  }));
+  await page.evaluate(() => window.__ACP_PROVIDERS_TEST__.resolvePendingInstall('codex'));
+  // CLI 区「重新检测」强制重读 status（provider 区刷新只重读 providers）；
+  // 两个同名按钮取最后一个（CLI 区）
+  await page.evaluate(() => {
+    const buttons = [...document.querySelectorAll('button')].filter(button => (button.textContent || '').trim() === '重新检测');
+    buttons[buttons.length - 1].click();
+  });
+  await sleep(600);
+  rec('㉒ 按 install_finished 收敛为完成', await page.evaluate(() => {
+    const card = document.querySelector('[data-testid="acp-cli-install-progress"]');
+    return !!card && (card.textContent || '').includes('完成');
   }));
 
   const pageErrors = errors.filter(message => !message.includes('favicon'));

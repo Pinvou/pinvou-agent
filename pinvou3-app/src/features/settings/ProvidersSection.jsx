@@ -381,6 +381,33 @@ export function ProvidersSection({ t }) {
     }
   }, [status, activeAgent]);
 
+  // 跨挂载安装自愈：安装期间本组件被卸载（关设置面板/切设置分区）时，
+  // install_acp_agent 的结束态只送达已卸载的发起实例，模块缓存恢复出的
+  // 「进行中」阶段永远不会被收口，卡片会永久停在「下载安装中」。后端在
+  // install_acp_agent 收口时把真实结局记入 status.install_finished（下次
+  // 安装开始时清除），本实例据此把停滞的进行中阶段收敛为终态。发起实例
+  // 自己的 await 路径（busy 匹配）仍按原样收口，不走这里；卡片只展示
+  // 当前标签页 Agent 的日志，其他 Agent 的进行中阶段不因异 Agent 的旧
+  // 终局被误收敛。
+  useEffect(() => {
+    if (installPhase !== 'checking' && installPhase !== 'installing') return;
+    if (busy === 'install:' + activeAgent) return;
+    if (installLog && installLog.agent !== activeAgent) return;
+    if (!status || status.installing) return;
+    const outcome = status.install_finished;
+    if (!outcome) return;
+    // 与发起实例的 catch 分支对齐：失败（非取消）时回显后端记录的失败原因
+    // （安装失败已写入 runtime_errors → status.error；取消不进红错区）。
+    const failureDetail = outcome.ok || outcome.cancelled
+      ? null
+      : String(status.error || '').trim() || null;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- same cross-mount restore as the effect above: converge the stale in-progress phase with the outcome already recorded by the backend
+    setInstallPhase(outcome.cancelled ? 'cancelled' : outcome.ok ? 'done' : 'failed');
+    if (failureDetail) {
+      setError(failureDetail);
+    }
+  }, [status, installPhase, busy, activeAgent, installLog]);
+
   useEffect(() => {
     return () => {
       if (noticeTimer.current) window.clearTimeout(noticeTimer.current);

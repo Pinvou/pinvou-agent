@@ -26,15 +26,16 @@ pub mod workspace;
 // 无副作用自由函数已迁入对应子模块，这里显式引入 mod.rs 实际使用的符号。
 use install::{
     brew_install_args, brew_package_installed, bundled_adapter_candidates,
-    claude_version_supported, clear_install_progress, codex_path_for_adapter,
-    codex_upgrade_required, codex_version_changed, command_version_output, detect_install_source,
-    fill_install_progress, find_in_path, install_action_for, installed_node_version,
+    claude_version_supported, clear_install_outcome, clear_install_progress,
+    codex_path_for_adapter, codex_upgrade_required, codex_version_changed, command_version_output,
+    detect_install_source, fill_install_outcome, fill_install_progress, find_in_path,
+    install_action_for, install_outcome_for_result, installed_node_version,
     kill_install_process_tree, kimi_version_supported, move_official_binaries_aside,
     node_major_version, npm_executable, npm_package, official_script_supported,
-    official_script_urls, parse_install_action, path_install_source, resolve_adapter_from,
-    resolve_claude_adapter_from, resolve_claude_cli, resolve_codex_cli, resolve_kimi_path,
-    run_brew_install, run_npm_global_upgrade, run_official_install_script, script_url_reachable,
-    stale_official_target,
+    official_script_urls, parse_install_action, path_install_source, record_install_outcome,
+    resolve_adapter_from, resolve_claude_adapter_from, resolve_claude_cli, resolve_codex_cli,
+    resolve_kimi_path, run_brew_install, run_npm_global_upgrade, run_official_install_script,
+    script_url_reachable, stale_official_target,
 };
 use introspect::{kimi_diagnostic_cursor, kimi_failure_after};
 use login::{
@@ -1004,11 +1005,31 @@ pub struct CodexAcpStatus {
     /// 安装进行中的输出最新一行（同样供重挂载恢复展示）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_latest_line: Option<String>,
+    /// 最后一次安装/升级的终局（install_agent 收口时记录，下次安装开始时
+    /// 清除）。安装跨越设置页关闭/分区切换时，发起安装的前端实例已卸载，
+    /// 命令返回值的结束态送达不了任何挂载中的组件——重挂载的前端据此把
+    /// 恢复出的「进行中」阶段收敛为 done/failed/cancelled，不再永久停留。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_finished: Option<InstallFinishedInfo>,
     pub error: Option<String>,
     /// 稳定的英文提示代码，前端映射 i18n 文案：
     /// "kimi_cli_missing" / "kimi_auth_required" / "claude_auth_required"。
     pub setup_hint: Option<&'static str>,
 }
+
+/// 安装/升级的整体终局：ok=false 时前端映射「失败」，cancelled=true 映射
+/// 「已取消」（不进红错区，与等待侧的取消收口一致）。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct InstallFinishedInfo {
+    pub ok: bool,
+    pub cancelled: bool,
+}
+
+/// 安装终局共享 store（tauri managed state）：install_agent 收口时记录该
+/// Agent 最近一次安装/升级的真实结局。与一次性命令返回值互补——返回值只
+/// 送达发起时的前端实例，卸载重开后只能从 status 感知终局。
+#[derive(Default)]
+struct InstallOutcomeStore(parking_lot::RwLock<HashMap<AgentBackend, InstallFinishedInfo>>);
 
 /// 安装进度共享 store（tauri managed state）：安装子进程逐行 emit 时同步记录
 /// 执行命令与最新一行，status 查询时带回——前端设置页/App 关闭重开后从
@@ -1824,6 +1845,7 @@ impl AcpPool {
             }
         }
         app.manage(InstallProgressStore::default());
+        app.manage(InstallOutcomeStore::default());
         Ok(Self {
             app,
             sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -2169,6 +2191,7 @@ impl AcpPool {
                 error: login.error.or_else(|| self.runtime_errors.get(backend)),
                 install_command: None,
                 install_latest_line: None,
+                install_finished: None,
                 setup_hint: if !cli_ready {
                     Some("kimi_cli_missing")
                 } else if !authenticated {
@@ -2178,6 +2201,7 @@ impl AcpPool {
                 },
             };
             fill_install_progress(&self.app, backend, &mut status);
+            fill_install_outcome(&self.app, backend, &mut status);
             return status;
         }
 
@@ -2331,8 +2355,10 @@ impl AcpPool {
             },
             install_command: None,
             install_latest_line: None,
+            install_finished: None,
         };
         fill_install_progress(&self.app, backend, &mut status);
+        fill_install_outcome(&self.app, backend, &mut status);
         status
     }
 
@@ -2726,6 +2752,30 @@ impl AcpPool {
         if !backend.is_acp() {
             bail!("Agent 不是 ACP 后端: {agent_id}");
         }
+        // 本次开始前清掉上一次的终局：install_finished 只表达「最近一次」
+        // 安装的结局，避免陈旧结局被前端自愈逻辑误用。
+        clear_install_outcome(&self.app, backend);
+        let result = self.install_agent_inner(backend, action).await;
+        // 收口记录真实结局。命令返回值只送达发起时的前端实例——安装期间
+        // 设置面板被关闭/切走时该实例已卸载，重挂载的前端只能从 status 的
+        // install_finished 感知终局（见 ProvidersSection 跨挂载自愈）。
+        let outcome = install_outcome_for_result(
+            result.is_ok(),
+            result
+                .as_ref()
+                .err()
+                .map(|error| format!("{error:#}"))
+                .as_deref(),
+        );
+        record_install_outcome(&self.app, backend, outcome);
+        result
+    }
+
+    async fn install_agent_inner(
+        &self,
+        backend: AgentBackend,
+        action: Option<&str>,
+    ) -> Result<CodexAcpStatus> {
         // 分派前强制刷新探测，确保 install_action 基于当前真实环境。
         self.refresh_agent_cli_probe(backend).await;
         let status = self.status_for_async(backend).await;

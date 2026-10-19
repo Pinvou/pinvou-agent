@@ -1097,6 +1097,7 @@ mod tests {
             error: None,
             install_command: None,
             install_latest_line: None,
+            install_finished: None,
             setup_hint: None,
         };
         let value = serde_json::to_value(&status).expect("serialize CodexAcpStatus");
@@ -1107,6 +1108,15 @@ mod tests {
         assert_eq!(value["install_source"], json!("npm"));
         assert_eq!(value["update_available"], json!(true));
         assert_eq!(value["update_required"], json!(true));
+        // 终局缺省不序列化（skip_serializing_if），出现时带 ok/cancelled 两字段
+        assert!(value.get("install_finished").is_none());
+        let mut finished = status.clone();
+        finished.install_finished = Some(install_outcome_for_result(true, None));
+        let value = serde_json::to_value(&finished).expect("serialize install_finished");
+        assert_eq!(
+            value["install_finished"],
+            json!({ "ok": true, "cancelled": false })
+        );
 
         let mut cli_ready_without_bridge = status.clone();
         cli_ready_without_bridge.codex_available = true;
@@ -1128,6 +1138,40 @@ mod tests {
             latest::ensure_agent_cli_ready(AgentBackend::CodexAcp, &cli_ready_without_bridge)
                 .is_ok(),
             "advisory latest upgrade must not fail the install when the package manager lags behind"
+        );
+    }
+
+    /// 终局映射：成功直通 ok；失败时按错误链里的取消标记区分「已取消」与
+    /// 「失败」，与等待侧/前端的取消收口同一判定（不依赖中文文案子串）。
+    #[test]
+    pub(super) fn install_outcome_maps_success_and_cancellation() {
+        assert_eq!(
+            install_outcome_for_result(true, None),
+            InstallFinishedInfo {
+                ok: true,
+                cancelled: false
+            }
+        );
+        assert_eq!(
+            install_outcome_for_result(false, Some("install_cancelled:kimi 安装已取消"),),
+            InstallFinishedInfo {
+                ok: false,
+                cancelled: true
+            }
+        );
+        assert_eq!(
+            install_outcome_for_result(false, Some("npm install failed: EBUSY")),
+            InstallFinishedInfo {
+                ok: false,
+                cancelled: false
+            }
+        );
+        assert_eq!(
+            install_outcome_for_result(false, None),
+            InstallFinishedInfo {
+                ok: false,
+                cancelled: false
+            }
         );
     }
 
@@ -1456,6 +1500,46 @@ mod tests {
 pub(super) fn clear_install_progress(app: &AppHandle, backend: AgentBackend) {
     if let Some(store) = app.try_state::<InstallProgressStore>() {
         store.0.write().remove(&backend);
+    }
+}
+
+/// install_agent 开始前清除上一次的终局：install_finished 只表达最近一次安装。
+pub(super) fn clear_install_outcome(app: &AppHandle, backend: AgentBackend) {
+    if let Some(store) = app.try_state::<InstallOutcomeStore>() {
+        store.0.write().remove(&backend);
+    }
+}
+
+/// 终局映射（纯函数，供单测）：ok 直通；失败时错误链包含取消标记即「已取消」，
+/// 与等待侧的取消收口（前端按结构化标记归为 cancelled，不进红错区）同一判定。
+pub(super) fn install_outcome_for_result(
+    ok: bool,
+    error_detail: Option<&str>,
+) -> InstallFinishedInfo {
+    InstallFinishedInfo {
+        ok,
+        cancelled: !ok
+            && error_detail.is_some_and(|detail| detail.contains(INSTALL_CANCELLED_MARKER)),
+    }
+}
+
+pub(super) fn record_install_outcome(
+    app: &AppHandle,
+    backend: AgentBackend,
+    outcome: InstallFinishedInfo,
+) {
+    if let Some(store) = app.try_state::<InstallOutcomeStore>() {
+        store.0.write().insert(backend, outcome);
+    }
+}
+
+pub(super) fn fill_install_outcome(
+    app: &AppHandle,
+    backend: AgentBackend,
+    status: &mut CodexAcpStatus,
+) {
+    if let Some(store) = app.try_state::<InstallOutcomeStore>() {
+        status.install_finished = store.0.read().get(&backend).cloned();
     }
 }
 
