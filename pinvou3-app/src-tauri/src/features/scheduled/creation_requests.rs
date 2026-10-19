@@ -1358,6 +1358,36 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
             Ok(outcome) => outcome,
             Err(panic) => {
                 log::error!("[scheduled-creation] processing {name} panicked: {panic:?}");
+                // Round-26 M3: catch_unwind converts the panic to
+                // Processed::Retry HERE — past process_spool_file's own
+                // Err arm, which is where the apply-failed shadow line
+                // lives — so a panicking attempt used to be the one
+                // failed-attempt shape the contract's "every failed
+                // attempt leaves a shadow line" claim did not cover.
+                // Re-read the record gated+bounded (the same trust
+                // boundary as every spool read) and write the shadow
+                // from it; an unreadable or diverged file keeps only the
+                // log line above, which the contract row does not claim.
+                if let Some((bytes, _meta)) =
+                    read_regular_bounded_anchored(&path, MAX_SPOOL_FILE_BYTES as usize)
+                {
+                    if let Ok(request) =
+                        serde_json::from_slice::<SpooledCreationRequest>(&bytes)
+                    {
+                        let stem = path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or_default()
+                            .to_string();
+                        audit_request_shadow(
+                            &request,
+                            &stem,
+                            request.task_id.as_deref().unwrap_or_default(),
+                            request.name.as_deref().unwrap_or_default(),
+                            "apply-panicked",
+                        );
+                    }
+                }
                 Processed::Retry(anyhow::anyhow!("processing panicked: {panic:?}"))
             }
         };
@@ -2333,6 +2363,48 @@ mod tests {
         );
     }
 
+    /// Round-26 M3: the contract's "every failed attempt leaves a shadow
+    /// line; only a pure poison is silent" used to be false for panicking
+    /// attempts — catch_unwind converted the panic to Processed::Retry in
+    /// the POLL loop, past process_spool_file's Err arm where the
+    /// apply-failed shadow lives. The panic arm now re-reads the record
+    /// and writes the shadow itself; deleting that re-read + write turns
+    /// this red.
+    #[tokio::test]
+    async fn panicking_attempt_leaves_a_shadow_audit_line() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        std::fs::write(spool.join("aaa.json"), spool_record_json(&[])).unwrap();
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &PanickingCreator,
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        let shadow = crate::features::scheduled::tasks::scheduled_automation_root()
+            .join("audit")
+            .join("workflow_audit.jsonl");
+        let lines = std::fs::read_to_string(&shadow)
+            .expect("the panicking attempt must create the shadow audit");
+        let line = lines
+            .lines()
+            .find(|line| line.contains("apply-panicked"))
+            .expect("the panicking attempt must leave an apply-panicked shadow line");
+        let entry: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(
+            entry["detail"]["spool_stem"], "aaa",
+            "the shadow keys the spool stem, not the record's self-description"
+        );
+        assert_eq!(
+            entry["detail"]["claimed_from_session_verified"], false,
+            "the claimed sender stays explicitly unverified"
+        );
+    }
+
     // Round-22 M1-pin: POSIX-only (read-only directory chmod blocks the
     // unlink deterministically; Windows has no equivalent one-liner).
     #[cfg(unix)]
@@ -3222,6 +3294,84 @@ mod tests {
         )
         .unwrap();
         assert_eq!(marker["ok"], false);
+    }
+
+    /// Round-26 M2: the round-24 M4 bound→ledger audit routing shipped
+    /// unpinned — mutating `audit_root_for` to always return the
+    /// execution root kept the whole module green, so the flagship
+    /// "planted evidence must not land in the user's project tree" rule
+    /// had no test. The messaging sibling owns the rule's template
+    /// (`bound_session_audits_route_to_the_ledger_root`); this is the
+    /// scheduled-side port, driven through the real `audit_request`
+    /// append path with the production binding seam (the injected
+    /// execution-root resolver).
+    #[test]
+    fn bound_session_audits_route_to_the_ledger_root() {
+        let _home = TempHome::new();
+        let store = crate::features::sessions::SessionStore::boot_for_process_startup()
+            .expect("sessions store");
+        let project = std::env::temp_dir().join(format!(
+            "pinvou3-scheduled-bound-project-{}",
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        // Pre-clean (TempHome's pattern): one red run must not leave a
+        // stale dir that fails every subsequent suite run.
+        let _ = std::fs::remove_dir_all(&project);
+        std::fs::create_dir_all(&project).unwrap();
+        let bound_id = "reqsrc01".to_string();
+        let bound_project = project.clone();
+        store.set_execution_root_resolver(std::sync::Arc::new(move |id: &str| {
+            (id == bound_id).then(|| bound_project.clone())
+        }));
+        // The private ledger dir exists for a created session; create it
+        // for this synthetic one.
+        let ledger = crate::platform::paths::session_workspace_dir("reqsrc01");
+        std::fs::create_dir_all(&ledger).unwrap();
+        let request: SpooledCreationRequest =
+            serde_json::from_str(&spool_record_json(&[])).unwrap();
+        audit_request(&store, &request, "t-bound", "早报任务");
+        assert!(
+            ledger.join("workflow_audit.jsonl").exists(),
+            "the audit line lands in the private ledger root"
+        );
+        assert!(
+            !project.join("workflow_audit.jsonl").exists(),
+            "the user's bound project directory stays clean"
+        );
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    /// Round-26 M2: the anchored Done-arm unlink guard's decision
+    /// function, pinned at its seam. The guard itself (the
+    /// `same_file_identity` compare at the consume site) fires only in
+    /// the microscopic compare-then-unlink TOCTOU window documented at
+    /// the site — not sequentially drivable in a test — so the pin
+    /// covers what the window's resolution means: a same-name replace
+    /// (identical bytes, fresh mtime) must NOT count as the applied
+    /// file, and the untouched file must.
+    #[test]
+    fn applied_file_identity_refuses_a_replaced_namesake() {
+        let dir = std::env::temp_dir().join(format!(
+            "pinvou3-sched-identity-{}",
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("abc.json");
+        std::fs::write(&path, b"payload").unwrap();
+        let applied = std::fs::symlink_metadata(&path).unwrap();
+        // The applied file untouched: the guard consumes it.
+        assert!(same_file_identity(&applied, &applied));
+        // A same-name replace with IDENTICAL bytes (the replay shape the
+        // window targets): fresh mtime → not the applied file.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::fs::write(&path, b"payload").unwrap();
+        let replaced = std::fs::symlink_metadata(&path).unwrap();
+        assert!(
+            !same_file_identity(&replaced, &applied),
+            "a replaced namesake must not pass the applied-identity guard"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
