@@ -17,8 +17,8 @@ the current overview; a completed bounded batch does not complete its whole task
 | T04 | Not completed | Independent composite packaging and verification toolchain; depends on T03 platform contracts. |
 | T05 | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
 | T06 | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
-| T07 | In progress | Signing/Root primitives, actual provider checks and explicit public-anchor bootstrap tooling; reviewed runtime workflows and complete production issuance remain pending |
-| T08 | In progress | Protected atomic metadata publication primitives; complete business publication workflows remain pending |
+| T07 | In progress | Reviewed public trust initialization HTTP/UI, signing/Root primitives and actual provider checks; online key management and complete production issuance remain pending |
+| T08 | In progress | Reviewed genesis catalog/component management and protected atomic publication primitives; complete business publication workflows remain pending |
 | T09 | In progress | Bounded package/native-byte inspection; complete upload, quarantine and platform qualification remain pending |
 | T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
 | T11 | In progress | Protected multi-platform drafts and reviewed content freezing with actual UI/API/history/recovery; package qualification and Release/Target lifecycle approval remain pending. |
@@ -12586,3 +12586,45 @@ T07/T08 explicit public trust bootstrap tool (2026-10-19):
   genesis publication and component-registration HTTP/UI workflows are next;
   published metadata sources, independent private custody, complete issuance and
   deployment acceptance remain separate pending work. Totals remain 5/14/28 of 47.
+
+
+T07/T08 reviewed trust initialization management (2026-10-19):
+
+- Service commit `3a602c3` adds fixed private preparation, original-result lookup
+  and three execution routes for catalog initialization, externally signed public
+  Root publication and component registration. It composes the original T05/T06
+  owners and the shared recovery worker, preserving their wire and SQL contracts.
+  Admission defaults off; closing admission preserves existing recovery/replay.
+- Preparation validates current actor, exact scope, MFA and keyed audit before and
+  after actual source reads. Its permanent result binding authenticates the exact
+  original request digest and change ID; coherent substitution by another genuine
+  same-content change and orphan audit/result state fail closed without healing.
+  Expired 24-hour full responses retain only the original minimal locator.
+- The three-language admin retains separate unresolved action slots per tab and
+  restores original public Root bytes. It requires two actual independent reviews,
+  binds execution to the visible approved input, and preserves exact pending bytes
+  across lost responses, reloads, scope changes and delayed response settlement.
+  A pre-Root component preparation can retry its original wire after Root exists;
+  a temporary source failure is not treated as a durable terminal refusal.
+- Two independent scoped static reviews passed after primary repairs. Actual
+  PostgreSQL 17/TLS/signed-OIDC acceptance passed all three final selected groups:
+  HTTP workflow, coherent-cache/orphan fault refusal and full browser workflow.
+  These groups had zero skips/failures. The browser verifies three languages,
+  independent reviews, lost preparation/execution ACKs, wrong-slot zero-write
+  refusal, edited-Root execution refusal and actual late JSON settlement after
+  scope unmount. Existing draft/assembly browser regression also passed earlier
+  in this batch. Initial new-browser locator failures were repaired and rerun;
+  unsuccessful attempts are not counted as passing.
+- The dedicated signed MFA fixture is explicit test composition, not certification
+  of a deployed password/OTP identity provider. No production identity provider,
+  private Root custody, metadata publisher or deployment was introduced. All 93
+  prior SQL files are unchanged and owned database/role inventory was restored.
+- Final checks passed module verification, default all-package tests (774 top-level
+  and 1,781 nested passes; 684 top-level and 664 nested opt-in skips; zero failures),
+  vet, server build, pinned contracts, affected formatting and whitespace. Default
+  opt-in skips are distinct from the separately run actual acceptance.
+- T07/T08 remain in progress; totals remain 5 implemented / 14 in progress / 28
+  incomplete or deferred of 47. Next is reviewed non-Root online key management.
+  Documents 1.0, product 0.10.12 and CodeWhale remain unchanged. Deployment is
+  deferred. Downloads have no hard total/cumulative duration or retry cap; 32 MiB
+  continues to bound only joined atomic inventory, never artifacts/downloads.
