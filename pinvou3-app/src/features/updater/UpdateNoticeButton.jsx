@@ -128,7 +128,7 @@ export const UpdateNoticeButton = ({ bs, t, onShowChangelog, sidebarOffset = 0, 
   // sidebar, and collisionLift moves it above the composer when the slot
   // would intersect it (see the layout effect above).
   return (
-    <div data-update-notice-card="true" className={`fixed z-[70] w-[260px] p-3.5 backdrop-blur-xl rounded-2xl border shadow-xl shrink-0 transition-all duration-300 bg-white/85 border-gray-200/60 text-gray-800 dark:bg-[#1c1c21]/85 dark:border-white/[0.06] dark:text-gray-200 dark:shadow-2xl`} style={{ left: (sidebarOffset || 0) + CARD_LEFT_MARGIN, bottom: CARD_BASE_BOTTOM + bottomInset + collisionLift }}>
+    <div ref={cardRef} data-update-notice-card="true" className={`fixed z-[70] w-[260px] p-3.5 backdrop-blur-xl rounded-2xl border shadow-xl shrink-0 transition-all duration-300 bg-white/85 border-gray-200/60 text-gray-800 dark:bg-[#1c1c21]/85 dark:border-white/[0.06] dark:text-gray-200 dark:shadow-2xl`} style={{ left: (sidebarOffset || 0) + CARD_LEFT_MARGIN, bottom: CARD_BASE_BOTTOM + bottomInset + collisionLift }}>
       <div className="flex items-center gap-3 mb-3">
         <div className={`w-10 h-10 rounded-[10px] border shadow-inner flex items-center justify-center shrink-0 overflow-hidden relative transition-colors duration-300 bg-gradient-to-br from-gray-100 to-gray-50 border-gray-200/80 dark:bg-gradient-to-br dark:from-[#2c2c35] dark:to-[#1a1a20] dark:border-white/[0.08]`}>
           <PinvouLogo className="h-6 w-6" />
