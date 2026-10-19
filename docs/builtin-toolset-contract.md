@@ -129,11 +129,13 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   `unevaluated*`, …) survives, a surviving keyword must be admissible for its
   node's type (`default` only on scalars — never on `array`/`object`; `enum` only
   on `string`/`number`/`integer`), `required` names unique declared properties,
-  bounds match their type (`minLength`/`maxLength` string, `minItems`/`maxItems`
-  array, `minimum`/`maximum` numeric), and the resource budgets hold (`anyOf` ≤ 10
-  branches, ≤ 100 total properties, property depth ≤ 5, ≤ 500 total enum values,
-  ≤ 120000 encoded bytes) — the validator silently drops the whole tool for any
-  of these.
+  bounds match their type and a keyword explicitly present with a null value is
+  present-and-invalid, never absent (`minLength`/`maxLength` string,
+  `minItems`/`maxItems` array, `minimum`/`maximum` numeric), and the resource
+  budgets hold (`anyOf` ≤ 10 branches, ≤ 100 total properties, property depth ≤ 5,
+  ≤ 500 total enum values, ≤ 120000 encoded bytes, and an enum above 250 entries
+  is further capped at 7500 combined literal bytes) — the validator silently
+  drops the whole tool for any of these.
 - **Pagination parameters** (existing precedent, mandatory alignment): a bounded
   count parameter (`turn_limit` in `read_session`; `limit` where a listing has
   no other count semantics) + `cursor` (opaque string, server stateless) →
