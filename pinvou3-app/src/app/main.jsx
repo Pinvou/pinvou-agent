@@ -293,7 +293,20 @@ const NAV_PREFETCH = {
       // theme to render; light when the system preference is undeterminable
       // (see shared/color-scheme.js).
       const systemDark = useSystemDarkMode();
-      const [colorScheme, setColorScheme] = useState('system');
+      const [colorScheme, setColorScheme] = useState(() => {
+        // Seed from the persisted scheme so the class the index.html pre-paint
+        // script applied survives until real settings arrive: reconciling from
+        // plain 'system' first would strip a correct pre-paint class whenever
+        // the stored pick differs from the OS at boot. Mirrors the pre-paint
+        // rule exactly: stored light/dark wins, anything else follows the OS.
+        // Web stores the raw choice here ('system' falls through to the
+        // default); desktop stores the resolved scheme as a boot cache.
+        try {
+          const stored = window.localStorage.getItem(COLOR_SCHEME_STORAGE_KEY);
+          if (stored === 'light' || stored === 'dark') return stored;
+        } catch { /* storage may be unavailable */ }
+        return 'system';
+      });
       const activeTheme = resolveTheme(colorScheme, systemDark);
       // Browser state is scoped to workspace sessions: switching chats only shows
       // that chat's WebView2. The login profile remains globally shared by the
