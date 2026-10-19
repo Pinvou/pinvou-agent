@@ -1156,6 +1156,11 @@ impl Pinvou3Bridge {
                 if base_url_uses_local_or_private(&self.base_url()) {
                     match self.probed_local_kind {
                         Some(LocalServerKind::Ollama) => return "ollama".to_string(),
+                        // Tachyon (驭光) speaks the vLLM wire family but its
+                        // tier ladder differs (none/low/medium/xhigh; `high`
+                        // is a 400), so it routes to its own engine provider
+                        // dialect instead of riding the vllm arm.
+                        Some(LocalServerKind::Tachyon) => return "tachyon".to_string(),
                         // SGLang / llama.cpp / KoboldCpp / LMDeploy / Docker
                         // Model Runner all support passthrough of
                         // chat_template_kwargs.enable_thinking and
@@ -1286,6 +1291,19 @@ impl Pinvou3Bridge {
         if provider == "vllm" {
             return Some(SEPARATE_REASONING_FIELD);
         }
+        // The "tachyon" route is NOT a truly custom interface: it only ever
+        // comes from a probed Tachyon (驭光) engine, and that server places
+        // thinking in the separate reasoning_content field whenever its
+        // reasoning parser is enabled (the Tachyon cards ship with one).
+        // Keeping None here would hit the foundation's wildcard-proxy
+        // fallback, which inlines reasoning-only deltas into the answer text.
+        // The engine-side route classifier (provider_accepts_reasoning_content)
+        // already covers catalogued reasoning model ids; this explicit table
+        // value additionally covers served ids the model catalog has not
+        // cataloged yet.
+        if provider == "tachyon" {
+            return Some(SEPARATE_REASONING_FIELD);
+        }
         if matches!(
             provider,
             "deepseek" | "moonshot" | "zai" | "minimax" | "xiaomi-mimo" | "volcengine"
@@ -1359,14 +1377,29 @@ impl Pinvou3Bridge {
     /// thinking injection, see image_capability.rs).
     fn request_reasoning_effort(&self) -> Option<String> {
         let provider = self.provider();
-        // "Local route": the vllm/ollama providers. When the openai wire
-        // points at a local/private endpoint (LM Studio/generic server), the
-        // engine treats reasoning_effort as a no-op, so knowledge-table
+        let effort = self.request_reasoning_effort_for_provider(&provider);
+        // Tachyon (驭光) wire 有效档为 none/low/medium/xhigh：`high` 会被服务端
+        // 400 拒绝。存量/知识表/显式选择中的 high 防御性归一为 medium（本仓
+        // UI 档表不提供 high，该值只可能来自旧版本存储或 always-thinking
+        // 知识表的 lowest-tier 归一）；`max` 原样放行，由底座 tachyon 方言映射
+        // 为 xhigh。
+        if provider == "tachyon" && effort.as_deref() == Some("high") {
+            return Some("medium".to_string());
+        }
+        effort
+    }
+
+    /// [`Self::request_reasoning_effort`] 的档位推导主体；Tachyon 的
+    /// high→medium 归一在公共入口统一收口，这里不做 provider 特判。
+    fn request_reasoning_effort_for_provider(&self, provider: &str) -> Option<String> {
+        // "Local route": the vllm/ollama/tachyon providers. When the openai
+        // wire points at a local/private endpoint (LM Studio/generic server),
+        // the engine treats reasoning_effort as a no-op, so knowledge-table
         // normalization would be ineffective and is skipped (the stored value
         // is still passed through per "explicit user choice wins" below, so it
         // takes effect once a later probe resolves to vllm); precise cloud
         // routes (moonshot/zai etc.) are likewise skipped.
-        let is_local_route = matches!(provider.as_str(), "vllm" | "ollama");
+        let is_local_route = matches!(provider, "vllm" | "ollama" | "tachyon");
         if is_local_route {
             let model = self.effective_model();
             if let Some(spec) = model.and_then(|m| always_thinking_spec(&m.model)) {
@@ -1408,7 +1441,7 @@ impl Pinvou3Bridge {
         {
             return Some(effort.to_string());
         }
-        match provider.as_str() {
+        match provider {
             // Local models default to the lowest thinking tier instead of
             // off: real-world models (Qwen3.8 family etc.) do not reliably
             // honor thinking=off, and a silently-thinking model stalls the
@@ -1427,6 +1460,9 @@ impl Pinvou3Bridge {
             // per-model capability probe if real-machine reports cluster
             // here.
             "vllm" => Some("low".to_string()),
+            // Tachyon 同样取最低可表达档 low（显式 arm，避免落进下方
+            // `_ => Some("high")` 通配——high 在 Tachyon wire 上是 400）。
+            "tachyon" => Some("low".to_string()),
             "ollama" => Some("high".to_string()),
             // Local OpenAI-compatible endpoints (loopback/private-network LM
             // Studio/generic services) are not injected, preserving the old
@@ -1489,10 +1525,11 @@ impl Pinvou3Bridge {
     /// OpenAI-compatible services explicitly pointing at a local loopback
     /// allow no auth; cloud/LAN addresses still require a Key by default.
     pub fn api_key_required(&self) -> bool {
-        // vLLM and Ollama (including probed LAN Ollama) default to no auth and
-        // the foundation also allows an empty key (Ollama officially works out
-        // of the box); loopback endpoints are likewise exempt.
-        !matches!(self.provider().as_str(), "vllm" | "ollama")
+        // vLLM, Tachyon (驭光) and Ollama (including probed LAN Ollama) default
+        // to no auth and the foundation also allows an empty key (Ollama
+        // officially works out of the box); loopback endpoints are likewise
+        // exempt.
+        !matches!(self.provider().as_str(), "vllm" | "tachyon" | "ollama")
             && !base_url_uses_loopback(&self.base_url())
     }
 
@@ -1785,7 +1822,9 @@ impl Pinvou3Bridge {
         let saved = self.effective_model().filter(|saved| saved.model == model);
         let configured_context = saved.and_then(|saved| saved.context_window_tokens);
         let inferred_context = crate::core::model_context::resolved_context_window(model);
-        let is_local_vllm = self.provider() == "vllm";
+        // Tachyon (驭光) is a vLLM-family local engine: same 128K no-facts
+        // window fallback and operator-owned endpoint declaration posture.
+        let is_local_vllm = matches!(self.provider().as_str(), "vllm" | "tachyon");
         // The window precedence shares core::model_context's single function
         // with the monitor display (declaration wins, probe min-clamps,
         // inference fills in), so the two paths cannot drift apart by each
@@ -2990,6 +3029,7 @@ impl Pinvou3Bridge {
             // Write base_url + api_key into the provider config matching the provider
             let provider_config = match provider.as_str() {
                 "vllm" => &mut providers.vllm,
+                "tachyon" => &mut providers.tachyon,
                 "ollama" => &mut providers.ollama,
                 "openai" => &mut providers.openai,
                 "deepseek" => &mut providers.deepseek,
@@ -10300,6 +10340,80 @@ mod tests {
                 providers.vllm.reasoning_stream_style.as_deref(),
                 Some(SEPARATE_REASONING_FIELD),
                 "{kind:?}"
+            );
+        }
+    }
+
+    /// Tachyon (驭光) 探测命中走独立的 engine provider 方言：默认档 low（不落
+    /// `_ => Some("high")` 通配，high 在 Tachyon wire 上是 400）、本地免密、
+    /// providers.tachyon 槽位携带 separate_field 流式风格（reasoning_content
+    /// 解码为思考而非正文）。
+    #[test]
+    fn local_tachyon_maps_to_own_provider_wire_and_default_low() {
+        let (_lock, _env) = locked_env(&[
+            "DEEPSEEK_MODEL",
+            "DEEPSEEK_PROVIDER",
+            "DEEPSEEK_BASE_URL",
+            "DEEPSEEK_API_KEY",
+        ]);
+        let mut bridge = fixture_bridge();
+        set_active_model(
+            &mut bridge,
+            ModelPreset::OpenaiCompatible,
+            "qwen3.8",
+            "http://127.0.0.1:8000/v1",
+            "",
+        );
+        bridge.probed_local_kind = Some(LocalServerKind::Tachyon);
+        assert_eq!(bridge.provider(), "tachyon");
+        assert_eq!(bridge.request_reasoning_effort().as_deref(), Some("low"));
+        assert!(
+            !bridge.api_key_required(),
+            "本地 Tachyon 默认无鉴权，不应强制 key"
+        );
+        let cfg = bridge.build_dt_config();
+        assert_eq!(
+            cfg.api_provider(),
+            deepseek_tui::config::ApiProvider::Tachyon
+        );
+        let providers = cfg.providers.as_ref().expect("providers config");
+        assert_eq!(
+            providers.tachyon.reasoning_stream_style.as_deref(),
+            Some(SEPARATE_REASONING_FIELD)
+        );
+        assert_eq!(providers.tachyon.base_url.as_deref(), Some("http://127.0.0.1:8000/v1"));
+    }
+
+    /// Tachyon 的存量/显式 high 必须防御性归一为 medium（high 会 400），
+    /// max 原样放行（由底座 tachyon 方言映射 xhigh）。
+    #[test]
+    fn local_tachyon_stored_high_normalizes_to_medium_and_max_passes_through() {
+        for (stored, expected) in [("high", "medium"), ("max", "max"), ("low", "low")] {
+            let (_lock, _env) = locked_env(&[
+                "DEEPSEEK_MODEL",
+                "DEEPSEEK_PROVIDER",
+                "DEEPSEEK_BASE_URL",
+                "DEEPSEEK_API_KEY",
+            ]);
+            let mut bridge = fixture_bridge();
+            set_active_model(
+                &mut bridge,
+                ModelPreset::OpenaiCompatible,
+                "qwen3.8",
+                "http://127.0.0.1:8000/v1",
+                "",
+            );
+            bridge.probed_local_kind = Some(LocalServerKind::Tachyon);
+            bridge
+                .prefs
+                .advanced
+                .saved_models
+                .last_mut()
+                .map(|m| m.reasoning_effort = Some(stored.to_string()));
+            assert_eq!(
+                bridge.request_reasoning_effort().as_deref(),
+                Some(expected),
+                "stored {stored} must surface as {expected}"
             );
         }
     }

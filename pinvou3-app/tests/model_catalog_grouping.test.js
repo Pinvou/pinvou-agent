@@ -887,6 +887,9 @@ test('localProbeTiersForKind 按探测结果映射真实档位', () => {
   // vllm → 四档；ollama → think 开关两档（避免 low/medium/high 归一误导）
   assert.deepStrictEqual([...localProbeTiersForKind('vllm')], ['off', 'low', 'medium', 'high']);
   assert.deepStrictEqual([...localProbeTiersForKind('ollama')], ['off', 'high']);
+  // tachyon（驭光）→ 有效档 none/low/medium/xhigh，high 是 400；最深档复用
+  // 既有 max 档位 id，bridge→底座链路映射为 wire 上的 xhigh
+  assert.deepStrictEqual([...localProbeTiersForKind('tachyon')], ['off', 'low', 'medium', 'max']);
   // Frameworks wire-isomorphic with vLLM thinking control → same four tiers as vllm
   for (const kind of ['sglang', 'llamacpp', 'koboldcpp', 'lmdeploy', 'dockermodelrunner']) {
     assert.deepStrictEqual([...localProbeTiersForKind(kind)], ['off', 'low', 'medium', 'high'], kind);

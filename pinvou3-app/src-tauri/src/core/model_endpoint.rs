@@ -797,14 +797,24 @@ pub fn strip_v1_suffix(url: &str) -> Option<String> {
 /// wire-identical SGLang / llama.cpp / KoboldCpp / LMDeploy / Docker Model
 /// Runner support off/low/medium/high effort tiers via
 /// `chat_template_kwargs.enable_thinking` + `reasoning_effort` (the bridge
-/// maps them uniformly to the engine vllm provider); LM Studio and generic
-/// OpenAI-compatible endpoints take the openai wire route, where the engine
-/// does not yet inject thinking control.
+/// maps them uniformly to the engine vllm provider); Tachyon (驭光) speaks
+/// the same wire family but with effective tiers none/low/medium/xhigh
+/// (`high` is rejected with 400, so the bridge maps it to its own engine
+/// tachyon provider, which never emits `high` and maps the deepest tier
+/// `max` to `xhigh`); LM Studio and generic OpenAI-compatible endpoints
+/// take the openai wire route, where the engine does not yet inject
+/// thinking control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalServerKind {
     /// vLLM：底座经 `chat_template_kwargs.enable_thinking` + `reasoning_effort`
     /// 支持 off/low/medium/high 档位。
     Vllm,
+    /// 驭光（Tachyon）：`owned_by == "tachyon"` in `/v1/models`；wire 与 vLLM
+    /// 同族（`enable_thinking` + `reasoning_effort`），但有效档为
+    /// none/low/medium/xhigh（`high` 会 400，最深档由底座映射 `xhigh`），
+    /// 新包另有 `/get_server_info` 会碰巧命中 SGLang 宽松签名，故本变体的
+    /// 判定优先级必须排在 Sglang 之前。
+    Tachyon,
     /// Ollama：底座经 `think` 布尔支持开关（off=think:false，其余 think:true）。
     Ollama,
     /// SGLang: signature endpoint `/get_server_info`; thinking-control wire
@@ -834,7 +844,8 @@ pub enum LocalServerKind {
 /// (`tokio::join!`, shared 3s timeout, a hung endpoint costs ~3s at worst),
 /// and once all complete the result is picked by signature-exclusivity
 /// priority: LM Studio (`/api/v0/models`) > KoboldCpp
-/// (`/api/extra/version`) > LlamaCpp (`/props`) > Sglang
+/// (`/api/extra/version`) > LlamaCpp (`/props`) > Tachyon (`owned_by` in
+/// `/v1/models`) > Sglang
 /// (`/get_server_info`) > LmDeploy (`owned_by` in `/v1/models`) > Vllm
 /// (`owned_by`) > Ollama (`/api/tags`) > Generic. Ollama comes last among
 /// the specific signatures because `/api/tags` is the weakest one — wrapped
@@ -1077,10 +1088,12 @@ struct ProbeCandidateHits {
 /// branch would hit first and DockerModelRunner would be unreachable, so on
 /// port 12434 only, the management API shape is checked before the Ollama
 /// decision — a miss continues in the normal order) > LM Studio >
-/// KoboldCpp > LlamaCpp > Sglang > LmDeploy > Vllm > Ollama > Generic.
+/// KoboldCpp > LlamaCpp > Tachyon > Sglang > LmDeploy > Vllm > Ollama > Generic.
 /// KoboldCpp is also compatible with llama.cpp's `/props`, so it must come
-/// before LlamaCpp; LMDeploy and vLLM share the owned_by signature, LMDeploy
-/// first.
+/// before LlamaCpp; Tachyon must come before Sglang (new Tachyon packages
+/// also expose `/get_server_info`, which coincidentally satisfies the loose
+/// SGLang signature — owned_by is the stronger identity evidence); LMDeploy
+/// and vLLM share the owned_by signature, LMDeploy first.
 /// Ollama is deliberately LAST among the specific signatures: `/api/tags`
 /// is the weakest signature — wrapped deployments (model-store containers,
 /// DMR) expose an Ollama-compatible shim on top of the real engine, and a
@@ -1099,6 +1112,16 @@ fn select_local_server_kind(hits: ProbeCandidateHits) -> LocalServerKind {
     }
     if hits.llamacpp {
         return LocalServerKind::LlamaCpp;
+    }
+    // Tachyon（驭光）：/v1/models 响应中模型 `owned_by == "tachyon"`。必须排在
+    // Sglang 之前：新包同时暴露 `/get_server_info`（含 version 字段），会碰巧
+    // 命中 SGLang 的宽松签名，导致误标 SGLang；owned_by 是更强的身份证据。
+    if hits
+        .v1_models
+        .as_ref()
+        .is_some_and(|v| v1_models_owned_by_matches(v, "tachyon"))
+    {
+        return LocalServerKind::Tachyon;
     }
     if hits.sglang {
         return LocalServerKind::Sglang;
@@ -2849,6 +2872,45 @@ pub(crate) mod tests {
         assert_eq!(
             probe_local_server_kind(&server.url, None).await,
             LocalServerKind::LmDeploy
+        );
+    }
+
+    /// Tachyon（驭光）命中：/v1/models 中 owned_by == "tachyon" → 判定
+    /// Tachyon。覆盖旧商店包（无 /get_server_info）的识别路径。
+    #[tokio::test]
+    async fn probe_local_kind_detects_tachyon_via_owned_by() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
+        let server = spawn_probe_server(vec![(
+            "/v1/models",
+            r#"{"object":"list","data":[{"id":"qwen3.8","owned_by":"tachyon"}]}"#,
+        )])
+        .await;
+        assert_eq!(
+            probe_local_server_kind(&server.url, None).await,
+            LocalServerKind::Tachyon
+        );
+    }
+
+    /// 优先级：新 Tachyon 包同时暴露 /get_server_info（含 version 字段，
+    /// 会碰巧命中 SGLang 宽松签名）与 owned_by == "tachyon" → 必须判
+    /// Tachyon 而非 Sglang（Tachyon 分支排在 Sglang 之前）。
+    #[tokio::test]
+    async fn probe_local_kind_tachyon_wins_over_sglang_server_info() {
+        let _state = PROBE_STATE_TEST_MUTEX.lock().await;
+        let server = spawn_probe_server(vec![
+            (
+                "/get_server_info",
+                r#"{"version":"88251e38","model_path":"qwen3.8"}"#,
+            ),
+            (
+                "/v1/models",
+                r#"{"object":"list","data":[{"id":"qwen3.8","owned_by":"tachyon"}]}"#,
+            ),
+        ])
+        .await;
+        assert_eq!(
+            probe_local_server_kind(&server.url, None).await,
+            LocalServerKind::Tachyon
         );
     }
 

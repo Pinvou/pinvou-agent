@@ -231,6 +231,7 @@ fn local_port_of(base_url: &str) -> Option<u16> {
 fn local_model_provider(kind: LocalServerKind, port: Option<u16>) -> (&'static str, &'static str) {
     match kind {
         LocalServerKind::Vllm => ("vllm", "vLLM"),
+        LocalServerKind::Tachyon => ("tachyon", "驭光引擎 (Tachyon)"),
         LocalServerKind::Ollama => ("ollama", "Ollama"),
         LocalServerKind::LmStudio => ("lm_studio", "LM Studio"),
         LocalServerKind::Sglang => ("sglang", "SGLang"),

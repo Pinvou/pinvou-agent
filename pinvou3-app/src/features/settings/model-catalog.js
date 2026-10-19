@@ -1921,6 +1921,9 @@ function normalizeStoredReasoningEffort(model, stored) {
 // 本地 OpenAI 兼容端点按探测服务类型可切换的档位。与 Rust
 // `probe_local_server_kind` 结果对齐：
 // - vllm → 底座 `chat_template_kwargs` 支持四档
+// - tachyon（驭光）→ wire 与 vllm 同族但有效档为 none/low/medium/xhigh（high
+//   会被服务端 400）；最深档复用既有 `max` 档位 id（与 codex/xai 先例一致，
+//   三语 i18n 已有 max 文案），bridge→底座链路把 max 映射为 wire 上的 xhigh
 // - sglang / llamacpp / koboldcpp / lmdeploy / dockermodelrunner → thinking
 //   control wire is structurally identical to vLLM (chat_template_kwargs +
 //   reasoning_effort passthrough); the tier set is the same as vllm
@@ -1931,6 +1934,8 @@ function normalizeStoredReasoningEffort(model, stored) {
 // - null（尚未探测/探测失败）→ 返回默认四档，前端在探测完成前不提供误导档位
 function localProbeTiersForKind(kind) {
   switch (kind) {
+    case 'tachyon':
+      return ['off', 'low', 'medium', 'max'];
     case 'vllm':
     case 'sglang':
     case 'llamacpp':

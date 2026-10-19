@@ -286,16 +286,20 @@ async fn snapshot_for_model_config(
     }
 
     // 2) /metrics（用 host 根目录，不带 /v1）
+    // 鉴权与上方 /v1/models 探测同模式：本地引擎以 `--api-key` 启动时
+    // /metrics 同样要求 bearer（Tachyon 驭光即如此），裸 GET 会 401 落进
+    // metrics_unavailable 诊断。
     let metrics_url = metrics_applicable
         .then(|| strip_v1_suffix(upstream).map(|h| format!("{h}/metrics")))
         .flatten();
     let metrics_resp = match metrics_url {
-        Some(u) => client
-            .get(&u)
-            .timeout(Duration::from_secs(3))
-            .send()
-            .await
-            .ok(),
+        Some(u) => {
+            let mut request = client.get(&u).timeout(Duration::from_secs(3));
+            if let Some(key) = api_key.map(str::trim).filter(|key| !key.is_empty()) {
+                request = request.bearer_auth(key);
+            }
+            request.send().await.ok()
+        }
         None => None,
     };
     let metrics_text = match metrics_resp {

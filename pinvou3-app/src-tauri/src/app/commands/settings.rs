@@ -362,6 +362,7 @@ pub async fn probe_local_server_kind(
         crate::core::model_endpoint::probe_local_server_kind(&base_url, bearer.as_deref()).await;
     Ok(match kind {
         crate::core::model_endpoint::LocalServerKind::Vllm => "vllm".to_string(),
+        crate::core::model_endpoint::LocalServerKind::Tachyon => "tachyon".to_string(),
         crate::core::model_endpoint::LocalServerKind::Ollama => "ollama".to_string(),
         crate::core::model_endpoint::LocalServerKind::Sglang => "sglang".to_string(),
         crate::core::model_endpoint::LocalServerKind::LlamaCpp => "llamacpp".to_string(),
