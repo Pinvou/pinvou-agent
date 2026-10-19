@@ -1324,7 +1324,15 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                 </div>
                 )}
 
-                {localEmbedSupported && (!downloading && !modelLoading ? (
+                {localEmbedSupported && (downloading || modelLoading ? (
+                  <div className="mt-5 max-w-[480px] mx-auto">
+                    <ModelProgressIndicator
+                      downloading={downloading}
+                      percent={dlPct}
+                      label={modelLoading && !downloading ? t.kbModelLoading : dlStageLabel}
+                    />
+                  </div>
+                ) : (
                   <div className="mt-5">
                     {modelFailed ? (
                       <div className="flex items-center justify-center gap-3">
@@ -1341,14 +1349,6 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                     )}
                     <div className={`mt-3 text-[12px] ${muted}`}>{t.kbModelFoot}</div>
                     {(kbm.error || (effectiveKbModel && effectiveKbModel.error)) && <div className="mt-2 text-[12px] text-[#d63a3a]">{kbm.error || effectiveKbModel.error}</div>}
-                  </div>
-                ) : (
-                  <div className="mt-5 max-w-[480px] mx-auto">
-                    <ModelProgressIndicator
-                      downloading={downloading}
-                      percent={dlPct}
-                      label={modelLoading && !downloading ? t.kbModelLoading : dlStageLabel}
-                    />
                   </div>
                 ))}
               </div>
