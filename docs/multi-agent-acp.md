@@ -60,7 +60,7 @@ Agent，开始后不能切换 Agent 或工作目录（原生会话同样生效�
 
 | Agent | 最低版本 | 版本输出示例 | 依据 |
 |---|---|---|---|
-| Codex | 0.144.6 | `codex-cli 0.146.0` | 保留的旧 Bridge 兼容门禁；内置 `codex-acp` 2.2.2 声明依赖 `@openai/codex ^0.160.1`，门禁仍为无上界的历史下限 0.144.6，0.144.6–0.160.0（包括示例 0.146.0）低于 Bridge 声明区间但被放行，与 Bridge 声明的差距进一步扩大，需另行完成兼容性校准 |
+| Codex | 0.144.6 | `codex-cli 0.146.0` | 下限运行时已实测校准（2026-10-19）：codex-acp 2.2.2 驱动 codex-cli 0.144.6 完成 initialize（ACP protocolVersion 1）→ session/new（0.144.6 app-server 线程创建、模型/命令列表正常下发）→ session/prompt 完整往返（模型侧 401 以流内 agent_message_chunk 送达，stopReason=end_turn）；同探针在声明区间的 0.160.1 上行为一致，仅认证失败改为结构化 JSON-RPC 错误（-32000 Authentication required）。因此门禁维持无上界的下限 0.144.6；0.144.6–0.160.0 与 Bridge 声明区间 `@openai/codex ^0.160.1` 的差异只影响认证失败的呈现方式（流内文案 vs 结构化错误），不构成协议不兼容 |
 | Claude Code | 2.0.0 | `2.1.163 (Claude Code)` | `claude-agent-sdk` 要求 |
 | Kimi | 0.9.0 | `0.31.1`（裸 semver） | `kimi acp` 引入版本；旧 Python 版 kimi-cli 已废弃，版本解析失败一律视为不合规 |
 
