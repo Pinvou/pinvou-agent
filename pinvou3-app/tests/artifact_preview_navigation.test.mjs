@@ -86,4 +86,20 @@ assert.ok(
   'builder must not fabricate image data the artifact never inlined',
 );
 
+// Canvas contract (2026-10-18 visual sweep): the builder must keep the UA
+// body margin at 0 (the zoom measurer derives the natural size from
+// scrollWidth/Height, which the 8px UA margin would inflate) and must NOT
+// force a canvas color into the document — light/dark is delegated to the
+// themed iframe surface (bg-white dark:bg-[#15171a] + color-scheme classes),
+// so a forced #15171a here would make light-authored documents unreadable in
+// the light theme again.
+assert.ok(
+  relativeDoc.includes('<style>html,body{margin:0;}</style>'),
+  'builder must inject exactly html,body{margin:0;} (zoom measurer assumption)',
+);
+assert.ok(
+  !/<style>[^<]*background[^<]*<\/style>/.test(relativeDoc),
+  'builder must not force a canvas background into the document (theme-following contract)',
+);
+
 console.log('artifact preview navigation tests passed');
