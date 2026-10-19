@@ -5,8 +5,8 @@ Tasks are completed individually only after in-scope independent code review,
 repairs, applicable tests and commit/push. Contract completion is not production
 client, service, physical platform certification or rollout readiness.
 
-Current task totals: 47 tasks; five implemented, fifteen in progress and
-twenty-seven not completed or deferred. Detailed chronological evidence follows
+Current task totals: 47 tasks; five implemented, sixteen in progress and
+twenty-six not completed or deferred. Detailed chronological evidence follows
 the current overview; a completed bounded batch does not complete its whole task.
 
 | Task | Status | Delivery / outstanding dependency |
@@ -14,10 +14,10 @@ the current overview; a completed bounded batch does not complete its whole task
 | T01 | Implemented; independently reviewed and verified | Executable metadata/credential Schemas, byte/trust profile, reference verifier, independently verified fixed vectors and local CLI E2E |
 | T02 | Implemented; independently reviewed and verified | Closed control APIs, publication/lifecycle/selection/quality reference models and regression tests; no production service implementation |
 | T03 | In progress | Independently reviewed repeatable synthetic-writer freeze/encrypted backup lab, retained homogeneous series and three Windows payload smokes; final contracts, exact production inventory, approved finite budgets and strict time qualification remain pending. |
-| T04 | Not completed | Independent composite packaging and verification toolchain; depends on T03 platform contracts. |
+| T04 | In progress | Reviewed offline prepare/assemble/verify tool and exact native-format/Package/evidence byte binding; native publisher authentication, complete provenance, production build integration and exact platform qualification remain pending. |
 | T05 | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
 | T06 | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
-| T07 | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop, permanent material fencing and OpenBao physical-stop recovery, with actual Root retention; complete issuance and emergency deny composition remain pending |
+| T07 | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop, permanent material fencing, OpenBao physical-stop recovery and authenticated Root/history/original-document catalog; complete issuance and emergency deny composition remain pending |
 | T08 | In progress | Reviewed genesis catalog/component management and protected atomic publication primitives; complete business publication workflows remain pending |
 | T09 | In progress | Bounded package/native-byte inspection, immutable storage, authenticated upload/recovery, ZIP inspection/UI and current-trust Package/evidence CLI and admin inspection; formal validation, admission, quarantine and platform qualification remain pending |
 | T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
@@ -13216,3 +13216,57 @@ T03 retained measurement series (2026-10-19):
   T03 and the 5 implemented / 15 in-progress / 27 incomplete-or-deferred totals
   are unchanged. Deployment remains deferred; downloads have no hard total or
   cumulative deadline and the 32 MiB bound remains business metadata only.
+
+T04 offline package tools and T07 Root catalog integrated delivery (2026-10-19):
+
+- Service commits `fe99aff9` (T04) and `6d5f6dc1` (T07) are
+  separate task deliveries over one frozen integrated validation tree. Both
+  batches pass two scoped independent static reviews after repairs. The final
+  committed tree and source bytes match the validated candidate exactly.
+- T04 adds actual standalone prepare/assemble/verify commands over immutable
+  installer/helper/launcher byte identities, closed V1 claims, deterministic
+  FullPack/UploadPack assembly and the existing shared archive verifier. Supplied
+  Root bytes require an independent exact digest pin and an explicit offline
+  verification time. This is not online admission or current qualification.
+- Native format observations cover Windows PE/installer version, Linux deb/ELF
+  and universal macOS helpers. Final DMG is opaque byte binding. Native publisher
+  authentication, complete provenance authenticity, production build integration
+  and exact native product qualification remain pending. JSONL syntax and test
+  format fixtures do not establish those claims.
+- Repairs retain the original parent while reading configuration and sources,
+  reject JSON case aliases, bind output directory identity and publish a synced,
+  closed report only at an exclusive completion point. Evidence names that the
+  shared scanner would treat as nested ZIPs are refused before signing material
+  is emitted. The new negative controls first reproduced that layout defect;
+  focused repair verification and the final full regression then pass.
+- Actual Windows output-directory swaps and post-write sync/close failures are
+  exercised. Windows prevents the source-root rename control, so that branch
+  verifies unchanged-source operation rather than a completed source exchange.
+  One leaf-symlink test skips because the local Windows token lacks privilege;
+  neither that case nor native Linux/macOS execution is claimed as tested.
+- T07 adds a read-only three-language directory, continuous Root history and
+  original Root/anchor document access over the actual existing runtime source.
+  Current scoped read/key authority and live session are rechecked; reads need
+  no new MFA and cannot refresh old author proofs. Full history and original
+  keyed publication evidence bind both Root and independent anchor captures.
+- Stable 32+1 history pages, original bounded documents, expired historical Root,
+  full-predecessor tampering, same-body anchor replacement, current revocation
+  and exact-byte restoration have actual database coverage. Version one uses
+  the real dual-review publication owner; later signed storage fixtures prove
+  history behavior and do not represent additional production approvals. The
+  new catalog's async ABA protection is statically reviewed, not separately
+  browser-injected here. Active current metadata and emergency deny are separate.
+- Frozen default regression passes 854 top-level/1891 nested cases, with 731
+  top-level/669 nested explicit opt-in or fixture skips recorded separately.
+  Actual built package CLI passes 9 top-level/23 nested cases with the single
+  Windows symlink skip above. Actual PostgreSQL/HTTPS/OIDC/browser trust and
+  Package-inspection acceptance passes all 6 top-level cases without skips.
+  All three test gates have zero failures.
+- All 19 integrated gates pass, including modules, vet, pinned contracts,
+  server/package CLI/admin builds, four-target server and package CLI cross-
+  builds, formatting and whitespace. All 103 prior SQL files are unchanged.
+  Cross-compilation is build evidence, not native execution certification.
+- T04 moves to in progress; T07 remains in progress. Totals are 5 implemented /
+  16 in progress / 26 incomplete or deferred of 47. Documents stay 1.0, product
+  stays 0.10.12 and CodeWhale is unchanged. Deployment stays deferred. Downloads
+  have no hard total/cumulative deadline; 32 MiB remains atomic metadata only.
