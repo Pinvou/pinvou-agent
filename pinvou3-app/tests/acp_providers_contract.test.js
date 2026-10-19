@@ -542,113 +542,148 @@ assert.ok(
   '安装进度必须走共享 store，且安装收口后清除'
 );
 
-// ---------------------------------------------------------------- 8.2 安装终局跨挂载自愈
+// ---------------------------------------------------------------- 8.2 Install outcome cross-mount heal
 
-// 安装期间设置面板被关闭/切走时发起实例已卸载，install_acp_agent 的返回值
-// 送达不了任何挂载中的组件——后端必须在收口时把真实结局记入共享 store 并
-// 由 status 带回（install_finished，下次安装开始时清除），前端重挂载恢复的
-// 「进行中」阶段据此收敛为终态，不能永久停留在「下载安装中」。
+// While installing, the settings panel can be closed/switched away and the
+// initiating instance unmounts — install_acp_agent's return value reaches no
+// mounted component. The backend must record the real outcome into the
+// shared store when it wraps up and carry it back through status
+// (install_finished, cleared when the next install starts); the remounted
+// panel converges the restored in-progress phase from it and must not stay
+// on "downloading" forever.
 assert.ok(
   MOD.includes('pub install_finished: Option<InstallFinishedInfo>')
     && MOD.includes('struct InstallOutcomeStore'),
-  'status 必须携带安装终局字段 install_finished（跨挂载自愈数据源）'
+  'status must carry the install outcome field install_finished (cross-mount heal data source)'
+);
+assert.ok(
+  MOD.includes('app.manage(InstallOutcomeStore::default())'),
+  'InstallOutcomeStore must be registered as managed state (try_state consumers silently no-op otherwise)'
 );
 assert.ok(
   MOD.includes('fn install_outcome_for_result'),
-  '终局映射必须是纯函数（取消标记判定可单测）'
+  'the outcome mapping must be a pure function (cancel-marker verdict unit-testable)'
 );
 assert.ok(
   MOD.includes('clear_install_outcome(&self.app, backend)')
     && MOD.includes('record_install_outcome(&self.app, backend, outcome)'),
-  'install_agent 入口必须先清除旧终局、返回前记录本次终局'
+  'install_agent must clear the previous outcome at entry and record this run\'s outcome before returning'
+);
+// The union read and the status-side fill each have exactly two call sites
+// (the Kimi early-return branch and the general branch): deleting either one
+// silently reinstates the strand window for the codex/claude backends, so a
+// substring match is not enough — pin the occurrence count.
+const modCount = needle => MOD.split(needle).length - 1;
+assert.ok(
+  modCount('guard_installing || self.install_active.read().contains(&backend)') === 2,
+  'status.installing must cover the whole install lifecycle (install lock union active window) in BOTH status build branches'
 );
 assert.ok(
-  MOD.includes('fill_install_outcome(&self.app, backend, &mut status)'),
-  'status 构建必须带回 install_finished'
+  modCount('fill_install_outcome(&self.app, backend, &mut status)') === 2,
+  'both status build branches must carry install_finished back'
 );
-// installing 覆盖 install_agent 活动全程（入口→终局记录）：若命令后 probe/
-// finalize 窗口内 installing 先行回落，前端安装轮询会在终局落库前停摆，
-// 重挂载的卡片重新永久停留。终局记录必须先于活动期注销。
+// The active window must actually register at entry: status.installing only
+// covers the whole lifecycle while the backend is inside the registry, and
+// the preflight cancel arm only fires while the registry holds the backend.
 assert.ok(
-  MOD.includes('install_active: Arc<parking_lot::RwLock<HashSet<AgentBackend>>>')
-    && MOD.includes('guard_installing || self.install_active.read().contains(&backend)'),
-  'status.installing 必须覆盖安装活动全程（安装锁 ∪ 活动期登记）'
+  MOD.includes('if !install_active.write().insert(backend)')
+    && MOD.includes('InstallActiveGuard::try_start(&self.install_active, backend)'),
+  'InstallActiveGuard must register the backend into install_active at install entry (try_start)'
 );
 assert.ok(
-  MOD.includes('record_install_outcome(&self.app, backend, outcome)')
-    && MOD.indexOf('record_install_outcome(&self.app, backend, outcome)')
-      < MOD.indexOf('drop(install_active_guard)'),
-  '终局必须先于活动期注销落库（不留 installing=false 且无终局的间隙）'
+  MOD.indexOf('InstallActiveGuard::try_start(&self.install_active, backend)')
+    < MOD.indexOf('clear_install_outcome(&self.app, backend)'),
+  'the active window must register BEFORE the entry clears: a rejected concurrent install must not clobber the running one\'s outcome or cancel marker'
 );
-// preflight 窗口（尚未 spawn、无 pid 可杀）的取消同样必须被登记补检消费，
-// 不能以「没有正在进行的安装」拒绝；入口同时清除陈旧取消标记。
 assert.ok(
-  MOD.includes('!guard_held && !self.install_active.read().contains(&backend)')
-    && MOD.includes('self.install_cancelled.lock().remove(&backend)'),
-  '取消必须覆盖 preflight 活动窗口，且安装入口清除陈旧取消标记'
+  MOD.indexOf('record_install_outcome(&self.app, backend, outcome)')
+    < MOD.indexOf('drop(install_active_guard)'),
+  'the outcome must be recorded before the active window closes (no installing=false-without-outcome gap)'
 );
-// 失败终局必须携带本次错误链：部分失败路径不写 runtime_errors，回显
-// status.error 会展示空文案或上一轮的陈旧错误。
+// A cancel in the preflight window (not spawned yet, no pid to kill) must be
+// armed instead of rejected, then consumed by the spawn-time recheck — or,
+// when the natural failure wins that race, consumed at outcome-record time.
+// Exactly two removes remain: the install entry clear and the record-time
+// consumption (the per-channel wipes are gone — a wipe after guard
+// acquisition would swallow a fresh preflight cancel).
+assert.ok(
+  MOD.includes('!guard_held && !self.install_active.read().contains(&backend)'),
+  'cancel must cover the preflight active window instead of rejecting with "no install in progress"'
+);
+assert.ok(
+  modCount('self.install_cancelled.lock().remove(&backend)') === 2
+    && MOD.includes('let cancel_pending = self.install_cancelled.lock().remove(&backend)'),
+  'the cancel marker must be consumed at install entry (stale marker) and at record time (unraced preflight cancel), and nowhere after guard acquisition'
+);
+assert.ok(
+  /install_outcome_for_result\(\s*result\.is_ok\(\),\s*cancel_pending,/.test(MOD),
+  'the record-time verdict must take a still-armed cancel marker into account'
+);
+// Failed outcomes must carry this run's error chain: some failure paths
+// never write runtime_errors, so echoing status.error would show an empty or
+// stale message.
 assert.ok(
   MOD.includes('error_detail.map(str::to_string)'),
-  '失败终局必须携带本次安装的错误链（install_finished.error）'
+  'failed outcomes must carry this run\'s error chain (install_finished.error)'
 );
-// 前端自愈：仅当「下载安装中阶段 + 非本实例发起（busy 不匹配）+ 日志属于
-// 当前 Agent + 本实例已亲自拉取过 status + status 属于当前 Agent 且后端已
-// 不在安装」时按终局收敛；三个终态都必须被映射，失败回显终局错误链。
+// Frontend heal: converge only when "installing phase + not initiated by
+// this instance (busy mismatch) + log exists and belongs to the active agent
+// + this instance fetched the status itself for this agent + the status
+// belongs to the active agent and the backend is no longer installing"; all
+// three terminal phases must be mapped and failures must echo the outcome's
+// error chain. Pins are code-anchored (comments may repeat similar strings).
 {
-  const healStart = PROVIDERS_SECTION.indexOf('跨挂载安装自愈');
-  assert.ok(healStart > 0, '前端必须实现跨挂载安装自愈（ProvidersSection）');
-  const heal = PROVIDERS_SECTION.slice(healStart, healStart + 1800);
+  const healStart = PROVIDERS_SECTION.indexOf('Cross-mount install heal');
+  assert.ok(healStart > 0, 'the frontend must implement the cross-mount install heal (ProvidersSection)');
+  const heal = PROVIDERS_SECTION.slice(healStart, healStart + 2600);
   assert.match(
     heal,
-    /status\.install_finished/,
-    '自愈必须消费 status.install_finished'
+    /const outcome = status\.install_finished/,
+    'the heal must consume status.install_finished'
   );
   assert.match(
     heal,
     /installPhase !== 'installing'/,
-    '自愈只收敛「下载安装中」阶段（checking 日志为空，无可收敛卡片）'
+    'the heal only converges the installing phase (checking has no log, no card to converge)'
   );
   assert.match(
     heal,
     /busy === 'install:' \+ activeAgent/,
-    '本实例发起的安装仍走 await 收口路径，不走自愈'
+    'an install initiated by this instance still converges via its own await, not the heal'
   );
   assert.match(
     heal,
     /!installLog \|\| installLog\.agent !== activeAgent/,
-    '日志必须非空且属于当前 Agent（空日志窗口不得被异 Agent 旧终局收敛）'
+    'the log must be non-null and belong to the active agent (the log-null window must not be closed by another agent\'s stale outcome)'
   );
   assert.match(
     heal,
-    /fetchedStatusRef\.current/,
-    '自愈只信本实例挂载后亲自拉取的 status（缓存快照可能携带旧终局）'
+    /fetchedStatusRef\.current !== activeAgent/,
+    'the heal trusts only a status this instance fetched itself FOR the active agent (cache snapshots may carry the previous install\'s outcome)'
+  );
+  assert.ok(
+    PROVIDERS_SECTION.includes('fetchedStatusRef.current = agent;'),
+    'the self-fetched marker must record WHICH agent was fetched (per-agent freshness)'
   );
   assert.match(
     heal,
-    /status\.agent_id !== activeAgent/,
-    'status 必须属于当前 Agent（标签切换的单 commit 旧快照不得触发自愈）'
-  );
-  assert.match(
-    heal,
-    /status\.installing/,
-    '后端仍在安装时不得自愈（终局未记录，防误收敛）'
+    /status\.agent_id !== activeAgent \|\| status\.installing/,
+    'the status must belong to the active agent and the backend must no longer be installing (no premature convergence)'
   );
   assert.match(
     heal,
     /outcome\.cancelled \? 'cancelled' : outcome\.ok \? 'done' : 'failed'/,
-    '自愈必须把终局映射为 cancelled/done/failed 三态'
+    'the heal must map the outcome to cancelled/done/failed'
   );
   assert.match(
     heal,
     /outcome\.error/,
-    '失败自愈必须回显终局携带的本次错误链（与发起实例的 catch 分支对齐）'
+    'failed heals must echo the outcome\'s own error chain (aligned with the initiating instance\'s catch branch)'
   );
   assert.match(
     heal,
     /setError\(failureDetail\)/,
-    '失败自愈必须把失败原因写入错误区'
+    'failed heals must write the failure cause into the error area'
   );
 }
 

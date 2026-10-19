@@ -698,7 +698,8 @@ async fn run_managed_install(
         .with_context(|| stage.spawn_context.clone())?;
     // spawn 后登记 pid 供取消命令杀进程树；guard 在本函数任意出口注销。
     let _child_guard = InstallChildGuard::register(install_children, backend, child.id());
-    // 取消可能发生在 spawn 与登记之间：登记后立即补检一次。
+    // A cancel may land between spawn and pid registration: recheck once
+    // right after registering.
     if install_cancelled.lock().contains(&backend) {
         let _ = child.kill().await;
     }
@@ -1108,11 +1109,13 @@ mod tests {
         assert_eq!(value["install_source"], json!("npm"));
         assert_eq!(value["update_available"], json!(true));
         assert_eq!(value["update_required"], json!(true));
-        // 终局缺省不序列化（skip_serializing_if），出现时带 ok/cancelled 字段，
-        // 失败结局另带本次错误链 error（成功/取消时 skip）。
+        // The outcome is absent from serialization by default
+        // (skip_serializing_if); when present it carries ok/cancelled, and a
+        // failed (non-cancelled) outcome adds this run's error chain (skipped
+        // on success/cancellation).
         assert!(value.get("install_finished").is_none());
         let mut finished = status.clone();
-        finished.install_finished = Some(install_outcome_for_result(true, None));
+        finished.install_finished = Some(install_outcome_for_result(true, false, None));
         let value = serde_json::to_value(&finished).expect("serialize install_finished");
         assert_eq!(
             value["install_finished"],
@@ -1120,6 +1123,7 @@ mod tests {
         );
         let mut failed = status.clone();
         failed.install_finished = Some(install_outcome_for_result(
+            false,
             false,
             Some("npm install failed: EBUSY"),
         ));
@@ -1152,13 +1156,17 @@ mod tests {
         );
     }
 
-    /// 终局映射：成功直通 ok；失败时按错误链里的取消标记区分「已取消」与
-    /// 「失败」，与等待侧/前端的取消收口同一判定（不依赖中文文案子串）；
-    /// 失败（非取消）额外携带本次错误链供自愈回显。
+    /// Outcome mapping: success passes through as ok; on failure the cancel
+    /// marker in the error chain distinguishes "cancelled" from "failed"
+    /// (same verdict as the wait side and the frontend, no Chinese-copy
+    /// substring matching). A cancel armed but not yet consumed at record
+    /// time (a preflight-window cancel whose natural failure won the race)
+    /// counts as cancelled too. Failure (non-cancelled) carries this run's
+    /// error chain for the cross-mount heal to echo.
     #[test]
     pub(super) fn install_outcome_maps_success_and_cancellation() {
         assert_eq!(
-            install_outcome_for_result(true, None),
+            install_outcome_for_result(true, false, None),
             InstallFinishedInfo {
                 ok: true,
                 cancelled: false,
@@ -1166,7 +1174,16 @@ mod tests {
             }
         );
         assert_eq!(
-            install_outcome_for_result(false, Some("install_cancelled:kimi 安装已取消")),
+            install_outcome_for_result(true, true, None),
+            InstallFinishedInfo {
+                ok: true,
+                cancelled: false,
+                error: None
+            },
+            "a cancel that lost the race to a successful exit is not an outcome"
+        );
+        assert_eq!(
+            install_outcome_for_result(false, false, Some("install_cancelled:kimi 安装已取消")),
             InstallFinishedInfo {
                 ok: false,
                 cancelled: true,
@@ -1174,7 +1191,16 @@ mod tests {
             }
         );
         assert_eq!(
-            install_outcome_for_result(false, Some("npm install failed: EBUSY")),
+            install_outcome_for_result(false, true, Some("preflight registry unreachable")),
+            InstallFinishedInfo {
+                ok: false,
+                cancelled: true,
+                error: None
+            },
+            "a still-armed marker at record time is a preflight-window cancel"
+        );
+        assert_eq!(
+            install_outcome_for_result(false, false, Some("npm install failed: EBUSY")),
             InstallFinishedInfo {
                 ok: false,
                 cancelled: false,
@@ -1182,7 +1208,7 @@ mod tests {
             }
         );
         assert_eq!(
-            install_outcome_for_result(false, None),
+            install_outcome_for_result(false, false, None),
             InstallFinishedInfo {
                 ok: false,
                 cancelled: false,
@@ -1326,6 +1352,29 @@ mod tests {
         assert!(installing_agents.read().contains(&AgentBackend::CodexAcp));
         drop(codex);
         assert!(installing_agents.read().is_empty());
+    }
+
+    #[test]
+    pub(super) fn install_active_window_is_exclusive_and_ends_at_drop() {
+        let install_active = Arc::new(parking_lot::RwLock::new(HashSet::new()));
+        let claude = InstallActiveGuard::try_start(&install_active, AgentBackend::ClaudeAcp)
+            .expect("the active window must register at entry");
+
+        assert!(install_active.read().contains(&AgentBackend::ClaudeAcp));
+        assert!(
+            InstallActiveGuard::try_start(&install_active, AgentBackend::ClaudeAcp).is_none(),
+            "a second install for the same Agent must be rejected inside the active window"
+        );
+
+        drop(claude);
+        assert!(
+            !install_active.read().contains(&AgentBackend::ClaudeAcp),
+            "the window must close at guard drop (outcome already recorded by then)"
+        );
+        assert!(
+            InstallActiveGuard::try_start(&install_active, AgentBackend::ClaudeAcp).is_some(),
+            "the next install must be able to register again"
+        );
     }
 
     #[test]
@@ -1519,22 +1568,29 @@ pub(super) fn clear_install_progress(app: &AppHandle, backend: AgentBackend) {
     }
 }
 
-/// install_agent 开始前清除上一次的终局：install_finished 只表达最近一次安装。
+/// Clears the previous install's outcome before `install_agent` starts:
+/// install_finished describes only the most recent install.
 pub(super) fn clear_install_outcome(app: &AppHandle, backend: AgentBackend) {
     if let Some(store) = app.try_state::<InstallOutcomeStore>() {
         store.0.write().remove(&backend);
     }
 }
 
-/// 终局映射（纯函数，供单测）：ok 直通；失败时错误链包含取消标记即「已取消」，
-/// 与等待侧的取消收口（前端按结构化标记归为 cancelled，不进红错区）同一判定。
-/// 失败（非取消）时携带本次错误链，供跨挂载自愈回显失败原因。
+/// Outcome mapping (pure, unit-testable): ok passes through; on failure the
+/// cancel marker in the error chain means "cancelled" (same verdict as the
+/// wait side, which the frontend classifies as cancelled via the structured
+/// marker — no red-error echo). `cancel_pending` is a marker still armed at
+/// record time: a preflight-window cancel whose natural failure won the race
+/// against the spawn-time recheck. Failure (non-cancelled) carries this
+/// run's error chain for the cross-mount heal to echo.
 pub(super) fn install_outcome_for_result(
     ok: bool,
+    cancel_pending: bool,
     error_detail: Option<&str>,
 ) -> InstallFinishedInfo {
-    let cancelled =
-        !ok && error_detail.is_some_and(|detail| detail.contains(INSTALL_CANCELLED_MARKER));
+    let cancelled = !ok
+        && (cancel_pending
+            || error_detail.is_some_and(|detail| detail.contains(INSTALL_CANCELLED_MARKER)));
     InstallFinishedInfo {
         ok,
         cancelled,
@@ -1546,6 +1602,7 @@ pub(super) fn install_outcome_for_result(
     }
 }
 
+/// Records the wrapped-up outcome into the shared store.
 pub(super) fn record_install_outcome(
     app: &AppHandle,
     backend: AgentBackend,
@@ -1556,6 +1613,8 @@ pub(super) fn record_install_outcome(
     }
 }
 
+/// Fills `install_finished` into status so a remounted panel can observe the
+/// most recent outcome.
 pub(super) fn fill_install_outcome(
     app: &AppHandle,
     backend: AgentBackend,

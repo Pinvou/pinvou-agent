@@ -101,8 +101,10 @@ function injectSource() {
             effectiveEntries: [],
           }, agentState));
         }
-        // 与真实后端一致：每次返回新对象（Rust 逐次序列化）。原地返回同一
-        // 引用会让 React setState 按引用去重，status 更新触发不了 effect。
+        // Same as the real backend: return a fresh object per call (Rust
+        // re-serializes each time). Returning the same reference in place
+        // lets React setState dedupe by identity and status updates never
+        // reach effects.
         case 'get_acp_agent_status': {
           var statusSnapshot = statusByAgent[args.agentId];
           return Promise.resolve(statusSnapshot ? Object.assign({}, statusSnapshot) : null);
@@ -138,8 +140,10 @@ function injectSource() {
           return Promise.resolve({ imported: 1, idConflicts: 0, skipped: 0 });
         // 一次性模型探针：smoke 不验证探针内容，返回 null（前端静默回退占位快照）
         case 'probe_acp_agent_models': return Promise.resolve(null);
-        // 挂起而不是立即 resolve：真实安装要等装完才返回，挂起才能覆盖
-        // 「安装期间组件被卸载」的窗口（见文件末尾跨挂载自愈步骤）
+        // Stay pending instead of resolving immediately: a real install only
+        // returns once finished, so pending covers the "component unmounted
+        // mid-install" window (see the cross-mount heal steps at the end of
+        // this file)
         case 'install_acp_agent': return new Promise(function (resolve) { pendingInstalls[args.agent] = resolve; });
         case 'cancel_acp_agent_install': statusByAgent[args.agent].installing = false; return Promise.resolve(statusByAgent[args.agent]);
         case 'uninstall_acp_agent': statusByAgent[args.agent].installed = false; return Promise.resolve(statusByAgent[args.agent]);
@@ -180,10 +184,11 @@ function injectSource() {
         status.installing = installing;
         if (installing) status.installed = false;
       },
-      // 跨挂载安装自愈测试钩子：setInstallScenario 直接改写 status 字段
-      // （installed/installing/install_finished 等），emitInstallProgress
-      // 派发 acp:install-progress 事件，resolvePendingInstall 收口挂起的
-      // install promise（模拟安装命令返回）。
+      // Cross-mount install heal test hooks: setInstallScenario rewrites
+      // status fields directly (installed/installing/install_finished etc.),
+      // emitInstallProgress dispatches acp:install-progress events, and
+      // resolvePendingInstall settles the pending install promise (simulating
+      // the install command returning).
       setInstallScenario: function (agent, patch) {
         Object.assign(statusByAgent[agent], patch);
       },
@@ -196,7 +201,8 @@ function injectSource() {
         var resolve = pendingInstalls[agent];
         if (resolve) {
           delete pendingInstalls[agent];
-          // 与 get_acp_agent_status 一致返回新对象：真实后端逐次序列化。
+          // Fresh object per call, same as get_acp_agent_status: the real
+          // backend re-serializes each time.
           var snapshot = statusByAgent[agent];
           resolve(snapshot ? Object.assign({}, snapshot) : null);
         }
@@ -563,9 +569,10 @@ async function clickSettingsSection(page, label) {
     return !!button && !button.disabled && !document.querySelector('[data-testid="acp-cli-install-cancel"]');
   }));
 
-  // 跨挂载安装自愈：安装期间切走设置分区（ProvidersSection 卸载，结束态只
-  // 送达已卸载的发起实例）→ 重挂载恢复的「下载安装中」卡片必须按后端
-  // status.install_finished 收敛为终态，不能永久停留在进行中。
+  // Cross-mount install heal: switching settings sections mid-install
+  // unmounts ProvidersSection (the terminal state is delivered only to the
+  // unmounted initiator) → the "downloading" card restored after remount
+  // must converge from status.install_finished, not stay in-progress forever.
   await page.evaluate(() => window.__ACP_PROVIDERS_TEST__.setInstallScenario('codex', {
     installed: false,
     installing: false,
@@ -575,7 +582,8 @@ async function clickSettingsSection(page, label) {
   await sleep(400);
   await page.evaluate(() => document.querySelector('[data-testid="acp-cli-install-update"]').click());
   await sleep(300);
-  // 后端登记安装锁并推送首条 command 事件（前端切换为「下载安装中」）
+  // The backend registers the install and pushes the first command event
+  // (the frontend switches to "downloading")
   await page.evaluate(() => window.__ACP_PROVIDERS_TEST__.setInstallScenario('codex', {
     installing: true,
     install_command: 'curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash',
@@ -588,7 +596,8 @@ async function clickSettingsSection(page, label) {
     const card = document.querySelector('[data-testid="acp-cli-install-progress"]');
     return !!card && (card.textContent || '').includes('下载安装中');
   }));
-  // 切走再切回：ProvidersSection 卸载重挂载，进行中阶段从模块缓存恢复
+  // Switch away and back: ProvidersSection unmounts and remounts, the
+  // in-progress phase is restored from the module cache
   await clickSettingsSection(page, '通用');
   await clickSettingsSection(page, '模型');
   await page.click('[data-testid="settings-model-tab-acp"]');
@@ -597,12 +606,15 @@ async function clickSettingsSection(page, label) {
     const card = document.querySelector('[data-testid="acp-cli-install-progress"]');
     return !!card && (card.textContent || '').includes('下载安装中');
   }));
-  // 后端收口：installing=false + install_finished=ok。发起实例已卸载，
-  // 重挂载实例必须据此把卡片收敛为「完成」而不是永久「下载安装中」。
-  // 刻意不点击任何刷新：安装中轮询（2s）仍在跑，真实用户盯着面板时收敛
-  // 走的就是这条被动路径——status 读上来后由自愈 effect 收敛（mock 的
-  // installing/install_finished 为原子更新；「installing 先行回落」的窗口
-  // 由后端活动期登记排除，见 acp_providers_contract 8.2）。
+  // Backend wraps up: installing=false + install_finished=ok. The initiator
+  // is unmounted; the remounted instance must converge the card to "done"
+  // from it instead of staying on "downloading" forever. Deliberately click
+  // no refresh: the install poller (2s) is still running, and that passive
+  // path is exactly what a real user watching the panel exercises — the heal
+  // effect converges as status comes back (the mock flips
+  // installing/install_finished atomically; the "installing drops early"
+  // window is excluded by the backend's active-window registry, see
+  // acp_providers_contract 8.2).
   await page.evaluate(() => window.__ACP_PROVIDERS_TEST__.setInstallScenario('codex', {
     installing: false,
     installed: true,
@@ -614,12 +626,18 @@ async function clickSettingsSection(page, label) {
     const card = document.querySelector('[data-testid="acp-cli-install-progress"]');
     return !!card && (card.textContent || '').includes('完成');
   }));
-  // 失败终局自愈：failed（非取消）outcome 必须把终局携带的本次错误链回显
-  // 进红错区（三态中唯一带错误文案的收敛）。顺序对齐真实安装：先把
-  // installing=true 读进组件（轮询接上、自愈被 installing 门挡住），再由
-  // command 事件切「下载安装中」，最后落失败终局交给轮询收敛。
+  // Failed-outcome heal: a failed (non-cancelled) outcome must echo the
+  // error chain recorded in the outcome into the red error area (the only
+  // terminal convergence that carries copy). Order mirrors a real install:
+  // first read installing=true into the component (poller armed, heal held
+  // by the installing gate), then switch to "downloading" via the command
+  // event, then land the failed outcome and let the poller converge. The
+  // scenario starts from a cleared outcome: the real backend clears
+  // install_finished at install entry, so "installing=true with a leftover
+  // outcome" is a state production never produces.
   await page.evaluate(() => window.__ACP_PROVIDERS_TEST__.setInstallScenario('codex', {
     installing: true,
+    install_finished: null,
     install_command: 'npm install -g @kimi/kimi-code',
   }));
   await page.evaluate(() => document.querySelector('[data-testid="acp-provider-refresh"]').click());

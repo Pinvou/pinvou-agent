@@ -158,9 +158,13 @@ export function ProvidersSection({ t }) {
   // 或重开窗口从缓存恢复。
   const [installLog, setInstallLog] = useState(INSTALL_LOG_CACHE.log);
   const [installPhase, setInstallPhase] = useState(() => INSTALL_LOG_CACHE.phase);
-  // 本实例挂载后是否已亲自拉取过 status：跨挂载自愈只信自己拉取的数据——
-  // 模块缓存恢复出的 status 快照可能停留在上一次安装开始之前（携带旧终局）。
-  const fetchedStatusRef = useRef(false);
+  // The agent whose status this instance last fetched itself after mount:
+  // the cross-mount heal trusts only self-fetched data — a status snapshot
+  // restored from the module cache may predate the current install's start
+  // (carrying the previous install's outcome). Keyed per agent: entering a
+  // tab hydrates that agent's cache synchronously, and only this instance's
+  // own fetch of the active agent arms the marker again.
+  const fetchedStatusRef = useRef(null);
   // 阶段同步进模块缓存：关设置窗口重开后恢复结束态/进行中态展示。
   useEffect(() => {
     INSTALL_LOG_CACHE.phase = installPhase;
@@ -268,7 +272,7 @@ export function ProvidersSection({ t }) {
       if (agent === activeAgentRef.current) {
         setView(nextView);
         setStatus(nextStatus);
-        fetchedStatusRef.current = true;
+        fetchedStatusRef.current = agent;
       }
     } catch (e) {
       if (agent === activeAgentRef.current) setError(String(e));
@@ -321,12 +325,13 @@ export function ProvidersSection({ t }) {
     };
   }, [activeAgent]);
 
-  // 安装中轮询：installing 期间每 2 秒读一次状态。installing 标志来自后端
-  // 安装生命周期（入口到终局记录全程），与 CLI 探测无关——用缓存读（不
-  // recheck）+ quiet（不闪 loading），避免每 2 秒真跑一遍 --version 探测造
-  // 成的页面抖动。
-  // 本地 busy 也触发轮询：安装命令从发起到后端登记安装锁之间有探测延迟，
-  // 靠轮询把 status.installing 接上（取消按钮随之出现）。
+  // Poll every 2s while installing. The installing flag comes from the
+  // backend install lifecycle (entry through recorded outcome), independent
+  // of CLI probes — read from cache (no recheck) + quiet (no loading flash)
+  // to avoid re-running a --version probe every 2s and jittering the page.
+  // Local busy also arms the poller: between issuing the install command and
+  // the backend registering the install there is probe latency; polling
+  // picks up status.installing (the cancel button appears with it).
   const installInFlight = installing || busy === 'install:' + activeAgent;
   useEffect(() => {
     if (!installInFlight) return;
@@ -386,26 +391,36 @@ export function ProvidersSection({ t }) {
     }
   }, [status, activeAgent]);
 
-  // 跨挂载安装自愈：安装期间本组件被卸载（关设置面板/切设置分区）时，
-  // install_acp_agent 的结束态只送达已卸载的发起实例，模块缓存恢复出的
-  // 「下载安装中」阶段永远不会被收口。后端在 install_acp_agent 收口时把
-  // 真实结局记入 status.install_finished（下次安装开始时清除），本实例据此
-  // 把停滞的进行中阶段收敛为终态。守卫逐条对应误收敛面：busy 匹配=发起
-  // 实例仍走自己的 await 收口，不走这里；日志必须属于当前 Agent（checking
-  // 阶段日志为空，不在此收敛——阶段由 command 事件切换）；只信本实例挂载
-  // 后亲自拉取的 status（缓存快照可能携带上一轮安装的旧终局）；status 必须
-  // 属于当前 Agent 且后端已不在安装。后端保证 installing 自安装入口覆盖到
-  // 终局记录，所以「!status.installing 且有终局」即本轮安装已收口。
+  // Cross-mount install heal: while an install runs, this component can be
+  // unmounted (settings panel closed / settings section switched), and
+  // install_acp_agent's terminal state is delivered only to the unmounted
+  // initiator — the "downloading" phase restored from the module cache would
+  // never converge. The backend records the real outcome into
+  // status.install_finished when install_acp_agent wraps up (cleared when the
+  // next install starts), and this instance converges the stalled in-progress
+  // phase from it. Guards map one-to-one to mis-convergence surfaces: busy
+  // match = the initiating instance still converges via its own await, not
+  // here; the log must exist and belong to the active agent (the checking
+  // phase has no log and is not converged here — the phase is switched by the
+  // command event); only a status this instance fetched itself, for this
+  // agent, after mount is trusted (cache snapshots may predate the current
+  // install and carry the previous one's outcome); the status must belong to
+  // the active agent and the backend must no longer be installing. The
+  // backend guarantees installing covers the whole lifecycle up to the
+  // recorded outcome, so "!status.installing with an outcome" means this run
+  // has wrapped up.
   useEffect(() => {
     if (installPhase !== 'installing') return;
     if (busy === 'install:' + activeAgent) return;
     if (!installLog || installLog.agent !== activeAgent) return;
-    if (!fetchedStatusRef.current) return;
+    if (fetchedStatusRef.current !== activeAgent) return;
     if (!status || status.agent_id !== activeAgent || status.installing) return;
     const outcome = status.install_finished;
     if (!outcome) return;
-    // 与发起实例的 catch 分支对齐：失败（非取消）时回显本次安装记录在终局
-    // 里的错误原因（与命令返回值的错误链同源；取消不进红错区）。
+    // Aligned with the initiating instance's catch branch: on failure
+    // (non-cancelled) echo the error cause recorded in this run's outcome
+    // (same source as the command return value's chain; cancelled stays out
+    // of the red error area).
     const failureDetail = outcome.ok || outcome.cancelled
       ? null
       : String(outcome.error || '').trim() || null;
