@@ -17,7 +17,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T04 | Not completed | Independent composite packaging and verification toolchain; depends on T03 platform contracts. |
 | T05 | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
 | T06 | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
-| T07 | In progress | Reviewed trust initialization and online key-material creation/registration; issuer activation and complete production issuance remain pending |
+| T07 | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop and actual Root retention; complete issuance and emergency deny composition remain pending |
 | T08 | In progress | Reviewed genesis catalog/component management and protected atomic publication primitives; complete business publication workflows remain pending |
 | T09 | In progress | Bounded package/native-byte inspection; complete upload, quarantine and platform qualification remain pending |
 | T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
@@ -12712,3 +12712,70 @@ T07 explicit issuer storage tooling (2026-10-19):
   Online issuer controls and Root retention composition are still in progress.
   Documents 1.0, product 0.10.12 and CodeWhale are unchanged. Deployment remains
   deferred; downloads have no hard total/cumulative duration or retry cap.
+
+
+T07 reviewed online signer controls (2026-10-19):
+
+- Service commit `7024d26` supplies fixed private enable/stop management and
+  Chinese/English/Japanese admin for timestamp, snapshot and target on exact
+  product/component scopes. It reuses the original issuer command, approval
+  Capture, permanent OwnerReplay and one shared T06 recovery worker. Registered
+  material must have actual published Root authorization and threshold, actual
+  current deny/fence/source facts and successful private signing probes.
+- Sign credentials are separate protected renewable files, read lazily per RPC.
+  Stop-only composition needs no provider. Current read status and ordinary stop
+  require neither a valid Root nor an available provider; stop preserves the
+  complete prior retention body except its state/revision. The same actual Store
+  authenticates immutable retention facts in Root publication and its recovery.
+- Fixed-purpose checks repeat at actual protected Receipt reads because worker
+  recovery bypasses ingress Decode. The actual broader original owner creates a
+  genuine release-role processing record. Its same-source Read, actual private
+  probe and complete Apply succeed under an explicit rollback-only positive
+  control; the new profile then refuses recovery with zero additional probes or
+  issuer business writes while retaining original work. Claim advancement is
+  permitted and explicitly observed, not described as rollback.
+- Admin closes complete stored Capture/approval structures, verifies native
+  actor/request size before retaining new work and verifies prior accepted
+  records before allocating a new request. Independent enable/stop slots preserve
+  original pending/prepared/accepted bytes. The native 64 KiB positive and one-byte
+  overflow negative pass separately; damaged nested records remain blocked.
+- Read-capable operators preflight actual Enable selectors and current Stop epoch
+  before allocating a mutation key. The new fixed Enable preview has no command
+  key, approval or supplied epoch; it reads actual PlanEnable facts under current
+  read/key-management/session checks, makes no RPC and writes no approval, ledger
+  or issuer state. Ordinary denial audit remains allowed. Its ephemeral candidate
+  is neither returned nor saved. Formal preparation/execution always recheck.
+- Actual preview acceptance preserves the threshold-two cardinality while
+  replacing only one confirmed-absent ID, then restores both actual IDs. It proves
+  zero new approval/operation/provider work. After a successful preview, actual
+  Root policy removal makes the same formal preparation key refuse; restoring
+  authorized policy lets that original key succeed. Preview is not a permit.
+- Two scoped independent static reviews passed after primary repairs, including
+  recovery purpose gating, nested-record rendering, native size check ordering
+  and accepted-record checks. The actual PostgreSQL/TLS/signed-OIDC/Transit
+  workflow observes a real signing-endpoint 403 for GET-only credentials, then
+  two successful private probes through natural original-claim/shared-worker
+  recovery. The same signing token refuses six lifecycle/export operations.
+  Actual retained Root publication and expired-Root/unavailable-provider stopping
+  pass; selection, stop and original ACK replay add zero provider requests.
+- Final browser acceptance passes three languages, two actual independent
+  reviewers, confirmed enable ACK followed by browser response loss, reload and
+  original wire replay, malformed saved records without blank rendering, damaged
+  accepted-record refusal with zero Prepare/new pending, absent material preview
+  and wrong stop selector with zero Prepare/new pending, and actual stopped state
+  matching the unique original database epoch and exact null dimensions.
+  Both affected original key-material and trust-initialization browsers also pass.
+- Earlier test attempts exposed an unused import, a nonexistent-column final
+  browser assertion and insufficiently isolated negative controls. They were
+  repaired and rerun; unsuccessful attempts are not counted as passing. Final
+  default checks pass 779 top-level/1,781 nested tests, with 692 top-level/664
+  nested explicit opt-in skips and zero failures. Modules, vet, build, pinned
+  contracts, affected formatting and whitespace pass. The separate actual cases
+  above pass with zero skips; all 93 prior SQL files are unchanged and fixtures
+  restore their database/role inventory.
+- T07/T08 remain in progress; totals remain 5 implemented / 14 in progress / 28
+  incomplete or deferred of 47. Complete metadata/credential issuing owners and
+  emergency business reconciliation remain pending. No production custody, live
+  realm, HA, physical-client qualification or deployment is certified. Documents
+  1.0, product 0.10.12 and CodeWhale are unchanged. Downloads have no hard total/
+  cumulative duration or retry cap; 32 MiB bounds only joined atomic inventory.
