@@ -19,7 +19,7 @@
 
 2. **`wecom-cli slide designs update` 是所有写命令的前置门**：设计契约未持久化之前，一切插页、插图、改文字操作会被服务端**直接拒绝**。契约有效期 **24 小时**，跨会话编辑前须先 `wecom-cli slide designs get` 确认仍有效，失效则用本地副本重新写入。
 
-3. **改 / 删任何资源前，先 get 确认它存在**：`slide get` 拿页数与 `slide_ids`，`slide pages get` 拿某页的形状列表，`slide shapes get` 拿单个形状。凭印象对页码 / `shape_id` 动手，命中不存在的资源即报错。
+3. **改 / 删任何资源前，先 get 确认它存在**：`slide get` 拿页数与 `slide_ids`，`slide pages get` 拿某页的形状列表。当前钉扎的 wecom-cli 1.3.4 二进制不支持 `slide shapes get`（上游文档超写），单个形状信息按约束 1 的探测先行协议处理——先 `--schema` 探测，探测不到即用 `slide pages get` 的形状列表定位。凭印象对页码 / `shape_id` 动手，命中不存在的资源即报错。
 
 ## 命令形态
 

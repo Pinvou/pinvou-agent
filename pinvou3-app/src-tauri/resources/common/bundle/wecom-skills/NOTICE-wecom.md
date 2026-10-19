@@ -389,8 +389,10 @@ wecom sheet/smartsheet/smartpage 三技能文档审计修复,属本地适配层(
 `f9b2815`)。技能从 14 个增至 **15 个**:上游新增 `wecomcli-pptx`(MR !77 随 1.3.4
 发布;`slide` 命令族技能,本地整体收录;经 connectors.lock 钉扎的 1.3.4 linux-arm64
 二进制实测,`wecom-cli slide` 的 get/pages/designs/images 子命令面与该技能
-`pptx-api.md` 所教一致(该文档约束 3 另教的 `slide shapes get` 为上游文档超写、
-钉扎二进制不支持,按其自身「先探边」协议处理);`wecomcli-pptx/scripts/` 两个脚本的命令表调用形态上游已写
+`pptx-api.md` 所教一致(该文档约束 3 原另教 `slide shapes get`,为上游文档超写、
+钉扎二进制不支持;2026-10-19 本地裁定:约束 3 删去该命令教学、注明钉扎二进制
+不支持,单个形状信息改按探测先行协议处理——属本地修改,下次 sync 需重放,
+上游修复后回退);`wecomcli-pptx/scripts/` 两个脚本的命令表调用形态上游已写
 `python3`,脚本 docstring 内的裸 `python` 按既定豁免不重写)。
 
 上游 v1.2.1 → v1.3.4 的 `skills/` 改动(MR !62 之后的增量):
