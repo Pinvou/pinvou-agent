@@ -59,8 +59,9 @@
 # to multiple GB): after unpacking, everything outside a whitelist
 # (usr/include, usr/lib, usr/share/pkgconfig, lib) is deleted, plus known
 # non-linking bulk under usr/lib (gconv modules, perl/python trees, locale
-# archives) and all *.a/*.la (the app links the sysroot dynamically; static
-# archives would only bloat it). gir-1.0 typelibs, docs, executables and
+# archives) and all *.a/*.la except what the link actually resolves (the
+# linker-script-referenced members and the glibc merged-library compat
+# stubs — see prune_sysroot). gir-1.0 typelibs, docs, executables and
 # every other non-compile payload fall outside the whitelist.
 #
 # Verification before the script reports success: host pkg-config must
@@ -244,14 +245,52 @@ pkg_config_env() {
 # ---- shared post-extraction: whitelist prune (Qomicex #215 size discipline) --
 prune_sysroot() {
   local root="$1"
-  # Whitelist: usr/include, usr/lib, usr/share/pkgconfig, lib. Everything
-  # else (etc, bin, sbin, var, usr/bin, docs, man, locales, gir typelibs,
-  # gtk-doc, dbus system configs, udev rules, ...) is irrelevant to
-  # compiling/linking and is removed.
-  find "$root" -mindepth 1 -maxdepth 1 ! -name usr ! -name lib -exec rm -rf -- {} +
+  # Usrmerge fold + aliases: deepin is usrmerged, so its packages ship
+  # runtime files only under usr/lib and usr/lib64 — but glibc's libc.so
+  # linker script references the historical absolute paths
+  # (/lib/loongarch64-linux-gnu/libc.so.6, /lib64/ld-linux-loongarch-
+  # lp64d.so.1; verified against libc6-dev 2.38-6deepin13+rb1). GNU ld
+  # resolves those against --sysroot when it opens the script from inside
+  # the sysroot, so /lib and /lib64 must exist and lead to usr/lib /
+  # usr/lib64. A real /lib or /lib64 directory shipped by ANY package of
+  # the closure (the first release run proved at least one does: the alias
+  # alone left /lib/loongarch64-linux-gnu/libc.so.6 unresolvable) must be
+  # folded into usr/ first — a real directory would silently shadow the
+  # alias and hide libc.so.6 behind it. Folding overwrites same-named
+  # files (dpkg never double-ships one path; pre-usrmerge leftovers equal
+  # their usr copies), and a package-shipped SYMLINK /lib is already the
+  # correct alias and is kept as-is.
+  merge_into_usr_lib() {
+    local d="$1"
+    if [ ! -e "$root/$d" ]; then
+      ln -s "usr/$d" "$root/$d"
+      return 0
+    fi
+    if [ -L "$root/$d" ]; then
+      return 0
+    fi
+    mkdir -p "$root/usr/$d"
+    cp -a "$root/$d/." "$root/usr/$d/"
+    rm -rf -- "$root/$d"
+    ln -s "usr/$d" "$root/$d"
+  }
+  merge_into_usr_lib lib
+  merge_into_usr_lib lib64
+  # Whitelist: usr/include, usr/lib, usr/lib64, usr/share/pkgconfig, lib,
+  # lib64. Everything else (etc, bin, sbin, var, usr/bin, docs, man,
+  # locales, gir typelibs, gtk-doc, dbus system configs, udev rules, ...)
+  # is irrelevant to compiling/linking and is removed. The lib64 keeps are
+  # load-bearing, not conservative: glibc's libc.so script AS_NEEDEDs the
+  # loader at /lib64/ld-linux-loongarch-lp64d.so.1 and usr/lib64 (a real
+  # directory on deepin, holding the relative loader symlink into
+  # usr/lib/loongarch64-linux-gnu) must survive for the usrmerge alias below
+  # to resolve it — deleting usr/lib64 turns every link into a fatal "cannot
+  # open /lib64/..." after a full compile.
+  find "$root" -mindepth 1 -maxdepth 1 ! -name usr ! -name lib ! -name lib64 \
+    -exec rm -rf -- {} +
   if [ -d "$root/usr" ]; then
     (cd "$root/usr" && find . -mindepth 1 -maxdepth 1 \
-      ! -name include ! -name lib ! -name share -exec rm -rf -- {} +)
+      ! -name include ! -name lib ! -name lib64 ! -name share -exec rm -rf -- {} +)
   fi
   if [ -d "$root/usr/share" ]; then
     (cd "$root/usr/share" && find . -mindepth 1 -maxdepth 1 \
@@ -277,7 +316,7 @@ prune_sysroot() {
       gconv perl perl-base gir-1.0 girepository-1.0 gstreamer-1.0 systemd)
   fi
   # Static archives and libtool files: the app links the sysroot
-  # dynamically; keeping .a would only bloat it. Exception: GNU ld linker
+  # dynamically; keeping .a would only bloat it. Exception 1: GNU ld linker
   # scripts (the text .so files, e.g. glibc's libc.so) name archive members
   # (libc_nonshared.a, and libmvec.a via libm.so's AS_NEEDED group) that
   # every -l resolution through those scripts requires — deleting them
@@ -289,6 +328,17 @@ prune_sysroot() {
     | xargs -0 -r grep -lI . 2>/dev/null \
     | xargs -r grep -hoE '[A-Za-z0-9._+-]+\.a\b' 2>/dev/null | sort -u || true)"
   for keep_name in $keep_names; do
+    keeps+=(${keeps[@]+"${keeps[@]}"} ! -name "$keep_name")
+  done
+  # Exception 2: the glibc 2.34+ merged-library compat stubs. libpthread,
+  # libdl, librt, libutil and libanl live in libc since 2.34 and libc6-dev
+  # ships them as .a-only stubs (no .so linker script names them — verified
+  # against 2.38-6deepin13+rb1), so the script scan above cannot see them.
+  # rustc's gnu link tail always carries -lutil -lrt -lpthread -lm -ldl -lc
+  # (rustc --print native-static-libs, empty main) and CMake find_library
+  # under CMAKE_SYSROOT resolves them from this directory, so deleting them
+  # fails the release link the same way exception 1 describes.
+  for keep_name in libpthread.a libdl.a librt.a libutil.a libanl.a; do
     keeps+=(${keeps[@]+"${keeps[@]}"} ! -name "$keep_name")
   done
   find "$root" -name '*.la' -type f -delete
@@ -319,14 +369,34 @@ verify_sysroot() {
   [ -f "$root/usr/include/stdio.h" ] || fail "sysroot lacks libc headers: $root/usr/include/stdio.h"
   [ -f "$root/usr/lib/$MULTIARCH_DIR/libc.so" ] \
     || fail "sysroot lacks the linker's libc.so: $root/usr/lib/$MULTIARCH_DIR/libc.so"
-  # The prune keeps the archives the linker scripts reference; assert they
-  # are really there so a prune regression fails here with a precise
-  # message instead of as "cannot find -lc_nonshared..." at link time.
-  local ref_archive
-  for ref_archive in $(grep -hoE '[A-Za-z0-9._+-]+\.a' \
-      "$root/usr/lib/$MULTIARCH_DIR/libc.so" 2>/dev/null | sort -u); do
-    [ -f "$root/usr/lib/$MULTIARCH_DIR/$ref_archive" ] \
-      || fail "linker script libc.so references $ref_archive but the sysroot lacks it (prune regression?)"
+  # The text linker scripts are the link's resolution roots: their GROUP /
+  # AS_NEEDED members are what -lc & co. actually open. Emulate GNU ld's
+  # resolution here so a regression fails at setup time with a precise name
+  # instead of as "cannot open /lib/.../libc.so.6" after a full compile:
+  # every ABSOLUTE .so path inside a script must exist under $root (ld
+  # sysroot-prefixes them when it opens the script from within the sysroot —
+  # this is what the usrmerge aliases created by prune_sysroot are for), and
+  # every .a member a script names must exist in the multiarch tree.
+  local script ref_path ref_archive
+  while IFS= read -r -d '' script; do
+    for ref_path in $(grep -hoE '/[A-Za-z0-9._/-]+\.so[0-9.]*' "$script" 2>/dev/null | sort -u); do
+      [ -e "$root$ref_path" ] \
+        || fail "linker script ${script#"$root"/} references $ref_path but the sysroot lacks it (usrmerge alias regression?)"
+    done
+    for ref_archive in $(grep -hoE '[A-Za-z0-9._+-]+\.a' "$script" 2>/dev/null | sort -u); do
+      [ -f "$root/usr/lib/$MULTIARCH_DIR/$ref_archive" ] \
+        || fail "linker script ${script#"$root"/} references $ref_archive but the sysroot lacks it (prune regression?)"
+    done
+  done < <(find "$root/usr/lib/$MULTIARCH_DIR" -maxdepth 1 -type f -name '*.so' -print0 2>/dev/null \
+    | xargs -0 -r grep -lIZ . 2>/dev/null)
+  # The merged-library compat stubs are named by no script (see
+  # prune_sysroot) but rustc's gnu link tail resolves them directly; assert
+  # them so the failure names the archive instead of surfacing as "cannot
+  # find -lpthread" after a full compile.
+  local compat_archive
+  for compat_archive in libpthread.a libdl.a librt.a libutil.a libanl.a; do
+    [ -f "$root/usr/lib/$MULTIARCH_DIR/$compat_archive" ] \
+      || fail "sysroot lacks the glibc compat stub $compat_archive (prune regression?)"
   done
 
   local libc_so="$root/usr/lib/$MULTIARCH_DIR/libc.so.6"
@@ -479,9 +549,12 @@ docker_method() {
     echo "[loong64-sysroot] extracting the container .debs failed" >&2
     return 1
   }
-  # errexit is suspended in this condition-context function: a failed prune
-  # must not leave a half-pruned tree reported as a successful docker source.
-  prune_sysroot "$output_dir" || {
+  # errexit is suspended for the WHOLE function body when called in a
+  # condition context, so a mid-prune failure (cp/ln/rm) would not abort on
+  # its own and only the last command's status would propagate: run the
+  # prune inside an errexit-restoring subshell so a failed prune cannot
+  # leave a half-pruned tree reported as a successful docker source.
+  ( set -euo pipefail; prune_sysroot "$output_dir" ) || {
     echo "[loong64-sysroot] pruning the docker-extracted sysroot failed" >&2
     return 1
   }

@@ -545,9 +545,10 @@ test("prepareLinuxAsrRuntime accepts a pre-built target engine instead of buildi
     assert.equal(
       spawnCalls,
       0,
-      "a pre-built engine must skip the build script: its requested_arch =="
-        + " host_arch assertion fires before its own cache reuse, so a cross build"
-        + " could never reach the cached fast path",
+      "a pre-built engine must skip the build script: the pipeline already ran"
+        + " it for the target architecture ahead of packaging (cross mode for"
+        + " loongarch64, natively for x86_64/aarch64), and the packaging step"
+        + " only verifies and accepts the result",
     );
   } finally {
     fs.rmSync(outputRoot, { recursive: true, force: true });

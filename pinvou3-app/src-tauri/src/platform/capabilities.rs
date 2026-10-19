@@ -63,6 +63,13 @@ pub(crate) fn current() -> DesktopCapabilities {
         browser_agent_automation: browser_product_enabled(),
         voice_shortcut_native: cfg!(target_os = "windows"),
         paste_image_clipboard_read: cfg!(target_os = "linux"),
+        // 与 pinvou_knowledge::embedding::local_embed_available() 同形的 cfg 门，
+        // 刻意手抄而非委托：platform/ 是跨 feature 的 OS 原语层，按架构边界
+        // （依赖方向 app → features → platform，不反向）不引入对 pinvou-knowledge
+        // 领域 crate 的依赖；且该谓词还含 local-embed feature 维度，语义本就不
+        // 完全等同。两侧 cfg 必须保持同步——一致性由 features/knowledge/
+        // model_download.rs 的 capability_bit_matches_knowledge_crate_predicate
+        // 测试在宿主上钉住。
         local_embed_supported: !cfg!(all(target_os = "linux", target_arch = "loongarch64")),
         global_shortcuts_available,
     }

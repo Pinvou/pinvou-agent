@@ -120,6 +120,16 @@ function prepareKnowledgeHost({
   ),
 } = {}) {
   if (platform !== 'linux') return null;
+  if (development && prebuilt) {
+    // `main()` never produces this combination (it passes prebuilt only on the
+    // cross-packaging call), but a direct caller could: the prebuilt branch
+    // would then copy a cross server into the development resource tree,
+    // contradicting "development always builds natively". Fail loudly before
+    // any development directory is prepared.
+    throw new Error(
+      '预构建的共享知识库服务仅用于打包：development 模式必须在本机原生构建，不能同时设置 prebuilt',
+    );
+  }
   const resourceRoot = development ? DEVELOPMENT_RESOURCE_ROOT : packagedResourceRoot;
   const helperSource = path.join(packagedResourceRoot, 'pinvou-knowledge-host-helper');
   const helper = path.join(resourceRoot, 'pinvou-knowledge-host-helper');

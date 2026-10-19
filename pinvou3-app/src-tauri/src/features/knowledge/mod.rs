@@ -282,20 +282,26 @@ impl KnowledgeService {
     /// 路径（deferred→导入）上的**首次也是唯一**一次加载，绕过它会让空闲卸载
     /// 巡检永不启动，~570MB 常驻直到退出。
     fn reload_embedder_if_import_needed(&self) {
-        self.reload_embedder_if_import_needed_with(model_download::model_installed(), || {
-            Self::load_embedder(Some(&model_dir()))
-        });
+        self.reload_embedder_if_import_needed_with(
+            crate::platform::capabilities::current().local_embed_supported,
+            model_download::model_installed(),
+            || Self::load_embedder(Some(&model_dir())),
+        );
     }
 
-    /// 上一方法的可测核心：`model_installed` 与加载器注入，便于断言门控与
-    /// 失败路径不落 embedder、不误起巡检。成功路径经 install_embedder 语义
-    /// 由既有 KbModelStatus/deferred 契约测试覆盖。
+    /// 上一方法的可测核心：`local_embed_supported`、`model_installed` 与加载器
+    /// 注入，便于断言门控与失败路径不落 embedder、不误起巡检。成功路径经
+    /// install_embedder 语义由既有 KbModelStatus/deferred 契约测试覆盖。
     fn reload_embedder_if_import_needed_with(
         &self,
+        local_embed_supported: bool,
         model_installed: bool,
         load: impl FnOnce() -> Result<Arc<pinvou_knowledge::embedding::Embedder>, String>,
     ) {
-        if self.l1.has_embedder() || !model_installed {
+        // 与 load_installed_embedder 入口闸同语义：不支持平台（linux/loongarch64）
+        // 上 stub 注定拒载，peer 残留的完整模型目录只会制造假失败诊断——加载
+        // 短路必须先于 model_installed 的磁盘探测与失败落账。
+        if self.l1.has_embedder() || !local_embed_supported || !model_installed {
             return;
         }
         // 门控放行 = 即将真实加载:清除「故意延迟」标记,此后的失败按真实失败
@@ -1516,9 +1522,9 @@ mod tests {
         KnowledgeService::new(&dir.join("index.db")).expect("KnowledgeService::new")
     }
 
-    /// 导入补载的门控契约：模型未安装或已在位时不发起加载（加载器注入计数
-    /// 验证门控短路），加载失败不落 embedder、不误起空闲巡检（补载失败走
-    /// 纯全文降级，起巡检只会空转）。
+    /// 导入补载的门控契约：模型未安装、已在位或不支持本地嵌入时不发起加载
+    /// （加载器注入计数验证门控短路），加载失败不落 embedder、不误起空闲巡检
+    /// （补载失败走纯全文降级，起巡检只会空转）。
     #[test]
     fn import_reload_skips_when_installed_or_ready_and_survives_load_failure() {
         // 本测试向进程级 MODEL_LOAD_ERROR 写入失败诊断并精确断言其值，与
@@ -1526,7 +1532,7 @@ mod tests {
         let _guard = model_download::MODEL_LOAD_ERROR_TEST_LOCK.blocking_lock();
         let svc = service();
         let mut calls = 0;
-        svc.reload_embedder_if_import_needed_with(false, || {
+        svc.reload_embedder_if_import_needed_with(true, false, || {
             calls += 1;
             unreachable!("模型未安装不应触发加载")
         });
@@ -1534,7 +1540,7 @@ mod tests {
         assert!(!svc.semantic_ready());
 
         let svc = service();
-        svc.reload_embedder_if_import_needed_with(true, || Err("模拟加载失败".into()));
+        svc.reload_embedder_if_import_needed_with(true, true, || Err("模拟加载失败".into()));
         assert!(!svc.semantic_ready(), "加载失败不得落入 embedder 槽");
         assert!(
             svc.embedder_reaper.lock().is_none(),
@@ -1549,12 +1555,36 @@ mod tests {
         );
 
         let svc = service();
-        svc.reload_embedder_if_import_needed_with(true, || Err("再次失败".into()));
+        svc.reload_embedder_if_import_needed_with(true, true, || Err("再次失败".into()));
         assert!(!svc.semantic_ready(), "失败后再次导入仍应重试补载");
         assert_eq!(
             model_download::model_load_error().as_deref(),
             Some("再次失败"),
             "后续失败覆盖旧诊断，状态不得停留在上一次的错误上"
+        );
+    }
+
+    /// loong64 回归锚点（round-3 自审揪出）：不支持本地嵌入的平台上，peer 残留
+    /// 的完整模型目录曾让导入补载真实发起加载——stub 必然拒载，拒载错误经
+    /// `set_model_load_error` 永久盖进此后每次 `kb_model_status` 的 `model_error`，
+    /// 与 `load_installed_embedder` 入口闸要消灭的假失败完全同形。能力闸必须
+    /// 先于 `model_installed` 的磁盘探测：不支持 + 已安装同样静默降级为纯全文。
+    #[test]
+    fn import_reload_skips_unsupported_platform_even_with_model_installed() {
+        let _guard = model_download::MODEL_LOAD_ERROR_TEST_LOCK.blocking_lock();
+        // 同锁兄弟测试会留下失败诊断:先清零,才能断言「短路没有伪造错误」。
+        model_download::set_model_load_error(None);
+        let svc = service();
+        let mut calls = 0;
+        svc.reload_embedder_if_import_needed_with(false, true, || {
+            calls += 1;
+            unreachable!("不支持平台不得触发导入补载加载")
+        });
+        assert_eq!(calls, 0);
+        assert!(!svc.semantic_ready());
+        assert!(
+            model_download::model_load_error().is_none(),
+            "能力闸短路不得伪造 model_error"
         );
     }
 

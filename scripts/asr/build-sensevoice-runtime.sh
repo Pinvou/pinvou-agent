@@ -107,7 +107,7 @@ fi
 # environment instead, and the host `strip` cannot handle foreign-arch ELFs,
 # so STRIP names the target strip (Debian cross binutils name by default).
 if [ "$cross_mode" -eq 1 ]; then
-  for command_name in cmake git make sha256sum dpkg file objdump readelf; do
+  for command_name in cmake git make sha256sum dpkg file readelf; do
     command -v "$command_name" >/dev/null || {
       echo "missing SenseVoice build dependency: $command_name" >&2
       exit 1
@@ -131,7 +131,7 @@ if [ "$cross_mode" -eq 1 ]; then
     strip_bin="${STRIP:-loongarch64-unknown-linux-gnu-strip}"
   fi
 else
-  for command_name in cmake g++ git make sha256sum dpkg file objdump readelf; do
+  for command_name in cmake g++ git make sha256sum dpkg file readelf; do
     command -v "$command_name" >/dev/null || {
       echo "missing SenseVoice build dependency: $command_name" >&2
       exit 1
