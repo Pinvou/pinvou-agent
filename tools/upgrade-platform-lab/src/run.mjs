@@ -7,7 +7,7 @@ import { startWriters, freezeWriters, joinWriters, writerNames } from './coordin
 import { generate } from './workload.mjs';
 import { inventory, seal, verify } from './archive.mjs';
 
-async function prototypeIdentity() {
+export async function prototypeIdentity() {
   const hash = createHash('sha256');
   for (const name of ['../lab.mjs', 'owned-files.mjs', 'writer.mjs', 'coordination.mjs', 'archive.mjs', 'workload.mjs', 'run.mjs']) {
     const bytes = await readFile(new URL(name, import.meta.url));
@@ -16,6 +16,15 @@ async function prototypeIdentity() {
   return hash.digest('hex');
 }
 export async function runExperiment(parent, plan, options = {}) {
+  let series;
+  if (options.seriesBinding !== undefined) {
+    const value = options.seriesBinding;
+    requireThat(value && !Array.isArray(value) && Object.keys(value).sort().join(',') === 'index,manifestSHA256,seriesId' &&
+      typeof value.seriesId === 'string' && /^[a-f0-9-]{36}$/.test(value.seriesId) &&
+      typeof value.manifestSHA256 === 'string' && /^[a-f0-9]{64}$/.test(value.manifestSHA256) &&
+      Number.isSafeInteger(value.index) && value.index >= 1 && value.index <= 1000, 'lab_series_binding_invalid');
+    series = { seriesId: value.seriesId, index: value.index, manifestSHA256: value.manifestSHA256 };
+  }
   const prototypeSHA256 = await prototypeIdentity();
   const { root, runId } = await createRun(parent, plan.bytes * 2 + plan.files * 4096);
   const key = randomBytes(32);
@@ -38,7 +47,7 @@ export async function runExperiment(parent, plan, options = {}) {
     const milliseconds = Number(process.hrtime.bigint() - start) / 1e6;
     const durability = await directoryDurability(root);
     const report = {
-      experiment: 'platform-v0', prototypeSHA256, runId, context, observedAt: new Date().toISOString(),
+      experiment: 'platform-v0', prototypeSHA256, runId, ...(series ? { series } : {}), context, observedAt: new Date().toISOString(),
       environment: { os: platform(), release: release(), arch: arch(), node: process.version, cpu: cpus()[0]?.model, logicalCpus: cpus().length, memoryBytes: totalmem() },
       workload: plan,
       freeze: { milliseconds: freeze.milliseconds, syntheticWriters: freeze.evidence.length },

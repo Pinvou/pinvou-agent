@@ -83,3 +83,104 @@ application/user/service integration as described by the proposal. A development
 volume smoke is useful primitive evidence only. Unavailable cold-cache control,
 distinct-user admission, protected key custody, restart/power-loss recovery and
 trusted power-off time remain explicit blockers for final T03/T46 qualification.
+
+## Repeated measurement series
+
+`series.mjs` runs one homogeneous series sequentially through the same real
+freeze, encryption, full byte verification and child-close implementation. It
+does not run performance samples concurrently: other heavy experiments must be
+scheduled separately to keep contention visible. It retains all data and refuses
+an insufficient initial estimate for the entire requested retained series. Every
+attempt also repeats the original current-space preflight. Neither observation
+reserves disk capacity; later IO failures remain failures.
+
+Create a local plan JSON file. The example requests thirty 1 GiB, few-large-file
+experiments; it therefore needs space for all thirty sources and encrypted
+outputs, plus overhead and headroom. Use truthful non-secret context labels.
+`hostKind` is an operator declaration (`developer`, `physical` or `virtual`), not
+attestation. `targetKey` must match the actual native host; macOS records the
+actual arm64/x64 host separately even though the candidate package is universal.
+
+```json
+{
+  "repetitions": 30,
+  "workload": { "bytes": 1073741824, "files": 12 },
+  "shape": "few-large",
+  "context": {
+    "labHostId": "dedicated-lab-host",
+    "storageId": "disposable-volume",
+    "storageClass": "unknown"
+  },
+  "experiment": {
+    "targetKey": "windows-x86_64-nsis-perMachine",
+    "hostKind": "developer",
+    "cacheState": "uncontrolled",
+    "mode": "synthetic-freeze-backup-v0"
+  }
+}
+```
+
+```sh
+node --test tools/upgrade-platform-lab/test/*.test.mjs
+node tools/upgrade-platform-lab/series.mjs run /dedicated/scratch /local/plan.json
+node tools/upgrade-platform-lab/series.mjs inspect /owned/pinvou-lab-SERIES-UUID
+```
+
+Plans accept 1–1000 repetitions. `many-small` requires the exact existing
+1/10/50 GiB and 10,000/100,000/500,000 file pairs; `few-large` uses the same byte
+sizes and 12 files. Small actual implementation tests may explicitly use
+`custom-smoke` with bounded custom byte/file counts. Such runs do not satisfy the
+baseline sample requirement regardless of their repetition count. These
+experimental input bounds are never product data or download limits.
+
+Cold/warm cache control and production preinstall/direct-install/activation
+adapters are not implemented. Requesting one records a preflight `unsupported`
+outcome and stops without executing a substitute. A mismatched or unknown target
+does the same. Remaining requested repetitions are `unattempted`; unsupported
+does not mean an actual failed freeze or backup.
+
+Each series has an exclusive directory, an immutable plan/source manifest and
+separate numbered attempt directories. Before executing an attempt it syncs a
+start record. After actual writer close it publishes that attempt's outcome
+exclusively, including the full original sample, its original relative report
+path and exact report SHA-256. Failures retain their partial data, a safe error
+code and the requested repetitions they prevented. A failure stops the series;
+the tool never retries until it obtains a convenient set of successes. Source
+identity is checked between attempts and before publishing the final report.
+The complete original manifest digest, including the requested repetitions,
+experiment and recorded native host, is retained in each start/outcome and in
+each raw sample. Inspection checks those bindings even before final publication;
+it cannot shorten a partially completed plan into a complete smaller series or
+relabel actual synthetic samples as a production mode or controlled-cache run.
+
+SIGINT/SIGTERM request a graceful stop: the current attempt completes its owned
+IO and joins writers, then no further attempt starts. This may take the full
+current attempt; it is not a hard cancellation deadline. The completed attempt
+retains its true success/failure status and `stopRequested` records the request.
+An abrupt process loss leaves the final series report unpublished. `inspect`
+reports a started attempt without a published outcome as `aborted`, with later
+slots `unattempted`; this means completion was not confirmed and never proves
+zero writes. Missing or invalid manifests/records fail inspection. The tool does
+not resume a crashed run or overwrite any report, archive or attempt directory.
+
+Inspection reopens the original samples, verifies their exact bytes and distinct
+identities and checks matching source, workload, host environment and observed
+volume/filesystem context. It refuses mixed, changed, extra or noncontiguous
+attempts. Statistics are present only if every requested attempt succeeded in
+that homogeneous series. All raw attempts remain in the report; failures,
+unsupported capability and interrupted/unattempted work stay separate. A
+complete but not finally published series can be inspected as such; no automatic
+publication or recovery claim follows. The command exits unsuccessfully for
+incomplete, failed, unsupported or unpublished results.
+Recorded host facts, rather than the inspecting computer, determine target
+compatibility and unsupported reasons. A present JSON null, boolean, number or
+string is an invalid record; only an absent file is treated as unpublished.
+
+For an approved baseline workload, `sampleRequirementMet` only means at least
+thirty complete homogeneous primitive samples were retained. Uncontrolled caches,
+synthetic same-account writers, production modes, protected time and other
+unproven capabilities remain explicit. The output is review evidence: approved
+and certified budgets stay null, qualification stays false, and no product
+configuration is written. Reports are local observations, not authenticated
+hardware attestations. Keep the dedicated scratch parent private; the inherited
+prototype's path-custody and power-loss limitations still apply.
