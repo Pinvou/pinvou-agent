@@ -1389,10 +1389,9 @@ impl Pinvou3Bridge {
         let provider = self.provider();
         let effort = self.request_reasoning_effort_for_provider(&provider);
         // Tachyon (驭光) wire 有效档为 none/low/medium/xhigh：`high` 会被服务端
-        // 400 拒绝。存量/知识表/显式选择中的 high 防御性归一为 medium（本仓
-        // UI 档表不提供 high，该值只可能来自旧版本存储或 always-thinking
-        // 知识表的 lowest-tier 归一）；`max` 原样放行，由底座 tachyon 方言映射
-        // 为 xhigh。
+        // 400 拒绝。任何来源的 high（旧版本存储的值、always-thinking 知识表
+        // 命中模型在表内原样透传的 high，如本地 kimi-k3）统一防御性归一为
+        // medium；`max` 原样放行，由底座 tachyon 方言映射为 xhigh。
         if provider == "tachyon" && effort.as_deref() == Some("high") {
             return Some("medium".to_string());
         }

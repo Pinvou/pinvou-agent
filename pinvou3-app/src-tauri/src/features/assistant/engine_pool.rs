@@ -2192,10 +2192,11 @@ impl EnginePool {
         // Ollama/LM Studio endpoints under that preset, and `/v1/models`
         // there never carries a window fact — without the kind probe the
         // native fetch below can never fire and the route keeps the 128K
-        // fallback while the monitor shows the real window. The probe result
-        // cannot flip the wire route for these presets (`provider()` resolves
-        // LocalVllm to "vllm" from the preset arm before ever consulting the
-        // probed kind), so a real vLLM classified `Vllm` is inert here.
+        // fallback while the monitor shows the real window. For LocalVllm the
+        // probe only flips the wire route when it identifies Tachyon
+        // (`provider()` follows the probed kind for the Tachyon dialect —
+        // its tier ladder differs, so riding the vllm arm would re-expose the
+        // 400-tier); a real vLLM classified `Vllm` is inert here.
         // A probe failure (service not started/timeout/auth failure) is
         // classified as generic, keeping the existing openai wire route. The
         // probe request carries a credential from the same origin as real
@@ -2236,7 +2237,11 @@ impl EnginePool {
         // returns facts belonging to another model and must not be
         // misattributed. Cloud presets and coding_plan are not
         // operator-owned and are not probed.
-        let is_vllm_route = bridge.provider() == "vllm";
+        // Tachyon rides the same served-name correction as vLLM: the wire
+        // family is identical (`/v1/models` listing, single-model rename),
+        // so a configured name that misses the served list gets the same
+        // rename/facts treatment instead of a hard model_not_found.
+        let is_vllm_route = matches!(bridge.provider().as_str(), "vllm" | "tachyon");
         if let Some(model) = bridge.effective_model_owned() {
             Self::adopt_probed_endpoint_facts(
                 &mut bridge,

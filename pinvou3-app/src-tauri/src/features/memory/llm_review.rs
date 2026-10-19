@@ -571,7 +571,7 @@ pub(super) async fn send_memory_llm_request(
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let provider = bridge.memory_provider();
     let preset = bridge.memory_model_preset();
-    let model_name = if provider == "vllm" {
+    let model_name = if provider == "vllm" || provider == "tachyon" {
         // The served-name probe uses an inference-same-origin key:
         // authenticated vLLM 401s on /v1/models. resolve_served_model keeps a
         // configured name the server lists (LM Studio/Ollama expose every

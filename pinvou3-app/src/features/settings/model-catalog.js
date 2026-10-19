@@ -1920,7 +1920,9 @@ function normalizeStoredReasoningEffort(model, stored) {
   // normalization 表无 probe 语境、只认 vllm 四档，若在这里把 max 归一成默认
   // low，设置表单重新打开再保存会把用户选的最深档静默改写为最低档。探测为
   // vllm 等其他本地引擎时 wire 方言把 max 映射为有效值（如 high），同样无需
-  // 客户端降级；展示高亮由 probe 档表决定（不含 max 的表显示无高亮，不改值）。
+  // 客户端降级；展示高亮由 probe 档表决定：不含 max 的表按
+  // reasoningEffortDisplayForTiers 的最近档规则显示（含 high 的表显示 high，
+  // 对 vllm wire 恰好等价），值本身不改。
   // always-thinking 知识表命中（如本地 kimi-k3 的 ['low','high']）不在此例——
   // 表外档维持既有的"归一到最低允许档"语义。
   const storedValueProvider = reasoningProviderForModel(model);
@@ -1991,6 +1993,10 @@ function localReasoningTiers(modelId, probedKind) {
     // is high (e.g. GPT-OSS only accepts the low/medium/high strings —
     // true/false is ignored, and thinking cannot be disabled anyway).
     if (probedKind === 'ollama') return ['high'];
+    // tachyon（驭光）叠加知识表（如本地 kimi-k3 的 ['low','high']）：表内的
+    // high 在 tachyon wire 上由 bridge 归一为 medium 发送（不发 high），最深
+    // 档 max 不在知识表内故不可达——与 Rust 侧防御归一口径一致，UI 保留
+    // 知识表档位不另行改写。
     return spec.tiers;
   }
   return localProbeTiersForKind(probedKind);

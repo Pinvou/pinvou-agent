@@ -94,8 +94,12 @@ function useLocalServerKindProbe({ enabled, baseUrl, apiKey = '', modelId = null
 // Returns { isLocalCompatible, probedKind, probePending, reasoningEffortTiers,
 //           noControlThinking, reasoningEffortDisplay }.
 export function useModelReasoningTierState({ model, storedEffort = null, baseUrl, apiKey = '', modelId = null, debounceMs = 0, trimInputs = false }) {
+  // local_vllm 预设的本地端点同样探测：本地"检测"流程历史存量把探测到的
+  // Ollama/LM Studio/Tachyon 候选都存成该预设；探测出 tachyon（驭光）时档表
+  // 必须切到 ['off','low','medium','max']（其 wire 无 high、最深档是 xhigh），
+  // 否则表单暴露的 high 实际只能发 medium、真实最深档 max 不可达。
   const isLocalCompatible = !!model
-    && model.preset === 'openai_compatible'
+    && (model.preset === 'openai_compatible' || model.preset === 'local_vllm')
     && baseUrlUsesLocalOrPrivate(baseUrl);
   const { probedKind, probePending } = useLocalServerKindProbe({
     enabled: isLocalCompatible,
@@ -105,8 +109,15 @@ export function useModelReasoningTierState({ model, storedEffort = null, baseUrl
     debounceMs,
     trimInputs,
   });
+  // local_vllm 预设只有探测出 tachyon 才跟随探测档表：Rust 侧 provider() 的
+  // LocalVllm 臂只对 Tachyon 翻转方言，其余探测结果（含 Ollama/LM Studio 的
+  // 历史存量）仍走 vllm wire，档表保持与静态四档一致，避免 UI 与实际路线劈叉。
+  // openai_compatible 预设的所有探测结果都由探测路由消费，维持原语义。
+  const probeKindForRoute = model && model.preset === 'local_vllm'
+    ? (probedKind === 'tachyon' ? 'tachyon' : null)
+    : probedKind;
   const reasoningEffortTiers = isLocalCompatible
-    ? (probePending ? [] : (localReasoningTiers(model.model, probedKind) || []))
+    ? (probePending ? [] : (localReasoningTiers(model.model, probeKindForRoute) || []))
     : (model ? (reasoningEffortTiersForModel(model) || []) : []);
   // Local routes (vllm preset / local-compatible endpoints) hit the "always-thinking,
   // no-control" knowledge table: the effort-tier area shows an "always on" hint instead of
