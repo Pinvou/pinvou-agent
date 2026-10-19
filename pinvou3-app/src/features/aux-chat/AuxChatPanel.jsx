@@ -124,8 +124,9 @@ export function AuxChatPanel({ sessionId, activationKey, t, theme, onClose, onAc
 
   // Composer auto-grow, same mechanism as the main conversation composer:
   // grow with the content up to the max-h-32 cap (then scroll internally) and
-  // shrink back when the draft clears. Re-runs on rebind so a restored draft
-  // sizes the box immediately.
+  // shrink back when the draft clears. Sizes on mount and whenever the draft
+  // changes; a rebind whose restored draft is byte-identical needs no re-fire
+  // (same string, same box), and a remount sizes it anyway.
   useAutoResizeTextarea(composerRef, view.draft, { min: 24, max: 128 });
 
   // Follow-state tracking, mirroring the main conversation's scroll listener:

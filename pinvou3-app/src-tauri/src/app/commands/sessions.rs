@@ -1373,7 +1373,7 @@ async fn get_or_create_aux_session_inner(
 /// Atomically restart a main session's auxiliary conversation (M6): if an
 /// aux session exists, delete it through the pool's turn gate, then create a
 /// fresh one, returning the new binding. This replaces the frontend's old
-/// two-invoke restart (`discard_aux_session` then
+/// two-invoke restart (a discard invoke followed by
 /// `get_or_create_aux_session`), whose halves had no server-side ordering —
 /// under the web relay's non-FIFO premise an orphaned discard could execute
 /// after the recreate and destroy the fresh transcript. One command, one

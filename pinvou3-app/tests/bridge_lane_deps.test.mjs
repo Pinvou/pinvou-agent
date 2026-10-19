@@ -225,8 +225,12 @@ for (const cluster of Object.keys(REQUIRED)) {
 // The audited complete surface follows. Expected sets were derived by the
 // scope-aware audit described in the header (union ∖ FORWARDER_DEP_NAMES
 // classification; the round-2 wave also removed the 13 then-inert keys from 7
-// literals, so the pinned sets contain no dead wiring). Same-named literals in
-// the two lanes (auxChat) must stay identical.
+// literals). The remaining sets are NOT all statically load-bearing: five keys
+// (tauriChat.touchSessionBuffer; tauriChatEvents.bt, itemIdSeq; tauriMemory
+// and tauriPersonas itemIdSeq) are unreachable from their clusters' exports
+// and are kept deliberately as routing-stability pins — removing one requires
+// re-deriving EXPECTED_CLUSTER_KEYS here in the same commit. Same-named
+// literals in the two lanes (auxChat) must stay identical.
 const EXPECTED_CLUSTER_KEYS = {
   'auxChat': [
     'auxChatDispatch',

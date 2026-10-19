@@ -3798,12 +3798,12 @@ impl EnginePool {
     /// "eval turn"). Returns the reservation with the held turn gate for the
     /// caller's divergent tail; the eval lane's session ids are never
     /// `sched-`, so its scheduled arm is a no-op.
-    /// Admit a reserved turn under the session turn gate and return the gate
-    /// with the reservation. The caller MUST keep the returned guard alive
-    /// until the engine submission is enqueued: the cascade-cancel ordering
-    /// invariant (see `should_retry_cascade`) depends on a phase-two cancel
-    /// never being able to interleave between this admission and the next
-    /// turn's `SendMessage` enqueue.
+    ///
+    /// The caller MUST keep the returned gate alive until the engine
+    /// submission is enqueued: the cascade-cancel ordering invariant (see
+    /// `should_retry_cascade`) depends on a phase-two cancel never being able
+    /// to interleave between this admission and the next turn's
+    /// `SendMessage` enqueue.
     async fn admit_reserved_turn(
         &self,
         session_id: &str,
