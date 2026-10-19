@@ -21,7 +21,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T08 | In progress | Reviewed genesis catalog/component management and protected atomic publication primitives; complete business publication workflows remain pending |
 | T09 | In progress | Bounded package/native-byte inspection, immutable storage, authenticated upload/recovery, ZIP inspection/UI and current-trust Package/evidence CLI and admin inspection; formal validation, admission, quarantine and platform qualification remain pending |
 | T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
-| T11 | In progress | Protected multi-platform drafts and reviewed content freezing with actual UI/API/history/recovery; package qualification and Release/Target lifecycle approval remain pending. |
+| T11 | In progress | Protected multi-platform drafts, reviewed content freezing and cancellation of assembled declarations with complete unchanged draft children; package qualification and Release/Target lifecycle approval/publication remain pending. |
 | T12 | In progress | Original stable-facts identity, exact profile matching and immutable forward-policy intersection; protected Registry/version/approval and production qualification remain pending |
 | T13 | Not completed | Supported floor, prerequisite paths and historical bridge approvals. |
 | T14 | In progress | Protected configuration drafts with actual UI/API/recovery; qualified parents, publication, scheduling and first-baseline activation remain pending. |
@@ -13135,3 +13135,50 @@ T03 approved isolated experimental lab and measured development smokes (2026-10-
 - T03 is now in progress. Totals are 5 implemented / 15 in progress / 27
   incomplete or deferred of 47. Documents 1.0, product 0.10.12 and CodeWhale
   remain unchanged. Remaining independent service development continues.
+
+T11 cancellation of assembled declarations (2026-10-19):
+
+- Service commit `0f1091a` adds actual context, preparation, two independent
+  reviews, execution and original-result lookup for assembled Release parents
+  whose complete unchanged children remain drafts. Draft/terminal parents and
+  missing, extra, replaced or advanced children are refused. This bounded
+  workflow does not qualify Packages or complete Target approval/publication.
+- Current full target scope, verified five-minute MFA, distinct non-author
+  reviewers and exact original content are repeated at native write boundaries.
+  Cancellation-specific keyed witnesses authenticate cumulative review results;
+  coherent rejection-to-approval edits cannot qualify through a content checksum.
+- Parent and every child head/history, scope inventory, transition audit,
+  immutable result/outbox and T06 completion commit together. Actual tests first
+  observe this complete transaction-local write set, then inject a rollback
+  fault. Unknown commit acknowledgements preserve the original result identity.
+- An independent registration witness prevents recreation of lost original
+  intent/authentication after registration, including fresh-MFA HTTP re-entry.
+  Workers retain original verification times. Cleaned responses remain cleaned;
+  the permanent read-only locator does not refresh old MFA or execution rights.
+- Explicit additive V4 migration authenticates complete source history and
+  original keyed audit. Installed recovery owners remain registered with new
+  admission disabled. All 97 prior SQL files are byte-unchanged. Actual prior
+  Create and assembly requests replay their original acknowledgements exactly.
+- Three-language browser workflows retain original actor/wire/key after actual
+  response loss. Wrong-purpose pending bytes fail closed without replacement.
+  A combined selection/scope ABA during a genuinely pending WebCrypto digest
+  sends no late command and preserves the original pending request.
+- Both independent final scoped static reviews pass after primary repairs.
+  Frozen actual PostgreSQL acceptance passes 28 top-level/59 nested cases;
+  actual TLS/OIDC/HTTP/CLI/browser acceptance passes 9 top-level/6 nested cases,
+  including all three Release browser workflows. These gates have zero skips
+  or failures. The signed test IdP does not certify deployment OTP/MFA.
+- Default tests pass 836 top-level/1837 nested cases; 728 top-level/669 nested
+  explicit opt-in/fixture skips are recorded separately. Modules, vet,
+  server/Release CLI/admin builds, pinned contracts, three cross-builds,
+  formatting and whitespace pass. Final source/index/status remain frozen.
+  Cross-builds establish compilation, not native platform qualification.
+- Two new test queries failed the first final run: the observer directly read a
+  restricted audit-head table, and the legacy Create receipt query used the
+  assembly column name. Repairs use the existing same-transaction audit-head
+  port and actual legacy column, preserving the full assertions. Both failed
+  cases then pass actual focused regression and the complete frozen rerun.
+- T11 remains in progress. Totals stay 5 implemented / 15 in progress / 27
+  incomplete or deferred of 47. Documents 1.0, product 0.10.12 and CodeWhale stay
+  unchanged. Deployment is deferred; downloads have no hard total/cumulative
+  deadline. The 32 MiB cap applies only to atomic business metadata.
