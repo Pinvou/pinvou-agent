@@ -638,9 +638,8 @@ test('every browser/mod.rs blank-tab marker references the shared const, never a
   // pinned; handle_hosted_browser_request and create_agent_popup_tab could
   // revert to hand-typed literals (plus a typo) with every test green. All
   // three production sites must go through HOST_BLANK_MARKER_TAB_PREFIX, and
-  // no production line may hand-type the value (host.rs's three documented
-  // hand-typed sites are value-pinned by its own unit tests; the mod.rs
-  // literal below belongs to this file's test module).
+  // no production line may hand-type the value (the mod.rs literal below
+  // belongs to this file's test module).
   const uses = [...browserManager.matchAll(/\{HOST_BLANK_MARKER_TAB_PREFIX\}/g)].length;
   assert.equal(
     uses,
@@ -659,6 +658,24 @@ test('every browser/mod.rs blank-tab marker references the shared const, never a
     production,
     /about:blank#pinvou-tab-/,
     'the blank-tab marker value must stay single-sourced in the platform constant',
+  );
+  // Round-8 review minor: host.rs's two blank-tab CONSTRUCTION sites (the
+  // workspace-restore arm and marked_blank_url) are const-bound like mod.rs.
+  // The one remaining hand-typed occurrence in host.rs production is the
+  // comparison inside the generated bootstrap JS raw string (it also names
+  // the session marker), which host.rs's own unit tests value-pin.
+  const hostProduction = nativeHost.slice(0, nativeHost.lastIndexOf('#[cfg(test)]'));
+  const hostConstUses = [...hostProduction.matchAll(/\{HOST_BLANK_MARKER_TAB_PREFIX\}/g)].length;
+  assert.equal(
+    hostConstUses,
+    2,
+    'host.rs blank-tab constructions must reference the shared platform const',
+  );
+  const hostHandTyped = [...hostProduction.matchAll(/about:blank#pinvou-tab-/g)].length;
+  assert.equal(
+    hostHandTyped,
+    1,
+    'the bootstrap JS comparison is the only hand-typed marker allowed in host.rs production',
   );
 });
 
