@@ -1,7 +1,8 @@
 # Upgrade implementation decisions and certification proposal
 
-Date: 2026-10-09. Status: health, strict time policy and backend stack approved;
-platform/data scope, measurement plan and physical evidence remain pending.
+Date: 2026-10-19. Status: health, strict time policy and backend stack approved;
+candidate platform/data coverage and the measurement proposal approved for
+isolated experiments; concrete budgets and physical qualification remain pending.
 
 This supplements the [V1.0 task decision register](pinvou-upgrade-platform-development-tasks.zh-CN.md#10-实施前需要确认的决策).
 It does not change R/D/S/C/F/M/K, approve new support boundaries, or complete T03.
@@ -44,6 +45,14 @@ the signed authentication level and authentication time, requiring MFA within
 the latest five minutes by default. Expiry requires step-up again. The actual
 realm flow must prove it cannot issue this ACR with password alone; signed test
 IdP fixtures do not certify a deployed Keycloak OTP configuration.
+
+On 2026-10-19 the owner approved using the existing candidate platform/data list
+and measurement proposal for isolated experiments. This approves the experimental
+work, including the three synthetic workload tiers; it does not certify that
+coverage, approve new application support boundaries, approve a concrete
+preparation budget, or relax strict time option A. The first standalone program
+is [platform lab v0](../tools/upgrade-platform-lab/README.md); its reported
+unsupported capabilities remain explicit.
 
 ## Platform certification candidates
 
@@ -152,7 +161,7 @@ Source anchors: [paths](../pinvou3-app/src-tauri/src/platform/paths.rs),
 
 ## Preparation-budget measurement proposal
 
-No certified millisecond value is proposed yet. Approve the measurement plan first;
+No certified millisecond value is proposed yet. The experimental plan is approved;
 run the T03 experimental adapters on representative physical systems, then submit a
 per-target table of measured distributions, worst observed time, safety margin,
 supported workload envelope, user wait cap, chosen budget and failure behavior.
@@ -339,11 +348,14 @@ providers separately. Cross-repository E2E completion remains T43's responsibili
 PostgreSQL evidence: [synchronous replication](https://www.postgresql.org/docs/17/warm-standby.html#SYNCHRONOUS-REPLICATION),
 [synchronous_commit](https://www.postgresql.org/docs/17/runtime-config-wal.html#GUC-SYNCHRONOUS-COMMIT).
 
-## Decisions to request after review
+## Remaining decisions after experimental measurement
 
-1. Approve or amend the exact OS coverage list; it is a test commitment, not existing certification.
-2. Approve or amend the data-protection policy and inventory, including conditional external/service scopes and exclusions.
-3. Approve or amend the synthetic workloads, storage classes and measurement process; actual budgets return for approval after measurement.
+1. Confirm final certified OS coverage from actual evidence; experimental candidates
+   do not establish an application support-policy change.
+2. Confirm the final exact per-installation migration inventory and any exclusions,
+   including conditional external/service scopes, before production certification.
+3. Review actual measurements, remaining unsupported capabilities and concrete
+   proposed budgets. The approved experimental plan does not approve those values.
 
 Strict time option A, local health criteria and the backend stack are already
 approved, and the separate `UpdateServer` repository has been supplied; these are

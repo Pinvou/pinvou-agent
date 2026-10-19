@@ -5,15 +5,15 @@ Tasks are completed individually only after in-scope independent code review,
 repairs, applicable tests and commit/push. Contract completion is not production
 client, service, physical platform certification or rollout readiness.
 
-Current task totals: 47 tasks; five implemented, fourteen in progress and
-twenty-eight not completed or deferred. Detailed chronological evidence follows
+Current task totals: 47 tasks; five implemented, fifteen in progress and
+twenty-seven not completed or deferred. Detailed chronological evidence follows
 the current overview; a completed bounded batch does not complete its whole task.
 
 | Task | Status | Delivery / outstanding dependency |
 |---|---|---|
 | T01 | Implemented; independently reviewed and verified | Executable metadata/credential Schemas, byte/trust profile, reference verifier, independently verified fixed vectors and local CLI E2E |
 | T02 | Implemented; independently reviewed and verified | Closed control APIs, publication/lifecycle/selection/quality reference models and regression tests; no production service implementation |
-| T03 | Not completed | Platform execution/protected-storage/backup contracts; platform/data scope and measured qualification remain pending. |
+| T03 | In progress | Independently reviewed experimental synthetic-writer freeze/encrypted backup lab and three Windows payload smokes; final contracts, exact production inventory, approved finite budgets and strict time qualification remain pending. |
 | T04 | Not completed | Independent composite packaging and verification toolchain; depends on T03 platform contracts. |
 | T05 | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
 | T06 | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
@@ -224,15 +224,15 @@ seal, independent custodians and protected backup/restore acceptance remain
 deferred without blocking code development. Local provider experiments do not
 establish three independent production custodians.
 
-T03 still requires approved OS certification coverage, all-user/service data
-scope and finite preparation budgets. The product owner approved local health
+T03 still requires certified OS coverage, an exact all-user/service migration
+inventory and approved finite preparation budgets. The product owner approved local health
 criteria, strict trustworthy time option A and the Go backend stack on 2026-10-09,
 and requested the platform/data inventory and measured-budget test proposal in
 [implementation decisions](upgrade-implementation-decisions.md).
 That document distinguishes approved policy from proposals and physical evidence.
 Normal offline retention across shutdown also needs a proven trustworthy elapsed-time mechanism under
 the current strict requirement. Ordinary OS clocks or powered-on TPM clocks
-alone do not demonstrate elapsed shutdown duration. OS/data scope and concrete
+alone do not demonstrate elapsed shutdown duration. Final certified scope, concrete
 budget approvals, and time-implementation evidence, remain pending. No support
 restriction or retention-policy change is assumed approved.
 
@@ -13109,3 +13109,29 @@ T07 material directory and accepted-original recovery (2026-10-19):
   incomplete or deferred of 47. Documents 1.0, product 0.10.12 and CodeWhale remain
   unchanged. Deployment stays deferred. Downloads have no hard total/cumulative
   duration or retry cap; 32 MiB remains an atomic business metadata bound only.
+
+T03 approved isolated experimental lab and measured development smokes (2026-10-19):
+
+- The owner approved the existing candidate platform/data/measurement proposal
+  for isolated experiments. Concrete budgets, production support boundaries and
+  strict time qualification were not approved by that answer.
+- The reviewed standalone Node 26 lab uses actual three-process SQLite/WAL
+  synthetic writers, original generation freeze evidence, encrypted streaming
+  backup and complete authenticated byte verification. It never boots the app,
+  scans user profiles, reads credentials or changes system date/power state.
+- Both final scoped independent static reviews pass after primary repairs.
+  Eleven focused tests pass with zero failures/skips, including actual stat/open
+  source/archive races, spawn/close failures, incomplete freeze, crypto faults,
+  context separation and post-write sync/close failures without a success report.
+- Frozen source development smokes pass for exact 1/10/50 GiB payloads. The
+  [observation record](upgrade-platform-lab-observations.md) preserves shapes,
+  single-sample counts, phase durations, prototype identity and limitations.
+  These are not 30-run baselines or certified preparation-budget values.
+- Windows Node directory durability, distinct OS identities, machine-wide
+  admission, protected key custody, parent-crash recovery and strict elapsed
+  power-off time remain unsupported/unproven. No final T03 contract or native
+  T46 capability is inferred. Deployment remains deferred; downloads have no
+  hard total/cumulative duration or retry cap. The server 32 MiB bound is metadata.
+- T03 is now in progress. Totals are 5 implemented / 15 in progress / 27
+  incomplete or deferred of 47. Documents 1.0, product 0.10.12 and CodeWhale
+  remain unchanged. Remaining independent service development continues.
