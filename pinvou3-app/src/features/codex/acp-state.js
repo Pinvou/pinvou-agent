@@ -476,10 +476,43 @@ export function createAcpGapResyncScheduler(resync, {
   };
 }
 
+function canIndexSnapshotEnvelope(envelope) {
+  if (!envelope || typeof envelope !== 'object') return false;
+  // Serialized ACP envelopes have own data properties. Accessors, inherited
+  // keys and irregular sequences keep the existing replay/read semantics.
+  try {
+    const owner = Object.getOwnPropertyDescriptor(envelope, 'sessionId');
+    const sequence = Object.getOwnPropertyDescriptor(envelope, 'seq');
+    return typeof owner?.value === 'string'
+      && Number.isSafeInteger(sequence?.value) && sequence.value >= 0;
+  } catch {
+    return false;
+  }
+}
+
 export function mergeAcpTimelineSnapshot(snapshot, current, sessionId) {
-  return (current || [])
-    .filter(event => event?.sessionId === sessionId)
-    .reduce((merged, event) => appendAcpEvent(merged, event), snapshot || []);
+  const local = (current || []).filter(event => event?.sessionId === sessionId);
+  const initial = snapshot || [];
+  if (!local.length) return initial;
+  const replay = () => local.reduce((merged, event) => appendAcpEvent(merged, event), initial);
+  if (!Array.isArray(initial)) return replay();
+
+  const sequences = new Set();
+  for (const envelope of initial) {
+    if (!canIndexSnapshotEnvelope(envelope)) return replay();
+    if (envelope.sessionId === sessionId) sequences.add(envelope.seq);
+  }
+  const additions = [];
+  for (const envelope of local) {
+    if (!canIndexSnapshotEnvelope(envelope)) return replay();
+    if (sequences.has(envelope.seq)) continue;
+    sequences.add(envelope.seq);
+    additions.push(envelope);
+  }
+  // Snapshot entries win duplicate keys and are never deduplicated/replaced.
+  // A no-op must retain the snapshot's identity and even its existing order.
+  if (!additions.length) return initial;
+  return [...initial, ...additions].sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0));
 }
 
 export function resolveAcpSessionControls(info) {
