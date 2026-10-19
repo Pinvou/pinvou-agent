@@ -1149,13 +1149,26 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
     payload_mismatch = False
     # Round-6 minor 1: `paused` omitted vs false digests identically for
     # creates (the watcher coerces via unwrap_or(false)) — coerce here too.
-    requested_digest = spool_request_digest(
-        kind,
-        task_id=task_id if kind != "create" else None,
-        name=name, prompt=prompt, rrule=rrule,
-        model_id=model_id,
-        paused=False if kind == "create" and paused is None else paused,
-    )
+    try:
+        requested_digest = spool_request_digest(
+            kind,
+            task_id=task_id if kind != "create" else None,
+            name=name, prompt=prompt, rrule=rrule,
+            model_id=model_id,
+            paused=False if kind == "create" and paused is None else paused,
+        )
+    except UnicodeEncodeError:
+        # Round-27 minor 6: lone surrogates in a JSON string argument crash
+        # the canonical digest's utf-8 encode; the catch-all would answer an
+        # opaque -32603 internal error for invalid input. A field validation
+        # error is the honest shape.
+        return None, "invalid request text: contains unpaired surrogate characters"
+    # Round-27 minor 7 evidence: was this key's request still QUEUED at
+    # entry (a live spool file, no terminal marker)? A retry in that window
+    # REPLACES the queued record and the watcher applies the new payload,
+    # so the success note must not claim "already processed; returning its
+    # recorded result".
+    entry_had_pending_spool = os.path.exists(target) and not os.path.exists(done_marker)
     if entry_marker_was_success:
         recorded_digest = recorded.get("request_digest")
         # Markers from before the digest existed answer unknown → no
@@ -1301,6 +1314,11 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
                         "The scheduled task has been created and is visible in the "
                         "Scheduled Tasks panel."
                         if not duplicate else
+                        "This key was still queued when the retry arrived; the "
+                        "queued request was REPLACED and the new values have now "
+                        "been applied (the result above is this retry's — no "
+                        "second task)."
+                        if entry_had_pending_spool else
                         "A request with the same idempotency key was already "
                         "processed; returning its recorded result — no second task "
                         "was created."
@@ -1310,6 +1328,10 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
                         "The scheduled task has been updated and the change is "
                         "visible in the Scheduled Tasks panel."
                         if not duplicate else
+                        "This key was still queued when the retry arrived; the "
+                        "queued request was REPLACED and the new values have now "
+                        "been applied (the result above is this retry's)."
+                        if entry_had_pending_spool else
                         "A request with the same idempotency key was already "
                         "processed; returning its recorded result."
                     )

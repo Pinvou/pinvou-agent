@@ -175,7 +175,11 @@ class RruleValidationTests(unittest.TestCase):
         try:
             _, gap_error = server.validate_rrule("FREQ=ONCE;AT=2026-03-08T02:30")
             _, amb_error = server.validate_rrule("FREQ=ONCE;AT=2026-11-01T01:30")
-            normalized, ok_error = server.validate_rrule("FREQ=ONCE;AT=2027-06-01T09:30")
+            # Round-27 minor 3: the passing arm uses the file's
+            # _future_at() helper — a hardcoded wall time failed the
+            # future check once it passed, a deterministic suite red.
+            future_at = _future_at(minutes=365)
+            normalized, ok_error = server.validate_rrule("FREQ=ONCE;AT=%s" % future_at)
         finally:
             if old_tz is None:
                 os.environ.pop("TZ", None)
@@ -186,7 +190,7 @@ class RruleValidationTests(unittest.TestCase):
         self.assertIsNotNone(amb_error, "the fall-back overlap must be rejected")
         self.assertIn("ambiguous", amb_error)
         self.assertIsNone(ok_error, "an ordinary future local minute must pass")
-        self.assertIn("2027-06-01T09:30", normalized)
+        self.assertEqual(normalized, "FREQ=ONCE;AT=%s" % future_at)
 
     def test_out_of_range_and_unknown_fields_rejected(self):
         for rrule in [

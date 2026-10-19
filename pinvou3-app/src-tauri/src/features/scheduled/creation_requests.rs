@@ -91,6 +91,9 @@ const MAX_SPOOL_FILE_BYTES: u64 = 256 * 1024;
 /// Transient creation failures retry on consecutive polls; quarantine only
 /// after this many attempts (design C4: quarantine + failure marker).
 const MAX_CREATE_ATTEMPTS: u32 = 3;
+/// Round-27 minor 9: pending-file ceiling per drain pass (the messaging
+/// sibling's 256; the sorted tail beyond it quarantines before processing).
+const MAX_PENDING_FILES: usize = 256;
 /// Watch poll interval: task creations are rare; the MCP server's synchronous
 /// wait covers up to 5s, so 1s keeps the typical create inside one poll.
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -382,6 +385,12 @@ pub(crate) fn validate_product_rrule(rrule: &str) -> Result<String> {
         }
     }
     let parse_int = |key: &str, value: &str, minimum: u32, maximum: u32| -> Result<u32> {
+        // Round-27 minor 5: `u32::from_str` accepts a leading '+' — the
+        // server's isdigit check rejects it, and the module's own B9 rule
+        // is "reject exactly what the server rejects".
+        if !value.bytes().all(|b| b.is_ascii_digit()) {
+            bail!("invalid rrule: {key} must be an integer, got '{value}'");
+        }
         let Ok(number) = value.parse::<u32>() else {
             bail!("invalid rrule: {key} must be an integer, got '{value}'");
         };
@@ -474,6 +483,12 @@ pub(crate) fn validate_product_rrule(rrule: &str) -> Result<String> {
                 .parse()
                 .map_err(|_| anyhow::anyhow!("invalid rrule: ONCE AT minute"))?;
             use chrono::TimeZone;
+            // DST gap/ambiguous parity with the server is pinned on the
+            // PYTHON side (validate_rrule + the gap/ambiguous helper with
+            // its committed wall times); the watcher stays the runtime
+            // authority — `.single()` refusing both shapes here is the
+            // same decision, stated but not separately TZ-tested (a Rust
+            // TZ test would need the IANA db the platform may lack).
             let local = chrono::Local
                 .with_ymd_and_hms(year, month, day, hour, minute, 0)
                 .single()
@@ -1342,6 +1357,34 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
         .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "json"))
         .collect();
     files.sort();
+    // Round-27 minor 9: the messaging sibling caps pending files at 256 and
+    // quarantines the sorted-tail excess — without it, a flood of planted
+    // records becomes N real applies or N retained quarantines in one tick
+    // (the design doc §7 "task explosion" mitigations lean on this bound).
+    // Same ceiling and ordering: the first MAX drain in sorted order, the
+    // excess moves to failed/ (best-effort — a persisted rename failure
+    // leaves the file in place, still outside this pass's budget).
+    if files.len() > MAX_PENDING_FILES {
+        let _ = std::fs::create_dir_all(failed_dir());
+        for path in files.split_off(MAX_PENDING_FILES) {
+            let Some(name) = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            match std::fs::rename(&path, failed_dir().join(&name)) {
+                Ok(()) => log::warn!(
+                    "[scheduled-creation] quarantining {name}: pending-file ceiling {MAX_PENDING_FILES} exceeded"
+                ),
+                Err(error) => log::warn!(
+                    "[scheduled-creation] could not quarantine {name} (pending-file ceiling {MAX_PENDING_FILES} exceeded): {error}"
+                ),
+            }
+            retries.attempts.remove(&name);
+        }
+    }
     for path in files {
         let Some(name) = path
             .file_name()
@@ -1658,6 +1701,20 @@ mod tests {
         assert_eq!(
             spool_request_digest(&request),
             "ee13de67c7837ccbb71afbf4c376e6f58bf80509bf7e79744c60c9ed6cd639fe"
+        );
+        // Round-27 minor 1: the CREATE paused coercion is pinned — the
+        // server coerces None→false before digesting, and this vector (the
+        // same create with paused: None) must hash to the SAME hex. The
+        // two vectors above feed Some(...), so deleting the
+        // unwrap_or(false) arm kept the whole module green while a Rust
+        // regression would surface cross-language as payload_mismatch on
+        // keyed replays.
+        let mut omitted = request.clone();
+        omitted.paused = None;
+        assert_eq!(
+            spool_request_digest(&omitted),
+            "ee13de67c7837ccbb71afbf4c376e6f58bf80509bf7e79744c60c9ed6cd639fe",
+            "a create with paused omitted must digest as paused:false (the server's coercion)"
         );
         let mut update = request;
         update.kind = SpoolRequestKind::Update;

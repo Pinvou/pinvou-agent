@@ -1435,10 +1435,15 @@ impl VersionedJsonStore<ScheduledTaskModelBindingRegistry> {
 
     /// The raw `(model_id, model)` binding for a task, so a failed update can
     /// roll back to the previous pin (create's rollback discipline).
+    /// Round-27 minor 4: the same foreign-writer discipline as
+    /// `model_id_for` — a stale handle must not survive a concurrent
+    /// `pinvou` rebind, or a failed-update rollback would re-persist the
+    /// stale binding over the newer one.
     pub(crate) fn binding_for(
         &self,
         automation_id: &str,
     ) -> Option<(Option<String>, Option<String>)> {
+        self.reload_if_changed();
         self.registry
             .read()
             .tasks

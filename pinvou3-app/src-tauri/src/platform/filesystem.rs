@@ -457,12 +457,9 @@ pub(crate) fn open_private_append_file(path: &Path) -> io::Result<std::fs::File>
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     let file = options.open(path)?;
-    if !file.metadata()?.is_file() {
-        return Err(std::io::Error::other(format!(
-            "{} is not a regular file",
-            path.display()
-        )));
-    }
+    // Round-27 minor 8: same condition, one error kind — the shared gate's
+    // InvalidData, not this helper's former io::Error::other.
+    refuse_non_regular_file(&file, path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;

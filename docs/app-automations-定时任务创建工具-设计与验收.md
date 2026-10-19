@@ -215,6 +215,8 @@
 - 现有面板"对话创建"流程保留不动，两条通道汇合到同一个 `create_task` 领域函数。
 - 零 CodeWhale / fork 内容变更；本分支**不含** fork 登记册刷新与 gitlink 追平提交——gitlink 随基座 main 对齐（round-27 M2 改真），`docs/fork-modifications.md` 由各落地 PR 各自维护；本计划文档本身随本分支入库，作为后续实施的评审基线。
 - 领域层 `parse_rrule` 实际支持 CRON，工具层收紧为三种子集是有意的产品约束；若未来要放开，只改 server.py + watcher 的子集校验，领域无需动。
+- **运行结果不可观测（round-27 minor 12）**：`list`/`read` 只暴露 status/nextRunAt/lastRunAt——模型无法读取运行输出（session-reader 硬拒 `sched-` 目标，无旁路）；被替换的基础 `automation` 工具在此处更丰富（read 含运行记录）。单一用户语义下面子可接受，特此披露。
+- **特性开关文案先于设置页（round-27 minor 13）**：`scheduled-task-automation` 开关的三语文案已入库，但本 PR 未随附自动化设置页——开关目前经命令/配置可达（契约 §3.1 的"随特性落地接入各自设置页"以跟进 PR 履行）。
 - **I/O 原语硬化披露（round-24 minor 13）**：unix 写原语（`open_private_append_file`/`open_private_tmp_write_file`）带 `O_NOFOLLOW|O_NONBLOCK`——用户合法符号链接的诊断/审计日志路径现在**失败关闭**（有意的行为变化；round-17 前符号链接会被跟随）；tmp 写原语对遗留的已存在 tmp 文件不重紧缩权限（载荷无敏感内容，落在同一私有目录）；Windows 写原语无 std 级 reparse-point 拒绝（同用户 spool/state 树的已记录残余）。
 
 
