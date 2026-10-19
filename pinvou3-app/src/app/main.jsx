@@ -4119,7 +4119,12 @@ const NAV_PREFETCH = {
                 <LazyUpdateNoticeButton
                   bs={bs}
                   t={t}
+                  // 68 = the collapsed rail's w-[68px] (kept literal here; Tailwind
+                  // needs the class spelled out at the rail below).
                   sidebarOffset={isCompactShell ? 0 : (isSidebarOpen ? sidebarWidth : 68)}
+                  bottomInset={isCompactShell ? 56 : 0}
+                  hidden={isCompactShell && isSidebarOpen}
+                  measureKey={currentView}
                   onShowChangelog={() => {
                     // Same settings entry path as the sidebar gear (openSettingsSection records the
                     // return view and lets navigateFromScheduledRun own the view transition).
