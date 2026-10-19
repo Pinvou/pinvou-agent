@@ -10394,7 +10394,10 @@ mod tests {
             providers.tachyon.reasoning_stream_style.as_deref(),
             Some(SEPARATE_REASONING_FIELD)
         );
-        assert_eq!(providers.tachyon.base_url.as_deref(), Some("http://127.0.0.1:8000/v1"));
+        assert_eq!(
+            providers.tachyon.base_url.as_deref(),
+            Some("http://127.0.0.1:8000/v1")
+        );
     }
 
     /// LocalVllm 预设条目实际指向 Tachyon 服务器（本地检测流程历史存量与手填
