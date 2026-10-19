@@ -2330,16 +2330,16 @@ mod tests {
         );
         // Round-27 minor 1: the CREATE paused coercion is pinned — the
         // server coerces None→false before digesting, and this vector (the
-        // same create with paused: None) must hash to the SAME hex. The
-        // two vectors above feed Some(...), so deleting the
-        // unwrap_or(false) arm kept the whole module green while a Rust
-        // regression would surface cross-language as payload_mismatch on
-        // keyed replays.
+        // same create with paused: None) must hash to the SAME hex as the
+        // Some(false) vector above. The other vectors feed Some(...) or a
+        // non-create kind, so deleting the unwrap_or(false) arm kept the
+        // whole module green while a Rust regression would surface
+        // cross-language as payload_mismatch on keyed replays.
         let mut omitted = request.clone();
         omitted.paused = None;
         assert_eq!(
             spool_request_digest(&omitted),
-            "ee13de67c7837ccbb71afbf4c376e6f58bf80509bf7e79744c60c9ed6cd639fe",
+            "e3ee5656710820acad7daa187ed50fe7a2295020d3d66f5bd37fc7afea42f755",
             "a create with paused omitted must digest as paused:false (the server's coercion)"
         );
         let mut update = request;
