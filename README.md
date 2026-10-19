@@ -72,6 +72,7 @@ Use **Codex, Claude Code, or Kimi** through [ACP](docs/multi-agent-acp.md) in th
 
 ### 🖥️ Built for daily operation
 
+- **Global bring-to-front shortcut** (off by default, `Ctrl/Cmd+Alt+P`) — enable it in Settings → General to summon the window with a key while it runs in the background
 - **Local voice input** with on-demand speech model downloads
 - **Centralized monitoring** of GPU, memory, disk, model service, and context usage
 - **Updates via GitHub Releases** — in-app update checks are not enabled yet

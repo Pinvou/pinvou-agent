@@ -222,6 +222,10 @@ function pinvouSharedtauriMain() {
       codexAcpSupported: false,
       browserNativeDisplay: false,
       localEmbedSupported: false,
+      // Global wake-up shortcut (set_global_shortcut_config); false on Wayland
+      // Linux. Fail-closed so the settings toggle stays disabled until
+      // load_platform_capabilities corrects the slice.
+      globalShortcutsAvailable: false,
     },
     settings: null,
     selectedPet: "lingling",
@@ -2219,6 +2223,9 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const getImageInputCapability = settingsFeature.getImageInputCapability;
   const testImageInputCapability = settingsFeature.testImageInputCapability;
   const probeLocalServerKind = settingsFeature.probeLocalServerKind;
+  // Dedicated global-shortcut command (update_settings is never used);
+  // Rust exclusively owns persistence and registration.
+  const setGlobalShortcutConfig = settingsFeature.setGlobalShortcutConfig;
   // Builtin feature switches (contract hook point): desktop Rust command
   // channel only — the web lane has no such backend.
   const listBuiltinFeatures = settingsFeature.listBuiltinFeatures;
@@ -2628,6 +2635,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       saveSettings,
       saveSearchSettings,
       saveSearchSettingsAndRestart,
+      setGlobalShortcutConfig,
       listBuiltinFeatures,
       setBuiltinFeatureEnabled,
     },

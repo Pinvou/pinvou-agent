@@ -3315,6 +3315,11 @@ fn settings_transaction_commands_join_off_the_runtime() {
             "voice.rs",
         ),
         (
+            include_str!("global_shortcut.rs"),
+            "join_blocking(\"set_global_shortcut_config\"",
+            "global_shortcut.rs",
+        ),
+        (
             include_str!("computer_use.rs"),
             "join_blocking(\"computer_use_set_enabled\"",
             "computer_use.rs",
@@ -3343,5 +3348,100 @@ fn settings_transaction_commands_join_off_the_runtime() {
     assert!(
         spawn_at < txn_at,
         "set_pet_enabled must run the settings transaction inside its blocking worker"
+    );
+}
+
+/// The set_global_shortcut_config committed-persist arm must compose the
+/// wire result from the PERSISTED prefs, not the apply outcome (review
+/// round 3, both lanes): a disabled save's outcome carries no accelerator,
+/// and a `from_outcome` there would strand the just-saved combo — both UI
+/// mirrors skip a null response, so the next toggle re-submits the stale
+/// combo over this save. The composition helper has its own unit test in
+/// the command file; this pins the WIRING, from a file that cannot match
+/// its own needle. Comment lines are stripped and the scan stops at the
+/// test module, so prose or #[cfg(test)] code cannot satisfy it (same
+/// rules as settings_transaction_commands_join_off_the_runtime).
+#[test]
+fn global_shortcut_persist_arm_reports_the_persisted_accelerator() {
+    fn code(source: &str) -> String {
+        source
+            .lines()
+            .take_while(|line| !line.trim_start().starts_with("mod tests"))
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    let source = code(include_str!("global_shortcut.rs"));
+    assert!(
+        source.contains(
+            "Ok(persisted) => Ok(GlobalShortcutApplyResult::persisted(outcome, persisted)),"
+        ),
+        "the committed-persist arm must report the persisted prefs' accelerator"
+    );
+}
+
+/// The persist gate IS the contract (review round 5): Invalid and Conflict
+/// must return BEFORE the settings transaction — a conflict outcome that
+/// reaches the transaction would persist enabled=true plus the accelerator
+/// while nothing is registered, exactly the "prefs must describe the still-
+/// active state" violation the predicate's unit test documents. That unit
+/// test cannot see the gate, so this pins the wiring: gate → early return →
+/// transaction, comment-stripped, from a file that cannot match its own
+/// needle.
+#[test]
+fn global_shortcut_persist_gate_precedes_the_transaction() {
+    fn code(source: &str) -> String {
+        source
+            .lines()
+            .take_while(|line| !line.trim_start().starts_with("mod tests"))
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    let source = code(include_str!("global_shortcut.rs"));
+    let gate = source
+        .find("if !should_persist(outcome.status) {")
+        .expect("the persist gate must decide before the transaction");
+    let early_return = source
+        .find("return Ok(GlobalShortcutApplyResult::from_outcome(outcome));")
+        .expect("non-persisting outcomes must return before the transaction");
+    let persist = source
+        .find("UserPrefs::update_transaction")
+        .expect("the command must run the settings transaction");
+    assert!(
+        gate < early_return && early_return < persist,
+        "the gate's early return must precede the settings transaction"
+    );
+}
+
+/// The persist path must store the CANONICAL accelerator (the raw input may
+/// be an alias spelling or friendly case), and a disable with unparsable
+/// input must fail validation only when ENABLING — the enable-side early
+/// invalid is what keeps the lazy parse from rejecting a legitimate disable
+/// (review round 5). Both live in the command file; pinned from here so the
+/// needles cannot match their own asserts.
+#[test]
+fn global_shortcut_persist_writes_and_lazy_parse_stay_pinned() {
+    fn code(source: &str) -> String {
+        source
+            .lines()
+            .take_while(|line| !line.trim_start().starts_with("mod tests"))
+            .map(|line| line.split("//").next().unwrap_or(""))
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+    let source = code(include_str!("global_shortcut.rs"));
+    assert!(
+        source.contains("prefs.global_shortcut_accelerator = canonical.clone();"),
+        "the transaction must persist the canonical accelerator, not the raw input"
+    );
+    assert!(
+        source.contains(
+            "Err(message) if enabled => return Ok(GlobalShortcutApplyResult::invalid(message))"
+        ),
+        "an unparsable accelerator must fail the request only when enabling"
     );
 }
