@@ -19,7 +19,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T06 | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
 | T07 | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop and actual Root retention; complete issuance and emergency deny composition remain pending |
 | T08 | In progress | Reviewed genesis catalog/component management and protected atomic publication primitives; complete business publication workflows remain pending |
-| T09 | In progress | Bounded package/native-byte inspection, immutable storage, authenticated upload/recovery and current read-only complete ZIP inspection/UI; formal validation, admission, quarantine and platform qualification remain pending |
+| T09 | In progress | Bounded package/native-byte inspection, immutable storage, authenticated upload/recovery, ZIP inspection/UI and current-trust Package/evidence CLI; formal validation, admission, quarantine and platform qualification remain pending |
 | T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
 | T11 | In progress | Protected multi-platform drafts and reviewed content freezing with actual UI/API/history/recovery; package qualification and Release/Target lifecycle approval remain pending. |
 | T12 | In progress | Original stable-facts identity, exact profile matching and immutable forward-policy intersection; protected Registry/version/approval and production qualification remain pending |
@@ -12925,3 +12925,43 @@ T09 read-only complete ZIP structure inspection (2026-10-19):
   Totals stay 5 implemented / 14 in progress / 28 incomplete or deferred of 47.
   Documents 1.0, product 0.10.12 and CodeWhale stay unchanged. Deployment is
   deferred; downloads have no hard total/cumulative elapsed or retry cap.
+
+T09 current package and paired evidence operator workflow (2026-10-19):
+
+- Service commit `2748ef3` adds the independent inspect-package command over
+  exact previously stored bytes and an explicit expected product/component/target/
+  version. Actual protected published Root/history, complete deny, native runtime
+  source guards and SQL time are read in two short SERIALIZABLE transactions.
+  Complete capture/ZIP/Manifest/evidence computation holds no SQL transaction.
+- The opaque owned observer checks current threshold signatures, scope/version,
+  independent FullPack/native-claim/evidence identities, supported CycloneDX 1.6,
+  primary installer SHA declaration and strict JSONL syntax. Final exact references
+  and nonregressing SQL time are required; it rechecks the same Manifest against
+  the final full view rather than treating equal references as time authority.
+  Failures expose no partial report or reusable success capability.
+- Output is bounded observation metadata, with no raw Manifest, evidence contents
+  or inventory. It performs no initialization, provider RPC, T06 allocation or
+  business write. Explicit parser/evidence/capture capacities share no HTTP enable
+  flag, inventory/file-size policy or hard total/cumulative duration/retry limit.
+- Two scoped independent static reviews pass. They found a test-only stale DSN:
+  the copied pgx configuration retained its original connection string. The new
+  child fixture now rebuilds the actual isolated runtime fields privately and
+  verifies parsing preserves them. The initial failed acceptance is retained and
+  not counted; the repaired actual PostgreSQL/independent-process suite passes.
+- Final frozen real acceptance passes two top-level and six nested tests with
+  zero failures/skips, including the existing storage command, original repeated
+  bytes, wrong version, current package deny, actual deny-reference change during
+  physical capture, exact restoration and unchanged protected business counts.
+  The fixture uses actual protected Root publication; its native byte contents
+  remain fixtures, not publisher or platform certification.
+- Final defaults pass 816 top-level/1,804 nested tests; 706 top-level/665 nested
+  tests explicitly skip unavailable opt-in/fixture environments, with zero failures.
+  Modules, vet, server/CLI builds, pinned contracts, three CLI cross-builds,
+  formatting and whitespace pass. All 97 prior SQL files and frozen source/index/
+  status remain unchanged. Cross-compilation does not certify native execution.
+- T09 and totals remain unchanged: 5 implemented / 14 in progress / 28 incomplete
+  or deferred of 47. The HTTP/user/receipt composition, formal validation jobs,
+  native publisher/provenance semantics/scans/T46, admission/quarantine and storage
+  replication remain pending. The expected version is an operator input, not proof
+  of an approved Release. Documents 1.0, product 0.10.12 and CodeWhale stay unchanged;
+  deployment remains deferred and downloads retain no hard duration or retry cap.
