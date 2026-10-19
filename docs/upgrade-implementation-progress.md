@@ -19,7 +19,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T06 | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
 | T07 | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop and actual Root retention; complete issuance and emergency deny composition remain pending |
 | T08 | In progress | Reviewed genesis catalog/component management and protected atomic publication primitives; complete business publication workflows remain pending |
-| T09 | In progress | Bounded package/native-byte inspection; complete upload, quarantine and platform qualification remain pending |
+| T09 | In progress | Bounded package/native-byte inspection and immutable local storage; complete upload, quarantine and platform qualification remain pending |
 | T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
 | T11 | In progress | Protected multi-platform drafts and reviewed content freezing with actual UI/API/history/recovery; package qualification and Release/Target lifecycle approval remain pending. |
 | T12 | In progress | Original stable-facts identity, exact profile matching and immutable forward-policy intersection; protected Registry/version/approval and production qualification remain pending |
@@ -12779,3 +12779,52 @@ T07 reviewed online signer controls (2026-10-19):
   realm, HA, physical-client qualification or deployment is certified. Documents
   1.0, product 0.10.12 and CodeWhale are unchanged. Downloads have no hard total/
   cumulative duration or retry cap; 32 MiB bounds only joined atomic inventory.
+
+T09 immutable local byte storage (2026-10-19):
+
+- Service commit `c9040b8` adds an immutable blob port, actual local-filesystem
+  adapter and explicit standalone `upgrade-artifacts` initialize/store/verify
+  workflow. The absolute container must already exist. Initialization creates a
+  fixed private child; runtime never initializes or normalizes permissions.
+- Put consumes owned captured bytes, checks full size/hash, flushes file data,
+  atomically creates the digest address without replacement and flushes directory
+  publication/owned staging cleanup. Existing addresses are verified and their
+  actual file data and directory are synchronized. Corrupt addresses are refused,
+  never overwritten. Original-identity retry recovers an uncertain publication.
+- Actual directory and file descriptors independently authenticate private
+  ownership/permissions. Windows uses protected directory ACL creation, actual
+  local NTFS/ReFS volume checks and same-object writable flush handles. Linux
+  uses owner/private mode checks and file/directory fsync. Other OS storage is
+  explicitly unsupported. Operators supply local Linux storage; the adapter does
+  not attest remote-mount locality or certify physical durability.
+- The read port exposes neither a path nor writing/deletion capability and stays
+  usable after Store.Close. A returned reader cannot expose a later privileged
+  file tail beyond its exact original identity. Memory capture and per-blob byte
+  capacities are explicit and separate; actual 33 MiB storage passes without
+  inheriting the 32 MiB atomic metadata inventory bound. No download duration or
+  cumulative retry cap is introduced.
+- Independent core and CLI/test reviews passed after primary repairs: authenticate
+  each blob's own permissions, sync existing file data before durable Put success,
+  and inspect the post-kill original object before retry could recreate it.
+  Competing EEXIST publication shares final staging-cleanup/directory barriers.
+- Final actual Windows acceptance passes 18 top-level and two nested cases with
+  zero failures. Three top-level and one nested tests explicitly skip only the
+  child fixture's direct invocation and unavailable source symlink/mapped-remote
+  fixtures. Mandatory storage/CLI paths pass, including eight competing writers,
+  directory/file ACL drift without repair, original-address corruption refusal,
+  post-Link sync uncertainty, independent command restart/replay and short/lost
+  command output. Owned processes are killed after actual Link and after complete
+  Put before receipt; fresh owners first read the original bytes, then retry.
+  All child processes are joined. This is process-death evidence, not power loss.
+- Final default checks pass 793 top-level/1,783 nested tests with 694 top-level/665
+  nested explicit opt-in/fixture skips and zero failures. Modules, vet, server and
+  artifact-command builds, pinned contracts, affected formatting and whitespace
+  pass. Linux x86_64/arm64 and macOS arm64 cross-compilation passes for affected
+  packages; compilation is not native OS execution or certification. All 93
+  existing SQL files are unchanged; no database/provider fixture is used here.
+- T09 remains in progress. Stored bytes confer no Artifact validity, native or
+  channel qualification, local-mode certification or publication right. Actual
+  upload/admission/quarantine, protected published-reference retention, orphan
+  collection, S3 durability proof and physical certification remain pending.
+  Totals remain 5 implemented / 14 in progress / 28 incomplete or deferred of 47.
+  Documents 1.0, product 0.10.12 and CodeWhale are unchanged; deployment is deferred.
