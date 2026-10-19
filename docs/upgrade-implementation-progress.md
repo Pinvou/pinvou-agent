@@ -13270,3 +13270,26 @@ T04 offline package tools and T07 Root catalog integrated delivery (2026-10-19):
   16 in progress / 26 incomplete or deferred of 47. Documents stay 1.0, product
   stays 0.10.12 and CodeWhale is unchanged. Deployment stays deferred. Downloads
   have no hard total/cumulative deadline; 32 MiB remains atomic metadata only.
+
+T07 pending-native-hash product-scope isolation (2026-10-19):
+
+- Service commit `f683ceb0` adds two actual browser controls for the Root
+  directory and original document. Each completes the native WebCrypto digest
+  while the application still awaits it, switches product A to B and back to A,
+  then releases the original result. No response or digest is fabricated.
+- The directory control waits for the final actual anchor hash; the document
+  control waits for its envelope hash. After promise/render completion, the new
+  scope has no stale rows, document or alert. Fresh actual server reads still
+  return the original reviewed Root and envelope. This closes the earlier
+  static-only boundary for these two controlled cases, not all async failures.
+- Both scoped independent line-by-line static reviews pass. Frozen actual
+  PostgreSQL/HTTPS/OIDC/Chrome acceptance passes its one parent workflow with
+  both controls and zero skips/failures. Default regression again passes
+  854 top-level/1891 nested cases, with 731 top-level/669 nested explicit skips.
+- All nine final gates pass, including strict new-helper type checking, modules,
+  vet, server build, pinned contracts and whitespace. The final committed tree
+  matches the verified candidate; production source, frozen test source/index/
+  status and all 103 prior SQL files are unchanged during validation.
+- Only two test files change. T07 stays in progress; totals remain 5 implemented /
+  16 in progress / 26 incomplete or deferred. Deployment, native certification,
+  document/product versions and the no-total-download-deadline rule are unchanged.
