@@ -698,9 +698,11 @@ mod tests {
     /// platform/capabilities.rs 的 `local_embed_supported` 按架构边界
     /// （platform/ 是跨 feature 的 OS 原语层，不依赖 pinvou-knowledge 领域
     /// crate）手抄了与 `local_embed_available()` 同形的 cfg 门。本测试在宿主
-    /// 上钉住两侧一致：任一侧 cfg 漂移（例如新增排除目标只改了一处）此处
-    /// 红灯。门在 local-embed feature 下：feature-off 构建里知识 crate 谓词
-    /// 额外含 feature 维度，两者本就不同义（该构建配置不出货）。
+    /// 上钉住两侧一致：任一侧在宿主可见方向上的 cfg 漂移（任一侧变 false）
+    /// 此处红灯。覆盖不到的方向：两侧在非宿主目标上的不一致（loong64 check
+    /// 腿只编译不跑测试），例如新增排除目标只改了一处——这由读码约定 +
+    /// 两侧注释互指兜底。门在 local-embed feature 下：feature-off 构建里
+    /// 知识 crate 谓词额外含 feature 维度，两者本就不同义（该构建配置不出货）。
     #[cfg(feature = "local-embed")]
     #[test]
     fn capability_bit_matches_knowledge_crate_predicate() {
