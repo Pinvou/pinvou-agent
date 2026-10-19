@@ -2188,7 +2188,8 @@ impl EnginePool {
         // thinking control follows the detected foundation wire protocol; a
         // LocalVllm preset resolves provider from the preset arm instead, so
         // for those routes the kind feeds only the native served-window
-        // follow-up below. LocalVllm presets must probe too: discovery saves
+        // follow-up below — except Tachyon, which additionally flips the wire
+        // dialect (see below). LocalVllm presets must probe too: discovery saves
         // Ollama/LM Studio endpoints under that preset, and `/v1/models`
         // there never carries a window fact — without the kind probe the
         // native fetch below can never fire and the route keeps the 128K

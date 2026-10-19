@@ -1562,16 +1562,20 @@ impl Pinvou3Bridge {
             }
         }
         if let Some(m) = self.effective_model() {
-            // Local vLLM needs no auth: when the user leaves the key empty,
-            // fall back to local-no-auth (the base requires a non-empty value).
-            let local_endpoint = m.preset == ModelPreset::LocalVllm && self.provider() == "vllm";
+            // Local vLLM/Tachyon needs no auth: when the user leaves the key
+            // empty, fall back to local-no-auth (the base requires a non-empty
+            // value). Tachyon rides the same placeholder — the probe can flip
+            // a LocalVllm entry to the tachyon dialect, and both dialects
+            // tolerate an empty key the same way.
+            let local_endpoint = m.preset == ModelPreset::LocalVllm
+                && matches!(self.provider().as_str(), "vllm" | "tachyon");
             return Self::credential_for_model(m, local_endpoint, "model");
         }
         match (
             self.prefs.advanced.model_preset.unwrap_or_default(),
             self.provider().as_str(),
         ) {
-            (ModelPreset::LocalVllm, "vllm") => LOCAL_VLLM_API_KEY.into(),
+            (ModelPreset::LocalVllm, "vllm" | "tachyon") => LOCAL_VLLM_API_KEY.into(),
             _ => String::new(),
         }
     }

@@ -1077,8 +1077,8 @@ struct ProbeCandidateHits {
     koboldcpp: bool,
     llamacpp: bool,
     sglang: bool,
-    /// `/v1/models` response body (one fetch shared by the LMDeploy and vLLM
-    /// owned_by decisions).
+    /// `/v1/models` response body (one fetch shared by the LMDeploy, Tachyon
+    /// and vLLM owned_by decisions).
     v1_models: Option<serde_json::Value>,
 }
 
@@ -1156,8 +1156,8 @@ fn select_local_server_kind(hits: ProbeCandidateHits) -> LocalServerKind {
 /// hung endpoint costs ~3s at worst instead of accumulating serially;
 /// `fetch_v1_models`'s 404/405 root fallback adds at most one more request
 /// window — a hung primary times out once and is not retried);
-/// `/v1/models` is fetched only once, shared by the LMDeploy and vLLM
-/// `owned_by` decisions. Once all complete, the result is picked by
+/// `/v1/models` is fetched only once, shared by the LMDeploy, Tachyon and
+/// vLLM `owned_by` decisions. Once all complete, the result is picked by
 /// signature-exclusivity priority.
 /// See [`apply_bearer`] for `bearer` semantics.
 async fn probe_local_server_kind_uncached(base_url: &str, bearer: Option<&str>) -> LocalServerKind {
@@ -1436,8 +1436,9 @@ async fn probe_docker_model_runner(base_url: &str, bearer: Option<&str>) -> bool
 }
 
 /// Whether any model's `owned_by` in the `/v1/models` response body equals
-/// the expected value (case-insensitive). Lets vLLM (`"vllm"`) and LMDeploy
-/// (`"lmdeploy"`) identification share the same fetch result.
+/// the expected value (case-insensitive). Lets vLLM (`"vllm"`), LMDeploy
+/// (`"lmdeploy"`) and Tachyon (`"tachyon"`) identification share the same
+/// fetch result.
 fn v1_models_owned_by_matches(v: &serde_json::Value, expected: &str) -> bool {
     v.get("data")
         .and_then(Value::as_array)
