@@ -12,9 +12,10 @@ import { MessageSquare } from '../../components/icons.jsx';
  *
  * Lives in its own module and is lazy-loaded by ChatView through
  * CHAT_PANEL_LOADERS: the static copy pushed the web main entry past the
- * 500 kB startup budget (round-18 CI), and the entry-budget policy requires
- * new entry work to be split or lazy-loaded. ChatView prefetches the chunk
- * on mount, so the split costs no perceptible latency.
+ * then-500 kB budget (the enforced gate is MAIN_ENTRY_BUDGET_BYTES, now
+ * 502 kB — see vite.config.mjs; round-18 CI), and the entry-budget policy
+ * requires new entry work to be split or lazy-loaded. ChatView prefetches
+ * the chunk on mount, so the split costs no perceptible latency.
  */
 export function SessionMessageCard({ sender, knownSessionIds, onOpenSession, copy }) {
   // Round-8 M4: the {sessionId:null, title:null} shape is REAL production

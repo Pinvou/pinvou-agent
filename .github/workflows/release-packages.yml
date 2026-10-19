@@ -407,7 +407,192 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-  # ── Job 4: Windows x86_64 nsis(仅受保护的 main 上下文) ─────────────
+  # ── Job 4: Linux loongarch64 deb(x86_64 runner 全程交叉,GitHub 无 loong64 runner) ──
+  build-linux-loongarch64:
+    name: 构建 Linux loongarch64 deb
+    needs: check-version-bump
+    if: needs.check-version-bump.outputs.build_required == 'true'
+    # GitHub 托管 runner 没有 loong64,job 跑在 x86_64 ubuntu-22.04 上,由
+    # scripts/ci-build-linux-loongarch64.sh 全程交叉:sha256 钉死的
+    # loong64/cross-tools 20260912(stable, gcc 14.4/glibc 2.38;只有 bfd,
+    # 没有 lld)+ deepin beige (glibc 2.38) sysroot。目标基线 = deepin
+    # 23/25 + UOS V25 的 glibc 2.38,由工具链/sysroot 决定而非 runner 发行版
+    # (与 x64/arm64 的"链接构建机 glibc"模型不同,详见 floor 守护注释)。
+    # 交叉构建显著慢于原生 arm64(90min),timeout 按 ~1.5x 放大。
+    runs-on: ubuntu-22.04
+    timeout-minutes: 135
+    env:
+      VERSION: ${{ needs.check-version-bump.outputs.version }}
+      # 与 x64/arm64 同源风险:release(thin-LTO O3) 编译 codewhale-tui 的
+      # rustc/LLVM 栈溢出(SIGBUS)。交叉构建的 rustc 仍是 x86_64 宿主进程,
+      # 同一 sh 版 wrapper 原样生效;编排脚本原样继承本 job 的环境。
+      RUSTC_WRAPPER: ${{ github.workspace }}/pinvou3-app/src-tauri/scripts/rustc-stack-wrapper
+      # 交叉工具链与 sysroot 放在 cargo target 目录之外(target 归 cargo 域,
+      # 钉死版本的工具链树走下面的独立 actions/cache 键)。语义注意:
+      # ci-loongarch64-toolchain.sh 的 --prefix 是"接收目录"(树落在
+      # <prefix>/<triple>),而本变量与 ci-loongarch64-sysroot.sh /
+      # ci-build-linux-loongarch64.sh 约定的是"工具链根"(含 bin/)。
+      # 缓存路径/键与 pr-check.yml 的 rust-loongarch64-check leg 逐字一致。
+      PINVOU_LOONG64_CACHE_ROOT: ${{ github.workspace }}/.pinvou-loong64-cache
+      PINVOU_LOONG64_TOOLCHAIN_PREFIX: ${{ github.workspace }}/.pinvou-loong64-cache/cross-tools/loongarch64-unknown-linux-gnu
+      PINVOU_LOONG64_SYSROOT: ${{ github.workspace }}/.pinvou-loong64-cache/sysroot
+      # Rust 旗标由编排脚本按 target 作用域导出(CARGO_TARGET_*_RUSTFLAGS:
+      # remap + -C link-arg=--sysroot,都只属于目标单元)。此处刻意不设
+      # RUSTFLAGS:cargo 的优先级是已设 RUSTFLAGS 完全压过 target 专属变量,
+      # 目标单元会静默丢掉 sysroot 链接旗标——仅此一条就足以致命(--target
+      # 交叉构建下宿主 build-script 单元本就收不到任何 rustflags)。
+      # arm64 的 -fuse-ld=lld / --icf=safe 同样不复制:钉死的交叉工具链
+      # 只有 bfd;LTO 也不覆盖(thin LTO 在 rustc 进程内执行,与链接器无关)。
+    steps:
+      - name: Checkout (含 submodule)
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set up zram and swap
+        # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
+        run: timeout --kill-after=15 240 sudo --preserve-env=GITHUB_ACTIONS,PINVOU3_CI_DISABLE_ZRAM bash "${{ github.workspace }}/scripts/ci-memory-setup.sh" || echo "::warning::ci-memory-setup did not finish; continuing with stock runner memory"
+
+      # 同 build-linux-x64:x86_64 镜像只有 ~13-14G 空闲,交叉构建的工具链 +
+      # sysroot + 两个 cargo target 目录全部落在工作区内,先腾空间。
+      - name: Prepare disk space for the release build
+        run: |
+          sudo env GITHUB_WORKSPACE="$GITHUB_WORKSPACE" \
+            RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            python3 scripts/ci-rust-disk.py --aggressive --min-free-gib 24
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add the loongarch64 Rust target
+        # 编排脚本内部会再跑一次(幂等);显式一步让 target 缺失在该步骤
+        # 即红,而不是埋在十几分钟后的编排脚本里。
+        run: rustup target add loongarch64-unknown-linux-gnu
+
+      # 工具链/sysroot 缓存:restore-only。发布 job 永不写缓存(同
+      # x64/arm64 rust-cache 的 save-if: false 配额策略);写入方是
+      # pr-check.yml 的 rust-loongarch64-check leg(main push 保存,同
+      # "main 写、其余读"约定)。发布按冷构建规划,命中只是加速;键把
+      # setup 脚本内容 hash 进去,脚本(钉的 sha256/包清单)一变即换代,
+      # 旧代由 scripts/cache-janitor.sh 规则 E 去重。
+      - name: Restore loong64 cross toolchain cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.PINVOU_LOONG64_CACHE_ROOT }}/cross-tools
+          key: release-linux-loong64-jammy-toolchain-${{ hashFiles('scripts/ci-loongarch64-toolchain.sh') }}
+          restore-keys: |
+            release-linux-loong64-jammy-toolchain-
+
+      - name: Restore loong64 sysroot cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.PINVOU_LOONG64_CACHE_ROOT }}/sysroot
+          key: release-linux-loong64-jammy-sysroot-${{ hashFiles('scripts/ci-loongarch64-sysroot.sh') }}
+          restore-keys: |
+            release-linux-loong64-jammy-sysroot-
+
+      # 宿主只需要构建脚本工具(cc/cmake/pkg-config):目标侧的
+      # webkit/gtk/soup/openssl/pipewire 头与库全部来自 glibc 2.38 sysroot,
+      # 由 ci-loongarch64-sysroot.sh 对逐个 .pc 模块校验。lld 不装(工具链
+      # 只有 bfd);pipewire 不需要宿主 1.0.7 前缀(beige 已带 libpipewire
+      # 1.2.5,sysroot 头部齐全,见 ci-libpipewire-build.sh 的适用范围)。
+      # libclang: libspa/pipewire 的 bindgen 构建脚本在交叉构建时会给
+      # libclang 传 --target=loongarch64-...,而 LoongArch 要 LLVM >= 16
+      # 才是主 target(jammy 档案里的 libclang 14/15 没有该 target,bindgen
+      # 直接 panic "unknown target triple")。因此钉 apt.llvm.org 的
+      # llvm-toolchain-jammy-18 套件装 libclang-18-dev,并用 LIBCLANG_PATH
+      # 短路 clang-sys 的多目录探测;目标头文件由 BINDGEN_EXTRA_CLANG_ARGS
+      # (编排脚本导出)指向 deepin sysroot。此 run 块与 pr-check.yml 的
+      # rust-loongarch64-check leg 在注释剥离后逐字一致
+      # (test_release_loongarch64_policy 按剥注释文本钉等价)。
+      - name: 装 Tauri + pinvou3 Linux 系统依赖 (host 侧)
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /etc/apt/keyrings
+          curl --proto '=https' --tlsv1.2 --location --silent --show-error --fail \
+            --retry 3 --retry-delay 2 https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo gpg --dearmor --yes -o /etc/apt/keyrings/pinvou-llvm.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/pinvou-llvm.gpg] https://apt.llvm.org/jammy/ llvm-toolchain-jammy-18 main" \
+            | sudo tee /etc/apt/sources.list.d/pinvou-llvm-18.list > /dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config cmake libclang-18-dev file
+          # Reduce footprint at the source: orphan dependencies, apt cache packages, and index lists do not stay on the build disk.
+          sudo apt-get autoremove -y --purge
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          # clang-sys probes several default locations; pin the discovery to
+          # the LoongArch-capable libclang this step just installed.
+          echo "LIBCLANG_PATH=/usr/lib/llvm-18/lib" >> "$GITHUB_ENV"
+
+      # 两步均幂等:restore 命中时脚本自检(marker 含 tag/variant/host/sha;
+      # manifest 含 glibc-floor/包清单)直接复用,未命中时下载 + sha256 校验
+      # (工具链)或 deepin beige 索引解析 + 逐包 sha256(sysroot)。sysroot
+      # 的 docker 方法需要 loong64 binfmt(本 job 未注册),脚本 auto 探测
+      # 失败后自动回退 deepin 索引直连方法。dpkg arch: loong64。
+      - name: Set up the pinned loong64 cross toolchain (sha256-pinned asset)
+        run: bash scripts/ci-loongarch64-toolchain.sh --prefix "$PINVOU_LOONG64_CACHE_ROOT/cross-tools"
+
+      - name: Set up the deepin glibc-2.38 loong64 sysroot
+        run: bash scripts/ci-loongarch64-sysroot.sh --output "$PINVOU_LOONG64_SYSROOT" --toolchain-prefix "$PINVOU_LOONG64_TOOLCHAIN_PREFIX"
+
+      - name: Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          # No npm cache — same policy and rationale as the first
+          # setup-node above (dropping it stops the per-release main-scope
+          # re-mint; the lost warmth is seconds of npm ci), pinned by
+          # test_release_cache_policy.
+
+      - name: 安装前端依赖
+        working-directory: pinvou3-app
+        run: npm ci --prefer-offline --no-audit
+
+      # 全流程编排(scripts/ci-build-linux-loongarch64.sh,每步失败即停):
+      # knowledge server 交叉 cargo build → SenseVoice 引擎交叉 cmake →
+      # build.js build --target loongarch64-unknown-linux-gnu(--bundles none:
+      # tauri-bundler 无 LoongArch 分支会 panic,build.js 把该请求翻译成
+      # CLI 的 --no-bundle;deb 由 package-deb-loongarch64.sh 手工组装)→
+      # repack xz -9 → glibc 2.38 下限守护(内部对解包树逐 ELF 跑
+      # check-linux-elf-policy.sh)。工具链/sysroot 已在 job env 导出,
+      # 编排脚本检测到后跳过内部安装。
+      - name: Cross build + package the loong64 deb
+        run: bash scripts/ci-build-linux-loongarch64.sh
+
+      # 编排脚本产出 pinvou3_<version>_loong64.deb,重命名为统一全平台命名
+      # pinvou-agent_<version>-linux-loong64.deb(与制品 zip 名对齐)。repack
+      # (xz -9)已在编排脚本内完成,重命名后的 sha256 覆盖最终字节。
+      - name: 校验产物 + 统一命名 + sha256
+        working-directory: pinvou3-app/src-tauri/target/release/bundle/deb
+        run: |
+          set -euo pipefail
+          SRC="pinvou3_${VERSION}_loong64.deb"
+          DEB="pinvou-agent_${VERSION}-linux-loong64.deb"
+          test -f "$SRC" || { echo "❌ deb 产物不存在: $SRC"; ls -la; exit 1; }
+          mv "$SRC" "$DEB"
+          SHA=$(sha256sum "$DEB" | awk '{print $1}')
+          echo "deb sha256: $SHA"
+          echo "$SHA  $DEB" > "$DEB.sha256"
+          ls -lh "$DEB"
+
+      # glibc 下限守护(同 build-linux-x64/arm64 的 重命名→守护→上传 序列;
+      # 断言全部 ELF 的 GLIBC_ 符号 ≤ 2.38 = deepin 23/25 + UOS V25 基线,
+      # 架构参数 loongarch64 同时校验包内没有异架构 ELF)。编排脚本在重命名
+      # 前对同一字节跑过一次;此处对最终命名产物再跑,失败即阻断发布。
+      - name: glibc 下限守护 (deepin 23/25 + UOS V25 = glibc 2.38)
+        run: ./scripts/check-linux-glibc-floor.sh "pinvou3-app/src-tauri/target/release/bundle/deb/pinvou-agent_${VERSION}-linux-loong64.deb" loongarch64
+
+      - name: 上传 deb artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: pinvou-agent-${{ needs.check-version-bump.outputs.version }}-linux-loong64
+          path: |
+            pinvou3-app/src-tauri/target/release/bundle/deb/pinvou-agent_${{ needs.check-version-bump.outputs.version }}-linux-loong64.deb
+            pinvou3-app/src-tauri/target/release/bundle/deb/pinvou-agent_${{ needs.check-version-bump.outputs.version }}-linux-loong64.deb.sha256
+          retention-days: 90
+          if-no-files-found: error
+
+  # ── Job 5: Windows x86_64 nsis(仅受保护的 main 上下文) ─────────────
   build-windows-x64:
     name: 构建 Windows x86_64 nsis
     needs: check-version-bump
@@ -545,7 +730,7 @@ jobs:
           retention-days: 90
           if-no-files-found: error
 
-  # ── Job 5: macOS universal dmg(沿用原 macOS 发布流程的做法) ──────────
+  # ── Job 6: macOS universal dmg(沿用原 macOS 发布流程的做法) ──────────
   build-macos-universal:
     name: 构建 macOS universal dmg
     needs: check-version-bump

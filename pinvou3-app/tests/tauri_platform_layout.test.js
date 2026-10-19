@@ -28,6 +28,7 @@ const common = readJson("tauri.conf.json");
 const linux = readJson("config/platforms/linux/tauri.conf.json");
 const linuxX64 = readJson("config/platforms/linux/x86_64/tauri.conf.json");
 const linuxArm64 = readJson("config/platforms/linux/aarch64/tauri.conf.json");
+const linuxLoong64 = readJson("config/platforms/linux/loongarch64/tauri.conf.json");
 const macos = readJson("config/platforms/macos/tauri.conf.json");
 const windows = readJson("config/platforms/windows/tauri.conf.json");
 
@@ -47,6 +48,9 @@ assert.deepEqual(resourceSources(linuxX64), [
 ]);
 assert.deepEqual(resourceSources(linuxArm64), [
   "target/linux-asr-runtime/aarch64/sense-voice-main",
+]);
+assert.deepEqual(resourceSources(linuxLoong64), [
+  "target/linux-asr-runtime/loongarch64/sense-voice-main",
 ]);
 assert.ok(
   resourceSources(macos).every((source) => source.startsWith("resources/platforms/macos/")),

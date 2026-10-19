@@ -102,3 +102,62 @@ test('desktop theme selection persists the current OS snapshot before its React 
     else globalThis.window = original;
   }
 });
+
+test('index.html pre-paint script mirrors resolveTheme: stored light/dark wins, else OS', () => {
+  // The inline classic script is a hand-copied mirror of the module rules (it
+  // must run before any bundle loads). Execute the real source with stubbed
+  // storage/matchMedia and check every branch against resolveTheme, so the
+  // mirror cannot silently drift.
+  const html = readFileSync(new URL('../src/index.html', import.meta.url), 'utf8');
+  const block = html.match(/<script>\s*([\s\S]*?pinvou\.web\.theme[\s\S]*?)<\/script>/);
+  assert.ok(block, 'the pre-paint theme script must exist in index.html');
+  const script = block[1];
+
+  const paintsDark = ({ stored, osDark, storageThrows = false }) => {
+    const added = [];
+    runInNewContext(script, {
+      window: {
+        localStorage: {
+          getItem: () => {
+            if (storageThrows) throw new Error('storage denied');
+            return stored;
+          },
+        },
+        matchMedia: (query) => ({ matches: query === '(prefers-color-scheme: dark)' && osDark }),
+      },
+      document: { documentElement: { classList: { add: (name) => added.push(name) } } },
+    });
+    return added.includes('dark');
+  };
+
+  for (const osDark of [false, true]) {
+    // Stored explicit light/dark always wins (web raw pick, desktop resolved
+    // boot cache alike).
+    assert.equal(paintsDark({ stored: 'dark', osDark }), true, `stored dark must paint dark (osDark=${osDark})`);
+    assert.equal(paintsDark({ stored: 'light', osDark }), false, `stored light must paint light (osDark=${osDark})`);
+    // 'system' and a missing entry follow the OS — the module's semantics.
+    for (const stored of ['system', null]) {
+      assert.equal(
+        paintsDark({ stored, osDark }),
+        resolveTheme('system', osDark) === 'dark',
+        `stored=${String(stored)} osDark=${osDark} must match resolveTheme`,
+      );
+    }
+    // Unavailable storage (privacy mode, corrupted store) falls back to the OS.
+    assert.equal(
+      paintsDark({ stored: 'dark', osDark, storageThrows: true }),
+      resolveTheme('system', osDark) === 'dark',
+      `storage failure must fall back to the OS (osDark=${osDark})`,
+    );
+  }
+});
+
+test('pre-paint canvas literals match the app shell backgrounds', () => {
+  // A shell/background mismatch would paint a visible flash between the
+  // pre-paint canvas and the React shell.
+  const html = readFileSync(new URL('../src/index.html', import.meta.url), 'utf8');
+  assert.match(html, /html\s*\{\s*background:\s*#ffffff/i);
+  assert.match(html, /html\.dark\s*\{\s*background:\s*#131314/i);
+  const mainSource = readFileSync(new URL('../src/app/main.jsx', import.meta.url), 'utf8');
+  assert.match(mainSource, /bg-\[#131314\]/, 'shell dark background must stay #131314');
+});

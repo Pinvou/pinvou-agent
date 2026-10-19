@@ -3943,14 +3943,6 @@ impl EnginePool {
         content: String,
     ) -> Result<()> {
         let reservation = self.reserve_turn(session_id)?;
-        // Round-7 Q2: expert matching sees the delivered BODY only. The
-        // round-6 version passed the full block (header + contract lines +
-        // sender JSON + body) — the fixed envelope text scored a containment
-        // boost for any expert card named e.g. "Session"/"Message" on every
-        // delivery, and the model-supplied sender title fed term scoring.
-        // Strip the block the same way the receiver does.
-        let match_text =
-            crate::features::sessions::delivered_body_for_matching(&content).to_string();
         // First-turn persona guard: the chat command prepends the full
         // persona card body once via take_pending_turn_injections (the
         // per-turn light anchor in send_reserved_user_message is not enough
@@ -3961,13 +3953,8 @@ impl EnginePool {
         // the next normal turn (same transactional pattern as
         // app/commands/chat.rs).
         let pending_injections = self.store.take_pending_turn_injections(session_id);
-        let mut engine_content = content.clone();
-        if let Some(body) = pending_injections.persona_body() {
-            engine_content = format!("{body}\n\n---\n\n{engine_content}");
-        }
-        // The transcript item keeps the delivered block text: the sender-card
-        // renderer requires the cross-session header at the very start.
-        let display_message = user_display_message(&content);
+        let (match_text, engine_content, display_message) =
+            assemble_delivery_turn(&content, pending_injections.persona_body());
         let expert_snapshot = (self.store.mode_state(session_id).multi_agent
             && self.swarm_mode_available(session_id))
         .then(ExpertRosterSnapshot::capture);
@@ -4691,6 +4678,27 @@ pub(crate) fn user_display_message(text: impl Into<String>) -> Message {
             cache_control: None,
         }],
     }
+}
+
+/// Pure assembly of a delivered cross-session turn (round-22 M-2). Pinned
+/// by `messaging::tests::delivery_turn_assembly_strips_for_matching`:
+/// expert matching consumes the STRIPPED body only (round-7 Q2 — passing
+/// the full block scored the fixed envelope text a containment boost for
+/// any expert card named e.g. "Session"/"Message", and fed the
+/// model-supplied sender title into term scoring), the persona card
+/// prefixes the ENGINE content only, and the transcript item keeps the
+/// delivered block verbatim so the sender-card renderer sees the
+/// cross-session header at the very start.
+pub(crate) fn assemble_delivery_turn(
+    content: &str,
+    persona_body: Option<&str>,
+) -> (String, String, Message) {
+    let match_text = crate::features::sessions::delivered_body_for_matching(content).to_string();
+    let mut engine_content = content.to_string();
+    if let Some(body) = persona_body {
+        engine_content = format!("{body}\n\n---\n\n{engine_content}");
+    }
+    (match_text, engine_content, user_display_message(content))
 }
 
 async fn persist_scheduled_prompt(

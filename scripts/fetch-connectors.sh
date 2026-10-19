@@ -22,6 +22,7 @@ if [[ -z "$platform" ]]; then
   case "$(uname -s)-$(uname -m)" in
     Linux-aarch64 | Linux-arm64) platform="linux-arm64" ;;
     Linux-x86_64) platform="linux-x64" ;;
+    Linux-loongarch64) platform="linux-loong64" ;;
     Darwin-arm64) platform="darwin-arm64" ;;
     Darwin-x86_64) platform="darwin-x64" ;;
     *) echo "无法探测连接器平台，请显式传 --platform" >&2; exit 2 ;;
@@ -34,6 +35,13 @@ case "$platform" in
   darwin-arm64) platform_resources="macos/aarch64"; suffix="" ;;
   darwin-x64) platform_resources="macos/x86_64"; suffix="" ;;
   windows-x64) platform_resources="windows/x86_64"; suffix=".exe" ;;
+  # Explicit-unsupported (not a generic unknown-platform error): connector
+  # vendors have not published loongarch64 builds yet, so the missing
+  # artifacts must be reported as such instead of surfacing as a lock-file
+  # error or a failed download deep in the fetch loop.
+  # platform values follow the Node arch spelling (linux-x64/linux-arm64,
+  # hence loong64 rather than the kernel's loongarch64 machine name).
+  linux-loong64) echo "connectors are not yet published for linux-loong64" >&2; exit 1 ;;
   *) echo "未知连接器平台: $platform" >&2; exit 2 ;;
 esac
 

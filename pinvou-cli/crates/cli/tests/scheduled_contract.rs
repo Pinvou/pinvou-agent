@@ -763,6 +763,14 @@ fn chat_prompt_mirrors_the_gui_once_scheduling_guidance() {
         prompt.contains("一次性定时的 AT 只用本地时刻 YYYY-MM-DDTHH:MM"),
         "the chat prompt must keep the ONCE AT guidance line"
     );
+    // The minute-level rule must stay a draft-format rule in both copies: the
+    // engine's CRON grammar DOES accept minute fields, so a regression to
+    // "不支持分钟级规则" would re-assert a false runtime fact, and dropping the
+    // sentence entirely would let the model emit minute-level drafts.
+    assert!(
+        prompt.contains("草稿不支持分钟级频率（不要输出分钟级草稿）"),
+        "the chat prompt must keep the minute-level draft-format rule"
+    );
 }
 
 /// Every command taking a task id answers an unknown id with the family's

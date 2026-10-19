@@ -74,10 +74,17 @@ tar = { version = "0.4", optional = true }
 tower-http = { version = "0.7", features = ["catch-panic", "trace"], optional = true }
 wait-timeout = { version = "0.2", optional = true }
 
+# fastembed/ort-sys cannot build on linux/loongarch64: ort-sys 2.0.0-rc.9's
+# dist table only ships x86_64/aarch64 for linux/windows/darwin and panics at
+# build time for any other target, so the dependency is declared off for that
+# target. The `local-embed` feature may still be enabled there (features
+# cannot be target-gated); embedding.rs mirrors this gate and compiles the
+# explicit "unsupported on this platform" Embedder stub instead. Windows keeps
+# its dynamic-load wiring unchanged.
 [target.'cfg(windows)'.dependencies]
 fastembed = { version = "4", optional = true, default-features = false, features = ["ort-load-dynamic"] }
 
-[target.'cfg(not(windows))'.dependencies]
+[target.'cfg(not(any(windows, all(target_os = "linux", target_arch = "loongarch64"))))'.dependencies]
 fastembed = { version = "4", optional = true }
 
 [dev-dependencies]

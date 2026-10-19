@@ -35,7 +35,11 @@ export function buildArtifactPreviewDocument(html) {
     '})();',
   ].join('');
   // \u003c escape keeps the literal "</script>" out of the source so it is not truncated when inlined into HTML.
+  // margin:0 stays (the zoom measurer assumes no UA body margin); the canvas
+  // background is intentionally NOT forced here — the doc stays transparent so
+  // the themed iframe surface decides light/dark, keeping light-authored
+  // documents readable in the light theme.
   return '<script>' + bootstrap + '\u003C/script>'
-    + '<style>html,body{background:#15171a;margin:0;}</style>'
+    + '<style>html,body{margin:0;}</style>'
     + String(html || '');
 }

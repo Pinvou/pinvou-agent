@@ -131,11 +131,11 @@ import { deptLabelFor, personaText, DEPT_ORDER, ALL_DEPT, DEPT_OPTIONS, deptColo
               {/* 名称 + 部门 */}
               <div className="rounded-[10px] overflow-hidden bg-[#fff] dark:bg-[#000]">
                 <div className="flex items-center px-4 py-3 border-b border-[rgba(198,198,200,.5)] dark:border-[#38383A]">
-                  <span className="w-20 text-[17px] shrink-0">{t.cpFieldName}</span>
+                  <span className="min-w-20 text-[17px] shrink-0">{t.cpFieldName}</span>
                   <input value={name} onChange={e=>setName(e.target.value)} placeholder={t.cpReqPh} className="flex-1 text-[17px] bg-transparent outline-none text-[#000] dark:text-[#fff]" />
                 </div>
                 <div className="flex items-center px-4 py-3">
-                  <span className="w-20 text-[17px] shrink-0">{t.cpDept}</span>
+                  <span className="min-w-20 text-[17px] shrink-0">{t.cpDept}</span>
                   <select value={dept} onChange={e=>setDept(e.target.value)} className="flex-1 text-[17px] bg-transparent outline-none text-[#000] dark:text-[#fff]">
                     {DEPT_OPTIONS.map(function(d){ return <option key={d} value={d} style={{ color:'#000' }}>{deptLabelFor(t, d)}</option>; })}
                   </select>

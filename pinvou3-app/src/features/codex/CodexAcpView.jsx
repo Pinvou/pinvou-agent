@@ -46,10 +46,10 @@ import {
   createAcpGapResyncScheduler,
   mergeAcpTimelineSnapshot,
   updateAcpAttachmentDraft,
-  projectAcpTimeline,
   redactDisplayError,
   resolveAcpSessionControls,
 } from './acp-state.js';
+import { createAcpTimelineProjector } from './acp-timeline-projector.js';
 import {
   applyNativeChatEvent,
   appendLocalUserMessage,
@@ -859,9 +859,10 @@ export function CodexAcpView({
     acpSendOperationTracker.switchSession(activeId || DRAFT_ATTACHMENT_KEY);
   }, [acpConfigOperationTracker, acpSendOperationTracker, activeId]);
   const acpModelServiceLanguage = bs && bs.settings && bs.settings.language;
+  const projectAcpTimeline = useMemo(() => createAcpTimelineProjector(), []);
   const projection = useMemo(
     () => projectAcpTimeline(events, { language: acpModelServiceLanguage }),
-    [events, acpModelServiceLanguage],
+    [events, acpModelServiceLanguage, projectAcpTimeline],
   );
   // 草稿态（!activeId）没有会话，退回使用该 agent 缓存的配置快照来预展示选项。
   const draftControlsInfo = activeId ? null : draftControlsCache[draftAgentId] || null;
@@ -3290,7 +3291,10 @@ export function CodexAcpView({
       }
       return <div className="px-1 text-[11px] text-gray-400">{legacy.text}</div>;
     }
-    return null;
+    // ConversationTimeline only falls through to its DefaultItem renderer when
+    // renderItem yields undefined — no return statement here (an explicit null
+    // would suppress the default rendering of unhandled types such as
+    // reasoning and tool_group).
   }
 
   async function openWorkspaceResource(resourcePath) {

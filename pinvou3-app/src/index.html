@@ -5,6 +5,31 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <base href="%BASE_URL%">
   <title>PINVOU 智能助手（内测版）</title>
+  <style>
+    /* Pre-hydration canvas: matches the app shell's light/dark background so a
+       dark-mode cold boot never paints a white frame before React applies the
+       theme class (the inline script below sets it before first paint). */
+    html { background: #ffffff; }
+    html.dark { background: #131314; }
+  </style>
+  <script>
+    // Pre-paint theme class (mirrors src/shared/color-scheme.js rules):
+    // 'light'/'dark' win ('pinvou.web.theme' is the authoritative store on web
+    // and a boot-time cache of the resolved scheme on desktop), anything else
+    // follows the OS preference. main.jsx's activeTheme effect reconciles the
+    // class once real settings arrive.
+    (function () {
+      var dark = false;
+      try {
+        var stored = window.localStorage.getItem('pinvou.web.theme');
+        if (stored === 'light' || stored === 'dark') dark = stored === 'dark';
+        else dark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      } catch (_) {
+        dark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      }
+      if (dark) document.documentElement.classList.add('dark');
+    })();
+  </script>
   <script>
     // Collect startup timing before any vendor or application module loads.
     // Batches are forwarded to Rust so release builds retain the timeline.
