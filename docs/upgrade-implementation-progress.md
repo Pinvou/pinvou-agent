@@ -17,7 +17,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T04 | Not completed | Independent composite packaging and verification toolchain; depends on T03 platform contracts. |
 | T05 | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
 | T06 | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
-| T07 | In progress | Reviewed public trust initialization HTTP/UI, signing/Root primitives and actual provider checks; online key management and complete production issuance remain pending |
+| T07 | In progress | Reviewed trust initialization and online key-material creation/registration; issuer activation and complete production issuance remain pending |
 | T08 | In progress | Reviewed genesis catalog/component management and protected atomic publication primitives; complete business publication workflows remain pending |
 | T09 | In progress | Bounded package/native-byte inspection; complete upload, quarantine and platform qualification remain pending |
 | T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
@@ -12628,3 +12628,63 @@ T07/T08 reviewed trust initialization management (2026-10-19):
   Documents 1.0, product 0.10.12 and CodeWhale remain unchanged. Deployment is
   deferred. Downloads have no hard total/cumulative duration or retry cap; 32 MiB
   continues to bound only joined atomic inventory, never artifacts/downloads.
+
+
+T07 approved online key-material management (2026-10-19):
+
+- Service commit `d65992d` supplies the complete reviewed creation, actual provider
+  readiness and separately reviewed inactive-registration workflow for timestamp,
+  snapshot and target roles. Fixed private HTTP routes and the Chinese/English/
+  Japanese admin compose the original owners, shared T06 recovery and a separate
+  joined provider runner. No issuer is enabled and no metadata is published.
+- Bounded keyset discovery never grants authority. Original committed T06 identity,
+  receipt/outbox, purpose/provider, current T05/MFA and original SQL claim are
+  checked. Unsupported genuine old-purpose work is retained/refused with zero
+  provider RPC, without starving supported work. Schema/privilege dependencies
+  are checked at readiness, before candidates and around RPC outside SQL.
+- The actual provider token is protected local configuration, reread per RPC,
+  separate from future signing credentials. The isolated dedicated-mount fixture
+  uses a single-segment key policy; the same actual token is verified to refuse
+  rotate, config, sign, export, backup and delete, while create/inspect succeeds.
+  RAM-only development Transit is not production custody, HA or deployment proof.
+- Public status requires both current read/key-management permissions and a live
+  session, without the creator's original proof or fresh MFA. Another basic-login
+  registrar can read ready material after creator revocation; registration still
+  needs a separate exact approval with two independent reviewers and fresh MFA.
+  Permission conjunction and exact post-principal session expiry are also covered
+  by narrow T05 port tests, distinct from actual database acceptance.
+- Admin recovery retains per-action original pending/prepared/accepted bytes and
+  replays the original key with current verified authentication. Before execute
+  POST it closes the complete source and verifies all hashes plus the original
+  logical approval hash, including pending-only recovery. Three actual corruption
+  controls retain the damaged bytes with zero execution POSTs, then restore the
+  original wire and obtain the original registered acknowledgement.
+- Read-capable operators preflight a new registration's actual ready selector
+  before allocating a preparation key or pending request. Actual absent-ID status
+  failure produces zero Prepare POSTs/no pending and keeps the form editable;
+  restoring the real ID completes the same workflow. Core write permissions and
+  existing unknown-request recovery remain unchanged.
+- Two independent scoped static reviews passed after primary repairs. Three actual
+  PostgreSQL 17/TLS/signed-OIDC/OpenBao HTTP/worker groups passed separately from
+  the final full browser workflow, all with zero skips. They verify coherent
+  accepted-ledger fault refusal/exact restoration, the original natural two-minute
+  provider lease, same-name/version recovery after confirmed provider response
+  loss, restart/admission-off replay and genuine unsupported-work refusal.
+  The final browser also verifies three languages, independent reviews, lost
+  execution responses, reload/original wire and the new registration preflight.
+- All four existing deployment/release/assembly/trust browser groups passed.
+  Initial test scope/approval/locator controls and a test-only declaration were
+  repaired. One original Release-browser invocation was blocked before navigation
+  by Chromium's restricted random port; its four cases passed on the subsequent
+  isolated allocation. Failed attempts are not counted as passing acceptance.
+- Final Go checks passed modules, defaults (777 top-level/1,781 nested passes;
+  688 top-level/664 nested explicit opt-in skips; zero failures), vet, build,
+  pinned contracts, affected formatting and whitespace. The last UI-only preflight
+  change preserved all Go/SQL hashes and passed a fresh UI build/actual browser
+  run. All 93 prior SQL files stayed intact; actual fixtures restored their original
+  database/role inventory. Normal opt-in skips are not actual acceptance.
+- T07 remains in progress; totals remain 5 implemented / 14 in progress / 28
+  incomplete or deferred of 47. Online issuer enable/stop and Root retention
+  composition follow. Documents 1.0, product 0.10.12 and CodeWhale are unchanged.
+  Deployment stays deferred. Downloads retain no hard total/cumulative duration
+  or retry cap; 32 MiB bounds only joined atomic inventory, never downloads.
