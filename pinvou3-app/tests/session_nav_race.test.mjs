@@ -133,6 +133,7 @@ test('durable reload：同会话（wasActive）草稿存活；跨会话冷切换
   const ok1 = await api.switchToSessionInternal('s-a', null, 'test', { forceDurableLoad: true });
   assert.equal(ok1, true, 'durable reload succeeds');
   assert.equal(state.composerDraft, 'half-typed', '同会话 durable 重载草稿存活（r13-M2 修复本体）');
+  assert.ok(calls.invoke.includes('load_session'), 'durable reload must invoke load_session（r16 M4：fast-path 回退否则全绿）');
   // 跨会话冷切换：目标会话草稿不受切出会话污染
   state.composerDraft = 'session-a draft';
   const ok2 = await api.switchToSessionInternal('s-b', null, 'test', { forceDurableLoad: true });
