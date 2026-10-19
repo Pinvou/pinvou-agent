@@ -131,19 +131,19 @@ PKG_CONFIG_LIBDIR="$sysroot/usr/lib/loongarch64-linux-gnu/pkgconfig:$sysroot/usr
 PKG_CONFIG_SYSROOT_DIR="$sysroot"
 
 # ---- cross environment (single source of truth for steps 3-6) ----------------
-# Both spellings: cc-rs/cmake-rs accept the underscore and the verbatim
-# triple form; cargo only knows the underscore form for the linker. gcc
+# Underscore spelling ONLY: cc-rs reads `<var>_<target_with_underscores>`
+# (dashes replaced, cc lib.rs "<var>_<target_with_underscores>") and bash
+# rejects hyphens in identifier positions — `export CC_loongarch64-...=`
+# is a runtime `not a valid identifier` error (bash -n accepts it), which
+# would kill the release build before step 3. The verbatim-triple form is
+# read by nothing. cargo only knows the underscore form for the linker. gcc
 # resolves its bundled glibc sysroot from its own path (relocatable), so no
 # SYSROOT/--sysroot flag is needed for plain rust/cargo compilation.
 export PINVOU_LOONG64_TOOLCHAIN_PREFIX="$toolchain_root"
 export CC_loongarch64_unknown_linux_gnu="$TOOLCHAIN_BIN/$TRIPLE-gcc"
-export CC_loongarch64-unknown-linux-gnu="$TOOLCHAIN_BIN/$TRIPLE-gcc"
 export CXX_loongarch64_unknown_linux_gnu="$TOOLCHAIN_BIN/$TRIPLE-g++"
-export CXX_loongarch64-unknown-linux-gnu="$TOOLCHAIN_BIN/$TRIPLE-g++"
 export AR_loongarch64_unknown_linux_gnu="$TOOLCHAIN_BIN/$TRIPLE-gcc-ar"
-export AR_loongarch64-unknown-linux-gnu="$TOOLCHAIN_BIN/$TRIPLE-gcc-ar"
 export RANLIB_loongarch64_unknown_linux_gnu="$TOOLCHAIN_BIN/$TRIPLE-gcc-ranlib"
-export RANLIB_loongarch64-unknown-linux-gnu="$TOOLCHAIN_BIN/$TRIPLE-gcc-ranlib"
 export STRIP="$TOOLCHAIN_BIN/$TRIPLE-strip"
 export CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER="$TOOLCHAIN_BIN/$TRIPLE-gcc"
 export PKG_CONFIG_LIBDIR PKG_CONFIG_SYSROOT_DIR CMAKE_TOOLCHAIN_FILE

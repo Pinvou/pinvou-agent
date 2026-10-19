@@ -26,6 +26,7 @@ moving or renaming a job changes the split points and fails loudly here.
 
 import json
 import re
+import shlex
 import subprocess
 import unittest
 from pathlib import Path
@@ -278,10 +279,14 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             for line in block.splitlines():
                 line = line.strip()
                 if line and not line.startswith("#"):
-                    # The block must stay pure env assignments (the pr-check
-                    # leg greps it into GITHUB_ENV); dash-spelled verbatim-
-                    # triple forms are allowed alongside the underscore ones.
-                    self.assertRegex(line, r"^[A-Za-z_][A-Za-z0-9_-]*=")
+                    # The block must stay pure, underscore-spelled env
+                    # assignments: the pr-check leg's GITHUB_ENV grep keeps
+                    # only `^[A-Za-z_][A-Za-z0-9_]*=` lines, and a hyphenated
+                    # name is not a valid bash identifier — one pasted
+                    # `export` of it dies at runtime (bash -n accepts it).
+                    # A dash-spelled line printed here is dead weight today
+                    # and a crash waiting for a copy-paste, so it fails here.
+                    self.assertRegex(line, r"^[A-Za-z_][A-Za-z0-9_]*=")
         def assert_block_exports(block, block_name, required):
             # Line-anchored on purpose: the block is heredoc DATA, where a
             # leading `#` is printed literally and the pr-check leg's
@@ -319,6 +324,36 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             "BINDGEN_EXTRA_CLANG_ARGS=--target=$TRIPLE --sysroot=",
         ):
             assert_block_exports(sysroot_block, "sysroot", required)
+
+    def test_pipeline_scripts_only_export_valid_bash_identifiers(self):
+        # Execution probe: `bash -n` accepts `export CC_loongarch64-...=x`
+        # because the hyphen is only rejected when the line RUNS — under
+        # `set -euo pipefail` the release build would die with `not a valid
+        # identifier` before the first compile step. Judge comment-stripped
+        # text so a disabled line cannot satisfy (or hide behind) the pin,
+        # and tokenize with shlex so quoted values containing spaces stay
+        # one assignment token.
+        offenders = []
+        for path in (ORCHESTRATOR, TOOLCHAIN_SCRIPT, SYSROOT_SCRIPT, PACKAGING_SCRIPT):
+            for number, line in enumerate(
+                _without_comments(path.read_text(encoding="utf-8")).splitlines(), start=1
+            ):
+                match = re.match(r"\s*export\s+(.+?)\s*$", line)
+                if not match:
+                    continue
+                for token in shlex.split(match.group(1)):
+                    if token.startswith("-"):
+                        continue  # export flags (-n, -p), not names
+                    name = token.split("=", 1)[0]
+                    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                        offenders.append(f"{path.name}:{number}: export {token}")
+        self.assertEqual(
+            offenders,
+            [],
+            "hyphenated (or otherwise non-identifier) export names are runtime "
+            "errors under set -euo pipefail; use the underscore spelling that "
+            "cc-rs actually reads:\n" + "\n".join(offenders),
+        )
 
     def test_cache_reuse_never_skips_generation_checks(self):
         # The cache-generation trust behaviors are the difference between a

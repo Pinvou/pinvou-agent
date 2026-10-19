@@ -247,19 +247,17 @@ if [ "$host_arch" = "x86_64" ] || [ "${PINVOU_LOONG64_TOOLCHAIN_SKIP_SMOKE:-0}" 
 fi
 
 print_env() {
-  # Both spellings: cc-rs/cmake-rs accept the underscore and the verbatim
-  # triple form; cargo only knows the underscore form for the linker.
+  # Underscore spelling ONLY: the pr-check leg greps this block into
+  # GITHUB_ENV with a `^[A-Za-z_][A-Za-z0-9_]*=` filter and cc-rs reads the
+  # underscored form; a verbatim-triple (hyphenated) name is not a valid
+  # bash identifier, so a pasted `export` of it dies at runtime.
   cat <<EOF
 ---- ci-loongarch64-toolchain: export in the CI step ----
 PINVOU_LOONG64_TOOLCHAIN_PREFIX=$toolchain_root
 CC_loongarch64_unknown_linux_gnu=$toolchain_bin/$TRIPLE-gcc
-CC_loongarch64-unknown-linux-gnu=$toolchain_bin/$TRIPLE-gcc
 CXX_loongarch64_unknown_linux_gnu=$toolchain_bin/$TRIPLE-g++
-CXX_loongarch64-unknown-linux-gnu=$toolchain_bin/$TRIPLE-g++
 AR_loongarch64_unknown_linux_gnu=$toolchain_bin/$TRIPLE-gcc-ar
-AR_loongarch64-unknown-linux-gnu=$toolchain_bin/$TRIPLE-gcc-ar
 RANLIB_loongarch64_unknown_linux_gnu=$toolchain_bin/$TRIPLE-gcc-ranlib
-RANLIB_loongarch64-unknown-linux-gnu=$toolchain_bin/$TRIPLE-gcc-ranlib
 STRIP=$toolchain_bin/$TRIPLE-strip
 CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER=$toolchain_bin/$TRIPLE-gcc
 ---- notes ----
