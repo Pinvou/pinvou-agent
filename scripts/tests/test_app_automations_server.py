@@ -538,16 +538,41 @@ class CreateSpoolAndResultTests(unittest.TestCase):
         return sorted(Path(self.requests, "spool").glob("*.json"))
 
     def _finish_in_background(self, task_id="task-1", ok=True, delay=0.3):
-        """Simulates the Rust watcher: drain the spool, write the marker, remove the file."""
+        """Simulates the Rust watcher: drain the spool, write the marker, remove the file.
+        Round-26 M1: the ok-true marker carries the canonical request
+        digest (create-side paused coerced to false, like the watcher) —
+        production markers always bind the digest and the poll loop now
+        requires it on unkeyed calls too, so a digest-less double would
+        honestly time out."""
 
         def worker():
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
                 files = self._spooled()
                 if files:
-                    spool_id = files[0].stem
+                    path = files[0]
+                    spool_id = path.stem
+                    record = json.loads(path.read_text(encoding="utf-8"))
                     payload = (
-                        {"ok": True, "task_id": task_id, "task_name": "早报"}
+                        {
+                            "ok": True,
+                            "task_id": task_id,
+                            "task_name": "早报",
+                            "request_digest": server.spool_request_digest(
+                                record.get("kind"),
+                                task_id=record.get("task_id"),
+                                name=record.get("name"),
+                                prompt=record.get("prompt"),
+                                rrule=record.get("rrule"),
+                                model_id=record.get("model_id"),
+                                paused=(
+                                    False
+                                    if record.get("kind") == "create"
+                                    and record.get("paused") is None
+                                    else record.get("paused")
+                                ),
+                            ),
+                        }
                         if ok
                         else {"ok": False, "error": "simulated watcher failure"}
                     )
