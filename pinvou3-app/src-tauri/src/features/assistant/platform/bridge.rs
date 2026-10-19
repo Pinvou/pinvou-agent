@@ -97,6 +97,13 @@ const RESPONSES_ROUTE_PROVIDER: &str = "pinvou_responses";
 /// - the Responses named-custom key → generic `custom` kind + the exact
 ///   table key as id (`build_dt_config` writes
 ///   `[providers.pinvou_responses]`, so the id is what names that table);
+/// - a literal `custom` pin only pairs an id when an exact
+///   `[providers.custom]` table backs it; without the table the pin rides
+///   the legacy root-level custom route and the pair is id-less
+///   (`("custom", None)`) — with an id the foundation's fail-closed
+///   `resolve_exact_provider_identity` rejects the record at the next
+///   resume ("requires exact custom provider 'custom', but
+///   `[providers.custom]` is missing");
 /// - a built-in slug → the kind as both fields (the exact shape
 ///   `resolve_runtime_route` re-resolves a built-in route with);
 /// - any other operator pin (a raw `DEEPSEEK_PROVIDER` typo, or a legacy
@@ -123,10 +130,28 @@ pub(crate) fn persisted_provider_route(
         return ("custom".to_string(), Some(provider.to_string()));
     }
     match dt_config.api_provider() {
-        // A custom landing pairs the generic kind with the exact table key:
-        // api_provider only resolves Custom when `cfg.provider` names an
-        // existing table, so the provider string is that key.
-        ApiProvider::Custom => ("custom".to_string(), Some(provider.to_string())),
+        // Two Custom provenances reach this arm: `cfg.provider` naming an
+        // existing `[providers.<key>]` table (the exact id is that key), and
+        // the legacy root-level `provider = "custom"` pin, which
+        // `ApiProvider::parse` also resolves to Custom without any table
+        // (the provider registry's id for the Custom kind is literally
+        // "custom"). Only the table provenance may carry an exact id: the
+        // foundation's `resolve_exact_provider_identity` rejects the literal
+        // "custom" id without `[providers.custom]`, while the id-less pair
+        // is the identity `resolve_persisted_provider_identity` accepts for
+        // the legacy root route (review #713, 2026-10-17).
+        ApiProvider::Custom => {
+            let named_table = dt_config
+                .providers
+                .as_ref()
+                .and_then(|providers| providers.custom_provider_config(provider))
+                .is_some();
+            if named_table {
+                ("custom".to_string(), Some(provider.to_string()))
+            } else {
+                ("custom".to_string(), None)
+            }
+        }
         ApiProvider::OllamaCloud if provider == ApiProvider::Ollama.as_str() => {
             // Legacy migration arm: the resolved kind is ollama-cloud but
             // the identity's exact id stays the pin's "ollama" (the
@@ -11736,6 +11761,45 @@ mod tests {
                 "custom".to_string(),
                 Some(RESPONSES_ROUTE_PROVIDER.to_string())
             )
+        );
+        // A named `[providers.<key>]` custom table pairs the generic kind
+        // with its exact table key: the resume-side
+        // resolve_exact_provider_identity re-enters that table.
+        let mut cfg = DtConfig::default();
+        cfg.provider = Some("my_endpoint".to_string());
+        cfg.providers
+            .get_or_insert_with(ProvidersConfig::default)
+            .custom
+            .insert("my_endpoint".to_string(), ProviderConfig::default());
+        assert_eq!(
+            persisted_provider_route(&cfg, "my_endpoint"),
+            ("custom".to_string(), Some("my_endpoint".to_string()))
+        );
+        // The literal `custom` pin WITHOUT `[providers.custom]` is the
+        // legacy root-level route: ApiProvider::parse("custom") resolves
+        // Custom even with no table (the Custom registry id is literally
+        // "custom"), and the exact id would be rejected at the next resume
+        // ("requires exact custom provider 'custom', but
+        // `[providers.custom]` is missing") — the id-less pair is the
+        // identity resolve_persisted_provider_identity accepts for the
+        // root route.
+        let mut cfg = DtConfig::default();
+        cfg.provider = Some("custom".to_string());
+        assert_eq!(
+            persisted_provider_route(&cfg, "custom"),
+            ("custom".to_string(), None)
+        );
+        // The same literal pin backed by an exact `[providers.custom]`
+        // table names that table, like any other named custom route.
+        let mut cfg = DtConfig::default();
+        cfg.provider = Some("custom".to_string());
+        cfg.providers
+            .get_or_insert_with(ProvidersConfig::default)
+            .custom
+            .insert("custom".to_string(), ProviderConfig::default());
+        assert_eq!(
+            persisted_provider_route(&cfg, "custom"),
+            ("custom".to_string(), Some("custom".to_string()))
         );
         // An unparseable operator pin (a raw DEEPSEEK_PROVIDER typo) must
         // stamp the kind the engine actually resolved: api_provider falls
