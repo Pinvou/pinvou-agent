@@ -3026,6 +3026,37 @@ pub(crate) mod tests {
         }
     }
 
+    /// Source-shape pin for the `MarketplaceWriteTxn` lock-order invariant:
+    /// `_transaction_guard` must be declared BEFORE `_market_write_lock` so
+    /// Rust's in-order field drop releases the transaction lock first and the
+    /// cross-process market write lock last (see the struct's lock-order
+    /// doc). A field swap compiles clean and would reintroduce the ABBA
+    /// deadlock against the import path with every behavioral test green —
+    /// this PR itself shipped the order inverted once before fixing it.
+    #[test]
+    fn write_transaction_drops_the_market_lock_last() {
+        let source = include_str!("mod.rs");
+        let struct_start = source
+            .find("struct MarketplaceWriteTxn {")
+            .expect("MarketplaceWriteTxn struct must exist");
+        let struct_body = &source[struct_start
+            ..source[struct_start..]
+                .find('}')
+                .map(|i| struct_start + i)
+                .expect("MarketplaceWriteTxn struct must close")];
+        let guard = struct_body
+            .find("_transaction_guard:")
+            .expect("transaction guard field must exist");
+        let market = struct_body
+            .find("_market_write_lock:")
+            .expect("market write lock field must exist");
+        assert!(
+            guard < market,
+            "_transaction_guard must be declared before _market_write_lock: \
+             in-order field drop must release the transaction lock first"
+        );
+    }
+
     /// The post-commit companion cleanup must keep a deny
     /// entry when that skill's own teardown fails — the skill is still on
     /// disk, so removing the entry would silently re-enable it. Broken
