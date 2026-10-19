@@ -722,6 +722,30 @@ class CiGatePolicyTests(unittest.TestCase):
         self.assertIn("matrix.phase == 'regression'", windows.split("- name: Check native Windows upgrade download jobs", 1)[1].split("\n      - name:", 1)[0])
         self.assertIn("specs/upgrade/v1 ci --ignore-scripts", windows)
 
+    def test_updater_custody_and_native_evidence_keep_required_gates(self):
+        block = self.pr_workflow.split("            rust_code:", 1)[1].split("            rust_dependencies:", 1)[0]
+        patterns = _extract_quoted_paths(block)
+        linux = self.pr_workflow.split("\n  rust-lint:", 1)[1].split("\n  rust-test:", 1)[0]
+        windows = self.pr_workflow.split("\n  windows-rust-test:", 1)[1].split("\n  macos-rust-check:", 1)[0]
+        for suffix, title in (("platform/custody", "updater file custody"),
+                              ("native-evidence", "upgrade native signature evidence")):
+            root = "pinvou3-app/src-tauri/src/features/updater/" + suffix
+            for path in ("src/platform/windows.rs", "Cargo.toml", "Cargo.lock", "README.md"):
+                self.assertTrue(_matches_paths_filter(root + "/" + path, patterns))
+            for job, prefix in ((linux, "Check independent "), (windows, "Check native Windows ")):
+                step = job.split("- name: " + prefix + title, 1)[1].split("\n      - name:", 1)[0]
+                self.assertIn("working-directory: " + root, step)
+                self.assertIn("CARGO_BUILD_JOBS: '2'", step)
+                self.assertNotIn("continue-on-error:", step)
+                self.assertNotIn("--include-ignored", step)
+                for command in ("cargo fmt -- --check", "cargo clippy --locked --all-targets -- -D warnings",
+                                "cargo test --locked --all-targets -- --test-threads=1"):
+                    self.assertIn(command, step)
+                if job == windows:
+                    self.assertIn("matrix.phase == 'regression'", step)
+                else:
+                    self.assertNotIn("if:", step)
+
     def test_read_only_cache_byte_controls_run_on_native_windows(self):
         job = self.pr_workflow.split("\n  windows-rust-test:", 1)[1].split("\n  macos-rust-check:", 1)[0]
         step = job.split("- name: Check native Windows upgrade byte verification", 1)[1].split("\n      - name:", 1)[0]

@@ -2,8 +2,8 @@
 //! Every later component/create/open/link is relative to a retained real handle.
 //! Sharing alone does NOT block FILE_WRITE_ATTRIBUTES reparse mutation. A changed
 //! parent must fail closed, and a leaf reparse object is inspected, never followed.
-use super::{Directory, Identity};
 use crate::Error;
+use crate::{Directory, Identity};
 use std::{
     ffi::OsStr,
     fs::{File, OpenOptions},
@@ -85,10 +85,10 @@ fn observe_identity(file: &File, maximum_links: u32) -> Result<Identity, Error> 
         created_low: value.ftCreationTime.dwLowDateTime,
     })
 }
-pub(crate) fn identity(file: &File) -> Result<Identity, Error> {
+pub fn identity(file: &File) -> Result<Identity, Error> {
     observe_identity(file, 1)
 }
-pub(crate) fn read_identity(file: &File) -> Result<Identity, Error> {
+pub fn read_identity(file: &File) -> Result<Identity, Error> {
     observe_identity(file, 2)
 }
 fn check_directory(file: &File) -> Result<(), Error> {
@@ -143,7 +143,7 @@ fn relative(parent: &File, component: &OsStr, mode: OpenMode) -> Result<File, Er
     let mut io = IO_STATUS_BLOCK::default();
     // Same read/write access as ordinary file IO, plus SYNCHRONIZE for the
     // synchronous native handle. Link publication needs no DELETE permission.
-    // No writable handle is exported by the job API and no old file is truncated.
+    // Callers select read/write IO explicitly; an existing file is never truncated.
     let access = GENERIC_READ | SYNCHRONIZE | if mode.write { GENERIC_WRITE } else { 0 };
     let options = FILE_OPEN_REPARSE_POINT
         | FILE_SYNCHRONOUS_IO_NONALERT
@@ -193,7 +193,7 @@ fn relative(parent: &File, component: &OsStr, mode: OpenMode) -> Result<File, Er
     Ok(file)
 }
 
-pub(crate) fn directory(path: &Path) -> Result<Directory, Error> {
+pub fn directory(path: &Path) -> Result<Directory, Error> {
     let absolute = std::path::absolute(path).map_err(|_| Error::InvalidInput)?;
     let mut components = absolute.components();
     let prefix = components.next().ok_or(Error::InvalidInput)?;
@@ -237,7 +237,7 @@ impl Directory {
     fn root(&self) -> Result<&File, Error> {
         self._handles.last().ok_or(Error::UnsafeObject)
     }
-    pub(crate) fn file(
+    pub fn file(
         &self,
         component: impl AsRef<OsStr>,
         write: bool,
@@ -255,7 +255,7 @@ impl Directory {
             },
         )
     }
-    pub(crate) fn create_dir(&self, component: &OsStr) -> Result<Directory, Error> {
+    pub fn create_dir(&self, component: &OsStr) -> Result<Directory, Error> {
         let child = relative(
             self.root()?,
             component,
@@ -276,7 +276,7 @@ impl Directory {
         Ok(Directory { _handles: handles })
     }
     #[allow(unsafe_code)]
-    pub(crate) fn publish(&self, source: &File, component: impl AsRef<OsStr>) -> Result<(), Error> {
+    pub fn publish(&self, source: &File, component: impl AsRef<OsStr>) -> Result<(), Error> {
         let wide = name(component.as_ref())?;
         let bytes = offset_of!(FILE_LINK_INFORMATION, FileName) + wide.len() * size_of::<u16>();
         // Word-backed storage supplies SDK structure alignment and initialized

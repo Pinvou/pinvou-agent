@@ -31,3 +31,18 @@ signs ephemeral QA metadata for its exact bytes, and downloads it using that
 unchanged production executable and its normal TLS trust. No CA is installed or
 overridden. It is not an installer/ZIP/current-qualification acceptance. Owned
 fixture files are retained; failed network runs fail rather than becoming skips.
+
+The relative-handle filesystem adapter is shared through updater-local
+`platform/custody`. The download compatibility adapter retains the same public
+APIs, fixed error codes and Identity JSON; it adds no native authentication,
+trusted journal ownership, installation permission or protected staging.
+
+The extraction compatibility control accepts an independently retained old
+production executable; it creates an old job, compares new status/cache scans,
+and preserves a damaged journal until exact source restoration:
+
+```text
+python tests/platform/legacy_compat.py --old-exe OLD_EXE --old-sha256 OLD_SHA256 --new-exe NEW_EXE --proof PROOF_JSON
+```
+
+This explicit local control performs no download and retains owned fixtures.

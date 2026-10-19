@@ -1,53 +1,52 @@
-//! Feature-local cache custody while a process is alive. This is not an ACL,
-//! administrator boundary, protected installation namespace or execution seal.
+//! Compatibility adapter: the reusable namespace has no download semantics.
 use crate::Error;
-use serde::{Deserialize, Serialize};
-use std::fs::File;
-#[cfg(any(test, not(target_os = "windows")))]
-use std::path::Path;
-
-#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct Identity {
-    volume: u32,
-    index_high: u32,
-    index_low: u32,
-    created_high: u32,
-    created_low: u32,
+pub(crate) use pinvou_upgrade_custody::Identity;
+use std::{ffi::OsStr, fs::File, path::Path};
+pub(crate) struct Directory(pinvou_upgrade_custody::Directory);
+impl From<pinvou_upgrade_custody::Error> for Error {
+    fn from(error: pinvou_upgrade_custody::Error) -> Self {
+        use pinvou_upgrade_custody::Error as E;
+        match error {
+            E::Unsupported => Self::Unsupported,
+            E::InvalidInput => Self::InvalidInput,
+            E::NotFound => Self::NotFound,
+            E::Busy => Self::Busy,
+            E::AlreadyExists => Self::AlreadyExists,
+            E::IoUnavailable => Self::IoUnavailable,
+            E::UnsafeObject => Self::UnsafeObject,
+        }
+    }
 }
-pub(crate) struct Directory {
-    _handles: Vec<File>,
+pub(crate) fn directory(path: &Path) -> Result<Directory, Error> {
+    pinvou_upgrade_custody::directory(path)
+        .map(Directory)
+        .map_err(Into::into)
 }
-
-#[cfg(target_os = "windows")]
-mod windows;
-#[cfg(target_os = "windows")]
-pub(crate) use windows::{directory, identity, read_identity};
-
-#[cfg(not(target_os = "windows"))]
-pub(crate) fn directory(_: &Path) -> Result<Directory, Error> {
-    Err(Error::Unsupported)
+pub(crate) fn identity(file: &File) -> Result<Identity, Error> {
+    pinvou_upgrade_custody::identity(file).map_err(Into::into)
 }
-#[cfg(not(target_os = "windows"))]
+pub(crate) fn read(file: &mut File, maximum: usize) -> Result<Vec<u8>, Error> {
+    pinvou_upgrade_custody::read(file, maximum).map_err(Into::into)
+}
 impl Directory {
     pub(crate) fn file(
         &self,
-        _: impl AsRef<std::ffi::OsStr>,
-        _: bool,
-        _: bool,
-        _: bool,
+        name: impl AsRef<OsStr>,
+        write: bool,
+        create: bool,
+        exclusive: bool,
     ) -> Result<File, Error> {
-        Err(Error::Unsupported)
+        self.0
+            .file(name, write, create, exclusive)
+            .map_err(Into::into)
     }
-    pub(crate) fn create_dir(&self, _: &std::ffi::OsStr) -> Result<Directory, Error> {
-        Err(Error::Unsupported)
+    pub(crate) fn create_dir(&self, name: &OsStr) -> Result<Self, Error> {
+        self.0.create_dir(name).map(Self).map_err(Into::into)
     }
-    pub(crate) fn publish(&self, _: &File, _: impl AsRef<std::ffi::OsStr>) -> Result<(), Error> {
-        Err(Error::Unsupported)
+    pub(crate) fn publish(&self, file: &File, name: impl AsRef<OsStr>) -> Result<(), Error> {
+        self.0.publish(file, name).map_err(Into::into)
     }
 }
-// Test convenience only. Production uses the already-retained actual parent,
-// never a re-resolved path to open a job child.
 #[cfg(test)]
 pub(crate) fn file(path: &Path, write: bool, create: bool, exclusive: bool) -> Result<File, Error> {
     directory(path.parent().ok_or(Error::InvalidInput)?)?.file(
@@ -57,36 +56,8 @@ pub(crate) fn file(path: &Path, write: bool, create: bool, exclusive: bool) -> R
         exclusive,
     )
 }
-#[cfg(not(target_os = "windows"))]
-pub(crate) fn identity(_: &File) -> Result<Identity, Error> {
-    Err(Error::Unsupported)
-}
-#[cfg(not(target_os = "windows"))]
-fn read_identity(_: &File) -> Result<Identity, Error> {
-    Err(Error::Unsupported)
-}
-
-pub(crate) fn read(file: &mut File, maximum: usize) -> Result<Vec<u8>, Error> {
-    use std::io::{Read, Seek, SeekFrom};
-    let before = read_identity(file)?;
-    if file.metadata().map_err(|_| Error::IoUnavailable)?.len() > maximum as u64 {
-        return Err(Error::InvalidInput);
-    }
-    file.seek(SeekFrom::Start(0))
-        .map_err(|_| Error::IoUnavailable)?;
-    let mut bytes = Vec::new();
-    file.take(maximum as u64 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| Error::IoUnavailable)?;
-    if bytes.len() > maximum || read_identity(file)? != before {
-        return Err(Error::UnsafeObject);
-    }
-    Ok(bytes)
-}
-
 #[cfg(all(test, target_os = "windows"))]
 mod windows_tests;
-
 #[cfg(not(target_os = "windows"))]
 #[test]
 fn unsupported_adapter_does_not_touch_files() {

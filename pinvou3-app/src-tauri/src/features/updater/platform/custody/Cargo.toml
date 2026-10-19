@@ -1,0 +1,19 @@
+[package]
+name = "pinvou-upgrade-custody"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+license = "MIT"
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Security", "Win32_System_IO"] }
+
+[dev-dependencies]
+serde_json = "=1.0.151"
+
+[lints.rust]
+unsafe_code = "deny"

@@ -1002,11 +1002,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "pinvou-upgrade-custody"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "pinvou-upgrade-download-job"
 version = "0.0.0"
 dependencies = [
  "pinvou-upgrade-byte-check",
  "pinvou-upgrade-codec",
+ "pinvou-upgrade-custody",
  "pinvou-upgrade-file-http",
  "pinvou-upgrade-transfer",
  "pinvou-upgrade-verifier",

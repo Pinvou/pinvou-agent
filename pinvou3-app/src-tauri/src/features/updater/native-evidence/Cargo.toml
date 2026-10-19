@@ -1,0 +1,27 @@
+[package]
+name = "pinvou-upgrade-native-evidence"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+license = "MIT"
+
+[dependencies]
+pinvou-upgrade-custody = { path = "../platform/custody" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+sha2 = "0.11"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Security", "Win32_System_IO", "Win32_Security_WinTrust", "Win32_Security_Cryptography", "Win32_Security_Cryptography_Catalog", "Win32_Security_Cryptography_Sip", "Win32_System_Console", "Win32_System_Memory"] }
+
+[lints.rust]
+unsafe_code = "deny"
+
+[[bin]]
+name = "upgrade-native-evidence"
+path = "src/main.rs"
+
+[[test]]
+name = "process"
+path = "tests/platform/process.rs"
