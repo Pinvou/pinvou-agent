@@ -405,16 +405,18 @@ const CLI_BUNDLE_TYPES = new Set([
  * Absorb the wrapper-owned `--bundles none` request and validate it. The
  * request shapes that can never succeed fail here, from argv alone:
  * `bundle --bundles none` (the subcommand has no --no-bundle), and a real
- * bundle type requested NEXT to an absorbed `none`. The latter has two
+ * bundle type requested NEXT to an absorbed `none`. The latter has three
  * shapes: a second `--bundles` spelling (after absorption the leftover
  * spelling would sit next to the injected `--no-bundle`, where the CLI
  * silently lets --no-bundle win — the same silent degradation the `none,deb`
- * value mix above refuses), and a space-separated continuation of the
- * absorbed spelling: the CLI's `--bundles` is multi-value (`Vec<BundleFormat>`
- * with `num_args(0..)`), so `--bundles none deb` is upstream ONE option with
- * two values, and absorbing only `none` would leave `deb` as a bare runner
- * positional that fails deep inside cargo with an "unexpected argument"
- * error that never mentions `--bundles`.
+ * value mix above refuses); a space-separated continuation of the absorbed
+ * spelling (the CLI's `--bundles` is multi-value (`Vec<BundleFormat>` with
+ * `num_args(0..)`), so `--bundles none deb` is upstream ONE option with two
+ * values, and absorbing only `none` leaves `deb` as a bare runner positional);
+ * and the `=` spelling of the absorbed request followed by a bundle-type word
+ * (`--bundles=none deb`). The CLI's usage is `tauri build [OPTIONS]
+ * [ARGS]...`, so those bare words pass arg-parse and only die deep inside the
+ * build with an error that never mentions `--bundles`.
  *
  * `main()` calls this before any preparation work (the sidecar steps take
  * minutes and the outcome is knowable from argv); `prepareTauriArgs` calls
@@ -442,15 +444,22 @@ function bundlesNonePlan(args) {
         // The space-separated continuation of the absorbed spelling, same
         // conflict: `--bundles none deb` is one multi-value option upstream,
         // so the wrapper absorbs `none` and `deb` is left behind as a bare
-        // runner positional. Only the space form is scanned: after
-        // `--bundles=none` a following bundle-type word was never part of the
-        // option, and the CLI itself rejects it as an unexpected argument.
-        // Scans the raw args, so both flag orders are covered.
+        // runner positional (the CLI's usage is `tauri build [OPTIONS]
+        // [ARGS]...`, so the bare word passes arg-parse and only dies deep in
+        // the build with an error that never mentions --bundles). Both the
+        // space form and the `=` form of the absorbed spelling are scanned,
+        // and the raw args cover both flag orders.
         for (let index = 0; index < args.length; index += 1) {
           if (
             (args[index] === "--bundles" || args[index] === "-b")
             && args[index + 1] === "none"
             && CLI_BUNDLE_TYPES.has(args[index + 2])
+          ) {
+            throw bundlesNoneConflictError();
+          }
+          if (
+            (args[index] === "--bundles=none" || args[index] === "-b=none")
+            && CLI_BUNDLE_TYPES.has(args[index + 1])
           ) {
             throw bundlesNoneConflictError();
           }

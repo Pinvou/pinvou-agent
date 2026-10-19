@@ -278,6 +278,35 @@ test("a space-separated bundle type following the absorbed none fails loudly", (
   }
 });
 
+test("a bundle type following the equals-form absorbed none fails loudly", () => {
+  // Same conflict as the space form: `--bundles=none deb` absorbs the `none`
+  // request and leaves `deb` as a bare runner positional (the CLI's usage is
+  // `tauri build [OPTIONS] [ARGS]...`, so the bare word passes arg-parse and
+  // only dies deep in the build without naming --bundles). Both spellings and
+  // both flag orders must be named loudly.
+  for (const spelling of ["--bundles=none", "-b=none"]) {
+    assert.throws(
+      () => prepareTauriArgs(
+        ["build", "--target", "loongarch64-unknown-linux-gnu", spelling, "deb"],
+        LINUX_X64,
+      ),
+      /conflicting --bundles requests/u,
+      `${spelling} followed by deb must fail loudly (subcommand-first)`,
+    );
+    assert.throws(
+      () => prepareTauriArgs(
+        [spelling, "deb", "build", "--target", "loongarch64-unknown-linux-gnu"],
+        LINUX_X64,
+      ),
+      /conflicting --bundles requests/u,
+      `${spelling} followed by deb must fail loudly (flag-first)`,
+    );
+  }
+  // A `=`-form `none` with no following bundle-type word stays valid.
+  const prepared = prepareTauriArgs(["build", "--bundles=none"], LINUX_X64);
+  assert.ok(prepared.includes("--no-bundle"), `missing --no-bundle: ${prepared}`);
+});
+
 test("a non-bundle token after the absorbed none is not a conflict", () => {
   // The follower check must fire only on the CLI's bundle-type words: the
   // `--` runner-argument passthrough and flag values keep working.
