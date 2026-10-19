@@ -336,7 +336,8 @@ emit_error(JSON+exit 1)、无裸 except。修复 1 处,下次 sync 需重放:
   lark-cli 输出含 emoji 时会抛未捕获 `UnicodeDecodeError`,导致调用方(3 个 CLI
   脚本)以 traceback 崩溃而非 emit_error 受控失败。其余 5 个脚本(lark_detect_subtables/
   lark_inspect_workbook/lark_profile_table/lark_sheet_range/sheets_df)无 subprocess
-  文本解码或文件 I/O,无同类问题。
+  文本解码或文件 I/O,无同类问题。(对账注 2026-10-19:`sheets_df` 已随 v1.0.98 同步
+  改名 `lark_sheets_df.py`,重放本条时按新名定位,勿在树中寻找旧名。)
 
 ### 独立复审补登记(2026-08-16,PR 评审)
 
@@ -719,7 +720,7 @@ lark-shared-identity-and-permissions.md 规定 agent 发起的增量授权必须
   (三列精简表)+ 9 条编辑准则」新形态,新增 `+filter-view-create`/`+history-list`/
   `+history-revert`/`+range-copy`/`+cells-merge` 等命令与 AI 公式(`=AI(prompt,range)`)指引;
   `scripts/sheets_df.py` 改名 `lark_sheets_df.py`(本地跟随,`workbook.md`/
-  `write-cells.md` 两处脚本指针同步改名);`references/lark-sheets-legacy-command-migration.md`
+  `write-cells.md`/`read-data.md` 三个文件的脚本指针同步改名);`references/lark-sheets-legacy-command-migration.md`
   上游删除(本地与基线逐字节一致,跟随删除);新增 `references/lark-base-view.md`、
   `references/lark-task-sections.md`(任务分区)。非收录域 lark-apps 新增 export 分册,不涉及。
 - **上游全量修正(147 文件)**:reference 前置条件 `../lark-shared/SKILL.md` →
@@ -740,7 +741,7 @@ lark-shared-identity-and-permissions.md 规定 agent 发起的增量授权必须
   导入导出」与「多维表格改用 lark-base」,271 字符;base 仅跟随上游 `version: 1.2.23`,
   description 不变),三份 description 均 ≤280(契约规则 6)。勘误(2026-10-18):doc 的
   272 字符形态合并时把 2026-07-26 登记的 doubao.com 路由锚点挤掉了,现恢复为
-  「(含 doubao.com 的 /docx/、/wiki/)时按路径/token 路由」279 字符形态,仍 ≤280;
+  「(含 doubao.com 的 /docx/、/wiki/)时按路径/token 路由」280 字符形态,仍 ≤280;
   `lark-sheets-batch-update.md`
   下拉配色「`--highlight=false` 时 `--colors` 被忽略」本地口径保持(上游同句未修复);
   `+find` 隐藏别名注、`+table-get` 可选过滤注、tmp/ 临时文件纪律(lark-shared 安全规则指针)、
@@ -751,3 +752,8 @@ lark-shared-identity-and-permissions.md 规定 agent 发起的增量授权必须
   新脚本 `lark_sheets_df.py` 无裸 python。
 - 契约:`pinvou3-app/tests/connector_skills_contract.test.js` 全量通过(含规则 5 阻断式
   auth login 扫描、规则 6 description ≤280、规则 10 participant 归一化扫描)。
+- **lark-base/SKILL.md CellValue 示例 `lark-contact` 口径(2026-10-19 评审补正,下次 sync 需重放)**:
+  上游 v1.0.98 原文「实际 open_id 用 lark-contact 查询」属未收录域引用,按「未随包收录 +
+  CLI 命令直给」既有口径(2026-07-25 复审补漏条、lark-task-get-my-tasks.md 同款)改写为
+  「实际 open_id 用 `lark-cli contact +search-user` 查询(lark-contact 未随包收录)」,
+  JSON 示例其余部分保持上游原样。
