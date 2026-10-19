@@ -20,6 +20,9 @@ function featureRegistry(calls, notifyDuringStartup) {
         get(_target, method) {
           return function (...args) {
             calls.push({ kind: 'feature', feature, method: String(method), args });
+            // The publication observer is synchronous and never publishes
+            // recursively; only startup loaders simulate their own notify.
+            if (feature === 'chat-events' && method === 'refreshActiveStreamRender') return;
             if (notifyDuringStartup && /^(load|refresh|enterDraft)/.test(String(method))) context.notify();
             if (feature === 'sessions' && method === 'switchToSession') return Promise.resolve(true);
             return Promise.resolve();

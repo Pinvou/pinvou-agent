@@ -1656,8 +1656,10 @@ function copySubscriptionStateObject(source) { return pinvouSharedtauriMain().co
   // re-render the root once per completed IPC. Keep their state ownership and
   // parallelism, but publish the initialized state as one coherent revision.
   let startupNotificationBatching = false;
+  let refreshActiveStreamRender = null;
   function notify() {
     if (suppressNotify || startupNotificationBatching) return;
+    if (refreshActiveStreamRender) refreshActiveStreamRender();
     // 会话列表「工作中」指示:active 取活动工作集 state.busy,其余取各自 buffer.busy
     state.sessionBusy = {};
     for (const id in sessionStates) state.sessionBusy[id] = !!sessionStates[id].busy;
@@ -2196,6 +2198,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     get toolMeta() { return toolMeta; },
     set toolMeta(value) { toolMeta = value; },
   });
+  refreshActiveStreamRender = chatEventsFeature.refreshActiveStreamRender;
 
   const monitorFeature = installBridgeFeature("monitor", { state, notify, invoke, bt, safeConsoleInfo, sessionStates });
   const startMonitorPolling = monitorFeature.startMonitorPolling;
