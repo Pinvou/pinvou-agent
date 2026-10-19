@@ -293,7 +293,20 @@ const NAV_PREFETCH = {
       // theme to render; light when the system preference is undeterminable
       // (see shared/color-scheme.js).
       const systemDark = useSystemDarkMode();
-      const [colorScheme, setColorScheme] = useState('system');
+      const [colorScheme, setColorScheme] = useState(() => {
+        // Seed from the persisted scheme so the class the index.html pre-paint
+        // script applied survives until real settings arrive: reconciling from
+        // plain 'system' first would strip a correct pre-paint class whenever
+        // the stored pick differs from the OS at boot. Mirrors the pre-paint
+        // rule exactly: stored light/dark wins, anything else follows the OS.
+        // Web stores the raw choice here ('system' falls through to the
+        // default); desktop stores the resolved scheme as a boot cache.
+        try {
+          const stored = window.localStorage.getItem(COLOR_SCHEME_STORAGE_KEY);
+          if (stored === 'light' || stored === 'dark') return stored;
+        } catch { /* storage may be unavailable */ }
+        return 'system';
+      });
       const activeTheme = resolveTheme(colorScheme, systemDark);
       // Browser state is scoped to workspace sessions: switching chats only shows
       // that chat's WebView2. The login profile remains globally shared by the
@@ -962,7 +975,16 @@ const NAV_PREFETCH = {
         };
       }, []);
       // 工具商店/卡片用 Tailwind dark: 变体(darkMode:'class'),全局挂 <html>.dark 让其随 app 主题切换
-      useEffect(() => { document.documentElement.classList.toggle('dark', activeTheme === 'dark'); }, [activeTheme]);
+      useEffect(() => {
+        document.documentElement.classList.toggle('dark', activeTheme === 'dark');
+        // 桌面端把解析后的配色写回 localStorage,作为 index.html 首帧前置
+        // class 脚本的启动缓存(authoritative color_scheme 在 settings.json,
+        // 异步到达;无缓存时深色冷启会闪白)。web 端 handleSetTheme 自己持久化
+        // 用户选择(system/light/dark),这里若覆盖会毁掉「跟随系统」。
+        if (!isWeb) {
+          try { window.localStorage.setItem(COLOR_SCHEME_STORAGE_KEY, activeTheme); } catch { /* storage may be unavailable */ }
+        }
+      }, [activeTheme]);
       const [language, setLanguage] = useState(() => {
         const systemLanguage = initialSystemLanguage();
         if (!isWeb) return systemLanguage;
@@ -3792,8 +3814,10 @@ const NAV_PREFETCH = {
 
             {/* 单一常驻 Suspense 边界:React 19 下切视图时旧视图在本边界内被替换,
                 chunk 未就绪(未被预取覆盖的入口)保持旧视图不闪 fallback;失败由
-                ViewErrorBoundary 兜底(reload 重试绕开 React.lazy 的失败缓存)。 */}
-            <ViewErrorBoundary t={t}>
+                ViewErrorBoundary 兜底(reload 重试绕开 React.lazy 的失败缓存)。
+                resetKey=currentView:某视图 chunk 失败仅锁该次渲染,切走时边界
+                复位,其余视图不受一次失败牵连。 */}
+            <ViewErrorBoundary t={t} resetKey={currentView}>
               <Suspense fallback={<ViewFallback />}>
             {currentView === 'monitor' && <LazyMonitorView theme={activeTheme} t={t} bs={bs} />}
             {currentView === 'settings' && (
@@ -4108,6 +4132,12 @@ const NAV_PREFETCH = {
                 <LazyUpdateNoticeButton
                   bs={bs}
                   t={t}
+                  // 68 = the collapsed rail's w-[68px] (kept literal here; Tailwind
+                  // needs the class spelled out at the rail below).
+                  sidebarOffset={isCompactShell ? 0 : (isSidebarOpen ? sidebarWidth : 68)}
+                  bottomInset={isCompactShell ? 56 : 0}
+                  hidden={isCompactShell && isSidebarOpen}
+                  measureKey={currentView}
                   onShowChangelog={() => {
                     // Same settings entry path as the sidebar gear (openSettingsSection records the
                     // return view and lets navigateFromScheduledRun own the view transition).

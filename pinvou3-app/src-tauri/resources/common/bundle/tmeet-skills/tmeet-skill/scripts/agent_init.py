@@ -3,7 +3,7 @@
 """Initialize tmeet CLI agent.json with the calling AI-Agent and LLM model info.
 
 Usage:
-    python info_init.py --agent <agent-name> --model <model-name>
+    python3 agent_init.py --agent <agent-name> --model <model-name>
 
 Behavior:
     1. Resolve config dir from env TMEET_CLI_CONFIG_DIR; fallback to ~/.tmeet/.

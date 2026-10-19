@@ -1546,7 +1546,7 @@ async function discoverWorkspacePages(listResult, state, externalRequestId = nul
     // URL fragment may turn it into an owned target.
     if (page.targetId) continue;
 
-    // Official chrome-devtools-mcp@1.7.0 does not yet expose raw targetId in
+    // Official chrome-devtools-mcp@1.11.0 does not yet expose raw targetId in
     // list_pages. Within one MCP process, retain only pageId bindings established
     // by an authoritative target or a controlled about:blank marker. After a
     // wrapper/MCP restart, fail when neither targetId nor marker exists; never
@@ -2211,7 +2211,7 @@ function spawnMcpChild(port) {
     // page-id routing alone can list pages but cannot build an authoritative host
     // targetId mapping, falsely reporting a successfully shown new tab as failed.
     ...(hostedWebView2
-      ? ['--experimental-page-id-routing', '--experimental-structured-content']
+      ? ['--page-id-routing', '--experimental-structured-content']
       : []),
     ...EXTRA_ARGS,
   ];

@@ -221,6 +221,11 @@ function pinvouSharedtauriMain() {
       localVllmSupported: false,
       codexAcpSupported: false,
       browserNativeDisplay: false,
+      localEmbedSupported: false,
+      // Global wake-up shortcut (set_global_shortcut_config); false on Wayland
+      // Linux. Fail-closed so the settings toggle stays disabled until
+      // load_platform_capabilities corrects the slice.
+      globalShortcutsAvailable: false,
     },
     settings: null,
     selectedPet: "lingling",
@@ -1651,8 +1656,10 @@ function copySubscriptionStateObject(source) { return pinvouSharedtauriMain().co
   // re-render the root once per completed IPC. Keep their state ownership and
   // parallelism, but publish the initialized state as one coherent revision.
   let startupNotificationBatching = false;
+  let refreshActiveStreamRender = null;
   function notify() {
     if (suppressNotify || startupNotificationBatching) return;
+    if (refreshActiveStreamRender) refreshActiveStreamRender();
     // 会话列表「工作中」指示:active 取活动工作集 state.busy,其余取各自 buffer.busy
     state.sessionBusy = {};
     for (const id in sessionStates) state.sessionBusy[id] = !!sessionStates[id].busy;
@@ -2191,6 +2198,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
     get toolMeta() { return toolMeta; },
     set toolMeta(value) { toolMeta = value; },
   });
+  refreshActiveStreamRender = chatEventsFeature.refreshActiveStreamRender;
 
   const monitorFeature = installBridgeFeature("monitor", { state, notify, invoke, bt, safeConsoleInfo, sessionStates });
   const startMonitorPolling = monitorFeature.startMonitorPolling;
@@ -2218,6 +2226,9 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
   const getImageInputCapability = settingsFeature.getImageInputCapability;
   const testImageInputCapability = settingsFeature.testImageInputCapability;
   const probeLocalServerKind = settingsFeature.probeLocalServerKind;
+  // Dedicated global-shortcut command (update_settings is never used);
+  // Rust exclusively owns persistence and registration.
+  const setGlobalShortcutConfig = settingsFeature.setGlobalShortcutConfig;
   // Builtin feature switches (contract hook point): desktop Rust command
   // channel only — the web lane has no such backend.
   const listBuiltinFeatures = settingsFeature.listBuiltinFeatures;
@@ -2627,6 +2638,7 @@ function composePlanMarkdown(snapshots) { return pinvouSharedtauriMain().compose
       saveSettings,
       saveSearchSettings,
       saveSearchSettingsAndRestart,
+      setGlobalShortcutConfig,
       listBuiltinFeatures,
       setBuiltinFeatureEnabled,
     },

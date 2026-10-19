@@ -9,6 +9,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { BookOpen, Check, ChevronDown, ClipboardList, X, Zap } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
+import { isWeb } from '../../shared/platform.js';
 import { ComposerPopover } from '../../components/ComposerPopover.jsx';
 import { invokeTauri, isTauriAvailable } from '../../platform/tauri/client.js';
 
@@ -136,11 +137,25 @@ const ComposerKbSelector = ({
     modelSetup.startupLoading === true
     || (runtimeReadyKnown && modelStatus.ready === false && modelSetup.startupReady !== true)
   );
-  const modelBlocked = modelMissing || modelNotReady;
+  // 后端状态里权威的能力位（与命令层下载/装载闸同一来源）：false = 本设备
+  // 编译期即无本地嵌入（loongarch64），模型永远无法就绪——挂载按既有的全文
+  // 检索降级姿态放行（kb_search 在该平台跳过模型重载、直接 FTS），模型检查
+  // 只在「支持平台」上继续把关。字段缺失（旧快照/mock）按未知 → 不放行。
+  const platformEmbedUnsupported = !!(modelStatus && modelStatus.localEmbedSupported === false);
+  const modelBlocked = !platformEmbedUnsupported && (modelMissing || modelNotReady);
   const triggerBlocked = modelBlocked
     && mountedEntries.every(entry => entry.source !== 'remote')
     && (collections || []).every(collection => !(collection.source === 'remote' && collection.ready !== false));
-  const modelBlockedCopy = modelMissing ? t.kbMountNoModel : t.kbMountNotReady;
+  // 平台无本地 embedding（localEmbedSupported=false，如 linux/loongarch64；能力快照
+  // 到达前同样按 false 兜底）时，「先去知识库下载」的引导不成立，改用平台不支持说明。
+  // 不支持时短路两个分支：该平台上模型永远无法就绪，「仍在加载」会变成永远
+  // 无法兑现的承诺（如共享宿主残留的模型目录会让 installed=true、ready=false）。
+  // web 端快照永远缺失，但阻塞通常只是「宿主桌面端尚未安装模型」——归因到
+  // 桌面端而不是宣称平台不支持（KnowledgeView 知识库门同向）。
+  const localEmbedSupported = !!(bs && bs.platformCapabilities && bs.platformCapabilities.localEmbedSupported);
+  const modelBlockedCopy = localEmbedSupported
+    ? (modelMissing ? t.kbMountNoModel : t.kbMountNotReady)
+    : (isWeb ? t.kbEmbedWebTitle : t.kbEmbedUnsupported);
 
   function toggle() { const next = !open; setOpen(next); if (next) { refreshModelStatus(); if (collections === null) loadList(); } }
   function pick(collection) {

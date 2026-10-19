@@ -8,6 +8,12 @@ Bytes from every candidate download source are verified against the lock's
 next candidate — mirrors only affect download speed, never the integrity of what
 gets installed.
 
+> **linux-loong64:** connector vendors have not published LoongArch64
+> artifacts upstream yet, so `scripts/fetch-connectors.sh` refuses that
+> platform explicitly and the loong64 package ships no connector lock. Pin
+> verification and managed first-use installation therefore degrade on
+> loongarch64; connectors already resolved from the system `PATH` keep working.
+
 Candidates are tried in order:
 
 1. An accelerated URL derived from `PINVOU3_GITHUB_ASSET_MIRROR_PREFIX` (only

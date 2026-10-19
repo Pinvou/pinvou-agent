@@ -1,9 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { PinvouLogo } from '../../components/PinvouLogo.jsx';
 import { RefreshCw, X } from '../../components/icons.jsx';
 import { bridge } from '../../hooks/useBridge.js';
 
-export const UpdateNoticeButton = ({ bs, t, onShowChangelog }) => {
+// Card bottom edge sits at 16px; `bottomInset` raises it above full-height
+// bottom chrome (the compact shell's 56px tab bar).
+const CARD_BASE_BOTTOM = 16;
+const CARD_LEFT_MARGIN = 16;
+// Composer-box anchor for the collision check below (ChatView's centered
+// content box: input bar, queued overlay and banners all live inside it).
+const COMPOSER_BOX_SELECTOR = '[data-testid="chat-composer-box"]';
+
+export const UpdateNoticeButton = ({ bs, t, onShowChangelog, sidebarOffset = 0, bottomInset = 0, hidden = false, measureKey = '' }) => {
   // update-notice-logic.js 是 index.html 经典脚本;若未来改为延迟注入,这里
   // 必须容忍未就绪(无更新 UI 缺席一轮渲染即可),不能白屏。
   // 早退 return 必须放在全部 hooks 之后:logic 未就绪时直接 return 会跳过
@@ -14,6 +22,10 @@ export const UpdateNoticeButton = ({ bs, t, onShowChangelog }) => {
     !!logic && !bridge.available && logic.previewEnabled(window.location);
   const updateInfo = logic ? logic.updateInfoFor(bs, { preview: isPreview }) : null;
   const [closed, setClosed] = useState(false);
+  const cardRef = useRef(null);
+  // Extra bottom offset applied when the preferred slot would intersect the
+  // chat composer box (see the layout effect below); 0 keeps the card docked.
+  const [collisionLift, setCollisionLift] = useState(0);
 
   const updateVersionKey = logic && updateInfo ? logic.versionKey(updateInfo) : '';
   useEffect(() => {
@@ -21,7 +33,70 @@ export const UpdateNoticeButton = ({ bs, t, onShowChangelog }) => {
     setClosed(false);
   }, [updateVersionKey]);
 
-  if (!logic || !updateInfo || closed) return null;
+  // Collision guard for the offset slot. On narrow windows with the sidebar
+  // open there is no free bottom band between the sidebar column and the
+  // composer's centered box, so anchoring right of the sidebar would cover
+  // composer controls (the legacy left-4 spot covers the sidebar footer
+  // instead). Measure the card's CANDIDATE rect (as if not lifted) against
+  // the composer box: on intersect, lift the card above the composer's top
+  // edge — covering scrollable chat content is acceptable, blocking input
+  // controls is not. Judging the candidate (not the current) position keeps
+  // this oscillation-free; re-measured on view switches, resizes, offset
+  // changes and composer height changes (the input bar grows when typing).
+  useLayoutEffect(() => {
+    let frame = 0;
+    let composerObserver = null;
+    const measure = () => {
+      const card = cardRef.current;
+      if (!card) return;
+      const box = document.querySelector(COMPOSER_BOX_SELECTOR);
+      if (!box) {
+        setCollisionLift(0);
+        return;
+      }
+      const baseBottom = CARD_BASE_BOTTOM + bottomInset;
+      const candidateLeft = (sidebarOffset || 0) + CARD_LEFT_MARGIN;
+      const candidateTop = window.innerHeight - baseBottom - card.offsetHeight;
+      const candidateBottom = window.innerHeight - baseBottom;
+      const boxRect = box.getBoundingClientRect();
+      const intersects =
+        candidateLeft < boxRect.right &&
+        candidateLeft + card.offsetWidth > boxRect.left &&
+        candidateTop < boxRect.bottom &&
+        candidateBottom > boxRect.top;
+      setCollisionLift(intersects ? Math.ceil(window.innerHeight - boxRect.top + 8) : 0);
+    };
+    const scheduleMeasure = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(measure);
+    };
+    const observeComposer = () => {
+      const box = document.querySelector(COMPOSER_BOX_SELECTOR);
+      if (box && composerObserver) composerObserver.observe(box);
+      return !!box;
+    };
+    composerObserver = new ResizeObserver(scheduleMeasure);
+    scheduleMeasure();
+    if (!observeComposer()) {
+      // ChatView (and its composer) lazy-mount after this component; retry
+      // per frame for ~2s until the box shows up.
+      let tries = 0;
+      const retryObserve = () => {
+        tries += 1;
+        if (tries > 120 || observeComposer()) return;
+        frame = requestAnimationFrame(retryObserve);
+      };
+      frame = requestAnimationFrame(retryObserve);
+    }
+    window.addEventListener('resize', scheduleMeasure);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('resize', scheduleMeasure);
+      if (composerObserver) composerObserver.disconnect();
+    };
+  }, [bottomInset, sidebarOffset, hidden, measureKey]);
+
+  if (hidden || !logic || !updateInfo || closed) return null;
 
   const vm = logic.viewModel(bs, updateInfo, bs && bs.appVersion, {
     downloadInstall: t.downloadInstall,
@@ -46,8 +121,14 @@ export const UpdateNoticeButton = ({ bs, t, onShowChangelog }) => {
     if (onShowChangelog) onShowChangelog();
   };
 
+  // Placement rules: anchor just right of the sidebar column (sidebarOffset
+  // from the app shell; 0 keeps the legacy left-4 spot without a persistent
+  // sidebar), `bottomInset` clears full-height bottom chrome (compact tab
+  // bar), `hidden` keeps the card off the compact drawer while it covers the
+  // sidebar, and collisionLift moves it above the composer when the slot
+  // would intersect it (see the layout effect above).
   return (
-    <div data-update-notice-card="true" className={`fixed left-4 bottom-4 z-[70] w-[260px] p-3.5 backdrop-blur-xl rounded-2xl border shadow-xl shrink-0 transition-all duration-300 bg-white/85 border-gray-200/60 text-gray-800 dark:bg-[#1c1c21]/85 dark:border-white/[0.06] dark:text-gray-200 dark:shadow-2xl`}>
+    <div ref={cardRef} data-update-notice-card="true" className={`fixed z-[70] w-[260px] p-3.5 backdrop-blur-xl rounded-2xl border shadow-xl shrink-0 transition-all duration-300 bg-white/85 border-gray-200/60 text-gray-800 dark:bg-[#1c1c21]/85 dark:border-white/[0.06] dark:text-gray-200 dark:shadow-2xl`} style={{ left: (sidebarOffset || 0) + CARD_LEFT_MARGIN, bottom: CARD_BASE_BOTTOM + bottomInset + collisionLift }}>
       <div className="flex items-center gap-3 mb-3">
         <div className={`w-10 h-10 rounded-[10px] border shadow-inner flex items-center justify-center shrink-0 overflow-hidden relative transition-colors duration-300 bg-gradient-to-br from-gray-100 to-gray-50 border-gray-200/80 dark:bg-gradient-to-br dark:from-[#2c2c35] dark:to-[#1a1a20] dark:border-white/[0.08]`}>
           <PinvouLogo className="h-6 w-6" />

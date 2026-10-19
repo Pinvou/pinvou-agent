@@ -277,6 +277,7 @@ fn prepare_product_attachment_content(
     prompt: String,
     staged_workspace: PathBuf,
     execution_root: PathBuf,
+    image_tools_allowed: bool,
 ) -> Result<String> {
     let fixed_error = || anyhow::anyhow!("attachment_staging_failed");
     let mut entries = std::fs::read_dir(&staged_workspace)
@@ -309,6 +310,7 @@ fn prepare_product_attachment_content(
         prompt,
         attachments,
         &execution_root,
+        image_tools_allowed,
     ))
 }
 
@@ -349,8 +351,14 @@ impl ProductRuntimePort for EnginePoolPort {
             .map_err(|_| anyhow::anyhow!("attachment_staging_failed"))?;
         let prompt = prompt.to_owned();
         let staged_workspace = staged_workspace.to_path_buf();
+        let image_tools_allowed = policy.0.allows("image_analyze");
         let content = tokio::task::spawn_blocking(move || {
-            prepare_product_attachment_content(prompt, staged_workspace, execution_root)
+            prepare_product_attachment_content(
+                prompt,
+                staged_workspace,
+                execution_root,
+                image_tools_allowed,
+            )
         })
         .await
         .map_err(|_| anyhow::anyhow!("attachment_staging_failed"))??;

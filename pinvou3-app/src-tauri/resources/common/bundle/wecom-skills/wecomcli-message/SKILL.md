@@ -1,6 +1,6 @@
 ---
 name: wecomcli-message
-description: 何时用:仅当用户明确指向企业微信(给企微同事/群发消息、查企微会话)时使用;泛指发消息默认走本地通讯工具,邮件走 wecomcli-email。查询可发消息的聊天会话范围,向单聊/群聊发送文本、Markdown、图片、文件、语音、视频消息。
+description: 何时用:仅当用户明确指向企业微信(给企微同事/群发消息、查企微会话)时使用;泛指发消息默认走本地通讯工具,邮件走 wecomcli-email。查询可发消息的聊天会话范围,向单聊/群聊发送 Markdown(纯文本亦按 Markdown 发送)、图片、文件、语音、视频消息。
 metadata:
   requires:
     bins: ["wecom-cli"]

@@ -9,6 +9,7 @@ const PLATFORM_CONFIG_NAMES = {
 const ARCHITECTURE_CONFIG_NAMES = {
   linux: {
     arm64: path.join("platforms", "linux", "aarch64", "tauri.conf.json"),
+    loong64: path.join("platforms", "linux", "loongarch64", "tauri.conf.json"),
     x64: path.join("platforms", "linux", "x86_64", "tauri.conf.json"),
   },
 };

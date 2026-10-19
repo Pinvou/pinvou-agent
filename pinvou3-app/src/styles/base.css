@@ -53,7 +53,10 @@
     .msg-md pre > code { display:block; padding:0; background:transparent; color:inherit; }
     .msg-md blockquote { border-left:3px solid rgba(128,128,128,0.4); padding-left:1em; margin:0.5em 0; opacity:0.85; }
     .msg-md a { text-decoration:underline; }
-    .msg-md table { border-collapse:collapse; margin:0.5em 0; font-size:0.92em; }
+    /* Block-table pattern: wide tables (LLM output routinely exceeds the panel
+       width) scroll within their own box instead of clipping at the container
+       edge or forcing a whole-document pan that hides the heading column. */
+    .msg-md table { border-collapse:collapse; margin:0.5em 0; font-size:0.92em; display:block; width:max-content; max-width:100%; overflow-x:auto; }
     .msg-md th,.msg-md td { border:1px solid rgba(128,128,128,0.3); padding:0.4em 0.8em; }
 
     /* Dark theme code blocks — scoped under .dark so both light-code+dark-code
