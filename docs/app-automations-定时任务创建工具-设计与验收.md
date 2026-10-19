@@ -183,7 +183,7 @@
 | H4 | `python3 -m unittest discover -s scripts/tests` | 0 failed（含 session-reader 既有用例不回归） |
 | H5 | `python3 scripts/mcp-server-contract-smoke.py` | 全绿（矩阵扩为 13 包） |
 | H6 | `python3 scripts/architecture-guard.py` | 通过 |
-| H7 | `./scripts/fork-guard.sh --fast` | 通过（零 fork 内容变更；gitlink 追平与登记刷新随分支落地） |
+| H7 | `./scripts/fork-guard.sh --fast` | 通过（零 fork 内容变更；分支不含任何 fork 登记册/gitlink 提交——gitlink 即基座 main 的 `c08c8c022`，round-27 M2 改真） |
 | H8 | catalog/默认安装测试 | `len()==13`；默认安装种子含 app-automations |
 
 ## 6. 测试文件与矩阵映射
@@ -211,9 +211,9 @@
 ## 8. 边界与已披露事项
 
 - 交互会话无阻塞确认（决策记录 §2）；`tasks`/`github` 基座工具可见性问题本次不处理。
-- **无人值守递归防护的真实边界（round-8 M1 修订）**：确定性防线是引擎侧 `unattended_disallowed_tools`（deny 名单）+ round-8 起对 sched- 隐藏会话**关闭 subagents**（`agent(inherit_disallowed_tools=false)` 无法再剥离 deny 名单——子运行时本会保留 MCP+自动批准，而 posture 名单不含本族三写工具）。剩余通道：无人值守运行携带 shell 时可直接向 `~/.pinvou3/task-requests/` 写入合法 spool 记录（claimed-string 过滤器的既有让步）；上游把宿主 deny 视为不可剥离上限是 CodeWhale 侧的正确修法（已列入家族跟进）。
+- **无人值守递归防护的真实边界（round-8 M1 修订）**：确定性防线是引擎侧 `unattended_disallowed_tools`（deny 名单）+ round-8 起对 sched- 隐藏会话**关闭 subagents**（`agent(inherit_disallowed_tools=false)` 无法再剥离 deny 名单——子运行时本会保留 MCP+自动批准，而 posture 名单不含本族三写工具）。剩余通道有二（round-27 M1 改真）。其一，**无需 shell**：定时任务钉死 Yolo（`tasks.rs`）→ trust mode 下 `write_file` 接受绝对路径，`~/.pinvou3` 不在默认拒绝子树内，而无人值守 deny 名单只含具名工具——故仅凭文件工具即可向 `~/.pinvou3/task-requests/` 写入合法 spool 记录（claimed-string 过滤器的既有让步）。其二，**messaging spool 是同类的第二通道，且可跨会话洗白**：`features/messaging/mod.rs` 自述该目录为"未经认证的本地侧门"（无 digest 绑定、`from_session` 可选）——无人值守运行的文件工具写入后，投递会把普通目录回合注入任意普通会话，而该会话目录含本族三写工具（即 round-9 M2 在工具层修掉的间接性的文件写孪生）。上游把宿主 deny 视为不可剥离上限是 CodeWhale 侧的正确修法（已列入家族跟进）。
 - 现有面板"对话创建"流程保留不动，两条通道汇合到同一个 `create_task` 领域函数。
-- 零 CodeWhale / fork 内容变更；分支上的 fork 登记册刷新与 gitlink 追平提交随评审推进落地（round-22 起更新 `docs/fork-modifications.md`）；本计划文档本身随本分支入库，作为后续实施的评审基线。
+- 零 CodeWhale / fork 内容变更；本分支**不含** fork 登记册刷新与 gitlink 追平提交——gitlink 随基座 main 对齐（round-27 M2 改真），`docs/fork-modifications.md` 由各落地 PR 各自维护；本计划文档本身随本分支入库，作为后续实施的评审基线。
 - 领域层 `parse_rrule` 实际支持 CRON，工具层收紧为三种子集是有意的产品约束；若未来要放开，只改 server.py + watcher 的子集校验，领域无需动。
 - **I/O 原语硬化披露（round-24 minor 13）**：unix 写原语（`open_private_append_file`/`open_private_tmp_write_file`）带 `O_NOFOLLOW|O_NONBLOCK`——用户合法符号链接的诊断/审计日志路径现在**失败关闭**（有意的行为变化；round-17 前符号链接会被跟随）；tmp 写原语对遗留的已存在 tmp 文件不重紧缩权限（载荷无敏感内容，落在同一私有目录）；Windows 写原语无 std 级 reparse-point 拒绝（同用户 spool/state 树的已记录残余）。
 
