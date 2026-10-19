@@ -19,7 +19,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T06 | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
 | T07 | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop and actual Root retention; complete issuance and emergency deny composition remain pending |
 | T08 | In progress | Reviewed genesis catalog/component management and protected atomic publication primitives; complete business publication workflows remain pending |
-| T09 | In progress | Bounded package/native-byte inspection, immutable storage, authenticated upload/recovery, ZIP inspection/UI and current-trust Package/evidence CLI; formal validation, admission, quarantine and platform qualification remain pending |
+| T09 | In progress | Bounded package/native-byte inspection, immutable storage, authenticated upload/recovery, ZIP inspection/UI and current-trust Package/evidence CLI and admin inspection; formal validation, admission, quarantine and platform qualification remain pending |
 | T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
 | T11 | In progress | Protected multi-platform drafts and reviewed content freezing with actual UI/API/history/recovery; package qualification and Release/Target lifecycle approval remain pending. |
 | T12 | In progress | Original stable-facts identity, exact profile matching and immutable forward-policy intersection; protected Registry/version/approval and production qualification remain pending |
@@ -12965,3 +12965,57 @@ T09 current package and paired evidence operator workflow (2026-10-19):
   replication remain pending. The expected version is an operator input, not proof
   of an approved Release. Documents 1.0, product 0.10.12 and CodeWhale stay unchanged;
   deployment remains deferred and downloads retain no hard duration or retry cap.
+
+T09 authenticated current package and evidence inspection (2026-10-19):
+
+- Service commit `d264fa0` adds the fixed receipt-bound inspect-package
+  route and a separate Chinese/English/Japanese panel. Exact current read plus
+  release permission, actual identity, Origin and CSRF remain mandatory. New
+  upload admission may stay closed while historical received bytes are inspected.
+- The closed request uses the independent one MiB metadata/64 KiB string bounds
+  and the complete V1 decimal version grammar, including long components. The
+  version is a caller expectation, not an approved Release reference. Requests
+  cannot replace the protected receipt, physical path, Root or complete deny set.
+- Two short actual SERIALIZABLE transactions jointly authenticate current caller,
+  original receipt/witness/proof/audit, published Root, complete deny and SQL time;
+  the MAC read authorization repeats after trust reads. Complete physical capture,
+  ZIP, Manifest and evidence computation runs outside SQL transactions.
+- Final authority/source failures override both earlier success and parser/evidence
+  rejection. Original full receipt, identical trust references, nonregressing
+  time and final signed Manifest checks are mandatory. Initial Manifest rejection
+  still rechecks the independent final trusted view; later evidence rejection
+  additionally rechecks the original valid Manifest. Failures return no report.
+- The panel correlates original receipt digest, physical source, scope, upload and
+  expected version before displaying bounded identities/counts or a fixed failure
+  phase/code/logical field. Version/selection changes, including away-and-back,
+  and known identity/scope/configuration/permission changes invalidate old results.
+  Reports are not persisted. No raw evidence or archive inventory is returned.
+- Both independent final scoped static reviews pass after a documentation repair
+  clarifies that inspection does not require new reception admission. Negative
+  database controls now assert exact Denied versus Unavailable error categories.
+- Frozen final actual PostgreSQL 17/Windows/TLS/signed-OIDC/browser regression
+  passes 16 top-level and 22 nested tests, zero failures and zero skips (152.543s).
+  It includes all previous reception/ZIP/CLI workflows, permission and login loss,
+  missing witness/deny changes on success and rejected calculations, genuine Root
+  advance, natural published-Root expiry, exact source restoration, unchanged
+  business inventory, long versions, transport/closed-field controls, lost response
+  recovery and delayed version/selection/scope results. Browser assertions wait
+  for actual response consumption and both actual digests; owned processes join.
+- The first combined run had an existing CLI child return a generic command
+  failure; its exact cause was not established. The unchanged current binary then
+  passes that focused case three times and the unchanged complete combined suite.
+  The original failed run remains preserved and is not counted as a passing gate.
+- Default tests pass 819 top-level/1,804 nested cases; 708 top-level/665 nested
+  explicit opt-in/fixture skips and zero failures are recorded separately. Modules,
+  vet, server/CLI builds, pinned contracts, admin build, eight focused UI contract
+  cases, three CLI cross-builds, formatting and whitespace pass. Successful gates
+  over unchanged frozen sources are retained while the failed real gate is rerun.
+  All 97 prior SQL files and frozen source/index/status stay unchanged. Cross-builds
+  are compilation evidence, not actual Linux/macOS execution or certification.
+- T09 remains in progress. Fixtures do not establish native publisher identity,
+  semantic provenance/scanner approval, T46 capability evidence, Artifact validity,
+  quarantine, protected reference retention or replicated storage qualification.
+  Totals remain 5 implemented / 14 in progress / 28 incomplete or deferred of 47.
+  Documents 1.0, product 0.10.12 and CodeWhale remain unchanged. Deployment stays
+  deferred; downloads have no hard total/cumulative duration or retry cap, and
+  32 MiB continues to bound atomic business metadata rather than file bytes.
