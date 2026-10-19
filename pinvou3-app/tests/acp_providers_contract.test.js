@@ -566,12 +566,40 @@ assert.ok(
   MOD.includes('fill_install_outcome(&self.app, backend, &mut status)'),
   'status 构建必须带回 install_finished'
 );
-// 前端自愈：仅当「进行中阶段 + 非本实例发起（busy 不匹配）+ 后端未在安装 +
-// 卡片属于当前 Agent」时按终局收敛；三个终态都必须被映射。
+// installing 覆盖 install_agent 活动全程（入口→终局记录）：若命令后 probe/
+// finalize 窗口内 installing 先行回落，前端安装轮询会在终局落库前停摆，
+// 重挂载的卡片重新永久停留。终局记录必须先于活动期注销。
+assert.ok(
+  MOD.includes('install_active: Arc<parking_lot::RwLock<HashSet<AgentBackend>>>')
+    && MOD.includes('guard_installing || self.install_active.read().contains(&backend)'),
+  'status.installing 必须覆盖安装活动全程（安装锁 ∪ 活动期登记）'
+);
+assert.ok(
+  MOD.includes('record_install_outcome(&self.app, backend, outcome)')
+    && MOD.indexOf('record_install_outcome(&self.app, backend, outcome)')
+      < MOD.indexOf('drop(install_active_guard)'),
+  '终局必须先于活动期注销落库（不留 installing=false 且无终局的间隙）'
+);
+// preflight 窗口（尚未 spawn、无 pid 可杀）的取消同样必须被登记补检消费，
+// 不能以「没有正在进行的安装」拒绝；入口同时清除陈旧取消标记。
+assert.ok(
+  MOD.includes('!guard_held && !self.install_active.read().contains(&backend)')
+    && MOD.includes('self.install_cancelled.lock().remove(&backend)'),
+  '取消必须覆盖 preflight 活动窗口，且安装入口清除陈旧取消标记'
+);
+// 失败终局必须携带本次错误链：部分失败路径不写 runtime_errors，回显
+// status.error 会展示空文案或上一轮的陈旧错误。
+assert.ok(
+  MOD.includes('error_detail.map(str::to_string)'),
+  '失败终局必须携带本次安装的错误链（install_finished.error）'
+);
+// 前端自愈：仅当「下载安装中阶段 + 非本实例发起（busy 不匹配）+ 日志属于
+// 当前 Agent + 本实例已亲自拉取过 status + status 属于当前 Agent 且后端已
+// 不在安装」时按终局收敛；三个终态都必须被映射，失败回显终局错误链。
 {
   const healStart = PROVIDERS_SECTION.indexOf('跨挂载安装自愈');
   assert.ok(healStart > 0, '前端必须实现跨挂载安装自愈（ProvidersSection）');
-  const heal = PROVIDERS_SECTION.slice(healStart, healStart + 1600);
+  const heal = PROVIDERS_SECTION.slice(healStart, healStart + 1800);
   assert.match(
     heal,
     /status\.install_finished/,
@@ -579,8 +607,8 @@ assert.ok(
   );
   assert.match(
     heal,
-    /status\.installing/,
-    '后端仍在安装时不得自愈（终局未记录，防误收敛）'
+    /installPhase !== 'installing'/,
+    '自愈只收敛「下载安装中」阶段（checking 日志为空，无可收敛卡片）'
   );
   assert.match(
     heal,
@@ -589,13 +617,38 @@ assert.ok(
   );
   assert.match(
     heal,
+    /!installLog \|\| installLog\.agent !== activeAgent/,
+    '日志必须非空且属于当前 Agent（空日志窗口不得被异 Agent 旧终局收敛）'
+  );
+  assert.match(
+    heal,
+    /fetchedStatusRef\.current/,
+    '自愈只信本实例挂载后亲自拉取的 status（缓存快照可能携带旧终局）'
+  );
+  assert.match(
+    heal,
+    /status\.agent_id !== activeAgent/,
+    'status 必须属于当前 Agent（标签切换的单 commit 旧快照不得触发自愈）'
+  );
+  assert.match(
+    heal,
+    /status\.installing/,
+    '后端仍在安装时不得自愈（终局未记录，防误收敛）'
+  );
+  assert.match(
+    heal,
     /outcome\.cancelled \? 'cancelled' : outcome\.ok \? 'done' : 'failed'/,
     '自愈必须把终局映射为 cancelled/done/failed 三态'
   );
   assert.match(
     heal,
-    /status\.error/,
-    '失败自愈必须回显后端记录的失败原因（与发起实例的 catch 分支对齐）'
+    /outcome\.error/,
+    '失败自愈必须回显终局携带的本次错误链（与发起实例的 catch 分支对齐）'
+  );
+  assert.match(
+    heal,
+    /setError\(failureDetail\)/,
+    '失败自愈必须把失败原因写入错误区'
   );
 }
 

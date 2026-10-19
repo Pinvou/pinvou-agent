@@ -196,7 +196,9 @@ function injectSource() {
         var resolve = pendingInstalls[agent];
         if (resolve) {
           delete pendingInstalls[agent];
-          resolve(statusByAgent[agent]);
+          // 与 get_acp_agent_status 一致返回新对象：真实后端逐次序列化。
+          var snapshot = statusByAgent[agent];
+          resolve(snapshot ? Object.assign({}, snapshot) : null);
         }
       },
     };
@@ -597,22 +599,45 @@ async function clickSettingsSection(page, label) {
   }));
   // 后端收口：installing=false + install_finished=ok。发起实例已卸载，
   // 重挂载实例必须据此把卡片收敛为「完成」而不是永久「下载安装中」。
+  // 刻意不点击任何刷新：安装中轮询（2s）仍在跑，真实用户盯着面板时收敛
+  // 走的就是这条被动路径——status 读上来后由自愈 effect 收敛（mock 的
+  // installing/install_finished 为原子更新；「installing 先行回落」的窗口
+  // 由后端活动期登记排除，见 acp_providers_contract 8.2）。
   await page.evaluate(() => window.__ACP_PROVIDERS_TEST__.setInstallScenario('codex', {
     installing: false,
     installed: true,
     install_finished: { ok: true, cancelled: false },
   }));
   await page.evaluate(() => window.__ACP_PROVIDERS_TEST__.resolvePendingInstall('codex'));
-  // CLI 区「重新检测」强制重读 status（provider 区刷新只重读 providers）；
-  // 两个同名按钮取最后一个（CLI 区）
-  await page.evaluate(() => {
-    const buttons = [...document.querySelectorAll('button')].filter(button => (button.textContent || '').trim() === '重新检测');
-    buttons[buttons.length - 1].click();
-  });
-  await sleep(600);
-  rec('㉒ 按 install_finished 收敛为完成', await page.evaluate(() => {
+  await sleep(3000);
+  rec('㉒ 不点击刷新也按 install_finished 收敛为完成', await page.evaluate(() => {
     const card = document.querySelector('[data-testid="acp-cli-install-progress"]');
     return !!card && (card.textContent || '').includes('完成');
+  }));
+  // 失败终局自愈：failed（非取消）outcome 必须把终局携带的本次错误链回显
+  // 进红错区（三态中唯一带错误文案的收敛）。顺序对齐真实安装：先把
+  // installing=true 读进组件（轮询接上、自愈被 installing 门挡住），再由
+  // command 事件切「下载安装中」，最后落失败终局交给轮询收敛。
+  await page.evaluate(() => window.__ACP_PROVIDERS_TEST__.setInstallScenario('codex', {
+    installing: true,
+    install_command: 'npm install -g @kimi/kimi-code',
+  }));
+  await page.evaluate(() => document.querySelector('[data-testid="acp-provider-refresh"]').click());
+  await sleep(400);
+  await page.evaluate(() => window.__ACP_PROVIDERS_TEST__.emitInstallProgress(
+    'codex', 'command', 'npm install -g @kimi/kimi-code',
+  ));
+  await sleep(300);
+  await page.evaluate(() => window.__ACP_PROVIDERS_TEST__.setInstallScenario('codex', {
+    installing: false,
+    install_finished: { ok: false, cancelled: false, error: 'npm install failed: EBUSY' },
+  }));
+  await sleep(3000);
+  rec('㉓ 按 install_finished 收敛为失败并回显原因', await page.evaluate(() => {
+    const card = document.querySelector('[data-testid="acp-cli-install-progress"]');
+    const banner = document.querySelector('[data-testid="acp-providers-error"]');
+    return !!card && (card.textContent || '').includes('失败')
+      && !!banner && (banner.textContent || '').includes('EBUSY');
   }));
 
   const pageErrors = errors.filter(message => !message.includes('favicon'));
