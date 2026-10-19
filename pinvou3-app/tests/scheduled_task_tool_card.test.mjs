@@ -31,6 +31,18 @@ import {
 } from '../src/features/tools/scheduled-task-card-logic.js';
 
 const read = rel => readFileSync(new URL(`../src/${rel}`, import.meta.url), 'utf8');
+// Round-26 M7: positive shape pins must not match text inside comments —
+// comment-masking a production line used to satisfy every anchor (the
+// unwrap-call hole was live-verified by review). Same strip discipline as
+// ui_language_coverage.test.mjs: block comments blanked with newlines
+// preserved, `//` tails dropped per line. Every pin below is POSITIVE, so
+// over-stripping can only fail loudly, never satisfy one.
+const stripComments = text => text
+  .replace(/\/\*[\s\S]*?\*\//g, comment => comment.replace(/[^\n]/g, ''))
+  .split('\n')
+  .map(line => line.replace(/\/\/.*$/, ''))
+  .join('\n');
+const readStripped = rel => stripComments(read(rel));
 
 // Round-8 minor 14: the mismatch and updatedName rows are pinned by
 // testid at the card source (deleting either div left the suite
@@ -166,7 +178,11 @@ test('prompt excerpt bounds long prompts', () => {
 });
 
 test('renderer wiring is present (timeline card + summary routing)', () => {
-  const common = read('features/tools/tool-common.jsx');
+  // Round-26 M7: the positive shape pins run against COMMENT-STRIPPED
+  // source (masking a production line in a comment used to satisfy them);
+  // the QUIET_TOOLS check stays on the RAW text — it is a negative pin,
+  // and over-stripping could silently satisfy one.
+  const common = readStripped('features/tools/tool-common.jsx');
   assert.match(
     common,
     new RegExp(`case ${'SCHEDULED_TASK_CREATE_TOOL'}:`),
@@ -182,9 +198,15 @@ test('renderer wiring is present (timeline card + summary routing)', () => {
     new RegExp(`case ${'SCHEDULED_TASK_DELETE_TOOL'}:`),
     'toolSummary must route the delete tool through the logic module',
   );
-  const renderers = read('features/tools/tool-renderers.jsx');
+  const renderers = readStripped('features/tools/tool-renderers.jsx');
   assert.match(renderers, /SCHEDULED_TASK_TOOL_OPS = \{[\s\S]*SCHEDULED_TASK_CREATE_TOOL[\s\S]*SCHEDULED_TASK_UPDATE_TOOL[\s\S]*SCHEDULED_TASK_DELETE_TOOL/,
     'create/update/delete must route to the result card');
+  // The OPS table's VALUES are behavioral — each one drives a card arm
+  // (the deleted value drives the deletedNote row), and corrupting one to
+  // a bogus op kept the name-key pin above green. Pin the exact rows.
+  assert.match(renderers, /\[SCHEDULED_TASK_CREATE_TOOL\]: 'created',/, 'the create op value drives the created arm');
+  assert.match(renderers, /\[SCHEDULED_TASK_UPDATE_TOOL\]: 'updated',/, 'the update op value drives the updated arm');
+  assert.match(renderers, /\[SCHEDULED_TASK_DELETE_TOOL\]: 'deleted',/, 'the delete op value drives the deletedNote arm');
   // Startup-budget lazy route: the card and its parser live in the lazy
   // scheduled-task chunk, and the entry routes done items through the
   // dynamic import below (re-inlining the card re-trips the main-entry
@@ -198,9 +220,13 @@ test('renderer wiring is present (timeline card + summary routing)', () => {
   // round-16 commit message claimed this pin existed and it did not. The
   // lazy result must render inside the local error boundary: a rejected
   // chunk import re-throws during render and unmounts the root.
+  // Round-26 M7: the regex extends through the ScheduledTaskToolResult
+  // props incl. the parse-miss `fallback` — deleting that prop at the
+  // composition site used to keep every suite green (the SSR fixture
+  // passes its own fallback, so only this pin sees the site).
   assert.match(
     renderers,
-    /<ScheduledTaskLoadBoundary fallback=\{<OutputPre text=\{out\} \/>\}>\s*<Suspense fallback=\{null\}>\s*<ScheduledTaskToolResult/,
+    /<ScheduledTaskLoadBoundary fallback=\{<OutputPre text=\{out\} \/>\}>\s*<Suspense fallback=\{null\}>\s*<ScheduledTaskToolResult\s*op=\{scheduledTaskOp\}\s*out=\{out\}\s*args=\{item\.args\}\s*t=\{t\}\s*fallback=\{<OutputPre text=\{out\} \/>\}/,
     'the lazy card must render inside the local error boundary',
   );
   assert.match(renderers, /class ScheduledTaskLoadBoundary/, 'the boundary must be defined');
@@ -222,10 +248,11 @@ test('renderer wiring is present (timeline card + summary routing)', () => {
   const cardLogic = read('features/tools/scheduled-task-card-logic.js');
   assert.match(cardLogic, /export const parseScheduledTaskToolOutput/, 'the parser must live in the lazy card logic module');
   // The L1 write tools must never join the quiet-tool set (execution
-  // visibility is mandatory).
-  const quietList = common.slice(
-    common.indexOf('QUIET_TOOLS'),
-    common.indexOf(']);', common.indexOf('QUIET_TOOLS')),
+  // visibility is mandatory). Negative pin: RAW text (see the note above).
+  const rawCommon = read('features/tools/tool-common.jsx');
+  const quietList = rawCommon.slice(
+    rawCommon.indexOf('QUIET_TOOLS'),
+    rawCommon.indexOf(']);', rawCommon.indexOf('QUIET_TOOLS')),
   );
   assert.ok(!quietList.includes('app-automations'), 'the write tools must not be quiet tools');
 });

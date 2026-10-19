@@ -24,8 +24,10 @@ const vite = await createServer({
   optimizeDeps: { noDiscovery: true },
 });
 const { ScheduledTaskToolCard } = await vite.ssrLoadModule('/src/features/tools/scheduled-task-card.jsx');
+const { ScheduledTaskToolResult } = await vite.ssrLoadModule('/src/features/tools/scheduled-task-card.jsx');
 const { parseScheduledTaskToolOutput } = await vite.ssrLoadModule('/src/features/tools/scheduled-task-card-logic.js');
 const { unwrapMcpTextEnvelope } = await vite.ssrLoadModule('/src/features/tools/tool-common.jsx');
+const { OutputPre } = await vite.ssrLoadModule('/src/features/tools/tool-common.jsx');
 
 after(async () => {
   await vite.close();
@@ -105,4 +107,44 @@ test('a name-less update does not claim "Renamed" (round-10 MAJOR-2)', () => {
     op: 'update', parsed, args: { name: '   ' }, t,
   }));
   assert.ok(!blank.includes('data-testid="scheduled-task-updated-name"'), 'a blank name is not a rename');
+});
+
+test('the real result branch renders the deleted row through unwrap+parse (round-26 M7)', () => {
+  // The production branch is ScheduledTaskToolResult — the component
+  // tool-renderers' lazy resolves to — not the hand-composed inner card the
+  // older fixtures rendered. Masking the unwrap call or corrupting the
+  // deleted-arm copy used to keep every suite green; this drives the real
+  // branch with the exact props the production composition passes
+  // (op/out/args/t/fallback). The lazy+Suspense layer itself cannot render
+  // through renderToStaticMarkup (verified: the boundary catches the
+  // suspension and renders its fallback), so the branch is rendered at its
+  // synchronous seam with the same component identity.
+  const html = renderToStaticMarkup(React.createElement(ScheduledTaskToolResult, {
+    op: 'deleted',
+    out: envelope({ ok: true, kind: 'delete', taskId: 't-9', taskName: '早报', duplicate: false }),
+    args: { name: '早报' },
+    t,
+    fallback: React.createElement(OutputPre, { text: 'RAW-ENVELOPE-MARKER' }),
+  }));
+  assert.ok(html.includes('Archived'), 'the deletedNote row renders through the real branch');
+  assert.ok(html.includes('Deleted'), 'the deleted heading renders');
+  assert.ok(html.includes('t-9'), 'the deleted row names the task id');
+  assert.ok(!html.includes('RAW-ENVELOPE-MARKER'), 'a parse hit must not fall back');
+});
+
+test('a parse miss renders the production fallback prop (round-26 M7)', () => {
+  // The `fallback={<OutputPre text={out} />}` prop is what structural
+  // drift degrades to; it is pinned at both ends — the composition site
+  // must pass it (the shape pin in scheduled_task_tool_card.test.mjs,
+  // round-26 M7) and, when passed, it must actually render on a parse
+  // miss (this test).
+  const html = renderToStaticMarkup(React.createElement(ScheduledTaskToolResult, {
+    op: 'deleted',
+    out: 'total drift, never parses',
+    args: {},
+    t,
+    fallback: React.createElement(OutputPre, { text: 'RAW-ENVELOPE-MARKER' }),
+  }));
+  assert.ok(html.includes('RAW-ENVELOPE-MARKER'), 'a parse miss renders the production fallback prop');
+  assert.ok(!html.includes('scheduled-task-tool-card'), 'a parse miss must not render the card');
 });
