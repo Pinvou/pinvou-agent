@@ -200,6 +200,11 @@ _MFJS_MAX_ANY_OF_ITEMS = 10
 _MFJS_MAX_OBJECT_DEPTH = 5
 _MFJS_MAX_TOTAL_PROPERTIES = 100
 _MFJS_MAX_TOTAL_ENUM_VALUES = 500
+# validate_mfjs_enum's conditional literal budget: an enum with more than 250
+# entries may not carry more than 7500 combined literal bytes (str::len for
+# strings, serde to_string() length for the numeric literals).
+_MFJS_ENUM_LENGTH_CHECK_THRESHOLD = 250
+_MFJS_MAX_ENUM_STRING_LENGTH = 7_500
 _MFJS_MAX_SCHEMA_BYTES = 120_000
 _MFJS_MAX_STRUCTURAL_DEPTH = 64
 _MFJS_MAX_SAFE_INTEGER = 9_007_199_254_740_991
@@ -392,6 +397,20 @@ def _walk_tool_schema(node, path, offenders, is_root=False, property_depth=0,
                             budget.enum_budget_reported = True
                             offenders.append(
                                 f"{path}: {budget.total_enum_values} total enum values exceed the MFJS budget of {_MFJS_MAX_TOTAL_ENUM_VALUES} (ResourceLimitExceeded drops the tool)")
+                    # validate_mfjs_enum's conditional literal budget: once an
+                    # enum holds more than 250 entries its combined literal
+                    # length must stay within 7500 bytes (str::len for the
+                    # string case, serde to_string() for numeric literals) or
+                    # the validator raises ResourceLimitExceeded.
+                    if len(values) > _MFJS_ENUM_LENGTH_CHECK_THRESHOLD:
+                        encoded_length = sum(
+                            len(value.encode("utf-8")) if isinstance(value, str)
+                            else len(json.dumps(
+                                value, separators=(",", ":")).encode("utf-8"))
+                            for value in values)
+                        if encoded_length > _MFJS_MAX_ENUM_STRING_LENGTH:
+                            offenders.append(
+                                f"{path}: enum of {len(values)} values carries {encoded_length} literal bytes — MFJS caps enums above {_MFJS_ENUM_LENGTH_CHECK_THRESHOLD} entries at {_MFJS_MAX_ENUM_STRING_LENGTH} (ResourceLimitExceeded drops the tool)")
             if ("default" in node and node_type in _MFJS_DEFAULT_VALUE_MATCHERS
                     and not _MFJS_DEFAULT_VALUE_MATCHERS[node_type](node["default"])):
                 # validate_mfjs_default: object/array nodes cannot carry a
@@ -400,9 +419,15 @@ def _walk_tool_schema(node, path, offenders, is_root=False, property_depth=0,
                     f"{path}: default does not match type \"{node_type}\" (MFJS InvalidDefault drops the tool)")
             for lo_kw, hi_kw in (("minLength", "maxLength"), ("minItems", "maxItems"),
                                  ("minimum", "maximum")):
-                lo, hi = node.get(lo_kw), node.get(hi_kw)
-                if lo is None and hi is None:
+                # Presence checks, mirroring the validator's obj.get(k).is_some()
+                # arms: an explicitly present null keyword value is
+                # present-and-invalid (validate_mfjs_bounds parses it and
+                # raises InvalidRange), never "keyword absent" — .get() alone
+                # cannot tell them apart because JSON null is Python None.
+                lo_present, hi_present = lo_kw in node, hi_kw in node
+                if not lo_present and not hi_present:
                     continue
+                lo, hi = node.get(lo_kw), node.get(hi_kw)
                 if lo_kw == "minLength":
                     expected_type, literal_ok = "string", _mfjs_is_u64
                 elif lo_kw == "minItems":
@@ -417,31 +442,34 @@ def _walk_tool_schema(node, path, offenders, is_root=False, property_depth=0,
                 if not type_ok:
                     offenders.append(
                         f"{path}: {lo_kw}/{hi_kw} require type \"{expected_type}\" (MFJS InvalidRange drops the tool)")
-                elif not ((lo is None or literal_ok(lo)) and (hi is None or literal_ok(hi))):
+                elif not ((not lo_present or literal_ok(lo))
+                          and (not hi_present or literal_ok(hi))):
                     offenders.append(
                         f"{path}: {lo_kw}/{hi_kw} hold an out-of-range literal (MFJS InvalidRange drops the tool)")
-                elif lo is not None and hi is not None and lo > hi:
+                elif lo_present and hi_present and lo > hi:
                     offenders.append(
                         f"{path}: {lo_kw} must not exceed {hi_kw} (MFJS InvalidRange drops the tool)")
             if node_type == "object":
                 properties = node.get("properties")
-                if properties is not None and not isinstance(properties, dict):
+                if "properties" in node and not isinstance(properties, dict):
                     offenders.append(
                         f"{path}: properties must be an object (MFJS InvalidKeywordValue drops the tool)")
                 additional = node.get("additionalProperties")
-                if additional is not None and not isinstance(additional, (bool, dict)):
+                if "additionalProperties" in node and not isinstance(additional, (bool, dict)):
                     offenders.append(
                         f"{path}: additionalProperties must be a boolean or a schema object (MFJS InvalidKeywordValue drops the tool)")
                 required = node.get("required")
-                if required is not None:
-                    if not isinstance(properties, dict):
-                        offenders.append(
-                            f"{path}: required requires a properties object (MFJS InvalidKeywordValue drops the tool)")
-                    elif (not isinstance(required, list)
-                            or not all(isinstance(entry, str) and entry for entry in required)):
+                if "required" in node:
+                    # validate_mfjs_required order: the required value must be
+                    # a list before the properties object it names is consulted.
+                    if not isinstance(required, list):
                         offenders.append(
                             f"{path}: required must be a list of non-empty property names (MFJS InvalidKeywordValue drops the tool)")
-                    elif (len(required) != len(set(required))
+                    elif not isinstance(properties, dict):
+                        offenders.append(
+                            f"{path}: required requires a properties object (MFJS InvalidKeywordValue drops the tool)")
+                    elif (not all(isinstance(entry, str) and entry for entry in required)
+                            or len(required) != len(set(required))
                             or any(entry not in properties for entry in required)):
                         offenders.append(
                             f"{path}: required must name unique declared properties (MFJS InvalidKeywordValue drops the tool)")
