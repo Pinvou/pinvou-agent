@@ -115,13 +115,16 @@ const RESPONSES_ROUTE_PROVIDER: &str = "pinvou_responses";
 ///   prevent (review #713 round 3). A tombstone slug still fails closed at
 ///   resume, as it already failed at spawn; the stamp must not silently
 ///   reroute it either;
-/// - a legacy `ollama` pin at the exact hosted endpoint rides the
-///   in-memory ollama→ollama-cloud migration, whose identity keeps the
-///   pin's exact id: the pair is `("ollama-cloud", Some("ollama"))`, the
-///   same shape the foundation's own derivation persists
-///   (`resolve_provider_identity`), so a later resume re-enters the same
-///   `[providers.ollama]` table the spawn rode instead of the built-in
-///   ollama-cloud route.
+/// - a legacy ollama pin at the exact hosted endpoint rides the in-memory
+///   ollama→ollama-cloud migration, whose identity keeps the legacy exact
+///   id: the pair is `("ollama-cloud", Some("ollama"))`, the same shape the
+///   foundation's own derivation persists (`resolve_provider_identity`), so
+///   a later resume re-enters the same `[providers.ollama]` table the spawn
+///   rode instead of the built-in ollama-cloud route. The pin is matched
+///   through `ApiProvider::parse`, the same case-insensitive id+alias
+///   resolution `api_provider` used to resolve the kind — the literal-only
+///   check missed `OLLAMA`/`ollama-local`, which the foundation also
+///   migrates (review #713 round 7).
 pub(crate) fn persisted_provider_route(
     dt_config: &DtConfig,
     provider: &str,
@@ -152,11 +155,14 @@ pub(crate) fn persisted_provider_route(
                 ("custom".to_string(), None)
             }
         }
-        ApiProvider::OllamaCloud if provider == ApiProvider::Ollama.as_str() => {
-            // Legacy migration arm: the resolved kind is ollama-cloud but
-            // the identity's exact id stays the pin's "ollama" (the
-            // foundation's migrated-route shape in
-            // `resolve_provider_identity`).
+        ApiProvider::OllamaCloud if ApiProvider::parse(provider) == Some(ApiProvider::Ollama) => {
+            // Legacy migration arm: `api_provider` only resolves OllamaCloud
+            // from an ollama pin via the hosted-route migration, and the
+            // identity's exact id stays the legacy "ollama" (the foundation's
+            // migrated-route shape in `resolve_provider_identity`). The pin
+            // is matched through the same parser, so the accepted spellings
+            // (`OLLAMA`, `ollama-local`, …) stay in lockstep with the kinds
+            // this arm can actually observe.
             (
                 ApiProvider::OllamaCloud.as_str().to_string(),
                 Some(ApiProvider::Ollama.as_str().to_string()),
@@ -11827,6 +11833,23 @@ mod tests {
             persisted_provider_route(&cfg, "ollama"),
             ("ollama-cloud".to_string(), Some("ollama".to_string()))
         );
+        // The migration arm keys off the parser, not the literal spelling:
+        // `OLLAMA` and `ollama-local` resolve Ollama too (case-insensitive
+        // id+alias, the same resolution `api_provider` used to produce this
+        // kind), so their identity keeps the legacy exact id as well — a
+        // kind-as-both-fields stamp would re-route the resume onto
+        // `[providers.ollama_cloud]` (review #713 round 7).
+        for spelling in ["OLLAMA", "ollama-local"] {
+            let mut cfg = DtConfig::default();
+            cfg.provider = Some(spelling.to_string());
+            let providers = cfg.providers.get_or_insert_with(ProvidersConfig::default);
+            providers.ollama.base_url = Some("https://ollama.com/v1".to_string());
+            assert_eq!(
+                persisted_provider_route(&cfg, spelling),
+                ("ollama-cloud".to_string(), Some("ollama".to_string())),
+                "migrated spelling {spelling} must keep the legacy exact id"
+            );
+        }
         // An explicit ollama-cloud pin is its own route (no migration):
         // the kind as both fields, like any other built-in slug.
         let mut cfg = DtConfig::default();
