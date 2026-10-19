@@ -55,10 +55,14 @@
 #      on the extracted tree — the .deb file is not an ELF, so the policy
 #      script must not be pointed at the deb directly.
 #
-# RUSTFLAGS are release-job policy and are inherited unchanged from the
-# workflow env (remap-only there: the pinned cross toolchain ships NO lld —
-# only bfd ld — so the arm64 job's -fuse-ld=lld must never be copied; the
-# rustc-side --remap-path-prefix is kept for artifact-path parity).
+# Rust flags are target-scoped: this script exports them as
+# CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS (remap +
+# --sysroot link-arg, see the export block below). They must not ride in
+# RUSTFLAGS: cargo gives a set RUSTFLAGS precedence over the target-scoped
+# variable (the target units would silently lose the sysroot link-arg), and
+# RUSTFLAGS also reaches every host build-script link where a loong64
+# --sysroot is fatal. The pinned cross toolchain ships NO lld — only bfd ld
+# — so the arm64 job's -fuse-ld=lld must never be copied in any spelling.
 #
 # Env knobs: PINVOU_LOONG64_TOOLCHAIN_PREFIX / PINVOU_LOONG64_SYSROOT (reuse
 # prepared trees), PINVOU_LOONG64_SYSROOT_METHOD and the mirror overrides
@@ -167,6 +171,17 @@ if [ -d /usr/lib/llvm-18/lib ]; then
   export LIBCLANG_PATH="${LIBCLANG_PATH:-/usr/lib/llvm-18/lib}"
 fi
 
+# ---- target-unit rust flags ---------------------------------------------------
+# Exactly two flags, both target-scoped on purpose (see the header): the
+# remap keeps build-machine paths out of the shipped loong64 artifacts (same
+# spelling and purpose as every other release job), and the link-arg points
+# the final links at the deepin sysroot so the libc.so linker script's
+# absolute GROUP paths resolve (with the usrmerge aliases the sysroot script
+# creates; without --sysroot ld opens them verbatim on the build host and
+# dies). Word-splitting is intentional — rustflags are consumed the same way.
+CARGO_TARGET_RUSTFLAGS="--remap-path-prefix=$REPO_ROOT=/ -C link-arg=--sysroot=$sysroot"
+export CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS="$CARGO_TARGET_RUSTFLAGS"
+
 # ---- rust target --------------------------------------------------------------
 # Run from the repo root: rustup resolves the active toolchain per directory
 # (pinvou-knowledge and src-tauri float on "stable" via their
@@ -181,6 +196,27 @@ assert_loongarch_elf() {
   [ "$machine" = "LoongArch" ] \
     || fail "$elf is not a LoongArch64 ELF (readelf Machine: '${machine:-<none>}')"
 }
+
+# ---- link smoke (seconds; the release path's canary for the link env) ---------
+# The pr-check legs are check-only and never link, so without this probe the
+# release job's first link was a full knowledge-server compile — the worst
+# place to discover a broken cross link environment. The tiny link exercises
+# the whole chain end to end: the cross driver, startfiles from the deepin
+# sysroot, the libc.so linker script resolved under --sysroot (usrmerge
+# aliases), the glibc compat archives (the gnu link tail always carries
+# -lutil -lrt -lpthread -lm -ldl -lc) and libgcc from the toolchain. Runs
+# from the repo root so rustup resolves the same pinned toolchain the cargo
+# builds below use.
+smoke_dir="$(mktemp -d)"
+printf 'fn main() {}\n' > "$smoke_dir/hello.rs"
+(cd "$REPO_ROOT" && rustc --target "$TRIPLE" \
+  -C linker="$CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER" \
+  $CARGO_TARGET_RUSTFLAGS \
+  -o "$smoke_dir/hello" "$smoke_dir/hello.rs") \
+  || fail "cross link smoke failed: the loong64 link environment is broken (see the error above)"
+assert_loongarch_elf "$smoke_dir/hello"
+rm -rf -- "$smoke_dir"
+log "link smoke passed"
 
 # ---- 3. knowledge server (exact target triple) --------------------------------
 if [ "${PINVOU_LOONG64_SKIP_KNOWLEDGE_BUILD:-0}" = "1" ]; then
@@ -267,10 +303,12 @@ sysroot: $sysroot
 # CI step exports (recompute at consumption time; see also the env blocks
 # printed by the two setup scripts):
 #   CC/CXX/AR/RANLIB_loongarch64_unknown_linux_gnu (+ verbatim-triple forms),
-#   CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER, STRIP,
+#   CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER,
+#   CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS,
 #   PKG_CONFIG_LIBDIR, PKG_CONFIG_SYSROOT_DIR, CMAKE_TOOLCHAIN_FILE
 #   (all set inside this script for its children; a workflow that runs the
 #   setup scripts directly exports the same values from their output).
-#   RUSTFLAGS stay the workflow's decision; the pinned toolchain has no lld,
-#   so the arm64 -fuse-ld=lld flag must not be copied.
+#   RUSTFLAGS must stay unset (cargo would let it shadow the target-scoped
+#   flags below); the pinned toolchain has no lld, so the arm64
+#   -fuse-ld=lld flag must not be copied in any spelling.
 EOF

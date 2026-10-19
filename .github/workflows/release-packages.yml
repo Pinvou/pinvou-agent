@@ -436,14 +436,13 @@ jobs:
       PINVOU_LOONG64_CACHE_ROOT: ${{ github.workspace }}/.pinvou-loong64-cache
       PINVOU_LOONG64_TOOLCHAIN_PREFIX: ${{ github.workspace }}/.pinvou-loong64-cache/cross-tools/loongarch64-unknown-linux-gnu
       PINVOU_LOONG64_SYSROOT: ${{ github.workspace }}/.pinvou-loong64-cache/sysroot
-      # RUSTFLAGS 只带 --remap-path-prefix(与 x64/arm64/macos 产物一致地把
-      # 构建机绝对路径从 panic Location 里洗掉;该旗标是 rustc 侧的,不依赖
-      # lld)。其余 arm64 的链接旗标刻意不复制:钉死的交叉工具链没有 lld
-      # (只有 bfd ld),-C link-arg=-fuse-ld=lld 在这里必然失败;--icf=safe
-      # 同样是 lld 专属,loong64 deb 不做 identical-code folding,体积代价
-      # 已知并接受。LTO 也不在此覆盖:Cargo.toml 的 thin LTO 由 rustc 进程内
-      # 执行,与链接器无关(env 覆盖反而偏离已审计的 profile)。
-      RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/"
+      # Rust 旗标由编排脚本按 target 作用域导出(CARGO_TARGET_*_RUSTFLAGS:
+      # remap + -C link-arg=--sysroot,都只属于目标单元)。此处刻意不设
+      # RUSTFLAGS:cargo 的优先级是已设 RUSTFLAGS 完全压过 target 专属变量
+      # (目标单元会静默丢掉 sysroot 链接旗标),且 RUSTFLAGS 还会进入每个
+      # 宿主 build-script 的链接,loong64 sysroot 在宿主链接里必然致命。
+      # arm64 的 -fuse-ld=lld / --icf=safe 同样不复制:钉死的交叉工具链
+      # 只有 bfd;LTO 也不覆盖(thin LTO 在 rustc 进程内执行,与链接器无关)。
     steps:
       - name: Checkout (含 submodule)
         uses: actions/checkout@v7

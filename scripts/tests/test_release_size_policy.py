@@ -97,20 +97,13 @@ class ReleaseSizePolicyTests(unittest.TestCase):
         self.assertNotIn("--icf=safe", job_code)
         self.assertNotIn("CARGO_PROFILE_RELEASE_LTO", job_code)
         self.assertNotIn("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", job_code)
-        job_env = job_code.split("\n    steps:", maxsplit=1)[0]
-        # RUSTFLAGS must be exactly the remap-only spelling: build-machine
-        # paths leave the artifact like every other release job, while the
-        # lld-specific link flags stay out (the cross toolchain is bfd-only).
-        rustflags = [
-            line.strip()
-            for line in job_env.splitlines()
-            if line.strip().startswith("RUSTFLAGS:")
-        ]
-        self.assertEqual(
-            rustflags,
-            ['RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/"'],
-            "the loongarch64 job must set exactly the remap-only RUSTFLAGS",
-        )
+        # The job must not set RUSTFLAGS anywhere (job env, step env, or a
+        # run-block export): cargo gives a set RUSTFLAGS precedence over the
+        # target-scoped CARGO_TARGET_<triple>_RUSTFLAGS the orchestrator
+        # exports (remap + sysroot link-arg — pinned by
+        # test_release_loongarch64_policy), so a global RUSTFLAGS here would
+        # silently strip the target units' flags.
+        self.assertNotIn("RUSTFLAGS", job_code)
 
     def test_linux_jobs_repack_deb_as_xz_before_sha256(self):
         for start, end in (

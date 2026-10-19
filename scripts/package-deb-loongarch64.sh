@@ -213,11 +213,14 @@ fi
 # Best-effort sweep of the staged runtime tree (shell scripts and data files
 # are skipped by the ELF filter): catches a mis-staged node or knowledge
 # server with a precise filename before packaging. -xtype follows symlinks,
-# so an ELF staged behind a link (npm .bin style) is checked here too; links
-# to directories are skipped here and abort loudly later in the
-# materialization pass, and dangling links die at the same later pass.
+# so an ELF staged behind a link (npm .bin style) is visited here as the
+# LINK path — and file -L must dereference it for the content probe: a plain
+# file -b lstats and reports "symbolic link to ...", silently skipping
+# exactly the ELF this sweep exists to catch. Links to directories are
+# skipped here and abort loudly later in the materialization pass, and
+# dangling links die at the same later pass.
 while IFS= read -r -d '' elf; do
-  file_out="$(file -b "$elf")"
+  file_out="$(file -bL "$elf")"
   case "$file_out" in
     ELF*) assert_loongarch_elf "$elf" ;;
   esac
