@@ -96,9 +96,15 @@ enum RateDecision {
 // download_model（公开 API 直连的防御纵深闸）共用同一语义与文案。能力位
 // 作参数（与桌面端 local_embed_download_refusal 同形），宿主即可在两个
 // 方向上执行闸语义，而不是只靠 loongarch64 目标的编译期检查。
+// 文案遵循 CONTRIBUTING 的诊断语言约定（英文），并刻意区别于 embedding
+// 桩常量（409 下载拒绝 ≠ 503 装载不可用，is_local_embed_unavailable 只
+// 认后者）。
 fn local_embed_download_refusal(supported: bool) -> Option<String> {
-    (!supported)
-        .then(|| "本地向量嵌入模型在此平台不可用，无法下载（本平台缺少模型运行库制品）".to_string())
+    (!supported).then(|| {
+        "local embedding model download is unavailable on this platform (no embedding \
+         runtime artifacts for this architecture)"
+            .to_string()
+    })
 }
 
 fn check_attempt_rate(
@@ -1668,7 +1674,10 @@ mod tests {
         assert!(local_embed_download_refusal(true).is_none());
         let refusal = local_embed_download_refusal(false)
             .expect("an unsupported capability must refuse downloads");
-        assert!(refusal.contains("此平台不可用"), "{refusal}");
+        assert!(
+            refusal.contains("unavailable on this platform"),
+            "{refusal}"
+        );
     }
 
     #[tokio::test]
@@ -1739,10 +1748,15 @@ mod tests {
         let error = service
             .begin_model_download()
             .expect_err("stub builds must refuse model downloads");
-        assert!(error.contains("此平台不可用"), "{error}");
+        assert!(error.contains("unavailable on this platform"), "{error}");
         // 下载闸文案是有意的独立文案（说明"下载不可为"）。503 映射键于
         // embedding 桩常量——那个常量由装载路径返回（from_dir 或上方
         // load_model 的早退）；下载端点自行映射 409，两者不需要同源。
+        // 钉住这个「不同源」：文案漂移成桩常量会把 409 拒绝误入 503 语义。
+        assert!(
+            !crate::embedding::is_local_embed_unavailable(&error),
+            "{error}"
+        );
         assert!(!service.model_downloading(), "no download may be in flight");
         // 公开 download_model 的直连调用者不经过上面的闸（防御纵深）：同样
         // 必须在任何安装锁/磁盘 I/O 之前拒绝，而不是白下 568 MB 后才失败。
@@ -1753,7 +1767,7 @@ mod tests {
         let direct = rt
             .block_on(async { service.download_model().await })
             .expect_err("stub builds must refuse direct download_model calls");
-        assert!(direct.contains("此平台不可用"), "{direct}");
+        assert!(direct.contains("unavailable on this platform"), "{direct}");
         // 装载路径同样在任何锁/磁盘 I/O 之前拒绝,且返回与 503 映射同源的
         // 桩常量(is_local_embed_unavailable):replace/search 据此映射 503。
         let load_error = service.load_model().unwrap_err();

@@ -26,12 +26,15 @@ use fastembed::{
 /// loongarch64（含 feature 开/关两种构建）给出显式的平台不支持；
 /// 其余平台的 feature 关闭构建保持历史文案不变。两段 cfg 与下面的
 /// 桩 impl 同形（避免常量在真实实现生效的目标上变成 dead_code）。
+/// 文案遵循 CONTRIBUTING 的诊断语言约定（英文）：该常量会经 503 映射、
+/// model_error 与 document.error 到达 en/ja 用户的界面。
 #[cfg(not(all(
     feature = "local-embed",
     not(all(target_os = "linux", target_arch = "loongarch64"))
 )))]
 #[cfg(all(target_os = "linux", target_arch = "loongarch64"))]
-const LOCAL_EMBED_UNAVAILABLE: &str = "本地 embedding 在此平台（linux/loongarch64）暂不支持";
+const LOCAL_EMBED_UNAVAILABLE: &str =
+    "local embedding is not supported on this platform (linux/loongarch64)";
 
 #[cfg(not(all(
     feature = "local-embed",

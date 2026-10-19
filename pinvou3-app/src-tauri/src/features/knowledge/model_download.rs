@@ -222,10 +222,15 @@ pub async fn kb_model_load_after_first_frame(
 /// 本地嵌入不支持时下载命令必须显式拒绝的文案。与 UI 的 fail-closed 能力位
 /// (`localEmbedSupported`) 同姿态，但落在命令层：peer/API 调用或未来 UI 回归
 /// 不应把 ~568MB 模型下载完成后才在 embedder 构造处失败（ort-sys 在
-/// loongarch64 无制品，stub embedder 只能拒载）。
+/// loongarch64 无制品，stub embedder 只能拒载）。文案遵循 CONTRIBUTING 的
+/// 诊断语言约定（英文），并刻意区别于 embedding 桩常量（409 下载拒绝 ≠
+/// 503 装载不可用）。
 fn local_embed_download_refusal(supported: bool) -> Option<String> {
-    (!supported)
-        .then(|| "本地向量嵌入模型在此平台不可用，无法下载（本平台缺少模型运行库制品）".to_string())
+    (!supported).then(|| {
+        "local embedding model download is unavailable on this platform (no embedding \
+         runtime artifacts for this architecture)"
+            .to_string()
+    })
 }
 
 /// 按需下载 + 校验 + 部署 embedding 模型，完成后热加载并刷新工具门控（免重启）。
@@ -657,7 +662,7 @@ mod tests {
         // 构造，命令体本身不可调用。
         let refusal = local_embed_download_refusal(false);
         assert!(refusal.is_some());
-        assert!(refusal.unwrap().contains("本地向量嵌入模型"));
+        assert!(refusal.unwrap().contains("unavailable on this platform"));
         // 支持平台（所有受支持目标的编译期取值）不受影响。
         assert!(local_embed_download_refusal(true).is_none());
     }
