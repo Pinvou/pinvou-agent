@@ -19,7 +19,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T06 | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
 | T07 | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop and actual Root retention; complete issuance and emergency deny composition remain pending |
 | T08 | In progress | Reviewed genesis catalog/component management and protected atomic publication primitives; complete business publication workflows remain pending |
-| T09 | In progress | Bounded package/native-byte inspection, immutable storage and authenticated upload/UI/history/original-request recovery; formal validation, admission, quarantine and platform qualification remain pending |
+| T09 | In progress | Bounded package/native-byte inspection, immutable storage, authenticated upload/recovery and current read-only complete ZIP inspection/UI; formal validation, admission, quarantine and platform qualification remain pending |
 | T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
 | T11 | In progress | Protected multi-platform drafts and reviewed content freezing with actual UI/API/history/recovery; package qualification and Release/Target lifecycle approval remain pending. |
 | T12 | In progress | Original stable-facts identity, exact profile matching and immutable forward-policy intersection; protected Registry/version/approval and production qualification remain pending |
@@ -12889,3 +12889,39 @@ T09 authenticated byte reception and original-request recovery (2026-10-19):
   1.0, product 0.10.12 and CodeWhale stay unchanged. Deployment remains deferred;
   downloads have no total/cumulative elapsed or retry cap, and 32 MiB applies only
   to joined atomic inventory, never file bytes.
+
+T09 read-only complete ZIP structure inspection (2026-10-19):
+
+- Service commit `52cd3b7` adds the fixed authenticated inspection route and
+  Chinese/English/Japanese receipt-bound view. Two short actual SERIALIZABLE
+  transactions check current read authority and the complete original protected
+  receipt/witness/audit before and after physical capture and full ZIP parsing
+  outside SQL locks. It writes no business state and allocates no T06 command.
+- Every ten-file page recomputes the complete original archive. Late corruption
+  returns only fixed original entry/container indices, with no partial summary
+  or files. Actual stored size/hash must match the receipt; unavailable or changed
+  bytes cannot reuse a prior success. Resource capacities are explicit and the
+  feature is disabled by default. A deep 32-layer page passes the actual one MiB
+  encoder without borrowing the unrelated 32 MiB inventory limit.
+- Two independent final scoped static reviews pass after primary test-evidence
+  repairs. The browser's delayed actual response now proves text consumption and
+  actual digest completion before checking that the new scope displays no facts from the old scope.
+  Fetch/hash instrumentation is restored; no result or hash is fabricated.
+- Frozen actual PostgreSQL 17/Windows/TLS/signed-OIDC/browser regression passes
+  12 top-level and three nested tests, zero failures and zero skips. It includes
+  all prior reception/recovery tests, real permission removal/login expiry/missing
+  witness during a paused physical read with exact restoration, complete paging,
+  late CRC failure, write-only denial, unavailable storage, lost response/reload
+  and all three languages. Owned workers, browser processes and fixtures join.
+- Final defaults pass 812 top-level and 1,798 nested tests, with 706 top-level
+  and 665 nested explicit opt-in/fixture skips and zero failures. Modules, vet,
+  server/artifact CLI builds, pinned contracts, admin build, five UI contract
+  cases, formatting and whitespace pass. Linux x86_64/arm64 and macOS arm64 CLI
+  cross-builds pass; these do not certify native platform execution. All 97 prior
+  SQL files and frozen source/index/status stay unchanged across verification.
+- The receipt remains received. Structure success grants no Manifest trust,
+  native publisher/supply-chain qualification, Artifact validity or publication.
+  Formal validation/admission/quarantine and platform qualification remain pending.
+  Totals stay 5 implemented / 14 in progress / 28 incomplete or deferred of 47.
+  Documents 1.0, product 0.10.12 and CodeWhale stay unchanged. Deployment is
+  deferred; downloads have no hard total/cumulative elapsed or retry cap.
