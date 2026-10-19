@@ -145,7 +145,7 @@
     "@eslint-react/eslint-plugin": "^5.26.5",
     "@eslint/js": "^10.0.1",
     "@mixmark-io/domino": "^2.2.0",
-    "@tauri-apps/cli": "^2.12.2",
+    "@tauri-apps/cli": "^2.11.4",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
