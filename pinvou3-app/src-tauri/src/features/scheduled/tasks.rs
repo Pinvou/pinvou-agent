@@ -4205,40 +4205,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[test]
-    fn probe_stamp_sequence() {
-        let _guard = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let dir = temp_home();
-        let previous = std::env::var("PINVOU3_HOME").ok();
-        // SAFETY: ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        let path = scheduled_task_kinds_path();
-        eprintln!("[probe] path={:?} exists_at_open={}", path, path.exists());
-        let kinds = ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("kind store");
-        eprintln!("[probe] after open, file exists={}", path.exists());
-        {
-            let foreign = ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("foreign");
-            foreign
-                .set_kind_with_target("automation-cli", SCHEDULED_TASK_KIND_SESSION_MESSAGE, "target009")
-                .expect("foreign write");
-            eprintln!("[probe] after foreign write, file exists={} len={:?}", path.exists(), std::fs::metadata(&path).map(|m| m.len()));
-        }
-        eprintln!("[probe] before stale set, file exists={} len={:?}", path.exists(), std::fs::metadata(&path).map(|m| m.len()));
-        let result = kinds.set_kind_with_target("automation-1", SCHEDULED_TASK_KIND_SESSION_MESSAGE, "target001");
-        eprintln!("[probe] stale set result: {:?}", result.as_ref().map(|_| "Ok").map_err(|e| format!("{e:#}")));
-        assert!(result.is_ok());
-        if let Some(v) = previous {
-            // SAFETY: ENV_LOCK held; env writes are serialized.
-            unsafe { std::env::set_var("PINVOU3_HOME", v) };
-        } else {
-            // SAFETY: ENV_LOCK held; env writes are serialized.
-            unsafe { std::env::remove_var("PINVOU3_HOME") };
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
     /// Round-17 M1: `set_kind_with_target` skipped the reload discipline
     /// every sibling mutator keeps — this sidecar is co-owned by the
     /// `pinvou` CLI, and a foreign kinds write landing after this handle's
@@ -4254,8 +4220,7 @@ mod tests {
         let previous = std::env::var("PINVOU3_HOME").ok();
         // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
         unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
-        let kinds =
-            ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("kind store");
+        let kinds = ScheduledTaskKindStore::open(scheduled_task_kinds_path()).expect("kind store");
         // The foreign writer: a second handle over the same sidecar (the
         // CLI's own view) writes a DIFFERENT automation and drops — the
         // first handle's cached version stamp is now stale.

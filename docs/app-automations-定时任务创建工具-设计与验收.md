@@ -350,9 +350,9 @@ On top of §9's CRUD, a third task kind: `session_message` (scheduled messages) 
 | Message body | The task's prompt (≤32k, the same cap as the messaging channel) | The cap is validated at create and update, with a belt re-check before each executor delivery; the panel/details/run records display it naturally, with no new field |
 | Self-addressing | Allowed (target = the creating session is the main use case) | The product currently runs full-auto approval; the practical review surface is the timeline result card and the audit log; the full message text is visible in the timeline |
 | Run records | Thread-less (like memory_organize), with the result text naming the target session | The target session is the thing to open; known limitation: a run record is not yet click-to-jump to the target |
-| Dead targets | A deleted target session → that delivery's run is marked failed (the delivery channel's own error) | No silent retry loop; the next fire fails the same way and leaves a trace |
+| Dead targets | A deleted target session → that delivery's run is marked failed (the delivery channel's own error) | No silent retry loop. Kind-accurate (round-17 M4): a RECURRING task's next fire fails the same way and leaves a trace; a failed ONCE delivery is TERMINAL — no future slot exists, so the task lands in Paused and nothing retries it |
 | Steer-loss window | A steer accepted but then dropped by the foundation → the run records Completed while the message never landed | The same pre-existing window as features/messaging (documented in messaging/mod.rs); this kind inherits and discloses it honestly; it is a rare event |
-| Delivery bound | Steer + dispatch share one 30s budget (the messaging channel bounds each stage at 30s) | A slow cold engine start can time one delivery out into failure; the next fire retries (as covered under dead targets above) |
+| Delivery bound | Steer + dispatch share one 30s budget (the messaging channel bounds each stage at 30s) | A slow cold engine start can time one delivery out into failure; a RECURRING task's next fire retries, while a failed ONCE stays terminal (see dead targets above) |
 
 ### 10.2 Acceptance addendum
 

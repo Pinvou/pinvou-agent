@@ -1319,13 +1319,30 @@ mod tests {
     /// carry store paths and gate detail) — deleting the call kept every
     /// behavioral test green, so the call site is pinned textually, the
     /// same way as the live body above.
+    /// Review round-15 N10, rewritten in round-17 M5: the delivery-failure
+    /// reason passes through `redact_secret` before it reaches the run
+    /// record. The textual pin needs TWO bounds to be mutation-sensitive:
+    /// `include_str!` includes the WHOLE file — the test module's own
+    /// source at the bottom carries every one of these literal patterns
+    /// (the old unbounded slice self-satisfied through its own find line,
+    /// verified by deleting the arm's call), and the plain `.nth(1)`
+    /// additionally spanned the memory_organize arm below, whose
+    /// byte-identical redact call self-satisfied the same way. Bound to
+    /// the production half first, then to this arm.
     #[test]
     fn delivery_failure_reason_is_redacted_in_source() {
         let source = include_str!("executor.rs");
-        let body = source
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("the production half present");
+        let body = production
             .split("async fn execute_session_message")
             .nth(1)
-            .expect("the session-message run body present");
+            .expect("the session-message run body present")
+            .split("async fn execute_memory_organize")
+            .next()
+            .expect("the session-message arm is bounded by the organize arm");
         let failure_arm = body
             .find("Some(Err(error))")
             .expect("the failure arm present");
