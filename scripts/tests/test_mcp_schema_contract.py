@@ -9,9 +9,12 @@ anyOf with union-only siblings), no keyword outside MFJS's allowed set
 survives, a surviving keyword must be admissible for its node's type
 (default on an array or enum/default on an object is InvalidKeywordValue),
 enum/default literals match their node's type, required names declared
-properties, bounds match their type, and the validator's resource budgets
-(anyOf ≤ 10 branches, ≤ 100 total properties, property depth ≤ 5, ≤ 500
-total enum values, ≤ 64 structural depth, ≤ 120000 encoded bytes) hold —
+properties, bounds match their type and a keyword that is explicitly present
+with a null value counts as present-and-invalid (never "absent"), and the
+validator's resource budgets (anyOf ≤ 10 branches, ≤ 100 total properties,
+property depth ≤ 5, ≤ 500 total enum values, ≤ 64 structural depth, ≤ 120000
+encoded bytes, enums above 250 entries capped at 7500 combined literal
+bytes) hold —
 the validator drops the whole tool for any of these, so a bundled server
 that ships one loses that tool silently on the constrained-decoding route.
 All bundled servers are currently compliant, so if the guard itself breaks
@@ -24,8 +27,9 @@ non-object schema values, $ref/$dynamicRef/$recursiveRef, empty or
 sibling-polluted anyOf, non-root $defs/$id, every non-MFJS keyword
 (oneOf, allOf, patternProperties, prefixItems, contains, propertyNames,
 not/if/then/else, dependentSchemas, draft-07 dependencies, unevaluated*,
-contentSchema), the per-type/budget deviations, and the reviewer
-counterexamples (array default, object enum/default, eleven-branch anyOf)
+contentSchema), the per-type/budget deviations, the explicit-null keyword
+values, and the reviewer counterexamples (array default, object enum/default,
+eleven-branch anyOf, null keyword values, oversized enum literals)
 must be red; typed enums, typed unions within every budget, and the real
 pptx schema must be green. Every recursion lane that survives (properties,
 additionalProperties, items, anyOf branches, $defs) has a red case pinning
@@ -528,6 +532,56 @@ class SchemaContractWalkerTest(unittest.TestCase):
         self.assertIsNotNone(message)
         self.assertIn("title must be a string", message)
 
+    # ── Explicit-null keyword values (round 8): the validator's keyword arms
+    # are presence-aware (obj.get(k) + is_some), so a keyword explicitly
+    # present with a null value is a present-and-invalid value — it never
+    # reads as "keyword absent". A .get(...) is-not-None probe cannot tell
+    # the two apart because JSON null is Python None.
+
+    def test_null_properties_is_red(self):
+        message = _contract_message(
+            {"type": "object",
+             "properties": {"inner": {"type": "object", "properties": None}}})
+        self.assertIsNotNone(message)
+        self.assertIn("properties must be an object", message)
+
+    def test_null_additional_properties_is_red(self):
+        message = _contract_message(
+            {"type": "object",
+             "properties": {"o": {"type": "object", "additionalProperties": None}}})
+        self.assertIsNotNone(message)
+        self.assertIn("additionalProperties must be a boolean or a schema object", message)
+
+    def test_null_required_is_red(self):
+        message = _contract_message(
+            {"type": "object",
+             "properties": {"o": {"type": "object",
+                                  "properties": {"a": {"type": "string"}},
+                                  "required": None}}})
+        self.assertIsNotNone(message)
+        self.assertIn("required must be a list", message)
+
+    def test_null_numeric_bound_is_red(self):
+        message = _contract_message(
+            {"type": "object",
+             "properties": {"n": {"type": "number", "minimum": None}}})
+        self.assertIsNotNone(message)
+        self.assertIn("out-of-range literal", message)
+
+    def test_null_string_bound_beside_valid_bound_is_red(self):
+        # The lo-is-None trap specifically: one valid bound must not let a
+        # present null partner pass as the "absent" side of the pair.
+        schema = {"type": "object",
+                  "properties": {"s": {"type": "string",
+                                       "minLength": None, "maxLength": 5}}}
+        message = _contract_message(schema)
+        self.assertIsNotNone(message)
+        self.assertIn("out-of-range literal", message)
+        self.assertIsNone(_contract_message(
+            {"type": "object",
+             "properties": {"s": {"type": "string",
+                                  "minLength": 1, "maxLength": 5}}}))
+
     # ── Resource budgets (round 7, P2-3): ResourceLimitExceeded drops the
     # tool exactly like every other deviation, so each budget needs a red
     # pin and its boundary stays green.
@@ -567,6 +621,35 @@ class SchemaContractWalkerTest(unittest.TestCase):
             {"type": "object", "properties": {"e": {"type": "string", "enum": enum}}})
         self.assertIsNotNone(message)
         self.assertIn("exceed the MFJS budget of 500", message)
+
+    def test_enum_literal_length_budget_is_enforced(self):
+        # validate_mfjs_enum's conditional budget: an enum with more than 250
+        # entries may not carry more than 7500 combined literal bytes. 251
+        # distinct 100-character values sit below the 500-value and
+        # 120000-byte caps, so only this budget rejects them.
+        enum = [f"{index:03d}" + "x" * 97 for index in range(251)]
+        message = _contract_message(
+            {"type": "object", "properties": {"e": {"type": "string", "enum": enum}}})
+        self.assertIsNotNone(message)
+        self.assertIn("literal bytes", message)
+        self.assertIn("above 250 entries at 7500", message)
+        # Both sides of the length boundary at 251 entries: exactly 7500
+        # (250 * 29 + 250) stays green, one more byte goes red.
+        def enum_at(last_len):
+            values = ["x" * 29] * 250 + ["y" * last_len]
+            return {"type": "object",
+                    "properties": {"e": {"type": "string", "enum": values}}}
+        self.assertIsNone(_contract_message(enum_at(250)))
+        message = _contract_message(enum_at(251))
+        self.assertIsNotNone(message)
+        self.assertIn("literal bytes", message)
+
+    def test_enum_length_budget_starts_above_the_entry_threshold(self):
+        # 250 entries carry no aggregate literal cap; only the whole-schema
+        # byte budget applies below the 251st entry.
+        enum = ["x" * 100] * 250
+        self.assertIsNone(_contract_message(
+            {"type": "object", "properties": {"e": {"type": "string", "enum": enum}}}))
 
     def test_encoded_bytes_budget_is_enforced(self):
         schema = {"type": "object",
