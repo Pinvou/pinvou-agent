@@ -37,7 +37,7 @@ static DINGTALK_SKILLS_DIR: Dir<'_> =
 static TMEET_SKILLS_DIR: Dir<'_> =
     include_dir!("$CARGO_MANIFEST_DIR/resources/common/bundle/tmeet-skills");
 
-// 连接器技能目录表（飞书 lark 9 + 企微 14 新名 + 0.1.9 legacy 名 + 钉钉/腾讯会议
+// 连接器技能目录表（飞书 lark 9 + 企微 15 新名 + 0.1.9 legacy 名 + 钉钉/腾讯会议
 // mono skill）已下沉到 `crate::platform::connector_skills` 作为单一真相源：
 // marketplace 注册表（wecom 卡 skills 列表）、扁平布局迁移、`cli_bundle_of_skill`
 // 反查与 `legacy_cli_records` 首启登记与本模块的门控写/删共用（五轮评审必修 3：
@@ -183,7 +183,25 @@ pub(crate) use crate::platform::connector_skills::{
 /// Skill trees are excluded from the content hash, so the semantic bump is
 /// required for connected users to refresh at startup (otherwise the refresh
 /// waits for the post-first-frame refresh_connector_auth_gates backfill).
-pub const BUNDLE_VERSION: &str = concat!("0.33-", env!("BUNDLE_INSTRUCTIONS_HASH"));
+/// 0.34: third-party connector skill trees re-synced to the upgraded CLI
+/// pins (no behavior change outside the trees; BUNDLE_VERSION must move so
+/// connected installs re-extract). dws skills 1.0.61 → 1.0.64: new
+/// contract/html/dingtalk-tag domains plus the oa template suite, the
+/// one-stop `aitable +import-file` shortcut retires the import-script
+/// path, server-side `record stats`/`psql` analytics routing, shortcut
+/// counts re-measured against the pinned 1.0.64 binary (upstream's todo
+/// doc still says 21; the shipped table follows the measured binary: 20); lark skills 1.0.95 → 1.0.98: sheets
+/// SKILL.md rewritten upstream (condensed speed table, 9 editing rules,
+/// +filter-view/+history/+range-copy commands, sheets_df.py renamed
+/// lark_sheets_df.py), lark-task prerequisite links path-fixed upstream
+/// under the local linkified form; wecom skills 1.2.1 → 1.3.4: new
+/// wecomcli-pptx skill (documents the binary's `slide` surface, 15th
+/// skill), upstream anti-injection "安全提示" sections adopted, shared
+/// version-gate text raised to 1.3.4. tmeet skills re-verified against
+/// upstream v1.0.18 (still latest; only registered local modifications
+/// differ). All replayed local normalizations are registered in the four
+/// NOTICE files. Next free slot after 0.33.
+pub const BUNDLE_VERSION: &str = concat!("0.34-", env!("BUNDLE_INSTRUCTIONS_HASH"));
 
 /// pinvou3 内置的 instructions 共享骨架（Qwen3.6 适配 prompt），编译时内嵌。
 /// skeleton = identity / baseline / user memory (placeholder) / tool-and-fact discipline /
@@ -2731,7 +2749,7 @@ mod tests {
             assert!(!bundle.skills_dir.join(d).exists(), "{d} 应被清理");
         }
 
-        // 显示门控:同样先清 legacy(开头无条件清理),再解包 14 个当前技能
+        // 显示门控:同样先清 legacy(开头无条件清理),再解包 15 个当前技能
         for d in WECOM_LEGACY_SKILL_DIRS {
             std::fs::create_dir_all(bundle.skills_dir.join(d)).unwrap();
         }

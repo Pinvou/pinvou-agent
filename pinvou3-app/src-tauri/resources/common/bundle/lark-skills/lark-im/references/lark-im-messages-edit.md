@@ -1,6 +1,6 @@
 # im +messages-edit
 
-> **Prerequisite:** Read [`../lark-shared/SKILL.md`](../../lark-shared/SKILL.md) first to understand authentication, global parameters, and safety rules.
+> **Prerequisite:** Read [`../../lark-shared/SKILL.md`](../../lark-shared/SKILL.md) first to understand authentication, global parameters, and safety rules.
 
 Edit an already-sent message's content. **Bot identity only** — the edit API does not accept user tokens. Only messages the bot sent can be edited.
 
@@ -27,6 +27,11 @@ The bot must be the original sender — editing another identity's message fails
 | Attach files/folders to the edited message's attachment zone | `--set-attachments` | Repeatable, as bare `file_key` (`file_xxx`); **replaces** the post content's `files` array (flag values are the final list, discarding any `files` in `--content`). Requires a post message (`--markdown` or `--msg-type post`). Name/metadata are filled by the server, not the client |
 | Clear the edited message's attachment zone | `--clear-attachments` | Sets `files:[]` on the post content. Requires a post message; mutually exclusive with `--set-attachments` |
 | Keep the existing attachment zone while rewriting the body | *(no attachment flag)* | **Default.** Editing with only `--markdown` / `--text` / `--content` leaves the current `files` array untouched — a body-only edit never drops attachments |
+
+```bash
+# Read the replacement Markdown from a local file
+lark-cli im +messages-edit --as bot --message-id om_xxx --markdown @./updated-message.md
+```
 
 ## Editing the Attachment Zone
 

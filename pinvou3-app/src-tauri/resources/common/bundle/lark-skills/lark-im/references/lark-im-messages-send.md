@@ -1,6 +1,6 @@
 # im +messages-send
 
-> **Prerequisite:** Read [`../lark-shared/SKILL.md`](../../lark-shared/SKILL.md) first to understand authentication, global parameters, and safety rules.
+> **Prerequisite:** Read [`../../lark-shared/SKILL.md`](../../lark-shared/SKILL.md) first to understand authentication, global parameters, and safety rules.
 
 Send a message to a group chat or a direct message conversation. Supports both user identity (`--as user`) and bot identity (`--as bot`).
 
@@ -120,6 +120,9 @@ lark-cli im +messages-send --chat-id oc_xxx --markdown $'## Update\n\n- item 1\n
 
 # Send a plain one-line message
 lark-cli im +messages-send --chat-id oc_xxx --text "Hello"
+
+# Read Markdown from a local file
+lark-cli im +messages-send --chat-id oc_xxx --markdown @./update.md
 
 # Equivalent manual JSON
 lark-cli im +messages-send --chat-id oc_xxx --content '{"text":"Hello"}'
