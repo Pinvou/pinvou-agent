@@ -17,8 +17,8 @@ the current overview; a completed bounded batch does not complete its whole task
 | T04 | In progress | Reviewed offline prepare/assemble/verify tool and exact native-format/Package/evidence byte binding; native publisher authentication, complete provenance, production build integration and exact platform qualification remain pending. |
 | T05 | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
 | T06 | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
-| T07 | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop, permanent material fencing, OpenBao physical-stop recovery and authenticated Root/history/original-document catalog; complete issuance and emergency deny composition remain pending |
-| T08 | In progress | Reviewed genesis catalog/component management and protected atomic publication primitives; complete business publication workflows remain pending |
+| T07 | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop, permanent material fencing, OpenBao physical-stop recovery, authenticated Root/history/original-document catalog and genesis-only role-scoped key deny; active issuance and emergency publication composition remain pending |
+| T08 | In progress | Reviewed genesis catalog/component management, protected atomic publication primitives and actual genesis-only append-only signing-key deny; active metadata and other business publication workflows remain pending |
 | T09 | In progress | Bounded package/native-byte inspection, immutable storage, authenticated upload/recovery, ZIP inspection/UI and current-trust Package/evidence CLI and admin inspection; formal validation, admission, quarantine and platform qualification remain pending |
 | T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
 | T11 | In progress | Protected multi-platform drafts, reviewed content freezing and cancellation of assembled declarations with complete unchanged draft children; package qualification and Release/Target lifecycle approval/publication remain pending. |
@@ -39,7 +39,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T26 | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
 | T27 | In progress | Authenticated Root/public/candidate/Package/Check/Refresh/DownloadInfo/Release-renewal verification and fixed control POST; protected workflow and high-water/cache integration remain pending |
 | T28 | Not completed | Machine-wide preparation ownership and multi-user writer freezing. |
-| T29 | In progress | Download/cache/byte-verification primitives; complete host download/continuation workflow remains pending |
+| T29 | In progress | Reviewed restricted transfer/cache primitives and explicit retained Windows QA download jobs with pinned inputs, relative-handle custody, whole-byte rescans and actual production-CLI HTTPS; production host/source/continuation/staging composition remains pending |
 | T30 | Not completed | Complete encrypted backup, manual export and original-deadline local cleanup. |
 | T31 | Not completed | Trusted helper/launcher build, installation and host protection. |
 | T32 | Not completed | Client consume, original-result recovery and permanent old-execution fencing. |
@@ -13293,3 +13293,60 @@ T07 pending-native-hash product-scope isolation (2026-10-19):
 - Only two test files change. T07 stays in progress; totals remain 5 implemented /
   16 in progress / 26 incomplete or deferred. Deployment, native certification,
   document/product versions and the no-total-download-deadline rule are unchanged.
+
+Parallel T29 and genesis-only T07/T08 delivery (2026-10-20):
+
+- Independent author worktrees, author self-tests, two non-author scoped deep
+  reviews and primary integration were overlapped. Heavy PostgreSQL/OpenBao/
+  Chrome runs were serialized; Rust reused the finished author's dependency
+  target only after that author stopped, preserving its binary separately.
+  Unchanged module/pin/admin-build evidence was reused only after exact input
+  comparison. External-state tests always ran fresh, without Go result caching.
+- Client commit `dd1e30721` on `codex/t44-validation-success-progress` delivers
+  19 paths for an explicit retained QA download library/CLI. Independently pinned
+  static inputs bind actual Package/DownloadInfo signatures and original request
+  projection. New attempts use fresh exclusive files from zero without invented
+  source continuity; completed cache reuse scans actual same-handle whole bytes.
+  Damaged journal recovery observes retained bytes without repairing authority.
+- Both independent T29 reviews found/confirmed an actual empty-directory
+  junction window. Share flags alone failed an actual WRITE_ATTRIBUTES probe.
+  The repaired adapter uses actual parent-relative handles for every child/open/
+  create and actual source-handle link publication. Actual tag mutation causes
+  file/directory/link operations to refuse without writing the target; it does
+  not claim directory metadata can never change. Both scoped rereviews pass.
+- Final client integration passes nine gates: formatting, warnings-as-errors
+  Clippy, ten library tests plus two independent production-CLI process groups,
+  production CLI build, actual public HTTPS, architecture, version, 71 CI-policy
+  tests and whitespace. Tests have zero skips/failures. The actual CLI retrieves
+  the 1068-byte public Rust license, rescans complete bytes, refuses same-size
+  corruption and observes restored bytes despite a damaged journal. This is
+  cache/transport evidence, not an installer or native publisher qualification.
+  All 19 new raw sources match review. All 476 protected inputs have identical
+  Git blobs; 172 checkout-only line-ending differences are explicitly recorded,
+  and the actual integration checkout itself passes the complete leaf workflow.
+- Service commit `56bd1f5` delivers 34 paths for actual product-level all-genesis
+  append-only signing-key/role deny. Actual complete registration inventory,
+  Root/accepted material, two distinct reviews, fresh MFA, retained original
+  authentication and the final T06 transaction guard every mutation. Actual
+  enabled issuer key selection refuses the denied role without provider RPC;
+  other roles and historical Transit verification remain usable. The three-language panel
+  supports actual prepare/review/execute and basic-session original-ACK recovery.
+- Both service reviewers confirmed a missing binding from registration receipt
+  to its original committed T06 identity. The repair reconstructs original actor/
+  request lookup and digest in Go and final SQL, and hashes the complete actual
+  source tuple into the captured index. Actual coherent receipt/outbox/head/
+  catalog substitution is refused during preparation and before final commit;
+  exact restoration lets the same original request succeed. Both rereviews pass.
+- Final service integration passes full default regression: 860 top-level and
+  1897 nested passes, 734 top-level and 672 nested explicit opt-in skips, zero
+  failures. Fresh actual PostgreSQL/OpenBao/HTTPS/OIDC/Chrome acceptance passes
+  four top-level and six nested cases with zero skips/failures. Build, full vet,
+  formatting, whitespace and all 103 prior SQL checks pass; module verification,
+  pinned contracts and admin build retain exact unchanged-input evidence.
+- Both DCO feature commits have the exact tested candidate trees. T07/T08/T29
+  remain in progress: active metadata publication, production immutable sources,
+  current host qualification, protected staging/install and native certification
+  are not delivered by these batches. Totals remain 5 implemented / 16 in progress /
+  26 incomplete or deferred. Product stays 0.10.12, normative documents stay 1.0,
+  CodeWhale is unchanged and deployment remains deferred. Downloads still have
+  no hard total/cumulative deadline or retry-count cap; 32 MiB is metadata only.
