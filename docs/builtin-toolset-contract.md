@@ -123,10 +123,17 @@ a plugin-center plugin, carried mainly over MCP (mirroring the Codex desktop app
   shape set the constrained-decoding route's validator (MFJS) actually accepts —
   every `type: array` carries concretely typed `items` (an itemless array completes
   to `[]` under constrained decoding; the k3 slides incident), every schema node is
-  a non-empty object with a concrete string `type` (or an `anyOf` union), and no
-  keyword outside MFJS's allowed set (`oneOf`, `allOf`, `patternProperties`,
-  `prefixItems`, `contains`, `unevaluated*`, …) survives — the validator silently
-  drops the whole tool for any of these.
+  a non-empty object with a concrete string `type` (or an `anyOf` union), the root
+  is a typed object without composition, no keyword outside MFJS's allowed set
+  (`oneOf`, `allOf`, `patternProperties`, `prefixItems`, `contains`,
+  `unevaluated*`, …) survives, a surviving keyword must be admissible for its
+  node's type (`default` only on scalars — never on `array`/`object`; `enum` only
+  on `string`/`number`/`integer`), `required` names unique declared properties,
+  bounds match their type (`minLength`/`maxLength` string, `minItems`/`maxItems`
+  array, `minimum`/`maximum` numeric), and the resource budgets hold (`anyOf` ≤ 10
+  branches, ≤ 100 total properties, property depth ≤ 5, ≤ 500 total enum values,
+  ≤ 120000 encoded bytes) — the validator silently drops the whole tool for any
+  of these.
 - **Pagination parameters** (existing precedent, mandatory alignment): a bounded
   count parameter (`turn_limit` in `read_session`; `limit` where a listing has
   no other count semantics) + `cursor` (opaque string, server stateless) →
