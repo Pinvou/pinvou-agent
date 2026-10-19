@@ -32,7 +32,7 @@ dws oa approval template update --process-code PROC-EXAMPLE --name '出差申请
 | 某个具体控件的 props 结构与示例 | [components/\<ComponentName\>.md](oa/template/components/) | 如 `TextField.md`、`DDSelectField.md`、`TableField.md` 等，共 31 个 |
 | 流程节点总览与 processConfig 树结构 | [process-nodes.md](oa/template/process-nodes.md) | 节点类型、嵌套树结构、节点通用字段、选人规则总览、约束速查 |
 | 某类节点（审批人/抄送/条件/并行等） | [nodes/\<node\>.md](oa/template/nodes/) | 如 `approver.md`、`cc.md`、`condition.md`、`parallel.md` 等，共 7 个 |
-| 审批人选人规则 | [rules/\<rule\>.md](oa/template/rules/) | 如 `target_management.md`、`target_label.md`、`target_managers_labels.md` 等，共 10 个 |
+| 审批人选人规则 | [rules/\<rule\>.md](oa/template/rules/) | 如 `target_management.md`、`target_label.md`、`target_managers_labels.md` 等，共 11 个 |
 | 完整表单示例 | [example/form_components.json](oa/template/example/form_components.json) | 包含多种控件的报销申请表单 |
 | 完整流程示例 | [example/process_config.json](oa/template/example/process_config.json) | 包含多级审批、条件分支、抄送的流程树 |
 | 生成控件唯一 ID | `python3 scripts/generate_form_component_id.py <ComponentType>` | 输出格式 `{ComponentName}_{随机字符串}` |

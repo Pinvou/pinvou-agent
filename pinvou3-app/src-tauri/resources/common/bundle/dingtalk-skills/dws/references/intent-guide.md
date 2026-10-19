@@ -119,7 +119,7 @@
 | "13800138000是谁/查手机号" | 按手机号搜人 | `aisearch person --dimension phone` | `contact` | 手机号查人走 aisearch，dimension=phone |
 | "搜一下智能化方案/最近 OKR 相关邮件/最近发版相关消息" | 搜企业知识内容 | `aisearch enterprise` | `doc search` / `mail search` / `chat message search` | 跨文档、消息、日程、听记、邮件等企业内容语义检索走 enterprise；具体 `queries/types/time-range` 抽槽见 `aisearch.md` |
 | "我发给某人的消息/邮件/文档/今天我干了什么" | 搜行为记录 | `aisearch behavior` | `chat` / `mail` / `doc` / `report` | 关注"谁对什么做过什么"，走 behavior；具体 `behavior-type/direction/chat-scope` 抽槽见 `aisearch.md` |
-| "查/提交 请假/加班/补卡 审批单" | 考勤业务审批单 | `attendance approve`（查询走 `attendance approve list`；提交走 `attendance approve templates --type leave\|overtime\|repair-check`） | `oa approval list-pending` / `oa approval records` | 请假/加班/补卡/出差/外出 属于考勤业务审批单，按业务类型查询；`oa approval` 是通用 OA 审批中心，覆盖范围不同 |
+| "查/提交 请假/加班/补卡 审批单" | 考勤业务审批单 | `attendance approve`（查询走 `attendance approve list`；提交：请假/加班/补卡/外出走 oa 套件工作流 `oa approval create-instance`（见 oa/oa-leave.md 等），出差走 `attendance approve templates --type out` 取 submitUrl 链接引导） | `oa approval list-pending` / `oa approval records` | 请假/加班/补卡/出差/外出 属于考勤业务审批单，按业务类型查询；`oa approval` 是通用 OA 审批中心，覆盖范围不同 |
 
 ---
 
@@ -361,7 +361,7 @@ dws chat +messages-send --as user --open-dingtalk-id <openDingTalkId> --msg-type
 
 **用 `attendance approve` 的场景**（考勤业务审批单）：
 - "上周谁请假了 / 某人近期的加班记录 / 外出出差单 / 补卡审批单" — `attendance approve list --types overtime,leave,trip,patch`（`trip` 同时覆盖出差与外出，两者合并为同一类，查询不再细分）
-- "查看考勤审批模板 / 帮我提交考勤审批" — `attendance approve templates --type leave|overtime|repair-check`（repair-check/patch=补卡）
+- "查看考勤审批模板 / 帮我提交考勤审批" — 先用 `attendance approve templates` 定位模板（repair-check/patch=补卡，travel=外出，out/trip=出差）：请假/补卡/外出/加班定位模板后进 oa 套件工作流提交，出差取 submitUrl 链接引导（分流细则见下「提交审批单的边界」）
 - 用户提到"请假单 / 加班单 / 出差单 / 补卡单 / 考勤审批"等考勤上下文
 
 **用 `oa approval` 的场景**（通用 OA 审批中心）：
@@ -371,13 +371,14 @@ dws chat +messages-send --as user --open-dingtalk-id <openDingTalkId> --msg-type
 - 用户提到"报销 / 采购 / 用印 / 合同 等非考勤类审批"
 
 **判断关键**：
-- 审批主题明确是【请假 / 加班 / 外出 / 出差 / 补卡】 → `attendance approve`
+- 查询【请假 / 加班 / 外出 / 出差 / 补卡】审批单记录 → `attendance approve list`
+- 提交【请假 / 补卡 / 外出 / 加班】→ oa 套件工作流（`oa approval create-instance` 发起，见下「提交审批单的边界」）；提交【出差】→ `attendance approve templates --type out` 取 submitUrl 链接引导
 - 不限于考勤业务、面向"我上下游的审批任务"表述 → `oa approval`
 
 **提交审批单的边界**：
-- 提交考勤审批单走 `attendance approve templates --type leave|overtime|repair-check|travel`（请假/加班/补卡/出差外出，出差外出用 `--type travel`，返回 approveType=TRAVEL/OUT 的模板；具体哪几类有模板取决于组织配置，返回空列表即该组织未配该类），命令会返回审批表单的 submitUrl 跳转链接，由用户点击链接跳转到钉钉客户端的提交页面完成填写与提交。**展示链接时必须用 Markdown 可点击格式 `[表单名称](submitUrl)`，不要裸露 URL**。
+- 提交考勤审批单先按类型分流：**请假/补卡/外出/加班**路由到 oa 套件工作流（见 [products/oa/oa-leave.md](./products/oa/oa-leave.md)「发起请假审批」/ [oa-supply.md](./products/oa/oa-supply.md)「发起补卡审批」/ [oa-goout.md](./products/oa/oa-goout.md)「发起外出审批」/ [oa-overtime.md](./products/oa/oa-overtime.md)「发起加班审批」），先用 `attendance approve templates --type leave|repair-check|travel|overtime` 定位模板，再由 `oa approval create-instance` 发起，不做链接引导（仅不支持 CLI 发起的模板场景，如加班旧版模板，才回退为链接引导）。**出差**没有 CLI 发起工作流，用 `attendance approve templates --type out|trip` 查询模板（注意映射：travel=外出、out/trip=出差，提交出差不要用 `--type travel`），命令返回 approveType=OUT 的模板及审批表单 submitUrl 跳转链接，由用户点击链接跳转到钉钉客户端的提交页面完成填写与提交。**展示链接时必须用 Markdown 可点击格式 `[表单名称](submitUrl)`，不要裸露 URL**。具体哪几类有模板取决于组织配置，返回空列表即该组织未配该类。
 - 提交诉求的辅助查询：可用假期余额走 `attendance vacation balance`、历史已提交记录走 `attendance approve list`。
-- 任何场景下都**不要误用 `oa approval` 代替** —— 该命令组只能查/审/撤已存在的审批单，考勤业务审批单走考勤自己的逻辑便于区分。
+- **`oa approval` 的误用边界**：`oa approval list-pending/records/detail/approve/reject/revoke` 只能查/审/撤已存在的审批单，不要用它们代替考勤业务审批单查询（走 `attendance approve list`）；而 `oa approval create-instance` 正是请假/补卡/外出/加班的提交入口（oa 套件工作流），该场景使用它**不属于误用**。
 
 ### 6.2 contract vs oa / agoal / drive / minutes / contact — 智能合同边界
 
