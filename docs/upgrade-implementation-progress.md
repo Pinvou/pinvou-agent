@@ -19,7 +19,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T06 | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
 | T07 | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop and actual Root retention; complete issuance and emergency deny composition remain pending |
 | T08 | In progress | Reviewed genesis catalog/component management and protected atomic publication primitives; complete business publication workflows remain pending |
-| T09 | In progress | Bounded package/native-byte inspection and immutable local storage; complete upload, quarantine and platform qualification remain pending |
+| T09 | In progress | Bounded package/native-byte inspection, immutable storage and authenticated upload/UI/history/original-request recovery; formal validation, admission, quarantine and platform qualification remain pending |
 | T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
 | T11 | In progress | Protected multi-platform drafts and reviewed content freezing with actual UI/API/history/recovery; package qualification and Release/Target lifecycle approval remain pending. |
 | T12 | In progress | Original stable-facts identity, exact profile matching and immutable forward-policy intersection; protected Registry/version/approval and production qualification remain pending |
@@ -12828,3 +12828,64 @@ T09 immutable local byte storage (2026-10-19):
   collection, S3 durability proof and physical certification remain pending.
   Totals remain 5 implemented / 14 in progress / 28 incomplete or deferred of 47.
   Documents 1.0, product 0.10.12 and CodeWhale are unchanged; deployment is deferred.
+
+T09 authenticated byte reception and original-request recovery (2026-10-19):
+
+- Service commit `3df7110` adds a complete scoped private upload workflow,
+  durable received receipts, read-only history/lookup, original-key resume/locator
+  and a three-language administration view. These receipts are separate from
+  normative Artifact validity, native certification and channel publication.
+- T05 supplies actual identity, current scoped grants and same-origin CSRF.
+  Upload needs change.create plus commands.release; receipt reads need change.read
+  plus commands.release. Capacity accepts either branch without exposing receipts.
+  A write-only account can upload without borrowing read permission or MFA.
+- Complete owned bytes, exact EOF and SHA-256 must match the original actor,
+  size and digest preconditions. The physical store is flushed before T06 starts;
+  its operation lease never becomes a transfer deadline. Compute independently
+  captures and verifies the actual stored bytes again before finalization.
+- The original wire, lookup/digest and application-authenticated login proof are
+  protected by a native enrollment. A separate permanent registration witness
+  binds original operation identity, wire hash and precise birth time. Missing
+  intent refuses both the still-live original epoch and a genuine T06 takeover;
+  an old proof/MAC cannot reconstruct a lost source or extend login authority.
+- Receipt, scope inventory sequence, keyed audit, outbox and original encrypted
+  T06 result commit together. Fresh final source/time/login/owner checks bracket
+  final owner work. Failures roll back every business write; source registration
+  stays recoverable under the original key. Historical lookup does not reopen
+  the standard 24-hour ACK replay window or issue qualification.
+- Browser storage retains exact canonical metadata before transmission. Lost or
+  refused results preserve it. Resume needs no file for an existing source; if
+  transmission ended before registration, only the same size/hash bytes may be
+  retransmitted under the retained wire/key. Corrupt storage, another account or
+  scope and changed file bytes cannot create a replacement request.
+- Two independent final static reviews pass after repairs: reject null cursors,
+  verify expected actor/actual hash directly, preserve missing-source refusal with
+  a permanent witness, allow original-byte retransmission and write-only capacity,
+  and distinguish actual cancellation-callback joining from a second Close wait.
+- Frozen actual PostgreSQL 17/Windows/TLS/signed-OIDC/browser acceptance passes all
+  nine top-level tests, zero failures and no skips. It covers exact replay/body
+  conflict, current MAC-authenticated pages/lookup/locator, closed-admission replay,
+  actual SQL e1/e2 missing-source refusal/Claim rollback/exact source restoration,
+  application-MAC login proof rejection/restoration, post-native-final-write whole
+  rollback/recovery and parallel attempts followed by original-key recovery.
+  Browser acceptance checks four real receipts, ACK loss, pre-registration loss,
+  reload, same-byte retransmission, wrong-byte zero transmission, account changes,
+  write-only upload and all three languages. Fixtures and workers are joined.
+- Final defaults pass 806 top-level/1,798 nested tests, with 703 top-level/665 nested
+  explicit opt-in/fixture skips and zero failures. One initial existing event test
+  failed while building its activation fixture; its exact cause was not established.
+  The unchanged focused case then passes five repetitions, its full package three
+  repetitions, and the unchanged full repository passes. This initial unreplicated
+  failure is retained as a diagnostic limitation, not attributed to load or hidden.
+- Modules, vet, server/artifact CLI builds, pinned contracts, admin build, three
+  focused UI contract tests, formatting and whitespace pass. Linux x86_64/arm64
+  and macOS arm64 cross-builds pass for the artifact CLI; these are compile proofs,
+  not native OS execution. Frozen source/index/status and all 93 existing SQL
+  files remain unchanged across verification; four new SQL files own seven tables.
+- T09 remains in progress: formal validation/error workflow, platform and T46
+  capability evidence, Artifact admission/quarantine, published-reference retention,
+  orphan collection and replicated storage proof remain pending. Totals stay
+  5 implemented / 14 in progress / 28 incomplete or deferred out of 47. Documents
+  1.0, product 0.10.12 and CodeWhale stay unchanged. Deployment remains deferred;
+  downloads have no total/cumulative elapsed or retry cap, and 32 MiB applies only
+  to joined atomic inventory, never file bytes.
