@@ -58,6 +58,7 @@
     "test:composer-tools": "node tests/composer_tool_menu_logic.test.js",
     "test:code-permission-state": "node tests/code_permission_state.test.mjs",
     "test:codex-checkpoints": "node tests/codex_checkpoints_logic.test.mjs",
+    "perf:acp-timeline": "node scripts/acp-timeline-performance.mjs",
     "test:codex-workspace-tree": "node tests/codex_workspace_tree_logic.test.mjs",
     "test:model-reasoning": "node tests/model_reasoning_render.test.mjs",
     "test:conversation-virtualization": "node tests/conversation_timeline_virtualization_smoke.mjs",

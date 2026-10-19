@@ -46,10 +46,10 @@ import {
   createAcpGapResyncScheduler,
   mergeAcpTimelineSnapshot,
   updateAcpAttachmentDraft,
-  projectAcpTimeline,
   redactDisplayError,
   resolveAcpSessionControls,
 } from './acp-state.js';
+import { createAcpTimelineProjector } from './acp-timeline-projector.js';
 import {
   applyNativeChatEvent,
   appendLocalUserMessage,
@@ -859,9 +859,10 @@ export function CodexAcpView({
     acpSendOperationTracker.switchSession(activeId || DRAFT_ATTACHMENT_KEY);
   }, [acpConfigOperationTracker, acpSendOperationTracker, activeId]);
   const acpModelServiceLanguage = bs && bs.settings && bs.settings.language;
+  const projectAcpTimeline = useMemo(() => createAcpTimelineProjector(), []);
   const projection = useMemo(
     () => projectAcpTimeline(events, { language: acpModelServiceLanguage }),
-    [events, acpModelServiceLanguage],
+    [events, acpModelServiceLanguage, projectAcpTimeline],
   );
   // 草稿态（!activeId）没有会话，退回使用该 agent 缓存的配置快照来预展示选项。
   const draftControlsInfo = activeId ? null : draftControlsCache[draftAgentId] || null;
