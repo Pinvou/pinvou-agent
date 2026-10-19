@@ -13068,3 +13068,44 @@ T07 reviewed permanent material-stop management (2026-10-19):
   progress / 28 incomplete or deferred of 47. Documents 1.0, product 0.10.12 and
   CodeWhale are unchanged. Deployment stays deferred; downloads have no hard
   total/cumulative elapsed or retry cap. The 32 MiB bound remains metadata only.
+
+T07 material directory and accepted-original recovery (2026-10-19):
+
+- Service commit `2521905` adds fixed catalog/recover routes over the current
+  provider's actual registered materials. Complete native status sources qualify
+  every selected row; actual 33-material controls prove exclusive 32+1 keyset
+  pagination without omissions or duplicates and isolate an unrelated role.
+- Only the original author can read an accepted stop's canonical HTTP execution
+  wire, SHA and immutable queue ACK. Current scoped read/key authority and live
+  session are required; basic reads need no MFA and cannot refresh old proof,
+  audit or lease. Execute retains its original fresh-MFA and approval rules.
+- Recovery authenticates native fence/job/receipt/outbox, complete historical
+  preparation/reviewer keyed audit and actual committed T06 identity. A shared
+  pure fingerprint function preserves the original actor-wire hash domain;
+  naturally cleared OwnerReplay projections are not required. Another genuine
+  fence, damaged ledger fields and processing work without a committed fence/job
+  refuse recovery; none imply zero writes or authorize replacement identities.
+- The three-language UI provides the server directory and recovery into an empty
+  browser. Exact source validation precedes local retention, and original pending
+  or damaged bytes remain protected. Basic-session recovery never executes;
+  fresh-MFA replay persists the exact original wire and returns the original ACK.
+  Real JSON/digest controls cover material/role ABA and scope recreation.
+- Both independent final scoped static reviews pass after primary repairs.
+  Frozen native core acceptance passes 15 top-level/13 nested;
+  affected actual T06 regression passes 20 top-level/21 nested;
+  actual TLS/OIDC/HTTP/browser/provider acceptance passes 5 top-level/
+  2 nested. These gates have zero failures/skips. The standalone crash
+  child helper is excluded from the T06 parent invocation; its actual parent
+  subprocess scenario still runs the real child without that exclusion.
+- Default tests pass 828 top-level/1830 nested, with 718
+  top-level/669 nested explicit opt-in/fixture skips separately recorded
+  and zero failures. All 16 gates pass, including modules, vet, builds, pinned
+  contracts, admin build/contracts, three cross-builds and formatting/whitespace.
+  All 97 prior SQL files and frozen source/index/status remain unchanged.
+  Cross-builds are compilation evidence, not native platform certification.
+- T07 remains in progress; accepted-original recovery is not full issuance,
+  emergency deny/publication, production custody or machine-crash evidence.
+  At this service delivery totals remain 5 implemented / 14 in progress / 28
+  incomplete or deferred of 47. Documents 1.0, product 0.10.12 and CodeWhale remain
+  unchanged. Deployment stays deferred. Downloads have no hard total/cumulative
+  duration or retry cap; 32 MiB remains an atomic business metadata bound only.
