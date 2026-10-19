@@ -40,10 +40,13 @@
 //!   state older than [`STATE_RETENTION`] is pruned (`.done/` and `failed/`
 //!   would otherwise grow forever; stray `*.tmp` crash leftovers are swept
 //!   with the same pass);
-//! - every success appends a kind-specific audit record into the requesting
-//!   session's execution root (contract §5 L1; model-supplied `from_session`
-//!   is the same unauthenticated provenance as messaging's — the Ask rules
-//!   and the audit trail are the trust boundary) and emits the panel refresh
+//! - every success appends a kind-specific audit record into the
+//!   requesting session's audit root — the execution root for unbound
+//!   sessions, the PRIVATE ledger root for bound ones (round-24 M4; the
+//!   contract §5 L1 provenance note is unchanged: model-supplied
+//!   `from_session` is the same unauthenticated provenance as messaging's
+//!   — the Ask rules and the audit trail are the trust boundary) — and
+//!   emits the panel refresh
 //!   event `scheduled_task:run_updated` (same channel the file watcher uses;
 //!   both frontends only refresh from the event name).
 //!
@@ -855,11 +858,25 @@ async fn process_spool_file<C: TaskCreator, N: PanelNotifier + ?Sized>(
     let applied = match request.kind {
         SpoolRequestKind::Create => creator.create(build_create_input(&request)).await,
         SpoolRequestKind::Update => {
-            let task_id = request.task_id.as_deref().unwrap_or_default().to_string();
+            // Round-26 minor 1: validation checked the TRIMMED id —
+            // dispatching the raw value sent whitespace-padded direct-spool
+            // ids to a lookup that could never match, burning the full
+            // retry budget before failing.
+            let task_id = request
+                .task_id
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_string();
             creator.update(&task_id, build_update_input(&request)).await
         }
         SpoolRequestKind::Delete => {
-            let task_id = request.task_id.as_deref().unwrap_or_default().to_string();
+            let task_id = request
+                .task_id
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_string();
             creator.delete(&task_id).await
         }
     };
@@ -1284,6 +1301,14 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
     notifier: &N,
     retries: &mut RetryState,
 ) {
+    // Round-26 minor 11: "never requested" (no spool dir) is the common
+    // case — return before paying the per-tick settings.json read the
+    // feature switch costs (global lock + parse + locale probing; the same
+    // anti-pattern messaging's own review removed). A present dir still
+    // goes through the gate and the full read_dir error handling below.
+    if !spool_root().exists() {
+        return;
+    }
     // Round-6 minor 6: the switch pauses the drain too (messaging parity) —
     // `scheduled-task-automation` off hides the tools AND stops already-
     // spooled requests from applying; the queue resumes on re-enable.
@@ -1371,9 +1396,7 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                 if let Some((bytes, _meta)) =
                     read_regular_bounded_anchored(&path, MAX_SPOOL_FILE_BYTES as usize)
                 {
-                    if let Ok(request) =
-                        serde_json::from_slice::<SpooledCreationRequest>(&bytes)
-                    {
+                    if let Ok(request) = serde_json::from_slice::<SpooledCreationRequest>(&bytes) {
                         let stem = path
                             .file_stem()
                             .and_then(|s| s.to_str())

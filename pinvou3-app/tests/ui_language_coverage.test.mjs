@@ -93,6 +93,19 @@ for (const language of ['zh', 'en', 'ja']) {
       dict[language].uiBuiltinPlugins.dataAccess['sessions.write'],
       `${language}.uiBuiltinPlugins.dataAccess.sessions.write must exist`,
     );
+    // Round-26 minor 14: the remaining declared scopes were unpinned —
+    // deleting automations.* from all three locales stayed green and the
+    // plugin card fell back to rendering the raw key. Driven from the
+    // app-automations manifest's declared data_access, so a new scope
+    // without localized copy turns red here too.
+    for (const scope of JSON.parse(
+      readFileSync(new URL('../resources/mcp-servers/app-automations/manifest.json', import.meta.url), 'utf8'),
+    ).data_access ?? []) {
+      assert.ok(
+        dict[language].uiBuiltinPlugins.dataAccess[scope],
+        `${language}.uiBuiltinPlugins.dataAccess.${scope} must exist (declared in the app-automations manifest)`,
+      );
+    }
   }
   // 2026-10-18 visual sweep pins. dictJa spreads dictEn, so the section loop
   // above cannot see ja-only gaps: a ja-missing top-level key silently falls

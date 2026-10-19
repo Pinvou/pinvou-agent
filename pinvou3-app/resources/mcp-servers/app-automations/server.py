@@ -767,9 +767,11 @@ def validate_task_id(task_id):
     """Charset + length validation for a target task id (update/delete); the
     id flows back into storage paths on the watcher side, so anti-traversal
     rules apply here too."""
-    if not task_id or len(task_id) > MAX_TASK_ID_LEN or not TASK_ID_RE.match(task_id):
-        return "invalid task_id: %r" % (
-            task_id[:64] + "..." if len(task_id) > 64 else task_id,)
+    # Round-26 minor 7: a None (or non-str) id reached the format branch
+    # and crashed with TypeError instead of returning the validation error.
+    if not isinstance(task_id, str) or not task_id or len(task_id) > MAX_TASK_ID_LEN or not TASK_ID_RE.match(task_id):
+        shown = task_id[:64] + "..." if isinstance(task_id, str) and len(task_id) > 64 else task_id
+        return "invalid task_id: %r" % (shown,)
     return None
 
 
