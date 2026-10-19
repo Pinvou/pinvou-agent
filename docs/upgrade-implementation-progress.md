@@ -13,7 +13,7 @@ the current overview; a completed bounded batch does not complete its whole task
 |---|---|---|
 | T01 | Implemented; independently reviewed and verified | Executable metadata/credential Schemas, byte/trust profile, reference verifier, independently verified fixed vectors and local CLI E2E |
 | T02 | Implemented; independently reviewed and verified | Closed control APIs, publication/lifecycle/selection/quality reference models and regression tests; no production service implementation |
-| T03 | In progress | Independently reviewed experimental synthetic-writer freeze/encrypted backup lab and three Windows payload smokes; final contracts, exact production inventory, approved finite budgets and strict time qualification remain pending. |
+| T03 | In progress | Independently reviewed repeatable synthetic-writer freeze/encrypted backup lab, retained homogeneous series and three Windows payload smokes; final contracts, exact production inventory, approved finite budgets and strict time qualification remain pending. |
 | T04 | Not completed | Independent composite packaging and verification toolchain; depends on T03 platform contracts. |
 | T05 | Implemented; independently reviewed and verified | Separate service management identity, MFA, scoped permissions, dual approval, protected audit and three-language admin; isolated actual Keycloak password/OTP/provider flows verified; deployment realm acceptance remains pending |
 | T06 | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
@@ -13182,3 +13182,37 @@ T11 cancellation of assembled declarations (2026-10-19):
   incomplete or deferred of 47. Documents 1.0, product 0.10.12 and CodeWhale stay
   unchanged. Deployment is deferred; downloads have no hard total/cumulative
   deadline. The 32 MiB cap applies only to atomic business metadata.
+
+T03 retained measurement series (2026-10-19):
+
+- Client commit `124b78955` and paired core commit `b35a346f5` add a standalone
+  series CLI over the actual synthetic writer/freeze/encryption/full-verification
+  implementation. Every attempt retains its original report and bytes hash;
+  a failed attempt stops rather than being replaced by convenient successes.
+- Complete manifest identity, requested repetitions, workload, experiment and
+  recorded host bind every start, outcome and raw sample. Inspection checks
+  recorded native host semantics even on another inspecting computer. Changed
+  repetitions, target, mode, cache or context cannot relabel unfinished samples.
+- Explicit missing-file facts differ from every present JSON value. Null,
+  booleans, numbers and strings cannot masquerade as missing records or bypass
+  final-report validation. Actual negative controls restore the original bytes
+  and confirm the original inspection result remains recoverable.
+- Failed, unsupported, aborted and unattempted work remain distinct. Only a
+  completely successful homogeneous series receives nearest-rank statistics.
+  Unsupported cache controllers and production modes execute no substitute.
+  Small custom smokes never satisfy the baseline sample-count requirement.
+- Both independent final scoped static reviews pass after primary repairs.
+  Final integrated actual tests pass 20/20 with zero failures/skips; architecture,
+  version and whitespace checks pass. Tool source stays unchanged during final
+  validation and matches the paired core worktree byte for byte.
+- Tests exercise actual child closure, freeze/encrypted-byte verification,
+  archive collisions, incomplete inspection, plan/context changes, present
+  falsey records and an independent CLI process. AbortController covers graceful
+  stop admission; the actual OS signal-delivery path remains untested here.
+- No new 1/10/50 GiB performance campaign ran in this batch. Earlier single
+  development smokes remain separate evidence. Approved/certified budgets stay
+  null and qualification stays false; actual user/service integration, controlled
+  caches, protected power-off time and final platform evidence remain pending.
+  T03 and the 5 implemented / 15 in-progress / 27 incomplete-or-deferred totals
+  are unchanged. Deployment remains deferred; downloads have no hard total or
+  cumulative deadline and the 32 MiB bound remains business metadata only.
