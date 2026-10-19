@@ -3,40 +3,56 @@
 The guard (check_schema_contract/_walk_tool_schema) runs inside the CI
 fast-gate's mcp-server-contract-smoke.py, shape-checking every bundled
 server's tools/list result against the MFJS shape set verified from the
-validator source (CodeWhale schema_sanitize.rs: ALLOWED_KEYWORDS plus the
-MissingType / UnsupportedKeyword / InvalidSchemaNode raise sites): every
-schema position holds an object, "type" is a single concrete MFJS string
-(or absent in favor of anyOf with union-only siblings), and no keyword
-outside MFJS's allowed set survives — the validator drops the whole tool
-for any of these, so a bundled server that ships one loses that tool
-silently on the constrained-decoding route. All bundled servers are
-currently compliant, so if the guard itself breaks the smoke stays green
-(against compliant schemas a broken guard is exactly as silent as a good
-one) — only the direct unit tests here turn red when the guard rots. Both
-directions are pinned: the incident shape (itemless array), items:{},
-untyped items, tuple items, boolean schemas, list-typed / non-string /
-unknown "type" values, typeless annotation-only nodes, non-object schema
-values, $ref/$dynamicRef/$recursiveRef, empty or sibling-polluted anyOf,
-non-root $defs/$id, and every non-MFJS keyword (oneOf, allOf,
-patternProperties, prefixItems, contains, propertyNames, not/if/then/else,
-dependentSchemas, draft-07 dependencies, unevaluated*, contentSchema) must
-be red; typed enums, typed unions, and the real pptx schema must be green.
-Every recursion lane that survives (properties, additionalProperties,
-items, anyOf branches, $defs) has a red case pinning it: the walker's
-recursion is not decorative, every lane is consumed by an assertion. The
-wiring (the call site itself) is pinned by check_schema_contract's
-return-value contract: check_protocol asserts the returned count against
-the boot contract and prints it into the success line, which raises the
-moment the call site is deleted; the unit test pins the return value.
+validator source (CodeWhale schema_sanitize.rs): every schema position holds
+an object, "type" is a single concrete MFJS string (or absent in favor of
+anyOf with union-only siblings), no keyword outside MFJS's allowed set
+survives, a surviving keyword must be admissible for its node's type
+(default on an array or enum/default on an object is InvalidKeywordValue),
+enum/default literals match their node's type, required names declared
+properties, bounds match their type, and the validator's resource budgets
+(anyOf ≤ 10 branches, ≤ 100 total properties, property depth ≤ 5, ≤ 500
+total enum values, ≤ 64 structural depth, ≤ 120000 encoded bytes) hold —
+the validator drops the whole tool for any of these, so a bundled server
+that ships one loses that tool silently on the constrained-decoding route.
+All bundled servers are currently compliant, so if the guard itself breaks
+the smoke stays green (against compliant schemas a broken guard is exactly
+as silent as a good one) — only the direct unit tests here turn red when
+the guard rots. Both directions are pinned: the incident shape (itemless
+array), items:{}, untyped items, tuple items, boolean schemas, list-typed /
+non-string / unknown "type" values, typeless annotation-only nodes,
+non-object schema values, $ref/$dynamicRef/$recursiveRef, empty or
+sibling-polluted anyOf, non-root $defs/$id, every non-MFJS keyword
+(oneOf, allOf, patternProperties, prefixItems, contains, propertyNames,
+not/if/then/else, dependentSchemas, draft-07 dependencies, unevaluated*,
+contentSchema), the per-type/budget deviations, and the reviewer
+counterexamples (array default, object enum/default, eleven-branch anyOf)
+must be red; typed enums, typed unions within every budget, and the real
+pptx schema must be green. Every recursion lane that survives (properties,
+additionalProperties, items, anyOf branches, $defs) has a red case pinning
+it: the walker's recursion is not decorative, every lane is consumed by an
+assertion. The wiring (the call site itself) is pinned by
+check_schema_contract's return-value contract: check_protocol asserts the
+returned count against the boot contract and prints it into the success
+line, which raises the moment the call site is deleted; the unit test pins
+the return value.
 
-The real-pptx-schema green case needs python-pptx to import the server
-module; in the fast-gate, unittest discover runs before python-pptx is
-installed, so that case skips in dependency-free environments — CI's green
-coverage of the real schema comes from the smoke step later in the same job
-(a real stdio pptx boot run through the same guard); what this file adds is
-local full-depth coverage.
+The real-pptx-schema green case loads the schema in a short-lived
+subprocess, never by importing server.py into this process: on Windows the
+server's import-time UTF-8 setup replaces sys.stdout with a fresh
+TextIOWrapper over the shared console buffer, so an in-process import
+leaves a wrapper whose release closes the buffer under the process's real
+stdout — a later module in the same discovery run (the Windows diagnostics
+tests) then dies with "ValueError: I/O operation on closed file" on its
+first print (review #713 round 7, P2-2). When python-pptx is not installed
+(the fast-gate discover runs before deps) the probe fails to import and
+the case skips, exactly like the direct import it replaced; CI's green
+coverage of the real schema comes from the smoke step later in the same
+job (a real stdio pptx boot run through the same guard).
 """
 import importlib.util
+import json
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -54,10 +70,42 @@ def _load_module(name, path):
 
 smoke = _load_module("mcp_contract_smoke_under_test", SMOKE)
 
-try:
-    pptx_server = _load_module("pptx_server_under_test", PPTX_SERVER)
-except Exception:  # python-pptx not installed (fast-gate discover runs before deps)
-    pptx_server = None
+
+def _load_pptx_schema():
+    """Return the real pptx inputSchema, extracted in a subprocess.
+
+    The import itself must not happen in this process (module docstring:
+    the server's Windows import-time stream setup poisons later tests);
+    the child only reports the schema as JSON. Any failure — python-pptx
+    missing is the expected one — keeps the skip semantics of the direct
+    import this replaced.
+    """
+    probe = (
+        "import importlib.util, json, sys\n"
+        "spec = importlib.util.spec_from_file_location('pptx_server_probe', sys.argv[1])\n"
+        "module = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(module)\n"
+        "sys.stdout.write(json.dumps(module.TOOL_DEFS[0]['inputSchema'], ensure_ascii=True))\n"
+    )
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", probe, str(PPTX_SERVER)],
+            capture_output=True, text=True, encoding="utf-8", timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        print(f"pptx schema probe failed to run ({error}); the real-schema case skips",
+              file=sys.stderr)
+        return None
+    if proc.returncode != 0:
+        if "No module named" not in proc.stderr:
+            print(f"pptx schema probe exited {proc.returncode}: {proc.stderr[-400:]}",
+                  file=sys.stderr)
+        return None
+    return json.loads(proc.stdout)
+
+
+pptx_schema = _load_pptx_schema()
 
 
 def _contract_message(schema):
@@ -288,14 +336,6 @@ class SchemaContractWalkerTest(unittest.TestCase):
         self.assertIsNotNone(message)
         self.assertIn("outside the schema root", message)
 
-    def test_list_typed_inside_additional_properties_is_red(self):
-        # The ban must hold at every recursion lane, not just properties.
-        message = _contract_message(
-            {"type": "object", "additionalProperties": {"type": ["array", "string"]}})
-        self.assertIsNotNone(message)
-        self.assertIn("additionalProperties", message)
-        self.assertIn("list-typed", message)
-
     def test_itemless_array_inside_defs_is_red(self):
         # $defs interiors recurse (an unreferenced definition must not be a
         # blind spot); draft-07 `definitions` is not an MFJS keyword and is
@@ -354,11 +394,15 @@ class SchemaContractWalkerTest(unittest.TestCase):
         # Wiring pin: check_protocol asserts this return value against the
         # boot contract and prints it into the success line, both of which
         # raise the moment the call site is deleted — the walker's own unit
-        # tests cannot pin the call site.
+        # tests cannot pin the call site. Roots stay object-typed: a
+        # parameters root must be a typed object (RootMustBeObject), so a
+        # scalar root is not a compliant tool schema to count.
         walked = smoke.check_schema_contract("t", [
-            {"name": "a", "inputSchema": {"type": "string"}},
-            {"name": "b", "inputSchema": {"type": "array",
-                                          "items": {"type": "string"}}},
+            {"name": "a", "inputSchema": {"type": "object",
+                                          "properties": {"x": {"type": "string"}}}},
+            {"name": "b", "inputSchema": {"type": "object",
+                                          "properties": {"y": {"type": "array",
+                                                               "items": {"type": "string"}}}}},
         ])
         self.assertEqual(walked, 2)
 
@@ -367,6 +411,171 @@ class SchemaContractWalkerTest(unittest.TestCase):
         self.assertIsNotNone(message)
         self.assertIn("inputSchema", message)
 
+    # ── Per-type keyword admissibility and value typing (round 7, P2-3) ──
+    # A keyword surviving the whitelist can still be InvalidKeywordValue on
+    # its node's type; these pin the reviewer counterexamples that the
+    # whitelist-only guard wrongly passed.
+
+    def test_array_default_is_red(self):
+        # The reviewer counterexample, verbatim: MFJS forbids `default` on
+        # an array (InvalidKeywordValue) — the whitelist alone accepted it.
+        message = _contract_message(
+            {"type": "object",
+             "properties": {"options": {"type": "array", "items": {"type": "string"},
+                                        "default": []}}})
+        self.assertIsNotNone(message)
+        self.assertIn("not permitted on type \"array\"", message)
+        self.assertIn("default", message)
+
+    def test_object_enum_and_default_are_red(self):
+        # The same mismatch on object nodes: enum/default are scalar-type
+        # keywords only.
+        message = _contract_message(
+            {"type": "object",
+             "properties": {"o": {"type": "object",
+                                  "properties": {"a": {"type": "string"}},
+                                  "enum": ["x"], "default": {}}}})
+        self.assertIsNotNone(message)
+        self.assertIn("not permitted on type \"object\"", message)
+        self.assertIn("'default'", message)
+        self.assertIn("'enum'", message)
+
+    def test_enum_value_type_mismatch_is_red(self):
+        message = _contract_message(
+            {"type": "object",
+             "properties": {"e": {"type": "string", "enum": ["a", 1]}}})
+        self.assertIsNotNone(message)
+        self.assertIn("do not all match type \"string\"", message)
+
+    def test_default_value_type_mismatch_is_red(self):
+        message = _contract_message(
+            {"type": "object",
+             "properties": {"d": {"type": "string", "default": 5}}})
+        self.assertIsNotNone(message)
+        self.assertIn("default does not match type \"string\"", message)
+
+    def test_typed_enum_default_and_bounds_stay_green(self):
+        self.assertIsNone(_contract_message(
+            {"type": "object",
+             "properties": {"s": {"type": "string", "default": "x", "enum": ["x"],
+                                  "minLength": 1, "maxLength": 5},
+                            "i": {"type": "integer", "default": 3, "enum": [3],
+                                  "minimum": -3, "maximum": 9},
+                            "a": {"type": "array", "items": {"type": "string"},
+                                  "minItems": 1, "maxItems": 5},
+                            "b": {"type": "boolean", "default": False}}}))
+
+    def test_bounds_type_and_range_deviations_are_red(self):
+        message = _contract_message(
+            {"type": "object",
+             "properties": {
+                 "a": {"type": "array", "items": {"type": "string"}, "minLength": 1},
+                 "s": {"type": "string", "minLength": -1},
+                 "n": {"type": "number", "minimum": 5, "maximum": 1}}})
+        self.assertIsNotNone(message)
+        self.assertIn("minLength/maxLength require type \"string\"", message)
+        self.assertIn("out-of-range literal", message)
+        self.assertIn("minimum must not exceed maximum", message)
+
+    def test_required_must_name_unique_declared_properties(self):
+        message = _contract_message(
+            {"type": "object",
+             "properties": {"a": {"type": "string"}},
+             "required": ["a", "ghost", "a"]})
+        self.assertIsNotNone(message)
+        self.assertIn("unique declared properties", message)
+
+    def test_required_without_properties_is_red(self):
+        message = _contract_message({"type": "object", "required": ["a"]})
+        self.assertIsNotNone(message)
+        self.assertIn("requires a properties object", message)
+
+    def test_properties_must_be_object_is_red(self):
+        # A list at the properties keyword itself previously fell out of the
+        # walker's isinstance-dict gate silently and passed — the validator
+        # rejects the shape outright.
+        message = _contract_message({"type": "object", "properties": []})
+        self.assertIsNotNone(message)
+        self.assertIn("properties must be an object", message)
+
+    def test_additional_properties_must_be_bool_or_object_is_red(self):
+        message = _contract_message({"type": "object", "additionalProperties": []})
+        self.assertIsNotNone(message)
+        self.assertIn("additionalProperties must be a boolean or a schema object", message)
+
+    def test_root_defs_must_be_object_is_red(self):
+        message = _contract_message({"type": "object", "$defs": []})
+        self.assertIsNotNone(message)
+        self.assertIn("$defs must be an object", message)
+
+    def test_reserved_property_name_is_red(self):
+        message = _contract_message(
+            {"type": "object", "properties": {"anyOf": {"type": "string"}}})
+        self.assertIsNotNone(message)
+        self.assertIn("empty or reserved", message)
+
+    def test_root_must_be_object_is_red(self):
+        # validate_mfjs_parameters (RootMustBeObject): function parameters
+        # are always a typed object on the constrained route.
+        message = _contract_message({"type": "string"})
+        self.assertIsNotNone(message)
+        self.assertIn("root must be type \"object\"", message)
+
+    def test_annotation_must_be_string_is_red(self):
+        message = _contract_message(
+            {"type": "object",
+             "properties": {"x": {"type": "string", "title": 5}}})
+        self.assertIsNotNone(message)
+        self.assertIn("title must be a string", message)
+
+    # ── Resource budgets (round 7, P2-3): ResourceLimitExceeded drops the
+    # tool exactly like every other deviation, so each budget needs a red
+    # pin and its boundary stays green.
+
+    def test_anyof_branch_budget_is_enforced(self):
+        branches = [{"type": "string"}] * 11
+        message = _contract_message({"type": "object", "properties": {"x": {"anyOf": branches}}})
+        self.assertIsNotNone(message)
+        self.assertIn("at most 10", message)
+        self.assertIsNone(_contract_message(
+            {"type": "object", "properties": {"x": {"anyOf": branches[:10]}}}))
+
+    def test_total_properties_budget_is_enforced(self):
+        def schema_with(count):
+            return {"type": "object",
+                    "properties": {f"p{index}": {"type": "string"}
+                                   for index in range(count)}}
+        message = _contract_message(schema_with(101))
+        self.assertIsNotNone(message)
+        self.assertIn("exceed the MFJS budget of 100", message)
+        self.assertIsNone(_contract_message(schema_with(100)))
+
+    def test_property_depth_budget_is_enforced(self):
+        def nested(depth):
+            node = {"type": "string"}
+            for _ in range(depth):
+                node = {"type": "object", "properties": {"inner": node}}
+            return node
+        message = _contract_message(nested(6))
+        self.assertIsNotNone(message)
+        self.assertIn("nesting deeper than 5", message)
+        self.assertIsNone(_contract_message(nested(5)))
+
+    def test_total_enum_budget_is_enforced(self):
+        enum = [f"v{index}" for index in range(501)]
+        message = _contract_message(
+            {"type": "object", "properties": {"e": {"type": "string", "enum": enum}}})
+        self.assertIsNotNone(message)
+        self.assertIn("exceed the MFJS budget of 500", message)
+
+    def test_encoded_bytes_budget_is_enforced(self):
+        schema = {"type": "object",
+                  "properties": {"d": {"type": "string",
+                                       "description": "x" * (smoke._MFJS_MAX_SCHEMA_BYTES + 100)}}}
+        message = _contract_message(schema)
+        self.assertIsNotNone(message)
+        self.assertIn("over the MFJS budget of", message)
+
     def test_typed_enum_and_leaf_nodes_are_green(self):
         self.assertIsNone(_contract_message(
             {"type": "object",
@@ -374,9 +583,9 @@ class SchemaContractWalkerTest(unittest.TestCase):
                             "s": {"type": "string"}},
              "additionalProperties": False}))
 
-    @unittest.skipIf(pptx_server is None, "python-pptx not installed (cannot import the pptx server module)")
+    @unittest.skipIf(pptx_schema is None, "python-pptx not installed (cannot load the pptx server schema)")
     def test_real_pptx_schema_is_green(self):
-        self.assertIsNone(_contract_message(pptx_server.TOOL_DEFS[0]["inputSchema"]))
+        self.assertIsNone(_contract_message(pptx_schema))
 
 
 if __name__ == "__main__":
