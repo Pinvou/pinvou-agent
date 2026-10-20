@@ -37,8 +37,10 @@ test('mobile web smoke uses locale-independent navigation selectors', () => {
   assert.match(webUiSmoke, /click\('\[data-testid="mobile-navigation-open"\]'\)/u);
   assert.match(
     webUiSmoke,
-    /evaluate\(\(\) => document\.querySelector\('\[data-testid="mobile-navigation-close"\]'\)\.click\(\)\)/u,
-    'the sidebar covers the overlay center, so closing must use a DOM click instead of coordinates',
+    /mobilePage\.mouse\.click\(370, 400\)/u,
+    'closing must go through a real pointer click landed 90px right of the 280px drawer: '
+      + 'trusted events focus the scrim button, which is what the scrim-focus record pins '
+      + '(a synthetic DOM click() never moves focus, so it cannot catch that regression)',
   );
   assert.doesNotMatch(webUiSmoke, /button\[aria-label="(?:打开|关闭)导航"\]/u);
 });

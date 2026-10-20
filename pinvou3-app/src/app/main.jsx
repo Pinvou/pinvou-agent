@@ -3923,7 +3923,13 @@ const App = () => {
               // drawer clear the overlay publication barrier together instead of
               // showing a dimmed screen with no drawer for the barrier window.
               aria-label={t.uiMainApp.closeNavigation}
-              onClick={() => setIsSidebarOpen(false)}
+              onClick={(event) => {
+                // A real pointer click leaves focus on this button; blur before
+                // it turns aria-hidden — ARIA forbids aria-hidden on the focused
+                // element, and the old unmount-based close dropped focus to <body>.
+                event.currentTarget.blur();
+                setIsSidebarOpen(false);
+              }}
               aria-hidden={!mobileDrawerOpen}
               tabIndex={mobileDrawerOpen ? 0 : -1}
               className={`fixed inset-0 z-30 hidden bg-black/40 max-sm:block transition-opacity duration-300 motion-reduce:transition-none ${mobileDrawerOpen ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
@@ -3942,11 +3948,12 @@ const App = () => {
               width: isSidebarOpen && !isCompactShell ? sidebarWidth : undefined,
               ...(isCompactShell ? {
                 // The drawer stays mounted: display:none cannot transition, so
-                // open/close animates transform while `visibility` (covered by
-                // transition-all) flips only after the slide-out finishes and
-                // immediately on slide-in. Full height overlays the top bar and
-                // tab bar; the env() insets keep clear of notch / home-indicator
-                // areas (same insets as the app root padding above).
+                // open/close animates transform while `visibility` (in the
+                // compact transition list below) flips only after the slide-out
+                // finishes and immediately on slide-in. Full height overlays the
+                // top bar and tab bar; the env() insets track the same top/bottom
+                // safe areas as the app root padding above (portrait notch /
+                // home indicator; landscape side insets are not tracked).
                 position: 'fixed',
                 left: 0,
                 top: 'env(safe-area-inset-top)',
@@ -3955,7 +3962,10 @@ const App = () => {
                 visibility: mobileDrawerOpen ? 'visible' : 'hidden',
               } : {}),
             }}
-            className={`${isCompactShell ? 'w-[280px]' : (isSidebarOpen ? '' : 'w-[68px]')} relative shrink-0 flex flex-col z-40 ${sidebarResizing ? '' : 'transition-all duration-300 motion-reduce:transition-none'} ${
+            // Compact transitions stay scoped to the slide: broad transition-all
+            // would also fade the dark open/closed shades on every toggle and
+            // animate height when env() insets change with device rotation.
+            className={`${isCompactShell ? 'w-[280px]' : (isSidebarOpen ? '' : 'w-[68px]')} relative shrink-0 flex flex-col z-40 ${sidebarResizing ? '' : (isCompactShell ? 'transition-[transform,visibility] duration-300 motion-reduce:transition-none' : 'transition-all duration-300 motion-reduce:transition-none')} ${
               activeTheme === 'light'
                 ? 'bg-[#F0F4F9]'
                 : (isSidebarOpen ? 'bg-[#1E1F20]' : 'bg-[#131314]')

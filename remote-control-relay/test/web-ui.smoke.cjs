@@ -624,13 +624,22 @@ async function main() {
     const sidebar = document.querySelector('[data-testid="app-sidebar"]');
     // 抽屉常驻挂载，关闭时 translateX(-100%) 滑出视口并 visibility:hidden，
     // 因此「隐藏」判据是滑出视口（右缘 ≤ 0）或 visibility，而不是 width === 0。
+    // 元素缺失不算「隐藏」：直接让断言变红，钉住常驻挂载本身。
     const sidebarRect = sidebar ? sidebar.getBoundingClientRect() : null;
+    const scrim = document.querySelector('[data-testid="mobile-navigation-close"]');
+    const scrimCs = scrim ? getComputedStyle(scrim) : null;
     return {
       topBar: rect('[data-testid="mobile-top-bar"]'),
       tabBar: rect('[data-testid="mobile-tab-bar"]'),
       tabCount: document.querySelectorAll('[data-testid="mobile-tab-bar"] button').length,
-      sidebarHidden: !sidebar || sidebarRect.right <= 0
-        || getComputedStyle(sidebar).visibility === 'hidden',
+      sidebarHidden: !!sidebar && (sidebarRect.right <= 0
+        || getComputedStyle(sidebar).visibility === 'hidden'),
+      scrimClosed: scrim && scrimCs ? {
+        opacity: scrimCs.opacity,
+        pointerEvents: scrimCs.pointerEvents,
+        ariaHidden: scrim.getAttribute('aria-hidden'),
+        tabIndex: scrim.tabIndex,
+      } : null,
     };
   });
   record('390x844 呈现移动壳层：顶栏 + 底部 Tab，侧栏窄轨隐藏',
@@ -640,6 +649,16 @@ async function main() {
       && mobileShell.tabCount === 4
       && mobileShell.sidebarHidden,
     JSON.stringify(mobileShell));
+  // 关闭态背板必须完全不可达：透明 + 穿透 + 移出无障碍树和焦点序。背板是
+  // 常驻挂载的全屏按钮，门控回归（改回 isSidebarOpen 或丢掉 opacity-0/
+  // pointer-events-none/aria-hidden/tabIndex）会在这里变红。
+  record('手机抽屉关闭态背板不可达（透明+穿透+aria-hidden+tabIndex=-1）',
+    !!mobileShell.scrimClosed
+      && mobileShell.scrimClosed.opacity === '0'
+      && mobileShell.scrimClosed.pointerEvents === 'none'
+      && mobileShell.scrimClosed.ariaHidden === 'true'
+      && mobileShell.scrimClosed.tabIndex === -1,
+    JSON.stringify(mobileShell.scrimClosed));
 
   const mobileComposerGap = await mobilePage.evaluate(() => {
     const disclaimer = document.querySelector('[data-testid="chat-disclaimer"]')?.getBoundingClientRect();
@@ -772,6 +791,12 @@ async function main() {
   const mobileSidebarLayout = await mobilePage.evaluate(() => {
     const sidebar = document.querySelector('[data-testid="app-sidebar"]');
     const rect = sidebar.getBoundingClientRect();
+    const sidebarCs = getComputedStyle(sidebar);
+    const scrim = document.querySelector('[data-testid="mobile-navigation-close"]');
+    const scrimCs = scrim ? getComputedStyle(scrim) : null;
+    // 过渡钉扎用的判据：时长取逗号分段里的最大值（0 = 瞬切，动画已被删）。
+    const maxDuration = (cs) => cs.transitionDuration.split(',')
+      .reduce((max, value) => Math.max(max, parseFloat(value) || 0), 0);
     const primaryNav = document.querySelector('[data-testid="sidebar-primary-nav"]');
     const primaryRect = primaryNav && primaryNav.getBoundingClientRect();
     const navButtons = primaryNav ? Array.from(primaryNav.querySelectorAll(':scope > div')).map((node) => {
@@ -795,6 +820,17 @@ async function main() {
       primaryBottom: primaryRect ? primaryRect.bottom : null,
       recentsTop: recentsRect ? recentsRect.top : null,
       navButtons,
+      drawerTransition: {
+        property: sidebarCs.transitionProperty,
+        maxDurationSeconds: maxDuration(sidebarCs),
+      },
+      scrimOpen: scrim && scrimCs ? {
+        opacity: scrimCs.opacity,
+        pointerEvents: scrimCs.pointerEvents,
+        ariaHidden: scrim.getAttribute('aria-hidden'),
+        transitionProperty: scrimCs.transitionProperty,
+        maxDurationSeconds: maxDuration(scrimCs),
+      } : null,
     };
   });
   record('手机会话抽屉压缩顶部导航高度，为任务列表留出纵向空间',
@@ -812,18 +848,50 @@ async function main() {
       && mobileSidebarLayout.top <= mobileSidebarLayout.topBar.top
       && mobileSidebarLayout.bottom >= mobileSidebarLayout.tabBar.bottom,
     JSON.stringify(mobileSidebarLayout));
-  // The z-40 sidebar covers the center of the z-30 full-screen overlay. A
-  // Puppeteer coordinate click would hit a sidebar session instead of closing
-  // the drawer, so invoke the overlay's click handler directly.
-  await mobilePage.evaluate(() => document.querySelector('[data-testid="mobile-navigation-close"]').click());
+  // 动画钉扎：抽屉与背板必须声明真实过渡（时长>0，属性覆盖 transform/
+  // visibility/opacity）。端点等待区分不了「有动画」和「瞬切」——删掉过渡
+  // （transition:none 或去掉类）的回归只有这里能拦住。
+  record('手机抽屉与背板声明滑入/淡入过渡（时长>0 且属性覆盖）',
+    mobileSidebarLayout.drawerTransition.maxDurationSeconds > 0
+      && (mobileSidebarLayout.drawerTransition.property === 'all'
+        || (mobileSidebarLayout.drawerTransition.property.includes('transform')
+          && mobileSidebarLayout.drawerTransition.property.includes('visibility')))
+      && !!mobileSidebarLayout.scrimOpen
+      && mobileSidebarLayout.scrimOpen.maxDurationSeconds > 0
+      && (mobileSidebarLayout.scrimOpen.transitionProperty === 'all'
+        || mobileSidebarLayout.scrimOpen.transitionProperty.includes('opacity'))
+      && mobileSidebarLayout.scrimOpen.opacity === '1'
+      && mobileSidebarLayout.scrimOpen.pointerEvents === 'auto'
+      && mobileSidebarLayout.scrimOpen.ariaHidden === 'false',
+    JSON.stringify({ drawer: mobileSidebarLayout.drawerTransition, scrim: mobileSidebarLayout.scrimOpen }));
+  // 关闭走真实指针点击：x=370 在 280px 抽屉右侧 90px 处，只会命中背板（抽屉
+  // 居左覆盖 0–280）。真实事件会把焦点交给背板按钮——合成 DOM .click() 不迁移
+  // 焦点，测不出「焦点滞留 aria-hidden 按钮」这类回归。
+  await mobilePage.mouse.click(370, 400);
   // 关闭是 300ms 滑出动画：visibility 在过渡末尾才翻为 hidden，等它落定。
+  // 元素缺失不再视为满足：条件卸载回归会在此超时变红（钉住常驻挂载）。
   await mobilePage.waitForFunction(
     () => {
       const sidebar = document.querySelector('[data-testid="app-sidebar"]');
-      return !sidebar || getComputedStyle(sidebar).visibility === 'hidden';
+      return !!sidebar && getComputedStyle(sidebar).visibility === 'hidden';
     },
     { timeout: 5_000 },
   );
+  const scrimFocus = await mobilePage.evaluate(() => {
+    const scrim = document.querySelector('[data-testid="mobile-navigation-close"]');
+    const active = document.activeElement;
+    return {
+      activeTag: active ? active.tagName : null,
+      activeIsScrim: active === scrim,
+      activeAriaHidden: active && active.getAttribute ? active.getAttribute('aria-hidden') : null,
+    };
+  });
+  // 关抽屉后焦点不得滞留在已 aria-hidden 的隐形按钮上：真实指针点击会聚焦
+  // 背板，onClick 先 blur 再关，让焦点落回 body（ARIA 禁止 aria-hidden 命中
+  // 焦点元素）。
+  record('手机抽屉关闭后焦点不滞留在背板按钮',
+    !scrimFocus.activeIsScrim && scrimFocus.activeAriaHidden !== 'true',
+    JSON.stringify(scrimFocus));
   await mobilePage.waitForSelector('[data-testid="chat-greeting"]', { timeout: 5_000 });
 
   const compactGreeting = await mobilePage.evaluate(() => {
