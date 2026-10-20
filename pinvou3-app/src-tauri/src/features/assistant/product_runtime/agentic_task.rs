@@ -1255,8 +1255,14 @@ fn ensure_existing_chat_session(store: &SessionStore, session_id: &str) -> Resul
     // with a "{name} (ACP)" model suffix) — the existence check above
     // passes. Driving a native-engine turn on an ACP session rewrites its
     // history in the wrong lane; probe the model string and refuse.
+    // r20 minor 5: an aux of an ACP main inherits the exact "(ACP)" model
+    // string — is_acp_metadata's documented exclusion applies here too: aux
+    // sessions are aux-owned, never ACP histories, and must stay reachable
+    // for headless runs (the probe otherwise over-rejects them).
     if let Ok(saved) = store.load(session_id) {
-        if saved.metadata.model.ends_with("(ACP)") {
+        if !crate::features::sessions::is_aux_session_id(session_id)
+            && saved.metadata.model.ends_with("(ACP)")
+        {
             anyhow::bail!(
                 "agent_session_not_chat: session '{session_id}' is an ACP session; \
                  headless runs cannot target ACP histories"

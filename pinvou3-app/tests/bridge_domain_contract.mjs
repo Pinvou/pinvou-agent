@@ -47,9 +47,10 @@ export const desktopOnlyBridgeApi = {
   // Session archive export writes the local-disk tar.xz via a native save
   // dialog over ~/.pinvou3/sessions; web keeps no local session store.
   // switchToSessionInternal is the rewind/undo rehydration seam (force a
-  // durable reload of the truncated session); rewind itself is desktop-only
-  // (the five checkpoint commands are not in the web access policy), so the
-  // web surface has no counterpart.
+  // durable reload of the truncated session). The web bridge does define the
+  // function for the shared sessions context, but exposes no policy surface
+  // for it: the rewind commands themselves are desktop-only (not in the web
+  // access policy), so there is no web caller.
   sessions: ['exportSessionArchive', 'invalidateSessionBuffer', 'pickDraftWorkspace', 'setDraftWorkspace', 'switchToSessionInternal'],
 
   // The queued chip's zap-send goes through the foundation EnginePool and needs

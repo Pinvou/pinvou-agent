@@ -202,6 +202,9 @@ const EXPECTED_SURFACE = {
   // base-local declarations. raisePinvouSummonHighwater (zhuowp round-2 P2-2:
   // the review-sidecar highwater commit) reads only `state`, which every
   // consuming cluster literal already provides — no literal gains a dep.
+  // +1 (316): isCompactionCarrierBlocks — internal predicate of
+  // rerenderFromMessagesCore (work-mode rewind filter; references no deps,
+  // not exported from any cluster literal).
   sharedFnCount: 316,
 };
 
@@ -470,7 +473,6 @@ const EXPECTED_CLUSTER_KEYS = {
     'latestShellToolIsWaitObserver',
     'normalizeTerminalTail',
     'notify',
-    'publishShellSnapshots',
     'runSyncOnSession',
     'shellPollState',
     'state',

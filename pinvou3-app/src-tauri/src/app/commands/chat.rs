@@ -8,9 +8,9 @@ use crate::features::assistant::engine::TurnReservation;
 use crate::features::assistant::engine_pool::user_display_message;
 use crate::features::assistant::image_capability::{EffectiveImageCapability, ImageInputMode};
 
-/// 原生 chat 车道拒绝 ACP 会话的统一文案：chat() 本体、web seam
-/// （web_access_chat_for_session）、accept_plan、compact_now 与 edit_last_turn
-/// 五处共用（车道不变量的门面）。
+/// 原生 chat 车道拒绝 ACP 会话的统一文案：chat() 本体两处、accept_plan、
+/// edit_last_turn、memory 的 web seam 与 remote_control 共六处文本站点共用
+/// （车道不变量的门面）。
 pub(crate) const ACP_CHAT_LANE_REJECTED: &str = "ACP 代码会话必须通过独立代码页面发送";
 
 /// 图片输入不受支持的稳定错误码(设计 §9.2 Unsupported):前端按码匹配,
