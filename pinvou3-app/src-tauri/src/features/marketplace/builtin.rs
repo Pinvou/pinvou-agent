@@ -727,7 +727,10 @@ mod tests {
     /// the union semantics are per-feature, never per-plugin or global.
     #[test]
     fn scheduled_task_feature_removal_is_scoped_to_its_family() {
-        with_temp_home(|| {
+        // Round-30 rebase: main's dead-code sweep (#701) removed this
+        // module's local zero-arg with_temp_home helper — the surviving
+        // calls use the shared platform helper directly.
+        crate::platform::test_support::with_temp_home("pinvou3-builtin-test", || {
             set_feature_enabled("scheduled-task-automation", false).unwrap();
             let removed = feature_disabled_tool_names();
             assert_eq!(
