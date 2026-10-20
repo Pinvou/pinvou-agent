@@ -153,6 +153,12 @@ export STRIP="$TOOLCHAIN_BIN/$TRIPLE-strip"
 # link-arg. Fail closed at setup time if one is present.
 [ -z "${CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS:-}" ] \
   || fail "CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS is set — remove it: RUSTFLAGS are workflow-owned (remap-only) and a target-scoped value silently shadows them for the target units"
+# The encoded spelling is cargo's one other rustflags env: alongside the
+# job-level RUSTFLAGS it makes cargo abort outright instead of building, so
+# reject it here with the policy message rather than letting a generic
+# cargo error surface mid-build.
+[ -z "${CARGO_ENCODED_RUSTFLAGS:-}" ] \
+  || fail "CARGO_ENCODED_RUSTFLAGS is set — remove it: RUSTFLAGS are workflow-owned (remap-only), and cargo refuses to build with the encoded and plain spellings set together"
 # Cargo links through the rust-lld wrapper (rustc's LLVM emits R_LARCH_CALL36
 # that the bundled bfd 2.41 cannot resolve; the wrapper keeps native cmake/cc
 # builds on bfd and the glibc 2.38 floor unchanged). The wrapper is
@@ -303,6 +309,7 @@ toolchain: $toolchain_root
 sysroot: $sysroot
 # CI step exports (recompute at consumption time; see also the env blocks
 # printed by the two setup scripts):
+#   PINVOU_LOONG64_TOOLCHAIN_PREFIX,
 #   CC/CXX/AR/RANLIB_loongarch64_unknown_linux_gnu, STRIP,
 #   CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER,
 #   PKG_CONFIG_LIBDIR, PKG_CONFIG_SYSROOT_DIR, CMAKE_TOOLCHAIN_FILE,

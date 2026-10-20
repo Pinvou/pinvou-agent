@@ -123,6 +123,24 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             ['RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/"'],
             "the loong64 job must set exactly the remap-only RUSTFLAGS",
         )
+        # ...and no other spelling may smuggle flags past the env block: a
+        # `echo "RUSTFLAGS=..." >> "$GITHUB_ENV"` write (the pattern exists
+        # in the windows job) or an inline `RUSTFLAGS=... cargo ...` prefix
+        # is invisible to the env-block collector above yet fully visible to
+        # cargo. Every live RUSTFLAGS occurrence in the job must therefore
+        # BE the pinned env definition line (comments are already stripped).
+        occurrences = [
+            line.strip()
+            for line in self.job_code.splitlines()
+            if "RUSTFLAGS" in line
+        ]
+        self.assertEqual(
+            occurrences,
+            ['RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/"'],
+            "the loong64 job must mention RUSTFLAGS only in the pinned "
+            "remap-only env definition (no GITHUB_ENV writes, no inline "
+            "prefixes, no target-scoped spelling)",
+        )
         self.assertNotIn("-fuse-ld=lld", self.job_code)
         self.assertNotIn("--icf=safe", self.job_code)
         self.assertNotIn("CARGO_PROFILE_RELEASE_LTO", self.job_code)
@@ -158,6 +176,15 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             "CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS is set — remove it",
             orchestrator_code,
             "the orchestrator must fail closed on a target-scoped RUSTFLAGS override",
+        )
+        # The encoded spelling is cargo's one other rustflags env: alongside
+        # the job-level RUSTFLAGS it makes cargo abort outright, which reads
+        # like a tooling bug instead of the release-link policy failure it
+        # is — pin the explicit guard too.
+        self.assertIn(
+            "CARGO_ENCODED_RUSTFLAGS is set — remove it",
+            orchestrator_code,
+            "the orchestrator must fail closed on the encoded RUSTFLAGS spelling",
         )
 
     def test_verify_sysroot_asserts_the_startup_objects(self):
@@ -204,6 +231,49 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             "references $ref_archive but the sysroot lacks it",
             sysroot,
             "the .a-member check must fail with its own message",
+        )
+        # The same completeness contract covers the scripts' SHARED-LIBRARY
+        # members (libc.so -> libc.so.6 and the loader, libm.so ->
+        # libm.so.6/libmvec.so.1) and every multiarch dev symlink
+        # (libssl.so -> libssl.so.3, prune-rebased absolute targets): a
+        # truncated restore that dropped one passes a scripts-only verify
+        # and dies far later as "cannot find -lc"/"cannot find -lssl".
+        self.assertIn(
+            "[A-Za-z0-9._+-]+\\.so[0-9.]*",
+            sysroot,
+            "verify_sysroot must also scan every text script for .so members",
+        )
+        self.assertIn(
+            "references $ref_name but the sysroot lacks it",
+            sysroot,
+            "the .so-member check must fail with its own message",
+        )
+        # The prune's dangling-target check runs only on the fresh path, so
+        # pin the reuse-path dev-symlink resolution loop by its distinct
+        # 2>/dev/null find spelling (the prune's own loop omits it).
+        self.assertIn(
+            'done < <(find "$root/usr/lib/$MULTIARCH_DIR" -type l -print0 2>/dev/null)',
+            sysroot,
+            "verify_sysroot must assert every multiarch dev symlink resolves",
+        )
+        self.assertIn(
+            "does not resolve inside the sysroot",
+            sysroot,
+            "the dev-symlink check must fail with its own message",
+        )
+        # The header merge must be verified in full, not by the single
+        # wordsize.h sentinel: pin the subtree comparison (cp -an keeps the
+        # multiarch source, so the loop works on the reuse path too).
+        self.assertIn(
+            'rel_header="${multi_header#"$root/usr/include/$MULTIARCH_DIR/"}"',
+            sysroot,
+            "verify_sysroot must compare the full multiarch header subtree, "
+            "not only the wordsize.h sentinel",
+        )
+        self.assertIn(
+            "header merge incomplete",
+            sysroot,
+            "the header-subtree check must fail with its own message",
         )
         # The GROUP dev stubs and their runtime backing objects.
         for name in (
@@ -673,6 +743,14 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             self.assertIn(f"<-B{bin_dir / 'lld-shim'}>", linked.stdout)
             self.assertIn("<-fuse-ld=lld>", linked.stdout)
             self.assertIn("<-o> <app>", linked.stdout)
+            # Order is load-bearing: -B dirs are last-match-wins in gcc, so
+            # the wrapper must PREPEND its -B/-fuse-ld=lld ahead of cargo's
+            # arguments, not append them behind flags a build script passed.
+            self.assertTrue(
+                linked.stdout.startswith("FAKE-GCC <-B"),
+                "the wrapper must prepend -B/-fuse-ld=lld ahead of cargo's "
+                "arguments",
+            )
 
             # The shim itself resolves and execs the rust-bundled ld.lld
             # with the linker arguments gcc passes it (argv0 is the shim
@@ -786,6 +864,14 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             )
             (ma / "libunreferenced.a").write_text("ar")
             (ma / "libunreferenced.la").write_text("libtool")
+            # A BINARY .so whose bytes happen to embed an absolute /…so path
+            # (an RUNPATH-like string) is not a linker script and must not
+            # trip the post-rewrite offender net: the rewrite and the net
+            # are both text-scoped (grep -I). Without the -I the net names
+            # this file and aborts a healthy prune.
+            (ma / "libbinary.so").write_bytes(
+                b"GROUP(/usr/lib64/evil.so)\n\x00"
+            )
             # Debian layout: arch-specific glibc headers under the multiarch
             # include subtree, generic headers directly in usr/include.
             multi_inc = root / "usr/include/loongarch64-linux-gnu/bits"
@@ -915,6 +1001,54 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             self.assertIn("still carry absolute paths", again.stderr)
             self.assertIn("libresidual.so", again.stderr)
             (ma / "libresidual.so").unlink()
+
+            # A package-shipped /lib64 -> usr/lib64 usrmerge alias DANGLES
+            # once the usr sweep removes usr/lib64: prune must replace the
+            # dangling symlink (not die on mkdir -p with a raw "File
+            # exists" under set -e) and still materialize the loader view
+            # from the multiarch original.
+            root2 = Path(tmp) / "root2"
+            ma2 = root2 / "usr/lib/loongarch64-linux-gnu"
+            ma2.mkdir(parents=True)
+            (ma2 / "libc.so.6").write_text("ELF")
+            (ma2 / "libpthread.so.0").write_text("ELF")
+            (ma2 / "libdl.so.2").write_text("ELF")
+            (ma2 / "ld-linux-loongarch-lp64d.so.1").write_text("ELF")
+            (ma2 / "libc.so").write_text(
+                "GROUP ( /lib/loongarch64-linux-gnu/libc.so.6"
+                "  AS_NEEDED ( /lib64/ld-linux-loongarch-lp64d.so.1 ) )\n"
+            )
+            inc2 = root2 / "usr/include/loongarch64-linux-gnu/bits"
+            inc2.mkdir(parents=True)
+            (inc2 / "wordsize.h").write_text("#define __WORDSIZE 64\n")
+            (root2 / "usr/include/stdio.h").write_text("/* generic */\n")
+            (root2 / "lib64").symlink_to("usr/lib64")  # dangles after the sweep
+            dangled = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    "set -euo pipefail; source %s; prune_sysroot %s"
+                    % (shlex.quote(str(fragment)), shlex.quote(str(root2))),
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            self.assertEqual(
+                dangled.returncode,
+                0,
+                f"prune must replace a dangling /lib64 alias: {dangled.stderr}",
+            )
+            self.assertFalse(
+                (root2 / "lib64").is_symlink(),
+                "the dangling /lib64 alias must be replaced by a real dir",
+            )
+            self.assertTrue(
+                (root2 / "lib64/ld-linux-loongarch-lp64d.so.1").exists(),
+                "the loader view must resolve after the dangling alias "
+                "is replaced",
+            )
 
     def test_elf_policy_uses_bfd_independent_readelf(self):
         # check-linux-elf-policy.sh dumps dynamic symbols with readelf, not
