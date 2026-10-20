@@ -116,9 +116,9 @@ function pinvouSharedtauriMain() {
   // 优先委托共享渲染器 window.PinvouMarkdownRenderer（npm 版，含语法高亮）；在其尚未安装的
   // 短暂窗口退回 vendor 全局兜底。兜底实现已收敛到 shared/markdown-bridge-fallback.js
   // （随 index.html 以普通脚本加载，暴露 window.PinvouMarkdownBridgeFallback），消除两份逐字复制。
-  // 最末级 fallback 必须自带 escapeHtml：共享脚本未加载时 renderMarkdown 仍会被
-  // dangerouslySetInnerHTML 消费，原文返回即 fail-open。escapeHtml 作为安全原语保留在本文件
-  // （不依赖任何外部脚本），仅 marked.parse+sanitize 这段较重的兜底被抽到共享文件。
+  // 整条 fallback 链（含最末级的 escapeHtml fail-open）都在 shared/bridge-shared-helpers.js
+  // 的 renderMarkdown 里；本文件只剩转发 —— 共享基座未加载时这里直接抛错（加载期即暴露），
+  // 而不是静默 fail-open（round-9 review：原文注释仍声称 escapeHtml 保留在本文件）。
 function renderMarkdown(text) { return pinvouSharedtauriMain().renderMarkdown(text); }
 
 

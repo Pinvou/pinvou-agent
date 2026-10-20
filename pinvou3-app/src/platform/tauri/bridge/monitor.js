@@ -80,7 +80,13 @@ function startMonitorPolling() { return pinvouSharedtauriMonitor().startMonitorP
 function stopMonitorPolling() { return pinvouSharedtauriMonitor().stopMonitorPolling(); }
 
   // ── Backend status (live dot) ────────────────────────────────────
+  // 在飞守卫与 web/bridge.js 的 pollBackendStatus 同型:get_backend_status
+  // 挂起时,10 秒间隔的重入会在慢响应上叠轮次 —— 一次只允许一轮在飞
+  // (round-9 review)。
+  let backendStatusPollInFlight = false;
   async function pollBackendStatus() {
+    if (backendStatusPollInFlight) return;
+    backendStatusPollInFlight = true;
     try {
       const s = await invoke("get_backend_status");
       state.backendOnline = !!s.vllm_online;
@@ -90,6 +96,8 @@ function stopMonitorPolling() { return pinvouSharedtauriMonitor().stopMonitorPol
       }
     } catch {
       state.backendOnline = false;
+    } finally {
+      backendStatusPollInFlight = false;
     }
     notify();
   }

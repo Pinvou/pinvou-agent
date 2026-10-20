@@ -18,6 +18,21 @@ const bridges = {
   web: read('src', 'shared', 'bridge-shared-helpers.js'),
 };
 
+// pollBackendStatus 仍是两条 lane 各自声明的手抄体(round-9 review R2:仅
+// 对齐语义,未单源)。钉住在飞守卫必须同时存在于两侧 —— get_backend_status
+// 挂起时,10 秒间隔的重入会在慢响应上叠轮次;守卫缺失曾只发生在桌面侧。
+const pollBackendStatusGuard = /backendStatusPollInFlight = true/;
+assert.match(
+  read('src', 'platform', 'tauri', 'bridge', 'monitor.js'),
+  pollBackendStatusGuard,
+  'desktop pollBackendStatus must keep the in-flight reentrancy guard',
+);
+assert.match(
+  read('src', 'platform', 'web', 'bridge.js'),
+  pollBackendStatusGuard,
+  'web pollBackendStatus must keep the in-flight reentrancy guard',
+);
+
 const TTFT_FALLBACK_PATTERN =
   /vllmTtft: sadj && sadj\.ttft_count > 0\s*\?\s*\(sadj\.ttft_sum_s \/ sadj\.ttft_count\)\.toFixed\(2\) \+ " s" : "—"/;
 const TPS_FALLBACK_PATTERN =

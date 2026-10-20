@@ -225,8 +225,8 @@ assert.equal(
 );
 assert.match(
   webBridge,
-  /listen\("remote_control:tools_changed", function \(\) \{\s*try \{ window\.dispatchEvent\(new CustomEvent\("pinvou:tools-changed"\)\); \}/,
-  'web bridge must re-dispatch pinvou:tools-changed from remote_control:tools_changed (bounded to the adjacent dispatch line — round-23 asto minor 3: the old unbounded gap stayed green on a deleted dispatch)',
+  /listen\("remote_control:tools_changed", function \(\) \{\s*try \{ window\.PinvouToolStoreEvents\.notifyComposerToolsChanged\(\); \}/,
+  'web bridge must re-dispatch pinvou:tools-changed through the shared module from remote_control:tools_changed (bounded to the adjacent dispatch line — round-23 asto minor 3: the old unbounded gap stayed green on a deleted dispatch; round-9: FFE4-1 conversion completed, the web lane now matches the desktop chat-events.js twin)',
 );
 
 // Memory organize is a global action (no session scope, same surface as

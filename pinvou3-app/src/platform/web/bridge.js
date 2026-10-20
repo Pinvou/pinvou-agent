@@ -96,7 +96,13 @@ function pinvouSharedweb() {
     });
   }
   function normalizeVoiceMode(mode) {
-    return mode === "task" ? "task" : mode === "edit" ? "edit" : "dictation";
+    // 与 features/voice-composer/voice-ui-policy.mjs 和 tauri/bridge/voice.js
+    // 同一映射(voice_edit/draft_edit 是编辑模式的别名;web 拷贝曾漏掉它们,
+    // 把编辑模式误路由到听写后处理 —— round-9 review)。三方一致性由
+    // tests/voice_mode_parity.test.mjs 钉住。
+    if (mode === "task") return "task";
+    if (["edit", "voice_edit", "draft_edit"].includes(mode)) return "edit";
+    return "dictation";
   }
   function webRequestId(prefix) {
     if (window.crypto && typeof window.crypto.randomUUID === "function") {
@@ -2771,7 +2777,7 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedweb().reb
       .then(function () {
         // 新一轮已被后端受理：会话中未提交的「打开」（pending enable）自此进入
         // 上下文并锁死（ComposerToolMenu 监听）。bridge 层不反向依赖 features，
-        // 与 pinvou:tools-changed 一样内联派发。
+        // 经 shared/tool-store-events.js 派发。
         try { window.PinvouToolStoreEvents.notifyChatRoundCommitted(); } catch { /* silently ignored */ }
         recordAuthoritySyncDiagnostic("local_turn_admitted", Object.assign({
           operation: "send",
@@ -3633,7 +3639,7 @@ function applyWorkspaceReboundMark(payload) { return pinvouSharedweb().applyWork
   // DOM CustomEvent the desktop bridge (chat-events.js) produces so ChatView's
   // registry subscription hot-refreshes on browser clients too.
   listen("remote_control:tools_changed", function () {
-    try { window.dispatchEvent(new CustomEvent("pinvou:tools-changed")); } catch { /* DOM dispatch failure only affects the refresh timing */ }
+    try { window.PinvouToolStoreEvents.notifyComposerToolsChanged(); } catch { /* DOM dispatch failure only affects the refresh timing */ }
   });
 
   // 所有 chat:* 事件都带 session_id(后端 spawn_event_forwarder 打的 tag)。

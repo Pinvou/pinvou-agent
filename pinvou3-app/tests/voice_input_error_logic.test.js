@@ -571,8 +571,8 @@ assert.match(
 );
 assert.match(
   webBridgeSource,
-  /function normalizeVoiceMode\(mode\) \{[\s\S]*?mode === "edit" \? "edit"/,
-  "web bridge must preserve edit mode instead of folding it into dictation",
+  /function normalizeVoiceMode\(mode\) \{[\s\S]*?\["edit", "voice_edit", "draft_edit"\]\.includes\(mode\)[\s\S]*?return "edit";/,
+  "web bridge must preserve edit mode (incl. the voice_edit/draft_edit aliases, round-9) instead of folding it into dictation",
 );
 // The web lane has no LLM postprocess, so edit must be downgraded to
 // appended dictation before writeback; otherwise the uncorrected raw ASR
