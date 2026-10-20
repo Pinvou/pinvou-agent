@@ -5,8 +5,8 @@ Tasks are completed individually only after in-scope independent code review,
 repairs, applicable tests and commit/push. Contract completion is not production
 client, service, physical platform certification or rollout readiness.
 
-Current task totals: 47 tasks; five implemented, nineteen in progress and
-twenty-two not completed and one explicitly deferred. Detailed evidence follows
+Current task totals: 47 tasks; five implemented, twenty in progress and
+twenty-one not completed and one explicitly deferred. Detailed evidence follows
 the current overview; a completed bounded batch does not complete its whole task.
 
 | Task | Status | Delivery / outstanding dependency |
@@ -20,7 +20,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T07 | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop, permanent material fencing, OpenBao physical-stop recovery, authenticated Root/history/original-document catalog and genesis-only role-scoped key deny; active issuance and emergency publication composition remain pending |
 | T08 | In progress | Reviewed genesis catalog/component management, protected atomic publication primitives and actual genesis-only append-only signing-key deny; active metadata and other business publication workflows remain pending |
 | T09 | In progress | Bounded package inspection, immutable intake/recovery and current-trust Package/evidence observation; authenticated final-installer and exact helper/launcher/helperArtifact structure queries and three-language admin; formal admission, quarantine, native publisher authentication and platform qualification remain pending. |
-| T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
+| T10 | In progress | Actual Manifest-bound material observations and pending dossier create/edit/history, original-request recovery and three-language administration; trusted provenance observations, scanner execution/coverage, formal policies/approval and bounded exceptions remain pending. |
 | T11 | In progress | Protected multi-platform drafts, reviewed content freezing and cancellation of assembled declarations with complete unchanged draft children; package qualification and Release/Target lifecycle approval/publication remain pending. |
 | T12 | In progress | Reviewed stable-facts matching and forward-policy primitives plus protected immutable candidate history, preparation, independent review and original-key recovery with three-language administration; formal Registry publication, capability admission and cleanup permissions remain pending |
 | T13 | Not completed | Supported floor, prerequisite paths and historical bridge approvals. |
@@ -13939,3 +13939,65 @@ overall task totals remain unchanged; T42 deployment remains deferred. Product
 0.10.13 and normative version 1.0 are unchanged. Downloads retain no
 total/cumulative duration or retry-count cap; 32 MiB applies only to the joined
 atomic business metadata batch.
+
+
+## T10 material observations and pending dossier workflow (2026-10-21)
+
+Separate service commit `61e3439952edc4fbf8141f5b33c07a740946d108` was DCO-signed
+and ordinarily pushed on `codex/t10-supply-chain-dossiers`. Its remote and local
+heads matched with a clean worktree and zero commits ahead or behind. This is a
+complete pending-dossier workflow; T10 as a whole remains in progress.
+
+The material reader authenticates the actual frozen T11 target, original upload
+receipt, T04 archive bindings, current Root and deny facts. It binds the exact Manifest,
+installer, SBOM and provenance bytes, retaining immutable evidence before the
+original operation is registered. Pending dossiers support creation, editing,
+current lists and permanent revision history through seven private management
+routes and Simplified Chinese, English and Japanese administration. Every route
+uses the original OIDC/current-provider, Origin and CSRF checks. Read-only access
+has no mutation authority; new configuration flags default to false and schema
+installation remains an explicit command, separate from HTTP startup.
+
+Original actor/key/request bindings survive lost acknowledgements, later activity
+and short response-cache expiry. Unknown results retain the original request;
+authenticated permanent refusals are archived before clearing pending state.
+An absent original request cannot execute new business through resume. A separate
+fixed SQL purpose can record only a refusal proven by its exact authenticated
+historical context and a higher head on the same chain. It cannot convert an
+already registered business operation or write material/dossier state.
+
+Independent review and real tests closed findings in stale-context recovery,
+permanent history source identity, selected-material context, page-size handling,
+identity refresh and complete capacity accounting. Before allocating a new
+browser request, only an advancing shared audit head may be refreshed; changed
+business facts require a context reload. Retained requests keep exact original
+bytes. Initial registration and future recovery/final transactions separately
+account for their actual sources, native wrappers and encryption overhead under
+the unchanged 1 MiB object, 4,096-reference and 32 MiB joined metadata bounds.
+Oversized identity proofs refuse before any durable reservation or audit write;
+the exact same request can proceed after the identity becomes representable.
+
+The final frozen code passed scoped independent line reviews, actual PostgreSQL
+workflow tests (three main tests and nine subtests), a separate 19-case SQL
+purpose profile and pure capacity boundaries (seven main tests and six subtests).
+The final executable passed genuine HTTPS integration and all twelve browser
+cases across the three languages, including lost-acknowledgement recovery,
+read-only permissions and actor/scope isolation. All 1,751 build and embedded
+inputs remained unchanged. Fifteen administration pure tests, TypeScript/Vite
+build and browser test type checks passed. The default administration regression
+passed 37 tests and separately skipped 41 opt-in cases; those skips are not
+claimed as executed integration coverage.
+
+Final repository checks passed: 1,016 main Go tests and 2,226 subtests, vet,
+module verification, server build, pinned-contract verification and whitespace.
+The default Go suite separately skipped 836 main tests and 739 subtests; the
+actual PostgreSQL/HTTPS/browser profiles above were executed separately with
+zero skips. Verification processes were joined and source inventories stayed
+unchanged. Submission scope and privacy review passed for all 128 changed files.
+
+Observed signatures, reception receipts and pending dossiers do not qualify an
+Artifact or approve a Release/Target. Production provenance publisher profiles,
+scanner execution/coverage, security exceptions and final supply-chain approval
+remain unavailable. Preparation remains blocked without those real owners.
+T42 deployment remains deferred; product 0.10.13 and normative version 1.0 are
+unchanged. Downloads retain no total/cumulative duration or retry-count cap.
