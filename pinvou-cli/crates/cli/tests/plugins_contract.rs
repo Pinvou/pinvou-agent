@@ -1964,6 +1964,14 @@ fn readiness_ima_survives_a_credential_store_read_failure() {
     );
     assert_eq!(ima["probe"], serde_json::json!("registry"));
 }
+/// OPT-IN (credential store): seeds both ima credentials through the same
+/// system store `plugins readiness` reads, pinning the two verdicts the zero
+/// state cannot reach — credentials + `ima-skills` installed → ready (the
+/// round-18 finding's red case: this used to read missing_credentials under
+/// probe:"registry"), and credentials without the companion skill →
+/// `skill_not_installed`. A non-ima neighbor row is re-checked after each
+/// phase so the seeding cannot masquerade as a broad verdict change.
+///
 /// On headless CI the store's file-backed fallback lands inside the sandboxed
 /// `CODEWHALE_HOME` (no OS keyring involved). On macOS the real login keychain
 /// serves the store; the previous values are snapshotted and restored on drop

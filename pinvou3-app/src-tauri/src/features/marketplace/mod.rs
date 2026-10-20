@@ -3030,9 +3030,12 @@ pub(crate) mod tests {
     /// `_transaction_guard` must be declared BEFORE `_market_write_lock` so
     /// Rust's in-order field drop releases the transaction lock first and the
     /// cross-process market write lock last (see the struct's lock-order
-    /// doc). A field swap compiles clean and would reintroduce the ABBA
-    /// deadlock against the import path with every behavioral test green —
-    /// this PR itself shipped the order inverted once before fixing it.
+    /// doc). A field swap compiles clean and breaks the release-order
+    /// exclusion — the market lock would drop while a transaction is still
+    /// open, letting another thread enter under it — with every behavioral
+    /// test green; this PR itself shipped the order inverted once before
+    /// fixing it. (The acquire-order ABBA risk is the struct doc's subject;
+    /// this pin guards the Drop half of that contract.)
     #[test]
     fn write_transaction_drops_the_market_lock_last() {
         let source = include_str!("mod.rs");

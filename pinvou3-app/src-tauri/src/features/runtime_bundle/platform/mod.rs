@@ -1148,7 +1148,7 @@ mod tests {
     }
 
     /// 测试 bundle 解包的两个场景：首次解包成功 + VERSION 匹配时不覆写。
-    /// 借 crate 级唯一 bridge::paths::tests::ENV_LOCK 跟其他 mutate PINVOU3_HOME 的测试串行化，
+    /// 借 crate 级唯一 platform::paths::tests::ENV_LOCK 跟其他 mutate PINVOU3_HOME 的测试串行化，
     /// 不靠唯一 nanos 路径躲 race（仍会读 env var）。
     #[test]
     fn ensure_extracted_behavior() {

@@ -179,7 +179,9 @@ assert.match(
 
 // The env override list was single-sourced: the GUI gate delegates to
 // has_asr_cli_override() and the probe loop in features/voice/platform/mod.rs
-// owns the variable table (has_asr_cli_override tests it in commands/tests.rs).
+// owns the variable table (the production has_asr_cli_override probe is
+// behavior-pinned by the env-driving test in features/voice (voice.rs);
+// commands/tests.rs covers its test-local copy of the predicate).
 const voicePlatform = read(
   "pinvou3-app/src-tauri/src/features/voice/platform/mod.rs",
 );
