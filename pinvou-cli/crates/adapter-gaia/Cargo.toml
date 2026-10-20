@@ -17,9 +17,12 @@ benchmark-core = { path = "../benchmark-core" }
 # The Hub round-trips (bounded paths-info preflight + streamed resolve download)
 # are issued directly through reqwest; no hf-hub client layer is used here.
 # hf-hub 0.4.x still enters the workspace graph transitively via fastembed 4.9.1.
+# `rustls` verifies against the OS trust store (rustls-platform-verifier), where
+# the removed hf-hub/ureq layer used bundled webpki-roots; `system-proxy` keeps
+# OS-level proxy settings in play, matching the other workspace consumers.
 parquet = { workspace = true, features = ["snap", "flate2-rust_backend", "zstd"] }
 rand.workspace = true
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls", "json"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "rustls", "json", "system-proxy"] }
 serde.workspace = true
 serde_json.workspace = true
 sha1 = "0.11"

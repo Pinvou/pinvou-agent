@@ -437,7 +437,7 @@ impl SnapshotDownloader for HfSnapshotDownloader {
         let url = format!(
             "{}/datasets/{GAIA_REPO_ID}/resolve/{GAIA_DATASET_REVISION}/{}",
             handle.endpoint.trim_end_matches('/'),
-            request.remote_path
+            percent_encode_remote_path(request.remote_path)
         );
         // reqwest's default redirect policy strips the Authorization header on
         // cross-host redirects, so the bearer token only ever reaches the
@@ -481,6 +481,24 @@ impl SnapshotDownloader for HfSnapshotDownloader {
         )?;
         Ok(())
     }
+}
+
+// The resolve URL interpolates a remote-supplied path, so every byte outside
+// RFC 3986's unreserved set (plus the `/` path separator) is percent-encoded.
+// The values are anchored to the compiled-in parquet digest before any request
+// is issued, but encoding here keeps a future spec drift (`?`, `#`, `%`,
+// whitespace) from restructuring the URL rather than failing the download.
+fn percent_encode_remote_path(path: &str) -> String {
+    let mut encoded = String::with_capacity(path.len());
+    for byte in path.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                encoded.push(byte as char)
+            }
+            _ => encoded.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    encoded
 }
 
 struct HfRepoMetadata {
@@ -2183,6 +2201,30 @@ mod review_contract_tests {
     use std::time::SystemTime;
 
     use crate::test_fixtures::{FixtureRow, FixtureSchema, snapshot_batch, write_parquet};
+
+    #[test]
+    fn percent_encode_remote_path_keeps_unreserved_and_slashes() {
+        assert_eq!(
+            percent_encode_remote_path(GAIA_PARQUET_PATH),
+            GAIA_PARQUET_PATH
+        );
+        assert_eq!(
+            percent_encode_remote_path("data/level-1_v2/file.name~"),
+            "data/level-1_v2/file.name~"
+        );
+    }
+
+    #[test]
+    fn percent_encode_remote_path_encodes_url_structural_bytes() {
+        assert_eq!(
+            percent_encode_remote_path("a b?c#d%e&f=g"),
+            "a%20b%3Fc%23d%25e%26f%3Dg"
+        );
+        assert_eq!(
+            percent_encode_remote_path("数据.json"),
+            "%E6%95%B0%E6%8D%AE.json"
+        );
+    }
 
     struct DenyDownloader;
 
