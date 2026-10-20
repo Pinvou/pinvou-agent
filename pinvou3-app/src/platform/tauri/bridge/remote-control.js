@@ -262,17 +262,12 @@
       }
     }
 
-    async function getWebRelaySettings() {
-      return invoke("web_access_relay_settings");
-    }
-
     return {
       startDesktopProxy,
       refreshRemoteControlStatus,
       startRemoteControl,
       stopRemoteControl,
       refreshRemoteControlQr,
-      getWebRelaySettings,
     };
   };
 })(window);

@@ -7,7 +7,7 @@ pub(crate) fn apply_pet_window_policy(_window: &tauri::WebviewWindow) {}
 pub(crate) fn resize_pet_window(
     win: &tauri::WebviewWindow,
     logical_size: (f64, f64),
-    anchor: crate::features::pet::pet_window::ScaleAnchor,
+    anchor: crate::features::pet::geometry::ScaleAnchor,
 ) {
     super::resize_pet_window_fallback(win, logical_size, anchor);
 }

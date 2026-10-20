@@ -68,8 +68,8 @@ use super::super::types::{
     UiTreeOptions,
 };
 use super::helpers::{
-    MAX_SCROLL_CLICKS, combine_drag_errors, drag_waypoints, normalize_typed_newlines,
-    sanitize_name, screening_hit,
+    MAX_NAME_CHARS, MAX_SCROLL_CLICKS, combine_drag_errors, drag_waypoints,
+    normalize_typed_newlines, sanitize_name, screening_hit,
 };
 use super::wayland_portal::{self, PortalInput};
 
@@ -92,9 +92,6 @@ const SCROLL_GAP_MS: u64 = 15;
 /// ui_tree default capture caps.
 const DEFAULT_MAX_DEPTH: u32 = 8;
 const DEFAULT_MAX_NODES: usize = 200;
-/// Maximum characters kept for a single node name (keeps oversized text from
-/// blowing up the tool result).
-const MAX_NAME_CHARS: usize = 80;
 /// Timeout for a single a11y D-Bus method call (zbus connection-level
 /// `method_timeout`).
 /// zbus's default timeout is very generous, tree traversal

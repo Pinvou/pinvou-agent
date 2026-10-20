@@ -40,7 +40,8 @@ test('the controller is a module-scope singleton shared by every mounted panel',
   // track backend-scoped operations that outlive any panel instance, so all
   // mounted panels must share one controller.
   assert.match(auxChatPanel, /const auxChatController = createAuxChatController\(\);/);
-  assert.match(auxChatPanel, /import \{ createAuxChatController, reconcileLiveTaskIds, removeAuxQuote \} from '\.\/aux-chat-controller\.mjs';/);
+  assert.match(auxChatPanel, /import \{ createAuxChatController, reconcileLiveTaskIds \} from '\.\/aux-chat-controller\.mjs';/);
+  assert.match(auxChatPanel, /import \{ removeAuxQuote \} from '\.\/aux-quote\.mjs';/);
 });
 
 test('M5: per-task registries and staged quotes purge on session deletion', () => {

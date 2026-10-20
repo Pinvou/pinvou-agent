@@ -12,31 +12,12 @@
   const flat = window.TauriBridge;
   if (!flat || !flat.available || typeof flat.getState !== "function") return;
 
-  const fields = {
-    platform: ["appVersion", "backendOnline", "platformCapabilities"],
-    sessions: ["sessions", "archivedSessions", "activeSessionId", "sessionBusy", "draftEpoch", "draftWorkspacePath"],
-    chat: ["activeSkill", "artifacts", "artifactChange", "attachments", "busy", "chatItems", "composerDraft", "composerPrefill", "messages", "modeState", "planSnapshot", "queued", "thinking", "tokens", "turnDirtyArtifacts", "turnPresentedArtifacts", "turnTimeline"],
-    voice: ["voiceInput", "voiceAsrSetup"],
-    knowledge: ["kbModelSetup", "mountedCollection", "mountedCollections", "mountedRemoteCollections", "mountedCollectionsRevision"],
-    scheduled: ["scheduledRunContext", "scheduledTaskAutoOpenId", "scheduledTaskBusyAction", "scheduledTaskCreationSessionId", "scheduledTaskDetail", "scheduledTaskError", "scheduledTaskErrorKind", "scheduledTaskLoading", "scheduledTaskPendingGuide", "scheduledTaskRecentRuns", "scheduledTaskRuns", "scheduledTasks", "scheduledTaskSelectionGeneration", "selectedScheduledTaskId"],
-    monitor: ["monitor", "monitorError"],
-    settings: ["settings", "selectedPet"],
-    models: ["activeModelId", "currentSessionModelId", "effectiveModelConfig", "savedModels"],
-    vllm: [],
-    interaction: ["pinvouModal", "pinvouReviews", "pinvouSummoning", "superPermEnabled"],
-    computerUse: ["computerUse"],
-    personas: ["activePersona", "personaEvents", "personaPool"],
-    memory: ["memory"],
-    remoteControl: ["webAccess"],
-    // projects 域为桌面专属(整域不出现在 bridgeDomainContract 的 Web 域面),
-    // 但 APP_BRIDGE_STATE_DOMAINS 的订阅列表双端共享;Web 端补一个空桩
-    // (没有 bridge.projects 方法面,列表恒空),防止启动期 getMany 抛
-    // "Unknown Tauri bridge state slice: projects"(栈内 #448 的根因)。
-    projects: ["projectsList"],
-    updater: ["updateCancelling", "updateCheckError", "updateChecking", "updateDownloading", "updateError", "updateInfo", "updateProgress", "updateReady"],
-    dependencies: ["deps", "depsChecking", "depsInstallError", "depsInstallProgress", "depsInstalling"]
-  };
-
+  // FE14 wave 5：fields 注册表统一用 shared/bridge-shared-helpers.js 的
+  // STATE_SLICE_FIELDS（与桌面 lane 同一份常量）。projects 域为桌面专属
+  // (整域不出现在 bridgeDomainContract 的 Web 域面)，但 APP_BRIDGE_STATE_DOMAINS
+  // 的订阅列表双端共享；表内的 projects 空桩条目防止启动期 getMany 抛
+  // "Unknown Tauri bridge state slice: projects"(栈内 #448 的根因)。
+  const fields = window.PinvouBridgeShared.STATE_SLICE_FIELDS;
   function clone(value) {
     if (typeof structuredClone === "function") {
       try { return structuredClone(value); } catch { /* silently fall back to JSON */ } // safari14-ok: typeof-guarded with JSON fallback
@@ -143,7 +124,7 @@
     return Promise.reject(new Error("computer use is not supported on the web client"));
   }
   const computerUseStubs = {};
-  ["getStatus", "refreshStatus", "grant", "revoke", "stop", "confirm", "deny", "setEnabled", "requestPermissions", "permissionStatus"]
+  ["refreshStatus", "grant", "revoke", "stop", "confirm", "deny", "setEnabled", "requestPermissions", "permissionStatus"]
     .forEach(function (name) { computerUseStubs[name] = computerUseUnsupported; });
 
   window.TauriBridge = {
@@ -156,7 +137,6 @@
       ensure: "auxChatEnsure",
       send: "auxChatSend",
       snapshot: "auxChatSnapshot",
-      discard: "auxChatDiscard",
       reset: "auxChatReset",
     }),
     voice: domain(["startVoiceInput", "cancelVoiceAsrSetup", "closeVoiceAsrSetup", "cancelVoiceInput", "clearVoiceInput", "abandonVoiceResult", "getVoiceOperationId", "beginVoiceSubmission", "completeVoiceSubmission", "dismissVoiceInput", "hasVoiceSubmissionPending", "appendVoiceText"]),

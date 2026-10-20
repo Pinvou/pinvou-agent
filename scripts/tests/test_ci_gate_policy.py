@@ -132,15 +132,6 @@ def _extract_consent_marker_read_targets(consent_test):
     return sorted(targets)
 
 
-def _changes_block(workflow_text):
-    """pr-check.yml 的 changes 块(去注释),各 filter 组提取的公共上游。"""
-    return _without_yaml_comments(
-        workflow_text.split("\n  changes:", maxsplit=1)[1].split(
-            "\n  fast-gate:", maxsplit=1
-        )[0]
-    )
-
-
 def _frontend_filter_entries(workflow_text):
     """从 pr-check.yml 的 changes 块提取 frontend filter 的路径条目列表。"""
     changes = _changes_block(workflow_text)
@@ -149,12 +140,6 @@ def _frontend_filter_entries(workflow_text):
             "            relay:", maxsplit=1
         )[0]
     )
-
-
-def _macos_job(workflow_text):
-    return workflow_text.split("\n  macos-rust-check:", maxsplit=1)[1].split(
-        "\n  windows-codex-runtime-test:", maxsplit=1
-    )[0]
 
 
 def _matches_paths_filter(path, patterns):

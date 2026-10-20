@@ -389,6 +389,9 @@ fn integrity_digest(
     hasher.finalize().into()
 }
 
+// Windows DPAPI leg helper; kept for the binding-digest contract test on
+// every platform.
+#[cfg(any(windows, test))]
 fn dpapi_entropy(binding: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"pinvou-private-prediction-dpapi-entropy/v1");

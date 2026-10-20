@@ -1092,30 +1092,6 @@ mod tests {
         }
     }
 
-    fn with_temp_home<F: FnOnce()>(test: F) {
-        let _guard = crate::platform::paths::tests::ENV_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let previous = std::env::var_os("PINVOU3_HOME");
-        let root = std::env::temp_dir().join(format!(
-            "pinvou-python-cleanup-test-{}-{}",
-            std::process::id(),
-            unique_suffix()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-        unsafe { std::env::set_var("PINVOU3_HOME", &root) };
-        test();
-        match previous {
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
-            // SAFETY: platform::paths::tests::ENV_LOCK held; env writes are serialized.
-            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
-        }
-        let _ = fs::remove_dir_all(root);
-    }
-
     fn sample_lock() -> PythonDependencyLock {
         PythonDependencyLock {
             schema_version: 1,
@@ -1286,7 +1262,7 @@ mod tests {
     /// UI 显式安装不受限；被延期的自动修复不得触达下载器。
     #[test]
     fn repair_cooldown_defers_auto_retry_but_not_explicit_install() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou-python-cleanup-test", || {
             let mut lock = sample_lock();
             lock.targets[0].platform = crate::platform::paths::connector_platform_dir(
                 std::env::consts::OS,
@@ -1386,7 +1362,7 @@ mod tests {
 
     #[test]
     fn prune_recovers_strictly_named_staging_and_partial_artifacts_only() {
-        with_temp_home(|| {
+        crate::platform::test_support::with_temp_home("pinvou-python-cleanup-test", || {
             let mut active_lock = sample_lock();
             active_lock.targets[0].platform = crate::platform::paths::connector_platform_dir(
                 std::env::consts::OS,

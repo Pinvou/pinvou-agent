@@ -22,15 +22,19 @@ const settingsI18nSources = ['zh', 'en', 'ja'].map((lang) => fs.readFileSync(
   path.join(__dirname, '..', 'src', 'shared', 'i18n', `${lang}.js`),
   'utf8',
 ));
-assert.match(
+// test_model_connection always resolves a serialized result object (the Rust
+// side maps transport/HTTP failures into the struct, including the 402
+// 'billing' code consumed via connectionMessages below); the FE normalizer
+// therefore keeps only the object branch plus an unknown-code reject fallback.
+assert.doesNotMatch(
   settingsViewSource,
-  /status === 402 \? 'billing'/,
-  'settings connection test must classify HTTP 402 as billing',
+  /HTTP\\s\+\(\\d\{3\}\)/,
+  'the legacy string-protocol HTTP parser must stay deleted',
 );
 assert.match(
   settingsViewSource,
-  /status === 402 \? settingsCopy\.connectionMessages\.billing/,
-  'settings connection test must provide a user-friendly billing message',
+  /code: 'unknown', message: settingsCopy\.connectionMessages\.unknown, detail: String\(value \|\| ''\)/,
+  'settings connection test must degrade unknown rejects to the unknown copy',
 );
 for (const settingsI18nSource of settingsI18nSources) {
   assert.match(

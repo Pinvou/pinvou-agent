@@ -10,13 +10,9 @@ import {
   sidePanelRatioFromWidth,
 } from '../src/components/layout/side-panel-layout.mjs';
 import {
-  activateRightDockPanel,
   createRightDockState,
-  hideRightDockPanel,
-  mountRightDockPanel,
+  reduceRightDockState,
   rightDockSnapshot,
-  setRightDockOcclusion,
-  unmountRightDockPanel,
 } from '../src/components/layout/right-dock-state.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -91,12 +87,12 @@ test('drag cancel, resize, and minimize paths all roll back temporary DOM width'
 
 test('Right Dock has one physical host and falls back to the latest active logical panel', () => {
   let state = createRightDockState();
-  state = mountRightDockPanel(state, 'browser');
-  state = activateRightDockPanel(state, 'browser');
-  state = mountRightDockPanel(state, 'artifact-preview');
-  state = activateRightDockPanel(state, 'artifact-preview');
-  state = mountRightDockPanel(state, 'subagent-transcript');
-  state = activateRightDockPanel(state, 'subagent-transcript');
+  state = reduceRightDockState(state, { type: 'mount', panelId: 'browser' });
+  state = reduceRightDockState(state, { type: 'activate', panelId: 'browser' });
+  state = reduceRightDockState(state, { type: 'mount', panelId: 'artifact-preview' });
+  state = reduceRightDockState(state, { type: 'activate', panelId: 'artifact-preview' });
+  state = reduceRightDockState(state, { type: 'mount', panelId: 'subagent-transcript' });
+  state = reduceRightDockState(state, { type: 'activate', panelId: 'subagent-transcript' });
 
   assert.deepEqual(rightDockSnapshot(state), {
     activePanelId: 'subagent-transcript',
@@ -106,20 +102,20 @@ test('Right Dock has one physical host and falls back to the latest active logic
     occluded: false,
   });
 
-  state = hideRightDockPanel(state, 'subagent-transcript');
+  state = reduceRightDockState(state, { type: 'hide', panelId: 'subagent-transcript' });
   assert.equal(rightDockSnapshot(state).activePanelId, 'artifact-preview');
-  state = activateRightDockPanel(state, 'browser');
+  state = reduceRightDockState(state, { type: 'activate', panelId: 'browser' });
   assert.equal(rightDockSnapshot(state).activePanelId, 'browser');
   assert.equal(rightDockSnapshot(state).openSidePanelCount, 1);
 
-  state = unmountRightDockPanel(state, 'browser');
+  state = reduceRightDockState(state, { type: 'unmount', panelId: 'browser' });
   assert.equal(rightDockSnapshot(state).activePanelId, 'artifact-preview');
 });
 
 test('fullscreen canvas occlusion preserves Right Dock state without exposing its host', () => {
   let state = createRightDockState();
-  state = activateRightDockPanel(state, 'browser');
-  state = setRightDockOcclusion(state, 'artifact-fullscreen', true);
+  state = reduceRightDockState(state, { type: 'activate', panelId: 'browser' });
+  state = reduceRightDockState(state, { type: 'occlude', occlusionId: 'artifact-fullscreen', active: true });
   assert.deepEqual(rightDockSnapshot(state), {
     activePanelId: null,
     mountedPanelCount: 1,
@@ -127,7 +123,7 @@ test('fullscreen canvas occlusion preserves Right Dock state without exposing it
     openSidePanelCount: 0,
     occluded: true,
   });
-  state = setRightDockOcclusion(state, 'artifact-fullscreen', false);
+  state = reduceRightDockState(state, { type: 'occlude', occlusionId: 'artifact-fullscreen', active: false });
   assert.equal(rightDockSnapshot(state).activePanelId, 'browser');
 });
 

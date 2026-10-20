@@ -1,3 +1,5 @@
+import { pathBasename } from '../../shared/path-utils.js';
+
 const ESC = String.fromCodePoint(0x1b);
 const BEL = String.fromCodePoint(0x07);
 const C1_CSI = String.fromCodePoint(0x9b);
@@ -58,6 +60,13 @@ export function expertDelegationText(args) {
 }
 
 const OPERATION_ITEM_TYPES = new Set(['command_execution', 'file_change', 'tool']);
+
+/// Single source for the operation-item membership so every lane filters with
+/// the same list (exported for the codex/ACP lane and the shared timeline).
+export function isOperationItemType(type) {
+  return OPERATION_ITEM_TYPES.has(type);
+}
+
 const SEARCH_TOOL_NAMES = new Set([
   'web_search',
   'mcp_iwencai_news_search',
@@ -87,7 +96,7 @@ export function toolWorkspaceResources(tool) {
     const path = String(value || '').trim();
     if (!path || seen.has(path)) return;
     seen.add(path);
-    const basename = path.split(/[\\/]/).pop() || path;
+    const basename = pathBasename(path, { fallback: path });
     const label = String(name || '').trim();
     resources.push({ path, name: !label || label === path ? basename : label });
   };
@@ -309,7 +318,6 @@ export function fetchToolDetails(tool) {
     || '');
   return {
     url,
-    hostname,
     target: target || hostname || '网页',
     status: Number.isFinite(status) ? status : null,
     contentType,

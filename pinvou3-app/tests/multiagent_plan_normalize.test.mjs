@@ -1010,7 +1010,7 @@ test('多级代理树：默认只列直属根，按父节点逐级展开并保�
 test('agent 工具调用渲染成行内专家卡，点击打开只读面板', () => {
   assert.match(
     timelineSource,
-    /if \((?:item\.type === 'tool' \|\| item\.type === 'command_execution' \|\| item\.type === 'file_change'|\['tool', 'command_execution', 'file_change'\]\.includes\(item\.type\))\)/,
+    /if \(isOperationItemType\(item\.type\)\)/,
     '独立 agent 工具项不得被共享时间线丢弃',
   );
   assert.match(
@@ -1095,7 +1095,7 @@ test('面板是只读执行记录：列表→详情两级，复用共享对话�
   assert.match(panelSource, /copy\.showEarlierTranscript/);
   assert.match(
     panelSource,
-    /active: \(list\) => !Array\.isArray\(list\)\s*\|\|\s*list\.some\(\(entry\) => !entry\.done && entry\.status != null\)/,
+    /active: \(list\) => !Array\.isArray\(list\)\s*\|\|\s*!list\.every\(isSettledEntry\)/,
     '清单全部终态后必须停止定时轮询；孤儿行（无 status 的未完成历史记录）不得钉住 2s 轮询',
   );
   assert.match(panelSource, /pinvou:subagent-update/, '新子智能体实时事件必须能唤醒终态清单');

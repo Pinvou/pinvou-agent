@@ -382,8 +382,13 @@ assert.match(viewErrorBoundary, /this\.props\.heading \|\| copy\.viewLoadFailed/
 assert.doesNotMatch(viewErrorBoundary, />设置页加载失败</);
 
 const petWindow = source('features/pet/PetWindow.jsx');
-assert.match(petWindow, /invokeTauri\(['"]get_settings['"]\)/);
-assert.match(petWindow, /listen\(['"]ui:language_changed['"]/);
+// The language follow (get_settings seed + ui:language_changed listener)
+// lives in the shared hook since the FFE7-1 extraction; the pet window must
+// still adopt it and the hook must keep both sides of the contract.
+assert.match(petWindow, /useFollowMainWindowLanguage\(/);
+const followHook = source('hooks/useFollowMainWindowLanguage.js');
+assert.match(followHook, /invokeTauri\(['"]get_settings['"]\)/);
+assert.match(followHook, /listen\(['"]ui:language_changed['"]/);
 assert.match(petWindow, /const petCopy = t\.uiPet/);
 
 assert.match(source('features/monitor/MonitorView.jsx'), /t\.uiMonitor/);

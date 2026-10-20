@@ -90,7 +90,7 @@ fn header_agent_id(first_line: &str) -> Option<String> {
 }
 
 /// 入口提示要求子任务"无法完成时最终回复以 `[BLOCKED]` 开头"。
-pub const BLOCKED_MARKER: &str = "[BLOCKED]";
+const BLOCKED_MARKER: &str = "[BLOCKED]";
 
 /// 只读文件首行认表头身份。清单每 2s 轮询一次，整读正文会随记录长度
 /// 线性变贵（复核 P2）；表头行是固定的一小行。

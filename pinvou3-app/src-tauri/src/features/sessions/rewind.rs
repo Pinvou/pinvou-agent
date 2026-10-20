@@ -110,7 +110,10 @@ fn system_prompt_has_compaction_summary(system_prompt: Option<&String>) -> bool 
 pub struct RewoundTurnsRecord {
     /// 截断时间（RFC3339）。
     pub rewound_at: String,
-    /// 截断前 transcript 的 revision（恢复线索 + 调试锚点）。
+    /// 截断前 transcript 的 revision（恢复线索 + 调试锚点）。业务逻辑虽不再读取，
+    /// 但旧版 reader（无 serde default）要求该字段：缺失会让整个 sidecar map 反序列化
+    /// 失败并被整体隔离（round-7 review P2——同一 `~/.pinvou3` 下新版 app + 旧版 CLI
+    /// 并存即触发），因此必须继续随记录落盘，旧值经 read-modify-write 原样保留。
     pub original_revision: String,
     /// 截断后保留的用户 turn 数（即「回退到第 N 轮」的 N）。
     pub kept_turns: u32,
@@ -320,6 +323,9 @@ impl SessionStore {
         }
         // turn_prompt_indices[keep_turns] 即第 N+1 个用户 turn prompt 的下标。
         let cut = turn_prompt_indices[keep_turns as usize];
+        // Compatibility field (see RewoundTurnsRecord::original_revision):
+        // recomputed per rewind and written for older readers even though
+        // this build never reads it back.
         let original_revision = transcript_revision(&session.messages)?;
         let removed_messages: Vec<Message> = session.messages.split_off(cut);
         // New revision after truncation (undo re-check condition; the same data is counted only once).

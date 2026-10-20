@@ -26,12 +26,12 @@ pub(crate) fn prepare_main_focus_raise(_app: &tauri::AppHandle) {}
 /// 尺寸和新原点,`display:YES` 强制同步重绘,消除中间合成帧。
 ///
 /// 锚点角固定:直接在 NSWindow 原生坐标(原点左下、y 朝上)里读当前 frame 做代数,
-/// 与 `pet_window::resized_position` 的六种锚点几何等价,但省去 Tauri 物理坐标
+/// 与 `geometry::resized_position` 的六种锚点几何等价,但省去 Tauri 物理坐标
 /// 到 Cocoa 坐标的翻转转换。
 pub(crate) fn resize_pet_window(
     window: &tauri::WebviewWindow,
     logical_size: (f64, f64),
-    anchor: crate::features::pet::pet_window::ScaleAnchor,
+    anchor: crate::features::pet::geometry::ScaleAnchor,
 ) {
     if objc2::MainThreadMarker::new().is_some() {
         resize_pet_window_impl(window, logical_size, anchor);
@@ -78,13 +78,13 @@ fn apply_pet_window_policy_impl(window: &tauri::WebviewWindow) {
 fn resize_pet_window_impl(
     window: &tauri::WebviewWindow,
     logical_size: (f64, f64),
-    anchor: crate::features::pet::pet_window::ScaleAnchor,
+    anchor: crate::features::pet::geometry::ScaleAnchor,
 ) {
     use objc2::rc::Retained;
     use objc2_app_kit::NSWindow;
     use objc2_foundation::{NSPoint, NSRect, NSSize};
 
-    use crate::features::pet::pet_window::ScaleAnchor;
+    use crate::features::pet::geometry::ScaleAnchor;
 
     let raw: *mut std::ffi::c_void = match window.ns_window() {
         Ok(pointer) => pointer,
@@ -122,7 +122,7 @@ fn resize_pet_window_impl(
             cur.origin.y + cur.size.height - new_h,
         ),
     };
-    // 与 pet_window::resized_position 的 work_area 钳制对齐:用窗口当前所在屏的
+    // 与 geometry::resized_position 的 work_area 钳制对齐:用窗口当前所在屏的
     // visibleFrame(已扣除 Dock/菜单栏)把新原点夹在工作区内,避免长大后顶出屏幕。
     if let Some(screen) = ns_window.screen() {
         let vf = screen.visibleFrame();

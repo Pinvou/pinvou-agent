@@ -4,6 +4,7 @@
 //! 这里只收与平台无关的部分:聚合节拍结构、两次采样的差分→使用率换算、
 //! 百分比钳制,以及跨两次调用的差分状态机。Windows 的 `SystemTimes` 口径不同
 //! (100ns 粒度、busy 由 total−idle 反推),差分状态机不共用(仅共用 `clamp_pct`)。
+// architecture-guard: allow-target-cfg -- the delta-state half below is consumed exclusively by the cfg-gated linux/macos samplers (platform/{linux,macos}_cpu.rs); it is cfg-gated in this shared pure-math module so Windows lib builds carry no dead delta machinery, while clamp_pct stays universal for all three samplers. The delta path is exercised by this module's unit tests on linux/macos.
 
 /// `/proc/stat` 首行 / `host_statistics64` 的聚合节拍。busy 含 user/nice/system/
 /// irq/softirq/steal(steal 时间本机不可用,计入占用而非空闲);idle 含 iowait
@@ -11,6 +12,7 @@
 /// 未完成 IO 才计入,等待中退出的任务会回退为 idle);异常时本采样最多导致
 /// total_delta 为 0 返回 None,不会产生失真数值。
 #[derive(Debug, Clone, Copy)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) struct SystemTicks {
     pub busy: u64,
     pub idle: u64,
@@ -20,10 +22,12 @@ pub(crate) struct SystemTicks {
 /// `absorb` 收下当前采样,返回"上一采样 → 当前采样"的系统使用率;
 /// 首次调用无上一采样,返回 None。
 #[derive(Debug, Default)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) struct SystemDeltaState {
     system: Option<SystemTicks>,
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl SystemDeltaState {
     pub(crate) fn absorb(&mut self, current: Option<SystemTicks>) -> Option<f64> {
         let usage_pct = match (self.system, current) {
@@ -39,6 +43,7 @@ impl SystemDeltaState {
 
 /// 两次采样间的系统使用率百分比。计数器回绕(busy 变小)时 `checked_sub`
 /// 返回 None,不产生负值。
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn system_usage_pct(prev: SystemTicks, current: SystemTicks) -> Option<f64> {
     let busy_delta = current.busy.checked_sub(prev.busy)?;
     let idle_delta = current.idle.saturating_sub(prev.idle);
@@ -71,6 +76,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn system_usage_from_deltas_returns_expected() {
         let prev = SystemTicks {
             busy: 100,
@@ -85,6 +91,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn system_usage_returns_none_without_elapsed_ticks() {
         let sample = SystemTicks {
             busy: 100,
@@ -94,6 +101,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn system_usage_clamps_wraparound() {
         // 计数器回绕(busy 变小)时 checked_sub 返回 None,不产生负值。
         let prev = SystemTicks {
@@ -108,6 +116,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn delta_state_skips_first_sample_and_keeps_latest() {
         let mut state = SystemDeltaState::default();
         // 首次采样无上一采样 → None,但采样本身被吸收

@@ -805,9 +805,6 @@ pub(crate) fn spawn_event_forwarder(
                 // managed by the foundation itself; the app only consumes the
                 // generic subagent events (AgentSpawned no longer registers a
                 // role).
-                Event::AgentSpawned {
-                    owner_session_id, ..
-                } if owner_session_id == session_id => {}
                 Event::AgentSpawned { .. } => {}
                 // Mid-turn inject delivery confirmation (P0-A): after the
                 // engine appends the steer message to the transcript it emits
@@ -847,9 +844,6 @@ pub(crate) fn spawn_event_forwarder(
                         payload,
                     );
                 }
-                Event::WorkflowUi {
-                    owner_session_id, ..
-                } if owner_session_id == session_id => {}
                 Event::WorkflowUi { .. } => {}
                 Event::AgentProgress {
                     owner_session_id,

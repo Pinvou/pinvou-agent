@@ -43,22 +43,7 @@ function pinvouSharedtauriInteraction() {
 
   // ── Super permission ─────────────────────────────────────────────
 async function refreshSuperPerm() { return pinvouSharedtauriInteraction().refreshSuperPerm(); }
-  async function toggleSuperPerm() {
-    const target = !state.superPermEnabled;
-    try {
-      state.superPermEnabled = !!(await invoke("set_super_permission", { enabled: target }));
-      addSystemItem(state.superPermEnabled
-        ? bt("superOn")
-        : bt("superOff"));
-      notify();
-      return { ok: state.superPermEnabled === target, enabled: state.superPermEnabled };
-    } catch (e) {
-      addSystemItem("⚠️ " + e);
-      try { state.superPermEnabled = !!(await invoke("get_super_permission_status")); } catch { /* treat query failure as not enabled */ }
-      notify();
-      return { ok: false, enabled: state.superPermEnabled, error: String(e) };
-    }
-  }
+async function toggleSuperPerm() { return pinvouSharedtauriInteraction().toggleSuperPerm(); }
 
   // ── Mode state ───────────────────────────────────────────────────
   // 会话级读取。必须防住的竞态：
@@ -247,7 +232,7 @@ function isActionablePlanCard(sid, itemId, planId) { return pinvouSharedtauriInt
         displayMessage: displayEcho,
       });
       // 接受计划 = 后端受理新一轮（reserve_turn + 重跑）：未提交的「打开」转正锁死。
-      try { window.dispatchEvent(new CustomEvent("pinvou:chat-round-committed", { detail: { scope: "plain" } })); } catch { /* silently ignored */ }
+      try { window.PinvouToolStoreEvents.notifyChatRoundCommitted(); } catch { /* silently ignored */ }
       if (planBuffer) planBuffer.deferredRemoteUserEvent = null;
       applyAuthoritativeModeState(sid, st);
     } catch (e) {
@@ -504,7 +489,7 @@ async function submitUserInput(itemId, toolCallId, answers, questions) { return 
     try {
       await invoke("edit_last_turn", { newMessage: newText, sessionId: state.activeSessionId });
       // 编辑重跑 = 后端受理新一轮：未提交的「打开」转正锁死（同 doSendFor）。
-      try { window.dispatchEvent(new CustomEvent("pinvou:chat-round-committed", { detail: { scope: "plain" } })); } catch { /* silently ignored */ }
+      try { window.PinvouToolStoreEvents.notifyChatRoundCommitted(); } catch { /* silently ignored */ }
     } catch (e) {
       // 失败恢复必须定向触发会话（web 对齐）：直接写全局会把 busy/错误提示
       // 砸进别的会话（编辑是在 sid 上发起的）。

@@ -89,7 +89,6 @@ function extractCalls(source, callee) {
   assert.deepEqual(
     extractCalls(bridgeSource, 'invoke'),
     [
-      'invoke("computer_use_get_status", { sessionId })',
       'invoke("computer_use_get_status", { sessionId: sid })',
       'invoke("computer_use_grant", { sessionId: sid })',
       'invoke("computer_use_revoke", { sessionId: sid })',

@@ -26,7 +26,7 @@ use super::state::{
     NativeTabLease, NavigationCommitDecision, RequestLedger, RetainedAgentOperation, SurfaceEntry,
     TabRegistry, UserNavigationState, WorkspaceControl,
 };
-use super::{NativeSurfaceCapabilities, NativeWorkspaceRestore};
+use super::{HOST_BLANK_MARKER_TAB_PREFIX, NativeSurfaceCapabilities, NativeWorkspaceRestore};
 
 const BROWSER_CORE_RUNTIME: &str =
     include_str!("../../../../resources/common/bundle/mcp-servers/browser-core-runtime.js");
@@ -167,6 +167,10 @@ struct PrepareGeneration {
     revision: u64,
 }
 
+/// The only native browser surface: desktop (Windows/macOS/Linux) via
+/// `NativeBrowserSurface`. Mobile targets are unsupported until a real
+/// surface lands — do not re-introduce no-op fallback stubs; the drift they
+/// accumulate makes them non-compiling and silently unsupported anyway.
 pub(crate) struct DesktopBrowserSurface<P: PlatformWebviewConfig> {
     platform: P,
     data_directory: Option<PathBuf>,
@@ -425,7 +429,7 @@ impl<P: PlatformWebviewConfig> DesktopBrowserSurface<P> {
         for url in &restore.urls {
             let tab_token = self.fresh_tab_token(&tab_tokens);
             let initial_url = if requires_automation_binding {
-                format!("about:blank#pinvou-tab-{tab_token}")
+                format!("{HOST_BLANK_MARKER_TAB_PREFIX}{tab_token}")
             } else {
                 marked_blank_url(url, &tab_token)
             };
@@ -4078,7 +4082,7 @@ fn internal_marker_token(url: &str) -> Option<&str> {
 
 fn marked_blank_url(url: &str, tab_token: &str) -> String {
     if url == "about:blank" {
-        format!("about:blank#pinvou-tab-{tab_token}")
+        format!("{HOST_BLANK_MARKER_TAB_PREFIX}{tab_token}")
     } else {
         url.to_string()
     }

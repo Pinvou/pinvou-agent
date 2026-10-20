@@ -919,7 +919,7 @@ pub(super) fn sanitize_llm_memory_item(
         if !validate_memory_content(&kind, &content) {
             return None;
         }
-        topic = normalize_timed_memory_topic(&kind, &topic);
+        topic = normalize_timed_memory_topic(&kind);
     } else if kind == "work_context" {
         if !validate_memory_content(&kind, &content) {
             return None;

@@ -133,10 +133,10 @@ for (const [label, section] of [['tauri', tauriSection], ['web', webSection]]) {
 // ── Initial-state source assertions: neither bridge initializes with the
 // 32K fake denominator (unknown window = 0; the UI hides the meter) ──
 const tauriBridgeSource = read('src', 'platform', 'tauri', 'bridge.js');
-const tauriMonitorSource = read('src', 'platform', 'tauri', 'bridge', 'monitor.js');
 assert.ok(tauriBridgeSource.includes('tokens: { input: 0, max: 0 }'), 'tauri bridge initializes max=0 (unknown window)');
 assert.ok(webSource.includes('tokens: { input: 0, max: 0 }'), 'web bridge initializes max=0 (unknown window)');
 assert.ok(!webSource.includes('let maxModelLen = 32768'), 'web monitor must not fall back to a fake 32K window');
-assert.ok(tauriMonitorSource.includes('state.tokens.max = snap.vllm.max_model_len;'), 'tauri monitor must not fall back to a fake 32K window');
+// Wave 1 moved pollMonitor into the shared base; pin the shared body.
+assert.ok((read('src', 'shared', 'bridge-shared-helpers.js')).includes('state.tokens.max = snap.vllm.max_model_len;'), 'tauri monitor must not fall back to a fake 32K window');
 
 console.log('chat_usage_context_window.test.mjs: OK');

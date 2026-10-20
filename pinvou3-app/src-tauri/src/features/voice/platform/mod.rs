@@ -36,6 +36,14 @@ pub(crate) fn asr_tool_path_from_env() -> Option<std::path::PathBuf> {
     None
 }
 
+/// GUI 兜底门禁（`app/commands/voice.rs`）：是否设置了任一显式 env 覆盖命令。
+/// 与 [`asr_tool_path_from_env`] 同一变量集、同一"非空"判定（按存在性语义，
+/// "取首个非空" ⟺ "任一非空"），两侧共用一份变量清单，新增/移除变量名时
+/// 不会漏改 GUI 门禁。
+pub(crate) fn has_asr_cli_override() -> bool {
+    asr_tool_path_from_env().is_some()
+}
+
 /// 就绪探测与执行路径必须同判定。本骨架只适配"执行必经 env CLI"的平台
 /// （Windows：`recognize_native` 恒为 None）：设置了覆盖命令时，就绪 = 该命令
 /// 本身可执行——执行会原样 spawn 它，打包运行时再完好也不能替它报就绪；未设置

@@ -532,18 +532,6 @@ def _parse_bool_arg(value, default=False):
     return default
 
 
-def _block_text(block):
-    """Extracts readable text from a content block; unknown types return None (drift defense: skip, never error)."""
-    if not isinstance(block, dict):
-        return None
-    btype = block.get("type")
-    if btype == "text":
-        return block.get("text") or ""
-    if btype == "thinking":
-        return block.get("thinking") or ""
-    return None
-
-
 def group_turns(messages):
     """Groups the messages sequence into turns (oldest first).
 

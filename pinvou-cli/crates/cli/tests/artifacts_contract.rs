@@ -552,6 +552,65 @@ fn artifacts_list_reports_unscannable_records_in_skipped_sessions() {
     assert_eq!(value["skipped_sessions"], serde_json::json!([]));
 }
 
+/// Closed-stderr contract (round-9 review): Rust ignores SIGPIPE, so with
+/// stderr closed (`pinvou artifacts list 2>&1 | head`) a plain `eprintln!`
+/// skip note panics (exit 101) and loses the whole listing where the
+/// deleted CLI mirror routed every streamed write through a best-effort
+/// note. The shared scan now enforces that closed-pipe contract itself
+/// (write errors ignored); one skipped record must not abort the report
+/// (rows JSON included) for the human lane either.
+#[test]
+fn artifacts_list_survives_a_closed_stderr_with_skipped_records() {
+    let _env_guard = env_lock();
+    let home = HomeGuard::new("artifacts", "closed-stderr", Isolation::ProductHome);
+    let id = create_session_fixture();
+
+    let report = seeded_report(&home, &id, "# Report\n");
+    let store = SessionStore::boot().expect("boot session store");
+    store
+        .update_artifacts(&id, vec![report.to_string_lossy().to_string()])
+        .expect("track artifact");
+    drop(store);
+
+    let sessions = home.sessions_root();
+    // Two skip classes fire so the closed stderr is hit mid-scan: a corrupt
+    // record (disclosed at the parse) and a sparse record over the scan cap
+    // (disclosed at the stat probe).
+    std::fs::write(sessions.join("junk.json"), b"not a session record").unwrap();
+    let over_scan = std::fs::File::create(sessions.join("huge.json")).unwrap();
+    over_scan.set_len(SCAN_CAP_BYTES + 1).unwrap();
+    drop(over_scan);
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_pinvou"))
+        .args(["artifacts", "list", "--output", "json"])
+        .env("PINVOU3_HOME", home.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the pinvou binary must spawn");
+    // Dropping our read end closes the pipe: every child stderr write now
+    // fails (Rust ignores SIGPIPE, so the write surfaces as an error, not a
+    // process kill) — exactly the `2>&1 | head` condition.
+    drop(child.stderr.take());
+    let output = child
+        .wait_with_output()
+        .expect("the pinvou binary must run to completion");
+
+    assert!(
+        output.status.success(),
+        "a closed stderr must not abort the listing: {output:?}"
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("the json report must survive");
+    assert_eq!(value["artifacts"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        value["skipped_sessions"],
+        serde_json::json!(["huge", "junk"]),
+        "the skip disclosure must land even with stderr closed"
+    );
+}
+
 /// The two sessions-root states the list lane distinguishes: a MISSING root
 /// is a genuinely empty store and must succeed with an empty index, while a
 /// root shadowed by a regular file is an undecidable store (`read_dir`

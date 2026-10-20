@@ -536,11 +536,101 @@ pub fn checkout_workspace_branch(
                 bail!("提交信息不能为空");
             }
             git_output(&root, &["add", "-A"])?;
-            git_output(&root, &["commit", "-m", message])?;
+            let commit_args = checkout_commit_args(&root, message);
+            let commit_refs: Vec<&str> = commit_args.iter().map(String::as_str).collect();
+            if let Err(error) = git_commit_for_checkout(&root, &commit_refs) {
+                // Stash 臂失败时自行恢复现场；commit 模式的 `git add -A` 在
+                // commit 失败时（无身份、hook 拒绝）已经改写用户索引——报错必须
+                // 披露这一事实，而不是让变更静默留在暂存区（CLI 车道 round-40
+                // 同款披露，双端一致）。
+                bail!("{error:#}；本次 `git add -A` 已暂存工作区——继续前请先 git status 检查");
+            }
             git_output(&root, &["checkout", branch])?;
         }
     }
     workspace_branches(&root)
+}
+
+/// 提交模式车道的 `git commit` 参数（CLI `commit_command_args` 的镜像，同一份
+/// 加固语义，防止双端再次漂移）：
+///
+/// - `commit.gpgsign=false` 是对用户 git 配置的显式偏离：本车道 git 的 stdin
+///   关闭且无截止时间，`commit.gpgsign=true` 用户的首次提交模式切换会停在
+///   GPG pinentry 提示上，把会话车道永久挂起。代价经文档披露：经本车道提交的
+///   commit 不带签名（CLI 车道同款语义，docs/pinvou-cli.md）。
+/// - 身份显式化：从用户配置（repo-local 优先，其后 global/system）读回身份并以
+///   `-c` 显式传入；环境中导出的 `GIT_AUTHOR_*`/`GIT_COMMITTER_*` 由
+///   [`git_commit_for_checkout`] 移除，不能覆盖这里解析出的身份。任何配置都读
+///   不到时 `user.useConfigOnly=true` 让 commit 如实失败，而不是伪造
+///   `user@hostname`。
+fn checkout_commit_args(root: &Path, message: &str) -> Vec<String> {
+    let mut args = vec!["-c".to_owned(), "commit.gpgsign=false".to_owned()];
+    match ambient_git_identity(root) {
+        Some((name, email)) => {
+            args.push("-c".to_owned());
+            args.push(format!("user.name={name}"));
+            args.push("-c".to_owned());
+            args.push(format!("user.email={email}"));
+        }
+        None => {
+            args.push("-c".to_owned());
+            args.push("user.useConfigOnly=true".to_owned());
+        }
+    }
+    args.push("commit".to_owned());
+    args.push("-m".to_owned());
+    args.push(message.to_owned());
+    args
+}
+
+/// 环境身份（repo-local 优先，其后 global/system）——GUI 会话车道实际会以哪个
+/// 身份提交。只读 `git config` 探测：不跑 hooks。与 [`checkout_commit_args`]
+/// 的提交使用同一条 `strip_git_override_env` 通路，两边看到同一个有效仓库与
+/// 同一组配置文件；用户全局配置刻意可见——读的就是用户实际提交用的身份。
+fn ambient_git_identity(root: &Path) -> Option<(String, String)> {
+    let capture = git_output(
+        root,
+        &["config", "--null", "--get-regexp", r"^user\.(name|email)$"],
+    )
+    .ok()?;
+    let mut name = None;
+    let mut email = None;
+    for record in capture.split('\0') {
+        let Some((key, value)) = record.split_once('\n') else {
+            continue;
+        };
+        match key.trim() {
+            "user.name" => name = Some(value.trim().to_owned()),
+            "user.email" => email = Some(value.trim().to_owned()),
+            _ => {}
+        }
+    }
+    Some((name?, email?))
+}
+
+/// 提交模式车道自己的 `git commit`：与 [`git_output`] 相同，但额外移除环境中
+/// 的身份变量（`GIT_AUTHOR_*`/`GIT_COMMITTER_*`，platform::process 的
+/// `GIT_IDENTITY_KEYS` 全表），使 [`checkout_commit_args`] 以 `-c` 显式传入的
+/// 身份真正生效——否则调用方 shell 导出的身份会覆盖用户配置解析出的身份。
+fn git_commit_for_checkout(root: &Path, arguments: &[&str]) -> Result<String> {
+    let mut command = crate::platform::process::HiddenCommand::new("git");
+    crate::platform::process::strip_git_override_env(&mut command);
+    for key in crate::platform::process::GIT_IDENTITY_KEYS {
+        command.env_remove(key);
+    }
+    let output = command
+        .current_dir(root)
+        .args(arguments)
+        .output()
+        .with_context(|| format!("执行 git {} 失败", arguments.join(" ")))?;
+    if !output.status.success() {
+        bail!(
+            "git {} 失败: {}",
+            arguments.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// In-memory diff cache: key = (session_id, relative path), value = file
@@ -2637,6 +2727,111 @@ mod tests {
             fs::read_to_string(root.path().join("file.txt")).unwrap(),
             "v1"
         );
+    }
+
+    #[test]
+    fn checkout_workspace_branch_commit_mode_suppresses_gpg_signing() {
+        // 与 CLI 车道同款加固（round-40 评审，双端一致）：commit.gpgsign=true
+        // 用户的首次提交模式切换不能停在 GPG 签名上（本车道 stdin 关闭、无截止
+        // 时间，pinentry 提示会把会话车道永久挂起）。签名密钥钉一个必然不存在的
+        // key id，让「不抑制签名则提交必败」在任何机器上成立。
+        let Some(root) = init_git_repo("checkout-commit-gpgsign") else {
+            return;
+        };
+        git_output(root.path(), &["config", "commit.gpgsign", "true"]).unwrap();
+        git_output(
+            root.path(),
+            &["config", "user.signingkey", "0xDEADBEEF_NO_SUCH_KEY"],
+        )
+        .unwrap();
+        fs::write(root.path().join("file.txt"), "v1-dirty").unwrap();
+        let result = checkout_workspace_branch(
+            root.path(),
+            "feature",
+            BranchSwitchMode::Commit,
+            Some("wip: gpgsign suppressed"),
+        )
+        .expect("commit.gpgsign=true must not fail the commit-mode switch");
+        assert_eq!(result.current.as_deref(), Some("feature"));
+        let main_log = git_output(root.path(), &["log", "-1", "--format=%s", "main"]).unwrap();
+        assert_eq!(main_log.trim(), "wip: gpgsign suppressed");
+    }
+
+    #[test]
+    fn checkout_workspace_branch_commit_mode_discloses_mutated_index_on_failure() {
+        // 拒绝型 pre-commit hook 让 commit 在 `git add -A` 之后失败（与无身份、
+        // 服务端 hook 拒绝同类）：报错必须披露索引已被改写，变更不能静默留在
+        // 暂存区。
+        let Some(root) = init_git_repo("checkout-commit-disclosure") else {
+            return;
+        };
+        let hook = root.path().join(".git").join("hooks").join("pre-commit");
+        fs::write(&hook, b"#!/bin/sh\nexit 1\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        fs::write(root.path().join("file.txt"), "v1-dirty").unwrap();
+        let error = checkout_workspace_branch(
+            root.path(),
+            "feature",
+            BranchSwitchMode::Commit,
+            Some("wip: hook rejects"),
+        )
+        .expect_err("a rejecting hook must fail the commit-mode switch");
+        let error = error.to_string();
+        assert!(
+            error.contains("已暂存工作区"),
+            "commit failure must disclose the mutated index: {error}"
+        );
+        // 被改写的索引是事实而非措辞：变更确实已在暂存区。
+        let staged = git_output(root.path(), &["status", "--porcelain"]).unwrap();
+        assert!(
+            staged.contains("M  file.txt"),
+            "changes must be staged: {staged}"
+        );
+    }
+
+    #[test]
+    fn checkout_workspace_branch_commit_mode_prefers_config_identity_over_ambient_env() {
+        // 身份显式化：提交车道移除 GIT_AUTHOR_*/GIT_COMMITTER_* 环境变量，使
+        // `-c user.name=`（用户配置解析出的身份）真正生效——调用方 shell 导出的
+        // 身份不得覆盖它。
+        let Some(root) = init_git_repo("checkout-commit-identity") else {
+            return;
+        };
+        fs::write(root.path().join("file.txt"), "v1-dirty").unwrap();
+        // Round-8 review minor: snapshot-and-restore through the shared
+        // panic-safe guard — a panic inside checkout_workspace_branch used to
+        // leak the seeded GIT_* values to later tests (a straight-line restore
+        // never runs on unwind).
+        let (_env_lock, _env) = crate::platform::test_support::locked_env(&[
+            "GIT_AUTHOR_NAME",
+            "GIT_AUTHOR_EMAIL",
+            "GIT_COMMITTER_NAME",
+            "GIT_COMMITTER_EMAIL",
+        ]);
+        // SAFETY: locked_env holds platform::paths::tests::ENV_LOCK; lib tests
+        // run with --test-threads=1, env writes are serialized in-process.
+        unsafe { std::env::set_var("GIT_AUTHOR_NAME", "env-author") };
+        unsafe { std::env::set_var("GIT_COMMITTER_NAME", "env-committer") };
+        let result = checkout_workspace_branch(
+            root.path(),
+            "feature",
+            BranchSwitchMode::Commit,
+            Some("wip: identity"),
+        )
+        .expect("commit-mode switch must succeed");
+        assert_eq!(result.current.as_deref(), Some("feature"));
+        let author = git_output(root.path(), &["log", "-1", "--format=%an", "main"]).unwrap();
+        assert_eq!(
+            author.trim(),
+            "test",
+            "ambient GIT_AUTHOR_NAME must not outrank the -c identity from the user's config"
+        );
+        let committer = git_output(root.path(), &["log", "-1", "--format=%cn", "main"]).unwrap();
+        assert_eq!(committer.trim(), "test");
     }
 
     #[test]

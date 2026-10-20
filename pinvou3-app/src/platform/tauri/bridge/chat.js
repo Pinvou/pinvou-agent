@@ -6,7 +6,7 @@
   const registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__ = window.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry.chat = function (context) {let pinvouSharedtauriChatCache = null;
 function pinvouSharedtauriChat() {
-  if (!pinvouSharedtauriChatCache) pinvouSharedtauriChatCache = window.PinvouBridgeShared.create("tauriChat", { state, sessionStates, messageHasToolBlock, addChatItem, notify, bt, summonPinvou, invoke });
+  if (!pinvouSharedtauriChatCache) pinvouSharedtauriChatCache = window.PinvouBridgeShared.create("tauriChat", { state, sessionStates, addChatItem, notify, bt, sendMessage, invoke, pendingAssistantBlocks: { get value() { return context.pendingAssistantBlocks; }, set value(v) { context.pendingAssistantBlocks = v; } }, flushPendingTextBlock, autoCreateScheduledTaskDraft, runSyncOnSession, ensureSessionBufferLoaded, getBuffer, touchSessionBuffer, recordAuthoritySyncDiagnostic, reconcileRemoteTurn, doSendFor, flushQueued, itemIdSeq: { get value() { return context.itemIdSeq; }, set value(v) { context.itemIdSeq = v; } } });
   return pinvouSharedtauriChatCache;
 }
 
@@ -30,6 +30,7 @@ function pinvouSharedtauriChat() {
     const ensureSessionBufferLoaded = context.ensureSessionBufferLoaded;
     const ensureSession = context.ensureSession;
     const getBuffer = context.getBuffer;
+    const touchSessionBuffer = context.touchSessionBuffer;
     const recordPinvouSceneForMessage = context.recordPinvouSceneForMessage || function () {};
     const recordSteeredMessages = context.recordSteeredMessages || function () {};
     const reconcileRemoteTurn = context.reconcileRemoteTurn;
@@ -37,7 +38,6 @@ function pinvouSharedtauriChat() {
     const adoptManagedAttachments = context.adoptManagedAttachments || function () { return Promise.resolve(); };
     const discardManagedAttachment = context.discardManagedAttachment || function () { return Promise.resolve(); };
     const userMessageDisplayText = context.userMessageDisplayText;
-    const parseScheduledTaskDraftFromText = context.parseScheduledTaskDraftFromText;
     const autoCreateScheduledTaskDraft = context.autoCreateScheduledTaskDraft;
 
   // Composer 草稿是纯前端短期状态：写入时不 notify，避免每次按键都克隆
@@ -286,29 +286,7 @@ function setComposerDraft(value) { return pinvouSharedtauriChat().setComposerDra
     item.id = ++context.itemIdSeq;
     state.chatItems.push(item);
   }
-  function messageHasToolBlock(type, toolCallId) {
-    if (!toolCallId) return false;
-    for (let i = state.messages.length - 1; i >= 0; i--) {
-      const blocks = state.messages[i] && state.messages[i].content;
-      if (!Array.isArray(blocks)) continue;
-      for (let j = blocks.length - 1; j >= 0; j--) {
-        const block = blocks[j];
-        if (!block || block.type !== type) continue;
-        if ((type === "tool_use" ? block.id : block.tool_use_id) === toolCallId) return true;
-      }
-    }
-    return false;
-  }
-  function toolCallAlreadyStarted(toolCallId) {
-    if (!toolCallId) return false;
-    if ((context.pendingAssistantBlocks || []).some(function (block) {
-      return block && block.type === "tool_use" && block.id === toolCallId;
-    })) return true;
-    if (state.chatItems.some(function (item) {
-      return item && item.type === "tool" && item.toolId === toolCallId;
-    })) return true;
-    return messageHasToolBlock("tool_use", toolCallId);
-  }
+  function toolCallAlreadyStarted(toolCallId) { return pinvouSharedtauriChat().toolCallAlreadyStarted(toolCallId); }
 function toolCallAlreadyFinished(toolCallId) { return pinvouSharedtauriChat().toolCallAlreadyFinished(toolCallId); }
 function hasChatItemForTool(type, toolCallId) { return pinvouSharedtauriChat().hasChatItemForTool(type, toolCallId); }
 function addSystemItem(text, meta) { return pinvouSharedtauriChat().addSystemItem(text, meta); }
@@ -325,23 +303,8 @@ function timeStr() { return pinvouSharedtauriChat().timeStr(); }
       context.pendingAssistantText = "";
     }
   }
-  function flushAssistantMessageToHistory() {
-    flushPendingTextBlock();
-    if (context.pendingAssistantBlocks.length) {
-      const assistantText = context.pendingAssistantBlocks
-        .filter(function (block) { return block && block.type === "text" && block.text; })
-        .map(function (block) { return block.text; })
-        .join("\n\n");
-      if (state.activeSessionId && state.activeSessionId === state.scheduledTaskCreationSessionId) {
-        const scheduledTaskDraft = parseScheduledTaskDraftFromText(assistantText);
-        if (scheduledTaskDraft) {
-          autoCreateScheduledTaskDraft(scheduledTaskDraft, state.activeSessionId);
-        }
-      }
-      state.messages.push({ role: "assistant", content: context.pendingAssistantBlocks });
-      context.pendingAssistantBlocks = [];
-    }
-  }
+  function flushAssistantMessageToHistory() { return pinvouSharedtauriChat().flushAssistantMessageToHistory(); }
+
   function resetPendingAssistant() {
     context.pendingAssistantText = "";
     context.pendingAssistantBlocks = [];
@@ -430,7 +393,7 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedtauriChat
         // 新一轮已被后端受理：会话中未提交的「打开」（pending enable）自此进入
         // 上下文并锁死（ComposerToolMenu 监听）。bridge 层不反向依赖 features，
         // 与 chat-events.js 的 pinvou:tools-changed 一样内联派发。
-        try { window.dispatchEvent(new CustomEvent("pinvou:chat-round-committed", { detail: { scope: "plain" } })); } catch { /* dispatch may fail in non-DOM test harness */ }
+        try { window.PinvouToolStoreEvents.notifyChatRoundCommitted(); } catch { /* dispatch may fail in non-DOM test harness */ }
         recordAuthoritySyncDiagnostic("local_turn_admitted", Object.assign({
           operation: "send",
         }, authoritySyncBufferSnapshot(sid, turnOwnerBuffer)));
@@ -551,51 +514,7 @@ function rebuiltQueuedMetaPayload(item, userText) { return pinvouSharedtauriChat
       });
   }
 
-  async function sendMessageToSession(sessionId, text, meta) {
-    const sid = String(sessionId || "").trim();
-    const content = String(text || "").trim();
-    if (!sid) throw new Error(bt("targetSessionMissing"));
-    if (!content) throw new Error(bt("replyContentEmpty"));
-    const exists = state.sessions.some(function (session) { return String(session.id) === sid; });
-    if (!exists) throw new Error(bt("targetSessionMissing"));
-
-    await ensureSessionBufferLoaded(sid);
-    let targetBuffer = getBuffer(sid);
-    const targetQueue = targetBuffer && targetBuffer.queued;
-    if (isBusyFor(sid) || (targetQueue && targetQueue.length > 0)) {
-      runSyncOnSession(sid, function () {
-        state.queued.push(makeQueuedMessage(
-          ++context.itemIdSeq, content, content, content, [], meta || null, false
-        ));
-      });
-      notify();
-      if (!isBusyFor(sid)) flushQueued(sid);
-      return { accepted: true, queued: true };
-    }
-    if (targetBuffer && targetBuffer.remoteTurnActive && !(await reconcileRemoteTurn(sid))) {
-      recordAuthoritySyncDiagnostic("remote_sync_blocked_action", Object.assign({
-        operation: "send_to_session",
-      }, authoritySyncBufferSnapshot(sid, targetBuffer)));
-      throw new Error(bt("targetSessionSyncing"));
-    }
-    targetBuffer = getBuffer(sid);
-    if (isBusyFor(sid) || (targetBuffer.queued && targetBuffer.queued.length > 0)) {
-      runSyncOnSession(sid, function () {
-        state.queued.push(makeQueuedMessage(
-          ++context.itemIdSeq, content, content, content, [], meta || null, false
-        ));
-      });
-      notify();
-      if (!isBusyFor(sid)) flushQueued(sid);
-      return { accepted: true, queued: true };
-    }
-    const completion = doSendFor(sid, content, content, [], meta || null, false, true)
-      .then(
-        function () { return { ok: true }; },
-        function (error) { return { ok: false, error }; }
-      );
-    return { accepted: true, queued: false, completion };
-  }
+  async function sendMessageToSession(sessionId, text, meta) { return pinvouSharedtauriChat().sendMessageToSession(sessionId, text, meta); }
 
   // Backfill once the steer invoke resolves with a steer_id: settle any
   // committed/dropped events that arrived early; if the chip was taken by
@@ -1292,28 +1211,7 @@ function prefillComposer(text, append) { return pinvouSharedtauriChat().prefillC
   // ── Pinvou v4 召唤式检阅:Boss 主动呼叫,审当前 session 前面的工作 ──
   // 纯召唤、不替 Boss 决策。
   // 审查卡进 chatItems(当前会话可见);跨会话持久化(进 messages/独立存储)是后续增强。
-  async function summonPinvou(focus, mode) {
-    if (!state.activeSessionId) { addSystemItem(bt("summonNeedsSession")); return; }
-    if (state.pinvouSummoning) return;
-    state.pinvouSummoning = true;
-    const sid = state.activeSessionId; // 召唤发起时的 session;await 返回后校验,防跨 session 串(召唤慢+切走)
-    // 检阅结果弹 modal(不进对话流):一次只一个,裁决/跳过直接操作 state.pinvouModal.review、
-    // 不靠 pos 定位(根治连续召唤 pos 重复串卡)。
-    state.pinvouModal = { loading: true, coverage: mode === "coverage" };
-    notify();
-    try {
-      // focus=产出物 path(品=审产物); mode="coverage"=悟(通盘体检)。
-      const review = await invoke("summon_pinvou", { sessionId: sid, focus: focus || null, mode: mode || null });
-      if (state.activeSessionId !== sid) return; // 召唤期间切了 session → 丢弃,绝不 record/写进别的 session
-      recordPinvouReview(review); // 存 sidecar(供核账读上轮账目);modal.review 同引用,裁决写它=写 sidecar
-      if (state.pinvouModal) { state.pinvouModal.loading = false; state.pinvouModal.review = review; }
-    } catch (e) {
-      if (state.activeSessionId === sid && state.pinvouModal) { state.pinvouModal.loading = false; state.pinvouModal.error = String(e && e.message ? e.message : e); }
-    } finally {
-      state.pinvouSummoning = false;
-      notify();
-    }
-  }
+async function summonPinvou(focus, mode) { return pinvouSharedtauriChat().summonPinvou(focus, mode); }
 
   // 通盘体检(覆盖镜头):查产物"全不全"=缺哪些完整性维度。独立入口,走 mode=coverage。
 function inspectPinvou(focus) { return pinvouSharedtauriChat().inspectPinvou(focus); }
@@ -1324,59 +1222,7 @@ function recordPinvouReview(review) { return pinvouSharedtauriChat().recordPinvo
 
   // §2 按勾选裁决:resolution 已由前端写回 review 对象(引用→sidecar),这里持久化 +
   // 把勾「让AI改」的条目走 B1 发定向修订指令(只改对应段落、禁全文重写)。Boss 驾驶,非自动。
-  async function resolvePinvouReview(resolutions, actions) {
-    // 检阅发生的会话归属捕获：persist 挂起期间用户可能切走，修订指令必须发回
-    // 检阅会话，不得漂进当前 active 会话（审计）。
-    const reviewSid = state.activeSessionId;
-    // 弹窗只一个 review(state.pinvouModal.review),直接在它上面写 resolution——不靠 pos 定位
-    // (根治连续召唤 pos 重复串卡)。它和 sidecar entry.review 同引用,写它=写 sidecar。
-    const isWu = !!(state.pinvouModal && state.pinvouModal.coverage); // 关窗前取,供转交标品/悟
-    const review = state.pinvouModal && state.pinvouModal.review;
-    if (review && resolutions) {
-      (review.recommendations || []).forEach(function (r, k) { if (resolutions.recs && resolutions.recs[k]) r.resolution = resolutions.recs[k]; });
-      (review.issues || []).forEach(function (x, k) { if (resolutions.issues && resolutions.issues[k]) x.resolution = resolutions.issues[k]; });
-      (review.coverage || []).forEach(function (g, k) { if (resolutions.coverage && resolutions.coverage[k]) g.resolution = resolutions.coverage[k]; });
-    }
-    await persistPinvouReviews(); // 落盘,配合后端 preserve_resolutions 防覆盖
-    state.pinvouModal = null; // 裁决完关窗
-    notify();
-    if (!actions || !actions.length) return;
-    // 按动作类型分组,组装一条 Boss 消息发给主 AI(Boss 驾驶,非自动回传):
-    //   fix/verify=产物缺陷定向修订(verify 先核实);adopt=Boss 已定的决策;ask=让 AI 正式问。
-    const fix = actions.filter(function (a) { return a.t === "fix"; });
-    const verify = actions.filter(function (a) { return a.t === "verify"; });
-    const adopt = actions.filter(function (a) { return a.t === "adopt"; });
-    const ask = actions.filter(function (a) { return a.t === "ask"; });
-    const parts = [];
-    if (fix.length) {
-      parts.push(bt("reviewFixHeader"));
-      fix.forEach(function (a) { parts.push("- " + a.text); });
-    }
-    if (verify.length) {
-      if (parts.length) parts.push("");
-      parts.push(bt("reviewVerifyHeader"));
-      verify.forEach(function (a) { parts.push("- " + a.text); });
-    }
-    if (adopt.length) {
-      if (parts.length) parts.push("");
-      parts.push(bt("reviewAdoptHeader"));
-      adopt.forEach(function (a) { parts.push("- " + (a.topic ? a.topic + "：" : "") + a.pick); });
-    }
-    if (ask.length) {
-      if (parts.length) parts.push("");
-      parts.push(bt("reviewAskHeader"));
-      ask.forEach(function (a) { parts.push("- " + a.topic); });
-    }
-    const fill = actions.filter(function (a) { return a.t === "fill"; });
-    if (fill.length) {
-      if (parts.length) parts.push("");
-      parts.push(bt("reviewFillHeader"));
-      fill.forEach(function (a) { parts.push("- " + a.dimension + (a.suggestion ? "：" + a.suggestion : "")); });
-      parts.push(bt("reviewFillFooter"));
-    }
-    // 已切走则放弃发指令（修订指令属于检阅会话，漂进别的会话会误导其上下文）。
-    if (parts.length && reviewSid && state.activeSessionId === reviewSid) sendMessage(parts.join("\n"), { pinvouTransfer: isWu ? "悟" : "品" });
-  }
+async function resolvePinvouReview(resolutions, actions) { return pinvouSharedtauriChat().resolvePinvouReview(resolutions, actions); }
 
   // 整卡跳过:Boss 看了不处理这次检阅 → 直接关窗(sidecar entry 留着、无 resolution,无害)。
 function dismissPinvouReview() { return pinvouSharedtauriChat().dismissPinvouReview(); }

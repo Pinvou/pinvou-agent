@@ -87,7 +87,6 @@ use objc2_core_foundation::{
 };
 use objc2_core_graphics::{CGPreflightScreenCaptureAccess, CGRequestScreenCaptureAccess};
 use objc2_foundation::{NSPoint, NSSize, NSString};
-use xcap::Monitor;
 
 use super::super::backend::ComputerUseBackend;
 use super::super::types::{
@@ -95,46 +94,17 @@ use super::super::types::{
     UiTreeOptions,
 };
 use super::helpers::{
-    MACOS_UNICODE_STRING_UTF16_UNITS, TYPE_CHUNK_CHARS, TypeRun, combine_drag_errors,
-    drag_waypoints, map_scroll, normalize_typed_newlines, sanitize_name, screening_hit,
-    split_type_runs, utf16_chunks,
+    CHORD_HOLD_MS, CLICK_SETTLE_MS, DEFAULT_TREE_MAX_DEPTH, DEFAULT_TREE_MAX_NODES,
+    DRAG_PRESS_SETTLE_MS, DRAG_STEP_DELAY_MS, DRAG_STEPS, HOLD_CANCEL_POLL_MS,
+    MACOS_UNICODE_STRING_UTF16_UNITS, MAX_NAME_CHARS, MAX_TREE_DEPTH, MAX_TREE_NODES,
+    MULTI_CLICK_INTERVAL_MS, TYPE_CHUNK_CHARS, TypeRun, combine_drag_errors, drag_waypoints,
+    map_scroll, map_xcap_err, normalize_typed_newlines, pick_monitor, release_reverse,
+    sanitize_name, screening_hit, split_type_runs, utf16_chunks,
 };
 use crate::platform::cursor::{CFRelease, CursorPositionError, cursor_position};
 
 use super::super::guard::raw_element_binding;
 
-/// Wait before a click so the preceding move settles (the target process
-/// consumes the mouse-moved event).
-const CLICK_SETTLE_MS: u64 = 30;
-/// Gap between consecutive clicks in a double/triple click (far below the
-/// system double-click threshold; enigo maintains clickState internally per
-/// NSEvent.doubleClickInterval, and double/triple clicks are recognized from
-/// it).
-const MULTI_CLICK_INTERVAL_MS: u64 = 40;
-/// Pause after the drag press and before movement starts, giving the target
-/// window time to enter drag-recognition state.
-const DRAG_PRESS_SETTLE_MS: u64 = 60;
-/// Number of interpolated drag path steps (some apps only recognize a drag
-/// after receiving enough motion events).
-const DRAG_STEPS: usize = 8;
-/// Delay between adjacent drag waypoints.
-const DRAG_STEP_DELAY_MS: u64 = 12;
-/// Pause between pressing all keys and releasing them in reverse; improves
-/// the hit rate of modifier chords (cmd+Tab etc.).
-const CHORD_HOLD_MS: u64 = 20;
-/// Granularity of the hold_key sleep: a stop/timeout cancel flag is polled
-/// at least this often, so an abandoned hold stops within this window
-/// instead of the full hold duration.
-const HOLD_CANCEL_POLL_MS: u64 = 100;
-
-/// `ui_tree` defaults/caps: depth and node count (keeps giant trees from
-/// overwhelming the worker thread and the text budget).
-const DEFAULT_TREE_MAX_DEPTH: u32 = 8;
-const DEFAULT_TREE_MAX_NODES: u32 = 400;
-const MAX_TREE_DEPTH: u32 = 24;
-const MAX_TREE_NODES: u32 = 2000;
-/// Character cap for a single-line name.
-const MAX_NODE_NAME_CHARS: usize = 80;
 /// Global message timeout (seconds) for AX's synchronous cross-process IPC.
 /// The default is about 6s; heavy apps (browsers/Electron) can hang on
 /// attribute reads, so it is tightened to 2s to protect the worker thread.
@@ -222,10 +192,6 @@ unsafe extern "C" {
     /// object type checks.
     fn AXUIElementGetTypeID() -> usize;
     fn AXValueGetTypeID() -> usize;
-}
-
-fn map_xcap_err(context: &str, err: xcap::XCapError) -> ComputerUseError {
-    ComputerUseError::failed(format!("{context}: {err}"))
 }
 
 fn map_input_err(context: &str, err: enigo::InputError) -> ComputerUseError {
@@ -339,29 +305,6 @@ fn cursor_points() -> Result<(i32, i32), ComputerUseError> {
         };
         ComputerUseError::failed(message)
     })
-}
-
-/// Monitor to capture: the one holding the cursor (on macOS from_point takes
-/// point coordinates); falls back to the primary monitor, then to the first
-/// monitor.
-fn pick_monitor(cursor: Option<(i32, i32)>) -> Result<Monitor, ComputerUseError> {
-    if let Some((x, y)) = cursor {
-        if let Ok(monitor) = Monitor::from_point(x, y) {
-            return Ok(monitor);
-        }
-    }
-    let mut monitors =
-        Monitor::all().map_err(|err| map_xcap_err("cannot enumerate monitors", err))?;
-    if let Some(primary) = monitors
-        .iter()
-        .position(|m| m.is_primary().unwrap_or(false))
-    {
-        return Ok(monitors.swap_remove(primary));
-    }
-    monitors
-        .drain(..)
-        .next()
-        .ok_or_else(|| ComputerUseError::unavailable("no monitor available for screen capture"))
 }
 
 /// This crate's `Key` → enigo key. macOS differences:
@@ -555,23 +498,6 @@ fn ordered_chord_keys(keys: &[Key]) -> Vec<Key> {
 /// secure fields directly as role AXSecureTextField.
 fn is_secure_text(role: &str, subrole: &str) -> bool {
     subrole == "AXSecureTextField" || role == "AXSecureTextField"
-}
-
-/// Releases pressed keys in reverse; even on a mid-way error, best-effort
-/// releases all of them and returns the first error.
-fn release_reverse(pressed: &[enigo::Key], enigo: &mut Enigo) -> Result<(), enigo::InputError> {
-    let mut first_err = None;
-    for key in pressed.iter().rev() {
-        if let Err(err) = enigo.key(*key, Direction::Release) {
-            if first_err.is_none() {
-                first_err = Some(err);
-            }
-        }
-    }
-    match first_err {
-        Some(err) => Err(err),
-        None => Ok(()),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1009,7 +935,7 @@ fn element_info_from(info: AxNodeInfo) -> ElementInfo {
     } else {
         info.title
     };
-    let display_name = sanitize_name(&name, MAX_NODE_NAME_CHARS);
+    let display_name = sanitize_name(&name, MAX_NAME_CHARS);
     // Bound while the raw strings are still in scope (see `raw_binding`).
     // Disclosed collapse: an element whose raw name is empty (no title and
     // no description) binds hash("", role), so every empty-named element of
@@ -1115,8 +1041,8 @@ fn format_tree_line(index: u32, depth: u32, info: &AxNodeInfo) -> String {
         // AXRole/AXSubrole are free-form strings supplied by the target app;
         // without sanitizing they could break the one-node-per-line invariant
         // (forged tree lines / newline injection) (round-10 review m6).
-        role = sanitize_name(&info.role, MAX_NODE_NAME_CHARS),
-        title = sanitize_name(display_title, MAX_NODE_NAME_CHARS),
+        role = sanitize_name(&info.role, MAX_NAME_CHARS),
+        title = sanitize_name(display_title, MAX_NAME_CHARS),
     );
     line
 }
@@ -2147,7 +2073,7 @@ mod tests {
     /// screening.
     #[test]
     fn element_info_screens_raw_strings_not_display_copies() {
-        let padding = "A".repeat(MAX_NODE_NAME_CHARS);
+        let padding = "A".repeat(MAX_NAME_CHARS);
         let base = AxNodeInfo {
             role: "AXButton".to_string(),
             title: String::new(),

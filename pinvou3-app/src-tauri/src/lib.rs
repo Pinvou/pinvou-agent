@@ -49,8 +49,8 @@ pub mod automation_foundation {
 /// the GUI keeps calling `crate::core::model_endpoint` directly.
 pub mod model_probe {
     pub use crate::core::model_endpoint::{
-        is_anthropic_api_url, is_opencode_gateway_base_url, models_probe_url,
-        opencode_session_id_for, strip_v1_suffix,
+        is_anthropic_api_url, is_opencode_gateway_base_url, model_probe_http_code,
+        model_probe_transport_code, models_probe_url, opencode_session_id_for, strip_v1_suffix,
     };
 }
 
@@ -129,7 +129,12 @@ fn ensure_release_env() {
             if let Some(connector_bin) = crate::platform::paths::managed_connector_bin_dir() {
                 dirs.push(connector_bin);
             }
-            if let Ok(prefix) = env::var("NPM_CONFIG_PREFIX") {
+            // npm reads both spellings (NPM_CONFIG_PREFIX and
+            // npm_config_prefix); uppercase wins when both are set — the
+            // same two-spelling read posix.rs's vendor-CLI scan uses.
+            if let Ok(prefix) =
+                env::var("NPM_CONFIG_PREFIX").or_else(|_| env::var("npm_config_prefix"))
+            {
                 dirs.push(std::path::Path::new(&prefix).join("bin"));
             }
             if let Some(home) = env::var_os("HOME") {
@@ -1572,7 +1577,6 @@ pub fn run() {
             commands::sessions::list_archived_sessions,
             commands::sessions::set_session_archived,
             commands::sessions::get_or_create_aux_session,
-            commands::sessions::discard_aux_session,
             commands::sessions::reset_aux_session,
             commands::timeline::get_session_timeline,
             commands::scheduled::list_scheduled_tasks,
@@ -1672,6 +1676,7 @@ pub fn run() {
             commands::artifacts::read_artifact_text,
             commands::artifacts::write_artifact_text,
             commands::artifacts::list_deliverable_index,
+            commands::artifacts::list_deliverable_index_v2,
             commands::artifacts::artifact_info,
             commands::artifacts::render_artifact_visual,
             commands::artifacts::read_artifact_image_b64,
@@ -2721,6 +2726,49 @@ mod release_env_defaults_guard {
             );
         }
         // EnvSnapshot::drop restores the full snapshot on exit (PATH / PINVOU3_HOME included).
+    }
+
+    /// PATH assembly must honor both npm prefix spellings: npm reads
+    /// NPM_CONFIG_PREFIX and npm_config_prefix alike, and a lowercase-only
+    /// setup (the shape commit 132cd4be9 fixed for the posix vendor-CLI scan
+    /// in platform/os/posix.rs) must still get its `<prefix>/bin` onto the
+    /// child-process PATH — a shim npm lands there must stay resolvable by
+    /// name for every PATH-based consumer this env serves.
+    #[test]
+    fn release_env_path_reads_lowercase_npm_config_prefix() {
+        let _lock = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _snapshot = EnvSnapshot::take();
+
+        let root = std::env::temp_dir().join(format!(
+            "pinvou3-npm-prefix-{}-{}",
+            std::process::id(),
+            crate::platform::paths::tests::unique_suffix()
+        ));
+        let bin_dir = root.join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("create prefix bin dir");
+        // The PATH branch only runs when var_os("PATH") exists; set a sentinel
+        // and set ONLY the lowercase spelling (uppercase removed) so the
+        // assertion covers exactly the two-spelling read.
+        // SAFETY: holding platform::paths::tests::ENV_LOCK (first line); env writes serialized.
+        unsafe { std::env::set_var("PATH", "/usr/bin:/bin") };
+        // SAFETY: same as above; ENV_LOCK serialization.
+        unsafe { std::env::remove_var("NPM_CONFIG_PREFIX") };
+        // SAFETY: same as above; ENV_LOCK serialization.
+        unsafe { std::env::set_var("npm_config_prefix", &root) };
+        super::ensure_release_env();
+
+        let path = std::env::var_os("PATH").expect("ensure_release_env must rewrite PATH");
+        let dirs: Vec<std::path::PathBuf> = std::env::split_paths(&path).collect();
+        assert!(
+            dirs.contains(&bin_dir),
+            "lowercase-only npm_config_prefix must still put <prefix>/bin on the child PATH (dirs: {dirs:?})"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+        // EnvSnapshot::drop restores the full snapshot on exit (both npm
+        // prefix spellings included).
     }
 
     /// `startup_process_env` is the sole injection funnel for

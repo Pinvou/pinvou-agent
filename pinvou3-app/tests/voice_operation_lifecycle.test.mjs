@@ -55,6 +55,7 @@ function operationCore(source, lane) {
 
 function baseSandbox(state) {
   const sandbox = { console, Math, Date, Promise, Object, Array, JSON, Set, Map };
+  sandbox.window = sandbox; // shared helpers attach PinvouBridgeShared onto window
   vm.createContext(sandbox);
   sandbox.state = state;
   sandbox.notify = () => {};
@@ -68,6 +69,25 @@ function baseSandbox(state) {
   sandbox.clearVoiceInput = () => {};
   sandbox.setVoiceInputStatus = () => {};
   sandbox.emitVoiceDiagnostic = () => {};
+  // Wave-4 lane merge: the extracted operation slices end in pinvouShared*
+  // forwarders, so the sandbox needs the shared base (index.html load order)
+  // plus per-lane cluster accessors wired to the sandbox stubs.
+  vm.runInContext(read("src/shared/bridge-shared-helpers.js"), sandbox, { filename: "shared/bridge-shared-helpers.js" });
+  vm.runInContext(`
+    this.pinvouSharedtauriVoice = () => this.__voiceCluster || (this.__voiceCluster = window.PinvouBridgeShared.create("tauriVoice", {
+      state, notify,
+      activeVoiceInput: { get value() { return activeVoiceInput; }, set value(v) { activeVoiceInput = v; } },
+      stopMediaTracks() {}, bt, VOICE_DEVICE_REQUEST_TIMEOUT_MS: 8000, finishVoiceInput() {},
+      voiceOperations: { get value() { return voiceOperations; } },
+    }));
+    this.pinvouSharedweb = () => this.__webCluster || (this.__webCluster = window.PinvouBridgeShared.create("web", {
+      state, invoke, notify, bt: { get value() { return bt; } },
+      voiceOperations: { get value() { return voiceOperations; } },
+      activeVoiceInput: { get value() { return activeVoiceInput; }, set value(v) { activeVoiceInput = v; } },
+      VOICE_DEVICE_REQUEST_TIMEOUT_MS: { get value() { return 8000; } },
+      finishVoiceInput() {}, stopMediaTracks() {},
+    }));
+  `, sandbox);
   return sandbox;
 }
 

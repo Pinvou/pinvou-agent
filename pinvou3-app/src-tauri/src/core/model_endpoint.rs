@@ -775,6 +775,66 @@ pub fn with_opencode_session_header(
 /// 模型列表探测地址：upstream 带 `/v1` 后缀时直接拼 `/models`；不带也拼 `/models`
 /// 而非补一层 `/v1`——glm `/paas/v4`、火山方舟 `/api/v3`、gemini `/v1beta/openai`
 /// 的 `/models` 端点均存在，补 `/v1` 会拼成不存在的地址永远 404。
+/// Status-code → stable probe classification code: the single home of the
+/// ladder both surfaces previously duplicated verbatim (GUI
+/// `model_connection_http_result`, CLI `connection_http_result`). The
+/// strings are wire codes consumed by the frontend's connectionMessages and
+/// pinned by both sides' tests.
+pub fn model_probe_http_code(status: reqwest::StatusCode) -> &'static str {
+    if status.is_success() {
+        "ok"
+    } else if status.is_redirection() {
+        "redirect"
+    } else {
+        match status.as_u16() {
+            400 | 422 => "request_invalid",
+            401 => "auth_invalid",
+            403 => "auth_forbidden",
+            404 => "endpoint_not_found",
+            405 => "method_not_allowed",
+            402 => "billing",
+            408 => "timeout",
+            429 => "rate_limited",
+            500..=599 => "server_unavailable",
+            _ => "http_error",
+        }
+    }
+}
+
+/// Transport-error → (classification code, redacted underlying detail).
+/// The two-pass scrub (URL-userinfo strip, then secret-shape pass — the
+/// same composition as the CLI's `support::redact_error_text`) is
+/// load-bearing: reqwest's Display embeds the full requested URL, and
+/// `redact_secret`'s generic heuristic needs a digit, so a
+/// `http://user:pass@host` base_url must not depend on reqwest's own
+/// Display redaction staying complete. One scrub here covers both
+/// surfaces permanently (was: identical ladders in settings.rs and the
+/// CLI's models.rs).
+pub fn model_probe_transport_code(err: &reqwest::Error) -> (&'static str, String) {
+    let raw = crate::platform::credential_store::redact_secret(
+        &crate::platform::redact_url_credentials_in_text(&err.to_string()),
+    );
+    let lower = raw.to_lowercase();
+    let code = if err.is_timeout() {
+        "timeout"
+    } else if lower.contains("certificate") || lower.contains("tls") || lower.contains("ssl") {
+        "tls_error"
+    } else if lower.contains("dns")
+        || lower.contains("lookup")
+        || lower.contains("name or service not known")
+    {
+        "dns_failed"
+    } else if lower.contains("connection refused")
+        || lower.contains("os error 10061")
+        || lower.contains("actively refused")
+    {
+        "connection_refused"
+    } else {
+        "network_error"
+    };
+    (code, raw)
+}
+
 pub fn models_probe_url(upstream: &str) -> String {
     format!("{}/models", upstream.trim_end_matches('/'))
 }
@@ -1808,6 +1868,55 @@ pub(crate) mod models_mock {
 pub(crate) mod tests {
     use super::*;
     use crate::platform::paths::tests::ENV_LOCK;
+
+    // Synthetic pin for model_probe_transport_code's composition (a real
+    // reqwest::Error cannot carry userinfo — reqwest >= 0.12 redacts its own
+    // Display, so the e2e probe in settings.rs cannot fail against a
+    // single-pass regression). The userinfo here carries no digit, so the
+    // token-shape pass alone cannot catch it: only the URL-userinfo pass
+    // does. For this digit-less input the two passes commute, so the pin
+    // asserts the COMPOSITION of both passes (identical to the CLI's
+    // support::redact_error_text), not their order; order observability and
+    // its pin live on the CLI side (URLs long enough to trip the generic
+    // token branch).
+    #[test]
+    fn transport_scrub_composition_strips_url_userinfo_before_token_shapes() {
+        // The URL path carries no digit anywhere: the generic >= 24 chars +
+        // digit + alpha branch of the token heuristic cannot fire, and no
+        // secret-like prefix matches, so the token pass alone keeps the URL.
+        let raw = "error sending request for url (http://alice:letmein@example.com/api):                    request rejected: sk-proj-abcd1234 invalid";
+        // The order claim, executable: the token-shape pass alone keeps the
+        // digit-less userinfo (the URL run matches no secret-like prefix).
+        let single_pass = crate::platform::credential_store::redact_secret(raw);
+        assert!(
+            single_pass.contains("letmein"),
+            "precondition drifted — the token pass alone now catches the userinfo: {single_pass}"
+        );
+        let scrubbed = crate::platform::credential_store::redact_secret(
+            &crate::platform::redact_url_credentials_in_text(raw),
+        );
+        assert!(
+            !scrubbed.contains("alice"),
+            "userinfo user survived: {scrubbed}"
+        );
+        assert!(
+            !scrubbed.contains("letmein"),
+            "userinfo password survived: {scrubbed}"
+        );
+        assert!(
+            !scrubbed.contains("sk-proj-abcd1234"),
+            "bearer token survived: {scrubbed}"
+        );
+        // The [REDACTED] here comes from the token arm's secret-shaped match,
+        // not from a wholesale URL fail-close: the URL pass strips only the
+        // userinfo and the host survives. This assert is therefore satisfied
+        // by the token arm alone — the alice/letmein asserts above are what
+        // bind the URL pass.
+        assert!(
+            scrubbed.contains("[REDACTED]"),
+            "the bearer token must be token-redacted: {scrubbed}"
+        );
+    }
 
     #[test]
     fn parse_models_response_list_keeps_all_model_ids() {

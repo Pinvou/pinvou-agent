@@ -122,6 +122,29 @@ pub struct MemoryOrganizeReport {
     pub warnings: Vec<String>,
 }
 
+impl MemoryOrganizeReport {
+    /// The single human summary wording for a finished organize run, shared
+    /// by the scheduled executor's `result_summary` and the CLI's
+    /// `memory organize` output (both used to carry byte-identical copies;
+    /// only the app side was test-pinned, so the copy could drift).
+    pub fn summary(&self) -> String {
+        let total = |counts: &std::collections::BTreeMap<String, u32>| {
+            counts.values().copied().sum::<u32>()
+        };
+        let scanned = total(&self.scanned);
+        if self.no_change {
+            return format!("Memory organize completed: scanned {scanned}, no changes needed");
+        }
+        format!(
+            "Memory organize completed: scanned {scanned}, deleted {}, updated {}, merged {}, skipped sensitive {}",
+            total(&self.deleted),
+            total(&self.updated),
+            total(&self.merged),
+            self.skipped_sensitive,
+        )
+    }
+}
+
 /// Organize entry point: mechanical pre-cleanup → full snapshot → LLM organize
 /// actions → sanitize/validate → apply → persist history.
 /// `cancel` comes from the scheduled-task entry point (the manual button has no

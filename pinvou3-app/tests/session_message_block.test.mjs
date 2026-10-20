@@ -140,21 +140,41 @@ test('CRLF-normalized history still parses (header, contract lines, blank line)'
 });
 
 test('auto-title strip ORDER (round-4 B3\'): the message block strips outermost-first, before the mention block, in both bridges', () => {
+  // The auto-title strip bodies moved into the shared base (the dead/
+  // duplicated sweep merged the web↔tauri persist pair): the order contract
+  // is pinned on that single shared body, and each bridge's reachability is
+  // pinned structurally by the forwarder leg below.
+  const shared = readFileSync(
+    new URL('../src/shared/bridge-shared-helpers.js', import.meta.url), 'utf8');
+  const message = shared.indexOf('splitMessage(titleText)');
+  const mention = shared.indexOf('splitMention(titleText)');
+  assert.ok(message !== -1, 'shared body: the message strip must exist');
+  assert.ok(mention !== -1, 'shared body: the mention strip must exist');
+  assert.ok(message < mention, 'the message block must strip BEFORE the mention block');
   for (const rel of ['../src/platform/tauri/bridge.js', '../src/platform/web/bridge.js']) {
     const source = readFileSync(new URL(rel, import.meta.url), 'utf8');
-    const message = source.indexOf('splitMessage(titleText)');
-    const mention = source.indexOf('splitMention(titleText)');
-    assert.ok(message !== -1, `${rel}: the message strip must exist`);
-    assert.ok(mention !== -1, `${rel}: the mention strip must exist`);
-    assert.ok(message < mention, `${rel}: the message block must strip BEFORE the mention block`);
+    assert.match(
+      source,
+      /async function persistMessagesFor\(sid\) \{ return pinvouShared(tauriMain|web)\(\)\.persistMessagesFor\(sid\); \}/,
+      `${rel}: auto-titling must forward to the shared body`,
+    );
   }
 });
 
 test('auto-title contract: both bridges strip the received-message block via the same window-global parser', () => {
+  // Single-sourced: the shared body consumes the window global; both bridges
+  // reach it through their cluster forwarders (pinned below).
+  const shared = readFileSync(
+    new URL('../src/shared/bridge-shared-helpers.js', import.meta.url), 'utf8');
+  assert.match(shared, /__PINVOU_SESSION_MESSAGE__/);
+  assert.match(shared, /splitMessage\(titleText\)/);
   for (const rel of ['../src/platform/tauri/bridge.js', '../src/platform/web/bridge.js']) {
     const source = readFileSync(new URL(rel, import.meta.url), 'utf8');
-    assert.match(source, /__PINVOU_SESSION_MESSAGE__/, rel);
-    assert.match(source, /splitMessage\(titleText\)/, rel);
+    assert.match(
+      source,
+      /async function persistMessagesFor\(sid\) \{ return pinvouShared/,
+      `${rel}: must forward to the shared strip`,
+    );
   }
   const moduleSource = readFileSync(
     new URL('../src/features/chat/session-message-block.js', import.meta.url), 'utf8');

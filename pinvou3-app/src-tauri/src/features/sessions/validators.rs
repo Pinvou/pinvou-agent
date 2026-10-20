@@ -199,7 +199,7 @@ pub(crate) fn generate_session_id() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_scheduled_task_id, validate_session_id};
+    use super::{is_sched_session_id, validate_scheduled_task_id, validate_session_id};
 
     /// Pins the two public error messages byte-for-byte: the shared charset
     /// helper interpolates the id kind, and callers surface these strings.
@@ -223,5 +223,24 @@ mod tests {
         assert!(validate_scheduled_task_id("task_1").is_ok());
         assert!(validate_session_id("   ").is_err());
         assert!(validate_scheduled_task_id("").is_err());
+    }
+
+    /// Round-8 review minor: the reserved-turn admission gates on this
+    /// predicate (via the shared prelude), but its body had no coverage — the
+    /// prelude shape pin counts call sites, not semantics. Pin the
+    /// case-insensitive prefix and the boundary-safe `get(..6)` directly: a
+    /// short id, a case variant, and the exact 6-char boundary must all
+    /// classify correctly.
+    #[test]
+    fn sched_session_id_predicate_classifies_case_and_boundary() {
+        assert!(is_sched_session_id("sched-abc123"));
+        assert!(is_sched_session_id("sched-")); // exact 6-char boundary
+        assert!(is_sched_session_id("SCHED-upper")); // ascii case-insensitive
+        assert!(is_sched_session_id("Sched-Mixed"));
+        assert!(!is_sched_session_id("")); // get(..6) is None, not a panic
+        assert!(!is_sched_session_id("sched")); // 5 chars: prefix never completes
+        assert!(!is_sched_session_id("schedXxyz")); // no dash at the boundary
+        assert!(!is_sched_session_id("main-abc123"));
+        assert!(!is_sched_session_id("aux-abc123"));
     }
 }

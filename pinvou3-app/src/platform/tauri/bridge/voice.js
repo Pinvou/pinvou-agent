@@ -9,7 +9,7 @@
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["voice"] = function (context) {let pinvouSharedtauriVoiceCache = null;
 function pinvouSharedtauriVoice() {
-  if (!pinvouSharedtauriVoiceCache) pinvouSharedtauriVoiceCache = window.PinvouBridgeShared.create("tauriVoice", { state, notify, activeVoiceInput: { get value() { return activeVoiceInput; }, set value(v) { activeVoiceInput = v; } }, stopMediaTracks, bt, VOICE_DEVICE_REQUEST_TIMEOUT_MS, finishVoiceInput });
+  if (!pinvouSharedtauriVoiceCache) pinvouSharedtauriVoiceCache = window.PinvouBridgeShared.create("tauriVoice", { state, notify, activeVoiceInput: { get value() { return activeVoiceInput; }, set value(v) { activeVoiceInput = v; } }, stopMediaTracks, bt, VOICE_DEVICE_REQUEST_TIMEOUT_MS, finishVoiceInput, voiceOperations: { get value() { return voiceOperations; } } });
   return pinvouSharedtauriVoiceCache;
 }
 
@@ -49,58 +49,14 @@ function pinvouSharedtauriVoice() {
   // writeback and retained until the draft is really sent or abandoned.
   const voiceOperations = new Map();
 
-  function rememberVoiceOperation(session) {
-    if (!session.sessionId && session.ownerKind === "chat") {
-      session.draftEpoch = Number(state.draftEpoch || 0);
-    }
-    for (const entry of voiceOperations) {
-      const item = entry[1];
-      // Terminal entries are done; a dismissed entry stays adoptable for a
-      // manual retry until the next recording starts, then it is swept —
-      // a never-sent dismissal must not leak its audio chunks forever.
-      if (item.telemetryTerminal || (item.dismissed && !item.pendingSubmission)) {
-        voiceOperations.delete(entry[0]);
-      }
-    }
-    voiceOperations.set(session.operationId, session);
-  }
-
-  function getVoiceOperationId(sessionId, ownerKind) {
-    const candidates = [...voiceOperations.values()].reverse();
-    const operation = candidates.find(function (item) {
-      return !item.telemetryTerminal && !item.pendingSubmission && item.voiceResultReady
-        && (item.sessionId || null) === (sessionId || null)
-        // A draft operation belongs to the draft epoch it was recorded in; a
-        // materialized session must not adopt an older draft's association.
-        && (item.sessionId || item.ownerKind !== "chat" || item.draftEpoch === Number(state.draftEpoch || 0))
-        && item.ownerKind === (ownerKind || "chat");
-    });
-    return operation ? operation.operationId : null;
-  }
-
-  function beginVoiceSubmission(operationId, sessionId) {
-    const operation = voiceOperations.get(operationId);
-    if (!operation || operation.telemetryTerminal) return;
-    operation.pendingSubmission = true;
-    if (sessionId && !operation.sessionId) {
-      operation.sessionId = sessionId;
-    }
-  }
-
-  function voiceOperationSessionId(operationId) {
-    return voiceOperations.get(operationId)?.sessionId || null;
-  }
-
-  // Whether the composer's current voice operation is parked on an in-flight
-  // send admission. The composer hook skips its identity-change auto-cancel
-  // for a parked operation: first-turn materialization flips the adapter
-  // identity mid-send, and cancelling here would only kill the completion
-  // notice of a message that still lands. A context switch before the park
-  // still cancels — that is the wrong-session auto-send protection.
-  function hasVoiceSubmissionPending() {
-    const operation = voiceOperations.get((state.voiceInput || {}).operationId);
-    return !!(operation && operation.pendingSubmission);
-  }
+function trackVoiceTerminal(eventName, session, fields) { return pinvouSharedtauriVoice().trackVoiceTerminal(eventName, session, fields); }
+function rememberVoiceOperation(session) { return pinvouSharedtauriVoice().rememberVoiceOperation(session); }
+function getVoiceOperationId(sessionId, ownerKind) { return pinvouSharedtauriVoice().getVoiceOperationId(sessionId, ownerKind); }
+function beginVoiceSubmission(operationId, sessionId) { return pinvouSharedtauriVoice().beginVoiceSubmission(operationId, sessionId); }
+function voiceOperationSessionId(operationId) { return pinvouSharedtauriVoice().voiceOperationSessionId(operationId); }
+function hasVoiceSubmissionPending() { return pinvouSharedtauriVoice().hasVoiceSubmissionPending(); }
+function rebindVoiceOperationToDraft(operationId, toEpoch) { return pinvouSharedtauriVoice().rebindVoiceOperationToDraft(operationId, toEpoch); }
+function completeVoiceSubmission(operationId, sessionId, accepted) { return pinvouSharedtauriVoice().completeVoiceSubmission(operationId, sessionId, accepted); }
 
   // Only ensureSession's proven same-draft rollback may advance this binding:
   // the multi-agent toggle save failing rolls the materialization back into the
@@ -115,44 +71,6 @@ function pinvouSharedtauriVoice() {
       || Number(state.draftEpoch || 0) !== toEpoch) return false;
     operation.draftEpoch = toEpoch;
     return true;
-  }
-
-  // Re-entering a departed draft hands its retained text back under a new
-  // draft epoch (enterDraft increments unconditionally). Once the text is
-  // visibly back in the composer the operation follows it: a manual retry
-  // keeps the voice association instead of being orphaned in the dead
-  // recording-time epoch (unadoptable, and unreachable by the keyed abandon).
-  // Restricted to unsubmitted draft operations (no session binding, chat
-  // kind), mirroring the rollback rebind; terminal operations never rebind.
-  function rebindVoiceOperationToDraft(operationId, toEpoch) {
-    const operation = voiceOperations.get(operationId);
-    if (!operation || operation.telemetryTerminal || operation.pendingSubmission
-      || operation.sessionId || operation.ownerKind !== "chat") return false;
-    operation.draftEpoch = Number(toEpoch);
-    return true;
-  }
-
-  function completeVoiceSubmission(operationId, sessionId, accepted) {
-    const operation = voiceOperations.get(operationId);
-    if (!operation || operation.telemetryTerminal) return;
-    operation.pendingSubmission = false;
-    if (sessionId && !operation.sessionId) {
-      operation.sessionId = sessionId;
-    }
-    if (accepted) {
-      operation.pendingTerminal = null;
-      operation.telemetryTerminal = true;
-      if (state.voiceInput && state.voiceInput.operationId === operationId) {
-        state.voiceInput = Object.assign({}, state.voiceInput, {
-          status: "idle", operationId: null, telemetryTerminal: true,
-        });
-        notify();
-      }
-    } else if (operation.pendingTerminal) {
-      const terminal = operation.pendingTerminal;
-      operation.pendingTerminal = null;
-      trackVoiceTerminal(terminal.eventName, operation, terminal.fields);
-    }
   }
 
   // Applying an edit preview or dismissing the finished notice retains the
@@ -172,18 +90,6 @@ function pinvouSharedtauriVoice() {
     setVoiceInputStatus("idle", { message: "", operationId: null });
   }
 
-  // Terminal dedup bookkeeping only (same state machine as the web lane):
-  // it marks the operation ended and consumes a queued terminal after a
-  // rejected admission; a cancel during admission waits for the admission
-  // result — an already-submitted operation is not recorded as cancelled.
-  function trackVoiceTerminal(eventName, session, fields) {
-    if (!session || session.telemetryTerminal) return;
-    if (session.pendingSubmission) {
-      session.pendingTerminal = { eventName, fields };
-      return;
-    }
-    session.telemetryTerminal = true;
-  }
 
   // Clearing the input or cancelling the preview abandons the result of a
   // recorded (but not submitted) operation; these are the only paths that
@@ -639,34 +545,7 @@ function mergeFloatChunks(chunks) { return pinvouSharedtauriVoice().mergeFloatCh
 
 function downsamplePcm(samples, sourceRate, targetRate) { return pinvouSharedtauriVoice().downsamplePcm(samples, sourceRate, targetRate); }
 
-  function encodeWav(samples, sampleRate) {
-    const dataSize = samples.length * 2;
-    const buffer = new ArrayBuffer(44 + dataSize);
-    const view = new DataView(buffer);
-    function writeString(offset, value) {
-      // WAV header writes ASCII only; charCode is the target byte value, fromCodePoint/codePointAt add nothing here.
-      for (let i = 0; i < value.length; i++) view.setUint8(offset + i, value.charCodeAt(i)); // eslint-disable-line unicorn/prefer-code-point
-    }
-    writeString(0, "RIFF");
-    view.setUint32(4, 36 + dataSize, true);
-    writeString(8, "WAVE");
-    writeString(12, "fmt ");
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    writeString(36, "data");
-    view.setUint32(40, dataSize, true);
-    let offset = 44;
-    for (let i = 0; i < samples.length; i++, offset += 2) {
-      const s = Math.max(-1, Math.min(1, samples[i]));
-      view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-    }
-    return buffer;
-  }
+function encodeWav(samples, sampleRate) { return pinvouSharedtauriVoice().encodeWav(samples, sampleRate); }
 
   // A 60s 16kHz 16bit WAV is ~1.9MB; shipping it across IPC as a JSON number array means
   // ~1.92M elements, multiple copies, ~25MB peak memory. Use a standard base64 string

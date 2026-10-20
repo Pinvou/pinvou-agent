@@ -10,7 +10,14 @@ const chatBridge = readFileSync(
   path.join(here, '..', 'src', 'platform', 'tauri', 'bridge', 'chat.js'),
   'utf8',
 );
-const bridgeImplementation = `${bridge}\n${chatBridge}`;
+// The lane-merge residual wave moved the sendMessageToSession body into the
+// shared base (the lane files keep pinvouShared* forwarders), so the
+// implementation pins span the shared payload too.
+const sharedBridgeHelpers = readFileSync(
+  path.join(here, '..', 'src', 'shared', 'bridge-shared-helpers.js'),
+  'utf8',
+);
+const bridgeImplementation = `${bridge}\n${chatBridge}\n${sharedBridgeHelpers}`;
 const main = readFileSync(path.join(here, '..', 'src', 'app', 'main.jsx'), 'utf8');
 const petWindow = readFileSync(
   path.join(here, '..', 'src', 'features', 'pet', 'PetWindow.jsx'),

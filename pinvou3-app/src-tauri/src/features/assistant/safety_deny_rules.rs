@@ -1815,7 +1815,7 @@ pub(crate) fn safety_deny_rules_for(super_permission_enabled: bool) -> Vec<ToolA
 /// state for the Windows real-home family. Production passes
 /// [`win_real_home_prefix`] (host-derived); tests inject a fixed value (or
 /// `None`) so the rule count stays host-independent.
-pub(crate) fn safety_deny_rules_with_home(
+fn safety_deny_rules_with_home(
     super_permission_enabled: bool,
     win_home_prefix: Option<String>,
 ) -> Vec<ToolAskRule> {

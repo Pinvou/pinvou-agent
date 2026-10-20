@@ -337,9 +337,8 @@ fn official_deepseek_model_name(model: &str) -> String {
 pub const MESSAGING_SEND_TOOL: &str = "mcp_session-reader_send_message_to_session";
 /// The exec-root resolver and "two roots" types for native code sessions are
 /// defined in one place, [`crate::features::sessions`] (SessionStore and the
-/// bridge share the same implementation); this re-export keeps existing call
-/// paths unchanged.
-pub use crate::features::sessions::{ExecutionRootResolver, SessionRoots};
+/// bridge share the same implementation).
+use crate::features::sessions::{ExecutionRootResolver, SessionRoots};
 
 /// Host-wide default per-turn model step budget: the main-turn default and
 /// the subagent default (`[subagents] default_max_steps`) are both 2,000;

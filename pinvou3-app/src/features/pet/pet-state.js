@@ -193,7 +193,7 @@ export function applyEvent(state, name, payload, now = Date.now(), copy = DEFAUL
   }
 }
 
-export function syncSessionTitles(state, sessions) {
+function syncSessionTitles(state, sessions) {
   if (!Array.isArray(sessions)) return false;
   const next = new Map();
   for (const session of sessions) {

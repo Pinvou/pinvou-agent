@@ -15,12 +15,14 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 use rusqlite::{Connection, params, params_from_iter, types::Value};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// schema 版本。v3 起包含用户创建的 L1 数据，后续版本必须提供原地迁移。
 /// v2：FTS 砍掉 path 列（path-trigram 实测占 2/3 库体积、是写入 CPU 大头）。
 /// v3：新增 L1 知识库表（collections/documents/chunks/chunks_fts）。
-/// v4：新增可恢复的批量导入任务、文件状态与分块暂存表。
+/// v4：新增可恢复的批量导入任务、文件状态与分块暂存表。v4 现容忍两种物理形态：
+/// 本版本起的全新建库不再创建 collections.embed_model/embed_dim（从未有代码读写），
+/// 旧库的这两列原样保留——所有语句都走显式列清单，两形态行为一致，故不 bump 版本。
 const SCHEMA_VERSION: i64 = 4;
 
 /// Whether a store at `version` may be deleted and rebuilt on open.
@@ -104,8 +106,6 @@ CREATE TABLE IF NOT EXISTS collections (
     description TEXT,
     created_at  INTEGER NOT NULL,
     updated_at  INTEGER NOT NULL,
-    embed_model TEXT,                       -- 绑定的 embedding 模型（NULL=仅全文）
-    embed_dim   INTEGER NOT NULL DEFAULT 0, -- 向量维度，换模型→重建
     status      TEXT NOT NULL DEFAULT 'ready' -- ready / indexing / pending
 );
 
@@ -253,9 +253,13 @@ pub(crate) fn like_pattern(q: &str) -> String {
 }
 
 /// 秒搜查询条件。`text` 为名/路径子串；其余为结构化过滤。
-#[derive(Debug, Clone, Default)]
+/// The serde shape is the `kb_search` IPC payload (camelCase); the headless
+/// CLI constructs it Rust-to-Rust, so there is exactly one query type.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SearchQuery {
     pub text: Option<String>,
+    #[serde(default)]
     pub exts: Vec<String>,
     pub mtime_after: Option<i64>,
     pub mtime_before: Option<i64>,
@@ -268,6 +272,7 @@ pub struct SearchQuery {
     pub id_before: Option<i64>,
     pub min_size: Option<u64>,
     pub max_size: Option<u64>,
+    #[serde(default)]
     pub limit: usize,
 }
 
@@ -1172,8 +1177,8 @@ mod tests {
         c.execute_batch(
             "CREATE TABLE collections(\
                id INTEGER PRIMARY KEY,name TEXT NOT NULL,category TEXT,description TEXT,\
-               created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,embed_model TEXT,\
-               embed_dim INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'ready'\
+               created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,\
+               status TEXT NOT NULL DEFAULT 'ready'\
              );\
              INSERT INTO collections(id,name,created_at,updated_at,status)\
              VALUES(7,'保留的知识集',1,1,'ready');\

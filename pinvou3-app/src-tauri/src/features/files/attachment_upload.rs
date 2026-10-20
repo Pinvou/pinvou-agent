@@ -5,7 +5,7 @@ use tokio::io::AsyncWriteExt;
 
 use super::file_ingest::{self, IngestResult, MAX_FILE_BYTES};
 
-pub(crate) const MAX_ATTACHMENT_CHUNK_BYTES: usize = 256 * 1024;
+const MAX_ATTACHMENT_CHUNK_BYTES: usize = 256 * 1024;
 const STALE_ATTACHMENT_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 const CONVERSATION_ATTACHMENT_REFS_FILE: &str = "conversation-attachments.json";
 static CONVERSATION_ATTACHMENT_REFS_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -219,7 +219,7 @@ fn upload_completed_dir(workspace: &Path, upload_id: &str) -> PathBuf {
     completed_root(workspace).join(upload_id)
 }
 
-pub(crate) fn draft_attachment_workspace() -> PathBuf {
+fn draft_attachment_workspace() -> PathBuf {
     crate::platform::paths::pinvou3_home().join("draft-attachments")
 }
 

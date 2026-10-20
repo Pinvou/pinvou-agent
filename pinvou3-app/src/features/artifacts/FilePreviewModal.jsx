@@ -3,6 +3,7 @@ import { bridge } from '../../hooks/useBridge.js';
 import { can, isWeb } from '../../shared/platform.js';
 import { getSyntaxHighlightVersion, subscribeSyntaxHighlight } from '../../shared/syntax-highlighter.js';
 import { OFFICE_HTML_STYLE } from '../../shared/artifact-utils.js';
+import { pathBasename } from '../../shared/path-utils.js';
 import { loadArtifactPreview } from './artifact-preview.js';
 import { localizedVisualWarning } from './visual-warning.js';
 import { ScaledHtmlPreview } from '../settings/composer-shared.jsx';
@@ -26,7 +27,7 @@ const FilePreviewModal = ({ path, sessionId, onClose, t }) => {
     return () => { alive = false; };
   }, [path, sessionId]);
 
-  const name = (path || '').split('/').pop();
+  const name = pathBasename(path);
   const labels = t.artifactPreview;
   // 后端 VisualResult.warning 的原始文案是中文，不作为任何一端的 UI 文案：
   // 已知 warning_code 渲染三语文案，未知/缺码时回退 previewUnsupported。
