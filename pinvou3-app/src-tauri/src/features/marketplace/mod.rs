@@ -2546,10 +2546,14 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     ) {
         let Some(entry) = snapshot.get(&manifest.id) else {
             match self.rebuild_local_mcp_entry(manifest, &serde_json::Map::new()) {
-                Ok(()) => actions.push(format!(
-                    "tool '{}': restored missing mcp.json entry",
-                    manifest.id
-                )),
+                Ok(missing_secrets) => {
+                    let mut note =
+                        format!("tool '{}': restored missing mcp.json entry", manifest.id);
+                    if let Some(caveat) = Self::credential_disabled_caveat(&missing_secrets) {
+                        note.push_str(&caveat);
+                    }
+                    actions.push(note);
+                }
                 Err(error) => actions.push(format!(
                     "tool '{}' missing mcp.json entry not restored: {error}",
                     manifest.id
@@ -2587,7 +2591,7 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             })
             .unwrap_or_default();
         match self.rebuild_local_mcp_entry(manifest, &preserved) {
-            Ok(()) => {
+            Ok(missing_secrets) => {
                 let mut note = format!(
                     "tool '{}': rebuilt mcp.json entry with {reason}",
                     manifest.id
@@ -2597,6 +2601,9 @@ impl<S: CredentialStore> MarketplaceManager<S> {
                 // source can reproduce are gone. Name the keys so the note is
                 // actionable — never their values, which may be sensitive.
                 if let Some(caveat) = Self::dropped_local_env_keys(manifest, entry) {
+                    note.push_str(&caveat);
+                }
+                if let Some(caveat) = Self::credential_disabled_caveat(&missing_secrets) {
                     note.push_str(&caveat);
                 }
                 actions.push(note);
@@ -2650,17 +2657,20 @@ impl<S: CredentialStore> MarketplaceManager<S> {
     }
 
     /// Recreate a local tool's mcp.json entry with the exact fresh-install form,
-    /// merging `preserved` user-owned fields (everything except
-    /// command/args/env) into the same single write (see
+    /// merging `preserved` user-owned fields (everything except command/args/env)
+    /// into the same single write (see
     /// `write_rebuilt_local_entry`). The package is released/verified first, and
     /// the rebuild is refused when the manifest-derived command is empty or its
     /// absolute command/script target would not exist — never write a knowingly
     /// dead entry, and never rewrite the same dead target on every startup.
+    /// Returns the required-credential keys whose wiring could not be restored
+    /// (empty = fully wired); the callers turn a non-empty list into the
+    /// disabled-entry caveat on the note.
     fn rebuild_local_mcp_entry(
         &self,
         manifest: &ToolManifest,
         preserved: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<String>, String> {
         mcp_catalog::ensure_package_released(&manifest.id)?;
         let server_dir = mcp_catalog::package_mcp_dir(&manifest.id);
         // Judge exactly the launch target the writer produces, via the same
@@ -2682,6 +2692,22 @@ impl<S: CredentialStore> MarketplaceManager<S> {
             }
         }
         self.write_rebuilt_local_entry(manifest, &server_dir, preserved.clone())
+    }
+
+    /// The disable-rule caveat appended to local rebuild/restore notes when the
+    /// rebuilt entry carries `disabled: true` because a required credential no
+    /// longer resolves: an entry that cannot authenticate must not be enabled
+    /// (enabling it only guarantees auth failures on first use). Names the keys,
+    /// never their values, and the reconnect fix.
+    fn credential_disabled_caveat(missing_secrets: &[String]) -> Option<String> {
+        if missing_secrets.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "; no stored credential for {} — the entry was restored disabled; reconnect \
+             the tool to re-enter it and enable",
+            missing_secrets.join(", ")
+        ))
     }
 
     #[cfg(test)]
@@ -3456,6 +3482,11 @@ pub(crate) mod tests {
             assert_eq!(entry["scopes"], serde_json::json!(["demo:read"]));
             assert_eq!(entry["oauth_resource"], "https://mcp.example.com/mcp");
             assert!(
+                entry.get("disabled").is_none(),
+                "an OAuth server's login is interactive — a restored OAuth entry must not \
+                 be disabled for lacking a stored key: {entry}"
+            );
+            assert!(
                 entry.get("headers").is_none()
                     && entry.get("bearer_token_env_var").is_none()
                     && entry.get("command").is_none(),
@@ -3827,8 +3858,11 @@ pub(crate) mod tests {
     }
 
     /// A bearer credential that no longer resolves must not fail the restore nor
-    /// invent half-wiring: the entry restores declaratively (url/scopes/oauth) and
-    /// the resulting auth failure surfaces through the engine's boot receipt.
+    /// invent half-wiring: the entry restores declaratively (url/scopes/oauth)
+    /// and carries `disabled: true` — an entry that cannot authenticate must not
+    /// be enabled, where the only guaranteed outcome is a 401 on first use. The
+    /// reconnect flow writes a fresh entry (clearing the flag) once the key is
+    /// re-entered.
     #[test]
     fn reconcile_restores_bearer_tool_without_resolvable_credential() {
         with_temp_home(|| {
@@ -3849,14 +3883,20 @@ pub(crate) mod tests {
                 actions,
                 vec![
                     "tool 'cf-y': restored missing remote entry 'cf-remote-y'; no stored \
-                      credential for LOST_KEY — restored without that auth wiring; reinstall \
-                      the tool to re-enter it"
+                      credential for LOST_KEY — an entry without its credential cannot \
+                      authenticate, so it was restored disabled; reconnect the tool to \
+                      re-enter it and enable"
                         .to_string()
                 ],
-                "the restore note must disclose the degraded credential channel"
+                "the restore note must disclose the degraded credential channel and the disable"
             );
             let entry = &read_mcp_json()["servers"]["cf-remote-y"];
             assert_eq!(entry["url"], "https://cf.example.com/mcp");
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "a keyless entry must not be restored enabled: {entry}"
+            );
             assert!(
                 entry.get("bearer_token_env_var").is_none()
                     && entry.get("env_headers").is_none()
@@ -3864,8 +3904,8 @@ pub(crate) mod tests {
                 "no credential wiring may be invented when nothing resolves: {entry}"
             );
 
-            // Idempotent: the declarative restore matches the manifest on the
-            // second run, which writes nothing.
+            // Idempotent: the disabled declarative restore matches the manifest on
+            // the second run, which writes nothing.
             let mcp_path = paths::mcp_config_path();
             assert_reconcile_idempotent(&manager, &mcp_path);
         });
@@ -4017,27 +4057,39 @@ pub(crate) mod tests {
 
             let actions = manager.reconcile_installed_mcp_entries().unwrap();
             assert_eq!(actions.len(), 1, "{actions:?}");
-            assert!(actions[0].contains("rebuilt"), "{actions:?}");
+            assert!(
+                actions[0].contains("rebuilt")
+                    && actions[0].contains("restored disabled")
+                    && actions[0].contains("AMAP_KEY"),
+                "the note must disclose the disable and name the missing key: {actions:?}"
+            );
 
             let entry = &read_mcp_json()["servers"]["lostkey-x"];
             assert_eq!(
                 entry["command"],
                 serde_json::Value::String(paths::python_command())
             );
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "an unresolvable required secret must leave the entry disabled, not enabled \
+                 without its wiring: {entry}"
+            );
             assert!(
                 entry.get("env").is_none(),
                 "an unresolvable secret must not be written, nor fail the rebuild: {entry}"
             );
 
-            // Idempotent: the degraded entry is healthy on the second run.
+            // Idempotent: the disabled rebuilt entry is healthy on the second run.
             assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
     /// The remote counterpart of the uniform startup secret policy: a
     /// `secret_headers` tool whose keyring entry was wiped restores
-    /// declaratively (no invented wiring) instead of the whole-tool restore
-    /// re-failing on every startup.
+    /// declaratively (no invented wiring) and `disabled: true` — the entry
+    /// cannot authenticate, so it must not boot enabled (the only guaranteed
+    /// outcome enabled is a 401 on first use).
     #[test]
     fn reconcile_restores_secret_headers_tool_without_resolvable_credential() {
         with_temp_home(|| {
@@ -4058,14 +4110,20 @@ pub(crate) mod tests {
                 actions,
                 vec![
                     "tool 'sh-y': restored missing remote entry 'sh-remote-y'; no stored \
-                      credential for SH_LOST_KEY — restored without that auth wiring; reinstall \
-                      the tool to re-enter it"
+                      credential for SH_LOST_KEY — an entry without its credential cannot \
+                      authenticate, so it was restored disabled; reconnect the tool to \
+                      re-enter it and enable"
                         .to_string()
                 ],
                 "the restore must degrade, not skip the whole tool, and say so"
             );
             let entry = &read_mcp_json()["servers"]["sh-remote-y"];
             assert_eq!(entry["url"], "https://sh.example.com/mcp");
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "a keyless entry must not be restored enabled: {entry}"
+            );
             assert!(
                 entry.get("headers").is_none()
                     && entry.get("env_headers").is_none()
@@ -4073,13 +4131,211 @@ pub(crate) mod tests {
                 "no credential wiring may be invented when nothing resolves: {entry}"
             );
 
-            // Idempotent: the declarative restore matches the manifest on the
-            // second run, which writes nothing.
+            // Idempotent: the disabled declarative restore matches the manifest on
+            // the second run, which writes nothing.
             let mcp_path = paths::mcp_config_path();
             assert_reconcile_idempotent(&manager, &mcp_path);
         });
     }
 
+    /// An OAuth-first remote tool with an OPTIONAL bearer key restores enabled
+    /// even with no stored key at all: its login is interactive (the engine
+    /// drives OAuth on use), so there is no API key whose absence could prove
+    /// the entry unusable — disabling it would break every OAuth-only user
+    /// (the qcc shape).
+    #[test]
+    fn reconcile_restores_oauth_tool_with_optional_key_stays_enabled() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "qcc-y",
+                "qcc-y",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"qcc-remote-y","url":"https://qcc.example.com/mcp",
+                                "scopes":["mcp:tools"],
+                                "oauth_resource":"https://qcc.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"QCC_Y_KEY","label":"key","required":false,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            write_installed_ids(&["qcc-y".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec!["tool 'qcc-y': restored missing remote entry 'qcc-remote-y'".to_string()]
+            );
+            let entry = &read_mcp_json()["servers"]["qcc-remote-y"];
+            assert!(
+                entry.get("disabled").is_none(),
+                "an OAuth-first tool must restore enabled without its optional key: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// Legacy migration of the credential rule: an ENABLED entry left by an
+    /// earlier restore (or a hand edit) without its required auth wiring is
+    /// flipped to `disabled: true` on the next reconcile — enabled without its
+    /// credential, the only guaranteed outcome is a 401 on every use.
+    #[test]
+    fn reconcile_disables_legacy_enabled_entry_without_auth_wiring() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "cf-y",
+                "cf-y",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"cf-remote-y","url":"https://cf.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"LOST_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            write_installed_ids(&["cf-y".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "cf-remote-y": {"url": "https://cf.example.com/mcp"}
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec![
+                    "tool 'cf-y': disabled remote entry 'cf-remote-y' — required credential \
+                      LOST_KEY has no auth wiring; reconnect the tool to re-enter it and \
+                      enable"
+                        .to_string()
+                ],
+                "the legacy flip must be disclosed with the missing key and the fix"
+            );
+            let entry = &read_mcp_json()["servers"]["cf-remote-y"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "the legacy enabled-but-unwired entry must be disabled: {entry}"
+            );
+
+            // Converged: the disabled entry is exempt on the second run.
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The realign flip must not disable hand-authored auth wiring: a literal
+    /// `Authorization` header is wiring the manifest cannot judge, so the
+    /// entry stays exactly as the user wrote it.
+    #[test]
+    fn reconcile_leaves_hand_wired_authorization_entry_enabled() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "cf-y",
+                "cf-y",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"cf-remote-y","url":"https://cf.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"LOST_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            write_installed_ids(&["cf-y".to_string()]);
+            let mcp_path = seed_mcp_json(serde_json::json!({
+                "cf-remote-y": {
+                    "url": "https://cf.example.com/mcp",
+                    "headers": {"Authorization": "Bearer hand-written"}
+                }
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert!(
+                actions.is_empty(),
+                "hand-authored auth wiring must not be disabled: {actions:?}"
+            );
+            let entry = &read_mcp_json()["servers"]["cf-remote-y"];
+            assert!(
+                entry.get("disabled").is_none(),
+                "a hand-wired entry stays enabled: {entry}"
+            );
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// A missing local entry whose required secret no longer resolves is
+    /// restored `disabled: true` — the same credential rule the remote
+    /// restore applies — with the note naming the key and the reconnect fix.
+    #[test]
+    fn reconcile_restores_missing_local_entry_disabled_without_credential() {
+        with_temp_home(|| {
+            write_local_tool_fixture("lostrs-x", true);
+            write_installed_ids(&["lostrs-x".to_string()]);
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+
+            let actions = manager.reconcile_installed_mcp_entries().unwrap();
+            assert_eq!(
+                actions,
+                vec![
+                    "tool 'lostrs-x': restored missing mcp.json entry; no stored credential \
+                      for AMAP_KEY — the entry was restored disabled; reconnect the tool \
+                      to re-enter it and enable"
+                        .to_string()
+                ]
+            );
+            let entry = &read_mcp_json()["servers"]["lostrs-x"];
+            assert_eq!(
+                entry["disabled"],
+                serde_json::Value::Bool(true),
+                "a keyless local entry must not be restored enabled: {entry}"
+            );
+
+            let mcp_path = paths::mcp_config_path();
+            assert_reconcile_idempotent(&manager, &mcp_path);
+        });
+    }
+
+    /// The reconnect half of the credential rule: installing (reconnecting) a
+    /// tool whose entry a previous restore had disabled writes a fresh entry
+    /// with the credential wiring and WITHOUT the disabled flag — the
+    /// connector is enabled again the moment its key is present.
+    #[test]
+    fn reconnect_install_over_a_disabled_entry_reenables_with_wiring() {
+        with_temp_home(|| {
+            write_tool_manifest_fixture(
+                "cf-z",
+                "cf-z",
+                r#""mcp_tools":[],"command":"","args":[],
+                    "servers":[{"name":"cf-remote-z","url":"https://cf.example.com/mcp"}],
+                    "config_fields":[
+                    {"key":"CF_Z_KEY","label":"key","required":true,"target":"bearer","secret":true}
+                    ]"#,
+            );
+            // The state a previous keyless restore leaves behind.
+            seed_mcp_json(serde_json::json!({
+                "cf-remote-z": {"url": "https://cf.example.com/mcp", "disabled": true}
+            }));
+            let manager = MarketplaceManager::with_store(MemoryCredentialStore::default());
+            let mut config = std::collections::HashMap::new();
+            config.insert("CF_Z_KEY".to_string(), "fresh-token".to_string());
+            let manifest = manager.load_manifest("cf-z").unwrap();
+            manager
+                .add_to_mcp_json(
+                    &manifest,
+                    &config,
+                    &mcp_catalog::package_mcp_dir("cf-z"),
+                    None,
+                )
+                .unwrap();
+
+            let entry = &read_mcp_json()["servers"]["cf-remote-z"];
+            assert_eq!(
+                entry["bearer_token_env_var"],
+                serde_json::Value::String(mcp_secret_env_var("CF_Z_KEY")),
+                "the reconnect must write the credential wiring: {entry}"
+            );
+            assert!(
+                entry.get("disabled").is_none(),
+                "a fresh wired entry must not inherit the disabled flag: {entry}"
+            );
+        });
+    }
     /// Pins the marketplace-side literal of `ENGINE_OWNED_MCP_SERVER_KEYS`. This is
     /// the second half of the lockstep: the runtime_bundle footprint test asserts
     /// the engine's *observed* write footprint against this same constant, and this

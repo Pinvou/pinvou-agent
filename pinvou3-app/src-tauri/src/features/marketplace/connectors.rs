@@ -748,17 +748,32 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
     /// in memory, and write once. One atomic write instead of a
     /// rebuild-then-reapply pair: a crash can never leave the fresh form without
     /// the preserved fields.
+    ///
+    /// Returns the required-credential keys whose wiring could not be restored
+    /// (empty = fully wired). Under the credential rule the written entry then
+    /// carries `disabled: true` — an entry that cannot authenticate must not be
+    /// enabled (the caller's note names the keys and the reconnect fix). The
+    /// rule wins over a preserved `disabled: false`: a hand re-enable of an
+    /// entry whose credential is gone would recreate the enabled-but-unwired
+    /// state this rule exists to prevent; the note discloses the flip.
     pub(super) fn write_rebuilt_local_entry(
         &self,
         manifest: &ToolManifest,
         server_dir: &std::path::Path,
         preserved: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<String>, String> {
         let mut entry =
             self.build_local_server_entry(manifest, &HashMap::new(), server_dir, None, true)?;
+        let missing_secrets = entry_secret_keys_without_wiring(
+            manifest,
+            entry.as_object().unwrap_or(&serde_json::Map::new()),
+        );
         if let Some(object) = entry.as_object_mut() {
             for (key, value) in preserved {
                 object.insert(key, value);
+            }
+            if !missing_secrets.is_empty() {
+                object.insert("disabled".to_string(), serde_json::Value::Bool(true));
             }
         }
         with_mcp_json_lock(|| {
@@ -769,7 +784,8 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                 .ok_or("mcp.json 格式错误")?;
             servers.insert(manifest.id.clone(), entry);
             write_json_pretty(&mcp_path, &mcp)
-        })
+        })?;
+        Ok(missing_secrets)
     }
 
     pub(super) fn remove_from_mcp_json(&self, tool_id: &str) -> Result<(), String> {
@@ -812,13 +828,21 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
     ///   store; a credential that is absent from the store leaves its wiring unwritten
     ///   rather than failing the restore, while a credential-store read failure fails
     ///   the restore so the next startup retries — installs keep the fail-loud
-    ///   contract for both cases).
+    ///   contract for both cases). Under the credential rule, a restored entry whose
+    ///   required credential did not resolve carries `disabled: true` — an entry that
+    ///   cannot authenticate must not boot enabled, where the only guaranteed outcome
+    ///   is a 401 on first use; the reconnect flow writes a fresh entry (clearing the
+    ///   flag) once the key is re-entered.
     /// - An existing entry whose manifest-derived shape (url/scopes/oauth_resource)
     ///   drifted from the current manifest is realigned; credential fields
     ///   (headers/env_headers/bearer_token_env_var) and forward-compatible fields are
     ///   preserved because they cannot be re-derived without user input. The `oauth`
     ///   block is the documented user-set client override, so an existing block is
     ///   never judged or rewritten — only a missing one is healed from the manifest.
+    ///   The same credential rule migrates a legacy ENABLED entry without its required
+    ///   auth wiring to `disabled: true`; already-disabled entries, OAuth-declared
+    ///   servers, user-set `oauth` blocks, and hand-authored literal `Authorization`
+    ///   headers are exempt.
     /// - Entries not owned by this manifest are never touched.
     /// Idempotent: returns Ok(None) without writing when everything already matches.
     pub(super) fn reconcile_remote_mcp_entries(
@@ -852,15 +876,57 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                             align_remote_entry_fields(object, server);
                             changed.push(format!("realigned remote entry '{}'", server.name));
                         }
+                        // Credential rule, legacy migration: an enabled entry left
+                        // enabled by an earlier restore or a hand edit without its
+                        // required auth wiring cannot authenticate — it 401s on
+                        // every use. Flip it to `disabled: true` instead of leaving
+                        // a permanently broken enabled entry; the note names the
+                        // missing keys and the fix (reconnect). Already-disabled
+                        // entries are exempt, so a converged file is never rewritten.
+                        if let Some(gaps) = entry_requires_disable(manifest, server, object) {
+                            object.insert("disabled".to_string(), serde_json::Value::Bool(true));
+                            changed.push(format!(
+                                "disabled remote entry '{}' — required credential {} has no \
+                                 auth wiring; reconnect the tool to re-enter it and enable",
+                                server.name,
+                                gaps.join(", ")
+                            ));
+                        }
                     }
                     _ => {
-                        let entry = self.build_remote_server_entry(
+                        let mut entry = self.build_remote_server_entry(
                             manifest,
                             server,
                             &HashMap::new(),
                             true,
                         )?;
-                        servers_map.insert(server.name.clone(), entry.clone());
+                        // Credential rule: an entry whose required credential is
+                        // absent cannot authenticate — restoring it enabled only
+                        // guarantees a 401 on first use. Such an entry is restored
+                        // `disabled: true` instead; the reconnect flow writes a
+                        // fresh entry (clearing the flag) once the user re-enters
+                        // the key. OAuth-declared servers are exempt: their login
+                        // is interactive and covers the entry without any key.
+                        let missing_secrets = entry_secret_keys_without_wiring(
+                            manifest,
+                            entry.as_object().unwrap_or(&serde_json::Map::new()),
+                        );
+                        let disabled = if missing_secrets.is_empty() {
+                            None
+                        } else {
+                            entry_requires_disable(
+                                manifest,
+                                server,
+                                entry.as_object().unwrap_or(&serde_json::Map::new()),
+                            )
+                        };
+                        if disabled.is_some() {
+                            if let Some(object) = entry.as_object_mut() {
+                                object
+                                    .insert("disabled".to_string(), serde_json::Value::Bool(true));
+                            }
+                        }
+                        servers_map.insert(server.name.clone(), entry);
                         // Say what the restore could not do instead of reporting an
                         // unqualified success that 401s on first use.
                         let mut note = format!("restored missing remote entry '{}'", server.name);
@@ -874,13 +940,21 @@ impl<S: crate::platform::credential_store::CredentialStore> MarketplaceManager<S
                                  re-derived — reinstall the tool to re-enter it",
                             );
                         }
-                        let missing_secrets = entry_secret_keys_without_wiring(manifest, &entry);
                         if !missing_secrets.is_empty() {
-                            note.push_str(&format!(
-                                "; no stored credential for {} — restored without that auth \
-                                 wiring; reinstall the tool to re-enter it",
-                                missing_secrets.join(", ")
-                            ));
+                            if disabled.is_some() {
+                                note.push_str(&format!(
+                                    "; no stored credential for {} — an entry without its \
+                                     credential cannot authenticate, so it was restored \
+                                     disabled; reconnect the tool to re-enter it and enable",
+                                    missing_secrets.join(", ")
+                                ));
+                            } else {
+                                note.push_str(&format!(
+                                    "; no stored credential for {} — restored without that auth \
+                                     wiring; reinstall the tool to re-enter it",
+                                    missing_secrets.join(", ")
+                                ));
+                            }
                         }
                         changed.push(note);
                     }
@@ -946,20 +1020,38 @@ pub(super) fn dead_local_entry_target(entry: &serde_json::Value) -> Option<Strin
         .map(str::to_string)
 }
 
-/// Secret source keys of `manifest` (secret_headers, required secret bearer
-/// config fields, legacy sensitive manifest.env keys) whose env-var NAME
-/// appears nowhere in a restored remote entry: the restore degraded to an
-/// entry without that wiring because no stored credential resolved. Only
-/// names are reported — never values. OPTIONAL (`required: false`) config
-/// fields are excluded: their absence is a legitimate outcome (the qcc shape
-/// is OAuth-first), so "no stored credential" would send an OAuth-only user
+/// Required-credential source keys of `manifest` whose env-var NAME appears
+/// nowhere in an mcp.json entry: the entry carries no auth wiring for them
+/// (a restore degraded because no stored credential resolved, or the wiring
+/// was never written). This is the single oracle for the disable rule — an
+/// entry with a gap here cannot authenticate, so it must not be enabled —
+/// and for the restore notes that name the missing keys. Only names are
+/// reported — never values.
+///
+/// Channels are guarded by the entry shape so one function serves both
+/// entry forms: a remote entry (`url`) wires secret_headers / secret bearer
+/// config fields / legacy sensitive env keys via `env_headers` and
+/// `bearer_token_env_var`; a local entry (`command`) wires secret_env /
+/// secret-or-sensitive env config fields / the same legacy keys via `env`.
+/// Both wire under the env-var NAME, so one `rendered.contains` check
+/// covers every channel. OPTIONAL (`required: false`) fields are excluded
+/// per channel: their absence is a legitimate outcome (the qcc shape is
+/// OAuth-first), so "no stored credential" would send an OAuth-only user
 /// hunting for a key they never needed — and under the fallback it would be
-/// a claim we cannot verify either way.
+/// a claim we cannot verify either way. An entry carrying neither marker
+/// (malformed, mid-rebuild) counts every channel: the rebuild paths always
+/// pass a built entry with a known shape.
 fn entry_secret_keys_without_wiring(
     manifest: &ToolManifest,
-    entry: &serde_json::Value,
+    entry: &serde_json::Map<String, serde_json::Value>,
 ) -> Vec<String> {
-    let rendered = entry.to_string();
+    let rendered = serde_json::to_string(entry).unwrap_or_default();
+    let is_remote = entry.get("url").is_some();
+    let is_local = entry.get("command").is_some();
+    // Neither marker (malformed, mid-build): count every channel, because the
+    // rebuild paths always pass a built entry with a known shape.
+    let counts_remote = is_remote || !(is_remote || is_local);
+    let counts_local = is_local || !(is_remote || is_local);
     let mut keys: Vec<String> = Vec::new();
     let mut push = |key: &str| {
         if rendered.contains(&mcp_secret_env_var(key)) {
@@ -969,18 +1061,73 @@ fn entry_secret_keys_without_wiring(
             keys.push(key.to_string());
         }
     };
-    for secret in &manifest.secret_headers {
-        push(&secret.source_key);
-    }
-    for field in &manifest.config_fields {
-        if field.target == "bearer" && field.secret && field.required {
-            push(&field.key);
+    if counts_remote {
+        for secret in &manifest.secret_headers {
+            if secret.required {
+                push(&secret.source_key);
+            }
+        }
+        for field in &manifest.config_fields {
+            if field.target == "bearer" && field.secret && field.required {
+                push(&field.key);
+            }
         }
     }
+    if counts_local {
+        for secret in &manifest.secret_env {
+            if secret.required {
+                push(&secret.key);
+            }
+        }
+        for field in &manifest.config_fields {
+            if field.target == "env"
+                && field.required
+                && (field.secret || is_sensitive_key_name(&field.key))
+            {
+                push(&field.key);
+            }
+        }
+    }
+    // Legacy `manifest.env` sensitive keys were written by both entry shapes
+    // (local via `env`, remote via the Bearer channel), so they are not
+    // shape-guarded.
     for key in manifest.env.keys().filter(|k| is_sensitive_key_name(k)) {
         push(key);
     }
     keys
+}
+
+/// Whether a startup-written/reconciled entry must carry `disabled: true`
+/// under the credential rule: an entry that cannot authenticate must not be
+/// enabled. OAuth-declared servers are exempt — their login is interactive
+/// (the engine drives the flow on use), so there is no API key whose absence
+/// could be proven here; the same exemption covers a user-set `oauth` block
+/// on an entry whose manifest does not declare it. A literal `Authorization`
+/// header is hand-authored wiring the manifest cannot judge, so the entry is
+/// left enabled. Returns the gap keys when the disable applies.
+fn entry_requires_disable(
+    manifest: &ToolManifest,
+    server: &super::types::RemoteServer,
+    entry: &serde_json::Map<String, serde_json::Value>,
+) -> Option<Vec<String>> {
+    if server.requires_oauth() {
+        return None;
+    }
+    if entry.get("disabled").and_then(|v| v.as_bool()) == Some(true) {
+        return None;
+    }
+    if entry.get("oauth").is_some_and(|value| !value.is_null()) {
+        return None;
+    }
+    if entry
+        .get("headers")
+        .and_then(|headers| headers.get("Authorization"))
+        .is_some()
+    {
+        return None;
+    }
+    let gaps = entry_secret_keys_without_wiring(manifest, entry);
+    if gaps.is_empty() { None } else { Some(gaps) }
 }
 
 /// Whether an existing remote entry carries the exact manifest-derived fields a fresh
