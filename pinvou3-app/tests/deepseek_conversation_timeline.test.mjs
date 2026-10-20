@@ -24,6 +24,10 @@ copyFileSync(
   path.join(root, 'src', 'shared', 'shell-tools.mjs'),
   path.join(sharedDir, 'shell-tools.mjs'),
 );
+copyFileSync(
+  path.join(root, 'src', 'shared', 'path-utils.js'),
+  path.join(sharedDir, 'path-utils.js'),
+);
 vm.runInThisContext(
   readFileSync(path.join(root, 'src', 'shared', 'model-service-errors.js'), 'utf8'),
   { filename: 'model-service-errors.js' },
@@ -40,6 +44,7 @@ try {
     isAgentWaitCall,
     isFetchTool,
     isNearConversationBottom,
+    isOperationItemType,
     isSearchTool,
     searchToolDetails,
   } = await import(
@@ -68,6 +73,14 @@ try {
     status: 'failed',
     tool: { name: 'read', rawInput: {} },
   }), true, 'ordinary tool failures must remain visible');
+  // Round-9 review pin: the operation-item membership set moved from three
+  // inline list spellings to this shared Set — feed EVERY member through the
+  // real module (file_change had zero executing coverage; dropping it from
+  // the Set stayed green and would silently stop rendering file-change cards).
+  for (const type of ['command_execution', 'file_change', 'tool']) {
+    assert.equal(isOperationItemType(type), true, `${type} must stay an operation item type`);
+  }
+  assert.equal(isOperationItemType('file'), false, 'non-operation types stay out');
   assert.equal(isNearConversationBottom({ scrollHeight: 1000, scrollTop: 820, clientHeight: 100 }), true);
   assert.equal(isNearConversationBottom({ scrollHeight: 1000, scrollTop: 700, clientHeight: 100 }), false);
   const chatItems = [

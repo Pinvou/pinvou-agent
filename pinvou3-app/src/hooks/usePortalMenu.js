@@ -8,14 +8,16 @@
 // interaction PR, not to a refactor.
 import { useEffect, useState } from 'react';
 
-export function usePortalMenu({ width = 176, height = 184 } = {}) {
+const MENU_WIDTH = 176;
+
+export function usePortalMenu({ height = 184 } = {}) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuStyle, setMenuStyle] = useState(null);
 
   const closeMenu = () => setMenuOpen(false);
   const placeMenu = (target) => {
     const rect = target.getBoundingClientRect();
-    const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+    const left = Math.max(8, Math.min(rect.right - MENU_WIDTH, window.innerWidth - MENU_WIDTH - 8));
     const top = rect.bottom + 6 + height > window.innerHeight
       ? Math.max(8, rect.top - height - 6)
       : Math.max(8, rect.bottom + 6);
@@ -23,7 +25,7 @@ export function usePortalMenu({ width = 176, height = 184 } = {}) {
     // allowed to grow with longer localized items (ja entries exceed 176px and
     // were glyph-clipped by the fixed width) up to a viewport-safe cap, since
     // the consumer menus are overflow-hidden.
-    setMenuStyle({ left, top, minWidth: width, maxWidth: Math.max(width, window.innerWidth - left - 8) });
+    setMenuStyle({ left, top, minWidth: MENU_WIDTH, maxWidth: Math.max(MENU_WIDTH, window.innerWidth - left - 8) });
   };
   const toggleMenu = (e) => {
     e.stopPropagation();

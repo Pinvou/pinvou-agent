@@ -542,6 +542,190 @@ assert.ok(
   '安装进度必须走共享 store，且安装收口后清除'
 );
 
+// ---------------------------------------------------------------- 8.2 Install outcome cross-mount heal
+
+// While installing, the settings panel can be closed/switched away and the
+// initiating instance unmounts — install_acp_agent's return value reaches no
+// mounted component. The backend must record the real outcome into the
+// shared store when it wraps up and carry it back through status
+// (install_finished, cleared when the next install starts); the remounted
+// panel converges the restored in-progress phase from it and must not stay
+// on "downloading" forever.
+assert.ok(
+  MOD.includes('pub install_finished: Option<InstallFinishedInfo>')
+    && MOD.includes('struct InstallOutcomeStore'),
+  'status must carry the install outcome field install_finished (cross-mount heal data source)'
+);
+assert.ok(
+  MOD.includes('app.manage(InstallOutcomeStore::default())'),
+  'InstallOutcomeStore must be registered as managed state (try_state consumers silently no-op otherwise)'
+);
+assert.ok(
+  MOD.includes('fn install_outcome_for_result'),
+  'the outcome mapping must be a pure function (cancel-marker verdict unit-testable)'
+);
+assert.ok(
+  MOD.includes('clear_install_outcome(&self.app, backend)')
+    && MOD.includes('record_install_outcome(&self.app, backend, outcome)'),
+  'install_agent must clear the previous outcome at entry and record this run\'s outcome before returning'
+);
+// The union read and the status-side fill each have exactly two call sites
+// (the Kimi early-return branch and the general branch): deleting either one
+// silently reinstates the strand window for the codex/claude backends, so a
+// substring match is not enough — pin the occurrence count.
+const modCount = needle => MOD.split(needle).length - 1;
+assert.ok(
+  modCount('guard_installing || self.install_active.read().contains(&backend)') === 2,
+  'status.installing must cover the whole install lifecycle (install lock union active window) in BOTH status build branches'
+);
+assert.ok(
+  modCount('fill_install_outcome(&self.app, backend, &mut status)') === 2,
+  'both status build branches must carry install_finished back'
+);
+// The active window must actually register at entry: status.installing only
+// covers the whole lifecycle while the backend is inside the registry, and
+// the preflight cancel arm only fires while the registry holds the backend.
+assert.ok(
+  MOD.includes('if !install_active.write().insert(backend)')
+    && MOD.includes('InstallActiveGuard::try_start(&self.install_active, backend)'),
+  'InstallActiveGuard must register the backend into install_active at install entry (try_start)'
+);
+assert.ok(
+  MOD.indexOf('InstallActiveGuard::try_start(&self.install_active, backend)')
+    < MOD.indexOf('clear_install_outcome(&self.app, backend)'),
+  'the active window must register BEFORE the entry clears: a rejected concurrent install must not clobber the running one\'s outcome or cancel marker'
+);
+assert.ok(
+  MOD.indexOf('record_install_outcome(&self.app, backend, outcome)')
+    < MOD.indexOf('drop(install_active_guard)'),
+  'the outcome must be recorded before the active window closes (no installing=false-without-outcome gap)'
+);
+// A cancel in the preflight window (not spawned yet, no pid to kill) must be
+// armed instead of rejected, then consumed by the spawn-time recheck — or,
+// when the natural failure wins that race, consumed at outcome-record time.
+// Exactly two removes remain: the install entry clear and the record-time
+// consumption (the per-channel wipes are gone — a wipe after guard
+// acquisition would swallow a fresh preflight cancel).
+assert.ok(
+  MOD.includes('!guard_held && !self.install_active.read().contains(&backend)'),
+  'cancel must cover the preflight active window instead of rejecting with "no install in progress"'
+);
+assert.ok(
+  modCount('self.install_cancelled.lock().remove(&backend)') === 2
+    && MOD.includes('let cancel_pending = self.install_cancelled.lock().remove(&backend)'),
+  'the cancel marker must be consumed at install entry (stale marker) and at record time (unraced preflight cancel), and nowhere after guard acquisition'
+);
+assert.ok(
+  /let \(outcome, returned_error\) =\s*settle_install_result\(\s*result\.is_ok\(\),\s*cancel_pending,/.test(MOD),
+  'the record-time verdict must take a still-armed cancel marker into account (via settle_install_result)'
+);
+// The return value must classify the same way the outcome is recorded: a
+// preflight-window cancel whose natural failure won the race is recorded as
+// cancelled, so the initiating caller must see a marker-carrying cancelled
+// error — the catch branch would otherwise overwrite the cancelled phase
+// with failed + red error, a wrong terminal the heal cannot repair.
+assert.ok(
+  MOD.includes('fn settle_install_result'),
+  'the cancellation settlement must be a pure function (return-vs-record classification unit-testable)'
+);
+assert.ok(
+  MOD.includes('Some(detail) => Err(anyhow!(detail)),')
+    && MOD.indexOf('Some(detail) => Err(anyhow!(detail)),') < MOD.indexOf('async fn install_agent_inner'),
+  'the wrapper must return the settlement\'s marker-carrying cancelled error instead of the incidental natural failure'
+);
+assert.ok(
+  /fn install_settlement_returns_recorded_cancellation/.test(MOD),
+  'the cancellation settlement must have a behavioral unit test (armed preflight cancel + natural failure => marker-carrying cancelled return)'
+);
+// Failed outcomes must carry this run's error chain: some failure paths
+// never write runtime_errors, so echoing status.error would show an empty or
+// stale message.
+assert.ok(
+  MOD.includes('error_detail.map(str::to_string)'),
+  'failed outcomes must carry this run\'s error chain (install_finished.error)'
+);
+// Frontend heal: converge only when "installing phase + not initiated by
+// this instance (busy mismatch) + log exists and belongs to the active agent
+// + this instance fetched the status itself for this agent + the status
+// belongs to the active agent and the backend is no longer installing"; all
+// three terminal phases must be mapped and failures must echo the outcome's
+// error chain. Pins are code-anchored (comments may repeat similar strings).
+{
+  const healStart = PROVIDERS_SECTION.indexOf('Cross-mount install heal');
+  assert.ok(healStart > 0, 'the frontend must implement the cross-mount install heal (ProvidersSection)');
+  const heal = PROVIDERS_SECTION.slice(healStart, healStart + 3400);
+  assert.match(
+    heal,
+    /const outcome = status\.install_finished/,
+    'the heal must consume status.install_finished'
+  );
+  assert.match(
+    heal,
+    /installPhase !== 'installing'/,
+    'the heal only converges the installing phase (checking has no log, no card to converge)'
+  );
+  assert.match(
+    heal,
+    /busy === 'install:' \+ activeAgent/,
+    'an install initiated by this instance still converges via its own await, not the heal'
+  );
+  assert.match(
+    heal,
+    /!installLog \|\| installLog\.agent !== activeAgent/,
+    'the log must be non-null and belong to the active agent (the log-null window must not be closed by another agent\'s stale outcome)'
+  );
+  assert.match(
+    heal,
+    /fresh\.agent !== activeAgent \|\| fresh\.seq !== installRunSeqRef\.current/,
+    'the heal trusts only a status this instance fetched itself FOR the active agent, DISPATCHED after the last observed run start (a pre-run snapshot carries the previous run\'s outcome with installing=false)'
+  );
+  assert.ok(
+    PROVIDERS_SECTION.includes('fetchedStatusRef.current = { agent, seq: seqAtDispatch };'),
+    'the self-fetched marker must record WHICH agent was fetched and the dispatch-time run sequence (per-agent, per-run freshness)'
+  );
+  assert.ok(
+    PROVIDERS_SECTION.includes('const seqAtDispatch = installRunSeqRef.current;'),
+    'freshness must capture the run sequence at DISPATCH, not at landing: a response for a pre-event fetch must not re-establish freshness after the command event'
+  );
+  // A run observed through a command event (started at another entrance)
+  // must invalidate pre-event freshness, or the heal consumes the previous
+  // run's outcome and falsely converges while the new run is still going.
+  assert.match(
+    PROVIDERS_SECTION,
+    /installRunSeqRef\.current \+= 1;\s*\n\s*setInstallPhase\('installing'\)/,
+    'a new-run command event must bump the run sequence (invalidate pre-event freshness) before switching the card to installing'
+  );
+  // With a stale status.installing=false in hand, only the installing phase
+  // itself arms the poller — otherwise an observed run at another entrance
+  // never converges. Scoped to the agent whose card is showing so a leftover
+  // phase from another tab cannot poll it.
+  assert.match(
+    PROVIDERS_SECTION,
+    /installPhase === 'installing' && installLog && installLog\.agent === activeAgent/,
+    'the installing phase (scoped to the active agent\'s card) must arm the install poller: an observed run with a stale status.installing=false must keep polling until its own terminal'
+  );
+  assert.match(
+    heal,
+    /status\.agent_id !== activeAgent \|\| status\.installing/,
+    'the status must belong to the active agent and the backend must no longer be installing (no premature convergence)'
+  );
+  assert.match(
+    heal,
+    /outcome\.cancelled \? 'cancelled' : outcome\.ok \? 'done' : 'failed'/,
+    'the heal must map the outcome to cancelled/done/failed'
+  );
+  assert.match(
+    heal,
+    /outcome\.error/,
+    'failed heals must echo the outcome\'s own error chain (aligned with the initiating instance\'s catch branch)'
+  );
+  assert.match(
+    heal,
+    /setError\(failureDetail\)/,
+    'failed heals must write the failure cause into the error area'
+  );
+}
+
 // ---------------------------------------------------------------- 9. Claude 细化模型槽位 + env 生效值（改动 5）
 
 // 槽位定义：mod.rs 提供 CLAUDE_MODEL_SLOTS（opus/sonnet/haiku/fable/subagent → env 键）

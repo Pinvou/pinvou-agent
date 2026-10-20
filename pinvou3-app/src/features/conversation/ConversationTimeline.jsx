@@ -23,6 +23,7 @@ import {
   externalMarkdownUrl,
   fetchToolDetails,
   isFetchTool,
+  isOperationItemType,
   isSearchTool,
   searchToolDetails,
   terminalStatus,
@@ -778,7 +779,7 @@ function DefaultItem({
       />
     );
   }
-  if (['tool', 'command_execution', 'file_change'].includes(item.type)) {
+  if (isOperationItemType(item.type)) {
     return (
       <ToolItem
         item={item}
@@ -1091,7 +1092,6 @@ export function ConversationTimeline({
   turns = EMPTY_TURNS,
   sessionId,
   scrollElementRef,
-  virtualizationThreshold = CONVERSATION_VIRTUALIZATION_THRESHOLD,
   busy = false,
   turnGapPx = DEFAULT_CONVERSATION_ROW_GAP_PX,
   followOutputRef,
@@ -1102,7 +1102,7 @@ export function ConversationTimeline({
   const virtualized = shouldVirtualizeConversationTurns(
     turns.length,
     scrollElementRef,
-    virtualizationThreshold,
+    CONVERSATION_VIRTUALIZATION_THRESHOLD,
   );
   const { historyTurns, liveTurn, liveTurnIndex } = useMemo(
     () => splitConversationLiveTail(turns, virtualized, busy),

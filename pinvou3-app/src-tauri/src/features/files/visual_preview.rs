@@ -146,17 +146,28 @@ pub fn office_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<Strin
                 .ok_or_else(|| "LibreOffice 未产出 PDF".to_string())?;
 
             let pages = render_pdf_pages(&pdf, tmpdir, 110, max_pages)?;
-            if pages.is_empty() {
-                return Err("未产出可渲染幻灯片页".into());
-            }
-            let truncated = pages.len() as u32 >= max_pages;
-            let mut uris = Vec::with_capacity(pages.len());
-            for p in &pages {
-                uris.push(image_file_to_data_uri(p)?);
-            }
-            Ok((uris, truncated))
+            pages_to_data_uris(&pages, max_pages, "未产出可渲染幻灯片页")
         },
     )
+}
+
+/// Shared tail of the office/PDF preview lanes: empty-page guard (with the
+/// lane's own empty label), truncation flag at the page cap, then per-page
+/// PNG → data-URI conversion.
+fn pages_to_data_uris(
+    pages: &[PathBuf],
+    max_pages: u32,
+    empty_label: &str,
+) -> Result<(Vec<String>, bool), String> {
+    if pages.is_empty() {
+        return Err(empty_label.to_string());
+    }
+    let truncated = pages.len() as u32 >= max_pages;
+    let mut uris = Vec::with_capacity(pages.len());
+    for p in pages {
+        uris.push(image_file_to_data_uri(p)?);
+    }
+    Ok((uris, truncated))
 }
 
 /// Shared pdftoppm rendering core: renders `pdf` into `dir` at `dpi` (`page-<n>.png`,
@@ -229,15 +240,7 @@ pub fn pdf_to_png_data_uris(path: &Path, max_pages: u32) -> Result<(Vec<String>,
 
     let result = (|| -> Result<(Vec<String>, bool), String> {
         let pages = render_pdf_pages(path, &tmpdir, 110, max_pages)?;
-        if pages.is_empty() {
-            return Err("PDF 未产出可渲染页".into());
-        }
-        let truncated = pages.len() as u32 >= max_pages;
-        let mut uris = Vec::with_capacity(pages.len());
-        for p in &pages {
-            uris.push(image_file_to_data_uri(p)?);
-        }
-        Ok((uris, truncated))
+        pages_to_data_uris(&pages, max_pages, "PDF 未产出可渲染页")
     })();
     let _ = std::fs::remove_dir_all(&tmpdir);
     result

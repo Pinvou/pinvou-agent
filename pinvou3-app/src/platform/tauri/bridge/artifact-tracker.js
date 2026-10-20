@@ -6,7 +6,7 @@
   const registry = window.__PINVOU_TAURI_BRIDGE_FEATURES__ = window.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["artifact-tracker"] = function (context) {let pinvouSharedtauriArtifactTrackerCache = null;
 function pinvouSharedtauriArtifactTracker() {
-  if (!pinvouSharedtauriArtifactTrackerCache) pinvouSharedtauriArtifactTrackerCache = window.PinvouBridgeShared.create("tauriArtifactTracker", { state, notify, DELIVERABLE_EXTS, extractArtifactPaths, parseToolResultPayload });
+  if (!pinvouSharedtauriArtifactTrackerCache) pinvouSharedtauriArtifactTrackerCache = window.PinvouBridgeShared.create("tauriArtifactTracker", { state, notify, invoke, isScheduledRunSession, DELIVERABLE_EXTS });
   return pinvouSharedtauriArtifactTrackerCache;
 }
 
@@ -69,78 +69,13 @@ function findPresentedArtifact(path) { return pinvouSharedtauriArtifactTracker()
 function updatePresentedArtifact(card) { return pinvouSharedtauriArtifactTracker().updatePresentedArtifact(card); }
 function sessionRecentlyRebound(sid) { return pinvouSharedtauriArtifactTracker().sessionRecentlyRebound(sid); }
 function rebaseArtifactPathsForRebind(sid, paths) { return pinvouSharedtauriArtifactTracker().rebaseArtifactPathsForRebind(sid, paths); }
-function pathIsRebindStale(sid, path) { return pinvouSharedtauriArtifactTracker().pathIsRebindStale(sid, path); }
+  // File.write / File.edit / File.patch 的 args 里提取全部产物路径。
+  function extractArtifactPaths(args) { return pinvouSharedtauriArtifactTracker().extractArtifactPaths(args); }
+function extractArtifactPath(args) { return pinvouSharedtauriArtifactTracker().extractArtifactPath(args); }
+
   // 切换 session 时对账:扫 workspace 磁盘,把实际存在、但跟踪列表里没有的文件补进来。
   // 修「文件已生成在盘上、却因 app 中途重启/跟踪遗漏而不在产物面板」(以磁盘为准)。
-  async function reconcileArtifacts(sid) {
-    if (!sid) return;
-    if (isScheduledRunSession(sid)) return;
-    try {
-      const files = await invoke("list_workspace_files", { sessionId: sid });
-      if (sid !== state.activeSessionId) return; // 已切走,放弃(避免写错 session)
-      const byName = {};
-      state.artifacts.forEach(function (a) { byName[basename(a.path)] = a; });
-      let added = false;
-      files.forEach(function (p) {
-        const bn = basename(p);
-        const ex = byName[bn];
-        // 已 present_artifact 过的成品在 saved.artifacts(ex 命中);扫盘只「新增」成品型文件,
-        // 不再把所有过程文件全扫进面板(修「飞书 CLI scratch 全暴露成产物」)。
-        if (!ex) {
-          if (!isDeliverable(p)) return;
-          const na = { path: p, basename: bn }; state.artifacts.push(na); byName[bn] = na; added = true;
-        }
-        else if (isAbsPath(p) && (!isAbsPath(ex.path) || (normalizedPath(ex.path) !== normalizedPath(p) && sessionRecentlyRebound(sid) && pathIsRebindStale(sid, ex.path)))) {
-          // Relative→absolute opens reliably; or stale absolute → live
-          // workspace file, matched by basename — ONLY for a session the
-          // rebind command just moved (the workspace_rebound mark, review
-          // #463 round-10 Major 2) AND only when the stored entry is real
-          // stale rebind geometry (its path sits under a chain from-prefix;
-          // round-24 minor 3: the mark alone let an unrelated live absolute
-          // entry whose basename collides be taken over and the wrong path
-          // persisted). After a folder rebind the persisted entry keeps the
-          // vanished root, and the relative→absolute escape hatch never
-          // fires for an already-absolute stale entry, so the
-          // freshness-windowed mark is what lets the reconcile heal it.
-          ex.path = p; added = true;
-        }
-      });
-      if (added) {
-        notify();
-        try { await invoke("save_session_artifacts", { id: sid, paths: rebaseArtifactPathsForRebind(sid, state.artifacts.map(function (a) { return a.path; })) }); } catch { /* disk-write failure must not block the frontend update */ }
-      }
-    } catch { /* workspace 不存在(新 session)等,忽略 */ }
-  }
-function pushArtifactPath(paths, path) { return pinvouSharedtauriArtifactTracker().pushArtifactPath(paths, path); }
-  function extractPatchHeaderPaths(patch, paths) {
-    String(patch || "").split(/\r?\n/).forEach(function (line) {
-      // eslint-disable-next-line sonarjs/super-linear-regex -- input is split by line and line length is bounded by the patch header; backtracking is negligible
-      const custom = /^\*\*\* (?:Add|Update|Delete) File:\s*(.+?)\s*$/.exec(line);
-      if (custom) { pushArtifactPath(paths, custom[1]); return; }
-      // eslint-disable-next-line sonarjs/super-linear-regex -- input is split by line and line length is bounded by the patch header; backtracking is negligible
-      const unified = /^\+\+\+\s+(?:b\/)?(.+?)\s*$/.exec(line);
-      if (unified && unified[1] !== "/dev/null") pushArtifactPath(paths, unified[1]);
-    });
-  }
-  // File.write / File.edit / File.patch 的 args 里提取全部产物路径。
-  function extractArtifactPaths(args) {
-    if (!args) return [];
-    if (typeof args === "string") {
-      try { args = JSON.parse(args); } catch { return []; }
-    }
-    const paths = [];
-    pushArtifactPath(paths, args.path || args.file_path || args.filename);
-    [args.replace, args.changes].forEach(function (changes) {
-      if (!Array.isArray(changes)) return;
-      changes.forEach(function (change) {
-        if (!change || typeof change !== "object") return;
-        pushArtifactPath(paths, change.path || change.file_path || change.filename);
-      });
-    });
-    extractPatchHeaderPaths(args.patch, paths);
-    return paths;
-  }
-function extractArtifactPath(args) { return pinvouSharedtauriArtifactTracker().extractArtifactPath(args); }
+function reconcileArtifacts(sid) { return pinvouSharedtauriArtifactTracker().reconcileArtifacts(sid); }
 
 function fileMutationAction(name, args) { return pinvouSharedtauriArtifactTracker().fileMutationAction(name, args); }
 
@@ -151,21 +86,7 @@ function isPresentArtifactTool(name) { return pinvouSharedtauriArtifactTracker()
   // 模型常给相对路径,直接拿 args.path 渲染会让卡片 path 是相对,点 Open 报「path must be
   // absolute」,且模型可能重试再 present 一次出双卡。取不到 abs_path 才回退原始 path。
   // 兼容两种结果格式:直接 payload {abs_path} / MCP content 数组 {content:[{text}]} 包一层。
-  function parseToolResultPayload(toolResultContent) {
-    try {
-      const raw = typeof toolResultContent === "string" ? toolResultContent : JSON.stringify(toolResultContent || {});
-      const obj = JSON.parse(raw);
-      if (obj && obj.content && obj.content[0] && typeof obj.content[0].text === "string") {
-        try {
-          const inner = JSON.parse(obj.content[0].text);
-          if (inner && typeof inner === "object") return inner;
-        } catch { /* use the outer object when the inner value is not JSON */ }
-      }
-      return obj;
-    } catch {
-      return null;
-    }
-  }
+function parseToolResultPayload(toolResultContent) { return pinvouSharedtauriArtifactTracker().parseToolResultPayload(toolResultContent); }
 function artifactPathFromToolOutput(toolResultContent) { return pinvouSharedtauriArtifactTracker().artifactPathFromToolOutput(toolResultContent); }
 function shouldUseToolOutputAsArtifact(name) { return pinvouSharedtauriArtifactTracker().shouldUseToolOutputAsArtifact(name); }
 function presentArtifactAbsPath(toolResultContent, fallbackPath) { return pinvouSharedtauriArtifactTracker().presentArtifactAbsPath(toolResultContent, fallbackPath); }

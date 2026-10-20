@@ -72,19 +72,19 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use wait_timeout::ChildExt;
 
-use crate::support::{render, require_yes, resolve_secret, sandbox_home, success};
+use crate::support::{file_is_sha256, render, require_yes, resolve_secret, sandbox_home, success};
 use crate::{CliError, CliOutcome, OutputMode};
 use pinvou3_lib::features::marketplace::bundle::CLI_DISCONNECTED_DEGRADED_REASON;
 use pinvou3_lib::features::marketplace::skill_marketplace::SkillMarketplaceManager;
 use pinvou3_lib::features::marketplace::store::{BundleRecord, BundleSource, BundleStore};
 use pinvou3_lib::features::{
-    LARK_MIN_VERSION as FEISHU_MIN_VERSION, TMEET_MIN_VERSION, WECOM_MIN_VERSION,
+    IMA_SKILL_ID, IMA_SKILL_VERSION, LARK_MIN_VERSION as FEISHU_MIN_VERSION, TMEET_MIN_VERSION,
+    TMEET_NPM_SPEC, WECOM_MIN_VERSION,
 };
 use pinvou3_lib::platform::connector_lock::{executable_name, locked_cli_path};
 use pinvou3_lib::platform::connector_skills::{
     DINGTALK_SKILL_DIRS, LARK_SKILL_DIRS, TMEET_SKILL_DIRS, WECOM_SKILL_DIRS,
 };
-use pinvou3_lib::platform::sha256_file;
 
 use pinvou3_lib::platform::connector_state::skills_visible_for;
 use pinvou3_lib::platform::credential_store::{
@@ -105,11 +105,6 @@ const USAGE: &str =
 // feishu and wecom floors are the live ones: the same sync raised them with
 // the resynced skill packs (lark 1.0.95→1.0.98, wecom 1.2.1→1.3.4), so
 // future raises are expected.
-const TMEET_NPM_SPEC: &str = "@tencentcloud/tmeet@1.0.18";
-
-/// ima skill installed by `ima_connect` (mirror of ima.rs `IMA_SKILL_ID`).
-const IMA_SKILL_ID: &str = "ima-skills";
-const IMA_SKILL_VERSION: &str = "1.1.8";
 
 /// Archive size cap, mirroring `native_installer::MAX_ARCHIVE_BYTES`.
 const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;
@@ -252,19 +247,17 @@ impl ConnectorKind {
     /// Provenance NOTICE file each connector's bundle unpack drops next to
     /// its skill directories — the `notice_file` argument the app passes to
     /// `Pinvou3Bundle::apply_connector_skills` (runtime_bundle/platform/
-    /// extraction.rs). feishu owns the bare `NOTICE.md`; the other three
-    /// carry an id suffix so four unpacks into sibling roots cannot
-    /// overwrite each other. The hide direction must remove it alongside
-    /// the directories or a logged-out connector keeps a stray attribution
-    /// file the app would never leave behind. There is no exported constant
-    /// for these on the app side (the strings are literals at the four call
-    /// sites), so this table is a mirror, not an import.
+    /// extraction.rs). The hide direction must remove it alongside the
+    /// directories or a logged-out connector keeps a stray attribution file
+    /// the app would never leave behind. The names are imported from the
+    /// app's single source (`platform::connector_skills`), no longer a
+    /// hand-maintained mirror.
     fn skills_notice_file(self) -> &'static str {
         match self {
-            Self::Feishu => "NOTICE.md",
-            Self::Wecom => "NOTICE-wecom.md",
-            Self::Dingtalk => "NOTICE-dingtalk.md",
-            Self::Tmeet => "NOTICE-tmeet.md",
+            Self::Feishu => pinvou3_lib::platform::connector_skills::FEISHU_SKILLS_NOTICE,
+            Self::Wecom => pinvou3_lib::platform::connector_skills::WECOM_SKILLS_NOTICE,
+            Self::Dingtalk => pinvou3_lib::platform::connector_skills::DINGTALK_SKILLS_NOTICE,
+            Self::Tmeet => pinvou3_lib::platform::connector_skills::TMEET_SKILLS_NOTICE,
         }
     }
 }
@@ -2705,12 +2698,6 @@ fn write_license(version_dir: &Path, artifact_name: &str) -> Result<(), CliError
             "connector installed, but its license file could not be written: {error}"
         ))
     })
-}
-
-fn file_is_sha256(path: &Path, expected: &str) -> bool {
-    sha256_file(path)
-        .map(|actual| actual == expected)
-        .unwrap_or(false)
 }
 
 /// Removes install debris left by a DEAD process: `<name>-extract-<pid>`
@@ -5269,15 +5256,15 @@ mod tests {
 
     // ── version-parse arms + spec parity (round-52 review) ──────────────
 
-    /// `TMEET_NPM_SPEC` hand-copies the version the GUI floor carries, and
-    /// nothing tied the two: raising the app's `TMEET_MIN_VERSION` (the
-    /// install AND upgrade gate this crate imports) would have silently
-    /// left `npm install -g` pinning the OLD spec — the freshly installed
-    /// CLI then fails the new floor and every connect answers
-    /// "upgrade required" forever. The spec's version suffix must parse to
-    /// exactly the imported floor, so a GUI-side raise turns this red until
-    /// the spec moves with it (the app asserts the same parity for its own
-    /// pair).
+    /// `TMEET_NPM_SPEC` is imported from the feature layer together with
+    /// `TMEET_MIN_VERSION` (the install AND upgrade gate), so a GUI-side
+    /// spec bump now moves this crate's install lane by construction. This
+    /// pin keeps the underlying invariant visible from the CLI side: the
+    /// spec's version suffix must parse to exactly the imported floor, so a
+    /// floor raise that forgets the spec turns red HERE too instead of only
+    /// in the app's own parity test — the freshly installed CLI would fail
+    /// the new floor and every connect would answer "upgrade required"
+    /// forever.
     #[test]
     fn tmeet_npm_spec_version_matches_the_imported_min_version_floor() {
         let suffix = TMEET_NPM_SPEC

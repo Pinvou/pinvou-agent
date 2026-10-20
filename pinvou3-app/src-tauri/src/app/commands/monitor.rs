@@ -265,9 +265,7 @@ pub struct BackendStatus {
 pub async fn get_backend_status() -> Result<BackendStatus, String> {
     // Lightweight: 只 probe 当前 active model,不跑 nvidia-smi / RAM 采样。
     let vllm = crate::features::monitor::active_model_snapshot().await;
-    let vllm_online = vllm.as_ref().is_some_and(|v| {
-        v.health_status == "verified" && matches!(v.status, VllmStatus::Ready | VllmStatus::Busy)
-    });
+    let vllm_online = vllm.as_ref().is_some_and(VllmSnapshot::is_online);
     let max_model_len = vllm.as_ref().and_then(|v| v.max_model_len);
     Ok(BackendStatus {
         vllm_online,

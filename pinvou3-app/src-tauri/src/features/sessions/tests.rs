@@ -7,6 +7,7 @@
 // architecture-guard: allow-target-cfg -- the legacy-table sync-failure regression needs POSIX permission modes to make the atomic rewrite fail deterministically, and the symlink-alias regression needs a real directory symlink to emulate macOS /var → /private/var ancestor resolution; PermissionsExt/from_mode and std::os::unix::fs::symlink do not exist on Windows, so those tests are cfg(unix)-gated and no platform behavior leaks into shared code.
 
 use super::*;
+use crate::core::mode_state::ModeLane;
 use crate::platform::paths;
 use crate::platform::paths::tests::ENV_LOCK;
 use crate::platform::prefs::UserPrefs;
@@ -1699,10 +1700,7 @@ fn scheduled_engine_state_persists_full_snapshot_and_preserves_identity_and_prof
             scheduled_engine_state(
                 messages.clone(),
                 ScheduledRunMode::Yolo,
-                ScheduledTokenAccounting::EngineCumulative {
-                    base_total_tokens: 40,
-                    engine_total_tokens: 12,
-                },
+                ScheduledTokenAccounting::PreservePersisted,
             ),
         )
         .expect("persist scheduled engine state");
@@ -1711,7 +1709,10 @@ fn scheduled_engine_state_persists_full_snapshot_and_preserves_identity_and_prof
     assert_eq!(persisted.metadata.title, before.metadata.title);
     assert_eq!(persisted.metadata.created_at, before.metadata.created_at);
     assert_eq!(persisted.metadata.message_count, messages.len());
-    assert_eq!(persisted.metadata.total_tokens, 52);
+    assert_eq!(
+        persisted.metadata.total_tokens,
+        before.metadata.total_tokens
+    );
     assert_eq!(persisted.metadata.model, "/engine-model");
     assert_eq!(
         persisted.metadata.workspace,
@@ -1730,13 +1731,16 @@ fn scheduled_engine_state_persists_full_snapshot_and_preserves_identity_and_prof
     let reloaded = reopen_store(&store).expect("reboot");
     assert_eq!(reloaded.scheduled_profile(&id), Some(expected_profile));
     let from_disk = reloaded.load(&id).expect("load persisted engine state");
-    assert_eq!(from_disk.metadata.total_tokens, 52);
+    assert_eq!(
+        from_disk.metadata.total_tokens,
+        before.metadata.total_tokens
+    );
     assert_eq!(from_disk.messages, persisted.messages);
     assert_eq!(from_disk.system_prompt, persisted.system_prompt);
 }
 
 #[test]
-fn scheduled_engine_token_accounting_preserves_updates_and_accumulates_across_restarts() {
+fn scheduled_engine_token_accounting_preserves_persisted_totals_across_restarts() {
     let (store, _g) = isolated_store();
     let scheduled = store
         .create_scheduled_run(scheduled_profile("task-token-accounting"))
@@ -1744,18 +1748,8 @@ fn scheduled_engine_token_accounting_preserves_updates_and_accumulates_across_re
     let id = scheduled.metadata.id.clone();
 
     store
-        .persist_scheduled_engine_state(
-            &id,
-            scheduled_engine_state(
-                vec![text_message("user", "first turn")],
-                ScheduledRunMode::Plan,
-                ScheduledTokenAccounting::EngineCumulative {
-                    base_total_tokens: 0,
-                    engine_total_tokens: 100,
-                },
-            ),
-        )
-        .expect("persist first engine snapshot");
+        .persist_scheduled_token_total(&id, 0, 100)
+        .expect("persist terminal token total");
     store
         .persist_scheduled_engine_state(
             &id,
@@ -1785,35 +1779,19 @@ fn scheduled_engine_token_accounting_preserves_updates_and_accumulates_across_re
             scheduled_engine_state(
                 vec![text_message("assistant", "later turn")],
                 ScheduledRunMode::Yolo,
-                ScheduledTokenAccounting::EngineCumulative {
-                    base_total_tokens: 100,
-                    engine_total_tokens: 25,
-                },
+                ScheduledTokenAccounting::PreservePersisted,
             ),
         )
         .expect("persist later engine snapshot");
-    reloaded
-        .persist_scheduled_engine_state(
-            &id,
-            scheduled_engine_state(
-                vec![text_message("assistant", "same engine next turn")],
-                ScheduledRunMode::Yolo,
-                ScheduledTokenAccounting::EngineCumulative {
-                    base_total_tokens: 100,
-                    engine_total_tokens: 40,
-                },
-            ),
-        )
-        .expect("persist cumulative same-engine snapshot");
 
     assert_eq!(
         reloaded
             .load(&id)
-            .expect("load accumulated total")
+            .expect("load preserved total")
             .metadata
             .total_tokens,
-        140,
-        "same-engine cumulative usage must not be added twice"
+        100,
+        "engine-state persistence must keep the durable token total"
     );
 }
 
@@ -1834,10 +1812,7 @@ fn scheduled_engine_state_entry_rejects_normal_chat_without_mutation() {
             scheduled_engine_state(
                 vec![text_message("user", "must not persist")],
                 ScheduledRunMode::Plan,
-                ScheduledTokenAccounting::EngineCumulative {
-                    base_total_tokens: 0,
-                    engine_total_tokens: 99,
-                },
+                ScheduledTokenAccounting::PreservePersisted,
             ),
         )
         .expect_err("normal chat must not use scheduled persistence");
@@ -4946,6 +4921,87 @@ fn rewind_truncates_at_turn_boundary_with_interleaved_tool_results() {
     );
     assert_eq!(record.pre_restore_checkpoint_id, None);
     assert_eq!(record.removed_messages, messages[4..]);
+}
+
+/// New-writer/old-reader compatibility (round-7 review P2): older binaries
+/// define `RewoundTurnsRecord` with a REQUIRED `originalRevision` (no serde
+/// default), and the CLI shares this sidecar with the desktop app. A map
+/// written without the field used to fail deserialization as a whole and get
+/// quarantined, taking every session's undo backups down with it. The field
+/// must therefore keep being written per record, and legacy values must
+/// survive a rewrite performed while backing up another session.
+#[test]
+fn rewound_sidecar_stays_readable_by_older_readers() {
+    let (store, _g) = isolated_store();
+    let session_a = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create a");
+    let id_a = session_a.metadata.id.clone();
+    let session_b = store
+        .create_new("/model".into(), None, std::env::temp_dir())
+        .expect("create b");
+    let id_b = session_b.metadata.id.clone();
+
+    // Session A keeps a record as an OLDER binary wrote it (required field,
+    // no truncatedRevision yet); session B gets truncated by THIS build, so
+    // the read-modify-write re-persists the whole map.
+    let legacy_removed: Vec<Message> = vec![user_text("旧第二轮"), assistant_text("旧答二")];
+    let legacy = serde_json::json!({
+        id_a.clone(): [{
+            "rewoundAt": "2026-10-19T00:00:00Z",
+            "originalRevision": "legacy-sha",
+            "keptTurns": 1,
+            "removedMessages": legacy_removed,
+        }]
+    });
+    let sidecar = paths::sessions_root().join("_rewound_turns.json");
+    std::fs::write(&sidecar, serde_json::to_vec_pretty(&legacy).expect("json"))
+        .expect("write legacy sidecar");
+
+    let messages_b = vec![
+        user_text("第一轮"),
+        assistant_text("答一"),
+        user_text("第二轮"),
+        assistant_text("答二"),
+    ];
+    store
+        .update_messages(&id_b, messages_b.clone())
+        .expect("seed transcript b");
+    store
+        .truncate_to_user_turn(&id_b, 1, None)
+        .expect("rewind b to turn 1");
+
+    // The exact reader shape of an older binary: originalRevision REQUIRED.
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct OldReaderRecord {
+        #[allow(dead_code)]
+        rewound_at: String,
+        #[allow(dead_code)]
+        original_revision: String,
+        #[allow(dead_code)]
+        kept_turns: u32,
+        #[allow(dead_code)]
+        removed_messages: Vec<Message>,
+    }
+    let bytes = std::fs::read(&sidecar).expect("read rewritten sidecar");
+    let old_reader_map: std::collections::HashMap<String, Vec<OldReaderRecord>> =
+        serde_json::from_slice(&bytes).expect("old reader parses the whole map");
+
+    assert_eq!(old_reader_map.len(), 2, "both sessions stay in the map");
+    // A missing originalRevision here is exactly the regression: the old
+    // reader would have rejected the map above instead of returning it.
+    assert_eq!(
+        old_reader_map[&id_a][0].original_revision, "legacy-sha",
+        "a legacy record's value must survive the rewrite verbatim"
+    );
+    let new_record = rewound_records(&id_b);
+    assert_eq!(new_record.len(), 1);
+    assert_eq!(
+        new_record[0].original_revision,
+        transcript_revision(&messages_b).expect("pre-truncation revision"),
+        "original_revision must be the full pre-truncation transcript revision"
+    );
 }
 
 /// N=0 = rewind to before the first turn; the transcript is fully truncated.

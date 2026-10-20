@@ -23,6 +23,7 @@ copyFileSync(path.join(root, 'src', 'features', 'codex', 'acp-state.js'), path.j
 copyFileSync(path.join(root, 'src', 'features', 'multiagent', 'spawn-aggregation.mjs'), path.join(temp, 'features', 'multiagent', 'spawn-aggregation.mjs'));
 copyFileSync(path.join(root, 'src', 'shared', 'internal-message.mjs'), path.join(temp, 'shared', 'internal-message.mjs'));
 copyFileSync(path.join(root, 'src', 'shared', 'shell-tools.mjs'), path.join(temp, 'shared', 'shell-tools.mjs'));
+copyFileSync(path.join(root, 'src', 'shared', 'path-utils.js'), path.join(temp, 'shared', 'path-utils.js'));
 
 try {
   const {

@@ -488,11 +488,12 @@ impl HeadlessAgentBackend for MockBackend {
             );
             state.active -= 1;
         }
-        observer.on_event(&SafeAgentEvent::tool_finished(
+        observer.on_event(&SafeAgentEvent::tool_finished_with_code(
             task.task_id(),
             "web_search",
             true,
             Duration::from_millis(3),
+            None::<String>,
         ));
         observer.on_event(&SafeAgentEvent::tool_finished_with_code(
             task.task_id(),

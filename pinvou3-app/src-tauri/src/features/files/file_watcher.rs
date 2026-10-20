@@ -204,7 +204,9 @@ fn scheduled_session_id(path: &Path, root: &Path) -> Option<String> {
 
 /// 跳过隐藏 / 编辑器临时文件 —— LibreOffice `.~lock.xxx#` / MS Word `~$xxx`
 /// / vim `.xxx.swp` / 通用 `.` 开头的隐藏文件 / `.tmp` 后缀。
-fn should_skip(basename: &str) -> bool {
+/// 产物面板的 workspace 文件列表（app/commands/sessions.rs）共用本规则，
+/// 单一事实源，避免规则漂移（watcher 先加了 workflow_audit.jsonl 规则）。
+pub(crate) fn should_skip(basename: &str) -> bool {
     if basename.is_empty() {
         return true;
     }

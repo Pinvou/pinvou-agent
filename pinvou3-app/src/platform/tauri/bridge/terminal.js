@@ -19,18 +19,7 @@ function pinvouSharedtauriTerminal() {
     const addChatItem = context.addChatItem;
     let shellNotifyTimer = null;
     const shellPollState = Object.create(null);
-  function updateToolItem(toolId, output, success) {
-    for (let i = 0; i < state.chatItems.length; i++) {
-      if (state.chatItems[i].type === "tool" && state.chatItems[i].toolId === toolId) {
-        state.chatItems[i].output = output;
-        state.chatItems[i].success = success;
-        state.chatItems[i].state = success ? "done" : "failed";
-        delete state.chatItems[i]._terminalParser;
-        return state.chatItems[i];
-      }
-    }
-    return null;
-  }
+  function updateToolItem(toolId, output, success) { return pinvouSharedtauriTerminal().updateToolItem(toolId, output, success); }
 
   const SHELL_TOOL_NAMES = ["bash", "exec_shell", "exec_shell_wait", "exec_wait", "task_shell_start", "task_shell_wait", "shell", "Bash"];
   const SHELL_WAIT_TOOL_NAMES = ["exec_shell_wait", "exec_wait", "task_shell_wait"];

@@ -277,7 +277,9 @@ fn is_owned_session_snapshot_name(name: &std::ffi::OsStr) -> bool {
     is_owned_session_download_id(download_id)
 }
 
-pub(super) fn is_owned_session_download_id(download_id: &str) -> bool {
+// pub(crate): the command-layer cancel gate re-uses this mint-side rule
+// (re-exported through `manager`) instead of re-deriving a laxer one.
+pub(crate) fn is_owned_session_download_id(download_id: &str) -> bool {
     // `len() > prefix.len()` on the wire ⇒ an inclusive min of prefix len + 1.
     crate::features::files::attachment_upload::validate_opaque_token(
         download_id,

@@ -66,12 +66,11 @@ function useAnchoredPosition(open, triggerRef, active) {
 // `opts` supports migrating the hand-rolled listener sets previously written per view (omitted = original behavior):
 //   escape               — also listen for Escape to close (document bubble phase by default)
 //   escapeOnWindow       — attach the Escape listener to window instead (some legacy sites listened there)
-//   escapeCapture        — Escape on the capture phase (context-menu family must run before menu-item shortcuts)
 //   preventEscapeDefault — preventDefault on Escape (blocks scrolling and other defaults)
 //   viewportClose        — close on window resize / any scroll (capture) (fixed-position
 //                           menu anchor coordinates go stale as the viewport changes)
 function useOutsidePointerClose(open, onClose, insideRefs, opts = {}) {
-  const { escape: escapeClose = false, escapeOnWindow = false, escapeCapture = false, preventEscapeDefault = false, viewportClose = false } = opts;
+  const { escape: escapeClose = false, escapeOnWindow = false, preventEscapeDefault = false, viewportClose = false } = opts;
   const onCloseRef = useRef(onClose);
   const insideRefsRef = useRef(insideRefs);
   // latest-ref sync: write back in an effect, not during render, to avoid
@@ -97,7 +96,7 @@ function useOutsidePointerClose(open, onClose, insideRefs, opts = {}) {
         onCloseRef.current();
       }
       : null;
-    if (handleEscape) escapeTarget.addEventListener('keydown', handleEscape, escapeCapture);
+    if (handleEscape) escapeTarget.addEventListener('keydown', handleEscape);
     const handleViewport = viewportClose ? () => onCloseRef.current() : null;
     if (handleViewport) {
       window.addEventListener('resize', handleViewport);
@@ -105,13 +104,13 @@ function useOutsidePointerClose(open, onClose, insideRefs, opts = {}) {
     }
     return () => {
       document.removeEventListener('pointerdown', handlePointerDown, true);
-      if (handleEscape) escapeTarget.removeEventListener('keydown', handleEscape, escapeCapture);
+      if (handleEscape) escapeTarget.removeEventListener('keydown', handleEscape);
       if (handleViewport) {
         window.removeEventListener('resize', handleViewport);
         window.removeEventListener('scroll', handleViewport, true);
       }
     };
-  }, [open, escapeClose, escapeOnWindow, escapeCapture, preventEscapeDefault, viewportClose]);
+  }, [open, escapeClose, escapeOnWindow, preventEscapeDefault, viewportClose]);
 }
 
 // composer 下拉外壳。桌面端保持原来的就地 absolute 下拉（外观行为不变）；移动 WebUI

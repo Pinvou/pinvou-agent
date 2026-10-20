@@ -55,7 +55,6 @@
       ensure: shared.auxChatEnsure,
       send: shared.auxChatSend,
       snapshot: shared.auxChatSnapshot,
-      discard: shared.auxChatDiscard,
       reset: shared.auxChatReset,
     };
   };

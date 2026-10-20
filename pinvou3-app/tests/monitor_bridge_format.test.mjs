@@ -10,10 +10,28 @@ const read = (...parts) => fs.readFileSync(path.join(root, ...parts), 'utf8');
 // 两份 bridge(tauri 桌面 / web)的 TTFT/TPS 无数据回退必须统一为「—」,
 // 与 MonitorView.jsx 的 MonitorMetricCard(值为 — 时不渲染 unit)配套。
 // 防止某一侧单独回退成字面 "0 s"/"0 tok/s" 造成桌面/网页显示漂移。
+// Wave 1 moved pollMonitor (vllmTtft/vllmTps formatting) into the shared
+// base; both lanes forward to it, so the shared body is the single source to
+// pin (the lane files no longer carry the formatted literals).
 const bridges = {
-  tauri: read('src', 'platform', 'tauri', 'bridge', 'monitor.js'),
-  web: read('src', 'platform', 'web', 'bridge.js'),
+  tauri: read('src', 'shared', 'bridge-shared-helpers.js'),
+  web: read('src', 'shared', 'bridge-shared-helpers.js'),
 };
+
+// pollBackendStatus 仍是两条 lane 各自声明的手抄体(round-9 review R2:仅
+// 对齐语义,未单源)。钉住在飞守卫必须同时存在于两侧 —— get_backend_status
+// 挂起时,10 秒间隔的重入会在慢响应上叠轮次;守卫缺失曾只发生在桌面侧。
+const pollBackendStatusGuard = /backendStatusPollInFlight = true/;
+assert.match(
+  read('src', 'platform', 'tauri', 'bridge', 'monitor.js'),
+  pollBackendStatusGuard,
+  'desktop pollBackendStatus must keep the in-flight reentrancy guard',
+);
+assert.match(
+  read('src', 'platform', 'web', 'bridge.js'),
+  pollBackendStatusGuard,
+  'web pollBackendStatus must keep the in-flight reentrancy guard',
+);
 
 const TTFT_FALLBACK_PATTERN =
   /vllmTtft: sadj && sadj\.ttft_count > 0\s*\?\s*\(sadj\.ttft_sum_s \/ sadj\.ttft_count\)\.toFixed\(2\) \+ " s" : "—"/;

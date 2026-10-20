@@ -118,7 +118,6 @@ pub(super) enum WebSessionOperation {
     CreateSession,
     LoadSessionChunk,
     GetOrCreateAuxSession,
-    DiscardAuxSession,
     ResetAuxSession,
 }
 
@@ -130,7 +129,6 @@ impl WebSessionOperation {
             Self::CreateSession => "create_session",
             Self::LoadSessionChunk => "load_session_chunk",
             Self::GetOrCreateAuxSession => "get_or_create_aux_session",
-            Self::DiscardAuxSession => "discard_aux_session",
             Self::ResetAuxSession => "reset_aux_session",
         }
     }
@@ -646,6 +644,19 @@ async fn load_session_chunk_inner(
     })
 }
 
+/// The cancel gate re-uses the mint-side ownership rule
+/// (`manager::is_owned_session_download_id`, the same validator
+/// `begin_web_session_download` issues ids through). The former hand-rolled
+/// check here was laxer (no `download_` prefix, 8-char floor) — behaviorally
+/// nil since `cancel_web_session_download` is a keyed lookup, but two rules
+/// for one token class is drift waiting to happen.
+fn ensure_owned_session_download_id(download_id: &str) -> Result<(), String> {
+    if manager::is_owned_session_download_id(download_id) {
+        return Ok(());
+    }
+    Err("invalid Session download id".into())
+}
+
 /// Idempotently release a browser Session download that did not reach EOF.
 /// This is a separate bounded command because a dropped Relay connection can
 /// leave the desktop-side temporary file alive after the browser has stopped
@@ -658,14 +669,7 @@ pub fn web_access_cancel_session_download(
 ) -> Result<bool, String> {
     crate::features::sessions::validate_session_id(&id)
         .map_err(|error| format!("invalid Session id: {error:#}"))?;
-    if download_id.len() < 8
-        || download_id.len() > 128
-        || !download_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
-        return Err("invalid Session download id".into());
-    }
+    ensure_owned_session_download_id(&download_id)?;
     manager.cancel_web_session_download(&download_id, &id)
 }
 
@@ -1313,9 +1317,12 @@ fn project_acp_status_for_web(
     status.login_url = None;
     status.login_code = None;
     status.error = None;
-    // 安装命令行与输出可能含内部镜像源或主机路径，仅桌面端展示。
+    // Install command lines and output may contain internal mirror sources or
+    // host paths, so they are desktop-only; the install outcome's error field
+    // is an error chain too and is stripped alongside `error`.
     status.install_command = None;
     status.install_latest_line = None;
+    status.install_finished = None;
     status
 }
 
@@ -1329,9 +1336,8 @@ pub async fn web_access_list_codex_acp_sessions(
 }
 
 #[tauri::command]
-pub async fn web_access_list_acp_agents(
-    _acp_pool: State<'_, AcpPool>,
-) -> Result<Vec<crate::features::codex_acp::AcpAgentDescriptor>, String> {
+pub async fn web_access_list_acp_agents()
+-> Result<Vec<crate::features::codex_acp::AcpAgentDescriptor>, String> {
     let outcome = super::codex::list_acp_agents_for_pool().await;
     web_acp_result(WebAcpOperation::ListAgents, outcome)
 }
@@ -1643,12 +1649,32 @@ pub async fn web_access_render_artifact_visual(
 mod tests {
     use super::{
         WebAcpOperation, WebSavedSession, WebSessionMetadata, WebSessionOperation,
-        WebWorkspaceOperation, ensure_web_chat_session_supported, web_acp_agent_id, web_acp_result,
-        web_artifact_storage_path, web_session_result, web_workspace_result,
+        WebWorkspaceOperation, ensure_owned_session_download_id, ensure_web_chat_session_supported,
+        web_acp_agent_id, web_acp_result, web_artifact_storage_path, web_session_result,
+        web_workspace_result,
     };
     use deepseek_tui::session_manager::{SavedSession, create_saved_session};
     use serde_json::{Value, json};
     use std::path::Path;
+
+    #[test]
+    fn cancel_download_gate_uses_the_mint_side_ownership_rule() {
+        // The gate must accept exactly what `begin_web_session_download` mints
+        // (`download_` prefix + ≥1 body char, ≤128, opaque alphabet) and
+        // reject the shapes the old hand-rolled command gate still let
+        // through (bare alnum id without the prefix, prefix-only id).
+        assert!(ensure_owned_session_download_id("download_abc123").is_ok());
+        assert!(ensure_owned_session_download_id("download_AbC-1_xY9").is_ok());
+        assert!(ensure_owned_session_download_id("abc12345").is_err());
+        assert!(ensure_owned_session_download_id("download_").is_err());
+        assert!(ensure_owned_session_download_id("dl_abc123").is_err());
+        let long_id = format!("download_{}", "a".repeat(119));
+        assert!(ensure_owned_session_download_id(&long_id).is_ok());
+        assert!(
+            ensure_owned_session_download_id(&format!("{long_id}x")).is_err(),
+            "ids beyond the mint-side 128-char ceiling must be refused"
+        );
+    }
 
     #[test]
     fn stable_web_error_codes_are_locked() {
@@ -1749,10 +1775,6 @@ mod tests {
         assert_eq!(
             web_session_result(WebSessionOperation::GetOrCreateAuxSession, error).unwrap_err(),
             "web_session_get_or_create_aux_session_failed"
-        );
-        assert_eq!(
-            web_session_result(WebSessionOperation::DiscardAuxSession, error).unwrap_err(),
-            "web_session_discard_aux_session_failed"
         );
         // M6: the atomic reset is web-allowlisted through the same funnel.
         assert_eq!(

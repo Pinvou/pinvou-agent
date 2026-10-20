@@ -159,7 +159,10 @@ fingerprints=(
   "T3|技能索引省略尾行守护               |CodeWhale/crates/tui/src/skills/tests.rs|fn forkguard_omitted_skills_line_stays_short"
   "T3|捆绑技能退役名清扫回归             |CodeWhale/crates/tui/src/skills/system/tests.rs|fn forkguard_bundled_skills_cite_no_hidden_or_retired_tool_names"
   "T3|best-of-n 目标工具自条件回归        |CodeWhale/crates/tui/src/skills/system/tests.rs|fn forkguard_best_of_n_goal_tool_is_availability_gated"
-  "T3|pdf 技能改引实工具（#56 措辞被上游 #112 吸收）|CodeWhale/crates/tui/assets/skills/pdf/SKILL.md|via \`bash\` when installed"
+  # 2026-10-20 批次 #112 撤下了 pdf 技能里 "built-in read 工具可抽取 PDF 文本" 的失实声明，
+  # 可靠工具清单改为 bash 侧 pdftotext/pdfinfo/qpdf/mutool——指纹随 #112 的真实措辞重钉；
+  # 反幻影名意图仍由 forkguard_bundled_skills_cite_no_hidden_or_retired_tool_names 可执行回归承载。
+  "T3|pdf 技能改引 bash 侧活工具         |CodeWhale/crates/tui/assets/skills/pdf/SKILL.md|\`pdftotext\` for text extraction"
   "T3|best-of-n 目标门控文案             |CodeWhale/crates/tui/assets/skills/best-of-n/SKILL.md|\`create_goal\` is in your tool list"
   "T3|mcp-discovery 前言如实披露 pool 依赖 |CodeWhale/crates/tui/assets/skills/mcp-discovery/SKILL.md|the start tool once the host's MCP pool is initialized"
   "T3|start 工具两段式激活门控           |CodeWhale/crates/tui/assets/skills/mcp-discovery/SKILL.md|\`tool_search\` as in step 1; if that fails, registry starts"
@@ -302,16 +305,10 @@ fingerprints=(
   "T9|Custom Responses exact-model replay             |CodeWhale/crates/tui/src/client/responses/tests.rs|fn forkguard_custom_responses_replays_only_exact_model_opaque_reasoning_state"
   "T9|Chat wire never captures encrypted reasoning    |CodeWhale/crates/tui/src/client/responses/tests.rs|fn forkguard_custom_chat_stream_does_not_capture_encrypted_reasoning"
   "T9|Empty encrypted content skips without breaking the stream |CodeWhale/crates/tui/src/client/responses/tests.rs|fn forkguard_custom_responses_capture_tolerates_missing_or_empty_encrypted_content"
-  "T10|Tachyon 方言档位永不发射 high             |CodeWhale/crates/tui/src/client.rs|fn forkguard_tachyon_effort_ladder_never_emits_high"
-  "T10|Tachyon max 族映射最深档 xhigh            |CodeWhale/crates/tui/src/client.rs|fn forkguard_tachyon_max_maps_to_xhigh"
-  "T10|Tachyon picker retains the normalized tier |CodeWhale/crates/tui/src/tui/model_picker.rs|fn forkguard_tachyon_picker_preserves_normalized_effort_on_reopen"
-  "T10|Tachyon unknown-model stream classification |CodeWhale/crates/tui/src/client/chat.rs|fn forkguard_tachyon_stream_separates_reasoning_for_unknown_model_ids"
-  "T10|Tachyon sole-provider persistence regression |CodeWhale/crates/config/src/tests.rs|fn forkguard_tachyon_only_provider_table_survives_config_store_save"
-  "T10|Tachyon validates provider context windows |CodeWhale/crates/tui/src/config.rs|(\"providers.tachyon\", &self.tachyon),"
-  "T10|Tachyon inventory requires explicit configuration |CodeWhale/crates/tui/src/model_routing.rs|fn forkguard_tachyon_inventory_requires_an_active_or_configured_route"
-  "T10|Tachyon route-scoped thinking capability |CodeWhale/crates/tui/src/config/tests.rs|fn forkguard_tachyon_thinking_capability_is_route_scoped"
-  "T10|Tachyon Fleet thinking capability validation |CodeWhale/crates/tui/src/fleet/worker_runtime.rs|fn forkguard_tachyon_fleet_accepts_explicit_reasoning_for_served_ids"
-  "T10|Tachyon 引擎注册表身份（registered-only） |CodeWhale/crates/config/src/provider.rs|static TACHYON: Tachyon = Tachyon;"
+
+  "T10|Tachyon effort ladder never emits high   |CodeWhale/crates/tui/src/client.rs|fn forkguard_tachyon_effort_ladder_never_emits_high"
+  "T10|registered-only Tachyon table survives save |CodeWhale/crates/config/src/tests.rs|fn forkguard_tachyon_only_provider_table_survives_config_store_save"
+
   "APP|unified 2000-step budget default           |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|const HOST_STEP_BUDGET: u32 = 2_000;"
   "APP|2000-step budget behavior regression       |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn engine_config_defaults_to_unified_step_budget_and_respects_override"
 )

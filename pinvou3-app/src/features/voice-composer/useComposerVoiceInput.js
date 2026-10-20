@@ -227,9 +227,6 @@ function useComposerVoiceInput(adapter) {
         // An unchanged edit yields no preview and no unsent result: abandon
         // the operation instead of leaving it recorded on the draft.
         discardVoiceResult(context);
-        if (next === original && typeof current.onEditUnchanged === 'function') {
-          current.onEditUnchanged({ original, instruction: trimDraft(context && context.rawText), context });
-        }
         return;
       }
       setEditPreview({
@@ -332,10 +329,6 @@ function useComposerVoiceInput(adapter) {
     }
     if (voiceBusy) return false;
     if (typeof current.canStart === 'function' && !current.canStart(nextMode)) return false;
-    if (!options.skipBeforeStart && typeof current.onBeforeStart === 'function'
-      && current.onBeforeStart(nextMode) === false) {
-      return false;
-    }
 
     // A pending edit preview is keyed to the old draft snapshot. Starting a
     // fresh session counts as abandoning it: a leftover preview would let the

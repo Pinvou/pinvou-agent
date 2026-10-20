@@ -41,7 +41,7 @@ import { useOutsidePointerClose } from '../../components/ComposerPopover.jsx';
  * @property {string} [error] - Failure message for fallback previews.
  */
 
-const kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], allDocs: [], embedInfo: null, model: null, outputs: [], outputsLoaded: false };
+const kbCache = { scan: null, stats: null, types: [], loaded: false, colls: [], allDocs: [], embedInfo: null, model: null, outputs: [], outputsLoaded: false, outputsSkipped: [] };
 // The full document table (kb_documents limit:0) is unbounded, so the
 // module-level cache keeps only a bounded slice: a remount instantly shows
 // the first rows and loadColls() re-fetches the complete data after mount,
@@ -448,6 +448,18 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       // ================= 产出物 =================
       const [outputs, setOutputs] = useState(kbCache.outputs);
       const [outputsLoaded, setOutputsLoaded] = useState(kbCache.outputsLoaded);
+      // Session records the backend index could not scan (over the 32 MiB
+      // read cap, unreadable, or unparseable). Their deliverables are absent
+      // from `outputs`, so this partial-result signal must surface — an
+      // oversized record silently shrinking the panel must not read as a
+      // successful empty index (round-4 review).
+      const [outputsSkipped, setOutputsSkipped] = useState(kbCache.outputsSkipped);
+      // True when the last index refresh REJECTED (sessions root unreadable,
+      // transport down) — a total scan failure, distinct from the partial
+      // `outputsSkipped` signal above. The last successful table stays
+      // rendered underneath; a rejection must not read as a clean empty
+      // index (round-7 review P2).
+      const [outputsScanError, setOutputsScanError] = useState(false);
       const [outCat, setOutCat] = useState('all');
       const [outQuery, setOutQuery] = useState('');
       const [outView, setOutView] = useState('list');
@@ -509,6 +521,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       })), []);
       const outputListSig = (list) => (list || []).map((o) => `${o.path || ''}|${o.mtime || 0}|${o.size || 0}|${o.sessionId || ''}|${o.source || ''}|${o.name || ''}`).join('\n');
       const outputsSigRef = useRef(outputListSig(kbCache.outputs));
+      const outputsSkippedSigRef = useRef((kbCache.outputsSkipped || []).join('\n'));
       const OUTPUT_CATS = [
         { key: 'all', label: t.kbOutCatAll, color: '#6a6a78', icon: GridIcon },
         { key: 'web', label: t.kbOutCatWeb, color: '#2f6beb', icon: AppWindow },
@@ -519,21 +532,42 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       const outCatMeta = (k) => OUTPUT_CATS.find((c) => c.key === k) || OUTPUT_CATS[0];
       const outputsDisposedRef = useRef(false);
       const refreshOutputs = useCallback(async () => {
-        const list = bridge && bridge.artifacts.listDeliverableIndex
-          ? await bridge.artifacts.listDeliverableIndex().catch(() => [])
-          : await invokeTauri('list_deliverable_index').catch(() => []);
+        const res = bridge && bridge.artifacts.listDeliverableIndex
+          ? await bridge.artifacts.listDeliverableIndex().catch(() => null)
+          // Fallback for a bridge without the facade: v2 carries this
+          // dist's expected {rows, skipped} shape (the facade owns the
+          // legacy-array negotiation for older desktops).
+          : await invokeTauri('list_deliverable_index_v2').catch(() => null);
         // Unmount cleanup already released the big table: an in-flight
         // request started before unmount must not write the index back into
         // the module-level cache once it resolves, or it would undo the
         // cleanup (setOutputs after unmount is a no-op and harmless).
         if (outputsDisposedRef.current) return;
-        const nextList = list || [];
+        // null = the refresh REJECTED (sessions root unreadable, transport
+        // down): a total failure must not read as a clean bill (round-7
+        // review P2). The rejected refresh re-lists the retained cache below
+        // (the sig compare then no-ops, keeping the last successful table)
+        // and raises the scan-error banner with a retry action instead of
+        // silently degrading to an empty/partial list.
+        const scanFailed = !res;
+        // The command returns { rows, skipped }: rows are the listable
+        // deliverables, skipped names the session records the scan could not
+        // read — the "incomplete ≠ empty" disclosure the panel renders.
+        const nextList = scanFailed ? kbCache.outputs : (res && Array.isArray(res.rows) ? res.rows : []);
+        const nextSkipped = scanFailed ? kbCache.outputsSkipped : (res && Array.isArray(res.skipped) ? res.skipped : []);
         const nextSig = outputListSig(nextList);
         if (nextSig !== outputsSigRef.current) {
           outputsSigRef.current = nextSig;
           setOutputs(nextList);
           kbCache.outputs = nextList;
         }
+        const nextSkippedSig = nextSkipped.join('\n');
+        if (nextSkippedSig !== outputsSkippedSigRef.current) {
+          outputsSkippedSigRef.current = nextSkippedSig;
+          setOutputsSkipped(nextSkipped);
+          kbCache.outputsSkipped = nextSkipped;
+        }
+        setOutputsScanError(scanFailed);
         setOutputsLoaded(true);
         kbCache.outputsLoaded = true;
       }, []);
@@ -559,6 +593,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
         outputsDisposedRef.current = true;
         kbCache.outputs = [];
         kbCache.outputsLoaded = false;
+        kbCache.outputsSkipped = [];
       }, []);
       const filteredOutputs = React.useMemo(() => {
         const q = outQuery.trim().toLowerCase();
@@ -772,8 +807,8 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       // 一级「产出物」只读产出物索引，不应触发任何知识库查询。
       useEffect(() => {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- synchronous setState in this effect is intentional: mirrors into local state right after reading the backend snapshot, avoiding first-frame flicker
-        if (!outputsOnly && (sub === 'files' || sub === 'kb')) loadColls();
-      }, [outputsOnly, sub, loadColls]);
+        if (sub === 'files' || sub === 'kb') loadColls();
+      }, [sub, loadColls]);
 
       const kbm = (bs && bs.kbModelSetup) || {};
       // ── embedding 模型 gate：区分磁盘文件与当前进程真实可用状态。旧后端未返回
@@ -1115,7 +1150,7 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
                                   <span className={`hidden md:block text-right text-[12px] ${muted}`}>{fmtSize(f.size)}</span>
                                   <span className={`hidden md:block text-[12px] font-medium tabular-nums ${muted}`}>{fmtDate(f.mtime)}</span>
                                   <div className="flex shrink-0 items-center justify-end gap-1">
-                                    <button type="button" title={t.kbAddToKb} onClick={(e2) => { e2.stopPropagation(); setAddToKb(f.path); if (outputsOnly) loadColls(); }}
+                                    <button type="button" title={t.kbAddToKb} onClick={(e2) => { e2.stopPropagation(); setAddToKb(f.path); }}
                                       className={`grid h-8 w-8 place-items-center rounded-[9px] transition-colors active:opacity-70 text-[#3A3A3C] hover:bg-[#F2F2F7] dark:text-[#C7C7CC] dark:hover:bg-white/[0.08]`}>
                                       <Plus size={15} />
                                     </button>
@@ -1168,6 +1203,28 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
             {/* ============ 产出物 ============ */}
             {sub === 'output' && (
               <div className="max-w-[1400px] mx-auto">
+                {/* Partial-result disclosure (round-4 review): records the
+                    backend index could not scan (over the 32 MiB read cap,
+                    unreadable, unparseable) contribute no rows, so their
+                    deliverables are missing from every branch below —
+                    including the "empty" one, which must not read as a
+                    clean bill. */}
+                {/* Total-failure disclosure (round-7 review): a rejected
+                    refresh (unreadable sessions root, transport down) must
+                    not read as a clean empty index. The listing below keeps
+                    the last successful result and the banner offers a
+                    retry. */}
+                {outputsScanError && (
+                  <div className="mb-4 px-4 py-2.5 rounded-[14px] text-[13px] leading-[18px] bg-[rgba(214,69,69,.08)] text-[#9A3B3B] dark:bg-[rgba(214,69,69,.12)] dark:text-[#E08A8A] flex items-center justify-between gap-3">
+                    <span>{t.kbOutScanError}</span>
+                    <button type="button" onClick={() => refreshOutputs()} className={`px-3 py-1 rounded-full text-[12px] font-bold shrink-0 ${soft}`}>{t.kbOutRetry}</button>
+                  </div>
+                )}
+                {outputsLoaded && outputsSkipped.length > 0 && (
+                  <div className="mb-4 px-4 py-2.5 rounded-[14px] text-[13px] leading-[18px] bg-[rgba(224,119,58,.08)] text-[#9A5B23] dark:bg-[rgba(224,119,58,.12)] dark:text-[#E0A477]">
+                    {t.kbOutSkippedNotice(outputsSkipped.length)}
+                  </div>
+                )}
                 {outputsLoaded ? outputs.length === 0 ? (
                   <KbEmptyState muted={muted} card={card} ink={ink} title={t.kbOutEmpty} hint={t.kbOutEmptyHint} />
                 ) : (() => {
@@ -1663,13 +1720,12 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
               ) : (
                 <div className="flex flex-col gap-1 mb-4 max-h-[240px] overflow-y-auto">
                   {colls.map((c) => (
-                    <button type="button" key={c.id} onClick={async () => { try { replaceIndexState(await invokeTauri('kb_collection_add_sources', { collectionId: c.id, paths: Array.isArray(addToKb) ? addToKb : [addToKb] })); } catch { /* silently degrade */ } setAddToKb(null); if (!outputsOnly) setSub('kb'); }}
+                    <button type="button" key={c.id} onClick={async () => { try { replaceIndexState(await invokeTauri('kb_collection_add_sources', { collectionId: c.id, paths: Array.isArray(addToKb) ? addToKb : [addToKb] })); } catch { /* silently degrade */ } setAddToKb(null); setSub('kb'); }}
                       className={`text-left px-4 py-2.5 rounded-xl text-[14px] ${card} ${iconHover} ${ink}`}>{c.name}</button>
                   ))}
                 </div>
               )}
-      {/* eslint-disable-next-line sonarjs/no-unenclosed-multiline-block -- single-line blocks are this file's existing style; bulk re-wrapping would flood the diff */}
-              <button type="button" onClick={() => { setAddToKb(null); if (!outputsOnly) setSub('kb'); setNewColl({ name: '', category: '' }); }} className={`w-full px-4 py-2.5 rounded-xl text-[13px] font-medium ${soft}`}>+ {t.kbNewColl}</button>
+              <button type="button" onClick={() => { setAddToKb(null); setSub('kb'); setNewColl({ name: '', category: '' }); }} className={`w-full px-4 py-2.5 rounded-xl text-[13px] font-medium ${soft}`}>+ {t.kbNewColl}</button>
             </KbDialog>
           )}
 

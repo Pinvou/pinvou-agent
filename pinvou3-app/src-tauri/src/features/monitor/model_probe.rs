@@ -53,6 +53,14 @@ pub enum VllmStatus {
 }
 
 impl VllmSnapshot {
+    /// 后端在线判定(live dot / CLI `monitor status` 的 `vllm_online` 共用):
+    /// 健康态 `verified` 且进程 Ready/Busy。原先该谓词在 GUI command 与
+    /// CLI status_payload 各自手写一遍字面量匹配,单点收口避免字符串漂移。
+    pub fn is_online(&self) -> bool {
+        self.health_status == "verified"
+            && matches!(self.status, VllmStatus::Ready | VllmStatus::Busy)
+    }
+
     /// 构造一份带核心标识字段的快照,所有 vLLM `/metrics` 派生字段(`prefix_cache_*` /
     /// `ttft_*` / `max_model_len`)缺省 None。调用方(健康探测的各早退分支 +
     /// happy-path 起点)共享同一组「指标缺失」默认值,happy-path 再逐项覆盖真实解析值。

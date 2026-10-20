@@ -36,7 +36,7 @@ use deepseek_tui::tools::spec::{
 use super::audit::{AuditLog, AuditRecord};
 use super::backend::BackendHandle;
 use super::guard::{
-    ComputerUseShared, GuardRejection, binding_key, is_secure_role, matches_t3_denylist,
+    ComputerUseShared, GuardRejection, is_secure_role, keyed_binding_u64, matches_t3_denylist,
     raw_element_binding,
 };
 use super::platform;
@@ -847,7 +847,7 @@ struct T3Hit {
     element_label: String,
     /// Keyed hash of the **raw** screening identity behind `element_label`.
     /// The label is display-sanitized and truncated to
-    /// [`MAX_LABEL_CHARS`], so two different elements can render the same
+    /// [`platform::MAX_NAME_CHARS`], so two different elements can render the same
     /// line — a label differing only past the truncation tail, or only in
     /// characters sanitization rewrites. The replay comparison therefore
     /// checks this binding too: the token must name the same *element*, not
@@ -855,11 +855,6 @@ struct T3Hit {
     element_binding: u64,
     reason: &'static str,
 }
-
-/// Display bound for each half of a consent target line. Applied where the
-/// label is built rather than on [`ElementInfo`] itself, so screening keeps
-/// seeing the raw strings.
-const MAX_LABEL_CHARS: usize = 80;
 
 /// How a screened coordinate is named when no element could be read there.
 /// A target still occupies a slot in the label so the approval binding
@@ -876,8 +871,8 @@ const UNREADABLE_TARGET_LABEL: &str = "(no readable target)";
 fn element_label(element: &ElementInfo) -> String {
     format!(
         "{} ({})",
-        platform::sanitize_name(&element.name, MAX_LABEL_CHARS),
-        platform::sanitize_name(&element.role, MAX_LABEL_CHARS)
+        platform::sanitize_name(&element.name, platform::MAX_NAME_CHARS),
+        platform::sanitize_name(&element.role, platform::MAX_NAME_CHARS)
     )
 }
 
@@ -1249,14 +1244,7 @@ fn full_type_preview(action: &ComputerUseAction, secure_type_target: bool) -> Op
 /// same process-memory access the approval tokens themselves already rely
 /// on staying private.
 fn action_binding(action: &ComputerUseAction) -> u64 {
-    use sha2::Digest;
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(binding_key());
-    hasher.update(format!("{action:?}").as_bytes());
-    let digest = hasher.finalize();
-    let mut prefix = [0u8; 8];
-    prefix.copy_from_slice(&digest[..8]);
-    u64::from_be_bytes(prefix)
+    keyed_binding_u64(&[format!("{action:?}").as_bytes()])
 }
 
 /// Combines the per-element raw bindings ([`ElementInfo::raw_binding`],
@@ -1266,16 +1254,9 @@ fn action_binding(action: &ComputerUseAction) -> u64 {
 /// hash distinct byte streams). Same key as [`action_binding`]; in-process
 /// only, never shown to the model — the same no-oracle argument.
 fn element_binding(bindings: &[u64]) -> u64 {
-    use sha2::Digest;
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(binding_key());
-    for binding in bindings {
-        hasher.update(binding.to_be_bytes());
-    }
-    let digest = hasher.finalize();
-    let mut prefix = [0u8; 8];
-    prefix.copy_from_slice(&digest[..8]);
-    u64::from_be_bytes(prefix)
+    let byte_streams: Vec<[u8; 8]> = bindings.iter().map(|b| b.to_be_bytes()).collect();
+    let parts: Vec<&[u8]> = byte_streams.iter().map(|bytes| bytes.as_slice()).collect();
+    keyed_binding_u64(&parts)
 }
 
 /// Structured i18n source for the consent dialog, serialized into the
@@ -2123,8 +2104,8 @@ fn execute_action(
                     Ok(format!(
                         "element at ({x}, {y}): role=\"{}\" name=\"{}\" bounds=({rx}, {ry}, \
                          {rw}x{rh}) in screenshot space secure={}",
-                        platform::sanitize_name(&element.role, MAX_LABEL_CHARS),
-                        platform::sanitize_name(&element.name, MAX_LABEL_CHARS),
+                        platform::sanitize_name(&element.role, platform::MAX_NAME_CHARS),
+                        platform::sanitize_name(&element.name, platform::MAX_NAME_CHARS),
                         element.secure
                     ))
                 }

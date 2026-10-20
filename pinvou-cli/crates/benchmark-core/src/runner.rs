@@ -444,7 +444,6 @@ where
         let status = match outcome.status() {
             SafeRunStatus::Completed => TaskStatus::Completed,
             SafeRunStatus::Failed => TaskStatus::Failed,
-            SafeRunStatus::Cancelled => TaskStatus::Cancelled,
         };
         let prediction = outcome
             .output_handle()

@@ -1660,16 +1660,17 @@ impl AcpConfigDefaultsStore {
     }
 
     /// Reload-backed read for the session-spawn path (round-40 review).
-    /// `get` answers from the boot-era memory map; the CLI's `code` family
-    /// rewrites `acp-agent-defaults.json` from a second process — the exact
-    /// second writer this store's section lock was built for — so a GUI
-    /// session created after that rewrite spawned with the STALE default
-    /// mode while every mutator already ran fresh. The reload reuses
-    /// [`Self::reload_into`]'s in-memory semantics WITHOUT the cross-process
-    /// section lock: a read needs no exclusion because the writers persist
-    /// by atomic rename, so a concurrent reader sees the old or the new
-    /// file whole, never torn — worst case it answers the pre-write
-    /// snapshot, which is exactly the staleness it exists to remove.
+    /// `get` answers from the boot-era memory map; concurrent in-process
+    /// writers (user config changes persisted from blocking workers, the
+    /// boot migration's `set_all_if_absent`) rewrite
+    /// `acp-agent-defaults.json` while this process is live, so a session
+    /// spawned after such a write must not start from the STALE boot-era
+    /// default. The reload reuses [`Self::reload_into`]'s in-memory
+    /// semantics WITHOUT the section lock: a read needs no exclusion
+    /// because the writers persist by atomic rename, so a concurrent
+    /// reader sees the old or the new file whole, never torn — worst case
+    /// it answers the pre-write snapshot, which is exactly the staleness
+    /// it exists to remove.
     pub fn get_after_reload(&self, backend: AgentBackend) -> HashMap<String, String> {
         {
             let mut records = self.records.write();
@@ -1686,12 +1687,11 @@ impl AcpConfigDefaultsStore {
         if !backend.is_acp() {
             anyhow::bail!("不能为非 ACP Agent 保存配置默认值");
         }
-        // Round-37 review MAJOR: the CLI's `code` family mutates this store
-        // from a second process (and the GUI holds it for its whole
-        // lifetime), so the in-memory write must not persist the boot-era
-        // snapshot over the peer's committed writes. Same discipline as the
-        // providers store: cross-process section lock → reload → mutate →
-        // persist.
+        // Round-37 review MAJOR: concurrent mutators of this store (user
+        // config changes on blocking workers, the boot migration) must not
+        // persist the boot-era snapshot over already-committed writes. Same
+        // discipline as the providers store: section lock → reload →
+        // mutate → persist.
         let _section = self.section_lock();
         {
             let mut records = self.records.write();
@@ -1724,8 +1724,8 @@ impl AcpConfigDefaultsStore {
         if !backend.is_acp() || values.is_empty() {
             return Ok(false);
         }
-        // Round-37 review MAJOR: same cross-process discipline as `set` —
-        // the boot migration can run while the other surface mutates, and a
+        // Round-37 review MAJOR: same discipline as `set` — the boot
+        // migration can run while a user config change mutates, and a
         // persist of the boot-era snapshot would revert it.
         let _section = self.section_lock();
         {
@@ -1742,11 +1742,10 @@ impl AcpConfigDefaultsStore {
         Ok(true)
     }
 
-    /// Cross-process section lock over the reload→mutate→persist window,
-    /// same shape as the providers store's (round-37 review MAJOR): the
-    /// CLI's `code` family mutates this store from a second process, and a
-    /// whole-table persist of a boot-era snapshot would silently revert the
-    /// peer's writes.
+    /// Section lock (OS flock) over the reload→mutate→persist window, same
+    /// shape as the providers store's (round-37 review MAJOR): every
+    /// mutator takes it, so a whole-table persist of a boot-era snapshot
+    /// cannot silently revert a concurrent writer's committed rows.
     fn section_lock(&self) -> Option<std::fs::File> {
         let lock_path = self.path.with_extension("json.lock");
         super::cross_process_section_lock(&lock_path, "acp-agent-defaults")
@@ -1801,11 +1800,10 @@ impl AcpConfigDefaultsStore {
         // no fsync, so power loss could land a truncated/empty
         // `acp-agent-defaults.json`. `atomic_write` provides the unique
         // per-writer staging name this comment already demanded (pid +
-        // timestamp — the same cross-process rule: the CLI's `code` family
-        // mutates this store from a second process, and a fixed `.tmp` name
-        // would let two surfaces rename each other's half-written file into
-        // place), the fsync-before-rename the sibling stores migrated for,
-        // and the same two-arm tmp cleanup.
+        // timestamp — the shared rule that keeps concurrent writers, here
+        // the store's own in-process mutators, from renaming each other's
+        // half-written file into place), the fsync-before-rename the
+        // sibling stores migrated for, and the same two-arm tmp cleanup.
         crate::platform::filesystem::atomic_write(path, &serde_json::to_vec_pretty(&value)?)?;
         Ok(())
     }

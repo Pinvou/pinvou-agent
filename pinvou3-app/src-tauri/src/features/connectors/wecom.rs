@@ -249,10 +249,10 @@ fn phase_scan(app: &AppHandle, generation: u64) -> Result<(), String> {
     // 卡片只显示本地化类目文案,捕获的原因行走 log 诊断轨迹。
     let (tx, rx) = mpsc::channel::<(Option<String>, Option<String>)>();
     if let Some(o) = child.stdout.take() {
-        cc::drain_for_url(WECOM_CTX, o, tx.clone());
+        cc::drain_for_url(WECOM_CTX, false, o, tx.clone());
     }
     if let Some(e) = child.stderr.take() {
-        cc::drain_for_url(WECOM_CTX, e, tx.clone());
+        cc::drain_for_url(WECOM_CTX, false, e, tx.clone());
     }
     drop(tx);
 

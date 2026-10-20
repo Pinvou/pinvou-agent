@@ -59,11 +59,6 @@ pub use self::tool::ComputerUseTool;
 // ---- for the composition root and command surface ----
 pub use self::types::{EVENT_STATE_CHANGED, TOOL_NAME};
 
-// ---- Test-only guard knobs (guard): unit tests across the feature adjust timeouts ----
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use self::guard::set_physical_input_lock_timeout_for_tests;
-
 // ---- Platform capability entry points (platform): consumed by Tauri commands ----
 pub(crate) use self::platform::{backend_supported, permission_status, request_permissions};
 

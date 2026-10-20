@@ -480,6 +480,7 @@ mod tests {
             error: None,
             install_command: None,
             install_latest_line: None,
+            install_finished: None,
             setup_hint: None,
         }
     }
