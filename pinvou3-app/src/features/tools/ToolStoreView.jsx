@@ -368,8 +368,18 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           // synchronously let a failure resolving after 1.8s land on a nulled flow (the null guard no-op'ing),
           // re-creating the silent-failure state. A slow write keeps the done card up until it resolves; a failed
           // write swaps in the error card and stays (no auto-collapse on errors, same as the awaited branch).
+          // Round-38 (review #741): the composer tools-changed broadcast must ride the write's SETTLEMENT, not
+          // the done phase — done is written synchronously above while the consent grant settles later, so the
+          // shared done-phase broadcast (useConnectorFlowSubscription) lets a mounted composer refetch the
+          // pre-grant state and render the connector OFF until the next broadcast. Notify after the write
+          // settles instead, on BOTH paths: a failed write leaves abort/revoke state a refresh should still
+          // pick up (notifying when nothing changed is harmless). The awaited branch (dingtalk/tmeet) gets
+          // this for free — its done phase is written after the apply resolves, so the shared broadcast is
+          // already post-apply there.
           invokeTauri(cfg.commands.applySkills).then(
             () => {
+              // Post-settle composer refresh (Round-38 above): the grant is now readable.
+              notifyComposerToolsChanged();
               // Auto-collapse the flow card later (the detail dialog's "Connected" state is now driven by derived
               // connection state). The collapse must only close a card that already reached 'done': a stale timer
               // from the previous round must not destroy a card the user re-opened within the window (and strand the
@@ -384,6 +394,9 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               reportConnectorFailure(cfg.key, failure, 'cli');
               // Same null guard as the awaited branch: a failure landing after the card was closed must not fabricate one.
               conn.setFlow(f => (f ? applyConnectorFailure(f, failure, 'cli') : f));
+              // Round-38: notify on failure too — the write's abort/revoke paths still leave backend
+              // state a composer refresh should pick up (harmless when nothing changed).
+              notifyComposerToolsChanged();
             },
           );
         } : async () => {
@@ -568,6 +581,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
               setBusyId((current) => releaseBusy(current, toolId));
               loadBackendState();
               setAlert({ visible: true, loading: false, title: toastCopyRef.current && toastCopyRef.current.doneTitle, subtitle: toastCopyRef.current && toastCopyRef.current.enabledSubtitle, isInstall: true, isError: false, toolId });
+              // For the fire-and-forget ('apply') connectors done is written synchronously, so this
+              // broadcast can land BEFORE their consent grant settles — their authoritative composer
+              // refresh is the post-settle notify in the apply-mode listener (Round-38). The awaited
+              // branches reach done only after their apply resolved, so here it is already post-apply.
               notifyComposerToolsChanged();
             } else if (ph === 'error') {
               setBusyId((current) => releaseBusy(current, toolId));
