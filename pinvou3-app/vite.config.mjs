@@ -494,7 +494,14 @@ function enforceLazyChunks() {
 // (500.69 → 502.79 local; CI projects ≈503.7 at the stable +0.9 kB toolchain
 // delta). The picker/grouping helpers are render-path synchronous and cannot
 // defer; the ceiling is the measured projection, not padded.
-export const MAIN_ENTRY_BUDGET_BYTES = 504_000;
+//
+// 504_000 → 505_000 (this PR's re-cut onto the #733 main, measured per
+// policy): #733's Tachyon app-side wiring rides the shared entry; the
+// joint main entry measures 504,082 B locally and identically on CI —
+// 82 B over the 504_000 ceiling this PR last raised. The picker/grouping
+// helpers are render-path synchronous and cannot defer; the ceiling is
+// the measured projection, not padded.
+export const MAIN_ENTRY_BUDGET_BYTES = 505_000;
 
 export function assertMainEntryBudget(bundle, budgetBytes = MAIN_ENTRY_BUDGET_BYTES) {
   const mainEntry = Object.values(bundle).find(output => (

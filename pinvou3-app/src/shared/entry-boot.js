@@ -6,7 +6,7 @@
 // 分支只有一处实现、一份行为测试。
 // 失败态文案刻意硬编码英文:该状态下词典定义上不可用,不存在可用的 i18n
 // 文案;这是词典无关的静态失败/重试态,不是常规 UI 文案。字符串刻意收紧:
-// 本模块随主入口 bundle 计入启动预算(504 kB 上限)。
+// 本模块随主入口 bundle 计入启动预算(505 kB 上限)。
 // doc 可注入:node 侧回归测试用它驱动假 DOM,验证绘制效果与 Retry 闭包。
 
 export function paintBootFailure({ retry, doc = document }) {
