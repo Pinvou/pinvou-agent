@@ -8,7 +8,9 @@
 //! `pinvou3_lib` building blocks the feature itself uses:
 //! - the connector switch → the plain-scope `load_disabled_bundles_for` /
 //!   `save_disabled_bundles_for` pair the GUI toggle uses, and
-//!   `sync_deny_all_scopes_after_install` after a connect's skill apply. The unified scope state
+//!   `grant_connect_enable` after a connect (feat/connector-connect-grants-enable:
+//!   the connect gesture is itself the consent, so the connector lands
+//!   ENABLED in every DenyAll scope — CLI and GUI agree). The unified scope state
 //!   (`disabled_bundles.json`) is the switch on BOTH surfaces: the GUI's
 //!   toggle is `set_disabled_connectors` → `apply_disabled_connectors_for`,
 //!   and `features/connectors/skill_gate.rs` records that the marker's
@@ -1093,10 +1095,12 @@ fn legacy_disabled_marker(kind: ConnectorKind) -> bool {
 /// Read through the app's own `load_disabled_bundles` (plain scope) rather
 /// than off the raw file: it applies the same read-time package-id
 /// normalization the GUI sees, and it is deliberately the PLAIN scope only —
-/// `sync_deny_all_scopes_after_install` adds a freshly connected connector to
-/// the *code* scope by design ("code sessions default external capabilities
-/// off"), so an any-scope read would report a perfectly enabled connector as
-/// switched off right after `apply-skills`.
+/// the plain scope is what the connector switch reads and writes on BOTH
+/// surfaces (`set_disabled_connectors`), while per-scope code rows belong to
+/// the composer's per-scope verdicts: the connect flow records an ENABLE
+/// grant (`grant_connect_enable`) rather than any scope row, so an any-scope
+/// read would report a perfectly enabled, just-connected connector as
+/// switched off whenever a stale code-scope verdict row exists.
 fn scope_state_disabled(kind: ConnectorKind) -> bool {
     let package_id =
         pinvou3_lib::features::marketplace::scope::resolve_pack_owner_id(kind.as_str());
@@ -1730,23 +1734,44 @@ fn set_enabled(
     Ok(success(render(output, human, &value)))
 }
 
-/// The consent-failure wrapping shared by the three vendor consent syncs
-/// (`apply_skills`' show branch, `finish_connect_side_effects`, and
-/// `ima_connect`'s rollback closure): the GUI fails the command with the
-/// shared consent-failure marker instead of letting the connector go live
-/// with zero consent; the CLI mirrors that contract. The scope layer logs
-/// nothing on write failure, so the error carries the reason. `subject` is
-/// the outcome already reported, up to the ", but" ("feishu connected" /
-/// "ima skills installed"); `pronoun` agrees with it ("it" for one
-/// connector, "them" for ima's skills). `id` stays the scope-layer argument
-/// (the skill id, normalized to its package id there), not necessarily the
-/// subject's first word.
+/// The consent-failure wrapping for the ima connect's INSTALL-channel consent
+/// sync: the ima flow installs a skill PACK, and pack installs keep the
+/// default-off registration (`sync_deny_all_scopes_after_install`) on BOTH
+/// surfaces — the app's `ima_connect` (features/connectors/ima.rs) runs the
+/// exact same entry point, unlike the vendor connect flow whose consent is
+/// the ENABLE grant below. The install failure leaves the pack live but
+/// unregistered (fail-open residue), so the copy tells the user to turn it
+/// off manually — the mirror image of the connect channel's fail-closed
+/// "reconnect" copy. `subject` is the outcome already reported, up to the
+/// ", but" ("ima skills installed"); `pronoun` agrees with it ("them"). `id`
+/// stays the scope-layer argument (the skill id, normalized to its package
+/// id there), not necessarily the subject's first word.
 fn sync_consent_after_install(id: &str, subject: &str, pronoun: &str) -> Result<(), CliError> {
     pinvou3_lib::features::marketplace::sync_deny_all_scopes_after_install(id).map_err(|error| {
         CliError::failed(format!(
             "{subject}, but {}: new sessions will enable {pronoun} by default — \
 turn {pronoun} off in the tools list: {error}",
             pinvou3_lib::features::marketplace::scope::CONSENT_SYNC_FAILURE_MARKER
+        ))
+    })
+}
+
+/// The consent-failure wrapping for the CONNECT-channel consent write shared
+/// by `apply_skills`' show branch and `finish_connect_side_effects`: the
+/// connect gesture is itself the consent (feat/connector-connect-grants-enable),
+/// so the write records an ENABLE grant (`grant_connect_enable`) — the same
+/// gesture surface the GUI's connect / apply-skills flow drives
+/// (`deny_first_register_connector`). A failed write FAILS the command
+/// (fail-closed, the app's deny-first contract): the connector never goes
+/// live unconsented, and with grant and rows alike absent the DenyAll
+/// expansion keeps it off in new sessions until a reconnect retries.
+/// `subject` / `pronoun` / `id` follow the same convention as the install
+/// wrapper above.
+fn sync_consent_after_connect(id: &str, subject: &str, pronoun: &str) -> Result<(), CliError> {
+    pinvou3_lib::features::marketplace::grant_connect_enable(id).map_err(|error| {
+        CliError::failed(format!(
+            "{subject}, but persisting the connect-enabled consent failed: \
+new sessions will keep {pronoun} disabled — reconnect to retry: {error}"
         ))
     })
 }
@@ -1783,7 +1808,7 @@ fn apply_skills(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, C
     let connected = probe.unwrap_or(false);
     let visible = gui_skill_gate_shows_with(kind, connected);
     if visible {
-        sync_consent_after_install(spec.id, &format!("{} applied", spec.id), "it")?;
+        sync_consent_after_connect(spec.id, &format!("{} applied", spec.id), "it")?;
     } else {
         hide_connector_skills(kind)?;
     }
@@ -3176,32 +3201,38 @@ fn wait_or_kill(child: &mut std::process::Child, phase: &str) -> Result<(), CliE
 /// must not stop at the first:
 /// - the bundle-store mirror write (`bundle_store_on_connected`) — both
 ///   surfaces' connect flows call it inline;
-/// - the DenyAll code-scope sync (`sync_deny_all_scopes_after_install`).
-///   The GUI runs it through the `*_apply_skills` command the frontend
-///   invokes right after `connected` fires (`ToolStoreView.jsx` calls
-///   `cfg.commands.applySkills` on the connect-completion handler), whose
-///   `show` branch performs exactly this sync (`skill_gate.rs::
-///   apply_skills_command`, fail-closed). Skipping it here meant a fresh
-///   connect never re-applied the "code sessions default external
-///   capabilities off" policy, so a newly connected connector stayed usable
-///   from code sessions until the next GUI-side apply-skills happened to
-///   run.
+/// - the connect consent write (`grant_connect_enable`,
+///   feat/connector-connect-grants-enable). The GUI runs it through the
+///   `*_apply_skills` command the frontend invokes right after `connected`
+///   fires (`ToolStoreView.jsx` calls `cfg.commands.applySkills` on the
+///   connect-completion handler), whose `show` branch records the connect
+///   ENABLE grant (`skill_gate.rs::apply_skills_command` →
+///   `deny_first_register_connector`, fail-closed). The connect gesture is
+///   itself the consent, so a freshly connected connector lands ENABLED in
+///   every DenyAll scope on BOTH surfaces (a stale default-off row is a
+///   previous verdict the fresh gesture overrides). The CLI's former
+///   install-semantics write here (`sync_deny_all_scopes_after_install`)
+///   diverged from that twice over: a fresh CLI connection stayed OFF in
+///   code sessions where a GUI connect had it ON, and the CLI-written
+///   sync-ledger entry permanently suppressed the GUI's own connect grant
+///   (`deny_first_register_connector`'s ledger gate short-circuits on it).
 fn finish_connect_side_effects(spec: &VendorSpec) -> Result<(), CliError> {
     bundle_store_on_connected(spec.id);
-    // GUI parity (round-18 finding 2): the desktop connect flow ends in the
-    // `<id>_apply_skills` follow-up, whose `apply_skills_command`
-    // (features/connectors/skill_gate.rs) runs
-    // `sync_deny_all_scopes_after_install` — 「连接器转为可用等同『新装』：
-    // 已初始化 code 开关时加入 code 禁用集」— so a freshly connected
-    // connector lands in the initialized DenyAll scopes' disabled sets
-    // (code sessions default external capabilities off). Without this, a
-    // fresh CLI connection would run code sessions with the connector ON
-    // where the GUI (which also runs the follow-up after its connect) would
-    // have it OFF. The GUI fails visibly on a failed consent write
-    // (skill_gate's marker contract); the CLI mirrors that instead of
-    // reporting a connection whose consent never landed — the scope layer
-    // logs nothing on write failure, so the error carries the reason.
-    sync_consent_after_install(spec.id, &format!("{} connected", spec.id), "it")?;
+    // GUI parity (round-18 finding 2; grant semantics since
+    // feat/connector-connect-grants-enable): the desktop connect flow ends
+    // in the `<id>_apply_skills` follow-up, whose `apply_skills_command`
+    // (features/connectors/skill_gate.rs) records the connect ENABLE grant
+    // (`deny_first_register_connector` → `grant_connect_enable`) —
+    // 「连接动作本身就是同意：连接成功即授予启用」— so a freshly connected
+    // connector lands ENABLED in every DenyAll scope (stale default-off
+    // rows lifted, `connect_granted` + the sync-ledger pairs written so the
+    // startup refresh never re-denies). CLI and GUI agree: connect =
+    // consent = enabled. The GUI fails visibly on a failed consent write
+    // (the deny-first contract: nothing materializes); the CLI mirrors that
+    // instead of reporting a connection whose consent never landed — the
+    // scope layer logs nothing on write failure, so the error carries the
+    // reason.
+    sync_consent_after_connect(spec.id, &format!("{} connected", spec.id), "it")?;
     Ok(())
 }
 
@@ -3457,10 +3488,10 @@ fn connect(kind: ConnectorKind, timeout: u64, output: OutputMode) -> Result<CliO
         }
     }
     notes.push(format!("{} connected", spec.id));
-    // The DenyAll scope sync ran inside `finish_connect_side_effects` on
-    // each vendor arm — running it twice per connect only doubled the
-    // last-writer-wins window against a concurrently persisting desktop
-    // app, so it lives in exactly one place.
+    // The connect consent write (the ENABLE grant) ran inside
+    // `finish_connect_side_effects` on each vendor arm — running it twice
+    // per connect only doubled the last-writer-wins window against a
+    // concurrently persisting desktop app, so it lives in exactly one place.
     let value = json!({
         "ok": true,
         "id": spec.id,
