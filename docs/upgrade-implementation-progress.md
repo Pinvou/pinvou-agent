@@ -28,7 +28,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T15 | Not completed | Approved automatic rollout scheduling, quality guards and controlled completion. |
 | T16 | Not completed | Explicit Stable-to-Beta/Internal atomic draft synchronization. |
 | T17 | In progress | Bounded original initial selection, protected logical workflow/initial installation, atomic handoff/live resume and private activation Session; qualified protected check/refresh composition remains pending |
-| T18 | In progress | Approved HTTPS file-source and destination-policy management is being developed in a separate worker; the production policy owner/admin and download-info issuance are not yet delivered. |
+| T18 | In progress | Reviewed production HTTPS primary/backup/redirect policy administration, independent approval, replacement/disable, original-key recovery and transient current-policy DNS diagnostics are delivered with three-language admin; qualified download-info issuance and client distribution remain pending. |
 | T19 | Not completed | Current qualification and three-purpose authorize/consume/cancel/status API composition over T44. |
 | T20 | In progress | Actual no-update/transaction and bounded Session/download/resume/activation acceptance, four HTTP batch routes, client request/ACK correlation and restricted task observation calculation; actual task acceptance, durable client queue and quality contribution remain pending |
 | T21 | In progress | Private sample/receipt persistence authenticates actual frozen SN sources and preserves original-stage history; contribution, aggregate evaluation and business composition remain pending |
@@ -13572,3 +13572,89 @@ independent reviews, actual acceptance and commit/push. Downloads still have no
 hard cumulative elapsed-time or retry-count deadline; the 32 MiB business metadata
 limit does not cap blobs. Normative documents remain version 1.0, the product is
 0.10.13, CodeWhale remains unchanged, and T42 deployment remains deferred.
+
+## T18 reviewed file-source policy administration (2026-10-20)
+
+The separate service commit `898a4936198df48d706daac905f194ee8410ec04`
+is committed with DCO and ordinarily pushed on `codex/t11-release-drafts`.
+Its exact reviewed tree is `2a883c156cfd510eb3ec024c8b9c1349a22759c6`.
+This complete bounded administration workflow does not complete all of T18:
+current-qualified download-info issuance and client distribution remain pending.
+Task totals remain five implemented, eighteen in progress and twenty-four not
+completed or deferred. T42 deployment remains deferred.
+
+The production owner supports explicit primary/backup/directed-redirect source
+configuration, keyless native preflight, protected draft preparation, actual T05
+approval, T06 apply/replacement/disable, separate applied current policy,
+authenticated history and original-key locate/resolve. Every channel requires
+the exact scoped policy permission and dedicated fresh five-minute MFA, with two
+independent reviewers. A separately authorized nonreviewer may execute; authors
+cannot review and reviewers cannot execute. The three-language admin preserves
+complete original safe requests and guards every asynchronous identity/scope/
+selection change, including A-B-A. No provider or destination is enrolled by
+default. Explicit owner initialization and independent default-off admission
+preserve recovery when new mutations are disabled.
+
+The diagnostic authenticates the current applied source, releases all database
+locks for DNS/local-interface observation, then rechecks current policy,
+permissions, session and MFA. Every answer, mapped address and real local
+interface is checked against explicit approved networks and redirect edges.
+Raw URL/path/query input remains transient and never enters DNS beyond the exact
+host, storage, events, approval, logs or browser pending. No file connection,
+proxy, signed URL, credential, installation or release qualification is created.
+
+Two independent nonauthor reviews covered all 47 changed paths line by line and
+separately accepted the exact final runtime proof. Real red controls exposed
+missing-operation-row recovery and older genuine authentication-proof rollback;
+independent lookup-domain witnesses and highest authentication revisions close
+both. Approval reads now accept only the exact current draft. Near-limit input
+also exposed native PostgreSQL JSONB spacing plus the unchanged T05 stored-change
+wrapper exceeding the read bound. Both preflight and preparation now measure
+the actual worst legal persisted representation through a narrow read-only T05
+adapter. Its reader, representation, JSON limit and old SQL were not relaxed.
+Other repaired implementation/test issues and their original failures remain
+recorded privately, including nullable/scalar canonical comparison, native SQL
+binding/precedence and the cross-executor key-conflict expectation.
+
+The final exact-source filesources run passed 19 top-level and 25 child tests:
+five top-level domain tests and fourteen actual PostgreSQL tests.
+Production workflow and guard probes use the restricted runtime.
+No test was skipped or failed; the network adapter's no-test-files package is
+reported separately. The actual HTTPS/browser Go run passed two top-level tests,
+and Chrome passed all three end-to-end cases against real TLS, signed OIDC and
+restricted PostgreSQL. Native controls prove committed coherent source/head/
+index mutations reach their intended independent guard, then restore exact rows
+and repeat the positive. Five tables reject twenty direct DML attempts and all
+four fixed publishers reject genuine committed-input replays. Tests also cover
+natural SQL lease expiry with exact Fenced refusal, admission-off worker takeover,
+actual PostgreSQL COMMIT acknowledgement loss at preparation and final apply,
+original-result recovery, precise DNS-window policy/authority changes, actual
+local/mapped addresses and a complete near-capacity two-review/apply/history path.
+HTTP response suppression after a received 200 is separately identified and is
+not the evidence for unknown database COMMIT. All owned test children and runtime
+resources were closed and joined.
+
+Root integration first passed the complete default service suite: 883 top-level
+and 1912 child tests, with 753 top-level and 683 child external opt-in skips and
+zero failures. The intermediate repair delta passed 90/97 tests with 56/17
+explicit skips; the final production/capacity delta passed 91/97 with 62/19 skips.
+These are separate runs, not additive unique test totals. Full module verification,
+pinned-contract checks, full vet, service/admin builds and final affected vet,
+service build, formatting and whitespace checks passed. Unchanged module,
+contract and UI inputs retain their first exact-input evidence. A v3 copy attempt
+was safely refused before any root mutation when three authorized test-only
+strengthenings changed the author tree; the final v4 was frozen and integrated
+exactly. Historical failures are preserved and all-attempted-pass is false;
+all required final checks passed.
+
+The final 47 owned files and 115 protected inputs were checked by raw SHA and
+clean Git blob. All 105 pre-existing SQL files, six frozen contract bundles and
+four dependency inputs remain unchanged against each checkout's own baseline;
+two pre-existing cross-checkout SQL differences are only line endings with equal
+clean blobs. The one new owner SQL file uses LF and exact embedded fingerprints.
+No product/normative version, CodeWhale state, production deployment or external
+qualification was changed. Downloads retain no hard total/cumulative deadline or
+retry-count cap; 32 MiB remains a logical business metadata batch bound, not a
+file-size limit. The next bounded work is the protected SN include/exclude plan
+administration workflow; its private technical contract is under independent
+design review and is not yet an implemented feature.
