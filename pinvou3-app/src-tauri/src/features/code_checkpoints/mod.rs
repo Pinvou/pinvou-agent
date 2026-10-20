@@ -748,7 +748,13 @@ fn ledger_guard_paths(ledger_root: &Path, execution_root: &Path) -> LedgerGuardP
         .strip_prefix(&canonical_exec)
         .ok()
         .map(|rel| rel.to_string_lossy().replace('\\', "/"))
-        .map(|rel| if rel.is_empty() { rel } else { format!("{rel}/") });
+        .map(|rel| {
+            if rel.is_empty() {
+                rel
+            } else {
+                format!("{rel}/")
+            }
+        });
     let checkpoint_dir = checkpoints_dir(ledger_root);
     let canonical_checkpoint_dir = fs::canonicalize(&checkpoint_dir).unwrap_or(checkpoint_dir);
     let checkpoint_rel = canonical_checkpoint_dir
@@ -767,7 +773,12 @@ fn ledger_guard_paths(ledger_root: &Path, execution_root: &Path) -> LedgerGuardP
 fn ledger_guard_pathspecs(guard: &LedgerGuardPaths) -> Vec<String> {
     let mut specs: Vec<String> = Vec::new();
     if let Some(prefix) = &guard.ledger_prefix {
-        for name in ["pending_rewind.json", "budget-disabled", "budget-ok", ".pinvou3"] {
+        for name in [
+            "pending_rewind.json",
+            "budget-disabled",
+            "budget-ok",
+            ".pinvou3",
+        ] {
             specs.push(format!(":(icase){prefix}{name}"));
         }
         specs.push(format!(":(icase){prefix}.pinvou3/**"));
@@ -786,7 +797,12 @@ fn ledger_guard_pathspecs(guard: &LedgerGuardPaths) -> Vec<String> {
 fn ledger_guard_ignore_patterns(guard: &LedgerGuardPaths) -> Vec<String> {
     let mut patterns: Vec<String> = Vec::new();
     if let Some(prefix) = &guard.ledger_prefix {
-        for name in ["pending_rewind.json", "budget-disabled", "budget-ok", ".pinvou3"] {
+        for name in [
+            "pending_rewind.json",
+            "budget-disabled",
+            "budget-ok",
+            ".pinvou3",
+        ] {
             patterns.push(icase_gitignore_pattern(&format!("{prefix}{name}")));
         }
         patterns.push(icase_gitignore_pattern(&format!("{prefix}.pinvou3/**")));
@@ -1235,7 +1251,10 @@ fn validate_no_sensitive_paths_staged(
         pathspecs.push(format!(":(icase){pattern}"));
         pathspecs.push(format!(":(icase)**/{pattern}"));
     }
-    pathspecs.extend(ledger_guard_pathspecs(&ledger_guard_paths(ledger_root, work_tree)));
+    pathspecs.extend(ledger_guard_pathspecs(&ledger_guard_paths(
+        ledger_root,
+        work_tree,
+    )));
     let refs: Vec<&str> = pathspecs.iter().map(|s| s.as_str()).collect();
     let mut args: Vec<&str> = vec!["diff", "--cached", "--name-only", "--"];
     args.extend(refs);
@@ -1656,10 +1675,7 @@ pub fn apply_restore(
         clean_args.push("-e".into());
         clean_args.push(icase_gitignore_pattern(pattern));
     }
-    for pattern in ledger_guard_ignore_patterns(&ledger_guard_paths(
-        ledger_root,
-        &execution_root,
-    )) {
+    for pattern in ledger_guard_ignore_patterns(&ledger_guard_paths(ledger_root, &execution_root)) {
         clean_args.push("-e".into());
         clean_args.push(pattern);
     }
@@ -2485,7 +2501,10 @@ mod tests {
         dir.write("a.txt", "v1\n");
         dir.write(".gitignore", "!checkpoints/\n");
         let pierced = create_checkpoint(&ledger, &exec, Some(1), CheckpointKind::Turn, "t1");
-        assert!(pierced.is_err(), "根级 checkpoints 击穿必须 bail: {pierced:?}");
+        assert!(
+            pierced.is_err(),
+            "根级 checkpoints 击穿必须 bail: {pierced:?}"
+        );
 
         // 自愈：撤掉否定行后同一会话的下一轮快照必须成功。
         dir.write(".gitignore", "a.txt\n");
@@ -2525,7 +2544,9 @@ mod tests {
         let repo = repo_dir(ledger.path());
         let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
         assert!(
-            tracked.lines().any(|l| l == "training/checkpoints/model.bin"),
+            tracked
+                .lines()
+                .any(|l| l == "training/checkpoints/model.bin"),
             "项目同名目录内容应照常跟踪: {tracked}"
         );
         assert!(
