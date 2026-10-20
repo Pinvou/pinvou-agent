@@ -1698,6 +1698,17 @@ pub(crate) fn unattended_disallowed_tools(disallowed: &[String]) -> Vec<String> 
         // the target-side layers never see an unattended sender. An
         // unattended run has no business starting turns elsewhere.
         crate::features::assistant::platform::bridge::MESSAGING_SEND_TOOL,
+        // Round-30 REQUIRED-2 (#628): the registry launchers are a THIRD
+        // unattended channel — both ride the app allowlist (sched- engines
+        // keep it), auto-approval Allows them, and the foundation's
+        // full-access hold list names only start_mcp_server, so
+        // start_registry_mcp_server launched a user-cached registry
+        // candidate whose mcp_<name>_* tools joined the SAME turn under
+        // identities this name-keyed shield cannot see. The deny list is
+        // the PR's own mechanism; the hold-list addition is tracked
+        // upstream per the fork boundary.
+        "registry_sync",
+        "start_registry_mcp_server",
     ] {
         if !list.iter().any(|blocked| blocked == tool) {
             list.push(tool.to_string());
@@ -4502,6 +4513,14 @@ mod unattended_shield_tests {
             "mcp_app-automations_create_scheduled_task",
             "mcp_app-automations_update_scheduled_task",
             "mcp_app-automations_delete_scheduled_task",
+            // Round-30 REQUIRED-2: the registry launchers — a third
+            // unattended channel (the foundation hold list names only
+            // start_mcp_server, and the launched server's mcp_<name>_*
+            // tools ride the same turn under identities the name-keyed
+            // deny list cannot see). Removing either entry turns this
+            // red.
+            "registry_sync",
+            "start_registry_mcp_server",
         ] {
             assert!(
                 list.iter().any(|blocked| blocked == tool),
