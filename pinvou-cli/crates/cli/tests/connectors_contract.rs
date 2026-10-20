@@ -1675,9 +1675,11 @@ fn status_finds_a_gui_installed_npm_prefix_cli() {
 // ── connect post-connection side effects ────────────────────────────────────
 
 /// Seeds an initialized, empty code scope into `disabled_bundles.json` — the
-/// shape the post-connect DenyAll sync writes into (a no-op on an
-/// uninitialized scope) — and returns the file path for the post-connect
-/// reads.
+/// scope the former install-semantics sync pushed its default-off row into
+/// (on an uninitialized scope the old write was a ledger-only no-op) — and
+/// returns the file path for the post-connect reads. Under the grant
+/// semantics the connect must leave the row list empty and record the grant
+/// + sync-ledger pairs instead.
 fn seed_initialized_code_scope(home: &HomeGuard) -> PathBuf {
     let disabled = home.disabled_bundles_file();
     if let Some(parent) = disabled.parent() {
@@ -1694,16 +1696,22 @@ fn seed_initialized_code_scope(home: &HomeGuard) -> PathBuf {
 /// The GUI's connect does not stop at `bundle_store_on_connected`: its
 /// frontend invokes `*_apply_skills` the moment the login lands
 /// (`ToolStoreView.jsx`'s connect-completion handler), whose `show` branch
-/// runs `sync_deny_all_scopes_after_install` — the write that re-applies the
-/// "code sessions default external capabilities off" policy to a freshly
-/// connected connector. Before this contract the CLI's `connect` skipped it,
-/// so a new connection stayed usable from code sessions until some GUI-side
-/// apply-skills happened to run. The pin seeds an **initialized** code scope
-/// (the write is a no-op on an uninitialized one, by design) and asserts the
-/// connector's package id landed in the persisted code list after `connect`.
+/// records the connect ENABLE grant (`grant_connect_enable` — the connect
+/// gesture is itself the consent, feat/connector-connect-grants-enable).
+/// The CLI's former install-semantics write here
+/// (`sync_deny_all_scopes_after_install`) diverged from that twice over: it
+/// left a fresh CLI connection OFF in code sessions where a GUI connect had
+/// it ON, and its sync-ledger entry permanently suppressed the GUI's own
+/// connect grant (`deny_first_register_connector`'s ledger gate
+/// short-circuits on it). The pin seeds an **initialized** code scope — the
+/// scope where the old sync pushed its default-off row — and asserts the
+/// grant shape after `connect`: `connect_granted` contains the connector's
+/// package id, the sync-ledger pairs for plain+code are written (so the
+/// startup refresh never re-denies), and NO default-off row for the
+/// connector exists in any scope.
 #[test]
 #[cfg(unix)]
-fn connect_reapplies_the_deny_all_code_scope_after_a_fresh_connection() {
+fn connect_grants_the_code_scope_enabled_after_a_fresh_connection() {
     let _env = common::env_lock();
     let home = HomeGuard::new("connect-scope-sync");
     let bin = fake_bin_dir("connect-scope-sync");
@@ -1720,9 +1728,9 @@ fn connect_reapplies_the_deny_all_code_scope_after_a_fresh_connection() {
     );
     let _path = VendorCliGuard::new_at(bin.clone());
 
-    // Seed an initialized code scope: the sync targets every initialized
-    // DenyAll scope (`PackDefaultPolicy::DenyAll` ⇒ the code mode), and
-    // writes the connector's package id into its persisted list.
+    // Seed an initialized code scope: the scope where the old install-
+    // semantics sync pushed its default-off row, so the no-row half of the
+    // grant shape is pinned exactly where the row used to land.
     let disabled = seed_initialized_code_scope(&home);
 
     let value = run_json(&[
@@ -1738,16 +1746,57 @@ fn connect_reapplies_the_deny_all_code_scope_after_a_fresh_connection() {
     let persisted: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&disabled).unwrap())
             .expect("disabled_bundles.json stays valid JSON");
-    let dingtalk_entry = persisted["scopes"]["code"]
+    let granted = persisted["connect_granted"]
         .as_array()
-        .expect("code scope list persists")
+        .expect("connect_granted persists")
         .iter()
         .any(|id| id.as_str() == Some("dingtalk"));
     assert!(
-        dingtalk_entry,
-        "a fresh connect must re-apply the DenyAll code-scope default (the GUI's \
+        granted,
+        "a fresh connect must record the connect ENABLE grant (the GUI's \
          post-connect apply-skills write): {persisted}"
     );
+    for scope in ["plain", "code"] {
+        let pair = format!("{scope}:dingtalk");
+        let ledgered = persisted["install_default_synced"]
+            .as_array()
+            .expect("sync ledger persists")
+            .iter()
+            .any(|entry| entry.as_str() == Some(pair.as_str()));
+        assert!(
+            ledgered,
+            "the connect grant must record the {pair} sync-ledger pair so \
+             the startup refresh never re-denies: {persisted}"
+        );
+    }
+    // Connect = consent = enabled: no default-off row in ANY scope (the old
+    // sync pushed one into the initialized code scope), and no
+    // install-default marker either.
+    for (scope, ids) in persisted["scopes"]
+        .as_object()
+        .expect("scope lists persist")
+    {
+        assert!(
+            !ids.as_array()
+                .expect("scope id list persists")
+                .iter()
+                .any(|id| id.as_str() == Some("dingtalk")),
+            "a fresh connect must NOT register the connector default-off in \
+             the {scope} scope: {persisted}"
+        );
+    }
+    if let Some(defaults) = persisted["default_off_scopes"].as_object() {
+        for (scope, ids) in defaults {
+            assert!(
+                !ids.as_array()
+                    .expect("default-off marker list persists")
+                    .iter()
+                    .any(|id| id.as_str() == Some("dingtalk")),
+                "a fresh connect must NOT leave an install-default marker in \
+                 the {scope} scope: {persisted}"
+            );
+        }
+    }
 
     // And the divergent GUI-mirror write this round removes: no asset pins
     // on the connect write — the GUI's own write is a bare `installed_now`
@@ -1816,8 +1865,10 @@ fn feishu_connect_survives_a_failed_status_probe_and_still_completes() {
     );
     let _path = VendorCliGuard::new_at(bin.clone());
 
-    // Seed an initialized code scope so the post-connect DenyAll sync has
-    // something to write into (the connect must reach its side effects).
+    // Seed an initialized code scope — the scope where the old install-
+    // semantics sync pushed its default-off row — so the grant's no-row
+    // shape is pinned exactly where the row used to land (the connect must
+    // reach its side effects either way).
     let disabled = seed_initialized_code_scope(&home);
 
     let value = run_json(&[
@@ -1849,7 +1900,8 @@ fn feishu_connect_survives_a_failed_status_probe_and_still_completes() {
     );
 
     // The connect ran its side effects: the store mirror flipped to
-    // connected and the DenyAll code-scope sync landed.
+    // connected and the connect ENABLE grant landed — with no default-off
+    // row in the code scope, where the old install-semantics sync pushed one.
     let record = pinvou3_lib::features::marketplace::store::BundleStore::new()
         .get("feishu")
         .expect("store read succeeds")
@@ -1861,14 +1913,24 @@ fn feishu_connect_survives_a_failed_status_probe_and_still_completes() {
     let persisted: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&disabled).unwrap())
             .expect("disabled_bundles.json stays valid JSON");
-    let feishu_entry = persisted["scopes"]["code"]
+    let granted = persisted["connect_granted"]
+        .as_array()
+        .expect("connect_granted persists")
+        .iter()
+        .any(|id| id.as_str() == Some("feishu"));
+    assert!(
+        granted,
+        "the connect must still record the ENABLE grant after a probe error: {persisted}"
+    );
+    let code_row = persisted["scopes"]["code"]
         .as_array()
         .expect("code scope list persists")
         .iter()
         .any(|id| id.as_str() == Some("feishu"));
     assert!(
-        feishu_entry,
-        "the connect must still run the DenyAll code-scope sync after a probe error: {persisted}"
+        !code_row,
+        "a connect must not register the connector default-off (grant \
+         semantics — connect = consent = enabled): {persisted}"
     );
 }
 
