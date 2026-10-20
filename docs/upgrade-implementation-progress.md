@@ -6,7 +6,7 @@ repairs, applicable tests and commit/push. Contract completion is not production
 client, service, physical platform certification or rollout readiness.
 
 Current task totals: 47 tasks; five implemented, eighteen in progress and
-twenty-four not completed or deferred. Detailed chronological evidence follows
+twenty-three not completed and one explicitly deferred. Detailed evidence follows
 the current overview; a completed bounded batch does not complete its whole task.
 
 | Task | Status | Delivery / outstanding dependency |
@@ -37,7 +37,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T24 | Not completed | Fixed weekly release-quality snapshots and restricted export. |
 | T25 | In progress | Privacy/deduplication primitives; weekly provider configuration and complete business composition remain pending |
 | T26 | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
-| T27 | In progress | Authenticated Root/public/candidate/Package/Check/Refresh/DownloadInfo/Release-renewal verification and fixed control POST; protected workflow and high-water/cache integration remain pending |
+| T27 | In progress | Authenticated public/control verification and fixed POST; reviewed ordinary SQLite acceptance, complete original history and high-water recovery; protected host/time, workflow and current qualification integration remain pending |
 | T28 | Not completed | Machine-wide preparation ownership and multi-user writer freezing. |
 | T29 | In progress | Reviewed restricted transfer/cache primitives, retained Windows QA jobs and original production-job HTTPS-to-FullPack/native observation with exact final-installer/helper/launcher declaration and byte binding; production host/source/continuation and protected staging remain pending. |
 | T30 | Not completed | Complete encrypted backup, manual export and original-deadline local cleanup. |
@@ -57,7 +57,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T44 | Implemented; independently reviewed and verified | Actual protected lifecycle kernel, complete atomic commands, original retention/backup deadlines and worker/access-driven timeout convergence; T17/T19/T20 composition and deployment remain separate |
 | T45 | Not completed | Approved helper/launcher evolution and restricted cleanup execution. |
 | T46 | Not completed | Actual local-mode prerequisite certification and exact evidence integration. |
-| T47 | In progress | Protected frozen SN lifecycle and operation-bound child write sets; actual multi-stage draft editing, independent approval, policy freezing, authenticated history and original-key recovery with three-language admin; running Rollout, quality and active publication composition remain pending. |
+| T47 | In progress | Protected frozen SN lifecycle and operation-bound child write sets; reviewed transient SN intake, complete multi-stage plan editing, independent approval, freezing, authenticated history and original-key recovery with three-language admin; running Rollout, quality and active publication composition remain pending. |
 
 Confirmed implementation decisions (2026-10-09):
 
@@ -13658,3 +13658,118 @@ retry-count cap; 32 MiB remains a logical business metadata batch bound, not a
 file-size limit. The next bounded work is the protected SN include/exclude plan
 administration workflow; its private technical contract is under independent
 design review and is not yet an implemented feature.
+
+## T47 reviewed SN plan administration (2026-10-20)
+
+Service commit `08c31d878af6e1aff0f5b3108386fe420b2eec77` is signed off and
+ordinarily pushed on `codex/t11-release-drafts`. Its reviewed tree is
+`dbab0ebabab39f1e00b8b6f298cf8b259655a9c0`. Two independent nonauthor reviews
+accepted all 66 changed paths and the exact final acceptance evidence. The
+106 pre-existing SQL files, six contract bundles and four dependency inputs
+remain unchanged against each checkout's own baseline. This completes the
+bounded SN administration workflow; running Rollout, quality contribution and
+active publication remain separate work. Task totals are unchanged.
+
+The three-language administration supports durable safe-input intents, transient
+raw serial input, actual OpenBao HMAC group derivation, atomic reviewed plan
+preparation and existing approval/freezing owners. Raw serial values never enter
+pending browser storage, URLs, persistent audit or logs. Reload, unknown responses,
+cancel, original-key recovery and identity/scope/selection changes preserve the
+original operation. Retained-source reads and recovery work through an actual
+provider outage without fetching a provider token; new derivation still requires
+the current provider. Legacy null-SN workflows remain usable.
+
+Independent reviews and actual negative controls exposed recovery retention,
+current-source authentication, unknown COMMIT result handling, pagination and
+creation-order defects. Permanent authenticated references now survive response
+cache expiry; independent highest proofs fence rollback. Actual PostgreSQL COMMIT
+acknowledgement loss returns no speculative body. List authentication covers the
+complete relevant native inventory before cursor filtering, including histories
+outside the returned page. Both plan-creation writers reject a counter below the
+committed history maximum, while legitimate leading counters and edits preserve
+their original semantics. The implementation refuses already inconsistent state
+without silently repairing it. Reversible corruption controls retain exact-restoration
+positives; genuine historical duplicates remain refused after counter restoration.
+
+Final exact-source acceptance separates three profiles: six current-native main
+tests and eighteen child tests; three current HTTPS main tests with six Chrome
+cases across the SN and legacy workflows; and one explicitly historical mixed-source
+test. All passed without skips. The historical profile compiles the exact earlier
+writer with the current reader to demonstrate refusal of genuine old duplicate
+creation sequences; it is not acceptance of the current writer. Earlier complete
+exact-input evidence covers unchanged native capacity, original-key recovery,
+provider outage and COMMIT fault scenarios. Overlapping runs are not added into
+a unique test total. All owned resources and child processes were joined.
+
+Final root integration passed 29 affected default main tests and eleven child
+tests, with 138 main and 76 child environment opt-ins explicitly skipped.
+Affected vet, service build, formatting, fresh normative contract pins and whitespace
+checks passed. Unchanged complete-regression, module and admin-build inputs retain
+their earlier exact-input evidence. Frozen raw bytes, clean blobs, protected inputs,
+full candidate contents, index entries and committed tree were checked independently.
+Original red controls, interrupted attempts and repaired formatting failures remain
+recorded; only the required final checks are represented as passing.
+
+No platform qualification, Artifact/Registry approval, active publication or
+deployment acceptance follows from this batch. Product version remains 0.10.13,
+normative documents remain 1.0 and CodeWhale is unchanged. Downloads retain no
+total/cumulative duration or retry-count cap. The 32 MiB bound applies only to the
+internal atomic business metadata batch, not installer bytes or downloads.
+
+## T27 durable metadata acceptance QA (2026-10-20)
+
+Client commit `1b1a37e52a1c9f1c56ea136b23ab13e7294ddfe7` delivers the independently reviewed isolated
+SQLite acceptance owner. The primary checkout has the identical reviewed tree
+through merge commit `8bf6ac80fc17a6831e2fbe9834766bebeceffdcd`. It retains complete verified public graphs, original
+signed envelope bytes, Root succession batches, active component inventories and
+monotonic role/Release watermarks in one transaction. Reads and later acceptance
+revalidate all owned history and exact persistent coverage; unrelated unvalidated
+rows cannot hide behind a successful original-object export. Original requests
+remain idempotent across reordered member descriptors, Root key rotation and
+lost responses, while changed current QA time or key denial is rechecked.
+
+The ordinary CLI provides initialization, acceptance, inspection and original
+object retrieval with real reopen behavior. SQLite uses FULL synchronization and
+DELETE journaling. Known failed writes roll back; acknowledgement or stdout loss
+after a real commit remains uncertain and recovers through the original identity.
+Each object and request is bounded before allocation, canonicalization or SQL
+binding. Trusted finite schema checks, preallocation row validation and disk-backed
+temporary coverage keep application working sets bounded. Per-batch 4,096 limits
+are not a lifetime accepted-history or download-size limit.
+
+Two nonauthor reviews covered all 26 paths and every repair delta. Real regression
+controls cover omitted historical islands, original Root retry identity, genuine
+old/new threshold rotation, post-commit broken pipes, persistent field bounds and
+unchecked public mutable inputs. Collection tests use independently signed inputs
+and the independent reference verifier. They accept a genuine 4,096-plus-one Root
+history and a 4,096-member complete Snapshot, reject missing/extra members with
+exact verification errors and prove the duplicate-member refusal against the
+actual accepted SQLite uniqueness constraint. Every refusal preserves the complete
+database bytes, followed by original-object, idempotence and fresh inspection
+positives. Release high-water identity is independent of application version.
+
+The complete final optimized Windows suite passed twenty cases: four library,
+four collection and twelve process tests, with zero failures, ignored or filtered
+cases. Process coverage includes every one of 23 actual persistent write points,
+post-COMMIT response loss, concurrency, restart, byte tampering and precise current
+context, metadata expiry and role-scoped denial controls. Clippy, formatting,
+architecture, all 73 CI-policy cases, version consistency and whitespace checks
+passed. The unchanged production inputs retain separately verified debug evidence
+of nineteen acceptance cases, 157 original codec tests and 68 original verifier
+tests. These overlapping profiles are not additive unique counts.
+
+Both Linux and Windows CI retain the full all-targets fault-tests command and now
+run it with optimized artifacts. No assertion, feature, platform condition or job
+timeout was removed. Actual local results are Windows evidence; Linux execution
+is not claimed. Frozen source, unowned baseline contents, protected inputs, real
+index and candidate tree were checked before and after testing. No application
+dependency, CodeWhale behavior or public protocol was changed.
+
+This is an ordinary isolated QA workflow. It cannot defend against replacement
+with an entire older valid database and does not supply protected host storage,
+trusted shutdown time, current online qualification or installation permission.
+The application still reports unsupported without those adapters. T27 remains
+in progress, and totals remain five implemented, eighteen in progress, twenty-three
+not completed and one explicitly deferred deployment task. Product 0.10.13 and
+normative version 1.0 remain unchanged. Downloads have no total/cumulative duration
+or retry-count cap; the 32 MiB internal metadata bound never caps artifact bytes.

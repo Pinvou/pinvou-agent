@@ -54,6 +54,23 @@ preparation budget, or relax strict time option A. The first standalone program
 is [platform lab v0](../tools/upgrade-platform-lab/README.md); its reported
 unsupported capabilities remain explicit.
 
+On 2026-10-20 the owner approved the Windows T31 host topology: one preinstalled
+LocalSystem upgrade service with a dedicated per-service SID and a closed local
+semantic interface. The service owns protected host state and fixed upgrade
+actions; callers cannot supply arbitrary execution paths, commands or authority.
+A service SID is an ACL identity, not a sandbox for LocalSystem. The concrete
+bootstrap, peer authentication, directory custody and process-launch design must
+pass independent review before implementation.
+
+This confirms the code architecture, not installation on the current workstation
+or production deployment. Actual installation/security positives require an
+identified isolated Windows test host, real intended machine identities and
+independent bootstrap artifact/anchor inputs. T42 production server deployment
+remains deferred. Registry approval is not a prerequisite for building the
+initial helper/launcher and its controlled first-install integration. Existing
+strict trustworthy-time, preparation-budget and complete writer-scope requirements
+remain unchanged.
+
 ## Platform certification candidates
 
 Approve this as the initial test coverage list, not as a claim that these systems
