@@ -5,8 +5,8 @@ Tasks are completed individually only after in-scope independent code review,
 repairs, applicable tests and commit/push. Contract completion is not production
 client, service, physical platform certification or rollout readiness.
 
-Current task totals: 47 tasks; five implemented, eighteen in progress and
-twenty-three not completed and one explicitly deferred. Detailed evidence follows
+Current task totals: 47 tasks; five implemented, nineteen in progress and
+twenty-two not completed and one explicitly deferred. Detailed evidence follows
 the current overview; a completed bounded batch does not complete its whole task.
 
 | Task | Status | Delivery / outstanding dependency |
@@ -41,7 +41,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T28 | Not completed | Machine-wide preparation ownership and multi-user writer freezing. |
 | T29 | In progress | Reviewed restricted transfer/cache primitives, retained Windows QA jobs and original production-job HTTPS-to-FullPack/native observation with exact final-installer/helper/launcher declaration and byte binding; production host/source/continuation and protected staging remain pending. |
 | T30 | Not completed | Complete encrypted backup, manual export and original-deadline local cleanup. |
-| T31 | Not completed | Trusted helper/launcher build, installation and host protection. |
+| T31 | In progress | Independently reviewed Windows LocalSystem host design; implementation has begun. Real helper/launcher, protected registration, installer/IPC workflow and native acceptance remain pending. |
 | T32 | Not completed | Client consume, original-result recovery and permanent old-execution fencing. |
 | T33 | In progress | Reviewed Windows same-object embedded Authenticode evidence, shared relative custody and retained FullPack final-installer/helper/launcher composition with original-job compatibility; approved publisher policy, protected host, installation/slot execution and platform qualification remain pending. |
 | T34 | Not completed | Actual Linux x64/arm64 upgrade execution and qualification. |
@@ -13773,3 +13773,62 @@ in progress, and totals remain five implemented, eighteen in progress, twenty-th
 not completed and one explicitly deferred deployment task. Product 0.10.13 and
 normative version 1.0 remain unchanged. Downloads have no total/cumulative duration
 or retry-count cap; the 32 MiB internal metadata bound never caps artifact bytes.
+
+## T07/T08 genesis Root and timestamp rollover acceptance (2026-10-20)
+
+Service commit `6a2512aa776680ab8db3caa5b156c06c416ad10f` is committed with DCO
+and pushed. Its seven new paths contain joint acceptance tests and an operator
+workflow document; production source is unchanged. Two nonauthor reviews passed
+the complete scope and repair deltas, then independently checked the final actual
+evidence and exact committed tree.
+
+Normal approved commands establish the product, two unpublished genesis components
+and Root1. Actual isolated Transit provisioning, material registration, issuer
+enable/stop and independently signed old/new two-of-three Root successors complete
+Root2, overlapping Root3 and retained-obligation Root4. Tests preserve the original
+SQL retention deadline, refuse removal while active even after that deadline and
+separately refuse early removal of a stopped unused epoch. Archive reads and
+original-request recovery preserve exact signed bytes through provider outage.
+
+The final five new native cases and three real COMMIT acknowledgement-loss child
+cases passed without failures or skips. Reserve recovery uses a separate OS
+process. Three Chrome cases independently complete the Root2-to-Root4 workflow
+in English, Chinese and Japanese from genuine Root1 prerequisites. Four unchanged
+native regressions and one separate unchanged Root1 Chrome case also passed;
+overlapping invocations are not added into a unique total. Historical failed
+test oracles, fixture assumptions, selectors and a private runner launch remain
+recorded separately. All final child processes were joined.
+
+Affected Go defaults, vet, formatting and whitespace checks passed. Environment
+opt-ins skipped by default are separate from actual
+acceptance. The frozen seven files, 1,780 unchanged baseline files, 117 protected
+inputs, index and committed tree were checked. This genesis-only workflow does
+not establish active publication, production custody, Artifact/Registry approval,
+platform qualification or completion of T07/T08.
+
+## T31 Windows host implementation started (2026-10-20)
+
+The owner approved one restricted LocalSystem service with a dedicated service
+SID and fixed semantic local IPC. Two nonauthor design reviews passed after
+repairing first-install intent/readiness ordering, original-installer liveness,
+app-visible restart coordination, early installer gating, lossless native process
+identity and finite IPC action/replay/handle ownership. This is design acceptance,
+not implementation or native acceptance.
+
+A new isolated worker safely synchronized main once and aligned its submodules.
+Implementation has begun with the host build/profile, closed JSON and process
+identity models. Packaging is assigned separately after its exact interface and
+file ownership are frozen. No build or functional pass is claimed yet, and the
+application's existing behavior remains the compatibility baseline.
+
+The owner authorized creating a local isolated Windows VM for native testing.
+The powered-off VMware lab has been created; official evaluation media and guest
+setup are being prepared. Encryption/vTPM needs a supported manual setup step.
+The available 26H2 evaluation guest will provide scoped functional observations,
+not certification of the approved 24H2/25H2 candidate matrix. The host OS has no
+new upgrade service or lab trust certificate installed by this work.
+
+T31 is now in progress. Totals are five implemented, nineteen in progress,
+twenty-two not completed and one explicitly deferred deployment task. Product
+0.10.13 and normative version 1.0 remain unchanged. Downloads retain no total or
+cumulative duration or retry-count cap.
