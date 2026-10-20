@@ -2663,7 +2663,16 @@ mod tests {
         let pierced_commit = git_ok(
             &repo,
             &exec,
-            &["commit-tree", &pierced_tree, "-m", "pierced"],
+            &[
+                "-c",
+                "user.name=Pinvou",
+                "-c",
+                "user.email=pinvou@localhost",
+                "commit-tree",
+                &pierced_tree,
+                "-m",
+                "pierced",
+            ],
         )
         .unwrap()
         .trim()
