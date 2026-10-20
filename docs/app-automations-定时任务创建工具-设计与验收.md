@@ -206,7 +206,7 @@
 | 任务爆炸（模型频繁创建） | list 工具让模型先查重；name 非唯一由用户在面板管理；`spool/failed` 隔离防队列阻塞 |
 | 与基座死工具混淆 | `automation`/`send_later` 加入 disallow（步骤 5），模型目录里只剩一条可用路径 |
 | watcher 与面板/领域并发写 | 创建唯一入口仍是 `ScheduledTaskState::create_task`（operation_locks 既有串行化）；watcher 不直接写 AutomationManager |
-| 依赖未合入 main | builtin 工具集/messaging 目前仅在 `luzeyang-dev`；本分支链接其后，依赖 PR 合入 main 后统一 rebase（步骤 0） |
+| 依赖未合入 main（round-30 S4 改真） | ~~builtin 工具集/messaging 目前仅在 `luzeyang-dev`~~ **已失效**：messaging 经 #627、session-reader 经 #585/#586、本分支的基座即 main——该风险已消除 |
 
 ## 8. 边界与已披露事项
 
@@ -215,6 +215,7 @@
 - 现有面板"对话创建"流程保留不动，两条通道汇合到同一个 `create_task` 领域函数。
 - 零 CodeWhale / fork 内容变更；本分支**不含** fork 登记册刷新与 gitlink 追平提交——gitlink 随基座 main 对齐（round-27 M2 改真），`docs/fork-modifications.md` 由各落地 PR 各自维护；本计划文档本身随本分支入库，作为后续实施的评审基线。
 - 领域层 `parse_rrule` 实际支持 CRON，工具层收紧为三种子集是有意的产品约束；若未来要放开，只改 server.py + watcher 的子集校验，领域无需动。
+- **超侧车上限的任务对模型不可见（round-30 S6）**：面板创建的任务若 prompt 超过 256 KiB 存储读上限（域层不限长），`read` 会答 "not found"、`list` 静默跳过——模型的建前去重会因此重复创建。已在 read 的错误语义与 §7 中注明；更细的 "存在但不可读" 信号是后续工作。
 - **运行结果不可观测（round-27 minor 12）**：`list`/`read` 只暴露 status/nextRunAt/lastRunAt——模型无法读取运行输出（session-reader 硬拒 `sched-` 目标，无旁路）；被替换的基础 `automation` 工具在此处更丰富（read 含运行记录）。单一用户语义下面子可接受，特此披露。
 - **特性开关文案先于设置页（round-27 minor 13）**：`scheduled-task-automation` 开关的三语文案已入库，但本 PR 未随附自动化设置页——开关目前经命令/配置可达（契约 §3.1 的"随特性落地接入各自设置页"以跟进 PR 履行）。
 - **I/O 原语硬化披露（round-24 minor 13）**：unix 写原语（`open_private_append_file`/`open_private_tmp_write_file`）带 `O_NOFOLLOW|O_NONBLOCK`——用户合法符号链接的诊断/审计日志路径现在**失败关闭**（有意的行为变化；round-17 前符号链接会被跟随）；tmp 写原语对遗留的已存在 tmp 文件不重紧缩权限（载荷无敏感内容，落在同一私有目录）；Windows 写原语无 std 级 reparse-point 拒绝（同用户 spool/state 树的已记录残余）。

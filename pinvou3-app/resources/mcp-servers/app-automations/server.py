@@ -1346,6 +1346,10 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
                         "The scheduled task has been deleted; its run history is "
                         "archived and it no longer schedules."
                         if not duplicate else
+                        "This key was still queued when the retry arrived; the "
+                        "queued request was REPLACED and the delete has now "
+                        "been applied (the result above is this retry's)."
+                        if entry_had_pending_spool else
                         "A request with the same idempotency key was already "
                         "processed; returning its recorded result."
                     )

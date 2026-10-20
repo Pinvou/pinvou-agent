@@ -1948,7 +1948,10 @@ mod tests {
             serde_json::json!("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30"),
         )]);
         let record: SpooledCreationRequest = serde_json::from_str(&surviving).unwrap();
-        assert!(record.validate().is_ok(), "the surviving BYDAY form applies");
+        assert!(
+            record.validate().is_ok(),
+            "the surviving BYDAY form applies"
+        );
     }
 
     /// Round-30 MAJOR-4: the pending-file ceiling's tail quarantine writes
@@ -1966,11 +1969,7 @@ mod tests {
         let spool = spool_root();
         std::fs::create_dir_all(&spool).unwrap();
         for i in 0..(MAX_PENDING_FILES + 8) {
-            std::fs::write(
-                spool.join(format!("f{i:04}.json")),
-                spool_record_json(&[]),
-            )
-            .unwrap();
+            std::fs::write(spool.join(format!("f{i:04}.json")), spool_record_json(&[])).unwrap();
         }
         let mut retries = RetryState::default();
         process_pending_spool(
@@ -2012,6 +2011,36 @@ mod tests {
             MAX_PENDING_FILES,
             "the head of the list keeps its budget"
         );
+    }
+
+    /// Round-30 S7: the app's dead-tool deny (`automation`/`send_later`
+    /// pushed onto the app session's disallow list in `lib.rs`, so the
+    /// model sees one working path instead of a dead foundation pair) had
+    /// no pin — deleting both pushes kept every test green. The production
+    /// span is sliced the round-6 MAJOR-3 way: from the dead-tool comment
+    /// to the first `#[cfg(test)]`, so the test module's own literals
+    /// cannot self-satisfy an include_str-based pin.
+    #[test]
+    fn lib_rs_denies_the_dead_foundation_automation_tools() {
+        let source = include_str!("../../lib.rs");
+        // lib.rs scatters `#[cfg(test)]` modules from early on, so the
+        // production-half bound is wrong here; the span runs from the
+        // dead-tool comment to the next statement block, which contains
+        // the pushes and no test module.
+        let span = source
+            .split("Base automation tools are dead in app sessions")
+            .nth(1)
+            .expect("the dead-tool deny site present")
+            .split("match EnginePool::new_with_dependencies")
+            .next()
+            .expect("the deny closure is followed by the engine pool build");
+        for tool in ["automation", "send_later"] {
+            let push = format!("tools.push(\"{tool}\".to_string());");
+            assert!(
+                span.contains(&push),
+                "lib.rs must deny the dead foundation tool '{tool}'"
+            );
+        }
     }
 
     #[tokio::test]
