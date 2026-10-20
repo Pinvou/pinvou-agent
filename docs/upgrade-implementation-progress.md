@@ -19,7 +19,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T06 | Implemented; independently reviewed and verified | Durable atomic executor, encrypted recovery projections, SQL lease fencing and background recovery; later business commands and production HA acceptance remain pending |
 | T07 | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop, permanent material fencing, OpenBao physical-stop recovery, authenticated Root/history/original-document catalog and genesis-only role-scoped key deny; active issuance and emergency publication composition remain pending |
 | T08 | In progress | Reviewed genesis catalog/component management, protected atomic publication primitives and actual genesis-only append-only signing-key deny; active metadata and other business publication workflows remain pending |
-| T09 | In progress | Bounded package/native-byte inspection, immutable storage, authenticated upload/recovery, ZIP inspection/UI, current-trust Package/evidence inspection and authenticated final-installer structure/internal-version admin observations; formal validation, admission, quarantine and platform qualification remain pending |
+| T09 | In progress | Bounded package inspection, immutable intake/recovery and current-trust Package/evidence observation; authenticated final-installer and exact helper/launcher/helperArtifact structure queries and three-language admin; formal admission, quarantine, native publisher authentication and platform qualification remain pending. |
 | T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
 | T11 | In progress | Protected multi-platform drafts, reviewed content freezing and cancellation of assembled declarations with complete unchanged draft children; package qualification and Release/Target lifecycle approval/publication remain pending. |
 | T12 | In progress | Original stable-facts identity, exact profile matching and immutable forward-policy intersection; protected Registry/version/approval and production qualification remain pending |
@@ -39,11 +39,11 @@ the current overview; a completed bounded batch does not complete its whole task
 | T26 | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
 | T27 | In progress | Authenticated Root/public/candidate/Package/Check/Refresh/DownloadInfo/Release-renewal verification and fixed control POST; protected workflow and high-water/cache integration remain pending |
 | T28 | Not completed | Machine-wide preparation ownership and multi-user writer freezing. |
-| T29 | In progress | Reviewed restricted transfer/cache primitives and explicit retained Windows QA download jobs with pinned inputs, relative-handle custody, whole-byte rescans and actual production-CLI HTTPS; production host/source/continuation/staging composition remains pending |
+| T29 | In progress | Reviewed restricted transfer/cache primitives, explicit retained Windows QA jobs and original production-job HTTPS-to-FullPack/native observation with exact byte custody; production host/source/continuation and protected staging composition remain pending. |
 | T30 | Not completed | Complete encrypted backup, manual export and original-deadline local cleanup. |
 | T31 | Not completed | Trusted helper/launcher build, installation and host protection. |
 | T32 | Not completed | Client consume, original-result recovery and permanent old-execution fencing. |
-| T33 | In progress | Reviewed Windows same-object embedded Authenticode evidence library/read-only CLI, shared relative-handle custody and retained T29 job compatibility; protected host, publisher policy, installation/slot execution and platform qualification remain pending. |
+| T33 | In progress | Reviewed Windows same-object embedded Authenticode evidence, shared relative custody and retained FullPack final-installer composition with original-job compatibility; approved publisher policy, protected host, installation/slot execution and platform qualification remain pending. |
 | T34 | Not completed | Actual Linux x64/arm64 upgrade execution and qualification. |
 | T35 | Not completed | Actual macOS Intel/Apple Silicon execution and qualification. |
 | T36 | Not completed | Protected single-hop execution, active-identity verification and local health. |
@@ -13427,3 +13427,79 @@ Current totals are 5 implemented / 17 in progress / 25 incomplete or deferred.
 Product remains 0.10.12, normative documents 1.0 and CodeWhale unchanged;
 deployment remains deferred. Downloads retain no hard total/cumulative deadline
 or retry-count cap, and 32 MiB remains business metadata rather than a blob cap.
+
+## Native member management and retained FullPack composition (2026-10-20)
+
+This batch delivers two scoped workflows; T09, T29 and T33 remain in progress.
+The current checkout now contains the previously reviewed client implementation,
+including the upstream 0.10.13 release. Normative documents remain version 1.0.
+
+- Service commit ad57a1f75f3f687e58a1987f6cc451aa9436dd54 adds independent
+  opt-in, authenticated availability and exact helper, launcher or signed
+  helperArtifact-ID observation, with a three-language management panel. Whole
+  upload/Manifest/FullPack/member identities and initial/final current authority,
+  receipt/birth/audit, Root/history/deny and SQL-time sources remain binding.
+  Physical PE/ELF/Mach-O reports confer no Artifact, publisher or install right;
+  the old installer-only routes and closed reports remain compatible.
+- Two non-author roles review all 22 paths. Author self-review repairs a negative
+  test that previously failed at Manifest semantics: execution-helper claims now
+  agree, claims.Check must succeed, and the genuinely signed/captured FullPack
+  must then fail physical member matching. The four-line test-only repair leaves
+  production, HTTP and browser compiled inputs unchanged.
+- Fresh real PostgreSQL, HTTPS, signed OIDC and Chrome pass four top-level groups
+  and 27 subcases, with no skip: four target packages, three roles, three
+  languages, response loss/ABA, late current-source faults and the old installer
+  HTTP regression. These are genuine parser/browser runs over synthetic signed
+  native fixtures, not physical Linux/macOS installation certification.
+- Final service integration passes all nine gates, including fresh default Go
+  tests (872 top-level/1909 subcases pass; 738 top-level/679 subcases explicitly
+  opt-in skipped; zero failures), modules, pins, vet, actual builds, formatting,
+  SQL preservation and whitespace. All 104 old SQL files retain both Git content
+  and integration-checkout physical bytes; no contract or dependency is changed.
+- Client commit a6690b2cbba984db451d4f9ceee77438d188baa5 adds the explicit
+  retained FullPack-to-finalInstaller observation library/CLI. The original job
+  reservation and independent manifest pin authenticate original Root/Package,
+  context and supplied historical time. Whole ZIP and native-member bytes are
+  rescanned, copied/flushed into a fresh ordinary output, all destination writers
+  retire, and the original relative identity/hash is rechecked before actual
+  same-object WinTrust. The source reservation/native object stay held through
+  report use. No ordinary File becomes a protected-cache or execution capability.
+- Both independent roles review 18 paths and preserve 507 protected paths. They
+  reject a cancellation test that observed only a newly created empty output.
+  The repaired test queries real active-file EOF, cancels only after nonzero
+  incomplete copying, joins, verifies the exact real partial native-byte prefix,
+  and proves output/source reservations release. Earlier failed test attempts
+  remain retained; no product hook, fake error or download deadline is introduced.
+- Author gates pass all 15 checks: two library plus six process cases, one
+  separately executed strict cache-only signer/timestamp positive, eight Package
+  regressions and ten library plus two original-workflow process regressions.
+  The one strict default ignore is reported explicitly, then actually run.
+  Versions/checksums of the original 227 external dependencies are preserved;
+  six additional transitive entries already occur in existing protected locks.
+- Final core integration passes ten required local gates, including actual
+  default/strict tests, Clippy, formatting/builds, architecture, version,
+  72 CI-policy cases, whitespace and a genuine public HTTPS composition.
+  The original pre-extraction production executable creates and downloads a
+  33,177,718-byte unmodified official .NET ZIP with normal CA validation and no
+  redirects. The new production CLI selects its actual 142,096-byte dotnet.exe
+  member, matches source/output hashes and reports physical signature verified.
+  Observation leaves the real successful original journal unchanged; the old
+  executable still checks the job. Package declarations are synthetic test
+  claims, not genuine NSIS qualification; every qualification/installation/
+  execution-object/trusted-deadline flag remains false and no downloaded file
+  is executed. The actual download has no harness elapsed deadline either.
+- An earlier genuinely downloaded Python ZIP is correctly refused because DOS
+  creators carry nonzero Unix mode attributes outside the frozen ZIP profile.
+  Its failed positive attempt remains a separately verified refusal, not a
+  passing positive; bytes/parser rules are never rewritten to obtain a pass.
+  The optional Apple crosscompile attempt also remains blocked by missing
+  cross-C compiler/SDK for existing aws-lc-sys. No macOS compile/runtime success
+  is claimed. Mandatory Linux compile/Unsupported and Windows native CI gates
+  remain present; Linux was not run locally. All attempted gates are therefore
+  not represented as passing, despite all required local Windows gates passing.
+
+Current totals remain 5 implemented / 17 in progress / 25 incomplete or deferred.
+The actual primary checkout is synchronized to the exact tested client tree.
+Product is 0.10.13, normative documents 1.0, CodeWhale remains unchanged, and
+production deployment stays deferred. Downloads retain no total/cumulative time
+or retry-count cap; 32 MiB limits business metadata, not downloaded artifact blobs.
