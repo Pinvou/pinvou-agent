@@ -147,7 +147,12 @@ function OverlayDialog({
 }
 
 // eslint-disable-next-line sonarjs/cognitive-complexity -- the main view aggregates the connection/collection/document/member data flows; splitting would break the existing structure
-function RemoteKnowledgeView({ t }) {
+function RemoteKnowledgeView({ t, localEmbedSupported }) {
+  // 本机作为共享知识库宿主时的「下载嵌入模型」入口与 KnowledgeView 的模型卡共用同一条
+  // 服务端下载漏斗（begin_model_download），后者在不支持的平台（linux/loongarch64）会
+  // 直接拒绝。入口按 === true 判定（fail closed）：快照未到达或未来新增渲染点漏传 prop
+  // 时一律隐藏，与 KnowledgeView 的模型卡门控保持同一方向。
+  const localEmbedReady = localEmbedSupported === true;
   const [connections, setConnections] = useState([]);
   const [connectionsLoaded, setConnectionsLoaded] = useState(false);
   const [selectedServerId, setSelectedServerId] = useState('');
@@ -516,7 +521,7 @@ function RemoteKnowledgeView({ t }) {
         includeDeleted: includeTrash,
       });
       if (requestId !== collectionsRequestRef.current || serverId !== selectedServerRef.current) return;
-      setCollections(next);
+      setCollections(next || []);
       const current = selectedCollectionRef.current;
       const nextCollectionId = current && next.some(item => item.id === current)
         ? current
@@ -893,7 +898,7 @@ function RemoteKnowledgeView({ t }) {
     });
     if (!created) return;
     setShareLink(created.share);
-    setOwnerShares(await invokeTauri('remote_kb_shares', { serverId: selectedServerId }));
+    setOwnerShares((await invokeTauri('remote_kb_shares', { serverId: selectedServerId })) || []);
   }
 
   async function resolveJoinRequest(requestId, scope) {
@@ -905,13 +910,13 @@ function RemoteKnowledgeView({ t }) {
       ...(scope ? { scope } : {}),
     }));
     if (!resolved) return;
-    setOwnerJoinRequests(await invokeTauri('remote_kb_join_requests', { serverId: selectedServerId }));
-    setOwnerDevices(await invokeTauri('remote_kb_devices', { serverId: selectedServerId }));
+    setOwnerJoinRequests((await invokeTauri('remote_kb_join_requests', { serverId: selectedServerId })) || []);
+    setOwnerDevices((await invokeTauri('remote_kb_devices', { serverId: selectedServerId })) || []);
   }
 
   async function stopShare(shareId) {
     const stopped = await run(`stop-share-${shareId}`, () => invokeTauri('remote_kb_stop_share', { serverId: selectedServerId, shareId }));
-    if (stopped) setOwnerShares(await invokeTauri('remote_kb_shares', { serverId: selectedServerId }));
+    if (stopped) setOwnerShares((await invokeTauri('remote_kb_shares', { serverId: selectedServerId })) || []);
   }
 
   async function updateMember(device, patch) {
@@ -2133,9 +2138,16 @@ function RemoteKnowledgeView({ t }) {
                       <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-[#EAF2FF] text-[#0B57D0] dark:bg-[#172B49] dark:text-[#A8C7FA]"><Database size={18} /></div>
                       <div className="min-w-0 flex-1">
                         <h3 className={`text-[15px] font-bold ${ink}`}>{t.remoteKbModelTitle}</h3>
-                        <p className={`mt-1 text-[13px] leading-5 ${ownerModelStatus?.error ? 'text-[#d63a3a]' : muted}`}>{ownerModelStatus?.error || (ownerModelStatus?.ready ? t.remoteKbModelReady : ownerModelStatus?.downloading ? t.remoteKbModelDownloading : t.remoteKbModelMissing)}</p>
+                        {/* 平台证明不支持本地嵌入时，能力说明（本地化文案）优先于
+                            后端原始诊断——宿主面板的下载入口本就被能力门隐藏，
+                            残留目录的加载失败只是同一事实的英文回声，不该用
+                            诊断文本顶掉用户语言里的解释（其余场景诊断仍优先）。 */}
+                        <p className={`mt-1 text-[13px] leading-5 ${isLocalHostOwner && !localEmbedReady ? muted : (ownerModelStatus?.error ? 'text-[#d63a3a]' : muted)}`}>{isLocalHostOwner && !localEmbedReady ? t.kbEmbedUnsupported : (ownerModelStatus?.error || (ownerModelStatus?.ready ? t.remoteKbModelReady : ownerModelStatus?.downloading ? t.remoteKbModelDownloading : t.remoteKbModelMissing))}</p>
                       </div>
-                      {isLocalHostOwner && !ownerModelStatus?.ready && <button type="button" className={`${soft} w-full sm:w-auto`} onClick={downloadOwnerModel} disabled={ownerModelStatus?.downloading || isBusy('owner-model-download')}>{ownerModelStatus?.downloading ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />}{ownerModelStatus?.downloading ? t.remoteKbModelDownloadingAction : t.remoteKbDownloadModel}</button>}
+                      {/* 下载入口被 localEmbedReady 隐藏时（本机平台无本地嵌入，下载
+                          在宿主侧也注定被拒），状态行改用平台不支持说明而不是让
+                          「尚未下载」悬空；非宿主观看者看到的仍是宿主的真实状态。 */}
+                      {isLocalHostOwner && localEmbedReady && !ownerModelStatus?.ready && <button type="button" className={`${soft} w-full sm:w-auto`} onClick={downloadOwnerModel} disabled={ownerModelStatus?.downloading || isBusy('owner-model-download')}>{ownerModelStatus?.downloading ? <RefreshCw size={14} className="animate-spin" /> : <Download size={14} />}{ownerModelStatus?.downloading ? t.remoteKbModelDownloadingAction : t.remoteKbDownloadModel}</button>}
                     </div>
                   </section>
 

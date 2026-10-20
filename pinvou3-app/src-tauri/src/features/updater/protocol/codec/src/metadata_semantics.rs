@@ -5,6 +5,14 @@ use crate::{
 use serde_json::Value;
 use std::collections::BTreeSet;
 const DAY: f64 = 86_400_000.0;
+const ROOT_LIFETIME: f64 = 365.0 * DAY;
+/// Trusted caller mode only; remote claims never select development semantics.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PackageSemanticsMode {
+    #[default]
+    Production,
+    Development,
+}
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RootWindowMode {
     #[default]
@@ -95,10 +103,26 @@ pub fn assert_supplied_metadata_semantics(
     now: &SuppliedProtocolTime,
     root_mode: RootWindowMode,
 ) -> Result<(), MetadataSemanticsError> {
+    assert_supplied_metadata_semantics_in_mode(
+        envelope,
+        now,
+        root_mode,
+        PackageSemanticsMode::Production,
+    )
+}
+/// Same original rules with an explicit trusted-caller package mode. Development
+/// corresponds only to the frozen reference's production=false package rule;
+/// it changes neither Root time nor signature/authority requirements.
+pub fn assert_supplied_metadata_semantics_in_mode(
+    envelope: &SchemaCheckedEnvelope,
+    now: &SuppliedProtocolTime,
+    root_mode: RootWindowMode,
+    package_mode: PackageSemanticsMode,
+) -> Result<(), MetadataSemanticsError> {
     let claims = envelope.envelope().signed().value();
     let role = text(&claims["role"])?;
     let maximum = match role {
-        "root" => 365.0 * DAY,
+        "root" => ROOT_LIFETIME,
         "timestamp" => DAY,
         "snapshot" => 7.0 * DAY,
         "target" => 30.0 * DAY,
@@ -110,17 +134,10 @@ pub fn assert_supplied_metadata_semantics(
     if role != "package" {
         let start = number(&claims["issuedAt"])?;
         let end = number(&claims["expiresAt"])?;
-        ensure(
-            end > start && end - start <= maximum,
-            MetadataSemanticsError::InvalidWindow,
-        )?;
-        if role == "root" && root_mode == RootWindowMode::AllowExpired {
-            ensure(now.millis >= start, MetadataSemanticsError::InvalidWindow)?;
+        if role == "root" {
+            root_window(start, end, now, root_mode)?;
         } else {
-            ensure(
-                now.millis >= start && now.millis < end,
-                MetadataSemanticsError::ClosedWindow,
-            )?;
+            time_window(start, end, maximum, now, false)?;
         }
     }
     match role {
@@ -131,8 +148,42 @@ pub fn assert_supplied_metadata_semantics(
         "snapshot" => snapshot(claims),
         "target" => target(claims),
         "release" => release(claims),
-        "package" => package(claims),
+        "package" => package(claims, package_mode),
         _ => Ok(()),
+    }
+}
+pub(super) fn root_window(
+    start: f64,
+    end: f64,
+    now: &SuppliedProtocolTime,
+    mode: RootWindowMode,
+) -> Result<(), MetadataSemanticsError> {
+    time_window(
+        start,
+        end,
+        ROOT_LIFETIME,
+        now,
+        mode == RootWindowMode::AllowExpired,
+    )
+}
+fn time_window(
+    start: f64,
+    end: f64,
+    maximum: f64,
+    now: &SuppliedProtocolTime,
+    allow_expired: bool,
+) -> Result<(), MetadataSemanticsError> {
+    ensure(
+        end > start && end - start <= maximum,
+        MetadataSemanticsError::InvalidWindow,
+    )?;
+    if allow_expired {
+        ensure(now.millis >= start, MetadataSemanticsError::InvalidWindow)
+    } else {
+        ensure(
+            now.millis >= start && now.millis < end,
+            MetadataSemanticsError::ClosedWindow,
+        )
     }
 }
 fn ensure(condition: bool, error: MetadataSemanticsError) -> Result<(), MetadataSemanticsError> {
@@ -281,7 +332,7 @@ fn release(claims: &Value) -> Result<(), MetadataSemanticsError> {
     }
     Ok(())
 }
-fn package(claims: &Value) -> Result<(), MetadataSemanticsError> {
+fn package(claims: &Value, mode: PackageSemanticsMode) -> Result<(), MetadataSemanticsError> {
     let mut helpers = BTreeSet::new();
     let mut selected = None;
     for helper in array(&claims["helpers"])? {
@@ -313,10 +364,12 @@ fn package(claims: &Value) -> Result<(), MetadataSemanticsError> {
             },
         MetadataSemanticsError::SourceRevision,
     )?;
-    ensure(
-        array(&claims["incrementalPackages"])?.is_empty(),
-        MetadataSemanticsError::IncrementalProduction,
-    )?;
+    if mode == PackageSemanticsMode::Production {
+        ensure(
+            array(&claims["incrementalPackages"])?.is_empty(),
+            MetadataSemanticsError::IncrementalProduction,
+        )?;
+    }
     ensure(
         claims["provenance"]["finalInstallerSha256"] == claims["finalInstaller"]["sha256"],
         MetadataSemanticsError::ProvenanceBinding,

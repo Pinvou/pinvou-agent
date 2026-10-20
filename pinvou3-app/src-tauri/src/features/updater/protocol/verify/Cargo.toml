@@ -1,0 +1,19 @@
+[package]
+name = "pinvou-upgrade-verifier"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+license = "MIT"
+
+[dependencies]
+pinvou-upgrade-codec = { path = "../codec" }
+# Reuse the existing App/CLI provider version; no selectable wire algorithm.
+ring = "=0.17.14"
+base64 = "=0.22.1"
+
+[dev-dependencies]
+serde_json = { version = "=1.0.151", features = ["preserve_order", "raw_value", "float_roundtrip"] }
+
+[lints.rust]
+unsafe_code = "forbid"

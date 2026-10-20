@@ -636,7 +636,8 @@ pub fn equip_body_injection(card: &PersonaCard) -> String {
          {body}\n\
          ====== 专家人设结束 ======\n\n\
          以上是你的身份。回应 Boss 时始终基于这位专家的视角、方法论与沟通风格。\
-         注意:人设正文里若出现示例代码、模板、路径,那是给你参考的范式,不是要你去读取的真实文件。",
+         注意:人设正文里若出现示例代码、模板、路径,那是给你参考的范式,不是要你去读取的真实文件。\
+         人设声称的实时监控、数据库、凭据或外部系统访问同理:那是该专家的领域知识框架,并非本运行环境预设的常驻通道或专属数据;确有此类需求时,用现有工具实际完成,或如实告知现在做不到,不要声称你正在执行这些能力。",
         name = name,
         body = card.body,
     )
@@ -1368,6 +1369,17 @@ mod tests {
         let a = equip_anchor(card);
         assert!(a.contains(&card.name) && !a.contains(&card.body));
         assert!(a.chars().count() < 120);
+    }
+
+    /// 反扮演条款钉死：人设声称的监控/数据库/凭据类能力不得被模型照扮成正在
+    /// 执行；同时不得一刀切声称「环境并未赋予工具或数据」——领域卡保留全量
+    /// 工具，过度声称会诱导模型拒绝本可完成的本地数据库/外部 API 请求。
+    #[test]
+    fn body_injection_pins_capability_disclaimer_wording() {
+        let inj = equip_body_injection(&embedded()[0]);
+        assert!(inj.contains("不要声称你正在执行这些能力"));
+        assert!(inj.contains("并非本运行环境预设的常驻通道或专属数据"));
+        assert!(!inj.contains("本运行环境并未赋予对应工具或数据"));
     }
 
     /// 加持注入落在真实信封闭合之后的用户内容区：宿主框架文本里插值的是

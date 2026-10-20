@@ -1,0 +1,33 @@
+[package]
+name = "pinvou-upgrade-download-job"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+license = "MIT"
+
+[dependencies]
+pinvou-upgrade-custody = { path = "../../platform/custody" }
+pinvou-upgrade-codec = { path = "../../protocol/codec" }
+pinvou-upgrade-verifier = { path = "../../protocol/verify" }
+pinvou-upgrade-transfer = { path = "../transfer" }
+pinvou-upgrade-file-http = { path = "../http" }
+pinvou-upgrade-byte-check = { path = "../verify" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+sha2 = "0.11"
+tokio = { version = "=1.53.1", features = ["net", "time", "rt", "macros"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Wdk_Foundation", "Wdk_Storage_FileSystem", "Win32_Security", "Win32_System_IO"] }
+
+[lints.rust]
+unsafe_code = "deny"
+
+[[bin]]
+name = "upgrade-download-cache"
+path = "src/main.rs"
+
+[[test]]
+name = "process"
+path = "tests/platform/process.rs"

@@ -1530,7 +1530,7 @@ test('leased dispatch always closes the host operation window after failure or c
   });
 });
 
-test('page-scoped tools in experimental page-id-routing are recognized', () => {
+test('page-scoped tools in page-id-routing are recognized', () => {
   const names = pageScopedToolNames({
     tools: [
       {

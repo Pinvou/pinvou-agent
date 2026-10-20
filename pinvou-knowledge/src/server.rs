@@ -618,6 +618,25 @@ async fn document_statuses(
     ))
 }
 
+/// Document-write errors keep the upload family's 400 contract, except the
+/// stub-build local-embed refusal: that refusal is a platform capability
+/// fact (the service can never index on this build), so it maps to 503 like
+/// the search path instead of reading as a malformed request.
+fn map_document_write_error(error: String) -> ApiError {
+    map_document_write_error_for(crate::embedding::is_local_embed_unavailable(&error), error)
+}
+
+/// Capability bit as a parameter (same shape as the desktop twin's
+/// `local_embed_download_refusal(supported)`): the host executes both
+/// branches, while the production bit stays compile-time per target.
+fn map_document_write_error_for(unavailable: bool, error: String) -> ApiError {
+    if unavailable {
+        ApiError::unavailable(error)
+    } else {
+        ApiError::bad_request(error)
+    }
+}
+
 async fn replace_document(
     State(service): State<Arc<KnowledgeService>>,
     headers: HeaderMap,
@@ -630,7 +649,7 @@ async fn replace_document(
         service
             .replace_document(id, &filename, bytes)
             .await
-            .map_err(ApiError::bad_request)?,
+            .map_err(map_document_write_error)?,
     ))
 }
 
@@ -908,6 +927,26 @@ mod tests {
     use http_body_util::BodyExt;
     use serde::Serialize;
     use tower::ServiceExt;
+
+    #[test]
+    fn document_write_errors_map_the_stub_refusal_to_unavailable() {
+        // The stub refusal is a platform capability fact, not a malformed
+        // request: it must reach the client as 503 (like the search path),
+        // while ordinary document errors keep the family's 400 contract.
+        assert_eq!(
+            map_document_write_error_for(false, "boom".to_string()).status,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            map_document_write_error_for(true, "stub".to_string()).status,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        // Real-impl builds never produce the refusal (compile-time pin lives
+        // on the loongarch64 side); the host direction of the predicate.
+        assert!(!crate::embedding::is_local_embed_unavailable(
+            "any parse error"
+        ));
+    }
 
     #[tokio::test]
     async fn info_is_public_but_collections_require_authentication() {

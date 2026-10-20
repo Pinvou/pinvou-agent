@@ -1089,7 +1089,7 @@ fn status_probes_a_below_minimum_install_like_the_gui_dtos() {
     let _env = common::env_lock();
     let _home = HomeGuard::new("upgrade-gate-probe");
     let bin = fake_bin_dir("upgrade-gate-probe");
-    // wecom 1.2.0 parses but sits below the 1.2.1 baseline; its status probe
+    // wecom 1.2.0 parses but sits below the 1.3.4 baseline; its status probe
     // answers the whole line `authorized` with exit 0 like a connected one.
     write_fake_cli(
         &bin,
@@ -1151,7 +1151,7 @@ fn status_probes_a_below_minimum_install_like_the_gui_dtos() {
 }
 
 /// Round-49 feishu version-gate parity (M3): the GUI gates lark-cli on
-/// `LARK_MIN_VERSION` (1.0.95, feishu.rs — the skill pack's command
+/// `LARK_MIN_VERSION` (1.0.98, feishu.rs — the skill pack's command
 /// surface assumes the lock baseline, and installed 1.0.65 silently
 /// degraded to generic help). The CLI's spec carried `min_version: None`,
 /// so `ensure-cli feishu` reported "already installed" for a
@@ -1169,7 +1169,7 @@ fn feishu_below_the_lark_minimum_is_upgrade_required_not_usable() {
     let _env = common::env_lock();
     let _home = HomeGuard::new("feishu-below-min");
     let bin = fake_bin_dir("feishu-below-min");
-    // lark-cli 1.0.65 parses but sits below the 1.0.95 baseline; its status
+    // lark-cli 1.0.65 parses but sits below the 1.0.98 baseline; its status
     // probe answers the ready JSON like a connected one.
     write_fake_cli(
         &bin,

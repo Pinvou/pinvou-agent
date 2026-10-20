@@ -54,7 +54,7 @@ const BUILTIN_CLI_BUNDLES: &[(&str, &str, &str, &[&str], &str)] = &[
         "企业微信",
         "wecom-cli",
         &WECOM_SKILL_DIRS,
-        "接入企业微信官方 CLI（@wecom/cli，MIT）+ 官方域技能：让 AI 以你本人身份收发消息、读写文档与智能表格、创建/查询会议与日程、管理待办、查询通讯录。点「连接」用企业微信 App 扫码授权，全程不填 key。数据经企业微信云（可选联网功能，opt-in）。",
+        "接入企业微信官方 CLI（@wecom/cli，MIT）+ 官方域技能：让 AI 以你本人身份收发消息、收发邮件、读写文档/智能表格/在线表格/智能文档、管理微盘文件、制作演示文稿、创建/查询会议与日程、管理待办、查询通讯录。点「连接」用企业微信 App 扫码授权，全程不填 key。数据经企业微信云（可选联网功能，opt-in）。",
     ),
     (
         "dingtalk",
@@ -1089,9 +1089,9 @@ mod tests {
     }
 
     /// 五轮评审必修 3：wecom 技能表与 `platform::connector_skills` 单一真相源
-    /// 一致（1.1.0 的 14 新名）；9 个新名反查命中 wecom 包（DenyAll 默认集 /
-    /// `skill_owner_package` 归属推导），0.1.9 退役名（msg/schedule）不进表、
-    /// 反查不命中。
+    /// 一致（1.1.0 引入 14 名，1.3.4 起新增 wecomcli-pptx 共 15 名）；新名
+    /// 反查命中 wecom 包（DenyAll 默认集 / `skill_owner_package` 归属推导），
+    /// 0.1.9 退役名（msg/schedule）不进表、反查不命中。
     #[test]
     fn wecom_skill_dirs_track_platform_truth() {
         let dirs = cli_bundle_skill_dirs("wecom");
@@ -1100,9 +1100,14 @@ mod tests {
             crate::platform::connector_skills::WECOM_SKILL_DIRS.as_slice(),
             "marketplace 侧表必须引用 platform 单一真相源"
         );
-        assert_eq!(dirs.len(), 14);
+        assert_eq!(dirs.len(), 15);
         // 新名（0.1.9 旧表里没有的）反查命中
-        for name in ["wecomcli-calendar", "wecomcli-message", "wecomcli-disk"] {
+        for name in [
+            "wecomcli-calendar",
+            "wecomcli-message",
+            "wecomcli-disk",
+            "wecomcli-pptx",
+        ] {
             assert_eq!(
                 cli_bundle_of_skill(name),
                 Some("wecom"),
@@ -1424,7 +1429,7 @@ mod tests {
                 "ima-skills 不得独立成包"
             );
             // wecom 卡的配套技能表以 platform::connector_skills 单一真相源为准
-            //（`wecom_skill_dirs_track_platform_truth` 钉住 14 新名/退役名口径）。
+            //（`wecom_skill_dirs_track_platform_truth` 钉住 15 名/退役名口径）。
             // id 唯一（一个包 = 一个开关的前提）
             let mut ids: Vec<&str> = bundles.iter().map(|b| b.id.as_str()).collect();
             ids.sort_unstable();

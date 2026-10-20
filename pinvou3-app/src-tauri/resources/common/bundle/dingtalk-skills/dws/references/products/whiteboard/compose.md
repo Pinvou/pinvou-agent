@@ -5,6 +5,8 @@
 
 ## 首次远端写入前检查
 
+- 若目标是已有白板，准备 source 后必须进入 [diff.md](./diff.md)：执行 +diff、展示变化并等待确认后才能 +update。追加也不例外；新建带内容白板仍走 render 流程。
+- 富文本的每个 run.text 禁止包含换行符（\n、\r、U+2028、U+2029）。多行内容拆成多个 paragraph block，空行用 runs: [{"text":""}] 的段落；保留每段对齐和每个 run 的 marks/link。不要把“上午、空行、待安排”塞进一个带换行的 run。
 - 信封是 `overwrite=false`、`1.0` / `dml-v1`、非空 `nodes`。
 - 每个节点（包括 connector）都有唯一稳定 ID；connector `nodeRef` 和 `parentId`
   只引用本次节点，后者是 Frame。
@@ -197,4 +199,6 @@ Frame 页面直属，子节点坐标相对其左上角；connector 不放入 Fra
 ]
 ```
 
-`presentationOrder` 须唯一且非负；未知字段、跨请求引用或不支持值会拒绝整批。
+`presentationOrder` 仅允许用于 `frame`，且须唯一、非负；`shape`、`text`、
+`stickyNote` 等其他节点不得携带该字段。普通节点的层叠顺序使用 `zIndex`。
+未知字段、跨请求引用或不支持值会拒绝整批。

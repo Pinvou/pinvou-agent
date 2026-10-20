@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Check, ChevronDown, Code, Cpu, Database, Globe, MessageSquare, Plus, RefreshCw, Search, Sparkles, Users, Wrench, X } from '../../components/icons.jsx';
 import { Toggle } from '../../components/Toggle.jsx';
 import PetSettingsSection from '../pet/PetSettingsSection.jsx';
@@ -31,6 +31,14 @@ import {
   voicePostprocessEnabled,
   voiceShortcutEnabled,
 } from '../chat/voice-shortcut-settings.mjs';
+import {
+  GLOBAL_SHORTCUT_DEFAULT_ACCELERATOR,
+  foldGlobalShortcutDraft,
+  formatGlobalShortcutForDisplay,
+  globalShortcutDraftToRust,
+  isPlausibleGlobalShortcutAccelerator,
+  normalizeGlobalShortcutDraft,
+} from './globalShortcutSettings.mjs';
 import { VoiceShortcutIntroModal } from '../voice-composer/VoiceShortcutIntroModal.jsx';
 import { ReasoningTierPicker, useModelReasoningTierState } from './local-server-tiers.jsx';
 import { StatusChip } from './StatusChip.jsx';
@@ -1402,7 +1410,7 @@ function hasStoredCredential(record) {
       );
     };
     /** @param {{ checked: boolean, onChange: (checked: boolean) => void }} props - Switch state. */
-    const IOSSwitch = ({ checked, onChange, disabled }) => <Toggle checked={checked} onChange={onChange} disabled={disabled} size="md" />;
+    const IOSSwitch = ({ checked, onChange, disabled, 'aria-label': ariaLabel }) => <Toggle checked={checked} onChange={onChange} disabled={disabled} size="md" aria-label={ariaLabel} />;
     /** @param {{ id: string, icon: import('react').ReactNode, label: string, dot?: boolean, active: boolean, onSelect: (id: string) => void }} props - Sidebar section entry. */
     const SectionButton = ({ id, icon, label, dot, active, onSelect }) => (
       <button
@@ -1706,6 +1714,217 @@ function hasStoredCredential(record) {
                   });
               }}
             />
+          </IOSRow>
+        </IOSSection>
+      );
+    };
+
+    /**
+     * Global bring-to-front shortcut (default combo Ctrl/Cmd+Alt+P, presents
+     * the window while Pinvou runs in the background; OFF by default).
+     * Desktop-only: the web lane renders none of this section (caller !isWeb
+     * gate); with globalShortcutsAvailable=false the switch and input grey
+     * out and the desc shows the unsupported copy. The switch and the combo
+     * input share one single-flight command channel (each call submits the
+     * full enabled+accelerator config, same flightRef pattern as
+     * ComputerUse); "invalid"/"conflict" write the localized error into the
+     * owning row's desc slot (conflict's technical message goes to console
+     * only), and a failed save reverts the UI by simply not mirroring. An
+     * enabled request answered disabled with a message (session cannot
+     * support it) still commits, but the switch row's desc turns into the
+     * unsupported copy.
+     *
+     * State model: `enabled` and the saved accelerator are read LIVE from
+     * the bridge settings slice — the bridge mirror refreshes that slice
+     * after every committed save (registered or disabled, always reporting
+     * the persisted accelerator), so the UI derives from the disk mirror, a
+     * failed save rolls the toggle back for free, and a pre-snapshot toggle
+     * cannot submit a stale combo: the whole section stays disabled until
+     * the slice exists. Only the accelerator input is local (display form);
+     * it follows the saved combo while untouched, and the dirty check
+     * compares display forms.
+     * Persistence is owned exclusively by set_global_shortcut_config (the
+     * bridge syncs the settings snapshot); update_settings is never used.
+     * @param {{ t: object, platformCapabilities: { globalShortcutsAvailable?: boolean } }} props - Dictionary and platform capability slice.
+     */
+    const GlobalShortcutSettingSection = ({ t, platformCapabilities }) => {
+      const copy = t.uiSettings;
+      const slice = useBridgeState(['settings']);
+      // Live disk-mirror state; `null` while the settings snapshot has not
+      // loaded. Rendering interactive defaults before it arrives would let a
+      // toggle submit the default combo over whatever disk holds. A failed
+      // get_settings leaves a truthy fallback {theme, color_scheme, language}
+      // in the slice — not disk truth for this section — so the gate also
+      // requires the shortcut fields to be present.
+      const rawSettings = (slice && slice.settings) || null;
+      const prefs = rawSettings && typeof rawSettings.global_shortcut_enabled === 'boolean'
+        ? rawSettings
+        : null;
+      const available = !!(platformCapabilities && platformCapabilities.globalShortcutsAvailable);
+      // Rust defaults global_shortcut_enabled to false: only an explicit true
+      // shows as on; unloaded settings render as off (and stay disabled).
+      const enabled = prefs ? prefs.global_shortcut_enabled === true : false;
+      const savedAccelerator = prefs
+        ? (normalizeGlobalShortcutDraft(prefs.global_shortcut_accelerator) || GLOBAL_SHORTCUT_DEFAULT_ACCELERATOR)
+        : GLOBAL_SHORTCUT_DEFAULT_ACCELERATOR;
+      const [draftAccelerator, setDraftAccelerator] = useState(() => formatGlobalShortcutForDisplay(savedAccelerator));
+      const [actionError, setActionError] = useState('');
+      const [errorSlot, setErrorSlot] = useState('toggle');
+      const [pending, setPending] = useState(false);
+      // Same synchronous single-flight as ComputerUseSettingSection: the
+      // disabled attribute lags one render, so a double-click would fire two
+      // concurrent commands — the ref intercepts inside the event handler.
+      const flightRef = useRef({ busy: false });
+      // The input follows the saved combo while the user has not typed:
+      // the settings snapshot may load after mount, and a racing save
+      // mirror may change the saved combo later. editedRef marks a
+      // user-touched draft, syncedFoldRef the fold of the saved combo the
+      // draft currently displays. draftRef mirrors the draft for the async
+      // completion handlers, which would otherwise read a stale render-time
+      // value.
+      const draftRef = useRef(draftAccelerator);
+      const editedRef = useRef(false);
+      const syncedFoldRef = useRef(foldGlobalShortcutDraft(draftAccelerator));
+      const updateDraft = useCallback((value) => {
+        draftRef.current = value;
+        setDraftAccelerator(value);
+      }, []);
+      useEffect(() => {
+        if (editedRef.current) return;
+        const display = formatGlobalShortcutForDisplay(savedAccelerator);
+        const fold = foldGlobalShortcutDraft(display);
+        if (fold === syncedFoldRef.current) return;
+        syncedFoldRef.current = fold;
+        updateDraft(display);
+      }, [savedAccelerator, updateDraft]);
+      const applyConfig = (nextEnabled, nextAccelerator, slot) => {
+        if (flightRef.current.busy) return;
+        if (!prefs || !bridge.available || !bridge.settings || typeof bridge.settings.setGlobalShortcutConfig !== 'function') return;
+        flightRef.current.busy = true;
+        setActionError('');
+        setPending(true);
+        bridge.settings.setGlobalShortcutConfig(nextEnabled, nextAccelerator)
+          .then((result) => {
+            const status = result && result.status;
+            if (status === 'registered' || status === 'disabled') {
+              // `enabled` and `savedAccelerator` are live bridge-mirror
+              // state: the wrapper refreshed the slice before this callback
+              // ran, so both already describe the committed save, and a
+              // failed save reverts them by not mirroring at all. Only the
+              // draft needs local care: fold it back in sync when it
+              // matches the submitted combo modulo case/whitespace/alias
+              // spelling (Rust already normalized; do not leave a phantom
+              // dirty flag behind); otherwise treat it as a combo the user
+              // is still editing and leave it alone.
+              if (result && typeof result.accelerator === 'string' && result.accelerator) {
+                const normalized = normalizeGlobalShortcutDraft(result.accelerator);
+                const draft = draftRef.current;
+                if (foldGlobalShortcutDraft(draft) === foldGlobalShortcutDraft(formatGlobalShortcutForDisplay(nextAccelerator))
+                  || foldGlobalShortcutDraft(draft) === foldGlobalShortcutDraft(nextAccelerator)) {
+                  editedRef.current = false;
+                  const display = formatGlobalShortcutForDisplay(normalized);
+                  syncedFoldRef.current = foldGlobalShortcutDraft(display);
+                  updateDraft(display);
+                }
+              }
+              // disabled + message only happens when the session cannot
+              // support shortcuts (e.g. Wayland): the intent was persisted,
+              // but the switch row's desc must show the localized
+              // unsupported notice instead of a silent success.
+              if (status === 'disabled' && nextEnabled === true && result.message) {
+                setActionError(copy.globalShortcutUnsupportedDesc);
+                setErrorSlot('toggle');
+              }
+              return;
+            }
+            if (status === 'conflict' && result && result.message) {
+              console.warn('[settings] global shortcut conflict detail', result.message);
+            }
+            setActionError(status === 'invalid' ? copy.globalShortcutInvalid
+              : status === 'conflict' ? copy.globalShortcutConflict
+              : copy.globalShortcutSaveFailed);
+            setErrorSlot(slot);
+          })
+          .catch((error) => {
+            // The wrapper contract never rejects (hard failures resolve
+            // null); this only guards against an unexpected exception
+            // latching the flight flag.
+            console.warn('[settings] global shortcut config failed', error);
+            setActionError(copy.globalShortcutSaveFailed);
+            setErrorSlot(slot);
+          })
+          .finally(() => {
+            flightRef.current.busy = false;
+            setPending(false);
+          });
+      };
+      // Dirty check compares display forms: draft holds the display form,
+      // savedAccelerator the machine-canonical string.
+      const acceleratorDirty = normalizeGlobalShortcutDraft(draftAccelerator) !== formatGlobalShortcutForDisplay(savedAccelerator);
+      const acceleratorPlausible = isPlausibleGlobalShortcutAccelerator(draftAccelerator);
+      // Errors land in the owning row's slot regardless of availability: on
+      // an unavailable session the only operable action is switching a
+      // residual shortcut off, and a failed disable must be visible instead
+      // of console-only.
+      const toggleDesc = actionError && errorSlot === 'toggle'
+        ? actionError
+        : available ? copy.globalShortcutEnableDesc : copy.globalShortcutUnsupportedDesc;
+      const acceleratorDesc = actionError && errorSlot === 'accelerator' ? actionError : undefined;
+      const saveAccelerator = () => {
+        // Plausibility gates the click, not the button: a never-valid draft
+        // (dangling separator, modifiers only) keeps Save enabled and
+        // explains itself here instead of wedging silently (same pattern as
+        // the localPort row).
+        if (!acceleratorPlausible) {
+          setActionError(copy.globalShortcutInvalid);
+          setErrorSlot('accelerator');
+          return;
+        }
+        applyConfig(enabled, globalShortcutDraftToRust(draftAccelerator), 'accelerator');
+      };
+      return (
+        <IOSSection title={copy.globalShortcuts}>
+          <IOSRow label={copy.globalShortcutEnable} desc={toggleDesc}>
+            {/* An unavailable session may still switch off a residual
+                enabled=true (the Rust disable path deliberately has no
+                availability gate — it is always safe); only turning the
+                shortcut ON needs a capable session. The whole section stays
+                disabled until the settings snapshot has loaded. */}
+            <IOSSwitch
+              checked={enabled}
+              disabled={!prefs || (!available && !enabled) || pending}
+              aria-label={copy.globalShortcutEnable}
+              onChange={value => applyConfig(!!value, savedAccelerator, 'toggle')}
+            />
+          </IOSRow>
+          <IOSRow label={copy.globalShortcutAccelerator} desc={acceleratorDesc}>
+            <div className="flex items-center gap-2 max-sm:w-full">
+              <input
+                type="text"
+                value={draftAccelerator}
+                onChange={e => {
+                  editedRef.current = true;
+                  // Same pattern as the localPort row: typing invalidates
+                  // the row's error, so a fixed-up draft no longer shows
+                  // the stale invalid copy next to it.
+                  if (errorSlot === 'accelerator') setActionError('');
+                  updateDraft(e.target.value);
+                }}
+                disabled={!prefs || !available || pending}
+                placeholder={copy.globalShortcutPlaceholder}
+                aria-label={copy.globalShortcutAccelerator}
+                data-testid="global-shortcut-accelerator"
+                autoCorrect="off" autoCapitalize="off" spellCheck={false}
+                className="h-8 w-36 rounded-lg border border-black/[0.12] bg-transparent px-2.5 text-[13px] leading-5 outline-none focus:border-[#007AFF] disabled:opacity-45 dark:border-white/[0.14] dark:focus:border-[#0A84FF] max-sm:w-full"
+              />
+              <button
+                type="button"
+                data-testid="global-shortcut-save"
+                disabled={!prefs || !available || pending || !acceleratorDirty}
+                onClick={saveAccelerator}
+                className="h-8 shrink-0 rounded-full bg-[#007AFF]/10 px-3 text-[13px] font-medium text-[#007AFF] transition-colors hover:bg-[#007AFF]/20 disabled:opacity-35 dark:bg-[#0A84FF]/20 dark:text-[#0A84FF]"
+              >{t.uiSettingsDetail.save}</button>
+            </div>
           </IOSRow>
         </IOSSection>
       );
@@ -2273,6 +2492,13 @@ function hasStoredCredential(record) {
               onClose={handleVoiceShortcutInfoClose}
               onToggleShortcut={handleVoiceShortcutInfoEnable}
             />
+          )}
+          {/* The global shortcut is a desktop capability: the web lane has
+              neither the command nor any global-window concept, so hide the
+              whole section (same gating pattern as the notifications
+              section's can gate). */}
+          {!isWeb && (
+            <GlobalShortcutSettingSection t={t} platformCapabilities={platformCapabilities} />
           )}
           {canUsePet && (
           <section className="mb-6">

@@ -65,13 +65,27 @@ fn ensure_collection_mountable(
     knowledge: &KnowledgeService,
     collection_id: i64,
 ) -> Result<(), String> {
-    validate_collection_mountable(collection_id, knowledge.semantic_ready(), || {
-        knowledge
-            .l1()
-            .collection_name(collection_id)
-            .map(|name| name.is_some())
-            .map_err(|error| error.to_string())
-    })
+    let local_embed_supported = crate::platform::capabilities::current().local_embed_supported;
+    validate_collection_mountable(
+        collection_id,
+        local_collection_mount_allowed(knowledge.semantic_ready(), local_embed_supported),
+        || {
+            knowledge
+                .l1()
+                .collection_name(collection_id)
+                .map(|name| name.is_some())
+                .map_err(|error| error.to_string())
+        },
+    )
+}
+
+/// 挂载门条件：语义就绪放行；本地嵌入不支持的设备（如 linux/loongarch64）
+/// 也放行——模型在该设备永远无法就绪，知识库以既有的全文检索降级姿态使用
+/// （kb_search 在该平台上跳过模型重载、直接 FTS，见 kb_tool.rs）。能力位为
+/// false 之外的任何情况（支持平台未装/未加载）仍要求语义就绪，模型检查
+/// 不放松。
+fn local_collection_mount_allowed(semantic_ready: bool, local_embed_supported: bool) -> bool {
+    semantic_ready || !local_embed_supported
 }
 
 fn validate_collection_mountable<F>(
@@ -393,7 +407,14 @@ pub async fn kb_model_status(
     // startup and while its owner panel is closed. A normal local status query
     // must therefore adopt the complete on-disk model instead of merely
     // reporting `installed=true, ready=false` and asking the user to retry.
-    if model_domain::model_installed() && !service.semantic_ready() {
+    // Platforms without local embedding (loongarch64) are excluded, same as
+    // kb_search's reload skip: the stub refuses before touching disk, so the
+    // attempt can only stamp a scary model_error onto every status refresh
+    // for a peer-residue model directory that can never load here.
+    if crate::platform::capabilities::current().local_embed_supported
+        && model_domain::model_installed()
+        && !service.semantic_ready()
+    {
         if let Err(error) =
             model_domain::load_installed_embedder(service.inner(), pool.inner()).await
         {
@@ -455,6 +476,22 @@ mod tests {
         let error = validate_collection_mountable(7, true, || Ok(false)).unwrap_err();
 
         assert!(error.contains("不存在或已删除"));
+    }
+
+    /// 挂载门的能力位放行只属于"平台证明不支持本地嵌入"的设备；支持平台上
+    /// 未装/未加载模型仍被拒（模型检查不放松）。两个方向的回归锚：删掉
+    /// `!local_embed_supported` 臂会把 loong64 全文姿态重新锁死在下载门后，
+    /// 删掉 `semantic_ready ||` 会让支持平台的未加载模型静默放行。
+    #[test]
+    fn mount_gate_admits_only_proven_unsupported_platforms_without_a_model() {
+        use super::local_collection_mount_allowed as allowed;
+
+        // 支持平台：必须语义就绪。
+        assert!(allowed(true, true));
+        assert!(!allowed(false, true));
+        // 平台证明不支持（loongarch64 / 编译期裁剪）：无模型也放行（全文姿态）。
+        assert!(allowed(false, false));
+        assert!(allowed(true, false));
     }
 
     /// 集名插进每轮的 `<system-reminder>` 信封：用户自建名里的信封标签

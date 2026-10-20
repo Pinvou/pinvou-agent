@@ -397,7 +397,7 @@ const MONITOR_CLOCK_LOCALE = { zh: 'zh-CN', en: 'en-US', ja: 'ja-JP' };
                         <span className="absolute h-full w-full rounded-full bg-[#8E8E93] opacity-60" />
                         <span className="relative h-2 w-2 rounded-full bg-[#8E8E93]" />
                       </span>
-                      <span className="text-[11px] font-bold tracking-[0.15em] uppercase text-black/50 dark:text-white/50">{monitorBridgeReady ? t.uiMonitor.readError(monitorError) : t.uiMonitor.bridgeError}</span>
+                      <span className="text-[11px] font-bold tracking-[0.15em] uppercase text-black/50 dark:text-white/50">{monitorBridgeReady ? t.uiMonitor.readFailed : t.uiMonitor.bridgeError}</span>
                     </div>
                   )}
                 </div>

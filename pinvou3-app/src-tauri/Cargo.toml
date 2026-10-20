@@ -1,6 +1,6 @@
 [package]
 name = "pinvou3-tauri"
-version = "0.10.12"
+version = "0.10.13"
 description = "品悟智能助手桌面应用后端"
 authors = ["pinvou"]
 license = "MIT"
@@ -63,6 +63,7 @@ filetime = "0.2.29"
 
 [dependencies]
 pinvou-upgrade-codec = { path = "src/features/updater/protocol/codec" }
+pinvou-upgrade-verifier = { path = "src/features/updater/protocol/verify" }
 pinvou-upgrade-control-http = { path = "src/features/updater/protocol/http" }
 pinvou-upgrade-timing = { path = "src/features/updater/timing/math" }
 pinvou-upgrade-transfer = { path = "src/features/updater/download/transfer" }
@@ -84,6 +85,7 @@ tauri-plugin-log = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2.4.2"
 tauri-plugin-notification = "2"
+tauri-plugin-global-shortcut = "2.3.2"
 
 # 异步 / 错误
 anyhow = "1.0"

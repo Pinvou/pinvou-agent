@@ -1,6 +1,181 @@
 //! Upgrade V1 contract decoding and fixed-origin control POST adaptation.
 //! Contract-valid transport bodies grant no signature/time/installation authority.
 
+/// Actual single-envelope checks under independently supplied existing Root,
+/// expected context/time/deny/high-water facts. Production is fixed here; this
+/// facade establishes no protected bootstrap, persistent acceptance or rights.
+pub(crate) fn verify_supplied_envelope_bytes<'a>(
+    bytes: &[u8],
+    root: &'a pinvou_upgrade_codec::RootPolicyShape,
+    expected: &'a pinvou_upgrade_codec::Document,
+    now: &'a pinvou_upgrade_codec::SuppliedProtocolTime,
+    high_water: Option<&'a pinvou_upgrade_codec::Document>,
+    denied_key_ids: &'a [String],
+) -> Result<
+    pinvou_upgrade_verifier::SignatureCheckedEnvelope<'a>,
+    pinvou_upgrade_verifier::VerificationError,
+> {
+    let mut inputs = pinvou_upgrade_verifier::VerificationInputs::new(root, expected, now)
+        .with_denied_key_ids(denied_key_ids);
+    if let Some(record) = high_water {
+        inputs = inputs.with_high_water(record);
+    }
+    pinvou_upgrade_verifier::verify_with_supplied_root(bytes, inputs)
+}
+
+/// One continuous Root successor using independently supplied full Root context,
+/// safe time and the caller-owned complete active read set. No install/persistence.
+pub(crate) fn verify_supplied_root_successor_bytes<'a>(
+    bytes: &[u8],
+    old_root: &'a pinvou_upgrade_codec::RootPolicyShape,
+    expected_root: &pinvou_upgrade_codec::Document,
+    now: &pinvou_upgrade_codec::SuppliedProtocolTime,
+    active_metadata: &[pinvou_upgrade_verifier::ActiveMetadataInput<'_>],
+) -> Result<
+    pinvou_upgrade_verifier::SignatureCheckedRootSuccessor<'a>,
+    pinvou_upgrade_verifier::VerificationError,
+> {
+    pinvou_upgrade_verifier::verify_root_successor(
+        bytes,
+        old_root,
+        expected_root,
+        now,
+        active_metadata,
+    )
+}
+
+/// Complete pure Root traversal. Only nonfinal expiry is allowed; no protected
+/// install/persistence or active-snapshot completeness is established here.
+pub(crate) fn verify_supplied_root_chain_bytes<'a>(
+    successors: &[&[u8]],
+    initial_root: &'a pinvou_upgrade_codec::RootPolicyShape,
+    expected_root: &pinvou_upgrade_codec::Document,
+    now: &pinvou_upgrade_codec::SuppliedProtocolTime,
+    active_metadata: &[pinvou_upgrade_verifier::ActiveMetadataInput<'_>],
+) -> Result<
+    pinvou_upgrade_verifier::SignatureCheckedRootChain<'a>,
+    pinvou_upgrade_verifier::VerificationError,
+> {
+    pinvou_upgrade_verifier::verify_root_chain(
+        successors,
+        initial_root,
+        expected_root,
+        now,
+        active_metadata,
+    )
+}
+
+/// Historical Production Package identity under caller-owned archived trust and
+/// safe time. This proof grants no current qualification or execution rights.
+pub(crate) fn verify_supplied_archived_package_bytes<'a>(
+    bytes: &[u8],
+    archived_root: &'a pinvou_upgrade_codec::RootPolicyShape,
+    expected: &pinvou_upgrade_codec::Document,
+    now: &pinvou_upgrade_codec::SuppliedProtocolTime,
+) -> Result<
+    pinvou_upgrade_verifier::ArchivedEnvelopeIdentity<'a>,
+    pinvou_upgrade_verifier::VerificationError,
+> {
+    pinvou_upgrade_verifier::verify_archived_package(bytes, archived_root, expected, now)
+}
+
+/// Historical Release identity at each original object's own issued time.
+/// Protected archive custody stays caller-owned; no current rights are granted.
+pub(crate) fn verify_supplied_archived_release_bytes<'a>(
+    bytes: &[u8],
+    archived_root: &'a pinvou_upgrade_codec::RootPolicyShape,
+    expected: &pinvou_upgrade_codec::Document,
+) -> Result<
+    pinvou_upgrade_verifier::ArchivedEnvelopeIdentity<'a>,
+    pinvou_upgrade_verifier::VerificationError,
+> {
+    pinvou_upgrade_verifier::verify_archived_release(bytes, archived_root, expected)
+}
+
+/// Complete public chain under independently supplied existing trust, context,
+/// safe time and denial facts. No persistent acceptance or current online rights.
+pub(crate) fn verify_supplied_public_chain_bytes<'a>(
+    timestamp_bytes: &[u8],
+    snapshot_bytes: &[u8],
+    member_bytes: &[&[u8]],
+    inputs: pinvou_upgrade_verifier::PublicChainInputs<'a>,
+) -> Result<
+    pinvou_upgrade_verifier::SignatureCheckedPublicChain<'a>,
+    pinvou_upgrade_verifier::PublicChainError,
+> {
+    pinvou_upgrade_verifier::verify_public_chain(
+        timestamp_bytes,
+        snapshot_bytes,
+        member_bytes,
+        inputs,
+    )
+}
+
+/// Actual signed candidate pair and opening under independent caller context.
+/// This neither selects a candidate nor grants persistent/current online rights.
+pub(crate) fn verify_supplied_candidate_release_bytes<'a>(
+    target_bytes: &[u8],
+    release_bytes: &[u8],
+    opening: &pinvou_upgrade_codec::Document,
+    inputs: pinvou_upgrade_verifier::CandidateVerificationInputs<'a>,
+) -> Result<
+    pinvou_upgrade_verifier::SignatureCheckedCandidateRelease<'a>,
+    pinvou_upgrade_verifier::CandidateVerificationError,
+> {
+    pinvou_upgrade_verifier::verify_candidate_release(target_bytes, release_bytes, opening, inputs)
+}
+
+/// Authenticate Package metadata and bind supplied Release Schema material.
+/// Release authenticity and current execution/qualification remain external.
+pub(crate) fn verify_supplied_release_package_bytes<'a>(
+    supplied_release: &'a pinvou_upgrade_codec::SchemaCheckedEnvelope,
+    package_bytes: &[u8],
+    inputs: pinvou_upgrade_verifier::PackageBindingInputs<'a>,
+) -> Result<
+    pinvou_upgrade_verifier::SignatureCheckedPackageBinding<'a>,
+    pinvou_upgrade_verifier::PackageBindingVerificationError,
+> {
+    pinvou_upgrade_verifier::verify_release_package(supplied_release, package_bytes, inputs)
+}
+
+/// Actual new Check/Refresh credentials correlated to the independent original
+/// request; metadata acceptance and workflow writer CAS remain external.
+pub(crate) fn verify_supplied_check_response_bytes<'a>(
+    response: &[u8],
+    operation: pinvou_upgrade_codec::CheckResponseOperation,
+    inputs: pinvou_upgrade_verifier::CheckVerificationInputs<'a>,
+) -> Result<
+    pinvou_upgrade_verifier::SignatureCheckedCheckResponse<'a>,
+    pinvou_upgrade_verifier::CheckVerificationError,
+> {
+    pinvou_upgrade_verifier::verify_check_response(response, operation, inputs)
+}
+
+/// Authenticate current Decision/Download inheritance; destination and active
+/// protected owner qualification remain external before any network or action.
+pub(crate) fn verify_supplied_download_response_bytes<'a>(
+    response: &[u8],
+    inputs: pinvou_upgrade_verifier::DownloadVerificationInputs<'a>,
+) -> Result<
+    pinvou_upgrade_verifier::SignatureCheckedDownloadResponse<'a>,
+    pinvou_upgrade_verifier::DownloadVerificationError,
+> {
+    pinvou_upgrade_verifier::verify_download_info_response(response, inputs)
+}
+
+/// Signed historical/current Release renewal relationship; protected metadata
+/// acceptance and complete chain qualification remain separate owners.
+pub(crate) fn verify_supplied_release_renewal_bytes<'a>(
+    previous: &[u8],
+    next: &[u8],
+    inputs: pinvou_upgrade_verifier::ReleaseRenewalInputs<'a>,
+) -> Result<
+    pinvou_upgrade_verifier::SignatureCheckedReleaseRenewal<'a>,
+    pinvou_upgrade_verifier::ReleaseRenewalVerificationError,
+> {
+    pinvou_upgrade_verifier::verify_release_renewal(previous, next, inputs)
+}
+
 /// Exactly one fixed-origin POST; a dropped/error response can have committed
 /// remotely. Owner-controlled retries and durable ACK/consume recovery remain separate.
 pub(crate) async fn send_client_request_once(
@@ -482,6 +657,867 @@ pub(crate) fn derive_source_profile(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn feature_facade_verifies_all_original_signatures_and_refuses_denied_signers() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let inventory: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../specs/upgrade/v1/vectors/crypto/envelopes.json"
+        )))
+        .unwrap();
+        let root =
+            decode_root_policy_shape(&serde_json::to_vec(&inventory["trustedRoot"]).unwrap())
+                .unwrap();
+        for vector in inventory["vectors"].as_array().unwrap() {
+            let bytes = URL_SAFE_NO_PAD
+                .decode(vector["envelopeBase64Url"].as_str().unwrap())
+                .unwrap();
+            let expected =
+                decode_metadata(&serde_json::to_vec(&vector["expectedContext"]).unwrap()).unwrap();
+            let now = decode_metadata(&serde_json::to_vec(&vector["now"]).unwrap())
+                .unwrap()
+                .protocol_time_shape()
+                .unwrap();
+            let checked = verify_supplied_envelope_bytes(&bytes, &root, &expected, &now, None, &[])
+                .unwrap_or_else(|error| panic!("{}: {error}", vector["name"]));
+            assert_eq!(checked.envelope().envelope().raw_bytes(), bytes);
+            let denied: Vec<_> = checked.verified_signer_ids().iter().cloned().collect();
+            assert!(matches!(
+                verify_supplied_envelope_bytes(&bytes, &root, &expected, &now, None, &denied),
+                Err(pinvou_upgrade_verifier::VerificationError::SigningKeyDenied)
+            ));
+        }
+    }
+
+    #[test]
+    fn feature_facade_keeps_production_for_an_actually_signed_incremental_package() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let output = std::process::Command::new("node")
+            .args([
+                "--input-type=module",
+                "-e",
+                include_str!("verify/tests/envelope-oracle.mjs"),
+            ])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../specs/upgrade/v1/reference/canonical-json.mjs"),
+            )
+            .output()
+            .expect("Node is required for the original full signature oracle");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        let case = cases
+            .iter()
+            .find(|case| case["name"] == "same-signed-incremental-explicit-development")
+            .unwrap();
+        let bytes = URL_SAFE_NO_PAD
+            .decode(case["bytes"].as_str().unwrap())
+            .unwrap();
+        let root =
+            decode_root_policy_shape(&serde_json::to_vec(&case["trustedRoot"]).unwrap()).unwrap();
+        let expected = decode_metadata(&serde_json::to_vec(&case["expected"]).unwrap()).unwrap();
+        let now = decode_metadata(&serde_json::to_vec(&case["now"]).unwrap())
+            .unwrap()
+            .protocol_time_shape()
+            .unwrap();
+        assert!(
+            pinvou_upgrade_verifier::verify_with_supplied_root(
+                &bytes,
+                pinvou_upgrade_verifier::VerificationInputs::new(&root, &expected, &now)
+                    .with_package_mode(pinvou_upgrade_codec::PackageSemanticsMode::Development)
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            verify_supplied_envelope_bytes(&bytes, &root, &expected, &now, None, &[]),
+            Err(pinvou_upgrade_verifier::VerificationError::Metadata(
+                pinvou_upgrade_codec::MetadataSemanticsError::IncrementalProduction
+            ))
+        ));
+    }
+
+    #[test]
+    fn feature_facade_checks_both_root_policies_and_active_key_retention() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        use pinvou_upgrade_verifier::ActiveMetadataInput;
+        let output = std::process::Command::new("node")
+            .args([
+                "--input-type=module",
+                "-e",
+                include_str!("verify/tests/root-successor-oracle.mjs"),
+            ])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../specs/upgrade/v1/reference/canonical-json.mjs"),
+            )
+            .output()
+            .expect("Node is required for the frozen Root successor oracle");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        for name in [
+            "distinct-old-and-next-two-of-three",
+            "old-only",
+            "next-only",
+            "all-five-metadata-roles",
+            "retired-active-key-refuses",
+            "active-package-does-not-run-production-body-semantics",
+        ] {
+            let case = cases.iter().find(|c| c["name"] == name).unwrap();
+            let old = decode_root_policy_shape(&serde_json::to_vec(&case["trustedRoot"]).unwrap())
+                .unwrap();
+            let expected =
+                decode_metadata(&serde_json::to_vec(&case["expected"]).unwrap()).unwrap();
+            let now = decode_metadata(&serde_json::to_vec(&case["now"]).unwrap())
+                .unwrap()
+                .protocol_time_shape()
+                .unwrap();
+            let bytes = URL_SAFE_NO_PAD
+                .decode(case["bytes"].as_str().unwrap())
+                .unwrap();
+            let active: Vec<_> = case["activeEnvelopes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| {
+                    (
+                        URL_SAFE_NO_PAD
+                            .decode(a["bytes"].as_str().unwrap())
+                            .unwrap(),
+                        decode_metadata(&serde_json::to_vec(&a["expected"]).unwrap()).unwrap(),
+                    )
+                })
+                .collect();
+            let inputs: Vec<_> = active
+                .iter()
+                .map(|(b, e)| ActiveMetadataInput::new(b, e))
+                .collect();
+            match verify_supplied_root_successor_bytes(&bytes, &old, &expected, &now, &inputs) {
+                Ok(checked) => {
+                    assert_eq!(case["accepted"], true, "unexpected acceptance {name}");
+                    assert!(std::ptr::eq(checked.supplied_old_root(), &old));
+                    assert_eq!(checked.envelope().envelope().raw_bytes(), bytes);
+                }
+                Err(error) => {
+                    assert_eq!(
+                        case["accepted"], false,
+                        "unexpected refusal {name}: {error}"
+                    );
+                    assert_eq!(error.to_string(), case["rustCode"].as_str().unwrap());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn feature_facade_traverses_expired_intermediates_and_requires_fresh_final_root() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        use pinvou_upgrade_verifier::ActiveMetadataInput;
+        let output = std::process::Command::new("node")
+            .args([
+                "--input-type=module",
+                "-e",
+                include_str!("verify/tests/root-chain-oracle.mjs"),
+            ])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../specs/upgrade/v1/reference/canonical-json.mjs"),
+            )
+            .output()
+            .expect("Node is required for the frozen complete Root-chain oracle");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        for name in [
+            "three-real-distinct-dual-threshold-steps",
+            "expired-old-and-intermediates-fresh-final",
+            "expired-final-refuses",
+            "bad-middle-extra-does-not-return-prefix",
+            "final-retirement-refuses",
+            "4097-count-refuses-before-parse",
+        ] {
+            let case = cases.iter().find(|c| c["name"] == name).unwrap();
+            let old = decode_root_policy_shape(&serde_json::to_vec(&case["trustedRoot"]).unwrap())
+                .unwrap();
+            let expected =
+                decode_metadata(&serde_json::to_vec(&case["expected"]).unwrap()).unwrap();
+            let now = decode_metadata(&serde_json::to_vec(&case["now"]).unwrap())
+                .unwrap()
+                .protocol_time_shape()
+                .unwrap();
+            let bytes: Vec<_> = case["successors"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|b| URL_SAFE_NO_PAD.decode(b.as_str().unwrap()).unwrap())
+                .collect();
+            let repeat = case["repeatSteps"].as_u64().unwrap() as usize;
+            let successors: Vec<_> = (0..repeat)
+                .flat_map(|_| bytes.iter().map(Vec::as_slice))
+                .collect();
+            let active: Vec<_> = case["activeEnvelopes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| {
+                    (
+                        URL_SAFE_NO_PAD
+                            .decode(a["bytes"].as_str().unwrap())
+                            .unwrap(),
+                        decode_metadata(&serde_json::to_vec(&a["expected"]).unwrap()).unwrap(),
+                    )
+                })
+                .collect();
+            let inputs: Vec<_> = active
+                .iter()
+                .map(|(b, e)| ActiveMetadataInput::new(b, e))
+                .collect();
+            match verify_supplied_root_chain_bytes(&successors, &old, &expected, &now, &inputs) {
+                Ok(checked) => {
+                    assert_eq!(case["accepted"], true, "unexpected acceptance {name}");
+                    assert!(std::ptr::eq(checked.supplied_initial_root(), &old));
+                    assert_eq!(checked.checked_steps(), successors.len());
+                    assert_eq!(
+                        checked.final_envelope().envelope().raw_bytes(),
+                        *successors.last().unwrap()
+                    );
+                }
+                Err(error) => {
+                    assert_eq!(
+                        case["accepted"], false,
+                        "unexpected refusal {name}: {error}"
+                    );
+                    assert_eq!(error.to_string(), case["rustCode"].as_str().unwrap());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn feature_facade_preserves_distinct_historical_identity_rules() {
+        use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+        let output = std::process::Command::new("node")
+            .args([
+                "--input-type=module",
+                "-e",
+                include_str!("verify/tests/archive-identity-oracle.mjs"),
+            ])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../specs/upgrade/v1/reference/canonical-json.mjs"),
+            )
+            .output()
+            .expect("Node is required for the frozen historical identity oracle");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        for name in [
+            "expired-root-still-identifies-package",
+            "future-root-still-refuses-package",
+            "archive-still-requires-production-full-package",
+            "release-has-no-current-now-restriction",
+            "root-issued-later-than-release-is-not-extra-policy",
+            "release-issued-after-root-expiry-is-identity-only",
+            "release-original-window-must-be-positive",
+            "package-two-actual-signatures",
+            "release-two-actual-signatures",
+            "package-one-is-insufficient",
+            "release-one-is-insufficient",
+        ] {
+            let case = cases.iter().find(|c| c["name"] == name).unwrap();
+            let root =
+                decode_root_policy_shape(&serde_json::to_vec(&case["archivedRoot"]).unwrap())
+                    .unwrap();
+            let expected =
+                decode_metadata(&serde_json::to_vec(&case["expected"]).unwrap()).unwrap();
+            let bytes = URL_SAFE_NO_PAD
+                .decode(case["bytes"].as_str().unwrap())
+                .unwrap();
+            let result = match case["operation"].as_str().unwrap() {
+                "package" => {
+                    let now = decode_metadata(&serde_json::to_vec(&case["now"]).unwrap())
+                        .unwrap()
+                        .protocol_time_shape()
+                        .unwrap();
+                    verify_supplied_archived_package_bytes(&bytes, &root, &expected, &now)
+                }
+                "release" => verify_supplied_archived_release_bytes(&bytes, &root, &expected),
+                other => panic!("unexpected archive operation {other}"),
+            };
+            match result {
+                Ok(checked) => {
+                    assert_eq!(
+                        case["accepted"], true,
+                        "unexpected identity acceptance {name}"
+                    );
+                    assert!(std::ptr::eq(checked.supplied_archived_root(), &root));
+                    assert_eq!(checked.envelope().envelope().raw_bytes(), bytes);
+                }
+                Err(error) => {
+                    assert_eq!(
+                        case["accepted"], false,
+                        "unexpected identity refusal {name}: {error}"
+                    );
+                    assert_eq!(error.to_string(), case["rustCode"].as_str().unwrap());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn feature_facade_authenticates_complete_public_chain_without_current_rights() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        use pinvou_upgrade_verifier::PublicChainInputs;
+        use std::collections::BTreeMap;
+        let output = std::process::Command::new("node")
+            .args([
+                "--input-type=module",
+                "-e",
+                include_str!("verify/tests/public-chain-oracle.mjs"),
+            ])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../specs/upgrade/v1/reference/signatures.mjs"),
+            )
+            .output()
+            .expect("Node is required for the frozen complete public-chain oracle");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        for name in [
+            "two-targets-two-packages-unordered-positive",
+            "second-target-independent-policy-refuses",
+            "second-target-complete-reference-scope-refuses",
+            "ordinary-path-reachable-positive",
+            "unreachable-candidate-leak",
+            "target-key-denied-only-for-release-still-passes",
+            "release-exact-role-deny-refuses",
+            "bad-extra-after-valid-threshold-refuses",
+            "production-incremental-package-refuses",
+        ] {
+            let case = cases.iter().find(|c| c["name"] == name).unwrap();
+            let root = decode_root_policy_shape(&serde_json::to_vec(&case["trustedRoot"]).unwrap())
+                .unwrap();
+            let context = decode_metadata(&serde_json::to_vec(&case["context"]).unwrap()).unwrap();
+            let now = decode_metadata(&serde_json::to_vec(&case["now"]).unwrap())
+                .unwrap()
+                .protocol_time_shape()
+                .unwrap();
+            let timestamp = STANDARD
+                .decode(case["timestamp"].as_str().unwrap())
+                .unwrap();
+            let snapshot = STANDARD.decode(case["snapshot"].as_str().unwrap()).unwrap();
+            let members: Vec<_> = case["members"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| STANDARD.decode(m.as_str().unwrap()).unwrap())
+                .collect();
+            let borrowed: Vec<_> = members.iter().map(Vec::as_slice).collect();
+            let denied: Vec<String> = serde_json::from_value(case["deniedKeyIds"].clone()).unwrap();
+            let role_denied: BTreeMap<String, Vec<String>> =
+                serde_json::from_value(case["deniedKeyIdsByRole"].clone()).unwrap();
+            let mut inputs =
+                PublicChainInputs::new(&root, &context, &now).with_denied_key_ids(&denied);
+            for (role, ids) in &role_denied {
+                inputs = inputs.with_role_denied_key_ids(role, ids);
+            }
+            match verify_supplied_public_chain_bytes(&timestamp, &snapshot, &borrowed, inputs) {
+                Ok(checked) => {
+                    assert_eq!(
+                        case["accepted"], true,
+                        "unexpected public-chain acceptance {name}"
+                    );
+                    assert!(std::ptr::eq(checked.supplied_root(), &root));
+                    assert_eq!(checked.members().len(), members.len());
+                    for (envelope, raw) in checked.members().iter().zip(&members) {
+                        assert_eq!(envelope.envelope().raw_bytes(), raw);
+                    }
+                }
+                Err(error) => {
+                    assert_eq!(
+                        case["accepted"], false,
+                        "unexpected public-chain refusal {name}: {error}"
+                    );
+                    let expected = match case["code"].as_str().unwrap() {
+                        "ROLE_NOT_AUTHORIZED" => "ROLE_POLICY_NOT_DECLARED",
+                        "REFERENCE_MISMATCH" => "METADATA_REFERENCE_MISMATCH",
+                        code => code,
+                    };
+                    assert_eq!(
+                        error.to_string(),
+                        expected,
+                        "wrong public-chain refusal {name}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn feature_facade_authenticates_candidate_opening_without_selecting_it() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        use pinvou_upgrade_verifier::CandidateVerificationInputs;
+        let output = std::process::Command::new("node")
+            .args([
+                "--input-type=module",
+                "-e",
+                include_str!("verify/tests/candidate-oracle.mjs"),
+            ])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../specs/upgrade/v1/reference/signatures.mjs"),
+            )
+            .output()
+            .expect("Node is required for the frozen complete candidate oracle");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        for name in [
+            "genuine-empty-catalog-candidate",
+            "opening-restored-positive",
+            "baseline-is-not-candidate",
+            "null-opening-refuses",
+            "independent-expectedReleaseId",
+            "release-cannot-switch-component",
+            "release-target-membership",
+            "bad-extra-after-valid-target-threshold",
+            "two-real-target-signatures",
+            "invalid-release-signature",
+        ] {
+            let case = cases.iter().find(|c| c["name"] == name).unwrap();
+            let root = decode_root_policy_shape(&serde_json::to_vec(&case["trustedRoot"]).unwrap())
+                .unwrap();
+            let context = decode_metadata(&serde_json::to_vec(&case["context"]).unwrap()).unwrap();
+            let opening = decode_metadata(&serde_json::to_vec(&case["opening"]).unwrap()).unwrap();
+            let now = decode_metadata(&serde_json::to_vec(&case["now"]).unwrap())
+                .unwrap()
+                .protocol_time_shape()
+                .unwrap();
+            let target = STANDARD
+                .decode(case["targetBytes"].as_str().unwrap())
+                .unwrap();
+            let release = STANDARD
+                .decode(case["releaseBytes"].as_str().unwrap())
+                .unwrap();
+            let denied: Vec<String> = serde_json::from_value(case["deniedKeyIds"].clone()).unwrap();
+            let inputs = CandidateVerificationInputs::new(&root, &context, &now)
+                .with_denied_key_ids(&denied);
+            match verify_supplied_candidate_release_bytes(&target, &release, &opening, inputs) {
+                Ok(checked) => {
+                    assert_eq!(
+                        case["accepted"], true,
+                        "unexpected candidate acceptance {name}"
+                    );
+                    assert!(std::ptr::eq(checked.supplied_root(), &root));
+                    assert_eq!(checked.target().envelope().raw_bytes(), target);
+                    assert_eq!(checked.release().envelope().raw_bytes(), release);
+                }
+                Err(error) => {
+                    assert_eq!(
+                        case["accepted"], false,
+                        "unexpected candidate refusal {name}: {error}"
+                    );
+                    let expected = match case["code"].as_str().unwrap() {
+                        "OPENING_MISMATCH" => "ROLLOUT_OPENING_MISMATCH",
+                        code => code,
+                    };
+                    assert_eq!(
+                        error.to_string(),
+                        expected,
+                        "wrong candidate refusal {name}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn feature_facade_authenticates_package_without_certifying_supplied_release() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        use pinvou_upgrade_verifier::PackageBindingInputs;
+        let output = std::process::Command::new("node")
+            .args([
+                "--input-type=module",
+                "-e",
+                include_str!("verify/tests/package-binding-oracle.mjs"),
+            ])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../specs/upgrade/v1/reference/signatures.mjs"),
+            )
+            .output()
+            .expect("Node is required for the frozen Package binding oracle");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        for name in [
+            "original-package-binding",
+            "release-mode-subset-positive",
+            "expired-release-positive",
+            "invalid-release-signature-positive",
+            "foreign-release-component-positive",
+            "bad-extra-after-valid-threshold",
+            "two-actual-package-signatures",
+            "unsigned-package-body-change",
+            "original-reference-version",
+            "production-incremental-refuses",
+        ] {
+            let case = cases.iter().find(|c| c["name"] == name).unwrap();
+            let root = decode_root_policy_shape(&serde_json::to_vec(&case["trustedRoot"]).unwrap())
+                .unwrap();
+            let context = decode_metadata(&serde_json::to_vec(&case["context"]).unwrap()).unwrap();
+            let now = decode_metadata(&serde_json::to_vec(&case["now"]).unwrap())
+                .unwrap()
+                .protocol_time_shape()
+                .unwrap();
+            let release_raw = STANDARD
+                .decode(case["releaseBytes"].as_str().unwrap())
+                .unwrap();
+            let release = decode_schema_checked_envelope(
+                &release_raw,
+                pinvou_upgrade_codec::InputKind::Metadata,
+            )
+            .unwrap();
+            let package = STANDARD
+                .decode(case["packageBytes"].as_str().unwrap())
+                .unwrap();
+            let denied: Vec<String> = serde_json::from_value(case["deniedKeyIds"].clone()).unwrap();
+            let inputs =
+                PackageBindingInputs::new(&root, &context, &now).with_denied_key_ids(&denied);
+            match verify_supplied_release_package_bytes(&release, &package, inputs) {
+                Ok(checked) => {
+                    assert_eq!(
+                        case["accepted"], true,
+                        "unexpected Package acceptance {name}"
+                    );
+                    assert!(std::ptr::eq(checked.supplied_root(), &root));
+                    assert!(std::ptr::eq(checked.supplied_release(), &release));
+                    assert_eq!(checked.checked_package().envelope().raw_bytes(), package);
+                }
+                Err(error) => {
+                    assert_eq!(
+                        case["accepted"], false,
+                        "unexpected Package refusal {name}: {error}"
+                    );
+                    let expected = if name == "original-reference-version" {
+                        "METADATA_REFERENCE_INVALID"
+                    } else {
+                        case["code"].as_str().unwrap()
+                    };
+                    assert_eq!(error.to_string(), expected, "wrong Package refusal {name}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn feature_facade_authenticates_and_correlates_successful_check_responses() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        use pinvou_upgrade_codec::CheckResponseOperation;
+        use pinvou_upgrade_verifier::CheckVerificationInputs;
+        let output = std::process::Command::new("node")
+            .args([
+                "--input-type=module",
+                "-e",
+                include_str!("verify/tests/check-response-oracle.mjs"),
+            ])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../specs/upgrade/v1/reference/signatures.mjs"),
+            )
+            .output()
+            .expect("Node required for composed signed-response controls");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        for name in [
+            "signed-check-update",
+            "signed-check-no-update",
+            "signed-refresh",
+            "expired-prior-refresh-decision",
+            "unverified-old-refresh-signature",
+            "whitespace-unordered-transport",
+            "request-host-arch",
+            "decision-requestNonce",
+            "telemetryCredential-bad-extra-after-valid-threshold",
+            "actual-dual-credential-thresholds",
+            "telemetryCredential-at-expiry",
+            "refreshed-workflow-mismatch",
+        ] {
+            let case = cases.iter().find(|c| c["name"] == name).unwrap();
+            let root = decode_root_policy_shape(&serde_json::to_vec(&case["trustedRoot"]).unwrap())
+                .unwrap();
+            let now = decode_metadata(&serde_json::to_vec(&case["now"]).unwrap())
+                .unwrap()
+                .protocol_time_shape()
+                .unwrap();
+            let raw_request = STANDARD
+                .decode(case["requestBytes"].as_str().unwrap())
+                .unwrap();
+            let request = decode_metadata(&raw_request).unwrap();
+            let response = STANDARD
+                .decode(case["responseBytes"].as_str().unwrap())
+                .unwrap();
+            let denied: Vec<String> = serde_json::from_value(case["deniedKeyIds"].clone()).unwrap();
+            let operation = if case["operation"] == "check" {
+                CheckResponseOperation::Check
+            } else {
+                CheckResponseOperation::Refresh
+            };
+            match verify_supplied_check_response_bytes(
+                &response,
+                operation,
+                CheckVerificationInputs::new(&root, &request, &now).with_denied_key_ids(&denied),
+            ) {
+                Ok(proof) => {
+                    assert_eq!(
+                        case["accepted"], true,
+                        "unexpected response acceptance {name}"
+                    );
+                    assert!(std::ptr::eq(proof.supplied_root(), &root));
+                    assert!(std::ptr::eq(proof.supplied_request(), &request));
+                    assert_eq!(proof.original_response_bytes(), response);
+                    assert_eq!(proof.operation(), operation);
+                    let transport = decode_metadata(&response).unwrap();
+                    for (field, credential) in [
+                        ("decision", proof.decision()),
+                        ("telemetryCredential", proof.telemetry_credential()),
+                    ] {
+                        assert_eq!(
+                            credential.envelope().raw_bytes(),
+                            decode_metadata(
+                                &serde_json::to_vec(&transport.value()[field]).unwrap()
+                            )
+                            .unwrap()
+                            .canonical_bytes()
+                            .unwrap()
+                        );
+                    }
+                }
+                Err(error) => {
+                    assert_eq!(
+                        case["accepted"], false,
+                        "unexpected response refusal {name}: {error}"
+                    );
+                    assert_eq!(
+                        error.to_string(),
+                        case["code"].as_str().unwrap(),
+                        "wrong response refusal {name}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn feature_facade_authenticates_download_response_and_current_request_decision() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        use pinvou_upgrade_verifier::DownloadVerificationInputs;
+        let output = std::process::Command::new("node")
+            .args([
+                "--input-type=module",
+                "-e",
+                include_str!("verify/tests/download-response-oracle.mjs"),
+            ])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../specs/upgrade/v1/reference/signatures.mjs"),
+            )
+            .output()
+            .expect("Node required for composed signed-download controls");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        for name in [
+            "signed-download-info",
+            "transport-whitespace",
+            "distinct-role-jti-and-key",
+            "inherited-forward-path",
+            "inherited-update",
+            "requested-other-package",
+            "both-actual-two-signer-thresholds",
+            "credential-bad-extra-after-valid-threshold",
+            "expired-request-decision",
+            "new-download-at-expiry",
+            "url-at-expiry",
+            "url-last-valid-millisecond",
+        ] {
+            let case = cases.iter().find(|c| c["name"] == name).unwrap();
+            let root = decode_root_policy_shape(&serde_json::to_vec(&case["trustedRoot"]).unwrap())
+                .unwrap();
+            let now = decode_metadata(&serde_json::to_vec(&case["now"]).unwrap())
+                .unwrap()
+                .protocol_time_shape()
+                .unwrap();
+            let raw_request = STANDARD
+                .decode(case["requestBytes"].as_str().unwrap())
+                .unwrap();
+            let request = decode_metadata(&raw_request).unwrap();
+            let response = STANDARD
+                .decode(case["responseBytes"].as_str().unwrap())
+                .unwrap();
+            let denied: Vec<String> = serde_json::from_value(case["deniedKeyIds"].clone()).unwrap();
+            match verify_supplied_download_response_bytes(
+                &response,
+                DownloadVerificationInputs::new(&root, &request, &now).with_denied_key_ids(&denied),
+            ) {
+                Ok(proof) => {
+                    assert_eq!(
+                        case["accepted"], true,
+                        "unexpected download acceptance {name}"
+                    );
+                    assert!(std::ptr::eq(proof.supplied_root(), &root));
+                    assert!(std::ptr::eq(proof.supplied_request(), &request));
+                    assert_eq!(proof.original_response_bytes(), response);
+                    let transport = decode_metadata(&response).unwrap();
+                    let original =
+                        decode_metadata(&serde_json::to_vec(&request.value()["decision"]).unwrap())
+                            .unwrap()
+                            .canonical_bytes()
+                            .unwrap();
+                    assert_eq!(proof.decision().envelope().raw_bytes(), original);
+                    let original = decode_metadata(
+                        &serde_json::to_vec(&transport.value()["credential"]).unwrap(),
+                    )
+                    .unwrap()
+                    .canonical_bytes()
+                    .unwrap();
+                    assert_eq!(proof.download_credential().envelope().raw_bytes(), original);
+                }
+                Err(error) => {
+                    assert_eq!(
+                        case["accepted"], false,
+                        "unexpected download refusal {name}: {error}"
+                    );
+                    assert_eq!(
+                        error.to_string(),
+                        case["code"].as_str().unwrap(),
+                        "wrong download refusal {name}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn feature_facade_preserves_authenticated_release_renewal_proof_levels() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        use pinvou_upgrade_verifier::ReleaseRenewalInputs;
+        let output = std::process::Command::new("node")
+            .args([
+                "--input-type=module",
+                "-e",
+                include_str!("verify/tests/release-renewal-oracle.mjs"),
+            ])
+            .arg(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../specs/upgrade/v1/reference/signatures.mjs"),
+            )
+            .output()
+            .expect("Node required for composed Release renewal controls");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let cases: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        for name in [
+            "expired-history-distinct-current-signer",
+            "future-historical-own-time-no-cross-order",
+            "historical-key-denied-not-retroactive",
+            "unchanged-current-root-and-release-key",
+            "both-actual-independent-thresholds",
+            "previous-bad-extra-after-valid-threshold",
+            "immutable-notes",
+            "independent-component",
+            "revision-equal",
+            "next-release-future",
+            "next-noncanonical",
+            "historical-original-window-invalid",
+        ] {
+            let case = cases.iter().find(|c| c["name"] == name).unwrap();
+            let archived =
+                decode_root_policy_shape(&serde_json::to_vec(&case["archivedRoot"]).unwrap())
+                    .unwrap();
+            let current =
+                decode_root_policy_shape(&serde_json::to_vec(&case["currentRoot"]).unwrap())
+                    .unwrap();
+            let context = decode_metadata(&serde_json::to_vec(&case["context"]).unwrap()).unwrap();
+            let now = decode_metadata(&serde_json::to_vec(&case["now"]).unwrap())
+                .unwrap()
+                .protocol_time_shape()
+                .unwrap();
+            let previous = STANDARD
+                .decode(case["previousBytes"].as_str().unwrap())
+                .unwrap();
+            let next = STANDARD
+                .decode(case["nextBytes"].as_str().unwrap())
+                .unwrap();
+            let denied: Vec<String> = serde_json::from_value(case["deniedKeyIds"].clone()).unwrap();
+            match verify_supplied_release_renewal_bytes(
+                &previous,
+                &next,
+                ReleaseRenewalInputs::new(&archived, &current, &context, &now)
+                    .with_denied_key_ids(&denied),
+            ) {
+                Ok(proof) => {
+                    assert_eq!(
+                        case["accepted"], true,
+                        "unexpected renewal acceptance {name}"
+                    );
+                    assert!(std::ptr::eq(
+                        proof.previous().supplied_archived_root(),
+                        &archived
+                    ));
+                    assert!(std::ptr::eq(proof.next().supplied_root(), &current));
+                    assert_eq!(proof.previous().envelope().envelope().raw_bytes(), previous);
+                    assert_eq!(proof.next().envelope().envelope().raw_bytes(), next);
+                    assert_eq!(proof.next().supplied_time_millis(), now.as_millis());
+                }
+                Err(error) => {
+                    assert_eq!(
+                        case["accepted"], false,
+                        "unexpected renewal refusal {name}: {error}"
+                    );
+                    assert_eq!(
+                        error.to_string(),
+                        case["code"].as_str().unwrap(),
+                        "wrong renewal refusal {name}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn feature_facade_matches_original_event_batches_without_queue_authority() {

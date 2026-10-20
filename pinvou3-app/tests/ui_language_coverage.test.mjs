@@ -93,6 +93,26 @@ for (const language of ['zh', 'en', 'ja']) {
       `${language}.uiBuiltinPlugins.dataAccess.sessions.write must exist`,
     );
   }
+  // 2026-10-18 visual sweep pins. dictJa spreads dictEn, so the section loop
+  // above cannot see ja-only gaps: a ja-missing top-level key silently falls
+  // back to English at runtime — exactly how the knowledge embed chip leaked.
+  // Pin the chip keys with their real ja strings, and keep the monitor
+  // banner's raw-error interpolation retired.
+  for (const language of ['zh', 'en', 'ja']) {
+    assert.ok(dict[language].kbEmbedOn, `${language}.kbEmbedOn must exist`);
+    assert.ok(dict[language].kbEmbedOff, `${language}.kbEmbedOff must exist`);
+    assert.ok(dict[language].uiMonitor.readFailed, `${language}.uiMonitor.readFailed must exist`);
+    assert.ok(
+      !('readError' in dict[language].uiMonitor),
+      `${language}.uiMonitor.readError must stay retired (raw error text must not reach user copy)`,
+    );
+  }
+  assert.equal(dict.ja.kbEmbedOff, '意味検索未設定 · 全文検索のみ');
+  assert.notEqual(
+    dict.ja.kbEmbedOn,
+    dict.en.kbEmbedOn,
+    'ja kbEmbedOn must be translated, not the English fallback',
+  );
   // All 23 uiAuxChat keys are pinned (round-14 minor-3: the list previously
   // covered 13, so sendingHint/bindingHint and the six quote* keys could be
   // deleted from every dictionary with the suite green — and quoteChipCount's
@@ -285,6 +305,35 @@ for (const language of ['zh', 'en', 'ja']) {
       `${language} dictionary misses zh keys (renders undefined): ${missing.slice(0, 10).join(', ')}`,
     );
   }
+}
+
+// Connector card desc overlay parity (wecom): localizeTool spreads the
+// uiToolDetails entry over the tsToolsData baseline, so an overlay desc that
+// trails a baseline capability bump silently hides the new capability in that
+// language (the 1.3.4 pack bump added 制作演示文稿 to the baseline and its
+// BUILTIN_CLI_BUNDLES mirror but missed all three overlays). The zh overlay is
+// the same-language twin of the baseline and must stay identical to it; en/ja
+// re-word, so their shipped capabilities are pinned by the rendered term
+// instead. Intentionally condensed siblings (tmeet, ima) are exempt — they
+// never claimed baseline equality.
+{
+  const baseline = source('features/tools/tool-common.jsx').match(/backendId: 'wecom', wecomCli: true,.*?desc: '([^']+)'/);
+  assert.ok(baseline, 'tsToolsData must carry the wecom card desc');
+  assert.equal(
+    dict.zh.uiToolDetails.tools.wecom.desc,
+    baseline[1],
+    'the zh wecom overlay desc must stay identical to the tsToolsData baseline it overrides at render time',
+  );
+  assert.match(
+    dict.en.uiToolDetails.tools.wecom.desc,
+    /presentations/,
+    'the en wecom overlay desc must keep presenting the presentations capability',
+  );
+  assert.match(
+    dict.ja.uiToolDetails.tools.wecom.desc,
+    /プレゼンテーション/,
+    'the ja wecom overlay desc must keep presenting the presentations capability',
+  );
 }
 
 // uiComputerUse (round-17): type parity across languages — a template

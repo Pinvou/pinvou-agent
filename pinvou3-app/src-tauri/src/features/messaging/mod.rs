@@ -44,10 +44,17 @@
 //!
 //! Known delivery guarantees (documented, accepted for v1):
 //! - **At-least-once, not exactly-once**: a crash between delivery and the
-//!   `.done` marker write replays the message on next boot; a dispatch whose
-//!   engine submission already landed can also be dropped by the 30s
-//!   delivery timeout and retried into the now-running turn — two
-//!   deliveries (round-21 minor 1).
+//!   `.done` marker write replays the message on next boot. The 30s
+//!   delivery timeout, by contrast, cannot double-deliver: it can only
+//!   fire while the dispatch future is still pending, and every await
+//!   before engine acceptance is covered — the staged transcript rule
+//!   rolls back with the reservation's `Drop`, and the submit itself is
+//!   cancel-safe ("a timed-out send was never enqueued",
+//!   `assistant::engine::bounded_reserved_submit_send`); acceptance to
+//!   `mark_submitted` has no await point, so a landed submission cannot
+//!   be dropped. Timeout+retry therefore delivers exactly once
+//!   (round-22 M-4: the round-21 note here claimed the opposite — that
+//!   phantom arm is retired; the contract §6 wording is the correct one).
 //! - **Dedup horizon is bounded**: `.done` markers are pruned after
 //!   `RETENTION` (7 days) — a retried keyed call older than that
 //!   re-delivers.
@@ -840,10 +847,12 @@ struct RetryState {
     /// file-lock class). Unkeyed deliveries have no done-marker, so a
     /// persistently failing remove would re-deliver + re-audit every 1s
     /// poll forever. After [`MAX_DELIVERY_ATTEMPTS`] failures the file is
-    /// quarantined to stop the loop — and when the directory itself defeats
-    /// the rename (the removal failure's precondition), the exhaustion arm
-    /// falls back to a best-effort done-marker (unkeyed included) and this
-    /// streak gates re-delivery at the pre-delivery check (round-21 M-1).
+    /// quarantined — and when the directory itself defeats the rename (the
+    /// removal failure's precondition), the exhaustion arm falls back to a
+    /// best-effort done-marker (unkeyed included). Round-21 froze every
+    /// exhausted file at the pre-delivery gate; round-22 carves out files
+    /// that already carry a done-marker (the marker itself suppresses
+    /// re-delivery, so only the freeze served no gate — `RetryState::due`).
     removal_failures: HashMap<String, u32>,
 }
 
@@ -852,18 +861,40 @@ impl RetryState {
     /// (linear backoff from `MIN_BACKOFF`, capped at `MAX_BACKOFF`).
     fn due(&self, name: &str) -> bool {
         // Round-21 M-1: a removal-failure streak at the ceiling gates
-        // re-delivery too — the quarantine stop-gap is a rename into the
-        // same directory and can fail under the exact precondition that
-        // defeated the removal, and the pre-delivery gate must not keep
-        // dispatching full engine turns for a file nothing can retire. (A
-        // same-name re-spool onto such an exhausted file stays starved
-        // until the file vanishes from a listing — the edge of the edge.)
+        // re-delivery — the quarantine stop-gap is a rename into the same
+        // directory and can fail under the exact precondition that defeated
+        // the removal, and the pre-delivery gate must not keep dispatching
+        // full engine turns for a file nothing can retire. Round-22 carves
+        // out marker-bearing files below. Three accepted corners, all
+        // bounded: a carved-out file churns up to four bounded re-reads
+        // (~256 KiB at the 64 KiB spool cap — the entry read, the
+        // post-delivery re-verify, the exhaustion-arm replace re-check and
+        // the audit read) plus removal/quarantine/mark attempts per poll
+        // and self-heals the moment the lock clears; a lock held past the
+        // RETENTION window re-freezes the file until boot (the prune
+        // deletes its aged marker, so the carve-out stops applying — no
+        // re-delivery, the freeze re-engages first); a file whose stop-gap
+        // marker write ALSO failed stays frozen until boot, because
+        // nothing processes it and the write is never retried (the
+        // exhaustion arm warned once).
         if self
             .removal_failures
             .get(name)
-            .is_some_and(|streak| *streak >= MAX_DELIVERY_ATTEMPTS as u32)
+            .is_some_and(|streak| *streak >= MAX_DELIVERY_ATTEMPTS)
         {
-            return false;
+            // Round-22 M-1: a file whose done-marker already exists is kept
+            // out of delivery by the marker itself, so freezing it here
+            // serves no gate — it only strands the delivered file in the
+            // spool until restart, with the marker-skip arm (the only path
+            // that keeps retrying the removal, and the terminal audit with
+            // it) unreachable. Such a file stays due: the skip arm
+            // re-attempts the removal each poll and never re-delivers.
+            let marker_exists = name
+                .strip_suffix(".json")
+                .is_some_and(|stem| done_dir().join(format!("{stem}.json")).exists());
+            if !marker_exists {
+                return false;
+            }
         }
         match self.attempts.get(name) {
             Some((count, last)) => {
@@ -2074,6 +2105,211 @@ mod spool_pipeline_tests {
             "the removal-failure streak survives polls (got {streak}; the \
              round-8 clear-before-attempt reset it to 1 every poll)"
         );
+    }
+
+    /// Round-22 M-1: a KEYED file whose done-marker was already written is
+    /// suppressed from re-delivery by the marker itself, so the round-21
+    /// streak gate must not additionally freeze it — the marker-skip arm is
+    /// the only path that retries the removal, and freezing it strands the
+    /// delivered file in the spool until restart (terminal audit orphaned).
+    /// Once the lock clears, the file must be retired on the first poll,
+    /// with no re-delivery.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn done_marker_keeps_a_streak_exhausted_file_retirable() {
+        let _home = TempHome::new();
+        let store = sessions_store();
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        // KEYED + already delivered: the marker exists (as the normal
+        // delivery path writes it before the Done arm's removal).
+        std::fs::write(spool.join("locked.json"), record_json("locked", Some("k1"))).unwrap();
+        std::fs::create_dir_all(done_dir()).unwrap();
+        std::fs::write(done_dir().join("locked.json"), b"").unwrap();
+        let fake = FakeDelivery {
+            outcome: Ok(DeliveryOutcome::Steered),
+            calls: Rc::new(RefCell::new(0)),
+        };
+        let mut retries = RetryState::default();
+        // Read-only spool dir: remove_file/rename fail every poll.
+        let perms = std::fs::metadata(&spool).unwrap().permissions();
+        std::fs::set_permissions(&spool, {
+            use std::os::unix::fs::PermissionsExt;
+            let mut p = perms.clone();
+            p.set_mode(p.mode() & !0o222);
+            p
+        })
+        .unwrap();
+        for _ in 0..(MAX_DELIVERY_ATTEMPTS + 1) {
+            process_pending_spool(
+                &fake,
+                &AllowAllGates,
+                &store,
+                &mut retries,
+                &mut Default::default(),
+            )
+            .await;
+        }
+        std::fs::set_permissions(&spool, {
+            use std::os::unix::fs::PermissionsExt;
+            let mut p = perms.clone();
+            p.set_mode(p.mode() | 0o222);
+            p
+        })
+        .unwrap();
+        // Asserted outside the read-only window: a panic while the spool is
+        // still unwritable would leave TempHome's cleanup unable to unlink
+        // the directory. The counter is cumulative, so this still covers the
+        // whole freeze window.
+        assert_eq!(
+            *fake.calls.borrow(),
+            0,
+            "the done-marker suppressed re-delivery through the freeze window"
+        );
+        // One more poll: the skip arm must run again and retire the file.
+        process_pending_spool(
+            &fake,
+            &AllowAllGates,
+            &store,
+            &mut retries,
+            &mut Default::default(),
+        )
+        .await;
+        assert!(
+            !spool.join("locked.json").exists(),
+            "a done-marked file at the streak ceiling must stay retirable \
+             (round-22 M-1: the round-21 gate froze it until restart)"
+        );
+        assert_eq!(*fake.calls.borrow(), 0, "retirement never re-delivers");
+    }
+
+    /// Round-22 review: the complementary arm of the M-1 carve-out — WITHOUT
+    /// a done-marker the ceiling still freezes. Deleting the whole gate
+    /// would otherwise re-introduce the round-8/21 1 Hz unkeyed re-delivery
+    /// loop and ship green (the carve-out had a pin; the freeze did not).
+    #[test]
+    fn streak_ceiling_still_freezes_files_without_a_done_marker() {
+        let _home = TempHome::new();
+        let mut retries = RetryState::default();
+        retries
+            .removal_failures
+            .insert("stuck.json".to_string(), MAX_DELIVERY_ATTEMPTS as u32);
+        // No `.done/stuck.json` on disk: the ceiling freeze holds.
+        assert!(!retries.due("stuck.json"));
+        // The carve-out: the same file with its marker written stays due.
+        std::fs::create_dir_all(done_dir()).unwrap();
+        std::fs::write(done_dir().join("stuck.json"), b"").unwrap();
+        assert!(retries.due("stuck.json"));
+        // Below the ceiling the gate arm is not entered (marker irrelevant).
+        *retries.removal_failures.get_mut("stuck.json").unwrap() -= 1;
+        std::fs::remove_file(done_dir().join("stuck.json")).unwrap();
+        assert!(retries.due("stuck.json"));
+    }
+
+    /// Round-22 M-2: the `deliver_messaging_turn` wiring, pinned at the
+    /// pure assembly seam — expert matching consumes the STRIPPED body
+    /// (round-7 Q2), the persona card prefixes the ENGINE content only,
+    /// and the transcript item keeps the delivered block verbatim so the
+    /// sender-card renderer sees the header at the very start. Mutating
+    /// the assembly back to raw-block matching ships this red.
+    #[test]
+    fn delivery_turn_assembly_strips_for_matching() {
+        use crate::features::assistant::engine_pool::assemble_delivery_turn;
+        let content = build_session_message_block(Some("src0001"), Some("源会话"), "正文\n两行");
+        let (match_text, engine_content, display) =
+            assemble_delivery_turn(&content, Some("卡片正文"));
+        assert_eq!(
+            match_text, "正文\n两行",
+            "expert matching must see the stripped body only (round-7 Q2)"
+        );
+        assert!(
+            engine_content.starts_with("卡片正文\n\n---\n\n")
+                && engine_content.contains(content.as_str()),
+            "the persona card prefixes the engine content; the block follows verbatim"
+        );
+        let deepseek_tui::models::ContentBlock::Text { text, .. } = &display.content[0] else {
+            panic!("display message must start with a text block");
+        };
+        assert_eq!(
+            text, &content,
+            "the transcript item keeps the delivered block VERBATIM — the \
+             sender-card renderer requires the header at the very start"
+        );
+        assert_eq!(
+            display.role,
+            deepseek_tui::models::Role::User,
+            "the transcript item is a user turn"
+        );
+        // Round-22 review: the None path must not grow a card either — an
+        // unconditional `unwrap_or_default` prefix ships this red.
+        let (match_text, engine_content, display) = assemble_delivery_turn(&content, None);
+        assert_eq!(match_text, "正文\n两行");
+        assert_eq!(
+            engine_content, content,
+            "no persona card without a pending injection"
+        );
+        let deepseek_tui::models::ContentBlock::Text { text, .. } = &display.content[0] else {
+            panic!("display message must start with a text block");
+        };
+        assert_eq!(text, &content, "the display keeps the block verbatim");
+    }
+
+    /// Round-1 review MAJOR-1 (fixed cross-file in the round-2 pass): the
+    /// type system pins the seam's parameter order but not the call-site
+    /// hand-off — `match_text`/`engine_content` are both `String`, so a
+    /// swap at the destructure, `None` for the persona body, or matching on
+    /// `engine_content` compiles clean and keeps the pure-seam test above
+    /// green. The production wiring is therefore pinned by reading the
+    /// engine_pool source FROM HERE: a cross-file include cannot match this
+    /// test's own text, which is what made the previous in-file self-pin
+    /// vacuous (every needle matched its own assert literal — the exact
+    /// defect `post_read_size_recheck_is_pinned` fixed for messaging in
+    /// round 8; the multiagent precedent is cross-file for the same
+    /// reason). The needles hard-code local identifiers, so a rename inside
+    /// `deliver_messaging_turn` ships a false red — accepted, in line with
+    /// that precedent.
+    #[test]
+    fn deliver_messaging_turn_hands_the_seam_outputs_to_the_right_consumers() {
+        let source = include_str!("../assistant/engine_pool.rs");
+        assert!(
+            source.contains("let (match_text, engine_content, display_message) =")
+                && source.contains(
+                    "assemble_delivery_turn(&content, pending_injections.persona_body());"
+                ),
+            "deliver_messaging_turn must assemble through the seam with the \
+             taken persona body (None would silently drop the first-turn \
+             persona card; swapping the two String outputs at the destructure \
+             feeds matching the persona-prefixed block — the round-7 Q2 \
+             regression class)"
+        );
+        assert!(
+            source.contains("snapshot.available_role_lines(&match_text)"),
+            "expert matching must consume the seam's stripped match_text \
+             (raw-block or engine-content matching is the round-7 Q2 \
+             regression class)"
+        );
+        assert!(
+            source.contains("pending_injections.commit();"),
+            "the taken pending injections must be committed only after the \
+             reserved turn submits (dropping the commit re-injects the full \
+             persona card on the next normal turn)"
+        );
+    }
+
+    /// Round-22 M-3: the disclosed caps are pinned to their literals —
+    /// without a literal anchor any drift (10→10 000, 200→201) ships the
+    /// suite green, because the surrounding fixtures derive from the
+    /// constants. (Round-2 review: RETENTION, the backoff pair and the
+    /// 64 KiB block cap had the same constant-derived-fixture shape.)
+    #[test]
+    fn disclosed_constants_are_pinned_to_their_literals() {
+        assert_eq!(MAX_DELIVERY_ATTEMPTS, 10);
+        assert_eq!(MAX_TITLE_CHARS, 200);
+        assert_eq!(MIN_BACKOFF, Duration::from_secs(5));
+        assert_eq!(MAX_BACKOFF, Duration::from_secs(60));
+        assert_eq!(RETENTION, Duration::from_secs(7 * 24 * 3600));
+        use crate::features::sessions::MAX_SESSION_BLOCK_JSON_LINE;
+        assert_eq!(MAX_SESSION_BLOCK_JSON_LINE, 64 * 1024);
     }
 
     /// Round-8 M6: builder → stripper round-trip lives HERE (messaging may

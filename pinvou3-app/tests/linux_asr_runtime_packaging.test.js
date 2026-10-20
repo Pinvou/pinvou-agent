@@ -112,7 +112,14 @@ assert.deepEqual(sharedAsrSources, [
   "resources/platforms/linux/asr/pinvou3-asr-shim.py",
 ]);
 
-for (const [architecture, directory] of [["x64", "x86_64"], ["arm64", "aarch64"]]) {
+for (const [architecture, directory] of [
+  ["x64", "x86_64"],
+  ["arm64", "aarch64"],
+  // loongarch64 must hold the same destination contract: a wrong mapping
+  // here would stage the engine at the wrong in-package path and break the
+  // loong64 ASR feature at runtime with every suite green.
+  ["loong64", "loongarch64"],
+]) {
   const configPath = path.join(
     appRoot,
     "src-tauri/config/platforms/linux",

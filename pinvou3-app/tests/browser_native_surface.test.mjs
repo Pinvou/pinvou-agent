@@ -149,7 +149,7 @@ test('Linux child WebView uses a fixed dock overlay and stays hidden on layout f
 test('Windows MCP enables pageId routing and structured targetId output', () => {
   assert.match(
     browserWrapper,
-    /\['--experimental-page-id-routing', '--experimental-structured-content'\]/,
+    /\['--page-id-routing', '--experimental-structured-content'\]/,
   );
 });
 

@@ -8,11 +8,12 @@
 //! （五轮评审必修 3：marketplace 侧曾按 0.1.9 旧表写死 7 技能，与门控侧的
 //! 1.1.0 新表分叉，污染上述全部消费面）。
 
-/// 14 个企微域技能目录名(门控写 / 删与 marketplace 各消费面共用)。wecom-cli 1.1.0
+/// 15 个企微域技能目录名(门控写 / 删与 marketplace 各消费面共用)。wecom-cli 1.1.0
 /// 起上游按服务模型重排(`msg`→`message`、`schedule`→`calendar`,新增 disk/
 /// doc-manage/email/media/sheet/smartpage/shared),本地结构跟随上游,不再维持
-/// 0.1.9 时代的「sheet/smartpage 并入 doc」合并形态。
-pub const WECOM_SKILL_DIRS: [&str; 14] = [
+/// 0.1.9 时代的「sheet/smartpage 并入 doc」合并形态;wecom-cli 1.3.4 起新增
+/// `wecomcli-pptx`(教 `slide` 命令族,见 wecom-skills/NOTICE-wecom.md 同步记录)。
+pub const WECOM_SKILL_DIRS: [&str; 15] = [
     "wecomcli-calendar",
     "wecomcli-contact",
     "wecomcli-disk",
@@ -22,6 +23,7 @@ pub const WECOM_SKILL_DIRS: [&str; 14] = [
     "wecomcli-media",
     "wecomcli-meeting",
     "wecomcli-message",
+    "wecomcli-pptx",
     "wecomcli-shared",
     "wecomcli-sheet",
     "wecomcli-smartpage",

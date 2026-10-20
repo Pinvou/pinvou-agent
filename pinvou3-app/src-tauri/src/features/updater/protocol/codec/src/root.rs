@@ -3,9 +3,12 @@ use crate::policy::{
     DeclaredRolePolicy, PolicyLookupError, RoleContextShape, RolePolicyData, select_declared_policy,
 };
 use crate::shape::{ROLES, TARGETS, closed, identifier, one_of, positive_safe_integer, sha256_hex};
-use crate::{Document, Error, key_descriptor};
+use crate::{
+    Document, Error, KeyDescriptor, MetadataSemanticsError, RootWindowMode, SuppliedProtocolTime,
+    key_descriptor,
+};
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RootPolicyError {
@@ -31,11 +34,52 @@ impl std::error::Error for RootPolicyError {}
 pub struct RootPolicyShape {
     canonical: Vec<u8>,
     product: String,
+    version: u64,
     policies: Vec<RolePolicyData>,
+    keys: BTreeMap<String, KeyDescriptor>,
+    issued_at: f64,
+    expires_at: f64,
 }
 impl RootPolicyShape {
     pub fn canonical_bytes(&self) -> &[u8] {
         &self.canonical
+    }
+    pub fn product(&self) -> &str {
+        &self.product
+    }
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+    /// Original supplied window with expiry alone permitted. This checks neither
+    /// lineage nor protected historical custody and cannot grant current rights.
+    pub fn assert_supplied_historical_window(
+        &self,
+        now: &SuppliedProtocolTime,
+    ) -> Result<(), MetadataSemanticsError> {
+        crate::metadata_semantics::root_window(
+            self.issued_at,
+            self.expires_at,
+            now,
+            RootWindowMode::AllowExpired,
+        )
+    }
+    /// Exact immutable descriptor from this same validated Root shape. This is
+    /// not a curve validity, key authority or protected Root acceptance proof.
+    pub fn declared_key_for(&self, key_id: &str) -> Option<&KeyDescriptor> {
+        self.keys.get(key_id)
+    }
+    /// Ordinary fresh Root window at caller-supplied time. No expired-history
+    /// option, trusted clock acquisition or protected Root acceptance is implied.
+    pub fn assert_supplied_current_window(
+        &self,
+        now: &SuppliedProtocolTime,
+    ) -> Result<(), MetadataSemanticsError> {
+        crate::metadata_semantics::root_window(
+            self.issued_at,
+            self.expires_at,
+            now,
+            RootWindowMode::Current,
+        )
     }
     /// Lookup only the exact declared product/role/component/channel/target tuple.
     /// This Root shape is not an authenticated Root or signature/key authority.
@@ -83,6 +127,7 @@ impl Document {
             .filter(|keys| !keys.is_empty())
             .ok_or(RootPolicyError::InvalidKey)?;
         let mut key_ids = BTreeSet::new();
+        let mut declared_keys = BTreeMap::new();
         for value in keys {
             let key = closed(value, &["keyId", "algorithm", "publicKey"])
                 .ok_or(RootPolicyError::InvalidKey)?;
@@ -97,6 +142,7 @@ impl Document {
             if descriptor.key_id() != id || !key_ids.insert(id) {
                 return Err(RootPolicyError::InvalidKey);
             }
+            declared_keys.insert(id.to_owned(), descriptor);
         }
         let roles = root["roles"]
             .as_array()
@@ -195,7 +241,19 @@ impl Document {
         Ok(RootPolicyShape {
             canonical,
             product,
+            // Already positive integral binary64 <= MAX_SAFE_INTEGER, so this
+            // conversion is exact and within u64 on every supported target.
+            version: root["version"]
+                .as_f64()
+                .ok_or(RootPolicyError::InvalidClaims)? as u64,
             policies: declared,
+            keys: declared_keys,
+            issued_at: root["issuedAt"]
+                .as_f64()
+                .ok_or(RootPolicyError::InvalidClaims)?,
+            expires_at: root["expiresAt"]
+                .as_f64()
+                .ok_or(RootPolicyError::InvalidClaims)?,
         })
     }
 }

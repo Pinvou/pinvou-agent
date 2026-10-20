@@ -13,6 +13,7 @@ const {
   developmentHelperSource,
   hardenDevelopmentPathChain,
   knowledgeHostDevelopmentConfigSpec,
+  prepareKnowledgeHost,
 } = require('../scripts/tauri/knowledge-host.js');
 const helperPath = path.join(
   appRoot,
@@ -44,7 +45,11 @@ const runDev = readFileSync(path.join(appRoot, 'run-dev.sh'), 'utf8');
 
 test('Linux package embeds the host helper and standalone server build', () => {
   assert.match(platformConfig, /resources\/platforms\/linux\/knowledge-host\//u);
-  assert.match(buildScript, /prepareKnowledgeHost\(\)/u);
+  // Packaging calls may pass cross-build options (pre-built target server);
+  // the pin is that build.js reaches this step at all — the dev path matches
+  // this loose form too, so the packaging-path guard and its before-manifest
+  // ordering are pinned in tauri_effective_config.test.js.
+  assert.match(buildScript, /prepareKnowledgeHost\(/u);
   assert.match(buildScript, /hasTauriBuildCommand/u);
   assert.match(knowledgeHostBuildScript, /chmodSync\(helper, 0o755\)/u);
   const repositoryRoot = path.resolve(appRoot, '..');
@@ -341,6 +346,16 @@ test('permanent removal validates the fixed data directory before recursive dele
   assert.match(helper, /resolved=\$\(readlink -f "\$DATA_DIR"/u);
   assert.match(helper, /\[ "\$resolved" = "\$DATA_DIR" \]/u);
   assert.match(helper, /rm -rf -- "\$DATA_DIR"/u);
+});
+
+test('the dev+prebuilt combination is refused before any directory is prepared', () => {
+  // `main()` never produces it, but a direct caller could: the prebuilt
+  // branch would copy a cross server into the development resource tree.
+  // The guard must fire before prepareDevelopmentResourceDirectories runs.
+  assert.throws(
+    () => prepareKnowledgeHost({ platform: 'linux', development: true, prebuilt: true }),
+    /development.*prebuilt|prebuilt.*development|预构建/u,
+  );
 });
 
 test('host helper has valid POSIX shell syntax on Linux', { skip: process.platform !== 'linux' }, () => {
