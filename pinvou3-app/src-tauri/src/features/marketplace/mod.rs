@@ -692,13 +692,15 @@ pub use types::{
 // implementations.
 pub use crate::features::marketplace::scope::{
     grant_connect_enable, grant_connect_enable_refresh, load_disabled_bundles_for,
-    load_disabled_bundles_startup, load_hidden_bundles_for, save_disabled_bundles_for,
-    save_hidden_bundles_for, sync_deny_all_scopes_after_install, sync_deny_all_scopes_refresh,
+    load_disabled_bundles_startup, load_hidden_bundles_for, revoke_connect_enable,
+    save_disabled_bundles_for, save_hidden_bundles_for, sync_deny_all_scopes_after_install,
     unavailable_bundles_for,
 };
 // The connector gate is crate-internal (skill_gate.rs is the only caller);
 // no command layer or engine surface needs it.
-pub(crate) use crate::features::marketplace::scope::deny_first_register_connector;
+pub(crate) use crate::features::marketplace::scope::{
+    deny_first_register_connector, deny_first_register_connector_refresh,
+};
 #[cfg(test)]
 pub use crate::features::marketplace::scope::{load_disabled_bundles, save_disabled_bundles};
 
