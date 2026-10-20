@@ -1,4 +1,3 @@
-import re
 import unittest
 from pathlib import Path
 
@@ -110,18 +109,21 @@ class ReleaseSizePolicyTests(unittest.TestCase):
         # collected together so a run-block export or a target-scoped
         # CARGO_TARGET_*_RUSTFLAGS env key cannot slip past the job-env-only
         # equality check.
+        # Containment, not line-anchored prefixes: an INLINE prefix
+        # (`run: RUSTFLAGS=... bash ...`) starts with neither spelling but
+        # is fully visible to cargo — every line mentioning RUSTFLAGS must
+        # BE the pinned definition.
         rustflags = [
             line.strip()
             for line in job_code.splitlines()
-            if line.strip().startswith("RUSTFLAGS:")
-            or re.match(r"^(export\s+)?RUSTFLAGS=", line.strip())
-            or re.match(r"CARGO_TARGET_[A-Z0-9_]*RUSTFLAGS[:=]", line.strip())
+            if "RUSTFLAGS" in line
         ]
         self.assertEqual(
             rustflags,
             ['RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/"'],
             "the loong64 job must keep RUSTFLAGS remap-only (job/step env, "
-            "run-block exports, and CARGO_TARGET_*_RUSTFLAGS keys alike)",
+            "run-block exports, inline prefixes, and CARGO_TARGET_*_RUSTFLAGS "
+            "keys alike)",
         )
 
     def test_linux_jobs_repack_deb_as_xz_before_sha256(self):

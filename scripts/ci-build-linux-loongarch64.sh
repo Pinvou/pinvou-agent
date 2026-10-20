@@ -151,13 +151,13 @@ export STRIP="$TOOLCHAIN_BIN/$TRIPLE-strip"
 # flags are invisible to the rustc link smoke below — the 0.10.13 release
 # link lost its startfiles to exactly such a target-scoped --sysroot
 # link-arg. Fail closed at setup time if one is present.
-[ -z "${CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS:-}" ] \
+[ -z "${CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS+set}" ] \
   || fail "CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS is set — remove it: RUSTFLAGS are workflow-owned (remap-only) and a target-scoped value silently shadows them for the target units"
 # The encoded spelling is cargo's one other rustflags env: alongside the
 # job-level RUSTFLAGS it makes cargo abort outright instead of building, so
 # reject it here with the policy message rather than letting a generic
 # cargo error surface mid-build.
-[ -z "${CARGO_ENCODED_RUSTFLAGS:-}" ] \
+[ -z "${CARGO_ENCODED_RUSTFLAGS+set}" ] \
   || fail "CARGO_ENCODED_RUSTFLAGS is set — remove it: RUSTFLAGS are workflow-owned (remap-only), and cargo refuses to build with the encoded and plain spellings set together"
 # Cargo links through the rust-lld wrapper (rustc's LLVM emits R_LARCH_CALL36
 # that the bundled bfd 2.41 cannot resolve; the wrapper keeps native cmake/cc
@@ -199,7 +199,7 @@ fi
 # default to the toolchain the rust-toolchain.toml pins first, so all
 # stages share one rustc and the std lands on the toolchain that actually
 # builds.
-pinned_toolchain="$(cd "$REPO_ROOT/src-tauri" && rustup show active-toolchain | awk '{print $1}')"
+pinned_toolchain="$(cd "$SRC_TAURI" && rustup show active-toolchain | awk '{print $1}')"
 (cd "$REPO_ROOT" && rustup default "$pinned_toolchain") \
   || fail "cannot align the rustup default to the rust-toolchain.toml toolchain ($pinned_toolchain)"
 (cd "$REPO_ROOT" && rustup target add "$TRIPLE") \
@@ -223,12 +223,16 @@ assert_loongarch_elf() {
 # the whole cargo-link chain end to end: the wrapper, the -B/-fuse-ld=lld
 # handoff into the lld shim, rust-lld resolved from the active rustc sysroot,
 # startfiles and the libc.so linker script from the toolchain's bundled
-# glibc 2.38 (the same tree every cargo link resolves -lc from — no
-# --sysroot is passed; the deepin tree serves the cmake/bindgen/pkg-config
-# side) and libgcc from the toolchain. Runs from the repo root on the
-# aligned default toolchain (rust target step above) — the same rustc the
-# knowledge build uses; only the job's rustc-side --remap-path-prefix
-# RUSTFLAGS differs from a cargo link, and remap is not a link input.
+# glibc 2.38 (no --sysroot is passed; the deepin tree serves the
+# cmake/bindgen/pkg-config side, and its resolution surface is what
+# verify_sysroot asserts) and libgcc from the toolchain. Runs from the repo
+# root on the aligned default toolchain (rust target step above) — the same
+# rustc the knowledge build uses; only the job's rustc-side
+# --remap-path-prefix RUSTFLAGS differs from a cargo link, and remap is not
+# a link input. (Note the smoke therefore validates the toolchain-sysroot
+# resolution; a production link that also carries deepin -L paths searches
+# those FIRST for every bare name, and the deepin-side presence of each
+# name is what the sysroot setup asserts statically.)
 smoke_dir="$(mktemp -d)"
 # Self-cleaning: the success path removes it below, and this trap covers
 # the failure paths (smoke link failure, wrong-arch artifact) so a broken

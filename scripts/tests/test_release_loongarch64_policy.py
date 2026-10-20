@@ -30,6 +30,7 @@ import os
 import re
 import shlex
 import shutil
+import struct
 import subprocess
 import tempfile
 import unittest
@@ -76,12 +77,33 @@ def _fn_source(script_text, name):
     return "\n".join(lines[start : end + 1])
 
 
+def _minimal_loongarch_elf(banner):
+    """A 64-byte ELF64 header with e_machine=258 (LoongArch) plus a glibc
+    version banner: just enough for `readelf -h` to report Machine:
+    LoongArch and for sysroot_glibc_version to extract the version — the
+    two content probes verify_sysroot runs on libc.so.6 — without shipping
+    a real binary in the repo."""
+    header = struct.pack(
+        "<16sHHIQQQIHHHHHH",
+        b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 8,  # e_ident
+        2,      # e_type = ET_EXEC
+        258,    # e_machine = EM_LOONGARCH
+        1,      # e_version
+        0, 0,   # e_entry, e_phoff
+        0,      # e_shoff
+        0x43,   # e_flags (objABI v1, base ABI lp64d)
+        64, 56, 0, 64, 0, 0,  # ehsize, phentsize, phnum, shentsize, shnum, shstrndx
+    )
+    return header + banner.encode()
+
+
 def _build_synthetic_sysroot(root):
     """A minimal deepin-shaped sysroot tree: the shapes prune_sysroot must
     handle (absolute ld scripts, absolute-target dev symlinks at depth 3 and
     deeper, empty libc6-dev .a stubs, split multiarch headers) plus a
-    deliberately TEXT libc.so.6, so an executed verify_sysroot stops at the
-    ELF machine check instead of needing real LoongArch objects."""
+    minimal-header LoongArch libc.so.6, so an executed verify_sysroot can
+    walk EVERY assertion (machine check, glibc version, views, header merge,
+    startup objects) and pass on a healthy tree."""
     ma = root / "usr/lib/loongarch64-linux-gnu"
     # Loader deliberately in the lib64/multiarch variant location — the
     # worst case for a "../"-target computation.
@@ -89,7 +111,16 @@ def _build_synthetic_sysroot(root):
     loader.parent.mkdir(parents=True)
     ma.mkdir(parents=True)
     loader.write_text("ELF")
-    (ma / "libc.so.6").write_text("ELF")
+    (ma / "libc.so.6").write_bytes(
+        _minimal_loongarch_elf(
+            "GNU C Library (Debian GLIBC 2.38-6deepin13+rb1) stable"
+            " release version 2.38.\n"
+        )
+    )
+    # Startup objects (the 0.10.13 release died on Scrt1.o): verify_sysroot
+    # asserts all four by name.
+    for crt_obj in ("Scrt1.o", "crt1.o", "crti.o", "crtn.o"):
+        (ma / crt_obj).write_text("ELF")
     # glibc ≥2.34 runtime stubs: libc6 ships these; libc6-dev ships only
     # EMPTY .a stubs (pruned) and no lib*.so.
     (ma / "libpthread.so.0").write_text("ELF")
@@ -123,6 +154,19 @@ def _build_synthetic_sysroot(root):
     )
     (ma / "libunreferenced.a").write_text("ar")
     (ma / "libunreferenced.la").write_text("libtool")
+    # glibc ≥2.34 compat stubs rustc's link tail resolves (-lutil/-lrt):
+    # the prune must KEEP these unreferenced-by-ld-script archives and
+    # verify_sysroot must assert them.
+    (ma / "librt.a").write_text("!<arch>\n")
+    (ma / "libutil.a").write_text("!<arch>\n")
+    (ma / "libanl.a").write_text("!<arch>\n")
+    # The real deepin closure shape that broke CI (469-package extraction):
+    # libpng-dev ships libpng.a -> libpng16.a, libpng16.a is referenced by
+    # no ld script, and a .a SYMLINK survives the `-type f` archive delete —
+    # the prune must take the link down with its deleted target, or
+    # verify_sysroot's every-symlink-resolves invariant fails the setup.
+    (ma / "libpng16.a").write_text("!<arch>\n")
+    (ma / "libpng.a").symlink_to("libpng16.a")
     # A BINARY .so whose bytes happen to embed an absolute /…so path (an
     # RUNPATH-like string) is not a linker script and must not trip the
     # post-rewrite offender net: the rewrite and the net are both
@@ -137,6 +181,7 @@ def _build_synthetic_sysroot(root):
     (multi_inc / "libc-header-start.h").write_text("/* arch bits */\n")
     multi_gnu = root / "usr/include/loongarch64-linux-gnu/gnu"
     multi_gnu.mkdir(parents=True)
+    (multi_gnu / "stubs.h").write_text("/* stubs */\n")
     (multi_gnu / "stubs-lp64d.h").write_text("/* stubs */\n")
     (root / "usr/include/stdio.h").write_text("/* generic */\n")
     (root / "etc").mkdir()
@@ -297,6 +342,42 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             "CARGO_ENCODED_RUSTFLAGS is set — remove it",
             orchestrator_code,
             "the orchestrator must fail closed on the encoded RUSTFLAGS spelling",
+        )
+        # The guards must test PRESENCE (`${VAR+set}`), not content
+        # (`${VAR:-}`): cargo's shadowing rule is is_some(), so an
+        # EMPTY-but-set CARGO_TARGET_*_RUSTFLAGS still suppresses the
+        # job-level RUSTFLAGS for target units — the original `:-` shape
+        # let it pass silently.
+        self.assertIn(
+            '[ -z "${CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS+set}" ]',
+            orchestrator_code,
+            "the target-scoped guard must reject set-but-empty values (presence, not content)",
+        )
+        self.assertIn(
+            '[ -z "${CARGO_ENCODED_RUSTFLAGS+set}" ]',
+            orchestrator_code,
+            "the encoded guard must reject set-but-empty values (presence, not content)",
+        )
+
+    def test_pr_check_leg_sets_no_rustflags_of_its_own(self):
+        # The pr-check cross leg imports the setup export blocks into
+        # GITHUB_ENV and runs cross cargo checks. Those blocks are pinned
+        # RUSTFLAGS-free (see the export-block scan above), but the leg's
+        # OWN env block and run steps are scanned by nothing else — a
+        # target-scoped or run-block RUSTFLAGS here would diverge the gate
+        # leg from the release link environment silently (the exact
+        # pre-#737 vector). The leg must carry no RUSTFLAGS spelling at
+        # all; it inherits everything from the imported blocks.
+        rustflags = [
+            line.strip()
+            for line in self.pr_job.splitlines()
+            if "RUSTFLAGS" in line
+        ]
+        self.assertEqual(
+            rustflags,
+            [],
+            "the pr-check loong64 leg must not set any RUSTFLAGS spelling of "
+            "its own (it inherits the shared, scanned export blocks)",
         )
 
     def test_verify_sysroot_asserts_the_startup_objects(self):
@@ -577,8 +658,12 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         # "no std for <target>" ~1h into the release job the day the runner
         # image's default toolchain stops coinciding with "stable".
         code = _without_comments(self.orchestrator)
+        # The path must be $SRC_TAURI (= pinvou3-app/src-tauri, where
+        # rust-toolchain.toml lives): a root-relative src-tauri does not
+        # exist, and under set -e the bare cd error killed the release job
+        # message-less before any build step.
         self.assertIn(
-            'pinned_toolchain="$(cd "$REPO_ROOT/src-tauri" && rustup show active-toolchain | awk \'{print $1}\')"',
+            'pinned_toolchain="$(cd "$SRC_TAURI" && rustup show active-toolchain | awk \'{print $1}\')"',
             code,
             "the orchestrator must read the toolchain rust-toolchain.toml pins",
         )
@@ -664,6 +749,22 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             "the generation marker must be written after the gcc smoke, "
             "not inside the unpack branch",
         )
+        # A tree that was already marked but stops passing the smoke (cache
+        # corruption after the marker was written) must lose the marker at
+        # the failure, so the NEXT run re-downloads instead of failing
+        # identically forever — every smoke fail() must be preceded by the
+        # marker removal.
+        for smoke_guard in (
+            'rm -f -- "$marker"; fail "$TRIPLE-gcc did not report a version',
+            'rm -f -- "$marker"; fail "$TRIPLE-gcc reports',
+            'rm -f -- "$marker"; fail "$TRIPLE-gcc -print-sysroot failed"',
+        ):
+            self.assertIn(
+                smoke_guard,
+                toolchain,
+                "every smoke failure must invalidate the generation marker "
+                f"(missing: {smoke_guard})",
+            )
 
     def test_sysroot_setup_script_pins_the_glibc_2_38_baseline(self):
         sysroot = _without_comments(self.sysroot)
@@ -861,10 +962,11 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         self.assertIn('mv "$manifest.tmp" "$manifest"', sysroot)
 
     def test_toolchain_cargo_linker_routes_through_rust_lld(self):
-        # rustc's LLVM (1.99+) emits R_LARCH_CALL36 (psABI v2.30) for some
-        # direct calls; the pinned toolchain's bundled bfd (2.41, chosen for
-        # the glibc 2.38 floor) rejects it with "unsupported relocation type
-        # 0x6e" at the cargo link step (pinvou3#1993 CI round 5). The
+        # rustc's LLVM (1.99+) emits R_LARCH_CALL36 (psABI v2.20; the v2.30
+        # revision added the code-models chapter that makes rustc emit it
+        # for direct calls); the pinned toolchain's bundled bfd (2.41, chosen
+        # for the glibc 2.38 floor) rejects it with "unsupported relocation
+        # type 0x6e" at the cargo link step (pinvou3#1993 CI round 5). The
         # toolchain therefore materializes a <triple>-gcc-rust-lld wrapper —
         # the sibling gcc with -B<shim dir> -fuse-ld=lld, where the shim dir
         # holds an `ld.lld` that resolves the rust-bundled gcc-ld/ld.lld
@@ -983,9 +1085,12 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             self.assertIn(f"<-B{bin_dir / 'lld-shim'}>", linked.stdout)
             self.assertIn("<-fuse-ld=lld>", linked.stdout)
             self.assertIn("<-o> <app>", linked.stdout)
-            # Order is load-bearing: -B dirs are last-match-wins in gcc, so
-            # the wrapper must PREPEND its -B/-fuse-ld=lld ahead of cargo's
-            # arguments, not append them behind flags a build script passed.
+            # Order is load-bearing: gcc resolves -B dirs and -fuse-ld names
+            # FIRST-match-wins (the earliest -B on the command line is
+            # searched before the standard prefix list), so the wrapper must
+            # PREPEND its -B/-fuse-ld=lld ahead of cargo's arguments —
+            # appending them behind a build script's own -B would let that
+            # -B's linker win instead of the shim.
             self.assertTrue(
                 linked.stdout.startswith("FAKE-GCC <-B"),
                 "the wrapper must prepend -B/-fuse-ld=lld ahead of cargo's "
@@ -1099,10 +1204,19 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             self.assertNotIn("=/", rewritten)
             self.assertNotIn(" /lib/", rewritten)
             self.assertNotIn(" /usr/lib/", rewritten)
-            # Referenced archive member kept; unreferenced bulk dropped.
+            # Referenced archive member kept; unreferenced bulk dropped;
+            # glibc ≥2.34 compat stubs (-lutil/-lrt link tail) kept.
             self.assertTrue((ma / "libc_nonshared.a").exists())
+            self.assertTrue((ma / "librt.a").exists())
+            self.assertTrue((ma / "libutil.a").exists())
+            self.assertTrue((ma / "libanl.a").exists())
             self.assertFalse((ma / "libunreferenced.a").exists())
             self.assertFalse((ma / "libunreferenced.la").exists())
+            # A *.a dev SYMLINK does not survive its target: the -type f
+            # archive delete cannot take it, so the prune removes .a links
+            # explicitly (deepin libpng.a -> libpng16.a broke CI otherwise).
+            self.assertFalse((ma / "libpng.a").exists())
+            self.assertFalse((ma / "libpng16.a").exists())
             self.assertFalse((root / "etc").exists())
             self.assertFalse((root / "usr/bin").exists())
             # The multiarch header merge must land arch bits in usr/include
@@ -1278,14 +1392,18 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         # verify_sysroot is the only guard a truncated cache restore hits
         # before the build (the reuse path re-runs it verbatim), so its
         # load-bearing checks must be EXERCISED, not just spelled: run the
-        # extracted function on the pruned synthetic tree and pin two
-        # fail-closed paths by their exact message — a referenced archive
-        # gone (the .a scan) and a dev symlink whose runtime target a
-        # truncated restore dropped (the resolution loop). The healthy run
-        # must stop at the ELF machine check (the fixture's libc.so.6 is
-        # text), proving neither guard false-fires on a real post-prune
-        # shape; a behaviorally broken .a regex or a removed resolution
-        # assertion leaves the matching case green and fails here.
+        # extracted function on the pruned synthetic tree, prove a healthy
+        # tree passes EVERY assertion (the crafted libc.so.6 carries a real
+        # ELF64 header with e_machine=258 and the glibc banner, so the
+        # machine check, version floor, views, header-merge comparison and
+        # startup-object loop all execute), and pin the fail-closed paths by
+        # their exact message — a referenced archive gone (the .a scan), a
+        # referenced .so member gone, a dev symlink whose runtime target a
+        # truncated restore dropped (the resolution loop), a zero-byte
+        # linker script (the -s guard), a dropped compat stub (-lutil/-lrt
+        # tail), and a wholesale multiarch-include loss (the source-subtree
+        # sentinel). A behaviorally broken regex or a removed assertion
+        # leaves the matching case green and fails here.
         sysroot_nc = _without_comments(self.sysroot)
         with tempfile.TemporaryDirectory() as tmp:
             prune_fragment = Path(tmp) / "prune-fragment.sh"
@@ -1302,9 +1420,15 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             verify_fragment = Path(tmp) / "verify-fragment.sh"
             verify_fragment.write_text(
                 "MULTIARCH_DIR=loongarch64-linux-gnu\n"
+                "GLIBC_FLOOR=2.38\n"
+                "VERIFY_PC_MODULES=()\n"
                 + _fn_source(self.sysroot, "fail")
                 + "\n"
                 + _fn_source(self.sysroot, "log")
+                + "\n"
+                + _fn_source(sysroot_nc, "pkg_config_env")
+                + "\n"
+                + _fn_source(sysroot_nc, "sysroot_glibc_version")
                 + "\n"
                 + _fn_source(sysroot_nc, "verify_sysroot")
                 + "\n",
@@ -1342,11 +1466,14 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
                 )
 
             healthy = verify()
-            self.assertNotEqual(healthy.returncode, 0)
-            # The fixture's libc.so.6 is text: the function must die at the
-            # machine check, AFTER the .a scan and the dev-symlink loop both
-            # passed — no false fire on a healthy post-prune shape.
-            self.assertIn("is not a LoongArch ELF", healthy.stderr)
+            # The crafted libc.so.6 carries a real ELF64 header and glibc
+            # banner: every assertion in the function runs and a healthy
+            # post-prune tree verifies GREEN end to end — any false fire on
+            # a healthy shape fails here.
+            self.assertEqual(
+                healthy.returncode, 0,
+                f"verify_sysroot false-fires on a healthy tree: {healthy.stderr}",
+            )
 
             # Truncation class 1: a referenced archive dropped. The .a scan
             # must name it (a text-only pin on the scan's plumbing would
@@ -1366,7 +1493,12 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             no_so = verify()
             self.assertNotEqual(no_so.returncode, 0)
             self.assertIn("references libc.so.6", no_so.stderr)
-            (ma / "libc.so.6").write_text("ELF")
+            (ma / "libc.so.6").write_bytes(
+                _minimal_loongarch_elf(
+                    "GNU C Library (Debian GLIBC 2.38-6deepin13+rb1) stable"
+                    " release version 2.38.\n"
+                )
+            )
 
             # Truncation class 2: the runtime file behind a rebased dev
             # symlink dropped. The resolution loop must name the link and
@@ -1377,6 +1509,41 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             self.assertNotEqual(truncated.returncode, 0)
             self.assertIn("does not resolve inside the sysroot", truncated.stderr)
             self.assertIn("libdbus-1.so.3.32.4", truncated.stderr)
+            (ma / "libdbus-1.so.3.32.4").write_text("ELF")
+
+            # Truncation class 3: the -lc linker script itself truncated to
+            # zero bytes. The text-script scan (grep -l .) excludes empty
+            # files, so only the -s guard catches this — a truncated restore
+            # must fail by name, not verify green and die as "file not
+            # recognized" at the first link.
+            libc_so = ma / "libc.so"
+            saved_script = libc_so.read_text()
+            libc_so.write_text("")
+            empty_script = verify()
+            self.assertNotEqual(empty_script.returncode, 0)
+            self.assertIn("libc.so is empty", empty_script.stderr)
+            libc_so.write_text(saved_script)
+
+            # Truncation class 4: a compat stub archive (-lutil/-lrt link
+            # tail) dropped. The keep-list and the verify assert must agree.
+            (ma / "librt.a").unlink()
+            no_compat = verify()
+            self.assertNotEqual(no_compat.returncode, 0)
+            self.assertIn("lacks the librt.a stub archive", no_compat.stderr)
+            (ma / "librt.a").write_text("!<arch>\n")
+
+            # Truncation class 5: the multiarch header SOURCE subtree lost
+            # wholesale (gnu/stubs.h is the arch-specific sentinel). Without
+            # this guard the comparison loop would iterate zero files and
+            # verify green on a tree whose merged arch headers can no longer
+            # be checked against anything.
+            (root / "usr/include/loongarch64-linux-gnu/gnu/stubs.h").unlink()
+            no_multi_inc = verify()
+            self.assertNotEqual(no_multi_inc.returncode, 0)
+            self.assertIn("multiarch header subtree lost", no_multi_inc.stderr)
+            (root / "usr/include/loongarch64-linux-gnu/gnu/stubs.h").write_text(
+                "/* stubs */\n"
+            )
 
     def test_elf_policy_uses_bfd_independent_readelf(self):
         # check-linux-elf-policy.sh dumps dynamic symbols with readelf, not

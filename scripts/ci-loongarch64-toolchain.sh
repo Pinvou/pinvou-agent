@@ -244,24 +244,29 @@ if [ "$host_arch" = "x86_64" ] || [ "${PINVOU_LOONG64_TOOLCHAIN_SKIP_SMOKE:-0}" 
   # previous `--version | head -n 1` could die of SIGPIPE under pipefail and
   # report a healthy toolchain as broken). A foreign-arch host without a
   # matching userland fails both invocations and gets the container hint.
+  # On a smoke failure the recorded marker is removed first: an
+  # already-verified tree that stopped running (cache corruption after the
+  # marker was written) must re-download on the next run instead of failing
+  # identically forever — the hint names both recovery routes.
   gcc_version="$("$toolchain_bin/$TRIPLE-gcc" -dumpfullversion 2>/dev/null || true)"
   [ -n "$gcc_version" ] || gcc_version="$("$toolchain_bin/$TRIPLE-gcc" -dumpversion 2>/dev/null || true)"
   [ -n "$gcc_version" ] \
-    || fail "$TRIPLE-gcc did not report a version (x86_64 binary on a foreign-arch host: run it inside a matching-userland container, or export PINVOU_LOONG64_TOOLCHAIN_SKIP_SMOKE=1)"
+    || { rm -f -- "$marker"; fail "$TRIPLE-gcc did not report a version (on a foreign-arch host: run it inside a matching-userland container, or export PINVOU_LOONG64_TOOLCHAIN_SKIP_SMOKE=1; on the x86_64 runner this means a corrupt cache — re-run with --force to re-download)"; }
   [ "$gcc_version" = "$GCC_VERSION" ] \
-    || fail "$TRIPLE-gcc reports '$gcc_version', expected version $GCC_VERSION (pin drift)"
+    || { rm -f -- "$marker"; fail "$TRIPLE-gcc reports '$gcc_version', expected version $GCC_VERSION (pin drift — re-run with --force to re-download)"; }
   "$toolchain_bin/$TRIPLE-gcc" -print-sysroot >/dev/null \
-    || fail "$TRIPLE-gcc -print-sysroot failed"
+    || { rm -f -- "$marker"; fail "$TRIPLE-gcc -print-sysroot failed"; }
 fi
 
 # The generation marker is written only AFTER the smoke passes: a tree
 # whose gcc exists and is executable but cannot actually run (foreign-arch
 # host without a matching userland, corrupt unpack) must not leave a
 # "verified" marker behind — every later run would reuse it and fail
-# identically at the same smoke instead of re-fetching. On the reuse path
-# the marker already exists and is left untouched; with the smoke skipped
-# (foreign-arch dev host + PINVOU_LOONG64_TOOLCHAIN_SKIP_SMOKE=1) the
-# marker is still written, as before.
+# identically at the same smoke instead of re-fetching. A reuse-path tree
+# that fails the smoke above has its marker removed there, so the next run
+# re-fetches. With the smoke skipped (foreign-arch dev host +
+# PINVOU_LOONG64_TOOLCHAIN_SKIP_SMOKE=1) the marker is still written, as
+# before.
 if [ -n "$fresh_tree" ]; then
   printf '%s\n' "$expected_id" > "$marker"
 fi
@@ -323,7 +328,8 @@ CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER=$toolchain_bin/$TRIPLE-gcc-rus
 # gcc resolves its bundled glibc $GLIBC_VERSION sysroot from its own path
 # (relocatable); no SYSROOT variable is needed for plain rust/cargo builds.
 # CARGO_TARGET_*_LINKER deliberately points at the $TRIPLE-gcc-rust-lld
-# wrapper: rustc's LLVM emits R_LARCH_CALL36 (psABI v2.30) that this
+# wrapper: rustc's LLVM emits R_LARCH_CALL36 (psABI v2.20; v2.30 added the
+# code-models chapter that makes rustc emit it for direct calls) that this
 # toolchain's bfd 2.41 cannot resolve, so cargo's links go through rust-lld
 # (same LLVM that emitted the relocs; linking against the same glibc
 # $GLIBC_VERSION sysroot keeps the deb floor unchanged). Do NOT copy the
