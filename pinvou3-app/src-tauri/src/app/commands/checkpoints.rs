@@ -69,8 +69,9 @@ async fn reconcile_pending_rewind(
     };
     // 当前 revision 与会话加载同源（store.load）。
     let current_revision = match store.load(session_id) {
-        Ok(session) => crate::features::sessions::transcript_revision(&session.messages)
-            .unwrap_or_default(),
+        Ok(session) => {
+            crate::features::sessions::transcript_revision(&session.messages).unwrap_or_default()
+        }
         Err(error) => {
             log::error!(
                 "[pinvou3][checkpoints] session load failed during rewind reconciliation, blocking this turn's snapshot sid={session_id}: {error:#}"
@@ -2302,8 +2303,8 @@ mod tests {
             crate::features::sessions::transcript_revision(&session.messages).expect("revision")
         };
         let target = checkpoints::find_checkpoint(&ledger, &first).expect("target");
-        let (_t, undo) = checkpoints::prepare_restore(&ledger, &execution, &first, None)
-            .expect("prepare");
+        let (_t, undo) =
+            checkpoints::prepare_restore(&ledger, &execution, &first, None).expect("prepare");
         checkpoints::write_pending_rewind(&ledger, &first, 1, &undo.id, &revision)
             .expect("pending");
         checkpoints::apply_restore(&ledger, &execution, &target).expect("apply");
