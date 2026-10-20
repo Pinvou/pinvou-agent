@@ -414,6 +414,10 @@ mod tests {
             ("vllm", "vLLM")
         );
         assert_eq!(
+            local_model_provider(LocalServerKind::Tachyon, None),
+            ("tachyon", "Tachyon (驭光)")
+        );
+        assert_eq!(
             local_model_provider(LocalServerKind::Ollama, None),
             ("ollama", "Ollama")
         );

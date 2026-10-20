@@ -934,16 +934,6 @@ mod tests {
         assert!(!native_display_window_adoptable(None, None));
     }
 
-    /// The display follow-up on a local Ollama endpoint: /api/ps effective
-    /// value wins (fresh, loaded ground truth); an Ollama-shaped ps with no
-    /// entry for the model falls through to /api/show (positively cached for
-    /// the TTL, and misses — no `num_ctx` — cached alike); a non-Ollama-shaped
-    /// ps (404 — vLLM/LM Studio/generic locals) ends the lookup with no
-    /// native follow-up at all. Each segment uses its own model name so the
-    /// shared static cache cannot collide even if the OS reuses a mock port;
-    /// the hit-count pins across two calls run under the crate ENV_LOCK so
-    /// a concurrent cache-clearing core test (same lock) can never wipe an
-    /// entry in between.
     /// /metrics 拉取携带与 /v1/models 同源 bearer（round-1 评审 minor 补钉）：以
     /// `--api-key` 启动的本地引擎（如驭光 Tachyon）对裸 GET 会 401，修复前落
     /// metrics_unavailable 误诊。mock 逐路径记录 Authorization，两个方向都钉：
@@ -1013,6 +1003,16 @@ mod tests {
         assert_eq!(snap.status, VllmStatus::Busy);
     }
 
+    /// The display follow-up on a local Ollama endpoint: /api/ps effective
+    /// value wins (fresh, loaded ground truth); an Ollama-shaped ps with no
+    /// entry for the model falls through to /api/show (positively cached for
+    /// the TTL, and misses — no `num_ctx` — cached alike); a non-Ollama-shaped
+    /// ps (404 — vLLM/LM Studio/generic locals) ends the lookup with no
+    /// native follow-up at all. Each segment uses its own model name so the
+    /// shared static cache cannot collide even if the OS reuses a mock port;
+    /// the hit-count pins across two calls run under the crate ENV_LOCK so
+    /// a concurrent cache-clearing core test (same lock) can never wipe an
+    /// entry in between.
     #[tokio::test]
     async fn local_native_display_window_ps_then_show_then_stop() {
         use crate::core::model_endpoint::models_mock;

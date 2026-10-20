@@ -14,9 +14,12 @@ import {
 
 // Probes the local server kind (vllm/ollama/lmstudio/generic) and returns { probedKind, probePending }.
 // - enabled=false (endpoint not local/private-network) synchronously clears the probe window; tiers fall back to the model catalog;
-// - probePending is true from the moment a probe is scheduled (debounce window included): no tiers are offered inside the window,
-//   so the user cannot pick/save a misleading tier while the probe is undecided; an unreachable probe (bridge
-//   unsupported/call failed) is reset by then/catch/finally to null + pending=false, landing on the default four tiers;
+// - probePending is true from the moment a probe is scheduled (debounce window included). Whether pending hides the tiers is the
+//   consumer's call via pendingHidesTiers (below), not this hook's: the openai_compatible preset keeps the round-6 hiding window
+//   (an "engine kind unknown" endpoint offers no tiers until decided, so the user cannot pick/save a misleading tier), while the
+//   local_vllm preset — whose unprobed route is already known to be vllm wire — shows the static four tiers during pending
+//   (settings_ui_smoke ⑥.5b contract). An unreachable probe (bridge unsupported/call failed) is reset by then/catch/finally to
+//   null + pending=false, landing on the default four tiers;
 // - debounceMs>0 schedules a debounced probe (the form's base_url/api_key are per-keystroke input state; without debouncing
 //   every keystroke would fire a probe, and the Rust-side cache key includes port/path, so every intermediate state is a
 //   new key probed serially, ~12s worst case); debounceMs=0 matches the original session popover, firing inline in the effect;
@@ -35,12 +38,14 @@ function useLocalServerKindProbe({ enabled, baseUrl, apiKey = '', modelId = null
       return;
     }
     let cancelled = false;
-    // Enter pending during the debounce window (round-6 P2): no tiers are
-    // offered from the moment the probe is scheduled (the default four
-    // tiers from localProbeTiersForKind(null) are only the fallback for an
-    // unreachable probe; they must not be exposed during the "probe
-    // incoming" window, or the user could pick/save a misleading tier
-    // before the result is known). An unreachable probe (bridge
+    // Enter pending during the debounce window (round-6 P2): this only
+    // marks the probe as undecided — the hook itself never hides tiers.
+    // Consumer-side pendingHidesTiers applies the hiding window for the
+    // openai_compatible preset only (engine kind unknown → offer no tiers
+    // until decided); the local_vllm preset keeps the static four tiers
+    // during pending (its unprobed route is known vllm wire; ⑥.5b). The
+    // default four tiers from localProbeTiersForKind(null) are the fallback
+    // for an unreachable probe. An unreachable probe (bridge
     // unsupported/failed) is reset by then/catch to null + pending=false,
     // landing on the default four tiers.
     setProbePending(true);

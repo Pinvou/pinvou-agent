@@ -1,6 +1,6 @@
 # Pinvou CodeWhale Fork Policy
 
-> Updated: 2026-10-17. Inside the transition window after the r3 closure: the immutable tag `pinvou-v0.9.12-r3` stays pinned at its closure commit `61cb769be` while the registered head advanced to `0bc868ff0` with the 2026-10-08/09 batch and again to `480bebf61` with the 2026-10-13/14 batch (#92/#96/#101/#102/#103/#104), and to `803e672bb` with the 2026-10-14 batch (#54/#107), and again to `13ee4dfd2` with the 2026-10-15 batch (#108), and to `c08c8c022` with the 2026-10-17 batch (#105/#106/#111) — the parent gitlink tracks the maintenance branch and leads the tag; `verify-public-submodule.sh` asserts the transition pinning via `TRANSITION_BASELINE`.
+> Updated: 2026-10-19. Inside the transition window after the r3 closure: the immutable tag `pinvou-v0.9.12-r3` stays pinned at its closure commit `61cb769be` while the registered head advanced to `0bc868ff0` with the 2026-10-08/09 batch and again to `480bebf61` with the 2026-10-13/14 batch (#92/#96/#101/#102/#103/#104), and to `803e672bb` with the 2026-10-14 batch (#54/#107), and again to `13ee4dfd2` with the 2026-10-15 batch (#108), and to `c08c8c022` with the 2026-10-17 batch (#105/#106/#111), and again to the T10 candidate head `7ba471304` with the 2026-10-19 T10 candidate batch — the T10 candidate window pins the parent gitlink directly at the candidate commit (a new pinning mode with no historical precedent: earlier batches all re-pinned the public head only after the squash merge), so the "gitlink = public maintenance-branch head" leg of `verify-public-submodule.sh` stays red by disclosed exemption during the window and doubles as merge-order enforcement; the `TRANSITION_BASELINE` leg is unaffected. After CodeWhale#113 squash-merges, the parent re-pins the gitlink, `EXPECTED_HEAD`/`EXPECTED_COMMITS`, and the ledgers (zh and en) to the squash SHA.
 > Canonical Chinese policy: [`docs/fork-policy.md`](fork-policy.md). This English page is a condensed summary; the Chinese version is the complete, authoritative process.
 
 ## Baseline
@@ -10,7 +10,7 @@
 - The public pre-upgrade rollback point is immutable tag `pinvou-v0.9.5-r13` at `f853f8f1566c57e6be40d5439a222a932aa79ef5`; local `backup/pre-v0.9.12-sync` at the same SHA is only a convenience ref.
 - r1 is the protected consumable baseline. At each rN closure the parent gitlink, maintenance branch, and immutable tag resolve to the same commit.
 - Transition exemption (from 2026-09-11): between two rN closures the parent gitlink may advance along `pinvou3-clean` ahead of the immutable tag. During the transition `scripts/verify-public-submodule.sh` asserts gitlink equals the public maintenance-branch head and the immutable tag stays pinned at its closure commit; the next rN closure cuts a fresh immutable tag at the merged head and restores three-way equality.
-- Keep four long-lived topics, three appended reduction topics, and one merged-into-maintenance topic:
+- Keep four long-lived topics, three appended reduction topics, two merged-into-maintenance topics, and one candidate-window topic:
 
   1. Host embedding and routing boundary
   2. Tool compatibility and command-execution safety
@@ -20,6 +20,8 @@
   6. Swarm rate-limit governance (T6, appended)
   7. Compaction checkpoint role compatibility (T7, merged into the maintenance branch)
   8. Roster presentation of host profiles (T8, appended)
+  9. Custom wire runtime routes (T9, merged into the maintenance branch)
+  10. Tachyon (驭光) engine reasoning-effort dialect (T10, candidate window)
 
 The exact commits and fingerprints are recorded in [`docs/fork-modifications.md`](fork-modifications.md).
 
