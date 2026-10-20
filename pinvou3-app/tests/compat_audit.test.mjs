@@ -178,6 +178,47 @@ test('the auditor flags @layer blocks that survive into dist CSS (Safari 14.0 co
   }
 });
 
+test('the auditor flags anonymous, statement, and import-layer survivors too', () => {
+  // The `@layer` substring cannot see the import form: `@import url(…)
+  // layer(nav);` creates cascade layers without containing `@layer`. Pin the
+  // anonymous and statement forms alongside it, and keep a `layer(` outside
+  // an @import (a URL string here) from phantom-matching.
+  const distDir = fs.mkdtempSync(path.join(os.tmpdir(), 'compat-audit-layer-forms-'));
+  try {
+    fs.mkdirSync(path.join(distDir, 'assets'), { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'assets', 'main.css'), [
+      '@layer{*{box-sizing:border-box}}',
+      '@media (min-width:640px){.ok{display:block}}',
+    ].join('\n'));
+    const anonymous = hermeticAudit({ distDir });
+    assert.equal(anonymous.length, 1, `exactly the anonymous layer must be reported; got: ${JSON.stringify(anonymous)}`);
+    assert.match(anonymous[0], /^dist:main\.css:1: @layer survives the build/);
+
+    fs.writeFileSync(path.join(distDir, 'assets', 'main.css'), [
+      '@layer base, utilities;',
+      '@media (min-width:640px){.ok{display:block}}',
+    ].join('\n'));
+    const statement = hermeticAudit({ distDir });
+    assert.equal(statement.length, 1, `exactly the layer statement must be reported; got: ${JSON.stringify(statement)}`);
+    assert.match(statement[0], /^dist:main\.css:1: @layer survives the build/);
+
+    fs.writeFileSync(path.join(distDir, 'assets', 'main.css'), [
+      '@import url("./theme.css") layer(nav);',
+      '@media (min-width:640px){.ok{display:block}}',
+    ].join('\n'));
+    const importLayer = hermeticAudit({ distDir });
+    assert.equal(importLayer.length, 1, `exactly the import layer must be reported; got: ${JSON.stringify(importLayer)}`);
+    assert.match(importLayer[0], /^dist:main\.css:1: @import layer\(\) survives the build/);
+
+    fs.writeFileSync(path.join(distDir, 'assets', 'main.css'), [
+      '.ok{background:url("./layer(v2).png")}',
+    ].join('\n'));
+    assert.deepEqual(hermeticAudit({ distDir }), [], 'layer( outside @import must not fire');
+  } finally {
+    fs.rmSync(distDir, { recursive: true, force: true });
+  }
+});
+
 test('the audit fails closed when a dist layer is absent or empty', () => {
   // The presence guards are the CLI's only defense against green-lighting an
   // audit whose dist layers were never produced: every layer runAudit scans
