@@ -340,9 +340,11 @@ super-permission pkexec toggle.
   undisclosed there; avoid running both surfaces' `ima connect` at once
   (round-38 review).
 - CLI consent/scope writes to `disabled_bundles.json` (`connectors
-  enable`/`disable`, `plugins enable`/`disable`/`project-skills`, and the
-  DenyAll sync after `plugins` installs/imports and `connectors
-  apply-skills`/`ima connect`) serialize only in-process, like the desktop
+  enable`/`disable`, `plugins enable`/`disable`/`project-skills`, the
+  DenyAll install sync after `plugins` installs/imports and `ima connect`,
+  and the connect-channel ENABLE grant behind `deny_first_register_connector`
+  for `connectors connect` and the `apply-skills` show branch — round-2
+  review: same gates as the GUI) serialize only in-process, like the desktop
   app's own writers; a CLI write racing a live desktop-app write to that file
   is last-writer-wins until the cross-process lock (#517) lands.
   `bundles.json` and `recycle-bin.json` are NOT in that class. The `bundles.json` store mirror
