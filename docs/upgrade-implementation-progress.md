@@ -57,7 +57,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T44 | Implemented; independently reviewed and verified | Actual protected lifecycle kernel, complete atomic commands, original retention/backup deadlines and worker/access-driven timeout convergence; T17/T19/T20 composition and deployment remain separate |
 | T45 | Not completed | Approved helper/launcher evolution and restricted cleanup execution. |
 | T46 | Not completed | Actual local-mode prerequisite certification and exact evidence integration. |
-| T47 | In progress | Protected frozen SN lifecycle and operation-bound child write sets; reviewed transient SN intake, complete multi-stage plan editing, independent approval, freezing, authenticated history and original-key recovery with three-language admin; running Rollout, quality and active publication composition remain pending. |
+| T47 | In progress | Protected frozen SN lifecycle, operation-bound child write sets and complete scope occupancy/absence with original T06 atomic composition and permanent-source recovery; running Rollout, parent, quality and active publication composition remain pending. |
 
 Confirmed implementation decisions (2026-10-09):
 
@@ -13873,3 +13873,69 @@ permissions and production qualification remain pending. T12 and the overall
 task counts remain unchanged. Product 0.10.13 and normative version 1.0 remain
 unchanged. Downloads retain no total/cumulative duration or retry-count cap;
 the 32 MiB limit applies only to the internal atomic business metadata batch.
+
+## T47 complete scope capture and original-operation composition (2026-10-21)
+
+Separate service commit `e2319b34269a1613167b165dca6bc3d3b0e50f79` was DCO-signed
+and ordinarily pushed on `codex/t47-scope-capture`. The remote and tracking heads
+match that commit; the worktree is clean with zero commits ahead or behind.
+This delivers a bounded private scope kernel, not a completed T47 or a running
+Rollout. The existing public lifecycle writers remain closed without actual
+parent, quality and publication owners.
+
+The increment adds complete scope occupancy, revision-zero absence proofs,
+independent membership witnesses, immutable enrollment origins, original
+operation bindings and sealed results. C-ordered keyset pages authenticate all
+permanent members without a lifetime row cap. Current heads, frozen plans,
+applicable SN sources, facts and permanent windows are authenticated before
+occupancy filtering. Original receipts, outboxes and committed root intents are
+discovered independently, so removing child evidence or locally rewinding new
+scope records cannot hide a retained original higher version. First installation
+and reopening apply the same complete missing-source checks.
+
+The private scope write set joins the supplied original T06 transaction, result,
+request digest and owner epoch. It preserves original envelope and recovery
+identities, merging actual current source references and logical costs under
+the existing 4,096-reference, 1 MiB encoded-reference and 32 MiB joined atomic
+metadata bounds. Each envelope retains its separate size bound; shared source
+identities are charged once. Scope CAS, declared children, original outboxes and
+outer completion commit together. Ordinary runtime retains SELECT-only factual
+reads, including original results after later activity and response expiry;
+no private EXECUTE privilege or new publisher is granted.
+
+Independent reviews closed the fixed namespace rights check, C-collated cursor
+bounds, complete undeclared-source references and byte charges, enrollment
+locking before the first business snapshot, exact original-proof result binding,
+SELECT-only original-source authentication and root-only omission detection.
+Cancellation at the last reservation or seal fence now poisons the original
+transaction even when the canceled query was never sent to PostgreSQL, so a
+caught Go refusal cannot commit earlier partial writes. A stale rollback-test
+precondition was corrected without weakening the production high-water guard.
+
+Two independent source reviews passed on the final frozen v7 tree: 32 owned
+files and 138 protected baseline inputs. The original state/operation sources,
+existing SQL, public contracts and dependencies remain unchanged. The independent
+complete PostgreSQL scope profile passed 25 top-level tests and 29 subtests,
+with zero failures or skips and no required native test missing. It includes
+the large undeclared-SN union above 32 MiB and shared-source deduplication, more
+than 4,096 permanent heads followed by a real T06 operation under its unchanged
+lease, 33 genuinely sealed operations across history pages, restricted runtime
+history, original-key recovery, catalog/ACL refusals, concurrency, canceled final
+fences and atomic rollback. Earlier diagnostic failures remain retained with
+their original outcomes.
+
+The independent default repository suite passed 942 top-level tests and 2,085
+subtests with zero failures; it separately reported 817 top-level and 739 subtest
+skips in that default configuration. Those skips do not replace the separately
+executed zero-skip scope profile. Final gofmt, vet, module verification, server
+build, pinned-contract and whitespace checks passed. Every verification process
+tree naturally drained and was joined, and the complete source inventory was
+unchanged before and after both independent verification runs. No UI or public
+HTTP route changes were part of this increment.
+
+Actual T14/T15 parent and baseline composition, T21 contribution/quality/freeze,
+T08 active publication and physical qualification remain pending. T47 and the
+overall task totals remain unchanged; T42 deployment remains deferred. Product
+0.10.13 and normative version 1.0 are unchanged. Downloads retain no
+total/cumulative duration or retry-count cap; 32 MiB applies only to the joined
+atomic business metadata batch.
