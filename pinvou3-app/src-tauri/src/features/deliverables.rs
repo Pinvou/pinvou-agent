@@ -146,11 +146,23 @@ pub fn deliverable_index(only_session: Option<&str>) -> Result<DeliverableIndex,
     // probe below and the `RecordRead::TooLarge` arm (a record that grew
     // past the cap between the probe and the read) disclose the exact same
     // way. stderr notes for the human lane; the skipped list is the payload
-    // a `--output json` consumer reads.
-    let skip_oversized = |file: &Path, stem: String, skipped: &mut Vec<String>| {
-        eprintln!(
-            "[artifacts] list skips {} (larger than the {MAX_LIST_SCAN_BYTES}-byte scan cap)",
+    // a `--output json` consumer reads. The notes are best-effort writes —
+    // Rust ignores SIGPIPE, so an `eprintln!` here would PANIC (exit 101)
+    // when a human pipes stderr (`pinvou artifacts list 2>&1 | head`) and
+    // the reader closes early; the CLI's `note!` documents this closed-pipe
+    // contract, and this shared impl is library code on that call path
+    // (round-9 review MAJOR), so the errors are ignored explicitly instead.
+    let note_skip = |detail: std::fmt::Arguments<'_>, file: &Path| {
+        use std::io::Write as _;
+        let _ = std::io::stderr().write_fmt(format_args!(
+            "[artifacts] list skips {} {detail}\n",
             file.display()
+        ));
+    };
+    let skip_oversized = |file: &Path, stem: String, skipped: &mut Vec<String>| {
+        note_skip(
+            format_args!("(larger than the {MAX_LIST_SCAN_BYTES}-byte scan cap)"),
+            file,
         );
         skipped.push(stem);
     };
@@ -176,18 +188,26 @@ pub fn deliverable_index(only_session: Option<&str>) -> Result<DeliverableIndex,
         if only_session.is_some_and(|session| session != stem.as_str()) {
             continue;
         }
-        let Ok(meta) = std::fs::metadata(&file) else {
-            continue;
-        };
-        if !meta.is_file() {
-            continue;
-        }
-        if meta.len() > MAX_LIST_SCAN_BYTES {
+        // A failed stat must NOT silently skip (round-9 review minor): the
+        // CLI side this impl absorbed fell through to the capped read on a
+        // stat failure, whose `RecordRead::Unreadable` arm discloses the
+        // record in `skipped` — the "incomplete ≠ empty" contract covers
+        // unreadable records, not just oversized ones. The over-cap probe
+        // only fires on a good stat (a failed stat reads as len 0 there,
+        // exactly like the CLI's `unwrap_or_default` probe), and a stamp
+        // only exists for a good stat, so the no-stamp path reads
+        // uncached — a stat that fails while the read succeeds (TOCTOU)
+        // parses normally but is never cached under a fabricated stamp.
+        let meta = std::fs::metadata(&file).ok();
+        if meta
+            .as_ref()
+            .is_some_and(|m| m.is_file() && m.len() > MAX_LIST_SCAN_BYTES)
+        {
             skip_oversized(&file, stem, &mut skipped);
             continue;
         }
-        let stamp = FileStamp::of(&meta);
-        let view = match DV_VIEW_CACHE.get(&file, stamp) {
+        let stamp = meta.as_ref().map(FileStamp::of);
+        let view = match stamp.and_then(|stamp| DV_VIEW_CACHE.get(&file, stamp)) {
             Some(view) => view,
             None => {
                 let raw = match read_record_capped(&file, MAX_LIST_SCAN_BYTES) {
@@ -205,7 +225,7 @@ pub fn deliverable_index(only_session: Option<&str>) -> Result<DeliverableIndex,
                         // is dropped from the index, so an unreadable slice
                         // must surface in skipped_sessions instead of
                         // vanishing (round-36 review).
-                        eprintln!("[artifacts] list skips {} (unreadable)", file.display());
+                        note_skip(format_args!("(unreadable)"), &file);
                         skipped.push(stem);
                         continue;
                     }
@@ -227,14 +247,13 @@ pub fn deliverable_index(only_session: Option<&str>) -> Result<DeliverableIndex,
                 let Ok(view) = serde_json::from_str::<DvSessionView>(&raw) else {
                     // Corrupt JSON is the same undecidable slice:
                     // disclosed, then skipped.
-                    eprintln!(
-                        "[artifacts] list skips {} (not a valid session record)",
-                        file.display()
-                    );
+                    note_skip(format_args!("(not a valid session record)"), &file);
                     skipped.push(stem);
                     continue;
                 };
-                DV_VIEW_CACHE.insert(&file, stamp, view.clone());
+                if let Some(stamp) = stamp {
+                    DV_VIEW_CACHE.insert(&file, stamp, view.clone());
+                }
                 view
             }
         };
