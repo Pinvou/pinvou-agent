@@ -2029,10 +2029,11 @@ mod spool_pipeline_tests {
                 AgentBackend::ClaudeAcp,
                 CodexWorkspaceKind::Temporary,
                 None,
+                Vec::new(),
             )
             .expect("bind acp record");
         store
-            .bind_code_native_session("code-tgt", CodexWorkspaceKind::Temporary, None)
+            .bind_code_native_session("code-tgt", CodexWorkspaceKind::Temporary, None, Vec::new())
             .expect("bind code record");
         // The production consultations, computed from the LIVE store.
         assert!(acp_code_target_denied(store.backend("acp-tgt").is_acp(), false).is_err());
@@ -3069,10 +3070,11 @@ mod spool_pipeline_tests {
                 AgentBackend::ClaudeAcp,
                 CodexWorkspaceKind::Temporary,
                 None,
+                Vec::new(),
             )
             .expect("bind acp record");
         store
-            .bind_code_native_session("code-tgt", CodexWorkspaceKind::Temporary, None)
+            .bind_code_native_session("code-tgt", CodexWorkspaceKind::Temporary, None, Vec::new())
             .expect("bind code record");
         assert!(
             store.backend("acp-tgt").is_acp(),

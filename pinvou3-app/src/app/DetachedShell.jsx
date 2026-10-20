@@ -25,7 +25,7 @@ import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
 import { normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
 import { listenTauri } from '../platform/tauri/client.js';
 import { listAcpSessions } from '../features/codex/acpClient.js';
-import { dict, ensureLanguage, initialSystemLanguage, TAG_TO_LANG } from '../shared/i18n.js';
+import { dict, ensureLanguage, initialSystemLanguage, TAG_TO_LANG, zhDict } from '../shared/i18n.js';
 import { ensurePersonaI18nOverlay } from './personas-overlay.js';
 
 function useDetachedBase() {
@@ -84,8 +84,8 @@ function useDetachedBase() {
     }
   }, [language]);
 
-  // 兜底 zh:词典 chunk 装载失败时按 zh 渲染而非白屏(与 PetWindow/ReaderApp 同口径)。
-  return { bs, activeTheme, t: dict[language] || dict.zh };
+  // 兜底 zh 是活腿:入口引导失败降级装载 zh 后 zhDict() 非空(与主窗同口径)。
+  return { bs, activeTheme, t: dict[language] || zhDict() };
 }
 
 class DetachedErrorBoundary extends React.Component {

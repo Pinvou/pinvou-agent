@@ -78,7 +78,9 @@
 //! failures exit 1, usage errors exit 2, and the destructive `delete`, the
 //! irreversible ungrouping `move`, and the wholesale `rebind` all require
 //! `--yes` before any store access (deleting a project never deletes
-//! sessions — affected sessions are only unassigned).
+//! sessions — affected code-session members get the explicit-None
+//! tombstone, plain bindings are unassigned; round-38 minor 13 wording
+//! fix to match the tombstone semantics the delete path documents).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -486,6 +488,18 @@ fn list(output: OutputMode) -> Result<CliOutcome, CliError> {
 /// project.
 fn create(name: &str, roots: Vec<PathBuf>, output: OutputMode) -> Result<CliOutcome, CliError> {
     let store = open_store()?;
+    // Round-47 M12: root-accepting writers hold `rebind_fence` — the GUI's
+    // create does (app commands/projects.rs, review #464 round-6 finding 6),
+    // and this PR's own round-40 M4 rationale (same durable assignment map
+    // via GUI or CLI) closes the class for update/delete; create joins them
+    // (a create landing mid-rebind would re-add a `from`-prefixed root after
+    // the rebind's snapshot). Precision (round-48): the fence is a
+    // process-local mutex — it serializes writers on this store handle, it
+    // does NOT exclude a separately running desktop or CLI process (the
+    // cross-process boundary is the section-lock discipline).
+    let _fence = store
+        .rebind_fence()
+        .map_err(|error| project_error("create", error))?;
     let project = store
         .create_project(name.to_owned(), roots)
         .map_err(|error| project_error("create", error))?;
@@ -506,9 +520,33 @@ fn update(
     output: OutputMode,
 ) -> Result<CliOutcome, CliError> {
     let store = open_store()?;
-    let project = store
-        .update_project(id, name, roots)
-        .map_err(|error| project_error("update", error))?;
+    // Round-40 M4: a root REPLACEMENT routes through the GUI's
+    // expel flow (enumeration + tombstones) — the same operation via GUI
+    // vs CLI must write the same durable assignment map (plain
+    // update_project left removed-root members silently re-adoptable).
+    let project = match roots {
+        Some(roots) => {
+            // Same rebind fence as the GUI update command (review #484
+            // round-14 MAJOR 1): a root replacement must not interleave
+            // with an in-flight rebind.
+            let _fence = store
+                .rebind_fence()
+                .map_err(|error| project_error("update", error))?;
+            let sessions = open_session_store()?;
+            let agents = match SessionAgentStore::load() {
+                Ok(agents) => agents,
+                Err(_) => {
+                    return Err(CliError::failed(
+                        "update: the code-session agent index is unreadable; nothing was updated — repair or remove session-agents.json, then retry",
+                    ));
+                }
+            };
+            cli_replace_roots_and_expel(&store, &sessions, &agents, id, name, roots)
+        }
+        None => store
+            .update_project(id, name, None)
+            .map_err(|error| project_error("update", error)),
+    }?;
     let count = store.assigned_session_ids(&project.id).len();
     let value = project_item(&project, count, "update")?;
     Ok(success(render(
@@ -518,14 +556,69 @@ fn update(
     )))
 }
 
-/// Mirror of `delete_project`: `--yes` is checked before any store access;
-/// affected sessions are only unassigned (they fall back to implicit
-/// grouping), never deleted.
+/// Mirror of the GUI `delete_project` command: `--yes` is checked before any
+/// store access; affected sessions are unassigned and their auto-membership
+/// tombstoned, never deleted.
 fn delete(id: &str, yes: bool, output: OutputMode) -> Result<CliOutcome, CliError> {
     require_yes(yes)?;
     let store = open_store()?;
+    // Same rebind fence as the GUI command: the tombstone writes are
+    // translation-domain state, and committing them mid-rebind lets
+    // pre-translation spellings escape (review #484 round-13 minor 2).
+    let _fence = store
+        .rebind_fence()
+        .map_err(|error| project_error("delete", error))?;
+    // Enumerate the auto-grouped members the GUI command tombstones — the
+    // agents index plus the plain workspace bindings under the project's
+    // roots. Without the tombstone, tier-② grouping could silently
+    // re-adopt a member into a surviving project sharing the root
+    // (review #484 round-19 minor 5's global-tombstone ruling).
+    let roots = store
+        .get(id)
+        .map(|project| project.roots)
+        .unwrap_or_default();
+    let agents = match SessionAgentStore::load() {
+        Ok(agents) => agents,
+        Err(_) => return Err(delete_index_unreadable()),
+    };
+    let mut expel_session_ids: Vec<String> = Vec::new();
+    for root in &roots {
+        // Round-37 M4: the CHECKED twin, mirroring the GUI delete this
+        // function documents itself against — a transient sidecar-root
+        // read failure fails the delete ("nothing was deleted — retry")
+        // instead of silently under-enumerating members the next folder
+        // materialization revives.
+        for (session_id, _) in
+            agents.try_sessions_under_workspace(root).map_err(|error| {
+                project_error(
+                    "delete",
+                    format!(
+                        "the code-session directory became unreadable ({}); nothing was deleted — retry",
+                        error.kind()
+                    ),
+                )
+            })?
+        {
+            expel_session_ids.push(session_id);
+        }
+    }
+    let sessions = open_session_store()?;
+    for (session_id, _) in sessions
+        .try_workspace_bindings_under_any(&roots)
+        .map_err(|error| {
+            project_error(
+                "delete",
+                format!(
+                    "the sessions directory became unreadable ({}); nothing was deleted — retry",
+                    error.kind()
+                ),
+            )
+        })?
+    {
+        expel_session_ids.push(session_id);
+    }
     let report = store
-        .delete_project(id)
+        .delete_project(id, &expel_session_ids)
         .map_err(|error| project_error("delete", error))?;
     let value = serde_json::json!({
         "id": id,
@@ -670,8 +763,10 @@ fn path_is_under_root(path: &Path, root: &Path) -> bool {
 /// The project a session currently resolves to, mirroring the frontend's
 /// `resolveSessionProjectId` (`features/projects/projectGrouping.js`): tier 1
 /// is the explicit assignment, tier 2 is auto-grouping by the session's bound
-/// workspace directory, longest root winning so a nested project root cannot
-/// be stolen by a shallower one.
+/// workspace directory under the §9.9 rule — projects ordered by
+/// (position, id), first root match wins (round-46 M3: this used to resolve
+/// by longest root, a rule the frontend retired; the parity claim below was
+/// false until the rules matched).
 ///
 /// The Rust store exposes tier 1 only, and only as the whole map: the
 /// per-session `assignment_of` is `#[cfg(test)]`, so the production reader is
@@ -699,19 +794,18 @@ fn resolved_project_id(
         Some(Some(_)) | None => {}
     }
     let workspace = session_workspace_path(sessions, session_id)?;
-    let mut best: Option<(&str, usize)> = None;
-    for project in &projects {
-        for root in &project.roots {
-            if !path_is_under_root(&workspace, root) {
-                continue;
-            }
-            let depth = root.as_os_str().len();
-            if best.is_none_or(|(_, best_depth)| depth > best_depth) {
-                best = Some((project.id.as_str(), depth));
-            }
-        }
-    }
-    best.map(|(project_id, _)| project_id.to_owned())
+    // §9.9: the (position, id) display order decides, first root match wins.
+    let mut ordered: Vec<_> = projects.iter().collect();
+    ordered.sort_by(|a, b| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id)));
+    ordered
+        .into_iter()
+        .find(|project| {
+            project
+                .roots
+                .iter()
+                .any(|root| path_is_under_root(&workspace, root))
+        })
+        .map(|project| project.id.clone())
 }
 
 /// Mirror of `move_session_to_project` (storage-only subset): the assignment
@@ -947,6 +1041,69 @@ fn push_unique(out: &mut Vec<String>, id: String) {
 /// the copy names the file and the repair instead. Nothing has been moved
 /// whenever this fires (the pre-lane load runs first; the lane's own
 /// persist rolls its memory back on failure).
+/// Round-40 M4: the GUI `replace_project_roots_and_expel` flow, mirrored
+/// CLI-side with the SAME checked enumeration twins (`nothing was
+/// moved — retry` on a read failure) and the store's own
+/// `update_project_and_expel` — a root replacement must write the same
+/// durable assignment map via either surface.
+fn cli_replace_roots_and_expel(
+    store: &ProjectStore,
+    sessions: &pinvou3_lib::features::sessions::SessionStore,
+    agents: &SessionAgentStore,
+    project_id: &str,
+    name: Option<String>,
+    roots: Vec<PathBuf>,
+) -> Result<Project, CliError> {
+    let normalized =
+        ProjectStore::normalize_roots(&roots).map_err(|error| project_error("update", error))?;
+    let previous_roots = store.get(project_id).map(|project| project.roots);
+    let removed = previous_roots
+        .map(|previous| pinvou3_lib::features::projects::removed_roots(&previous, &normalized))
+        .unwrap_or_default();
+    let mut expel_candidates: Vec<(String, PathBuf)> = Vec::new();
+    // Round-41 minor 6: the agents-store scan stays per-root (each call is
+    // one read_dir + orphan sidecar stats — the GUI twin's cost note), but
+    // the PLAIN lane single-walks ALL removed roots (the GUI's deliberate
+    // shape; per-root re-walks cost 64 directory walks at the cap).
+    for root in &removed {
+        for (session_id, path) in agents
+            .try_sessions_under_workspace(root)
+            .map_err(|error| {
+                CliError::failed(format!(
+                    "projects update: the code-session directory became unreadable ({}); nothing was moved — retry",
+                    error.kind()
+                ))
+            })?
+        {
+            if !pinvou3_lib::features::projects::workspace_covered_by_roots(&path, &normalized) {
+                expel_candidates.push((session_id, path));
+            }
+        }
+    }
+    for (session_id, path) in sessions
+        .try_workspace_bindings_under_any(&removed)
+        .map_err(|error| {
+            CliError::failed(format!(
+                "projects update: the sessions directory became unreadable ({}); nothing was moved — retry",
+                error.kind()
+            ))
+        })?
+    {
+        if !pinvou3_lib::features::projects::workspace_covered_by_roots(&path, &normalized) {
+            expel_candidates.push((session_id, path));
+        }
+    }
+    store
+        .update_project_and_expel(project_id, name, normalized, &expel_candidates)
+        .map_err(|error| project_error("update", error))
+}
+
+fn delete_index_unreadable() -> CliError {
+    CliError::failed(
+        "delete: the code-session agent index is unreadable; nothing was deleted — repair or remove session-agents.json, then retry",
+    )
+}
+
 fn rebind_index_unreadable() -> CliError {
     CliError::failed(
         "rebind_workspace_root: the code-session agent index is unreadable; nothing was \
@@ -1681,6 +1838,7 @@ mod tests {
                 AgentBackend::CodexAcp,
                 CodexWorkspaceKind::Project,
                 Some(from.clone()),
+                Vec::new(),
             )
             .expect("bind the session under from");
 
@@ -1705,6 +1863,8 @@ mod tests {
             position: 0,
             created_at: now,
             updated_at: now,
+            origin: None,
+            last_primary_root: None,
         }
     }
 
@@ -1868,6 +2028,7 @@ mod tests {
                 AgentBackend::CodexAcp,
                 CodexWorkspaceKind::Project,
                 Some(from.clone()),
+                Vec::new(),
             )
             .expect("bind the session to the backslash directory");
         let to = root.join("proj");

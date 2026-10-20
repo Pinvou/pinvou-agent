@@ -116,11 +116,12 @@ fn create_code_session_fixture(project: Option<&Path>) -> String {
                 &id,
                 CodexWorkspaceKind::Project,
                 Some(project.to_path_buf()),
+                Vec::new(),
             )
             .expect("bind project code session"),
         None => {
             agents
-                .bind_code_native_session(&id, CodexWorkspaceKind::Temporary, None)
+                .bind_code_native_session(&id, CodexWorkspaceKind::Temporary, None, Vec::new())
                 .expect("bind temporary code session");
             let workspace = SessionStore::boot()
                 .unwrap()
@@ -145,6 +146,7 @@ fn create_acp_session_fixture(project: &Path) -> String {
             pinvou3_lib::features::codex_acp::AgentBackend::CodexAcp,
             CodexWorkspaceKind::Project,
             Some(project.to_path_buf()),
+            Vec::new(),
         )
         .expect("bind acp workspace");
     id

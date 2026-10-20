@@ -714,6 +714,37 @@ fn acp_recovery_record(
         }
         None => CodexWorkspaceKind::Project,
     };
+    // Keychain snapshot source = the workspace.roots spawn writes to acp-state.json
+    // (review #484 round-11 M8): old files lack the key → empty = single-root
+    // semantics, the base normalizes by cwd; alignment converges in place via
+    // set_session_workspace_roots and never revives a wider set. Non-string /
+    // non-absolute entries drop (fail-closed, same absolute-path rule as intake).
+    let workspace_roots = state["workspace"]["roots"]
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry.as_str())
+                .map(PathBuf::from)
+                .filter(|root| root.is_absolute())
+                .collect::<Vec<PathBuf>>()
+        })
+        .unwrap_or_default();
+    // Round-37 M6: the align convergence patch persists the granted
+    // ancestors beside the roots — carry them into the recovery record so an
+    // index loss no longer revokes them (bounded by the keychain, same as
+    // the native sidecar's field; absent key = no grants, fail-safe).
+    let explicit_ancestor_roots = state["workspace"]["explicit_ancestor_roots"]
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| entry.as_str())
+                .map(PathBuf::from)
+                .filter(|root| root.is_absolute() && workspace_roots.contains(root))
+                .collect::<Vec<PathBuf>>()
+        })
+        .unwrap_or_default();
     Ok(SessionAgentRecord {
         backend: expected_backend,
         acp_session_id: Some(acp_session_id),
@@ -724,6 +755,8 @@ fn acp_recovery_record(
         acp_config_values: acp_config_values_from_state(state),
         workspace_kind,
         workspace_path: (workspace_kind == CodexWorkspaceKind::Project).then_some(workspace_path),
+        workspace_roots,
+        explicit_ancestor_roots,
         mode: SessionMode::Plain,
     })
 }
@@ -4470,7 +4503,13 @@ impl AcpPool {
         let agents = self.agents.clone();
         let probe_owned = probe_id.clone();
         on_blocking(move || {
-            agents.set_acp_workspace(&probe_owned, backend, CodexWorkspaceKind::Temporary, None)
+            agents.set_acp_workspace(
+                &probe_owned,
+                backend,
+                CodexWorkspaceKind::Temporary,
+                None,
+                Vec::new(),
+            )
         })
         .await?;
         let result = self.session_info(&probe_id).await;
@@ -5246,6 +5285,15 @@ impl AcpPool {
             )
         })
         .await?;
+        // Round-41 minor 2: `saved` was captured before the multi-second
+        // handshake — an align kernel committing mid-spawn would be silently
+        // reverted by the full rewrite below (the over-grant direction).
+        // Re-read the keychain immediately before persisting (round-48
+        // minor 2: this is the in-memory RwLock read, not the cross-process
+        // section lock — the persist below remains an unlocked writer per
+        // the events.rs six-writer disclosure); a missing record falls back
+        // to fresh-spawn defaults.
+        let fresh_keychain = self.agents.session_workspace_keychain(pinvou_session_id);
         persist_acp_state(
             pinvou_session_id,
             json!({
@@ -5267,6 +5315,28 @@ impl AcpPool {
                 "workspace": {
                     "kind": saved.workspace_kind,
                     "path": &workspace,
+                    // The durable roots snapshot (review #484 round-11 M8):
+                    // acp-state.json is the only per-session ACP artifact that
+                    // survives a session-agents.json loss, so the recovery
+                    // path below reads the keychain back from here instead of
+                    // hardcoding single-root semantics.
+                    //
+                    // Round-38 A1: the align-granted ancestor provenance rides
+                    // the SAME full rewrite (the in-scope index record `saved`
+                    // carries the field) — the convergence patch alone left a
+                    // respawn-sized hole: any restart rewrote the file without
+                    // the field, and a later index loss then revoked every
+                    // grant in exactly the recovery window. The plain
+                    // `set_session_workspace_roots` setter still resets
+                    // provenance (SF6) — only align grants it, so only align's
+                    // writers need to carry it (spawn here, convergence patch
+                    // in the store, and the rebind translate resets it too).
+                    // Round-41 minor 2: the fresh pre-persist re-read feeds
+                    // both fields (see the `fresh_keychain` binding above).
+                    "roots": fresh_keychain
+                        .clone()
+                        .0,
+                    "explicit_ancestor_roots": fresh_keychain.1,
                 },
                 "lastStatus": "ready",
             }),
@@ -6410,11 +6480,134 @@ mod tests {
             &temporary,
         )
         .unwrap();
+
         assert_eq!(
             temporary_recovered.workspace_kind,
             CodexWorkspaceKind::Temporary
         );
         assert_eq!(temporary_recovered.workspace_path, None);
+    }
+
+    #[test]
+    fn acp_recovery_reads_the_durable_roots_snapshot() {
+        // review #484 round-11 M8: acp-state.json is the durable per-session
+        // ACP keychain artifact — the recovery path must read
+        // workspace.roots back instead of hardcoding single-root semantics
+        // (a session-agents.json loss used to silently resume multi-root
+        // sessions single-root). Relative entries are dropped (intake
+        // requires absolute paths); a legacy file without the key stays
+        // empty, as the sibling test pins.
+        let temporary = std::env::temp_dir().join("pinvou-roots-recovery-workspace");
+        let project = std::env::temp_dir().join("pinvou-roots-recovery-project");
+        let extra = std::env::temp_dir().join("pinvou-roots-recovery-extra");
+        let state = json!({
+            "pinvouSessionId": "pinvou-session",
+            "adapter": {
+                "agentId": "kimi",
+                "package": KIMI_ACP_PACKAGE,
+            },
+            "session": {
+                "session_id": "acp-session",
+            },
+            "workspace": {
+                "kind": "project",
+                "path": &project,
+                "roots": [&project, &extra, "relative/path"],
+            },
+        });
+        let recovered = acp_recovery_record(
+            "pinvou-session",
+            AgentBackend::KimiAcp,
+            &state,
+            project.clone(),
+            &temporary,
+        )
+        .unwrap();
+        assert_eq!(recovered.workspace_kind, CodexWorkspaceKind::Project);
+        assert_eq!(recovered.workspace_path, Some(project.clone()));
+        // Verbatim durability: the snapshot round-trips the full set
+        // (primary included, spawn wrote it that way); the base normalizes
+        // cwd-first per turn. The relative entry is dropped.
+        assert_eq!(recovered.workspace_roots, vec![project, extra]);
+    }
+
+    #[test]
+    fn acp_spawn_and_recovery_roundtrip_align_granted_ancestors() {
+        // Round-38 A1: the spawn full-rewrite of acp-state.json carries
+        // explicit_ancestor_roots beside the roots (the convergence patch
+        // alone left a respawn-sized hole), and the recovery reader picks
+        // the field back up — the durable-provenance guarantee must survive
+        // BOTH writers plus the index loss. The writer half is pinned by
+        // production source (the spawn site must name the field); the reader
+        // half is pinned behaviorally here.
+        let temporary = std::env::temp_dir().join("pinvou-ancestors-recovery-workspace");
+        let project = std::env::temp_dir().join("pinvou-ancestors-recovery-project");
+        let granted = std::env::temp_dir().join("pinvou-ancestors-recovery-granted");
+        let state = json!({
+            "pinvouSessionId": "pinvou-session",
+            "adapter": {
+                "agentId": "kimi",
+                "package": KIMI_ACP_PACKAGE,
+            },
+            "session": {
+                "session_id": "acp-session",
+            },
+            "workspace": {
+                "kind": "project",
+                "path": &project,
+                "roots": [&project, &granted],
+                "explicit_ancestor_roots": [&granted],
+            },
+        });
+        let recovered = acp_recovery_record(
+            "pinvou-session",
+            AgentBackend::KimiAcp,
+            &state,
+            project.clone(),
+            &temporary,
+        )
+        .unwrap();
+        assert_eq!(
+            recovered.explicit_ancestor_roots,
+            vec![granted.clone()],
+            "the recovery must honor the align-granted ancestors from the durable copy"
+        );
+        // Bounded by the keychain: an ancestor outside the roots set (the
+        // stale-field resurrection shape the rebind translate now resets)
+        // is dropped at recovery.
+        let mut stale = state.clone();
+        stale["workspace"]["explicit_ancestor_roots"] =
+            json!([std::env::temp_dir().join("pinvou-ancestors-recovery-stale")]);
+        let recovered = acp_recovery_record(
+            "pinvou-session",
+            AgentBackend::KimiAcp,
+            &stale,
+            project.clone(),
+            &temporary,
+        )
+        .unwrap();
+        assert!(
+            recovered.explicit_ancestor_roots.is_empty(),
+            "an ancestor outside the durable keychain must not survive recovery"
+        );
+        // The spawn writer's production source must persist the field beside
+        // the roots (the exact miss of round-37's M6).
+        // Round-41 minor 2 reshaped the writer: the fields now come from
+        // the pre-persist fresh re-read (fresh_keychain) instead of the
+        // pre-handshake snapshot — the pin follows the new shape.
+        let production = include_str!("mod.rs");
+        let spawn = production
+            .find("\"roots\": fresh_keychain")
+            .expect("the spawn state writer must exist");
+        let window = &production[spawn..spawn + 1200];
+        assert!(
+            window.contains("\"explicit_ancestor_roots\": fresh_keychain"),
+            "the spawn full-rewrite must carry the align-granted ancestors beside the roots (from the fresh pre-persist read)"
+        );
+        assert!(
+            production.contains("session_workspace_keychain(pinvou_session_id);"),
+            "the fresh pre-persist keychain re-read must exist (mid-spawn align commits are not reverted)"
+        );
     }
 
     #[test]
@@ -6497,7 +6690,12 @@ mod tests {
         // 写入一个已绑定的原生代码会话（索引 + sidecar）。
         let writer = SessionAgentStore::for_test(path.clone());
         writer
-            .bind_code_native_session("code-1", CodexWorkspaceKind::Project, Some(root.clone()))
+            .bind_code_native_session(
+                "code-1",
+                CodexWorkspaceKind::Project,
+                Some(root.clone()),
+                Vec::new(),
+            )
             .unwrap();
         // code-1's durable record exists on disk (any live session has one in
         // reality; the owner probe and the backfill gate only stat existence
@@ -6540,6 +6738,8 @@ mod tests {
             .join("code-1")
             .join("code-session.json");
         std::fs::remove_file(&sidecar_path).unwrap();
+        // Round-31 minor 5: seed the live owner the backfill's gate stats.
+        std::fs::write(root.join("sessions").join("code-1.json"), b"{}").unwrap();
         let summary = restore_code_native_sessions_from_sidecars(&agents);
         assert_eq!(
             summary,
@@ -6559,6 +6759,7 @@ mod tests {
                 AgentBackend::CodexAcp,
                 CodexWorkspaceKind::Temporary,
                 None,
+                Vec::new(),
             )
             .unwrap();
         let leftover_dir = root.join("sessions").join("acp-1");
@@ -6569,6 +6770,8 @@ mod tests {
                 version: 1,
                 workspace_kind: CodexWorkspaceKind::Temporary,
                 workspace_path: None,
+                workspace_roots: Vec::new(),
+                explicit_ancestor_roots: Vec::new(),
                 bound_at: None,
             })
             .unwrap(),
@@ -6597,7 +6800,7 @@ mod tests {
         // alive. dead-2.json is deliberately not created: a missing owner
         // record means "dead".
         agents
-            .bind_code_native_session("dead-2", CodexWorkspaceKind::Temporary, None)
+            .bind_code_native_session("dead-2", CodexWorkspaceKind::Temporary, None, Vec::new())
             .unwrap();
         let summary = restore_code_native_sessions_from_sidecars(&agents);
         assert_eq!(
@@ -6630,6 +6833,8 @@ mod tests {
                 version: 1,
                 workspace_kind: CodexWorkspaceKind::Temporary,
                 workspace_path: None,
+                workspace_roots: Vec::new(),
+                explicit_ancestor_roots: Vec::new(),
                 bound_at: None,
             })
             .unwrap(),
@@ -6686,6 +6891,7 @@ mod tests {
                 AgentBackend::CodexAcp,
                 CodexWorkspaceKind::Temporary,
                 None,
+                Vec::new(),
             )
             .unwrap();
         let acp_live_dir = root.join("sessions").join("acp-live");

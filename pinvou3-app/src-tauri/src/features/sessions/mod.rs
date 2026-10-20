@@ -188,16 +188,21 @@ pub use self::validators::is_aux_session_id;
 /// (alias-defeating, round-34 minor 4) and the tests that pin the
 /// predicate itself.
 pub(crate) use self::validators::is_sched_session_id;
-/// Re-export the crate-visible session-id validator (used by commands); the
-/// session-id half is `pub` (the underlying fn is too) for the pinvou-cli
-/// `projects` family's orphan probe, the rest stays out of the public API.
+/// `is_filesystem_root`/`lexical_normalize` ride along for the delivery-lane
+/// re-check in `compose_workspace_roots` (round-19 minor 6).
+/// The session-id validator is `pub` (the underlying fn is too) for the
+/// pinvou-cli `projects` family's orphan probe.
 pub use self::validators::validate_session_id;
 pub(crate) use self::validators::{
-    aux_side_effect_exclusion, validate_scheduled_task_id, validate_user_workspace_path,
+    aux_side_effect_exclusion, is_filesystem_root, lexical_normalize, primary_comparison_spelling,
+    validate_scheduled_task_id, validate_user_workspace_path, validate_workspace_roots,
 };
 /// Re-export the rebind outcome (public rebind docs link into it; the module
 /// itself stays private).
 pub use self::workspace_bindings::RebindBindingsOutcome;
+/// Re-export the keychain persist-shape normalizer for the codex agent-record
+/// lane (same §6 cwd-first contract as the plain binding sidecar).
+pub(crate) use self::workspace_bindings::cwd_first_workspace_roots;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionKind {

@@ -1,4 +1,4 @@
-import { dict } from '../../shared/i18n.js';
+import { zhDict } from '../../shared/i18n.js';
 import { sessionPayloadId } from './pet-state.js';
 
 // 持久化键仅在本模块读写(read/acknowledge),不对外暴露。
@@ -41,7 +41,7 @@ export function selectLatestScheduledNotice(tasks, runsByTask, acknowledgedAt = 
   return latest;
 }
 
-export function formatScheduledNoticeBody(notice, locale = 'zh-CN', completedLabel = dict.zh.uiPet.done) {
+export function formatScheduledNoticeBody(notice, locale = 'zh-CN', completedLabel = zhDict().uiPet.done) {
   const time = new Intl.DateTimeFormat(locale, {
     hour: '2-digit',
     minute: '2-digit',

@@ -5,9 +5,12 @@
 // 维护约定:en/ja 覆盖 zh 的全部叶子 key(parity 断言在 ui_language_coverage;en/ja
 // 比 zh 多出的 settings 相关键是历史遗留);ja 以 en 兜底(i18n/ja.js 内 spread);
 // settings 详情文案已并入各语言文件(原 settings-i18n.js)。
-import { dictZh } from './i18n/zh.js';
-
-const dict = { zh: dictZh };
+// Startup-budget (round-41 merge with #586): zh joins en/ja behind the
+// dynamic loaders — the eager 152 kB dictionary pushed the main entry
+// past the 500 kB budget. The dict fills via ensureLanguage (the same
+// async flow en/ja already ride); a read before load resolves through
+// the language gate's fallback (createLatestLanguageGate).
+const dict = {};
 
 // UI 语言 ↔ 后端 UserPrefs language(BCP 47 tag)映射。加语言时三处同步:
 // 这里 / dict / Rust prefs.rs Language 枚举
@@ -51,6 +54,7 @@ export const isDefaultChatTitle = (title) => DEFAULT_CHAT_TITLES.has(title);
 // 载入表冻结、在途去重、失败清挂起(下次触发可重试)。ja chunk 静态依赖 en chunk
 // (兜底 spread 在模块内完成),由打包器拆成共享 chunk,无需在此处理顺序。
 const LAZY_DICT_LOADERS = Object.freeze({
+  zh: () => import('./i18n/zh.js'),
   en: () => import('./i18n/en.js'),
   ja: () => import('./i18n/ja.js'),
 });
@@ -72,7 +76,7 @@ export function ensureLanguage(lang) {
   if (!pending) {
     pending = loader()
       .then((m) => {
-        dict[lang] = lang === 'ja' ? m.dictJa : m.dictEn;
+        dict[lang] = m.dictZh || m.dictEn || m.dictJa;
         return true;
       })
       .catch(() => false)
@@ -97,6 +101,28 @@ export function createLatestLanguageGate(ensure = ensureLanguage) {
       })
       .catch(() => {});
   };
+}
+
+// zh-fallback readers (pet/persona/tool-common/reader/timeline): tolerate
+// the lazy-load window — the boot sequence (ensureLanguageWithZhFallback)
+// fills the preferred language, and zh when that chunk fails; node-side
+// component tests may render before any load, hence the {} tail.
+export function zhDict() {
+  return dict.zh || {};
+}
+
+// Boot language sequence shared by every entry (main/pet/reader): load the
+// preferred language; if its chunk cannot load (offline web, stale hashed
+// chunk after a redeploy), load zh so the render-path leg
+// `dict[language] || zhDict()` degrades to Chinese copy instead of
+// undefined. Returns the ready language ('en'|'ja'|'zh'), or null when even
+// zh failed — nothing renderable is left, so callers (the three entries,
+// via shared/entry-boot.js) must paint the static failure/retry screen
+// instead of mounting dictionary-dependent components (round-49 M2).
+export async function ensureLanguageWithZhFallback(lang) {
+  if (await ensureLanguage(lang)) return lang;
+  if (await ensureLanguage('zh')) return 'zh';
+  return null;
 }
 
 export { dict, LANG_TO_TAG, TAG_TO_LANG, languageFromLocaleTags, initialSystemLanguage, SEARCH_KEY_PROVIDERS };

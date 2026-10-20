@@ -72,7 +72,7 @@ import {
   resolvePet,
 } from './pet-registry.js';
 import { useReducedMotion } from '../../hooks/useReducedMotion.js';
-import { dict } from '../../shared/i18n.js';
+import { dict, zhDict } from '../../shared/i18n.js';
 import './pet.css';
 
 const TICK_MS = 600;
@@ -166,7 +166,8 @@ export default function PetWindow({
     : DEFAULT_SCALE;
   const stateRef = useRef(createPetState());
   const language = useFollowMainWindowLanguage({ enabled: isTauriAvailable() });
-  const t = dict[language] || dict.zh;
+  // 兜底 zh 是活腿:入口引导失败降级装载 zh 后 zhDict() 非空(与主窗同口径)。
+  const t = dict[language] || zhDict();
   const petCopy = t.uiPet;
   // pet.html 的 <title>/<html lang> 是静态中文,按当前语言同步一次。
   useEffect(() => {

@@ -1,4 +1,5 @@
 use super::prelude::*;
+use crate::features::projects::ProjectStore;
 // Native save dialog support for `export_session`; the other session
 // commands do not interact with the dialog plugin.
 use crate::features::sessions::NEW_CHAT_TITLE;
@@ -18,6 +19,11 @@ pub struct SessionListItem {
     /// (grouping follows binding, the same signal as the safety posture).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_binding: Option<String>,
+    /// Keychain snapshot locked at creation (§6, the full accessible root set
+    /// including the primary); empty = single-root semantics. The picker /
+    /// management panel shows "the set of folders this conversation can access".
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub workspace_roots: Vec<String>,
 }
 
 /// Web boundary projection for SessionListItem: degrade the host absolute
@@ -34,6 +40,12 @@ pub struct SessionListItem {
 pub(crate) fn redact_session_list_item_for_web(item: &mut SessionListItem) {
     if let Some(binding) = &item.workspace_binding {
         item.workspace_binding = Some(super::codex::redact_workspace_path_for_web(binding));
+    }
+    // The keychain snapshot likewise holds host-absolute paths: degrade each
+    // entry to its last component before crossing the Web boundary — the same
+    // projection as workspace_binding (web does not group by it, inert leaf only).
+    for root in item.workspace_roots.iter_mut() {
+        *root = super::codex::redact_workspace_path_for_web(root);
     }
 }
 
@@ -165,6 +177,7 @@ fn session_title_attachment_names(store: &SessionStore, metadata: &SessionMetada
 pub async fn list_sessions(
     store: State<'_, SessionStore>,
     acp_pool: State<'_, crate::features::codex_acp::AcpPool>,
+    projects: State<'_, crate::features::projects::ProjectStore>,
 ) -> Result<Vec<SessionListItem>, String> {
     let mut metas = store.list().map_err(|e| format!("list_sessions: {e:#}"))?;
     metas.retain(|m| {
@@ -174,28 +187,58 @@ pub async fn list_sessions(
             && !acp_pool.agents().is_code_session(&m.id)
             && !store.is_hidden(&m.id)
     });
-    Ok(metas
-        .into_iter()
-        .map(|metadata| {
-            let title_attachment_names = session_title_attachment_names(&store, &metadata);
-            // On a read-cache miss the sidecar is re-read; the list is ≤50
-            // entries. Bound sessions stay resident once backfilled, while
-            // unbound sessions get no negative caching — each refresh still
-            // costs on the order of ≤2 syscalls × 50 (acceptable; review #464
-            // nit: the comment must not exaggerate this as "resident after a
-            // single N-read pass").
-            let workspace_binding = store
-                .session_workspace_binding(&metadata.id)
-                .map(|path| path.display().to_string());
-            SessionListItem {
-                pinned: store.is_pinned(&metadata.id),
-                pinned_at: store.pinned_at(&metadata.id),
-                title_attachment_names,
-                workspace_binding,
-                metadata,
-            }
-        })
-        .collect())
+    // Round-47 M11: the per-session projection is disk-bound work — a sidecar
+    // cold read plus compose_workspace_roots' canonicalize walk per extra
+    // root, per bound session, on the once-per-turn-end refresh cadence
+    // (session:list_changed / chat:done). It rides the blocking lane like
+    // create_session's durable work (round-40 M7 / the #695 convention)
+    // instead of stalling async-runtime tasks.
+    let store = store.inner().clone();
+    let agents = acp_pool.agents().clone();
+    let projects = projects.inner().clone();
+    crate::features::codex_acp::on_blocking_labeled("list_sessions", move || {
+        Ok(metas
+            .into_iter()
+            .map(|metadata| {
+                let title_attachment_names = session_title_attachment_names(&store, &metadata);
+                // On a read-cache miss the sidecar is re-read; the list is ≤50
+                // entries. Bound sessions stay resident once backfilled, while
+                // unbound sessions get no negative caching — each refresh still
+                // costs on the order of ≤2 syscalls × 50 (acceptable; review #464
+                // nit: the comment must not exaggerate this as "resident after a
+                // single N-read pass").
+                let workspace_binding = store
+                    .session_workspace_binding(&metadata.id)
+                    .map(|path| path.display().to_string());
+                // The keychain snapshot exists only once bound; a sidecar cold read
+                // (same order of magnitude as the binding).
+                // Round-30 minor 5: the projection goes through
+                // compose_workspace_roots — the same delivery-time re-check the
+                // codex lane applies (round-21 M1's "display == engine-effective"
+                // invariant) — so a soft-kept root that later resolves to a
+                // dropped widening target does not display as accessible while
+                // the engine drops it.
+                let workspace_roots = if workspace_binding.is_some() {
+                    crate::compose_workspace_roots(&agents, &store, &projects, &metadata.id)
+                        .iter()
+                        .map(|path| path.display().to_string())
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                SessionListItem {
+                    pinned: store.is_pinned(&metadata.id),
+                    pinned_at: store.pinned_at(&metadata.id),
+                    title_attachment_names,
+                    workspace_binding,
+                    workspace_roots,
+                    metadata,
+                }
+            })
+            .collect::<Vec<SessionListItem>>())
+    })
+    .await
+    .map_err(|e| format!("list_sessions: {e:#}"))
 }
 
 /// Session-mention injection block contract (the JS builder in
@@ -678,37 +721,146 @@ pub(super) fn create_session_record(
 pub async fn create_session(
     set_active: Option<bool>,
     workspace_path: Option<String>,
+    workspace_roots: Option<Vec<String>>,
+    project_id: Option<String>,
     app: AppHandle,
     store: State<'_, SessionStore>,
     pool: State<'_, EnginePool>,
+    projects: State<'_, ProjectStore>,
 ) -> Result<SessionMetadata, String> {
     let workspace = workspace_path
         .as_deref()
         .map(crate::features::sessions::validate_user_workspace_path)
         .transpose()
         .map_err(|e| format!("create_session: invalid workspace_path: {e:#}"))?;
-    let metadata =
-        create_session_record(set_active.unwrap_or(true), &store, &pool, workspace.clone())?;
-    if let Some(workspace) = workspace {
-        // A failed binding persist must not leave behind a session that "looked
-        // created but falls back to the private execution root after restart":
-        // roll back by deleting the just-created empty session (in the rollback
-        // style of create_new).
-        if let Err(error) = store.bind_session_workspace(&metadata.id, workspace) {
-            let rollback = store.delete(&metadata.id);
-            return Err(match rollback {
-                Ok(()) => format!("create_session: bind workspace: {error:#}"),
-                Err(rollback_error) => format!(
-                    "create_session: bind workspace: {error:#}; rollback Session {}: {rollback_error:#}",
-                    metadata.id
-                ),
-            });
+    // Keychain snapshot (§6): non-absolute paths hard-rejected; non-existent
+    // directories soft-warned and kept (per rebind's lenient semantics — an extra
+    // root may be rebuilt later). Empty/omitted = single root (cwd only).
+    let roots = crate::features::sessions::validate_workspace_roots(
+        workspace_roots.unwrap_or_default(),
+        workspace.as_deref(),
+    )
+    .map_err(|e| format!("create_session: invalid workspace_roots: {e:#}"))?;
+    // Without workspace_path the keychain / project membership has nowhere to
+    // land: silently dropping them after hard validation would misreport the
+    // granted scope (review #484 round-7 minor) — an explicit parameter error; the caller re-sends.
+    if workspace.is_none() && (!roots.is_empty() || project_id.is_some()) {
+        return Err(
+            "create_session: invalid workspace_roots/project_id: both require workspace_path"
+                .to_string(),
+        );
+    }
+    // Same rebind fence as every sibling root-accepting writer (review #484
+    // round-11 M3): the binding write and the project-choice writes
+    // (last_primary_root + tier-1 assignment) must not commit between the
+    // rebind's candidate snapshot and its translation, or the fresh binding
+    // keeps the dead `from` spelling and escapes translation entirely. Held
+    // only for the binding window — the plain no-workspace create path stays
+    // fence-free. Taken BEFORE create_session_record (review #484 round-13
+    // minor 1): a REBIND_IN_PROGRESS rejection after the session was created
+    // would leave a persisted orphan session behind — the exact state the
+    // adjacent bind-failure path rolls back by deleting.
+    // Round-40 M7: the creation lane's durable work — the record write,
+    // the sidecar bind (an atomic 0600 write), the two projects.json
+    // persists behind record_project_choice, and their fsyncs — runs on a
+    // blocking worker (the class main's #695 moved off the async runtime;
+    // this command's awaits share tokio workers with the engine pumps).
+    // The outcome enum crosses back so the EVENTS (which need the AppHandle)
+    // stay on the async side.
+    let store_handle = store.inner().clone();
+    let pool_handle = pool.inner().clone();
+    let projects_handle = projects.inner().clone();
+    let workspace_for_task = workspace.clone();
+    let project_id_for_task = project_id.clone();
+    let (metadata, choice) =
+        crate::features::codex_acp::on_blocking_labeled("create_session", move || {
+            create_session_durable(
+                set_active.unwrap_or(true),
+                &store_handle,
+                &pool_handle,
+                &projects_handle,
+                workspace_for_task,
+                roots,
+                project_id_for_task,
+            )
+        })
+        .await
+        .map_err(|e| format!("create_session: {e:#}"))?;
+    match choice {
+        super::projects::ProjectChoiceRecord::Written => {
+            super::projects::emit_create_channel_assignment_event(&app);
         }
+        // Round-35 M3: the tier-1 assignment failed for THIS session and
+        // is never retried — surface the degraded notice instead of a
+        // success-implying refresh.
+        super::projects::ProjectChoiceRecord::AssignmentFailed => {
+            super::projects::emit_create_channel_assignment_degraded(&app);
+        }
+        super::projects::ProjectChoiceRecord::NotApplicable => {}
     }
     emit_session_event(&app, "session:list_changed", &metadata.id, "created");
     // 多 session 并发:不预热 engine(lazy)。新建的空 session 没有历史,首条 chat
     // 时 EnginePool.get_or_spawn 会为它 spawn 一个带专属 workspace 的 engine。
     Ok(metadata)
+}
+
+/// Round-40 M7: the durable half of `create_session` — runs on a blocking
+/// worker. Returns the metadata plus the project-choice outcome so the
+/// event emission (AppHandle-bound) stays on the async side.
+fn create_session_durable(
+    set_active: bool,
+    store: &SessionStore,
+    pool: &crate::features::assistant::engine_pool::EnginePool,
+    projects: &crate::features::projects::ProjectStore,
+    workspace: Option<std::path::PathBuf>,
+    roots: Vec<std::path::PathBuf>,
+    project_id: Option<String>,
+) -> anyhow::Result<(
+    deepseek_tui::session_manager::SessionMetadata,
+    super::projects::ProjectChoiceRecord,
+)> {
+    // Same rebind fence as every sibling root-accepting writer (review
+    // #484 round-11 M3): taken BEFORE create_session_record (round-13
+    // minor 1) so a REBIND_IN_PROGRESS rejection leaves no orphan session.
+    let _fence = if workspace.is_some() {
+        Some(
+            projects
+                .rebind_fence()
+                .map_err(|error| anyhow::anyhow!("{error:#}"))?,
+        )
+    } else {
+        None
+    };
+    let metadata = create_session_record(set_active, store, pool, workspace.clone())
+        .map_err(|error| anyhow::anyhow!("{error:#}"))?;
+    let mut choice = super::projects::ProjectChoiceRecord::NotApplicable;
+    if let Some(workspace) = workspace {
+        // A failed binding persist must not leave behind a session that
+        // "looked created but falls back to the private execution root
+        // after restart": roll back by deleting the just-created empty
+        // session (in the rollback style of create_new).
+        if let Err(error) =
+            store.bind_session_workspace_with_roots(&metadata.id, workspace.clone(), roots)
+        {
+            let rollback = store.delete(&metadata.id);
+            return Err(match rollback {
+                Ok(()) => anyhow::anyhow!("bind workspace: {error:#}"),
+                Err(rollback_error) => anyhow::anyhow!(
+                    "bind workspace: {error:#}; rollback Session {}: {rollback_error:#}",
+                    metadata.id
+                ),
+            });
+        }
+        // Project channel (§9.3): creation updates the project's
+        // remembered primary folder and writes explicit membership.
+        choice = super::projects::record_project_choice(
+            projects,
+            &metadata.id,
+            project_id.as_deref(),
+            Some(&workspace),
+        );
+    }
+    Ok((metadata, choice))
 }
 
 /// Queries a plain chat session's user working-directory binding (None when
@@ -2005,15 +2157,27 @@ mod web_projection_tests {
             pinned_at: None,
             title_attachment_names: Vec::new(),
             workspace_binding: Some("/Users/host/Documents/secret-project".to_string()),
+            workspace_roots: vec![
+                "/Users/host/Documents/secret-project".to_string(),
+                "/Users/host/very-secret-extra".to_string(),
+            ],
             metadata,
         };
 
         redact_session_list_item_for_web(&mut item);
 
         assert_eq!(
+            item.workspace_roots,
+            vec![
+                "secret-project".to_string(),
+                "very-secret-extra".to_string()
+            ],
+            "the keychain snapshot must likewise degrade every entry to its leaf name at the web boundary"
+        );
+        assert_eq!(
             item.workspace_binding.as_deref(),
             Some("secret-project"),
-            "workspace_binding 过 Web 边界必须降级为末级目录名"
+            "workspace_binding must degrade to leaf names at the web boundary"
         );
 
         // Unbound sessions (None) are unaffected; the Windows form likewise
@@ -2048,6 +2212,7 @@ mod web_projection_tests {
             pinned_at: None,
             title_attachment_names: Vec::new(),
             workspace_binding: Some("/Users/host/Documents/secret-project".to_string()),
+            workspace_roots: vec!["/Users/host/Documents/secret-project".to_string()],
             metadata,
         }];
 

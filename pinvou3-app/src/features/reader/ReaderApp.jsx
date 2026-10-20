@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { X } from '../../components/icons.jsx';
 import { useCopyFlash } from '../../hooks/useCopyFlash.js';
 import { useFollowMainWindowLanguage } from '../../hooks/useFollowMainWindowLanguage.js';
@@ -7,7 +7,7 @@ import { FileColoredIcon } from '../../components/files/FileColoredIcon.jsx';
 import { invokeTauri, listenTauri } from '../../platform/tauri/client.js';
 import { useSystemDarkMode } from '../../hooks/useSystemDarkMode.js';
 import { normalizeColorScheme, resolveTheme } from '../../shared/color-scheme.js';
-import { dict } from '../../shared/i18n.js';
+import { dict, zhDict } from '../../shared/i18n.js';
 import {
   CodeViewerContent,
   CodeViewerToolbar,
@@ -54,7 +54,14 @@ export function ReaderApp() {
     [],
   );
   const language = useFollowMainWindowLanguage({ onSettings: onMainWindowSettings });
-  const copy = (dict[language] || dict.zh).uiCodexWorkspace;
+  // Lazy-load window (a direct mount that bypasses the entry's
+  // ensureLanguage preload): fall back to an empty table — string keys
+  // render blank instead of crashing. Production entries (reader-main.jsx)
+  // preload before the first render, so the normal path never sees it.
+  const copy = useMemo(
+    () => (dict[language] || zhDict()).uiCodexWorkspace || {},
+    [language],
+  );
   const [tabs, setTabs] = useState([]);
   const [activeKey, setActiveKey] = useState('');
   const [previews, setPreviews] = useState({});
