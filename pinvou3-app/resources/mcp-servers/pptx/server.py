@@ -169,13 +169,40 @@ def _title_block(slide, th, title):
     rect(slide, Inches(0.9), Inches(1.55), Inches(11.5), Inches(0.025), th["light"])
 
 
-# ── 版式 ────────────────────────────────────────────────────────────────────
+# ── Layouts ────────────────────────────────────────────────────────────────
+# Always read slide fields as `s.get(k) or default` / `or []`, never
+# `get(k, default)`: DeepSeek strict tool mode rewrites the schema-declared
+# optional properties into required+nullable (the engine's
+# enforce_strict_subset; the already-required layout gains no nullable), so
+# the model explicitly sends null for fields it does not use — and dict.get's
+# default does not apply when the key exists with a null value, carrying None
+# straight into rendering. Exception: a kpi/agenda num/label of 0 is valid
+# data that `or` would swallow, so those fall back on None only
+# (_item_num_label).
+
+def _item_num_label(it):
+    """Unified read for the items string|{num,label} anyOf.
+
+    String elements are returned verbatim, except a null element falls back
+    to the empty string (same None-only rule as a dict's fields — str(None)
+    must never reach a slide); a dict element's num/label fall back to the
+    empty string on None only (`or ""` would swallow a legitimate numeric 0
+    into a blank card). Renderers must not truthiness-test the return value.
+    """
+    if not isinstance(it, dict):
+        return ("" if it is None else str(it), "")
+    num, label = it.get("num"), it.get("label")
+    return (
+        "" if num is None else str(num),
+        "" if label is None else str(label),
+    )
+
 
 def layout_cover(slide, th, s):
     bg(slide, th["bg"])
     rect(slide, 0, 0, Inches(0.28), SLIDE_H, th["primary"])
     tf = textbox(slide, Inches(1.1), Inches(2.5), Inches(11.0), Inches(2.6), MSO_ANCHOR.MIDDLE)
-    para(tf, s.get("title", "未命名演示"), 46, th["ink"], bold=True, font=th["title_font"], first=True, space_after=14)
+    para(tf, s.get("title") or "未命名演示", 46, th["ink"], bold=True, font=th["title_font"], first=True, space_after=14)
     if s.get("subtitle"):
         para(tf, s["subtitle"], 22, th["muted"], font=th["body_font"])
     rect(slide, Inches(1.13), Inches(5.25), Inches(1.6), Inches(0.08), th["primary"])
@@ -187,7 +214,12 @@ def layout_cover(slide, th, s):
 def layout_agenda(slide, th, s):
     bg(slide, th["bg"])
     _title_block(slide, th, s.get("title") or "目录")
-    items = (s.get("items") or [])[:6]
+    raw_items = s.get("items")
+    # Non-list items and non-(str, dict) elements are schema-illegal but the
+    # JSON-string salvage path bypasses schema validation; drop them before
+    # the ordinal numbering so garbage neither renders nor consumes a slot.
+    items = [it for it in (raw_items if isinstance(raw_items, list) else [])
+             if isinstance(it, (str, dict))][:6]
     y0 = Inches(2.05)
     step = Inches(0.78)
     for i, it in enumerate(items):
@@ -196,22 +228,30 @@ def layout_agenda(slide, th, s):
         para(tfn, "%02d" % (i + 1), 30, th["primary"], bold=True, font=th["title_font"], first=True)
         rect(slide, Inches(2.25), yy + Inches(0.12), Inches(0.04), step - Inches(0.28), th["light"])
         tft = textbox(slide, Inches(2.55), yy, Inches(9.3), step, MSO_ANCHOR.MIDDLE)
-        para(tft, str(it), 20, th["ink"], font=th["body_font"], first=True)
+        num, label = _item_num_label(it)
+        para(tft, " ".join(t for t in (num, label) if t), 20, th["ink"], font=th["body_font"], first=True)
 
 
 def layout_section(slide, th, s):
     bg(slide, th["primary"])
     rect(slide, Inches(1.1), Inches(3.05), Inches(0.9), Inches(0.1), th["accent"])
     tf = textbox(slide, Inches(1.1), Inches(3.3), Inches(11), Inches(1.5))
-    para(tf, s.get("title", ""), 40, th["on_primary"], bold=True, font=th["title_font"], first=True)
+    para(tf, s.get("title") or "", 40, th["on_primary"], bold=True, font=th["title_font"], first=True)
 
 
 def layout_bullets(slide, th, s):
     bg(slide, th["bg"])
     _title_block(slide, th, s.get("title"))
     tf = textbox(slide, Inches(1.2), Inches(2.0), Inches(11.0), Inches(4.8))
-    for i, b in enumerate(s.get("bullets") or []):
-        para(tf, "▸  " + str(b), 19, th["ink"], font=th["body_font"], space_after=14, line_spacing=1.2, first=(i == 0))
+    rendered = 0
+    for b in s.get("bullets") or []:
+        if not isinstance(b, str):
+            # Non-string elements (null included) are schema-illegal but the
+            # JSON-string salvage path bypasses schema validation; skip them
+            # so no str() repr (None, True, lists, dicts) reaches the slide.
+            continue
+        para(tf, "▸  " + b, 19, th["ink"], font=th["body_font"], space_after=14, line_spacing=1.2, first=(rendered == 0))
+        rendered += 1
 
 
 def layout_two_col(slide, th, s):
@@ -223,8 +263,14 @@ def layout_two_col(slide, th, s):
             tf = textbox(slide, x, Inches(2.0), Inches(5.4), Inches(0.6))
             para(tf, ctitle, 18, th["primary"], bold=True, font=th["title_font"], first=True)
         tf2 = textbox(slide, x, Inches(2.7), Inches(5.4), Inches(4.0))
-        for i, b in enumerate(items or []):
-            para(tf2, "•  " + str(b), 17, th["ink"], font=th["body_font"], space_after=12, line_spacing=1.2, first=(i == 0))
+        rendered = 0
+        for b in items if isinstance(items, list) else []:
+            if not isinstance(b, str):
+                # Same salvage-path rule as the bullets lane: skip
+                # non-string elements instead of rendering their repr.
+                continue
+            para(tf2, "•  " + b, 17, th["ink"], font=th["body_font"], space_after=12, line_spacing=1.2, first=(rendered == 0))
+            rendered += 1
 
     col(Inches(1.2), s.get("leftTitle"), s.get("left"))
     col(Inches(6.9), s.get("rightTitle"), s.get("right"))
@@ -233,7 +279,12 @@ def layout_two_col(slide, th, s):
 def layout_kpi(slide, th, s):
     bg(slide, th["bg"])
     _title_block(slide, th, s.get("title"))
-    items = (s.get("items") or [])[:4]
+    raw_items = s.get("items")
+    # Same salvage-path rule as the agenda lane: drop non-list items and
+    # non-(str, dict) elements before layout so garbage neither renders nor
+    # widens the card row.
+    items = [it for it in (raw_items if isinstance(raw_items, list) else [])
+             if isinstance(it, (str, dict))][:4]
     n = max(1, len(items))
     gap = Inches(0.4)
     total_w = Inches(11.5)
@@ -243,10 +294,16 @@ def layout_kpi(slide, th, s):
         x = x0 + i * (card_w + gap)
         rect(slide, x, y, card_w, h, th["light"])
         rect(slide, x, y, card_w, Inches(0.12), th["primary"])
+        # The schema's items is a string|{num,label} anyOf (shared with the
+        # agenda lane): string elements render as the big number, a dict's
+        # num/label fall back to the empty string on null — neither may crash;
+        # num/label fall back on None only, a numeric 0 renders as data (see
+        # _item_num_label).
+        num, label = _item_num_label(it)
         tfn = textbox(slide, x, y + Inches(0.55), card_w, Inches(1.1), MSO_ANCHOR.MIDDLE)
-        para(tfn, str(it.get("num", "")), 40, th["primary"], bold=True, align=PP_ALIGN.CENTER, font=th["title_font"], first=True)
+        para(tfn, num, 40, th["primary"], bold=True, align=PP_ALIGN.CENTER, font=th["title_font"], first=True)
         tfl = textbox(slide, x, y + Inches(1.65), card_w, Inches(0.6), MSO_ANCHOR.MIDDLE)
-        para(tfl, str(it.get("label", "")), 15, th["muted"], align=PP_ALIGN.CENTER, font=th["body_font"], first=True)
+        para(tfl, label, 15, th["muted"], align=PP_ALIGN.CENTER, font=th["body_font"], first=True)
 
 
 _CHART_TYPES = {
@@ -259,12 +316,27 @@ _CHART_TYPES = {
 def layout_chart(slide, th, s):
     bg(slide, th["bg"])
     _title_block(slide, th, s.get("title"))
-    ctype = _CHART_TYPES.get(s.get("chartType", "bar"), XL_CHART_TYPE.COLUMN_CLUSTERED)
+    ctype = _CHART_TYPES.get(s.get("chartType") or "bar", XL_CHART_TYPE.COLUMN_CLUSTERED)
     cd = CategoryChartData()
-    cd.categories = s.get("categories") or []
-    series = s.get("series") or []
+    # A non-list categories node is schema-illegal but the JSON-string salvage
+    # path bypasses schema validation; drop it like the series/rows lanes
+    # (iterating a dict or string would otherwise mint phantom labels).
+    raw_categories = s.get("categories")
+    raw_categories = raw_categories if isinstance(raw_categories, list) else []
+    # Non-string categories are dropped together with the SAME position in
+    # every series' data: labels and values must shift atomically, or a
+    # surviving category silently re-labels its neighbour's value
+    # (["Q1", None, "Q3"] + [10, 20, 30] would otherwise label 20 with Q3).
+    keep = [i for i, c in enumerate(raw_categories) if isinstance(c, str)]
+    cd.categories = [raw_categories[i] for i in keep]
+    # Non-dict entries are schema-illegal but the JSON-string salvage path
+    # bypasses schema validation; drop them so the legend count matches what
+    # is actually drawn.
+    series = [ser for ser in (s.get("series") or []) if isinstance(ser, dict)]
     for ser in series:
-        cd.add_series(ser.get("name", ""), tuple(ser.get("data") or []))
+        data = ser.get("data") or []
+        cd.add_series(ser.get("name") or "",
+                      tuple(data[i] for i in keep if i < len(data)))
     gframe = slide.shapes.add_chart(ctype, Inches(1.0), Inches(1.95), Inches(11.3), Inches(4.85), cd)
     chart = gframe.chart
     chart.has_legend = (len(series) > 1) or (ctype == XL_CHART_TYPE.PIE)
@@ -319,7 +391,10 @@ def layout_table(slide, th, s):
     bg(slide, th["bg"])
     _title_block(slide, th, s.get("title"))
     headers = s.get("headers") or []
-    rows = s.get("rows") or []
+    # Non-list rows are schema-illegal but the JSON-string salvage path
+    # bypasses schema validation; a null row would crash len()/indexing into
+    # the per-page guard, so drop it and keep the grid consistent.
+    rows = [row for row in (s.get("rows") or []) if isinstance(row, (list, tuple))]
     ncol = len(headers) if headers else (len(rows[0]) if rows else 0)
     nrow = len(rows) + (1 if headers else 0)
     if ncol == 0 or nrow == 0:
@@ -332,13 +407,13 @@ def layout_table(slide, th, s):
     r0 = 0
     if headers:
         for j, htext in enumerate(headers):
-            _cell(tbl.cell(0, j), th["primary"], str(htext), 14, th["on_primary"], th,
+            _cell(tbl.cell(0, j), th["primary"], "" if htext is None else str(htext), 14, th["on_primary"], th,
                   bold=True, align=PP_ALIGN.LEFT if j == 0 else PP_ALIGN.CENTER)
         r0 = 1
     for ri, row in enumerate(rows):
         zebra = th["light"] if ri % 2 == 0 else th["bg"]
         for j in range(ncol):
-            val = str(row[j]) if j < len(row) else ""
+            val = ("" if row[j] is None else str(row[j])) if j < len(row) else ""
             _cell(tbl.cell(ri + r0, j), zebra, val, 13, th["ink"], th,
                   align=PP_ALIGN.LEFT if j == 0 else PP_ALIGN.CENTER)
 
@@ -353,11 +428,11 @@ def layout_image(slide, th, s):
     bg(slide, th["bg"])
     _title_block(slide, th, s.get("title"))
     img = s.get("image")
-    bullets = s.get("bullets") or []
+    bullets = [b for b in (s.get("bullets") or []) if isinstance(b, str)]
     if bullets:
         tf = textbox(slide, Inches(0.9), Inches(2.2), Inches(5.0), Inches(4.4))
         for i, b in enumerate(bullets):
-            para(tf, "•  " + str(b), 17, th["ink"], font=th["body_font"], space_after=12, line_spacing=1.25, first=(i == 0))
+            para(tf, "•  " + b, 17, th["ink"], font=th["body_font"], space_after=12, line_spacing=1.25, first=(i == 0))
         ix, iy, iw, ih = Inches(6.3), Inches(2.0), Inches(6.1), Inches(4.3)
     else:
         ix, iy, iw, ih = Inches(2.6), Inches(2.0), Inches(8.1), Inches(4.3)
@@ -376,7 +451,7 @@ def layout_image(slide, th, s):
 def layout_end(slide, th, s):
     bg(slide, th["primary"])
     tf = textbox(slide, Inches(1), Inches(3.0), Inches(11.3), Inches(1.6), MSO_ANCHOR.MIDDLE)
-    para(tf, s.get("title", "谢谢"), 48, th["on_primary"], bold=True, align=PP_ALIGN.CENTER, font=th["title_font"], first=True)
+    para(tf, s.get("title") or "谢谢", 48, th["on_primary"], bold=True, align=PP_ALIGN.CENTER, font=th["title_font"], first=True)
     if s.get("subtitle"):
         para(tf, s["subtitle"], 18, th["light"], align=PP_ALIGN.CENTER, font=th["body_font"])
 
@@ -638,6 +713,83 @@ TOOL_DEFS = [{
                     "- end: {layout, title, subtitle}  ← 结尾页\n"
                     "正文要有真实内容/数据,不要只放标题。"
                 ),
+                # items must carry a concrete type: on constrained tool-call
+                # decoding channels (Kimi and friends) an itemless array is
+                # completed to its minimal valid value [] (observed live: k3
+                # emitted slides:[] 27 times in a row); structured items also
+                # give the constrained decoder a shape it can fill.
+                "items": {
+                    "type": "object",
+                    "required": ["layout"],
+                    "properties": {
+                        "layout": {
+                            "type": "string",
+                            "enum": ["cover", "agenda", "section", "bullets", "two_col",
+                                     "kpi", "chart", "table", "image", "end"],
+                            "description": "版式(必填)",
+                        },
+                        "title": {"type": "string", "description": "页标题"},
+                        "subtitle": {"type": "string", "description": "副标题(cover/end)"},
+                        "date": {"type": "string", "description": "日期(cover)"},
+                        "items": {
+                            "type": "array",
+                            "description": "agenda: 字符串数组; kpi: {num,label} 对象数组(最多4个)",
+                            "items": {
+                                "anyOf": [
+                                    {"type": "string"},
+                                    {"type": "object",
+                                     "properties": {
+                                         "num": {"type": "string", "description": "大数字,如 68%"},
+                                         "label": {"type": "string", "description": "指标说明"},
+                                     },
+                                     # num optional: agenda pages draw their
+                                     # own ordinals, so a label-only dict is
+                                     # a natural entry; the renderer falls
+                                     # back to "".
+                                     },
+                                ],
+                            },
+                        },
+                        "bullets": {"type": "array", "items": {"type": "string"},
+                                    "description": "要点(bullets/image)"},
+                        "leftTitle": {"type": "string", "description": "左栏标题(two_col)"},
+                        "left": {"type": "array", "items": {"type": "string"},
+                                 "description": "左栏要点(two_col)"},
+                        "rightTitle": {"type": "string", "description": "右栏标题(two_col)"},
+                        "right": {"type": "array", "items": {"type": "string"},
+                                  "description": "右栏要点(two_col)"},
+                        "chartType": {"type": "string", "enum": ["bar", "line", "pie"],
+                                      "description": "图表类型(chart)"},
+                        "categories": {"type": "array", "items": {"type": "string"},
+                                       "description": "类目轴(chart)"},
+                        "series": {
+                            "type": "array",
+                            "description": "数据系列(chart)",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    # name optional: single-series charts
+                                    # hide the legend, so a forced invented
+                                    # name is pure friction; the renderer
+                                    # falls back to "".
+                                    "name": {"type": "string", "description": "系列名"},
+                                    "data": {"type": "array", "items": {"type": "number"},
+                                             "description": "与 categories 等长的数值"},
+                                },
+                                "required": ["data"],
+                            },
+                        },
+                        "headers": {"type": "array", "items": {"type": "string"},
+                                    "description": "表头(table)"},
+                        "rows": {
+                            "type": "array",
+                            "description": "行数据,每行是与 headers 等长的单元格数组(table)",
+                            "items": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "caption": {"type": "string", "description": "图注(image)"},
+                        "image": {"type": "string", "description": "本地图片绝对路径(image,可选)"},
+                    },
+                },
             },
             "filename": {"type": "string", "description": "文件名(不含扩展名),缺省 演示文稿"},
         },
