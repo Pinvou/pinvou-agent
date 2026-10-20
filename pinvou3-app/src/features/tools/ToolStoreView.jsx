@@ -2156,6 +2156,30 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         return () => { document.body.style.overflow = 'unset'; };
       }, [selectedTool]);
 
+      // 详情弹窗的动作按钮必须吃实时状态：弹窗持有的是点开时的卡对象快照，
+      // 连接/断开/更新完成后 loadBackendState 只刷新列表数据源（bundleStates 等），
+      // 快照停留旧值——按钮滞留「连接」，而横幅按实时连接态已显示「已连接」，
+      // 要重开弹窗才恢复（用户实机报告）。按钮驱动且会随操作流变化的字段从列表
+      // 实时卡覆盖（与列表卡同源同值）：installed/actions，以及 updateAvailable
+      // ——ima/组合卡的「更新」入口由它注入（后端 actions 不含 update），不覆盖则
+      // 弹窗内更新成功后「更新」幻影滞留，再点会对同版本重复走覆盖式更新。其余
+      // 展示字段维持快照（生效名/说明的显式补拉见 doEditDisplaySave）。查找要求
+      // backendId 非空：即将上线占位卡没有 backendId，按 undefined 匹配会撞上
+      // 第一张占位卡（今日各占位卡按钮字段恒等、渲染无差，仍不应依赖该巧合）。
+      // 卡已不在列表（卸载后消失的自定义包/上传技能/随包解散的组合卡）时回退
+      // 快照，渲染与修复前逐字节一致——卸载路径会 patch 快照 installed
+      // （handleAction/handleSkillAction），旧分支据其渲染；OAuth selectedToolPatch
+      // 与卸载 patch 在实时卡命中的主路径同样承重（authStatus 驱动「重新授权」
+      // 文案），并非仅供回退的死代码，勿当冗余清理。
+      const selectedLiveTool = selectedTool && selectedTool.backendId
+        ? (tools.find(x => x.backendId === selectedTool.backendId)
+          || skillCards.find(x => x.backendId === selectedTool.backendId))
+        : null;
+      const detailTool = selectedTool
+        ? (selectedLiveTool
+          ? { ...selectedTool, installed: selectedLiveTool.installed, actions: selectedLiveTool.actions, updateAvailable: selectedLiveTool.updateAvailable }
+          : selectedTool)
+        : null;
       // Detail page "Connected" banner (five connectors, one shared visual shell): CLI connectors need the connection
       // state ready and the flow card collapsed; ima has no flow card, connection state only. Mutually exclusive, at most one shows.
       const connectedBanners = [
@@ -2733,7 +2757,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white mb-2 tracking-tight">{selectedTool.title}</h2>
                       <p className="text-[17px] text-slate-500 dark:text-slate-400 mb-5 font-medium">{selectedTool.subtitle}</p>
                       <div className="flex flex-col items-end gap-1.5">
-                        <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} onEditDisplay={handleEditDisplay} onExport={handleExportInstalled} size="lg" copy={storeCopy} t={t} />
+                        <PlatformToolAction tool={detailTool} busy={busyId === selectedTool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} onEditDisplay={handleEditDisplay} onExport={handleExportInstalled} size="lg" copy={storeCopy} t={t} />
                         {((selectedTool.feishuCli && !feishuConnected) || (selectedTool.wecomCli && !wecomConnected) || (selectedTool.dingtalkCli && !dingtalkConnected) || (selectedTool.tmeetCli && !tmeetConnected)) && <span className="text-[11px] text-slate-400">{storeCopy.firstUseOnlineInstall}</span>}
                       </div>
                     </div>
