@@ -3919,11 +3919,14 @@ const App = () => {
             <button
               type="button"
               data-testid="mobile-navigation-close"
+              // Driven by mobileDrawerOpen, not isSidebarOpen, so the dim and the
+              // drawer clear the overlay publication barrier together instead of
+              // showing a dimmed screen with no drawer for the barrier window.
               aria-label={t.uiMainApp.closeNavigation}
               onClick={() => setIsSidebarOpen(false)}
-              aria-hidden={!isSidebarOpen}
-              tabIndex={isSidebarOpen ? 0 : -1}
-              className={`fixed inset-0 z-30 hidden bg-black/40 max-sm:block transition-opacity duration-300 ${isSidebarOpen ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
+              aria-hidden={!mobileDrawerOpen}
+              tabIndex={mobileDrawerOpen ? 0 : -1}
+              className={`fixed inset-0 z-30 hidden bg-black/40 max-sm:block transition-opacity duration-300 motion-reduce:transition-none ${mobileDrawerOpen ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
             />
           )}
 
@@ -3952,7 +3955,7 @@ const App = () => {
                 visibility: mobileDrawerOpen ? 'visible' : 'hidden',
               } : {}),
             }}
-            className={`${isCompactShell ? 'w-[280px]' : (isSidebarOpen ? '' : 'w-[68px]')} relative shrink-0 flex flex-col z-40 ${sidebarResizing ? '' : 'transition-all duration-300'} ${
+            className={`${isCompactShell ? 'w-[280px]' : (isSidebarOpen ? '' : 'w-[68px]')} relative shrink-0 flex flex-col z-40 ${sidebarResizing ? '' : 'transition-all duration-300 motion-reduce:transition-none'} ${
               activeTheme === 'light'
                 ? 'bg-[#F0F4F9]'
                 : (isSidebarOpen ? 'bg-[#1E1F20]' : 'bg-[#131314]')

@@ -780,9 +780,17 @@ async function main() {
     }) : [];
     const recents = document.querySelector('[data-testid="sidebar-recents"]');
     const recentsRect = recents && recents.getBoundingClientRect();
+    const barRect = (selector) => {
+      const node = document.querySelector(selector);
+      return node ? { top: node.getBoundingClientRect().top, bottom: node.getBoundingClientRect().bottom } : null;
+    };
     return {
       viewport: document.documentElement.clientWidth,
       width: rect.width,
+      top: rect.top,
+      bottom: rect.bottom,
+      topBar: barRect('[data-testid="mobile-top-bar"]'),
+      tabBar: barRect('[data-testid="mobile-tab-bar"]'),
       rightGap: document.documentElement.clientWidth - rect.right,
       primaryBottom: primaryRect ? primaryRect.bottom : null,
       recentsTop: recentsRect ? recentsRect.top : null,
@@ -795,6 +803,14 @@ async function main() {
       && mobileSidebarLayout.navButtons.every(button => button.height <= 41)
       && mobileSidebarLayout.primaryBottom <= 400
       && mobileSidebarLayout.recentsTop <= 405,
+    JSON.stringify(mobileSidebarLayout));
+  // 全高断言：抽屉上下缘必须至少包住顶栏上缘与底部 Tab 下缘（与 env() 安全区
+  // 取值无关），重新引入 top:48/bottom:56 夹层会让该断言变红。
+  record('手机会话抽屉全高覆盖顶栏与底部 Tab',
+    !!mobileSidebarLayout.topBar
+      && !!mobileSidebarLayout.tabBar
+      && mobileSidebarLayout.top <= mobileSidebarLayout.topBar.top
+      && mobileSidebarLayout.bottom >= mobileSidebarLayout.tabBar.bottom,
     JSON.stringify(mobileSidebarLayout));
   // The z-40 sidebar covers the center of the z-30 full-screen overlay. A
   // Puppeteer coordinate click would hit a sidebar session instead of closing
