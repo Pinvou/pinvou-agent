@@ -1,12 +1,14 @@
 //! Compose retained FullPack/Package binding with same-object native observations.
 //! Ordinary output cache, not a protected host, execution handoff or permission.
 mod platform;
+mod role;
 use pinvou_upgrade_archive::{ArchiveLimits, materialize_member};
 use pinvou_upgrade_codec::{Document, InputKind, derive_metadata_reference};
 use pinvou_upgrade_custody::{Directory, Identity};
 use pinvou_upgrade_download_job::{ObservedCache, observe_retained};
 use pinvou_upgrade_native_evidence::{ExpectedFile, Observation as NativeObservation};
-use pinvou_upgrade_package_check::{NativeMemberKind, PackageInspection, select_native_member};
+use pinvou_upgrade_package_check::{PackageInspection, select_native_member};
+pub use role::{Role, RoleObservation, RoleReport, RoleRequest, RoleSelection, inspect_role};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -201,6 +203,32 @@ pub fn inspect(
     limits: &Limits,
     cancel: &AtomicBool,
 ) -> Result<Observation, Error> {
+    inspect_selected(
+        job,
+        manifest_sha256,
+        attempt,
+        output,
+        RoleRequest {
+            role: Role::FinalInstaller,
+            member_name,
+        },
+        limits,
+        cancel,
+    )
+    .map(|(observation, _)| observation)
+}
+
+// One actual byte/custody/native pipeline for the old API and every role.
+fn inspect_selected(
+    job: &Path,
+    manifest_sha256: &str,
+    attempt: u64,
+    output: &Path,
+    request: RoleRequest<'_>,
+    limits: &Limits,
+    cancel: &AtomicBool,
+) -> Result<(Observation, RoleSelection), Error> {
+    let RoleRequest { role, member_name } = request;
     poll(cancel)?;
     platform::require_supported()?;
     let limits = limits.archive()?;
@@ -240,20 +268,21 @@ pub fn inspect(
         .try_clone()
         .map_err(|_| Error::IoUnavailable)?;
     let source_identity = pinvou_upgrade_custody::identity(&reader).map_err(custody)?;
-    let selected = select_native_member(
-        &mut reader,
-        &input,
-        NativeMemberKind::FinalInstaller,
-        member_name,
-        || cancel.load(Ordering::Acquire),
-    )
-    .map_err(|_| {
-        if cancel.load(Ordering::Acquire) {
-            Error::Cancelled
-        } else {
-            Error::Package
-        }
-    })?;
+    let selected =
+        select_native_member(&mut reader, &input, role.member_kind(), member_name, || {
+            cancel.load(Ordering::Acquire)
+        })
+        .map_err(|_| {
+            if cancel.load(Ordering::Acquire) {
+                Error::Cancelled
+            } else {
+                Error::Package
+            }
+        })?;
+    // select_native_member has rechecked complete Package semantics, including
+    // executionHelperId -> helpers[].nativeIdentity == Package.helper. The
+    // selection is a report of that exact declaration, never a current owner.
+    let selection = role.selection(package.value().get("signed").ok_or(Error::Package)?)?;
     poll(cancel)?;
     let directory = pinvou_upgrade_custody::directory(output).map_err(custody)?;
     let (destination_name, mut destination) = fresh(&directory)?;
@@ -305,19 +334,22 @@ pub fn inspect(
     let declared_native = serde_json::from_slice(selected.identity().canonical_bytes())
         .map_err(|_| Error::Package)?;
     drop(reader);
-    Ok(Observation {
-        source,
-        native,
-        _destination: directory,
-        destination_name,
-        package_id,
-        package_size,
-        package_sha256,
-        envelope_sha256,
-        member_name,
-        declared_native,
-        source_identity,
-    })
+    Ok((
+        Observation {
+            source,
+            native,
+            _destination: directory,
+            destination_name,
+            package_id,
+            package_size,
+            package_sha256,
+            envelope_sha256,
+            member_name,
+            declared_native,
+            source_identity,
+        },
+        selection,
+    ))
 }
 
 #[cfg(test)]

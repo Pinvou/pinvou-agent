@@ -1,4 +1,4 @@
-# Inspect a retained FullPack's native installer
+# Inspect a retained FullPack's native files
 
 The explicit `upgrade-inspect-retained-native` tool connects an existing download
 job's retained complete bytes to actual Windows embedded Authenticode evidence.
@@ -10,10 +10,40 @@ cargo build --locked --manifest-path pinvou3-app/src-tauri/src/features/updater/
 upgrade-inspect-retained-native inspect JOB MANIFEST_SHA256 ATTEMPT OUTPUT_DIRECTORY MEMBER LIMITS_JSON
 ```
 
+The original `inspect` command/library function and its report remain unchanged.
+Three additional commands observe exact helper/launcher declarations using the
+same source, capacity, copying, identity, cancellation and native policy:
+
+```text
+upgrade-inspect-retained-native inspect-execution-helper JOB MANIFEST_SHA256 ATTEMPT OUTPUT_DIRECTORY MEMBER LIMITS_JSON
+upgrade-inspect-retained-native inspect-launcher JOB MANIFEST_SHA256 ATTEMPT OUTPUT_DIRECTORY MEMBER LIMITS_JSON
+upgrade-inspect-retained-native inspect-helper-artifact JOB MANIFEST_SHA256 ATTEMPT OUTPUT_DIRECTORY HELPER_ID MEMBER LIMITS_JSON
+```
+
+`inspect-execution-helper` takes no helper ID. It reads the original signed
+`executionHelperId` and the complete declared `helper` identity; existing Package
+semantics require that ID to name one unique helper with the same complete native
+identity and target. It does not choose the first array entry. The explicit
+artifact command accepts only an exact case-sensitive ID already declared in
+that Package. Choosing a helper artifact does not change the execution helper.
+`installationTarget` is a logical declaration and never a source ZIP locator or
+an arbitrary filesystem command/path for this tool.
+
+Role commands produce a separate wrapper with `selection.kind`,
+`selection.helperId` (null for finalInstaller/launcher), and `observation` holding
+the original full report. `executionHelper` reports the ID from the verified
+declaration; `helperArtifact` reports the matching declared ID. These describe
+Package roles, not installed roles, approved Registry entries or verified native
+versions. All five qualification/permission/time flags remain false in the
+wrapper, observation and native report. The library's ordinary `RoleRequest`
+combines a closed `Role` and independent member locator; `inspect_role` returns
+the same custody through a `RoleObservation` until dropped.
+
 Retain the original independent `manifestSha256` from `upgrade-download-cache
 create`. ATTEMPT is a positive canonical decimal number. OUTPUT_DIRECTORY must
 already exist on the local supported filesystem. MEMBER is the exact ZIP member
-whose bytes match the signed Package's `finalInstaller`; member names themselves
+whose bytes match the selected signed Package native declaration (`finalInstaller`
+for the original `inspect` command); member names themselves
 carry no role or publisher authority. A helper alias with identical bytes is
 therefore equivalent as a locator. Only the Windows x86_64 NSIS target is
 supported. Actual signature observation covers embedded PE signatures; it does
@@ -38,7 +68,7 @@ nor repaired: a damaged or absent journal cannot invent success or prevent an
 independently pinned complete byte observation.
 
 The existing package/archive implementations check the complete current ZIP and
-all declared native byte identities, locate the selected finalInstaller by exact
+all declared native byte identities, locate the selected native declaration by exact
 size/hash, copy it to an exclusively created single-component cache filename,
 synchronize it and rescan its complete actual destination. The tool keeps the
 source/job and destination directory handles. All destination writers close
@@ -75,7 +105,22 @@ The strict existing-cache positive is run separately on a suitable Windows host:
 
 ```text
 cargo test --locked --test process cache_only_strict_fullpack_signature_positive -- --ignored --test-threads=1
+cargo test --locked --test process roles::cache_only_strict_execution_helper_positive -- --ignored --exact --test-threads=1
 ```
 
 Failure to obtain complete chain/timestamp evidence fails that explicit check;
 the tool does not fetch material, import certificates or substitute a fixture.
+
+An additional explicit compatibility test requires the independently retained
+original T29 binary with SHA-256
+`52b3b639e9f64a557813b37090255706e375eeb31013c29b57ccadcf684168b3`.
+Set the test-only `PINVOU_UPGRADE_LEGACY_DOWNLOAD_CLI` to its local path, then run:
+
+```text
+cargo test --locked --test process roles::original_52b3_job_can_observe_exact_execution_helper_and_old_final_installer -- --ignored --exact --test-threads=1
+```
+
+The old binary performs actual job creation; tests insert the signed FullPack
+bytes as a retained candidate without inventing a successful download journal.
+The new role and original inspector both read that original job. No replacement
+binary, self-reported version or simulated native API satisfies this opt-in.
