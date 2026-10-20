@@ -95,7 +95,7 @@ test('a legacy array from an old desktop merges as rows, not an empty index', as
     state,
   });
   const res = await cluster.listDeliverableIndex();
-  assert.deepEqual(Array.from(commands), ['list_deliverable_index'],
+  assert.deepEqual([...commands], ['list_deliverable_index'],
     'the legacy command is used when the desktop does not advertise v2');
   assert.deepEqual(Array.from(res.rows, (r) => String(r.path)), ['/w/legacy.pdf']);
   assert.deepEqual(Array.from(res.skipped, String), []);
