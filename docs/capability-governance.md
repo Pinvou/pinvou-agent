@@ -107,24 +107,29 @@ cohort（round-33 minor 7 勘误）。随真正被切换的
 批量 enable 的整批判拒只针对 stored 中**不在**本表
 的 id——安装默认的关可被用户动作（欢迎卡/场景 opt-in）移除，显式 opt-out
 不可。`install_default_synced`（评审 #455 round-31/32）是 `"<mode>:<包 id>"`
-同步账本：install/connect/startup 三个同步变体对观察到的每个 DenyAll
+同步账本：install 同步与 connect 授权两个写入变体对观察到的每个 DenyAll
 scope × 包对各记一行，**scope 仍处于未初始化时同样记账**（round-32 MAJOR
 1：fresh home 上的连接发生在 plain 物化之前，不记账则用户的**首次**启用会
-在下次启动被回填覆盖）；启动 refresh 只对账本**缺失**的对回填；用户
+在下次启动被覆盖）；启动 refresh 只对**从未记账**的对授权；用户
 enable 移除 stored 行但**保留**账本条目（使 enable 对 refresh 粘滞）；teardown
 （`remove_bundle_from_disabled_scopes_exact`）按 scope 键**精确匹配**清除该包
 全部条目（round-32 minor 1），重装/重连因此重新走同意注册。
 `connect_granted`（feat/connector-connect-grants-enable）记录 CLI 连接器
-**连接动作显式授予启用**的包 id：连接手势本身就是同意，`*_apply_skills`
-（`deny_first_register_connector` → `grant_connect_enable`）在物化技能文件
+**连接动作显式授予启用**的包 id：连接手势本身就是同意，GUI 的 `*_apply_skills`
+与 CLI 的 `pinvou connectors connect`（两表面同一语义，各自经
+`deny_first_register_connector` → `grant_connect_enable`）在物化技能文件
 **之前**落地「开」——清掉旧默认关行与标记、记 `connect_granted`、写账本对；
-打包/MCP **安装**仍走安装侧默认关注册，不受影响。该集合只被**未初始化
-scope 的 DenyAll 现算扩集**做减法（已初始化 scope 以落盘列表为准，行缺席即
-开），所以未初始化 scope 上连接的连接器立即可用、composer 首屏渲染为开；
-用户在 composer 显式关闭（写入行）即移除授权——显式裁决恒优先于连接默认，
-账本同时保证启动 refresh 的 ledger 门控变体
-（`grant_connect_enable_refresh`，只对从未记账的对授权）不会把用户的关翻回
-开；teardown 连同 stored/hidden/标记/账本一并清除授权，同 id 重装由重连流程
+连接后技能物化失败则由 `revoke_connect_enable` 补偿回「从未同意」的
+fail-closed 态（否则授权在手、卡片报失败，连接器却已被现算为开）。打包/MCP
+**安装**仍走安装侧默认关注册，不受影响。门控经**未初始化 scope 的 DenyAll
+现算扩集**对该集合做减法（已初始化 scope 以落盘列表为准，行缺席即开；另一
+读者是 enable 路径的 `not_applied` 上报过滤，仅影响提示），所以未初始化 scope
+上连接的连接器立即可用、composer 首屏渲染为开；用户在 composer 显式关闭
+（写入行）即移除授权——显式裁决恒优先于连接默认，且**启动 refresh 永不越过
+stored 行**：`grant_connect_enable_refresh`（ledger 门控）额外要求**任何 scope
+都无该包行**才授权——无账本态下的行（legacy 迁移的显式关、连接落盘失败后的
+composer 关）即裁决，boot 回填一律不碰，只有用户自己的连接手势才可抬行；
+teardown 连同 stored/hidden/标记/账本一并清除授权，同 id 重装由重连流程
 重新授权。首个版本读取时把旧的
 `disabled_connectors.json`（连接器 id）与 `disabled_skills.json`（技能 id）迁移合并：
 连接器 id 原样进包 id（连接器 id 即包 id），技能 id 经 scope 侧的包 id 归一
@@ -319,9 +324,10 @@ refused, the whole install/import aborts before landing, never exposing an
 "installed but not in the disabled set" intermediate state and never letting
 the rollback uninstall destroy an existing user install (a reinstall/re-import
 overwrites the old copy in place, and a post-hoc rollback cannot restore it);
-the CLI connector enablement (`*_apply_skills` and the auth-gated refresh /
-startup backfill's skill materialization) likewise registers the DenyAll
-disabled set first and materializes skill files second, and a refusal aborts
+the CLI connector enablement (`*_apply_skills`, the CLI connect command, and
+the auth-gated refresh / startup backfill's skill materialization) likewise
+records its consent first — the connect ENABLE grant — and materializes skill
+files second, and a refusal aborts
 the connect before any skill materialization; recycle-bin restore is
 deny-first the same way (uninstall already cleared the old disabled entries,
 so restore is, in governance terms, "a not-installed pack becoming available

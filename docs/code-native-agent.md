@@ -209,7 +209,9 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 > `~/.pinvou3/disabled_bundles.json`（`features/marketplace/scope.rs`：包 id × 模式
 > 禁用集 + `hidden_scopes` 可见性轴，读到旧双文件即迁移不删；曾有的 `skill_scope.rs`
 > re-export 别名层已删除，调用方直接使用 `scope` 模块）。开关粒度从"连接器 id"变为"包 id"（含技能/CLI）。
-> 本节其余机制（DenyAll 安全默认、初始化语义、组合目录联动）仍准确；现行完整
+> 本节其余机制（DenyAll 安全默认——已连接的 CLI 连接器经 `connect_granted`
+> 从现算扩集减除、boot 回填永不越过 stored 行；初始化语义、组合目录联动）仍
+> 准确；现行完整
 > 形态以 `docs/capability-governance.md` 为准。下文保留双文件描述作历史语义参考。
 
 - 连接器禁用列表按会话模式 scope 分开持久化（`disabled_connectors.json` 存
