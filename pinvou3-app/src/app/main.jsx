@@ -3569,6 +3569,9 @@ const App = () => {
       ].filter(Boolean).join('|');
       const browserOverlayPublicationReady = !!browserOverlayIntent
         && publishedBrowserOverlayIntent === browserOverlayIntent;
+      // Compact-shell drawer opens only after its overlay intent is published;
+      // defined once because the drawer style needs it for transform+visibility.
+      const mobileDrawerOpen = isCompactShell && isSidebarOpen && browserOverlayPublicationReady;
       // Keep the surface hidden while one already-published overlay hands off to
       // another. The replacement itself is still withheld until its own barrier
       // attempt has settled.
@@ -3912,13 +3915,15 @@ const App = () => {
           >
           <div className={`flex flex-1 min-h-0 ${activeTheme === 'dark' ? (isSidebarOpen ? 'bg-[#1E1F20]' : 'bg-[#131314]') : 'bg-[#F0F4F9]'}`}>
 
-          {isWeb && isSidebarOpen && browserOverlayPublicationReady && (
+          {isWeb && (
             <button
               type="button"
               data-testid="mobile-navigation-close"
               aria-label={t.uiMainApp.closeNavigation}
               onClick={() => setIsSidebarOpen(false)}
-              className="fixed inset-0 z-30 hidden bg-black/40 max-sm:block"
+              aria-hidden={!isSidebarOpen}
+              tabIndex={isSidebarOpen ? 0 : -1}
+              className={`fixed inset-0 z-30 hidden bg-black/40 max-sm:block transition-opacity duration-300 ${isSidebarOpen ? 'opacity-100' : 'pointer-events-none opacity-0'}`}
             />
           )}
 
@@ -3933,14 +3938,21 @@ const App = () => {
               // z-40 sidebar).
               width: isSidebarOpen && !isCompactShell ? sidebarWidth : undefined,
               ...(isCompactShell ? {
-                display: isSidebarOpen && browserOverlayPublicationReady ? 'flex' : 'none',
+                // The drawer stays mounted: display:none cannot transition, so
+                // open/close animates transform while `visibility` (covered by
+                // transition-all) flips only after the slide-out finishes and
+                // immediately on slide-in. Full height overlays the top bar and
+                // tab bar; the env() insets keep clear of notch / home-indicator
+                // areas (same insets as the app root padding above).
                 position: 'fixed',
                 left: 0,
-                top: 48,
-                bottom: 56,
+                top: 'env(safe-area-inset-top)',
+                bottom: 'env(safe-area-inset-bottom)',
+                transform: mobileDrawerOpen ? 'translateX(0)' : 'translateX(-100%)',
+                visibility: mobileDrawerOpen ? 'visible' : 'hidden',
               } : {}),
             }}
-            className={`${isSidebarOpen ? (isCompactShell ? 'w-[280px]' : '') : 'w-[68px]'} relative shrink-0 flex flex-col z-40 ${sidebarResizing ? '' : 'transition-all duration-300'} ${
+            className={`${isCompactShell ? 'w-[280px]' : (isSidebarOpen ? '' : 'w-[68px]')} relative shrink-0 flex flex-col z-40 ${sidebarResizing ? '' : 'transition-all duration-300'} ${
               activeTheme === 'light'
                 ? 'bg-[#F0F4F9]'
                 : (isSidebarOpen ? 'bg-[#1E1F20]' : 'bg-[#131314]')

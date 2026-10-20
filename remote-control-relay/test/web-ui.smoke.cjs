@@ -622,11 +622,15 @@ async function main() {
       return { bottom: r.bottom, visible: r.height > 0 && r.width > 0 };
     };
     const sidebar = document.querySelector('[data-testid="app-sidebar"]');
+    // 抽屉常驻挂载，关闭时 translateX(-100%) 滑出视口并 visibility:hidden，
+    // 因此「隐藏」判据是滑出视口（右缘 ≤ 0）或 visibility，而不是 width === 0。
+    const sidebarRect = sidebar ? sidebar.getBoundingClientRect() : null;
     return {
       topBar: rect('[data-testid="mobile-top-bar"]'),
       tabBar: rect('[data-testid="mobile-tab-bar"]'),
       tabCount: document.querySelectorAll('[data-testid="mobile-tab-bar"] button').length,
-      sidebarHidden: !sidebar || sidebar.getBoundingClientRect().width === 0,
+      sidebarHidden: !sidebar || sidebarRect.right <= 0
+        || getComputedStyle(sidebar).visibility === 'hidden',
     };
   });
   record('390x844 呈现移动壳层：顶栏 + 底部 Tab，侧栏窄轨隐藏',
@@ -754,8 +758,15 @@ async function main() {
   );
 
   await mobilePage.click('[data-testid="mobile-navigation-open"]');
+  // 抽屉是常驻挂载的滑入动画：width 恒为 280，必须等滑入完成（左缘归位且可见）
+  // 再量取几何信息，否则会采到动画中间态。
   await mobilePage.waitForFunction(
-    () => document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width > 0,
+    () => {
+      const sidebar = document.querySelector('[data-testid="app-sidebar"]');
+      return !!sidebar
+        && getComputedStyle(sidebar).visibility === 'visible'
+        && sidebar.getBoundingClientRect().left >= 0;
+    },
     { timeout: 5_000 },
   );
   const mobileSidebarLayout = await mobilePage.evaluate(() => {
@@ -789,8 +800,12 @@ async function main() {
   // Puppeteer coordinate click would hit a sidebar session instead of closing
   // the drawer, so invoke the overlay's click handler directly.
   await mobilePage.evaluate(() => document.querySelector('[data-testid="mobile-navigation-close"]').click());
+  // 关闭是 300ms 滑出动画：visibility 在过渡末尾才翻为 hidden，等它落定。
   await mobilePage.waitForFunction(
-    () => document.querySelector('[data-testid="app-sidebar"]')?.getBoundingClientRect().width === 0,
+    () => {
+      const sidebar = document.querySelector('[data-testid="app-sidebar"]');
+      return !sidebar || getComputedStyle(sidebar).visibility === 'hidden';
+    },
     { timeout: 5_000 },
   );
   await mobilePage.waitForSelector('[data-testid="chat-greeting"]', { timeout: 5_000 });
