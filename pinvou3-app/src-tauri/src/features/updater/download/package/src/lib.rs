@@ -10,7 +10,8 @@ use pinvou_upgrade_codec::{
 use pinvou_upgrade_transfer::Artifact;
 mod materialize;
 pub use materialize::{
-    NativeMaterializeError, NativeMemberKind, ObservedNativeMember, materialize_native_member,
+    NativeMaterializeError, NativeMemberKind, ObservedNativeMember, SelectedNativeMember,
+    materialize_native_member, select_native_member,
 };
 use std::{collections::BTreeSet, fs::File};
 

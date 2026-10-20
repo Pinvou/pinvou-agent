@@ -728,7 +728,8 @@ class CiGatePolicyTests(unittest.TestCase):
         linux = self.pr_workflow.split("\n  rust-lint:", 1)[1].split("\n  rust-test:", 1)[0]
         windows = self.pr_workflow.split("\n  windows-rust-test:", 1)[1].split("\n  macos-rust-check:", 1)[0]
         for suffix, title in (("platform/custody", "updater file custody"),
-                              ("native-evidence", "upgrade native signature evidence")):
+                              ("native-evidence", "upgrade native signature evidence"),
+                              ("download/native-inspection", "retained native inspection")):
             root = "pinvou3-app/src-tauri/src/features/updater/" + suffix
             for path in ("src/platform/windows.rs", "Cargo.toml", "Cargo.lock", "README.md"):
                 self.assertTrue(_matches_paths_filter(root + "/" + path, patterns))

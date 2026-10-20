@@ -210,6 +210,7 @@ jobs:
               - 'pinvou3-app/src-tauri/src/features/updater/download/cache/**'
               - 'pinvou3-app/src-tauri/src/features/updater/download/http/**'
               - 'pinvou3-app/src-tauri/src/features/updater/download/workflow/**'
+              - 'pinvou3-app/src-tauri/src/features/updater/download/native-inspection/**'
               - 'pinvou3-app/src-tauri/src/features/updater/native-evidence/**'
               - 'pinvou3-app/src-tauri/src/features/updater/platform/custody/**'
               - 'pinvou3-app/src-tauri/src/features/updater/protocol/codec/**'
@@ -1056,6 +1057,15 @@ jobs:
 
       - name: Check independent upgrade native signature evidence
         working-directory: pinvou3-app/src-tauri/src/features/updater/native-evidence
+        env:
+          CARGO_BUILD_JOBS: '2'
+        run: |
+          cargo fmt -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --all-targets -- --test-threads=1
+
+      - name: Check independent retained native inspection
+        working-directory: pinvou3-app/src-tauri/src/features/updater/download/native-inspection
         env:
           CARGO_BUILD_JOBS: '2'
         run: |
@@ -2080,6 +2090,16 @@ jobs:
       - name: Check native Windows upgrade native signature evidence
         if: ${{ matrix.phase == 'regression' }}
         working-directory: pinvou3-app/src-tauri/src/features/updater/native-evidence
+        env:
+          CARGO_BUILD_JOBS: '2'
+        run: |
+          cargo fmt -- --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --all-targets -- --test-threads=1
+
+      - name: Check native Windows retained native inspection
+        if: ${{ matrix.phase == 'regression' }}
+        working-directory: pinvou3-app/src-tauri/src/features/updater/download/native-inspection
         env:
           CARGO_BUILD_JOBS: '2'
         run: |

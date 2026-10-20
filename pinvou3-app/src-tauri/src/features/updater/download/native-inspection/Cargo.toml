@@ -1,0 +1,39 @@
+[package]
+name = "pinvou-upgrade-native-inspection"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+license = "MIT"
+
+[dependencies]
+pinvou-upgrade-download-job = { path = "../workflow" }
+pinvou-upgrade-package-check = { path = "../package" }
+pinvou-upgrade-archive = { path = "../archive" }
+pinvou-upgrade-codec = { path = "../../protocol/codec" }
+pinvou-upgrade-custody = { path = "../../platform/custody" }
+pinvou-upgrade-native-evidence = { path = "../../native-evidence" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+sha2 = "=0.11.0"
+# Existing CLI source used by real original-job fixture creation.
+tokio = { version = "=1.53.1", features = ["net", "time", "rt", "macros"] }
+
+[lints.rust]
+unsafe_code = "deny"
+
+[[bin]]
+name = "upgrade-inspect-retained-native"
+path = "src/main.rs"
+
+[[test]]
+name = "process"
+path = "tests/platform/process.rs"
+
+# Compile the existing tool source unchanged for actual legacy-create fixtures.
+[[bin]]
+name = "upgrade-download-cache"
+path = "../workflow/src/main.rs"
+
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Wdk_Storage_FileSystem", "Win32_System_IO", "Win32_System_Threading"] }
