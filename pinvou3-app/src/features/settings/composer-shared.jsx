@@ -467,34 +467,40 @@ window.addEventListener('pinvou:chat-round-committed', (event) => {
       if (writeGateRef.current === null) writeGateRef.current = createToggleWriteGate();
       // CLI 连接器连接/技能状态：key → { on: 是否已连接, enabled: 技能是否启用(未手动停用) }。
       const [connectorStates, setConnectorStates] = useState(initialConnectorStates);
-      // 启动时加载已装工具 + 全局持久的禁用列表(持久语义:新窗口/新对话都继承)
+      // Round-38 刷新序号门（round-2 review m9）：连接现在会背靠背广播两次
+      // （done 相位 + 写入落定后），第一次读到的必然是授权落地前的旧状态。
+      // 桌面端 invoke 应答有序，按 key 的 setState 本就按服务次序落盘；此
+      // 序号门额外覆盖不保序的传输（web 桥）：只允许最新一次刷新提交。
+      const refreshSeqRef = useRef(0);
       async function refreshToolsMenu(isAlive) {
+        const seq = ++refreshSeqRef.current;
+        const isCurrent = () => isAlive() && seq === refreshSeqRef.current;
         try {
           const list = await invokeTauri('list_marketplace_tools');
-          if (isAlive()) setMarketplaceTools(Array.isArray(list) ? list : []);
+          if (isCurrent()) setMarketplaceTools(Array.isArray(list) ? list : []);
         } catch { /* ignore */ }
         try {
           const skills = await invokeTauri('list_marketplace_skills');
-          if (isAlive()) setMarketplaceSkills(Array.isArray(skills) ? skills : []);
+          if (isCurrent()) setMarketplaceSkills(Array.isArray(skills) ? skills : []);
         } catch { /* ignore */ }
         try {
           const dis = await invokeTauri('get_disabled_connectors', { scope: toolScope });
-          if (isAlive()) setDisabled(new Set(dis || []));
+          if (isCurrent()) setDisabled(new Set(dis || []));
         } catch { /* ignore */ }
         try {
           const hid = await invokeTauri('get_bundle_visibility', { scope: toolScope });
-          if (isAlive()) setHidden(new Set(hid || []));
+          if (isCurrent()) setHidden(new Set(hid || []));
         } catch { /* ignore */ }
         try {
           const proj = await invokeTauri('get_project_skills_enabled');
-          if (isAlive()) setProjectSkillsEnabled(!!proj);
+          if (isCurrent()) setProjectSkillsEnabled(!!proj);
         } catch { /* ignore */ }
         // 逐 CLI 连接器探测连接/技能启用态（`<key>_skills_state`）：顺序 await，
         // 与原先四段展开实现一致；单个失败不影响其余连接器。
         for (const { key } of COMPOSER_CONNECTORS) {
           try {
             const state = await invokeTauri(`${key}_skills_state`);
-            if (isAlive()) {
+            if (isCurrent()) {
               setConnectorStates(prev => ({
                 ...prev,
                 [key]: { on: !!(state && state.connected), enabled: !state || state.enabled !== false },
