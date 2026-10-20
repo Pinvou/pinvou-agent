@@ -94,6 +94,12 @@ def _build_synthetic_sysroot(root):
     # EMPTY .a stubs (pruned) and no lib*.so.
     (ma / "libpthread.so.0").write_text("ELF")
     (ma / "libdl.so.2").write_text("ELF")
+    # A package-shipped DANGLING RELATIVE-target dev link (its runtime file
+    # came from a package this closure lacks): the prune's rebase loop only
+    # handles absolute targets, so the stub materialization must REPLACE
+    # this link rather than write the GROUP text through it into a bogus
+    # target file.
+    (ma / "libpthread.so").symlink_to("libpthread.so.0-missing")
     # Debian dev symlink with an ABSOLUTE target into the (usr-merged)
     # runtime root: inside the sysroot it escapes to the build host unless
     # the prune rebases it onto the sysroot's /lib view.
@@ -424,11 +430,20 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             )
         asr = _without_comments(ASR_BUILD_SCRIPT.read_text(encoding="utf-8"))
         self.assertIn(
-            '-DCMAKE_EXE_LINKER_FLAGS="-L$(dirname "$CMAKE_TOOLCHAIN_FILE")'
-            '/usr/lib/loongarch64-linux-gnu -static-libstdc++ -static-libgcc"',
+            '-DCMAKE_EXE_LINKER_FLAGS="-L$multiarch_lib -static-libstdc++ -static-libgcc"',
             asr,
             "the ASR cross build must re-add the multiarch -L its explicit "
             "EXE linker flags otherwise drop",
+        )
+        # The -L derives the sysroot root from the toolchain file's dirname
+        # — an implicit contract with ci-loongarch64-sysroot.sh (which
+        # writes the file at the sysroot root). A relocated copy would
+        # yield a silently wrong -L, so the derivation must be guarded.
+        self.assertIn(
+            'if [ ! -d "$multiarch_lib" ]',
+            asr,
+            "the ASR -L derivation must fail loudly when the toolchain file "
+            "does not sit at a sysroot root",
         )
         # A cmake failure must dump the try-compile probe logs (tail, fail
         # closed): cmake 3.31 buries try-compile stderr in
@@ -588,7 +603,8 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         # cannot drift from what the cargo builds link with. Cargo links
         # carry no rust flags of their own any more (the remap rides the
         # workflow's RUSTFLAGS; the linker wrapper embeds the -B/-fuse-ld
-        # handoff), so the smoke passes exactly what a cargo link passes.
+        # handoff), so the only difference from a real cargo link is that
+        # rustc-side remap — which is not a link input.
         code = _without_comments(self.orchestrator)
         self.assertIn("-C linker=\"$CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER\"", code)
         self.assertIn('assert_loongarch_elf "$smoke_dir/hello"', code)
@@ -597,6 +613,26 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             code,
             "the smoke must fail loudly with its own message",
         )
+        # The smoke's scratch dir must clean up on failure paths too: the
+        # script is executed (never sourced), so an EXIT trap stays scoped.
+        self.assertIn(
+            "trap 'rm -rf -- \"${smoke_dir:-}\"' EXIT",
+            code,
+            "the smoke dir must be trap-cleaned so a failed smoke does not "
+            "litter the runner",
+        )
+        # Every loong64 artifact must face the same ELF machine gate, not
+        # just the smoke: the knowledge server, ASR engine and app binary
+        # are each a wrong-arch accident waiting for its own assertion, and
+        # downstream floor checks fire far later with less precise
+        # messages. Pin the exact artifact call sites.
+        for artifact in ("$KNOWLEDGE_SERVER", "$ASR_ENGINE", "$APP_BINARY"):
+            self.assertIn(
+                f'assert_loongarch_elf "{artifact}"',
+                code,
+                f"the {artifact} build must be asserted LoongArch64 in the "
+                "orchestrator",
+            )
         self.assertLess(
             code.index("hello.rs"),
             code.index("--manifest-path"),
@@ -613,6 +649,21 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         self.assertIn(TOOLCHAIN_SHA256, toolchain)
         self.assertIn('GLIBC_VERSION="2.38"', toolchain)
         self.assertIn('VARIANT="stable"', toolchain)
+        # The generation marker must be written only AFTER the gcc smoke: a
+        # tree whose gcc exists and is executable but cannot actually run
+        # would otherwise leave a "verified" marker behind, and every later
+        # run would reuse it and fail identically at the same smoke instead
+        # of re-fetching (never self-heals).
+        self.assertIn("fresh_tree=\"\"", toolchain)
+        self.assertIn("fresh_tree=1", toolchain)
+        marker_write = 'printf \'%s\\n\' "$expected_id" > "$marker"'
+        self.assertIn(marker_write, toolchain)
+        self.assertLess(
+            toolchain.index("-print-sysroot"),
+            toolchain.index(marker_write),
+            "the generation marker must be written after the gcc smoke, "
+            "not inside the unpack branch",
+        )
 
     def test_sysroot_setup_script_pins_the_glibc_2_38_baseline(self):
         sysroot = _without_comments(self.sysroot)
@@ -620,6 +671,38 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         self.assertIn('DPKG_ARCH="loong64"', sysroot)
         # The deepin beige source is the audited glibc-2.38 baseline.
         self.assertIn("community-packages.deepin.com/beige", sysroot)
+        # The usr-level sweep must keep usr/lib64 too: some libc6 builds
+        # place the program loader there rather than in the multiarch dir
+        # or root-level lib64, and deleting it turns that layout into an
+        # avoidable loud "program loader not found anywhere" failure.
+        self.assertIn(
+            "! -name include ! -name lib ! -name lib64 ! -name share",
+            sysroot,
+            "the usr sweep must keep usr/lib64 (alternative loader home)",
+        )
+        # The host probe must cover every text-processing command the prune
+        # relies on, so a minimal image fails at setup with the name
+        # instead of mid-prune.
+        self.assertIn(
+            "python3 grep sed awk xargs sort; do",
+            sysroot,
+            "the required-command probe must cover the prune's text tools",
+        )
+        # The /lib view must be created with -fn (same dangling-leftover
+        # rationale as the /lib64 view), and the libpthread/libdl stub
+        # block must replace a dangling dev link instead of writing the
+        # GROUP text THROUGH it.
+        self.assertIn(
+            'ln -sfn "../../usr/lib/$MULTIARCH_DIR/libc.so.6"',
+            sysroot,
+            "the /lib libc.so.6 view must tolerate a dangling leftover link",
+        )
+        self.assertIn(
+            'if [ -L "$stub_path" ] && [ ! -e "$stub_path" ]; then',
+            sysroot,
+            "stub materialization must replace a dangling dev link, not "
+            "write through it",
+        )
 
     def test_setup_scripts_print_the_export_block_the_pr_leg_consumes(self):
         # The pr-check leg extracts the "export in the CI step" block into
@@ -645,6 +728,20 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
                     # A dash-spelled line printed here is dead weight today
                     # and a crash waiting for a copy-paste, so it fails here.
                     self.assertRegex(line, r"^[A-Za-z_][A-Za-z0-9_]*=")
+                    # ...and the block must never export a RUSTFLAGS
+                    # spelling: the pr-check grep imports this block into
+                    # GITHUB_ENV verbatim, where a RUSTFLAGS/CARGO_TARGET_*_
+                    # RUSTFLAGS line would shadow the jobs' remap-only
+                    # policy OUTSIDE every static scan of the workflow and
+                    # the orchestrator (both suites scan those, not these
+                    # setup scripts).
+                    self.assertNotIn(
+                        "RUSTFLAGS",
+                        line.split("=", 1)[0],
+                        "the setup export block must not export a RUSTFLAGS "
+                        "spelling (it is imported into GITHUB_ENV verbatim by "
+                        "the pr-check leg, outside the RUSTFLAGS policy scans)",
+                    )
         def assert_block_exports(block, block_name, required):
             # Line-anchored on purpose: the block is heredoc DATA, where a
             # leading `#` is printed literally and the pr-check leg's
@@ -853,6 +950,12 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
                 [
                     "bash",
                     "-c",
+                    # Production semantics: the sysroot script runs under
+                    # `set -euo pipefail` and the generated files must
+                    # parse AND execute under it; `fail` is stubbed so a
+                    # generation-guard failure inside the fragment aborts
+                    # the fragment instead of NameError-ing.
+                    "set -euo pipefail; fail() { echo \"$*\" >&2; exit 1; }; "
                     "toolchain_bin=%s; TRIPLE=loongarch64-unknown-linux-gnu; source /dev/stdin"
                     % shlex.quote(str(bin_dir)),
                 ],
@@ -1023,6 +1126,18 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             # stub must resolve through the -L search path.
             self.assertIn("GROUP ( libpthread.so.0 )", (ma / "libpthread.so").read_text())
             self.assertIn("GROUP ( libdl.so.2 )", dl_script)
+            # The dangling relative-target libpthread.so link must have
+            # been REPLACED by the GROUP stub (a regular file), and the
+            # bogus target must not have been created by a write-through.
+            self.assertFalse(
+                (ma / "libpthread.so").is_symlink(),
+                "the dangling dev link must be replaced, not kept",
+            )
+            self.assertFalse(
+                (ma / "libpthread.so.0-missing").exists(),
+                "the stub must not be written through the dangling link "
+                "into a bogus target file",
+            )
             # The absolute dev symlink must be rebased onto the sysroot's
             # /lib view and still resolve through it.
             self.assertTrue(
@@ -1112,6 +1227,15 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             (inc2 / "wordsize.h").write_text("#define __WORDSIZE 64\n")
             (root2 / "usr/include/stdio.h").write_text("/* generic */\n")
             (root2 / "lib64").symlink_to("usr/lib64")  # dangles after the sweep
+            # ...and a package-shipped DANGLING libc.so.6 link at the /lib
+            # view location: it passes the [ ! -e ] guard, so the view
+            # creation must use -fn (like the /lib64 view) instead of
+            # aborting mid-prune with a raw "File exists".
+            lib2 = root2 / "lib/loongarch64-linux-gnu"
+            lib2.mkdir(parents=True)
+            (lib2 / "libc.so.6").symlink_to(
+                "../../usr/lib/loongarch64-linux-gnu/libc.so.7"
+            )
             dangled = subprocess.run(
                 [
                     "bash",
@@ -1137,6 +1261,17 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
                 (root2 / "lib64/ld-linux-loongarch-lp64d.so.1").exists(),
                 "the loader view must resolve after the dangling alias "
                 "is replaced",
+            )
+            # The dangling /lib libc.so.6 view link must have been replaced
+            # (resolving now) instead of aborting the prune.
+            self.assertTrue(
+                (root2 / "lib/loongarch64-linux-gnu/libc.so.6").exists(),
+                "the /lib libc.so.6 view must resolve after the dangling "
+                "leftover is replaced",
+            )
+            self.assertEqual(
+                str((root2 / "lib/loongarch64-linux-gnu/libc.so.6").readlink()),
+                "../../usr/lib/loongarch64-linux-gnu/libc.so.6",
             )
 
     def test_verify_sysroot_fails_closed_on_resolution_gaps(self):

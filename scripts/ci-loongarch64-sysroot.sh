@@ -200,7 +200,7 @@ if [ -n "$packages_csv" ]; then
   IFS=, read -r -a DEV_PACKAGES <<< "$(printf '%s' "$packages_csv" | tr -d '[:space:]')"
 fi
 
-for command_name in curl gzip dpkg dpkg-deb readelf find pkg-config strings sha256sum python3; do
+for command_name in curl gzip dpkg dpkg-deb readelf find pkg-config strings sha256sum python3 grep sed awk xargs sort; do
   command -v "$command_name" >/dev/null || fail "missing required command: $command_name"
 done
 
@@ -258,8 +258,13 @@ prune_sysroot() {
   # finds its target inside the sysroot.
   find "$root" -mindepth 1 -maxdepth 1 ! -name usr ! -name lib ! -name lib64 -exec rm -rf -- {} +
   if [ -d "$root/usr" ]; then
+    # lib64 kept at the usr level too: some libc6 builds place the program
+    # loader under usr/lib64 rather than the multiarch dir or root-level
+    # lib64; deleting it turns that layout into a loud-but-avoidable
+    # "program loader not found anywhere" failure. Harmless to keep — the
+    # bare-name rewrite means nothing references it.
     (cd "$root/usr" && find . -mindepth 1 -maxdepth 1 \
-      ! -name include ! -name lib ! -name share -exec rm -rf -- {} +)
+      ! -name include ! -name lib ! -name lib64 ! -name share -exec rm -rf -- {} +)
   fi
   if [ -d "$root/usr/share" ]; then
     (cd "$root/usr/share" && find . -mindepth 1 -maxdepth 1 \
@@ -410,7 +415,10 @@ prune_sysroot() {
     [ -e "$root/usr/lib/$MULTIARCH_DIR/libc.so.6" ] \
       || fail "cannot materialize the /lib view: no usr/lib/$MULTIARCH_DIR/libc.so.6 either"
     mkdir -p "$root/lib/$MULTIARCH_DIR"
-    ln -s "../../usr/lib/$MULTIARCH_DIR/libc.so.6" "$root/lib/$MULTIARCH_DIR/libc.so.6"
+    # -fn, same rationale as the /lib view above: a package-shipped DANGLING
+    # libc.so.6 link passes the [ ! -e ] guard, and a plain `ln -s` onto it
+    # aborts mid-prune with a raw "File exists".
+    ln -sfn "../../usr/lib/$MULTIARCH_DIR/libc.so.6" "$root/lib/$MULTIARCH_DIR/libc.so.6"
   fi
 
   # Merge the Debian multiarch header subtree (usr/include/<multiarch>/bits/,
@@ -443,9 +451,9 @@ prune_sysroot() {
   # usr-merged /lib view (lib -> usr/lib); fail closed listing any whose
   # runtime file the sysroot genuinely lacks.
   # This runs BEFORE the stub materialization below so an upstream-shipped
-  # dangling lib*.so symlink is reported here instead of being written
-  # through by the `printf >` (which would follow the link at its
-  # host-absolute target).
+  # dangling ABSOLUTE-target lib*.so symlink is reported here instead of
+  # being rebased onto a missing target; the stub block itself replaces
+  # RELATIVE-target dangling links it must overwrite.
   local missing="" link target_abs sub stripped depth prefix i
   while IFS= read -r -d '' link; do
     target_abs="$(readlink "$link")" || continue
@@ -488,15 +496,24 @@ prune_sysroot() {
   # driven -sys crate emits the search path, and resolve -lpthread/-ldl
   # from the toolchain's bundled glibc otherwise. (Kept idempotent: never
   # overwrite an upstream-shipped file.)
-  local stub rt
+  local stub rt stub_path
   for stub in pthread:libpthread.so.0 dl:libdl.so.2; do
     rt="${stub#*:}"
     stub="${stub%%:*}"
-    if [ ! -e "$root/usr/lib/$MULTIARCH_DIR/lib$stub.so" ]; then
+    stub_path="$root/usr/lib/$MULTIARCH_DIR/lib$stub.so"
+    # The rebase loop above reports only ABSOLUTE-target dangling links; a
+    # RELATIVE-target dangling dev link reaches here, and `printf >` would
+    # FOLLOW it — materializing the stub as a bogus new target file instead
+    # of the link, so every later existence check passes while -lpthread
+    # still dies at link time. Replace the dangling link, never write
+    # through it; a resolving link or real file is left untouched.
+    if [ -L "$stub_path" ] && [ ! -e "$stub_path" ]; then
+      rm -f "$stub_path"
+    fi
+    if [ ! -e "$stub_path" ]; then
       [ -e "$root/usr/lib/$MULTIARCH_DIR/$rt" ] \
         || fail "cannot materialize lib$stub.so: the sysroot lacks $rt (unexpected libc6 layout drift)"
-      printf 'GROUP ( %s )\n' "$rt" \
-        > "$root/usr/lib/$MULTIARCH_DIR/lib$stub.so"
+      printf 'GROUP ( %s )\n' "$rt" > "$stub_path"
     fi
   done
   [ -f "$root/usr/lib/$MULTIARCH_DIR/libpthread.so" ] \

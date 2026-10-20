@@ -181,6 +181,7 @@ already_verified() {
   [ -x "$toolchain_bin/$TRIPLE-gcc" ] || return 1
 }
 
+fresh_tree=""
 if [ "$force" = false ] && already_verified; then
   log "reusing verified toolchain (marker: $(cat "$marker")): $toolchain_root"
 else
@@ -225,7 +226,10 @@ else
   [ "$libc_version" = "$GLIBC_VERSION" ] \
     || fail "bundled sysroot glibc is '${libc_version:-<unknown>}', expected $GLIBC_VERSION (wrong variant?)"
 
-  printf '%s\n' "$expected_id" > "$marker"
+  # Marker deliberately NOT written here: it is written after the smoke
+  # below, so a tree whose gcc cannot execute never records itself as
+  # verified.
+  fresh_tree=1
   log "verified and unpacked: $toolchain_root"
 fi
 
@@ -248,6 +252,18 @@ if [ "$host_arch" = "x86_64" ] || [ "${PINVOU_LOONG64_TOOLCHAIN_SKIP_SMOKE:-0}" 
     || fail "$TRIPLE-gcc reports '$gcc_version', expected version $GCC_VERSION (pin drift)"
   "$toolchain_bin/$TRIPLE-gcc" -print-sysroot >/dev/null \
     || fail "$TRIPLE-gcc -print-sysroot failed"
+fi
+
+# The generation marker is written only AFTER the smoke passes: a tree
+# whose gcc exists and is executable but cannot actually run (foreign-arch
+# host without a matching userland, corrupt unpack) must not leave a
+# "verified" marker behind — every later run would reuse it and fail
+# identically at the same smoke instead of re-fetching. On the reuse path
+# the marker already exists and is left untouched; with the smoke skipped
+# (foreign-arch dev host + PINVOU_LOONG64_TOOLCHAIN_SKIP_SMOKE=1) the
+# marker is still written, as before.
+if [ -n "$fresh_tree" ]; then
+  printf '%s\n' "$expected_id" > "$marker"
 fi
 
 # Materialize the cargo-linker wrapper: cargo's link step routes through

@@ -230,6 +230,11 @@ assert_loongarch_elf() {
 # knowledge build uses; only the job's rustc-side --remap-path-prefix
 # RUSTFLAGS differs from a cargo link, and remap is not a link input.
 smoke_dir="$(mktemp -d)"
+# Self-cleaning: the success path removes it below, and this trap covers
+# the failure paths (smoke link failure, wrong-arch artifact) so a broken
+# link environment doesn't litter mktemp dirs on the runner. The script is
+# executed (never sourced), so an EXIT trap stays scoped to this run.
+trap 'rm -rf -- "${smoke_dir:-}"' EXIT
 printf 'fn main() {}\n' > "$smoke_dir/hello.rs"
 (cd "$REPO_ROOT" && rustc --target "$TRIPLE" \
   -C linker="$CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER" \

@@ -199,8 +199,20 @@ if [ "$cross_mode" -eq 1 ]; then
   # CI round 10). The toolchain file lives INSIDE the sysroot root, so its
   # dirname is the sysroot.
   if [ -n "${CMAKE_TOOLCHAIN_FILE:-}" ]; then
+    sysroot_dir="$(dirname "$CMAKE_TOOLCHAIN_FILE")"
+    multiarch_lib="$sysroot_dir/usr/lib/loongarch64-linux-gnu"
+    # The -L below derives the sysroot root from the toolchain file's
+    # dirname — an implicit contract with ci-loongarch64-sysroot.sh, which
+    # writes the file at the sysroot root. Guard it: a relocated copy of
+    # the toolchain file would otherwise yield a silently wrong -L and the
+    # link would die later on libdl/libpthread with no pointer at this
+    # derivation.
+    if [ ! -d "$multiarch_lib" ]; then
+      echo "[sensevoice] CMAKE_TOOLCHAIN_FILE=$CMAKE_TOOLCHAIN_FILE does not sit at a sysroot root (missing $multiarch_lib) — cannot derive the cross -L" >&2
+      exit 1
+    fi
     cmake_args+=(
-      -DCMAKE_EXE_LINKER_FLAGS="-L$(dirname "$CMAKE_TOOLCHAIN_FILE")/usr/lib/loongarch64-linux-gnu -static-libstdc++ -static-libgcc"
+      -DCMAKE_EXE_LINKER_FLAGS="-L$multiarch_lib -static-libstdc++ -static-libgcc"
     )
     cmake_args+=(-DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN_FILE")
   else
