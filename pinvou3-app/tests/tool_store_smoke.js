@@ -48,7 +48,7 @@ function injectSource() {
     const state=window.__TOOL_STORE_TEST__={
       // government-writing 初始为独立已装（MCP gongwen 未装）:覆盖 G3 混合态——
       // companion 卡动作须来自技能级 readiness(卸载),首个用例卸载后回到未装态。
-      installed:{},skills:{visualizer:false,'government-writing':true},connected:{feishu:false,wecom:false,dingtalk:false,tmeet:false,ima:false},
+      installed:{},skills:{visualizer:false,'government-writing':true},connected:{feishu:false,wecom:false,dingtalk:false,tmeet:false,ima:false},imaSkillsUpdate:true,
       oauthAuth:{},oauthRequests:{},finishOAuthInstall:null,calls:[],obsidianChecks:0,composerChanged:0,failVisibility:false,failOpenExternal:false,
       hidden:{plain:[],code:[]}
     };
@@ -68,6 +68,9 @@ function injectSource() {
       {id:'pptx',title:'PPT 生成',subtitle:'本地直出可编辑 PowerPoint',description:'本地直出可编辑 .pptx',icon:'Presentation',color:'bg-gradient-to-b from-orange-400 to-rose-500',installed:!!state.installed.pptx,user_uploaded:false},
       // tencent-docs 的 companion 预置技能(#300):统一包模型下包由该合成卡代表
       {id:'tencent-docs-skill',title:'腾讯文档 MCP',subtitle:'官方远程 MCP:在线文档/表格/幻灯片读写与协作',description:'接入腾讯文档官方远程 MCP',icon:'FileText',color:'bg-gradient-to-b from-blue-500 to-indigo-600',installed:!!state.installed['tencent-docs'],user_uploaded:false},
+      // ima-skills 被连接器认领(CONNECTOR_CLAIMED_SKILLS)不单独成卡;其
+      // update_available 挂在 ima 连接器卡上驱动「更新」注入(V5 认领模型)。
+      {id:'ima-skills',title:'ima 技能包',installed:!!state.skills['ima-skills'],user_uploaded:false,update_available:!!state.imaSkillsUpdate},
     ];
     function record(cmd,args){state.calls.push({cmd,args:args||{}});}
     // 复刻后端 to_package_id 归一（scope.rs + bundle.rs 条件认领）：剥 skill: 前缀后，
@@ -125,6 +128,7 @@ function injectSource() {
         }
         case 'install_marketplace_skill': state.skills[args.skillId]=true; return Promise.resolve(null);
         case 'uninstall_marketplace_skill': state.skills[args.skillId]=false; return Promise.resolve(null);
+        case 'update_marketplace_skill': if(args.skillId==='ima-skills')state.imaSkillsUpdate=false; return Promise.resolve(null);
         case 'detect_obsidian': state.obsidianChecks++; return Promise.resolve(state.obsidianChecks===1?{state:'no_vault'}:{state:'ok',vault_path:'/tmp/test-vault'});
         case 'ima_connect': state.connected.ima=true;state.skills['ima-skills']=true;state.lastImaConnect=args; return Promise.resolve({ok:true,connected:true});
         case 'ima_logout': state.connected.ima=false;state.skills['ima-skills']=false; return Promise.resolve({ok:true,connected:false});
@@ -149,6 +153,12 @@ function injectSource() {
                 {key:'IMA_CLIENT_ID',required:true,target:'credential',secret:true},
                 {key:'IMA_API_KEY',required:true,target:'credential',secret:true},
               ]})));
+          }
+          if(id==='ima-skills'){
+            // 认领技能仍是真实包：readiness 照常下发（无独立卡消费它），
+            // 与生产一致，不让批量取数落进未知包的拒绝分支。
+            const c=!!state.skills['ima-skills'];
+            return Promise.resolve(mk(c,true,null,c?[act('uninstall')]:[act('install')]));
           }
           if(id==='visualizer'){
             const c=!!state.skills.visualizer;
@@ -452,6 +462,31 @@ async function visibilityBox(page, cardText, modeLabel, click) {
     return state.connected.ima&&state.skills['ima-skills']&&state.lastImaConnect?.clientId==='ima-client-test'&&state.lastImaConnect?.apiKey==='ima-api-test'&&!generic;
   }));
 
+  // ima 认领技能的「更新」入口只由 updateAvailable 注入（后端 actions 不含
+  // update，见 TsActionBtn ima 注释）。回归：弹窗内更新成功后「更新」必须随
+  // 实时 updateAvailable 即时消失——旧表现快照滞留 true，「更新」幻影滞留到
+  // 重开弹窗，再点会对同版本重复走覆盖式更新（与详情弹窗按钮滞留同类）。
+  await page.evaluate(() => {
+    const heading=[...document.querySelectorAll('h3')].find(el => (el.textContent || '').trim()==='腾讯 ima');
+    if (heading) heading.click();
+  });
+  await sleep(220);
+  rec('ima 弹窗打开时列表与详情各有「更新」（updateAvailable 注入）',await page.evaluate(() => (
+    document.querySelectorAll('button[data-testid="tool-store-update"][data-tool-id="ima"]').length === 2
+  )));
+  await clickExact(page, '更新'); await sleep(220);
+  await clickExact(page, '更新'); await sleep(260);
+  // 轮询条件必须先等 busy 结束（busy 期间动作区只剩「...」，「更新」会暂时
+  // 消失）：以「断开」回到动作区且「更新」仍不在为准。
+  const imaUpdateGone=await page.waitForFunction(() => {
+    const actions=[...document.querySelectorAll('button[data-testid="tool-store-action"][data-tool-id="ima"]')];
+    return actions.some(b => (b.textContent || '').trim()==='断开')
+      && document.querySelectorAll('button[data-testid="tool-store-update"][data-tool-id="ima"]').length === 0;
+  }, { timeout: 8000 }).then(() => true).catch(() => false);
+  rec('ima 弹窗内更新完成后「更新」按钮即时消失',imaUpdateGone);
+  await dismiss(page);
+  await closeDetail(page,'腾讯 ima');
+
   await action(page,'Obsidian 知识库','安装','obsidian');
   rec('Obsidian 缺库时先展示引导',await page.evaluate(()=>document.body.innerText.includes('还没有笔记库')));
   await clickExact(page,'我已新建，重新检测'); await sleep(250); await dismiss(page);
@@ -601,6 +636,12 @@ async function visibilityBox(page, cardText, modeLabel, click) {
         qr_data_url: 'data:image/png;base64,AAAA',
       }));
       await sleep(150);
+      // 前置本身须验屏：下方按钮切换断言实际钉的是「connected 落在非空 flow
+      // 上」，running 相位也能绿；这里钉住二维码确实在屏，旅程保真才成立。
+      rec('WeCom 重入扫码相位且二维码在屏（连接完成回归前置）', await page.evaluate(() => {
+        const img = [...document.querySelectorAll('img')].find(i => (i.getAttribute('src') || '') === 'data:image/png;base64,AAAA');
+        return !!img && document.body.innerText.includes('用企业微信 App 扫一扫');
+      }));
     }
     if(id==='tmeet'){
       await page.evaluate(() => window.__emitTauri('tmeet:qr', {

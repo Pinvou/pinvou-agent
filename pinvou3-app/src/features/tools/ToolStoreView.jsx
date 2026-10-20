@@ -2156,21 +2156,28 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         return () => { document.body.style.overflow = 'unset'; };
       }, [selectedTool]);
 
-      // 详情弹窗的动作按钮必须吃实时连接态：弹窗持有的是点开时的卡对象快照，
-      // 连接/断开完成后 loadBackendState 只刷新列表数据源（bundleStates 等），
-      // 快照的 installed/actions 停留旧值——按钮滞留「连接」，而横幅按实时连接
-      // 态已显示「已连接」，要重开弹窗才恢复（用户实机报告）。按钮驱动的
-      // installed/actions 从列表实时卡覆盖（与列表卡同源同值）；其余展示字段
-      // 维持快照（生效名/说明的显式补拉见 doEditDisplaySave）；卡已不在列表
-      // （卸载后消失的自定义包/上传技能）时回退快照——对应操作路径已显式
-      // patch installed。
-      const selectedLiveTool = selectedTool
+      // 详情弹窗的动作按钮必须吃实时状态：弹窗持有的是点开时的卡对象快照，
+      // 连接/断开/更新完成后 loadBackendState 只刷新列表数据源（bundleStates 等），
+      // 快照停留旧值——按钮滞留「连接」，而横幅按实时连接态已显示「已连接」，
+      // 要重开弹窗才恢复（用户实机报告）。按钮驱动且会随操作流变化的字段从列表
+      // 实时卡覆盖（与列表卡同源同值）：installed/actions，以及 updateAvailable
+      // ——ima/组合卡的「更新」入口由它注入（后端 actions 不含 update），不覆盖则
+      // 弹窗内更新成功后「更新」幻影滞留，再点会对同版本重复走覆盖式更新。其余
+      // 展示字段维持快照（生效名/说明的显式补拉见 doEditDisplaySave）。查找要求
+      // backendId 非空：即将上线占位卡没有 backendId，按 undefined 匹配会撞上
+      // 第一张占位卡（今日各占位卡按钮字段恒等、渲染无差，仍不应依赖该巧合）。
+      // 卡已不在列表（卸载后消失的自定义包/上传技能/随包解散的组合卡）时回退
+      // 快照，渲染与修复前逐字节一致——卸载路径会 patch 快照 installed
+      // （handleAction/handleSkillAction），旧分支据其渲染；OAuth selectedToolPatch
+      // 与卸载 patch 在实时卡命中的主路径同样承重（authStatus 驱动「重新授权」
+      // 文案），并非仅供回退的死代码，勿当冗余清理。
+      const selectedLiveTool = selectedTool && selectedTool.backendId
         ? (tools.find(x => x.backendId === selectedTool.backendId)
           || skillCards.find(x => x.backendId === selectedTool.backendId))
         : null;
       const detailTool = selectedTool
         ? (selectedLiveTool
-          ? { ...selectedTool, installed: selectedLiveTool.installed, actions: selectedLiveTool.actions }
+          ? { ...selectedTool, installed: selectedLiveTool.installed, actions: selectedLiveTool.actions, updateAvailable: selectedLiveTool.updateAvailable }
           : selectedTool)
         : null;
       // Detail page "Connected" banner (five connectors, one shared visual shell): CLI connectors need the connection
