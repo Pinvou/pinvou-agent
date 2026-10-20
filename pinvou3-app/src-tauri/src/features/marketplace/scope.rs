@@ -92,15 +92,24 @@ pub struct DisabledBundlesFile {
     /// Package ids a CLI connector CONNECT explicitly opted in
     /// (feat/connector-connect-grants-enable): the connect gesture on the
     /// store card is itself consent, so the connector lands ENABLED in every
-    /// DenyAll scope instead of registered default-off. The set is consulted
-    /// ONLY by the uninitialized scope's DenyAll expansion
-    /// ([`resolve_scope_disabled_ids`]) — an initialized scope is governed by
+    /// DenyAll scope instead of registered default-off. Gating reads the set
+    /// through the uninitialized scope's DenyAll expansion
+    /// (`resolve_scope_disabled_ids`) — an initialized scope is governed by
     /// its stored list alone, where absence of a row already means enabled, so
-    /// a grant is vestigial there. A user's composer toggle-off removes the
-    /// grant ([`save_disabled_bundles_for`] — a stored row is a verdict that
-    /// outranks the connect default), and teardown
+    /// a grant is vestigial there; the only other reader is
+    /// `enable_packages_in_scope`'s not-applied filter (reporting, inside the
+    /// same uninitialized arm). The set is GLOBAL, not per scope: a grant
+    /// flips the connector on in every still-uninitialized scope at once, and
+    /// (disclosed asymmetry) a composer toggle-off in ONE scope removes it for
+    /// all of them — a later re-ON in that scope cannot restore it, only a
+    /// fresh connect or teardown+reconnect can. A user's composer toggle-off
+    /// removes the grant ([`save_disabled_bundles_for`] — a stored row is a
+    /// verdict that outranks the connect default), teardown
     /// ([`remove_bundle_from_disabled_scopes_exact`]) sweeps it with the rows
-    /// so a same-id reinstall starts from the connect flow's own re-grant.
+    /// so a same-id reinstall starts from the connect flow's own re-grant,
+    /// and the boot refresh ([`grant_connect_enable_refresh`]) never grants
+    /// over a stored verdict — only the connect gesture
+    /// ([`grant_connect_enable`]) may lift a row.
     #[serde(default)]
     pub connect_granted: Vec<String>,
     /// 未知键原样保留（前向兼容）。
@@ -1991,21 +2000,24 @@ pub(crate) fn refuse_owner_claimed_id(id: &str, folded: &str) -> Result<(), Stri
     ))
 }
 
-/// Deny-first consent registration for the CLI connector channels
-/// (`feishu`/`wecom`/`dingtalk`/`tmeet` `*_apply_skills` and the auth-gate
-/// refresh / startup backfill): when the connector is about to become
-/// visible (materialize its skill files), record its connect consent FIRST,
-/// so a refused write aborts before anything is exposed. The consent is an
-/// ENABLE grant (feat/connector-connect-grants-enable): the connect gesture
-/// is itself the opt-in, so the registration lands the connector ENABLED in
-/// every DenyAll scope ([`grant_connect_enable`]) instead of the former
-/// default-off rows. A hidden (`show == false`) connector needs no
-/// registration. The known-bundle skip ignores the connect-time `Builtin`
-/// record (written before the gate ever runs), so the FIRST visibility always
-/// registers; once the connector's full companion layout is materialized on
-/// disk it counts as known (see `consent_gate_bundle_already_known`),
-/// preserving the user's recorded verdict — including across the startup
-/// auth-gate refresh.
+/// Deny-first consent registration for the CONNECT gesture
+/// (`feishu`/`wecom`/`dingtalk`/`tmeet` `*_apply_skills`): when the connector
+/// is about to become visible (materialize its skill files), record its
+/// connect consent FIRST, so a refused write aborts before anything is
+/// exposed. The consent is an ENABLE grant
+/// (feat/connector-connect-grants-enable): the connect gesture is itself the
+/// opt-in, so the registration lands the connector ENABLED in every DenyAll
+/// scope ([`grant_connect_enable`]) instead of the former default-off rows.
+/// Returns whether THIS call put the grant in place (`Ok(true)`) — the caller
+/// uses it to compensate with [`revoke_connect_enable`] when the skill
+/// materialization after the grant fails, so a failed connect cannot leave
+/// the connector computed-ON behind a failure card. A hidden
+/// (`show == false`) connector needs no registration. The known-bundle skip
+/// ignores the connect-time `Builtin` record (written before the gate ever
+/// runs), so the FIRST visibility always registers; once the connector's full
+/// companion layout is materialized on disk it counts as known (see
+/// `consent_gate_bundle_already_known`), preserving the user's recorded
+/// verdict — including across the startup auth-gate refresh.
 ///
 /// Re-shows after a hide/disconnect: the CLI connectors' hide and logout
 /// paths run no teardown, so the sync ledger entry survives and a re-show
@@ -2015,14 +2027,45 @@ pub(crate) fn refuse_owner_claimed_id(id: &str, folded: &str) -> Result<(), Stri
 /// Re-registration happens after a ledger-clearing teardown: an ima logout
 /// (`uninstall_and_strip_scope`), or a pack uninstall, which also withdraws
 /// the materialized companion dirs and sweeps the connect grant. Because the
-/// gate's materialized
-/// known-clause additionally requires the ledger trace, a
+/// gate's materialized known-clause additionally requires the ledger trace, a
 /// gated show materializing IN FLIGHT across such a teardown — the dirs
 /// re-land after the strip — re-registers through its post-materialization
 /// grant instead of vouching for the cleared consent.
-pub(crate) fn deny_first_register_connector(connector_id: &str, show: bool) -> Result<(), String> {
+///
+/// This is the GESTURE surface: the user just connected, so lifting a stale
+/// stored row is the connect overriding an old verdict with a fresh one. The
+/// boot-time counterpart that must never touch verdicts is
+/// [`deny_first_register_connector_refresh`].
+pub(crate) fn deny_first_register_connector(
+    connector_id: &str,
+    show: bool,
+) -> Result<bool, String> {
+    deny_first_register_connector_inner(connector_id, show, false)
+}
+
+/// The STARTUP counterpart of [`deny_first_register_connector`] — same
+/// deny-first boundary for the auth-gate refresh / startup backfill, but its
+/// consent write is the LEDGER-GATED, VERDICT-RESPECTING grant
+/// ([`grant_connect_enable_refresh`]): a boot refresh has no user gesture
+/// behind it, so it never lifts a stored row (a stored row is a user verdict
+/// — the composer toggle-off or a legacy-migrated explicit disable) and only
+/// backfills pairs nothing ever consented. See the review BLOCKER: routing
+/// the boot refresh through the gesture variant silently flipped both
+/// cohorts ON.
+pub(crate) fn deny_first_register_connector_refresh(
+    connector_id: &str,
+    show: bool,
+) -> Result<bool, String> {
+    deny_first_register_connector_inner(connector_id, show, true)
+}
+
+fn deny_first_register_connector_inner(
+    connector_id: &str,
+    show: bool,
+    ledger_gated: bool,
+) -> Result<bool, String> {
     if !show {
-        return Ok(());
+        return Ok(false);
     }
     let package_id = to_package_id(connector_id);
     // Owner-claim divergence refusal — the connector twin
@@ -2044,24 +2087,38 @@ pub(crate) fn deny_first_register_connector(connector_id: &str, show: bool) -> R
     // return early. Both call sites (apply_skills_command, the auth-gate
     // refresh/backfill) propagate the Err before any skill materializes.
     if package_id != connector_id {
-        return refuse_owner_claimed_id(connector_id, &package_id);
+        return refuse_owner_claimed_id(connector_id, &package_id).map(|_| false);
     }
     // LEDGER-GATED (the startup-refresh boundary): the grant
     // itself skips only *known* bundles; a ledgered-but-uninstalled pair
     // (the user toggle-off removed the row, the ledger entry survives) would
     // re-grant through the ungated connect grant at every boot and silently
     // revert the toggle-off. A ledger entry for any scope = a consent write
-    // already ran for this
-    // pack; only a ledger-clearing teardown (an ima logout, a pack
-    // uninstall — the CLI connectors' hide/logout runs none) re-arms a
-    // later show.
+    // already ran for this pack; only a ledger-clearing teardown (an ima
+    // logout, a pack uninstall — the CLI connectors' hide/logout runs none)
+    // re-arms a later show. The no-ledger verdict cohorts (legacy-migrated
+    // rows, toggle-off after a failed connect persist) are the
+    // refresh variant's verdict guard's job.
     let ledger = load_disabled_bundles_file().install_default_synced;
     if ledger_has_any_mode(&ledger, &package_id) {
-        return Ok(());
+        return Ok(false);
     }
     // The grant itself skips known bundles (their consent is recorded), so a
-    // re-show never overrides a user verdict.
-    grant_connect_enable(connector_id)
+    // re-show never overrides a user verdict. The connect tail carries the
+    // shared connect-consent marker on persist failures (the realistic
+    // #515 flock refusal happens here): the store cards key on it to show
+    // the fail-closed "reconnect to retry" copy instead of the generic
+    // "try again". Owner-claim refusals propagate unwrapped — they are
+    // policy refusals, not persist failures.
+    if ledger_gated {
+        grant_connect_enable_refresh(connector_id).map(|_| true)
+    } else {
+        grant_connect_enable(connector_id)
+            .map(|_| true)
+            .map_err(|e| {
+                connect_consent_sync_failure_message(&format!("{connector_id} connected"), &e)
+            })
+    }
 }
 
 /// One constructor for the sync-ledger key wire format
@@ -2174,28 +2231,17 @@ pub(crate) fn consent_gate_bundle_already_known(package_id: &str) -> bool {
 /// persisted"). Callers surface the error after their own success commit; a
 /// retry of the sync is safe (idempotent membership push).
 pub fn sync_deny_all_scopes_after_install(raw_id: &str) -> Result<(), String> {
-    sync_deny_all_scopes_inner(raw_id, false)
+    sync_deny_all_scopes_inner(raw_id)
 }
 
-/// The STARTUP connector-gate-refresh variant (round-31 BLOCKER, review
-/// #455): LEDGER-GATED — pushes rows only for `(scope, pack)` pairs that no
-/// sync ever recorded. For a connected connector the refresh's `show` is
-/// always true (the legacy disable flags are read-only), so a plain
-/// membership push here re-added the row a user enable had removed at every
-/// boot, silently reverting explicit enables. The ledger entry survives the
-/// user's later enable (which removes the stored row, not this fact);
-/// ledger absence is exactly the never-synced cohort the backfill targets.
-/// The install/connect variant stays deliberately un-gated: connecting is a
-/// user action with fresh-install semantics ("等同新装") and re-arms the
-/// default-off — both variants record the ledger pair **even when the scope is
-/// still uninitialized** (round-32 MAJOR 1, review #455), so this refresh
-/// never undoes what either of them wrote, nor an enable made between a
-/// pre-initialization sync and the scope's materialization.
-pub fn sync_deny_all_scopes_refresh(raw_id: &str) -> Result<(), String> {
-    sync_deny_all_scopes_inner(raw_id, true)
-}
+// The former LEDGER-GATED startup-refresh variant of this sync
+// (`sync_deny_all_scopes_refresh`, the round-31 BLOCKER fix of review #455)
+// lost its last production caller when the connector connect flow flipped to
+// the enable grant: the boot refresh is now the verdict-respecting
+// `grant_connect_enable_refresh`, and the `ledger_gated` arm went with it.
+// Reintroduce a gated arm only with a caller.
 
-fn sync_deny_all_scopes_inner(raw_id: &str, ledger_gated: bool) -> Result<(), String> {
+fn sync_deny_all_scopes_inner(raw_id: &str) -> Result<(), String> {
     let package_id = to_package_id(raw_id);
     // Builtin plugins can never be disabled (docs/builtin-toolset-contract.md
     // §3.3): exempt them here, or a direct-IPC reinstall of an already
@@ -2224,22 +2270,19 @@ fn sync_deny_all_scopes_inner(raw_id: &str, ledger_gated: bool) -> Result<(), St
             let ledger_key = ledger_key(key, &package_id);
             if !file.initialized.contains(key) {
                 // The uninitialized arm must still
-                // record the pair. A connect/install sync on a fresh home runs
+                // record the pair. An install sync on a fresh home runs
                 // exactly here — plain is uninitialized by design until the
                 // user's first composer/welcome/scene write materializes it — so
                 // skipping the ledger made the user's FIRST enable observably
-                // identical to "never synced": the next boot's refresh backfilled
-                // the default-off row over it. Recording (without pushing any
+                // identical to "never synced" (the round-32 MAJOR 1 shape).
+                // Recording (without pushing any
                 // row — the uninitialized scope is covered by the on-the-fly
-                // expansion) marks the pair as seen, so the post-materialization
-                // refresh leaves the enable in place.
+                // expansion) marks the pair as seen for every ledger-gated
+                // consumer.
                 if !file.install_default_synced.contains(&ledger_key) {
                     file.install_default_synced.push(ledger_key);
                     changed = true;
                 }
-                continue;
-            }
-            if ledger_gated && file.install_default_synced.contains(&ledger_key) {
                 continue;
             }
             let ids = file.scopes.entry(key.to_string()).or_default();
@@ -2268,29 +2311,33 @@ fn sync_deny_all_scopes_inner(raw_id: &str, ledger_gated: bool) -> Result<(), St
 }
 
 /// CONNECT grant (feat/connector-connect-grants-enable): record a CLI
-/// connector connect as the user's opt-IN — the mirror image of
-/// [`sync_deny_all_scopes_inner`]'s install registration. The connect gesture
+/// connector connect as the user's opt-IN — the mirror image of the install
+/// registration `sync_deny_all_scopes_inner` performs. The connect gesture
 /// (authorizing on the store card) is itself consent, so the connector lands
 /// ENABLED in every DenyAll scope: stale default-off rows and their markers
-/// are removed, the id is recorded in `connect_granted` (the uninitialized
-/// scope's DenyAll expansion subtracts it), and the sync ledger pair is
-/// written so the startup refresh never re-denies. The persist is
+/// are lifted (a fresh connect overrides an old verdict with a new one —
+/// this variant is reachable ONLY through the gesture path), the id is
+/// recorded in `connect_granted` (the uninitialized scope's DenyAll
+/// expansion subtracts it), and the sync ledger pair is written so the
+/// startup refresh never re-denies. The persist is
 /// **fail-visible** for the same reason the install sync's is: the deny-first
 /// caller aborts the connect before materializing anything, so a swallowed
 /// save would strand the connector disabled with the card claiming success.
-/// Pack/MCP INSTALLS keep defaulting off — only the connector connect flow
-/// (and its startup backfill twin below) calls this. A retry is safe
-/// (idempotent membership writes).
+/// Pack/MCP INSTALLS keep defaulting off — the connector connect flow (and,
+/// on the CLI surface, the equivalent connect command) is this function's
+/// only caller. A retry is safe (idempotent membership writes).
 pub fn grant_connect_enable(raw_id: &str) -> Result<(), String> {
     grant_connect_enable_inner(raw_id, false)
 }
 
-/// The STARTUP connector-gate-refresh variant, LEDGER-GATED exactly like
-/// [`sync_deny_all_scopes_refresh`]: only pairs no sync ever recorded are
-/// granted. For a ledgered pair the stored list is the sole truth — a user
-/// toggle-off after the connect lives in a stored row that a refresh must
-/// never lift (the grant would remove it; the ledger gate is what prevents
-/// that).
+/// The STARTUP connector-gate-refresh variant: LEDGER-GATED and
+/// VERDICT-RESPECTING. Only pairs no consent write ever recorded are granted,
+/// and a stored row in ANY scope — a composer toggle-off, or a
+/// legacy-migrated explicit disable — blocks the grant entirely: a boot
+/// refresh has no user gesture behind it, so it must never lift a verdict
+/// (the ledger gate alone cannot see the no-ledger verdict cohorts). The
+/// gesture counterpart that may lift stale rows on a fresh connect is
+/// [`grant_connect_enable`].
 pub fn grant_connect_enable_refresh(raw_id: &str) -> Result<(), String> {
     grant_connect_enable_inner(raw_id, true)
 }
@@ -2310,6 +2357,26 @@ fn grant_connect_enable_inner(raw_id: &str, ledger_gated: bool) -> Result<(), St
     }
     super::file_lock::with_file_lock(&disabled_bundles_path(), || {
         let mut file = load_disabled_bundles_file_locked();
+        // BOOT REFRESH NEVER OVERRIDES A VERDICT: a stored row in any scope
+        // is a user verdict — a composer toggle-off, or a legacy-migrated
+        // explicit disable. Default-off registrations are always written
+        // together with their ledger pair in one atomic save, and the
+        // composer's first materializing write seeds verdict rows too, so a
+        // row that exists without a ledger entry is verdict-shaped, and the
+        // row the ledger gate cannot see is exactly this cohort. Without
+        // this guard the row removal below silently flipped both cohorts ON
+        // at the next boot (the reproduced review BLOCKER). The refresh
+        // therefore leaves every verdict in place; only the user's own
+        // connect gesture (the un-gated variant) may lift a row, and only a
+        // teardown re-arms the grant.
+        if ledger_gated
+            && file
+                .scopes
+                .values()
+                .any(|ids| ids.iter().any(|id| id == &package_id))
+        {
+            return Ok(());
+        }
         let mut changed = false;
         for mode in SessionMode::ALL {
             if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
@@ -2339,9 +2406,15 @@ fn grant_connect_enable_inner(raw_id: &str, ledger_gated: bool) -> Result<(), St
             if ledger_gated && file.install_default_synced.contains(&ledger_key) {
                 continue;
             }
-            // A stale stored row (an old default-off registration, or a
-            // hand-edited state) must not outlive the connect: the row and its
-            // marker go, the grant lands.
+            // A stored row must not outlive the connect GESTURE: the row and
+            // its marker go, the grant lands. Reachable shapes: hand-edited
+            // state, or a verdict from a previous ledger era (a legacy
+            // migration row — default-off registrations always land together
+            // with their ledger pair in one atomic save, so a consent-era
+            // registration row can never get here: the ledger gate above
+            // already returned). The gesture is a fresh consent, so it
+            // overrides; the boot refresh (ledger_gated) never reaches this
+            // arm at all — its guard above returns before any write.
             if let Some(ids) = file.scopes.get_mut(key) {
                 let before = ids.len();
                 ids.retain(|id| id != &package_id);
@@ -2365,6 +2438,44 @@ fn grant_connect_enable_inner(raw_id: &str, ledger_gated: bool) -> Result<(), St
                 file.install_default_synced.push(ledger_key);
                 changed = true;
             }
+        }
+        if changed {
+            try_save_disabled_bundles_file(&file)?;
+        }
+        Ok(())
+    })
+}
+
+/// Compensating revoke for a connect whose grant landed but whose skill
+/// materialization then failed: without it the connector would be computed
+/// ON in every DenyAll expansion (the grant stands, the stale rows were
+/// already lifted, the CLI binary drops out of `cli_deny_rules`) while the
+/// card reports failure — the review's fail-open abort window, where main
+/// kept the default-off rows and stayed fully denied. Removes the
+/// `connect_granted` entry and the sync ledger pairs; stored rows are NOT
+/// reconstructed (the grant lifted them and they cannot be rebuilt) — with
+/// grant and ledger gone the uninitialized DenyAll expansion denies the id
+/// again, so the state returns to fail-closed "never consented" and the next
+/// connect retries the full flow. Callers invoke this best-effort next to
+/// the materialize failure and log a revoke failure instead of masking the
+/// original error.
+pub fn revoke_connect_enable(raw_id: &str) -> Result<(), String> {
+    let package_id = to_package_id(raw_id);
+    super::file_lock::with_file_lock(&disabled_bundles_path(), || {
+        let mut file = load_disabled_bundles_file_locked();
+        let mut changed = false;
+        let before_grant = file.connect_granted.len();
+        file.connect_granted.retain(|id| id != &package_id);
+        changed |= file.connect_granted.len() != before_grant;
+        for mode in SessionMode::ALL {
+            if mode.pack_default_policy() != PackDefaultPolicy::DenyAll {
+                continue;
+            }
+            let ledger_key = ledger_key(mode.as_str(), &package_id);
+            let before_ledger = file.install_default_synced.len();
+            file.install_default_synced
+                .retain(|entry| entry != &ledger_key);
+            changed |= file.install_default_synced.len() != before_ledger;
         }
         if changed {
             try_save_disabled_bundles_file(&file)?;
@@ -2621,9 +2732,12 @@ pub fn enable_packages_in_scope(
                 // likely not installed/known yet, so there is nothing to persist).
                 // A batch whose ids are all connect-granted (already on) lands
                 // here too but reports nothing and warns about nothing: the
-                // opt-in is already material, there is just no row delta.
+                // opt-in is already material, there is just no row delta. The
+                // warn names only the NOT-applied ids: in a mixed batch the
+                // granted member did match (it is already on), so warning
+                // about the whole request would be false.
                 log::warn!(
-                    "[scope] enable_packages_in_scope({key}): none of {ids:?} matched the DenyAll expansion; no opt-in materialized"
+                    "[scope] enable_packages_in_scope({key}): none of {not_applied_ids:?} matched the DenyAll expansion; no opt-in materialized"
                 );
             }
             not_applied = not_applied_ids;
@@ -3517,6 +3631,141 @@ mod tests {
             assert!(
                 load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
                 "the ledger-gated refresh must not re-grant over a user verdict"
+            );
+        });
+    }
+
+    /// Review BLOCKER regression pin: the BOOT refresh must never grant over
+    /// (let alone delete) a stored verdict row, in ANY scope. The ledger gate
+    /// cannot see the no-ledger verdict cohorts — a legacy-migrated explicit
+    /// disable, and a composer toggle-off written after a failed connect
+    /// persist (the composer writer never records the ledger) — so the
+    /// verdict guard inside `grant_connect_enable_refresh` is the only thing
+    /// standing between those cohorts and a silent ON flip at the next boot.
+    /// Deleting the guard, or swapping the refresh variant for the gesture
+    /// variant, must fail here. The gesture variant itself remains allowed to
+    /// lift a stale row: a fresh connect is a fresh consent.
+    #[test]
+    fn connect_refresh_never_overrides_a_stored_verdict() {
+        use crate::platform::test_support::with_temp_home;
+
+        with_temp_home("pinvou3-scope-refresh-respects-verdicts", || {
+            // (a) Initialized plain with an explicit off row, NO ledger entry:
+            // the exact post-failed-connect-persist shape.
+            save_disabled_bundles_for(ConnectorScope::Plain, &["feishu".to_string()]).unwrap();
+            assert!(
+                !load_disabled_bundles_file()
+                    .install_default_synced
+                    .iter()
+                    .any(|entry| entry.ends_with(":feishu")),
+                "fixture: the composer write records no ledger entry"
+            );
+            grant_connect_enable_refresh("feishu").unwrap();
+            let file = load_disabled_bundles_file();
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
+                "the boot refresh must not touch a stored verdict row: {file:?}"
+            );
+            assert!(
+                file.connect_granted.is_empty() && file.install_default_synced.is_empty(),
+                "the refresh must write nothing at all over a verdict: {file:?}"
+            );
+
+            // (b) Cross-scope consequence: the row lives in plain and code
+            // was never initialized — the blocked grant means no ON state may
+            // leak into any scope behind the plain verdict, so code's
+            // computed expansion still denies the connector.
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Code).contains(&"feishu".to_string()),
+                "the blocked grant must leave the uninitialized scope's expansion denying the id"
+            );
+
+            // (c) The gesture counterpart: the user's own connect MAY lift the
+            // stale row — a fresh consent overrides an old verdict.
+            grant_connect_enable("feishu").unwrap();
+            let file = load_disabled_bundles_file();
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
+                "the connect gesture lifts the verdict row: {file:?}"
+            );
+            assert!(
+                file.connect_granted.iter().any(|id| id == "feishu"),
+                "the gesture records the grant: {file:?}"
+            );
+        });
+    }
+
+    /// The LEGACY-MIGRATED cohort of the same BLOCKER: an upgraded home whose
+    /// `disabled_connectors.json` disabled the connector pre-consent-gate.
+    /// Migration lands an unmarked row with no ledger entry, the connector
+    /// probes as shown (the legacy composer-off never writes the read-only
+    /// `<id>_disabled` flag the gate probes), so the first boot's refresh
+    /// used to delete the row and silently re-enable the connector. The
+    /// verdict guard must keep the legacy disable in place.
+    #[test]
+    fn legacy_migrated_disable_survives_the_boot_refresh() {
+        use crate::platform::test_support::with_temp_home;
+
+        with_temp_home("pinvou3-scope-legacy-verdict", || {
+            let home = crate::platform::paths::pinvou3_home();
+            std::fs::create_dir_all(&home).unwrap();
+            std::fs::write(home.join("disabled_connectors.json"), r#"["feishu"]"#).unwrap();
+
+            // First read runs the migration: the row lands, no ledger entry.
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
+                "fixture: the migration carried the legacy disable over"
+            );
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.install_default_synced.is_empty(),
+                "fixture: the migrated row carries no ledger entry: {file:?}"
+            );
+
+            // The boot refresh must leave the legacy verdict alone.
+            grant_connect_enable_refresh("feishu").unwrap();
+            let file = load_disabled_bundles_file();
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
+                "the legacy explicit disable must survive the boot refresh: {file:?}"
+            );
+            assert!(
+                file.connect_granted.is_empty() && file.install_default_synced.is_empty(),
+                "the refresh must write nothing over the legacy verdict: {file:?}"
+            );
+        });
+    }
+
+    /// The grant-aware reporting leg of the enable path: a connect-granted id
+    /// is already ON, so requesting it must not be reported `not_applied` (and
+    /// must persist nothing), while a genuinely unknown id in the same batch
+    /// still is. Dropping the grant conjunct from the not-applied filter — or
+    /// regressing the warn to name the whole request — fails here.
+    #[test]
+    fn enable_reporting_treats_a_connect_granted_id_as_applied() {
+        use crate::features::marketplace::scope::enable_packages_in_scope;
+        use crate::platform::test_support::with_temp_home;
+
+        with_temp_home("pinvou3-scope-enable-grant-reporting", || {
+            grant_connect_enable("feishu").unwrap();
+            let outcome = enable_packages_in_scope(
+                ConnectorScope::Plain,
+                &["feishu".to_string(), "never-heard-of-it".to_string()],
+            )
+            .unwrap();
+            assert_eq!(
+                outcome.not_applied,
+                vec!["never-heard-of-it".to_string()],
+                "only the unknown id may be reported not applied: {outcome:?}"
+            );
+            assert!(
+                !outcome.state_changed,
+                "an all-granted batch persists nothing — the opt-in is already material"
+            );
+            let file = load_disabled_bundles_file();
+            assert!(
+                file.scopes.get("plain").is_none() && !file.initialized.contains("plain"),
+                "the reporting path must not materialize the scope as a side effect: {file:?}"
             );
         });
     }
@@ -4659,17 +4908,19 @@ mod tests {
             // vouches for the connector.
             plant_installed_record("feishu", BundleSource::Builtin);
 
-            deny_first_register_connector("feishu", false)
+            let granted = deny_first_register_connector("feishu", false)
                 .expect("a hidden connector needs no registration");
+            assert!(!granted, "a hidden connector grants nothing");
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["seed-bundle".to_string()],
                 "a hidden connector must not be registered"
             );
 
-            deny_first_register_connector("feishu", true).expect(
+            let granted = deny_first_register_connector("feishu", true).expect(
                 "a visible connector registers deny-first even with the connect-time Builtin record present",
             );
+            assert!(granted, "the visible connect must own its grant");
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["seed-bundle".to_string()],
@@ -4809,8 +5060,9 @@ mod tests {
             crate::features::marketplace::store::BundleStore::new()
                 .remove("evil")
                 .unwrap();
-            deny_first_register_connector("feishu", true)
+            let granted = deny_first_register_connector("feishu", true)
                 .expect("with no claimant installed the connector id self-maps and the gate runs");
+            assert!(granted, "the unclaimed connect must own its grant");
             assert_eq!(
                 load_disabled_bundles_for(ConnectorScope::Code),
                 vec!["seed-bundle".to_string()],
