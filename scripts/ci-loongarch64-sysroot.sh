@@ -319,16 +319,17 @@ prune_sysroot() {
   # neither tree carries /lib/<multiarch>/ (the cmake try-compile surfaced
   # exactly that; pinvou3#1993 CI round 2). Strip the directory so the
   # script references bare file names: ld resolves them through its search
-  # path, and BOTH link contexts carry -L<sysroot>/usr/lib/$MULTIARCH_DIR
-  # (cmake links pass it in the toolchain file; cargo links get it from
-  # rustc's -L) — while the `=` prefix would bake in whichever --sysroot
-  # the driver applies, which DIFFERS between the two (gcc applies its own
-  # bundled sysroot when rustc passes none). The named files all live in
-  # the multiarch dir, so the bare form resolves to the deepin files
-  # everywhere.
+  # path, and each link context carries -L<sysroot>/usr/lib/$MULTIARCH_DIR
+  # where it must resolve this tree (cmake links pass it in the toolchain
+  # file; cargo links via pkg-config-driven -sys crates — the stub
+  # materialization below spells out the full contract) — while the `=`
+  # prefix would bake in whichever --sysroot the driver applies, which
+  # DIFFERS between the two (gcc applies its own bundled sysroot when rustc
+  # passes none). The named files all live in the multiarch dir, so the
+  # bare form resolves to the deepin files everywhere.
   # Idempotent: the rewritten bare names no longer match the " /lib/"
-  # pattern. The multiarch -L is materialized by the toolchain file (cmake)
-  # and rustc's -L (cargo) — a link context without it is unsupported here.
+  # pattern. A link context without the multiarch -L is unsupported here —
+  # the stub materialization below spells out which context carries it.
   local ld_script
   # Newline-delimited reads (grep -l output form): sysroot paths are built by
   # this script and cannot contain newlines. A `-print0 | read -d ''` pairing
@@ -353,15 +354,20 @@ prune_sysroot() {
   # just the four known shapes: the design is bare filenames resolved via
   # -L, so no absolute form is legal here. Known forms are rewritten above;
   # anything else (a no-space `GROUP(/lib/...`, an `=`-prefixed form, a new
-  # directory) must break HERE with the file named, not as "cannot find
-  # ..." at link time. (The rewritten bare names do not match.)
+  # directory, an `INPUT(/usr/lib/.../libfoo.a` archive member, a `++`
+  # library name) must break HERE with the file named, not as "cannot find
+  # ..." at link time. (The rewritten bare names do not match.) The class
+  # covers `.so`/`.a`/`.o` reference suffixes and `+` (libstdc++), matching
+  # the archive-keep scan above; -I keeps it text-only like the rewrite
+  # loop, so a binary named *.so cannot trip it, and only path-like tokens
+  # match — `/* ... */` comments and `https://` URLs stay legal.
   local offender
   # -I: the net's subject is TEXT linker scripts (the same set the rewrite
   # pipeline above processes). Without it a binary .so whose bytes happen to
   # contain an absolute /…so path (embedded RUNPATH strings etc.) would be
   # named as an offender and abort a healthy prune.
   offender="$(find "$root/usr/lib/$MULTIARCH_DIR" -maxdepth 1 -type f -name '*.so' -print0 2>/dev/null \
-    | xargs -0 -r grep -lIE '/[A-Za-z0-9._/-]+\.so[0-9.]*' 2>/dev/null || true)"
+    | xargs -0 -r grep -lIE '/[A-Za-z0-9._+/-]+\.(so|a|o)[0-9.]*' 2>/dev/null || true)"
   [ -z "$offender" ] || fail "ld script(s) still carry absolute paths after the bare-filename rewrite: $offender"
 
   # Sysroot-shape fixup so every resolution form of the rewritten scripts
@@ -431,13 +437,16 @@ prune_sysroot() {
   # sysroot that absolute target escapes to the BUILD HOST's root — lld dies
   # with "unable to find library -ldbus-1" (CI round 13). Rebase each onto
   # the link's own depth (usr/lib/<multiarch> is three levels under the
-  # root) targeting the sysroot's usr-merged /lib view (lib -> usr/lib);
-  # fail closed listing any whose runtime file the sysroot genuinely lacks.
+  # root, and a link in a subdirectory that survives the prune — cmake/,
+  # pkgconfig/, plugin dirs — needs one more "../" per level below it; a
+  # hardcoded climb would silently dangle those) targeting the sysroot's
+  # usr-merged /lib view (lib -> usr/lib); fail closed listing any whose
+  # runtime file the sysroot genuinely lacks.
   # This runs BEFORE the stub materialization below so an upstream-shipped
   # dangling lib*.so symlink is reported here instead of being written
   # through by the `printf >` (which would follow the link at its
   # host-absolute target).
-  local missing="" link target_abs
+  local missing="" link target_abs sub stripped depth prefix i
   while IFS= read -r -d '' link; do
     target_abs="$(readlink "$link")" || continue
     case "$target_abs" in
@@ -448,7 +457,17 @@ prune_sysroot() {
       missing="$missing $target_abs"
       continue
     fi
-    ln -sfn "../../../${target_abs#/}" "$link"
+    sub="${link#"$root/usr/lib/$MULTIARCH_DIR"}"
+    sub="${sub#/}"
+    stripped="${sub//\//}"
+    depth=$((3 + ${#sub} - ${#stripped}))
+    prefix=""
+    i=0
+    while [ "$i" -lt "$depth" ]; do
+      prefix="../$prefix"
+      i=$((i + 1))
+    done
+    ln -sfn "${prefix}${target_abs#/}" "$link"
   done < <(find "$root/usr/lib/$MULTIARCH_DIR" -type l -print0)
   [ -z "$missing" ] \
     || fail "dev symlinks point at runtime files the sysroot lacks:$missing"
@@ -519,11 +538,15 @@ verify_sysroot() {
     done
     # Same net for the SHARED-LIBRARY members: every rewritten script names
     # bare .so/.so.N files that the -L search path must resolve in this dir
-    # (libc.so -> libc.so.6 and the loader, libm.so -> libm.so.6 and
-    # libmvec.so.1). A truncated restore that kept the script but dropped a
-    # runtime object would otherwise pass setup and die far later as
-    # "cannot find -lc" / "unable to find library".
+    # (libc.so -> libc.so.6, libm.so -> libm.so.6 and libmvec.so.1). A
+    # truncated restore that kept the script but dropped a runtime object
+    # would otherwise pass setup and die far later as "cannot find -lc" /
+    # "unable to find library". Exception: the program loader — depending
+    # on the libc6 build it lives OUTSIDE the multiarch dir
+    # (lib64/<multiarch>/ on non-usrmerged layouts), and its resolution is
+    # asserted by the /lib64 view check below.
     for ref_name in $(grep -hoE '[A-Za-z0-9._+-]+\.so[0-9.]*' "$script" 2>/dev/null | sort -u); do
+      case "$ref_name" in ld-linux-*) continue ;; esac
       [ -e "$root/usr/lib/$MULTIARCH_DIR/$ref_name" ] \
         || fail "linker script ${script#"$root"/} references $ref_name but the sysroot lacks it (prune regression or truncated restore?)"
     done
@@ -533,11 +556,16 @@ verify_sysroot() {
   # (libssl.so -> libssl.so.3, the prune-rebased absolute targets, ...).
   # The prune's dangling-target check runs only on the fresh-extraction
   # path, so on the reuse path this is the only guard that every symlink
-  # still resolves inside the sysroot.
+  # still resolves inside the sysroot — a truncated restore (runtime file
+  # dropped, dev symlink kept) fails HERE with both names, instead of as an
+  # imprecise "unable to find library -l..." at link time. An absolute
+  # target is impossible after the prune's rebase (it would resolve against
+  # the BUILD HOST's root); the walk is recursive, so links in
+  # subdirectories that survive the prune are covered too.
   local dev_link
   while IFS= read -r -d '' dev_link; do
     [ -e "$dev_link" ] \
-      || fail "dev symlink ${dev_link#"$root"/} does not resolve inside the sysroot (truncated restore or prune regression?)"
+      || fail "dev symlink ${dev_link#"$root"/} (target $(readlink "$dev_link")) does not resolve inside the sysroot (truncated restore or prune regression?)"
   done < <(find "$root/usr/lib/$MULTIARCH_DIR" -type l -print0 2>/dev/null)
   # The GROUP dev stubs prune_sysroot materializes (and the runtime stub
   # objects behind them) are what every cmake -lpthread/-ldl resolution

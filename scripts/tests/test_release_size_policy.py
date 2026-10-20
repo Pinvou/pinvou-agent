@@ -99,29 +99,29 @@ class ReleaseSizePolicyTests(unittest.TestCase):
         self.assertNotIn("CARGO_PROFILE_RELEASE_LTO", job_code)
         self.assertNotIn("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", job_code)
         # RUSTFLAGS must stay remap-only in this job — in EVERY spelling a
-        # cargo/rustc invocation can see: a `RUSTFLAGS:` job/step env key, a
-        # shell-style `export RUSTFLAGS=` / `RUSTFLAGS=` line inside any run
-        # block, AND the target-scoped `CARGO_TARGET_*_RUSTFLAGS` spelling
-        # (cargo's precedence makes it silently shadow the job-level value
-        # — the exact pre-#737 vector). --remap-path-prefix is rustc-side
-        # and keeps build-machine paths out of the artifact; linker
-        # selection is NOT a RUSTFLAGS concern (cargo routes through the
-        # generated rust-lld wrapper — pinned by
-        # test_release_loongarch64_policy), so any -C link-arg here would
-        # either fail (the pinned toolchain ships bfd only) or bypass the
-        # audited wrapper. The spellings are collected together so a
-        # run-block export cannot slip past the job-env-only equality check.
+        # cargo/rustc invocation can see: a `RUSTFLAGS:` job/step env key AND
+        # a shell-style `export RUSTFLAGS=` / `RUSTFLAGS=` line inside any
+        # run block. --remap-path-prefix is rustc-side and keeps
+        # build-machine paths out of the artifact; linker selection is NOT a
+        # RUSTFLAGS concern (cargo routes through the generated rust-lld
+        # wrapper — pinned by test_release_loongarch64_policy), so any
+        # -C link-arg here would either fail (the pinned toolchain ships
+        # bfd only) or bypass the audited wrapper. The three spellings are
+        # collected together so a run-block export or a target-scoped
+        # CARGO_TARGET_*_RUSTFLAGS env key cannot slip past the job-env-only
+        # equality check.
         rustflags = [
             line.strip()
             for line in job_code.splitlines()
             if line.strip().startswith("RUSTFLAGS:")
             or re.match(r"^(export\s+)?RUSTFLAGS=", line.strip())
-            or re.match(r"^(export\s+)?CARGO_TARGET_[A-Z0-9_]*RUSTFLAGS=", line.strip())
+            or re.match(r"CARGO_TARGET_[A-Z0-9_]*RUSTFLAGS[:=]", line.strip())
         ]
         self.assertEqual(
             rustflags,
             ['RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/"'],
-            "the loong64 job must keep RUSTFLAGS remap-only (job/step env and run-block exports alike)",
+            "the loong64 job must keep RUSTFLAGS remap-only (job/step env, "
+            "run-block exports, and CARGO_TARGET_*_RUSTFLAGS keys alike)",
         )
 
     def test_linux_jobs_repack_deb_as_xz_before_sha256(self):

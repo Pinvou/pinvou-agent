@@ -190,16 +190,28 @@ if [ -d /usr/lib/llvm-18/lib ]; then
 fi
 
 # ---- rust target --------------------------------------------------------------
-# Run from the repo root: rustup resolves the active toolchain per directory
-# (pinvou-knowledge and src-tauri float on "stable" via their
-# rust-toolchain.toml), and the cargo builds below run from this CWD too.
+# rustup resolves the toolchain per CWD and its ancestors only: the tauri
+# stage below runs inside src-tauri/, whose rust-toolchain.toml floats on
+# "stable", while every REPO_ROOT-cwd invocation (the target add here, the
+# link smoke, the knowledge build via --manifest-path) resolves the rustup
+# DEFAULT — a runner-image property nothing in this job controls, and the
+# release job has no "align the toolchain" step (pr-check does). Align the
+# default to the toolchain the rust-toolchain.toml pins first, so all
+# stages share one rustc and the std lands on the toolchain that actually
+# builds.
+pinned_toolchain="$(cd "$REPO_ROOT/src-tauri" && rustup show active-toolchain | awk '{print $1}')"
+(cd "$REPO_ROOT" && rustup default "$pinned_toolchain") \
+  || fail "cannot align the rustup default to the rust-toolchain.toml toolchain ($pinned_toolchain)"
 (cd "$REPO_ROOT" && rustup target add "$TRIPLE") \
   || fail "cannot install the rust $TRIPLE std for the active toolchain"
 
 assert_loongarch_elf() {
   local elf="$1" machine
   [ -f "$elf" ] || fail "expected loong64 artifact missing: $elf"
-  machine="$(LC_ALL=C readelf -h "$elf" 2>/dev/null | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')"
+  # `|| true`: a corrupt/non-ELF artifact makes readelf fail, and under
+  # pipefail that would abort BEFORE the fail() below — a silent exit
+  # instead of the precise message.
+  machine="$(LC_ALL=C readelf -h "$elf" 2>/dev/null | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p' || true)"
   [ "$machine" = "LoongArch" ] \
     || fail "$elf is not a LoongArch64 ELF (readelf Machine: '${machine:-<none>}')"
 }
@@ -213,8 +225,10 @@ assert_loongarch_elf() {
 # startfiles and the libc.so linker script from the toolchain's bundled
 # glibc 2.38 (the same tree every cargo link resolves -lc from — no
 # --sysroot is passed; the deepin tree serves the cmake/bindgen/pkg-config
-# side) and libgcc from the toolchain. Runs from the repo root so rustup
-# resolves the same pinned toolchain the cargo builds below use.
+# side) and libgcc from the toolchain. Runs from the repo root on the
+# aligned default toolchain (rust target step above) — the same rustc the
+# knowledge build uses; only the job's rustc-side --remap-path-prefix
+# RUSTFLAGS differs from a cargo link, and remap is not a link input.
 smoke_dir="$(mktemp -d)"
 printf 'fn main() {}\n' > "$smoke_dir/hello.rs"
 (cd "$REPO_ROOT" && rustc --target "$TRIPLE" \

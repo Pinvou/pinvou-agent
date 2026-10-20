@@ -212,10 +212,13 @@ if [ "$cross_mode" -eq 1 ]; then
   fi
 fi
 if ! cmake "${cmake_args[@]}"; then
-  # Fail closed WITH the ground truth: cmake 3.31 buries try-compile stderr
-  # (compiler-id/ABI/FindThreads probes) in CMakeConfigureLog.yaml — without
-  # this dump a cross-build failure is undiagnosable from CI logs alone
-  # (pinvou3#1993 CI round 8: FindThreads failed with no visible cause).
+  # Fail closed WITH the ground truth: recent cmake (3.26+) buries try-compile
+  # stderr (compiler-id/ABI/FindThreads probes) in CMakeConfigureLog.yaml,
+  # older releases in CMakeError.log/CMakeOutput.log — dump whichever
+  # generation produced, so a cross-build failure stays diagnosable from CI
+  # logs alone (pinvou3#1993 CI round 8: FindThreads failed with no visible
+  # cause). tail -n 120: enough for the failing probe block without
+  # flooding the log.
   for probe_log in \
     "$build_dir/CMakeFiles/CMakeConfigureLog.yaml" \
     "$build_dir/CMakeFiles/CMakeError.log" \
