@@ -8,9 +8,11 @@
 //! `pinvou3_lib` building blocks the feature itself uses:
 //! - the connector switch → the plain-scope `load_disabled_bundles_for` /
 //!   `save_disabled_bundles_for` pair the GUI toggle uses, and
-//!   `grant_connect_enable` after a connect (feat/connector-connect-grants-enable:
-//!   the connect gesture is itself the consent, so the connector lands
-//!   ENABLED in every DenyAll scope — CLI and GUI agree). The unified scope state
+//!   `deny_first_register_connector` after a connect
+//!   (feat/connector-connect-grants-enable: the connect gesture is itself the
+//!   consent, so the connector lands ENABLED in every DenyAll scope — CLI and
+//!   GUI agree, behind the SAME gates: owner-claim refusal + ledger gate;
+//!   round-2 review — calling the bare grant skipped both). The unified scope state
 //!   (`disabled_bundles.json`) is the switch on BOTH surfaces: the GUI's
 //!   toggle is `set_disabled_connectors` → `apply_disabled_connectors_for`,
 //!   and `features/connectors/skill_gate.rs` records that the marker's
@@ -1756,24 +1758,26 @@ turn {pronoun} off in the tools list: {error}",
     })
 }
 
-/// The consent-failure wrapping for the CONNECT-channel consent write shared
-/// by `apply_skills`' show branch and `finish_connect_side_effects`: the
-/// connect gesture is itself the consent (feat/connector-connect-grants-enable),
-/// so the write records an ENABLE grant (`grant_connect_enable`) — the same
-/// gesture surface the GUI's connect / apply-skills flow drives
-/// (`deny_first_register_connector`). A failed write FAILS the command
-/// (fail-closed, the app's deny-first contract): the connector never goes
-/// live unconsented, and with grant and rows alike absent the DenyAll
-/// expansion keeps it off in new sessions until a reconnect retries.
-/// `subject` / `pronoun` / `id` follow the same convention as the install
-/// wrapper above.
-fn sync_consent_after_connect(id: &str, subject: &str, pronoun: &str) -> Result<(), CliError> {
-    pinvou3_lib::features::marketplace::grant_connect_enable(id).map_err(|error| {
-        CliError::failed(format!(
-            "{subject}, but persisting the connect-enabled consent failed: \
-new sessions will keep {pronoun} disabled — reconnect to retry: {error}"
-        ))
-    })
+/// The CONNECT-channel consent write shared by `apply_skills`' show branch
+/// and `finish_connect_side_effects`: the connect gesture is itself the
+/// consent (feat/connector-connect-grants-enable), routed through the SAME
+/// gated entry the GUI drives — `deny_first_register_connector`, whose
+/// owner-claim refusal and ledger gate apply here too (round-2 review
+/// BLOCKER: calling the bare `grant_connect_enable` skipped both, so a CLI
+/// connect could grant a foreign claimant's pack and a reconnect or an
+/// `apply-skills` could silently revert an explicit disable). `Ok(false)` =
+/// the gates declined to write (a recorded consent or a hidden connector) —
+/// nothing to do, the standing verdict stays. A failed write FAILS the
+/// command (fail-closed, the app's deny-first contract): the connector never
+/// goes live unconsented, and with grant and rows alike absent the DenyAll
+/// expansion keeps it off in new sessions until a reconnect retries. The
+/// error message is the scope layer's single-source copy (persist failures
+/// already carry `CONNECT_CONSENT_SYNC_FAILURE_MARKER`; refusals carry their
+/// policy reason), so no CLI-side rewording can desynchronize the surfaces.
+fn sync_consent_after_connect(id: &str) -> Result<(), CliError> {
+    pinvou3_lib::features::marketplace::deny_first_register_connector(id, true)
+        .map(|_granted| ())
+        .map_err(CliError::failed)
 }
 
 /// Mirror of `<connector>_apply_skills` (`ConnectorGate::apply_skills_command`
@@ -1808,7 +1812,7 @@ fn apply_skills(kind: ConnectorKind, output: OutputMode) -> Result<CliOutcome, C
     let connected = probe.unwrap_or(false);
     let visible = gui_skill_gate_shows_with(kind, connected);
     if visible {
-        sync_consent_after_connect(spec.id, &format!("{} applied", spec.id), "it")?;
+        sync_consent_after_connect(spec.id)?;
     } else {
         hide_connector_skills(kind)?;
     }
@@ -3201,16 +3205,20 @@ fn wait_or_kill(child: &mut std::process::Child, phase: &str) -> Result<(), CliE
 /// must not stop at the first:
 /// - the bundle-store mirror write (`bundle_store_on_connected`) — both
 ///   surfaces' connect flows call it inline;
-/// - the connect consent write (`grant_connect_enable`,
-///   feat/connector-connect-grants-enable). The GUI runs it through the
+/// - the connect consent write (feat/connector-connect-grants-enable). The
+///   GUI runs it through the
 ///   `*_apply_skills` command the frontend invokes right after `connected`
 ///   fires (`ToolStoreView.jsx` calls `cfg.commands.applySkills` on the
 ///   connect-completion handler), whose `show` branch records the connect
 ///   ENABLE grant (`skill_gate.rs::apply_skills_command` →
-///   `deny_first_register_connector`, fail-closed). The connect gesture is
+///   `deny_first_register_connector`, fail-closed). The CLI drives the SAME
+///   gated entry here (round-2 review: the bare grant skipped the
+///   owner-claim refusal and the ledger gate). The connect gesture is
 ///   itself the consent, so a freshly connected connector lands ENABLED in
 ///   every DenyAll scope on BOTH surfaces (a stale default-off row is a
-///   previous verdict the fresh gesture overrides). The CLI's former
+///   previous verdict the fresh gesture overrides; a LEDGER-backed
+///   toggle-off stays — the ledger gate preserves it, so reconnecting
+///   cannot revert an explicit disable on either surface). The CLI's former
 ///   install-semantics write here (`sync_deny_all_scopes_after_install`)
 ///   diverged from that twice over: a fresh CLI connection stayed OFF in
 ///   code sessions where a GUI connect had it ON, and the CLI-written
@@ -3222,7 +3230,11 @@ fn finish_connect_side_effects(spec: &VendorSpec) -> Result<(), CliError> {
     // feat/connector-connect-grants-enable): the desktop connect flow ends
     // in the `<id>_apply_skills` follow-up, whose `apply_skills_command`
     // (features/connectors/skill_gate.rs) records the connect ENABLE grant
-    // (`deny_first_register_connector` → `grant_connect_enable`) —
+    // through `deny_first_register_connector` — the exact gated entry this
+    // CLI write now drives too (round-2 review BLOCKER fix: same
+    // owner-claim refusal, same ledger gate, so a claimant state refuses
+    // here like on the GUI and a reconnect can never revert a ledger-backed
+    // disable) —
     // 「连接动作本身就是同意：连接成功即授予启用」— so a freshly connected
     // connector lands ENABLED in every DenyAll scope (stale default-off
     // rows lifted, `connect_granted` + the sync-ledger pairs written so the
@@ -3232,7 +3244,7 @@ fn finish_connect_side_effects(spec: &VendorSpec) -> Result<(), CliError> {
     // instead of reporting a connection whose consent never landed — the
     // scope layer logs nothing on write failure, so the error carries the
     // reason.
-    sync_consent_after_connect(spec.id, &format!("{} connected", spec.id), "it")?;
+    sync_consent_after_connect(spec.id)?;
     Ok(())
 }
 
