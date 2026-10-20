@@ -81,9 +81,11 @@ impl ConnectorGate {
                     // already lifted the stale rows and flipped every DenyAll
                     // expansion to ON — left standing behind this failure the
                     // connector would be live while the card reports failure.
-                    // Revoke grant + ledger so the state returns to
-                    // fail-closed "never consented" and a retry reruns the
-                    // full connect; best-effort, the apply error stays the
+                    // Revoke grant + ledger and restore the lifted rows so
+                    // the state returns to fail-closed "never consented"
+                    // (the revoke re-adds the markered rows in initialized
+                    // scopes — round-2 review) and a retry reruns the full
+                    // connect; best-effort, the apply error stays the
                     // surfaced one.
                     if granted_here {
                         if let Err(revoke_err) =
@@ -108,16 +110,37 @@ impl ConnectorGate {
                 // deny-first gate above, because the consent write can block on
                 // the cross-process flock (#515), and a frozen peer must not
                 // hang a Tokio worker.
-                crate::features::marketplace::grant_connect_enable(self.id).map_err(|e| {
-                    log::warn!(
-                        "[{}] persisting the connect-enabled consent state failed: {e}",
-                        self.id
-                    );
-                    crate::features::marketplace::scope::connect_consent_sync_failure_message(
-                        &format!("{} connected", self.id),
-                        &e,
-                    )
-                })?;
+                crate::features::marketplace::grant_connect_enable(self.id)
+                    .inspect_err(|_| {
+                        // Round-2 review m2: if this leg fails after the
+                        // deny-first grant landed, grant + lifted rows would
+                        // outlive the failure while the card claims "nothing
+                        // was changed" — revoke (which now restores the
+                        // lifted rows) so the copy is true again. When
+                        // deny-first did not grant (a re-show over a recorded
+                        // consent) nothing of this call's is at risk and the
+                        // standing consent must not be stripped.
+                        if granted_here {
+                            if let Err(revoke_err) =
+                                crate::features::marketplace::revoke_connect_enable(self.id)
+                            {
+                                log::warn!(
+                                    "[{}] revoking the connect grant after the belt persist failure failed: {revoke_err}",
+                                    self.id
+                                );
+                            }
+                        }
+                    })
+                    .map_err(|e| {
+                        log::warn!(
+                            "[{}] persisting the connect-enabled consent state failed: {e}",
+                            self.id
+                        );
+                        crate::features::marketplace::scope::connect_consent_sync_failure_message(
+                            &format!("{} connected", self.id),
+                            &e,
+                        )
+                    })?;
             }
             Ok(show)
         })
@@ -170,8 +193,8 @@ impl ConnectorGate {
                 // Same M4 compensation as the connect body: a backfill grant
                 // that outlives a failed materialization would leave the
                 // connector ON behind a failed boot refresh; with grant and
-                // ledger revoked the next boot retries from "never
-                // consented".
+                // ledger revoked and the lifted rows restored the next boot
+                // retries from "never consented".
                 if granted_here {
                     if let Err(revoke_err) =
                         crate::features::marketplace::revoke_connect_enable(self.id)
@@ -206,17 +229,34 @@ impl ConnectorGate {
             // caller surfaces them only via a frontend console.warn — the
             // failure is additionally marked on the startup timeline where it
             // is observable.
-            crate::features::marketplace::grant_connect_enable_refresh(self.id).map_err(|e| {
-                crate::platform::startup::mark_with_detail(
-                    "rust",
-                    "connector_consent_sync:failed",
-                    &format!("{}: {e}", self.id),
-                );
-                format!(
-                    "{}技能门控刷新后的连接启用授权落盘失败: {e}",
-                    self.display_name
-                )
-            })?;
+            crate::features::marketplace::grant_connect_enable_refresh(self.id)
+                .inspect_err(|_| {
+                    // Same round-2 m2 compensation as the connect body: a
+                    // tail-leg failure must not leave the backfill grant (or
+                    // — nothing of this call's, when deny-first already
+                    // granted) standing behind a failed refresh.
+                    if granted_here {
+                        if let Err(revoke_err) =
+                            crate::features::marketplace::revoke_connect_enable(self.id)
+                        {
+                            log::warn!(
+                                "[{}] revoking the connect grant after the refresh tail persist failure failed: {revoke_err}",
+                                self.id
+                            );
+                        }
+                    }
+                })
+                .map_err(|e| {
+                    crate::platform::startup::mark_with_detail(
+                        "rust",
+                        "connector_consent_sync:failed",
+                        &format!("{}: {e}", self.id),
+                    );
+                    format!(
+                        "{}技能门控刷新后的连接启用授权落盘失败: {e}",
+                        self.display_name
+                    )
+                })?;
         }
         Ok(show)
     }
@@ -674,6 +714,98 @@ mod tests {
                         .iter()
                         .any(|entry| entry.as_str().is_some_and(|s| s.ends_with(":feishu"))),
                 "the revoked connect grant must leave neither grant nor ledger: {raw}"
+            );
+        });
+    }
+
+    /// Round-2 review M1: the gesture grant lifts stored rows in EVERY
+    /// initialized DenyAll scope, and an initialized scope's stored list is
+    /// its sole truth — so a connect whose materialization then failed used
+    /// to leave the connector computed-ON by row-absence behind the failure
+    /// card, with the next boot refresh silently completing the enable (both
+    /// reproduced). The revoke must REBUILD the registered-default-off shape
+    /// — row + marker back in every initialized DenyAll scope — so the
+    /// failure end-state is fail-closed on both scope kinds and the restored
+    /// row re-arms the verdict guard against the boot backfill.
+    #[test]
+    fn revoke_restores_the_lifted_rows_in_initialized_scopes() {
+        use crate::features::marketplace::{ConnectorScope, load_disabled_bundles_for};
+
+        crate::platform::test_support::with_temp_home("pinvou3-skillgate-revoke-restore", || {
+            // Initialized plain scope holding an off-row, no ledger, no
+            // grant: the no-ledger verdict cohorts (a legacy-migrated
+            // disable, or a toggle-off after a failed connect persist — the
+            // exact state the failure card's "reconnect to retry" steers
+            // into).
+            let store = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::write(
+                &store,
+                r#"{"scopes":{"plain":["feishu"]},"initialized":["plain"],"plain_defaults_migrated":true}"#,
+            )
+            .unwrap();
+
+            let gate = Box::leak(Box::new(ConnectorGate {
+                id: "feishu",
+                disabled_filename: "feishu_disabled",
+                display_name: "Feishu",
+                ready_probe: || true,
+                apply_bundle_skills: |_| {
+                    Err(std::io::Error::other("injected materialization failure"))
+                },
+            }));
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let err = rt.block_on(gate.apply_skills_command()).unwrap_err();
+            assert!(
+                err.contains("injected materialization failure"),
+                "the connect must surface the materialization failure: {err}"
+            );
+            let raw: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+            assert_eq!(
+                raw["scopes"]["plain"],
+                serde_json::json!(["feishu"]),
+                "the revoke must restore the lifted row in the initialized scope: {raw}"
+            );
+            assert!(
+                raw["default_off_scopes"]["plain"]
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().any(|id| id == "feishu")),
+                "the revoke must restore the registration marker: {raw}"
+            );
+            assert!(
+                raw["connect_granted"]
+                    .as_array()
+                    .is_none_or(|ids| ids.iter().all(|id| id != "feishu"))
+                    && !raw["install_default_synced"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|entry| entry.as_str().is_some_and(|s| s.ends_with(":feishu"))),
+                "the revoke must still remove the grant and the ledger: {raw}"
+            );
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
+                "the initialized scope must compute OFF again after the revoke"
+            );
+
+            // The restored row is verdict-shaped: the boot refresh must not
+            // complete the enable the failed connect started.
+            let boot = connected_gate("feishu");
+            boot.refresh_step().unwrap();
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
+                "the boot refresh must not complete the enable over the restored verdict"
+            );
+            let raw: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+            assert!(
+                raw["connect_granted"]
+                    .as_array()
+                    .is_none_or(|ids| ids.iter().all(|id| id != "feishu")),
+                "the boot refresh must not grant over the restored verdict: {raw}"
             );
         });
     }
