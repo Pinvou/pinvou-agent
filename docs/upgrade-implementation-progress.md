@@ -22,7 +22,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T09 | In progress | Bounded package inspection, immutable intake/recovery and current-trust Package/evidence observation; authenticated final-installer and exact helper/launcher/helperArtifact structure queries and three-language admin; formal admission, quarantine, native publisher authentication and platform qualification remain pending. |
 | T10 | Not completed | Approved supply-chain policies and bounded security exceptions; complete T08/T09 composition remains pending. |
 | T11 | In progress | Protected multi-platform drafts, reviewed content freezing and cancellation of assembled declarations with complete unchanged draft children; package qualification and Release/Target lifecycle approval/publication remain pending. |
-| T12 | In progress | Original stable-facts identity, exact profile matching and immutable forward-policy intersection; protected Registry/version/approval and production qualification remain pending |
+| T12 | In progress | Reviewed stable-facts matching and forward-policy primitives plus protected immutable candidate history, preparation, independent review and original-key recovery with three-language administration; formal Registry publication, capability admission and cleanup permissions remain pending |
 | T13 | Not completed | Supported floor, prerequisite paths and historical bridge approvals. |
 | T14 | In progress | Protected configuration drafts with actual UI/API/recovery; qualified parents, publication, scheduling and first-baseline activation remain pending. |
 | T15 | Not completed | Approved automatic rollout scheduling, quality guards and controlled completion. |
@@ -13832,3 +13832,44 @@ T31 is now in progress. Totals are five implemented, nineteen in progress,
 twenty-two not completed and one explicitly deferred deployment task. Product
 0.10.13 and normative version 1.0 remain unchanged. Downloads retain no total or
 cumulative duration or retry-count cap.
+
+## T12 immutable candidate management (2026-10-20)
+
+Service commit `015496ee69a9f1e30d9e79ecd6523ae2edc4ed5f` is committed with
+DCO and pushed on `codex/t12-registry-approval`. Its 70 changed files provide
+the complete scoped candidate save, history, difference, immutable preparation,
+independent review and original-request recovery workflow, including English,
+Simplified Chinese and Japanese administration. Candidate declarations remain
+distinct from formally admitted Registry and platform capability evidence.
+
+Native source authentication covers original candidate/preparation identity,
+highest review and recovery witnesses, complete relevant history, permanent
+accepted-stale refusals and original-key results. Current grants, session and MFA
+checks remain independent. Bounded capacity accounts for actual JSONB review and
+response framing; browser recovery preserves exact pending input through response
+loss and stale asynchronous work. Native browser-test Jobs join their full
+process trees.
+
+Independent full and incremental reviews passed after repairing all findings.
+The final repair authenticates the audit MAC chain once per actual transaction
+and verifies every appended stored row and head. Native reuse checks the actual
+database isolation setting. Registry-enabled review selects Repeatable Read at
+BEGIN; other T05 actions retain their existing transaction path. A deterministic
+one-microsecond negative fixture replaces a two-clock precision assumption.
+
+Actual PostgreSQL acceptance covers capacity, permissions, source integrity,
+concurrency, lease recovery and lost COMMIT acknowledgements. Final affected
+snapshot/refusal tests, legacy management regression, HTTPS routes and six Chrome
+cases in each of three languages passed with no skips. The final default Go run
+passed 937 top-level and 2,085 subtests; its opt-in skips remain separate from
+the actual integration evidence. Final Go tests, vet and the server build passed.
+The unchanged admin build, module verification and pinned-contract check retain
+their earlier passes from this same task; their inputs were verified unchanged.
+Formatting and whitespace checks passed. The frozen tree,
+70 owned files and 117 protected SQL/contract/dependency inputs were verified.
+
+Formal Registry publication, evidenced capability admission, helper cleanup
+permissions and production qualification remain pending. T12 and the overall
+task counts remain unchanged. Product 0.10.13 and normative version 1.0 remain
+unchanged. Downloads retain no total/cumulative duration or retry-count cap;
+the 32 MiB limit applies only to the internal atomic business metadata batch.
