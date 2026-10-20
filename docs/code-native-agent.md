@@ -209,7 +209,9 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
 > `~/.pinvou3/disabled_bundles.json`（`features/marketplace/scope.rs`：包 id × 模式
 > 禁用集 + `hidden_scopes` 可见性轴，读到旧双文件即迁移不删；曾有的 `skill_scope.rs`
 > re-export 别名层已删除，调用方直接使用 `scope` 模块）。开关粒度从"连接器 id"变为"包 id"（含技能/CLI）。
-> 本节其余机制（DenyAll 安全默认、初始化语义、组合目录联动）仍准确；现行完整
+> 本节其余机制（DenyAll 安全默认——已连接的 CLI 连接器经 `connect_granted`
+> 从现算扩集减除、boot 回填永不越过 stored 行；初始化语义、组合目录联动）仍
+> 准确；现行完整
 > 形态以 `docs/capability-governance.md` 为准。下文保留双文件描述作历史语义参考。
 
 - 连接器禁用列表按会话模式 scope 分开持久化（`disabled_connectors.json` 存
@@ -250,11 +252,9 @@ bridge 的 chat 状态机绑定单一 activeSession，代码页与主聊天并�
   影响；predicate 未注入时行为与注入前一致。
 
 ### 8.5 受限项目规则注入（AGENTS.md）
-- 底座仍枚举 `PROJECT_CONTEXT_FILES`，但 pinvou3 安装的 static prompt-composer
-  override 使底座把上下文视为 embedder 所有（自动扫描返回空，workspace context
-  pack 也随 `!static_composer_installed` 与 `project_context_pack_enabled = false`
-  双保险关闭）；为满足审阅建议③a，在 app 侧
-  （`Pinvou3Bridge::code_session_project_rules`）按安全边界补齐。
+- 底座 C5 fork 已砍空 `PROJECT_CONTEXT_FILES`（不再自动扫描 AGENTS.md），
+  `project_context_pack_enabled` 在 pinvou3 显式关闭；为满足审阅建议③a，
+  在 app 侧（`Pinvou3Bridge::code_session_project_rules`）按安全边界补齐。
 - **注入范围**：仅对**绑定了项目目录的原生代码会话**（execution root resolver
   命中且 `is_code_session`，双门控）注入 `AGENTS.md`。覆盖项目根逐级向上到
   用户家目录为止（家目录本身不入链，`~/AGENTS.md` 不注入，避免泄露桌面/用户
