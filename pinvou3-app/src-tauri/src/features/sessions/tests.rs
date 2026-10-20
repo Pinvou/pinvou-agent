@@ -3105,6 +3105,123 @@ fn set_title_updates_metadata() {
     assert_eq!(loaded.metadata.title, "改个名字");
 }
 
+/// The engine spawn path must record the provider route it actually resolved
+/// onto the session record. The foundation create path stamps the engine
+/// default ("deepseek") into every new record; a session bound to a
+/// vendor-kimi saved model ("k3" on the Kimi Coding Plan, whose resolved
+/// route the bridge pins to "moonshot" in
+/// coding_plan_vendor_routes_reasoning_without_model_name_heuristics) must
+/// read back as the canonical ("moonshot", Some("moonshot")) pair after the
+/// spawn-time stamp, survive a store reopen, and the stamp must fail soft —
+/// an unstampable session errors instead of panicking or touching any record
+/// (the spawn caller logs and continues, never aborting the spawn).
+#[test]
+fn stamp_resolved_provider_records_vendor_route_over_engine_default() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("k3".into(), None, std::env::temp_dir())
+        .expect("create");
+    // Baseline poison being fixed: creation itself cannot know the route and
+    // carries the foundation default.
+    assert_eq!(s.metadata.model_provider, "deepseek");
+    assert_eq!(s.metadata.model_provider_id, None);
+
+    store
+        .stamp_resolved_provider(&s.metadata.id, "moonshot", Some("moonshot"))
+        .expect("stamp resolved provider");
+    let loaded = store.load(&s.metadata.id).expect("load");
+    assert_eq!(loaded.metadata.model_provider, "moonshot");
+    // Built-in routes stamp the kind as both fields — the exact pair the
+    // foundation's resolve_persisted_provider_identity re-derives a built-in
+    // route from, so a later shared-home resume resolves instead of failing
+    // closed on a mismatched pair.
+    assert_eq!(
+        loaded.metadata.model_provider_id.as_deref(),
+        Some("moonshot")
+    );
+
+    // The stamp is forensic data: it must survive an app restart.
+    let reopened = reopen_store(&store).expect("reopen");
+    let reloaded = reopened.load(&s.metadata.id).expect("reload");
+    assert_eq!(reloaded.metadata.model_provider, "moonshot");
+    assert_eq!(
+        reloaded.metadata.model_provider_id.as_deref(),
+        Some("moonshot")
+    );
+
+    // Fail-soft seam contract: an absent record is a clean Err — no panic,
+    // no write — so the spawn caller can log and continue.
+    let error = reopened
+        .stamp_resolved_provider("no-such-session", "moonshot", Some("moonshot"))
+        .expect_err("stamping an absent session must fail soft");
+    assert!(
+        error.to_string().contains("provider stamp"),
+        "error must name the stamp step: {error:#}"
+    );
+}
+
+/// A record created by the CodeWhale CLI in a shared home can carry a
+/// non-None exact provider id naming a different route than the one the GUI
+/// spawn resolved. The stamp must rewrite the whole pair coherently: keeping
+/// the stale id next to the new kind produces exactly the mismatch the
+/// foundation's fail-closed resolve_persisted_provider_identity rejects at
+/// the next resume (review #713 round 2: ("moonshot", Some("openai")) —
+/// "declares built-in kind 'moonshot' but exact provider id 'openai' names
+/// a different route") even with both providers configured, and
+/// persist_chat_engine_state preserves the metadata fields verbatim, so
+/// nothing downstream heals it.
+#[test]
+fn stamp_resolved_provider_rewrites_stale_exact_id_on_route_switch() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("k3".into(), None, std::env::temp_dir())
+        .expect("create");
+    // Seed the shared-home CLI shape: kind + exact id naming one route.
+    let mut seeded = store.load(&s.metadata.id).expect("load");
+    seeded.metadata.model_provider = "openai".to_string();
+    seeded.metadata.model_provider_id = Some("openai".to_string());
+    store
+        .manager
+        .save_session(&seeded)
+        .expect("seed CLI-shaped record");
+
+    // The GUI spawn resolves a different route (kimi vendor → moonshot).
+    store
+        .stamp_resolved_provider(&s.metadata.id, "moonshot", Some("moonshot"))
+        .expect("stamp resolved provider");
+    let loaded = store.load(&s.metadata.id).expect("load");
+    assert_eq!(loaded.metadata.model_provider, "moonshot");
+    // The stale "openai" id must not survive next to the "moonshot" kind.
+    assert_eq!(
+        loaded.metadata.model_provider_id.as_deref(),
+        Some("moonshot")
+    );
+}
+
+/// The Responses wire route resolves `cfg.provider` to the named-custom key
+/// ("pinvou_responses") — an exact provider key, not a canonical kind. The
+/// canonical pair the engine hands the stamp is the generic `custom` kind
+/// plus that key as the exact id, and the stamp must persist it verbatim:
+/// that is the shape the foundation resolver re-derives the
+/// `[providers.pinvou_responses]` table from (review #713 round 2).
+#[test]
+fn stamp_resolved_provider_persists_named_custom_responses_pair() {
+    let (store, _g) = isolated_store();
+    let s = store
+        .create_new("k3".into(), None, std::env::temp_dir())
+        .expect("create");
+
+    store
+        .stamp_resolved_provider(&s.metadata.id, "custom", Some("pinvou_responses"))
+        .expect("stamp resolved provider");
+    let loaded = store.load(&s.metadata.id).expect("load");
+    assert_eq!(loaded.metadata.model_provider, "custom");
+    assert_eq!(
+        loaded.metadata.model_provider_id.as_deref(),
+        Some("pinvou_responses")
+    );
+}
+
 #[test]
 fn touch_activity_updates_timestamp_without_mutating_conversation() {
     let (store, _g) = isolated_store();
