@@ -9,7 +9,8 @@
   const registry = root.__PINVOU_TAURI_BRIDGE_FEATURES__ = root.__PINVOU_TAURI_BRIDGE_FEATURES__ || {};
   registry["artifacts"] = function (context) {let pinvouSharedtauriArtifactsCache = null;
 function pinvouSharedtauriArtifacts() {
-  if (!pinvouSharedtauriArtifactsCache) pinvouSharedtauriArtifactsCache = window.PinvouBridgeShared.create("tauriArtifacts", { invoke, addSystemItem, bt, state, sessionStates, isDeliverable, basename, artifactInfo, dialogOpen, addAttachmentByPath });
+  if (!pinvouSharedtauriArtifactsCache) pinvouSharedtauriArtifactsCache = window.PinvouBridgeShared.create("tauriArtifacts", { invoke, addSystemItem, bt, state, sessionStates, isDeliverable, basename, artifactInfo, dialogOpen, addAttachmentByPath, // 桌面 WebView 与 Rust 同包发布:两个 deliverable 索引命令必然同时存在,无需协商
+  hasCommand() { return true; } });
   return pinvouSharedtauriArtifactsCache;
 }
 

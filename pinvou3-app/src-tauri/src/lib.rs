@@ -1676,6 +1676,7 @@ pub fn run() {
             commands::artifacts::read_artifact_text,
             commands::artifacts::write_artifact_text,
             commands::artifacts::list_deliverable_index,
+            commands::artifacts::list_deliverable_index_v2,
             commands::artifacts::artifact_info,
             commands::artifacts::render_artifact_visual,
             commands::artifacts::read_artifact_image_b64,

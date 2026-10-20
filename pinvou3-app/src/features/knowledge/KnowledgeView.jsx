@@ -534,7 +534,10 @@ const OutputLivePreview = ({ o, onOpen, outPreviewCache, runQueuedPreview, remem
       const refreshOutputs = useCallback(async () => {
         const res = bridge && bridge.artifacts.listDeliverableIndex
           ? await bridge.artifacts.listDeliverableIndex().catch(() => null)
-          : await invokeTauri('list_deliverable_index').catch(() => null);
+          // Fallback for a bridge without the facade: v2 carries this
+          // dist's expected {rows, skipped} shape (the facade owns the
+          // legacy-array negotiation for older desktops).
+          : await invokeTauri('list_deliverable_index_v2').catch(() => null);
         // Unmount cleanup already released the big table: an in-flight
         // request started before unmount must not write the index back into
         // the module-level cache once it resolves, or it would undo the

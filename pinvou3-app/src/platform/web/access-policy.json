@@ -66,6 +66,7 @@
     "kb_type_counts",
     "list_builtin_features",
     "list_deliverable_index",
+    "list_deliverable_index_v2",
     "list_marketplace_skills",
     "list_marketplace_tools",
     "list_models",

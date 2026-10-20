@@ -21,7 +21,7 @@ function loadShared() {
   return root.PinvouBridgeShared;
 }
 
-function artifactsCluster({ invoke, state }) {
+function artifactsCluster({ invoke, state, hasCommand }) {
   return loadShared().create('tauriArtifacts', {
     invoke,
     addSystemItem() {},
@@ -33,6 +33,7 @@ function artifactsCluster({ invoke, state }) {
     artifactInfo() { return Promise.resolve({ modified: '2026-10-19T00:00:00Z', size: 10 }); },
     dialogOpen: null,
     addAttachmentByPath() {},
+    hasCommand: hasCommand || (() => true),
   });
 }
 
@@ -52,9 +53,10 @@ test('a successful scan still merges disk and memory rows and preserves skipped'
   };
   const cluster = artifactsCluster({
     invoke(cmd, args) {
-      if (cmd === 'list_deliverable_index') {
+      if (cmd === 'list_deliverable_index_v2') {
         return Promise.resolve({ rows: [{ path: '/w/disk.pdf', mtime: 5 }], skipped: ['s-big'] });
       }
+      assert.equal(cmd, 'list_workspace_files');
       assert.equal(cmd, 'list_workspace_files');
       assert.equal(args.sessionId, 's1');
       return Promise.resolve(['/w/report.html']);
@@ -67,4 +69,52 @@ test('a successful scan still merges disk and memory rows and preserves skipped'
   const paths = Array.from(res.rows, (r) => String(r.path)).sort((a, b) => a.localeCompare(b));
   assert.deepEqual(paths, ['/w/disk.pdf', '/w/report.html']);
   assert.deepEqual(Array.from(res.skipped, String), ['s-big']);
+});
+
+// Round-9 review (mixed-version pairings): the web dist updates
+// independently of the installed desktop, so a dist that knows v2 can meet
+// a desktop whose advertised policy lacks it — the helper must then call
+// the legacy command and still merge its rows instead of degrading a bare
+// array to an empty index.
+test('a legacy array from an old desktop merges as rows, not an empty index', async () => {
+  const state = {
+    sessions: [{ id: 's1', title: 'One' }],
+    activeSessionId: 's1',
+    artifacts: [],
+  };
+  const commands = [];
+  const cluster = artifactsCluster({
+    hasCommand: () => false,
+    invoke(cmd) {
+      commands.push(cmd);
+      if (cmd === 'list_deliverable_index') {
+        return Promise.resolve([{ path: '/w/legacy.pdf', mtime: 5 }]);
+      }
+      return Promise.resolve([]);
+    },
+    state,
+  });
+  const res = await cluster.listDeliverableIndex();
+  assert.deepEqual(Array.from(commands), ['list_deliverable_index'],
+    'the legacy command is used when the desktop does not advertise v2');
+  assert.deepEqual(Array.from(res.rows, (r) => String(r.path)), ['/w/legacy.pdf']);
+  assert.deepEqual(Array.from(res.skipped, String), []);
+});
+
+// Defense in depth: even when the capability snapshot claims v2, an
+// unexpected legacy array answer must merge by rows (and carry no skip
+// disclosure) instead of rendering an empty index.
+test('an array answer on the v2 path still merges as rows (accept-both)', async () => {
+  const state = { sessions: [], activeSessionId: 's1', artifacts: [] };
+  const cluster = artifactsCluster({
+    hasCommand: () => true,
+    invoke(cmd) {
+      assert.equal(cmd, 'list_deliverable_index_v2');
+      return Promise.resolve([{ path: '/w/stale.pdf', mtime: 5 }]);
+    },
+    state,
+  });
+  const res = await cluster.listDeliverableIndex();
+  assert.deepEqual(Array.from(res.rows, (r) => String(r.path)), ['/w/stale.pdf']);
+  assert.deepEqual(Array.from(res.skipped, String), []);
 });

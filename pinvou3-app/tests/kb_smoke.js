@@ -80,6 +80,7 @@ function injectSource() {
         case 'get_active_persona': return Promise.resolve(null);
         // The command returns DeliverableIndex { rows, skipped }: the panel
         // renders rows and must surface skipped as a partial-result notice.
+        case 'list_deliverable_index_v2':
         case 'list_deliverable_index': return Promise.resolve({rows: OUTPUTS, skipped: []});
         // ---- kb_* ----
         case 'kb_scan_status': return Promise.resolve({running:false,phase:'done',scanned:1248});

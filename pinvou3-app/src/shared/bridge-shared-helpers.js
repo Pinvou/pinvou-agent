@@ -99,7 +99,9 @@
       personaPlaceholderTitles, sessionSwitchRequestToken, SHELL_TOOL_NAMES, shellPollState, DELIVERABLE_EXTS, monitorBaseline,
       monitorIntervalId, monitorPollInFlight, gpuUtilHistory, settingsWriteQueue, modelsLoadSeq, memoryOverviewSeq, personaPoolCache, personaSyncSeq,
       deletedPersonaIds, lastEquippedSid, mountedCollectionDraftTarget, mountedCollectionUpdate, activeVoiceInput, voiceOperations, VOICE_DEVICE_REQUEST_TIMEOUT_MS,
-      pe, sid, ensureSessionBufferLoaded, auxChatDispatch, candidateCardPatcher, pendingStreamNotifications, pendingAssistantText, pendingAssistantBlocks, itemIdSeq, currentStreamText, currentStreamId, toolMeta, flushQueued, doSendFor, reconcileRemoteTurn, reportSidecarReadFailure, historyRefreshTimer, historyRefreshPending, restoreSteeredWorkingSet, saveSteeredWorkingSet, artifactInfo, finalizeAssistantStreamBeforeReasoning, flushPendingTextBlock
+      pe, sid, ensureSessionBufferLoaded, auxChatDispatch, candidateCardPatcher, pendingStreamNotifications, pendingAssistantText, pendingAssistantBlocks, itemIdSeq, currentStreamText, currentStreamId, toolMeta, flushQueued, doSendFor, reconcileRemoteTurn, reportSidecarReadFailure, historyRefreshTimer, historyRefreshPending, restoreSteeredWorkingSet, saveSteeredWorkingSet, artifactInfo, finalizeAssistantStreamBeforeReasoning, flushPendingTextBlock,
+      // 跨版本能力协商谓词(round-9):web lane 传 canInvoke,桌面 lane 传恒真(同包发布);未传时按 v2 可用处理
+      hasCommand
     } = deps;
 
   // web+tauriMain 共享
@@ -4022,18 +4024,29 @@
   // artifactInfo 由两条 lane 传入各自实现——web 的签名多一个 sessionId 定位参数，
   // tauri 的实现忽略多余实参，故共享正文统一用双参调用形态）
   async function listDeliverableIndex() {
-    // The command returns DeliverableIndex { rows, skipped } (round-4
-    // review): rows are the listable deliverables, skipped names the
-    // session records the scan could not read — the partial-result signal
-    // must survive this merge, not be flattened back into rows only.
-    // A rejected invoke is the TOTAL-failure signal (sessions root
-    // unreadable, transport down) and must propagate to the caller: the
-    // Knowledge panel renders an error over its last successful table.
-    // Swallowing it into { rows: [], skipped: [] } made an unreadable root
-    // read as a clean empty index (round-7 review P2).
-    const raw = await invoke("list_deliverable_index");
-    const disk = raw && Array.isArray(raw.rows) ? raw.rows : [];
-    const skipped = raw && Array.isArray(raw.skipped) ? raw.skipped : [];
+    // Wire-shape compatibility (round-9 review): the rich
+    // DeliverableIndex { rows, skipped } lives on the separately negotiated
+    // list_deliverable_index_v2 (round-4 review), advertised to web
+    // clients through the desktop capability snapshot — the remote-control
+    // web dist is deployed independently of the installed desktop, so the
+    // unversioned command must keep its legacy bare-array contract for
+    // dists that predate v2. Lanes without a negotiated command set (the
+    // version-locked desktop webview) bind no hasCommand and read as
+    // v2-capable; the web lane passes its canInvoke so an older desktop is
+    // served the legacy command instead. A rejected invoke on v2 is the
+    // TOTAL-failure signal (sessions root unreadable, transport down) and
+    // must propagate to the caller: the Knowledge panel renders an error
+    // over its last successful table — swallowing it into
+    // { rows: [], skipped: [] } made an unreadable root read as a clean
+    // empty index (round-7 review P2). The accept-both normalization below
+    // keeps the merge correct even if the capability snapshot and the
+    // desktop disagree (the legacy-array side degrades skipped to []).
+    const wantsSkipped =
+      typeof hasCommand !== "function" || hasCommand("list_deliverable_index_v2");
+    const raw = await invoke(wantsSkipped ? "list_deliverable_index_v2" : "list_deliverable_index");
+    const legacyArray = Array.isArray(raw);
+    const disk = legacyArray ? raw : (raw && Array.isArray(raw.rows) ? raw.rows : []);
+    const skipped = legacyArray ? [] : (raw && Array.isArray(raw.skipped) ? raw.skipped : []);
     const byPath = {};
     disk.forEach(function (x) { if (x && x.path) byPath[x.path] = x; });
     const mem = currentMemoryArtifacts().filter(function (x) { return x.path && !byPath[x.path]; });
