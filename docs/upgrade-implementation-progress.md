@@ -5,8 +5,8 @@ Tasks are completed individually only after in-scope independent code review,
 repairs, applicable tests and commit/push. Contract completion is not production
 client, service, physical platform certification or rollout readiness.
 
-Current task totals: 47 tasks; five implemented, seventeen in progress and
-twenty-five not completed or deferred. Detailed chronological evidence follows
+Current task totals: 47 tasks; five implemented, eighteen in progress and
+twenty-four not completed or deferred. Detailed chronological evidence follows
 the current overview; a completed bounded batch does not complete its whole task.
 
 | Task | Status | Delivery / outstanding dependency |
@@ -28,7 +28,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T15 | Not completed | Approved automatic rollout scheduling, quality guards and controlled completion. |
 | T16 | Not completed | Explicit Stable-to-Beta/Internal atomic draft synchronization. |
 | T17 | In progress | Bounded original initial selection, protected logical workflow/initial installation, atomic handoff/live resume and private activation Session; qualified protected check/refresh composition remains pending |
-| T18 | Not completed | Approved HTTPS file-source management and current download-info issuance. |
+| T18 | In progress | Approved HTTPS file-source and destination-policy management is being developed in a separate worker; the production policy owner/admin and download-info issuance are not yet delivered. |
 | T19 | Not completed | Current qualification and three-purpose authorize/consume/cancel/status API composition over T44. |
 | T20 | In progress | Actual no-update/transaction and bounded Session/download/resume/activation acceptance, four HTTP batch routes, client request/ACK correlation and restricted task observation calculation; actual task acceptance, durable client queue and quality contribution remain pending |
 | T21 | In progress | Private sample/receipt persistence authenticates actual frozen SN sources and preserves original-stage history; contribution, aggregate evaluation and business composition remain pending |
@@ -39,11 +39,11 @@ the current overview; a completed bounded batch does not complete its whole task
 | T26 | In progress | Trusted-time/budget primitives; measured platform evidence and complete host composition remain pending |
 | T27 | In progress | Authenticated Root/public/candidate/Package/Check/Refresh/DownloadInfo/Release-renewal verification and fixed control POST; protected workflow and high-water/cache integration remain pending |
 | T28 | Not completed | Machine-wide preparation ownership and multi-user writer freezing. |
-| T29 | In progress | Reviewed restricted transfer/cache primitives, explicit retained Windows QA jobs and original production-job HTTPS-to-FullPack/native observation with exact byte custody; production host/source/continuation and protected staging composition remain pending. |
+| T29 | In progress | Reviewed restricted transfer/cache primitives, retained Windows QA jobs and original production-job HTTPS-to-FullPack/native observation with exact final-installer/helper/launcher declaration and byte binding; production host/source/continuation and protected staging remain pending. |
 | T30 | Not completed | Complete encrypted backup, manual export and original-deadline local cleanup. |
 | T31 | Not completed | Trusted helper/launcher build, installation and host protection. |
 | T32 | Not completed | Client consume, original-result recovery and permanent old-execution fencing. |
-| T33 | In progress | Reviewed Windows same-object embedded Authenticode evidence, shared relative custody and retained FullPack final-installer composition with original-job compatibility; approved publisher policy, protected host, installation/slot execution and platform qualification remain pending. |
+| T33 | In progress | Reviewed Windows same-object embedded Authenticode evidence, shared relative custody and retained FullPack final-installer/helper/launcher composition with original-job compatibility; approved publisher policy, protected host, installation/slot execution and platform qualification remain pending. |
 | T34 | Not completed | Actual Linux x64/arm64 upgrade execution and qualification. |
 | T35 | Not completed | Actual macOS Intel/Apple Silicon execution and qualification. |
 | T36 | Not completed | Protected single-hop execution, active-identity verification and local health. |
@@ -57,7 +57,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T44 | Implemented; independently reviewed and verified | Actual protected lifecycle kernel, complete atomic commands, original retention/backup deadlines and worker/access-driven timeout convergence; T17/T19/T20 composition and deployment remain separate |
 | T45 | Not completed | Approved helper/launcher evolution and restricted cleanup execution. |
 | T46 | Not completed | Actual local-mode prerequisite certification and exact evidence integration. |
-| T47 | In progress | Protected frozen SN lifecycle persistence, operation-bound child write sets and original outer T06 recovery; fixed production parent/admin/quality/publication composition remains pending |
+| T47 | In progress | Protected frozen SN lifecycle and operation-bound child write sets; actual multi-stage draft editing, independent approval, policy freezing, authenticated history and original-key recovery with three-language admin; running Rollout, quality and active publication composition remain pending. |
 
 Confirmed implementation decisions (2026-10-09):
 
@@ -13503,3 +13503,72 @@ The actual primary checkout is synchronized to the exact tested client tree.
 Product is 0.10.13, normative documents 1.0, CodeWhale remains unchanged, and
 production deployment stays deferred. Downloads retain no total/cumulative time
 or retry-count cap; 32 MiB limits business metadata, not downloaded artifact blobs.
+
+## Retained native roles and production plan management (2026-10-20)
+
+The retained Windows observation batch is delivered in client commit
+`33896fe63e63b549307cff81b50a42a3f25a626e`; the primary working directory
+contains the identical reviewed tree through sync commit
+`bd5e97dc658b845c8abdac7171e14cade9ee74e2`. Both branches were pushed normally.
+The new role API and CLI independently select the original signed execution
+helper, an exact named helper artifact or the launcher. Selection never assumes
+that the execution helper is the first array entry. Every role retains the
+original FullPack byte scan, exact member binding, actual copy/flush, retirement
+of all writers, relative identity/hash reopen and same-object WinTrust observation.
+The old inspect API, command and 21-field report remain compatible.
+
+Two nonauthor reviews passed all nine source paths; 515 protected inputs remained
+unchanged. Author gates passed eleven checks. Final integration gates passed ten
+checks: fifteen default tests passed with three explicit opt-ins, and each of the
+two strict signature positives and original `52b3` production-job compatibility
+opt-in passed separately. Real partial-copy cancellation, join/drop/kill release,
+wrong members/IDs, unsigned files, rehashed signature tampering and damaged
+journals were exercised. All five qualification flags remain false. This does
+not provide an installed helper, publisher approval, current eligibility,
+installation rights or platform qualification. No new dependency or public
+protocol change was introduced.
+
+Service commit `8ab4cbcb94c6467d0379b13fededd2eb0e0ed5a6` delivers the complete
+bounded production plan-management workflow and was pushed normally. Actual
+multi-stage normal/forced/silent drafts use revision CAS, current T05 independent
+approval and MFA, policy freezing, authenticated history and original-key
+locate/resolve. A draft edit invalidates the old approval for the new revision.
+Null SN references mean no extra include/exclude lists; non-null SN references
+remain explicitly unsupported. This does not start a Rollout, expand traffic,
+publish active metadata or supply an Artifact/Registry qualification.
+
+Two nonauthor reviewers completed the entire 35-path scope and every subsequent
+repair delta. The 104 pre-existing SQL files and six frozen contract bundles
+remained unchanged. Repairs bound the actual SQL creation sequence into an
+independent source MAC witness, authenticated inheritance on edit/freeze, mapped
+known plan CAS conflicts without a terminal marker, and tested source corruption
+through the real low-privilege runtime rather than an owner-identity early refusal.
+New embedded SQL uses the exact LF bytes committed to Git. The browser fixture
+holds a safe bound TLS listener rather than disabling browser port protection.
+
+The final unchanged production input passed twelve actual PostgreSQL/HTTPS/OIDC
+main tests and twenty-six subtests with no skips or failures; real Chrome passed
+three of three cases. A subsequent test-only delta passed three actual PG main
+tests and ten subtests, including two-plan pagination and stable creation order
+after editing. Nine affected packages were compiled afresh for that test delta;
+this compile-only check is not reported as test execution. The preceding complete
+local default regression passed 876 main tests and 1,909 subtests; 748 main and
+681 subtests were explicit environment opt-ins. The final production delta also
+passed 117 affected main tests and 107 subtests, vet and the server build; its
+125 main and 60 skipped subtests remain explicitly unexecuted. Unchanged frontend
+build, module, contract-pin and protected-input checks were retained. Final source,
+index and tree guards matched the reviewed snapshots.
+
+The original sequence-corruption red cases and the earlier browser unsafe-port
+failure remain recorded. Required final checks passed after repairs; not every
+exploratory attempt passed. Actual deployment acceptance and other operating
+systems are not inferred from these local results.
+
+The next T18 worker now develops the complete file-source policy owner and
+three-language admin against the reviewed service base. Its private DTOs,
+configuration precheck and transient destination diagnostics are not public V1
+extensions or download authorization. It is not marked delivered before its own
+independent reviews, actual acceptance and commit/push. Downloads still have no
+hard cumulative elapsed-time or retry-count deadline; the 32 MiB business metadata
+limit does not cap blobs. Normative documents remain version 1.0, the product is
+0.10.13, CodeWhale remains unchanged, and T42 deployment remains deferred.
