@@ -29,6 +29,8 @@ mod check_response;
 pub use check_response::{CheckResponseError, CheckResponseOperation};
 mod public_graph;
 pub use public_graph::{PublicGraphError, assert_supplied_public_graph};
+mod public_graph_source;
+pub use public_graph_source::assert_supplied_public_graph_source;
 mod candidate;
 pub use candidate::{CandidateBindingError, assert_supplied_candidate_binding};
 mod release_package;

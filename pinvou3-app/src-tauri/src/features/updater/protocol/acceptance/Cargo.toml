@@ -1,0 +1,21 @@
+[package]
+name = "pinvou-upgrade-metadata-qa"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+license = "MIT"
+
+[features]
+fault-tests = []
+
+[dependencies]
+pinvou-upgrade-codec = { path = "../codec" }
+pinvou-upgrade-verifier = { path = "../verify" }
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.151", features = ["float_roundtrip"] }
+sha2 = "=0.11.0"
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -1,0 +1,10 @@
+PRAGMA application_id=1347834167;
+PRAGMA user_version=1;
+CREATE TABLE store(singleton INTEGER PRIMARY KEY CHECK(singleton=1), generation INTEGER NOT NULL CHECK(generation>0), product TEXT NOT NULL, anchor_hash TEXT NOT NULL REFERENCES objects(hash), root_hash TEXT NOT NULL REFERENCES objects(hash), initialized_at INTEGER NOT NULL CHECK(initialized_at>=0));
+CREATE TABLE objects(hash TEXT PRIMARY KEY, bytes BLOB NOT NULL CHECK(length(bytes) BETWEEN 1 AND 1048576));
+CREATE TABLE waters(context TEXT PRIMARY KEY, version INTEGER NOT NULL CHECK(version>0 AND version<=9007199254740991), hash TEXT NOT NULL REFERENCES objects(hash));
+CREATE TABLE batches(generation INTEGER PRIMARY KEY CHECK(generation>1 AND generation<=9007199254740991), before_root TEXT NOT NULL, after_root TEXT NOT NULL, observed_at INTEGER NOT NULL CHECK(observed_at>=0 AND observed_at<=9007199254740991), component TEXT NOT NULL, evidence BLOB NOT NULL CHECK(length(evidence) BETWEEN 1 AND 1048576));
+CREATE TABLE root_steps(generation INTEGER NOT NULL REFERENCES batches(generation), ordinal INTEGER NOT NULL CHECK(ordinal>=0 AND ordinal<4096), hash TEXT NOT NULL REFERENCES objects(hash), PRIMARY KEY(generation,ordinal));
+CREATE TABLE sets(id INTEGER PRIMARY KEY, component TEXT NOT NULL, generation INTEGER NOT NULL REFERENCES batches(generation), timestamp_hash TEXT NOT NULL REFERENCES objects(hash), snapshot_hash TEXT NOT NULL REFERENCES objects(hash), UNIQUE(component,generation));
+CREATE TABLE members(set_id INTEGER NOT NULL REFERENCES sets(id), ordinal INTEGER NOT NULL CHECK(ordinal>=0 AND ordinal<4096), hash TEXT NOT NULL REFERENCES objects(hash), PRIMARY KEY(set_id,ordinal), UNIQUE(set_id,hash));
+CREATE TABLE active(component TEXT PRIMARY KEY, set_id INTEGER NOT NULL UNIQUE REFERENCES sets(id));

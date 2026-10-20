@@ -1,0 +1,14 @@
+DROP TABLE IF EXISTS temp.expected_waters;
+DROP TABLE IF EXISTS temp.validated_active;
+DROP TABLE IF EXISTS temp.visited_objects;
+DROP TABLE IF EXISTS temp.visited_batches;
+DROP TABLE IF EXISTS temp.visited_root_steps;
+DROP TABLE IF EXISTS temp.visited_sets;
+DROP TABLE IF EXISTS temp.visited_members;
+CREATE TEMP TABLE expected_waters(context TEXT PRIMARY KEY,version INTEGER NOT NULL,hash TEXT NOT NULL);
+CREATE TEMP TABLE validated_active(component TEXT PRIMARY KEY,set_id INTEGER NOT NULL);
+CREATE TEMP TABLE visited_objects(hash TEXT PRIMARY KEY);
+CREATE TEMP TABLE visited_batches(generation INTEGER PRIMARY KEY);
+CREATE TEMP TABLE visited_root_steps(generation INTEGER NOT NULL,ordinal INTEGER NOT NULL,PRIMARY KEY(generation,ordinal));
+CREATE TEMP TABLE visited_sets(id INTEGER PRIMARY KEY);
+CREATE TEMP TABLE visited_members(set_id INTEGER NOT NULL,ordinal INTEGER NOT NULL,PRIMARY KEY(set_id,ordinal));
