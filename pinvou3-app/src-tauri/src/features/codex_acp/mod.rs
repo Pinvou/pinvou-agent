@@ -29,13 +29,13 @@ use install::{
     claude_version_supported, clear_install_outcome, clear_install_progress,
     codex_path_for_adapter, codex_upgrade_required, codex_version_changed, command_version_output,
     detect_install_source, fill_install_outcome, fill_install_progress, find_in_path,
-    install_action_for, install_outcome_for_result, installed_node_version,
-    kill_install_process_tree, kimi_version_supported, move_official_binaries_aside,
-    node_major_version, npm_executable, npm_package, official_script_supported,
-    official_script_urls, parse_install_action, path_install_source, record_install_outcome,
-    resolve_adapter_from, resolve_claude_adapter_from, resolve_claude_cli, resolve_codex_cli,
-    resolve_kimi_path, run_brew_install, run_npm_global_upgrade, run_official_install_script,
-    script_url_reachable, stale_official_target,
+    install_action_for, installed_node_version, kill_install_process_tree, kimi_version_supported,
+    move_official_binaries_aside, node_major_version, npm_executable, npm_package,
+    official_script_supported, official_script_urls, parse_install_action, path_install_source,
+    record_install_outcome, resolve_adapter_from, resolve_claude_adapter_from, resolve_claude_cli,
+    resolve_codex_cli, resolve_kimi_path, run_brew_install, run_npm_global_upgrade,
+    run_official_install_script, script_url_reachable, settle_install_result,
+    stale_official_target,
 };
 use introspect::{kimi_diagnostic_cursor, kimi_failure_after};
 use login::{
@@ -63,7 +63,7 @@ use agent_client_protocol::schema::v1::{
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo};
 use agent_probe::{CliProbeCache, CliProbeGates, ResolvedCli};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use auth_probe::{AgentAuthProbeState, CachedAuthStatus};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -2855,18 +2855,24 @@ impl AcpPool {
         // so the run reports cancelled per user intent (an in-command cancel
         // has already consumed the marker to rewrite its own failure).
         let cancel_pending = self.install_cancelled.lock().remove(&backend);
-        let outcome = install_outcome_for_result(
+        let error_detail = result.as_ref().err().map(|error| format!("{error:#}"));
+        let (outcome, returned_error) = settle_install_result(
             result.is_ok(),
             cancel_pending,
-            result
-                .as_ref()
-                .err()
-                .map(|error| format!("{error:#}"))
-                .as_deref(),
+            error_detail.as_deref(),
+            backend,
         );
         record_install_outcome(&self.app, backend, outcome);
         drop(install_active_guard);
-        result
+        match returned_error {
+            // Cancellation settlement: the recorded outcome says cancelled,
+            // so the return value must classify the same way — the
+            // initiating instance's catch classifies via the structured
+            // marker and would otherwise overwrite the cancelled phase with
+            // failed plus a red error (see settle_install_result).
+            Some(detail) => Err(anyhow!(detail)),
+            None => result,
+        }
     }
 
     async fn install_agent_inner(

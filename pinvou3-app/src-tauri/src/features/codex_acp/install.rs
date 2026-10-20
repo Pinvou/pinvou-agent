@@ -1217,6 +1217,84 @@ mod tests {
         );
     }
 
+    /// Cancellation settlement: the returned error must classify the same
+    /// way as the recorded outcome. The critical case is a preflight-window
+    /// cancel whose natural failure won the race (armed marker + unmarked
+    /// error): the outcome says cancelled, so the initiating caller must see
+    /// a marker-carrying cancelled error — the frontend's catch would
+    /// otherwise pin the card on failed + red error while every other
+    /// surface (status.install_finished, the heal, the wait side) reports a
+    /// cancellation. Pre-marked cancel errors, successes, and plain failures
+    /// pass through unchanged.
+    #[test]
+    pub(super) fn install_settlement_returns_recorded_cancellation() {
+        let (outcome, returned) = settle_install_result(
+            false,
+            true,
+            Some("preflight registry unreachable"),
+            AgentBackend::KimiAcp,
+        );
+        assert_eq!(
+            outcome,
+            InstallFinishedInfo {
+                ok: false,
+                cancelled: true,
+                error: None
+            }
+        );
+        assert_eq!(
+            returned.as_deref(),
+            Some("install_cancelled:Kimi 安装已取消"),
+            "the return value must carry the cancellation classification the outcome recorded"
+        );
+        // An error that already carries the marker classifies by itself: no
+        // rewrite (the original chain keeps its own wording).
+        let (outcome, returned) = settle_install_result(
+            false,
+            false,
+            Some("install_cancelled:kimi 安装已取消"),
+            AgentBackend::KimiAcp,
+        );
+        assert_eq!(
+            outcome,
+            InstallFinishedInfo {
+                ok: false,
+                cancelled: true,
+                error: None
+            }
+        );
+        assert_eq!(returned, None, "a pre-marked cancel error needs no rewrite");
+        // A cancel that lost the race to a successful exit is not a
+        // cancellation on either side.
+        let (outcome, returned) = settle_install_result(true, true, None, AgentBackend::KimiAcp);
+        assert_eq!(
+            outcome,
+            InstallFinishedInfo {
+                ok: true,
+                cancelled: false,
+                error: None
+            }
+        );
+        assert_eq!(returned, None);
+        // A plain failure is neither cancelled nor rewritten: the outcome
+        // carries the error chain, and the caller sees the original error.
+        let (outcome, returned) = settle_install_result(
+            false,
+            false,
+            Some("npm install failed: EBUSY"),
+            AgentBackend::KimiAcp,
+        );
+        assert_eq!(
+            outcome,
+            InstallFinishedInfo {
+                ok: false,
+                cancelled: false,
+                error: Some("npm install failed: EBUSY".to_string())
+            }
+        );
+        assert_eq!(returned, None);
+    }
+
     #[test]
     pub(super) fn install_source_follows_path_of_cli_in_use() {
         // 多份并存时以「正在使用的这份」的路径为准，避免升级打到另一份：
@@ -1600,6 +1678,38 @@ pub(super) fn install_outcome_for_result(
             None
         },
     }
+}
+
+/// Settles a finished install run into (outcome to record, error to return),
+/// guaranteeing both carry the same cancellation classification. A cancel
+/// armed in the preflight window whose natural failure won the race is
+/// recorded as cancelled (see [`install_outcome_for_result`]); the return
+/// value must classify the same way — ProvidersSection's initiating catch
+/// recognizes only the structured `install_cancelled` marker and would
+/// otherwise overwrite the cancelled phase with failed plus a red error
+/// banner, a wrong terminal the cross-mount heal cannot repair (it only
+/// converges the installing phase). The rewritten error mirrors the wait
+/// side's cancel wording; the incidental natural failure stays visible in
+/// the diagnostics log. An error already carrying the marker, a successful
+/// run, and a plain failure are returned unchanged.
+pub(super) fn settle_install_result(
+    ok: bool,
+    cancel_pending: bool,
+    error_detail: Option<&str>,
+    backend: AgentBackend,
+) -> (InstallFinishedInfo, Option<String>) {
+    let outcome = install_outcome_for_result(ok, cancel_pending, error_detail);
+    let rewritten_error = if outcome.cancelled
+        && !error_detail.is_some_and(|detail| detail.contains(INSTALL_CANCELLED_MARKER))
+    {
+        Some(format!(
+            "{INSTALL_CANCELLED_MARKER}{} 安装已取消",
+            backend.display_name()
+        ))
+    } else {
+        None
+    };
+    (outcome, rewritten_error)
 }
 
 /// Records the wrapped-up outcome into the shared store.
