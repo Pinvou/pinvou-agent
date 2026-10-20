@@ -65,3 +65,65 @@ integration. Concrete budgets return for owner approval only after that evidence
 No product preparation limit is inferred here; downloads retain no hard total or
 cumulative duration or retry cap. The 32 MiB server atomic metadata limit is
 unrelated to these payload sizes.
+
+## Retained 1 GiB development series (2026-10-20)
+
+One complete series retained thirty independent successful 1 GiB / 12-file
+experiments. Each attempt used three new real synthetic SQLite writers, actual
+coordination/freeze, AES-256-GCM backup and complete ordered content/authentication
+verification. All thirty sources, encrypted archives and original reports remain
+local. There were zero failed, unsupported, aborted or unattempted slots. The
+series command took 616.369 seconds, including generation and report publication.
+
+| Measured phase | Samples | Lower median | Nearest-rank P95 | Maximum |
+|---|---|---|---|---|
+| Coordination and freeze | 30 | 17.3938 ms | 80.5721 ms | 94.7815 ms |
+| Encrypted backup plus complete verification | 30 | 7.8860352 s | 21.4605393 s | 21.9602175 s |
+
+For thirty samples, lower median selects the fifteenth ordered value and P95
+selects the twenty-ninth. Neither statistic averages neighboring samples.
+Phase definitions are those above; the payload excludes the additional SQLite
+and freeze evidence, which the verified backup byte count includes. No sample
+was discarded or retried to obtain thirty convenient successes.
+
+All samples report Windows x64 `10.0.22631`, Node `v26.0.0`, the same i7-8700,
+twelve logical CPUs and 34,123,063,296 bytes of memory. A separate native storage
+inquiry observed a healthy fixed NTFS volume. This is a development-volume
+observation, not hardware attestation; the tool's recorded
+filesystem-type code is zero/unknown and its storage-class label remains unknown.
+Caches are uncontrolled. Other controlled heavy development experiments were
+paused for this series; ordinary background activity and document/design work
+were not eliminated. This is one development environment and workload shape,
+not a certified OS/storage/cache matrix or an actual-user/service experiment.
+
+The runtime prototype digest is
+`e979e9c5033a2bab5923fce745286dbf9bdc18731ef2254512c0530da2171dc8`;
+the series implementation digest is
+`b71464a57b3b36ab312b8511470263ce8c9c342cb45a5068f864261df086af9b`.
+All fourteen tracked lab inputs remained unchanged. These bytes and this shape
+differ from the earlier smokes; their measurements are not pooled. Private
+host/storage identifiers, scratch paths and raw records are not committed.
+
+A fresh inspector reopened the published manifest, every attempt and original
+report and checked their hashes and bindings. Root and a nonauthor independently
+recomputed all statistics, continuous attempt identities, distinct run identities,
+source/profile/environment equality and absence of omitted failures. The evidence
+review passed. Original runtime verification is distinct from later report
+inspection: keys were wiped after each experiment, so this review does not claim
+to decrypt the retained archives again. All owned writers and commands were
+joined; a scoped process check found no surviving owned Node process.
+
+The sample-count requirement is met for this primitive workload only. Approved
+and certified budgets remain null, and qualification remains false. Windows
+directory durability, independent users/services, production format/restoration,
+protected key recovery and strict elapsed shutdown time retain their recorded
+limitations. This result does not approve a finite product preparation budget or
+complete T03/T46.
+
+The selected scratch volume cannot hold the larger retained thirty-run series:
+10 GiB and 50 GiB payloads require at least 600 GiB and 3,000 GiB respectively for
+sources plus encrypted outputs, with file overhead and at least 2 GiB additional
+headroom. Such capacity must be available before those experiments; existing
+outputs are not deleted or samples silently reduced to fit. Controlled-cache and
+actual platform/mode evidence also remain required before proposing certified
+preparation limits. Product download policies are unchanged.
