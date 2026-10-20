@@ -20,7 +20,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T07 | In progress | Reviewed trust initialization, key material, scoped issuer enable/stop, permanent material fencing, OpenBao physical-stop recovery, authenticated Root/history/original-document catalog and genesis-only role-scoped key deny; active issuance and emergency publication composition remain pending |
 | T08 | In progress | Reviewed genesis catalog/component management, protected atomic publication primitives and actual genesis-only append-only signing-key deny; active metadata and other business publication workflows remain pending |
 | T09 | In progress | Bounded package inspection, immutable intake/recovery and current-trust Package/evidence observation; authenticated final-installer and exact helper/launcher/helperArtifact structure queries and three-language admin; formal admission, quarantine, native publisher authentication and platform qualification remain pending. |
-| T10 | In progress | Actual Manifest-bound material observations and pending dossier create/edit/history, original-request recovery and three-language administration; trusted provenance observations, scanner execution/coverage, formal policies/approval and bounded exceptions remain pending. |
+| T10 | In progress | Actual Manifest-bound materials, explicit-profile historical provenance observations, pending dossier bindings/history, original-request recovery and three-language administration; formal pipeline approval, scanner execution/coverage, policies/approval and bounded exceptions remain pending. |
 | T11 | In progress | Protected multi-platform drafts, reviewed content freezing and cancellation of assembled declarations with complete unchanged draft children; package qualification and Release/Target lifecycle approval/publication remain pending. |
 | T12 | In progress | Reviewed stable-facts matching and forward-policy primitives plus protected immutable candidate history, preparation, independent review and original-key recovery with three-language administration; formal Registry publication, capability admission and cleanup permissions remain pending |
 | T13 | Not completed | Supported floor, prerequisite paths and historical bridge approvals. |
@@ -14001,3 +14001,50 @@ scanner execution/coverage, security exceptions and final supply-chain approval
 remain unavailable. Preparation remains blocked without those real owners.
 T42 deployment remains deferred; product 0.10.13 and normative version 1.0 are
 unchanged. Downloads retain no total/cumulative duration or retry-count cap.
+
+
+## T10 historical provenance and pending bindings (2026-10-21)
+
+Separate service commit `5868b25ca925e86a4b1a0b858747b2cce8ee88a6` was DCO-signed and ordinarily pushed
+on `codex/t10-supply-chain-dossiers`. This increment completes configurable
+historical provenance observations and their pending-dossier bindings; T10 as
+a whole remains in progress.
+
+Explicit, exact-scope publisher profiles verify the actual Manifest-bound
+DSSE/Ed25519 provenance and immutable material facts. The additional private
+observation route, permanent history and three-language administration retain
+the original profile and result. An observed signature describes verification
+under that historical profile; it does not represent current publisher trust
+or final supply-chain approval. New bindings require the current profile.
+Already registered work can recover its original result after profile changes
+or closure, while absent resumes can only record an authenticated refusal.
+
+The additive migration is explicit and preserves the original schema and
+publishers. Runtime privileges, complete source census, actual input costs and
+pre-registration limits are checked without startup repair. Independent source
+review and actual tests closed typed-input, local archive rendering, unavailable
+new-binding and SQL-purpose observer findings. The observer correction reused
+its existing restricted function and did not broaden runtime permissions.
+
+Final checks passed 1,030 main Go tests and 2,265 subtests, formatting, vet,
+module verification, server build, pinned contracts and staged whitespace.
+The default suite separately skipped 850 main tests and 739 subtests. Actual
+PostgreSQL migration/recovery/fault tests passed 13 main tests and 20 subtests;
+a separate SQL-purpose test passed 17 subtests and 39 asserted probes, with
+zero skips. The exact final migration digest also passed two real HTTPS tests
+and two English provenance browser cases. The unchanged client code additionally retains its
+three-language six-case provenance coverage, four English legacy cases,
+22 pure tests, TypeScript/Vite build and browser type checks. Earlier browser
+runs are retained with their original source snapshots rather than relabelled
+as the final migration build. All 1,774 collected Go/SQL, test and embedded
+source inputs were frozen.
+One preceding HTTPS run failed during the legacy fixture management startup,
+before T10 initialization. Its original failure is retained; a single isolated
+rerun of the same executable and inputs passed. The precise cause is unconfirmed.
+
+All 64 changed files passed independent review and privacy checks. Formal
+pipeline approval, scanner execution/coverage, exceptions and Artifact
+qualification remain unavailable. Task totals remain five implemented, twenty
+in progress, twenty-one not completed and one deferred. T42 deployment remains
+deferred; product 0.10.13 and normative version 1.0 are unchanged. Downloads
+retain no total/cumulative duration or retry-count cap.
