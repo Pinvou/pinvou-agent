@@ -658,6 +658,42 @@ async function clickSettingsSection(page, label) {
       && !!banner && (banner.textContent || '').includes('EBUSY');
   }));
 
+  // Cross-entrance run observation: an install started at ANOTHER entrance
+  // (e.g. the ACP 管理 view) while this panel stays mounted. The panel holds
+  // a pre-run snapshot (installing=false carrying the previous run's outcome
+  // from step ㉓); the new run's command event must NOT let the heal consume
+  // that stale outcome — freshness is invalidated, the card stays in-progress
+  // (with the old code it flipped straight to the previous run's terminal),
+  // and the poller — armed by the installing phase itself, since the held
+  // status.installing is stale — converges only on the new run's own
+  // terminal.
+  await page.evaluate(() => window.__ACP_PROVIDERS_TEST__.emitInstallProgress(
+    'codex', 'command', 'curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash',
+  ));
+  await sleep(300);
+  rec('㉔ 观察到新安装不吞旧结果（保持进行中）', await page.evaluate(() => {
+    const card = document.querySelector('[data-testid="acp-cli-install-progress"]');
+    return !!card && (card.textContent || '').includes('下载安装中');
+  }));
+  // Mirror the real backend ordering for the rest of the run: entry (clears
+  // the outcome; active window → installing=true), then the terminal. From
+  // here every poll lands with installing=true until the outcome exists.
+  await page.evaluate(() => window.__ACP_PROVIDERS_TEST__.setInstallScenario('codex', {
+    installing: true,
+    install_finished: null,
+  }));
+  await sleep(2500);
+  await page.evaluate(() => window.__ACP_PROVIDERS_TEST__.setInstallScenario('codex', {
+    installing: false,
+    installed: true,
+    install_finished: { ok: true, cancelled: false },
+  }));
+  await sleep(3000);
+  rec('㉕ 观察到的新安装按其自身结果收敛', await page.evaluate(() => {
+    const card = document.querySelector('[data-testid="acp-cli-install-progress"]');
+    return !!card && (card.textContent || '').includes('完成');
+  }));
+
   const pageErrors = errors.filter(message => !message.includes('favicon'));
   rec('⑮ 无页面错误', pageErrors.length === 0, pageErrors.slice(0, 3).join(' | '));
 

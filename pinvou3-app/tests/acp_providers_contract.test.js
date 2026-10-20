@@ -616,8 +616,26 @@ assert.ok(
   'the cancel marker must be consumed at install entry (stale marker) and at record time (unraced preflight cancel), and nowhere after guard acquisition'
 );
 assert.ok(
-  /install_outcome_for_result\(\s*result\.is_ok\(\),\s*cancel_pending,/.test(MOD),
-  'the record-time verdict must take a still-armed cancel marker into account'
+  /let \(outcome, returned_error\) =\s*settle_install_result\(\s*result\.is_ok\(\),\s*cancel_pending,/.test(MOD),
+  'the record-time verdict must take a still-armed cancel marker into account (via settle_install_result)'
+);
+// The return value must classify the same way the outcome is recorded: a
+// preflight-window cancel whose natural failure won the race is recorded as
+// cancelled, so the initiating caller must see a marker-carrying cancelled
+// error — the catch branch would otherwise overwrite the cancelled phase
+// with failed + red error, a wrong terminal the heal cannot repair.
+assert.ok(
+  MOD.includes('fn settle_install_result'),
+  'the cancellation settlement must be a pure function (return-vs-record classification unit-testable)'
+);
+assert.ok(
+  MOD.includes('Some(detail) => Err(anyhow!(detail)),')
+    && MOD.indexOf('Some(detail) => Err(anyhow!(detail)),') < MOD.indexOf('async fn install_agent_inner'),
+  'the wrapper must return the settlement\'s marker-carrying cancelled error instead of the incidental natural failure'
+);
+assert.ok(
+  /fn install_settlement_returns_recorded_cancellation/.test(MOD),
+  'the cancellation settlement must have a behavioral unit test (armed preflight cancel + natural failure => marker-carrying cancelled return)'
 );
 // Failed outcomes must carry this run's error chain: some failure paths
 // never write runtime_errors, so echoing status.error would show an empty or
@@ -635,7 +653,7 @@ assert.ok(
 {
   const healStart = PROVIDERS_SECTION.indexOf('Cross-mount install heal');
   assert.ok(healStart > 0, 'the frontend must implement the cross-mount install heal (ProvidersSection)');
-  const heal = PROVIDERS_SECTION.slice(healStart, healStart + 2600);
+  const heal = PROVIDERS_SECTION.slice(healStart, healStart + 3400);
   assert.match(
     heal,
     /const outcome = status\.install_finished/,
@@ -658,12 +676,33 @@ assert.ok(
   );
   assert.match(
     heal,
-    /fetchedStatusRef\.current !== activeAgent/,
-    'the heal trusts only a status this instance fetched itself FOR the active agent (cache snapshots may carry the previous install\'s outcome)'
+    /fresh\.agent !== activeAgent \|\| fresh\.seq !== installRunSeqRef\.current/,
+    'the heal trusts only a status this instance fetched itself FOR the active agent, DISPATCHED after the last observed run start (a pre-run snapshot carries the previous run\'s outcome with installing=false)'
   );
   assert.ok(
-    PROVIDERS_SECTION.includes('fetchedStatusRef.current = agent;'),
-    'the self-fetched marker must record WHICH agent was fetched (per-agent freshness)'
+    PROVIDERS_SECTION.includes('fetchedStatusRef.current = { agent, seq: seqAtDispatch };'),
+    'the self-fetched marker must record WHICH agent was fetched and the dispatch-time run sequence (per-agent, per-run freshness)'
+  );
+  assert.ok(
+    PROVIDERS_SECTION.includes('const seqAtDispatch = installRunSeqRef.current;'),
+    'freshness must capture the run sequence at DISPATCH, not at landing: a response for a pre-event fetch must not re-establish freshness after the command event'
+  );
+  // A run observed through a command event (started at another entrance)
+  // must invalidate pre-event freshness, or the heal consumes the previous
+  // run's outcome and falsely converges while the new run is still going.
+  assert.match(
+    PROVIDERS_SECTION,
+    /installRunSeqRef\.current \+= 1;\s*\n\s*setInstallPhase\('installing'\)/,
+    'a new-run command event must bump the run sequence (invalidate pre-event freshness) before switching the card to installing'
+  );
+  // With a stale status.installing=false in hand, only the installing phase
+  // itself arms the poller — otherwise an observed run at another entrance
+  // never converges. Scoped to the agent whose card is showing so a leftover
+  // phase from another tab cannot poll it.
+  assert.match(
+    PROVIDERS_SECTION,
+    /installPhase === 'installing' && installLog && installLog\.agent === activeAgent/,
+    'the installing phase (scoped to the active agent\'s card) must arm the install poller: an observed run with a stale status.installing=false must keep polling until its own terminal'
   );
   assert.match(
     heal,

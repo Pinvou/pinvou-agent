@@ -158,13 +158,17 @@ export function ProvidersSection({ t }) {
   // 或重开窗口从缓存恢复。
   const [installLog, setInstallLog] = useState(INSTALL_LOG_CACHE.log);
   const [installPhase, setInstallPhase] = useState(() => INSTALL_LOG_CACHE.phase);
-  // The agent whose status this instance last fetched itself after mount:
-  // the cross-mount heal trusts only self-fetched data — a status snapshot
-  // restored from the module cache may predate the current install's start
-  // (carrying the previous install's outcome). Keyed per agent: entering a
-  // tab hydrates that agent's cache synchronously, and only this instance's
-  // own fetch of the active agent arms the marker again.
+  // The status this instance last fetched itself after mount, as
+  // { agent, seq }: the cross-mount heal trusts only self-fetched data — a
+  // status snapshot restored from the module cache may predate the current
+  // install's start (carrying the previous install's outcome). seq is the
+  // install-run sequence captured when the fetch was DISPATCHED (not when
+  // it landed): a command event for the active agent bumps the sequence, so
+  // a snapshot issued before an observed run — including one still in
+  // flight when the event arrives — can never satisfy the heal's freshness
+  // check, and the next dispatch after the event re-arms it.
   const fetchedStatusRef = useRef(null);
+  const installRunSeqRef = useRef(0);
   // 阶段同步进模块缓存：关设置窗口重开后恢复结束态/进行中态展示。
   useEffect(() => {
     INSTALL_LOG_CACHE.phase = installPhase;
@@ -261,6 +265,11 @@ export function ProvidersSection({ t }) {
   activeAgentRef.current = activeAgent; // eslint-disable-line react-hooks/refs -- synchronously mirror the latest activeAgent during render so async callbacks can tell "still the current tab"
   const loadAgent = useCallback(async (agent, recheck = false, quiet = false) => {
     if (!quiet && agent === activeAgentRef.current) setLoading(true);
+    // Capture the install-run sequence at dispatch: a response for a fetch
+    // issued before a run was observed must not re-establish freshness after
+    // that run's command event invalidates it (the snapshot would carry the
+    // previous run's outcome with installing=false).
+    const seqAtDispatch = installRunSeqRef.current;
     try {
       const [nextView, nextStatus] = await Promise.all([
         invokeTauri('list_acp_providers', { agent }),
@@ -272,7 +281,7 @@ export function ProvidersSection({ t }) {
       if (agent === activeAgentRef.current) {
         setView(nextView);
         setStatus(nextStatus);
-        fetchedStatusRef.current = agent;
+        fetchedStatusRef.current = { agent, seq: seqAtDispatch };
       }
     } catch (e) {
       if (agent === activeAgentRef.current) setError(String(e));
@@ -332,7 +341,14 @@ export function ProvidersSection({ t }) {
   // Local busy also arms the poller: between issuing the install command and
   // the backend registering the install there is probe latency; polling
   // picks up status.installing (the cancel button appears with it).
-  const installInFlight = installing || busy === 'install:' + activeAgent;
+  // An install observed through command events (started at another entrance
+  // while this panel was mounted) may hold a stale status.installing=false,
+  // so the installing phase itself — scoped to the agent whose card is
+  // showing — arms the poller too, until the heal observes that run's own
+  // terminal and the phase leaves installing.
+  const installInFlight = installing
+    || busy === 'install:' + activeAgent
+    || (installPhase === 'installing' && installLog && installLog.agent === activeAgent);
   useEffect(() => {
     if (!installInFlight) return;
     const timer = window.setInterval(() => {
@@ -352,6 +368,13 @@ export function ProvidersSection({ t }) {
         const payload = event.payload || {};
         if (payload.agent !== activeAgentRef.current) return;
         if (payload.kind === 'command') {
+          // A command event means a new install run started — possibly from
+          // another entrance while this panel was mounted. Invalidate status
+          // freshness captured before it: the heal must not consume the
+          // previous run's outcome (a pre-run snapshot shows installing=false
+          // with that outcome), and the next dispatch after this event
+          // re-arms freshness for the new run.
+          installRunSeqRef.current += 1;
           setInstallPhase('installing');
           applyInstallLog({ agent: payload.agent, command: payload.value }); // eslint-disable-line react-hooks/immutability -- applyInstallLog is declared below; the closure is ready by the time event callbacks run
         } else if (payload.value) {
@@ -403,17 +426,20 @@ export function ProvidersSection({ t }) {
   // here; the log must exist and belong to the active agent (the checking
   // phase has no log and is not converged here — the phase is switched by the
   // command event); only a status this instance fetched itself, for this
-  // agent, after mount is trusted (cache snapshots may predate the current
-  // install and carry the previous one's outcome); the status must belong to
-  // the active agent and the backend must no longer be installing. The
-  // backend guarantees installing covers the whole lifecycle up to the
-  // recorded outcome, so "!status.installing with an outcome" means this run
-  // has wrapped up.
+  // agent, dispatched after the last observed run start is trusted —
+  // freshness records the install-run sequence captured at dispatch, and a
+  // command event bumps it, so a snapshot from before the current install
+  // (which may carry the previous run's outcome with installing=false)
+  // cannot close the heal; the status must belong to the active agent and
+  // the backend must no longer be installing. The backend guarantees
+  // installing covers the whole lifecycle up to the recorded outcome, so
+  // "!status.installing with an outcome" means this run has wrapped up.
   useEffect(() => {
     if (installPhase !== 'installing') return;
     if (busy === 'install:' + activeAgent) return;
     if (!installLog || installLog.agent !== activeAgent) return;
-    if (fetchedStatusRef.current !== activeAgent) return;
+    const fresh = fetchedStatusRef.current;
+    if (!fresh || fresh.agent !== activeAgent || fresh.seq !== installRunSeqRef.current) return;
     if (!status || status.agent_id !== activeAgent || status.installing) return;
     const outcome = status.install_finished;
     if (!outcome) return;
