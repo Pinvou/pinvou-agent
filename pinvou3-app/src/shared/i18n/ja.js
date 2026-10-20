@@ -642,6 +642,8 @@ dictJa.uiToolDetails.actions = { connectedTmeet:'Tencent Meeting に接続しま
 
 dictJa.uiToolDetails.tmeetSteps = [{key:'runtime',label:'ランタイムを準備',sub:'アプリ同梱の Node を使用'},{key:'cli',label:'接続コンポーネントをインストール',sub:'tmeet · 初回は約 40 秒'},{key:'qr',label:'ログイン',sub:'Tencent Meeting 認証ページ'}];
 
+// Retained for parity with the private implementation this tree aligns with; it has
+// no consumer in the public tree (the flow card always renders localized copy).
 dictJa.uiToolDetails.showRawErrors = false;
 
 Object.assign(dictJa.uiToolDetails.tools, {
@@ -963,6 +965,7 @@ desktopHint:'先にデスクトップで Obsidian をインストールして保
     registration_failed:'アプリの登録が完了していません。再接続してください。',
     auth_failed:'ログイン認証が完了していません。再接続してください。',
     consent_persist_failed:'接続は完了しましたが、デフォルトOFFの同意状態の保存に失敗しました。入力欄のツールリストでコネクタをオフにしてから、再接続してください。',
+    connect_consent_persist_failed:'認証は完了しましたが、コネクタの有効状態の保存に失敗しました。変更は加えられていません。再接続して再試行してください。',
     skills_enable_failed:'認証は完了しましたが、スキルを有効化できませんでした。再試行してください。',
     cli_data_access_disabled:'組織のDingTalk CLIデータアクセスが有効になっていません。組織の管理者に、DingTalkオープンプラットフォームの開発者設定で「Allow members to access their personal data via CLI」を有効にするよう依頼し、再度サインインしてください。',
     unknown:'接続に失敗しました。後で再試行してください。',

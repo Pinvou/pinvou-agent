@@ -642,6 +642,8 @@ dictZh.uiToolDetails.actions = { connectedTmeet:'已连接腾讯会议', enabled
 
 dictZh.uiToolDetails.tmeetSteps = [{key:'runtime',label:'准备运行时',sub:'使用应用自带 Node'},{key:'cli',label:'安装连接组件',sub:'tmeet · 首次约 40 秒'},{key:'qr',label:'扫码登录',sub:'腾讯会议授权页'}];
 
+// Retained for parity with the private implementation this tree aligns with; it has
+// no consumer in the public tree (the flow card always renders localized copy).
 dictZh.uiToolDetails.showRawErrors = true;
 
 // 工具商店 MCP 连接器卡片三语 overlay(tool-common.jsx tsToolsData;localizeTool 按 backendId 或占位卡 'card'+id 命中)。
@@ -996,6 +998,7 @@ desktopHint:'请先在桌面端安装 Obsidian 并创建笔记库，然后在这
     registration_failed:'应用注册未完成，请重新连接',
     auth_failed:'登录授权未完成，请重新连接',
     consent_persist_failed:'授权已完成，但默认关同意状态落盘失败。请在输入框工具列表中关闭该连接器后重新连接。',
+    connect_consent_persist_failed:'授权已完成，但连接器启用状态落盘失败。未做任何更改，请重新连接重试。',
     skills_enable_failed:'已完成授权，但启用技能失败，请重试',
     cli_data_access_disabled:'钉钉组织未开启 CLI 数据访问，请联系组织主管理员在钉钉开放平台开发者设置中开启“Allow members to access their personal data via CLI”后重新登录',
     unknown:'连接失败，请稍后重试',

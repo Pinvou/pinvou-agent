@@ -91,7 +91,7 @@ Bundle = { id, name, mcp_servers: [], skills: [], cli: [] }
 存储：`~/.pinvou3/disabled_bundles.json` 单一文件（包 id × 模式键控 map）：
 
 ```json
-{ "scopes": { "<mode>": ["<包 id>"] }, "hidden_scopes": { "<mode>": ["<包 id>"] }, "default_off_scopes": { "<mode>": ["<包 id>"] }, "initialized": ["<mode>"], "project_skills_enabled": false, "plain_defaults_migrated": true, "install_default_synced": ["<mode>:<包 id>"] }
+{ "scopes": { "<mode>": ["<包 id>"] }, "hidden_scopes": { "<mode>": ["<包 id>"] }, "default_off_scopes": { "<mode>": ["<包 id>"] }, "initialized": ["<mode>"], "project_skills_enabled": false, "plain_defaults_migrated": true, "install_default_synced": ["<mode>:<包 id>"], "connect_granted": ["<包 id>"] }
 ```
 
 scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
@@ -110,10 +110,22 @@ cohort（round-33 minor 7 勘误）。随真正被切换的
 同步账本：install/connect/startup 三个同步变体对观察到的每个 DenyAll
 scope × 包对各记一行，**scope 仍处于未初始化时同样记账**（round-32 MAJOR
 1：fresh home 上的连接发生在 plain 物化之前，不记账则用户的**首次**启用会
-在下次启动被回填覆盖）；启动 refresh 只对账本**缺失**的对回填默认关行；用户
+在下次启动被回填覆盖）；启动 refresh 只对账本**缺失**的对回填；用户
 enable 移除 stored 行但**保留**账本条目（使 enable 对 refresh 粘滞）；teardown
 （`remove_bundle_from_disabled_scopes_exact`）按 scope 键**精确匹配**清除该包
-全部条目（round-32 minor 1），重装/重连因此重新同步默认关。首个版本读取时把旧的
+全部条目（round-32 minor 1），重装/重连因此重新走同意注册。
+`connect_granted`（feat/connector-connect-grants-enable）记录 CLI 连接器
+**连接动作显式授予启用**的包 id：连接手势本身就是同意，`*_apply_skills`
+（`deny_first_register_connector` → `grant_connect_enable`）在物化技能文件
+**之前**落地「开」——清掉旧默认关行与标记、记 `connect_granted`、写账本对；
+打包/MCP **安装**仍走安装侧默认关注册，不受影响。该集合只被**未初始化
+scope 的 DenyAll 现算扩集**做减法（已初始化 scope 以落盘列表为准，行缺席即
+开），所以未初始化 scope 上连接的连接器立即可用、composer 首屏渲染为开；
+用户在 composer 显式关闭（写入行）即移除授权——显式裁决恒优先于连接默认，
+账本同时保证启动 refresh 的 ledger 门控变体
+（`grant_connect_enable_refresh`，只对从未记账的对授权）不会把用户的关翻回
+开；teardown 连同 stored/hidden/标记/账本一并清除授权，同 id 重装由重连流程
+重新授权。首个版本读取时把旧的
 `disabled_connectors.json`（连接器 id）与 `disabled_skills.json`（技能 id）迁移合并：
 连接器 id 原样进包 id（连接器 id 即包 id），技能 id 经 scope 侧的包 id 归一
 （`to_package_id` → `skill_gating_owner`：manifest 认领优先，物理嵌套回退；
@@ -125,10 +137,11 @@ stored 包行）映射到所属包（companion → MCP/CLI 包，独立技能 �
 （DenyAll 兜底保住丢失的显式禁用），旧文件原样保留供手工恢复——否则宽升级信号会把升级装机
 误初始化成 plain 空 = 全开并在首读永久冻结（评审 #455 round-34，恢复 main 严格解析语义）。
 升级时点的 legacy cohort 有一个**已披露的不对称**（评审 #455 round-32
-minor 7）：升级时在线的内置 CLI 连接器在首次启动由账本化 refresh 回填为
-默认关（连接器有启动刷新臂），而同样在线的 legacy MCP/技能包则**原地保留
+minor 7；feat/connector-connect-grants-enable 起方向更新）：升级时在线的
+内置 CLI 连接器在首次启动由账本化 refresh 回填为**连接启用授权**（连接动作
+即同意；连接器有启动刷新臂），而同样在线的 legacy MCP/技能包则**原地保留
 live**——零 stored 行、零账本条目，也没有任何启动回填臂；同一"升级时在线"
-cohort 得到相反的默认姿态，此句即为二者的登记。
+cohort 的默认姿态自此对齐为「在线即可用」，此句即为二者的登记。
 
 `hidden_scopes`（可见性）与 `scopes`（disabled，开关）是两套**正交**门控
 （`marketplace/scope.rs`）：

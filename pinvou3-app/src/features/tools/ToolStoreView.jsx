@@ -14,7 +14,7 @@ import { can } from '../../shared/platform.js';
 import { isImeComposing } from '../../shared/ime-guard.mjs';
 import { pathBasename } from '../../shared/path-utils.js';
 import { companionPackageMap } from '../../shared/companion-packages.js';
-import { applyConnectorFailure, CONSENT_SYNC_FAILURE_MARKER, connectorErrorCopy, connectorFailure, connectorUiStep } from './connector-ui-state.js';
+import { applyConnectorFailure, CONNECT_CONSENT_SYNC_FAILURE_MARKER, CONSENT_SYNC_FAILURE_MARKER, connectorErrorCopy, connectorFailure, connectorUiStep } from './connector-ui-state.js';
 
 // 10 分钟:等待的是人完成浏览器 OAuth(2FA、慢邮箱登录、跨设备取码都可能
 // 超过旧值 90s)。后端本地回调等待自身有 300s 上限,到时后端先显式失败;
@@ -354,14 +354,16 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
           // Flow null = the card was closed (cancel) before the event landed;
           // writing would resurrect a zombie "done" card.
           conn.setFlow(f => (f ? { ...f, phase: 'done', steps: { ...f.steps, qr: 'done' } } : f));
-          // Connected → write skills per the rules (enabled by default) + broadcast refresh; view-independent, so it lives in the global listener.
+          // Connected → write skills per the rules (connect grants enable) + broadcast refresh; view-independent, so it lives in the global listener.
           // Round-33 MAJOR 2 + round-35 MAJOR 1 (review #455): the fire-and-forget write is consent-critical — a lost
-          // row leaves the connector live with zero consent until the next boot's ledger-gated backfill, silently. The
+          // grant leaves the connector off until the user reconnects, silently. The
           // failure is surfaced ON THE CARD via applyConnectorFailure (the console-only reportConnectorFailure call was
           // the round-35 review's finding — success toast + connected card while only the console saw the error): the
-          // backend message carries the shared consent marker (CONSENT_SYNC_FAILURE_MARKER, pinned on both sides —
-          // ima-pattern substring match) → the dedicated consent_persist_failed copy; anything else keeps the step's
-          // localized copy.
+          // backend message carries the connect consent marker (CONNECT_CONSENT_SYNC_FAILURE_MARKER, pinned on both
+          // sides — ima-pattern substring match) → the dedicated connect_consent_persist_failed copy; anything else
+          // keeps the step's localized copy. (feat/connector-connect-grants-enable: the connect channel records an
+          // ENABLE grant and is fail-closed on persist failure, hence its own marker/code — the install channels keep
+          // the original CONSENT_SYNC_FAILURE_MARKER and consent_persist_failed.)
           // Round-37 F2 (review #455): the collapse timer is armed only AFTER the write settles — arming it
           // synchronously let a failure resolving after 1.8s land on a nulled flow (the null guard no-op'ing),
           // re-creating the silent-failure state. A slow write keeps the done card up until it resolves; a failed
@@ -376,8 +378,8 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             },
             (e) => {
               const msg = String(e && e.message ? e.message : e);
-              const failure = msg.includes(CONSENT_SYNC_FAILURE_MARKER)
-                ? { code: 'consent_persist_failed' }
+              const failure = msg.includes(CONNECT_CONSENT_SYNC_FAILURE_MARKER)
+                ? { code: 'connect_consent_persist_failed' }
                 : { code: 'skills_enable_failed' };
               reportConnectorFailure(cfg.key, failure, 'cli');
               // Same null guard as the awaited branch: a failure landing after the card was closed must not fabricate one.
@@ -404,17 +406,18 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             setTimeout(() => conn.setFlow(f => (f && f.phase === 'done' ? null : f)), 1800);
           } catch (e) {
             // readinessAwait (tmeet) passes the readiness re-check's auth_failed through; a consent-persist failure
-            // (the backend copy carries the shared marker) reports consent_persist_failed — "Try again" cannot fix a
-            // persist failure; every other failure after authorization completed (dingtalk's awaited apply, tmeet's
-            // own skill write) reports skills_enable_failed — the sign-in demonstrably succeeded on those paths.
+            // (the backend copy carries the connect marker) reports connect_consent_persist_failed — "Try again"
+            // cannot fix a persist failure; every other failure after authorization completed (dingtalk's awaited
+            // apply, tmeet's own skill write) reports skills_enable_failed — the sign-in demonstrably succeeded on
+            // those paths.
             // Round-35 MAJOR 1 (review #455): without this classification the consent_persist_failed catalog entry
             // was unreachable for every connector.
             const authIncomplete = cfg.connectedMode !== 'applyAwait' && e && e.code === 'auth_failed';
             const msg = String(e && e.message ? e.message : e);
             const failure = authIncomplete
               ? e
-              : msg.includes(CONSENT_SYNC_FAILURE_MARKER)
-                ? { code: 'consent_persist_failed' }
+              : msg.includes(CONNECT_CONSENT_SYNC_FAILURE_MARKER)
+                ? { code: 'connect_consent_persist_failed' }
                 : { code: 'skills_enable_failed' };
             reportConnectorFailure(cfg.key, failure, 'qr');
             // Same null guard: a failure landing after the card was closed must not fabricate one.

@@ -639,6 +639,8 @@ dictEn.uiToolDetails.actions = { connectedTmeet:'Tencent Meeting connected', ena
 
 dictEn.uiToolDetails.tmeetSteps = [{key:'runtime',label:'Prepare runtime',sub:'Use the app-provided Node runtime'},{key:'cli',label:'Install connector',sub:'tmeet · about 40 seconds on first use'},{key:'qr',label:'Sign in',sub:'Tencent Meeting authorization page'}];
 
+// Retained for parity with the private implementation this tree aligns with; it has
+// no consumer in the public tree (the flow card always renders localized copy).
 dictEn.uiToolDetails.showRawErrors = false;
 
 Object.assign(dictEn.uiToolDetails.tools, {
@@ -960,6 +962,7 @@ desktopHint:'Install Obsidian on the desktop and create a vault first, then chec
     registration_failed:'App registration was not completed. Reconnect and try again.',
     auth_failed:'Sign-in authorization was not completed. Reconnect and try again.',
     consent_persist_failed:'Authorization completed, but persisting the default-off consent failed. Turn the connector off in the composer tools list, then reconnect.',
+    connect_consent_persist_failed:'Authorization completed, but persisting the connector’s enabled state failed. Nothing was changed — reconnect to try again.',
     skills_enable_failed:'Authorization completed, but enabling the skill failed. Try again.',
     cli_data_access_disabled:'Your organization has not enabled CLI data access for DingTalk. Ask your organization admin to enable “Allow members to access their personal data via CLI” in the DingTalk open-platform developer settings, then sign in again.',
     unknown:'Connection failed. Try again later.',

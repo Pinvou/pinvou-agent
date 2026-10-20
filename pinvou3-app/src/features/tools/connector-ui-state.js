@@ -11,6 +11,15 @@
 export const CONSENT_SYNC_FAILURE_MARKER =
   'persisting their default-off consent state failed';
 
+// feat/connector-connect-grants-enable: the CONNECT channel's twin marker,
+// mirroring `scope::CONNECT_CONSENT_SYNC_FAILURE_MARKER`. The CLI connector
+// connect flow records an ENABLE grant, so its persist failure is fail-closed
+// (nothing was exposed; the connector stays off until reconnect) — the store
+// cards must key it to its own `connect_consent_persist_failed` copy, not the
+// install channels' "turn it off" guidance.
+export const CONNECT_CONSENT_SYNC_FAILURE_MARKER =
+  "persisting the connector's connect-enabled consent failed";
+
 // Stable machine-readable error codes for user-facing messages.
 // Backends attach a snake_case `code` (or prefix the message with `code: ...`);
 // the UI maps the code to a localized string and never shows raw backend text
