@@ -232,10 +232,109 @@ test('入口双失败行为:null 判定挂失败/重试态且不挂载,Retry 成
   assert.equal(mounted, 1, '装载成功后应恰好挂载一次');
   assert.equal(doc.host.textContent, '', '挂载前应清掉失败态 DOM');
 
-  // boot 返回值可被测试/入口直接驱动,语义与 Retry 相同。
+  // boot 返回值可被测试/入口直接驱动;挂载后再次引导是 no-op(round-50 P2
+  // 的挂载独占语义):不重复挂载,也不再绘失败屏。
   const direct = await boot();
-  assert.equal(direct, true);
-  assert.equal(mounted, 2);
+  assert.equal(direct, false, '挂载后的引导尝试必须是 no-op');
+  assert.equal(mounted, 1, '挂载态独占根,不二次挂载');
+  assert.equal(doc.host.dataset.bootFailure, undefined, '挂载后不得重绘失败屏');
+});
+
+// Round-50 P2 (Jensen): 并发 Retry 乱序回归——Retry 在装载期间可点击,较旧的
+// 完成不得触碰根:旧 null 不得清掉已挂载的应用重绘失败屏,旧成功不得二次
+// 挂载。顺序用受控 deferred 精确编排(Jensen 的探针序列)。
+test('入口并发 Retry 乱序:陈旧完成不触碰根,最新尝试独占', async () => {
+  const bootUrl = new URL('../src/shared/entry-boot.js', import.meta.url).href;
+  const { mountWhenLanguageReady } = await import(
+    `${bootUrl}?case=${Math.random().toString(36).slice(2)}`
+  );
+
+  function fakeDoc() {
+    const listeners = new Map();
+    const makeEl = (tag) => ({
+      tag,
+      type: undefined,
+      textContent: '',
+      dataset: {},
+      attributes: {},
+      children: [],
+      setAttribute(key, value) { this.attributes[key] = value; },
+      addEventListener(kind, fn) { listeners.set(kind, fn); },
+      append(...els) { this.children.push(...els); },
+    });
+    const host = makeEl('#root');
+    return {
+      host,
+      listeners,
+      createElement: (tag) => makeEl(tag),
+      querySelector: (sel) => (sel === '#root' ? host : null),
+      clickRetry() {
+        const fn = listeners.get('click');
+        if (fn) fn();
+      },
+    };
+  }
+
+  // 受控装载:每次装载返回一个可手动放行的 deferred;按判定给值。
+  function deferred(verdict) {
+    let resolve;
+    const promise = new Promise((res) => { resolve = res; });
+    return { promise, settle: () => resolve(verdict) };
+  }
+  const pending = [];
+  let mounted = 0;
+  const doc = fakeDoc();
+  // 判定脚本:gen1/gen2 落 null(双失败与陈旧失败),gen3 落 'en'(最新成功)。
+  const verdicts = [null, null, 'en'];
+  let attemptIndex = 0;
+  const boot = mountWhenLanguageReady({
+    load: () => {
+      const attempt = deferred(verdicts[attemptIndex] ?? null);
+      attemptIndex += 1;
+      pending.push(attempt);
+      return attempt.promise;
+    },
+    mount: () => { mounted += 1; },
+    doc,
+  });
+
+  // gen1: 初始装载,放行 null → 失败态。
+  await new Promise((resolve) => { setTimeout(resolve, 0); });
+  pending.shift().settle();
+  await new Promise((resolve) => { setTimeout(resolve, 0); });
+  assert.equal(mounted, 0);
+  assert.equal(doc.host.children[0].dataset.bootFailure, 'true');
+
+  // gen2 + gen3: 连点两次 Retry,两趟装载同时在途(gen1 已放行不在册)。
+  doc.clickRetry();
+  doc.clickRetry();
+  await new Promise((resolve) => { setTimeout(resolve, 0); });
+  assert.equal(pending.length, 2, 'gen2/gen3 各占一次装载');
+
+  // 旧结果先落(gen2 → null,非最新)→ 必须被丢弃:不挂载、不重绘(gen3 在途)。
+  pending[0].settle();
+  await new Promise((resolve) => { setTimeout(resolve, 0); });
+  assert.equal(mounted, 0, '陈旧 null 完成不得挂载');
+  assert.equal(
+    doc.host.children[0] && doc.host.children[0].dataset.bootFailure, 'true',
+    '陈旧 null 也不得重绘失败屏(gen3 在途独占)',
+  );
+
+  // 新结果后落(gen3 → 'en')→ 恰一次挂载,根清空。
+  pending[1].settle();
+  await new Promise((resolve) => { setTimeout(resolve, 0); });
+  assert.equal(mounted, 1, '最新成功尝试恰挂载一次');
+  assert.equal(doc.host.textContent, '');
+
+  // Jensen 探针的另一半:挂载后一次失败完成落地(boot 直驱 gen4)→
+  // 挂载态独占根,应用必须仍在,失败屏不得覆盖。
+  pending.push(deferred(null));
+  void boot();
+  await new Promise((resolve) => { setTimeout(resolve, 0); });
+  pending[pending.length - 1].settle();
+  await new Promise((resolve) => { setTimeout(resolve, 0); });
+  assert.equal(mounted, 1, '挂载后的失败完成不得改变挂载态');
+  assert.equal(doc.host.dataset.bootFailure, undefined, '失败态不得覆盖已挂载的应用');
 });
 
 // 引导兜底(round-46 M1):入口的降级装载链。旧 `dict[language] || dict.zh`

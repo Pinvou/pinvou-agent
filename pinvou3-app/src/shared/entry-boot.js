@@ -34,23 +34,30 @@ export function paintBootFailure({ retry, doc = document }) {
 }
 
 // load 解析为就绪语言(truthy)才执行 mount;null 判定挂静态失败/重试态,
-// Retry 按钮重新走完整引导(而不是复用失败结果)。挂载前必须清掉失败态
-// DOM:React 18 的 createRoot 不保证移除容器既有子节点。返回 boot 供测试
-// 直接驱动。
+// Retry 按钮重新走完整引导(而不是复用失败结果)。
+// 并发乱序防护(round-50 P2):Retry 在装载期间仍可点击,每次 boot 递增代数,
+// 只有最新一次尝试可以触碰根——否则旧 null 完成会在新尝试成功挂载后清掉
+// 应用重绘失败屏,旧成功也会二次挂载(装载完成后不再绘失败屏,挂载态独占
+// 根)。挂载前必须清掉失败态 DOM:React 18 的 createRoot 不保证移除容器
+// 既有子节点。返回 boot 供测试直接驱动。
 export function mountWhenLanguageReady({ load, mount, doc = document }) {
-  const boot = () =>
-    Promise.resolve()
-      .then(load)
-      .then((ready) => {
-        if (ready) {
-          const host = doc.querySelector('#root');
-          if (host) host.textContent = '';
-          mount();
-          return true;
-        }
-        paintBootFailure({ retry: boot, doc });
-        return false;
-      });
+  let generation = 0;
+  let mounted = false;
+  const boot = () => {
+    const ticket = ++generation;
+    return load().then((ready) => {
+      if (ticket !== generation || mounted) return false;
+      if (ready) {
+        mounted = true;
+        const host = doc.querySelector('#root');
+        if (host) host.textContent = '';
+        mount();
+        return true;
+      }
+      paintBootFailure({ retry: boot, doc });
+      return false;
+    });
+  };
   boot();
   return boot;
 }
