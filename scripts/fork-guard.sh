@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 80 commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 81 commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-EXPECTED_HEAD="65f01c16caddf48aaa2eddeff236a32d7a1aaa1f"
-EXPECTED_COMMITS=80
+EXPECTED_HEAD="7ad77637648e6447b48b81fd3ae23b76092de2ec"
+EXPECTED_COMMITS=81
 # r1 收口锚点：不可变 r1 tag 的收口 commit。层 0 断言它是当前 head 的祖先，
 # 即维护分支自 r1 收口线性前进而非另起分叉（2026-10-02 起处于过渡期：gitlink =
 # 维护分支头，领先钉在 r3 收口 commit 的不可变 tag；tag 钉点与领先关系由
@@ -27,7 +27,7 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 65 个登记提交，r3 收口后过渡期）──"
+bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 66 个登记提交，r3 收口后过渡期）──"
 actual_head="$(git -C "$CODEWHALE" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
   green "  ✓ CodeWhale gitlink 指向登记 head ${EXPECTED_HEAD}（gitlink=维护分支头；过渡期内领先钉在 r3 收口的 tag）"
@@ -309,6 +309,8 @@ fingerprints=(
   "T10|Tachyon sole-provider persistence regression |CodeWhale/crates/config/src/tests.rs|fn forkguard_tachyon_only_provider_table_survives_config_store_save"
   "T10|Tachyon validates provider context windows |CodeWhale/crates/tui/src/config.rs|(\"providers.tachyon\", &self.tachyon),"
   "T10|Tachyon inventory requires explicit configuration |CodeWhale/crates/tui/src/model_routing.rs|fn forkguard_tachyon_inventory_requires_an_active_or_configured_route"
+  "T10|Tachyon route-scoped thinking capability |CodeWhale/crates/tui/src/config/tests.rs|fn forkguard_tachyon_thinking_capability_is_route_scoped"
+  "T10|Tachyon Fleet thinking capability validation |CodeWhale/crates/tui/src/fleet/worker_runtime.rs|fn forkguard_tachyon_fleet_accepts_explicit_reasoning_for_served_ids"
   "T10|Tachyon 引擎注册表身份（registered-only） |CodeWhale/crates/config/src/provider.rs|static TACHYON: Tachyon = Tachyon;"
   "APP|unified 2000-step budget default           |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|const HOST_STEP_BUDGET: u32 = 2_000;"
   "APP|2000-step budget behavior regression       |pinvou3-app/src-tauri/src/features/assistant/platform/bridge.rs|fn engine_config_defaults_to_unified_step_budget_and_respects_override"
