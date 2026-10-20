@@ -133,6 +133,111 @@ test('引导兜底:三个入口都经 ensureLanguageWithZhFallback 引导', asyn
   }
 });
 
+// Round-49 M2 (Jensen round-49 P2): 入口双失败回归——helper 返回 null 时,
+// 三个入口必须挂词典无关的静态失败/重试态而不是照常挂载(词典依赖组件会
+// 在首帧 TypeError)。先钉接线:入口必须经 mountWhenLanguageReady 引导,
+// 不得退回裸 `.then(() => render)` 形状;再行为级驱动双失败分支。
+test('入口双失败接线:三个入口经引导门,不得退回裸 .then 挂载', async () => {
+  const fs = await import('node:fs');
+  const read = (p) => fs.readFileSync(new URL(p, import.meta.url), 'utf8');
+  for (const entry of [
+    '../src/app/main.jsx',
+    '../src/app/pet-main.jsx',
+    '../src/app/reader-main.jsx',
+  ]) {
+    const source = read(entry);
+    assert.match(
+      source,
+      /mountWhenLanguageReady\(\{/,
+      `${entry} 必须经 shared/entry-boot.js 的引导门挂载(round-49 M2)`,
+    );
+    assert.doesNotMatch(
+      source,
+      /ensureLanguageWithZhFallback\([^)]*\)\s*\.then\(/,
+      `${entry} 不得绕过引导门直接 .then 挂载(null 判定会被丢弃)`,
+    );
+  }
+});
+
+test('入口双失败行为:null 判定挂失败/重试态且不挂载,Retry 成功后才 mount', async () => {
+  const bootUrl = new URL('../src/shared/entry-boot.js', import.meta.url).href;
+  const { mountWhenLanguageReady } = await import(
+    `${bootUrl}?case=${Math.random().toString(36).slice(2)}`
+  );
+
+  // 最小 DOM 桩:记录绘制效果,暴露 Retry 监听器供测试驱动。
+  function fakeDoc() {
+    const listeners = new Map();
+    const makeEl = (tag) => ({
+      tag,
+      type: undefined,
+      textContent: '',
+      attributes: {},
+      dataset: {},
+      children: [],
+      setAttribute(key, value) { this.attributes[key] = value; },
+      addEventListener(kind, fn) { listeners.set(kind, fn); },
+      append(...els) { this.children.push(...els); },
+    });
+    const host = makeEl('#root');
+    return {
+      host,
+      listeners,
+      createElement: (tag) => makeEl(tag),
+      querySelector: (sel) => (sel === '#root' ? host : null),
+      clickRetry() {
+        const fn = listeners.get('click');
+        if (fn) fn();
+      },
+    };
+  }
+
+  let attempts = 0;
+  let mounted = 0;
+  const doc = fakeDoc();
+  // 注意用 undefined 表示"继续双失败":null ?? fallback 会把 null 吞掉。
+  const verdicts = [null, null, 'en'];
+  const boot = mountWhenLanguageReady({
+    load: () => {
+      attempts += 1;
+      const verdict = verdicts.shift();
+      return Promise.resolve(verdict === undefined ? 'en' : verdict);
+    },
+    mount: () => { mounted += 1; },
+    doc,
+  });
+
+  // 第一轮:双失败(null)——不得挂载,须挂静态失败态(硬编码英文文案 +
+  // Retry 按钮,词典不可用态下不存在可用 i18n 文案)。
+  await new Promise((resolve) => { setTimeout(resolve, 0); });
+  assert.equal(attempts, 1);
+  assert.equal(mounted, 0, '双失败判定不得挂载词典依赖组件');
+  const box = doc.host.children[0];
+  assert.ok(box, '双失败判定必须绘制失败态');
+  assert.equal(box.dataset.bootFailure, 'true');
+  const button = box.children[2];
+  assert.equal(button.textContent, 'Retry');
+
+  // 第二轮:Retry 再次双失败——仍是失败态,依然不挂载。
+  doc.clickRetry();
+  await new Promise((resolve) => { setTimeout(resolve, 0); });
+  assert.equal(attempts, 2);
+  assert.equal(mounted, 0, '重试再失败仍不得挂载');
+  assert.equal(doc.host.children[0].dataset.bootFailure, 'true', '失败态应重绘');
+
+  // 第三轮:Retry 后装载成功——恰挂载一次,且失败态被清除。
+  doc.clickRetry();
+  await new Promise((resolve) => { setTimeout(resolve, 0); });
+  assert.equal(attempts, 3);
+  assert.equal(mounted, 1, '装载成功后应恰好挂载一次');
+  assert.equal(doc.host.textContent, '', '挂载前应清掉失败态 DOM');
+
+  // boot 返回值可被测试/入口直接驱动,语义与 Retry 相同。
+  const direct = await boot();
+  assert.equal(direct, true);
+  assert.equal(mounted, 2);
+});
+
 // 引导兜底(round-46 M1):入口的降级装载链。旧 `dict[language] || dict.zh`
 // 是死腿——zh 只在语言=zh 时才装载,en/ja 用户 chunk 失败时该腿永远空,首帧
 // t.uiMainApp 解引用 undefined 即白屏。ensureLanguageWithZhFallback 让 zh 在

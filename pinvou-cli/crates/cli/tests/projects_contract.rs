@@ -1923,3 +1923,73 @@ fn projects_delete_exposes_auto_grouped_members_and_refuses_a_corrupt_index() {
         .expect("corrupt the agent index");
     expect_failed(&["pinvou", "projects", "delete", &project_id2, "--yes"]);
 }
+
+// Round-49 M4: `update --roots` expulsion contract. A root replacement must
+// route through `cli_replace_roots_and_expel` (the GUI's expel flow, the
+// round-40 M4 parity requirement): narrowing the roots tombstones the
+// auto-grouped member bound under the dropped root, so the assignment map
+// drops it. Reverting the path to a plain `store.update_project` leaves the
+// stale assignment in place (count stays 2, and the GUI's align would
+// silently re-adopt the member); no other update test reaches the
+// replacement lane with auto-grouped members at all.
+#[test]
+fn projects_update_roots_expels_auto_grouped_members() {
+    let _lock = env_lock();
+    let home = HomeGuard::new("projects", "update-expel", Isolation::ProductHome);
+    let kept_root = home.path().join("kept-root");
+    let dropped_root = home.path().join("dropped-root");
+    std::fs::create_dir_all(&kept_root).expect("kept project root");
+    std::fs::create_dir_all(&dropped_root).expect("dropped project root");
+
+    let created = create_project("cli-update-expel", &[&kept_root, &dropped_root]);
+    let project_id = created["id"].as_str().unwrap().to_owned();
+    // An AUTO-GROUPED member under each root (tier-2 binding, no explicit
+    // assignment): the dropped-root one must be expelled, the kept-root one
+    // must survive the replacement.
+    let survivor = bind_code_session(&kept_root);
+    let expelled = bind_code_session(&dropped_root);
+
+    let value = run_json(&[
+        "pinvou",
+        "projects",
+        "update",
+        &project_id,
+        "--root",
+        kept_root.to_str().unwrap(),
+    ]);
+    // The replacement is wholesale: only the kept root remains.
+    let listed: Vec<&str> = value["roots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|entry| entry["path"].as_str())
+        .collect();
+    assert_eq!(
+        listed,
+        vec![kept_root.to_str().unwrap()],
+        "the root list must be replaced wholesale: {value}"
+    );
+
+    // The tombstone, asserted where it lives: the expelled member must hold
+    // an explicit-None entry in the durable assignment map. This is the
+    // exact discriminator against the round-40 M4 divergence class — a
+    // plain `store.update_project` would leave NO map entry (the member
+    // silently re-adoptable), which a bare count assertion cannot see
+    // (tier-2 members never enter the map to begin with).
+    let relisting = run_json(&["pinvou", "projects", "list"]);
+    let assignments = relisting["assignments"]
+        .as_object()
+        .expect("projects list must carry the assignment map");
+    assert!(
+        assignments.contains_key(expelled.as_str()),
+        "the expelled member must have an explicit assignment-map entry (the tombstone): {relisting}"
+    );
+    assert!(
+        assignments.get(expelled.as_str()).unwrap().is_null(),
+        "the expelled member's entry must be an explicit-None tombstone: {relisting}"
+    );
+    assert!(
+        !assignments.contains_key(survivor.as_str()),
+        "the kept-root member must stay tier-2-only (no map entry): {relisting}"
+    );
+}

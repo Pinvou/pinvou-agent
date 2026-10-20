@@ -25,6 +25,7 @@ import { useCompactViewport, useVisualViewportHeight } from '../hooks/useViewpor
 import { useSystemDarkMode } from '../hooks/useSystemDarkMode.js';
 import { COLOR_SCHEME_STORAGE_KEY, normalizeColorScheme, resolveTheme } from '../shared/color-scheme.js';
 import { DEFAULT_CHAT_TITLES, dict, createLatestLanguageGate, ensureLanguage, ensureLanguageWithZhFallback, LANG_TO_TAG, initialSystemLanguage, SEARCH_KEY_PROVIDERS, TAG_TO_LANG, zhDict } from '../shared/i18n.js';
+import { mountWhenLanguageReady } from '../shared/entry-boot.js';
 import { formatSessionDate, localDateKey, formatDateGroupLabel } from '../shared/date-utils.js';
 import { groupSessionsWithProjects, resolveSessionProjectId, needsAddFolderConfirm, WORKSPACE_KIND_BOUND } from '../features/projects/projectGrouping.js';
 import { interpretFolderEnsureOutcomes } from '../features/projects/folderEnsure.js';
@@ -4745,16 +4746,22 @@ const App = () => {
         return value && ['zh', 'en', 'ja'].includes(value) ? value : null;
       } catch { return null; }
     })();
-    ensureLanguageWithZhFallback(__storedLang || __initialLang).then(function () {
-      if (__q.get('detached') === '1') {
-        window.__PINVOU_DETACHED__ = true;
-        root.render(
-          <Suspense fallback={<div className="p-6 text-sm opacity-60">…</div>}>
-            <LazyDetachedShell kind={__q.get('kind') || 'monitor'} id={__q.get('id') || ''} />
-          </Suspense>
-        );
-      } else {
-        window.__PINVOU_STARTUP__.mark('react:render_call');
-        root.render(<App />);
-      }
+    // 双失败引导终态(round-49 M2):装载返回 null(首选与 zh chunk 都不可达)
+    // 时照常挂载会让词典依赖组件在首帧 TypeError;由 mountWhenLanguageReady
+    // 以词典无关的静态失败/重试态替代(见 shared/entry-boot.js)。
+    mountWhenLanguageReady({
+      load: () => ensureLanguageWithZhFallback(__storedLang || __initialLang),
+      mount: function () {
+        if (__q.get('detached') === '1') {
+          window.__PINVOU_DETACHED__ = true;
+          root.render(
+            <Suspense fallback={<div className="p-6 text-sm opacity-60">…</div>}>
+              <LazyDetachedShell kind={__q.get('kind') || 'monitor'} id={__q.get('id') || ''} />
+            </Suspense>
+          );
+        } else {
+          window.__PINVOU_STARTUP__.mark('react:render_call');
+          root.render(<App />);
+        }
+      },
     });

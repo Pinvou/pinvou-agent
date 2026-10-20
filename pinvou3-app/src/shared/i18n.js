@@ -115,8 +115,10 @@ export function zhDict() {
 // preferred language; if its chunk cannot load (offline web, stale hashed
 // chunk after a redeploy), load zh so the render-path leg
 // `dict[language] || zhDict()` degrades to Chinese copy instead of
-// undefined. Returns the ready language ('en'|'ja'|'zh') or null when even
-// zh failed (nothing renderable — a white screen is then honest).
+// undefined. Returns the ready language ('en'|'ja'|'zh'), or null when even
+// zh failed — nothing renderable is left, so callers (the three entries,
+// via shared/entry-boot.js) must paint the static failure/retry screen
+// instead of mounting dictionary-dependent components (round-49 M2).
 export async function ensureLanguageWithZhFallback(lang) {
   if (await ensureLanguage(lang)) return lang;
   if (await ensureLanguage('zh')) return 'zh';

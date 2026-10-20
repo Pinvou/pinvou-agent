@@ -5614,14 +5614,42 @@ mod tests {
             chat_arms >= 1,
             "the chat lane must dispatch AssignmentFailed"
         );
-        for (lane, source) in [("codex", &codex), ("chat", &sessions)] {
-            let degraded = source
-                .matches("emit_create_channel_assignment_degraded")
-                .count();
+        // Round-49 M3: per-SITE pairing. The file-level counts above still
+        // let a swap survive — swapping ONE arm's degraded emit to the
+        // success event leaves the other site satisfying both counts (the
+        // round-47 fix closed the arm-count half but not the pairing half).
+        // Each AssignmentFailed arm's own body (the window from the arm
+        // marker to the next match arm) must emit the degraded event and
+        // never the success one.
+        fn assignment_arm_bodies(source: &str) -> Vec<&str> {
+            let marker = "ProjectChoiceRecord::AssignmentFailed =>";
+            let mut bodies = Vec::new();
+            let mut rest = source;
+            while let Some(pos) = rest.find(marker) {
+                let after = &rest[pos + marker.len()..];
+                let end = after.find("ProjectChoiceRecord::").unwrap_or(after.len());
+                bodies.push(&after[..end]);
+                rest = &after[end..];
+            }
+            bodies
+        }
+        for (lane, source, expected_sites) in [("codex", codex, 2usize), ("chat", sessions, 1)] {
+            let bodies = assignment_arm_bodies(source);
             assert!(
-                degraded >= 1,
-                "the {lane} lane must surface the degraded notice"
+                bodies.len() >= expected_sites,
+                "the {lane} lane must carry {expected_sites} AssignmentFailed dispatch site(s), found {}",
+                bodies.len()
             );
+            for (site, body) in bodies.iter().enumerate() {
+                assert!(
+                    body.contains("emit_create_channel_assignment_degraded"),
+                    "the {lane} lane's AssignmentFailed dispatch site #{site} must emit the degraded event inside its own arm (round-49 M3 mutation window)"
+                );
+                assert!(
+                    !body.contains("emit_create_channel_assignment_event"),
+                    "the {lane} lane's AssignmentFailed dispatch site #{site} must not fire the success event"
+                );
+            }
         }
         // The wrapper must not fire the success event unconditionally (the
         // M2a masking shape): after the last emit_create_channel_assignment
