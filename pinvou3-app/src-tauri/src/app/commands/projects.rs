@@ -753,7 +753,10 @@ fn align_probe_busy(
 /// unwrapped; this closes the asymmetry for the kernel legs.
 fn render_align_error(e: anyhow::Error) -> String {
     let rendered = format!("{e:#}");
-    if rendered.starts_with("ALIGN_") {
+    // Round-48 minor 1: several kernel legs already render with this
+    // command's prefix (retention-purge, aux guard, store reads); prefixing
+    // those again double-prefixes the user-facing message.
+    if rendered.starts_with("ALIGN_") || rendered.starts_with("align_session_to_project: ") {
         rendered
     } else {
         format!("align_session_to_project: {rendered}")

@@ -10,10 +10,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 // Round-46 M2: bumped 5 -> 6 — this PR persists two new per-record fields
-// (workspace_roots, explicit_ancestor_roots); a pre-PR binary sharing the
-// home would strip them on its own whole-table persists. The gate makes an
-// older binary refuse the newer index instead (rebuild from sidecars, not
-// data loss), so every index reader must check it, not just load().
+// (workspace_roots, explicit_ancestor_roots); binaries WITHOUT this gate
+// strip them on their own whole-table persists. Readers carrying the check
+// refuse the newer index instead (rebuild from sidecars, not data loss);
+// every reader in THIS binary checks it (round-48 minor 3: the refusal is
+// a property of the checking reader, not of the file's writer era).
 const STORE_VERSION: u32 = 6;
 const CONFIG_DEFAULTS_VERSION: u32 = 1;
 /// 原生代码会话 sidecar 的 schema 版本；未来字段演进时用于迁移。

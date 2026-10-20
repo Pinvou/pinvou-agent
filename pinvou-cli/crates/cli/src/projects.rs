@@ -493,7 +493,10 @@ fn create(name: &str, roots: Vec<PathBuf>, output: OutputMode) -> Result<CliOutc
     // and this PR's own round-40 M4 rationale (same durable assignment map
     // via GUI or CLI) closes the class for update/delete; create joins them
     // (a create landing mid-rebind would re-add a `from`-prefixed root after
-    // the rebind's snapshot).
+    // the rebind's snapshot). Precision (round-48): the fence is a
+    // process-local mutex — it serializes writers on this store handle, it
+    // does NOT exclude a separately running desktop or CLI process (the
+    // cross-process boundary is the section-lock discipline).
     let _fence = store
         .rebind_fence()
         .map_err(|error| project_error("create", error))?;

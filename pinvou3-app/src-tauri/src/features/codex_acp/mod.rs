@@ -5288,8 +5288,11 @@ impl AcpPool {
         // Round-41 minor 2: `saved` was captured before the multi-second
         // handshake — an align kernel committing mid-spawn would be silently
         // reverted by the full rewrite below (the over-grant direction).
-        // Re-read the keychain under the section lock immediately before
-        // persisting; a missing record falls back to fresh-spawn defaults.
+        // Re-read the keychain immediately before persisting (round-48
+        // minor 2: this is the in-memory RwLock read, not the cross-process
+        // section lock — the persist below remains an unlocked writer per
+        // the events.rs six-writer disclosure); a missing record falls back
+        // to fresh-spawn defaults.
         let fresh_keychain = self.agents.session_workspace_keychain(pinvou_session_id);
         persist_acp_state(
             pinvou_session_id,
