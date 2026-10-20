@@ -591,6 +591,16 @@ async function visibilityBox(page, cardText, modeLabel, click) {
         const qrImg = [...document.querySelectorAll('img')].some(i => (i.getAttribute('src') || '') === 'data:image/png;base64,AAAA');
         return !qrImg && !document.body.innerText.includes('用企业微信 App 扫一扫');
       }));
+      // 真实用户旅程回归前置：重新走到扫码相位并停在那里（QR 在屏），让下方
+      // 共享的 wecom:connected 事件落在 qr 相位上——与「扫码成功时二维码卡正
+      // 开着」一致，done 转换才会触发组件级收尾（loadBackendState 刷新连接态）。
+      await clickExact(page, '连接'); await sleep(260);
+      await page.evaluate(() => window.__emitTauri('wecom:qr', {
+        phase: 'authorize',
+        url: 'https://work.weixin.qq.com/ai/qc/gen?source=wecom_cli_external&test=1',
+        qr_data_url: 'data:image/png;base64,AAAA',
+      }));
+      await sleep(150);
     }
     if(id==='tmeet'){
       await page.evaluate(() => window.__emitTauri('tmeet:qr', {
@@ -635,6 +645,21 @@ async function visibilityBox(page, cardText, modeLabel, click) {
     await sleep(180); await dismiss(page);
     const info=await page.evaluate(({commands})=>({calls:commands.every(c=>window.__TOOL_STORE_TEST__.calls.some(x=>x.cmd===c)),seen:window.__TOOL_STORE_TEST__.calls.map(x=>x.cmd)}),{commands});
     rec(`${query} 授权编排命令与成功事件`,info.calls,info.calls?'':JSON.stringify(info.seen.slice(-12)));
+    if(id==='feishu'||id==='wecom'){
+      // 回归（用户实机报告）：连接成功后详情弹窗还开着——动作按钮必须随
+      // bundle_readiness 即时切换为「断开」、已连接横幅出现；快照滞留的旧表现
+      // 是按钮停在「连接」而横幅已「已连接」，重开弹窗才恢复。横幅在 done 卡
+      // 1.8s 收起后才显示，轮询等待收起计时器走完（上限 8s 防 CI 慢机 flake）。
+      // 只看动作按钮（data-testid=tool-store-action）：详情页已连接卡还并列
+      // 「导出」按钮（同 data-tool-id），不能进 every 判定。
+      const switched = await page.waitForFunction(({id,name})=>{
+        const buttons=[...document.querySelectorAll(`button[data-testid="tool-store-action"][data-tool-id="${id}"]`)];
+        return buttons.length>0
+          &&buttons.every(b=>(b.textContent||'').trim()==='断开')
+          &&document.body.innerText.includes(`已连接${name}`);
+      },{timeout:8000},{id,name:{feishu:'飞书',wecom:'企业微信'}[id]}).then(()=>true).catch(()=>false);
+      rec(`${query} 连接完成后详情弹窗按钮即时切换为断开`,switched);
+    }
     await closeDetail(page,query);
   }
 

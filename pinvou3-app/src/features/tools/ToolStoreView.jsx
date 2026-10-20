@@ -2156,6 +2156,23 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
         return () => { document.body.style.overflow = 'unset'; };
       }, [selectedTool]);
 
+      // 详情弹窗的动作按钮必须吃实时连接态：弹窗持有的是点开时的卡对象快照，
+      // 连接/断开完成后 loadBackendState 只刷新列表数据源（bundleStates 等），
+      // 快照的 installed/actions 停留旧值——按钮滞留「连接」，而横幅按实时连接
+      // 态已显示「已连接」，要重开弹窗才恢复（用户实机报告）。按钮驱动的
+      // installed/actions 从列表实时卡覆盖（与列表卡同源同值）；其余展示字段
+      // 维持快照（生效名/说明的显式补拉见 doEditDisplaySave）；卡已不在列表
+      // （卸载后消失的自定义包/上传技能）时回退快照——对应操作路径已显式
+      // patch installed。
+      const selectedLiveTool = selectedTool
+        ? (tools.find(x => x.backendId === selectedTool.backendId)
+          || skillCards.find(x => x.backendId === selectedTool.backendId))
+        : null;
+      const detailTool = selectedTool
+        ? (selectedLiveTool
+          ? { ...selectedTool, installed: selectedLiveTool.installed, actions: selectedLiveTool.actions }
+          : selectedTool)
+        : null;
       // Detail page "Connected" banner (five connectors, one shared visual shell): CLI connectors need the connection
       // state ready and the flow card collapsed; ima has no flow card, connection state only. Mutually exclusive, at most one shows.
       const connectedBanners = [
@@ -2733,7 +2750,7 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
                       <h2 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white mb-2 tracking-tight">{selectedTool.title}</h2>
                       <p className="text-[17px] text-slate-500 dark:text-slate-400 mb-5 font-medium">{selectedTool.subtitle}</p>
                       <div className="flex flex-col items-end gap-1.5">
-                        <PlatformToolAction tool={selectedTool} busy={busyId === selectedTool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} onEditDisplay={handleEditDisplay} onExport={handleExportInstalled} size="lg" copy={storeCopy} t={t} />
+                        <PlatformToolAction tool={detailTool} busy={busyId === selectedTool.backendId} onAction={handleAction} onUpdate={handleSkillUpdate} onEditDisplay={handleEditDisplay} onExport={handleExportInstalled} size="lg" copy={storeCopy} t={t} />
                         {((selectedTool.feishuCli && !feishuConnected) || (selectedTool.wecomCli && !wecomConnected) || (selectedTool.dingtalkCli && !dingtalkConnected) || (selectedTool.tmeetCli && !tmeetConnected)) && <span className="text-[11px] text-slate-400">{storeCopy.firstUseOnlineInstall}</span>}
                       </div>
                     </div>
