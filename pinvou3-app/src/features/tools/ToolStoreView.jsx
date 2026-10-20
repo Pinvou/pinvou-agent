@@ -435,6 +435,10 @@ const withUiTimeout = (promise, timeoutMs, fallbackResult) => {
             reportConnectorFailure(cfg.key, failure, 'qr');
             // Same null guard: a failure landing after the card was closed must not fabricate one.
             conn.setFlow(f => (f ? applyConnectorFailure(f, failure, 'qr') : f));
+            // Round-38 parity with the fire-and-forget branch (round-2 review m7): the awaited
+            // apply's failure path also churns backend state (deny-first grant + revoke), so the
+            // composer must refetch here too instead of waiting for the next unrelated broadcast.
+            notifyComposerToolsChanged();
           }
         });
         ev.listen(cfg.events.error, (e) => {
