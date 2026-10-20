@@ -256,9 +256,10 @@ fi
 # -fuse-ld only accepts NAMES (resolved as `ld.<name>` via -B/search paths),
 # not absolute paths — so the wrapper ships a shim DIRECTORY containing an
 # `ld.lld` that resolves rust-lld from the ACTIVE rustc sysroot at link
-# time (this setup step runs before rust is installed on the release
-# runner, so the path cannot be baked in here). Rewritten every run:
-# idempotent. sh -n on both generated files.
+# time. The path must not be baked in here: this setup tree is cache-reused
+# across runs while rust floats on "stable" (rustup resolves whatever the
+# workflow installed that day), so a pinned path would rot on the next
+# rustc upgrade. Rewritten every run: idempotent. sh -n on both files.
 mkdir -p "$toolchain_bin/lld-shim"
 cat >"$toolchain_bin/lld-shim/ld.lld" <<SHIM
 #!/bin/sh

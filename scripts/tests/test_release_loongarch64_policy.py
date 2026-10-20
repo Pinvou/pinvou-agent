@@ -141,6 +141,24 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
                 stripped.startswith("RUSTFLAGS=") or stripped.startswith("export RUSTFLAGS"),
                 f"the orchestrator must leave RUSTFLAGS unset, found: {stripped}",
             )
+            # The target-scoped spelling deserves its own guard: it is the
+            # EXACT form the pre-#737 orchestrator exported (the --sysroot
+            # link-arg behind the 0.10.13 failure), and plain
+            # startswith("...RUSTFLAGS") does not match it. cargo would let
+            # it silently shadow the job-level remap-only RUSTFLAGS for the
+            # target units.
+            self.assertIsNone(
+                re.search(r"CARGO_TARGET_[A-Z0-9_]*RUSTFLAGS=", stripped),
+                f"the orchestrator must not export target-scoped rust flags, found: {stripped}",
+            )
+        # ...and the orchestrator fails closed at runtime if such a variable
+        # is present in its environment (belt and braces beyond this static
+        # scan: a workflow step could set it without touching this script).
+        self.assertIn(
+            "CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS is set — remove it",
+            orchestrator_code,
+            "the orchestrator must fail closed on a target-scoped RUSTFLAGS override",
+        )
 
     def test_verify_sysroot_asserts_the_startup_objects(self):
         # Startup objects are named by no linker script and no -l flag: the
@@ -162,6 +180,47 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             "sysroot lacks the startup object $crt_obj",
             sysroot,
             "the startup-object check must fail with its own message",
+        )
+
+    def test_verify_sysroot_asserts_the_link_resolution_surface(self):
+        # The reuse path (already_built → verify-only) is the ONLY guard a
+        # truncated cache restore hits before the build, so verify_sysroot
+        # must cover the whole link resolution surface, not just libc.so:
+        # every text script's .a members (libm.so's AS_NEEDED group
+        # references libmvec.a, which every -lm resolution opens) and the
+        # GROUP dev stubs prune_sysroot materializes (libpthread.so/libdl.so
+        # plus the runtime stub objects behind them). A libc.so-only verify
+        # passes a tree missing exactly those and dies far later at the
+        # cmake ggml link with "cannot find -lpthread".
+        sysroot = _without_comments(self.sysroot)
+        # The archive scan must run over EVERY text script (the
+        # find|grep -lIZ loop), not a single hardcoded libc.so grep.
+        self.assertIn(
+            "| xargs -0 -r grep -lIZ . 2>/dev/null)",
+            sysroot,
+            "verify_sysroot must scan every text linker script for archive refs",
+        )
+        self.assertIn(
+            "references $ref_archive but the sysroot lacks it",
+            sysroot,
+            "the .a-member check must fail with its own message",
+        )
+        # The GROUP dev stubs and their runtime backing objects.
+        for name in (
+            "libpthread.so",
+            "libpthread.so.0",
+            "libdl.so",
+            "libdl.so.2",
+        ):
+            self.assertIn(
+                '$MULTIARCH_DIR/%s"' % name,
+                sysroot,
+                f"verify_sysroot must assert the stub {name} for the reuse path",
+            )
+        self.assertIn(
+            "sysroot lacks the libpthread.so dev script",
+            sysroot,
+            "the stub check must fail with its own message",
         )
 
     def test_cmake_link_surfaces_carry_the_multiarch_search_path(self):
@@ -628,11 +687,26 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             self.assertEqual(shimmed.returncode, 0, shimmed.stderr)
             self.assertIn("FAKE-LLD <-o> <app> <a.o> <b.o>", shimmed.stdout)
 
-            # No rustc on PATH: fail loudly with the actionable message, not
-            # with a silent bfd fallback.
+            # Broken resolution, REAL scenario: rustc IS resolvable but the
+            # rust sysroot it reports carries no gcc-ld/ld.lld (utilities
+            # like find stay available from the system PATH) — the exact
+            # case the shim's message describes. Fail loudly with the
+            # actionable message and exit 127, not with a silent bfd
+            # fallback. (PATH must keep the system dirs: a bin-only PATH
+            # would fail on the missing `find` binary instead, exercising a
+            # different failure than the one this assertion is about.)
+            bin_no_lld = tmp / "bin-no-lld"
+            bin_no_lld.mkdir()
+            empty_sysroot = tmp / "empty-sysroot"
+            empty_sysroot.mkdir()
+            fake_rustc_no_lld = bin_no_lld / "rustc"
+            fake_rustc_no_lld.write_text(
+                "#!/bin/sh\necho %s\n" % shlex.quote(str(empty_sysroot))
+            )
+            fake_rustc_no_lld.chmod(0o755)
             broken = subprocess.run(
                 [str(shim), "-o", "app", "a.o"],
-                env={"PATH": str(bin_dir)},
+                env={"PATH": f"{bin_no_lld}:{os.environ.get('PATH', '')}"},
                 capture_output=True,
                 text=True,
                 timeout=60,
@@ -651,7 +725,9 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         # the whole prune_sysroot runs on a synthetic tree so the view
         # contract is exercised, not just spelled.
         sysroot = _without_comments(self.sysroot)
-        self.assertIn('ln -s "../${loader_src#"$root"/}"', sysroot)
+        # -fn: [ ! -e ] passes for a dangling leftover symlink, and a plain
+        # `ln -s` onto it aborts with a raw "File exists" mid-prune.
+        self.assertIn('ln -sfn "../${loader_src#"$root"/}"', sysroot)
         self.assertIn("view did not resolve after materialization", sysroot)
 
         import os
@@ -747,7 +823,11 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
                 [
                     "bash",
                     "-c",
-                    "source %s; prune_sysroot %s"
+                    # Production runs under `set -euo pipefail` (the sysroot
+                    # script sets it globally); exercise prune_sysroot under
+                    # the same errexit semantics so a mid-prune raw abort is
+                    # a test failure, not a silent partial tree.
+                    "set -euo pipefail; source %s; prune_sysroot %s"
                     % (shlex.quote(str(fragment)), shlex.quote(str(root))),
                 ],
                 env=env,
@@ -804,6 +884,37 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
                 str((ma / "libdbus-1.so").readlink()),
                 "../../../lib/loongarch64-linux-gnu/libdbus-1.so.3.32.4",
             )
+
+            # The post-rewrite fail-closed net is GENERIC, not a fixed-shape
+            # allowlist: ANY surviving absolute `.so` path must abort the
+            # prune with the file named. Plant an escape form that neither
+            # the sed patterns nor a leading-space shape list could match (a
+            # no-space `GROUP(` + an unrewritten `/usr/lib64/` directory) —
+            # a 4-shape scan would stay green here and the link would die
+            # much later with "cannot find /usr/lib64/...".
+            (ma / "libresidual.so").write_text(
+                "GROUP(/usr/lib64/ld-linux-loongarch-lp64d.so.1 libc.so.6)\n"
+            )
+            again = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    "set -euo pipefail; source %s; prune_sysroot %s"
+                    % (shlex.quote(str(fragment)), shlex.quote(str(root))),
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            self.assertNotEqual(
+                again.returncode,
+                0,
+                "prune_sysroot must fail closed on a surviving absolute path",
+            )
+            self.assertIn("still carry absolute paths", again.stderr)
+            self.assertIn("libresidual.so", again.stderr)
+            (ma / "libresidual.so").unlink()
 
     def test_elf_policy_uses_bfd_independent_readelf(self):
         # check-linux-elf-policy.sh dumps dynamic symbols with readelf, not

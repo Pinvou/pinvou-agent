@@ -145,6 +145,14 @@ export CXX_loongarch64_unknown_linux_gnu="$TOOLCHAIN_BIN/$TRIPLE-g++"
 export AR_loongarch64_unknown_linux_gnu="$TOOLCHAIN_BIN/$TRIPLE-gcc-ar"
 export RANLIB_loongarch64_unknown_linux_gnu="$TOOLCHAIN_BIN/$TRIPLE-gcc-ranlib"
 export STRIP="$TOOLCHAIN_BIN/$TRIPLE-strip"
+# RUSTFLAGS are workflow-owned (job-level, remap-only) and must stay that
+# way: a target-scoped CARGO_TARGET_*_RUSTFLAGS silently SHADOWS the
+# job-level RUSTFLAGS for the target units, and cargo-only target-scoped
+# flags are invisible to the rustc link smoke below — the 0.10.13 release
+# link lost its startfiles to exactly such a target-scoped --sysroot
+# link-arg. Fail closed at setup time if one is present.
+[ -z "${CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS:-}" ] \
+  || fail "CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS is set — remove it: RUSTFLAGS are workflow-owned (remap-only) and a target-scoped value silently shadows them for the target units"
 # Cargo links through the rust-lld wrapper (rustc's LLVM emits R_LARCH_CALL36
 # that the bundled bfd 2.41 cannot resolve; the wrapper keeps native cmake/cc
 # builds on bfd and the glibc 2.38 floor unchanged). The wrapper is
@@ -295,11 +303,13 @@ toolchain: $toolchain_root
 sysroot: $sysroot
 # CI step exports (recompute at consumption time; see also the env blocks
 # printed by the two setup scripts):
-#   CC/CXX/AR/RANLIB_loongarch64_unknown_linux_gnu (+ verbatim-triple forms),
-#   CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER, STRIP,
-#   PKG_CONFIG_LIBDIR, PKG_CONFIG_SYSROOT_DIR, CMAKE_TOOLCHAIN_FILE
+#   CC/CXX/AR/RANLIB_loongarch64_unknown_linux_gnu, STRIP,
+#   CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER,
+#   PKG_CONFIG_LIBDIR, PKG_CONFIG_SYSROOT_DIR, CMAKE_TOOLCHAIN_FILE,
+#   BINDGEN_EXTRA_CLANG_ARGS, LIBCLANG_PATH (llvm-18 prefix when present)
 #   (all set inside this script for its children; a workflow that runs the
 #   setup scripts directly exports the same values from their output).
-#   RUSTFLAGS stay the workflow's decision; the pinned toolchain has no lld,
-#   so the arm64 -fuse-ld=lld flag must not be copied.
+#   RUSTFLAGS stay the workflow's decision (remap-only; a target-scoped
+#   CARGO_TARGET_*_RUSTFLAGS is rejected above); the pinned toolchain has
+#   no lld, so the arm64 -fuse-ld=lld flag must not be copied.
 EOF
