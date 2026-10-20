@@ -37,8 +37,10 @@ pub fn append(ws: &Path, kind: &str, role: &str, detail: serde_json::Value) {
     let r = crate::platform::filesystem::open_private_append_file(&path)
         .and_then(|mut file| file.write_all(buf.as_bytes()));
     if let Err(e) = r {
-        // Round-26 minor 3: the audit stream must be observable where logs
-        // go, not only on a stderr the app may not surface.
+        // Round-26 minor 3, round-31 minor 10 wording: the audit stream
+        // must be observable where logs go, not only on a stderr the app
+        // may not surface — the write-failure CONTRACT is unchanged (log,
+        // never panic); only the channel moved from eprintln to log::warn.
         log::warn!("[audit] append failed ({}): {e}", path.display());
     }
 }

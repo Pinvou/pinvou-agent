@@ -704,6 +704,19 @@ mod tests {
 
     /// The feature-removal list merges into the engine-gate aggregation
     /// (unavailable_tool_names_for).
+    /// Round-31 minor 15: default-on membership is pinned by CONTENT —
+    /// removing "app-automations" from DEFAULT_INSTALLED_MCP_TOOLS used to
+    /// leave the entire suite green (the seed test iterates the const, so
+    /// an empty/shrunken const self-satisfies).
+    #[test]
+    fn default_installed_tools_name_the_automations_package() {
+        let installed = crate::features::marketplace::DEFAULT_INSTALLED_MCP_TOOLS;
+        assert!(
+            installed.contains(&"app-automations"),
+            "the app-automations package must be default-on: {installed:?}"
+        );
+    }
+
     #[test]
     fn feature_removal_flows_into_unavailable_tool_names() {
         crate::platform::test_support::with_temp_home("pinvou3-builtin-test", || {

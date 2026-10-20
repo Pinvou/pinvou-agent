@@ -94,6 +94,9 @@ const MAX_CREATE_ATTEMPTS: u32 = 3;
 /// Round-27 minor 9: pending-file ceiling per drain pass (the messaging
 /// sibling's 256; the sorted tail beyond it quarantines before processing).
 const MAX_PENDING_FILES: usize = 256;
+/// Round-31 minor 5: per-pass poison-warn budget (detail for the first
+/// few, one summary beyond — the failed/ evidence carries every record).
+const POISON_WARN_PER_PASS: usize = 8;
 /// Watch poll interval: task creations are rare; the MCP server's synchronous
 /// wait covers up to 5s, so 1s keeps the typical create inside one poll.
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -1304,6 +1307,11 @@ struct RetryState {
     attempts: HashMap<String, u32>,
     spool_dir_error_logged: bool,
     removal_error_logged: bool,
+    /// Round-31 minor 5: the ceiling-quarantine warn is once per streak
+    /// (the flag resets on a pass that does not hit the ceiling) — a
+    /// sustained re-plant flood at 1 Hz otherwise yields ~10k log
+    /// lines/s from this arm alone.
+    ceiling_warn_logged: bool,
     parked: HashMap<String, std::time::SystemTime>,
 }
 
@@ -1368,6 +1376,13 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
     // the tail must receive a terminal outcome, not time out into a
     // "pending" that is terminally dead.
     if files.len() > MAX_PENDING_FILES {
+        // Round-31 minor 5: one warn per flood streak, not one per record.
+        if !retries.ceiling_warn_logged {
+            log::warn!(
+                "[scheduled-creation] pending-file ceiling {MAX_PENDING_FILES} exceeded; quarantining the excess"
+            );
+            retries.ceiling_warn_logged = true;
+        }
         for path in files.split_off(MAX_PENDING_FILES) {
             let Some(name) = path
                 .file_name()
@@ -1387,11 +1402,9 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
             if quarantine(&path) {
                 // Best-effort receipt: the record may not even parse
                 // (hostile growth), in which case no marker is written —
-                // the log line and the failed/ evidence are the trace.
+                // the failed/ evidence and the streak warn above are the
+                // trace.
                 write_failure_marker(&stem, &error);
-                log::warn!(
-                    "[scheduled-creation] quarantining {name}: pending-file ceiling {MAX_PENDING_FILES} exceeded"
-                );
                 retries.attempts.remove(&name);
             } else {
                 // Persisted rename failure: leave the record queued and
@@ -1402,6 +1415,11 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
             }
         }
     }
+    if files.len() <= MAX_PENDING_FILES {
+        // Round-31 minor 5: a pass under the ceiling ends the flood streak.
+        retries.ceiling_warn_logged = false;
+    }
+    let mut poisons_this_pass: usize = 0;
     for path in files {
         let Some(name) = path
             .file_name()
@@ -1556,7 +1574,18 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                 }
             }
             Processed::Poison(error) => {
-                log::warn!("[scheduled-creation] quarantining {name}: {error:#}");
+                // Round-31 minor 5: per-record detail up to the pass budget;
+                // beyond it, one summary line. The failed/ evidence and each
+                // record's failure marker carry the error either way, so a
+                // re-plant flood cannot turn the drain into a log firehose.
+                poisons_this_pass += 1;
+                if poisons_this_pass <= POISON_WARN_PER_PASS {
+                    log::warn!("[scheduled-creation] quarantining {name}: {error:#}");
+                } else if poisons_this_pass == POISON_WARN_PER_PASS + 1 {
+                    log::warn!(
+                        "[scheduled-creation] further poison quarantines this pass are summarized; failed/ carries each record"
+                    );
+                }
                 audit_failure(sessions, &path, &error);
                 // Round-16 MAJOR-1: the budget clears only when the record
                 // actually left the spool; a persisted rename failure parks

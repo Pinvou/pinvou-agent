@@ -183,19 +183,22 @@ test('renderer wiring is present (timeline card + summary routing)', () => {
   // the QUIET_TOOLS check stays on the RAW text — it is a negative pin,
   // and over-stripping could silently satisfy one.
   const common = readStripped('features/tools/tool-common.jsx');
+  // Round-31 MAJOR-1: the labels alone were mutation-transparent — gutting
+  // all four case bodies to `return ''` kept the suite green. Bind the
+  // call expressions so the summaries are actually routed.
   assert.match(
     common,
-    new RegExp(`case ${'SCHEDULED_TASK_CREATE_TOOL'}:`),
+    new RegExp(`case ${'SCHEDULED_TASK_CREATE_TOOL'}:\\s*return scheduledTaskCreateSummary\\(`),
     'toolSummary must route the create tool through the logic module',
   );
   assert.match(
     common,
-    new RegExp(`case ${'SCHEDULED_TASK_UPDATE_TOOL'}:`),
+    new RegExp(`case ${'SCHEDULED_TASK_UPDATE_TOOL'}:\\s*return scheduledTaskUpdateSummary\\(`),
     'toolSummary must route the update tool through the logic module',
   );
   assert.match(
     common,
-    new RegExp(`case ${'SCHEDULED_TASK_DELETE_TOOL'}:`),
+    new RegExp(`case ${'SCHEDULED_TASK_DELETE_TOOL'}:\\s*return scheduledTaskDeleteSummary\\(`),
     'toolSummary must route the delete tool through the logic module',
   );
   const renderers = readStripped('features/tools/tool-renderers.jsx');

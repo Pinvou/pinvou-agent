@@ -88,6 +88,17 @@ test('the pending and duplicate rows render', () => {
     op: 'create', parsed: pending, args: {}, t,
   }));
   assert.ok(html.includes('Pending'), 'the pending row renders');
+  // Round-31 MAJOR-2: the duplicate-replay row (the only UI trace of the
+  // "recorded result" contract) was deletable invisibly — the old fixture
+  // asserted Pending on duplicate:false only. A duplicate:true replay must
+  // surface the localized duplicate row.
+  const replay = parseScheduledTaskToolOutput(unwrapMcpTextEnvelope(envelope({
+    ok: true, kind: 'create', taskId: 't-1', taskName: '早报', duplicate: true,
+  })));
+  const replayHtml = renderToStaticMarkup(React.createElement(ScheduledTaskToolCard, {
+    op: 'create', parsed: replay, args: { name: '早报' }, t,
+  }));
+  assert.ok(replayHtml.includes('Duplicate'), 'the duplicate row renders for an idempotent replay');
 });
 
 test('a name-less update does not claim "Renamed" (round-10 MAJOR-2)', () => {
