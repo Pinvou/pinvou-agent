@@ -1362,10 +1362,12 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
     // records becomes N real applies or N retained quarantines in one tick
     // (the design doc §7 "task explosion" mitigations lean on this bound).
     // Same ceiling and ordering: the first MAX drain in sorted order, the
-    // excess moves to failed/ (best-effort — a persisted rename failure
-    // leaves the file in place, still outside this pass's budget).
+    // excess quarantines. Round-30 MAJOR-4: the quarantine uses the shared
+    // collision-suffix rename (never overwrite earlier evidence), and each
+    // record gets a failure marker — a waiting caller whose record lands in
+    // the tail must receive a terminal outcome, not time out into a
+    // "pending" that is terminally dead.
     if files.len() > MAX_PENDING_FILES {
-        let _ = std::fs::create_dir_all(failed_dir());
         for path in files.split_off(MAX_PENDING_FILES) {
             let Some(name) = path
                 .file_name()
@@ -1374,15 +1376,30 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
             else {
                 continue;
             };
-            match std::fs::rename(&path, failed_dir().join(&name)) {
-                Ok(()) => log::warn!(
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string();
+            let error = anyhow::anyhow!(
+                "pending-file ceiling {MAX_PENDING_FILES} exceeded; the record was never applied"
+            );
+            if quarantine(&path) {
+                // Best-effort receipt: the record may not even parse
+                // (hostile growth), in which case no marker is written —
+                // the log line and the failed/ evidence are the trace.
+                write_failure_marker(&stem, &error);
+                log::warn!(
                     "[scheduled-creation] quarantining {name}: pending-file ceiling {MAX_PENDING_FILES} exceeded"
-                ),
-                Err(error) => log::warn!(
-                    "[scheduled-creation] could not quarantine {name} (pending-file ceiling {MAX_PENDING_FILES} exceeded): {error}"
-                ),
+                );
+                retries.attempts.remove(&name);
+            } else {
+                // Persisted rename failure: leave the record queued and
+                // say so; it stays outside this pass's budget either way.
+                log::warn!(
+                    "[scheduled-creation] could not quarantine {name} (pending-file ceiling {MAX_PENDING_FILES} exceeded)"
+                );
             }
-            retries.attempts.remove(&name);
         }
     }
     for path in files {
@@ -1932,6 +1949,69 @@ mod tests {
         )]);
         let record: SpooledCreationRequest = serde_json::from_str(&surviving).unwrap();
         assert!(record.validate().is_ok(), "the surviving BYDAY form applies");
+    }
+
+    /// Round-30 MAJOR-4: the pending-file ceiling's tail quarantine writes
+    /// a failure marker for every record (a waiting caller whose record
+    /// lands in the tail must receive a terminal outcome, not time out
+    /// into a "pending" that is terminally dead) via the shared
+    /// collision-suffix quarantine. The fixture uses a failing creator so
+    /// the first MAX records stay queued (attempt-1 failures) and only the
+    /// tail exercises the ceiling; removing write_failure_marker or
+    /// reverting to the plain rename turns this red.
+    #[tokio::test]
+    async fn pending_ceiling_quarantines_the_tail_with_failure_markers() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let spool = spool_root();
+        std::fs::create_dir_all(&spool).unwrap();
+        for i in 0..(MAX_PENDING_FILES + 8) {
+            std::fs::write(
+                spool.join(format!("f{i:04}.json")),
+                spool_record_json(&[]),
+            )
+            .unwrap();
+        }
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &FailingCreator,
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        for i in (MAX_PENDING_FILES)..(MAX_PENDING_FILES + 8) {
+            let name = format!("f{i:04}.json");
+            assert!(
+                failed_dir().join(&name).exists(),
+                "the sorted tail beyond the ceiling quarantines: {name}"
+            );
+            assert!(!spool.join(&name).exists());
+            let marker: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(done_dir().join(&name)).expect("failure marker"),
+            )
+            .unwrap();
+            assert_eq!(marker["ok"], false, "{marker}");
+            assert!(
+                marker["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("pending-file ceiling"),
+                "the marker names the ceiling: {marker}"
+            );
+            assert_eq!(
+                retries.attempts.get(&name).copied(),
+                None,
+                "the quarantined tail buys no retry budget"
+            );
+        }
+        // The first MAX records: attempt-1 failures stay queued for the
+        // budget (the ceiling is on pending files, not on deliveries).
+        assert_eq!(
+            retries.attempts.len(),
+            MAX_PENDING_FILES,
+            "the head of the list keeps its budget"
+        );
     }
 
     #[tokio::test]
