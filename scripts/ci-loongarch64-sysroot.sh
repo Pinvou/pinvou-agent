@@ -34,7 +34,13 @@
 #           gir1.2-gtk-3.0). Arch-qualified interpreter deps (`perl:any`,
 #           `python3:any`) are skipped by design: `:any` is satisfied by
 #           the build host, and the whitelist below would drop the payload
-#           anyway.
+#           anyway. WHY NOT apt itself (dpkg --add-architecture loong64 +
+#           a [trusted=yes] deepin source + apt-get download, or
+#           mmdebstrap/multistrap): all of them mutate host apt/dpkg state
+#           (or need root), assume a Debian-family build host, and the
+#           runner's jammy apt chokes on deepin's index; the embedded
+#           resolver keeps the step self-contained, rootless, and runnable
+#           on any dev host (the tests rely on that).
 #   Mirror overrides:
 #     PINVOU_LOONG64_DEEPIN_MIRROR  base URL (default
 #                                   https://community-packages.deepin.com/beige)
@@ -59,9 +65,12 @@
 # to multiple GB): after unpacking, everything outside a whitelist
 # (usr/include, usr/lib, usr/share/pkgconfig, lib) is deleted, plus known
 # non-linking bulk under usr/lib (gconv modules, perl/python trees, locale
-# archives) and all *.a/*.la except what the link actually resolves (the
-# linker-script-referenced members and the glibc merged-library compat
-# stubs — see prune_sysroot). gir-1.0 typelibs, docs, executables and
+# archives) and all *.a/*.la except the archives the ld linker scripts
+# reference (see prune_sysroot). prune_sysroot also rewrites the ld scripts
+# to bare-file-name form, materializes the /lib and /lib64 views, merges the
+# Debian multiarch header subtree into usr/include, materializes the
+# libpthread/libdl dev scripts and rebases absolute-target dev symlinks onto
+# the sysroot. gir-1.0 typelibs, docs, executables and
 # every other non-compile payload fall outside the whitelist.
 #
 # Verification before the script reports success: host pkg-config must
@@ -178,25 +187,40 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 [ -n "$output_dir" ] || output_dir="$DEFAULT_OUTPUT"
+# The rewrite pipeline below is newline-delimited by design (grep -l form),
+# so it carries any path EXCEPT one containing whitespace — there it would
+# silently split and the fail-closed net would report the misleading
+# "still carry absolute paths" instead of the real cause. Reject up front.
+case "$output_dir" in *[[:space:]]*)
+  fail "--output path contains whitespace ('$output_dir'): the ld-script rewrite pipeline is newline-delimited and cannot carry it" ;;
+esac
 case "$method" in
   auto|docker|apt) ;;
   *) fail "unknown --method '$method' (auto|docker|apt)" ;;
 esac
 if [ -n "$toolchain_prefix" ] && [ ! -d "$toolchain_prefix" ]; then
-  toolchain_prefix=""
+  fail "toolchain prefix '$toolchain_prefix' (--toolchain-prefix/PINVOU_LOONG64_TOOLCHAIN_PREFIX) does not exist — run scripts/ci-loongarch64-toolchain.sh first or leave it unset to use the default"
 fi
-mkdir -p "$output_dir"
+mkdir -p -- "$output_dir"
 output_dir="$(cd "$output_dir" && pwd)"
+# Re-check AFTER canonicalization: a relative --output that traverses a
+# symlink or parent directory containing whitespace passes the literal
+# check above but canonicalizes into a whitespace path — exactly the
+# split the rewrite pipeline cannot carry.
+case "$output_dir" in *[[:space:]]*)
+  fail "--output path contains whitespace ('$output_dir'): the ld-script rewrite pipeline is newline-delimited and cannot carry it" ;;
+esac
 
 mirror="${PINVOU_LOONG64_DEEPIN_MIRROR:-$DEFAULT_MIRROR}"
 suite="${PINVOU_LOONG64_DEEPIN_SUITE:-$DEFAULT_SUITE}"
 docker_image="${PINVOU_LOONG64_SYSROOT_IMAGE:-$DEFAULT_DOCKER_IMAGE}"
 
 if [ -n "$packages_csv" ]; then
-  IFS=, read -r -a DEV_PACKAGES <<< "$packages_csv"
+  # Trim: `--packages "a, b"` must not seed a package literally named " b".
+  IFS=, read -r -a DEV_PACKAGES <<< "$(printf '%s' "$packages_csv" | tr -d '[:space:]')"
 fi
 
-for command_name in curl gzip dpkg dpkg-deb readelf find pkg-config strings sha256sum python3; do
+for command_name in curl gzip dpkg dpkg-deb readelf find pkg-config strings sha256sum python3 grep sed awk xargs sort; do
   command -v "$command_name" >/dev/null || fail "missing required command: $command_name"
 done
 
@@ -245,50 +269,20 @@ pkg_config_env() {
 # ---- shared post-extraction: whitelist prune (Qomicex #215 size discipline) --
 prune_sysroot() {
   local root="$1"
-  # Usrmerge fold + aliases: deepin is usrmerged, so its packages ship
-  # runtime files only under usr/lib and usr/lib64 — but glibc's libc.so
-  # linker script references the historical absolute paths
-  # (/lib/loongarch64-linux-gnu/libc.so.6, /lib64/ld-linux-loongarch-
-  # lp64d.so.1; verified against libc6-dev 2.38-6deepin13+rb1). GNU ld
-  # resolves those against --sysroot when it opens the script from inside
-  # the sysroot, so /lib and /lib64 must exist and lead to usr/lib /
-  # usr/lib64. A real /lib or /lib64 directory shipped by ANY package of
-  # the closure (the first release run proved at least one does: the alias
-  # alone left /lib/loongarch64-linux-gnu/libc.so.6 unresolvable) must be
-  # folded into usr/ first — a real directory would silently shadow the
-  # alias and hide libc.so.6 behind it. Folding overwrites same-named
-  # files (dpkg never double-ships one path; pre-usrmerge leftovers equal
-  # their usr copies), and a package-shipped SYMLINK /lib is already the
-  # correct alias and is kept as-is.
-  merge_into_usr_lib() {
-    local d="$1"
-    if [ ! -e "$root/$d" ]; then
-      ln -s "usr/$d" "$root/$d"
-      return 0
-    fi
-    if [ -L "$root/$d" ]; then
-      return 0
-    fi
-    mkdir -p "$root/usr/$d"
-    cp -a "$root/$d/." "$root/usr/$d/"
-    rm -rf -- "$root/$d"
-    ln -s "usr/$d" "$root/$d"
-  }
-  merge_into_usr_lib lib
-  merge_into_usr_lib lib64
-  # Whitelist: usr/include, usr/lib, usr/lib64, usr/share/pkgconfig, lib,
-  # lib64. Everything else (etc, bin, sbin, var, usr/bin, docs, man,
-  # locales, gir typelibs, gtk-doc, dbus system configs, udev rules, ...)
-  # is irrelevant to compiling/linking and is removed. The lib64 keeps are
-  # load-bearing, not conservative: glibc's libc.so script AS_NEEDEDs the
-  # loader at /lib64/ld-linux-loongarch-lp64d.so.1 and usr/lib64 (a real
-  # directory on deepin, holding the relative loader symlink into
-  # usr/lib/loongarch64-linux-gnu) must survive for the usrmerge alias below
-  # to resolve it — deleting usr/lib64 turns every link into a fatal "cannot
-  # open /lib64/..." after a full compile.
-  find "$root" -mindepth 1 -maxdepth 1 ! -name usr ! -name lib ! -name lib64 \
-    -exec rm -rf -- {} +
+  # Whitelist: usr/include, usr/lib, usr/share/pkgconfig, lib. Everything
+  # else (etc, bin, sbin, var, usr/bin, docs, man, locales, gir typelibs,
+  # gtk-doc, dbus system configs, udev rules, ...) is irrelevant to
+  # compiling/linking and is removed.
+  # lib64 stays: glibc's program loader (ld-linux-loongarch-lp64d.so.1)
+  # lives there and every resolution form of the rewritten ld scripts
+  # finds its target inside the sysroot.
+  find "$root" -mindepth 1 -maxdepth 1 ! -name usr ! -name lib ! -name lib64 -exec rm -rf -- {} +
   if [ -d "$root/usr" ]; then
+    # lib64 kept at the usr level too: some libc6 builds place the program
+    # loader under usr/lib64 rather than the multiarch dir or root-level
+    # lib64; deleting it turns that layout into a loud-but-avoidable
+    # "program loader not found anywhere" failure. Harmless to keep — the
+    # bare-name rewrite means nothing references it.
     (cd "$root/usr" && find . -mindepth 1 -maxdepth 1 \
       ! -name include ! -name lib ! -name lib64 ! -name share -exec rm -rf -- {} +)
   fi
@@ -316,29 +310,32 @@ prune_sysroot() {
       gconv perl perl-base gir-1.0 girepository-1.0 gstreamer-1.0 systemd)
   fi
   # Static archives and libtool files: the app links the sysroot
-  # dynamically; keeping .a would only bloat it. Exception 1: GNU ld linker
-  # scripts (the text .so files, e.g. glibc's libc.so) name archive members
-  # (libc_nonshared.a, and libmvec.a via libm.so's AS_NEEDED group) that
-  # every -l resolution through those scripts requires — deleting them
-  # turns each link into a fatal "cannot find" at release-build time, which
-  # cargo check legs never catch because they do not link.
+  # dynamically; keeping .a would only bloat it. Exceptions, in two classes:
+  # - GNU ld linker scripts (the text .so files, e.g. glibc's libc.so) name
+  #   archive members (libc_nonshared.a) that every -l resolution through
+  #   those scripts requires — deleting them turns each link into a fatal
+  #   "cannot find" at release-build time, which cargo check legs never
+  #   catch because they do not link. (Whether a given tree also ships
+  #   libmvec.a behind libm.so is build-dependent; the scan is generic.)
+  # - glibc ≥2.34 folds librt/libutil/libanl into libc and libc6-dev ships
+  #   them as empty stub archives only. rustc's link tail unconditionally
+  #   appends `-lutil -lrt` (captured from `rustc --target … -v`), and once
+  #   a pkg-config-driven -sys crate emits the deepin -L, the deepin tree
+  #   is searched FIRST — so the stubs must live here, not only in the
+  #   toolchain sysroot nothing verifies. ~40 bytes each; asserted in
+  #   verify_sysroot.
+  # Every multiarch-scoped scan below runs find(1) with stderr silenced; on
+  # a tree without the dir it would exit non-zero (keep_names) or empty
+  # (the rest) and fail later message-less under pipefail. Name the real
+  # problem here instead.
+  [ -d "$root/usr/lib/$MULTIARCH_DIR" ] \
+    || fail "sysroot lacks usr/lib/$MULTIARCH_DIR (unexpected package layout — extract regression?)"
   local keep_names keep_name
   local keeps=()
   keep_names="$(find "$root/usr/lib/$MULTIARCH_DIR" -maxdepth 1 -type f -name '*.so' -print0 2>/dev/null \
     | xargs -0 -r grep -lI . 2>/dev/null \
     | xargs -r grep -hoE '[A-Za-z0-9._+-]+\.a\b' 2>/dev/null | sort -u || true)"
-  for keep_name in $keep_names; do
-    keeps+=(${keeps[@]+"${keeps[@]}"} ! -name "$keep_name")
-  done
-  # Exception 2: the glibc 2.34+ merged-library compat stubs. libpthread,
-  # libdl, librt, libutil and libanl live in libc since 2.34 and libc6-dev
-  # ships them as .a-only stubs (no .so linker script names them — verified
-  # against 2.38-6deepin13+rb1), so the script scan above cannot see them.
-  # rustc's gnu link tail always carries -lutil -lrt -lpthread -lm -ldl -lc
-  # (rustc --print native-static-libs, empty main) and CMake find_library
-  # under CMAKE_SYSROOT resolves them from this directory, so deleting them
-  # fails the release link the same way exception 1 describes.
-  for keep_name in libpthread.a libdl.a librt.a libutil.a libanl.a; do
+  for keep_name in $keep_names librt.a libutil.a libanl.a; do
     keeps+=(${keeps[@]+"${keeps[@]}"} ! -name "$keep_name")
   done
   find "$root" -name '*.la' -type f -delete
@@ -347,6 +344,231 @@ prune_sysroot() {
   else
     find "$root" -name '*.a' -type f -delete
   fi
+  # Dev symlinks named *.a point at archives this pass just deleted or the
+  # tree never shipped (deepin libpng-dev: libpng.a -> libpng16.a, and
+  # libpng16.a is not an ld-script member — the full 469-package closure
+  # died in verify_sysroot on exactly this link). Dynamic cross linking
+  # never resolves -l<name> through a .a symlink (the .so script or symlink
+  # carries the resolution), so the link goes with its target instead of
+  # staying dangling for verify_sysroot's every-symlink-resolves invariant.
+  find "$root" -name '*.a' -type l -delete
+  # Rewrite GNU ld scripts to BARE FILENAME form. The native libc6-dev
+  # scripts use ABSOLUTE paths (GROUP ( /lib/loongarch64-linux-gnu/libc.so.6
+  # ... /lib64/ld-linux-loongarch-lp64d.so.1 )). ld never resolves such a
+  # path through its search list: a script opened INSIDE the link-time
+  # sysroot gets its absolute paths re-anchored onto that sysroot (with no
+  # host fallback), and a script opened outside it has them opened verbatim
+  # on the build host. Under a cargo link the gcc driver passes the
+  # TOOLCHAIN's bundled sysroot, so the deepin paths are re-anchored onto
+  # the toolchain tree (CI round 14: "cannot open
+  # <toolchain>/sysroot//lib/.../libc.so.6" at the final tauri link); under
+  # cmake they re-anchor onto deepin — and before the views below exist,
+  # neither tree carries /lib/<multiarch>/ (the cmake try-compile surfaced
+  # exactly that; pinvou3#1993 CI round 2). Strip the directory so the
+  # script references bare file names: ld resolves them through its search
+  # path, and each link context carries -L<sysroot>/usr/lib/$MULTIARCH_DIR
+  # where it must resolve this tree (cmake links pass it in the toolchain
+  # file; cargo links via pkg-config-driven -sys crates — the stub
+  # materialization below spells out the full contract) — while the `=`
+  # prefix would bake in whichever --sysroot the driver applies, which
+  # DIFFERS between the two (gcc applies its own bundled sysroot when rustc
+  # passes none). The named files all live in the multiarch dir, so the
+  # bare form resolves to the deepin files everywhere.
+  # Idempotent: the rewritten bare names no longer match the " /lib/"
+  # pattern. A link context without the multiarch -L is unsupported here —
+  # the stub materialization below spells out which context carries it.
+  local ld_script
+  # Newline-delimited reads (grep -l output form): sysroot paths are built by
+  # this script and cannot contain newlines. A `-print0 | read -d ''` pairing
+  # would be wrong here — grep emits newlines, so the NUL reader never fires
+  # and the rewrite silently no-ops.
+  # The `{ xargs ... || true; }` guard: with an all-binary `*.so` set grep
+  # exits 1 and xargs 123, which pipefail would turn into a message-less
+  # prune abort — an empty match list is a no-op here, not an error. A sed
+  # failure INSIDE the loop still fails the loop stage and aborts.
+  find "$root/usr/lib/$MULTIARCH_DIR" -maxdepth 1 -type f -name '*.so' -print 2>/dev/null \
+    | { xargs -r grep -lI . 2>/dev/null || true; } \
+    | while IFS= read -r ld_script; do
+        [ -n "$ld_script" ] || continue
+        sed -i \
+          -e 's| /lib/loongarch64-linux-gnu/| |g' \
+          -e 's| /usr/lib/loongarch64-linux-gnu/| |g' \
+          -e 's| /lib64/ld-linux-loongarch-lp64d.so.1| ld-linux-loongarch-lp64d.so.1|g' \
+          -e 's| /lib/ld-linux-loongarch-lp64d.so.1| ld-linux-loongarch-lp64d.so.1|g' \
+          "$ld_script"
+      done
+  # Fail closed if any script still references an ABSOLUTE path at all — not
+  # just the four known shapes: the design is bare filenames resolved via
+  # -L, so no absolute form is legal here. Known forms are rewritten above;
+  # anything else (a no-space `GROUP(/lib/...`, an `=`-prefixed form, a new
+  # directory, an `INPUT(/usr/lib/.../libfoo.a` archive member, a `++`
+  # library name) must break HERE with the file named, not as "cannot find
+  # ..." at link time. (The rewritten bare names do not match.) The class
+  # covers `.so`/`.a`/`.o` reference suffixes and `+` (libstdc++), matching
+  # the archive-keep scan above; -I keeps it text-only like the rewrite
+  # loop, so a binary named *.so cannot trip it. The class is deliberately
+  # broad: any path-like token survives, including ones inside `/* ... */`
+  # comments or `https://` URLs — a healthy deepin tree carries none, and
+  # an unlikely false arrest here fails closed with the file named.
+  local offender
+  # -I: the net's subject is TEXT linker scripts (the same set the rewrite
+  # pipeline above processes). Without it a binary .so whose bytes happen to
+  # contain an absolute /…so path (embedded RUNPATH strings etc.) would be
+  # named as an offender and abort a healthy prune.
+  offender="$(find "$root/usr/lib/$MULTIARCH_DIR" -maxdepth 1 -type f -name '*.so' -print0 2>/dev/null \
+    | xargs -0 -r grep -lIE '/[A-Za-z0-9._+/-]+\.(so|a|o)[0-9.]*' 2>/dev/null || true)"
+  [ -z "$offender" ] || fail "ld script(s) still carry absolute paths after the bare-filename rewrite: $offender"
+
+  # Sysroot-shape fixup so every resolution form of the rewritten scripts
+  # finds its target: the extracted tree only guarantees the debian
+  # multiarch views under usr/lib (usr-merged layouts may ship no
+  # root-level /lib at all, and the loader can live in either place
+  # depending on the libc6 build). Materialize both views so a link never
+  # dies with "cannot find <path> inside <sysroot>" (CI rounds 3-4).
+  # -fn: [ ! -e ] passes for a DANGLING leftover symlink, and a plain
+  # `ln -s` onto it aborts with a raw "File exists" mid-prune.
+  if [ ! -e "$root/lib" ]; then ln -sfn usr/lib "$root/lib"; fi
+  local loader="ld-linux-loongarch-lp64d.so.1"
+  if [ ! -e "$root/lib64/$loader" ]; then
+    local loader_src candidate
+    loader_src=""
+    # Skip the view path itself: a DANGLING leftover view symlink matches
+    # -name too, and picking it would point the recreated view at itself
+    # (the resolution post-check below would catch the self-loop, but the
+    # first real loader copy is the correct source).
+    while IFS= read -r candidate; do
+      [ "$candidate" = "$root/lib64/$loader" ] && continue
+      loader_src="$candidate"
+      break
+    done < <(find "$root" -name "$loader" 2>/dev/null)
+    [ -n "$loader_src" ] || fail "program loader $loader not found anywhere in the extracted sysroot"
+    # A package-shipped /lib64 -> usr/lib64 usrmerge alias DANGLES once the
+    # usr sweep above removes usr/lib64: mkdir -p would abort on the
+    # dangling symlink with a raw "File exists" instead of the clean
+    # replacement the /lib side gets from `ln -sfn` above. A RESOLVING
+    # alias whose target does not carry the loader is replaced too: the
+    # sweep keeps usr/lib64, so writing the view through the alias would
+    # land it in usr/lib64/, where the ../-relative target is one level
+    # too shallow and the view dangles. (-L + ! -e on the LOADER path
+    # covers both: a dangling alias implies a dangling loader path; a real
+    # dir or an alias that already resolves to the loader skips it — the
+    # latter never reaches this branch, the view check above passed.)
+    if [ -L "$root/lib64" ] && [ ! -e "$root/lib64/$loader" ]; then rm -f "$root/lib64"; fi
+    mkdir -p "$root/lib64"
+    # The target must be "../" + the root-relative path: a symlink resolves
+    # its target against the LINK's directory ($root/lib64), not the sysroot
+    # root — a bare root-relative target dangles (CI round 4).
+    ln -sfn "../${loader_src#"$root"/}" "$root/lib64/$loader"
+  fi
+  [ -e "$root/lib64/$loader" ] || fail "the /lib64/$loader view did not resolve after materialization"
+  if [ ! -e "$root/lib/$MULTIARCH_DIR/libc.so.6" ]; then
+    [ -e "$root/usr/lib/$MULTIARCH_DIR/libc.so.6" ] \
+      || fail "cannot materialize the /lib view: no usr/lib/$MULTIARCH_DIR/libc.so.6 either"
+    mkdir -p "$root/lib/$MULTIARCH_DIR"
+    # -fn, same rationale as the /lib view above: a package-shipped DANGLING
+    # libc.so.6 link passes the [ ! -e ] guard, and a plain `ln -s` onto it
+    # aborts mid-prune with a raw "File exists".
+    ln -sfn "../../usr/lib/$MULTIARCH_DIR/libc.so.6" "$root/lib/$MULTIARCH_DIR/libc.so.6"
+  fi
+
+  # Merge the Debian multiarch header subtree (usr/include/<multiarch>/bits/,
+  # ...) into usr/include/: Debian ships glibc's arch-specific headers under
+  # the multiarch directory while a crosstool-NG cross gcc searches
+  # <sysroot>/usr/include only — without the merge every real glibc-header
+  # compile dies with "bits/wordsize.h: No such file or directory" (CI round
+  # 9; the ABI probe passed only because its source includes no headers).
+  # Union merge, never overwrite: generic and multiarch headers are disjoint
+  # by Debian design. Idempotent.
+  if [ -d "$root/usr/include/$MULTIARCH_DIR" ]; then
+    # || true: coreutils 9.x cp -n exits nonzero when it skips an existing
+    # file. No 2>/dev/null: a genuine failure (disk full, type conflict)
+    # must be visible in the log — verify_sysroot asserts the merge is
+    # complete below, so a swallowed partial merge would only move the
+    # failure to a vaguer place.
+    cp -an "$root/usr/include/$MULTIARCH_DIR/." "$root/usr/include/" || true
+  fi
+  [ -f "$root/usr/include/bits/wordsize.h" ] \
+    || fail "sysroot lacks usr/include/bits/wordsize.h after the multiarch header merge"
+
+  # Rebase ABSOLUTE-target dev symlinks onto the sysroot: Debian ships e.g.
+  # libdbus-1.so -> /lib/<multiarch>/libdbus-1.so.3.32.4, and inside the
+  # sysroot that absolute target escapes to the BUILD HOST's root — lld dies
+  # with "unable to find library -ldbus-1" (CI round 13). Rebase each onto
+  # the link's own depth (usr/lib/<multiarch> is three levels under the
+  # root, and a link in a subdirectory that survives the prune — cmake/,
+  # pkgconfig/, plugin dirs — needs one more "../" per level below it; a
+  # hardcoded climb would silently dangle those) targeting the sysroot's
+  # usr-merged /lib view (lib -> usr/lib); fail closed listing any whose
+  # runtime file the sysroot genuinely lacks.
+  # This runs BEFORE the stub materialization below so an upstream-shipped
+  # dangling ABSOLUTE-target lib*.so symlink is reported here instead of
+  # being rebased onto a missing target; the stub block itself replaces
+  # RELATIVE-target dangling links it must overwrite.
+  local missing="" link target_abs sub stripped depth prefix i
+  while IFS= read -r -d '' link; do
+    target_abs="$(readlink "$link")" || continue
+    case "$target_abs" in
+      /*) ;;
+      *) continue ;;
+    esac
+    if [ ! -e "$root$target_abs" ]; then
+      missing="$missing $target_abs"
+      continue
+    fi
+    sub="${link#"$root/usr/lib/$MULTIARCH_DIR"}"
+    sub="${sub#/}"
+    stripped="${sub//\//}"
+    depth=$((3 + ${#sub} - ${#stripped}))
+    prefix=""
+    i=0
+    while [ "$i" -lt "$depth" ]; do
+      prefix="../$prefix"
+      i=$((i + 1))
+    done
+    ln -sfn "${prefix}${target_abs#/}" "$link"
+  done < <(find "$root/usr/lib/$MULTIARCH_DIR" -type l -print0)
+  [ -z "$missing" ] \
+    || fail "dev symlinks point at runtime files the sysroot lacks:$missing"
+
+  # Materialize the libpthread/libdl dev symlinks: glibc ≥2.34 folds pthread
+  # and dl symbols into libc, and deepin's libc6-dev ships only EMPTY
+  # libpthread.a/libdl.a stub archives (8 bytes, pruned with the other .a)
+  # and NO lib*.so — so "-lpthread/-ldl" cannot resolve and ggml's explicit
+  # link dies with "cannot find -lpthread" (CI round 11). The runtime
+  # package still ships libpthread.so.0/libdl.so.2 stub shared objects, and
+  # the target system provides them, so a GROUP script over the bare
+  # runtime name links correctly and records a DT_NEEDED the target has.
+  # Bare names (NOT =-absolute): cargo links carry no --sysroot (gcc applies
+  # its own bundled sysroot, CI round 13), so the runtime stub must resolve
+  # through the -L search path. Cmake links always carry that -L (the
+  # toolchain file seeds it; the ASR build re-adds it when its explicit EXE
+  # flags replace the seed); cargo links carry it whenever a pkg-config-
+  # driven -sys crate emits the search path, and resolve -lpthread/-ldl
+  # from the toolchain's bundled glibc otherwise. (Kept idempotent: never
+  # overwrite an upstream-shipped file.)
+  local stub rt stub_path
+  for stub in pthread:libpthread.so.0 dl:libdl.so.2; do
+    rt="${stub#*:}"
+    stub="${stub%%:*}"
+    stub_path="$root/usr/lib/$MULTIARCH_DIR/lib$stub.so"
+    # The rebase loop above reports only ABSOLUTE-target dangling links; a
+    # RELATIVE-target dangling dev link reaches here, and `printf >` would
+    # FOLLOW it — materializing the stub as a bogus new target file instead
+    # of the link, so every later existence check passes while -lpthread
+    # still dies at link time. Replace the dangling link, never write
+    # through it; a resolving link or real file is left untouched.
+    if [ -L "$stub_path" ] && [ ! -e "$stub_path" ]; then
+      rm -f "$stub_path"
+    fi
+    if [ ! -e "$stub_path" ]; then
+      [ -e "$root/usr/lib/$MULTIARCH_DIR/$rt" ] \
+        || fail "cannot materialize lib$stub.so: the sysroot lacks $rt (unexpected libc6 layout drift)"
+      printf 'GROUP ( %s )\n' "$rt" > "$stub_path"
+    fi
+  done
+  [ -f "$root/usr/lib/$MULTIARCH_DIR/libpthread.so" ] \
+    && [ -f "$root/usr/lib/$MULTIARCH_DIR/libdl.so" ] \
+    || fail "libpthread.so/libdl.so dev scripts missing after materialization"
 }
 
 # ---- shared extraction -------------------------------------------------------
@@ -369,39 +591,92 @@ verify_sysroot() {
   [ -f "$root/usr/include/stdio.h" ] || fail "sysroot lacks libc headers: $root/usr/include/stdio.h"
   [ -f "$root/usr/lib/$MULTIARCH_DIR/libc.so" ] \
     || fail "sysroot lacks the linker's libc.so: $root/usr/lib/$MULTIARCH_DIR/libc.so"
-  # The text linker scripts are the link's resolution roots: their GROUP /
-  # AS_NEEDED members are what -lc & co. actually open. Emulate GNU ld's
-  # resolution here so a regression fails at setup time with a precise name
-  # instead of as "cannot open /lib/.../libc.so.6" after a full compile:
-  # every ABSOLUTE .so path inside a script must exist under $root (ld
-  # sysroot-prefixes them when it opens the script from within the sysroot —
-  # this is what the usrmerge aliases created by prune_sysroot are for), and
-  # every .a member a script names must exist in the multiarch tree.
-  local script ref_path ref_archive
+  # -s, not just -f: the text-script scan below (grep -l .) excludes empty
+  # files, so a truncated restore that left libc.so as a zero-byte file
+  # would otherwise verify green and die at the first link as "file not
+  # recognized". A PARTIAL truncation still passes this check, but the
+  # script it recovers then misses GROUP members that the scans below name.
+  [ -s "$root/usr/lib/$MULTIARCH_DIR/libc.so" ] \
+    || fail "sysroot's linker script libc.so is empty (truncated restore?)"
+  # The prune keeps the archives the linker scripts reference; assert they
+  # are really there so a prune regression or a truncated cache restore
+  # fails here with a precise message instead of as "cannot find
+  # -lc_nonshared..." at link time. EVERY text script is scanned, not just
+  # libc.so: whether a tree also ships libm.so as a text script (whose
+  # AS_NEEDED group would reference libm.so.6/libmvec members) is
+  # build-dependent — deepin's libm.so is a plain symlink, which find's
+  # -type f skips; the scan stays generic so either shape is verified.
+  local script ref_archive ref_name
   while IFS= read -r -d '' script; do
-    for ref_path in $(grep -hoE '/[A-Za-z0-9._/-]+\.so[0-9.]*' "$script" 2>/dev/null | sort -u); do
-      [ -e "$root$ref_path" ] \
-        || fail "linker script ${script#"$root"/} references $ref_path but the sysroot lacks it (usrmerge alias regression?)"
-    done
     for ref_archive in $(grep -hoE '[A-Za-z0-9._+-]+\.a' "$script" 2>/dev/null | sort -u); do
       [ -f "$root/usr/lib/$MULTIARCH_DIR/$ref_archive" ] \
         || fail "linker script ${script#"$root"/} references $ref_archive but the sysroot lacks it (prune regression?)"
     done
+    # Same net for the SHARED-LIBRARY members: every rewritten script names
+    # bare .so/.so.N files that the -L search path must resolve in this dir
+    # (libc.so -> libc.so.6). A truncated restore that kept the script but
+    # dropped a runtime object would otherwise pass setup and die far later
+    # as "cannot find -lc" / "unable to find library". Exception: the
+    # program loader — depending on the libc6 build it lives OUTSIDE the
+    # multiarch dir (lib64/<multiarch>/ on non-usrmerged layouts), and its
+    # resolution is asserted by the /lib64 view check below.
+    for ref_name in $(grep -hoE '[A-Za-z0-9._+-]+\.so[0-9.]*' "$script" 2>/dev/null | sort -u); do
+      case "$ref_name" in ld-linux-*) continue ;; esac
+      [ -e "$root/usr/lib/$MULTIARCH_DIR/$ref_name" ] \
+        || fail "linker script ${script#"$root"/} references $ref_name but the sysroot lacks it (prune regression or truncated restore?)"
+    done
   done < <(find "$root/usr/lib/$MULTIARCH_DIR" -maxdepth 1 -type f -name '*.so' -print0 2>/dev/null \
     | xargs -0 -r grep -lIZ . 2>/dev/null)
-  # The merged-library compat stubs are named by no script (see
-  # prune_sysroot) but rustc's gnu link tail resolves them directly; assert
-  # them so the failure names the archive instead of surfacing as "cannot
-  # find -lpthread" after a full compile.
+  # Dev symlinks are the other half of the -l resolution surface
+  # (libssl.so -> libssl.so.3, the prune-rebased absolute targets, ...).
+  # The prune's dangling-target check runs only on the fresh-extraction
+  # path, so on the reuse path this is the only guard that every symlink
+  # still resolves inside the sysroot — a truncated restore (runtime file
+  # dropped, dev symlink kept) fails HERE with both names, instead of as an
+  # imprecise "unable to find library -l..." at link time. An absolute
+  # target is impossible after the prune's rebase (it would resolve against
+  # the BUILD HOST's root); the walk is recursive, so links in
+  # subdirectories that survive the prune are covered too.
+  local dev_link
+  while IFS= read -r -d '' dev_link; do
+    [ -e "$dev_link" ] \
+      || fail "dev symlink ${dev_link#"$root"/} (target $(readlink "$dev_link")) does not resolve inside the sysroot (truncated restore or prune regression?)"
+  done < <(find "$root/usr/lib/$MULTIARCH_DIR" -type l -print0 2>/dev/null)
+  # The GROUP dev stubs prune_sysroot materializes (and the runtime stub
+  # objects behind them) are what every cmake -lpthread/-ldl resolution
+  # goes through; assert them so a truncated cache restore fails here
+  # instead of as "cannot find -lpthread" after a full compile.
+  # -s, same rationale as the libc.so guard above: the -f check passes on
+  # empty files and the member scans exclude them, so a truncated restore
+  # that left a zero-byte stub would verify green and ld would read it as
+  # no GROUP at all — a silently degraded -lpthread/-ldl resolution.
+  [ -s "$root/usr/lib/$MULTIARCH_DIR/libpthread.so" ] \
+    || fail "sysroot lacks a usable libpthread.so dev script (missing or empty: prune regression or truncated restore?)"
+  [ -e "$root/usr/lib/$MULTIARCH_DIR/libpthread.so.0" ] \
+    || fail "sysroot lacks the libpthread.so.0 runtime stub (extract regression or truncated restore?)"
+  [ -s "$root/usr/lib/$MULTIARCH_DIR/libdl.so" ] \
+    || fail "sysroot lacks a usable libdl.so dev script (missing or empty: prune regression or truncated restore?)"
+  [ -e "$root/usr/lib/$MULTIARCH_DIR/libdl.so.2" ] \
+    || fail "sysroot lacks the libdl.so.2 runtime stub (extract regression or truncated restore?)"
+  # glibc ≥2.34 folded libpthread/libdl/libutil/libanl into libc (librt was
+  # NOT folded: its aio/mq/timer entry points still live in librt.so.1, but
+  # the prune keeps librt.a too) — the prune keeps the libc6-dev stub
+  # archives because rustc's link tail unconditionally requests -lutil -lrt
+  # and a pkg-config -L can make the deepin tree the first search location.
+  # Assert them so a truncated restore fails here instead of as "cannot
+  # find -lutil" after a full compile; -s for the same empty-file reason
+  # as the GROUP stubs above.
   local compat_archive
-  for compat_archive in libpthread.a libdl.a librt.a libutil.a libanl.a; do
-    [ -f "$root/usr/lib/$MULTIARCH_DIR/$compat_archive" ] \
-      || fail "sysroot lacks the glibc compat stub $compat_archive (prune regression?)"
+  for compat_archive in librt.a libutil.a libanl.a; do
+    [ -s "$root/usr/lib/$MULTIARCH_DIR/$compat_archive" ] \
+      || fail "sysroot lacks a usable $compat_archive stub archive (missing or empty: prune regression or truncated restore? rustc's link tail links -lutil/-lrt)"
   done
 
   local libc_so="$root/usr/lib/$MULTIARCH_DIR/libc.so.6"
   [ -f "$libc_so" ] || fail "sysroot lacks libc.so.6: $libc_so"
-  machine="$(LC_ALL=C readelf -h "$libc_so" 2>/dev/null | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')"
+  # || machine="": under pipefail a readelf failure on a present-but-truncated
+  # file kills the assignment message-less; fall through to the guard below.
+  machine="$(LC_ALL=C readelf -h "$libc_so" 2>/dev/null | sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')" || machine=""
   [ "$machine" = "LoongArch" ] \
     || fail "sysroot libc is not a LoongArch ELF (readelf Machine: '${machine:-<none>}')"
   libc_version="$(sysroot_glibc_version "$libc_so")"
@@ -414,6 +689,50 @@ verify_sysroot() {
     echo "         the symbols they reference, but the final deb MUST pass" >&2
     echo "         scripts/check-linux-glibc-floor.sh" >&2
   fi
+
+  # Every resolution form of the rewritten ld scripts resolves under the
+  # sysroot root (see the prune fixup): assert those views exist so a prune
+  # regression fails here instead of at cmake time.
+  [ -e "$root/lib/$MULTIARCH_DIR/libc.so.6" ] \
+    || fail "sysroot lacks the /lib/$MULTIARCH_DIR/libc.so.6 view"
+  [ -e "$root/lib64/ld-linux-loongarch-lp64d.so.1" ] \
+    || fail "sysroot lacks the /lib64/ld-linux-loongarch-lp64d.so.1 view"
+  # The multiarch header merge is a prune-time fixup; assert its product so
+  # a stale cache-restored tree (key predates the fixup) fails here with a
+  # precise message instead of "bits/wordsize.h: No such file or directory"
+  # at the first real glibc-header compile (pinvou3#1993 CI round 9).
+  [ -f "$root/usr/include/bits/wordsize.h" ] \
+    || fail "sysroot lacks usr/include/bits/wordsize.h (multiarch header merge missing — regenerate the sysroot)"
+  # ...and not just that sentinel: EVERY file the multiarch subtree ships
+  # must have landed under usr/include/. cp -an keeps the source subtree, so
+  # the comparison works on the reuse path too — a truncated restore that
+  # kept wordsize.h but dropped gnu/stubs.h or bits/syscall.h would
+  # otherwise pass and die at the first compile that includes them. The
+  # source subtree must exist for that comparison to mean anything: without
+  # it the loop below iterates zero files and a wholesale multiarch-include
+  # loss would verify green (gnu/stubs.h — arch-specific, always shipped by
+  # libc6-dev — is the sentinel for "the subtree was there to be compared").
+  [ -f "$root/usr/include/$MULTIARCH_DIR/gnu/stubs.h" ] \
+    || fail "sysroot lacks usr/include/$MULTIARCH_DIR/gnu/stubs.h (multiarch header subtree lost — regenerate the sysroot)"
+  local multi_header rel_header
+  while IFS= read -r -d '' multi_header; do
+    rel_header="${multi_header#"$root/usr/include/$MULTIARCH_DIR/"}"
+    [ -f "$root/usr/include/$rel_header" ] \
+      || fail "multiarch header usr/include/$MULTIARCH_DIR/$rel_header is missing from usr/include/$rel_header (header merge incomplete — regenerate the sysroot)"
+  done < <(find "$root/usr/include/$MULTIARCH_DIR" -type f -print0 2>/dev/null)
+
+  # Startup objects are the other half of the link contract: Scrt1.o/crt1.o/
+  # crti.o/crtn.o live in the multiarch dir (libc6-dev), and a missing one
+  # surfaces only at real link time ("ld: cannot find Scrt1.o") which cargo
+  # check legs never reach. Assert them here so a prune/extract regression
+  # fails with a precise message instead of a cmake try-compile wall
+  # (Scrt1.o is the PIE startfile — the exact object the 0.10.13 release
+  # link died on).
+  local crt_obj
+  for crt_obj in Scrt1.o crt1.o crti.o crtn.o; do
+    [ -f "$root/usr/lib/$MULTIARCH_DIR/$crt_obj" ] \
+      || fail "sysroot lacks the startup object $crt_obj under usr/lib/$MULTIARCH_DIR (extract/prune regression?)"
+  done
 
   # Host pkg-config reads the foreign .pc files through the sysroot env.
   pkg_config_env "$root"
@@ -443,6 +762,23 @@ write_cmake_toolchain_file() {
     echo "set(CMAKE_SYSTEM_NAME Linux)"
     echo "set(CMAKE_SYSTEM_PROCESSOR loongarch64)"
     echo "set(CMAKE_SYSROOT \"$root\")"
+    # The deepin tree uses the debian multiarch layout (usr/lib/loongarch64-
+    # linux-gnu), while the bootstrapped cross-gcc's default startfile/library
+    # search under --sysroot only covers <sysroot>/usr/lib. Without pointing
+    # the search there, every link dies with "cannot find crt1.o/-lc/-lm"
+    # (the cmake try-compile is the first real link and surfaced exactly
+    # that; pinvou3#1993 CI round 2). -B feeds gcc's startfile search; -L
+    # feeds the linker's -l resolution. Only the deepin tree is searched this
+    # way — the toolchain's own bundled glibc dir must NOT shadow the sysroot
+    # under CMAKE_SYSROOT. The *_FLAGS_INIT seeds ride the language and
+    # linker flag variables; the ASR build's explicit -DCMAKE_EXE_LINKER_FLAGS
+    # replaces the EXE seed (build-sensevoice-runtime.sh re-adds the multiarch
+    # -L there itself — CI round 10).
+    echo "set(CMAKE_C_FLAGS_INIT \"-B$root/usr/lib/$MULTIARCH_DIR\")"
+    echo "set(CMAKE_CXX_FLAGS_INIT \"-B$root/usr/lib/$MULTIARCH_DIR\")"
+    echo "set(CMAKE_EXE_LINKER_FLAGS_INIT \"-L$root/usr/lib/$MULTIARCH_DIR\")"
+    echo "set(CMAKE_SHARED_LINKER_FLAGS_INIT \"-L$root/usr/lib/$MULTIARCH_DIR\")"
+    echo "set(CMAKE_MODULE_LINKER_FLAGS_INIT \"-L$root/usr/lib/$MULTIARCH_DIR\")"
     echo "set(CMAKE_C_COMPILER \"$prefix/bin/$TRIPLE-gcc\")"
     echo "set(CMAKE_CXX_COMPILER \"$prefix/bin/$TRIPLE-g++\")"
     echo "set(CMAKE_AR \"$prefix/bin/$TRIPLE-gcc-ar\")"

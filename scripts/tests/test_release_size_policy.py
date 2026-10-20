@@ -97,13 +97,34 @@ class ReleaseSizePolicyTests(unittest.TestCase):
         self.assertNotIn("--icf=safe", job_code)
         self.assertNotIn("CARGO_PROFILE_RELEASE_LTO", job_code)
         self.assertNotIn("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", job_code)
-        # The job must not set RUSTFLAGS anywhere (job env, step env, or a
-        # run-block export): cargo gives a set RUSTFLAGS precedence over the
-        # target-scoped CARGO_TARGET_<triple>_RUSTFLAGS the orchestrator
-        # exports (remap + sysroot link-arg — pinned by
-        # test_release_loongarch64_policy), so a global RUSTFLAGS here would
-        # silently strip the target units' flags.
-        self.assertNotIn("RUSTFLAGS", job_code)
+        # RUSTFLAGS must stay remap-only in this job — in EVERY spelling a
+        # cargo/rustc invocation can see: a `RUSTFLAGS:` job/step env key AND
+        # a shell-style `export RUSTFLAGS=` / `RUSTFLAGS=` line inside any
+        # run block. --remap-path-prefix is rustc-side and keeps
+        # build-machine paths out of the artifact; linker selection is NOT a
+        # RUSTFLAGS concern (cargo routes through the generated rust-lld
+        # wrapper — pinned by test_release_loongarch64_policy), so any
+        # -C link-arg here would either fail (the pinned toolchain ships
+        # bfd only) or bypass the audited wrapper. The three spellings are
+        # collected together so a run-block export or a target-scoped
+        # CARGO_TARGET_*_RUSTFLAGS env key cannot slip past the job-env-only
+        # equality check.
+        # Containment, not line-anchored prefixes: an INLINE prefix
+        # (`run: RUSTFLAGS=... bash ...`) starts with neither spelling but
+        # is fully visible to cargo — every line mentioning RUSTFLAGS must
+        # BE the pinned definition.
+        rustflags = [
+            line.strip()
+            for line in job_code.splitlines()
+            if "RUSTFLAGS" in line
+        ]
+        self.assertEqual(
+            rustflags,
+            ['RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/"'],
+            "the loong64 job must keep RUSTFLAGS remap-only (job/step env, "
+            "run-block exports, inline prefixes, and CARGO_TARGET_*_RUSTFLAGS "
+            "keys alike)",
+        )
 
     def test_linux_jobs_repack_deb_as_xz_before_sha256(self):
         for start, end in (

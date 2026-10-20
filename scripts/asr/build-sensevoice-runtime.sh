@@ -191,17 +191,57 @@ if [ "$cross_mode" -eq 1 ]; then
   # The engine is the deb's only C++ artifact: link libstdc++/libgcc
   # statically so it carries no GLIBCXX_/CXXABI_ version requirements and the
   # jammy GLIBCXX_/CXXABI_ floors hold for every architecture.
-  cmake_args+=(-DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc")
+  # The sysroot toolchain file seeds CMAKE_*_LINKER_FLAGS_INIT with the
+  # multiarch -L, but an explicit -DCMAKE_EXE_LINKER_FLAGS (this -static
+  # pair) replaces the INIT seeds entirely — without re-adding -L the link
+  # cannot find Debian-multiarch libdl/libpthread (lib* live under
+  # usr/lib/<multiarch>/, not the sysroot's default lib dirs; pinvou3#1993
+  # CI round 10). The toolchain file lives INSIDE the sysroot root, so its
+  # dirname is the sysroot.
   if [ -n "${CMAKE_TOOLCHAIN_FILE:-}" ]; then
+    sysroot_dir="$(dirname "$CMAKE_TOOLCHAIN_FILE")"
+    multiarch_lib="$sysroot_dir/usr/lib/loongarch64-linux-gnu"
+    # The -L below derives the sysroot root from the toolchain file's
+    # dirname — an implicit contract with ci-loongarch64-sysroot.sh, which
+    # writes the file at the sysroot root. Guard it: a relocated copy of
+    # the toolchain file would otherwise yield a silently wrong -L and the
+    # link would die later on libdl/libpthread with no pointer at this
+    # derivation.
+    if [ ! -d "$multiarch_lib" ]; then
+      echo "[sensevoice] CMAKE_TOOLCHAIN_FILE=$CMAKE_TOOLCHAIN_FILE does not sit at a sysroot root (missing $multiarch_lib) — cannot derive the cross -L" >&2
+      exit 1
+    fi
+    cmake_args+=(
+      -DCMAKE_EXE_LINKER_FLAGS="-L$multiarch_lib -static-libstdc++ -static-libgcc"
+    )
     cmake_args+=(-DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN_FILE")
   else
     cmake_args+=(
+      -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc"
       -DCMAKE_SYSTEM_NAME=Linux
       -DCMAKE_SYSTEM_PROCESSOR="$requested_arch"
     )
   fi
 fi
-cmake "${cmake_args[@]}"
+if ! cmake "${cmake_args[@]}"; then
+  # Fail closed WITH the ground truth: recent cmake (3.26+) buries try-compile
+  # stderr (compiler-id/ABI/FindThreads probes) in CMakeConfigureLog.yaml,
+  # older releases in CMakeError.log/CMakeOutput.log — dump whichever
+  # generation produced, so a cross-build failure stays diagnosable from CI
+  # logs alone (pinvou3#1993 CI round 8: FindThreads failed with no visible
+  # cause). tail -n 120: enough for the failing probe block without
+  # flooding the log.
+  for probe_log in \
+    "$build_dir/CMakeFiles/CMakeConfigureLog.yaml" \
+    "$build_dir/CMakeFiles/CMakeError.log" \
+    "$build_dir/CMakeFiles/CMakeOutput.log"; do
+    if [ -f "$probe_log" ]; then
+      echo "[sensevoice] ===== $probe_log (tail) =====" >&2
+      tail -n 120 "$probe_log" >&2
+    fi
+  done
+  exit 1
+fi
 cmake --build "$build_dir" --target sense-voice-main \
   --parallel "${PINVOU3_SENSEVOICE_BUILD_JOBS:-4}"
 
