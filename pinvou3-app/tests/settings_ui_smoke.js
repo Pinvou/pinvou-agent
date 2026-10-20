@@ -250,6 +250,7 @@ function injectSource() {
     var failMemoryUpdate = false;
     var pendingDownloadResolve = null;
     var pendingDownloadReject = null;
+    var probedLocalKind = null;
     function record(cmd, args) { calls.push({ cmd: cmd, args: args || null }); }
     // Deliberately not stubbing window.confirm here. SettingsView now routes
     // everything through in-app confirm dialogs (the native confirm does not
@@ -265,6 +266,7 @@ function injectSource() {
     function invoke(cmd, args) {
       record(cmd, args);
       switch (cmd) {
+        case 'probe_local_server_kind': return Promise.resolve(probedLocalKind);
         case 'get_platform_capabilities': return Promise.resolve({
           os: 'windows',
           showSuperPermissionSettings: false,
@@ -404,6 +406,7 @@ function injectSource() {
     }
     window.__SETTINGS_TEST__ = {
       calls: calls,
+      setProbedLocalKind: function (kind) { probedLocalKind = kind; },
       emit: emit,
       models: function () { return models.slice(); },
       settings: function () { return settings; },
@@ -1319,6 +1322,33 @@ async function modalWidth(page, headingText) {
   const localNoContextWindowField = await page.evaluate(() =>
     !document.querySelector('[data-testid="model-form-context-window"]'));
   rec('⑥.5c local model form hides the context window input (probed value is authoritative)', localNoContextWindowField);
+  // A legacy high (also selectable while the local_vllm probe is pending)
+  // must highlight its effective medium tier once Tachyon is detected.
+  await page.evaluate(() => window.__SETTINGS_TEST__.setProbedLocalKind('tachyon'));
+  const tachyonUrlInput = await page.evaluateHandle(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const label = [...dialog.querySelectorAll('label,span')].find(node => (node.textContent || '').trim() === 'API 地址');
+    return label.closest('div').querySelector('input');
+  });
+  await tachyonUrlInput.click({ clickCount: 3 });
+  await tachyonUrlInput.type('http://127.0.0.1:8001/v1');
+  await clickModalExact(page, '高');
+  await sleep(700);
+  const tachyonEffort = await page.evaluate(() => {
+    const dialog = document.querySelector('[data-testid="model-form-dialog"]');
+    const label = [...dialog.querySelectorAll('span')].find(node => (node.textContent || '').trim() === '思考深度');
+    const buttons = [...label.parentElement.querySelectorAll('button')];
+    return {
+      count: buttons.length,
+      hasHigh: buttons.some(node => node.textContent.trim() === '高'),
+      selected: buttons.filter(node => node.className.includes('bg-[#007AFF]')).map(node => node.textContent.trim()),
+    };
+  });
+  rec('Tachyon probe keeps legacy high highlighted as effective medium',
+    tachyonEffort.count === 4 && !tachyonEffort.hasHigh
+      && tachyonEffort.selected.length === 1 && tachyonEffort.selected[0] === '中',
+    JSON.stringify(tachyonEffort));
+  await page.evaluate(() => window.__SETTINGS_TEST__.setProbedLocalKind(null));
   await clickExact(page, '取消');
   await sleep(200);
 

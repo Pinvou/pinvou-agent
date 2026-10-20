@@ -294,16 +294,20 @@ async fn snapshot_for_model_config(
     }
 
     // 2) /metrics（用 host 根目录，不带 /v1）
+    // 鉴权与上方 /v1/models 探测同模式：本地引擎以 `--api-key` 启动时
+    // /metrics 同样要求 bearer（Tachyon 驭光即如此），裸 GET 会 401 落进
+    // metrics_unavailable 诊断。
     let metrics_url = metrics_applicable
         .then(|| strip_v1_suffix(upstream).map(|h| format!("{h}/metrics")))
         .flatten();
     let metrics_resp = match metrics_url {
-        Some(u) => client
-            .get(&u)
-            .timeout(Duration::from_secs(3))
-            .send()
-            .await
-            .ok(),
+        Some(u) => {
+            let mut request = client.get(&u).timeout(Duration::from_secs(3));
+            if let Some(key) = api_key.map(str::trim).filter(|key| !key.is_empty()) {
+                request = request.bearer_auth(key);
+            }
+            request.send().await.ok()
+        }
         None => None,
     };
     let metrics_text = match metrics_resp {
@@ -936,6 +940,75 @@ mod tests {
         );
         assert!(!native_display_window_adoptable(Some("m"), None));
         assert!(!native_display_window_adoptable(None, None));
+    }
+
+    /// /metrics 拉取携带与 /v1/models 同源 bearer（round-1 评审 minor 补钉）：以
+    /// `--api-key` 启动的本地引擎（如驭光 Tachyon）对裸 GET 会 401，修复前落
+    /// metrics_unavailable 误诊。mock 逐路径记录 Authorization，两个方向都钉：
+    /// 有 key 时两路径同带 `Bearer secret`；keyless 时不带任何 Authorization。
+    #[tokio::test]
+    async fn metrics_fetch_carries_the_same_origin_bearer() {
+        use crate::core::model_endpoint::models_mock;
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let metrics_body = "vllm:num_requests_running 1\nvllm:num_requests_waiting 0\n".to_string();
+        // The snapshot's health request goes through `models_probe_url`,
+        // which appends `/models` directly on a bare-host base (no `/v1`).
+        let mock = models_mock::spawn(&[
+            (
+                "/models",
+                200,
+                r#"{"object":"list","data":[{"id":"qwen3.8","max_model_len":131072}]}"#.into(),
+            ),
+            ("/metrics", 200, metrics_body.clone()),
+        ]);
+        let snap = snapshot_for_model_config(
+            &mock.base_url,
+            Some("qwen3.8".to_string()),
+            ModelPreset::LocalVllm,
+            Some("secret"),
+            None,
+        )
+        .await
+        .expect("snapshot with key");
+        assert_eq!(
+            mock.auth_for("/models").as_deref(),
+            Some("Bearer secret"),
+            "the health probe keeps the existing bearer semantics"
+        );
+        assert_eq!(
+            mock.auth_for("/metrics").as_deref(),
+            Some("Bearer secret"),
+            "/metrics must carry the same-origin bearer (--api-key servers 401 a bare GET)"
+        );
+        assert_eq!(
+            snap.status,
+            VllmStatus::Busy,
+            "metrics body parses once authorized (running=1 surfaces as Busy)"
+        );
+
+        let mock = models_mock::spawn(&[
+            (
+                "/models",
+                200,
+                r#"{"object":"list","data":[{"id":"qwen3.8","max_model_len":131072}]}"#.into(),
+            ),
+            ("/metrics", 200, metrics_body),
+        ]);
+        let snap = snapshot_for_model_config(
+            &mock.base_url,
+            Some("qwen3.8".to_string()),
+            ModelPreset::LocalVllm,
+            None,
+            None,
+        )
+        .await
+        .expect("snapshot keyless");
+        assert_eq!(
+            mock.auth_for("/metrics"),
+            None,
+            "keyless servers must not receive an Authorization header"
+        );
+        assert_eq!(snap.status, VllmStatus::Busy);
     }
 
     /// The display follow-up on a local Ollama endpoint: /api/ps effective
