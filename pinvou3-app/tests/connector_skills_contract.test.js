@@ -489,7 +489,7 @@ for (const f of dwsTexts) {
   // 文件范围自检:argv 数组形态只存在于 .py 脚本,.py 一旦被剔出扫描范围,
   // 上面的 argv 固定装置仍绿而真实防线已死——这里直接钉住范围本身。
   assert.ok(
-    dwsTexts.some((f) => rel(f).endsWith("scripts/calendar_schedule_meeting.py")),
+    dwsTexts.some((f) => rel(f).split(path.sep).join("/").endsWith("scripts/calendar_schedule_meeting.py")),
     "规则 10 扫描范围必须包含 dws scripts/*.py(argv 数组唯一载体)",
   );
   assert.ok(dwsTexts.length > 0, "规则 10 扫描范围不得为空");

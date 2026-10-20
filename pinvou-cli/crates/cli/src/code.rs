@@ -5881,12 +5881,47 @@ fn checkpoints_rewind(
     }
     let checkpoint = resolve_rewind_plan(&entries, keep_turns)?;
 
-    // 1) Restore the code snapshot (restore_checkpoint forces a PreRestore
-    //    rollback point and returns it for the undo bookkeeping).
-    let undo =
-        checkpoints::restore_checkpoint(&ledger, &execution, &checkpoint.id).map_err(|error| {
+    // 1) r19 M10: restore through the pending-rewind protocol (same as the
+    //    GUI): prepare (create/reuse PreRestore) → write pending → apply. A
+    //    crash between apply and truncate now leaves the pending marker, so a
+    //    guided retry reuses the FIRST PreRestore — the true pre-rewind state —
+    //    instead of snapshotting the already-restored tree and orphaning the
+    //    only copy of the pre-rewind state (undo would silently no-op).
+    let revision = pinvou3_lib::features::sessions::transcript_revision(&loaded.messages)
+        .map_err(|error| CliError::failed(format!("code checkpoints rewind: {error:#}")))?;
+    let reuse =
+        checkpoints::matching_pending_pre_restore(&ledger, &checkpoint.id, keep_turns, &revision)
+            .map_err(|error| {
+                crate::support::store_error("code", "checkpoints rewind", &checkpoint.id, error)
+            })?
+            .filter(|pre_restore_id| {
+                // Stale-pending guard (mirror of the GUI): a PreRestore already bound
+                // by a completed rewind's backup record means the rewind finished and
+                // only the clear failed — do not reuse.
+                !store
+                    .latest_rewound_turns_record(session)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|record| {
+                        record.pre_restore_checkpoint_id.as_deref() == Some(pre_restore_id.as_str())
+                    })
+            });
+    let (target_meta, undo) =
+        checkpoints::prepare_restore(&ledger, &execution, &checkpoint.id, reuse.as_deref())
+            .map_err(|error| {
+                crate::support::store_error("code", "checkpoints rewind", &checkpoint.id, error)
+            })?;
+    checkpoints::write_pending_rewind(&ledger, &checkpoint.id, keep_turns, &undo.id, &revision)
+        .map_err(|error| {
             crate::support::store_error("code", "checkpoints rewind", &checkpoint.id, error)
         })?;
+    checkpoints::apply_restore(&ledger, &execution, &target_meta).map_err(|error| {
+        CliError::failed(format!(
+            "code checkpoints rewind: code may be partially restored (mixed state); retry the \
+             rewind to reuse rollback point {} and complete it: {error:#}",
+            undo.id
+        ))
+    })?;
     // 2) Truncate the transcript to the end of turn N (backs up the removed
     //    messages into the rewind sidecar, bound to the PreRestore id).
     let outcome = store
@@ -5895,10 +5930,14 @@ fn checkpoints_rewind(
             CliError::failed(format!(
                 "code checkpoints rewind: code was restored (original code kept in rollback point \
                  {}), but truncating the transcript failed: {error:#}. Retry the rewind to \
-                 complete the truncation",
-                undo.id
+                 complete the truncation (it will reuse rollback point {} and not snapshot the \
+                 restored tree)",
+                undo.id, undo.id
             ))
         })?;
+    // The rewind has fully landed (backup record bound to the PreRestore):
+    // clear the pending marker so later rewinds do not reuse it.
+    checkpoints::clear_pending_rewind(&ledger);
     // 3) Invalidate the abandoned branch snapshots (best-effort, same as GUI).
     if let Err(error) = checkpoints::invalidate_turn_checkpoints_after(&ledger, keep_turns) {
         note!(

@@ -200,7 +200,10 @@ const EXPECTED_SURFACE = {
   // window.PinvouBridgeMessages classic global and their parameters, so no
   // cluster literal gains a dep; userMessageDisplayText calls them as
   // base-local declarations.
-  sharedFnCount: 315,
+  // +1 (316): isCompactionCarrierBlocks — internal predicate of
+  // rerenderFromMessagesCore (work-mode rewind filter; references no deps,
+  // not exported from any cluster literal).
+  sharedFnCount: 316,
 };
 
 assert.equal(
@@ -468,7 +471,6 @@ const EXPECTED_CLUSTER_KEYS = {
     'latestShellToolIsWaitObserver',
     'normalizeTerminalTail',
     'notify',
-    'publishShellSnapshots',
     'runSyncOnSession',
     'shellPollState',
     'state',

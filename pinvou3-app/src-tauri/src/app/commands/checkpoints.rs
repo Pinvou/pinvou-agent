@@ -43,11 +43,123 @@ fn resolve_native_session_roots(
     Ok((roots.ledger, roots.execution))
 }
 
+/// r19 M6 崩溃对账：回退协议（apply → truncate → clear）中途进程死亡后暂记
+/// 留在盘上——代码可能已恢复而 transcript 未截断（revision 仍等于暂记值）。
+/// 不在此收口，下一轮快照会把混合树拍进影子库、revision 前进，pending 复用
+/// 门与 undo 绑定双双永久失效（崩溃那次的 PreRestore——真前态的唯一副本——
+/// 从此不可达）。规则：revision 仍匹配 → 截断未提交，幂等重放 apply + 完成
+/// 截断（绑定暂记的 PreRestore）+ 作废被截分支快照；revision 已前进 → 截断
+/// 已提交、仅清理失败的残留，清掉暂记。返回 false = 本轮快照必须阻断
+/// （对账未完成时把混合状态固化进历史是更坏的失败模式）。
+async fn reconcile_pending_rewind(
+    store: &SessionStore,
+    session_id: &str,
+    ledger: &std::path::Path,
+    execution: &std::path::Path,
+) -> bool {
+    let pending = match checkpoints::live_pending_rewind(ledger) {
+        Ok(Some(pending)) => pending,
+        Ok(None) => return true,
+        Err(error) => {
+            log::error!(
+                "[pinvou3][checkpoints] pending rewind read failed, blocking this turn's snapshot sid={session_id}: {error:#}"
+            );
+            return false;
+        }
+    };
+    // 当前 revision 与会话加载同源（store.load）。
+    let current_revision = match store.load(session_id) {
+        Ok(session) => crate::features::sessions::transcript_revision(&session.messages)
+            .unwrap_or_default(),
+        Err(error) => {
+            log::error!(
+                "[pinvou3][checkpoints] session load failed during rewind reconciliation, blocking this turn's snapshot sid={session_id}: {error:#}"
+            );
+            return false;
+        }
+    };
+    if current_revision != pending.transcript_revision {
+        // 截断已提交（revision 前进）、仅清理失败的残留——清掉暂记即可。
+        checkpoints::clear_pending_rewind(ledger);
+        return true;
+    }
+    // 半程态：幂等重放 apply（覆盖「写暂记后、apply 前死亡」与「apply 后、
+    // 截断前死亡」两种崩溃点），随后完成截断。
+    let target = match checkpoints::find_checkpoint(ledger, &pending.checkpoint_id) {
+        Ok(meta) => meta,
+        Err(error) => {
+            // 目标已被 LRU 淘汰：该回退永远无法完成，清掉暂记解除阻断；
+            // 真前态若仍在索引则由用户经 CLI 恢复（如实披露的残余）。
+            log::error!(
+                "[pinvou3][checkpoints] pending rewind target evicted, dropping pending sid={session_id} target={}: {error:#}",
+                pending.checkpoint_id
+            );
+            checkpoints::clear_pending_rewind(ledger);
+            return true;
+        }
+    };
+    let apply_ledger = ledger.to_path_buf();
+    let apply_execution = execution.to_path_buf();
+    let apply = tauri::async_runtime::spawn_blocking(move || {
+        checkpoints::apply_restore(&apply_ledger, &apply_execution, &target)
+    })
+    .await;
+    match apply {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => {
+            log::error!(
+                "[pinvou3][checkpoints] rewind reconciliation apply failed, blocking this turn's snapshot sid={session_id}: {error:#}"
+            );
+            return false;
+        }
+        Err(error) => {
+            log::error!(
+                "[pinvou3][checkpoints] rewind reconciliation apply task failed, blocking this turn's snapshot sid={session_id}: {error}"
+            );
+            return false;
+        }
+    }
+    let store_truncate = store.clone();
+    let sid_truncate = session_id.to_string();
+    let pre_restore_id = pending.pre_restore_id.clone();
+    let keep_turns = pending.keep_turns;
+    let truncate = tauri::async_runtime::spawn_blocking(move || {
+        store_truncate.truncate_to_user_turn(&sid_truncate, keep_turns, Some(pre_restore_id))
+    })
+    .await;
+    match truncate {
+        Ok(Ok(_outcome)) => {}
+        Ok(Err(error)) => {
+            log::error!(
+                "[pinvou3][checkpoints] rewind reconciliation truncate failed, blocking this turn's snapshot sid={session_id}: {error:#}"
+            );
+            return false;
+        }
+        Err(error) => {
+            log::error!(
+                "[pinvou3][checkpoints] rewind reconciliation truncate task failed, blocking this turn's snapshot sid={session_id}: {error}"
+            );
+            return false;
+        }
+    }
+    checkpoints::clear_pending_rewind(ledger);
+    let ledger_invalidate = ledger.to_path_buf();
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        invalidate_abandoned_turn_checkpoints(&ledger_invalidate, keep_turns);
+    })
+    .await;
+    log::info!(
+        "[pinvou3][checkpoints] crash-interrupted rewind auto-completed at turn snapshot sid={session_id} keep_turns={keep_turns}"
+    );
+    true
+}
+
 /// Turn 开始前的影子 git checkpoint 前奏，`chat` 与 `accept_plan`（均发送真实
-/// 用户消息，`is_user_turn_prompt` 计数口径一致）共用。流程：执行根体积门 →
-/// turn 序号计数 → `create_checkpoint` → 失败/alias 冲突按级别记日志。失败/
-/// 超预算不阻断 turn（设计 §5 降级语义）。返回本轮成功登记的快照 id；发送
-/// 失败时调用方按 id 精确作废「未成活」快照（评审 M5，见各自 Err 分支）。
+/// 用户消息，`is_user_turn_prompt` 计数口径一致）共用。流程：崩溃对账 →
+/// 执行根体积门 → turn 序号计数 → `create_checkpoint` → 失败/alias 冲突按级别
+/// 记日志。失败/超预算不阻断 turn（设计 §5 降级语义）；对账未完成时例外——
+/// 快照必须阻断（r19 M6），turn 本身照常发出。返回本轮成功登记的快照 id；
+/// 发送失败时调用方按 id 精确作废「未成活」快照（评审 M5，见各自 Err 分支）。
 pub(super) async fn create_turn_checkpoint(
     store: &SessionStore,
     session_id: &str,
@@ -56,6 +168,10 @@ pub(super) async fn create_turn_checkpoint(
     label: String,
     caller: &str,
 ) -> Option<String> {
+    // r19 M6：快照前先对账中断的回退（收口混合态；未完成则跳过本轮快照）。
+    if !reconcile_pending_rewind(store, session_id, &ledger, &execution).await {
+        return None;
+    }
     let store_count = store.clone();
     let sid_count = session_id.to_string();
     let snapshot = tauri::async_runtime::spawn_blocking(move || {
@@ -165,27 +281,27 @@ pub async fn list_checkpoints(
         .session_roots(&session_id)
         .map_err(|error| format!("解析会话根失败: {error:#}"))?
         .ledger;
-    // 与 rewind_to_turn 预检同源的计数（count_user_turns，is_user_turn_prompt
-    // 同口径）：调和门比对的必须是后端回退时实际校验的那个数。
-    // 阻塞 IO（全量 transcript 解析）同样移出 async 命令线程（评审 r8 minor 3，
-    // 与 rewind_to_turn 的同款 load 同步口径；该列表每 turn 边沿被拉两次）。
-    let store_count = store.inner().clone();
-    let session_id_count = session_id.clone();
-    let user_turns = tauri::async_runtime::spawn_blocking(move || {
-        let session = store_count
-            .load(&session_id_count)
-            .map_err(|error| format!("读取会话失败: {error:#}"))?;
-        Ok::<_, String>(checkpoints::count_user_turns(&session.messages))
-    })
-    .await
-    .map_err(|error| format!("读取会话任务失败: {error}"))??;
+    // r19 M8：用户 turn 计数从账本索引末条 Turn 快照派生（每轮发送前以
+    // count+1 登记 → 末条 turn == 最后一个已开始轮的序号），消除每 turn 边沿
+    // 2-3 次的全量 transcript 读盘+解析（大会话 0.5-2s 级后台 CPU、随长度
+    // 线性、与流式渲染抢预算；main 上本列表只读 index.json）。已知 staleness
+    // 窗口（消息唤醒轮后未再发送、发送失败且作废失败、压缩后未再发送）均
+    // 表现为调和门诚实隐藏入口、下次发送自愈——与主车道失准的既有处理语义
+    // 一致。rewind_to_turn 预检仍走全量精确计数：那是实际执行回退前的一次性
+    // 校验，不在轮询热路径。
     tauri::async_runtime::spawn_blocking(move || {
-        checkpoints::list_checkpoints(&ledger)
-            .map(|checkpoints| CheckpointListForUi {
-                checkpoints,
-                user_turns,
-            })
-            .map_err(|error| format!("读取检查点列表失败: {error:#}"))
+        let entries = checkpoints::list_checkpoints(&ledger)
+            .map_err(|error| format!("读取检查点列表失败: {error:#}"))?;
+        let user_turns = entries
+            .iter()
+            .rev()
+            .find(|entry| entry.kind == checkpoints::CheckpointKind::Turn)
+            .and_then(|entry| entry.turn)
+            .unwrap_or(0);
+        Ok::<_, String>(CheckpointListForUi {
+            checkpoints: entries,
+            user_turns,
+        })
     })
     .await
     .map_err(|error| format!("读取检查点列表任务失败: {error}"))?
@@ -2129,6 +2245,118 @@ mod tests {
         assert!(
             !remaining.contains(&dropped_id),
             "未成活快照必须按 id 精确删除: {remaining:?}"
+        );
+        let _ = std::fs::remove_dir_all(&ledger);
+    }
+
+    /// r19 M6：回退在 apply 后、truncate 前崩溃（暂记落盘、代码已恢复、对话
+    /// 未截断）——下一次 turn 快照前的崩溃对账必须自动完成协议：截断生效、
+    /// 被截分支快照作废、暂记清除、本轮快照登记在截断后的树上（而不是把混合
+    /// 树固化进历史、让 pending 复用门与 undo 绑定永久失效）。
+    #[tokio::test]
+    async fn crash_interrupted_rewind_auto_completes_before_next_snapshot() {
+        if !git_available() {
+            return;
+        }
+        let (store, _g, id, ledger, execution) = work_mode_session("crash-reconcile");
+        std::fs::write(execution.join("code.txt"), "v1\n").expect("seed code");
+        let first = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第一轮".into(),
+            "chat",
+        )
+        .await
+        .expect("turn 1 snapshot");
+        store
+            .update_messages(&id, vec![user_msg("第一轮"), assistant_msg("答一")])
+            .expect("seed turn 1");
+        std::fs::write(execution.join("code.txt"), "v2\n").expect("advance code");
+        let second = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第二轮".into(),
+            "chat",
+        )
+        .await
+        .expect("turn 2 snapshot");
+        store
+            .update_messages(
+                &id,
+                vec![
+                    user_msg("第一轮"),
+                    assistant_msg("答一"),
+                    user_msg("第二轮"),
+                    assistant_msg("答二"),
+                ],
+            )
+            .expect("seed turn 2");
+
+        // 模拟崩溃点：协议走到 apply 完成、truncate 未启动（暂记留存）。
+        let revision = {
+            let session = store.load(&id).expect("load");
+            crate::features::sessions::transcript_revision(&session.messages).expect("revision")
+        };
+        let target = checkpoints::find_checkpoint(&ledger, &first).expect("target");
+        let (_t, undo) = checkpoints::prepare_restore(&ledger, &execution, &first, None)
+            .expect("prepare");
+        checkpoints::write_pending_rewind(&ledger, &first, 1, &undo.id, &revision)
+            .expect("pending");
+        checkpoints::apply_restore(&ledger, &execution, &target).expect("apply");
+        assert_eq!(
+            std::fs::read_to_string(execution.join("code.txt")).unwrap(),
+            "v1\n",
+            "apply 已把代码恢复到第一轮"
+        );
+        assert_eq!(
+            checkpoints::count_user_turns(&store.load(&id).expect("load").messages),
+            2,
+            "崩溃点：对话尚未截断（混合态）"
+        );
+
+        // 下一次 turn 快照：对账 seam 自动完成协议 + 照常登记本轮快照。
+        let snapshot3 = create_turn_checkpoint(
+            &store,
+            &id,
+            ledger.clone(),
+            execution.clone(),
+            "第三轮".into(),
+            "chat",
+        )
+        .await
+        .expect("reconcile 后本轮快照必须照常登记");
+        let session = store.load(&id).expect("load after");
+        assert_eq!(
+            checkpoints::count_user_turns(&session.messages),
+            1,
+            "对账必须完成截断（保留第一轮）"
+        );
+        assert!(
+            !ledger.join("pending_rewind.json").exists(),
+            "协议完成后暂记必须清除"
+        );
+        assert_eq!(
+            std::fs::read_to_string(execution.join("code.txt")).unwrap(),
+            "v1\n",
+            "幂等重放 apply 不得破坏已恢复状态"
+        );
+        let turn_entries: Vec<(Option<u32>, String)> = checkpoints::list_checkpoints(&ledger)
+            .expect("list")
+            .into_iter()
+            .filter(|entry| entry.kind == CheckpointKind::Turn)
+            .map(|entry| (entry.turn, entry.id))
+            .collect();
+        assert!(
+            !turn_entries.iter().any(|(_, id)| id == &second),
+            "被截分支的第二轮快照必须作废: {turn_entries:?}"
+        );
+        assert!(
+            turn_entries.contains(&(Some(2), snapshot3.clone())),
+            "新分支的同号快照必须登记: {turn_entries:?}"
         );
         let _ = std::fs::remove_dir_all(&ledger);
     }
