@@ -42,7 +42,9 @@ server = [
 
 [dependencies]
 anyhow = "1.0"
-# Keep 0.22 to match the app: upstreams still require 0.22; a solo 0.23 bump would add a second copy. Revisit once upstreams align.
+# Direct use stays on 0.22 (same line as age and the app's codewhale-tui); the
+# graph also carries a 0.23 copy via pem 4 (rcgen 0.14.10) and reqwest 0.13.
+# Revisit the split once the upstreams realign on one line.
 base64 = "0.22"
 calamine = "0.36"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
