@@ -569,8 +569,13 @@ def _parse_int_value(key, value, minimum, maximum):
 
 
 def _parse_byday(value):
-    tokens = [token.strip() for token in str(value).split(",") if token.strip()]
-    if not tokens:
+    # Round-30 REQUIRED-1: an empty token (a trailing/double comma — a
+    # classic LLM artifact) is an INVALID token, not a skippable one. The
+    # domain parser bails on "", so filtering empties here admitted shapes
+    # that deterministically poison after the full wait, behind an already
+    # answered ok:true.
+    tokens = [token.strip() for token in str(value).split(",")]
+    if not tokens or any(not token for token in tokens):
         return None, "invalid rrule: BYDAY cannot be empty"
     for token in tokens:
         if token not in WEEKDAY_TOKENS:

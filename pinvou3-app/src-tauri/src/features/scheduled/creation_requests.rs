@@ -400,12 +400,12 @@ pub(crate) fn validate_product_rrule(rrule: &str) -> Result<String> {
         Ok(number)
     };
     let parse_byday = |value: &str| -> Result<()> {
-        let tokens: Vec<&str> = value
-            .split(',')
-            .map(str::trim)
-            .filter(|t| !t.is_empty())
-            .collect();
-        if tokens.is_empty() {
+        // Round-30 REQUIRED-1: an empty token (trailing/double comma) is
+        // INVALID, not skippable — the domain parser bails on "", and the
+        // module's B9 rule is to reject exactly what the server rejects
+        // (which now rejects it too).
+        let tokens: Vec<&str> = value.split(',').map(str::trim).collect();
+        if tokens.iter().any(|t| t.is_empty()) {
             bail!("invalid rrule: BYDAY cannot be empty");
         }
         for token in tokens {
@@ -1897,6 +1897,14 @@ mod tests {
             "FREQ=WEEKLY;BYDAY=XX;BYHOUR=8;BYMINUTE=30",
             "FREQ=WEEKLY;BYDAY=MO;BYHOUR=24;BYMINUTE=30",
             "FREQ=WEEKLY;BYDAY=MO;BYHOUR=8;BYMINUTE=60",
+            // Round-30 REQUIRED-1: empty BYDAY tokens (trailing/double
+            // comma — a classic LLM artifact) are rejected here like the
+            // server does, instead of being filtered into an accepted
+            // shape the domain then poisons after a fully-answered create.
+            "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU,;BYHOUR=8;BYMINUTE=30",
+            "FREQ=WEEKLY;BYDAY=MO,,TU;BYHOUR=8;BYMINUTE=30",
+            "FREQ=WEEKLY;BYDAY=MO,;BYHOUR=8;BYMINUTE=30",
+            "FREQ=WEEKLY;BYDAY=,;BYHOUR=8;BYMINUTE=30",
             "FREQ=ONCE;AT=2020-01-01T09:30",
             "FREQ=ONCE;AT=2099-06-01T09:30Z",
             "FREQ=ONCE;AT=2099-06-01T09:30+08:00",
@@ -1915,6 +1923,15 @@ mod tests {
                 "{rrule} should be rejected"
             );
         }
+        // The positive arm of the same gate: the domain accepts the forms
+        // that survive both layers (a here-filtered empty token used to
+        // break this parity end to end).
+        let surviving = spool_record_json(&[(
+            "rrule",
+            serde_json::json!("FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU;BYHOUR=8;BYMINUTE=30"),
+        )]);
+        let record: SpooledCreationRequest = serde_json::from_str(&surviving).unwrap();
+        assert!(record.validate().is_ok(), "the surviving BYDAY form applies");
     }
 
     #[tokio::test]

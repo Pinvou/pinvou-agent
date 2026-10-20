@@ -204,6 +204,14 @@ class RruleValidationTests(unittest.TestCase):
             "FREQ=WEEKLY;BYDAY=MO;BYHOUR=8",
             "FREQ=WEEKLY;BYDAY=MO;BYHOUR=24;BYMINUTE=0",
             "FREQ=WEEKLY;BYDAY=MO;BYHOUR=8;BYMINUTE=60",
+            # Round-30 REQUIRED-1: empty BYDAY tokens (trailing/double
+            # comma) are invalid, not skippable — filtering them admitted
+            # shapes the domain deterministically poisons behind an
+            # already-answered ok:true.
+            "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU,;BYHOUR=8;BYMINUTE=30",
+            "FREQ=WEEKLY;BYDAY=MO,,TU;BYHOUR=8;BYMINUTE=30",
+            "FREQ=WEEKLY;BYDAY=MO,;BYHOUR=8;BYMINUTE=30",
+            "FREQ=WEEKLY;BYDAY=,;BYHOUR=8;BYMINUTE=30",
             "FREQ=HOURLY;WILDCARD=1",
             "FREQ=MONTHLY;BYDAY=1MO",
             "INTERVAL=5",
