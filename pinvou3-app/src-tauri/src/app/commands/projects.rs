@@ -2558,7 +2558,9 @@ pub async fn rebind_workspace_root(
 /// workspace_rebound event with the rebind geometry (see the call site for
 /// why failed and post-busy ids are included). Same forwarding convention
 /// as `emit_session_event` applies to the session event; dead ids are never
-/// reported, hence never evented (review #463 round-10 minor 4).
+/// reported and the re-scoped callers (round-26) event failed and post-busy
+/// ids verbatim through this helper — the events mirror what the caller
+/// feeds it (review #463 round-10 minor 4 scope, adjusted round-51).
 fn emit_workspace_rebound_events<'a>(
     app: &AppHandle,
     session_ids: impl Iterator<Item = &'a String>,

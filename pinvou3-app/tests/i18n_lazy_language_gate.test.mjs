@@ -249,22 +249,43 @@ test('入口并发 Retry 乱序:陈旧完成不触碰根,最新尝试独占', as
     `${bootUrl}?case=${Math.random().toString(36).slice(2)}`
   );
 
+  // 假 DOM(round-51 M1 加固):textContent='' 必须与真实 DOM 同语义地清空
+  // 子节点,否则"陈旧 null 重绘"断言在幸存旧盒上假绿;paints 记录每次
+  // 失败屏绘制(每次 paint 恰向 #root append 一个盒),突变掉票号守卫后
+  // 陈旧重绘会使计数变 2。
   function fakeDoc() {
     const listeners = new Map();
-    const makeEl = (tag) => ({
-      tag,
-      type: undefined,
-      textContent: '',
-      dataset: {},
-      attributes: {},
-      children: [],
-      setAttribute(key, value) { this.attributes[key] = value; },
-      addEventListener(kind, fn) { listeners.set(kind, fn); },
-      append(...els) { this.children.push(...els); },
-    });
+    const makeEl = (tag) => {
+      const el = {
+        tag,
+        type: undefined,
+        dataset: {},
+        attributes: {},
+        children: [],
+        setAttribute(key, value) { this.attributes[key] = value; },
+        addEventListener(kind, fn) { listeners.set(kind, fn); },
+        append(...els) { for (const child of els) this.children.push(child); },
+      };
+      let text = '';
+      Object.defineProperty(el, 'textContent', {
+        get: () => text,
+        set: (value) => {
+          text = value;
+          if (value === '') el.children = [];
+        },
+      });
+      return el;
+    };
     const host = makeEl('#root');
+    const paints = [];
+    const hostAppend = host.append.bind(host);
+    host.append = (...els) => {
+      paints.push(els[0]);
+      hostAppend(...els);
+    };
     return {
       host,
+      paints,
       listeners,
       createElement: (tag) => makeEl(tag),
       querySelector: (sel) => (sel === '#root' ? host : null),
@@ -275,66 +296,117 @@ test('入口并发 Retry 乱序:陈旧完成不触碰根,最新尝试独占', as
     };
   }
 
-  // 受控装载:每次装载返回一个可手动放行的 deferred;按判定给值。
-  function deferred(verdict) {
+  function deferred() {
     let resolve;
     const promise = new Promise((res) => { resolve = res; });
-    return { promise, settle: () => resolve(verdict) };
+    return { promise, settle: (verdict) => resolve(verdict) };
   }
-  const pending = [];
-  let mounted = 0;
-  const doc = fakeDoc();
-  // 判定脚本:gen1/gen2 落 null(双失败与陈旧失败),gen3 落 'en'(最新成功)。
-  const verdicts = [null, null, 'en'];
-  let attemptIndex = 0;
-  const boot = mountWhenLanguageReady({
-    load: () => {
-      const attempt = deferred(verdicts[attemptIndex] ?? null);
-      attemptIndex += 1;
-      pending.push(attempt);
-      return attempt.promise;
-    },
-    mount: () => { mounted += 1; },
-    doc,
-  });
+  const tick = () => new Promise((resolve) => { setTimeout(resolve, 0); });
 
-  // gen1: 初始装载,放行 null → 失败态。
-  await new Promise((resolve) => { setTimeout(resolve, 0); });
-  pending.shift().settle();
-  await new Promise((resolve) => { setTimeout(resolve, 0); });
-  assert.equal(mounted, 0);
-  assert.equal(doc.host.children[0].dataset.bootFailure, 'true');
+  async function drive(verdicts) {
+    const doc = fakeDoc();
+    const pending = [];
+    let mounted = 0;
+    let attemptIndex = 0;
+    const boot = mountWhenLanguageReady({
+      load: () => {
+        const attempt = deferred();
+        pending.push(attempt);
+        void verdicts[attemptIndex];
+        attemptIndex += 1;
+        return attempt.promise;
+      },
+      mount: () => { mounted += 1; },
+      doc,
+    });
+    return {
+      doc, pending, boot,
+      get mounted() { return mounted; },
+      settle(index, verdict) { pending[index].settle(verdict); },
+      get paints() { return doc.paints.length; },
+    };
+  }
 
-  // gen2 + gen3: 连点两次 Retry,两趟装载同时在途(gen1 已放行不在册)。
-  doc.clickRetry();
-  doc.clickRetry();
-  await new Promise((resolve) => { setTimeout(resolve, 0); });
-  assert.equal(pending.length, 2, 'gen2/gen3 各占一次装载');
+  // ── 腿 1: 陈旧 null 在最新尝试在途时落地——不得重绘(突变判别腿:
+  // 判定脚本 gen1=null, gen2=null, gen3='en'; gen2 在 gen3 在途时先落)。──
+  {
+    const run = await drive([null, null, 'en']);
+    await tick();
+    run.settle(0, null);
+    await tick();
+    assert.equal(run.mounted, 0);
+    assert.equal(run.paints, 1, '初始双失败恰绘一次失败屏');
+    const firstBox = run.doc.host.children[0];
+    assert.equal(firstBox.dataset.bootFailure, 'true');
 
-  // 旧结果先落(gen2 → null,非最新)→ 必须被丢弃:不挂载、不重绘(gen3 在途)。
-  pending[0].settle();
-  await new Promise((resolve) => { setTimeout(resolve, 0); });
-  assert.equal(mounted, 0, '陈旧 null 完成不得挂载');
-  assert.equal(
-    doc.host.children[0] && doc.host.children[0].dataset.bootFailure, 'true',
-    '陈旧 null 也不得重绘失败屏(gen3 在途独占)',
-  );
+    run.doc.clickRetry();
+    run.doc.clickRetry();
+    await tick();
+    assert.equal(run.pending.length, 3, 'gen1..gen3 各占一次装载(gen1 已放行但仍在册)');
+    run.settle(1, null); // gen2: 陈旧 null,gen3 仍在途
+    await tick();
+    assert.equal(run.mounted, 0, '陈旧 null 完成不得挂载');
+    assert.equal(
+      run.paints, 1,
+      '陈旧 null 不得重绘失败屏(票号守卫被突变掉后此处变 2,即回归信号)',
+    );
+    assert.equal(
+      run.doc.host.children[0], firstBox,
+      '根上仍是初始失败盒(陈旧重绘会先清空 children 再放新盒)',
+    );
 
-  // 新结果后落(gen3 → 'en')→ 恰一次挂载,根清空。
-  pending[1].settle();
-  await new Promise((resolve) => { setTimeout(resolve, 0); });
-  assert.equal(mounted, 1, '最新成功尝试恰挂载一次');
-  assert.equal(doc.host.textContent, '');
+    run.settle(2, 'en'); // gen3: 最新成功 → 恰一次挂载,根清空
+    await tick();
+    assert.equal(run.mounted, 1, '最新成功尝试恰挂载一次');
+    assert.equal(run.doc.host.textContent, '');
+  }
 
-  // Jensen 探针的另一半:挂载后一次失败完成落地(boot 直驱 gen4)→
-  // 挂载态独占根,应用必须仍在,失败屏不得覆盖。
-  pending.push(deferred(null));
-  void boot();
-  await new Promise((resolve) => { setTimeout(resolve, 0); });
-  pending[pending.length - 1].settle();
-  await new Promise((resolve) => { setTimeout(resolve, 0); });
-  assert.equal(mounted, 1, '挂载后的失败完成不得改变挂载态');
-  assert.equal(doc.host.dataset.bootFailure, undefined, '失败态不得覆盖已挂载的应用');
+  // ── 腿 2: 陈旧成功在最新 null 在途时落地——不得挂载(突变判别腿:
+  // 判定脚本 gen1=null, gen2='en', gen3=null; gen2 的成功在 gen3 在途时
+  // 先落,陈旧成功挂载会把应用盖在最新判定"仍是失败"之上)。──
+  {
+    const run = await drive([null, 'en', null]);
+    await tick();
+    run.settle(0, null);
+    await tick();
+    assert.equal(run.paints, 1);
+
+    run.doc.clickRetry();
+    run.doc.clickRetry();
+    await tick();
+    run.settle(1, 'en'); // gen2: 陈旧成功,gen3(null)仍在途
+    await tick();
+    assert.equal(run.mounted, 0, '陈旧成功完成不得挂载(最新判定尚未落地)');
+    assert.equal(run.paints, 1, '不得触碰失败屏');
+    assert.equal(
+      run.doc.host.children[0].dataset.bootFailure, 'true',
+      '失败屏必须原样保留',
+    );
+
+    run.settle(2, null); // gen3: 最新判定仍失败 → 允许重绘
+    await tick();
+    assert.equal(run.mounted, 0);
+    assert.equal(run.paints, 2, '最新判定的失败重绘是合法行为');
+    assert.equal(run.doc.host.children[0].dataset.bootFailure, 'true');
+  }
+
+  // ── 腿 3: 最新成功之后落陈旧成功——挂载态独占,不得二次挂载。──
+  {
+    const run = await drive([null, 'en', 'en']);
+    await tick();
+    run.settle(0, null);
+    await tick();
+    run.doc.clickRetry();
+    run.doc.clickRetry();
+    await tick();
+    run.settle(2, 'en'); // gen3: 最新成功先落
+    await tick();
+    assert.equal(run.mounted, 1);
+    run.settle(1, 'en'); // gen2: 陈旧成功后落
+    await tick();
+    assert.equal(run.mounted, 1, '陈旧成功不得二次挂载');
+    assert.equal(run.doc.host.children.length, 0, '挂载态下根上无失败盒');
+  }
 });
 
 // 引导兜底(round-46 M1):入口的降级装载链。旧 `dict[language] || dict.zh`

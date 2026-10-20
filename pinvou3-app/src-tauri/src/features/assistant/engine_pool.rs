@@ -3432,7 +3432,10 @@ impl EnginePool {
                 RECLAIM_SHUTDOWN_RETRY_PATIENCE,
             ));
         }
-        // A reclaimed engine's forwarder was aborted (and awaited) above, so
+        // A reclaimed engine's forwarder was aborted and, on the normal
+        // arm, awaited above (the bounded-drain timeout arm detaches instead
+        // — a straggler already inside a CompactionStarted arm can re-set
+        // the latch behind this cleanup; same 15-min expiry bounds it), so
         // the compaction terminal event (Completed/Cancelled/Failed) that
         // would clear the in-flight flag can never arrive — and clearing only
         // here (not at entry) means a queued CompactionStarted the dying

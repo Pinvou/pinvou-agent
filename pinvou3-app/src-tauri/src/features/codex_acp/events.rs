@@ -1149,10 +1149,12 @@ pub fn persist_acp_state(session_id: &str, mut state: Value) -> Result<()> {
 /// surfaced to the align lane as a convergence failure (`sidecar_stale`),
 /// never as clean success.
 /// Concurrency residual (round-20 SF2, on record; class count corrected
-/// round-38): the acp-state.json read-modify-write window is unlocked
-/// across its six writer classes (events lastStatus, operation_gate,
-/// the align convergence patch, the spawn full rewrite, the rebind
-/// translate pass, and this persist helper's own callers). A
+/// round-38, sixth site named round-51): the acp-state.json
+/// read-modify-write window is unlocked across six write call sites in
+/// five logical classes (events lastStatus, operation_gate, the align
+/// convergence patch, the spawn full rewrite, and the rebind translate
+/// pass — whose detached-sweep retranslate tail shares the align writer,
+/// giving the sixth site). A
 /// milliseconds-wide interleave can drop one patch (e.g. the event lane's
 /// stale read landing after align's narrower workspace patch resurrects the
 /// wider pre-align root set — the over-grant direction, the exact scenario
