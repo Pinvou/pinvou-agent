@@ -199,7 +199,8 @@ fi
 # default to the toolchain the rust-toolchain.toml pins first, so all
 # stages share one rustc and the std lands on the toolchain that actually
 # builds.
-pinned_toolchain="$(cd "$SRC_TAURI" && rustup show active-toolchain | awk '{print $1}')"
+pinned_toolchain="$(cd "$SRC_TAURI" && rustup show active-toolchain | awk '{print $1}')" \
+  || fail "cannot read the active toolchain from $SRC_TAURI (rustup show active-toolchain failed)"
 (cd "$REPO_ROOT" && rustup default "$pinned_toolchain") \
   || fail "cannot align the rustup default to the rust-toolchain.toml toolchain ($pinned_toolchain)"
 (cd "$REPO_ROOT" && rustup target add "$TRIPLE") \

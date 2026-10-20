@@ -34,7 +34,13 @@
 #           gir1.2-gtk-3.0). Arch-qualified interpreter deps (`perl:any`,
 #           `python3:any`) are skipped by design: `:any` is satisfied by
 #           the build host, and the whitelist below would drop the payload
-#           anyway.
+#           anyway. WHY NOT apt itself (dpkg --add-architecture loong64 +
+#           a [trusted=yes] deepin source + apt-get download, or
+#           mmdebstrap/multistrap): all of them mutate host apt/dpkg state
+#           (or need root), assume a Debian-family build host, and the
+#           runner's jammy apt chokes on deepin's index; the embedded
+#           resolver keeps the step self-contained, rootless, and runnable
+#           on any dev host (the tests rely on that).
 #   Mirror overrides:
 #     PINVOU_LOONG64_DEEPIN_MIRROR  base URL (default
 #                                   https://community-packages.deepin.com/beige)
@@ -195,8 +201,15 @@ esac
 if [ -n "$toolchain_prefix" ] && [ ! -d "$toolchain_prefix" ]; then
   fail "toolchain prefix '$toolchain_prefix' (--toolchain-prefix/PINVOU_LOONG64_TOOLCHAIN_PREFIX) does not exist — run scripts/ci-loongarch64-toolchain.sh first or leave it unset to use the default"
 fi
-mkdir -p "$output_dir"
+mkdir -p -- "$output_dir"
 output_dir="$(cd "$output_dir" && pwd)"
+# Re-check AFTER canonicalization: a relative --output that traverses a
+# symlink or parent directory containing whitespace passes the literal
+# check above but canonicalizes into a whitespace path — exactly the
+# split the rewrite pipeline cannot carry.
+case "$output_dir" in *[[:space:]]*)
+  fail "--output path contains whitespace ('$output_dir'): the ld-script rewrite pipeline is newline-delimited and cannot carry it" ;;
+esac
 
 mirror="${PINVOU_LOONG64_DEEPIN_MIRROR:-$DEFAULT_MIRROR}"
 suite="${PINVOU_LOONG64_DEEPIN_SUITE:-$DEFAULT_SUITE}"
@@ -432,9 +445,15 @@ prune_sysroot() {
     # A package-shipped /lib64 -> usr/lib64 usrmerge alias DANGLES once the
     # usr sweep above removes usr/lib64: mkdir -p would abort on the
     # dangling symlink with a raw "File exists" instead of the clean
-    # replacement the /lib side gets from `ln -sfn` above. (-L + ! -e is
-    # the dangling-symlink test; a real dir or a resolving alias skips it.)
-    if [ -L "$root/lib64" ] && [ ! -e "$root/lib64" ]; then rm -f "$root/lib64"; fi
+    # replacement the /lib side gets from `ln -sfn` above. A RESOLVING
+    # alias whose target does not carry the loader is replaced too: the
+    # sweep keeps usr/lib64, so writing the view through the alias would
+    # land it in usr/lib64/, where the ../-relative target is one level
+    # too shallow and the view dangles. (-L + ! -e on the LOADER path
+    # covers both: a dangling alias implies a dangling loader path; a real
+    # dir or an alias that already resolves to the loader skips it — the
+    # latter never reaches this branch, the view check above passed.)
+    if [ -L "$root/lib64" ] && [ ! -e "$root/lib64/$loader" ]; then rm -f "$root/lib64"; fi
     mkdir -p "$root/lib64"
     # The target must be "../" + the root-relative path: a symlink resolves
     # its target against the LINK's directory ($root/lib64), not the sysroot
@@ -627,23 +646,30 @@ verify_sysroot() {
   # objects behind them) are what every cmake -lpthread/-ldl resolution
   # goes through; assert them so a truncated cache restore fails here
   # instead of as "cannot find -lpthread" after a full compile.
-  [ -f "$root/usr/lib/$MULTIARCH_DIR/libpthread.so" ] \
-    || fail "sysroot lacks the libpthread.so dev script (prune regression or truncated restore?)"
+  # -s, same rationale as the libc.so guard above: the -f check passes on
+  # empty files and the member scans exclude them, so a truncated restore
+  # that left a zero-byte stub would verify green and ld would read it as
+  # no GROUP at all — a silently degraded -lpthread/-ldl resolution.
+  [ -s "$root/usr/lib/$MULTIARCH_DIR/libpthread.so" ] \
+    || fail "sysroot lacks a usable libpthread.so dev script (missing or empty: prune regression or truncated restore?)"
   [ -e "$root/usr/lib/$MULTIARCH_DIR/libpthread.so.0" ] \
     || fail "sysroot lacks the libpthread.so.0 runtime stub (extract regression or truncated restore?)"
-  [ -f "$root/usr/lib/$MULTIARCH_DIR/libdl.so" ] \
-    || fail "sysroot lacks the libdl.so dev script (prune regression or truncated restore?)"
+  [ -s "$root/usr/lib/$MULTIARCH_DIR/libdl.so" ] \
+    || fail "sysroot lacks a usable libdl.so dev script (missing or empty: prune regression or truncated restore?)"
   [ -e "$root/usr/lib/$MULTIARCH_DIR/libdl.so.2" ] \
     || fail "sysroot lacks the libdl.so.2 runtime stub (extract regression or truncated restore?)"
-  # glibc ≥2.34 folded librt/libutil/libanl into libc; the prune keeps the
-  # empty libc6-dev stub archives because rustc's link tail unconditionally
-  # requests -lutil -lrt and a pkg-config -L can make the deepin tree the
-  # first search location. Assert them so a truncated restore fails here
-  # instead of as "cannot find -lutil" after a full compile.
+  # glibc ≥2.34 folded libpthread/libdl/libutil/libanl into libc (librt was
+  # NOT folded: its aio/mq/timer entry points still live in librt.so.1, but
+  # the prune keeps librt.a too) — the prune keeps the libc6-dev stub
+  # archives because rustc's link tail unconditionally requests -lutil -lrt
+  # and a pkg-config -L can make the deepin tree the first search location.
+  # Assert them so a truncated restore fails here instead of as "cannot
+  # find -lutil" after a full compile; -s for the same empty-file reason
+  # as the GROUP stubs above.
   local compat_archive
   for compat_archive in librt.a libutil.a libanl.a; do
-    [ -f "$root/usr/lib/$MULTIARCH_DIR/$compat_archive" ] \
-      || fail "sysroot lacks the $compat_archive stub archive (prune regression or truncated restore? rustc's link tail links -lutil/-lrt)"
+    [ -s "$root/usr/lib/$MULTIARCH_DIR/$compat_archive" ] \
+      || fail "sysroot lacks a usable $compat_archive stub archive (missing or empty: prune regression or truncated restore? rustc's link tail links -lutil/-lrt)"
   done
 
   local libc_so="$root/usr/lib/$MULTIARCH_DIR/libc.so.6"

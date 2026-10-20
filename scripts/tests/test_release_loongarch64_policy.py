@@ -481,7 +481,7 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
                 f"verify_sysroot must assert the stub {name} for the reuse path",
             )
         self.assertIn(
-            "sysroot lacks the libpthread.so dev script",
+            "sysroot lacks a usable libpthread.so dev script",
             sysroot,
             "the stub check must fail with its own message",
         )
@@ -667,6 +667,15 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             code,
             "the orchestrator must read the toolchain rust-toolchain.toml pins",
         )
+        # The probe itself must carry the script-wide fail-loudly contract:
+        # under set -e a bare rustup failure aborts message-less (no FAIL:
+        # prefix) before the alignment steps below get their own wrappers.
+        self.assertIn(
+            "rustup show active-toolchain failed",
+            code,
+            "the toolchain probe must fail loudly with its own message, "
+            "not a bare set -e abort",
+        )
         self.assertIn(
             '(cd "$REPO_ROOT" && rustup default "$pinned_toolchain")',
             code,
@@ -718,6 +727,15 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
                 f"the {artifact} build must be asserted LoongArch64 in the "
                 "orchestrator",
             )
+        # The gate itself must keep its exact comparison: a weakened check
+        # ([ -n "$machine" ], a misspelled arch) would wave every artifact
+        # through while all the call-site pins above stay green.
+        self.assertIn(
+            '[ "$machine" = "LoongArch" ]',
+            code,
+            "the ELF gate must compare readelf Machine: against LoongArch "
+            "exactly",
+        )
         self.assertLess(
             code.index("hello.rs"),
             code.index("--manifest-path"),
@@ -1388,6 +1406,66 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
                 "../../usr/lib/loongarch64-linux-gnu/libc.so.6",
             )
 
+            # The RESOLVING alias variant: /lib64 -> usr/lib64 survives the
+            # usr sweep (the sweep keeps usr/lib64) but the loader lives in
+            # the multiarch dir, so the view must still be materialized.
+            # Writing the view link THROUGH the resolving alias lands it in
+            # usr/lib64/, where the ../-relative target is one level too
+            # shallow — the alias must be replaced by a real dir first, like
+            # the dangling variant above.
+            root3 = Path(tmp) / "root3"
+            ma3 = root3 / "usr/lib/loongarch64-linux-gnu"
+            ma3.mkdir(parents=True)
+            (ma3 / "libc.so.6").write_text("ELF")
+            (ma3 / "libpthread.so.0").write_text("ELF")
+            (ma3 / "libdl.so.2").write_text("ELF")
+            (ma3 / "ld-linux-loongarch-lp64d.so.1").write_text("ELF")
+            (ma3 / "libc.so").write_text(
+                "GROUP ( /lib/loongarch64-linux-gnu/libc.so.6"
+                "  AS_NEEDED ( /lib64/ld-linux-loongarch-lp64d.so.1 ) )\n"
+            )
+            inc3 = root3 / "usr/include/loongarch64-linux-gnu/bits"
+            inc3.mkdir(parents=True)
+            (inc3 / "wordsize.h").write_text("#define __WORDSIZE 64\n")
+            (root3 / "usr/include/stdio.h").write_text("/* generic */\n")
+            (root3 / "usr/lib64").mkdir()
+            (root3 / "usr/lib64/keepme").write_text("not the loader\n")
+            (root3 / "lib64").symlink_to("usr/lib64")  # resolves, no loader
+            aliased = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    "set -euo pipefail; source %s; prune_sysroot %s"
+                    % (shlex.quote(str(fragment)), shlex.quote(str(root3))),
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            self.assertEqual(
+                aliased.returncode,
+                0,
+                f"prune must replace a resolving /lib64 alias that does "
+                f"not carry the loader: {aliased.stderr}",
+            )
+            self.assertFalse(
+                (root3 / "lib64").is_symlink(),
+                "a resolving /lib64 alias without the loader must be "
+                "replaced by a real dir, not written through",
+            )
+            self.assertEqual(
+                str(
+                    (root3 / "lib64/ld-linux-loongarch-lp64d.so.1").readlink()
+                ),
+                "../usr/lib/loongarch64-linux-gnu/ld-linux-loongarch-lp64d.so.1",
+                "the loader view must resolve against its own directory",
+            )
+            self.assertTrue(
+                (root3 / "lib64/ld-linux-loongarch-lp64d.so.1").exists(),
+                "the loader view must resolve after the alias is replaced",
+            )
+
     def test_verify_sysroot_fails_closed_on_resolution_gaps(self):
         # verify_sysroot is the only guard a truncated cache restore hits
         # before the build (the reuse path re-runs it verbatim), so its
@@ -1524,13 +1602,40 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             self.assertIn("libc.so is empty", empty_script.stderr)
             libc_so.write_text(saved_script)
 
+            # Truncation class 3b: the materialized GROUP dev stubs truncated
+            # to zero bytes. The -f guards pass on empty files and the member
+            # scans exclude them, so without -s guards of their own the stubs
+            # would verify green and ld would read the empty script as no
+            # GROUP at all — a silently degraded -lpthread/-ldl resolution.
+            for stub_name in ("libpthread.so", "libdl.so"):
+                stub = ma / stub_name
+                saved_stub = stub.read_text()
+                stub.write_text("")
+                empty_stub = verify()
+                self.assertNotEqual(empty_stub.returncode, 0)
+                self.assertIn(
+                    f"lacks a usable {stub_name} dev script",
+                    empty_stub.stderr,
+                )
+                stub.write_text(saved_stub)
+
             # Truncation class 4: a compat stub archive (-lutil/-lrt link
             # tail) dropped. The keep-list and the verify assert must agree.
             (ma / "librt.a").unlink()
             no_compat = verify()
             self.assertNotEqual(no_compat.returncode, 0)
-            self.assertIn("lacks the librt.a stub archive", no_compat.stderr)
+            self.assertIn("lacks a usable librt.a stub archive", no_compat.stderr)
             (ma / "librt.a").write_text("!<arch>\n")
+
+            # Truncation class 4b: the same archive present but truncated to
+            # zero bytes — same rationale as class 3b.
+            (ma / "libutil.a").write_text("")
+            empty_compat = verify()
+            self.assertNotEqual(empty_compat.returncode, 0)
+            self.assertIn(
+                "lacks a usable libutil.a stub archive", empty_compat.stderr
+            )
+            (ma / "libutil.a").write_text("!<arch>\n")
 
             # Truncation class 5: the multiarch header SOURCE subtree lost
             # wholesale (gnu/stubs.h is the arch-specific sentinel). Without
@@ -1544,6 +1649,30 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             (root / "usr/include/loongarch64-linux-gnu/gnu/stubs.h").write_text(
                 "/* stubs */\n"
             )
+
+    def test_sysroot_output_whitespace_guard_survives_canonicalization(self):
+        # The parse-time whitespace check runs on the literal argument: a
+        # RELATIVE --output that traverses a whitespace-named parent (or
+        # symlink) passes it and only canonicalizes into a whitespace path
+        # afterwards — exactly the split the newline-delimited rewrite
+        # pipeline cannot carry. The guard must therefore run twice, before
+        # AND after the cd/pwd canonicalization.
+        sysroot = _without_comments(SYSROOT_SCRIPT.read_text(encoding="utf-8"))
+        self.assertEqual(
+            sysroot.count('case "$output_dir" in *[[:space:]]*'),
+            2,
+            "the --output whitespace guard must exist both before the "
+            "canonicalization (literal argument) and after it (resolved "
+            "path)",
+        )
+        self.assertLess(
+            sysroot.index('case "$output_dir" in *[[:space:]]*'),
+            sysroot.index('output_dir="$(cd "$output_dir" && pwd)"'),
+        )
+        self.assertGreater(
+            sysroot.rindex('case "$output_dir" in *[[:space:]]*'),
+            sysroot.index('output_dir="$(cd "$output_dir" && pwd)"'),
+        )
 
     def test_elf_policy_uses_bfd_independent_readelf(self):
         # check-linux-elf-policy.sh dumps dynamic symbols with readelf, not
