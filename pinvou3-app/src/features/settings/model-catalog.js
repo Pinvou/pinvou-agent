@@ -2009,12 +2009,14 @@ function localReasoningTiers(modelId, probedKind) {
 // (think:true), semantically equal to high, so the highlight maps to the
 // nearest tier, high (same for max; the core normalizes max to high).
 // This only affects display comparison and never changes stored values (the
-// original value survives switching back to a four-tier endpoint). Returns
-// null when no tier was ever picked, the table is missing/empty, or the table
-// truly has no high to land on (no highlight shown).
+// original value survives switching back to a four-tier endpoint).
+// Tachyon's ladder replaces high with max; its wire clamps a legacy high to
+// medium, so show that effective tier while preserving the stored value.
+// Returns null when there is no selection or no equivalent tier.
 function reasoningEffortDisplayForTiers(effort, tiers) {
   if (!effort || !Array.isArray(tiers) || !tiers.length) return null;
   if (tiers.includes(effort)) return effort;
+  if (effort === 'high' && tiers.includes('medium') && tiers.includes('max') && !tiers.includes('high')) return 'medium';
   return tiers.includes('high') ? 'high' : null;
 }
 

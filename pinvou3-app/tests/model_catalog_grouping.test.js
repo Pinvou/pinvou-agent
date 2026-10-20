@@ -992,6 +992,16 @@ test('localReasoningTiers: probed tiers overlaid with the model knowledge table'
 });
 
 test('reasoningEffortDisplayForTiers: display fallback of stored tiers against probed tiers', () => {
+  // A stored high, or high selected before probing completes, is clamped to
+  // medium on Tachyon. Re-probing another engine preserves the original value.
+  const tachyonTiers = [...localProbeTiersForKind('tachyon')];
+  for (const preset of ['local_vllm', 'openai_compatible']) {
+    const model = { preset, model: 'qwen3.8', base_url: 'http://127.0.0.1:8000/v1' };
+    const stored = normalizeStoredReasoningEffort(model, 'high');
+    assert.strictEqual(reasoningEffortDisplayForTiers(stored, tachyonTiers), 'medium');
+    assert.strictEqual(reasoningEffortDisplayForTiers(stored, [...localProbeTiersForKind('vllm')]), 'high');
+    assert.strictEqual(stored, 'high');
+  }
   // ollama two-tier table: stored low/medium are wire-equivalent to high
   // (think:true); the highlight maps to the nearest tier, high
   assert.strictEqual(reasoningEffortDisplayForTiers('low', ['off', 'high']), 'high');
