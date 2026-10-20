@@ -3,8 +3,9 @@
 GitHub hosts no loong64 runner, so the release build runs cross on x86_64
 ubuntu-22.04 and the pr-check cross leg type-checks the target per PR:
 - the release job must invoke the orchestrator (scripts/ci-build-linux-
-  loongarch64.sh) on an x86_64 runner, must NOT copy the arm64 lld RUSTFLAGS
-  (the pinned cross toolchain ships bfd only) and must not override LTO;
+  loongarch64.sh) on an x86_64 runner, must keep RUSTFLAGS remap-only (the
+  pinned cross toolchain ships bfd only — cargo links route through the
+  generated rust-lld wrapper instead) and must not override LTO;
 - bundling must be skipped via the build.js `--bundles none` path (tauri-
   bundler has no LoongArch variant and panics); the deb is hand-assembled;
 - the toolchain/sysroot must come from the sha256-pinned setup scripts, with
@@ -25,6 +26,7 @@ moving or renaming a job changes the split points and fails loudly here.
 """
 
 import json
+import os
 import re
 import shlex
 import subprocess
@@ -98,97 +100,107 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         # build.js (or any bundling) itself.
         self.assertNotIn("node scripts/tauri/build.js", self.job_code)
 
-    def test_release_job_keeps_forbidden_linker_flags_out(self):
-        # The pinned cross toolchain ships NO lld (bfd only): the arm64 job's
-        # -fuse-ld=lld / --icf=safe must never be copied, and LTO stays owned
-        # by Cargo.toml. Comment mentions of the forbidden flags are
-        # deliberate (they warn future editors) and are stripped here — only
-        # live configuration counts.
+    def test_release_job_sets_remap_only_rustflags(self):
+        # RUSTFLAGS stay remap-only: --remap-path-prefix is rustc-side (the
+        # macOS job sets it alone) and keeps build-machine paths out of the
+        # artifact like every other release job. Linker selection is NOT a
+        # RUSTFLAGS concern here: cargo routes through the toolchain's
+        # generated <triple>-gcc-rust-lld wrapper (see the toolchain test
+        # below — rustc's LLVM emits R_LARCH_CALL36 that the pinned
+        # bfd 2.41 cannot resolve), so the arm64 job's HOST-side
+        # -fuse-ld=lld / --icf=safe must still never be copied, and LTO
+        # stays owned by Cargo.toml. Comment mentions of the forbidden
+        # flags are deliberate (they warn future editors) and are stripped
+        # here — only live configuration counts.
+        job_env = self.job_code.split("\n    steps:", maxsplit=1)[0]
+        rustflags = [
+            line.strip()
+            for line in job_env.splitlines()
+            if line.strip().startswith("RUSTFLAGS:")
+        ]
+        self.assertEqual(
+            rustflags,
+            ['RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/"'],
+            "the loong64 job must set exactly the remap-only RUSTFLAGS",
+        )
         self.assertNotIn("-fuse-ld=lld", self.job_code)
         self.assertNotIn("--icf=safe", self.job_code)
         self.assertNotIn("CARGO_PROFILE_RELEASE_LTO", self.job_code)
         self.assertNotIn("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", self.job_code)
-
-    def test_rust_flags_are_target_scoped_never_global(self):
-        # The target units need --remap-path-prefix (artifact-path parity)
-        # AND the two link-args: -C link-arg=--sysroot (the deepin libc.so
-        # linker script's absolute GROUP paths only resolve under the
-        # sysroot) and -C link-arg=-B<sysroot>/usr/lib/loongarch64-linux-gnu/
-        # (a command-line --sysroot replaces the toolchain's bundled one, so
-        # the gcc driver drops the bundled startfile prefixes and searches
-        # only the deepin tree, which keeps Scrt1.o/crti.o solely under the
-        # Debian multiarch dir the unknown-triple gcc never searches — see
-        # test_cross_links_find_the_deepin_startfiles). None of these can
-        # ride in RUSTFLAGS: cargo gives a set RUSTFLAGS precedence over
-        # CARGO_TARGET_<triple>_RUSTFLAGS (verified: the target-scoped value
-        # is silently dropped when both are set), so the target units would
-        # silently lose the sysroot link-arg. With --target, host
-        # build-script units receive no rustflags at all — the shadowing
-        # alone is what makes a job-level RUSTFLAGS fatal here.
-        # So the job must not set RUSTFLAGS anywhere (job env, step env, or a
-        # run-block export) and the orchestrator must own exactly one
-        # target-scoped export carrying the remap and both link-args.
-        self.assertNotIn("RUSTFLAGS", self.job_code)
+        # The orchestrator owns the actual cargo invocations and must not
+        # override the job's flags (its comments deliberately warn; strip
+        # them before scanning).
         orchestrator_code = _without_comments(self.orchestrator)
         self.assertNotIn("-fuse-ld=lld", orchestrator_code)
         self.assertNotIn("--icf=safe", orchestrator_code)
         self.assertNotIn("CARGO_PROFILE_RELEASE_LTO", orchestrator_code)
         self.assertNotIn("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", orchestrator_code)
-        export_lines = [
-            line.strip()
-            for line in orchestrator_code.splitlines()
-            if re.match(r"^(export\s+)?[A-Z0-9_]*RUSTFLAGS=", line.strip())
-        ]
-        self.assertEqual(
-            export_lines,
-            [
-                'CARGO_TARGET_RUSTFLAGS="--remap-path-prefix=$REPO_ROOT=/ '
-                '-C link-arg=--sysroot=$sysroot '
-                '-C link-arg=-B$sysroot/usr/lib/loongarch64-linux-gnu/"',
-                'export CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS='
-                '"$CARGO_TARGET_RUSTFLAGS"',
-            ],
-            "the orchestrator must own exactly the two-line target-scoped "
-            "rust-flag export (remap + sysroot link-arg + multiarch "
-            "startfile -B)",
+        for line in orchestrator_code.splitlines():
+            stripped = line.strip()
+            self.assertFalse(
+                stripped.startswith("RUSTFLAGS=") or stripped.startswith("export RUSTFLAGS"),
+                f"the orchestrator must leave RUSTFLAGS unset, found: {stripped}",
+            )
+
+    def test_verify_sysroot_asserts_the_startup_objects(self):
+        # Startup objects are named by no linker script and no -l flag: the
+        # gcc driver selects them by its own rules (Scrt1.o/crti.o/crtn.o
+        # for -pie, crt1.o for -no-pie) out of directories it derives from
+        # its own configuration. A missing one surfaces only at real link
+        # time ("ld: cannot find Scrt1.o" — the exact failure the 0.10.13
+        # release link died on) which the check-only pr-check legs never
+        # reach. verify_sysroot must assert the full set so a prune/extract
+        # regression fails at setup time with the object named.
+        sysroot = _without_comments(self.sysroot)
+        self.assertIn(
+            "for crt_obj in Scrt1.o crt1.o crti.o crtn.o; do",
+            sysroot,
+            "verify_sysroot must assert the startup objects the cross driver "
+            "selects by its own rules",
+        )
+        self.assertIn(
+            "sysroot lacks the startup object $crt_obj",
+            sysroot,
+            "the startup-object check must fail with its own message",
         )
 
-    def test_cross_links_find_the_deepin_startfiles(self):
-        # A command-line --sysroot re-roots the gcc driver's startfile search
-        # off the toolchain's bundled tree onto the deepin one, which keeps
-        # Scrt1.o/crti.o only under usr/lib/loongarch64-linux-gnu/ — a dir
-        # the unknown-triple gcc never searches (its configured multiarch is
-        # its own triple). Both link surfaces must hand the driver that dir:
-        # the rust target flags as a -B link-arg (trailing slash = directory
-        # form; a -B dir also reaches ld as -L, putting the multiarch libc.so
-        # script and compat archives on the -l path), and the generated cmake
-        # toolchain file as *_LINKER_FLAGS_INIT (the ASR build passes
-        # CMAKE_SYSROOT and its first try_compile link would die the same
-        # way). verify_sysroot must assert the startfiles exist so a prune
-        # regression fails at setup time with the object named — the
-        # check-only pr-check legs never run a link.
-        #
-        # The cmake side rides in CMAKE_C/CXX_FLAGS_INIT (on compile AND
-        # link lines) rather than *_LINKER_FLAGS_INIT: the ASR build pins
-        # -DCMAKE_EXE_LINKER_FLAGS in cross mode, and a command-line -D
-        # cache entry silently drops a toolchain-file INIT seed.
-        build = _without_comments(self.orchestrator)
+    def test_cmake_link_surfaces_carry_the_multiarch_search_path(self):
+        # The deepin tree is Debian-multiarch: startfiles and lib* live under
+        # usr/lib/loongarch64-linux-gnu/, which neither the cross gcc's
+        # default search nor <sysroot>/usr/lib covers. Both cmake link
+        # surfaces must hand that dir to the driver: the generated toolchain
+        # file seeds -B (startfiles) and -L (-l resolution) via the
+        # *_FLAGS_INIT / *_LINKER_FLAGS_INIT seeds (CI round 2), and the ASR
+        # build's explicit -DCMAKE_EXE_LINKER_FLAGS must RE-ADD the -L — an
+        # explicit -D cache entry silently replaces the INIT seed (CI round
+        # 10: "cannot find -ldl/-lpthread" after configure went green).
         sysroot = _without_comments(self.sysroot)
-        self.assertIn("-C link-arg=-B$sysroot/usr/lib/loongarch64-linux-gnu/", build)
-        for lang in ("C", "CXX"):
-            self.assertIn(f"CMAKE_{lang}_FLAGS_INIT", sysroot)
         self.assertEqual(
-            sysroot.count("-B$root/usr/lib/$MULTIARCH_DIR/"),
+            sysroot.count("-B$root/usr/lib/$MULTIARCH_DIR"),
             2,
             "both cmake language-flag variants must carry the same -B "
             "startfile dir",
         )
+        for kind in ("EXE", "SHARED", "MODULE"):
+            self.assertIn(
+                f"set(CMAKE_{kind}_LINKER_FLAGS_INIT \\\"-L$root/usr/lib/$MULTIARCH_DIR\\\")",
+                sysroot,
+                f"the {kind} linker-flag seed must carry the multiarch -L",
+            )
+        asr = _without_comments(ASR_BUILD_SCRIPT.read_text(encoding="utf-8"))
         self.assertIn(
-            "for startfile in Scrt1.o crt1.o crti.o crtn.o; do",
-            sysroot,
-            "verify_sysroot must assert the C startfiles the cross driver "
-            "selects by its own rules",
+            '-DCMAKE_EXE_LINKER_FLAGS="-L$(dirname "$CMAKE_TOOLCHAIN_FILE")'
+            '/usr/lib/loongarch64-linux-gnu -static-libstdc++ -static-libgcc"',
+            asr,
+            "the ASR cross build must re-add the multiarch -L its explicit "
+            "EXE linker flags otherwise drop",
         )
+        # A cmake failure must dump the try-compile probe logs (tail, fail
+        # closed): cmake 3.31 buries try-compile stderr in
+        # CMakeConfigureLog.yaml, and without the dump a cross-build failure
+        # is undiagnosable from CI logs alone (CI round 8).
+        self.assertIn("CMakeConfigureLog.yaml", asr)
+        self.assertIn("tail -n 120", asr)
 
     def test_release_job_gives_the_cross_build_headroom(self):
         # arm64 (native) gets 90 minutes; the cross build reuses the same
@@ -306,12 +318,13 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         # job's first link used to be the full knowledge-server compile —
         # the worst place to discover a broken cross link environment. A
         # hello-world link must sit before it and reuse the exact exported
-        # flag string (the $CARGO_TARGET_RUSTFLAGS variable, not a copied
-        # literal) so the smoke cannot drift from what the cargo builds run
-        # with; the cross linker must come from the same env contract too.
+        # linker variable (the wrapper, not a copied literal) so the smoke
+        # cannot drift from what the cargo builds link with. Cargo links
+        # carry no rust flags of their own any more (the remap rides the
+        # workflow's RUSTFLAGS; the linker wrapper embeds the -B/-fuse-ld
+        # handoff), so the smoke passes exactly what a cargo link passes.
         code = _without_comments(self.orchestrator)
         self.assertIn("-C linker=\"$CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER\"", code)
-        self.assertIn("$CARGO_TARGET_RUSTFLAGS", code)
         self.assertIn('assert_loongarch_elf "$smoke_dir/hello"', code)
         self.assertIn(
             "cross link smoke failed",
@@ -484,69 +497,313 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         self.assertIn('> "$manifest.tmp"', sysroot)
         self.assertIn('mv "$manifest.tmp" "$manifest"', sysroot)
 
-    def test_sysroot_keeps_the_link_resolution_surface(self):
-        # The final links resolve -lc through the deepin libc.so TEXT linker
-        # script, whose GROUP names absolute paths (/lib/loongarch64-linux-
-        # gnu/libc.so.6, /lib64/ld-linux-loongarch-lp64d.so.1, verified
-        # against libc6-dev 2.38-6deepin13+rb1). Deepin is usrmerged, so the
-        # extracted tree only has usr/lib and usr/lib64 — the prune must
-        # recreate the /lib and /lib64 aliases or every link dies on
-        # "cannot open /lib/..." after a full compile (the CMake ASR build
-        # passes CMAKE_SYSROOT and dies the same way). The prune must also
-        # keep the glibc 2.34+ merged-library compat stubs (libpthread etc.,
-        # .a-only — no .so script names them, so the script-scan keep
-        # mechanism cannot see them; rustc's gnu link tail always carries
-        # -lutil -lrt -lpthread -lm -ldl -lc), and verify_sysroot must
-        # emulate ld's resolution for EVERY text script, not just libc.so,
-        # so a regression fails at setup time with the missing path named.
+    def test_toolchain_cargo_linker_routes_through_rust_lld(self):
+        # rustc's LLVM (1.99+) emits R_LARCH_CALL36 (psABI v2.30) for some
+        # direct calls; the pinned toolchain's bundled bfd (2.41, chosen for
+        # the glibc 2.38 floor) rejects it with "unsupported relocation type
+        # 0x6e" at the cargo link step (pinvou3#1993 CI round 5). The
+        # toolchain therefore materializes a <triple>-gcc-rust-lld wrapper —
+        # the sibling gcc with -B<shim dir> -fuse-ld=lld, where the shim dir
+        # holds an `ld.lld` that resolves the rust-bundled gcc-ld/ld.lld
+        # from the ACTIVE rustc sysroot at link time — and points
+        # CARGO_TARGET_*_LINKER at it, so cargo links with the same LLVM
+        # that emitted the relocs while native cmake/cc builds keep bfd and
+        # the glibc 2.38 floor stays unchanged. (GCC's -fuse-ld only takes
+        # NAMES resolved as `ld.<name>` via -B dirs — CI round 7 proved an
+        # absolute path dies with "unrecognized command-line option".) Pins
+        # the wiring, then executes the generated shim and wrapper against
+        # fake rustc/gcc so the exec chain is exercised, not just spelled.
+        self.assertIn('mkdir -p "$toolchain_bin/lld-shim"', self.toolchain)
+        self.assertIn('wrapper="$toolchain_bin/$TRIPLE-gcc-rust-lld"', self.toolchain)
+        self.assertIn(
+            "CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER="
+            "$toolchain_bin/$TRIPLE-gcc-rust-lld",
+            self.toolchain,
+        )
+        # The shim and wrapper must be regenerated and syntax-checked on
+        # every run.
+        self.assertIn('sh -n "$toolchain_bin/lld-shim/ld.lld"', self.toolchain)
+        self.assertIn('sh -n "$wrapper"', self.toolchain)
+
+        # The orchestrator is the release path's single env source of truth
+        # and re-exports CARGO_TARGET_*_LINKER: it must point at the wrapper
+        # (an earlier upstream round silently re-exported the bare gcc and
+        # undid the whole wrapper — CI round 6) and fail closed when a stale
+        # prefix lacks it, at setup time rather than at the final link.
+        orchestrator = _without_comments(self.orchestrator)
+        self.assertIn(
+            'cargo_linker="$TOOLCHAIN_BIN/$TRIPLE-gcc-rust-lld"',
+            orchestrator,
+        )
+        self.assertIn(
+            'export CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER="$cargo_linker"',
+            orchestrator,
+        )
+        self.assertIn(
+            "re-run scripts/ci-loongarch64-toolchain.sh to materialize the "
+            "rust-lld linker wrapper",
+            orchestrator,
+            "a stale prefix without the wrapper must fail with the actionable "
+            "message",
+        )
+
+        lines = self.toolchain.splitlines()
+        start = next(
+            i for i, l in enumerate(lines) if l.startswith('mkdir -p "$toolchain_bin/lld-shim"')
+        )
+        end = next(
+            i
+            for i in range(start, len(lines))
+            if lines[i].startswith('chmod +x "$wrapper"')
+        )
+        generation = "\n".join(lines[start : end + 1])
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            bin_dir = tmp / "bin"
+            bin_dir.mkdir()
+            sysroot = tmp / "sysroot"
+            gcc_ld = sysroot / "lib/rustlib/x86_64-unknown-linux-gnu/bin/gcc-ld"
+            gcc_ld.mkdir(parents=True)
+            fake_rustc = bin_dir / "rustc"
+            fake_rustc.write_text("#!/bin/sh\necho %s\n" % shlex.quote(str(sysroot)))
+            fake_rustc.chmod(0o755)
+            fake_gcc = bin_dir / "loongarch64-unknown-linux-gnu-gcc"
+            fake_gcc.write_text(
+                '#!/bin/sh\nprintf "FAKE-GCC"; printf " <%s>" "$@"; printf "\\n"\n'
+            )
+            fake_gcc.chmod(0o755)
+            # A REAL executable stand-in for the rust-bundled ld.lld: the
+            # shim must exec it with cargo's link arguments verbatim.
+            fake_ld = gcc_ld / "ld.lld"
+            fake_ld.write_text(
+                '#!/bin/sh\nprintf "FAKE-LLD"; printf " <%s>" "$@"; printf "\\n"\n'
+            )
+            fake_ld.chmod(0o755)
+
+            proc = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    "toolchain_bin=%s; TRIPLE=loongarch64-unknown-linux-gnu; source /dev/stdin"
+                    % shlex.quote(str(bin_dir)),
+                ],
+                input=generation,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            wrapper = bin_dir / "loongarch64-unknown-linux-gnu-gcc-rust-lld"
+            shim = bin_dir / "lld-shim" / "ld.lld"
+            self.assertTrue(wrapper.exists(), "setup must materialize the wrapper")
+            self.assertTrue(shim.exists(), "setup must materialize the ld.lld shim")
+
+            # Happy path through the FULL chain: wrapper → gcc (fake) gets
+            # the -B shim dir + -fuse-ld=lld ahead of cargo's own arguments.
+            linked = subprocess.run(
+                [str(wrapper), "-o", "app", "a.o", "b.o"],
+                env={"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}"},
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            self.assertEqual(linked.returncode, 0, linked.stderr)
+            self.assertIn(f"<-B{bin_dir / 'lld-shim'}>", linked.stdout)
+            self.assertIn("<-fuse-ld=lld>", linked.stdout)
+            self.assertIn("<-o> <app>", linked.stdout)
+
+            # The shim itself resolves and execs the rust-bundled ld.lld
+            # with the linker arguments gcc passes it (argv0 is the shim
+            # path, so lld's flavor detection sees `ld.lld`).
+            shimmed = subprocess.run(
+                [str(shim), "-o", "app", "a.o", "b.o"],
+                env={"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}"},
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            self.assertEqual(shimmed.returncode, 0, shimmed.stderr)
+            self.assertIn("FAKE-LLD <-o> <app> <a.o> <b.o>", shimmed.stdout)
+
+            # No rustc on PATH: fail loudly with the actionable message, not
+            # with a silent bfd fallback.
+            broken = subprocess.run(
+                [str(shim), "-o", "app", "a.o"],
+                env={"PATH": str(bin_dir)},
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            self.assertEqual(broken.returncode, 127, broken.stderr)
+            self.assertIn("no gcc-ld/ld.lld", broken.stderr)
+
+    def test_sysroot_loader_view_is_a_resolving_relative_symlink(self):
+        # The /lib64 loader view is created by prepending "../" to the
+        # ROOT-relative loader path: a symlink target resolves against the
+        # LINK's directory ($root/lib64), not the sysroot root, so a bare
+        # root-relative target dangles and every later resolution of
+        # ld-linux-loongarch-lp64d.so.1 through the /lib64 view dies
+        # (pinvou3#1993 CI round 3: "sysroot lacks the /lib64/... view").
+        # The corrected form and the fail-closed post-check are pinned, then
+        # the whole prune_sysroot runs on a synthetic tree so the view
+        # contract is exercised, not just spelled.
         sysroot = _without_comments(self.sysroot)
-        # The fold must run before the whitelists (folded content is then
-        # pruned by the same size discipline), handle all three shapes
-        # (missing → alias, shipped symlink → keep, real dir → fold), and
-        # end with /lib and /lib64 as symlinks into usr/.
-        self.assertIn('merge_into_usr_lib lib\n  merge_into_usr_lib lib64', sysroot)
-        self.assertIn('if [ ! -e "$root/$d" ]; then', sysroot)
-        self.assertIn('ln -s "usr/$d" "$root/$d"', sysroot)
-        self.assertIn('[ -L "$root/$d" ]', sysroot)
-        self.assertIn('cp -a "$root/$d/." "$root/usr/$d/"', sysroot)
-        self.assertIn('rm -rf -- "$root/$d"', sysroot)
-        # The aliases only resolve if the whitelist prune keeps usr/lib64
-        # (the loader symlink's home): a verified-red harness round caught
-        # the usr-level whitelist deleting it and leaving /lib64 dangling.
-        self.assertIn(
-            '! -name usr ! -name lib ! -name lib64 \\\n    -exec rm -rf -- {} +',
-            sysroot,
+        self.assertIn('ln -s "../${loader_src#"$root"/}"', sysroot)
+        self.assertIn("view did not resolve after materialization", sysroot)
+
+        import os
+        import shutil
+        import tempfile
+
+        lines = self.sysroot.splitlines()
+
+        def fn_text(name):
+            start = next(
+                i for i, l in enumerate(lines) if l.startswith(f"{name}() {{")
+            )
+            end = next(i for i in range(start, len(lines)) if lines[i] == "}")
+            return "\n".join(lines[start : end + 1])
+
+        prune_start = next(
+            i for i, l in enumerate(lines) if l.startswith("prune_sysroot() {")
         )
-        self.assertIn(
-            "! -name include ! -name lib ! -name lib64 ! -name share",
-            sysroot,
-        )
-        self.assertIn(
-            "for keep_name in libpthread.a libdl.a librt.a libutil.a libanl.a; do",
-            sysroot,
-        )
-        # The verify side asserts the SAME compat-stub list (sysroot.sh's
-        # verify_sysroot loop); the two lists are hand-maintained twins, so
-        # pin both — drift between them would let one side keep a stub the
-        # other stops checking (or vice versa) without anything going red.
-        self.assertIn(
-            "for compat_archive in libpthread.a libdl.a librt.a libutil.a libanl.a; do",
-            sysroot,
-        )
-        self.assertIn('grep -hoE \'/[A-Za-z0-9._/-]+\\.so[0-9.]*\' "$script"', sysroot)
-        self.assertIn('[ -e "$root$ref_path" ]', sysroot)
-        self.assertIn(
-            "but the sysroot lacks it (usrmerge alias regression?)",
-            sysroot,
-            "the absolute-script-path check must fail with its own message",
-        )
-        # The emulation must scan all text scripts (the while-read loop over
-        # the grep -lI set), not only libc.so.
-        self.assertIn(
-            'done < <(find "$root/usr/lib/$MULTIARCH_DIR" -maxdepth 1 -type f '
-            "-name '*.so' -print0",
-            sysroot,
-        )
+        prune_end = next(i for i in range(prune_start, len(lines)) if lines[i] == "}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fragment = Path(tmp) / "prune-fragment.sh"
+            fragment.write_text(
+                "MULTIARCH_DIR=loongarch64-linux-gnu\n"
+                + fn_text("fail")
+                + "\n"
+                + fn_text("log")
+                + "\n"
+                + "\n".join(lines[prune_start : prune_end + 1])
+                + "\n",
+                encoding="utf-8",
+            )
+            root = Path(tmp) / "root"
+            ma = root / "usr/lib/loongarch64-linux-gnu"
+            # Loader deliberately in the lib64/multiarch variant location —
+            # the worst case for a "../"-target computation.
+            loader = root / "lib64/loongarch64-linux-gnu/ld-linux-loongarch-lp64d.so.1"
+            loader.parent.mkdir(parents=True)
+            ma.mkdir(parents=True)
+            loader.write_text("ELF")
+            (ma / "libc.so.6").write_text("ELF")
+            # glibc ≥2.34 runtime stubs: libc6 ships these; libc6-dev ships
+            # only EMPTY .a stubs (pruned) and no lib*.so.
+            (ma / "libpthread.so.0").write_text("ELF")
+            (ma / "libdl.so.2").write_text("ELF")
+            # Debian dev symlink with an ABSOLUTE target into the (usr-merged)
+            # runtime root: inside the sysroot it escapes to the build host
+            # unless the prune rebases it onto the sysroot's /lib view.
+            (ma / "libdbus-1.so.3.32.4").write_text("ELF")
+            (ma / "libdbus-1.so").symlink_to("/lib/loongarch64-linux-gnu/libdbus-1.so.3.32.4")
+            (ma / "libc_nonshared.a").write_text("ar")
+            (ma / "libc.so").write_text(
+                "GROUP ( /lib/loongarch64-linux-gnu/libc.so.6"
+                " /usr/lib/loongarch64-linux-gnu/libc_nonshared.a"
+                "  AS_NEEDED ( /lib64/ld-linux-loongarch-lp64d.so.1 ) )\n"
+            )
+            (ma / "libunreferenced.a").write_text("ar")
+            (ma / "libunreferenced.la").write_text("libtool")
+            # Debian layout: arch-specific glibc headers under the multiarch
+            # include subtree, generic headers directly in usr/include.
+            multi_inc = root / "usr/include/loongarch64-linux-gnu/bits"
+            multi_inc.mkdir(parents=True)
+            (multi_inc / "wordsize.h").write_text("#define __WORDSIZE 64\n")
+            (root / "usr/include/stdio.h").write_text("/* generic */\n")
+            (root / "etc").mkdir()
+            (root / "usr/bin").mkdir()
+
+            env = dict(os.environ)
+            system_sed = shutil.which("sed")
+            is_gnu_sed = False
+            if system_sed:
+                probe = subprocess.run(
+                    [system_sed, "--version"], capture_output=True, text=True
+                )
+                is_gnu_sed = probe.returncode == 0 and "GNU sed" in probe.stdout
+            if not is_gnu_sed and system_sed:
+                # Dev-macOS only: BSD sed cannot run the script's GNU
+                # `sed -i -e` rewrite (it eats -e as the backup suffix), so
+                # shim it to the equivalent `-i ''` form. CI (Ubuntu) has
+                # GNU sed natively and takes the unshimmed path.
+                shim = Path(tmp) / "bin"
+                shim.mkdir()
+                shim_sed = shim / "sed"
+                shim_sed.write_text(
+                    "#!/bin/sh\n"
+                    'if [ "$1" = "-i" ]; then shift; set -- -i \'\' "$@"; fi\n'
+                    f'exec "{system_sed}" "$@"\n'
+                )
+                shim_sed.chmod(0o755)
+                env["PATH"] = f"{shim}:{env.get('PATH', '')}"
+
+            proc = subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    "source %s; prune_sysroot %s"
+                    % (shlex.quote(str(fragment)), shlex.quote(str(root))),
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            self.assertEqual(proc.returncode, 0, f"prune_sysroot failed: {proc.stderr}")
+            # Every view the rewritten ld scripts resolve through bare names
+            # via the -L search path must exist inside the sysroot.
+            self.assertTrue((root / "lib").is_symlink() and (root / "lib").exists())
+            self.assertTrue(
+                (root / "lib64/ld-linux-loongarch-lp64d.so.1").exists(),
+                "the /lib64 loader view must resolve through the ../ target",
+            )
+            self.assertTrue((root / "lib/loongarch64-linux-gnu/libc.so.6").exists())
+            rewritten = (ma / "libc.so").read_text()
+            # Bare filenames: resolution rides the -L search path (present in
+            # both cargo and cmake link contexts), NOT the =-sysroot form —
+            # that resolves against whichever --sysroot the driver applies,
+            # and cargo links get gcc's bundled sysroot, not this one.
+            self.assertIn("GROUP ( libc.so.6 libc_nonshared.a", rewritten)
+            self.assertIn("ld-linux-loongarch-lp64d.so.1", rewritten)
+            self.assertNotIn("=/", rewritten)
+            self.assertNotIn(" /lib/", rewritten)
+            self.assertNotIn(" /usr/lib/", rewritten)
+            # Referenced archive member kept; unreferenced bulk dropped.
+            self.assertTrue((ma / "libc_nonshared.a").exists())
+            self.assertFalse((ma / "libunreferenced.a").exists())
+            self.assertFalse((ma / "libunreferenced.la").exists())
+            self.assertFalse((root / "etc").exists())
+            self.assertFalse((root / "usr/bin").exists())
+            # The multiarch header merge must land arch bits in usr/include
+            # without disturbing the generic headers (union, no clobber).
+            self.assertTrue(
+                (root / "usr/include/bits/wordsize.h").exists(),
+                "multiarch header merge did not materialize bits/wordsize.h",
+            )
+            self.assertTrue((root / "usr/include/stdio.h").exists())
+            self.assertTrue(
+                (root / "usr/include/loongarch64-linux-gnu/bits/wordsize.h").exists()
+            )
+            dl_script = (ma / "libdl.so").read_text()
+            # Bare runtime names: cargo links carry no --sysroot, so the
+            # stub must resolve through the -L search path.
+            self.assertIn("GROUP ( libpthread.so.0 )", (ma / "libpthread.so").read_text())
+            self.assertIn("GROUP ( libdl.so.2 )", dl_script)
+            # The absolute dev symlink must be rebased onto the sysroot's
+            # /lib view and still resolve through it.
+            self.assertTrue(
+                (ma / "libdbus-1.so").exists(), "rebased libdbus-1.so does not resolve"
+            )
+            self.assertEqual(
+                str((ma / "libdbus-1.so").readlink()),
+                "../../../lib/loongarch64-linux-gnu/libdbus-1.so.3.32.4",
+            )
 
     def test_elf_policy_uses_bfd_independent_readelf(self):
         # check-linux-elf-policy.sh dumps dynamic symbols with readelf, not
