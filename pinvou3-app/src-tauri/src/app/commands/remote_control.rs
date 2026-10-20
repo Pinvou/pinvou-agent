@@ -1313,9 +1313,12 @@ fn project_acp_status_for_web(
     status.login_url = None;
     status.login_code = None;
     status.error = None;
-    // 安装命令行与输出可能含内部镜像源或主机路径，仅桌面端展示。
+    // Install command lines and output may contain internal mirror sources or
+    // host paths, so they are desktop-only; the install outcome's error field
+    // is an error chain too and is stripped alongside `error`.
     status.install_command = None;
     status.install_latest_line = None;
+    status.install_finished = None;
     status
 }
 

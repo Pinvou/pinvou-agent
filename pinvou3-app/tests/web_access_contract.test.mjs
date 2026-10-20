@@ -436,10 +436,11 @@ assert.match(webBridge, /web_access_discard_attachment/,
   'removed or late-cancelled attachments must release their opaque desktop handle');
 assert.match(remoteControlCommands, /stage_uploaded_attachments\(attachments, session_id, &?store\)/,
   'uploaded attachments must be staged into the Session workspace before the engine sees their paths');
-// Agent 安装命令行/输出可能含内部镜像源或主机路径，Web status 投影必须清除。
+// Agent 安装命令行/输出可能含内部镜像源或主机路径，Web status 投影必须清除；
+// 安装终局的 error 字段同为错误链，一并仅桌面端展示。
 assert.match(remoteControlCommands,
-  /project_acp_status_for_web[\s\S]*?status\.install_command = None[\s\S]*?status\.install_latest_line = None/,
-  'the Web agent-status projection must strip install command and output lines');
+  /project_acp_status_for_web[\s\S]*?status\.install_command = None[\s\S]*?status\.install_latest_line = None[\s\S]*?status\.install_finished = None/,
+  'the Web agent-status projection must strip install command/output lines and the install outcome');
 assert.match(remoteControlCommands, /redact_workspace_path_for_web|list_codex_acp_sessions_for_web/,
   'the Web session list must redact host workspace paths to a directory name');
 assert.match(remoteControlCommands,
