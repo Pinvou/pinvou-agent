@@ -10,7 +10,8 @@ mod store;
 pub use manifest::{Import, NetworkConsent};
 pub use runner::{Notice, run};
 pub use store::{
-    Job, ObservedCache, Snapshot, StopRequest, create, observe_retained, request_stop,
+    Job, ObservedCache, RetainedPackage, Snapshot, StopRequest, create, observe_retained,
+    request_stop,
 };
 
 use sha2::{Digest, Sha256};

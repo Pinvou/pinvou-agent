@@ -14,6 +14,92 @@ pub enum NativeMemberKind<'a> {
     Launcher,
     HelperArtifact(&'a str),
 }
+/// A declared native claim matched to a currently inspected FullPack member.
+/// This is byte binding, not signature trust, native authenticity or custody.
+pub struct SelectedNativeMember {
+    name: String,
+    size: u64,
+    sha256: [u8; 32],
+    identity: NativeIdentityShape,
+}
+impl SelectedNativeMember {
+    pub fn expected_member(&self) -> Result<ExpectedMember<'_>, NativeMaterializeError> {
+        ExpectedMember::new(&self.name, self.size, self.sha256)
+            .map_err(NativeMaterializeError::Archive)
+    }
+    pub fn identity(&self) -> &NativeIdentityShape {
+        &self.identity
+    }
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+    pub fn sha256(&self) -> &[u8; 32] {
+        &self.sha256
+    }
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+}
+
+fn declared_member(
+    signed: &serde_json::Value,
+    kind: NativeMemberKind<'_>,
+    member_name: &str,
+) -> Result<SelectedNativeMember, NativeMaterializeError> {
+    let value = match kind {
+        NativeMemberKind::FinalInstaller => &signed["finalInstaller"],
+        NativeMemberKind::ExecutionHelper => &signed["helper"],
+        NativeMemberKind::Launcher => &signed["launcher"],
+        NativeMemberKind::HelperArtifact(id) => &signed["helpers"]
+            .as_array()
+            .ok_or(NativeMaterializeError::InvalidSelector)?
+            .iter()
+            .find(|helper| helper["helperId"].as_str() == Some(id))
+            .ok_or(NativeMaterializeError::InvalidSelector)?["nativeIdentity"],
+    };
+    let (size, sha256) = claim_bytes(value).ok_or(NativeMaterializeError::InvalidSelector)?;
+    ExpectedMember::new(member_name, size, sha256).map_err(NativeMaterializeError::Archive)?;
+    let identity = Document::parse(
+        &serde_json::to_vec(value)
+            .map_err(|_| NativeMaterializeError::Json(Error::Canonicalization))?,
+        InputKind::Metadata,
+    )
+    .map_err(NativeMaterializeError::Json)?
+    .native_identity_shape()
+    .map_err(NativeMaterializeError::NativeIdentity)?;
+    Ok(SelectedNativeMember {
+        name: member_name.into(),
+        size,
+        sha256,
+        identity,
+    })
+}
+
+/// Inspect the complete current FullPack and select one exact declared member.
+/// The source is an actual File, never an arbitrary-File cache capability.
+pub fn select_native_member(
+    source: &mut std::fs::File,
+    input: &PackageInspection<'_, '_>,
+    kind: NativeMemberKind<'_>,
+    member_name: &str,
+    mut cancelled: impl FnMut() -> bool,
+) -> Result<SelectedNativeMember, NativeMaterializeError> {
+    poll(&mut cancelled)?;
+    let envelope = bind_manifest(input).map_err(NativeMaterializeError::Package)?;
+    let signed = envelope.envelope().signed().value();
+    let selected = declared_member(signed, kind, member_name)?;
+    let inventory = inspect_members(source, input.artifact, input.limits, signed, &mut cancelled)
+        .map_err(NativeMaterializeError::Package)?;
+    if !inventory.members().iter().any(|m| {
+        m.name() == selected.name && m.size() == selected.size && m.sha256() == selected.sha256
+    }) {
+        return Err(NativeMaterializeError::Archive(
+            ArchiveError::MemberMismatch,
+        ));
+    }
+    poll(&mut cancelled)?;
+    Ok(selected)
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeMaterializeError {
     Package(PackageCheckError),
@@ -75,28 +161,8 @@ pub fn materialize_native_member<'a>(
     poll(&mut cancelled)?;
     let envelope = bind_manifest(&input).map_err(NativeMaterializeError::Package)?;
     let signed = envelope.envelope().signed().value();
-    let value = match kind {
-        NativeMemberKind::FinalInstaller => &signed["finalInstaller"],
-        NativeMemberKind::ExecutionHelper => &signed["helper"],
-        NativeMemberKind::Launcher => &signed["launcher"],
-        NativeMemberKind::HelperArtifact(id) => &signed["helpers"]
-            .as_array()
-            .ok_or(NativeMaterializeError::InvalidSelector)?
-            .iter()
-            .find(|helper| helper["helperId"].as_str() == Some(id))
-            .ok_or(NativeMaterializeError::InvalidSelector)?["nativeIdentity"],
-    };
-    let (size, hash) = claim_bytes(value).ok_or(NativeMaterializeError::InvalidSelector)?;
-    let expected =
-        ExpectedMember::new(member_name, size, hash).map_err(NativeMaterializeError::Archive)?;
-    let identity = Document::parse(
-        &serde_json::to_vec(value)
-            .map_err(|_| NativeMaterializeError::Json(Error::Canonicalization))?,
-        InputKind::Metadata,
-    )
-    .map_err(NativeMaterializeError::Json)?
-    .native_identity_shape()
-    .map_err(NativeMaterializeError::NativeIdentity)?;
+    let selected = declared_member(signed, kind, member_name)?;
+    let expected = selected.expected_member()?;
     poll(&mut cancelled)?;
     // Duplicate the same readonly OS object/access. Never open the source path.
     // Shared cursor and any other original writers require owner coordination.
@@ -128,7 +194,7 @@ pub fn materialize_native_member<'a>(
     poll(&mut cancelled)?;
     Ok(ObservedNativeMember {
         member,
-        identity,
+        identity: selected.identity,
         file,
     })
 }

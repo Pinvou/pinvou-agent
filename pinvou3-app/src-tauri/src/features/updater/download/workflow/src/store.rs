@@ -37,6 +37,7 @@ pub struct Snapshot {
 pub struct ObservedCache {
     file: File,
     facts: Snapshot,
+    package: RetainedPackage,
     _directory: platform::Directory,
     _writer: File,
 }
@@ -46,6 +47,40 @@ impl ObservedCache {
     }
     pub fn facts(&self) -> &Snapshot {
         &self.facts
+    }
+    /// Original inputs from the independently pinned manifest, rechecked by
+    /// observe_retained. These historical observations grant no current rights.
+    pub fn package(&self) -> &RetainedPackage {
+        &self.package
+    }
+}
+/// Immutable original Package inputs, not a protected trust/eligibility token.
+/// FileKind is necessarily FullPack: the job target is signed.fullPackage.
+pub struct RetainedPackage {
+    manifest: Manifest,
+    target: Target,
+}
+impl RetainedPackage {
+    pub fn job_id(&self) -> &str {
+        &self.manifest.job_id
+    }
+    pub fn root_sha256(&self) -> &str {
+        &self.manifest.root_sha256
+    }
+    pub fn envelope_bytes(&self) -> &[u8] {
+        self.manifest.package.as_bytes()
+    }
+    pub fn expected_context_bytes(&self) -> &[u8] {
+        self.manifest.expected.as_bytes()
+    }
+    pub fn supplied_time_millis(&self) -> u64 {
+        self.manifest.initial_supplied_time_millis
+    }
+    pub fn artifact(&self) -> Result<pinvou_upgrade_transfer::Artifact<'_>, Error> {
+        self.target.artifact()
+    }
+    pub fn target_key(&self) -> &str {
+        &self.target.target
     }
 }
 #[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -251,6 +286,7 @@ pub fn observe_retained(
     Ok(ObservedCache {
         file,
         facts,
+        package: RetainedPackage { manifest, target },
         _directory: directory,
         _writer: writer,
     })
