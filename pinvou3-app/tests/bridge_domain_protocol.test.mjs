@@ -228,10 +228,11 @@ const expectedProtocolHashes = {
   // tool-store-events.js), and the wave-5 chat-events DI pairs
   // (recordTurnStarted/stream-notify/reasoning/flush families) moved into
   // the shared tauriChatEvents/web cluster with unchanged event surface.
-  // Recomputed for background tool-delta routing: the captured listener body
-  // now defers its extra publication to the existing terminal timer. Invoke
-  // and event wire shapes remain unchanged; publication timing is intentional.
-  chat: 'b3d5b2882cf4f83958f7b16d8e3ebc6e5fd75006a7b43e285690bfd78e8a4f49',
+  // Recomputed for the eslint-plugin-unicorn 78 wave: guard-clause
+  // conversions in the shared subscription-state and rerender-core loop
+  // bodies (bridge-shared-helpers.js). Event names, invoke shapes and
+  // authoritative payload handling remain unchanged.
+  chat: '571f250acd903e01a57ff6c1292d2b8b69402d038370df4d492763625bb59579',
   // Recomputed for the shared-helper dedup (see batch note above).
   dependencies: 'bcc3fb2ec60c5e80df5ac86bc8b4e14c810aa449d5ee5f4e3bc8ab1f32ffdff3',
   // Recomputed for #445 round-8: exitPlanToYolo accepts an explicit target
