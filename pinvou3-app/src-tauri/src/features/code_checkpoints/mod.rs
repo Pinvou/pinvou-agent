@@ -323,19 +323,38 @@ fn estimate_workspace_bytes(execution_root: &Path, ledger_root: &Path) -> Option
     Some(total)
 }
 
+/// 正向判定缓存有效期（r19 M7）：窗口内复用上次「在预算内」结论，免每条
+/// 消息全树走读（大树上 0.2-3s 的 time-to-first-token 开销）。体积门是成本
+/// 闸（2GB 上限保护快照 IO 与影子库膨胀），非正确性闸——窗口内长过限的最坏
+/// 后果是多付一次快照成本，且有 2× 预算硬停兜底；120s 平衡「每消息走读」
+/// 与「超限形状的感知延迟」。
+const BUDGET_OK_TTL_SECONDS: i64 = 120;
+
 /// 执行根是否在快照体积预算内（chat.rs 在 turn 快照前调用；超限的会话如实
 /// 没有回退入口，不算错误）。
 ///
-/// 粘性判定（评审 r7 M4 + minor 11）：首次「不在预算内」（超限/条目超上限/
-/// 任何读取错误按 None 处理）即在账本根落 `budget-disabled` 标记，此后每次
-/// turn 直接读标记短路——不再重复全树遍历（超限形状此前每条消息都白付一次
-/// 20 万条目级 walk + 逐目录 canonicalize，且只有一条 info 日志、用户无感知）。
-/// 首次落标记升级为 `log::warn`。标记只随账本根存续；用户换绑/清空目录后
-/// 删除会话即可重置。
+/// 负向粘性判定（评审 r7 M4 + minor 11）：首次「不在预算内」（超限/条目超
+/// 上限/任何读取错误按 None 处理）即在账本根落 `budget-disabled` 标记，此后
+/// 每次 turn 直接读标记短路——不再重复全树遍历（超限形状此前每条消息都白付
+/// 一次 20 万条目级 walk + 逐目录 canonicalize，且只有一条 info 日志、用户
+/// 无感知）。首次落标记升级为 `log::warn`。标记只随账本根存续；用户换绑/
+/// 清空目录后删除会话即可重置。
+///
+/// 正向 TTL 缓存（r19 M7）：在预算内的会话此前同样每条消息重走全树——预算
+/// 内才是长期稳态。`budget-ok` 标记内容为 Unix 秒时间戳（不依赖文件系统
+/// 时间戳精度），过期/损坏按无缓存处理重新走读。
 pub fn execution_root_within_snapshot_budget(execution_root: &Path, ledger_root: &Path) -> bool {
     let marker = ledger_root.join("budget-disabled");
     if marker.exists() {
         return false;
+    }
+    let ok_marker = ledger_root.join("budget-ok");
+    if let Ok(bytes) = fs::read(&ok_marker) {
+        if let Ok(stamp) = String::from_utf8_lossy(&bytes).trim().parse::<i64>() {
+            if now_seconds().saturating_sub(stamp) < BUDGET_OK_TTL_SECONDS {
+                return true;
+            }
+        }
     }
     let within = estimate_workspace_bytes(execution_root, ledger_root)
         .is_some_and(|bytes| bytes <= MAX_WORKSPACE_BYTES_FOR_SNAPSHOT);
@@ -347,6 +366,12 @@ pub fn execution_root_within_snapshot_budget(execution_root: &Path, ledger_root:
         // 标记写入失败不改变本次判定（本次已拒绝）；只是下次会再走一遍估算。
         // r14 M-A：与其它 ledger 文件同款原子私有写。
         let _ = crate::platform::filesystem::atomic_write_private(&marker, b"");
+        let _ = fs::remove_file(&ok_marker);
+    } else {
+        let _ = crate::platform::filesystem::atomic_write_private(
+            &ok_marker,
+            now_seconds().to_string().as_bytes(),
+        );
     }
     within
 }
@@ -686,8 +711,10 @@ impl Drop for TempDiffFile<'_> {
 
 /// 迁移/恢复共用的敏感文件 pathspec 全集：字面模式（无通配符，如 .env、
 /// id_rsa）在 git pathspec 里只命中仓库根部，自动派生 `**/` 前缀版本覆盖任意
-/// 深度；含通配符的模式（*.pem 等）本身跨 `/` 匹配，无需派生。gitignore 语义
-/// 的 exclude 本就任意深度生效，此差异只影响 `rm --cached` 这类 pathspec 调用。
+/// 深度。r19 M3：含通配符的模式同样无条件派生——pathspec 匹配锚定整条路径，
+/// 字面量前导的 glob（.env.*.local）裸形态只命中根部，`apps/web/.env.*.local`
+/// 逃过 purge、被 checkout-index 写回、再被 staged 校验永久击穿（M1/M2 链）。
+/// `**/` 前缀对星号前导的 glob（*.pem）只是冗余命中，无语义损失。
 /// 恒带 `:(icase)`：与 info/exclude 的字符类模式同向（大小写不敏感），三层
 /// 口径一致才不会出现「exclude 放行、purge 错杀」的 B1 链路（评审 M1）。
 fn secret_pathspecs() -> Vec<String> {
@@ -696,9 +723,76 @@ fn secret_pathspecs() -> Vec<String> {
         .map(|line| format!(":(icase){line}"))
         .collect();
     for line in SECRET_EXCLUDES {
-        if !line.contains(['*', '?', '[']) {
-            patterns.push(format!(":(icase)**/{line}"));
+        patterns.push(format!(":(icase)**/{line}"));
+    }
+    patterns
+}
+
+/// 账本路径在执行根内的真实相对位置（r19 M1/M4）。`ledger_prefix`：账本根
+/// 位于执行根内时的相对前缀（两根相同 = 空串；在外 = None，绑定会话）。
+/// `checkpoint_rel`：checkpoints 目录的相对路径（不在执行根内 = None）。
+/// 派生与 ensure_repo 的 info/exclude 腿同源：绑定布局下同名项目内容
+/// （ML 项目的 training/checkpoints/）是无辜用户数据，不得进校验/purge/
+/// clean 排除集——这正是账本腿必须布局条件化的原因（评审 r19 M1b）。
+struct LedgerGuardPaths {
+    ledger_prefix: Option<String>,
+    checkpoint_rel: Option<String>,
+}
+
+fn ledger_guard_paths(ledger_root: &Path, execution_root: &Path) -> LedgerGuardPaths {
+    let canonical_exec =
+        fs::canonicalize(execution_root).unwrap_or_else(|_| execution_root.to_path_buf());
+    let canonical_ledger =
+        fs::canonicalize(ledger_root).unwrap_or_else(|_| ledger_root.to_path_buf());
+    let ledger_prefix = canonical_ledger
+        .strip_prefix(&canonical_exec)
+        .ok()
+        .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+        .map(|rel| if rel.is_empty() { rel } else { format!("{rel}/") });
+    let checkpoint_dir = checkpoints_dir(ledger_root);
+    let canonical_checkpoint_dir = fs::canonicalize(&checkpoint_dir).unwrap_or(checkpoint_dir);
+    let checkpoint_rel = canonical_checkpoint_dir
+        .strip_prefix(&canonical_exec)
+        .ok()
+        .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+        .filter(|rel| !rel.is_empty());
+    LedgerGuardPaths {
+        ledger_prefix,
+        checkpoint_rel,
+    }
+}
+
+/// 账本 pathspec 全集（:(icase) pathspec 形态，供 staged 校验与 restore 的
+/// rm --cached）。绑定布局（账本在工作树外）返回空集。
+fn ledger_guard_pathspecs(guard: &LedgerGuardPaths) -> Vec<String> {
+    let mut specs: Vec<String> = Vec::new();
+    if let Some(prefix) = &guard.ledger_prefix {
+        for name in ["pending_rewind.json", "budget-disabled", "budget-ok", ".pinvou3"] {
+            specs.push(format!(":(icase){prefix}{name}"));
         }
+        specs.push(format!(":(icase){prefix}.pinvou3/**"));
+    }
+    if let Some(rel) = &guard.checkpoint_rel {
+        specs.push(format!(":(icase){rel}"));
+        specs.push(format!(":(icase){rel}/**"));
+    }
+    specs
+}
+
+/// 账本文件名的 gitignore 形态（供 restore 的 clean -e 排除），与
+/// info/exclude 同款的 icase 字符类——裸字面大小写敏感，.ENV/ID_RSA 变体
+/// 可穿透（r19 M5 的 clean 腿同因）。绑定布局返回空集：项目同名目录是
+/// 无辜内容，clean 的常规语义不得被排挤。
+fn ledger_guard_ignore_patterns(guard: &LedgerGuardPaths) -> Vec<String> {
+    let mut patterns: Vec<String> = Vec::new();
+    if let Some(prefix) = &guard.ledger_prefix {
+        for name in ["pending_rewind.json", "budget-disabled", "budget-ok", ".pinvou3"] {
+            patterns.push(icase_gitignore_pattern(&format!("{prefix}{name}")));
+        }
+        patterns.push(icase_gitignore_pattern(&format!("{prefix}.pinvou3/**")));
+    }
+    if let Some(rel) = &guard.checkpoint_rel {
+        patterns.push(icase_gitignore_pattern(&format!("{rel}/**")));
     }
     patterns
 }
@@ -828,7 +922,7 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
             "--local",
             "--name-only",
             "--get-regexp",
-            r"^(filter\.|extensions\.partialclone|remote\.[^.]+\.promisor|remote\.[^.]+\.url|core\.sshCommand|protocol\.)",
+            r"^(filter\.|diff\.|extensions\.partialclone|remote\.[^.]+\.promisor|remote\.[^.]+\.url|core\.sshCommand|protocol\.)",
         ],
     )
     .unwrap_or_default();
@@ -850,7 +944,7 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
                 // Check if the candidate still looks like a subsection key
                 // (not a known leaf like clean/smudge/required/url/promisor/
                 // sshCommand/partialclone/allow).
-                const LEAVES: [&str; 8] = [
+                const LEAVES: [&str; 11] = [
                     "clean",
                     "smudge",
                     "required",
@@ -859,6 +953,13 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
                     "sshCommand",
                     "partialclone",
                     "allow",
+                    // r20 M1：diff 驱动键族（diff.external 顶层 / diff.<driver>.
+                    // command|textconv 子节）。info/attributes 的 `* !diff` 只
+                    // unset 属性、把路径路由回 diff.external——挡不住 config，
+                    // 必须清洗节本体。
+                    "external",
+                    "command",
+                    "textconv",
                 ];
                 if let Some(dot2) = candidate.rfind('.') {
                     let possible_leaf = &candidate[dot2 + 1..];
@@ -925,6 +1026,7 @@ fn ensure_repo(ledger_root: &Path, execution_root: &Path) -> Result<PathBuf> {
             excludes.push(".pinvou3/".to_string());
             excludes.push("pending_rewind.json".to_string());
             excludes.push("budget-disabled".to_string());
+            excludes.push("budget-ok".to_string());
         }
     }
     let info_dir = repo.join("info");
@@ -992,6 +1094,23 @@ fn load_index(ledger_root: &Path) -> Result<CheckpointIndex> {
                 }
                 index.entries.retain(|e| e.kind != CheckpointKind::Turn);
                 index.version = 2;
+            }
+            // r20 M1：commit 字段按对象 id 形状校验（SHA-1 40 / SHA-256 64 位
+            // 十六进制）。它被插进 git argv 的 rev 位（rev-parse / read-tree /
+            // diff 等）且位于 `--no-textconv`/`--no-ext-diff` 等选项钉之后——
+            // git 选项 last-wins，被篡改的 `"--ext-diff"` 值可重新启用外部 diff
+            // 驱动（config 清洗只覆盖 diff.* 节，攻击者可改 index 而非 config）。
+            // 失败按损坏处理：fail-closed 报错优于把不可信 rev 喂给 git。
+            for entry in &index.entries {
+                let commit = entry.commit.trim();
+                let valid_len = commit.len() == 40 || commit.len() == 64;
+                if !valid_len || !commit.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    bail!(
+                        "checkpoint '{}' 的 commit 字段不是合法对象 id（索引可能被篡改或损坏），拒绝使用: {}",
+                        entry.id,
+                        entry.commit
+                    );
+                }
             }
             Ok(index)
         }
@@ -1099,32 +1218,35 @@ fn turn_snapshot_hard_stopped(repo_bytes: u64, packed_bytes: u64, kind: Checkpoi
 /// .gitignore 的否定行（!checkpoints/ 、!.env 、!.pinvou3/）可击穿
 /// info/exclude 的排除——把敏感文件、账本自身或会话侧数据照进影子树。
 /// 用 git 自身的 pathspec 匹配（避免手写 gitignore 语义），命中即 bail。
-fn validate_no_sensitive_paths_staged(repo: &Path, work_tree: &Path) -> Result<()> {
-    // r16 M1 → r17 M1 收紧：(1) 全部 secret 模式（含嵌入式 glob 如 .env.*.local）
-    // 统一派生 :(icase)**/ 变体——嵌入式 glob 的裸形态不跨 /，深/浅层否定可绕；
-    // (2) 尾斜杠账本（checkpoints/、.pinvou3/）的 **/<name>/ 形状在 git pathspec
-    // 匹配空集（死代码），改用无尾斜杠 + /** 双形状；(3) diff 路径接同一校验。
+fn validate_no_sensitive_paths_staged(
+    ledger_root: &Path,
+    repo: &Path,
+    work_tree: &Path,
+) -> Result<()> {
+    // r16 M1 → r17 M1 → r19 M1 收紧：(1) 全部 secret 模式（含嵌入式 glob 如
+    // .env.*.local）统一派生 :(icase)**/ 变体——pathspec 锚定整条路径，裸形态
+    // 不跨 /；(2) 账本腿从固定 **/<name> 死形状改为按账本真实位置派生的根级
+    // 形状（裸 + /**；**/checkpoints 在 git pathspec 匹配空集、**/x/** 只命中
+    // 嵌套内容——根级 checkpoints/* 对旧形状不可见），且仅当账本位于执行根内
+    // 才启用——绑定项目的 training/checkpoints/ 是无辜内容，无条件账本腿会把
+    // 其快照永久误杀（评审 r19 M1a/M1b）；(3) diff 路径接同一校验。
     let mut pathspecs: Vec<String> = Vec::new();
     for pattern in SECRET_EXCLUDES {
         pathspecs.push(format!(":(icase){pattern}"));
         pathspecs.push(format!(":(icase)**/{pattern}"));
     }
-    for ledger in [
-        "checkpoints",
-        "pending_rewind.json",
-        "budget-disabled",
-        ".pinvou3",
-    ] {
-        let dir = format!(":(icase)**/{ledger}");
-        pathspecs.push(dir.clone());
-        pathspecs.push(format!("{dir}/**"));
-    }
+    pathspecs.extend(ledger_guard_pathspecs(&ledger_guard_paths(ledger_root, work_tree)));
     let refs: Vec<&str> = pathspecs.iter().map(|s| s.as_str()).collect();
     let mut args: Vec<&str> = vec!["diff", "--cached", "--name-only", "--"];
     args.extend(refs);
     let staged = git_ok(repo, work_tree, &args)?;
     let first = staged.lines().find(|l| !l.trim().is_empty());
     if let Some(path) = first {
+        // r19 M2：bail 前清空影子 index——add -A 已把击穿条目暂存进持久 index，
+        // 不清则此后每轮快照/预览的 add -A 重新暂存同一批条目（exclude 管不住
+        // 已跟踪文件）、每轮 bail，用户删掉冒犯文件前回退永久停摆且无自愈。
+        // read-tree --empty 只动 index：下一轮 add -A 全量重建，无正确性损失。
+        let _ = git(repo, work_tree, &["read-tree", "--empty"]);
         bail!(
             "checkpoint staged sensitive path {path} detected: worktree .gitignore negation may have pierced the exclusion; refusing to snapshot",
         );
@@ -1166,7 +1288,7 @@ fn create_checkpoint_preserving(
     // add -A 全量暂存（影子 index），write-tree 取内容树；与上一条 commit 的树相同
     // 则复用（空 turn 不产生冗余快照内容，但 meta 仍按新 turn 登记，保持对齐）。
     git_ok(&repo, &execution_root, &["add", "-A"])?;
-    validate_no_sensitive_paths_staged(&repo, &execution_root)?;
+    validate_no_sensitive_paths_staged(ledger_root, &repo, &execution_root)?;
     let tree = git_ok(&repo, &execution_root, &["write-tree"])?
         .trim()
         .to_string();
@@ -1311,7 +1433,7 @@ pub fn list_checkpoints(ledger_root: &Path) -> Result<Vec<CheckpointMeta>> {
     Ok(load_index(ledger_root)?.entries)
 }
 
-fn find_checkpoint(ledger_root: &Path, checkpoint_id: &str) -> Result<CheckpointMeta> {
+pub fn find_checkpoint(ledger_root: &Path, checkpoint_id: &str) -> Result<CheckpointMeta> {
     validate_checkpoint_id(checkpoint_id)?;
     load_index(ledger_root)?
         .entries
@@ -1326,14 +1448,14 @@ fn find_checkpoint(ledger_root: &Path, checkpoint_id: &str) -> Result<Checkpoint
 /// 首个 PreRestore——否则重试会对混合/已回退的工作区新拍快照并把 undo 绑定到
 /// 错误状态（恢复失败重试绑混合态；截断失败重试绑已回退态，评审 M2 两条腿）。
 #[derive(Serialize, Deserialize)]
-struct PendingRewind {
-    checkpoint_id: String,
-    keep_turns: u32,
-    pre_restore_id: String,
+pub(crate) struct PendingRewind {
+    pub(crate) checkpoint_id: String,
+    pub(crate) keep_turns: u32,
+    pub(crate) pre_restore_id: String,
     /// 写暂记时的会话 transcript revision：重试复用仅当其未变——新轮次/
     /// 编辑/成功回退/撤销都会改变它，届时退回「新建 PreRestore」（对那些
     /// 场景新建才是正确语义：undo 应绑定重试时刻的真实前置状态）。
-    transcript_revision: String,
+    pub(crate) transcript_revision: String,
 }
 
 fn pending_rewind_path(ledger_root: &Path) -> std::path::PathBuf {
@@ -1431,6 +1553,25 @@ pub fn clear_pending_rewind(ledger_root: &Path) {
     }
 }
 
+/// r19 M6 崩溃对账读取：任何「活」暂记（存在、可解析、目标仍在索引）。
+/// 与 matching_pending_pre_restore 不同——不做 checkpoint/keepTurns/revision
+/// 维度匹配：对账要回答的是「协议是否走到一半死了」，任何活暂记都值得
+/// 处理。损坏文件沿既有约定隔离（删除 + None）。
+pub fn live_pending_rewind(ledger_root: &Path) -> Result<Option<PendingRewind>> {
+    let path = pending_rewind_path(ledger_root);
+    let Ok(bytes) = fs::read(&path) else {
+        return Ok(None);
+    };
+    let Ok(pending) = serde_json::from_slice::<PendingRewind>(&bytes) else {
+        let _ = fs::remove_file(&path);
+        return Ok(None);
+    };
+    if find_checkpoint(ledger_root, &pending.checkpoint_id).is_err() {
+        return Ok(None);
+    }
+    Ok(Some(pending))
+}
+
 /// 恢复准备段：解析目标 + 创建（或按 `reuse_pre_restore` 复用）PreRestore，
 /// **不动工作区**。拆出本段让调用方能在「PreRestore 已存在」与「开始变更
 /// 工作区」之间落暂记（评审 r6 M2）。
@@ -1460,7 +1601,8 @@ pub fn prepare_restore(
     Ok((meta, undo))
 }
 
-/// 恢复执行段：read-tree → 清 index → checkout-index → clean，幂等可重入。
+/// 恢复执行段：read-tree → 清 index（敏感 + 账本）→ checkout-index → clean，
+/// 幂等可重入。
 pub fn apply_restore(
     ledger_root: &Path,
     execution_root: &Path,
@@ -1475,25 +1617,51 @@ pub fn apply_restore(
     // 迁移的效果被一次回滚复活）。恢复前按同一模式清影子 index（只动 index）。
     purge_secret_patterns_from_index(&repo, &execution_root)
         .context("清理快照中的敏感文件条目失败")?;
+    // r19 M4：被击穿的旧快照 tree 含账本路径（checkpoints/index.json、
+    // pending_rewind.json、.pinvou3/**——M1 根洞时期的树，或 negate 击穿）
+    // 时，checkout-index -f -a 把陈旧账本覆写到活账本上、协议中途自毁。
+    // read-tree 之后、checkout-index 之前 rm --cached 同源派生的账本形状
+    // （绑定布局 = 空集，同名项目内容不受影响）。
+    let ledger_specs = ledger_guard_pathspecs(&ledger_guard_paths(ledger_root, &execution_root));
+    if !ledger_specs.is_empty() {
+        let mut rm_args: Vec<&str> = vec![
+            "rm",
+            "-r",
+            "--cached",
+            "--ignore-unmatch",
+            "--quiet",
+            "-f",
+            "--",
+        ];
+        rm_args.extend(ledger_specs.iter().map(String::as_str));
+        let output = git(&repo, &execution_root, &rm_args)?;
+        if !output.status.success() {
+            bail!(
+                "git rm --cached 账本路径失败: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+    }
     git_ok(&repo, &execution_root, &["checkout-index", "-f", "-a"])
         .context("写回 checkpoint 文件失败")?;
     // r17 M2：clean 的 -e 排除压过 ignore 规则——worktree .gitignore 的
     // 否定行（!.env）可让真实密钥文件在 restore 的 clean -fd 中被物理删除。
     // r19 M5：-e 排除集必须用与 info/exclude 同款的大小写字符类形式——裸字面
-    // 是大小写敏感的，.ENV / ID_RSA 变体可穿透。账本腿同理。
+    // 是大小写敏感的，.ENV / ID_RSA 变体可穿透。
+    // r19 M1：账本腿改为按账本真实位置派生（绑定布局 = 空集——固定
+    // checkpoints/** 会把项目无辜同名目录挡在 clean 语义之外，预览与实际
+    // 行为背离）。
     let mut clean_args: Vec<String> = vec!["clean".into(), "-fd".into()];
     for pattern in SECRET_EXCLUDES {
         clean_args.push("-e".into());
         clean_args.push(icase_gitignore_pattern(pattern));
     }
-    for ledger in [
-        "checkpoints",
-        "pending_rewind.json",
-        "budget-disabled",
-        ".pinvou3",
-    ] {
+    for pattern in ledger_guard_ignore_patterns(&ledger_guard_paths(
+        ledger_root,
+        &execution_root,
+    )) {
         clean_args.push("-e".into());
-        clean_args.push(icase_gitignore_pattern(&format!("{ledger}/**")));
+        clean_args.push(pattern);
     }
     let clean_refs: Vec<&str> = clean_args.iter().map(|s| s.as_str()).collect();
     git_ok(&repo, &execution_root, &clean_refs).context("清理快照后新建文件失败")?;
@@ -1728,7 +1896,7 @@ pub fn diff_checkpoint(
     git_ok(&repo, &execution_root, &["add", "-A"])?;
     // r17 M1(c)：diff 路径的 add -A 同样需要 staged 校验——被否定的 index
     // 持久留存会让后续每个快照的校验都 bail（无自愈）。
-    validate_no_sensitive_paths_staged(&repo, &execution_root)?;
+    validate_no_sensitive_paths_staged(ledger_root, &repo, &execution_root)?;
     let raw_status = git_ok(
         &repo,
         &execution_root,
@@ -2299,6 +2467,217 @@ mod tests {
         assert!(
             ledger.join("budget-disabled").exists(),
             "budget-disabled 必须在 restore 后存活"
+        );
+    }
+
+    /// r19 M1a + M2（unbound 布局）：根级账本击穿必须被校验命中（旧
+    /// `**/checkpoints` 死形状对根级 checkpoints/* 不可见），且 bail 后影子
+    /// index 已被清空——移除冒犯文件后下一轮快照自愈（旧代码条目粘死在
+    /// 持久 index，每轮 add -A 重新暂存、每轮 bail）。
+    #[test]
+    fn root_ledger_pierce_bails_then_self_heals_after_offending_file_removed() {
+        if !git_available() {
+            return;
+        }
+        let dir = TestDir::new("ledger-pierce-unbound");
+        let ledger = dir.path().to_path_buf();
+        let exec = dir.path().to_path_buf();
+        dir.write("a.txt", "v1\n");
+        dir.write(".gitignore", "!checkpoints/\n");
+        let pierced = create_checkpoint(&ledger, &exec, Some(1), CheckpointKind::Turn, "t1");
+        assert!(pierced.is_err(), "根级 checkpoints 击穿必须 bail: {pierced:?}");
+
+        // 自愈：撤掉否定行后同一会话的下一轮快照必须成功。
+        dir.write(".gitignore", "a.txt\n");
+        create_checkpoint(&ledger, &exec, Some(2), CheckpointKind::Turn, "t2")
+            .expect("移除冒犯文件后快照必须自愈（r19 M2 read-tree --empty）");
+        let repo = repo_dir(&ledger);
+        let tracked = git_ok(&repo, &exec, &["ls-files"]).unwrap();
+        assert!(
+            !tracked.lines().any(|l| l.starts_with("checkpoints/")),
+            "影子仓库自身不得被跟踪: {tracked}"
+        );
+    }
+
+    /// r19 M1b（bound 布局）：账本腿必须布局条件化——项目内的
+    /// training/checkpoints/ 与同名 pending_rewind.json 是无辜用户内容，
+    /// 快照照常收录（旧代码的固定账本腿让这类项目永久 bail、回退停摆）；
+    /// clean -e 亦不再排挤同名目录：快照后新建的该目录文件按 restore 的
+    /// 常规语义清理（预览与实际行为一致）。
+    #[test]
+    fn bound_project_same_named_dirs_are_innocent() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("innocent-bound-ledger");
+        let exec = TestDir::new("innocent-bound-exec");
+        exec.write("training/checkpoints/model.bin", "weights\n");
+        exec.write("pending_rewind.json", "{\"project\":\"artifact\"}\n");
+        exec.write("src/main.rs", "fn main() {}\n");
+        let first = create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .expect("无辜同名项目内容不得让快照 bail（r19 M1b）");
+        let repo = repo_dir(ledger.path());
+        let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
+        assert!(
+            tracked.lines().any(|l| l == "training/checkpoints/model.bin"),
+            "项目同名目录内容应照常跟踪: {tracked}"
+        );
+        assert!(
+            tracked.lines().any(|l| l == "pending_rewind.json"),
+            "项目同名文件应照常跟踪: {tracked}"
+        );
+
+        // 快照后新建的无辜同名目录文件：restore 的 clean -fd 按常规语义清理。
+        exec.write("training/checkpoints/late.bin", "late\n");
+        restore_checkpoint(ledger.path(), exec.path(), &first.id).expect("restore");
+        assert!(
+            !exec.path().join("training/checkpoints/late.bin").exists(),
+            "clean -e 不得再排挤项目同名目录（预览承诺与实际行为一致）"
+        );
+        assert!(
+            exec.path().join("training/checkpoints/model.bin").exists(),
+            "快照内文件照常写回"
+        );
+    }
+
+    /// r19 M3：字面量前导 glob（.env.*.local）的 purge 必须派生 `**/` 变体
+    /// ——裸形态锚定整条路径，`apps/web/.env.development.local` 逃过清理、
+    /// 被 checkout-index 写回、再永久击穿 staged 校验。直接对影子 index
+    /// 注入两个深度的条目（等价迁移前已跟踪的存量），跑 purge 断言全清。
+    #[test]
+    fn purge_covers_nested_literal_leading_glob_secrets() {
+        if !git_available() {
+            return;
+        }
+        let ledger = TestDir::new("nested-glob-ledger");
+        let exec = TestDir::new("nested-glob-exec");
+        exec.write("a.txt", "v1\n");
+        exec.write(".env.production.local", "SECRET=1\n");
+        exec.write("apps/web/.env.development.local", "SECRET=2\n");
+        create_checkpoint(
+            ledger.path(),
+            exec.path(),
+            Some(1),
+            CheckpointKind::Turn,
+            "t1",
+        )
+        .unwrap();
+        let repo = repo_dir(ledger.path());
+        // 绕过 exclude 强制暂存（等价迁移前存量跟踪）。
+        git_ok(
+            &repo,
+            exec.path(),
+            &[
+                "add",
+                "-f",
+                "--",
+                ".env.production.local",
+                "apps/web/.env.development.local",
+            ],
+        )
+        .unwrap();
+        purge_secret_patterns_from_index(&repo, exec.path()).expect("purge");
+        let tracked = git_ok(&repo, exec.path(), &["ls-files"]).unwrap();
+        assert!(
+            !tracked
+                .lines()
+                .any(|l| l.ends_with(".env.production.local")
+                    || l.ends_with(".env.development.local")),
+            "任意深度的 .env.*.local 都必须被 purge 清出 index: {tracked}"
+        );
+    }
+
+    /// r19 M4：含账本路径的陈旧快照 tree（M1 根洞时期的 pierced tree）经
+    /// restore 不得把陈旧账本覆写到活账本上——apply 的 rm --cached 腿在
+    /// checkout-index 之前清掉账本条目（协议中途自毁的直达链）。
+    #[test]
+    fn restore_never_overwrites_live_ledger_from_stale_pierced_tree() {
+        if !git_available() {
+            return;
+        }
+        let dir = TestDir::new("stale-tree-unbound");
+        let ledger = dir.path().to_path_buf();
+        let exec = dir.path().to_path_buf();
+        dir.write("a.txt", "v1\n");
+        let real = create_checkpoint(&ledger, &exec, Some(1), CheckpointKind::Turn, "t1")
+            .expect("base checkpoint");
+
+        // 手工构造含账本路径的 pierced tree（等价旧根洞时期的快照）。
+        let repo = repo_dir(&ledger);
+        git_ok(&repo, &exec, &["read-tree", &real.commit]).unwrap();
+        let stale_file = exec.join("stale-ledger-probe.txt");
+        fs::write(&stale_file, "STALE-LEDGER\n").unwrap();
+        let blob = git_ok(
+            &repo,
+            &exec,
+            &["hash-object", "-w", &stale_file.to_string_lossy()],
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        let _ = fs::remove_file(&stale_file);
+        for staged_path in ["checkpoints/index.json", "pending_rewind.json"] {
+            git_ok(
+                &repo,
+                &exec,
+                &[
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    &format!("100644,{blob},{staged_path}"),
+                ],
+            )
+            .unwrap();
+        }
+        let pierced_tree = git_ok(&repo, &exec, &["write-tree"])
+            .unwrap()
+            .trim()
+            .to_string();
+        let pierced_commit = git_ok(
+            &repo,
+            &exec,
+            &["commit-tree", &pierced_tree, "-m", "pierced"],
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+        let mut index = load_index(&ledger).unwrap();
+        let pierced_meta = CheckpointMeta {
+            id: format!("c-pierced-{}", now_nanos()),
+            turn: Some(1),
+            kind: CheckpointKind::Turn,
+            label: "pierced".to_string(),
+            commit: pierced_commit.clone(),
+            created_at: now_seconds(),
+        };
+        index.entries.push(pierced_meta.clone());
+        save_index(&ledger, &index).unwrap();
+
+        // 活账本真身。
+        let live_pending = format!(
+            "{{\"checkpoint_id\":\"{}\",\"keep_turns\":1,\"pre_restore_id\":\"pre-1\",\"transcript_revision\":\"rev-live\"}}",
+            real.id
+        );
+        fs::write(ledger.join("pending_rewind.json"), &live_pending).unwrap();
+        let live_index_bytes = fs::read(ledger.join("checkpoints/index.json")).unwrap();
+
+        apply_restore(&ledger, &exec, &pierced_meta).expect("apply");
+
+        assert_eq!(
+            fs::read_to_string(ledger.join("pending_rewind.json")).unwrap(),
+            live_pending,
+            "陈旧 tree 里的 pending_rewind.json 不得覆写活暂记（r19 M4）"
+        );
+        assert_eq!(
+            fs::read(ledger.join("checkpoints/index.json")).unwrap(),
+            live_index_bytes,
+            "陈旧 tree 里的 checkpoints/index.json 不得覆写活账本（r19 M4）"
         );
     }
 

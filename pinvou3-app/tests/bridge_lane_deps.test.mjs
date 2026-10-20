@@ -193,9 +193,9 @@ while ((m = clusterRe.exec(helpers)) !== null) {
   snapshot.clusters[m[1]] = [...m[2].matchAll(/([\w$]+): b\.([\w$]+)/g)].map((p) => `${p[1]}:${p[2]}`);
 }
 const EXPECTED_SURFACE = {
-  // The replay result mutator is private and parameter-only. AST scope audit:
-  // updateToolItem adds only that helper; replay adds it plus standard Map.
-  // No new cluster deps, exports or forwarders; REQUIRED stays unchanged.
+  // +1 (313): isCompactionCarrierBlocks — internal predicate of
+  // rerenderFromMessagesCore (work-mode rewind filter; references no deps,
+  // not exported from any cluster literal).
   sharedFnCount: 313,
 };
 
@@ -464,7 +464,6 @@ const EXPECTED_CLUSTER_KEYS = {
     'latestShellToolIsWaitObserver',
     'normalizeTerminalTail',
     'notify',
-    'publishShellSnapshots',
     'runSyncOnSession',
     'shellPollState',
     'state',

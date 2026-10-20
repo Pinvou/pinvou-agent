@@ -48,21 +48,23 @@ assert.match(rewindDialogs, /export function RewindUndoConfirmDialog\(/, 'Rewind
 // ── ChatView 接线：共享模块 + 时间线入口 + 弹窗 ──────────────────────
 // 共享模块导入（搬家后唯一来源是 features/conversation）。
 assert.match(chatView, /from '\.\.\/conversation\/useRewindController\.js'/, 'ChatView 必须使用共享编排 hook');
-// 评审 r9 M5：两车道重载投影必须跳过含 tool_result 的 User 消息的用户气泡
-// （后端按 ToolResult-first 判 NotPrompt；工具卡由 toolMeta 回填还原）——
-// 否则截图类工具回传的 [ToolResult, Text, ImageUrl, Text] 渲染幻影气泡并顶
-// 偏序号，调和门随之隐藏该会话全部入口。
-// r10 M5：形状锚（非标识符共现）——删掉三元守卫（回退为直取
-// userMessageDisplayText）必须变红；只留未用变量声明的变异同样变红。
-assert.match(tauriBridge, /toolResultCarrier\s*\?\s*""\s*:\s*userMessageDisplayText/, 'tauri 重载：tool_result 载体必须以三元守卫跳过用户气泡');
-assert.match(webBridge, /toolResultCarrier\s*\?\s*""\s*:\s*userMessageDisplayText/, 'web 重载：tool_result 载体必须以三元守卫跳过用户气泡');
-// 步数预算通知过滤（r10 M3）双车道同款形状锚。
-assert.match(tauriBridge, /stepBudgetNotice[\s\S]{0,240}if \(utext && !stepBudgetNotice\)/, 'tauri 重载：步数预算通知必须被过滤出用户气泡');
-assert.match(webBridge, /stepBudgetNotice[\s\S]{0,240}if \(utext && !stepBudgetNotice\)/, 'web 重载：步数预算通知必须被过滤出用户气泡');
-// r11 M4：压缩载体过滤的调用形状锚（变异实证：禁用过滤行全绿）。过滤器
-// 必须在 rerender 的 user 分支里被调用（carrier check 在 bubble 创建前）。
-assert.match(tauriBridge, /if \(isCompactionCarrierBlocks\(blocks\)\) continue;/, 'tauri bridge：压缩载体必须在用户气泡创建前被过滤——禁用该行必须变红');
-assert.match(webBridge, /if \(isCompactionCarrierBlocks\(blocks\)\) continue;/, 'web bridge：压缩载体必须在用户气泡创建前被过滤——禁用该行必须变红');
+// 评审 r9 M5 / r10 M3 / r11 M4：重载投影的三个用户气泡过滤（tool_result 载体 /
+// 步数预算通知 / 压缩载体）。main FE14-wave5 把 rerender 主体去重进
+// shared/bridge-shared-helpers.js 的 rerenderFromMessagesCore（两 lane 经 hooks
+// 注入差异），过滤随主体单份落在共享核心——断言对象从两份 lane 内联循环改为
+// 共享核心 + 「两 lane 必须真的调核心」（lane 静默回退内联循环会让过滤全部失效）。
+const sharedHelpers = source('shared/bridge-shared-helpers.js');
+assert.match(tauriBridge, /rerenderFromMessagesCore\(/, 'tauri 重载必须走共享核心 rerenderFromMessagesCore（lane 回退内联循环会让全部用户气泡过滤失效）');
+assert.match(webBridge, /rerenderFromMessagesCore\(/, 'web 重载必须走共享核心 rerenderFromMessagesCore（lane 回退内联循环会让全部用户气泡过滤失效）');
+// 形状锚（非标识符共现）——删掉三元守卫（回退为直取 userMessageDisplayText）
+// 必须变红；只留未用变量声明的变异同样变红。
+assert.match(sharedHelpers, /toolResultCarrier\s*\?\s*""\s*:\s*lane\.userMessageDisplayText/, '重载核心：tool_result 载体必须以三元守卫跳过用户气泡');
+// 步数预算通知过滤（r10 M3）形状锚。
+assert.match(sharedHelpers, /stepBudgetNotice[\s\S]{0,240}if \(utext && !stepBudgetNotice\)/, '重载核心：步数预算通知必须被过滤出用户气泡');
+// 压缩载体过滤的调用形状锚（变异实证：禁用过滤行全绿）。过滤器必须在 rerender
+// 的 user 分支里被调用（carrier check 在 bubble 创建前），谓词定义在共享核心内。
+assert.match(sharedHelpers, /if \(isCompactionCarrierBlocks\(blocks\)\) continue;/, '重载核心：压缩载体必须在用户气泡创建前被过滤——禁用该行必须变红');
+assert.match(sharedHelpers, /function isCompactionCarrierBlocks\(blocks\)/, '重载核心：压缩载体谓词必须随核心定义（classic script 无法 import ESM，与 internal-message.mjs 逐字镜像）');
 // r13 M4：三个安全关键机制的接线 pin——变异实证均全绿。
 // 1) forceDurableLoad：删掉第四参 → 同 id 快路径假成功（r7-M3 修掉的形状）。
 assert.match(chatView, /switchToSessionInternal\(sid, true, 'chat-rewind', \{ forceDurableLoad: true \}\)/,
@@ -136,8 +138,8 @@ assert.match(
 // （否则切换前打开的确认弹窗会对新会话执行旧目标的回退——跨会话截断）。
 assert.match(
   chatView,
-  /resetRewindForSessionSwitch\(\);/,
-  'ChatView 必须在会话切换时调用共享 hook 的 resetForSessionSwitch',
+  /resetRewindForSessionSwitch\(\);\s*\n\s*\}, \[activeSessionId, resetRewindForSessionSwitch\]\);/,
+  'ChatView 必须在会话切换时调用共享 hook 的 resetForSessionSwitch，且 effect 依赖数组必须含 activeSessionId（r20 M2：漏掉它则跨会话陈旧回退截断复活而本钉不红）',
 );
 // reload 布尔合同：switchToSessionInternal 失败返回 false 而非 reject，视图
 // 侧必须转换成异常交给共享编排的 reload 失败路径。
@@ -230,5 +232,14 @@ for (const language of ['zh', 'en', 'ja']) {
 // 中性化方向锚定：两车道共用同文案，不得再以「代码变更」限定回退对象。
 assert.doesNotMatch(dict.zh.uiCodex.rewindChangesToUndo, /代码/, '将撤销的变更文案必须中性（工作模式共用）');
 assert.doesNotMatch(dict.en.uiCodex.rewindChangesToUndo, /code/i, 'File changes copy must stay lane-neutral');
+// r20 minor 3：三个回退提示键的删除守卫——ui_language_coverage 只校验 en/ja
+// 覆盖 zh，键从所有字典删光时全套件仍绿（UI 渲染 undefined 文案）。
+for (const language of ['zh', 'en', 'ja']) {
+  for (const key of ['rewindReloadFailed', 'rewindFilesDeleteNote', 'rewindUndoExpiryNote']) {
+    const text = dict[language].uiCodex[key];
+    assert.equal(typeof text, 'string', `${key} 必须有 ${language} 文案（删除守卫）`);
+    assert.ok(text.length > 0, `${key} 的 ${language} 文案不得为空`);
+  }
+}
 
 console.log('chat_rewind_wiring: all assertions passed');
