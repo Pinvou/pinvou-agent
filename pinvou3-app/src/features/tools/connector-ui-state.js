@@ -3,11 +3,13 @@
 // message in the current UI language; the raw backend diagnostic never
 // reaches the card (matching the Official repo's PR #442 behavior).
 
-// Round-37 F3 (review #455): the ONE consent-failure marker string, mirroring
-// `scope::CONSENT_SYNC_FAILURE_MARKER` on the Rust side (both pinned by
-// consent_marker_frontend.test.mjs + the Rust emitter pins). The three JS
-// matchers import this instead of hardcoding the literal, so one-site drift
-// cannot survive the pin.
+// Round-37 F3 (review #455): the install channels' consent-failure marker,
+// mirroring `scope::CONSENT_SYNC_FAILURE_MARKER` on the Rust side (both pinned
+// by consent_marker_frontend.test.mjs + the Rust emitter pins). Since the
+// connect channels grew their own marker below, exactly one JS matcher still
+// imports this — the ima connect card, whose backend stays on install-side
+// default-off registration — instead of hardcoding the literal, so one-site
+// drift cannot survive the pin.
 export const CONSENT_SYNC_FAILURE_MARKER =
   'persisting their default-off consent state failed';
 

@@ -54,9 +54,24 @@ for (const MARKER of [INSTALL_MARKER, CONNECT_MARKER]) {
     'the marker literal must be defined only in connector-ui-state.js (import the const instead)',
   );
 }
-assert.ok(
-  store.includes('CONSENT_SYNC_FAILURE_MARKER') && store.includes('CONNECT_CONSENT_SYNC_FAILURE_MARKER'),
-  'ToolStoreView must key both consent-failure surfacings on the shared consts',
+// Name presence alone is satisfied by the import and the comments alone, so a
+// matcher site reverted to a stale const — or the matcher deleted outright —
+// passes a bare includes() leg while the failure degrades to the generic copy.
+// Pin the per-channel CALL COUNTS instead, anchored on the `includes(<CONST>)`
+// call shape: the connect channel has exactly its two catch sites (feishu/wecom
+// apply + the awaited dingtalk/tmeet branch) and the install channel exactly
+// its one ima-pattern matcher. Anchoring after `includes(` keeps the
+// CONNECT_ call sites from satisfying the install count and keeps the import
+// and comment mentions from satisfying either.
+assert.strictEqual(
+  store.split('includes(CONNECT_CONSENT_SYNC_FAILURE_MARKER)').length - 1,
+  2,
+  'ToolStoreView must key exactly its two connect catch sites on CONNECT_CONSENT_SYNC_FAILURE_MARKER — a site reverted to a stale const, a deleted site, or a hand-rolled literal breaks this pin',
+);
+assert.strictEqual(
+  store.split('includes(CONSENT_SYNC_FAILURE_MARKER)').length - 1,
+  1,
+  'ToolStoreView must keep exactly one install consent-failure matcher keyed on CONSENT_SYNC_FAILURE_MARKER (the ima-pattern matcher) — reverting it to a stale const, deleting it, or a hand-rolled literal breaks this pin',
 );
 
 // A backend-only reword (Rust const + updated Rust value test) would otherwise
