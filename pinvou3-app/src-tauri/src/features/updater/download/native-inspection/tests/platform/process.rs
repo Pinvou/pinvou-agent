@@ -3,6 +3,7 @@ use serde_json::Value;
 use std::{fs, path::PathBuf, process::Command, sync::atomic::AtomicBool};
 const EXE: &str = env!("CARGO_BIN_EXE_upgrade-inspect-retained-native");
 const JOB_EXE: &str = env!("CARGO_BIN_EXE_upgrade-download-cache");
+mod roles;
 struct Fixture {
     root: PathBuf,
     job: PathBuf,
@@ -11,6 +12,15 @@ struct Fixture {
 }
 impl Fixture {
     fn new(kind: &str) -> Self {
+        let (fixture, create) = Self::prepare(kind, "legacy", JOB_EXE);
+        assert!(
+            create.status.success(),
+            "actual legacy create: {}",
+            String::from_utf8_lossy(&create.stderr)
+        );
+        fixture
+    }
+    fn prepare(kind: &str, profile: &str, creator: &str) -> (Self, std::process::Output) {
         let root = std::env::temp_dir().join(format!(
             "pinvou-native-job-{}-{}",
             std::process::id(),
@@ -46,14 +56,50 @@ impl Fixture {
                     .unwrap();
             }
         }
+        if profile != "legacy" {
+            fs::copy(EXE, root.join("helper-first.exe")).unwrap();
+            fs::copy(
+                PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+                    .join("System32/kernel32.dll"),
+                root.join("helper-execution.exe"),
+            )
+            .unwrap();
+            fs::copy(
+                PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+                    .join("System32/kernelbase.dll"),
+                root.join("launcher.exe"),
+            )
+            .unwrap();
+            if kind == "role-tampered" {
+                let path = root.join("helper-execution.exe");
+                let mut bytes = fs::read(&path).unwrap();
+                bytes[32] ^= 1;
+                fs::write(path, bytes).unwrap();
+            }
+            if kind == "launcher-unsigned" {
+                fs::copy(EXE, root.join("launcher.exe")).unwrap();
+            }
+            if kind == "role-large" {
+                fs::OpenOptions::new()
+                    .write(true)
+                    .open(root.join("helper-execution.exe"))
+                    .unwrap()
+                    .set_len(4 * 1024 * 1024)
+                    .unwrap();
+            }
+        }
         let crate_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let zip = root.join("fullpack.zip");
-        let made = Command::new("python")
-            .arg(crate_dir.join("tests/fullpack.py"))
+        let mut pack = Command::new("python");
+        pack.arg(crate_dir.join("tests/fullpack.py"))
             .arg(&native)
-            .arg(&zip)
-            .output()
-            .unwrap();
+            .arg(&zip);
+        if profile != "legacy" {
+            pack.arg(root.join("helper-first.exe"))
+                .arg(root.join("helper-execution.exe"))
+                .arg(root.join("launcher.exe"));
+        }
+        let made = pack.output().unwrap();
         assert!(made.status.success(), "ZIP fixture generation refused");
         let fixture = Command::new("node")
             .arg(crate_dir.join("tests/fixtures.mjs"))
@@ -72,6 +118,7 @@ impl Fixture {
                 "windows-x86_64-nsis-perMachine"
             })
             .arg(kind)
+            .arg(profile)
             .output()
             .unwrap();
         assert!(
@@ -89,7 +136,7 @@ impl Fixture {
         )
         .unwrap();
         let job = root.join("job");
-        let create = Command::new(JOB_EXE)
+        let create = Command::new(creator)
             .arg("create")
             .arg(&job)
             .arg(root.join("root.json"))
@@ -99,23 +146,28 @@ impl Fixture {
             .arg(root.join("import.json"))
             .output()
             .unwrap();
-        assert!(
-            create.status.success(),
-            "actual legacy create: {}",
-            String::from_utf8_lossy(&create.stderr)
-        );
-        let made: Value = serde_json::from_slice(&create.stdout).unwrap();
+        let pin = if create.status.success() {
+            let made: Value = serde_json::from_slice(&create.stdout).unwrap();
+            made["manifestSha256"].as_str().unwrap().to_owned()
+        } else {
+            String::new()
+        };
         // Fixture populates retained bytes, never invents a successful journal.
-        fs::copy(zip, job.join("attempt-00000000000000000001.bin")).unwrap();
+        if create.status.success() {
+            fs::copy(zip, job.join("attempt-00000000000000000001.bin")).unwrap();
+        }
         let output = root.join("output");
         fs::create_dir(&output).unwrap();
         fs::write(root.join("limits.json"),r#"{"fileBytes":134217728,"expandedBytes":134217728,"entries":64,"metadataBytes":1048576,"pathStateBytes":1048576,"ratio":100}"#).unwrap();
-        Self {
-            root,
-            job,
-            output,
-            pin: made["manifestSha256"].as_str().unwrap().into(),
-        }
+        (
+            Self {
+                root,
+                job,
+                output,
+                pin,
+            },
+            create,
+        )
     }
     fn command(&self) -> Command {
         let mut cmd = Command::new(EXE);
@@ -385,12 +437,15 @@ impl Drop for Joined {
 }
 #[test]
 fn actual_cli_kill_wait_releases_original_job_and_cache_custody() {
+    let f = Fixture::new("large");
+    kill_join_proof(&f, f.command());
+}
+fn kill_join_proof(f: &Fixture, mut command: Command) {
     use std::{
         os::windows::fs::OpenOptionsExt,
         process::Stdio,
         time::{Duration, Instant},
     };
-    let f = Fixture::new("large");
     let path = f.job.join("attempt-00000000000000000001.bin");
     // An attribute-only, fully shared observation does not race the child's read
     // acquisition with a conflicting probe writer or duplicate read capability.
@@ -400,8 +455,7 @@ fn actual_cli_kill_wait_releases_original_job_and_cache_custody() {
         .share_mode(7)
         .open(&path)
         .unwrap();
-    let child = f
-        .command()
+    let child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -449,16 +503,24 @@ fn actual_cli_kill_wait_releases_original_job_and_cache_custody() {
 }
 #[test]
 fn actual_copy_cancellation_joins_before_releasing_partial_output() {
+    let f = Fixture::new("large");
+    partial_copy_proof(&f, None, "payload/installer.exe", "input.exe");
+}
+fn partial_copy_proof(
+    f: &Fixture,
+    role: Option<pinvou_upgrade_native_inspection::Role<'_>>,
+    member: &str,
+    native_file: &str,
+) {
     use std::{
         os::windows::fs::OpenOptionsExt,
         sync::{Arc, atomic::Ordering},
         time::{Duration, Instant},
     };
-    let f = Fixture::new("large");
     let cancel = Arc::new(AtomicBool::new(false));
     let watcher_cancel = cancel.clone();
     let output = f.output.clone();
-    let native_bytes = fs::read(f.root.join("input.exe")).unwrap();
+    let native_bytes = fs::read(f.root.join(native_file)).unwrap();
     let expected_size = native_bytes.len() as u64;
     let watcher = std::thread::spawn(move || {
         let start = Instant::now();
@@ -492,15 +554,26 @@ fn actual_copy_cancellation_joins_before_releasing_partial_output() {
         None
     });
     let limits = serde_json::from_slice(&fs::read(f.root.join("limits.json")).unwrap()).unwrap();
-    let result = pinvou_upgrade_native_inspection::inspect(
-        &f.job,
-        &f.pin,
-        1,
-        &f.output,
-        "payload/installer.exe",
-        &limits,
-        &cancel,
-    );
+    let result = if let Some(role) = role {
+        pinvou_upgrade_native_inspection::inspect_role(
+            &f.job,
+            &f.pin,
+            1,
+            &f.output,
+            pinvou_upgrade_native_inspection::RoleRequest {
+                role,
+                member_name: member,
+            },
+            &limits,
+            &cancel,
+        )
+        .map(drop)
+    } else {
+        pinvou_upgrade_native_inspection::inspect(
+            &f.job, &f.pin, 1, &f.output, member, &limits, &cancel,
+        )
+        .map(drop)
+    };
     let (partial, observed_size) = watcher
         .join()
         .unwrap()

@@ -2,6 +2,7 @@
 import {readFile} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
+import {dirname, join} from 'node:path';
 const reference = pathToFileURL(process.argv[2]);
 const {createFixtureSet, NOW, TARGET} = await import(new URL('./tests/fixtures.mjs', reference));
 const {canonicalize} = await import(new URL('./canonical-json.mjs', reference));
@@ -26,13 +27,32 @@ pkg.finalInstaller.format = target.startsWith('windows-') ? 'nsis' : 'deb';
 pkg.finalInstaller.identity = pkg.finalInstaller.format;
 pkg.helpers[0].nativeIdentity = structuredClone(pkg.helper);
 pkg.provenance.finalInstallerSha256 = native.sha256;
+const profile = process.argv[7] ?? 'legacy';
+if (profile !== 'legacy') {
+  const dir = dirname(process.argv[4]);
+  const claim = async (file, format, name) => ({...identity(await readFile(join(dir,file))),format,identity:name,publisher:'test-publisher'});
+  const first = await claim('helper-first.exe','helper','first-helper-native');
+  const execution = await claim('helper-execution.exe','helper','execution-helper-native');
+  pkg.helper = execution;
+  pkg.launcher = await claim('launcher.exe','launcher','launcher-native');
+  pkg.helpers = [
+    {helperId:'helper-first',version:'1.0.0',targetKey:target,nativeIdentity:first,installationTarget:'logical/first-not-a-zip-member'},
+    {helperId:'helper-execution',version:'2.0.0',targetKey:target,nativeIdentity:execution,installationTarget:'logical/execution-not-a-zip-member'}
+  ];
+  pkg.executionHelperId = 'helper-execution';
+  if (profile === 'missing-helper') pkg.helpers.pop();
+  if (profile === 'duplicate-helper') pkg.helpers[0].helperId = pkg.helpers[1].helperId;
+  if (profile === 'helper-target') pkg.helpers[0].targetKey = 'linux-x86_64-deb-perMachine';
+  if (profile === 'missing-execution-id') pkg.executionHelperId = 'not-declared';
+  if (profile === 'helper-canonical') pkg.helper = {...pkg.helper,publisher:'another-declared-publisher'};
+}
 if (process.argv[6] === 'wrong-native') {
   pkg.finalInstaller.sha256 = 'b'.repeat(64);
   pkg.provenance.finalInstallerSha256 = pkg.finalInstaller.sha256;
 }
 const packageBytes = f.sign(pkg);
 const expected = {role:'package',product:'pinvou',component:'app',scope:{targetKey:target}};
-verifyEnvelope(packageBytes,{trustedRoot:f.metadata.root,expected,now:NOW});
+if (profile === 'legacy' || profile === 'roles') verifyEnvelope(packageBytes,{trustedRoot:f.metadata.root,expected,now:NOW});
 for (const role of ['decision','download']) {
   const c = f.claims[role];
   c.host = target.startsWith('windows-') ? {os:'windows',arch:'x86_64',osVersion:'10.0'} : c.host;
