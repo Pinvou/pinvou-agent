@@ -78,8 +78,8 @@ use pinvou3_lib::features::marketplace::bundle::CLI_DISCONNECTED_DEGRADED_REASON
 use pinvou3_lib::features::marketplace::skill_marketplace::SkillMarketplaceManager;
 use pinvou3_lib::features::marketplace::store::{BundleRecord, BundleSource, BundleStore};
 use pinvou3_lib::features::{
-    IMA_SKILL_ID, LARK_MIN_VERSION as FEISHU_MIN_VERSION, TMEET_MIN_VERSION, TMEET_NPM_SPEC,
-    WECOM_MIN_VERSION,
+    IMA_SKILL_ID, IMA_SKILL_VERSION, LARK_MIN_VERSION as FEISHU_MIN_VERSION, TMEET_MIN_VERSION,
+    TMEET_NPM_SPEC, WECOM_MIN_VERSION,
 };
 use pinvou3_lib::platform::connector_lock::{executable_name, locked_cli_path};
 use pinvou3_lib::platform::connector_skills::{
@@ -105,10 +105,6 @@ const USAGE: &str =
 // feishu and wecom floors are the live ones: the same sync raised them with
 // the resynced skill packs (lark 1.0.95→1.0.98, wecom 1.2.1→1.3.4), so
 // future raises are expected.
-
-/// ima companion skill version (`IMA_SKILL_ID` itself is imported from the
-/// feature layer alongside the version floors above).
-const IMA_SKILL_VERSION: &str = "1.1.8";
 
 /// Archive size cap, mirroring `native_installer::MAX_ARCHIVE_BYTES`.
 const MAX_ARCHIVE_BYTES: u64 = 128 * 1024 * 1024;

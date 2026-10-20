@@ -22,7 +22,10 @@ const API_KEY_SECRET: &str = "api_key";
 /// ima 通道与 plugins readiness 表直接引用，替代各自的手抄镜像。
 pub const IMA_SKILL_ID: &str = "ima-skills";
 const IMA_BASE_URL: &str = "https://ima.qq.com";
-const IMA_SKILL_VERSION: &str = "1.1.8";
+/// `pub`（经 `features::mod` 越界）：CLI 的 ima_connect 查询把它作为
+/// `skill_version` 上报 —— 曾经是 CLI 侧的无对齐护栏手抄镜像（round-9 review
+/// n2），与 IMA_SKILL_ID 同一批单一真相源。
+pub const IMA_SKILL_VERSION: &str = "1.1.8";
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 
 const READ_API_PATHS: &[&str] = &[
