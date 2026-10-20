@@ -21,7 +21,7 @@ pub use candidate::{
     CandidateVerificationError, CandidateVerificationInputs, SignatureCheckedCandidateRelease,
     verify_candidate_release,
 };
-pub use chain::{SignatureCheckedRootChain, verify_root_chain};
+pub use chain::{SignatureCheckedRootChain, verify_root_chain, verify_root_chain_source};
 pub use check::{
     CheckVerificationError, CheckVerificationInputs, SignatureCheckedCheckResponse,
     verify_check_response,

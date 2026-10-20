@@ -123,18 +123,26 @@ pub(super) fn verify_root_transition_parts(
     }
     .map_err(VerificationError::Time)?;
     for current in active_metadata {
-        let active = parse_bound_envelope(current.bytes, current.expected)?;
-        if !matches!(
-            active.envelope().signed().value()["role"].as_str(),
-            Some("timestamp" | "snapshot" | "target" | "release" | "package")
-        ) {
-            return Err(VerificationError::ActiveReadSetInvalid);
-        }
-        signatures::verify_signatures(&active, &next_root)?;
+        verify_active_binding(current, &next_root)?;
     }
     Ok(TransitionParts {
         envelope,
         next_root,
         signer_ids,
     })
+}
+
+pub(super) fn verify_active_binding(
+    current: &ActiveMetadataInput<'_>,
+    root: &RootPolicyShape,
+) -> Result<(), VerificationError> {
+    let active = parse_bound_envelope(current.bytes, current.expected)?;
+    if !matches!(
+        active.envelope().signed().value()["role"].as_str(),
+        Some("timestamp" | "snapshot" | "target" | "release" | "package")
+    ) {
+        return Err(VerificationError::ActiveReadSetInvalid);
+    }
+    signatures::verify_signatures(&active, root)?;
+    Ok(())
 }

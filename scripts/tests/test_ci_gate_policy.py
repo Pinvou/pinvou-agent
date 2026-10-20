@@ -747,6 +747,29 @@ class CiGatePolicyTests(unittest.TestCase):
                 else:
                     self.assertNotIn("if:", step)
 
+    def test_durable_metadata_qa_runs_actual_transaction_process_tests(self):
+        root = "pinvou3-app/src-tauri/src/features/updater/protocol/acceptance"
+        block = self.pr_workflow.split("            rust_code:", 1)[1].split("            rust_dependencies:", 1)[0]
+        patterns = _extract_quoted_paths(block)
+        for path in ("src/coordinator.rs", "tests/process.rs", "README.md", "Cargo.toml", "Cargo.lock"):
+            self.assertTrue(_matches_paths_filter(root + "/" + path, patterns))
+        linux = self.pr_workflow.split("\n  rust-lint:", 1)[1].split("\n  rust-test:", 1)[0]
+        windows = self.pr_workflow.split("\n  windows-rust-test:", 1)[1].split("\n  macos-rust-check:", 1)[0]
+        for job, title in ((linux, "Check isolated durable metadata acceptance QA"),
+                           (windows, "Check native Windows durable metadata acceptance QA")):
+            step = job.split("- name: " + title, 1)[1].split("\n      - name:", 1)[0]
+            self.assertIn("working-directory: " + root, step)
+            self.assertIn("CARGO_BUILD_JOBS: '2'", step)
+            self.assertNotIn("continue-on-error:", step)
+            self.assertNotIn("--include-ignored", step)
+            for command in ("cargo fmt -- --check", "cargo clippy --locked --all-targets --all-features -- -D warnings",
+                            "cargo test --locked --release --all-targets --features fault-tests -- --test-threads=1"):
+                self.assertIn(command, step)
+            if job == windows:
+                self.assertIn("matrix.phase == 'regression'", step)
+            else:
+                self.assertNotIn("if:", step)
+
     def test_read_only_cache_byte_controls_run_on_native_windows(self):
         job = self.pr_workflow.split("\n  windows-rust-test:", 1)[1].split("\n  macos-rust-check:", 1)[0]
         step = job.split("- name: Check native Windows upgrade byte verification", 1)[1].split("\n      - name:", 1)[0]

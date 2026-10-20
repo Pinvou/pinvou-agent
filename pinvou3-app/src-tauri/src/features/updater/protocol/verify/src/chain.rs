@@ -36,6 +36,14 @@ impl SignatureCheckedRootChain<'_> {
     pub fn supplied_time_millis(&self) -> f64 {
         self.supplied_now
     }
+    /// Same original full-Schema/context/final-key signature binding, one owned
+    /// snapshot member at a time. Caller still owns complete active inventory.
+    pub fn assert_active_binding(
+        &self,
+        input: &ActiveMetadataInput<'_>,
+    ) -> Result<(), VerificationError> {
+        crate::successor::verify_active_binding(input, &self.final_root)
+    }
 }
 
 /// One through 4096 continuous dual-threshold steps; only nonfinal Root expiry
@@ -49,22 +57,45 @@ pub fn verify_root_chain<'a>(
     now: &SuppliedProtocolTime,
     active_metadata: &[ActiveMetadataInput<'_>],
 ) -> Result<SignatureCheckedRootChain<'a>, VerificationError> {
-    if !(1..=4096).contains(&successors.len()) {
+    let checked = verify_root_chain_source(
+        successors.len(),
+        |index| Ok(successors[index].to_vec()),
+        initial_root,
+        expected_root,
+        now,
+    )?;
+    for item in active_metadata {
+        checked.assert_active_binding(item)?;
+    }
+    Ok(checked)
+}
+
+/// Bounded original-object source variant of the same chain kernel. This does
+/// not authenticate source storage or attest the caller's active-set completeness.
+pub fn verify_root_chain_source<'a>(
+    count: usize,
+    mut read: impl FnMut(usize) -> Result<Vec<u8>, VerificationError>,
+    initial_root: &'a RootPolicyShape,
+    expected_root: &Document,
+    now: &SuppliedProtocolTime,
+) -> Result<SignatureCheckedRootChain<'a>, VerificationError> {
+    if !(1..=4096).contains(&count) {
         return Err(VerificationError::RootChainInvalid);
     }
     let mut current = None;
-    for (index, bytes) in successors.iter().enumerate() {
+    for index in 0..count {
+        let bytes = read(index)?;
         let old = current
             .as_ref()
             .map(|parts: &crate::successor::TransitionParts| &parts.next_root)
             .unwrap_or(initial_root);
-        let final_step = index + 1 == successors.len();
+        let final_step = index + 1 == count;
         let parts = verify_root_transition_parts(
-            bytes,
+            &bytes,
             old,
             expected_root,
             now,
-            if final_step { active_metadata } else { &[] },
+            &[],
             if final_step {
                 NextRootWindow::Fresh
             } else {
@@ -81,7 +112,7 @@ pub fn verify_root_chain<'a>(
         final_envelope: parts.envelope,
         final_root: parts.next_root,
         final_signer_ids: parts.signer_ids,
-        checked_steps: successors.len(),
+        checked_steps: count,
         supplied_now: now.as_millis(),
     })
 }

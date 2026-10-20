@@ -214,6 +214,7 @@ jobs:
               - 'pinvou3-app/src-tauri/src/features/updater/native-evidence/**'
               - 'pinvou3-app/src-tauri/src/features/updater/platform/custody/**'
               - 'pinvou3-app/src-tauri/src/features/updater/protocol/codec/**'
+              - 'pinvou3-app/src-tauri/src/features/updater/protocol/acceptance/**'
               - 'pinvou3-app/src-tauri/src/features/updater/protocol/http/**'
               - 'specs/upgrade/v1/**'
               - '**/*.rs'
@@ -1082,6 +1083,15 @@ jobs:
           cargo fmt -- --check
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked
+
+      - name: Check isolated durable metadata acceptance QA
+        working-directory: pinvou3-app/src-tauri/src/features/updater/protocol/acceptance
+        env:
+          CARGO_BUILD_JOBS: '2'
+        run: |
+          cargo fmt -- --check
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo test --locked --release --all-targets --features fault-tests -- --test-threads=1
 
       - name: Check independent upgrade Package byte binding
         working-directory: pinvou3-app/src-tauri/src/features/updater/download/package
@@ -2106,6 +2116,16 @@ jobs:
           cargo fmt -- --check
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked --all-targets -- --test-threads=1
+
+      - name: Check native Windows durable metadata acceptance QA
+        if: ${{ matrix.phase == 'regression' }}
+        working-directory: pinvou3-app/src-tauri/src/features/updater/protocol/acceptance
+        env:
+          CARGO_BUILD_JOBS: '2'
+        run: |
+          cargo fmt -- --check
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+          cargo test --locked --release --all-targets --features fault-tests -- --test-threads=1
 
       - name: Check native Windows upgrade byte verification
         if: ${{ matrix.phase == 'regression' }}
