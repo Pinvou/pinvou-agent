@@ -40,15 +40,17 @@ fn lark(args: &[&str]) -> Command {
 }
 
 /// Minimum acceptable lark-cli version for the skill pack's command surface.
-/// The skill pack documents the lock baseline (1.0.95, see NOTICE.md); older
-/// installs are missing dozens of taught shortcuts (e.g. `+get`/`+table-copy`),
+/// It must equal the platform locks' lark-cli pin (1.0.98 —
+/// `lark_min_version_matches_platform_lock`; the bundled skill pack itself
+/// is synced at v1.0.98, see NOTICE.md), and older installs are missing
+/// dozens of taught shortcuts (e.g. `+get`/`+table-copy`),
 /// so they count as not installed and trigger the locked-version replacement —
 /// same policy as wecom/tmeet, which carry per-connector minimums and lark
 /// historically did not (installed 1.0.65 silently degraded to generic help).
 /// `pub` + the facade re-export: the CLI's connectors family consumes this
 /// floor instead of a drifting copy (round-51 review — a GUI-side raise to
 /// the lock baseline must move the CLI's `upgrade_required` gate with it).
-pub const LARK_MIN_VERSION: (u64, u64, u64) = (1, 0, 95);
+pub const LARK_MIN_VERSION: (u64, u64, u64) = (1, 0, 98);
 
 /// 解析 `lark-cli --version` 输出为三段语义版本。输出形如
 /// `lark-cli version 1.0.65`(程序名与版本之间夹着字面量 `version`),故锚定

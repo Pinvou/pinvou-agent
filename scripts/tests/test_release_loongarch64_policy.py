@@ -40,6 +40,8 @@ TOOLCHAIN_SCRIPT = ROOT / "scripts" / "ci-loongarch64-toolchain.sh"
 SYSROOT_SCRIPT = ROOT / "scripts" / "ci-loongarch64-sysroot.sh"
 PACKAGING_SCRIPT = ROOT / "scripts" / "package-deb-loongarch64.sh"
 BUILD_JS = ROOT / "pinvou3-app" / "scripts" / "tauri" / "build.js"
+ELF_POLICY_SCRIPT = ROOT / "scripts" / "check-linux-elf-policy.sh"
+ASR_BUILD_SCRIPT = ROOT / "scripts" / "asr" / "build-sensevoice-runtime.sh"
 
 # scripts/ci-loongarch64-toolchain.sh: the x86_64-host asset pin (tag
 # 20260912, variant stable, gcc 14.4, glibc 2.38). The workflow must consume
@@ -96,43 +98,52 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         # build.js (or any bundling) itself.
         self.assertNotIn("node scripts/tauri/build.js", self.job_code)
 
-    def test_release_job_sets_remap_only_rustflags(self):
+    def test_release_job_keeps_forbidden_linker_flags_out(self):
         # The pinned cross toolchain ships NO lld (bfd only): the arm64 job's
         # -fuse-ld=lld / --icf=safe must never be copied, and LTO stays owned
-        # by Cargo.toml. RUSTFLAGS must be exactly the remap-only spelling:
-        # --remap-path-prefix is rustc-side (the macOS job sets it alone),
-        # keeps build-machine paths out of the artifact like every other
-        # release job, and needs no lld. Comment mentions of the forbidden
-        # flags are deliberate (they warn future editors) and are stripped
-        # here — only live configuration counts.
+        # by Cargo.toml. Comment mentions of the forbidden flags are
+        # deliberate (they warn future editors) and are stripped here — only
+        # live configuration counts.
         self.assertNotIn("-fuse-ld=lld", self.job_code)
         self.assertNotIn("--icf=safe", self.job_code)
         self.assertNotIn("CARGO_PROFILE_RELEASE_LTO", self.job_code)
         self.assertNotIn("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", self.job_code)
-        job_env = self.job_code.split("\n    steps:", maxsplit=1)[0]
-        rustflags = [
-            line.strip()
-            for line in job_env.splitlines()
-            if line.strip().startswith("RUSTFLAGS:")
-        ]
-        self.assertEqual(
-            rustflags,
-            ['RUSTFLAGS: "--remap-path-prefix=${{ github.workspace }}=/"'],
-            "the loong64 job must set exactly the remap-only RUSTFLAGS",
-        )
-        # The orchestrator owns the actual cargo invocations and must not
-        # override the job's flags (its comments deliberately warn; strip
-        # them before scanning).
+
+    def test_rust_flags_are_target_scoped_never_global(self):
+        # The target units need --remap-path-prefix (artifact-path parity)
+        # AND -C link-arg=--sysroot (the deepin libc.so linker script's
+        # absolute GROUP paths only resolve under the sysroot). Neither can
+        # ride in RUSTFLAGS: cargo gives a set RUSTFLAGS precedence over
+        # CARGO_TARGET_<triple>_RUSTFLAGS (verified: the target-scoped value
+        # is silently dropped when both are set), so the target units would
+        # silently lose the sysroot link-arg. With --target, host
+        # build-script units receive no rustflags at all — the shadowing
+        # alone is what makes a job-level RUSTFLAGS fatal here.
+        # So the job must not set RUSTFLAGS anywhere (job env, step env, or a
+        # run-block export) and the orchestrator must own exactly one
+        # target-scoped export carrying both flags.
+        self.assertNotIn("RUSTFLAGS", self.job_code)
         orchestrator_code = _without_comments(self.orchestrator)
         self.assertNotIn("-fuse-ld=lld", orchestrator_code)
         self.assertNotIn("--icf=safe", orchestrator_code)
         self.assertNotIn("CARGO_PROFILE_RELEASE_LTO", orchestrator_code)
-        for line in orchestrator_code.splitlines():
-            stripped = line.strip()
-            self.assertFalse(
-                stripped.startswith("RUSTFLAGS=") or stripped.startswith("export RUSTFLAGS"),
-                f"the orchestrator must leave RUSTFLAGS unset, found: {stripped}",
-            )
+        self.assertNotIn("CARGO_PROFILE_RELEASE_CODEGEN_UNITS", orchestrator_code)
+        export_lines = [
+            line.strip()
+            for line in orchestrator_code.splitlines()
+            if re.match(r"^(export\s+)?[A-Z0-9_]*RUSTFLAGS=", line.strip())
+        ]
+        self.assertEqual(
+            export_lines,
+            [
+                'CARGO_TARGET_RUSTFLAGS="--remap-path-prefix=$REPO_ROOT=/ '
+                '-C link-arg=--sysroot=$sysroot"',
+                'export CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS='
+                '"$CARGO_TARGET_RUSTFLAGS"',
+            ],
+            "the orchestrator must own exactly the two-line target-scoped "
+            "rust-flag export (remap + sysroot link-arg)",
+        )
 
     def test_release_job_gives_the_cross_build_headroom(self):
         # arm64 (native) gets 90 minutes; the cross build reuses the same
@@ -243,6 +254,29 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         self.assertIn(
             'find "$bridge_dir" -type f -name node -print -quit | grep -q .',
             _without_comments(self.orchestrator),
+        )
+
+    def test_orchestrator_smoke_links_before_the_first_real_build(self):
+        # The pr-check legs are check-only and never link, so the release
+        # job's first link used to be the full knowledge-server compile —
+        # the worst place to discover a broken cross link environment. A
+        # hello-world link must sit before it and reuse the exact exported
+        # flag string (the $CARGO_TARGET_RUSTFLAGS variable, not a copied
+        # literal) so the smoke cannot drift from what the cargo builds run
+        # with; the cross linker must come from the same env contract too.
+        code = _without_comments(self.orchestrator)
+        self.assertIn("-C linker=\"$CARGO_TARGET_LOONGARCH64_UNKNOWN_LINUX_GNU_LINKER\"", code)
+        self.assertIn("$CARGO_TARGET_RUSTFLAGS", code)
+        self.assertIn('assert_loongarch_elf "$smoke_dir/hello"', code)
+        self.assertIn(
+            "cross link smoke failed",
+            code,
+            "the smoke must fail loudly with its own message",
+        )
+        self.assertLess(
+            code.index("hello.rs"),
+            code.index("--manifest-path"),
+            "the link smoke must run before the first real cargo build",
         )
 
     # ---- pinned toolchain / sysroot ----
@@ -405,11 +439,100 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         self.assertIn('> "$manifest.tmp"', sysroot)
         self.assertIn('mv "$manifest.tmp" "$manifest"', sysroot)
 
+    def test_sysroot_keeps_the_link_resolution_surface(self):
+        # The final links resolve -lc through the deepin libc.so TEXT linker
+        # script, whose GROUP names absolute paths (/lib/loongarch64-linux-
+        # gnu/libc.so.6, /lib64/ld-linux-loongarch-lp64d.so.1, verified
+        # against libc6-dev 2.38-6deepin13+rb1). Deepin is usrmerged, so the
+        # extracted tree only has usr/lib and usr/lib64 — the prune must
+        # recreate the /lib and /lib64 aliases or every link dies on
+        # "cannot open /lib/..." after a full compile (the CMake ASR build
+        # passes CMAKE_SYSROOT and dies the same way). The prune must also
+        # keep the glibc 2.34+ merged-library compat stubs (libpthread etc.,
+        # .a-only — no .so script names them, so the script-scan keep
+        # mechanism cannot see them; rustc's gnu link tail always carries
+        # -lutil -lrt -lpthread -lm -ldl -lc), and verify_sysroot must
+        # emulate ld's resolution for EVERY text script, not just libc.so,
+        # so a regression fails at setup time with the missing path named.
+        sysroot = _without_comments(self.sysroot)
+        # The fold must run before the whitelists (folded content is then
+        # pruned by the same size discipline), handle all three shapes
+        # (missing → alias, shipped symlink → keep, real dir → fold), and
+        # end with /lib and /lib64 as symlinks into usr/.
+        self.assertIn('merge_into_usr_lib lib\n  merge_into_usr_lib lib64', sysroot)
+        self.assertIn('if [ ! -e "$root/$d" ]; then', sysroot)
+        self.assertIn('ln -s "usr/$d" "$root/$d"', sysroot)
+        self.assertIn('[ -L "$root/$d" ]', sysroot)
+        self.assertIn('cp -a "$root/$d/." "$root/usr/$d/"', sysroot)
+        self.assertIn('rm -rf -- "$root/$d"', sysroot)
+        # The aliases only resolve if the whitelist prune keeps usr/lib64
+        # (the loader symlink's home): a verified-red harness round caught
+        # the usr-level whitelist deleting it and leaving /lib64 dangling.
+        self.assertIn(
+            '! -name usr ! -name lib ! -name lib64 \\\n    -exec rm -rf -- {} +',
+            sysroot,
+        )
+        self.assertIn(
+            "! -name include ! -name lib ! -name lib64 ! -name share",
+            sysroot,
+        )
+        self.assertIn(
+            "for keep_name in libpthread.a libdl.a librt.a libutil.a libanl.a; do",
+            sysroot,
+        )
+        # The verify side asserts the SAME compat-stub list (sysroot.sh's
+        # verify_sysroot loop); the two lists are hand-maintained twins, so
+        # pin both — drift between them would let one side keep a stub the
+        # other stops checking (or vice versa) without anything going red.
+        self.assertIn(
+            "for compat_archive in libpthread.a libdl.a librt.a libutil.a libanl.a; do",
+            sysroot,
+        )
+        self.assertIn('grep -hoE \'/[A-Za-z0-9._/-]+\\.so[0-9.]*\' "$script"', sysroot)
+        self.assertIn('[ -e "$root$ref_path" ]', sysroot)
+        self.assertIn(
+            "but the sysroot lacks it (usrmerge alias regression?)",
+            sysroot,
+            "the absolute-script-path check must fail with its own message",
+        )
+        # The emulation must scan all text scripts (the while-read loop over
+        # the grep -lI set), not only libc.so.
+        self.assertIn(
+            'done < <(find "$root/usr/lib/$MULTIARCH_DIR" -maxdepth 1 -type f '
+            "-name '*.so' -print0",
+            sysroot,
+        )
+
+    def test_elf_policy_uses_bfd_independent_readelf(self):
+        # check-linux-elf-policy.sh dumps dynamic symbols with readelf, not
+        # objdump: objdump's BFD only knows the targets its build enabled and
+        # the x86_64 jammy runner's binutils (and its binutils-multiarch)
+        # has no LoongArch backend, so a foreign-arch ELF dies with "file
+        # format not recognized" and kills the release job. readelf parses
+        # the ELF structures directly, so one spelling serves every arch.
+        # The ASR build script required objdump only for the policy call and
+        # must drop it from its host-command lists too.
+        policy = _without_comments(ELF_POLICY_SCRIPT.read_text(encoding="utf-8"))
+        self.assertNotIn("objdump", policy)
+        self.assertIn("readelf -W --dyn-syms", policy)
+        asr = _without_comments(ASR_BUILD_SCRIPT.read_text(encoding="utf-8"))
+        self.assertNotIn("objdump", asr)
+
     # ---- cache keys (release restore-only, pr-check main-only saves) ----
 
     def test_release_job_restores_loong64_caches_read_only(self):
-        self.assertIn(TOOLCHAIN_CACHE_KEY, self.job_code)
-        self.assertIn(SYSROOT_CACHE_KEY, self.job_code)
+        # The FULL key spelling must match the pr-check save side exactly
+        # (same script hashed): a prefix-only pin let the release key drift
+        # (a different hashFiles target, an extra suffix) while staying green
+        # here — the release job would then restore a cache the writer never
+        # created and pay a full cold rebuild every release.
+        for key, script in (
+            (TOOLCHAIN_CACHE_KEY, "scripts/ci-loongarch64-toolchain.sh"),
+            (SYSROOT_CACHE_KEY, "scripts/ci-loongarch64-sysroot.sh"),
+        ):
+            full_key = "key: " + key + "${{ hashFiles('" + script + "') }}"
+            self.assertEqual(self.job_code.count(full_key), 1, key)
+            self.assertIn(f"restore-keys: |\n            {key}", self.job_code, key)
         # Release runs never write caches (same quota policy as the
         # save-if: false rust-caches of the x64/arm64 jobs).
         self.assertNotIn("actions/cache/save@", self.job_code)
@@ -659,6 +782,12 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
             packager.index(normalization[0]),
             "symlink materialization must run before mode normalization",
         )
+        # The staged-ELF sweep must dereference when probing content: find
+        # -xtype f visits a symlink-to-file as the LINK path, and a plain
+        # file -b lstats it into "symbolic link to ..." — silently skipping
+        # exactly the wrong-arch ELF behind an npm .bin link the sweep
+        # exists to catch.
+        self.assertIn('file -bL "$elf"', packager)
         # Control emission (mutation-verified hollow before this pin): the
         # DEPENDS/RECOMMENDS/Installed-Size computations above are inert
         # unless they are actually written into DEBIAN/control — deleting an

@@ -30,12 +30,12 @@ fi
 # 同一个版本钉住全部目标。官方 nodejs.org 不发布 linux-loong64；该架构由
 # unofficial-builds 提供同版本构建（下载源见下方 node_dist_urls），sha256 单独
 # 钉在 node_sha256 中，来自该 release 的 SHASUMS256.txt。
-NODE_VERSION="24.20.0"
-CODEX_ACP_VERSION="1.6.2"
+NODE_VERSION="24.22.0"
+CODEX_ACP_VERSION="2.2.2"
 CODEX_ACP_PACKAGE="@agentclientprotocol/codex-acp"
-CLAUDE_ACP_VERSION="0.79.0"
+CLAUDE_ACP_VERSION="0.93.0"
 CLAUDE_ACP_PACKAGE="@agentclientprotocol/claude-agent-acp"
-CLAUDE_SDK_VERSION="0.3.274"
+CLAUDE_SDK_VERSION="0.3.300"
 BRIDGE_PACKAGE_DIR="$SCRIPT_DIR/codex-bridge-runtime"
 
 # Print one string field of manifest.json on stdout.
@@ -278,13 +278,13 @@ node_archive_ext() {
 
 node_sha256() {
   case "$1" in
-    linux-x64) echo "2f2c0da162318f0de47665410c7c8c2ed3d36c8f3105de4bbc61176c70a7cbf2" ;;
-    linux-arm64) echo "5f4ddab610c1ab2016b3c227cebdbf6d9495161487e4739c7b90090595f465f7" ;;
-    # 来自 https://unofficial-builds.nodejs.org/download/release/v24.20.0/SHASUMS256.txt
+    linux-x64) echo "cc2f601cee82d9a5a233302fe307abc600727035fd7d2c3a3571755989e95008" ;;
+    linux-arm64) echo "fef00bb4d36e1c50104a9775a10359beee98f162b4104dd12472c75065c6a143" ;;
+    # 来自 https://unofficial-builds.nodejs.org/download/release/v24.22.0/SHASUMS256.txt
     # （并已通过下载 tar.xz 复核）。
-    linux-loong64) echo "ce808f2b812df963cf262af1f260c0d54a117fe145c71c804055eaced6a17515" ;;
-    darwin-x64) echo "9e5b2644cf107befb6aefca676b96d3296bc10138096f022ed378d6233ed81f4" ;;
-    darwin-arm64) echo "40e5607e5ecb3db9192723776da2d75d966260fc74a7a9e731c1bd67dda96bc8" ;;
+    linux-loong64) echo "793274e3d17b31e0a51147f3782c85fdb5097932749f4bdb75c3454aac83c01b" ;;
+    darwin-x64) echo "495e3f273c645f3c4677d438304cdfc701729ea5dec5728f5c8e76a2dece4b91" ;;
+    darwin-arm64) echo "6a9724d9b50a5f22b4816cded441b5a8d9ddae546191a5e5b7efa5a5e2ee26d5" ;;
     *) return 1 ;;
   esac
 }

@@ -1,8 +1,9 @@
 ---
 name: dws
-description: 【何时用:仅当用户明确指向钉钉/DingTalk(钉钉文档、钉钉日程等)时使用;泛指做文档/表格/待办/审批默认走本地工具,不要误用钉钉】用 dws CLI 管理钉钉:AI表格/AI搜问(找人首选)/目标管理(Agoal)/组织大脑/日历/通讯录/群聊与机器人消息/待办/审批/考勤/日志(日报周报)/DING消息/钉钉文档/云盘/Markdown文件/AI听记/邮箱/在线电子表格(axls)/知识库/白板/开放平台文档/个人IM与OA事件订阅。用户要求操作上述钉钉产品时使用。
-cli_version: ">=1.0.61"
+description: 【何时用:仅当用户明确指向钉钉/DingTalk(钉钉文档、钉钉日程等)时使用;泛指做文档/表格/待办/审批默认走本地工具,不要误用钉钉】用 dws CLI 管理钉钉:AI表格/AI搜问(找人首选)/目标管理(Agoal)/组织大脑/日历/通讯录/群聊与机器人消息/待办/审批/智能合同/考勤/日志(日报周报)/DING消息/钉钉文档/云盘/Markdown文件/HTML文件/AI听记/邮箱/在线电子表格(axls)/知识库/白板/开放平台文档/个人IM与OA事件订阅。用户要求操作上述钉钉产品时使用。
+cli_version: ">=1.0.64"
 metadata:
+  internal: true
   requires:
     bins: ["dws"]
   cliHelp: "dws --help"
@@ -24,12 +25,13 @@ metadata:
 
 ## 严格要求 (MUST DO)
 - 所有命令必须加 `--format json`（默认输出即 json,显式携带以防默认值变化,确保可解析）
+- 用户明确要登录钉钉国际版、海外版或 `.io` 区域时，必须执行 `dws auth login --intl`（无头环境再加 `--device`），不得回退到国内 `.com`；`--intl` 只用于登录，后续业务命令按所选 profile 自动路由
 - 危险操作必须先向用户确认，用户同意后才加 `--yes` 执行
 - 直接调用 dws 批量接口（如 `record update`）时单次硬上限 100 条（各 record 分册同）；Agent 直连建议每批 ≤30 条以便失败重试；使用 [scripts/import_records.py](./scripts/import_records.py) 批量导入时按脚本默认 50 条/批（其 `DEFAULT_BATCH_SIZE=50`，上限 100）
 - 所有命令必须**严格遵循**对应产品参考文档里面规定的参数格式（参数与参数值之间用空格隔开）
 - **脚本只用于明确覆盖的复合任务**：[scripts/](./scripts/) 下的脚本可封装 AI 表格批量导入导出、钉盘目录树等流程；当公开 `+` Shortcut 已提供目标唯一解析、分页/部分失败 ledger 和确认语义时，优先 Shortcut。Chat 历史导出与机器人广播已完全下沉 Runtime，不再发布兼容脚本
 - **脚本调用约定**：统一用 `python3` 调用（多数 macOS/Linux 环境没有裸 `python` 命令）；文档中的 `scripts/...` 是相对本 Skill 根目录（`SKILL.md` 所在目录）的路径，实际执行时应拼成完整路径（如 `python3 <Skill根目录>/scripts/attendance_report_monthly.py ...`），**不要假设当前工作目录（CWD）已在 Skill 根目录**
-- **实时个人事件例外**：普通 IM 消息、reaction、已读和撤回默认走 `dws event +listen-im ...`；OA 审批、VoIP 通话邀请、Todo、群生命周期、明确的原始 EventKey、Filter DSL、subscribe_id 或原始 envelope 使用 `dws event consume ... --flatten`。不要写脚本轮询消息历史、审批列表、通话记录或待办列表
+- **实时个人事件例外**：普通 IM 消息、reaction、已读和撤回默认走 `dws event +listen-im ...`；OA 审批、VoIP 通话邀请、Todo、互动卡片回调、群生命周期、明确的原始 EventKey、Filter DSL、subscribe_id 或原始 envelope 使用 `dws event consume ... --flatten`。不要写脚本轮询消息历史、审批列表、通话记录或待办列表
 
 ## Shortcut 与原子命令的使用原则
 
@@ -46,20 +48,20 @@ metadata:
 <!-- VISIBLE_SHORTCUTS_OVERVIEW_START -->
 ## Shortcut 总览
 
-下面只统计当前公开 catalog 中的 shortcut，不展开完整明细。已知意图应先按产品 Skill、意图表或任务 reference 选择唯一命令；命令已选中时直接执行，只在参数或安全语义不确定时读取 leaf Schema，在当前 Cobra flags 不确定时读取 leaf Help。仅当现有路由和 reference 都无法定位低频能力时，才用 `dws shortcut list --service <service> --format json` 做最后回退；不要为已知高频意图加载完整产品 Catalog。
+下面只统计当前公开 catalog 中的 shortcut，不展开完整明细。已知意图先按产品 Skill、意图表或任务 reference 选唯一命令；参数/约束/安全不明时读一次 leaf 窄 Schema。Schema 不可用时才读一次已知 leaf Help；`unknown flag` 用同 leaf Help 修正一次；`unknown command` 不查 Help，先用错误的明确 suggestion，否则用已加载 Skill/reference 的明确兼容入口，仍无则报告漂移，不枚举全 Catalog。仅当现有路由和 reference 都无法定位低频能力时，才用 `dws shortcut list --service <service> --format json` 做最后回退；不要为已知意图加载完整产品 Catalog 或 root/parent Help。
 
 | 服务 | shortcut 数 |
 |---|---:|
 | `agoal` | 5 |
 | `aisearch` | 1 |
-| `aitable` | 100 |
-| `attendance` | 8 |
+| `aitable` | 127 |
+| `attendance` | 11 |
 | `calendar` | 27 |
-| `chat` | 98 |
-| `contact` | 13 |
+| `chat` | 102 |
+| `contact` | 19 |
 | `devapp` | 25 |
 | `ding` | 1 |
-| `doc` | 45 |
+| `doc` | 49 |
 | `drive` | 28 |
 | `mail` | 8 |
 | `minutes` | 29 |
@@ -68,7 +70,7 @@ metadata:
 | `report` | 4 |
 | `sheet` | 2 |
 | `todo` | 20 |
-| `whiteboard` | 2 |
+| `whiteboard` | 3 |
 | `wiki` | 20 |
 <!-- VISIBLE_SHORTCUTS_OVERVIEW_END -->
 
@@ -84,20 +86,23 @@ metadata:
 
 | 产品                | 用途                                                   | 参考文件                                                           |
 |-------------------|------------------------------------------------------|----------------------------------------------------------------|
-| `agoal` | 目标管理:战略解码/经营合约/计分卡/用户目标/目标模板/周月报 | [agoal.md](./references/products/agoal.md) |
+| `agoal`           | 目标管理：战略解码、经营合约、计分卡、目标规则周期、个人目标、目标模板、周月报规则提交统计与跟催 | [agoal.md](./references/products/agoal.md)                       |
 | `aisearch`        | AI搜问（通用找人首选）：按姓名/部门/职位/职责/上级/下级/手机号/工号维度找人，"谁负责 XX/XX 的负责人/某事项/某项目的人"统一走本产品；不含人才池/绩效/职业历程等专项 HR 场景（那些去 `hrbrain`） | [aisearch.md](./references/products/aisearch.md)               |
-| `aitable`         | AI表格：Base/数据表/字段/记录/视图/附件/图表/仪表盘/导入导出/模板搜索            | [aitable.md](./references/products/aitable.md)                 |
+| `aitable`         | AI表格：Base/数据表/字段/记录/视图/附件/图表/仪表盘/导入导出/模板搜索/PostgreSQL 只读查询与 JOIN | [aitable.md](./references/products/aitable.md)                 |
 | `api`             | OpenAPI 逃生舱：官方 llms.txt 分层发现，仅执行企业内部应用 App Token 服务端 API | [openapi-explorer.md](./references/products/openapi-explorer.md) |
 | `attendance`      | 考勤：打卡结果/打卡流水/考勤组查询/考勤规则/汇总统计/假期类型/假期余额（全部命令已注册可用，见 attendance.md「命令可用性提示」） | [attendance.md](./references/products/attendance.md)           |
 | `calendar`        | 日历：日历列表/日程/参与者/附件/响应/会议室/闲忙查询/时间建议                  | [calendar.md](./references/products/calendar.md)               |
 | `chat`            | 群聊与机器人：搜索群/建群/群成员管理/改群名/消息发送(文本/Markdown/图片/文件)/拉取消息/消息收藏/@我/特别关注/机器人群发/单聊/撤回/转发/引用回复/Webhook/机器人搜索 | [chat.md](./references/products/chat.md)                       |
 | `contact`         | 通讯录：用户查询/部门/角色/花名册（学历/家庭/银行卡/紧急联系人/合同等基础字段）/离职员工/特别关注，以及创建企业、企业账号和邀请员工；不含职业历程/绩效/人才池（那些去 `hrbrain`） | [contact.md](./references/products/contact.md)                 |
+| `contract`        | 法务智能合同：台账、批量导入、听记起草、归档、项目、相对方与账款管理 | [contract.md](./references/products/contract.md)               |
 | `dev`             | 开放平台开发者：应用生命周期/机器人建号与配置/凭证/权限/事件订阅/版本发布审批/本地建联（dev connect）；**创建或建联机器人一律走 `dev`，不走 `chat`** | [dev.md](./references/products/dev.md)                         |
 | `devdoc`          | 开放平台文档：搜索开发文档                                        | [devdoc.md](./references/products/devdoc.md)                   |
 | `ding`            | DING消息：发送/撤回（应用内/短信/电话）                              | [ding.md](./references/products/ding.md)                       |
+| `dingtalk-tag`    | DingTalk Tag 数字员工：管理生命周期、Skill/MCP、执行状态与 trace，以及员工 Profile、普通本地 Agent 或 DSH 接入与运行管理 | [dingtalk-tag-index.md](./references/products/dingtalk-tag/dingtalk-tag-index.md) |
 | `doc`             | 钉钉文档：搜索/浏览/读写/块级编辑/评论/文件创建/复制/移动/重命名/**删除/导出 docx/权限管理/媒体上传下载**       | [doc.md](./references/products/doc.md)                         |
-| `drive`           | 钉钉云盘：文件列表/元数据/文件夹/上传(两步)/下载/本地与钉盘文件夹差异比较(status)/拉取到本地(pull)/推送到钉盘(push)/双向同步(sync)/互联网公开发布(publish)/分享链接密码与有效期 | [drive.md](./references/products/drive.md)                     |
+| `drive`           | 钉钉云盘：文件列表/元数据/文件夹/上传(两步)/下载/本地与钉盘文件夹差异比较(status)/拉取到本地(pull)/推送到钉盘(push)/双向同步(sync)/互联网公开发布(publish)/分享链接密码与有效期/节点分享范围(set-share-scope) | [drive.md](./references/products/drive.md)                     |
 | `hrbrain`         | 组织大脑：人才池管理/员工档案专项模块查询（元数据/批量数据/标签/职业历程/绩效）/结构化高级人才搜索（原始条件表达式）；区别于 `contact` 的基础通讯录档案与 `aisearch` 的通用语义找人 | [hrbrain.md](./references/products/hrbrain.md)                 |
+| `html`            | 原生 HTML 文件：读取/创建/全量覆盖/局部替换（.html/.htm，钉盘或文档空间）     | [html.md](./references/products/html.md)                     |
 | `markdown`        | 原生 Markdown 文件：读取/创建/对比/全量覆盖/局部替换/评论列表           | [markdown.md](./references/products/markdown.md)               |
 | `minutes`         | AI听记：听记列表/摘要/关键词/转写/待办/思维导图/发言人/发言人段落总结/热词/录音控制/成员权限/上传 | [minutes.md](./references/products/minutes.md)                 |
 | `oa`              | OA审批：待处理/详情/同意/拒绝/撤销/记录/已发起/任务/转交/评论/抄送              | [oa.md](./references/products/oa.md)                           |
@@ -106,17 +111,17 @@ metadata:
 | `mail`            | 邮箱：邮箱地址查询/邮件搜索(KQL)/邮件详情/发送邮件                        | [mail.md](./references/products/mail.md)                       |
 | `sheet`           | 在线电子表格(axls)：工作表 CRUD/区域读写/CSV 批量写入/行列增删/合并/查找替换/筛选视图/全局筛选/排序/下拉列表/条件格式/浮动图片/浮动图表/模板/导出 xlsx(单命令一站式) | [sheet.md](./references/products/sheet.md)                     |
 | `todo`            | 待办：创建(含优先级/截止时间/循环)/查询/修改/标记完成/删除                   | [todo.md](./references/products/todo.md)                       |
-| `wiki`            | 知识库：空间创建/详情/列表/搜索 + 成员管理 + 知识库动态查询                | [wiki.md](./references/products/wiki.md)                       |
-| `whiteboard`      | 文档内嵌白板：读取 OpenNodes、追加节点、整页重建                           | [whiteboard.md](./references/products/whiteboard.md)           |
-| `recruit`         | 钉钉招聘：查询职位列表、获取职位详情、创建职位                              | [recruit.md](./references/products/recruit.md)                  |
-| `event`           | 个人 IM/OA/VoIP/Todo 事件：监听消息、群生命周期、审批任务/实例、通话邀请与待办变化，NDJSON 输出（实时驱动 Agent）| [event.md](./references/products/event.md)                     |
+| `wiki`            | 知识库：空间创建/详情/列表/搜索 + 成员管理 + 知识库动态查询 + 空间分享范围(permission set-share-scope) | [wiki.md](./references/products/wiki.md)                       |
+| `whiteboard`      | 独立白板（白板文件）的内容操作；或在已有承载文档 nodeId 和 partId 后读写文档内嵌白板 part 的图形内容，两类目标互不转换 | [whiteboard.md](./references/products/whiteboard.md)           |
+| `event`           | 个人 IM/OA/VoIP/Todo/互动卡片事件：监听消息、群生命周期、审批任务/实例、通话邀请、待办变化与卡片回调，NDJSON 输出（实时驱动 Agent）| [event.md](./references/products/event.md)                     |
 
 ## 意图判断决策树
 
 用户提到"AI应用/创建应用/生成系统/做工具/管理后台/低代码/宜搭" → 产品参考以 [dev.md](./references/products/dev.md) 为准（勿猜 `aiapp` 等未在 dev.md 列出的命令，命令以 `dws dev --help` 实测为准）；应用创建/机器人建号与建联流程见该文「典型工作流」
-用户提到"目标管理/Agoal/战略解码/经营合约/计分卡/目标模板/周月报提交统计" → `agoal`
+用户提到"目标管理/Agoal/战略解码/经营合约或字段配置/计分卡/目标规则周期/个人目标/目标模板/周月报规则提交统计/按时/迟交/未提交/跟催" → `agoal`；只填写、提交或查询日报周报月报正文时才走 `report`
+用户提到"法务/智能合同/合同台账/合同归档/合同项目/相对方/合同账款/按听记起草合同" → `contract`（合同审批实例的查询或处理走 `oa`；合同文件存储操作走 `drive`）
 用户提到"找人/搜人/谁负责 XX/某事项的负责人/某项目的人/团队成员/上级/下级/按工号找人/按手机号找人" → `aisearch`（通用语义找人；若明确涉及人才池/绩效/职业历程/结构化高级条件，去 `hrbrain`）
-用户提到"表格/多维表/AI表格/记录/数据/视图/图表/仪表盘" → `aitable`
+用户提到"表格/多维表/AI表格/记录/数据/视图/图表/仪表盘/SQL/PostgreSQL/SELECT/JOIN/跨表关联查询" → `aitable`
 用户提到"考勤/打卡/排班" → `attendance`
 用户提到"日程/日历/会议室/约会/时间建议" → `calendar`
 用户提到"群聊/建群/群成员/群管理/发消息/发图片消息/发文件消息/发 Markdown 消息/截图发钉钉/转发消息/引用回复/@我/特别关注消息/机器人发消息/Webhook/机器人群发/机器人单聊/通知" → `chat`
@@ -124,9 +129,11 @@ metadata:
 用户提到"开发/API/调用错误 文档" → `devdoc`
 用户提到"未封装 OpenAPI/llms.txt/dws api/Raw API/API 逃生舱" → `dws api`（先查现有产品命令，再读官方 llms.txt）
 用户提到"DING/紧急消息/电话提醒" → `ding`
+用户提到"DingTalk Tag/DEAP 数字员工/创建发布数字员工/修改数字员工人设/响应模式/为 A2A 等场景安全登录数字员工 DWS/给数字员工挂 Skill 或 MCP/数字员工运行状态或 trace/落盘本地 Profile/接入 DSH" → `dingtalk-tag`，先读 [dingtalk-tag-index.md](./references/products/dingtalk-tag/dingtalk-tag-index.md)
 用户提到"钉钉文档/云文档/知识库/读写文档/块级编辑/文档评论/文档复制移动" → `doc`
 用户提到"云盘/文件存储/文件上传下载/文件夹/互联网公开/分享链接密码/公开有效期" → `drive`
 用户提到"人才池/储备干部池/员工档案元数据或批量模块数据/职业历程/绩效记录/员工标签/组织大脑/结构化人才搜索(高级条件表达式)" → `hrbrain`（区别于 `aisearch` 的通用语义找人与 `contact` 的基础通讯录档案）
+用户提到"原生 HTML 文件/.html 文件/新建 HTML 页面/创建 HTML 文件/读取 HTML 原文/覆盖 HTML/局部替换 HTML" → `html`
 用户提到"原生 Markdown 文件/.md 文件/读取 Markdown 原文/覆盖 Markdown/局部替换 Markdown/Markdown 评论" → `markdown`
 用户提到"听记/AI听记/会议纪要/转写/摘要/思维导图/发言人/热词" → `minutes`
 用户提到"邮箱/邮件/发邮件/收邮件/搜邮件/查邮件/邮件草稿/转发邮件/回复邮件/邮件附件/抄送" → `mail`
@@ -136,19 +143,19 @@ metadata:
 用户提到"在线电子表格/钉钉表格/axls/工作表/单元格读写/合并单元格/筛选视图/导出 xlsx" → `sheet`
 用户提到"待办/TODO/任务提醒/循环待办" → `todo`
 用户提到"创建知识库/知识库列表/搜索知识库空间/wiki/团队空间/知识库成员管理/我的文档个人空间" → `wiki`
-用户提到"文档内嵌白板/画布/OpenNodes/白板节点/连接线/整页重建白板" → `whiteboard`；创建空白板卡片先走 `doc whiteboard insert`
-用户提到"招聘/职位/JD/在招职位/创建职位/职位详情" → `recruit`
+用户提到"白板文件/独立白板/保存到白板/画布/OpenNodes/白板节点/连接线/整页重建白板" → `whiteboard`。用户要在文档中插入、定位或删除白板卡片 → `doc whiteboard`；只有已有承载文档 `nodeId` 和 `partId` 的内嵌白板图形内容读写才走 `whiteboard`。内嵌目标身份缺失时停止并补齐，禁止转成独立白板
 用户提到"监听有人@我/监听单聊或群消息/监听所有单聊或群消息/监听某人发送的消息/监听消息已读/监听消息撤回/监听消息贴表情或表情回应/订阅个人 IM 事件/实时接收钉钉事件/监听并自动回复消息/驱动 Agent 处理消息" → `event +listen-im`；群成员加入/退出、群改名/解散或明确原始 EventKey/Filter DSL → `event consume`
 用户提到"监听待我审批的任务/监听审批任务创建、完成或转交/监听审批单发起或终止/监听我发起的审批完成/监听审批实例完成/订阅 OA 事件/event consume user_oa_approval_*" → `event consume`
 用户提到"收到语音通话邀请时通知我/监听 VoIP 来电/订阅 user_voip_call_receive_invite" → `event consume`
 用户提到"监听待办创建/更新/删除/监听指派给我的待办/订阅 Todo 事件/event consume user_todo_task_*" → `event consume`，按角色使用 `--role-types`
+用户提到"互动卡片回调/监听卡片操作/订阅 user_card_action_triggered" → `event consume user_card_action_triggered --flatten -f ndjson`
 
 普通消息、reaction、已读、撤回监听优先由一个 `dws event +listen-im` 进程表达目标；不同用户、不同群或不同过滤条件拆成独立进程。只有高级事件控制才生成 `dws event consume <event_key> [event_key...] --flatten`。
 
 关键区分: aitable(数据表格) vs todo(待办任务)
 关键区分: report(钉钉日志/日报周报) vs todo(待办任务)
 关键区分: chat send-by-bot(机器人身份发消息) vs send-by-webhook(自定义机器人Webhook告警)
-关键区分: doc(在线富文本文档/adoc) vs markdown(原生 .md 纯文本文件) vs drive(通用文件存储与传输)
+关键区分: doc(在线富文本文档/adoc) vs markdown(原生 .md 纯文本文件) vs html(原生 .html 文件读写) vs drive(通用文件存储与传输)
 关键区分: contact(基础通讯录档案：学历/家庭/银行卡/紧急联系人/合同/部门角色) vs aisearch person(通用语义找人：谁负责/上级/下级/多维度模糊搜索) vs hrbrain(人才池/员工档案专项模块数据/职业历程/绩效/结构化高级人才搜索)
 关键区分: oa tasks(审批 taskId，审批/拒绝用) vs oa list-pending(收件箱 processInstanceId，查看用)
 关键区分: oa(查询或操作审批) vs event user_oa_approval_*(当前用户审批事件长连接监听)
@@ -181,9 +188,10 @@ metadata:
 | `chat` | `clear-messages` | 清空会话聊天记录 |
 | `chat` | `message recall-by-bot` | 撤回机器人已发消息 |
 | `doc` | `delete` | **删除整篇文档/文件**到回收站（与 `block delete` 不同，本命令删除整个 node） |
-| `doc` | `block delete` | 删除文档单个块（不可恢复） |
+| `doc` | `block delete` | 删除文档块（不可恢复）；`--block-id` 支持逗号分隔一次删多个 |
 | `doc` | `permission update` | 修改协作者权限（降权可能影响他人访问） |
 | `ding` | `message recall` | 撤回已发 DING 消息 |
+| `dingtalk-tag` | `manage save-draft` / `manage publish` / `manage delete` / `capability skill create` / `capability mcp create` | 覆写或发布数字员工、删除数字员工、创建能力资源；以 leaf Schema 的 confirmation 为准 |
 | `oa` | `approval revoke` | 撤销自己发起的审批实例 |
 | `oa` | `approval reject` | 拒绝待审批（需加明确理由） |
 | `todo` | `task delete` | 删除待办 |
@@ -321,6 +329,7 @@ Schema 与 Help 冲突是**契约漂移**，不得静默猜测或把两边字段
 ## 详细参考 (按需读取)
 
 - [references/products/](./references/products/) — 各产品命令详细参考（Cobra 接受的 flag 以叶子 `--help` 为准；公开基础命令与内建 shortcut 的 Agent 映射/约束/安全语义以 leaf Schema 为准）
+- [references/products/dingtalk-tag/](./references/products/dingtalk-tag/) — DingTalk Tag 数字员工生命周期、能力资源与执行查询
 - [references/intent-guide.md](./references/intent-guide.md) — 意图路由指南（易混淆场景对照）
 - [references/url-patterns.md](./references/url-patterns.md) — URL 格式规范 + alidocs URL 分流决策与类型探测流程（含钉盘 `document/edit|preview?dentryKey=` 链接）
 - [references/global-reference.md](./references/global-reference.md) — 全局标志、认证、输出格式
@@ -331,3 +340,7 @@ Schema 与 Help 冲突是**契约漂移**，不得静默猜测或把两边字段
 - [references/products/pat.md](./references/products/pat.md) — PAT 浏览器策略、行为 scope 预览与授权安全要求
 - [references/capability-limits.md](./references/capability-limits.md) — 已知能力限制（doc/aitable/chat/minutes，遇到时直接告知用户不支持）
 - [references/best_practices/](./references/best_practices/) — 11 个编号场景 recipe(01 消息/02 任务/03 会议/04 文档/05 汇报/06 数据分析/07 听记/08 通讯录/09 邮件/10-11 听记发言人)+ [lite-recipes.md](./references/best_practices/lite-recipes.md) 速查;通用规范在 `_common/`
+
+Agent 使用 OpenNodes 带内容创建白板时，必须先执行 `whiteboard render`，展示 SVG 和渲染提示后停止，等待用户明确确认当前版本才能创建；修改后重新渲染和确认。不得跳过预览直接创建，最初的创建请求及创建后回读不能替代预览确认。详见白板入口的创建流程；空白创建、直接套用模板和已有白板更新不由此规则扩展。
+
+Agent 更新已有白板内容（追加、修改、删除、清空）必须先执行 `whiteboard +diff`，展示差异和风险后停止，等待用户明确确认当前差异，再用同一 sourceDigest 执行 `+update`；diff 失败或有 blocker 时不得写入。不得换原子 update 绕过，render、dry-run 和写后回读不能替代 diff。详见白板入口的更新流程。更新只设一个用户确认点：先完成所需的 render 和必需的 +diff，再把视觉预览（如有）、差异与覆盖影响一起展示并一次确认；不要在 render 后先索要确认、获准后才补做 diff 再次询问。同一目标、revision、source 和模式已获确认后，直接提交；只有这些内容变化或出现未披露的实质风险才重新确认。

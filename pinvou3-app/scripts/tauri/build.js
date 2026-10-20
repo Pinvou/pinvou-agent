@@ -367,13 +367,56 @@ function bundlesNoneCommandError() {
 }
 
 /**
- * Absorb the wrapper-owned `--bundles none` request and validate it. The two
+ * The wrapper-owned error for a real bundle type requested next to an
+ * absorbed `--bundles none`. Shared by both conflict shapes (a second
+ * `--bundles` spelling, a space-separated continuation of the absorbed one)
+ * so the wording cannot drift between them.
+ */
+function bundlesNoneConflictError() {
+  return new Error(
+    "conflicting --bundles requests: a real bundle type was requested alongside"
+      + " `--bundles none`, and the CLI's --no-bundle would silently win."
+      + " Drop one of the two --bundles spellings.",
+  );
+}
+
+/**
+ * Bundle-type words the pinned @tauri-apps/cli 2.11.4 accepts for `--bundles`:
+ * the `PackageType::short_name()` values of tauri-bundler 2.9.4, exposed as
+ * the CLI's BundleFormat value enum (verified against the CLI source; the
+ * --help listing filters them by host platform and hides `updater`, but the
+ * value parser accepts the full set on every host). The wrapper needs the
+ * cross-platform set to recognize a space-separated continuation of an
+ * absorbed `--bundles none` request (see `bundlesNonePlan`).
+ */
+const CLI_BUNDLE_TYPES = new Set([
+  "app",
+  "appimage",
+  "deb",
+  "dmg",
+  "ios",
+  "msi",
+  "nsis",
+  "rpm",
+  "updater",
+]);
+
+/**
+ * Absorb the wrapper-owned `--bundles none` request and validate it. The
  * request shapes that can never succeed fail here, from argv alone:
  * `bundle --bundles none` (the subcommand has no --no-bundle), and a real
- * bundle type requested NEXT to an absorbed `none` (after absorption the
- * leftover spelling would sit next to the injected `--no-bundle`, where the
- * CLI silently lets --no-bundle win — the same silent degradation the
- * `none,deb` value mix above refuses).
+ * bundle type requested NEXT to an absorbed `none`. The latter has three
+ * shapes: a second `--bundles` spelling (after absorption the leftover
+ * spelling would sit next to the injected `--no-bundle`, where the CLI
+ * silently lets --no-bundle win — the same silent degradation the `none,deb`
+ * value mix above refuses); a space-separated continuation of the absorbed
+ * spelling (the CLI's `--bundles` is multi-value (`Vec<BundleFormat>` with
+ * `num_args(0..)`), so `--bundles none deb` is upstream ONE option with two
+ * values, and absorbing only `none` leaves `deb` as a bare runner positional);
+ * and the `=` spelling of the absorbed request followed by a bundle-type word
+ * (`--bundles=none deb`). The CLI's usage is `tauri build [OPTIONS]
+ * [ARGS]...`, so those bare words pass arg-parse and only die deep inside the
+ * build with an error that never mentions `--bundles`.
  *
  * `main()` calls this before any preparation work (the sidecar steps take
  * minutes and the outcome is knowable from argv); `prepareTauriArgs` calls
@@ -397,12 +440,29 @@ function bundlesNonePlan(args) {
           || argument === "-b"
           || argument.startsWith("--bundles=")
           || argument.startsWith("-b="));
-        if (conflicting) {
-          throw new Error(
-            "conflicting --bundles requests: a real bundle type was requested alongside"
-              + " `--bundles none`, and the CLI's --no-bundle would silently win."
-              + " Drop one of the two --bundles spellings.",
-          );
+        if (conflicting) throw bundlesNoneConflictError();
+        // The space-separated continuation of the absorbed spelling, same
+        // conflict: `--bundles none deb` is one multi-value option upstream,
+        // so the wrapper absorbs `none` and `deb` is left behind as a bare
+        // runner positional (the CLI's usage is `tauri build [OPTIONS]
+        // [ARGS]...`, so the bare word passes arg-parse and only dies deep in
+        // the build with an error that never mentions --bundles). Both the
+        // space form and the `=` form of the absorbed spelling are scanned,
+        // and the raw args cover both flag orders.
+        for (let index = 0; index < args.length; index += 1) {
+          if (
+            (args[index] === "--bundles" || args[index] === "-b")
+            && args[index + 1] === "none"
+            && CLI_BUNDLE_TYPES.has(args[index + 2])
+          ) {
+            throw bundlesNoneConflictError();
+          }
+          if (
+            (args[index] === "--bundles=none" || args[index] === "-b=none")
+            && CLI_BUNDLE_TYPES.has(args[index + 1])
+          ) {
+            throw bundlesNoneConflictError();
+          }
         }
       }
     }

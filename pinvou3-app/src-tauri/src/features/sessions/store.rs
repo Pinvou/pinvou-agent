@@ -866,6 +866,42 @@ impl SessionStore {
         Ok(())
     }
 
+    /// Persist the provider route the engine spawn actually resolved onto the
+    /// session record (same load→patch→persist pattern as [`Self::set_title`]).
+    ///
+    /// The foundation's create path
+    /// (`create_saved_session_with_id_and_mode`) stamps every new record with
+    /// the engine default `model_provider = "deepseek"`; the app resolves the
+    /// real route only at spawn, so without this write a session riding the
+    /// moonshot/zai/... wire reads back as "deepseek" and misleads diagnosis.
+    ///
+    /// The caller supplies the canonical `(kind, exact id)` pair for the
+    /// resolved route (`bridge::persisted_provider_route`), and both fields
+    /// are written together: a record created by the CodeWhale CLI in a
+    /// shared home can carry a non-None `model_provider_id` naming the
+    /// previous route, and rewriting only the kind would leave exactly the
+    /// mismatched pair the foundation's fail-closed
+    /// `resolve_persisted_provider_identity` rejects at the next resume
+    /// (review #713 round 2) — even with both providers configured.
+    pub fn stamp_resolved_provider(
+        &self,
+        id: &str,
+        kind: &str,
+        provider_id: Option<&str>,
+    ) -> Result<()> {
+        let _mutation = self.scheduled_mutation.lock();
+        let mut session = self
+            .manager
+            .load_session_snapshot(id)
+            .with_context(|| format!("load_session({id}) for provider stamp"))?;
+        session.metadata.model_provider = kind.to_string();
+        session.metadata.model_provider_id = provider_id.map(str::to_string);
+        // In-place metadata rewrite: no session created or removed, so the
+        // post-persist retention rescan is skipped (round-18 MAJOR-4).
+        self.persist_in_place(&session, "provider stamp")?;
+        Ok(())
+    }
+
     /// Artifact-path rebase for directory rebind (review #463 round-10
     /// Major 2): `SavedSession.artifacts[].storage_path` persists absolute
     /// workspace paths for deliverables, and without this pass every

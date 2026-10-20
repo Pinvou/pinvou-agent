@@ -16,6 +16,12 @@ pptx 工具(make_pptx)测试用例 —— 覆盖本次 PR 的可确定性核心�
   7. slides 传成 JSON 字符串也兼容(模型有时这么传)
   8. 回归:不再产生调试落盘文件 ~/_make_pptx_debug.json
   9. MCP 协议冒烟(子进程):initialize / tools/list / tools/call(make_pptx)
+  10. malformed-JSON salvage / fully empty loud error
+  11. slides inputSchema.items structure pinned (arrays must carry concretely typed items)
+  12. explicit-null optional fields are safe (DeepSeek strict mode rewrites every property required+nullable)
+  13. kpi numeric 0 / agenda dict items (allowed by the schema anyOf) render as data, not swallowed by `or`
+  14. null array elements (salvage path bypasses the schema) fall back instead of leaking str(None) or error pages
+  15. non-string salvage elements are dropped (reprs never render, no phantom ordinals)
 
 注意:测试把 PINVOU3_SESSION_ARTIFACTS 指向临时目录,不污染 ~/.pinvou3。
 """
@@ -254,6 +260,223 @@ def test_malformed_json_salvage():
         r2 = server.make_pptx(theme="business-blue", slides=empty, filename="test_empty")
         assert r2.get("ok") is False and r2.get("error"), \
             "空/无法解析的 slides 应返回 ok:False+error,实际 %r(输入 %r)" % (r2, empty)
+
+
+# ── 11. slides schema must carry structured items (regression: k3 once completed an itemless array to []) ──
+@case("11. slides inputSchema.items structure pinned (arrays must carry concretely typed items)")
+def test_slides_schema_items_pin():
+    schema = server.TOOL_DEFS[0]["inputSchema"]["properties"]["slides"]
+    assert schema.get("type") == "array", "slides must be an array, got %r" % schema.get("type")
+    items = schema.get("items")
+    assert isinstance(items, dict) and items, "slides must carry non-empty items (Kimi-channel decoders complete an itemless array to []), got %r" % items
+    assert items.get("type") == "object", "items must be an object, got %r" % items.get("type")
+    assert items.get("required") == ["layout"], "items.required must be ['layout'], got %r" % items.get("required")
+    # The layout enum must match the LAYOUTS render table exactly (a new
+    # layout added without updating the enum must turn red here).
+    props = items.get("properties") or {}
+    assert set(props.get("layout", {}).get("enum") or []) == set(server.LAYOUTS), \
+        "layout.enum must match LAYOUTS exactly, got %r vs %r" % (props.get("layout", {}).get("enum"), sorted(server.LAYOUTS))
+    # The chartType enum must match the _CHART_TYPES render table exactly.
+    assert set(props.get("chartType", {}).get("enum") or []) == set(server._CHART_TYPES), \
+        "chartType.enum must match _CHART_TYPES exactly, got %r vs %r" % (props.get("chartType", {}).get("enum"), sorted(server._CHART_TYPES))
+    # Property-name set pinned: a dropped field (the model loses that field's
+    # guidance) and an unregistered extra field must both turn red.
+    expected = {"layout", "title", "subtitle", "date", "items", "bullets", "leftTitle", "left",
+                "rightTitle", "right", "chartType", "categories", "series", "headers", "rows",
+                "caption", "image"}
+    assert set(props) == expected, \
+        "slides.items.properties must be exactly the %d declared fields, diff %r" % (len(expected), set(props) ^ expected)
+    # Every nested array must carry concretely typed items (guard class:
+    # reintroducing an itemless array must turn red here).
+    def _assert_typed(node, path):
+        if node.get("type") != "array":
+            return
+        sub = node.get("items")
+        assert isinstance(sub, dict) and sub, "%s is missing items" % path
+        if sub.get("type") in ("array", "object", "string", "number"):
+            if sub.get("type") == "array":
+                _assert_typed(sub, path + ".items")
+        elif "anyOf" in sub:
+            for i, br in enumerate(sub["anyOf"]):
+                assert br.get("type"), "%s.anyOf[%d] lacks a concrete type" % (path, i)
+        else:
+            assert False, "%s.items lacks a concrete type: %r" % (path, sub.get("type"))
+    for key in ("bullets", "left", "right", "categories", "headers", "rows", "items", "series"):
+        _assert_typed(props[key], "slides.items.properties.%s" % key)
+    # series.data's numeric array and rows' 2-D array are the two deepest
+    # spots; pin their shapes separately. name stays optional: single-series
+    # charts hide the legend, so a forced invented name is friction, and the
+    # renderer falls back to "" either way.
+    series_items = props["series"]["items"]
+    assert series_items.get("required") == ["data"], "series items.required must be ['data'], got %r" % series_items.get("required")
+    assert series_items["properties"]["data"]["items"] == {"type": "number"}, "series.data items must be number"
+    assert props["rows"]["items"]["type"] == "array" and props["rows"]["items"]["items"] == {"type": "string"}, \
+        "rows must be a 2-D string array, got %r" % props["rows"]
+    # The items anyOf dict branch must not require num: agenda pages draw
+    # their own ordinals, so a label-only dict is a legal entry.
+    items_anyof = props["items"]["items"]["anyOf"]
+    dict_branch = next(br for br in items_anyof if br.get("type") == "object")
+    assert "required" not in dict_branch, "items dict branch must not require num, got %r" % dict_branch.get("required")
+
+
+# ── 12. explicit-null optional-field safety (DeepSeek strict rewrites every
+#        property required+nullable, so the model explicitly sends
+#        "field": null for unused fields; the renderer must fall back to
+#        defaults instead of blowing up the page) ──
+@case("12. explicit-null optional fields render with no error placeholder pages and no literal None")
+def test_explicit_null_fields_render():
+    deck = _deck(
+        {"layout": "cover", "title": None, "subtitle": None, "date": None},
+        {"layout": "agenda", "title": None, "items": None},
+        {"layout": "section", "title": None},
+        {"layout": "bullets", "title": None, "bullets": None},
+        {"layout": "two_col", "title": None, "leftTitle": None, "left": None,
+         "rightTitle": None, "right": None},
+        {"layout": "kpi", "title": None, "items": [{"num": None, "label": None}, "68%"]},
+        {"layout": "chart", "title": None, "chartType": None, "categories": None, "series": None},
+        {"layout": "table", "title": None, "headers": None, "rows": None},
+        {"layout": "image", "title": None, "bullets": None, "caption": None, "image": None},
+        {"layout": "end", "title": None, "subtitle": None},
+    )
+    r = server.make_pptx(theme="business-blue", slides=deck, filename="test_null_fields")
+    assert r.get("ok") is True, "all-null optional fields must render ok=True, got %r" % r
+    assert r["slides"] == 10, "slide count must be 10, got %r" % r["slides"]
+    prs = Presentation(r["path"])
+    texts = [shape.text_frame.text
+             for slide in prs.slides for shape in slide.shapes if shape.has_text_frame]
+    joined = "\n".join(texts)
+    assert "本页渲染失败" not in joined, "no page may render as a failure: %s" % joined[:300]
+    assert "None" not in joined, "null must not render as a literal None: %r" % [t for t in texts if "None" in t]
+    # A null title must fall back to each layout's default title; a kpi
+    # string element (allowed by the schema anyOf) renders as the big number.
+    assert "未命名演示" in joined and "谢谢" in joined, "cover/end null titles must fall back to the default titles"
+    assert "68%" in joined, "kpi string elements must render as the big number"
+
+
+# ── 13. numeric 0 and dict-form items: the items anyOf allows {num,label},
+#        and num/label fall back on None only — a numeric 0 is valid data
+#        that the `or` idiom would swallow into a blank card; an agenda dict
+#        element must not render as a dict repr either. ──
+@case("13. kpi numeric 0 and agenda dict items render as data")
+def test_falsy_and_dict_items_render():
+    deck = _deck(
+        {"layout": "kpi", "title": "指标",
+         "items": [{"num": 0, "label": "增长"}, {"num": 5, "label": None}]},
+        {"layout": "agenda", "title": None,
+         "items": [{"num": "68%", "label": "满意度"}, "前言"]},
+    )
+    r = server.make_pptx(theme="business-blue", slides=deck, filename="test_falsy_items")
+    assert r.get("ok") is True, "numeric 0 / dict items must render ok=True, got %r" % r
+    assert r["slides"] == 2, "slide count must be 2, got %r" % r["slides"]
+    prs = Presentation(r["path"])
+    texts = [shape.text_frame.text
+             for slide in prs.slides for shape in slide.shapes if shape.has_text_frame]
+    joined = "\n".join(texts)
+    assert "本页渲染失败" not in joined, "no page may render as a failure: %s" % joined[:300]
+    # A numeric 0 must render as its own "0" text box (agenda ordinals are
+    # "01"/"02", which do not count).
+    assert "0" in texts, "kpi numeric 0 must not be swallowed by `or` into a blank card, got text frames %r" % texts
+    assert "5" in texts, "kpi numeric 5 must render normally, got text frames %r" % texts
+    # An agenda dict element renders as "num label", never a dict repr.
+    assert "满意度" in joined and "68%" in joined, "agenda dict items must render num/label: %r" % texts
+    # Pin the exact rendered pair instead of a brace/apostrophe ban (a
+    # legitimate fixture could contain either); the dict repr would appear
+    # verbatim as "{'num': '68%', 'label': '满意度'}".
+    assert "68% 满意度" in joined, "agenda dict element must render as its num label pair, got %r" % texts
+    assert "{'num'" not in joined, "agenda must not render a dict repr: %r" % texts
+    assert "前言" in joined, "agenda string elements must render verbatim"
+
+
+# ── 14. null array elements: schema-illegal but the JSON-string salvage path
+#        bypasses schema validation, so a null element must neither leak
+#        str(None) into a slide nor crash into the per-page error guard. ──
+@case("14. null array elements render as fallbacks, never None or error pages")
+def test_null_array_elements_are_safe():
+    deck = _deck(
+        {"layout": "bullets", "title": "空要点", "bullets": ["第一", None]},
+        {"layout": "kpi", "title": "空指标",
+         "items": [None, {"num": "1", "label": "存活"}]},
+        {"layout": "agenda", "title": None, "items": [None, {"label": "只标签"}, "文字"]},
+        {"layout": "table", "title": "空表格", "headers": [None, "表头"], "rows": [None, ["格子"]]},
+        {"layout": "chart", "title": "空图表", "chartType": "bar",
+         "categories": ["Q1"], "series": [None, {"name": "系列", "data": [1]}]},
+    )
+    r = server.make_pptx(theme="business-blue", slides=deck, filename="test_null_elements")
+    assert r.get("ok") is True, "null elements must render ok=True, got %r" % r
+    assert r["slides"] == 5, "slide count must be 5, got %r" % r["slides"]
+    prs = Presentation(r["path"])
+    texts = [shape.text_frame.text
+             for slide in prs.slides for shape in slide.shapes if shape.has_text_frame]
+    cells = [cell.text
+             for slide in prs.slides for shape in slide.shapes
+             if getattr(shape, "has_table", False) and shape.has_table
+             for row in shape.table.rows for cell in row.cells]
+    joined = "\n".join(texts + cells)
+    assert "本页渲染失败" not in joined, "no page may render as a failure: %s" % joined[:300]
+    assert "None" not in joined, "str(None) must never reach a slide, got %r" % (texts + cells)
+    # The surviving sibling elements must still render (table content lives
+    # in table cells; the chart's surviving series count is read off the
+    # chart object — neither appears in plain text frames).
+    for needle in ("第一", "存活", "只标签", "文字", "格子", "表头"):
+        assert needle in joined, "element %r must survive its null siblings, got %r" % (needle, joined[:300])
+    charts = [shape.chart for slide in prs.slides for shape in slide.shapes
+              if getattr(shape, "has_chart", False) and shape.has_chart]
+    assert len(charts) == 1, "exactly one chart must render, got %r" % len(charts)
+    assert len(charts[0].plots[0].series) == 1, "the null series must be dropped, leaving 1, got %r" % len(charts[0].plots[0].series)
+
+
+# ── 15. non-string salvage garbage: the JSON-string salvage path bypasses
+#        schema validation, so any element type can arrive. Every element
+#        lane drops what it cannot render (kept in lockstep with the
+#        series/rows filters): string items where strings are expected,
+#        (str, dict) items in the shared items anyOf — dropped before the
+#        agenda ordinals are numbered, and string-only chart categories —
+#        with every series dropping the same positions as the labels. ──
+@case("15. non-string salvage elements are dropped, never rendered as reprs or phantom slots")
+def test_non_string_salvage_elements_are_dropped():
+    deck = _deck(
+        {"layout": "bullets", "title": "标量要点", "bullets": ["文字", True, 3.5, ["嵌"], {"k": "v"}]},
+        {"layout": "two_col", "title": "两栏", "leftTitle": "左",
+         "left": {"a": 1}, "right": ["右", None, 2]},
+        {"layout": "agenda", "title": None, "items": "not-a-list"},
+        {"layout": "agenda", "title": None, "items": [None, "唯一", ["嵌"], 7]},
+        {"layout": "kpi", "title": "指标", "items": [["嵌"], {"num": "1", "label": "存活"}]},
+        {"layout": "chart", "title": "空图表", "chartType": "bar",
+         "categories": ["Q1", None, "Q3"], "series": [{"name": "系列", "data": [10, 20, 30]}]},
+    )
+    r = server.make_pptx(theme="business-blue", slides=deck, filename="test_salvage_elements")
+    assert r.get("ok") is True, "salvage garbage must render ok=True, got %r" % r
+    assert r["slides"] == 6, "slide count must be 6, got %r" % r["slides"]
+    prs = Presentation(r["path"])
+    texts = [shape.text_frame.text
+             for slide in prs.slides for shape in slide.shapes if shape.has_text_frame]
+    joined = "\n".join(texts)
+    assert "本页渲染失败" not in joined, "no page may render as a failure: %s" % joined[:300]
+    for needle in ("True", "3.5", "['嵌']", "{'k': 'v'}", "{'a': 1}", "not-a-list", "None"):
+        assert needle not in joined, "salvage repr %r must never reach a slide, got %r" % (needle, joined[:400])
+    # Surviving real content must still render.
+    for needle in ("文字", "右", "唯一", "存活"):
+        assert needle in joined, "element %r must survive its garbage siblings, got %r" % (needle, joined[:400])
+    # A string-valued items renders nothing (no per-character ordinals), and
+    # garbage elements must not consume agenda ordinals: "唯一" is the only
+    # item on its page, so exactly one ordinal ("01") may exist there.
+    agenda_page = prs.slides[3]
+    agenda_texts = [shape.text_frame.text for shape in agenda_page.shapes if shape.has_text_frame]
+    ordinals = [t for t in agenda_texts if t in ("01", "02", "03", "04", "05", "06")]
+    assert ordinals == ["01"], "dropped elements must not consume agenda ordinals, got %r" % agenda_texts
+    # Null/garbage categories are dropped from the chart axis, and every
+    # series drops the SAME positions its labels drop: Q3 must keep its own
+    # value (30), not the shifted 20 — read labels and values back together
+    # off the saved file (already-shortened data cannot catch the shift).
+    charts = [shape.chart for slide in prs.slides for shape in slide.shapes
+              if getattr(shape, "has_chart", False) and shape.has_chart]
+    assert len(charts) == 1, "exactly one chart must render, got %r" % len(charts)
+    plot = charts[0].plots[0]
+    got_categories = list(plot.categories)
+    assert got_categories == ["Q1", "Q3"], "null categories must be dropped, got %r" % got_categories
+    got_values = [float(v) for v in plot.series[0].values]
+    assert got_values == [10.0, 30.0], \
+        "series values must drop the dropped label positions, got %r" % got_values
 
 
 # ── 跑全部 ───────────────────────────────────────────────────────────────

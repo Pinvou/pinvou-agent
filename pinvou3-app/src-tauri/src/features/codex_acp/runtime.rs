@@ -9,11 +9,18 @@ use wait_timeout::ChildExt;
 /// Compatibility floor retained from the legacy codex-acp bridge.
 ///
 /// Every runtime source, including an explicit override, must satisfy this
-/// gate. The bundled codex-acp 1.6.2 package declares `@openai/codex ^0.148.0`,
-/// so the current gate can still accept 0.144.6-0.147.x (including the 0.146.0
-/// documentation example). Recalibrating it requires a separate compatibility
-/// change so an existing installation is not rejected without its own evidence
-/// and migration path.
+/// gate. The gate itself is an unbounded >= 0.144.6 floor: the bundled
+/// codex-acp 2.2.2 package declares `@openai/codex ^0.160.1`, so installs in
+/// 0.144.6-0.160.0 (including the 0.146.0 documentation example) sit below
+/// the bridge's declared range. The floor is runtime-validated, not just
+/// retained: driving codex-acp 2.2.2 against codex-cli 0.144.6 completes
+/// initialize (ACP protocolVersion 1), session/new (thread created through
+/// the 0.144.6 app-server, model/command lists intact), and a full
+/// session/prompt round-trip; the same probe on a declared-range 0.160.1
+/// behaves identically except that auth failures surface as a structured
+/// JSON-RPC error instead of an in-stream agent_message_chunk. Raising the
+/// floor still requires a separate compatibility change with its own
+/// migration path for existing installations.
 pub const MIN_CODEX_VERSION: &str = "0.144.6";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]

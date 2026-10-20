@@ -53,14 +53,21 @@ const CLAUDE_BRIDGE_PACKAGE_JSON = path.join(
 const MARKER_NAME = "manifest.json";
 const PREPARE_FORMAT_VERSION = 4;
 const MINIMUM_NODE_MAJOR = 20;
+// Spawn sites inside @agentclientprotocol/codex-acp dist/index.js (verbatim,
+// minified output). Since 2.x the win32 branch goes through cross-spawn with an
+// args array and no shell string; the bundled fallback spreads
+// appServerStartupArgs. Both must stay unique single occurrences in the bundle
+// (the patch throws when an anchor is missing, duplicated, or half-applied);
+// hideWindowsChildProcesses rewrites exactly these two (the POSIX ternary
+// branch never runs on win32, mirroring the 1.x patch scope).
 const CODEX_PATH_SPAWN =
-  'spawn(`"${codexPath}" app-server`, { shell: true, env: spawnEnv })';
+  "(0, import_cross_spawn.default)(codexPath, appServerStartupArgs, { env: spawnEnv })";
 const HIDDEN_CODEX_PATH_SPAWN =
-  'spawn(`"${codexPath}" app-server`, { shell: true, env: spawnEnv, windowsHide: true })';
+  "(0, import_cross_spawn.default)(codexPath, appServerStartupArgs, { env: spawnEnv, windowsHide: true })";
 const BUNDLED_CODEX_SPAWN =
-  'spawn(process.execPath, [bundledCodexPath, "app-server"], { env: spawnEnv })';
+  "spawn(process.execPath, [bundledCodexPath, ...appServerStartupArgs], { env: spawnEnv })";
 const HIDDEN_BUNDLED_CODEX_SPAWN =
-  'spawn(process.execPath, [bundledCodexPath, "app-server"], { env: spawnEnv, windowsHide: true })';
+  "spawn(process.execPath, [bundledCodexPath, ...appServerStartupArgs], { env: spawnEnv, windowsHide: true })";
 const WINDOWS_NPM_CI_ARGS = [
   "ci",
   "--prefer-offline",
@@ -96,6 +103,10 @@ function expectedMarker({ architecture = process.arch } = {}) {
   };
 }
 
+function countOccurrences(haystack, needle) {
+  return haystack.split(needle).length - 1;
+}
+
 function hideWindowsChildProcesses(entrypointPath) {
   let source = fs.readFileSync(entrypointPath, "utf8");
   const replacements = [
@@ -104,8 +115,15 @@ function hideWindowsChildProcesses(entrypointPath) {
   ];
 
   for (const [visibleSpawn, hiddenSpawn] of replacements) {
-    if (source.includes(hiddenSpawn)) continue;
-    if (!source.includes(visibleSpawn)) {
+    if (source.includes(hiddenSpawn)) {
+      if (source.includes(visibleSpawn)) {
+        throw new Error(
+          "Windows ACP Bridge 子进程入口补丁只应用了一半，无法安全继续",
+        );
+      }
+      continue;
+    }
+    if (countOccurrences(source, visibleSpawn) !== 1) {
       throw new Error(
         "Windows ACP Bridge 子进程入口已变化，无法安全应用隐藏控制台补丁",
       );
@@ -121,7 +139,9 @@ function windowsChildProcessesHidden(entrypointPath) {
     const source = fs.readFileSync(entrypointPath, "utf8");
     return (
       source.includes(HIDDEN_CODEX_PATH_SPAWN) &&
-      source.includes(HIDDEN_BUNDLED_CODEX_SPAWN)
+      source.includes(HIDDEN_BUNDLED_CODEX_SPAWN) &&
+      !source.includes(CODEX_PATH_SPAWN) &&
+      !source.includes(BUNDLED_CODEX_SPAWN)
     );
   } catch {
     return false;

@@ -18,9 +18,10 @@
 # every other ELF (the main app binary is Rust).
 # Runs on the release runner (see the
 # glibc floor guard steps in release-packages.yml) and at the end of
-# build-sensevoice-runtime.sh. Depends on dpkg/file/find/objdump/readelf,
-# all preinstalled on ubuntu runners; meaningful only on Linux, use bash -n
-# for a local syntax check.
+# build-sensevoice-runtime.sh. Depends on dpkg/file/find/readelf, all
+# preinstalled on ubuntu runners (readelf doubles as the machine and the
+# dynamic-symbol probe: it is BFD-independent, so cross-arch trees scan on
+# any host); meaningful only on Linux, use bash -n for a local syntax check.
 set -euo pipefail
 
 usage() {
@@ -47,7 +48,7 @@ case "$expected_arch" in
 esac
 glibc_floor="${glibc_floor_arg:-$default_glibc_floor}"
 
-for command_name in dpkg file find objdump readelf; do
+for command_name in dpkg file find readelf; do
   command -v "$command_name" >/dev/null || {
     echo "missing required command: $command_name" >&2
     exit 1
@@ -65,8 +66,16 @@ display_path() {
 
 dump_dynamic_symbols() {
   local elf="$1" out
-  out="$(LC_ALL=C objdump -T "$elf" 2>&1)" || {
-    echo "FAIL: $(display_path "$elf") objdump 无法解析(文件损坏或 binutils 不支持?):" >&2
+  # readelf, not objdump: readelf parses the ELF structures directly (no BFD
+  # target backend), so it dumps .dynsym of ANY architecture — objdump's BFD
+  # only knows the targets its build enabled, and the x86_64 jammy runner's
+  # binutils has no LoongArch backend (binutils-multiarch's list doesn't
+  # either), so a foreign-arch ELF would fail here with "file format not
+  # recognized" and kill the release job. Versioned symbols print as
+  # "name@GLIBC_2.34" / "name@@GLIBC_2.34", the same shape the version grep
+  # below already parses.
+  out="$(LC_ALL=C readelf -W --dyn-syms "$elf" 2>&1)" || {
+    echo "FAIL: $(display_path "$elf") readelf 无法解析(文件损坏?):" >&2
     printf '%s\n' "$out" >&2
     return 1
   }

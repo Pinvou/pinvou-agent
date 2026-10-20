@@ -63,13 +63,15 @@ function prepareLinuxAsrRuntime({
   if (platform !== "linux") return null;
   const runtime = linuxAsrRuntimeOutput(architecture, { outputRoot });
   if (prebuilt) {
-    // Cross builds cannot run the build script for the target architecture:
-    // its requested_arch == host_arch assertion fires before its own cache
-    // reuse, so the release pipeline pre-builds the engine for the target and
-    // this step only verifies and accepts it (same contract as the script's
-    // own cached-build fast path). The skip is opt-in on purpose: skipping
-    // whenever a file happens to exist would bypass the script's
-    // commit-pinned cache invalidation and could package a stale engine.
+    // The prebuilt engine is the packaging-time input produced by the release
+    // pipeline: the pipeline runs build-sensevoice-runtime.sh for the target
+    // architecture ahead of packaging (in its cross mode for loongarch64,
+    // natively for x86_64/aarch64) and leaves the result at the same path the
+    // script itself would write, so this step only verifies and accepts it
+    // (same contract as the script's own cached-build fast path). The skip is
+    // opt-in on purpose: skipping whenever a file happens to exist would
+    // bypass the script's commit-pinned cache invalidation and could package
+    // a stale engine.
     // A missing artifact fails loudly - the architecture overlay still
     // declares the file, so a silent skip would fail the bundle later with a
     // much less specific error.

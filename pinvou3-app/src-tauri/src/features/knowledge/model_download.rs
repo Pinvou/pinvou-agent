@@ -447,10 +447,28 @@ pub async fn kb_model_download(
     Ok(current_status(&service))
 }
 
+/// 本地嵌入不支持平台（linux/loongarch64：ort-sys 无制品，embedder 只有显式
+/// 拒载桩）的热加载跳过判定，与 `local_embed_download_refusal` 同一能力源。
+/// 该平台即使存在 peer 残留的完整模型目录，加载也必然失败：跳过可省去使用
+/// 探测 + 安装锁 + 完整性复查 + spawn_blocking 这条纯开销路径，并避免 stub
+/// 错误经 `set_model_load_error` 永久盖进此后每次 `kb_model_status` 的
+/// `model_error`。跳过按 Ok(false) 返回，语义与「未安装」的静默降级一致
+/// （真实原因由状态的 `local_embed_supported=false` 如实表达，不算加载失败）。
+fn local_embed_load_skipped(local_embed_supported: bool) -> bool {
+    !local_embed_supported
+}
+
 pub(crate) async fn load_installed_embedder(
     service: &KnowledgeService,
     pool: &crate::features::assistant::engine_pool::EnginePool,
 ) -> Result<bool, String> {
+    // 能力闸放在本共用入口（首帧加载、kb_model_status 热加载、peer 同步热加载
+    // 都经这里），先于使用探测/安装锁/一切磁盘 I/O：不支持平台上 stub 注定
+    // 拒载，任何尝试只会制造假失败诊断。
+    if local_embed_load_skipped(crate::platform::capabilities::current().local_embed_supported) {
+        crate::platform::startup::mark("knowledge_embedder_async:skipped_unsupported_platform");
+        return Ok(false);
+    }
     // 首帧门控（kb_model_load_after_first_frame 与 kb_model_status 热加载共用本
     // 入口，改这一处两个调用点同时生效）：磁盘目录完整 ≠ 值得加载。本地无已
     // 入库内容且远程无连接时，加载 ~570MB 模型纯属白占内存（没有任何检索、
@@ -665,6 +683,33 @@ mod tests {
         assert!(refusal.unwrap().contains("unavailable on this platform"));
         // 支持平台（所有受支持目标的编译期取值）不受影响。
         assert!(local_embed_download_refusal(true).is_none());
+    }
+
+    #[test]
+    fn installed_model_load_is_skipped_when_local_embed_is_unsupported() {
+        // 与下载闸同一双向宿主执行模式：决策函数在此钉死两个方向；把它接到
+        // load_installed_embedder 第一条语句（先于使用探测、安装锁与一切
+        // 磁盘 I/O）是读码验证的位置事实——该入口要求 KnowledgeService 与
+        // EnginePool 实例，本 harness 无法构造。
+        assert!(local_embed_load_skipped(false));
+        assert!(!local_embed_load_skipped(true));
+    }
+
+    /// platform/capabilities.rs 的 `local_embed_supported` 按架构边界
+    /// （platform/ 是跨 feature 的 OS 原语层，不依赖 pinvou-knowledge 领域
+    /// crate）手抄了与 `local_embed_available()` 同形的 cfg 门。本测试在宿主
+    /// 上钉住两侧一致：任一侧在宿主可见方向上的 cfg 漂移（任一侧变 false）
+    /// 此处红灯。覆盖不到的方向：两侧在非宿主目标上的不一致（loong64 check
+    /// 腿只编译不跑测试），例如新增排除目标只改了一处——这由读码约定 +
+    /// 两侧注释互指兜底。门在 local-embed feature 下：feature-off 构建里
+    /// 知识 crate 谓词额外含 feature 维度，两者本就不同义（该构建配置不出货）。
+    #[cfg(feature = "local-embed")]
+    #[test]
+    fn capability_bit_matches_knowledge_crate_predicate() {
+        assert_eq!(
+            crate::platform::capabilities::current().local_embed_supported,
+            pinvou_knowledge::embedding::local_embed_available()
+        );
     }
 
     fn temporary_model_root(label: &str) -> std::path::PathBuf {

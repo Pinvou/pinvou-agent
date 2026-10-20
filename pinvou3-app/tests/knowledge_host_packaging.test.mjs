@@ -13,6 +13,7 @@ const {
   developmentHelperSource,
   hardenDevelopmentPathChain,
   knowledgeHostDevelopmentConfigSpec,
+  prepareKnowledgeHost,
 } = require('../scripts/tauri/knowledge-host.js');
 const helperPath = path.join(
   appRoot,
@@ -345,6 +346,16 @@ test('permanent removal validates the fixed data directory before recursive dele
   assert.match(helper, /resolved=\$\(readlink -f "\$DATA_DIR"/u);
   assert.match(helper, /\[ "\$resolved" = "\$DATA_DIR" \]/u);
   assert.match(helper, /rm -rf -- "\$DATA_DIR"/u);
+});
+
+test('the dev+prebuilt combination is refused before any directory is prepared', () => {
+  // `main()` never produces it, but a direct caller could: the prebuilt
+  // branch would copy a cross server into the development resource tree.
+  // The guard must fire before prepareDevelopmentResourceDirectories runs.
+  assert.throws(
+    () => prepareKnowledgeHost({ platform: 'linux', development: true, prebuilt: true }),
+    /development.*prebuilt|prebuilt.*development|预构建/u,
+  );
 });
 
 test('host helper has valid POSIX shell syntax on Linux', { skip: process.platform !== 'linux' }, () => {

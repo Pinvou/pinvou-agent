@@ -1,6 +1,6 @@
 # 创建 docx 文件
 
-模型只需写一份 JSONL 描述文件（**不需要写 Python 脚本**），由分发器 `build_docx.py` 把每条命令派发到对应函数完成 `.docx` 生成
+模型只需写一份 JSONL 描述文件（**不需要写 Python 脚本**），由分发器 `build_docx.py` 把每条命令派发到对应函数完成 `.docx` 生成，该脚本依赖 `python-docx`，需提前检查安装。
 
 # 整体工作流
 
@@ -9,12 +9,12 @@
 | 1. 写 jsonl | `write` 工具                                                                                      | 输出一个 `*.jsonl` 文件 |
 | 2. 生成 docx | `python3 build_docx.py <*.jsonl>` | 自动应用默认样式 → 按 `action` 派发 → 输出 `.docx` |
 
-> **`build_docx.py` 位置**：（即与 当前 `references/` 同级的 `scripts/` 目录下）
+`build_docx.py` 位置：位于 `wecomcli-doc` 技能目录的scripts子目录下 `/wecomcli-doc/scripts/`。
+最后生成的docx文件默认位于 JSONL 所在目录的 `docx/` 子目录。
 
 **用法约定**：
 
-- JSONL 须写入宿主可读目录（`WECOMAGENT_READABLE_DIRS`），否则报路径越权
-- 产物固定写入可写目录的 `docx/` 子目录，实际路径以脚本 stdout 的 `Successfully built` 行为准
+- 产物写入 JSONL 所在目录的 `docx/` 子目录，实际路径以脚本 stdout 的 `Successfully built` 行为准
 - spec 文件名建议用 ASCII 字符并与目标文档标题一致（非 ASCII 词干会被替换为 `document`）
 
 # JSONL 书写规范

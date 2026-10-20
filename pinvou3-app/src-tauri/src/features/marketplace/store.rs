@@ -1242,9 +1242,11 @@ mod tests {
         });
     }
 
-    /// 首启登记：企微按 1.1.0 的 14 新名识别「连接过」（五轮评审必修 3：旧 7 名
-    /// 表会让升级自 wecom-cli 1.1.0 的用户漏登 wecom 安装记录——`legacy_imported`
-    /// 闸一次性置位，错过即永久错过）。
+    /// 首启登记：企微识别表现已为 15 名表（1.1.0 重排的 14 新名 + 1.3.4 新增
+    /// wecomcli-pptx），重点是 1.2.1 及更早时代装机的 14 目录在 15 名表下仍被
+    /// 识别为「连接过」（五轮评审必修 3：旧 7 名表会让升级自 wecom-cli 1.1.0
+    /// 的用户漏登 wecom 安装记录——`legacy_imported` 闸一次性置位，错过即永久
+    /// 错过）。
     #[test]
     fn import_legacy_registers_wecom_by_new_skill_dirs() {
         with_temp_home("pinvou3-store-test", || {

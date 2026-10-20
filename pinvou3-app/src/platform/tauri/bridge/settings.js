@@ -150,6 +150,57 @@ async function testImageInputCapability(model, baseUrl, apiKey, modelId) { retur
     });
   }
 
+  // ── Global bring-to-front shortcut ────────────────────────────────
+  // The dedicated Rust command set_global_shortcut_config exclusively owns
+  // registration and persistence (update_settings is never used): success =
+  // status "registered"/"disabled", and a committed save always reports the
+  // accelerator disk now holds — including a disabled save, which may itself
+  // have changed the stored combo (null remains possible on
+  // "invalid"/"conflict", i.e. nothing was persisted). "invalid"/"conflict"
+  // mean the registration was refused (conflict's message is technical
+  // detail, console only; the UI shows localized copy). Hard failures (IPC
+  // exceptions) resolve null so the caller can roll its toggle back and show
+  // the generic failure copy.
+  function setGlobalShortcutConfig(enabled, accelerator) {
+    const sync = function () {
+      return invoke("set_global_shortcut_config", { enabled: !!enabled, accelerator: String(accelerator || "") });
+    };
+    // Retry once on any invocation failure — a transient IPC error, or a
+    // Rust-side persist failure (which rolls the registration back before
+    // returning Err). The full re-apply is safe: apply_config is idempotent
+    // per (enabled, accelerator) and disk stays authoritative (same shape as
+    // setVoiceShortcutEnabled); on persistent failure return null so the
+    // caller can roll its optimistic state back. On success the authoritative
+    // response is mirrored into state.settings so a settings-page remount
+    // reads the persisted combo instead of the startup snapshot.
+    return sync().then(function (result) { return applyGlobalShortcutResult(result, enabled); }, function (error) {
+      console.warn("[settings] global shortcut config sync failed, retrying once", error);
+      return sync().then(function (result) { return applyGlobalShortcutResult(result, enabled); }, function (retryError) {
+        console.warn("[settings] global shortcut config sync failed after retry", retryError);
+        return null;
+      });
+    });
+  }
+  function applyGlobalShortcutResult(result, enabled) {
+    if (!result || typeof result.status !== "string") return null;
+    if (result.status !== "registered" && result.status !== "disabled") return result;
+    if (state.settings) {
+      // Same mechanics as the pet:enabled_changed listener above: the bridge
+      // owns its settings slice; the React layer only reads it. Mirror the
+      // accelerator whenever Rust reports one — a disabled save reports the
+      // combo it just persisted, so the next toggle submits it instead of a
+      // stale mirror. (A missing accelerator must never regress the snapshot
+      // to the raw input.)
+      const mirror = { global_shortcut_enabled: !!enabled };
+      if (typeof result.accelerator === "string" && result.accelerator) {
+        mirror.global_shortcut_accelerator = result.accelerator;
+      }
+      state.settings = Object.assign({}, state.settings, mirror);
+      notify();
+    }
+    return result;
+  }
+
   // ── Builtin feature toggles (docs/builtin-toolset-contract.md hook) ──────
   // list_builtin_features is consumed by ChatView (the session-mention feature
   // gate, PR #586); set_builtin_feature_enabled only wraps the command channel
@@ -185,6 +236,7 @@ async function testImageInputCapability(model, baseUrl, apiKey, modelId) { retur
       testModelConnection,
       testImageInputCapability,
       probeLocalServerKind,
+      setGlobalShortcutConfig,
       listBuiltinFeatures,
       setBuiltinFeatureEnabled
     };

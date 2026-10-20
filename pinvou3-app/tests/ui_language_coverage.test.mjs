@@ -307,6 +307,35 @@ for (const language of ['zh', 'en', 'ja']) {
   }
 }
 
+// Connector card desc overlay parity (wecom): localizeTool spreads the
+// uiToolDetails entry over the tsToolsData baseline, so an overlay desc that
+// trails a baseline capability bump silently hides the new capability in that
+// language (the 1.3.4 pack bump added 制作演示文稿 to the baseline and its
+// BUILTIN_CLI_BUNDLES mirror but missed all three overlays). The zh overlay is
+// the same-language twin of the baseline and must stay identical to it; en/ja
+// re-word, so their shipped capabilities are pinned by the rendered term
+// instead. Intentionally condensed siblings (tmeet, ima) are exempt — they
+// never claimed baseline equality.
+{
+  const baseline = source('features/tools/tool-common.jsx').match(/backendId: 'wecom', wecomCli: true,.*?desc: '([^']+)'/);
+  assert.ok(baseline, 'tsToolsData must carry the wecom card desc');
+  assert.equal(
+    dict.zh.uiToolDetails.tools.wecom.desc,
+    baseline[1],
+    'the zh wecom overlay desc must stay identical to the tsToolsData baseline it overrides at render time',
+  );
+  assert.match(
+    dict.en.uiToolDetails.tools.wecom.desc,
+    /presentations/,
+    'the en wecom overlay desc must keep presenting the presentations capability',
+  );
+  assert.match(
+    dict.ja.uiToolDetails.tools.wecom.desc,
+    /プレゼンテーション/,
+    'the ja wecom overlay desc must keep presenting the presentations capability',
+  );
+}
+
 // uiComputerUse (round-17): type parity across languages — a template
 // flattened to a string in any language makes describeConfirmAction's
 // function guard fall back to the raw English summary while the generic
