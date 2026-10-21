@@ -60,6 +60,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 1
+          # 同 header 凭据策略:纯文件级版本比对,不初始化子模块、无 git
+          # 网络操作,不保留 job token。
+          persist-credentials: false
 
       - name: Set up zram and swap
         # Best effort: timeouts or failures only warn and never block (falls back to stock runner memory).
@@ -877,7 +880,7 @@ jobs:
             echo "✓ 手动 dmg 打包完成(无 Finder 图标美化)"
           fi
 
-          test -f "$DMG" || { echo "❌ dmg 产物不存在: $DMG"; exit 1; }
+          test -f "$DMG" || { echo "❌ dmg 产物不存在: $DMG"; ls -la; exit 1; }
 
           # Compression upgrade: the tauri dmg (bundler's bundle_dmg) is
           # UDZO/zlib and passes no -imagekey zlib-level, so hdiutil uses its
