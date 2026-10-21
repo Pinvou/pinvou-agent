@@ -13,6 +13,7 @@ name: PR Check
 # - release-contract-test:发布链路改动只跑配置/脚本契约,不在 PR 构建安装包。
 # - knowledge-rust:独立 pinvou-knowledge crate/部署入口改动跑 fmt/clippy/test 与 shell
 #   语法检查；依赖或策略改动时追加 cargo-deny，不依赖 Tauri workspace 间接覆盖。
+#   main push 无条件运行刷新 knowledge-rust-v2 存档(同 cli-test);draft 跳过。
 # - rust-test: Draft and explicitly low-risk Rust changes skip the large test
 #   binary. Ready high-risk PRs and their combined Merge Queue tree run Linux
 #   regressions; Windows runs once on the ready PR. main push 无条件累计编译
@@ -850,8 +851,9 @@ jobs:
       }}
     runs-on: ubuntu-22.04
     # 冷跑时长未实测(命中缓存 3–6min)。工具链滚动触发冷跑且逼近 30m 时
-    # job 会超时取消,但 cache-on-failure 的 post 步在 cancel 下仍保存已编译
-    # 产物(post-if 恒真),namespace 不会全冷;冷跑实测逼近上限时再上调。
+    # job 会超时取消,但 cache-on-failure 的 post 步在 cancel 下仍保存
+    # ~/.cargo(registry/git 等;cache-targets: false,不含 target 编译产物),
+    # namespace 不会全冷;冷跑实测逼近上限时再上调。
     timeout-minutes: 30
     steps:
       - name: Checkout
