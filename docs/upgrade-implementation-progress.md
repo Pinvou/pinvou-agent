@@ -21,7 +21,7 @@ the current overview; a completed bounded batch does not complete its whole task
 | T08 | In progress | Reviewed genesis catalog/component management, protected atomic publication primitives and actual genesis-only append-only signing-key deny; active metadata and other business publication workflows remain pending |
 | T09 | In progress | Bounded package inspection, immutable intake/recovery and current-trust Package/evidence observation; authenticated final-installer and exact helper/launcher/helperArtifact structure queries and three-language admin; formal admission, quarantine, native publisher authentication and platform qualification remain pending. |
 | T10 | In progress | Actual Manifest-bound materials, explicit-profile historical provenance observations, pending dossier bindings/history, original-request recovery and three-language administration; formal pipeline approval, scanner execution/coverage, policies/approval and bounded exceptions remain pending. |
-| T11 | In progress | Protected multi-platform drafts, reviewed content freezing and cancellation of assembled declarations with complete unchanged draft children; package qualification and Release/Target lifecycle approval/publication remain pending. |
+| T11 | In progress | Protected multi-platform drafts, reviewed content freezing, individual Target cancellation, atomic mixed parent closure, authenticated history and original-request recovery with three-language administration; package qualification and Release/Target lifecycle approval/publication remain pending. |
 | T12 | In progress | Reviewed stable-facts matching and forward-policy primitives plus protected immutable candidate history, preparation, independent review and original-key recovery with three-language administration; formal Registry publication, capability admission and cleanup permissions remain pending |
 | T13 | Not completed | Supported floor, prerequisite paths and historical bridge approvals. |
 | T14 | In progress | Protected configuration drafts with actual UI/API/recovery; qualified parents, publication, scheduling and first-baseline activation remain pending. |
@@ -14048,3 +14048,65 @@ qualification remain unavailable. Task totals remain five implemented, twenty
 in progress, twenty-one not completed and one deferred. T42 deployment remains
 deferred; product 0.10.13 and normative version 1.0 are unchanged. Downloads
 retain no total/cumulative duration or retry-count cap.
+
+## T11 individual Target cancellation and mixed closure (2026-10-21)
+
+Separate service commit `fe354207c441d29c9bc62245afa4b8faca611624` was
+DCO-signed and ordinarily pushed on `codex/t11-target-cancellation`. Local and
+remote heads match with a clean working tree. This increment completes the
+bounded private cancellation workflow; T11 as a whole remains in progress.
+
+Ordinary cancellation abandons one unqualified draft Target under current
+parent/Target permissions without additional MFA. Siblings are preserved.
+Cancelling the last draft also cancels its parent atomically. Mixed cancellation
+requires its exact owner-bound preparation, two independent reviews, current
+grants and verified MFA within five minutes. Previously cancelled siblings keep
+their exact references, actors, reasons and original history. Original frozen
+assembly references remain distinct from current and terminal child references;
+old cancellation records and canonical request meanings remain unchanged.
+
+Seven fixed private routes and three-language administration provide context,
+paginated history, cancellation, mixed preparation/execution, original lookup
+and recovery. Actual OIDC/current-provider, Origin and CSRF checks remain in
+place. Unknown outcomes retain the original actor, scope, purpose, key and exact
+request. A verified committed result closes it as successful; only an
+authenticated durable refusal can close it as `not_committable`. Ordinary
+conflicts or missing historical sources cannot prove zero committed work.
+The additive V5 migration is explicit and keyed, separate from startup.
+New admission defaults to false; closure preserves original recovery and reads.
+
+New T10 captures require current frozen Target content. Already registered
+processing operations may recover their authenticated original retained content,
+with current identity, Root, deny, intake and complete capacity checks. New
+Target-cancellation requests and acknowledgements are independently bounded at
+64 KiB. Actual sources and framing count toward the unchanged object/reference
+and 32 MiB atomic metadata limits. The metadata budget does not limit installer
+bytes.
+
+Independent line reviews and real PostgreSQL profiles covered additive migration,
+schema-before-audit lock order, complete earlier-table preservation, edited
+history and lookahead integrity, fixed publisher purpose isolation, legacy
+compatibility, original-key recovery, competing owners, revoked grants, missing
+authentication generations and capacity boundaries. Real CLI initialization,
+checks and repeated V5 migration passed. Genuine HTTPS ordinary and mixed flows
+passed. The final executable passed six actual Chrome cases across Simplified
+Chinese, English and Japanese, with no failures or skips; all 1,976 collected
+source/build/browser inputs stayed unchanged. Thirteen administration pure tests,
+TypeScript/Vite build and strict browser test type checks also passed.
+
+The default Go suite passed 1,060 main tests and 2,332 subtests, separately
+skipping 874 main tests and 746 subtests. Vet, module verification, server build,
+pinned contracts and final staged whitespace passed. Formatting passed for this
+increment's changed/new Go files after a test-file CRLF-only normalization;
+other common checks retain their original execution with exact normalization
+proof. The unrelated pre-existing formatting deviation remains outside this
+increment. Earlier failed runs retain their original results and snapshots.
+All 98 changed files passed final scope and privacy review. Browser inner helpers
+prove ownership cleanup; outer natural completion does not assert natural exit
+for every browser descendant.
+
+This workflow does not approve a Release, qualify an Artifact, publish metadata,
+execute a scanner or perform deployment. Task totals remain five implemented,
+twenty in progress, twenty-one not completed and one deferred. T42 remains
+deferred; product 0.10.13 and normative version 1.0 are unchanged. Downloads
+retain no hard total/cumulative duration or retry-count cap.
