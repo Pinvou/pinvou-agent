@@ -14201,3 +14201,24 @@ seven-day raw-IP-log/thirty-day summary retention and all contribution/query
 limits remain unchanged. Source/ASN/freeze contracts, key lifecycle, actual
 provider acceptance and complete T25 composition are still pending; T25 remains
 20 percent complete. This policy decision does not complete another task.
+
+
+## T03 single 10 GiB many-file development sample (2026-10-22)
+
+One retained synthetic sample on the Windows x64 development host used 10 GiB
+and 100,000 payload files with three same-account SQLite/WAL writers. Freezing
+the writers took 26.0376 ms. Inventory, AES-GCM backup and complete authenticated
+readback took 291,354.4959 ms (about 4 min 51 s); generation and per-file fsync
+before freeze are excluded from that backup measurement. The backup covered
+100,007 files including the synthetic database and coordination records.
+
+Scratch preparation, the measured run and fresh report inspection each exited
+naturally with their owned process trees empty and handles closed. Source and
+index stayed unchanged, and no resource floor was breached. The original sample,
+encrypted archive and execution evidence are retained. This is n=1, with an
+uncontrolled cache and unclassified storage, not the required repeated series,
+a four-platform qualification or an approved timing budget. Directory durability,
+real separate users/services, protected key recovery and power-off behavior remain
+unproven; the experimental in-memory backup key is cleared after verification.
+T03 remains in progress, and no task is newly declared complete. Downloads retain
+no hard total or cumulative duration limit.
