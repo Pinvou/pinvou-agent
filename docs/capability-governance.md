@@ -118,7 +118,7 @@ cohort（round-33 minor 7 勘误）。随真正被切换的
 `connect_granted`（feat/connector-connect-grants-enable）记录 CLI 连接器
 **连接动作显式授予启用**的包 id：连接手势本身就是同意，GUI 的 `*_apply_skills`
 与 CLI 的 `pinvou connectors connect`（两表面同一语义，各自经
-`deny_first_register_connector` → `grant_connect_enable`）在物化技能文件
+`deny_first_register_connector` → `grant_connect_enable_inner`）在物化技能文件
 **之前**落地「开」——清掉旧默认关行与标记、记 `connect_granted`、写账本对；
 连接后技能物化失败则由 `revoke_connect_enable` 补偿回「从未同意」的
 fail-closed 态——授权与账本对撤除之外，**被该次连接手势实际抬掉的默认关行
@@ -158,7 +158,11 @@ store 丢失把 stored 裁决与连接账本**一起**抹掉，refresh 从此无
 重新武装回填，其后若仍有丢失期前被显式关闭的连接器在线（其 stored 裁决与
 账本已随 store 丢失湮灭），下一次启动回填会把它们一并授予为开；回填停摆
 只被推迟一次手势，对丢失裁决的完全保护需逐连接器重连（fail-closed 起点，
-方向已披露）。首个版本读取时把旧的
+方向已披露）。另一处边界：`disabled_bundles.json` 被外部整体删除且无
+`.corrupt.*`/`.unreadable.*` 旁证时，读取走 NotFound 迁移臂（R10-m3 登记
+的豁免），`recovery_hold` **不**置位——该 cohort 的下一次启动回填会把仍在线
+的连接器授予为开（本 PR 前的 main 对同一 cohort 回填默认关行、保持关闭；
+此句登记这一方向翻转）。首个版本读取时把旧的
 `disabled_connectors.json`（连接器 id）与 `disabled_skills.json`（技能 id）迁移合并：
 连接器 id 原样进包 id（连接器 id 即包 id），技能 id 经 scope 侧的包 id 归一
 （`to_package_id` → `skill_gating_owner`：manifest 认领优先，物理嵌套回退；
@@ -182,10 +186,7 @@ teardown+重连重新授权；**无账本但迁移落了显式关行的对也不
 verdict guard 管辖的裁决（见上「启动 refresh 永不越过 stored 行」），boot
 回填同样不碰（`legacy_migrated_disable_survives_the_boot_refresh` 钉死）；
 store 丢失恢复后的 cohort 见 `recovery_hold`——回填同样停摆，重连重新建立
-同意。**有账本的对不在
-此列**：同意纪元（main 起）连接写入的账本条目让 ledger 门继续把它们留在
-升级前的状态（通常显式关闭保持关闭），直至 teardown+重连重新授权；store
-丢失恢复后的 cohort 见 `recovery_hold`——回填同样停摆，重连重新建立同意。
+同意。
 
 `hidden_scopes`（可见性）与 `scopes`（disabled，开关）是两套**正交**门控
 （`marketplace/scope.rs`）：
