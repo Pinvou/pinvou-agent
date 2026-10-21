@@ -665,6 +665,13 @@ jobs:
           set -euo pipefail
           probe="$(mktemp -d)"
           echo 'fn main() {}' > "$probe/probe.rs"
+          # --remap-path-prefix normalizes build-machine absolute paths
+          # embedded in the artifact (panic locations etc.), same as the
+          # job-level RUSTFLAGS of the x64/arm64/macOS jobs. It is a top-level
+          # rustc flag (NOT -C); both separator variants are exported because
+          # the embedded form follows whatever cargo passed to rustc.
+          ws="${GITHUB_WORKSPACE}"
+          ws_fwd="${ws//\\//}"
           if rustc -C linker-features=+lld -o "$probe/probe.exe" "$probe/probe.rs" 2>"$probe/a.err"; then
             flags="-C linker-features=+lld"
           elif rustc -C linker=rust-lld -C linker-flavor=lld-link \
@@ -675,6 +682,7 @@ jobs:
             cat "$probe/a.err" "$probe/b.err" >&2 || true
             exit 1
           fi
+          flags="$flags --remap-path-prefix=$ws=/ --remap-path-prefix=$ws_fwd=/"
           echo "probed RUSTFLAGS=$flags"
           echo "RUSTFLAGS=$flags" >> "$GITHUB_ENV"
 
