@@ -409,7 +409,11 @@ pub(crate) fn aux_parent_session_id(session_id: &str) -> Option<&str> {
     // Isolated-prefix parents (the server's ISOLATED_SESSION_PREFIXES set,
     // case-insensitive): an aux engine pinned to one would point the scoped
     // reader at another isolated class — fail closed instead.
-    for prefix in ["sched-", "eval_", "aux-"] {
+    // The set gained agentic_ (headless runs) alongside the store's
+    // ensure_parent_can_own_aux refusal: an aux side-chat pinned to a
+    // headless parent is refused at creation, and this loop is the
+    // spawn-time backstop for ids that reach the pool anyway.
+    for prefix in ["sched-", "eval_", "aux-", "agentic_"] {
         if parent
             .get(..prefix.len())
             .is_some_and(|head| head.eq_ignore_ascii_case(prefix))

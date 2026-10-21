@@ -160,8 +160,9 @@ export function splitSessionMentionBlock(text) {
 // Isolated session id prefixes, aligned with session_reader_server's
 // ISOLATED_SESSION_PREFIXES: sched- (scheduled runs live in the Scheduled
 // panel), eval_ (benchmark-private sessions), aux- (auxiliary side-chat
-// sessions, isolated from cross-session reads the same way).
-const ISOLATED_SESSION_PREFIXES = ['sched-', 'eval_', 'aux-'];
+// sessions, isolated from cross-session reads the same way), and agentic_
+// (headless `agent run` sessions — never mentionable cross-session).
+const ISOLATED_SESSION_PREFIXES = ['sched-', 'eval_', 'aux-', 'agentic_'];
 const isIsolatedSessionId = (sessionId) => {
   const lower = sessionId.toLowerCase();
   return ISOLATED_SESSION_PREFIXES.some((prefix) => lower.startsWith(prefix));

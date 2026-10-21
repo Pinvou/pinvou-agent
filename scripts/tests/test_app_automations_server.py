@@ -310,9 +310,11 @@ class CreateValidationTests(unittest.TestCase):
 
     def test_invalid_sender_ids_are_rejected(self):
         # Round-15 REQUIRED-1: the case variants pin the server's
-        # case-insensitive isolation matching on aux/eval origins.
+        # case-insensitive isolation matching on aux/eval origins. The
+        # headless agentic_ run joins the isolated senders (never an
+        # interactive continuation) — both case forms pin the folding.
         for bad in ("../escape", "with space", "a" * 300, "eval_b1", "aux-x1",
-                    "EVAL_b1", "AUX-x1"):
+                    "EVAL_b1", "AUX-x1", "agentic_7", "AGENTIC_x"):
             payload, error = self.create(from_session=bad)
             self.assertIsNone(payload, bad)
             self.assertIsNotNone(error, bad)
@@ -1424,7 +1426,8 @@ class MessageTargetTests(unittest.TestCase):
         # Round-7 minor 4: assert the REJECTION CLASS, not mere presence —
         # the old form stayed green if the charset branch was deleted (the
         # charset/length inputs then failed as "not found" instead).
-        isolated = ("sched-run1", "SCHED-run1", "aux-side1", "eval_b1")
+        isolated = ("sched-run1", "SCHED-run1", "aux-side1", "eval_b1",
+                    "agentic_7", "AGENTIC_x")
         junk = ("../escape", "with space", "a" * 300)
         for bad in isolated:
             payload, error = self._create(target_session=bad)
