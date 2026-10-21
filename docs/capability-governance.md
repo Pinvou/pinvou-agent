@@ -91,7 +91,7 @@ Bundle = { id, name, mcp_servers: [], skills: [], cli: [] }
 存储：`~/.pinvou3/disabled_bundles.json` 单一文件（包 id × 模式键控 map）：
 
 ```json
-{ "scopes": { "<mode>": ["<包 id>"] }, "hidden_scopes": { "<mode>": ["<包 id>"] }, "default_off_scopes": { "<mode>": ["<包 id>"] }, "initialized": ["<mode>"], "project_skills_enabled": false, "plain_defaults_migrated": true, "install_default_synced": ["<mode>:<包 id>"], "connect_granted": ["<包 id>"] }
+{ "scopes": { "<mode>": ["<包 id>"] }, "hidden_scopes": { "<mode>": ["<包 id>"] }, "default_off_scopes": { "<mode>": ["<包 id>"] }, "initialized": ["<mode>"], "project_skills_enabled": false, "plain_defaults_migrated": true, "install_default_synced": ["<mode>:<包 id>"], "connect_granted": ["<包 id>"], "recovery_hold": false }
 ```
 
 scope 键即 `SessionMode` 的 kebab-case 名（当前 `plain` / `code`）；
@@ -107,7 +107,7 @@ cohort（round-33 minor 7 勘误）。随真正被切换的
 批量 enable 的整批判拒只针对 stored 中**不在**本表
 的 id——安装默认的关可被用户动作（欢迎卡/场景 opt-in）移除，显式 opt-out
 不可。`install_default_synced`（评审 #455 round-31/32）是 `"<mode>:<包 id>"`
-同步账本：install 同步、connect 授权与 composer 首次启用**三个写入变体**
+同步账本：install 同步、connect 授权与 composer 显式启用**三个写入变体**
 对观察到的每个 DenyAll scope × 包对各记一行，**scope 仍处于未初始化时同样
 记账**（round-32 MAJOR 1：fresh home 上的连接发生在 plain 物化之前，不记账
 则用户的**首次**启用会在下次启动被覆盖）；启动 refresh 只对**从未记账**的
@@ -117,18 +117,32 @@ cohort（round-33 minor 7 勘误）。随真正被切换的
 全部条目（round-32 minor 1），重装/重连因此重新走同意注册。
 `connect_granted`（feat/connector-connect-grants-enable）记录 CLI 连接器
 **连接动作显式授予启用**的包 id：连接手势本身就是同意，GUI 的 `*_apply_skills`
-与 CLI 的 `pinvou connectors connect`（两表面同一语义，各自经
-`deny_first_register_connector` → `grant_connect_enable_inner`）在物化技能文件
+（连接完成臂）与 CLI 的 `pinvou connectors connect` 经手势门
+`deny_first_register_connector` → `grant_connect_enable_inner` 在物化技能文件
 **之前**落地「开」——清掉旧默认关行与标记、记 `connect_granted`、写账本对；
+CLI 的独立 `apply-skills` 维护命令没有连接手势，自 round-3 评审起走**账本门控、
+尊重裁决**的 refresh 变体（`deny_first_register_connector_refresh`，与启动
+回填同一入口）：verdict guard 见到任何 scope 的 stored 行即拒绝，无账本裁决
+cohort 不再被无手势的维护命令抬行（round-3 评审；从未同意的连接器仍收敛到
+「在线即启用」形态）。
 连接后技能物化失败则由 `revoke_connect_enable` 补偿回「从未同意」的
-fail-closed 态——授权与账本对撤除之外，**被该次连接手势实际抬掉的默认关行
-与标记按其精确足迹（`ConnectGrantOutcome.lifted_scopes`）在已初始化 scope
-里重建**（round-2 评审：已初始化 scope 以落盘列表为唯一真相，行缺席即
-「开」，不重建行则失败卡背后连接器已被现算为开，且下次启动回填会悄悄完成
-这次启用；round-1 评审：重建不越出该次手势实际抬行的 scope——第二次重连的
-授权在某 scope 未抬任何行时，其失败补偿不得把该 scope 用户既有的显式开降
-级为可被欢迎卡抬掉的默认关行）；若补偿落盘本身也失败（授权+已抬行残留），
-连接器会以「已同意开启」态留在失败卡背后，仅日志可见——这是已披露的
+fail-closed 态。授权与账本对撤除之外，补偿按 outcome 足迹重建三类形态：
+**手势实际抬行的已初始化 scope** 按精确足迹（`lifted_scopes`）重建行，标记
+只在抬行确实发现标记的 scope 重建（`lifted_markers`——round-3 评审：对无标记
+的显式裁决行补加标记会把裁决降级为可批量 enable 抬掉的安装默认）；**授权在
+未初始化时记账覆盖的 scope**（fresh-home 臂，`covered_uninitialized_scopes`）
+若在授权与补偿之间被物化——composer 整表写或他包 enable 以授权后快照初始化
+该 scope，行缺席即「开」，失败卡背后连接器已被现算为开，下次启动回填会悄悄
+完成这次启用（round-3 评审 MAJOR）——按 deny-first 注册形态（行+标记）重建；
+**授权已被消费则整个补偿跳过**（round-3 评审：窗口内的 composer 显式关闭
+命名该 id 时已移除授权并写入裁决行，其账本对必须存活使裁决防重连翻案——
+补偿若照旧撤账本、补标记反而破坏该裁决），仅保留 `recovery_hold` 重新武装。
+已初始化 scope 以落盘列表为唯一真相，行缺席即「开」，不重建行则失败卡背后
+连接器已被现算为开，且下次启动回填会悄悄完成这次启用；重建不越出该次手势
+实际足迹的 scope——第二次重连的授权在某 scope 未抬任何行时，其失败补偿不得
+把该 scope 用户既有的显式开降级为可被欢迎卡抬掉的默认关行（round-1 评审）；
+若补偿落盘本身也失败（授权+足迹残留），连接器会以「已同意开启」态留在失败卡
+背后，仅日志可见——这是已披露的
 best-effort 残留，下次连接幂等收敛；否则授权在手、卡片报失败，连接器却已
 被现算为开。
 两表面的同意写入同经 `deny_first_register_connector` 的两道门：owner-claim
@@ -186,7 +200,10 @@ teardown+重连重新授权；**无账本但迁移落了显式关行的对也不
 verdict guard 管辖的裁决（见上「启动 refresh 永不越过 stored 行」），boot
 回填同样不碰（`legacy_migrated_disable_survives_the_boot_refresh` 钉死）；
 store 丢失恢复后的 cohort 见 `recovery_hold`——回填同样停摆，重连重新建立
-同意。
+同意。该 cohort 的判定是「在线 + 无账本 + 任何 scope 无行」，**不区分连接
+是否经本应用发生**：绕过本应用直接完成 vendor CLI 授权（如脚本化
+`lark-cli auth login`）的连接器同样满足形态，首次启动被回填为开——这是
+「连接即可用」默认的机制性含义，此句予以显式登记（round-3 评审边界注记）。
 
 `hidden_scopes`（可见性）与 `scopes`（disabled，开关）是两套**正交**门控
 （`marketplace/scope.rs`）：
