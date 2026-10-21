@@ -248,6 +248,51 @@ test('the auditor flags anonymous, statement, and import-layer survivors too', (
   }
 });
 
+test('the layer scan is case-insensitive, string-aware, and blind to comments and strings', () => {
+  // CSS at-keywords are ASCII case-insensitive, so `@LAYER` and a `LAYER`
+  // import clause create real layers. An unquoted url() token may contain
+  // `;` (data URLs), which must not truncate the prelude capture before the
+  // clause. Comments (`/*! … */` license headers survive minification) and
+  // quoted strings (a `content` value may quote at-rule syntax) cannot
+  // create layers and must not fail the build.
+  const distDir = fs.mkdtempSync(path.join(os.tmpdir(), 'compat-audit-layer-hard-'));
+  try {
+    fs.mkdirSync(path.join(distDir, 'assets'), { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'assets', 'upper.css'), '@LAYER base{*{box-sizing:border-box}}');
+    fs.writeFileSync(path.join(distDir, 'assets', 'upper-import.css'), '@IMPORT URL("./u.css") LAYER;');
+    fs.writeFileSync(path.join(distDir, 'assets', 'semicolon-url.css'), '@import url(data:text/css;base64,QGxheWVy) layer;');
+    const violations = hermeticAudit({ distDir });
+    assert.equal(violations.length, 3, `all three layer shapes must be reported; got: ${JSON.stringify(violations)}`);
+    assert.deepEqual(
+      violations.map((violation) => violation.slice('dist:'.length).replace(/:.*/, '')).sort(),
+      ['semicolon-url.css', 'upper-import.css', 'upper.css'],
+      'each fixture file must be reported exactly once',
+    );
+    assert.match(violations.find((violation) => violation.includes('upper.css')), / @layer survives the build/);
+    assert.match(violations.find((violation) => violation.includes('upper-import.css')), / @import layer survives the build/);
+    assert.match(violations.find((violation) => violation.includes('semicolon-url.css')), / @import layer survives the build/);
+
+    fs.rmSync(path.join(distDir, 'assets'), { recursive: true, force: true });
+    fs.mkdirSync(path.join(distDir, 'assets'), { recursive: true });
+    fs.writeFileSync(path.join(distDir, 'assets', 'licensed.css'), [
+      '/*! derived from the @layer utilities documentation */',
+      '.ok{color:red}',
+    ].join('\n'));
+    fs.writeFileSync(path.join(distDir, 'assets', 'content-strings.css'), [
+      '.a:before{content:"@layer base"}',
+      '.b:after{content:"@import url(a) layer;"}',
+      '.c{background:url("./layer(v2).png")}',
+    ].join('\n'));
+    assert.deepEqual(
+      hermeticAudit({ distDir }),
+      [],
+      'comments and quoted strings must not fail the audit',
+    );
+  } finally {
+    fs.rmSync(distDir, { recursive: true, force: true });
+  }
+});
+
 test('the audit fails closed when a dist layer is absent or empty', () => {
   // The presence guards are the CLI's only defense against green-lighting an
   // audit whose dist layers were never produced: every layer runAudit scans

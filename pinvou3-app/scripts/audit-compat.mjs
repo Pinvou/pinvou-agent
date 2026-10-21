@@ -281,6 +281,40 @@ function collectStaticRuntimeScripts() {
 // `.ring-inset` class name that Tailwind emits don't phantom-match.
 // `inset(` (clip-path function) and logical properties (`inset-inline:`)
 // don't match either: in both, `inset` is not followed by `:`.
+// Replace CSS comments and quoted strings with same-length space runs so the
+// layer scans cannot fire inside them. Offsets in the stripped copy index the
+// original string 1:1. A `/*` inside an unquoted url() token is treated as a
+// comment opener (real-world dist CSS quotes its url tokens), which is safe
+// for a fail-closed gate: the stripped span can only hide a violation if a
+// literal `@layer` sits inside an unquoted url token that also contains an
+// unpaired `/*`.
+function stripCssCommentsAndStrings(code) {
+  let out = '';
+  let i = 0;
+  while (i < code.length) {
+    const ch = code[i];
+    if (ch === '/' && code[i + 1] === '*') {
+      const end = code.indexOf('*/', i + 2);
+      const stop = end === -1 ? code.length : end + 2;
+      out += ' '.repeat(stop - i);
+      i = stop;
+    } else if (ch === '"' || ch === "'") {
+      let j = i + 1;
+      while (j < code.length && code[j] !== ch) {
+        if (code[j] === '\\') j += 1;
+        j += 1;
+      }
+      const stop = j < code.length ? j + 1 : code.length;
+      out += ' '.repeat(stop - i);
+      i = stop;
+    } else {
+      out += ch;
+      i += 1;
+    }
+  }
+  return out;
+}
+
 function auditDistCss(assetsDir) {
   const violations = [];
   for (const name of readdirSync(assetsDir)) {
@@ -298,30 +332,40 @@ function auditDistCss(assetsDir) {
     // them at cssTarget safari14; a Tailwind 4 build puts ~90% of its output
     // inside @layer blocks, so any survivor means the macOS 11 / Safari 14.0
     // floor renders unstyled (same verdict as the #665 TW4 investigation).
-    // Covers the block/anonymous/statement `@layer` forms. The import form
-    // (`@import … layer|layer(name)`) carries no `@layer` substring, so the
-    // @import preludes are parsed separately: strip the leading URL token
-    // and require a standalone layer clause, so `layer(` inside the URL
-    // never fires and the clause is caught in any position (after
-    // supports(), before/after the media query, bare or named).
-    let layerIndex = code.indexOf('@layer');
-    while (layerIndex !== -1) {
-      const excerpt = code.slice(Math.max(0, layerIndex - 30), layerIndex + 50).replaceAll(/\s+/g, ' ');
+    // Comments and quoted strings cannot create layers, but lightningcss
+    // keeps `/*! … */` license headers verbatim and `content` strings can
+    // quote at-rule syntax, so both scans run over a comment/string-stripped
+    // copy. The replacement is space-padded, preserving offsets for the
+    // excerpt/line attribution. Covers the block/anonymous/statement `@layer`
+    // forms, case-insensitively (CSS at-keywords are ASCII case-insensitive).
+    // The import form (`@import … layer|layer(name)`) carries no `@layer`
+    // substring, so the @import preludes are parsed separately: the capture
+    // treats `url(…)` as one atomic token (an unquoted data URL may contain
+    // `;`), strips that leading URL token, and requires a standalone layer
+    // clause — so `layer(` inside the URL never fires and the clause is
+    // caught in any position (after supports(), before/after the media
+    // query, bare or named).
+    const scan = stripCssCommentsAndStrings(code);
+    const layerPattern = /@layer/gi;
+    let layerMatch;
+    while ((layerMatch = layerPattern.exec(scan)) !== null) {
+      const excerpt = code.slice(Math.max(0, layerMatch.index - 30), layerMatch.index + 50).replaceAll(/\s+/g, ' ');
       violations.push(
-        `dist:${name}:${lineOfOffset(code, layerIndex).line}: @layer survives the build — cascade layers need Safari 15.4, below the Safari 14.0 floor; context: …${excerpt}…`,
+        `dist:${name}:${lineOfOffset(code, layerMatch.index).line}: @layer survives the build — cascade layers need Safari 15.4, below the Safari 14.0 floor; context: …${excerpt}…`,
       );
-      layerIndex = code.indexOf('@layer', layerIndex + 1);
     }
-    const importPattern = /@import\s+([^;]+);/g;
+    // Arms are disjoint (url( token | double-quoted string | single-quoted
+    // string | any other non-terminator), so matching stays linear.
+    const importPattern = /@import\s+((?:url\((?:'[^']*'|"[^"]*"|[^()'"\\]|\\.)*\)|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^;"'])+);/gi;
     let importMatch;
-    while ((importMatch = importPattern.exec(code)) !== null) {
+    while ((importMatch = importPattern.exec(scan)) !== null) {
       // @import grammar: [ <url> | <string> ] first, then the optional
       // layer clause and import conditions — only a clause after the URL
       // token creates a cascade layer.
       const prelude = importMatch[1]
         .replace(/^url\(\s*(?:'[^']*'|"[^"]*"|[^)'"]*)\s*\)/i, '')
         .replace(/^'(?:[^'\\]|\\.)*'|^"(?:[^"\\]|\\.)*"/, '');
-      if (!/(?:^|\s)layer(?:\s*\(|(?=\s|$))/.test(prelude)) continue;
+      if (!/(?:^|\s)layer(?:\s*\(|(?=\s|$))/i.test(prelude)) continue;
       const excerpt = code.slice(Math.max(0, importMatch.index - 30), importMatch.index + 50).replaceAll(/\s+/g, ' ');
       violations.push(
         `dist:${name}:${lineOfOffset(code, importMatch.index).line}: @import layer survives the build — cascade layers need Safari 15.4, below the Safari 14.0 floor; context: …${excerpt}…`,
