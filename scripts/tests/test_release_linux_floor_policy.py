@@ -145,6 +145,19 @@ class ReleaseLinuxFloorPolicyTests(unittest.TestCase):
                 job.count(upload_name), 2, f"{arch}: unified deb name must appear in both upload paths"
             )
 
+    def test_x64_rename_uses_literal_name_with_fail_loud_guard(self):
+        # PR #745 aligned the x64 rename with the other platforms: the
+        # literal VERSION-named deb plus an explicit test -f guard with a
+        # directory dump. The previous $(ls pinvou3_*.deb) glob failed
+        # opaquely on a surprise second match (mv with a newline-joined
+        # argument) and could rename a stale wrong-version deb silently.
+        self.assertIn('SRC="pinvou3_${VERSION}_amd64.deb"', self.x64_job)
+        self.assertIn(
+            'test -f "$SRC" || { echo "❌ deb 产物不存在: $SRC"; ls -la; exit 1; }',
+            self.x64_job,
+        )
+        self.assertNotIn("ls pinvou3_", self.x64_job)
+
     def test_guard_script_defaults_to_per_arch_glibc_floors(self):
         # The wrapper takes the floor as the optional third argument and
         # delegates to check-linux-elf-policy.sh, which owns the per-arch

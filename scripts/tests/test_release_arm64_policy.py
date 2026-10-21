@@ -41,6 +41,24 @@ class ReleaseArm64PolicyTests(unittest.TestCase):
         self.assertIn("build-essential pkg-config cmake lld", self.arm64_job)
         self.assertNotIn("RUSTFLAGS", build)
 
+    def test_arm64_release_budget_keeps_measured_headroom(self):
+        # 2026-10 measured baseline: 19 successful release builds ran
+        # 39-48 min (peak 48m14s), so the old 90 cap already held ~2x
+        # headroom. 120 keeps ~2.5x for toolchain rollovers and cold
+        # caches; the cap is pinned end-anchored (a bare substring would
+        # also match 1200) with the last-key-wins count check, so it can
+        # neither regress to 90 nor drift upward unnoticed. The loong64
+        # 1.5x budget reads this cap live in test_release_loongarch64_policy.
+        arm64_job = self.workflow.split(
+            "\n  build-linux-arm64:", maxsplit=1
+        )[1].split("\n  build-linux-loongarch64:", maxsplit=1)[0]
+        self.assertIn("\n    timeout-minutes: 120\n", arm64_job)
+        self.assertEqual(
+            arm64_job.count("timeout-minutes:"),
+            1,
+            "exactly one timeout budget may exist in the job",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

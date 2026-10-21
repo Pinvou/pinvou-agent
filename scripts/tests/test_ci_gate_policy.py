@@ -3490,6 +3490,13 @@ class CiGatePolicyTests(unittest.TestCase):
             # "one failed main push drops the namespace fully cold" reason
             # as its siblings; pin it so it cannot rot the same way.
             ("cli-lint", "\n  windows-rust-test:"),
+            # 2026-10 audit followups (PR #745): knowledge-rust/rust-lint/
+            # cli-test joined the flag when their main-push unconditional
+            # runs landed — same "one failed main push drops the namespace
+            # fully cold" exposure; pin them so they cannot rot the same way.
+            ("knowledge-rust", "\n  rust-lint:"),
+            ("rust-lint", "\n  rust-test:"),
+            ("cli-test", "\n  cli-lint:"),
         ):
             job = self.pr_workflow.split(
                 f"\n  {job_name}:", maxsplit=1
@@ -3513,6 +3520,93 @@ class CiGatePolicyTests(unittest.TestCase):
         # (rust-cache's default keeps target artifacts). Comments stripped:
         # the decision record above mentions the old value historically.
         self.assertNotIn("cache-targets:", rust_test_cache)
+
+    def test_dev_profile_o0_guard_stays_on_all_three_heavy_legs(self):
+        # rust-test's codewhale-tui dev-O0 memory guard defuses the
+        # documented ~7 GB single-rustc dev thin-LTO OOM; the 2026-10 audit
+        # followups (PR #745) ported it to the 7 GB no-swap macOS runner
+        # beside the existing Windows twin. The override is a silent policy
+        # knob — dropping a leg's step or gutting the TOML section
+        # resurfaces the cold-run OOM with no runtime error — so pin the
+        # shared payload in every leg. Windows speaks pwsh (Add-Content
+        # here-string), the others a bash heredoc; the TOML section is the
+        # contract they share.
+        for job_name, end_marker in (
+            ("rust-test", "\n  cli-test:"),
+            ("windows-rust-test", "\n  macos-rust-check:"),
+            ("macos-rust-check", "\n  windows-codex-runtime-test:"),
+        ):
+            job = self.pr_workflow.split(f"\n  {job_name}:", maxsplit=1)[1].split(
+                end_marker, maxsplit=1
+            )[0]
+            self.assertIn("codewhale-tui O0", job, job_name)
+            self.assertIn("[profile.dev.package.codewhale-tui]", job, job_name)
+            self.assertIn("opt-level = 0", job, job_name)
+        # The bash twins append to the cargo-home config; rust-cache's
+        # cachePaths never include config.toml, so warm runs cannot
+        # accumulate duplicate TOML tables.
+        for job_name, end_marker in (
+            ("rust-test", "\n  cli-test:"),
+            ("macos-rust-check", "\n  windows-codex-runtime-test:"),
+        ):
+            job = self.pr_workflow.split(f"\n  {job_name}:", maxsplit=1)[1].split(
+                end_marker, maxsplit=1
+            )[0]
+            self.assertIn(
+                'config="${CARGO_HOME:-$HOME/.cargo}/config.toml"',
+                job,
+                job_name,
+            )
+
+    def test_frontend_test_webui_smoke_reuses_the_prebuilt_dist(self):
+        # frontend-test builds the web dist unconditionally (the web index
+        # contract test only covers it when it exists), so the diff-selected
+        # test:webui smoke must reuse that dist via PINVOU_WEBUI_SKIP_BUILD=1
+        # instead of paying a second identical vite build. Both smoke steps —
+        # the PR-selected and the merge-group one — must keep the env: a
+        # dropped step silently reintroduces the duplicate build.
+        frontend = self.pr_workflow.split("\n  frontend-test:", maxsplit=1)[1].split(
+            "\n  relay-test:", maxsplit=1
+        )[0]
+        self.assertEqual(
+            frontend.count('PINVOU_WEBUI_SKIP_BUILD: "1"'),
+            2,
+            "both webui smoke steps must set PINVOU_WEBUI_SKIP_BUILD=1",
+        )
+
+    def test_release_checkouts_never_persist_credentials(self):
+        # release-packages 的 header 承诺 checkout 后不保留凭据。构建 job 的
+        # 子模块在 checkout 内部用 token 初始化,之后的运行时仓库按锁定
+        # gitlink 匿名拉取(Windows 先行验证);PR #745 补齐其余四腿,这里把
+        # 每个 checkout(含 gate 的纯文件级比对)钉住,凭据策略不得回退。
+        workflow = (ROOT / ".github/workflows/release-packages.yml").read_text(
+            encoding="utf-8"
+        )
+        for job_name, end_marker in (
+            ("check-version-bump", "\n  build-linux-x64:"),
+            ("build-linux-x64", "\n  build-linux-arm64:"),
+            ("build-linux-arm64", "\n  build-linux-loongarch64:"),
+            ("build-linux-loongarch64", "\n  build-windows-x64:"),
+            ("build-windows-x64", "\n  build-macos-universal:"),
+            ("build-macos-universal", None),
+        ):
+            job = workflow.split(f"\n  {job_name}:", maxsplit=1)[1]
+            if end_marker is not None:
+                job = job.split(end_marker, maxsplit=1)[0]
+            checkout = job.split("uses: actions/checkout@v7", maxsplit=1)[1].split(
+                "\n      - name:", maxsplit=1
+            )[0]
+            self.assertIn("persist-credentials: false", checkout, job_name)
+        # The gate compares VERSION files only: no submodules, depth 1 — a
+        # future git-history-reading step must not silently need depth 0.
+        gate = workflow.split("\n  check-version-bump:", maxsplit=1)[1].split(
+            "\n  build-linux-x64:", maxsplit=1
+        )[0]
+        gate_checkout = gate.split("uses: actions/checkout@v7", maxsplit=1)[1].split(
+            "\n      - name:", maxsplit=1
+        )[0]
+        self.assertIn("\n          fetch-depth: 1\n", gate_checkout)
+        self.assertNotIn("submodules:", gate_checkout)
 
     def test_quota_and_toolchain_hardening_stays_pinned(self):
         # 2026-10 audit hardening. Each item is a silent policy change (quota

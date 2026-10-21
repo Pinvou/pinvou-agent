@@ -79,6 +79,22 @@ class ReleaseSizePolicyTests(unittest.TestCase):
                 if line.strip().startswith("RUSTFLAGS:"):
                     self.assertNotIn("-C remap-path-prefix", line, start)
 
+    def test_windows_probe_exports_remap_path_prefix(self):
+        # PR #745: the Windows lld probe exports --remap-path-prefix beside
+        # the probed linker flags so the nsis artifact normalizes
+        # build-machine absolute paths like every other release job. Both
+        # separator variants ship because the embedded form follows
+        # whatever cargo passed to rustc. Dropping the flags line reverts
+        # to path-leaking artifacts with no build error, hence the pin.
+        windows = self.job("\n  build-windows-x64:", "\n  build-macos-universal:")
+        self.assertIn('ws="${GITHUB_WORKSPACE}"', windows)
+        self.assertIn('ws_fwd="${ws//\\\\//}"', windows)
+        self.assertIn(
+            'flags="$flags --remap-path-prefix=$ws=/ --remap-path-prefix=$ws_fwd=/"',
+            windows,
+        )
+        self.assertNotIn("-C remap-path-prefix", windows)
+
     def test_loongarch64_job_must_not_copy_lld_rustflags(self):
         # The pinned loong64/cross-tools asset ships NO lld (bfd ld only —
         # see scripts/ci-loongarch64-toolchain.sh). Copying the arm64 job's
