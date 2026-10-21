@@ -242,8 +242,9 @@ jobs:
         working-directory: pinvou3-app/src-tauri/target/release/bundle/deb
         run: |
           set -euo pipefail
-          SRC=$(ls pinvou3_*_amd64.deb)
+          SRC="pinvou3_${VERSION}_amd64.deb"
           DST="pinvou-agent_${VERSION}-linux-x64.deb"
+          test -f "$SRC" || { echo "❌ deb 产物不存在: $SRC"; ls -la; exit 1; }
           mv "$SRC" "$DST"
           SHA=$(sha256sum "$DST" | awk '{print $1}')
           echo "deb sha256: $SHA"
@@ -276,7 +277,10 @@ jobs:
     # 与 build-linux-x64 同理:Linux 发布基线是 Ubuntu 22.04 (glibc 2.35),
     # runner 钉在 ubuntu-22.04-arm,升级前先确认新基线决策。
     runs-on: ubuntu-22.04-arm
-    timeout-minutes: 90
+    # 实测典型时长 ~90min(loong64 job 的放大注释即以它为基准)。旧上限 90 与
+    # 典型时长相等,任何抖动即撞线,而失败重跑是又一次 ~90min 全冷构建;
+    # 放宽到 120 只在真挂死时多付 30min,换取抖动不再触发整包重跑。
+    timeout-minutes: 120
     env:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
       # release profile 已在 Cargo.toml 设为 thin LTO(原 fat 在 ubuntu 16GB 上
@@ -427,9 +431,10 @@ jobs:
     # 没有 lld)+ deepin beige (glibc 2.38) sysroot。目标基线 = deepin
     # 23/25 + UOS V25 的 glibc 2.38,由工具链/sysroot 决定而非 runner 发行版
     # (与 x64/arm64 的"链接构建机 glibc"模型不同,详见 floor 守护注释)。
-    # 交叉构建显著慢于原生 arm64(90min),timeout 按 ~1.5x 放大。
+    # 交叉构建显著慢于原生 arm64(典型 ~90min),timeout 按 arm64 上限的
+    # ~1.5x 放大(arm64 上限 120 → 本 job 180),保持放大规则自洽。
     runs-on: ubuntu-22.04
-    timeout-minutes: 135
+    timeout-minutes: 180
     env:
       VERSION: ${{ needs.check-version-bump.outputs.version }}
       # 与 x64/arm64 同源风险:release(thin-LTO O3) 编译 codewhale-tui 的

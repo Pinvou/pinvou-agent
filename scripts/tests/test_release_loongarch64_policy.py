@@ -549,12 +549,14 @@ class ReleaseLoongArch64PolicyTests(unittest.TestCase):
         self.assertIn("tail -n 120", asr)
 
     def test_release_job_gives_the_cross_build_headroom(self):
-        # arm64 (native) gets 90 minutes; the cross build reuses the same
-        # runner shape with the cross toolchain in front of it — the budget
-        # is 90 * ~1.5. Pin it so the headroom cannot silently disappear,
-        # and pin the count: GitHub's last-key-wins YAML parsing means a
-        # second live timeout-minutes would silently void the pinned value.
-        self.assertIn("timeout-minutes: 135", self.job_code)
+        # arm64 (native) gets 120 minutes (raised 2026-10 from 90, which
+        # equaled its documented typical duration); the cross build reuses
+        # the same runner shape with the cross toolchain in front of it —
+        # the budget is 120 * ~1.5. Pin it so the headroom cannot silently
+        # disappear, and pin the count: GitHub's last-key-wins YAML parsing
+        # means a second live timeout-minutes would silently void the
+        # pinned value.
+        self.assertIn("timeout-minutes: 180", self.job_code)
         self.assertEqual(
             self.job_code.count("timeout-minutes:"),
             1,
