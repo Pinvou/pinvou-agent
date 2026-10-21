@@ -157,6 +157,47 @@ function chunkResponse(saved) {
   };
 }
 
+test('web cold replay preserves first duplicate tool matching and cached session navigation', async () => {
+  const rt = bootWebBridge();
+  const loaded = [];
+  rt.setHandler('web_access_load_session_chunk', ({ id }) => {
+    loaded.push(id);
+    return chunkResponse({
+      metadata: { id, title: id }, artifacts: [], transcript_revision: 'fixture-revision',
+      messages: id === 'replay-A' ? [
+        { role: 'user', content: [{ type: 'text', text: 'Restore tool history' }] },
+        { role: 'assistant', content: [
+          { type: 'tool_use', id: 'duplicate', name: 'Bash', input: { command: 'first' } },
+          { type: 'tool_use', id: 'duplicate', name: 'Bash', input: { command: 'second' } },
+          { type: 'tool_use', id: 'failure', name: 'Bash', input: { command: 'fail' } },
+          { type: 'tool_use', id: 'pending', name: 'Bash', input: { command: 'pending' } },
+        ] },
+        { role: 'user', content: [
+          { type: 'tool_result', tool_use_id: 'duplicate', content: 'complete' },
+          { type: 'tool_result', tool_use_id: 'failure', content: 'failed', is_error: true },
+        ] },
+        { role: 'assistant', content: [{ type: 'text', text: 'Restored' }] },
+      ] : [{ role: 'user', content: [{ type: 'text', text: 'Other session' }] }],
+    });
+  });
+  assert.equal(await rt.sessions.switchToSession('replay-A'), true);
+  const rows = () => Array.from(rt.view().chatItems.filter(item => item.type === 'tool'), item => ({
+    command: item.args.command, output: item.output, state: item.state, success: item.success,
+  }));
+  const expected = [
+    { command: 'first', output: 'complete', state: 'done', success: true },
+    { command: 'second', output: null, state: 'pending', success: null },
+    { command: 'fail', output: 'failed', state: 'failed', success: false },
+    // Web's existing replay hook leaves an unresolved historical tool pending.
+    { command: 'pending', output: null, state: 'pending', success: null },
+  ];
+  assert.deepEqual(rows(), expected);
+  assert.equal(await rt.sessions.switchToSession('replay-B'), true);
+  assert.equal(await rt.sessions.switchToSession('replay-A'), true);
+  assert.deepEqual(rows(), expected);
+  assert.deepEqual(loaded, ['replay-A', 'replay-B'], 'returning to A must use its cached buffer');
+});
+
 // 轮询至条件成立或超时（对账/物化链跨多个宏任务，不能单次 tick 断言）。
 async function waitFor(predicate, label) {
   const deadline = Date.now() + 2000;
