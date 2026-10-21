@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import postcss from 'postcss';
 import tailwindcss from 'tailwindcss';
 
-import { auditDistPresenceProblems, runAudit } from '../scripts/audit-compat.mjs';
+import { auditDistCss, auditDistPresenceProblems, runAudit } from '../scripts/audit-compat.mjs';
 import { staticRuntimeScripts } from '../vite.config.mjs';
 
 // WebView compatibility contract: the desktop minimum is macOS 11
@@ -299,6 +299,90 @@ test('the layer scan is case-insensitive, string-aware, and blind to comments an
       [],
       'comments and quoted strings must not fail the audit',
     );
+  } finally {
+    fs.rmSync(distDir, { recursive: true, force: true });
+  }
+});
+
+test('the auditor flags @layer behind an unquoted url token the minifier emits', () => {
+  // lightningcss drops url quotes whenever the value needs no escaping, so a
+  // quoted source url ships UNQUOTED in dist and a `/*` inside it is token
+  // content, not a comment opener. Pin the real minifier output: the genuine
+  // `@layer` behind that url must still be reported even though the quoted
+  // source form contains no scanner-visible `/*` outside the string.
+  const distDir = fs.mkdtempSync(path.join(os.tmpdir(), 'compat-audit-url-comment-'));
+  try {
+    fs.mkdirSync(path.join(distDir, 'assets'), { recursive: true });
+    const compiled = transformCss({
+      filename: 'main.css',
+      code: Buffer.from('a{background:url("https://example.com/a/*b.png")}@layer demo{b{color:red}}'),
+      targets: browserslistToTargets(['safari 14']),
+      minify: true,
+    }).code.toString();
+    assert.match(compiled, /url\(https:\/\/example\.com\/a\/\*b\.png\)/, 'minifier fixture must emit the unquoted url');
+    assert.match(compiled, /@layer demo/, 'minifier fixture must keep the real layer');
+    fs.writeFileSync(path.join(distDir, 'assets', 'main.css'), compiled);
+    const violations = hermeticAudit({ distDir });
+    assert.equal(violations.length, 1, `exactly the real layer must be reported; got: ${JSON.stringify(violations)}`);
+    assert.match(violations[0], /^dist:main\.css:1: @layer survives the build/);
+  } finally {
+    fs.rmSync(distDir, { recursive: true, force: true });
+  }
+});
+
+test('unquoted url() bodies neither hide nor invent layer violations', () => {
+  // A `/*` inside a valid unquoted url() token is token content: it must not
+  // strip the remainder of the stylesheet (a real @layer behind it stays
+  // reported), while an `@layer` substring inside a token body must not
+  // phantom-match. A `url(` inside a comment stays comment text. All
+  // fixtures share one audit pass (a full runAudit re-parses every static
+  // runtime script), partitioned per file below.
+  const distDir = fs.mkdtempSync(path.join(os.tmpdir(), 'compat-audit-url-body-'));
+  try {
+    fs.mkdirSync(path.join(distDir, 'assets'), { recursive: true });
+    fs.writeFileSync(
+      path.join(distDir, 'assets', 'layer-behind.css'),
+      'a{background:url(https://example.com/a/*b.png)}@layer demo{b{color:red}}',
+    );
+    fs.writeFileSync(path.join(distDir, 'assets', 'inert.css'), [
+      '.ok{background:url(/@layer-demo.png)}',
+      'a{background:url(data:text/css;base64,QGxheWVy)}',
+    ].join('\n'));
+    fs.writeFileSync(path.join(distDir, 'assets', 'comment-url.css'), '/*! url(https://x/*y ) */@layer a{b{color:red}}');
+    const violations = hermeticAudit({ distDir });
+    assert.deepEqual(
+      violations.map((violation) => violation.slice('dist:'.length).replace(/:.*/, '')).sort((a, b) => a.localeCompare(b)),
+      ['comment-url.css', 'layer-behind.css'],
+      `exactly the two real layers must be reported; got: ${JSON.stringify(violations)}`,
+    );
+    for (const file of ['comment-url.css', 'layer-behind.css']) {
+      assert.match(violations.find((violation) => violation.includes(file)), /^dist:[^:]+:1: @layer survives the build/);
+    }
+  } finally {
+    fs.rmSync(distDir, { recursive: true, force: true });
+  }
+});
+
+test('the import-prelude scan stays linear on an unterminated prelude', { timeout: 20000 }, () => {
+  // The former capture regex had overlapping alternation arms (a `url(…)`
+  // token could also be consumed by the `[^;"']` fallback), so an
+  // unterminated prelude of repeated url(…) tokens backtracked exponentially
+  // (~3.5s at 22 tokens). The single-pass prelude reader finishes each
+  // prelude exactly once; regressing to a backtracking shape hangs here
+  // (the scan is synchronous, so no timeout can mask it) and the wall-clock
+  // pin keeps lesser shape changes visible. Timed via auditDistCss because
+  // a full runAudit adds seconds of static-script parsing noise.
+  const distDir = fs.mkdtempSync(path.join(os.tmpdir(), 'compat-audit-perf-'));
+  try {
+    const assetsDir = path.join(distDir, 'assets');
+    fs.mkdirSync(assetsDir, { recursive: true });
+    fs.writeFileSync(path.join(assetsDir, 'main.css'), `@import ${'url(a)'.repeat(20000)} layer;`);
+    const started = Date.now();
+    const violations = auditDistCss(assetsDir);
+    const elapsed = Date.now() - started;
+    assert.equal(violations.length, 1, `the trailing layer clause must fire; got: ${JSON.stringify(violations)}`);
+    assert.match(violations[0], /@import layer survives the build/);
+    assert.ok(elapsed < 5000, `the audit must stay linear; took ${elapsed}ms`);
   } finally {
     fs.rmSync(distDir, { recursive: true, force: true });
   }
