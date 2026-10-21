@@ -191,4 +191,92 @@ assert.ok(
 );
 assertRoutesThroughSharedHelper('skill_gate', skillGateSrc, 'connect_consent_sync_failure_message', CONNECT_TAIL);
 
+// ---------------------------------------------------------------------------
+// Round-38 + round-3 review wiring pins. The settle-ordered composer refresh
+// and the honest toast/banner copy are timing/UI wiring that no behavioral
+// test reaches without a browser; the repo's convention for exactly this
+// class is source-text pins (collapse-timer / null-guard style), so reverting
+// the wiring fails here instead of silently shipping a stale-copy toast, a
+// pre-grant refresh, or a lying banner.
+
+const collapsedStore = collapsed(store);
+
+// (a) The done toast for the fire-and-forget connectors (doneSettlesLater)
+// stays title-only BOTH ways: the subtitle is undefined AND the alert's
+// installHint fallback is suppressed — the fallback copy still says "off by
+// default", so suppressing the subtitle alone renders the stale claim
+// (round-3 review MAJOR).
+assert.ok(
+  collapsedStore.includes(
+    'subtitle: doneSettlesLater ? undefined : toastCopyRef.current && toastCopyRef.current.enabledSubtitle, suppressHint: !!doneSettlesLater,',
+  ),
+  'the doneSettlesLater toast must pass both a falsy subtitle AND suppressHint — dropping either leg resurrects a stale off-by-default claim on the success toast',
+);
+assert.ok(
+  collapsedStore.includes('!alert.isError && !alert.suppressHint &&'),
+  'TsAlert must honor suppressHint in its installHint/removeHint fallback — reverting the condition renders the stale off-by-default copy again',
+);
+
+// (b) Every composer notify in the connector apply flows is settle-ordered
+// in the module-level listener: fire-and-forget success + failure, awaited
+// success + failure — exactly four. The mounted subscription's done phase
+// must NOT broadcast — for the fire-and-forget connectors that read is
+// provably pre-grant (round-3 review removed the wasted refresh).
+{
+  const connectedRegion = store.match(/cfg\.events\.connected[\s\S]*?ev\.listen\(cfg\.events\.error/);
+  assert.ok(connectedRegion, 'the connector connected-handler region must stay recognizable');
+  assert.strictEqual(
+    connectedRegion[0].split('notifyComposerToolsChanged()').length - 1,
+    4,
+    'the connector apply flows must keep exactly four settle-ordered composer notifies (fire-and-forget success+failure, awaited success+failure) — a fifth in a done phase is the wasted pre-grant broadcast, a missing one strands a mounted composer on stale state',
+  );
+}
+{
+  const doneBranch = collapsedStore.match(/if \(ph === 'done'\) \{[\s\S]*?\} else if \(ph === 'error'\)/);
+  assert.ok(doneBranch, 'the subscription done/error branch shape must stay recognizable');
+  assert.ok(
+    !doneBranch[0].includes('notifyComposerToolsChanged()'),
+    "the subscription's done phase must not broadcast — the settle-ordered listener notifies cover it (round-3 review)",
+  );
+}
+
+// (c) The awaited branches' success path notifies (round-3 review: it lived
+// only in the mounted subscription's done phase before, so an unmounted
+// store view's composer never learned of a successful connect).
+assert.ok(
+  /await invokeTauri\(cfg\.commands\.applySkills\);\s*\/\/ Round-38 \+ round-3 review[\s\S]{0,400}?notifyComposerToolsChanged\(\)/.test(store),
+  'the awaited apply success path must notify the composer right after the apply resolves (view-independent, parity with its failure path)',
+);
+
+// (d) The connected banner falls back to the title-only copy while a consent
+// persist failure is latched — the enabled-by-default copy would lie over
+// the fail-closed state (round-3 review).
+assert.ok(
+  collapsedStore.includes("const connectedBannerText = (key) => (consentSyncFailedByTool[key] ? storeCopy.connectedTool(storeCopy.toolNames[key]) : storeCopy.connectedBanner(storeCopy.toolNames[key]));"),
+  'the connected banner must fall back to the title-only copy while a consent-persist failure is latched',
+);
+for (const key of ['feishu', 'wecom', 'dingtalk', 'tmeet']) {
+  assert.ok(
+    store.includes(`consentSyncFailedByTool[key]`) && store.includes(`${key}ConsentSyncFailed`),
+    `the ${key} subscription must feed its consent-failure latch into the banner gate`,
+  );
+}
+assert.ok(
+  collapsedStore.includes("flow.errorCode === 'connect_consent_persist_failed'"),
+  'the latch must key on the connect-consent failure code — latching every error would suppress the banner copy for ordinary auth failures',
+);
+
+// (e) The composer seq guard (round-38, round-2 review m9): only the latest
+// refresh may commit, so a pre-grant read can never overtake the
+// authoritative post-settle one.
+const composerSrc = readFileSync(join(root, 'src/features/settings/composer-shared.jsx'), 'utf8');
+assert.ok(
+  composerSrc.includes('const seq = ++refreshSeqRef.current;'),
+  'the composer refresh must bump a per-invocation seq — reverting the guard lets a stale pre-grant read commit over the authoritative one',
+);
+assert.ok(
+  composerSrc.includes('seq === refreshSeqRef.current'),
+  'the composer refresh must gate every commit on the seq being current',
+);
+
 console.log('consent_marker_frontend: ok');
