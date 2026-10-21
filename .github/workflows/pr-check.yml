@@ -154,6 +154,7 @@ jobs:
           scripts/tests/select-frontend-smokes.test.mjs
           scripts/tests/run-frontend-smokes.test.mjs
           scripts/tests/pr-check-routing.test.mjs
+          scripts/tests/run-webui-smoke.test.mjs
 
       - name: 校验 VERSION 与各版本文件一致
         run: node scripts/sync-version.mjs --check
@@ -475,6 +476,9 @@ jobs:
               - 'pinvou3-app/knip.json'
               - 'pinvou3-app/jsconfig.json'
               - 'pinvou3-app/scripts/audit-compat.mjs'
+              # test:webui 的包装脚本只被 frontend-test 的 diff-selection 消费;
+              # 不列入则 wrapper-only PR 静默跳过该门禁(test_ci_gate_policy 锁定)。
+              - 'pinvou3-app/scripts/run-webui-smoke.mjs'
               - 'pinvou3-app/src-tauri/tauri.conf.json'
               - '.gitmodules'
               - '.github/workflows/pr-check.yml'

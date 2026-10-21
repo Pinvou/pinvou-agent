@@ -653,6 +653,31 @@ class CiGatePolicyTests(unittest.TestCase):
                 f"静态门禁配置 {path} 不在 frontend filter 中,config-only PR 会静默跳过 frontend-test",
             )
 
+    def test_webui_wrapper_routes_to_frontend_test_with_suite_wired(self):
+        # run-webui-smoke.mjs is consumed only inside frontend-test (the
+        # diff-selected test:webui entry), and its behavior suite
+        # scripts/tests/run-webui-smoke.test.mjs is executed by
+        # version-consistency from an explicit file list. Miss either
+        # registration and a wrapper-only PR loses every gate over the file
+        # it changed (round-2 review of PR #745 found both holes: the
+        # selector branch existed but the filter never routed the path, and
+        # the suite only ever ran locally).
+        changes = _without_yaml_comments(_changes_block(self.pr_workflow))
+        frontend_paths = _frontend_filter_paths(changes)
+        self.assertIn(
+            "pinvou3-app/scripts/run-webui-smoke.mjs",
+            frontend_paths,
+            "webui wrapper 不在 frontend filter 中,wrapper-only PR 会静默跳过 frontend-test",
+        )
+        version_consistency = self.pr_workflow.split(
+            "\n  version-consistency:", maxsplit=1
+        )[1].split("\n  changes:", maxsplit=1)[0]
+        self.assertIn(
+            "scripts/tests/run-webui-smoke.test.mjs",
+            version_consistency,
+            "wrapper 套件未接入 version-consistency 的显式 node --test 列表,CI 永不执行",
+        )
+
     def test_cross_language_contract_rust_sources_route_to_frontend_test(self):
         # multiagent_plan_normalize.test.mjs reads the Rust sources below for
         # cross-language contract pins (swarm contract text, same-snapshot
