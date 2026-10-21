@@ -495,7 +495,12 @@ fn percent_encode_remote_path(path: &str) -> String {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
                 encoded.push(byte as char)
             }
-            _ => encoded.push_str(&format!("%{byte:02X}")),
+            _ => {
+                const HEX_DIGITS: &[u8; 16] = b"0123456789ABCDEF";
+                encoded.push('%');
+                encoded.push(HEX_DIGITS[(byte >> 4) as usize] as char);
+                encoded.push(HEX_DIGITS[(byte & 0xF) as usize] as char);
+            }
         }
     }
     encoded
