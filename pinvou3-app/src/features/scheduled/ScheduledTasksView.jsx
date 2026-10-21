@@ -1,3 +1,4 @@
+import { ScheduledMessageTarget, scheduledRunDescription } from './scheduled-message-display.jsx';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { Check, ChevronDown, ChevronRight, ClipboardCheck, Clock, Database, FileChartLine, MessageCircle, Newspaper, Plus, X } from '../../components/icons.jsx';
@@ -1397,12 +1398,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
                   <span className={mutedValue}>{scheduledCopy.nextExecution}</span>
                   <span className={`truncate text-right font-medium ${bodyText}`}>{fmtDateTime(selected.nextRunAt)}</span>
                 </div>
-                {selected.targetSession ? (
-                  <div data-testid="scheduled-detail-target" className="flex items-center justify-between gap-3">
-                    <span className={mutedValue}>{scheduledCopy.targetSession}</span>
-                    <span className={`truncate text-right font-mono text-[12px] font-medium ${bodyText}`}>{selected.targetSession}</span>
-                  </div>
-                ) : null}
+                <ScheduledMessageTarget target={selected.targetSession} label={scheduledCopy.targetSession} mutedClass={mutedValue} bodyClass={bodyText} />
                 <div className="flex items-center justify-between gap-3">
                   <span className={mutedValue}>{scheduledCopy.enableTask}</span>
                   <MacSwitch task={selected} onToggle={toggleTaskPaused} busyAction={busyAction} scheduledCopy={scheduledCopy} />
@@ -1458,12 +1454,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
                               {runStatusLabel(item.status)}
                             </span>
                             <span className={`mt-0.5 block truncate text-[13px] ${bodyText}`}>
-                              {item.error
-                                || (item.sessionId ? scheduledCopy.viewRunResult : null)
-                                || (item.deliveredTarget
-                                  ? scheduledCopy.deliveredTo(item.deliveredTarget)
-                                  : null)
-                                || (['failed', 'canceled'].includes(item.status) ? runStatusLabel(item.status) : scheduledCopy.noRunSession)}
+                              {scheduledRunDescription(item, selected.kind, scheduledCopy, runStatusLabel)}
                             </span>
                             <span className={`mt-1 block truncate text-[12px] ${mutedValue}`}>
                               {fmtDateTime(item.scheduledFor || item.createdAt)}

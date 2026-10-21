@@ -20,7 +20,6 @@ use tokio_util::sync::CancellationToken;
 use crate::features::assistant::engine_pool::EnginePool;
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::features::scheduled::executor::{ScheduledChatExecutor, current_yolo_allow_shell};
-use crate::features::sessions::validators::{is_aux_session_id, is_sched_session_id};
 use crate::features::sessions::{SessionStore, is_not_found_error};
 use crate::platform::prefs::UserPrefs;
 
@@ -36,8 +35,7 @@ const SCHEDULED_TASK_UI_METADATA_SCHEMA_VERSION: u32 = 1;
 // strips the legacy overbroad snapshot fields.
 const SCHEDULED_HISTORY_ARCHIVE_SCHEMA_VERSION: u32 = 2;
 const SCHEDULED_EXECUTION_MODE: &str = "yolo";
-/// Only supported task kind for now: runs app-side memory organization instead of an
-/// engine conversation turn.
+/// App-side memory-organization kind; ordinary chat has no sidecar entry.
 pub(crate) const SCHEDULED_TASK_KIND_MEMORY_ORGANIZE: &str = "memory_organize";
 /// Scheduled-message kind: each fire delivers the task's prompt into the
 /// stored target session (steer / new turn) instead of starting a new
@@ -47,7 +45,7 @@ pub(crate) const SCHEDULED_TASK_KIND_SESSION_MESSAGE: &str = "session_message";
 /// channel (a delivered message becomes a user turn in the target session).
 /// Enforced at create and update; the executor re-checks it as a belt before
 /// every delivery.
-pub(crate) const SCHEDULED_MESSAGE_MAX_CHARS: usize = 32 * 1024;
+pub(crate) use super::SCHEDULED_MESSAGE_MAX_CHARS;
 const SCHEDULED_WALL_TIME: Duration = Duration::from_secs(30 * 60);
 // Pinvou's embedded Engine does not currently project every model delta/tool
 // heartbeat into TaskExecutionEvent. An idle deadline shorter than the hard
@@ -79,8 +77,8 @@ mod stores;
 
 // The executor-facing kind lookup type is produced by the store and consumed by
 // the executor; re-export it at the feature boundary so both can name it.
-pub(crate) use stores::ScheduledTaskKindLookup;
 use stores::*;
+pub(crate) use stores::{ScheduledTaskKindLookup, ScheduledTaskKindStore};
 
 /// 删除一次定时运行对话的那一步。抽成 trait 只为可注入：EnginePool 需要活的
 /// WebView AppHandle，无法在单元测试里构造，而删除级联的正确性必须被测到。
@@ -369,12 +367,7 @@ impl ScheduledTaskState {
                     model_bindings.model_id_for(automation_id, model)
                 })
             },
-            {
-                let task_kinds = task_kinds.clone();
-                Some(Arc::new(move |automation_id: &str| {
-                    task_kinds.kind_lookup_for(automation_id)
-                }))
-            },
+            Some((automations.clone(), task_kinds.clone())),
         ));
         let task_manager = TaskManager::start_with_executor(task_cfg, executor).await?;
         {
@@ -446,7 +439,7 @@ impl ScheduledTaskState {
         // rejected outright (same style as the mode check).
         let mut requested_kind = canonical_scheduled_kind(input.kind.clone())?;
         // Scheduled-message mode is derived from the target's presence (the tool
-        // and the panel both express it that way): a target means the run body
+        // surface expresses it that way; panel target creation is unsupported): a target means the run body
         // is "deliver the prompt into that session", not a new conversation.
         let requested_target =
             canonical_message_target(&self.sessions, input.target_session.as_deref())?;
@@ -566,43 +559,30 @@ impl ScheduledTaskState {
     ) -> Result<ScheduledTaskDto, String> {
         let _operation = self.lock_operation(&id).await;
         let manager = self.automations.lock().await;
-        // Round-15 minor 2: a permanently ABSENT task is named as such — the
-        // plain Display wrap below hides the io cause ("No such file"), so
-        // the watcher's poison classification never matched and an
-        // unknown-task update burned its whole 3-attempt budget on a
-        // permanent miss. The chain is inspected here, not leaked into the
-        // caller's error text; a present-but-unreadable record keeps the
-        // retry-classified wrap (the miss may be transient).
-        if let Err(err) = manager.get_automation(&id) {
-            // Round-17 M2: classify by ErrorKind, not OS text — Windows'
-            // ENOENT Display ("The system cannot find the file specified.",
-            // fully localized on non-English installs) never contained
-            // "No such file", so the unknown-task update kept the plain
-            // Display wrap and burned the whole budget. The cross-platform
-            // helper is already in scope here.
+        // This read is mandatory before any mutation and is also the rollback
+        // baseline for a target-store failure. Unreadable records never proceed.
+        let previous = manager.get_automation(&id).map_err(|err| {
             if is_not_found_error(&err) {
-                return Err(format!("scheduled task not found: {id}"));
+                format!("scheduled task not found: {id}")
+            } else {
+                format!("Failed to update scheduled task '{id}': {err:#}")
             }
-            return Err(format!("Failed to update scheduled task '{id}': {err}"));
-        }
-        if input.model_id.is_some()
-            && input.model.is_none()
-            && manager
-                .get_automation(&id)
-                .map_err(|error| format!("Failed to read scheduled task '{id}': {error:#}"))?
-                .model
-                .is_none()
-        {
+        })?;
+        if input.model_id.is_some() && input.model.is_none() && previous.model.is_none() {
             input.model = Some(self.fallback_model.clone());
         }
+        let current_kind = self
+            .task_kinds
+            .checked_kind_lookup_for(&id)
+            .map_err(|error| error.to_string())?;
         let requested_model_update = input.model.clone();
         let requested_model_id = input.model_id.clone();
         let requires_model_binding = requested_model_id.is_some();
-        // The 32k message-body cap also guards the panel/update path: a
+        // The shared message-body cap also guards the panel/update path: a
         // session-message task must never persist a body the delivery belt
         // would then reject on every fire (same bound as create).
         if let Some(prompt) = input.prompt.as_deref().map(str::trim) {
-            if self.task_kinds.kind_for(&id).as_deref() == Some(SCHEDULED_TASK_KIND_SESSION_MESSAGE)
+            if !matches!(current_kind, ScheduledTaskKindLookup::Chat)
                 && prompt.chars().count() > SCHEDULED_MESSAGE_MAX_CHARS
             {
                 return Err(format!(
@@ -619,8 +599,7 @@ impl ScheduledTaskState {
         // prompt firing into the new session.
         let retarget = match input.target_session.as_deref() {
             Some(target) => {
-                let current_kind = self.task_kinds.kind_for(&id);
-                if current_kind.as_deref() != Some(SCHEDULED_TASK_KIND_SESSION_MESSAGE) {
+                if !matches!(current_kind, ScheduledTaskKindLookup::SessionMessage { .. }) {
                     return Err(
                         "only scheduled-message tasks can change their target session".to_string(),
                     );
@@ -632,61 +611,49 @@ impl ScheduledTaskState {
             }
             None => None,
         };
-        // Pre-update snapshot for the retarget rollback below (same
-        // discipline as the model-binding rollback): a failed target
-        // persist must not leave the automation updated with a stale
-        // target — the half-applied state a retried update would stack on.
-        let previous_for_rollback = retarget.as_ref().and_then(|_| match manager.get_automation(&id) {
-            Ok(previous) => Some(previous),
-            Err(error) => {
-                // Round-13 minor 6: a failed snapshot read silently skips
-                // the rollback — say so loudly instead of degrading to None
-                // (the failed update then proceeds with no rollback
-                // possible on sidecar-persist failure).
-                log::warn!(
-                    "Failed to snapshot scheduled task {id} before its retarget (rollback unavailable if the target persist fails): {error:#}"
-                );
-                None
-            }
-        });
+        // The shared manager lock spans the definition and target writes.
+        // Executor dispatch snapshots acquire the same lock before reading both.
+        let restore_definition = || {
+            // Restore all mutable definition fields if a later sidecar/workspace
+            // write fails. An empty model clears an originally absent model.
+            manager.update_automation(
+                &id,
+                UpdateAutomationRequest {
+                    name: Some(previous.name.clone()),
+                    prompt: Some(previous.prompt.clone()),
+                    rrule: Some(previous.rrule.clone()),
+                    model: Some(previous.model.clone().unwrap_or_default()),
+                    status: Some(previous.status),
+                    ..Default::default()
+                },
+            )
+        };
         let updated = manager
             .update_automation(&id, build_update_request(input)?)
             .map_err(|err| format!("Failed to update scheduled task '{id}': {err}"))?;
-        let updated = ensure_automation_workspace(&manager, updated)
-            .map_err(|err| format!("Failed to update scheduled task workspace '{id}': {err:#}"))?;
+        let updated = match ensure_automation_workspace(&manager, updated) {
+            Ok(updated) => updated,
+            Err(error) => {
+                if let Err(rollback) = restore_definition() {
+                    log::warn!(
+                        "Failed to restore scheduled task {id} after a workspace-save failure: {rollback:#}"
+                    );
+                }
+                return Err(format!(
+                    "Failed to update scheduled task workspace '{id}': {error:#}"
+                ));
+            }
+        };
         if let Some(target) = retarget {
             if let Err(error) = self.task_kinds.set_kind_with_target(
                 &id,
                 SCHEDULED_TASK_KIND_SESSION_MESSAGE,
                 &target,
             ) {
-                if let Some(previous) = previous_for_rollback {
-                    // Review round-4 M2: restore the MUTABLE FIELDS the
-                    // combined update could have touched — model and
-                    // paused/status too, not just name/prompt/rrule; a
-                    // {paused:true, target_session} update whose sidecar
-                    // persist fails must not leave the task paused on disk
-                    // while the caller is told the update failed. (The
-                    // crash-between-persists and rollback-write-failure
-                    // windows stay the family's accepted at-least-once
-                    // posture.)
-                    // Round-5 M-C: a previous model of None restores via
-                    // Some("") — the domain normalizes the empty string to
-                    // None, so the restore actually clears a model the
-                    // failed update had set (a bare None means "keep").
-                    let restore = UpdateAutomationRequest {
-                        name: Some(previous.name.clone()),
-                        prompt: Some(previous.prompt.clone()),
-                        rrule: Some(previous.rrule.clone()),
-                        model: Some(previous.model.clone().unwrap_or_default()),
-                        status: Some(previous.status),
-                        ..Default::default()
-                    };
-                    if let Err(rollback_error) = manager.update_automation(&id, restore) {
-                        log::warn!(
-                            "Failed to roll back scheduled task {id} after a target-save failure: {rollback_error:#}"
-                        );
-                    }
+                if let Err(rollback) = restore_definition() {
+                    log::warn!(
+                        "Failed to restore scheduled task {id} after a target-save failure: {rollback:#}"
+                    );
                 }
                 return Err(format!("Failed to save scheduled task target: {error:#}"));
             }
@@ -795,15 +762,6 @@ impl ScheduledTaskState {
         // cancellation-style outer timeout could release the gate midway through
         // the archive-then-delete sequence, allowing update/run-now into partial state.
         let _operation = self.lock_operation(&id).await;
-        {
-            let manager = self.automations.lock().await;
-            if let Err(error) = manager.get_automation(&id) {
-                if is_not_found_error(&error) {
-                    return Err(format!("scheduled task not found: {id}"));
-                }
-                return Err(format!("Failed to delete scheduled task '{id}': {error:#}"));
-            }
-        }
         self.delete_task_inner(&id)
             .await
             .map_err(|error| format!("Failed to delete scheduled task '{id}': {error:#}"))
@@ -1041,6 +999,7 @@ impl ScheduledTaskState {
                         model: archived.and_then(|entry| entry.task.model),
                         model_id: None,
                         kind: None,
+                        target_session: None,
                         has_unread_runs: false,
                         is_running: false,
                         pinned: false,
@@ -1631,16 +1590,7 @@ fn delivery_result_summary(
     }
     // This fact belongs to the completed task, not the mutable target sidecar.
     // Missing/pruned legacy task results stay unknown rather than mislabeled.
-    let target = result_summary?.strip_prefix("delivered to session ")?;
-    if target.is_empty()
-        || target.len() > 128
-        || !target
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return None;
-    }
-    Some(target.to_string())
+    super::message::delivered_target(result_summary?).map(str::to_string)
 }
 
 async fn recorded_delivery_target(
@@ -1844,28 +1794,17 @@ fn canonical_message_target(
     if target.is_empty() {
         return Err("target_session cannot be blank: pass the session's id, or omit the field for an ordinary task".to_string());
     }
-    if target.len() > 128
-        || !target
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Err("invalid target_session: use the session's id".to_string());
-    }
-    if is_sched_session_id(target)
-        || is_aux_session_id(target)
-        || target.to_ascii_lowercase().starts_with("eval_")
-    {
-        return Err(format!(
-            "invalid target_session: {target} is an isolated or unattended session and cannot receive scheduled messages"
-        ));
-    }
+    super::message::validate_target_identity(target)
+        .map_err(|error| format!("invalid target_session: {error}"))?;
     ensure_exact_message_target_exists(sessions, target)?;
     // Review round-4 B1 (creation arm) / round-5 M-A disposition: code/ACP
     // sessions load fine as native records, so the existence probe alone
     // would accept them — and every later fire would fail the executor's
     // delivery gate. Same sidecar-disk source (and the same narrower-than-
     // messaging parity delta) as the executor gate's comment states.
-    let agents = crate::features::codex_acp::SessionAgentStore::load_or_empty();
+    let agents = crate::features::codex_acp::SessionAgentStore::load().map_err(|_| {
+        "target_session could not be checked: session agent index unavailable".to_string()
+    })?;
     if agents.backend(target).is_acp() || agents.is_code_session(target) {
         return Err(format!(
             "target_session {target} is an ACP/code session; deliver through the independent code page, not scheduled messages"
@@ -1886,7 +1825,9 @@ pub(crate) fn ensure_exact_message_target_exists(
     for entry in entries {
         let entry =
             entry.map_err(|error| format!("target_session could not be checked: {error}"))?;
-        if entry.file_name() == std::ffi::OsStr::new(&filename) && entry.path().is_file() {
+        if entry.file_name() == std::ffi::OsStr::new(&filename)
+            && entry.file_type().is_ok_and(|kind| kind.is_file())
+        {
             return Ok(());
         }
     }
@@ -2410,6 +2351,44 @@ mod tests {
             retention_handle: Arc::new(SyncMutex::new(None)),
             creation_watch: Arc::new(SyncMutex::new(None)),
         }
+    }
+
+    #[test]
+    fn message_updates_refuse_unreadable_kinds_before_mutation_and_reject_bad_agent_index() {
+        crate::platform::test_support::with_temp_home("message-strict-update", || {
+            tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+                let state = state_without_task_manager();
+                std::fs::create_dir_all(state.sessions.manager.sessions_dir()).unwrap();
+                std::fs::write(state.sessions.manager.sessions_dir().join("target001.json"), "{}").unwrap();
+                let input = serde_json::json!({"name":"Message", "prompt":"original", "rrule":"FREQ=HOURLY", "paused":true, "targetSession":"target001"});
+                let created = state.create_task(serde_json::from_value(input.clone()).unwrap()).await.unwrap();
+                let path = scheduled_task_kinds_path();
+                let valid_kinds = std::fs::read(&path).unwrap();
+                let before = state.automations.lock().await.get_automation(&created.id).unwrap();
+                std::fs::write(&path, "{broken").unwrap();
+                let error = state.update_task(created.id.clone(), serde_json::from_value(serde_json::json!({"name":"changed", "prompt":"x".repeat(SCHEDULED_MESSAGE_MAX_CHARS + 1)})).unwrap()).await.unwrap_err();
+                assert!(error.contains("metadata unavailable"), "{error}");
+                let after = state.automations.lock().await.get_automation(&created.id).unwrap();
+                assert_eq!(after.name, before.name);
+                assert_eq!(after.prompt, before.prompt);
+                std::fs::write(&path, valid_kinds).unwrap();
+                let error = state.update_task(created.id.clone(), serde_json::from_value(serde_json::json!({"prompt":"x".repeat(SCHEDULED_MESSAGE_MAX_CHARS + 1)})).unwrap()).await.unwrap_err();
+                assert!(error.contains("character limit"), "{error}");
+                let workspace = scheduled_task_internal_workspace(&created.id);
+                std::fs::remove_dir_all(&workspace).unwrap();
+                std::fs::write(&workspace, "obstructed").unwrap();
+                let error = state.update_task(created.id.clone(), serde_json::from_value(serde_json::json!({"name":"changed", "prompt":"changed body", "targetSession":"target001"})).unwrap()).await.unwrap_err();
+                assert!(error.contains("workspace"), "{error}");
+                let after = state.automations.lock().await.get_automation(&created.id).unwrap();
+                assert_eq!(after.name, before.name);
+                assert_eq!(after.prompt, before.prompt);
+                assert_eq!(state.task_kinds.target_session_for(&created.id).as_deref(), Some("target001"));
+                std::fs::write(crate::platform::paths::pinvou3_home().join("session-agents.json"), "{broken").unwrap();
+                let error = state.create_task(serde_json::from_value(input).unwrap()).await.unwrap_err();
+                assert!(error.contains("index unavailable"), "{error}");
+                assert_eq!(state.automations.lock().await.list_automations().unwrap().len(), 1);
+            });
+        });
     }
 
     // ── VersionedJsonStore<T> 通用核心(合并三 store) ──────────────────
@@ -4305,12 +4284,12 @@ mod tests {
             )
         };
 
-        // Squat the kinds sidecar: every set_kind_with_target persist now
-        // fails, so the combined rename+retarget update must roll the
-        // domain fields back.
-        let kinds_path = scheduled_task_kinds_path();
-        std::fs::remove_file(&kinds_path).ok();
-        std::fs::create_dir_all(&kinds_path).unwrap();
+        // Keep the mandatory pre-update registry read healthy; fail only the
+        // subsequent target persist so this exercises the actual rollback.
+        state
+            .task_kinds
+            .fail_next_persist
+            .store(true, std::sync::atomic::Ordering::Release);
         // Round-7 M-B: the failing update mutates EVERY restorable field —
         // name, model, paused — so the docstring's "reverting any restore
         // leg turns this red" is actually true (the round-6 form set only

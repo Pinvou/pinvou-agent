@@ -333,6 +333,12 @@ impl SpooledCreationRequest {
                 bail!("idempotency_key requires from_session so the key is scoped to one sender");
             }
         }
+        check_sender_session_id(self.from_session.as_ref())?;
+        if let Some(rrule) = &self.rrule {
+            validate_product_rrule(rrule)?;
+        } else if self.kind == SpoolRequestKind::Create {
+            bail!("rrule is empty");
+        }
         check_optional_field(&self.target_session, "target_session", MAX_TASK_ID_LEN)?;
         if let Some(target) = self
             .target_session
@@ -343,25 +349,8 @@ impl SpooledCreationRequest {
             // Same charset the server enforces: a hostile or padded target
             // must poison immediately, not burn three transient retries
             // inside the domain's own session lookup.
-            if target.len() > MAX_TASK_ID_LEN
-                || !target
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-            {
-                bail!("invalid target_session id");
-            }
-            if is_sched_session_id(target)
-                || is_aux_session_id(target)
-                || target.to_ascii_lowercase().starts_with("eval_")
-            {
-                bail!("target_session {target} is an isolated or unattended session");
-            }
-        }
-        check_sender_session_id(self.from_session.as_ref())?;
-        if let Some(rrule) = &self.rrule {
-            validate_product_rrule(rrule)?;
-        } else if self.kind == SpoolRequestKind::Create {
-            bail!("rrule is empty");
+            crate::features::scheduled::message::validate_target_identity(target)
+                .map_err(|error| anyhow::anyhow!("invalid target_session: {error}"))?;
         }
         Ok(())
     }
@@ -1196,7 +1185,10 @@ fn spool_request_digest(request: &SpooledCreationRequest) -> String {
             "task_id",
             serde_json::json!(trimmed_non_empty(&request.task_id)),
         ),
-        ("target_session", serde_json::json!(trimmed_non_empty(&request.target_session))),
+        (
+            "target_session",
+            serde_json::json!(trimmed_non_empty(&request.target_session)),
+        ),
     ]);
     use sha2::Digest;
     let serialized = serde_json::to_string(&canonical).unwrap_or_default();
@@ -1252,27 +1244,16 @@ fn same_file_identity(current: &std::fs::Metadata, applied: &std::fs::Metadata) 
 /// Validation-shaped domain errors (charset/isolation/caps/kind rules and
 /// missing targets) — retrying the same record can never fix them.
 fn is_permanent_domain_error(error: &str) -> bool {
-    const PERMANENT_MARKERS: [&str; 14] = [
-        "invalid target_session",
-        "cannot be blank",
-        "isolated or unattended",
-        "isolated and cannot",
-        "exceeds",
-        "cannot be combined",
-        "only scheduled-message tasks",
-        "require memory to be enabled",
+    // Keep explicit, reachable domain dispositions here. Pre-spool validation
+    // handles field shape, mode, schedule syntax and body limits. I/O, registry
+    // recovery and index-read failures remain bounded retries. A typed error
+    // migration is deferred; do not classify generic OS/parse text as poison.
+    const PERMANENT_MARKERS: [&str; 5] = [
+        "only scheduled-message tasks can change their target session",
         "target_session not found:",
         "scheduled task not found:",
-        // A permanently corrupt target can never load — poison, don't burn
-        // the retry budget (round-4 minor 3).
-        "could not be loaded",
-        // Only explicit domain pre-check misses are permanent. An inner
-        // archive/delete IO NotFound remains retryable on every platform.
-        // Round-5 minor 1: the ACP/code disposition and the kind errors are
-        // permanent too — no retry can fix them.
         "ACP/code session",
-        "pass target_session to create",
-        "Unsupported scheduled task kind",
+        "Once schedule has no future run",
     ];
     PERMANENT_MARKERS
         .iter()
@@ -3483,6 +3464,8 @@ mod tests {
             spool.join("typo.json"),
             spool_record_json(&[
                 ("kind", serde_json::json!("update")),
+                ("prompt", serde_json::Value::Null),
+                ("rrule", serde_json::Value::Null),
                 ("task_id", serde_json::json!(created.id)),
                 ("target_session", serde_json::json!("no-such-target")),
             ]),
@@ -3535,6 +3518,8 @@ mod tests {
             spool.join("ghost.json"),
             spool_record_json(&[
                 ("kind", serde_json::json!("update")),
+                ("prompt", serde_json::Value::Null),
+                ("rrule", serde_json::Value::Null),
                 ("task_id", serde_json::json!("nosuch99")),
                 ("name", serde_json::json!("改名")),
             ]),
@@ -3572,14 +3557,8 @@ mod tests {
         );
     }
 
-    /// Round-17 m3: the DELETE twin of the unknown-task pin above. The
-    /// delete path has no update-style pre-check — its miss is classified
-    /// at the domain's error mapping (round-17 M2: by ErrorKind via
-    /// `is_not_found_error`, not by the OS text that Windows localizes
-    /// away) — so removing the "not found" mapping turns this red on
-    /// every platform.
     #[tokio::test]
-    async fn unknown_task_delete_poisons_at_attempt_1() {
+    async fn unknown_task_delete_is_ensure_absent_success() {
         let _home = TempHome::new();
         let state = watcher_state().await;
         let spool = spool_root();
@@ -3604,28 +3583,16 @@ mod tests {
             &mut retries,
         )
         .await;
-        assert!(
-            failed_dir().join("ghost.json").exists(),
-            "an unknown-task delete must quarantine on attempt 1"
-        );
+        assert!(!failed_dir().join("ghost.json").exists());
         assert!(!spool.join("ghost.json").exists());
+        assert!(!retries.attempts.contains_key("ghost.json"));
+        let marker: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(done_dir().join("ghost.json")).unwrap()).unwrap();
         assert_eq!(
-            retries.attempts.get("ghost.json").copied(),
-            None,
-            "attempt-1 poison must not buy retry budget"
+            marker["ok"], true,
+            "delete retry converges to absence: {marker}"
         );
-        let marker: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(done_dir().join("ghost.json")).expect("failure marker"),
-        )
-        .unwrap();
-        assert_eq!(marker["ok"], false);
-        assert!(
-            marker["error"]
-                .as_str()
-                .unwrap()
-                .contains("scheduled task not found: nosuch99"),
-            "{marker}"
-        );
+        assert_eq!(marker["task_id"], "nosuch99");
     }
 
     #[tokio::test]
@@ -5607,7 +5574,6 @@ mod tests {
         assert_eq!(batch, vec![root.join("fresh.json")]);
 
     }
-
 
     #[test]
     fn explicit_blank_target_is_rejected_for_every_request_kind() {

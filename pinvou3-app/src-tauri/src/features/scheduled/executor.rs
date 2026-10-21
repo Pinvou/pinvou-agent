@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+use deepseek_tui::automation_manager::SharedAutomationManager;
 use deepseek_tui::core::events::TurnOutcomeStatus;
 use deepseek_tui::task_manager::{
     ExecutionTask, TaskExecutionEvent, TaskExecutionResult, TaskExecutor, TaskStatus,
@@ -16,8 +17,9 @@ use tokio_util::sync::CancellationToken;
 use crate::features::assistant::engine_pool::{EnginePool, ScheduledTurnCompletion};
 use crate::features::assistant::platform::bridge::Pinvou3Bridge;
 use crate::features::memory::MemoryOrganizeReport;
-use crate::features::scheduled::tasks::{SCHEDULED_MESSAGE_MAX_CHARS, ScheduledTaskKindLookup};
-use crate::features::sessions::validators::{is_aux_session_id, is_sched_session_id};
+use crate::features::scheduled::tasks::{
+    SCHEDULED_MESSAGE_MAX_CHARS, ScheduledTaskKindLookup, ScheduledTaskKindStore,
+};
 use crate::features::sessions::{ScheduledRunMode, ScheduledRunProfile, SessionStore};
 use crate::platform::prefs::{SavedModel, UserPrefs};
 
@@ -209,7 +211,7 @@ impl ScheduledConversationRuntime for EngineScheduledRuntime {
 
 /// Upper bound for one scheduled-message delivery attempt (same reasoning as
 /// features::messaging's delivery timeout: a wedged engine must not hang the
-/// scheduled run; the run is marked failed and the next fire retries).
+/// scheduled run; the run is marked failed; recurring tasks can try at their next slot).
 const SCHEDULED_MESSAGE_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Run-time re-check for a scheduled-message target — the delivery-side twin
@@ -221,26 +223,10 @@ const SCHEDULED_MESSAGE_DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 /// free function so tests can drive it with a real store without an
 /// EnginePool.
 pub(crate) fn ensure_deliverable_target(store: &SessionStore, target_session: &str) -> Result<()> {
-    const MAX_TARGET_SESSION_LEN: usize = 128;
-    if target_session.is_empty()
-        || target_session.len() > MAX_TARGET_SESSION_LEN
-        || !target_session
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        anyhow::bail!("invalid target session id");
-    }
+    super::message::validate_target_identity(target_session).map_err(anyhow::Error::msg)?;
     if store.scheduled_profile(target_session).is_some() {
         anyhow::bail!(
             "target {target_session} is a scheduled-run session and cannot receive scheduled messages"
-        );
-    }
-    if is_sched_session_id(target_session)
-        || is_aux_session_id(target_session)
-        || target_session.to_ascii_lowercase().starts_with("eval_")
-    {
-        anyhow::bail!(
-            "target session {target_session} is isolated and cannot receive scheduled messages"
         );
     }
     // Review round-4 B1 / round-5 M-A disposition: ACP-backend and
@@ -251,10 +237,11 @@ pub(crate) fn ensure_deliverable_target(store: &SessionStore, target_session: &s
     // M-A): this check reads the sidecar `session-agents.json` from disk,
     // not the live AcpPool — it therefore misses sessions classified ACP
     // only by the pool's in-memory metadata recovery (index record lost AND
-    // boot recovery failed — a double fault), and a corrupt sidecar fails
-    // open for all records rather than only absent ones. Narrower than
-    // messaging's gate; the live-pool consult is the follow-up.
-    let agents = crate::features::codex_acp::SessionAgentStore::load_or_empty();
+    // boot recovery failed — a double fault). A present unreadable/corrupt
+    // index now fails closed; a missing index remains an empty-index case.
+    // This is narrower than messaging's live-pool gate.
+    let agents = crate::features::codex_acp::SessionAgentStore::load()
+        .map_err(|_| anyhow!("target session agent index unavailable"))?;
     if agents.backend(target_session).is_acp() || agents.is_code_session(target_session) {
         anyhow::bail!(
             "target session {target_session} is an ACP/code session; deliver through the independent code page, not scheduled messages"
@@ -270,6 +257,7 @@ pub(crate) fn ensure_deliverable_target(store: &SessionStore, target_session: &s
 pub(crate) struct ScheduledChatExecutor {
     runtime: Arc<dyn ScheduledConversationRuntime>,
     kind_resolver: Option<KindResolver>,
+    dispatch_store: Option<(SharedAutomationManager, ScheduledTaskKindStore)>,
 }
 
 impl ScheduledChatExecutor {
@@ -277,10 +265,12 @@ impl ScheduledChatExecutor {
         Self {
             runtime,
             kind_resolver: None,
+            dispatch_store: None,
         }
     }
 
-    /// Injects the automation_id → kind resolver (production reads the task-kinds sidecar).
+    /// Injects a kind resolver for isolated executor fixtures.
+    #[cfg(test)]
     pub(crate) fn with_kind_resolver(mut self, kind_resolver: KindResolver) -> Self {
         self.kind_resolver = Some(kind_resolver);
         self
@@ -290,23 +280,39 @@ impl ScheduledChatExecutor {
         store: SessionStore,
         pool: EnginePool,
         model_id_resolver: ModelIdResolver,
-        kind_resolver: Option<KindResolver>,
+        dispatch_store: Option<(SharedAutomationManager, ScheduledTaskKindStore)>,
     ) -> Self {
-        let executor = Self::new(Arc::new(EngineScheduledRuntime::new(
+        let mut executor = Self::new(Arc::new(EngineScheduledRuntime::new(
             store,
             pool,
             model_id_resolver,
         )));
-        match kind_resolver {
-            Some(resolver) => executor.with_kind_resolver(resolver),
-            None => executor,
-        }
+        executor.dispatch_store = dispatch_store;
+        executor
     }
 
     fn kind_for(&self, automation_id: &str) -> ScheduledTaskKindLookup {
         match self.kind_resolver.as_ref() {
             Some(resolver) => resolver(automation_id),
             None => ScheduledTaskKindLookup::Chat,
+        }
+    }
+
+    /// Snapshot the current body and destination under the same lock that
+    /// spans app updates. Queued TaskRecord prompts remain enqueue-time input;
+    /// a scheduled message uses the complete configuration at dispatch time.
+    async fn dispatch_snapshot(
+        &self,
+        id: &str,
+        queued_prompt: &str,
+    ) -> Result<(ScheduledTaskKindLookup, String)> {
+        match &self.dispatch_store {
+            Some((automations, kinds)) => {
+                let manager = automations.lock().await;
+                let record = manager.get_automation(id)?;
+                Ok((kinds.checked_kind_lookup_for(id)?, record.prompt))
+            }
+            None => Ok((self.kind_for(id), queued_prompt.to_string())),
         }
     }
 
@@ -321,12 +327,10 @@ impl ScheduledChatExecutor {
     /// waiting out the delivery bound.
     async fn execute_session_message(
         &self,
-        automation_id: &str,
         target_session: &str,
         message: &str,
         cancel: CancellationToken,
     ) -> TaskExecutionResult {
-        let _ = automation_id;
         if cancel.is_cancelled() {
             return canceled();
         }
@@ -355,7 +359,7 @@ impl ScheduledChatExecutor {
             None => canceled(),
             Some(Ok(())) => TaskExecutionResult {
                 status: TaskStatus::Completed,
-                result_text: Some(format!("delivered to session {target_session}")),
+                result_text: Some(super::message::delivered_result(target_session)),
                 error: None,
                 terminal_reason: TaskTerminalReason::Completed,
             },
@@ -442,13 +446,17 @@ impl TaskExecutor for ScheduledChatExecutor {
         // degrading it to a chat task would execute the kind-specific stored prompt as
         // an unattended full-permission agent conversation, which is the unsafe
         // direction when the sidecar and the binary disagree.
-        match self.kind_for(&automation_id) {
+        let (kind, message) = match self.dispatch_snapshot(&automation_id, task.prompt()).await {
+            Ok(snapshot) => snapshot,
+            Err(_) => return failed("scheduled task configuration unavailable before dispatch"),
+        };
+        match kind {
             ScheduledTaskKindLookup::MemoryOrganize => {
                 return self.execute_memory_organize(cancel).await;
             }
             ScheduledTaskKindLookup::SessionMessage { target_session } => {
                 return self
-                    .execute_session_message(&automation_id, &target_session, task.prompt(), cancel)
+                    .execute_session_message(&target_session, &message, cancel)
                     .await;
             }
             ScheduledTaskKindLookup::Unsupported(raw) => {
@@ -1220,12 +1228,7 @@ mod tests {
             let runtime = Arc::new(ScriptedRuntime::new([]));
             let executor = ScheduledChatExecutor::new(runtime.clone());
             let result = executor
-                .execute_session_message(
-                    "automation-1",
-                    "target001",
-                    body,
-                    CancellationToken::new(),
-                )
+                .execute_session_message("target001", body, CancellationToken::new())
                 .await;
             assert_eq!(
                 result.status,
@@ -1338,7 +1341,7 @@ mod tests {
     fn delivery_failure_reason_is_redacted_in_source() {
         let source = include_str!("executor.rs");
         let production = source
-            .split("#[cfg(test)]")
+            .split("\n#[cfg(test)]\nmod tests {")
             .next()
             .expect("the production half present");
         let body = production
@@ -1648,7 +1651,7 @@ mod tests {
             let cancel = CancellationToken::new();
             cancel.cancel();
             let result = executor
-                .execute_session_message("task", "target001", &message, cancel)
+                .execute_session_message("target001", &message, cancel)
                 .await;
             assert_eq!(result.status, TaskStatus::Canceled);
         }
@@ -1796,6 +1799,15 @@ mod tests {
             assert!(err.to_string().contains("ACP/code"), "{err}");
             std::fs::write(store.manager.sessions_dir().join("chat-tgt.json"), "{}").unwrap();
             assert!(ensure_deliverable_target(&store, "chat-tgt").is_ok());
+            std::fs::write(&sidecar, "{broken").unwrap();
+            assert!(
+                ensure_deliverable_target(&store, "chat-tgt")
+                    .unwrap_err()
+                    .to_string()
+                    .contains("index unavailable")
+            );
+            std::fs::write(&sidecar, r#"{"version":999,"sessions":{}}"#).unwrap();
+            assert!(ensure_deliverable_target(&store, "chat-tgt").is_err());
         });
     }
 
@@ -1834,6 +1846,94 @@ mod tests {
                 "{hostile:?} must be rejected"
             );
         }
+        Ok(())
+    }
+    async fn message_snapshot_fixture() -> Result<(
+        TestRoot,
+        SharedAutomationManager,
+        ScheduledTaskKindStore,
+        String,
+    )> {
+        let root = TestRoot::new()?;
+        let automations = Arc::new(tokio::sync::Mutex::new(
+            deepseek_tui::automation_manager::AutomationManager::open(root.0.join("automations"))?,
+        ));
+        let created = automations
+            .lock()
+            .await
+            .create_automation(serde_json::from_value(serde_json::json!({
+                "name":"snapshot", "prompt":"old body", "rrule":"FREQ=HOURLY", "status":"paused"
+            }))?)?;
+        let kinds = ScheduledTaskKindStore::open(root.0.join("task-kinds.json"))?;
+        kinds.set_kind_with_target(&created.id, "session_message", "target001")?;
+        Ok((root, automations, kinds, created.id))
+    }
+
+    #[tokio::test]
+    async fn dispatch_waits_for_both_retarget_writes_before_reading_a_pair() -> Result<()> {
+        let (_root, automations, kinds, id) = message_snapshot_fixture().await?;
+        let runtime = Arc::new(ScriptedRuntime::new([]));
+        let mut executor = ScheduledChatExecutor::new(runtime);
+        executor.dispatch_store = Some((automations.clone(), kinds.clone()));
+        let update = automations.lock().await;
+        update.update_automation(
+            &id,
+            deepseek_tui::automation_manager::UpdateAutomationRequest {
+                prompt: Some("new body".to_string()),
+                ..Default::default()
+            },
+        )?;
+        let dispatched =
+            tokio::spawn(async move { executor.dispatch_snapshot(&id, "old queued body").await });
+        tokio::task::yield_now().await;
+        assert!(
+            !dispatched.is_finished(),
+            "dispatch must wait at the update's critical section"
+        );
+        kinds.set_kind_with_target(
+            &update.list_automations()?[0].id,
+            "session_message",
+            "target002",
+        )?;
+        drop(update);
+        let (kind, prompt) = dispatched.await??;
+        assert_eq!(prompt, "new body");
+        assert_eq!(
+            kind,
+            ScheduledTaskKindLookup::SessionMessage {
+                target_session: "target002".to_string()
+            }
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn real_task_manager_delivery_result_round_trips_the_target_contract() -> Result<()> {
+        let (_root, automations, kinds, id) = message_snapshot_fixture().await?;
+        let runtime = Arc::new(ScriptedRuntime::new([]));
+        let mut executor = ScheduledChatExecutor::new(runtime.clone());
+        executor.dispatch_store = Some((automations.clone(), kinds));
+        let (_task_root, manager) = manager_with_executor(Arc::new(executor)).await?;
+        let run =
+            deepseek_tui::automation_manager::run_now_shared(&automations, &id, &manager).await?;
+        let finished = wait_for_terminal_state(
+            &manager,
+            run.task_id.as_deref().expect("linked task"),
+            Duration::from_secs(5),
+        )
+        .await?;
+        assert_eq!(finished.status, TaskStatus::Completed);
+        assert_eq!(
+            runtime.deliveries(),
+            vec![("target001".to_string(), "old body".to_string())]
+        );
+        assert_eq!(
+            super::super::message::delivered_target(
+                finished.result_summary.as_deref().expect("result")
+            ),
+            Some("target001")
+        );
+        manager.shutdown();
         Ok(())
     }
 }

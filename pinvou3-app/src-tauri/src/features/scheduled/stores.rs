@@ -290,6 +290,8 @@ pub(crate) struct VersionedJsonStore<T: VersionedRegistry> {
     /// through. Cleared by a successful persist (the file is healthy again)
     /// and by a successful read of a present file.
     quarantined: Arc<std::sync::atomic::AtomicBool>,
+    #[cfg(test)]
+    pub(crate) fail_next_persist: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Cheap change detector for the registry file: a `stat` is orders of
@@ -594,6 +596,8 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
                 DiskRead::Failed { .. } => (T::default(), false, true),
             };
         let store = Self {
+            #[cfg(test)]
+            fail_next_persist: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             path: Arc::new(path),
             registry: Arc::new(RwLock::new(registry)),
             // Round-37 review MAJOR: a failed boot read must NOT install the
@@ -623,6 +627,7 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
     #[cfg(test)]
     pub(crate) fn from_registry(path: PathBuf, registry: T) -> Self {
         Self {
+            fail_next_persist: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             path: Arc::new(path),
             registry: Arc::new(RwLock::new(registry)),
             seen: Arc::new(RwLock::new(None)),
@@ -791,6 +796,13 @@ impl<T: VersionedRegistry> VersionedJsonStore<T> {
     }
 
     pub(crate) fn persist(&self, registry: &T) -> Result<()> {
+        #[cfg(test)]
+        if self
+            .fail_next_persist
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+        {
+            bail!("injected sidecar persist failure");
+        }
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create {} dir {}", T::LABEL, parent.display()))?;
@@ -1352,27 +1364,80 @@ impl VersionedJsonStore<ScheduledTaskKindRegistry> {
             .unwrap_or(ScheduledTaskKindLookup::Chat)
     }
 
+    /// Mutation/dispatch readers need a current, readable registry. Keeping a
+    /// previous cache is useful for display, but cannot prove a safe body cap
+    /// or pair a newly read message with its destination after a read failure.
+    pub(crate) fn checked_kind_lookup_for(
+        &self,
+        automation_id: &str,
+    ) -> Result<ScheduledTaskKindLookup> {
+        if let Err(error) = std::fs::metadata(self.path.as_ref()) {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                if let Some(parent) = self.path.parent() {
+                    match std::fs::read_dir(parent) {
+                        Ok(entries) => {
+                            for entry in entries {
+                                let entry = entry.context("read scheduled task kind directory")?;
+                                if entry
+                                    .file_name()
+                                    .to_string_lossy()
+                                    .starts_with("task-kinds.json.invalid-")
+                                {
+                                    bail!(
+                                        "scheduled task kind metadata unavailable after quarantine"
+                                    );
+                                }
+                            }
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => {
+                            return Err(error).context("read scheduled task kind directory");
+                        }
+                    }
+                }
+            } else {
+                return Err(error).context("read scheduled task kind metadata");
+            }
+        }
+        let registry = match Self::read_from_disk(
+            self.path.as_ref(),
+            &self.quarantined,
+            self.seen
+                .read()
+                .is_some_and(|stamp| stamp != FileStamp::ABSENT),
+        ) {
+            DiskRead::Loaded(registry) | DiskRead::Migrated(registry) => registry,
+            DiskRead::Failed { .. } => bail!("scheduled task kind metadata unavailable"),
+        };
+        Ok(registry
+            .tasks
+            .get(automation_id)
+            .map(Self::classify_kind_entry)
+            .unwrap_or(ScheduledTaskKindLookup::Chat))
+    }
+
     /// Classify the loaded entry after the caller's version refresh.
     fn stored_kind(&self, automation_id: &str) -> Option<ScheduledTaskKindLookup> {
         self.registry
             .read()
             .tasks
             .get(automation_id)
-            .map(|entry| match entry.kind.as_str() {
-                SCHEDULED_TASK_KIND_MEMORY_ORGANIZE => ScheduledTaskKindLookup::MemoryOrganize,
-                SCHEDULED_TASK_KIND_SESSION_MESSAGE => match entry.target_session.as_deref() {
-                    Some(target) if !target.trim().is_empty() => {
-                        ScheduledTaskKindLookup::SessionMessage {
-                            target_session: target.trim().to_string(),
-                        }
+            .map(Self::classify_kind_entry)
+    }
+
+    fn classify_kind_entry(entry: &ScheduledTaskKindEntry) -> ScheduledTaskKindLookup {
+        match entry.kind.as_str() {
+            SCHEDULED_TASK_KIND_MEMORY_ORGANIZE => ScheduledTaskKindLookup::MemoryOrganize,
+            SCHEDULED_TASK_KIND_SESSION_MESSAGE => match entry.target_session.as_deref() {
+                Some(target) if !target.trim().is_empty() => {
+                    ScheduledTaskKindLookup::SessionMessage {
+                        target_session: target.trim().to_string(),
                     }
-                    // A target-less session_message entry is drift (the
-                    // creation path never writes one): fail the run like an
-                    // unsupported kind instead of guessing.
-                    _ => ScheduledTaskKindLookup::Unsupported(entry.kind.clone()),
-                },
-                other => ScheduledTaskKindLookup::Unsupported(other.to_string()),
-            })
+                }
+                _ => ScheduledTaskKindLookup::Unsupported(entry.kind.clone()),
+            },
+            other => ScheduledTaskKindLookup::Unsupported(other.to_string()),
+        }
     }
 
     /// None removes the task's kind record (back to an ordinary chat task).
@@ -1663,6 +1728,69 @@ mod foreign_writer_tests {
         let staging = path.with_extension("json.tmp-fixture");
         std::fs::write(&staging, payload).expect("write staging kind registry");
         std::fs::rename(&staging, path).expect("rename kind registry");
+    }
+
+    #[test]
+    fn strict_kind_lookup_refuses_corruption_and_recovers() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        let store = kind_store(&path);
+        assert_eq!(
+            store.checked_kind_lookup_for("ordinary").unwrap(),
+            ScheduledTaskKindLookup::Chat
+        );
+        assert_eq!(
+            store.checked_kind_lookup_for("ordinary").unwrap(),
+            ScheduledTaskKindLookup::Chat
+        );
+        store
+            .set_kind_with_target("message", "session_message", "target001")
+            .unwrap();
+        std::fs::write(&path, b"{broken").unwrap();
+        assert!(store.checked_kind_lookup_for("message").is_err());
+        assert!(
+            store.checked_kind_lookup_for("message").is_err(),
+            "quarantine absence is not a chat proof"
+        );
+        assert!(
+            kind_store(&path)
+                .checked_kind_lookup_for("message")
+                .is_err(),
+            "quarantine survives a process restart"
+        );
+        write_kind_registry(
+            &path,
+            serde_json::json!({"message":{"kind":"session_message","target_session":"target002","updated_at":"2026-01-01T00:00:00Z"}}),
+        );
+        assert!(
+            matches!(store.checked_kind_lookup_for("message").unwrap(), ScheduledTaskKindLookup::SessionMessage {target_session} if target_session == "target002")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn target_persist_failure_restores_memory_and_disk() {
+        let dir = temp_home();
+        let path = dir.join("task-kinds.json");
+        let store = kind_store(&path);
+        store
+            .set_kind_with_target("message", "session_message", "target001")
+            .unwrap();
+        let original = std::fs::read(&path).unwrap();
+        store
+            .fail_next_persist
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(
+            store
+                .set_kind_with_target("message", "session_message", "target002")
+                .is_err()
+        );
+        assert_eq!(
+            store.target_session_for("message").as_deref(),
+            Some("target001")
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn memory_organize() -> String {

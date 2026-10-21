@@ -335,60 +335,151 @@
 
 ---
 
-## 10. Implementation addendum: scheduled messages (the `session_message` kind, 2026-09-29; re-cut and translated 2026-10-06)
+## 10. Scheduled messages (`session_message`, revised for R19)
 
-On top of §9's CRUD, a third task kind: `session_message` (scheduled messages) — at fire time no new conversation is created; instead the task's prompt is delivered into the designated session (steer when busy, a new turn when idle, reusing features/messaging's delivery semantics).
+A scheduled message reuses the existing automation scheduler and CRUD flow. At
+execution it delivers the stored body into an existing ordinary session: steer
+when a turn accepts it, otherwise the EnginePool messaging new-turn path. It
+creates no separate scheduled-run conversation and no new scheduler or store.
 
-### 10.1 Design decisions
+### 10.1 Surfaces and product decisions
 
-| Decision | Outcome | Rationale |
-|---|---|---|
-| Shape | A task kind, not a new tool family | Scheduling/CRUD/panel/pause-resume/run history are all reused; a new scheduling loop would be duplication |
-| Kind derivation | On create, the presence of the `target_session` field means session_message; on update, `target_session` is only a retarget of an existing session_message task — an ordinary task cannot be converted | The tool surface and the panel express it the same way, with no half-specified state; an explicit kind parameter is mutually exclusive with it |
-| Target allowlist | Ordinary sessions only; sched-/aux-/eval_ rejected at every layer (server validation, watcher re-check, executor re-check before each delivery) | Waking an unattended session on a schedule is the recursion direction; the isolation-prefix semantics follow contract §5 |
-| Target storage | Reuses the task-kinds sidecar (entries gain an additive target_session field) | No new store file; old records stay compatible via serde defaults |
-| Message body | The task's prompt (≤32k, the same cap as the messaging channel) | The cap is validated at create and update, with a belt re-check before each executor delivery; the panel/details/run records display it naturally, with no new field |
-| Self-addressing | Allowed (target = the creating session is the main use case) | The product currently runs full-auto approval; the practical review surface is the timeline result card and the audit log; the full message text is visible in the timeline |
-| Run records | Thread-less (like memory_organize), with the result text naming the target session | The target session is the thing to open; known limitation: a run record is not yet click-to-jump to the target |
-| Dead targets | A deleted target session → that delivery's run is marked failed (the delivery channel's own error) | No silent retry loop. Kind-accurate (round-17 M4): a RECURRING task's next fire fails the same way and leaves a trace; a failed ONCE delivery is TERMINAL — no future slot exists, so the task lands in Paused and nothing retries it |
-| Steer-loss window | A steer accepted but then dropped by the foundation → the run records Completed while the message never landed | The same pre-existing window as features/messaging (documented in messaging/mod.rs); this kind inherits and discloses it honestly; it is a rare event |
-| Delivery bound | Steer + dispatch share one 30s budget (the messaging channel bounds each stage at 30s) | A slow cold engine start can time one delivery out into failure; a RECURRING task's next fire retries, while a failed ONCE stays terminal (see dead targets above) |
+| Surface | Supported behavior |
+|---|---|
+| MCP create | Supplying `target_session` derives `session_message`; it is mutually exclusive with an explicit kind. Ordinary create remains unchanged. |
+| MCP read/list | Both expose `kind`; read also exposes `targetSession`. They read the capped kinds registry without rewriting it. Unreadable, corrupt or newer metadata is an error, not proof of an ordinary task. |
+| MCP update | Retarget an existing scheduled-message task; an ordinary task cannot be converted. Prompt/rrule replacements require review and submission in the existing panel under #628's product decision. |
+| Panel | Displays the target and full body, edits the body/schedule and manages pause/delete/run-now. It cannot create or retarget scheduled messages. |
+| Timeline tool card | Shows the requested target for a matching receipt (or a request still marked pending), plus a 120-character body excerpt. A mismatched replay hides the new requested target. This is not a full-body review or deterministic authorization UI. |
+| CLI | List/show preserve the raw kind and target. `run` refuses this kind with a product-host remedy; creation and retargeting are not implemented. An update may replace its body only within 32,768 Unicode characters. Unknown kinds and unreadable kind metadata refuse prompt replacement. Other documented CLI mutations retain their existing scope. |
 
-### 10.2 Acceptance addendum
+Self-addressing is allowed. Task access follows the existing local-user permission
+model; there is no creating-session ownership check for retargeting. Tools must
+follow explicit user intent and ask when the task identity is ambiguous, per #628.
+This guidance does not prove intent or prevent prompt injection. Delivery injects
+the raw body as a target instruction, without a machine-readable origin envelope
+or a delivery audit line in the target ledger. CRUD auditing and the run result
+provide limited provenance; they do not provide messaging's origin/audit parity.
+Prompt/rrule tool replacement remains panel-only. No dedicated confirmation card,
+definition backup, undo system, or new authorization protocol is added here.
 
-| # | Scenario | Verification | Priority |
-|---|---|---|---|
-| J1 | Scheduled message delivers at fire time (busy → steer / idle → new turn) | ● Rust executor tests + manual | P0 |
-| J2 | Target allowlist enforced across the three layers | ● python + ● Rust (create rejection / watcher isolation+charset / executor gate test incl. the run-level pin) | P0 |
-| J3 | Kind is one-time: an ordinary task cannot be converted via update | ● Rust | P0 |
-| J4 | Retarget is limited to session_message tasks and the target must exist | ● Rust | P1 |
-| J5 | The watcher loop lands the kind+target sidecar | ● Rust | P0 |
-| J6 | Delivery run records are thread-less and the result names the target | ● Rust + manual | P1 |
+### 10.2 Validation and persistence
 
-● = landed test (the round-3 review verified these by name; the earlier ◇ "planned" markers misread as unimplemented and are retired).
+- The body cap is **32,768 Unicode characters** after trimming. The MCP server
+  applies it to all task kinds; the domain/panel conservatively enforce it for
+  any kind not definitively ordinary chat, and the executor rechecks it for
+  scheduled messages. CLI session-message replacements share the app constant.
+- Target IDs have an ASCII letters/digits/`-`/`_` charset and a 128-character
+  maximum. Leading `_` is reserved; case-insensitive `sched-`, `aux-`, `eval_`
+  and `agentic_` targets are refused. Server, watcher and domain/executor apply
+  identity checks. Exact directory-entry spelling and a regular non-symlink
+  session file are required at server, domain and each delivery.
+- **ACP/code classification is checked at domain and executor only**, from
+  `session-agents.json`. A missing index is the store's normal empty-index case;
+  a present unreadable/corrupt/newer index fails closed. This does not consult
+  live AcpPool recovery, and cannot identify code ownership absent from the index.
+- Create stages a **Paused** automation, persists workspace/model/kind+target,
+  then activates only if requested. Workspace failure rolls back the definition.
+  A crash before activation can leave a paused partial record, not an Active
+  kind-less chat. Cleanup is best-effort when its own disk write fails.
+- Update reads a mandatory original definition and a fresh readable kind registry
+  before mutation. Its app AutomationManager mutex spans definition and target
+  writes; executor dispatch reads the body and kind/target under that same mutex.
+  A dispatch therefore sees an entire old or new pair. The lock is released before
+  engine delivery; a later edit cannot recall a pair already captured.
+- A target-save or workspace-save error attempts to restore the original mutable
+  definition (name/body/schedule/model/status); store-level target failure restores
+  its in-memory entry as well. Failure to obtain the original snapshot stops the
+  update. These files are **not one crash-atomic transaction**: process death
+  between writes, rollback-write failure, and external CLI/file writers outside
+  the app mutex remain residual risks. Stop external writers while the app runs,
+  inspect and repair the definition/target pair after a failed rollback.
+- For scheduled messages, delivery uses the complete configuration current when
+  execution starts. A queued TaskRecord's prompt is its enqueue-time snapshot;
+  after editing it can differ from the body actually delivered. The result records
+  the delivered destination, not an immutable copy of the delivered body.
+- Production dispatch refuses unreadable/quarantined whole kinds metadata rather
+  than downgrading to chat. An absent entry in a healthy registry still means chat;
+  external removal of an individual entry cannot be distinguished from that case.
+- `target_session` is additive and old records read normally. **Downgrading is not
+  write-safe**: an older typed app can drop target fields when rewriting the
+  registry. Stop the app before downgrade; preserve the registry privately and
+  restore it before re-upgrade, or recreate affected tasks with their destinations. A
+  scheduled-message entry without a target fails closed after re-upgrade.
 
-### 10.3 Further disclosed boundaries (round 4)
+### 10.3 Execution and history boundaries
 
-- **Misfire semantics**: a missed recurring fire within the 60s grace catches up; beyond it the fire is silently skipped (the next occurrence runs). A missed ONCE task delivers arbitrarily late with no staleness bound — surprising for a *message*, accepted for v1. And a FAILED ONCE delivery is worse than late (round-13 MAJOR 2): `next_after_slot` returns None, the task silently pauses, and the message is permanently lost — there is no next fire; recreate the task to resend.
-- **No origin envelope**: unlike features/messaging's delivered block, a scheduled delivery injects the raw task prompt as the target's opening instruction, with no machine-readable origin block; the audit trail and the run record are the provenance. An origin block is future work.
-- **ACP/code targets**: rejected at creation and per fire via the sidecar `session-agents.json` — NARROWER than messaging's twin gate (which consults the live AcpPool's metadata recovery; a double-faulted index plus failed boot recovery escapes this check) — deliver through the independent code page instead.
-- **Panel asymmetry**: the panel can neither create a session-message task nor retarget one (retargeting an ordinary task is impossible in the domain); target-setting is tool-only.
-- **Record-vs-reality windows (round 6)**: once `pool.steer` returns Ok the message cannot be recalled — a cancel landing between the enqueue and the next poll records **Canceled** while the message still lands; symmetrically the 30s timeout can record **Failed** while a just-submitted steer/dispatch lands. The run record is bookkeeping, not a delivery receipt.
-- **Model binding is display-only for this kind (round 6 minor 3)**: creation accepts `target_session` together with `model`/`model_id` and the DTO displays the binding, but delivery never consults it — steer uses the target's live engine, the dispatch fallback resolves the model exactly as the target session's own next turn would (`prepare_runtime_model` → session override else app default). The binding is retained for the DTO/panel display and for a future per-message model override.
-- **Poison classification**: explicit domain pre-check misses (`target_session not found:` and `scheduled task not found:`), target/class/isolation rejection, and message caps poison at attempt 1. Inner archive/delete IO errors, including NotFound, remain retryable; generic OS text is not a permanent marker. Several legacy kind/blank markers remain unreachable from watcher apply because shape validation rejects them first.
-- **Delivery at-least-once / crash-replay window (round 7 minor 8)**: the delivery path has NO result marker — a crash between the engine accepting a turn and the run record persisting replays the message on the next process start (the foundation scheduler advances `next_run_at` only after the run persists). This is the delivery-path analogue of the CRUD spool's accepted marker window, but the window is foundation-owned.
-- **The 32k prompt cap is tool-stricter than the panel (round 7 minor 9)**: the server caps EVERY kind's prompt at 32k code points; the domain/panel cap session_message prompts only — the same deliberate-stricter posture as the rrule subset (CRON/minute-granular rejected at the tool layer), recorded so it does not read as drift.
-- **Feature switch scope (round 6 minor 4)**: disabling `scheduled-task-automation` removes the MCP tool surface but does NOT stop existing `session_message` tasks from firing — the scheduler/executor are app core and the panel remains the management surface (pause/delete there), same as every other task kind.
-- **Whole-sidecar corruption fails open to a chat run (round 15 minor 3)**: a quarantined task-kinds file loads as an empty registry, so `kind_lookup_for` returns Chat for every task — a session-message-authored prompt would then execute as an ordinary unattended Yolo conversation. This is the shared store posture (per-record corruption quarantines only that record; whole-file corruption is the unsafe direction) that `memory_organize` already lives with; this kind widens its blast radius. A fail-closed sentinel (refuse to run anything while the kinds file is unreadable) is future work.
-- **Target-session permission mode (round 15 minor 8)**: a dispatched (idle-target) delivery executes under the TARGET session's own permission mode through the engine pool's dispatch funnel — byte-for-byte the posture of `features::messaging`'s new-turn delivery. A steer into a mid-turn target joins the turn already running there, so there is no separate mode decision. Scheduled messages do not elevate or restrict the target's settings.
-- **Run-now is not serialized against a scheduled delivery; pause does not cancel one (round 15 minor 9)**: `run_now` (foundation `run_now_shared`) has no in-flight-run check, and pausing a task signals the scheduler only — an in-flight delivery is neither preempted nor awaited. So a manual run-now landing on top of an in-flight scheduled delivery can double-deliver (the accepted at-least-once posture above), and a pause during a delivery lets that delivery finish while later fires stop. Both are foundation-inherited scheduling semantics, recorded here because §10.3 is the durable record.
+- A completed delivery result means the engine accepted steer/new-turn handoff;
+  it does not mean the target's model completed its response. The retained linked
+  completed TaskRecord result stores the destination using a shared formatter and
+  parser. Retargeting A to B leaves old retained rows showing A. Missing/pruned
+  results, malformed text or removed kind metadata stay unknown. Deleted archives
+  still lose this footer when kind metadata is removed. The panel shows a localized
+  missing-target message for identifiable scheduled-message runs; it does not jump
+  to the destination session.
+- The delivery attempt shares a 30-second bound across steer and new-turn handoff.
+  Cancellation is selected before a ready delivery result; after the delivery
+  future returns success there is no await that could turn it into Canceled in
+  this executor. Cancellation/timeout stops waiting on an in-flight future; it
+  cannot promise to retract effects already handed to another task. No specific
+  cancel-after-success or timeout-after-success window is asserted as verified.
+- An accepted steer can still be lost before the target consumes it. This inherited
+  EnginePool window permits Completed without consumption. A crash between engine
+  acceptance and durable task/run reconciliation is not an exactly-once receipt;
+  recovery or manual retry can duplicate delivery. There is no delivery-id dedupe
+  journal, and automatic replay of every crash is not guaranteed.
+- A recurring slot within the scheduler's 60-second grace is eligible only if
+  there is no existing slot record or active run. An active run skips the slot;
+  an older missed recurring slot jumps directly to the next future occurrence.
+  A missed ONCE can run arbitrarily late. After it is enqueued, ONCE has no future
+  slot and pauses even if delivery fails; retry requires an explicit new run or
+  task. The next recurring slot is a new attempt, not guaranteed recovery of the
+  failed message (the task may have been edited).
+- Manual run-now has no in-flight check and can overlap a scheduled run. Pause
+  stops future scheduling without canceling an existing delivery. The task's model
+  binding is display-only for this kind: delivery uses the target's current live
+  turn or its own next-turn model and permission settings.
+- Disabling the MCP feature removes its tools without stopping existing scheduled
+  messages; manage those in the panel. CRUD spool idempotency does not deduplicate
+  delivery. Delete retains #628's ensure-absent success for retry after success.
+- Watcher shape validation handles invalid fields before apply. The remaining
+  string classifier recognizes narrow domain dispositions (wrong retarget kind,
+  explicit missing task/target, ACP/code, expired ONCE). Generic I/O, parse and
+  index-read failures use bounded retry. A typed domain-error migration remains
+  debt; arbitrary OS text is not a permanent-error contract.
 
+### 10.4 Verification scope and remaining debt
 
-### Round-18 review follow-up (#629)
+R19 adds CLI kind/target inspection and safe-update regressions, MCP read/list and
+invalid-target tests, strict registry/index failure tests, target-store restore,
+mandatory pre-update reads, app-lock body/target interleaving, and a real
+TaskManager → executor → retained result → target-parser round trip. UI render
+fixtures cover both destination rows and unknown-target text. A padded target is
+normalized consistently in validation and receipt digests. Parent #628's paused
+create/workspace rollback tests remain part of the combined branch.
 
-- Target existence is checked by an exact directory-entry comparison at the domain boundary and before each executor delivery. Case-insensitive filesystem resolution cannot alias a differently spelled ACP/code target. The check reads directory metadata, not a full transcript; existence does not guarantee a readable transcript, and later runtime errors still fail the run.
-- Delivered-target history reads the completed run's linked, retained TaskRecord result summary. Changing a task from target A to B leaves the old run showing A. Missing/pruned task results, malformed summary text, or removed task-kind metadata stay unknown instead of borrowing today's target. Deleted-task archives still lack this footer after their kind metadata is removed. This adds no foundation schema or parallel run store.
-- Failed retarget rollback now asserts the original prompt and recurrence in addition to name/model/status. Existing watcher validation already rejects explicit blank targets; the new regression verifies create, update and delete rather than adding a redundant check. Fake receipts in both Python test harnesses include the target field in their digest, including a keyed-target replay journey.
-- A cached kinds entry reloads foreign edits as well as additions, so a CLI retarget is visible before the next fire. NotFound is permanent only at delete's initial task lookup; inner archive/delete I/O errors remain retryable. Already-canceled delivery fires win over empty/oversized-body validation. Canceled or failed-without-error rows reuse the localized status rather than claiming that a conversation is unavailable.
-- The unused `uiScheduled.subtitle` and `uiChat.ready` additions are removed; the target-session label is pinned in every locale. The update cap diagnostic and digest-call indentation are aligned with their counterparts. The model-binding comment now accurately describes its generic error.
-- Remaining delivery seam debt (R18 minor 8): the live EnginePool steer/dispatch body's order is guarded by bounded, mutation-tested source contracts, not a behavioral fake. A steer-Ok fall-through mutant is not yet covered by a behavioral seam; extracting that port remains follow-up work, not a claimed fix here. Real-cadence performance notes (minor 11) remain: delivery shares a preferences read with chat execution, the ACP sidecar is uncapped, and update takes a second snapshot read. Panel kind/target display now uses one lookup snapshot instead of two. These are disclosed rather than represented as optimizations in this wave.
+These are deterministic local regressions. Exact commands, current counts, entry
+sizes, live/manual acceptance and platform limitations are recorded in the PR's
+latest verification section; historical review measurements are not current
+candidate measurements. Parent #628's live A1/A4 ordinary-task acceptance does not
+by itself verify this kind's delivery.
+
+R19 Linux Tauri/Wry acceptance also exercised this kind with the configured real
+model: a conversation created a self-targeted scheduled message through MCP; the
+2026-10-21 11:04 UTC ONCE slot was enqueued at 11:04:06.469 UTC and produced the
+expected model response. The actual panel showed the target, full body and
+completed destination footer. An IPC/domain retarget followed by manual run-now
+reached a second ordinary session and produced the expected real response, while
+the old run retained its original destination. A further 30-second observation
+left exactly two completed runs, one delivered body/reply per target, no scheduled
+run conversation and a paused fixture task. Real stdio read/list also projected
+the kind/target correctly. Test app and driver were stopped afterward. Live busy
+steer, packaged release, Web UI and native Windows/macOS acceptance were not run.
+
+Remaining debt is explicit: the live EnginePool steer/fallback order still uses
+bounded source contracts rather than an extracted behavioral fake; per fire there
+is synchronous session directory scanning, a full uncapped ACP index parse,
+preferences I/O, and a capped full kinds-registry read on the single worker.
+History projection still performs result/metadata lookups per row. No performance
+optimization, exact-once receipt, origin envelope or native Windows/macOS manual
+acceptance is claimed. The approved entry budget remains 506,000 B on both builds.

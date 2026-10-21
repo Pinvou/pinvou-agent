@@ -38,6 +38,7 @@ const envelope = payload =>
   JSON.stringify({ content: [{ type: 'text', text: JSON.stringify(payload) }], isError: false });
 
 const t = {
+  uiScheduled: { targetSession: 'Target session' },
   uiScheduledTaskTool: {
     listLabel: 'List', duplicateNote: 'Duplicate', mismatchNote: 'Different payload; not applied.',
     created: 'Created', updated: 'Updated', deleted: 'Deleted', deletedNote: 'Archived',
@@ -168,4 +169,31 @@ test('a failed lazy card preserves raw output through the shared boundary', asyn
   assert.equal(boundary.render(), 'normal');
   boundary.state = { ...boundary.state, ...ViewErrorBoundary.getDerivedStateFromError(new Error('chunk missing')) };
   assert.equal(boundary.render(), fallback);
+});
+
+test('the lazy result card shows the requested target only for a matching receipt', () => {
+  const payload = {ok:true, kind:'create', taskId:'message-1', taskName:'Message'};
+  const parsed = parseScheduledTaskToolOutput(JSON.stringify(payload));
+  const args = {target_session:'  target001  ', prompt:'x'.repeat(200)};
+  const html = renderToStaticMarkup(React.createElement(ScheduledTaskToolCard, {parsed,args,t}));
+  assert.ok(html.includes('scheduled-task-tool-target') && html.includes('Target session: target001'));
+  assert.ok(!html.includes('x'.repeat(121)), 'body remains an excerpt, not the full-message review surface');
+  const mismatch = renderToStaticMarkup(React.createElement(ScheduledTaskToolCard, {
+    parsed:{...parsed,payloadMismatch:true},args,t,
+  }));
+  assert.ok(!mismatch.includes('scheduled-task-tool-target'), 'changed retry arguments cannot name the applied target');
+});
+
+test('task detail renders the destination and honest missing-delivery text', async () => {
+  const { ScheduledMessageTarget, scheduledRunDescription } = await vite.ssrLoadModule('/src/features/scheduled/scheduled-message-display.jsx');
+  const html = renderToStaticMarkup(React.createElement(ScheduledMessageTarget, {
+    target:'target001', label:'Target session', mutedClass:'muted', bodyClass:'body',
+  }));
+  assert.ok(html.includes('scheduled-detail-target') && html.includes('target001') && html.includes('Target session'));
+  assert.equal(renderToStaticMarkup(React.createElement(ScheduledMessageTarget, {target:null})), '');
+  const copy = {noDeliveryTarget:'Delivery target record unavailable', noRunSession:'No conversation', deliveredTo:id => `Delivered to ${id}`};
+  assert.equal(scheduledRunDescription({status:'completed'}, 'session_message', copy, s => s), copy.noDeliveryTarget);
+  assert.equal(scheduledRunDescription({status:'completed',deliveredTarget:'old-target'}, 'session_message', copy, s => s), 'Delivered to old-target');
+  assert.equal(scheduledRunDescription({status:'completed'}, null, copy, s => s), 'No conversation');
+  assert.equal(scheduledRunDescription({status:'canceled'}, 'session_message', copy, s => s), 'canceled');
 });

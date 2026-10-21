@@ -7970,7 +7970,7 @@ async function completedRunReopenPreservesStreamingFollowup() {
 // delivered to session X", backend English in zh/ja).
 async function scheduledDeliveredTargetCompositionBehavior() {
   const viewSource = fs.readFileSync(
-    path.join(__dirname, '..', 'src', 'features', 'scheduled', 'ScheduledTasksView.jsx'),
+    path.join(__dirname, '..', 'src', 'features', 'scheduled', 'scheduled-message-display.jsx'),
     'utf8',
   );
   // Round-7 M-C: count RAW occurrences, not /deliveredTo\([^)]*\)/ matches —
@@ -7980,7 +7980,7 @@ async function scheduledDeliveredTargetCompositionBehavior() {
   const occurrences = viewSource.split('deliveredTo(').length - 1;
   assert.strictEqual(occurrences, 1, 'exactly one deliveredTo composition site');
   assert.ok(
-    viewSource.includes('scheduledCopy.deliveredTo(item.deliveredTarget)'),
+    viewSource.includes('copy.deliveredTo(item.deliveredTarget)'),
     'the view passes the DTO field bare (single, unnested call)',
   );
   for (const locale of ['en', 'zh', 'ja']) {

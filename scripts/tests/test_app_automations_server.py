@@ -1962,7 +1962,7 @@ class Round33BoundaryTests(unittest.TestCase):
                 replies = []
                 with patch.object(server, "_send", side_effect=replies.append):
                     server._handle_call(1, {"name": definition["name"], "arguments": {}},
-                                        requests, automations, server.load_tool_features())
+                                        requests, automations, str(Path(tmp, "sessions")), server.load_tool_features())
                 self.assertTrue(replies[0]["result"]["isError"])
                 self.assertIn("feature_disabled", replies[0]["result"]["content"][0]["text"])
             self.assertFalse(Path(requests, "spool").exists())
@@ -1982,8 +1982,8 @@ class Round33BoundaryTests(unittest.TestCase):
         for value in ("x" * 200000, "\ud800", {"bad": "type"}):
             replies = []
             with patch.object(server, "_send", side_effect=replies.append):
-                server._handle({"id": 1, "method": value}, "unused", "unused", {})
-                server._handle_call(2, {"name": value}, "unused", "unused", {})
+                server._handle({"id": 1, "method": value}, "unused", "unused", "unused", {})
+                server._handle_call(2, {"name": value}, "unused", "unused", "unused", {})
             self.assertEqual([r["error"]["code"] for r in replies], [-32601, -32602])
             self.assertLess(len(json.dumps(replies)), 500)
 
@@ -1997,6 +1997,66 @@ class Round33BoundaryTests(unittest.TestCase):
             payload, error = server.read_scheduled_task("unused", "task-1")
         self.assertIsNone(payload)
         self.assertIn("not readable", error)
+
+
+class Round19MessageProjectionTests(unittest.TestCase):
+    def test_read_and_list_expose_kind_and_read_target_without_writing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _write_automation(root, "message-1")
+            kinds = root / "task-kinds.json"
+            kinds.write_text(json.dumps({"schema_version": 1, "tasks": {
+                "message-1": {"kind": "session_message", "target_session": "target001"}
+            }}), encoding="utf-8")
+            before = kinds.read_bytes()
+            detail, error = server.read_scheduled_task(tmp, "message-1")
+            self.assertIsNone(error)
+            self.assertEqual(detail["kind"], "session_message")
+            self.assertEqual(detail["targetSession"], "target001")
+            listing, error = server.list_scheduled_tasks(tmp)
+            self.assertIsNone(error)
+            self.assertEqual(listing["tasks"][0]["kind"], "session_message")
+            self.assertNotIn("prompt", listing["tasks"][0])
+            self.assertEqual(kinds.read_bytes(), before)
+            kinds.write_text("{bad", encoding="utf-8")
+            self.assertIn("metadata", server.read_scheduled_task(tmp, "message-1")[1])
+            self.assertIn("metadata", server.list_scheduled_tasks(tmp)[1])
+            self.assertEqual(kinds.read_text(), "{bad")
+            for bad_target in (42, {"bad": "target"}):
+                kinds.write_text(json.dumps({"schema_version": 1, "tasks": {"message-1": {
+                    "kind": "session_message", "target_session": bad_target
+                }}}), encoding="utf-8")
+                self.assertIn("metadata", server.read_scheduled_task(tmp, "message-1")[1])
+                self.assertIn("metadata", server.list_scheduled_tasks(tmp)[1])
+
+    def test_target_requires_an_ordinary_exact_regular_session_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for target in ["agentic_001", "AGENTIC_001", "_session_models", "sched-001"]:
+                (root / (target + ".json")).write_text("{}")
+                self.assertIsNotNone(server.validate_message_target(tmp, target)[1])
+            self.assertIsNotNone(server.validate_message_target(None, "target001")[1])
+            (root / "target001.json").mkdir()
+            self.assertIsNotNone(server.validate_message_target(tmp, "target001")[1])
+            (root / "target001.json").rmdir()
+            (root / "target001.json").write_text("{}")
+            self.assertEqual(server.validate_message_target(tmp, "target001"), ("target001", None))
+            boundary = "x" * 128
+            (root / (boundary + ".json")).write_text("{}")
+            self.assertIsNone(server.validate_message_target(tmp, boundary)[1])
+            self.assertIsNotNone(server.validate_message_target(tmp, "x" * 129)[1])
+            if hasattr(os, "symlink"):
+                (root / "linked001.json").symlink_to(root / "target001.json")
+                self.assertIsNotNone(server.validate_message_target(tmp, "linked001")[1])
+
+    def test_target_digest_uses_the_applied_trimmed_identity(self):
+        self.assertEqual(server.spool_request_digest("create", target_session="  target001  "),
+                         server.spool_request_digest("create", target_session="target001"))
+
+    def test_explicit_session_root_overrides_environment(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"PINVOU3_HOME": "/ignored-home"}):
+            self.assertEqual(server.resolve_sessions_dir(["--sessions-dir", "/explicit-sessions"]), "/explicit-sessions")
 
 
 if __name__ == "__main__":
