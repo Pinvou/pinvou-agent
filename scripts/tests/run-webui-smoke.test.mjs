@@ -69,7 +69,7 @@ function runWrapper({ smoke, fakeBin, log, skipBuild, stubExit, fakeNpmExit }) {
   if (skipBuild !== undefined) env.PINVOU_WEBUI_SKIP_BUILD = skipBuild;
   if (stubExit !== undefined) env.STUB_EXIT = String(stubExit);
   if (fakeNpmExit !== undefined) env.FAKE_NPM_EXIT = String(fakeNpmExit);
-  if (fakeBin) env.PATH = `${fakeBin}${path.delimiter}${env.PATH ?? ""}`;
+  if (fakeBin) env.PATH = [fakeBin, env.PATH].filter(Boolean).join(path.delimiter);
   return spawnSync(process.execPath, [WRAPPER, smoke], { env });
 }
 

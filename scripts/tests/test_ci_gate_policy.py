@@ -3621,7 +3621,14 @@ class CiGatePolicyTests(unittest.TestCase):
             checkout = job.split("uses: actions/checkout@v7", maxsplit=1)[1].split(
                 "\n      - name:", maxsplit=1
             )[0]
-            self.assertIn("persist-credentials: false", checkout, job_name)
+            # Comment-stripped: a commented-out live line must not satisfy
+            # the pin (same live-config rule as _without_yaml_comments users
+            # elsewhere in this file).
+            self.assertIn(
+                "persist-credentials: false",
+                _without_yaml_comments(checkout),
+                job_name,
+            )
         # The gate compares VERSION files only: no submodules, depth 1 — a
         # future git-history-reading step must not silently need depth 0.
         gate = workflow.split("\n  check-version-bump:", maxsplit=1)[1].split(
@@ -3630,8 +3637,9 @@ class CiGatePolicyTests(unittest.TestCase):
         gate_checkout = gate.split("uses: actions/checkout@v7", maxsplit=1)[1].split(
             "\n      - name:", maxsplit=1
         )[0]
-        self.assertIn("\n          fetch-depth: 1\n", gate_checkout)
-        self.assertNotIn("submodules:", gate_checkout)
+        live_gate_checkout = _without_yaml_comments(gate_checkout)
+        self.assertIn("\n          fetch-depth: 1\n", live_gate_checkout)
+        self.assertNotIn("submodules:", live_gate_checkout)
 
     def test_quota_and_toolchain_hardening_stays_pinned(self):
         # 2026-10 audit hardening. Each item is a silent policy change (quota

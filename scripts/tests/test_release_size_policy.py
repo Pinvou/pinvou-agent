@@ -93,7 +93,15 @@ class ReleaseSizePolicyTests(unittest.TestCase):
             'flags="$flags --remap-path-prefix=$ws=/ --remap-path-prefix=$ws_fwd=/"',
             windows,
         )
-        self.assertNotIn("-C remap-path-prefix", windows)
+        # Comment-stripped: a comment explaining why the -C spelling is
+        # wrong (as the probe's own comment nearly does) must not false-red
+        # the absence pin (same rule as the other policy files' helpers).
+        self.assertNotIn(
+            "-C remap-path-prefix",
+            "\n".join(
+                line for line in windows.splitlines() if not line.lstrip().startswith("#")
+            ),
+        )
 
     def test_loongarch64_job_must_not_copy_lld_rustflags(self):
         # The pinned loong64/cross-tools asset ships NO lld (bfd ld only —
