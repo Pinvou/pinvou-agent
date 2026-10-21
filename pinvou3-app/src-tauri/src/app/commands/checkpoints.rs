@@ -1320,6 +1320,9 @@ mod tests {
                 crate::features::codex_acp::AgentBackend::CodexAcp,
                 crate::features::codex_acp::CodexWorkspaceKind::Project,
                 Some(root.clone()),
+                // #484 multi-root keychain snapshot: single-root binding locks
+                // the root itself as the full set.
+                vec![root.clone()],
             )
             .expect("set acp workspace");
 
