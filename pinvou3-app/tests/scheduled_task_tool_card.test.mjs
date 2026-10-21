@@ -127,20 +127,23 @@ test('list summary names the tool with the localized verb and optional localized
   assert.equal(scheduledTaskListSummary({ limit: 5 }, 'list', n=>` · limit ${n}`), 'list · limit 5');
   assert.equal(scheduledTaskListSummary({ limit: 5 }, '列表', n=>` · 限 ${n} 条`), '列表 · 限 5 条');
   assert.equal(scheduledTaskListSummary({}, 'list', n=>` · limit ${n}`), 'list');
+  for (const [value, expected] of [[0, 1], [101, 100], ['bad', 20], ['1.5', 20], [1.5, 1]]) {
+    assert.equal(scheduledTaskListSummary({ limit: value }, 'list', n=>` · limit ${n}`), `list · limit ${expected}`);
+  }
 });
 
 test('output parser maps the CRUD payload shapes', () => {
   assert.deepEqual(
     parseScheduledTaskToolOutput(JSON.stringify({ ok: true, kind: 'create', taskId: 't-1', taskName: '早报' })),
-    { kind: 'created', taskId: 't-1', taskName: '早报', duplicate: false, payloadMismatch: false, mismatchNote: '' },
+    { kind: 'created', taskId: 't-1', taskName: '早报', duplicate: false, payloadMismatch: false },
   );
   assert.deepEqual(
     parseScheduledTaskToolOutput(JSON.stringify({ ok: true, kind: 'update', taskId: 't-1', taskName: '早报' })),
-    { kind: 'updated', taskId: 't-1', taskName: '早报', duplicate: false, payloadMismatch: false, mismatchNote: '' },
+    { kind: 'updated', taskId: 't-1', taskName: '早报', duplicate: false, payloadMismatch: false },
   );
   assert.deepEqual(
     parseScheduledTaskToolOutput(JSON.stringify({ ok: true, kind: 'delete', taskId: 't-1', taskName: '早报' })),
-    { kind: 'deleted', taskId: 't-1', taskName: '早报', duplicate: false, payloadMismatch: false, mismatchNote: '' },
+    { kind: 'deleted', taskId: 't-1', taskName: '早报', duplicate: false, payloadMismatch: false },
   );
   assert.deepEqual(
     parseScheduledTaskToolOutput(JSON.stringify({ ok: true, kind: 'create', taskId: null, delivery: 'pending', taskName: '早报' })),
@@ -150,7 +153,7 @@ test('output parser maps the CRUD payload shapes', () => {
   // card does not claim a fresh apply.
   assert.deepEqual(
     parseScheduledTaskToolOutput(JSON.stringify({ ok: true, kind: 'update', taskId: 't-1', taskName: '早报', duplicate: true })),
-    { kind: 'updated', taskId: 't-1', taskName: '早报', duplicate: true, payloadMismatch: false, mismatchNote: '' },
+    { kind: 'updated', taskId: 't-1', taskName: '早报', duplicate: true, payloadMismatch: false },
   );
 });
 
@@ -232,32 +235,13 @@ test('renderer wiring is present (timeline card + summary routing)', () => {
     /<ScheduledTaskLoadBoundary fallback=\{<OutputPre text=\{out\} \/>\}>\s*<Suspense fallback=\{null\}>\s*<ScheduledTaskToolResult\s*op=\{scheduledTaskOp\}\s*out=\{out\}\s*args=\{item\.args\}\s*t=\{t\}\s*fallback=\{<OutputPre text=\{out\} \/>\}/,
     'the lazy card must render inside the local error boundary',
   );
-  assert.match(renderers, /class ScheduledTaskLoadBoundary/, 'the boundary must be defined');
-  // Round-18: the boundary's mechanism is pinned too — dropping
-  // getDerivedStateFromError or neutering render stayed green before.
-  assert.match(
-    renderers,
-    /static getDerivedStateFromError\(\) \{[\s\S]{0,80}return \{ failed: true \}/,
-    'the boundary must actually trip on render errors',
-  );
-  assert.match(
-    renderers,
-    /render\(\) \{\s*return this\.state\.failed \? this\.props\.fallback : this\.props\.children;/,
-    'the boundary must swap to the fallback, not pass errors through',
-  );
-  const cardModule = read('features/tools/scheduled-task-card.jsx');
-  assert.match(cardModule, /ScheduledTaskToolCard/, 'the result card must be defined');
-  assert.match(cardModule, /data-testid="scheduled-task-tool-card"/, 'the card must be testable');
-  const cardLogic = read('features/tools/scheduled-task-card-logic.js');
-  assert.match(cardLogic, /export const parseScheduledTaskToolOutput/, 'the parser must live in the lazy card logic module');
-  // The L1 write tools must never join the quiet-tool set (execution
-  // visibility is mandatory). Negative pin: RAW text (see the note above).
-  const rawCommon = read('features/tools/tool-common.jsx');
-  const quietList = rawCommon.slice(
-    rawCommon.indexOf('QUIET_TOOLS'),
-    rawCommon.indexOf(']);', rawCommon.indexOf('QUIET_TOOLS')),
-  );
-  assert.ok(!quietList.includes('app-automations'), 'the write tools must not be quiet tools');
+  assert.match(renderers, /ViewErrorBoundary as ScheduledTaskLoadBoundary/,
+    'the slot reuses the shared error boundary');
+  const boundary = readStripped('shared/ViewErrorBoundary.jsx');
+  assert.match(boundary, /static getDerivedStateFromError\(error\)/,
+    'the shared boundary must actually trip on errors');
+  assert.match(boundary, /if \(this\.props\.fallback !== undefined\) return this\.props\.fallback;/,
+    'a chunk failure must retain the raw output');
 });
 
 test('tool names match the manifest registration', () => {

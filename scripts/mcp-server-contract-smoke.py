@@ -903,7 +903,8 @@ def main():
                         path.unlink()
                     time.sleep(0.05)
 
-            _threading.Thread(target=watcher, daemon=True).start()
+            watcher_thread = _threading.Thread(target=watcher, daemon=True)
+            watcher_thread.start()
             confirmed = content_json(rpc.call("tools/call", {
                 "name": "create_scheduled_task",
                 "arguments": {
@@ -916,6 +917,8 @@ def main():
             assert confirmed.get("taskName") == "晚报", confirmed
             assert confirmed.get("duplicate") is False, confirmed
             stop.set()
+            watcher_thread.join(timeout=2)
+            assert not watcher_thread.is_alive(), "fake watcher must finish before inspecting the spool"
             # 积压与在途都被排水，spool 清空、.done 留有两条标记。
             assert not list(Path(home, "task-requests", "spool").glob("*.json"))
             assert len(list(Path(home, "task-requests", "spool", ".done").glob("*.json"))) == 2

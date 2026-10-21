@@ -1,4 +1,5 @@
-import React, { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
+import { ViewErrorBoundary as ScheduledTaskLoadBoundary } from '../../shared/ViewErrorBoundary.jsx';
 import { ChevronDown, Wrench } from '../../components/icons.jsx';
 import { StatusDot } from '../../components/StatusDot.jsx';
 import { isShellExecutionTool } from '../../shared/shell-tools.mjs';
@@ -203,35 +204,7 @@ const SCHEDULED_TASK_TOOL_OPS = {
 const ScheduledTaskToolResult = lazy(() =>
   import('./scheduled-task-card.jsx').then(m => ({ default: m.ScheduledTaskToolResult })));
 
-// Round-16 MAJOR-2: a rejected lazy import re-throws during render and
-// React unmounts the entire root — one stale-cached index.html hitting a
-// 404 on the hashed chunk would white-screen the app over one tool row.
-// The repo's lazy-mount policy (ChatView's boundary comment) pairs every
-// Suspense with a local error boundary so the failure stays contained to
-// the slot; the fallback is the same default raw view the parse-miss path
-// renders, so a chunk failure degrades to exactly the pre-lazy behavior.
-class ScheduledTaskLoadBoundary extends React.Component {
-  constructor(props) {
-    super(props);
-    this.state = { failed: false };
-  }
-
-  static getDerivedStateFromError() {
-    return { failed: true };
-  }
-
-  componentDidCatch(error, info) {
-    console.error(
-      '[tools] scheduled-task card chunk failed to load',
-      error && error.stack ? error.stack : error,
-      info && info.componentStack ? info.componentStack : info,
-    );
-  }
-
-  render() {
-    return this.state.failed ? this.props.fallback : this.props.children;
-  }
-}
+// The shared boundary preserves raw output if this lazy slot fails.
 
 // eslint-disable-next-line sonarjs/cognitive-complexity -- per-tool output view routing; splitting by tool has low payoff;legacy view; tracked separately
 const ToolOutput = ({ item, t }) => {

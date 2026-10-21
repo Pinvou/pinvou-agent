@@ -159,3 +159,13 @@ test('a parse miss renders the production fallback prop (round-26 M7)', () => {
   assert.ok(html.includes('RAW-ENVELOPE-MARKER'), 'a parse miss renders the production fallback prop');
   assert.ok(!html.includes('scheduled-task-tool-card'), 'a parse miss must not render the card');
 });
+
+
+test('a failed lazy card preserves raw output through the shared boundary', async () => {
+  const { ViewErrorBoundary } = await vite.ssrLoadModule('/src/shared/ViewErrorBoundary.jsx');
+  const fallback = React.createElement('pre', null, 'RAW-FAILURE-FALLBACK');
+  const boundary = new ViewErrorBoundary({ fallback, children: 'normal' });
+  assert.equal(boundary.render(), 'normal');
+  boundary.state = { ...boundary.state, ...ViewErrorBoundary.getDerivedStateFromError(new Error('chunk missing')) };
+  assert.equal(boundary.render(), fallback);
+});

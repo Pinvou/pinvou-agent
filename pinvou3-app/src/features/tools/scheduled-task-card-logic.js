@@ -53,7 +53,6 @@ export const parseScheduledTaskToolOutput = output => {
       // Round-7 MAJOR 3: surface the server's divergence signal — a keyed
       // retry whose payload changed must not render as a benign duplicate.
       payloadMismatch: payload.payload_mismatch === true,
-      mismatchNote: typeof payload.mismatch_note === 'string' ? payload.mismatch_note : '',
     };
   }
   return null;

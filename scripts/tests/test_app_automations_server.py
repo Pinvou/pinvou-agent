@@ -661,8 +661,8 @@ class CreateSpoolAndResultTests(unittest.TestCase):
         call's spool is a stale leftover — ignored, the honest answer is
         pending (the model is not told "failed" while the request is
         queued); a forged marker landing AFTER the spool (a live tamper)
-        still classifies as the failure answer. No success is fabricated
-        and the record stays queued in either arm."""
+        also stays pending. No terminal outcome is fabricated, and the
+        record stays queued in either arm."""
         import hashlib
 
         digest = server.spool_request_digest(
@@ -706,7 +706,7 @@ class CreateSpoolAndResultTests(unittest.TestCase):
                 self.assertTrue(spool.exists(), "the record stays queued")
 
             # Live-tamper shape: lands MID-POLL (after this call's spool) —
-            # newer than entry_seen_at, so the failure arm answers it.
+            # newer than entry_seen_at; it must still remain pending.
             for forged in forged_bodies:
                 if marker.exists():
                     marker.unlink()
@@ -722,8 +722,8 @@ class CreateSpoolAndResultTests(unittest.TestCase):
                         name="新名字", from_session="reqsrc01", idempotency_key="k-forged"
                     )
                 )
-                self.assertIsNone(payload, "a live-tampered marker must not answer success")
-                self.assertIsNotNone(error)
+                self.assertIsNone(error, "a malformed marker must not fabricate a terminal failure")
+                self.assertEqual(payload.get("delivery"), "pending", payload)
                 self.assertTrue(spool.exists(), "the record stays queued")
         finally:
             server.RESULT_WAIT_SECONDS = old_wait
@@ -1612,3 +1612,22 @@ class StdioContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewFollowupInputTests(unittest.TestCase):
+    def test_lone_surrogate_key_is_a_validation_error(self):
+        with tempfile.TemporaryDirectory() as home:
+            result, error = server.create_scheduled_task(
+                home, name="test", prompt="test", rrule="FREQ=HOURLY;INTERVAL=1",
+                from_session="reqsrc01", idempotency_key="bad-\ud800")
+            self.assertIsNone(result)
+            self.assertIn("invalid idempotency_key", error)
+            self.assertFalse(Path(home, "spool").exists())
+
+    def test_non_object_arguments_report_invalid_params(self):
+        from unittest.mock import patch
+        for args in ([], [1], "text", 0, False, None):
+            with self.subTest(args=args), patch.object(server, "_error") as error:
+                server._handle_call(1, {"name": "list_scheduled_tasks", "arguments": args},
+                                    "/unused", "/unused", {})
+                self.assertEqual(error.call_args.args[1], -32602)

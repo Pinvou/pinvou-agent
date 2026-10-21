@@ -13,7 +13,7 @@
 会话模型当前没有可用的定时任务创建通道：
 
 - 基座 `automation` 工具（`CodeWhale/crates/tui/src/tools/automation.rs`）在应用会话中已注册但 manager 未挂载，调用必然失败（"AutomationManager is not attached"）；
-- 现有"对话创建"流程靠提示词（`SCHEDULED_TASK_CHAT_PROMPT`，`features/scheduled/tasks.rs:235`）约束模型只输出 `scheduled-task-draft` 草稿块、由前端调 `create_scheduled_task` 代创建，仅在定时任务面板的专属引导会话中可用。
+- 现有"对话创建"流程靠提示词（`SCHEDULED_TASK_CHAT_PROMPT`，`features/scheduled/tasks.rs::SCHEDULED_TASK_CHAT_PROMPT`）约束模型只输出 `scheduled-task-draft` 草稿块、由前端调 `create_scheduled_task` 代创建，仅在定时任务面板的专属引导会话中可用。
 
 目标：在**任意会话**里，模型可通过内置工具直接创建定时任务，落库路径与面板完全一致（同一 `ScheduledTaskState::create_task` 领域函数、同一数据目录 `~/.pinvou3/automations`），并满足契约 §5 的 L1 安全要求。
 
@@ -76,11 +76,11 @@
 - rrule 校验：仅 `FREQ=HOURLY`(INTERVAL≥1 小时 + BYHOUR/BYMINUTE)、`FREQ=WEEKLY`(BYDAY 必填 + BYHOUR 0–23 + BYMINUTE 0–59)、`FREQ=ONCE`(AT 本地 `YYYY-MM-DDTHH:MM`、拒绝时区后缀、必须未来)；拒绝 CRON、分钟级、未知键、越界值；trim + 大写。
 - spool 记录：`{schema_version:1, id, kind, task_id?, name?, prompt?, rrule?, model_id?, paused?, from_session?, created_at, idempotency_key?}`（round-8 更正：早期草案列出的 `from_title?` 两侧实现均未写入），mkstemp + os.replace 原子写。
 
-**步骤 2 — Rust 注册**：`MCP_PACKAGES` 加项（include_str! 两文件）、`len()==12→13`；`DEFAULT_INSTALLED_MCP_TOOLS`（`marketplace/mod.rs:613`）加 id；`builtin.rs`/`types.rs` 镜像 session-reader 的清单与特性注册表测试。
+**步骤 2 — Rust 注册**：`MCP_PACKAGES` 加项（include_str! 两文件）、`len()==12→13`；`DEFAULT_INSTALLED_MCP_TOOLS`（`marketplace/mod.rs::DEFAULT_INSTALLED_MCP_TOOLS`）加 id；`builtin.rs`/`types.rs` 镜像 session-reader 的清单与特性注册表测试。
 
 **步骤 3 — 创建 watcher**：`ScheduledTaskState` 克隆化（步骤见 §3.3）；`ScheduledTaskState::start_creation_watcher（creation_requests.rs）` 用 `tauri::async_runtime::spawn`（勿用 tokio::spawn——原因与教训写在 `creation_requests.rs` 的 `start_creation_watcher` 文档与模块头），select! cancel/sleep(1s)，`boot_runtime` 末尾启动、句柄挂 state、Drop 取消；单文件处理逻辑见 §3.2。
 
-**步骤 4 — Ask 规则**：`bridge.rs:215` 旁加 `pub const SCHEDULED_TASK_CREATE_TOOL`；`scope_deny_ruleset_with`(~:2358) push `ToolAskRule::new(...)`；list 工具不加（L0）。注：当前产品所有会话固定全自动审批，规则暂不弹窗（为审批分化 S-1 预留）；无人值守的递归自改由引擎侧 `unattended_disallowed_tools` 确定性拒绝（watcher 的 `check_sender_session_id` 隔离前缀拒绝只是 claimed-string 过滤器——from_session 可省略且未认证）。更新 bridge.rs 规则集测试（4209–4470 一带）。
+**步骤 4 — Ask 规则**：`bridge.rs::SCHEDULED_TASK_CREATE_TOOL` 旁加 `pub const SCHEDULED_TASK_CREATE_TOOL`；`scope_deny_ruleset_with` push `ToolAskRule::new(...)`；list 工具不加（L0）。注：当前产品所有会话固定全自动审批，规则暂不弹窗（为审批分化 S-1 预留）；无人值守的递归自改由引擎侧 `unattended_disallowed_tools` 确定性拒绝（watcher 的 `check_sender_session_id` 隔离前缀拒绝只是 claimed-string 过滤器——from_session 可省略且未认证）。更新 bridge.rs 规则集测试（scope_deny_ruleset_with 一带）。
 
 **步骤 5 — 死工具清理**：lib.rs `tool_policy` 闭包追加 disallow `"automation"`、`"send_later"`。
 
@@ -183,7 +183,7 @@
 | H4 | `python3 -m unittest discover -s scripts/tests` | 0 failed（含 session-reader 既有用例不回归） |
 | H5 | `python3 scripts/mcp-server-contract-smoke.py` | 全绿（矩阵扩为 13 包） |
 | H6 | `python3 scripts/architecture-guard.py` | 通过 |
-| H7 | `./scripts/fork-guard.sh --fast` | 通过（零 fork 内容变更；分支不含任何 fork 登记册/gitlink 提交——gitlink 即基座 main 的 `c08c8c022`，round-27 M2 改真） |
+| H7 | `./scripts/fork-guard.sh --fast` | 通过（零 fork 内容变更；分支不含任何 fork 登记册/gitlink 提交——gitlink 即基座 main 的 `083cebfd9`，round-27 M2 改真） |
 | H8 | catalog/默认安装测试 | `len()==13`；默认安装种子含 app-automations |
 
 ## 6. 测试文件与矩阵映射
@@ -260,3 +260,20 @@
 | I6 | Ask 规则扩展 | 规则集含 update/delete 两条 Ask；read/list 不含 | ◇Rust `scope_deny_ruleset_asks_for_scheduled_task_create` 扩展 | P0 |
 
 §6 测试映射相应扩展：python 套件覆盖 I3/I4/I5，smoke 旅程覆盖 read/update/delete 校验路径，渲染卡测试覆盖三操作结果解析。
+
+## 评审补充：排水边界与证据保留
+
+- 非空排水轮仅从权威 settings.json 读取 `disabled_builtin_features`，不加载全量偏好、不探测语言、不迁移凭证。配置损坏或不可读时暂停排水，同一失败持续期仅记录一次；修复后下一轮恢复。空队列无需读取配置。
+- 已消失的请求名清理重试和停放状态；非 UTF-8 文件名按原名字节隔离，无法生成协议回执。一轮内成功应用的请求最多触发一次面板刷新。
+- 隔离使用平台原生的禁止覆盖原子重命名（Linux `RENAME_NOREPLACE`、macOS `RENAME_EXCL`、Windows 不带替换标记的 `MoveFileExW`）；包括并发写者在内的目标冲突均重试后缀，不覆盖旧证据。不支持的平台或文件系统显式报错，源请求保留在队列或停放。
+- 14 天回执清理遇到同名 spool 请求时保留标记，防止已应用但无法删除的请求在回执过期后再次执行。请求名消失后恢复清理；隔离证据和服务端遗留临时文件仍遵循 14 天策略。
+- 模型绑定更新失败依赖存储自身的快照恢复，移除多余的第二次回滚写入，避免覆盖并发 CLI 重新绑定；此前已持久化的任务字段保留，可整体重试。
+- 私有写原语拒绝 Unix 符号链接和非普通文件；预植的普通硬链接临时文件仍可能通过相同 inode 被截断，依赖私有目录与同用户权限边界。Windows 重解析点的已披露限制不变。
+- 插件卡片给出真实关闭路径：在 settings.json 的 `disabled_builtin_features` 中加入功能标识，不再暗示已有设置界面开关。重复请求文案兼容已处理回放与替换排队请求两种情况。首发包版本为 `1.0.0`。
+
+| 验收场景 | 预期 | 验证 |
+|---|---|---|
+| 排队上限 | 每轮最多 256 条尝试应用；超额请求留存隔离证据与失败回执，不覆盖旧证据；洪泛警告持续期仅一次 | `pending_ceiling_quarantines_the_tail_with_failure_markers`、`quarantine_keeps_colliding_evidence` |
+| 保留期与临时文件 | 超过 14 天的终态与孤立临时文件被清理；同名请求仍在队列时保留回执 | `prune_stale_state_sweeps_old_markers_and_stray_tmp`、`retention_preserves_receipts_for_stuck_spool_records` |
+| 夏令时墙钟 | 双层拒绝 ONCE 时间落在缺口或重叠；Python 缺 tzdata 时 Rust 为最终权威 | 既有 Rust 与 Python ONCE/DST 用例 |
+| 配置损坏 | 暂停本排水器；修复即恢复，不重复迁移凭证 | `a_drain_pass_coalesces_refresh_and_pauses_on_bad_settings` |

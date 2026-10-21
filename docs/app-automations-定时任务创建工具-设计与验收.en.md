@@ -13,7 +13,7 @@
 The session model currently has no usable channel for creating scheduled tasks:
 
 - The base `automation` tool (`CodeWhale/crates/tui/src/tools/automation.rs`) is registered in app sessions but its manager is never attached, so every call fails ("AutomationManager is not attached");
-- The existing "create via conversation" flow relies on a prompt (`SCHEDULED_TASK_CHAT_PROMPT`, `features/scheduled/tasks.rs:235`) to constrain the model into emitting a `scheduled-task-draft` block, with the frontend calling `create_scheduled_task` on its behalf — available only in the scheduled-tasks panel's dedicated guided session.
+- The existing "create via conversation" flow relies on a prompt (`SCHEDULED_TASK_CHAT_PROMPT`, `features/scheduled/tasks.rs::SCHEDULED_TASK_CHAT_PROMPT`) to constrain the model into emitting a `scheduled-task-draft` block, with the frontend calling `create_scheduled_task` on its behalf — available only in the scheduled-tasks panel's dedicated guided session.
 
 Goal: in **any session**, the model can create scheduled tasks directly through a builtin tool, landing in the exact same persistence path as the panel (the same `ScheduledTaskState::create_task` domain function, the same data directory `~/.pinvou3/automations`), while satisfying the L1 safety requirements of contract §5.
 
@@ -76,11 +76,11 @@ App-side watcher (new module under features/scheduled, 1s poll)
 - rrule validation: only `FREQ=HOURLY` (INTERVAL ≥ 1 hour + BYHOUR/BYMINUTE), `FREQ=WEEKLY` (BYDAY required + BYHOUR 0–23 + BYMINUTE 0–59), `FREQ=ONCE` (AT as local `YYYY-MM-DDTHH:MM`, timezone suffixes rejected, must be in the future); CRON, minute granularity, unknown keys, and out-of-range values are rejected; trim + uppercase.
 - Spool record: `{schema_version:1, id, kind, task_id?, name?, prompt?, rrule?, model_id?, paused?, from_session?, created_at, idempotency_key?}` (round-8 correction: `from_title?` as listed in early drafts was never written by either side), written atomically via mkstemp + os.replace.
 
-**Step 2 — Rust registration**: add the `MCP_PACKAGES` entry (include_str! of both files), `len()==12→13`; add the id to `DEFAULT_INSTALLED_MCP_TOOLS` (`marketplace/mod.rs:613`); `builtin.rs`/`types.rs` mirror session-reader's manifest and feature-registry tests.
+**Step 2 — Rust registration**: add the `MCP_PACKAGES` entry (include_str! of both files), `len()==12→13`; add the id to `DEFAULT_INSTALLED_MCP_TOOLS` (`marketplace/mod.rs::DEFAULT_INSTALLED_MCP_TOOLS`); `builtin.rs`/`types.rs` mirror session-reader's manifest and feature-registry tests.
 
 **Step 3 — Creation watcher**: make `ScheduledTaskState` cloneable (steps in §3.3); `ScheduledTaskState::start_creation_watcher (creation_requests.rs)` spawned via `tauri::async_runtime::spawn` (not `tokio::spawn` — the reason and the lesson are documented in `creation_requests.rs`'s `start_creation_watcher` doc and the module header), `select!` cancel/sleep(1s), started at the end of `boot_runtime`, handle parked on state, Drop cancels; per-record handling per §3.2.
 
-**Step 4 — Ask rules**: add `pub const SCHEDULED_TASK_CREATE_TOOL` next to `bridge.rs:215`; `scope_deny_ruleset_with`(~:2358) pushes `ToolAskRule::new(...)`; the list tool gets none (L0). Note: the current product pins every session to full-auto approval, so the rules do not prompt today (reserved for approval differentiation S-1); unattended recursive self-modification is deterministically rejected by the engine-side `unattended_disallowed_tools` (the watcher's `check_sender_session_id` isolated-prefix rejection is only a claimed-string filter — `from_session` may be omitted and is unauthenticated). Update the bridge.rs ruleset tests (the 4209–4470 region).
+**Step 4 — Ask rules**: add `pub const SCHEDULED_TASK_CREATE_TOOL` next to `bridge.rs::SCHEDULED_TASK_CREATE_TOOL`; `scope_deny_ruleset_with` pushes `ToolAskRule::new(...)`; the list tool gets none (L0). Note: the current product pins every session to full-auto approval, so the rules do not prompt today (reserved for approval differentiation S-1); unattended recursive self-modification is deterministically rejected by the engine-side `unattended_disallowed_tools` (the watcher's `check_sender_session_id` isolated-prefix rejection is only a claimed-string filter — `from_session` may be omitted and is unauthenticated). Update the bridge.rs ruleset tests (the scope_deny_ruleset_with region).
 
 **Step 5 — Dead-tool cleanup**: the lib.rs `tool_policy` closure appends disallows for `"automation"` and `"send_later"`.
 
@@ -183,7 +183,7 @@ Test names in the "Verification" column are marked: ◇ = to be added, ○ = exi
 | H4 | `python3 -m unittest discover -s scripts/tests` | 0 failed (incl. no regression of existing session-reader cases) |
 | H5 | `python3 scripts/mcp-server-contract-smoke.py` | All green (matrix extended to 13 packages) |
 | H6 | `python3 scripts/architecture-guard.py` | Pass |
-| H7 | `./scripts/fork-guard.sh --fast` | Pass (zero fork content changes; the branch carries no fork-register/gitlink commits — the gitlink is the base main's `c08c8c022`; corrected in round-27 M2) |
+| H7 | `./scripts/fork-guard.sh --fast` | Pass (zero fork content changes; the branch carries no fork-register/gitlink commits — the gitlink is the base main's `083cebfd9`; corrected in round-27 M2) |
 | H8 | Catalog/default-install tests | `len()==13`; the default-install seed includes app-automations |
 
 ## 6. Test Files and Matrix Mapping
@@ -260,3 +260,20 @@ The first design (§1–§8) covered only create + list. Per review feedback it 
 | I6 | Ask-rule extension | The ruleset carries Ask entries for update/delete; read/list carry none | ◇Rust `scope_deny_ruleset_asks_for_scheduled_task_create` extension | P0 |
 
 The §6 test mapping extends accordingly: the python suite covers I3/I4/I5, the smoke journey covers the read/update/delete validation paths, and the result-card tests cover parsing all three operations' results.
+
+## Review follow-up: bounded drain and evidence retention
+
+- Each non-empty drain pass reads only `disabled_builtin_features` from the authoritative settings file. It does not load preferences, probe language, or migrate credentials. Invalid/unreadable settings pause the drain with one diagnostic per failure streak; fixing the file resumes it on the next poll. Empty spools need no settings read.
+- Vanished spool names release retry/park entries. Non-UTF-8 filenames are quarantined with their original bytes; they cannot produce a protocol receipt. A pass emits at most one panel refresh for its successful operations.
+- Quarantine uses native atomic no-replace rename (Linux `RENAME_NOREPLACE`, macOS `RENAME_EXCL`, Windows `MoveFileExW` without replace). A collision retries a suffix without overwriting existing evidence, including a concurrent writer. Unsupported platforms or filesystems return an explicit error and leave the source queued/parked.
+- The 14-day receipt retention does not remove a marker while its spool filename still exists. This keeps an applied request deduplicated across persistent unlink failures. Once the spool name disappears, normal retention resumes. Evidence and stale server temporary files retain the 14-day policy.
+- Model-binding updates rely on the store's own snapshot restoration on persistence failure. The redundant second rollback write was removed so it cannot overwrite a concurrent CLI rebind; previously persisted task fields remain applied and retriable.
+- Private write helpers reject Unix symlinks and non-regular files. A pre-existing hard-linked regular temporary file is still accepted and can be truncated through its linked inode; the private-directory/same-user authority boundary applies. Windows reparse-point residuals are unchanged.
+- The marketplace copy now gives the actual configuration off-ramp (`disabled_builtin_features` in `settings.json`) and does not imply a settings-page toggle. Duplicate-card copy covers both recorded replay and replacement of a queued request. The first shipped package version is `1.0.0`.
+
+| Acceptance case | Expected result | Verification |
+|---|---|---|
+| Pending ceiling | At most 256 records attempt apply per pass; excess evidence and failure receipts are preserved without overwriting prior evidence; flood warnings stay streak-latched | `pending_ceiling_quarantines_the_tail_with_failure_markers`, `quarantine_keeps_colliding_evidence` |
+| Retention and temporary sweep | Old terminal state and stray `*.tmp` files are pruned after 14 days; receipts for stuck spool names survive | `prune_stale_state_sweeps_old_markers_and_stray_tmp`, `retention_preserves_receipts_for_stuck_spool_records` |
+| DST wall time | Both layers reject local ONCE times in DST gaps or overlaps; the Rust watcher remains authoritative if Python tzdata is unavailable | Existing ONCE/DST fixtures in the Rust watcher and Python recurrence suite |
+| Broken preferences | Invalid settings pause only this drain; repair resumes it without a restart or repeated credential migration | `a_drain_pass_coalesces_refresh_and_pauses_on_bad_settings` |

@@ -619,6 +619,10 @@ fn open_private_data_file_within(path: &Path, max_bytes: u64) -> io::Result<std:
 /// (no secrets in the payloads; the publish rename lands it in the same
 /// private directory). Windows has no std-level reparse-point refusal on
 /// `OpenOptions` (documented residual, same-user spool/state tree).
+/// A regular file with additional hard links is accepted: create+truncate can
+/// change the linked inode before any post-open check. Callers must use a
+/// private state directory; this helper does not isolate hostile same-user
+/// hard links (the lock-file primitive documents the same authority boundary).
 pub(crate) fn open_private_tmp_write_file(path: &Path) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
@@ -3813,6 +3817,33 @@ pub(crate) mod tests {
             crate::platform::test_support::permission_bits(&path),
             Some(0o600),
             "a drifted mode must be re-tightened"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_writers_refuse_symlinks_and_reader_present_fifo() {
+        use std::os::unix::fs::{OpenOptionsExt as _, symlink};
+        let temp = tempfile::tempdir().unwrap();
+        let target = temp.path().join("target");
+        std::fs::write(&target, b"keep these bytes").unwrap();
+        let link = temp.path().join("link");
+        symlink(&target, &link).unwrap();
+        assert!(super::open_private_append_file(&link).is_err());
+        assert!(super::open_private_tmp_write_file(&link).is_err());
+        assert_eq!(std::fs::read(&target).unwrap(), b"keep these bytes");
+        let fifo = temp.path().join("pipe");
+        crate::platform::paths::tests::plant_fifo(&fifo);
+        let _reader = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo)
+            .unwrap();
+        let error = super::open_private_append_file(&fifo).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::InvalidData,
+            "the fstat gate, rather than ENXIO, refuses the write"
         );
     }
 }

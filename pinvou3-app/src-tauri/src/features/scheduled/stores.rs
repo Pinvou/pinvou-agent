@@ -1433,24 +1433,6 @@ impl VersionedJsonStore<ScheduledTaskModelBindingRegistry> {
             .map(|binding| binding.model_id.clone())
     }
 
-    /// The raw `(model_id, model)` binding for a task, so a failed update can
-    /// roll back to the previous pin (create's rollback discipline).
-    /// Round-27 minor 4: the same foreign-writer discipline as
-    /// `model_id_for` — a stale handle must not survive a concurrent
-    /// `pinvou` rebind, or a failed-update rollback would re-persist the
-    /// stale binding over the newer one.
-    pub(crate) fn binding_for(
-        &self,
-        automation_id: &str,
-    ) -> Option<(Option<String>, Option<String>)> {
-        self.reload_if_changed();
-        self.registry
-            .read()
-            .tasks
-            .get(automation_id)
-            .map(|binding| (Some(binding.model_id.clone()), Some(binding.model.clone())))
-    }
-
     pub(crate) fn set(
         &self,
         automation_id: &str,
@@ -2435,5 +2417,34 @@ mod foreign_writer_tests {
         );
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+    #[test]
+    fn failed_model_binding_set_restores_the_last_successful_snapshot() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("bindings.json");
+        let backup = temp.path().join("backup.json");
+        let store = ScheduledTaskModelBindingStore::open(path.clone()).unwrap();
+        store
+            .set("task", Some("old-id".into()), Some("old-model".into()))
+            .unwrap();
+        std::fs::rename(&path, &backup).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(
+            store
+                .set("task", Some("new-id".into()), Some("new-model".into()))
+                .is_err()
+        );
+        assert_eq!(
+            store.bound_model_id("task", "old-model").as_deref(),
+            Some("old-id")
+        );
+        assert_eq!(store.bound_model_id("task", "new-model"), None);
+        std::fs::remove_dir(&path).unwrap();
+        std::fs::rename(&backup, &path).unwrap();
+        let reopened = ScheduledTaskModelBindingStore::open(path).unwrap();
+        assert_eq!(
+            reopened.model_id_for("task", "old-model").as_deref(),
+            Some("old-id")
+        );
     }
 }

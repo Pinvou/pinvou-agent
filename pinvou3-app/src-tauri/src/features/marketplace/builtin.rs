@@ -172,6 +172,27 @@ fn disabled_feature_ids() -> BTreeSet<String> {
         .collect()
 }
 
+/// Read only the authoritative switches, without loading or migrating any
+/// unrelated preferences or credentials. Background drains pause on malformed
+/// settings and let their caller rate-limit the diagnostic.
+pub(crate) fn feature_enabled_for_background_drain(id: &str) -> anyhow::Result<bool> {
+    #[derive(serde::Deserialize)]
+    struct Switches {
+        #[serde(default)]
+        disabled_builtin_features: Vec<String>,
+    }
+    let raw = match crate::platform::filesystem::read_private_data_file(&paths::settings_path()) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(error) => return Err(error.into()),
+    };
+    let switches: Switches = serde_json::from_str(&raw)?;
+    Ok(!switches
+        .disabled_builtin_features
+        .iter()
+        .any(|feature| feature == id))
+}
+
 /// Feature switch (docs/builtin-toolset-contract.md §3.3): writes
 /// `UserPrefs::disabled_builtin_features` (field-level transaction), then
 /// atomically writes the state file for MCP servers, and returns the fresh

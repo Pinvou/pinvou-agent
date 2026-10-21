@@ -439,7 +439,11 @@ export const lazyChunkContracts = {
   archiveConfirmDialog: ['components/ArchiveConfirmDialog.jsx', 'ArchiveConfirmDialog'],
 };
 
-export function assertLazyChunks(bundle, contracts = lazyChunkContracts) {
+export const lazyToolChunkContracts = {
+  scheduledTaskCard: ['features/tools/scheduled-task-card.jsx', 'ScheduledTaskToolCard'],
+};
+
+export function assertLazyChunks(bundle, contracts = { ...lazyChunkContracts, ...lazyToolChunkContracts }) {
   for (const [modulePath, label] of Object.values(contracts)) {
     const chunks = Object.values(bundle).filter(output => output.type === 'chunk'
       && Object.keys(output.modules).some(moduleId => moduleId.replaceAll('\\', '/')
@@ -502,16 +506,17 @@ function enforceLazyChunks() {
 // helpers are render-path synchronous and cannot defer; the ceiling is
 // the measured projection, not padded.
 //
-// 505_000 → 506_000 (PR #628's rebase onto the #733+#744 main, measured
-// per policy): the app-automations builtin adds +5,131 B of web entry on
-// the current toolchain (main@2c2e40d03 alone = 500,424 B main-entry under
-// node v24 + vite 8.3.4; merged = 505,555 B web / 502,236 B desktop) —
-// the result card and its parser ride the on-demand scheduled-task-card
-// chunk, and the residual is the timeline-header summary logic plus the
-// dispatch constants, trilingual copy, and the lazy/boundary wiring, whose
-// synchronous rendering is pinned reviewed behavior. The measurement is
-// already on CI's node major, so the 445 B of headroom is toolchain
-// tolerance only; the ceiling is the measured projection, not padded.
+// 505_000 → 506_000 (PR #628 follow-ups, measured per policy): on
+// main@61fb3f4e4 the inherited 505_000 gate failed at 505,902 B web;
+// reusing ViewErrorBoundary saved 294 B (505,608 B) and the review's
+// limit-summary fix landed that tree at 505,801 B web / 502,485 B
+// desktop. This branch's re-cut onto the #744 main (2c2e40d03, vite
+// 8.3.4) re-measures at 505,454 B web / 502,135 B desktop
+// (main alone = 500,424 B on the same node v24 toolchain). The result
+// card/parser stay lazy behind the scheduledTaskCard lazy-tool-chunk
+// contract; synchronous timeline headers remain eager. The author
+// explicitly approved 506_000 on 2026-10-21 after reviewing both
+// measurements; the headroom is toolchain tolerance, not padding.
 export const MAIN_ENTRY_BUDGET_BYTES = 506_000;
 
 export function assertMainEntryBudget(bundle, budgetBytes = MAIN_ENTRY_BUDGET_BYTES) {

@@ -8,6 +8,7 @@ import createViteConfig, {
   assertLazyChunks,
   assertMainEntryBudget,
   lazyChunkContracts,
+  lazyToolChunkContracts,
 } from '../vite.config.mjs';
 
 function chunk({ name, modules = {}, isEntry = false, code = '' }) {
@@ -17,10 +18,8 @@ function chunk({ name, modules = {}, isEntry = false, code = '' }) {
 const mainSource = readFileSync(new URL('../src/app/main.jsx', import.meta.url), 'utf8');
 
 test('startup gates remain active in desktop and web production builds', () => {
-  // Round-21 B-1 + PR #628's measured rebase raises — see the budget comment
-  // in vite.config.mjs (main@2c2e40d03 alone = 500,424 B under node v24 +
-  // vite 8.3.4; the automations residual adds +5,131 B web → 505,555 web /
-  // 502,236 desktop, ceiling 506,000 with toolchain tolerance only).
+  // PR #628's 506_000 decision is measured and explicitly approved;
+  // the config comment preserves both platform measurements.
   assert.equal(MAIN_ENTRY_BUDGET_BYTES, 506_000);
   for (const mode of ['production', 'web']) {
     const config = createViteConfig({ command: 'build', mode });
@@ -42,6 +41,12 @@ test('every view loader has an explicit lazy chunk contract', () => {
     Object.keys(lazyChunkContracts).toSorted((left, right) => left.localeCompare(right)),
     Object.keys(VIEW_LOADERS).toSorted((left, right) => left.localeCompare(right)),
   );
+});
+
+test('scheduled task cards have a production lazy-chunk gate', () => {
+  assert.deepEqual(lazyToolChunkContracts.scheduledTaskCard,
+    ['features/tools/scheduled-task-card.jsx', 'ScheduledTaskToolCard']);
+  assert.throws(() => assertLazyChunks({}), /lazy module was not emitted/);
 });
 
 test('rare global overlays stay out of the startup module graph', () => {

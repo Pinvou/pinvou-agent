@@ -720,8 +720,6 @@ def _once_wall_time_gap_or_ambiguous(at, tz=None):
     pre-round-24 behavior and the watcher remains the authority. `tz`
     overrides the zone for tests."""
     try:
-        import zoneinfo as _zoneinfo
-
         if tz is None:
             tz = _local_zoneinfo()
         if tz is None:
@@ -1069,6 +1067,11 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
             return None, "invalid prompt: exceeds the %d character limit" % MAX_PROMPT_CHARS
     if model_id is not None and len(model_id) > MAX_MODEL_ID_CHARS:
         return None, "invalid model_id: exceeds %d characters" % MAX_MODEL_ID_CHARS
+    if idempotency_key is not None:
+        try:
+            idempotency_key.encode("utf-8")
+        except UnicodeEncodeError:
+            return None, "invalid idempotency_key: must contain valid Unicode text"
     if idempotency_key is not None and len(idempotency_key) > MAX_IDEMPOTENCY_KEY_CHARS:
         return None, "invalid idempotency_key: exceeds %d characters" % MAX_IDEMPOTENCY_KEY_CHARS
     if idempotency_key is not None and from_session is None:
@@ -1089,6 +1092,8 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
         rrule, error = validate_rrule(rrule)
         if error:
             return None, error
+        if len(rrule) > MAX_RRULE_CHARS:
+            return None, "invalid rrule: exceeds the %d character limit" % MAX_RRULE_CHARS
 
     # Fail fast on an unknown target instead of spooling into a guaranteed
     # failure (the watcher re-checks against the live store anyway).
@@ -1372,6 +1377,12 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
             if marker_is_stale:
                 time.sleep(RESULT_POLL_INTERVAL_SECONDS)
                 continue
+            if marker.get("ok") is not False:
+                # A malformed/live-tampered receipt is not a terminal failure.
+                # The watcher only publishes literal booleans; keep waiting
+                # for that result just as for an unreadable marker.
+                time.sleep(RESULT_POLL_INTERVAL_SECONDS)
+                continue
             return None, str(marker.get("error") or "scheduled task request failed")
         # marker_error only means "not there yet / unreadable" — keep polling.
         time.sleep(RESULT_POLL_INTERVAL_SECONDS)
@@ -1488,8 +1499,14 @@ def _text_content(payload, is_error=False):
 
 
 def _handle_call(req_id, params, requests_dir, automations_dir, tool_features):
-    name = (params or {}).get("name")
-    args = (params or {}).get("arguments") or {}
+    if not isinstance(params, dict):
+        _error(req_id, -32602, "tool call params must be an object")
+        return
+    name = params.get("name")
+    args = params.get("arguments", {})
+    if not isinstance(args, dict):
+        _error(req_id, -32602, "tool arguments must be an object")
+        return
     # Contract §3.3 fallback: a tool call from stale context gets a structured
     # feature_disabled when all its features are off.
     gate = feature_gate_error(name, requests_dir, tool_features)

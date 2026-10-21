@@ -489,31 +489,15 @@ impl ScheduledTaskState {
         let updated = ensure_automation_workspace(&manager, updated)
             .map_err(|err| format!("Failed to update scheduled task workspace '{id}': {err:#}"))?;
         if requested_model_update.is_some() || requested_model_id.is_some() {
-            let previous_binding = self.model_bindings.binding_for(&id);
             if let Err(error) =
                 self.model_bindings
                     .set(&id, requested_model_id, updated.model.clone())
             {
                 if requires_model_binding {
-                    // Round-8 minor 19 (truthful scope): the binding store's
-                    // own set() snapshot-restores atomically on persist
-                    // failure, so this rollback re-persists identical state
-                    // (a no-op in the verified failure mode) — it is defense
-                    // in depth, NOT "the same discipline as create's
-                    // rollback" (create deletes a real automation). The
-                    // state that IS half-applied on this path — the already
-                    // persisted name/prompt/rrule — is deliberately kept:
-                    // the caller's error names the binding, and the fields
-                    // are retriable as a whole.
-                    let rollback = match previous_binding {
-                        Some((model_id, model)) => self.model_bindings.set(&id, model_id, model),
-                        None => self.model_bindings.remove(&id),
-                    };
-                    if let Err(rollback_error) = rollback {
-                        log::warn!(
-                            "Failed to roll back the model binding of scheduled task {id}: {rollback_error:#}"
-                        );
-                    }
+                    // The binding store restores its own in-memory snapshot
+                    // on persist failure. Do not write an older binding again:
+                    // that redundant rollback could clobber a concurrent CLI
+                    // rebind. Automation fields remain applied and retriable.
                     return Err(format!(
                         "Failed to save scheduled task model binding: {error:#}"
                     ));

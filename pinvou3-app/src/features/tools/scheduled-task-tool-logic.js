@@ -64,8 +64,14 @@ export const scheduledTaskDeleteSummary = args => {
  * limit (the only argument).
  */
 export const scheduledTaskListSummary = (args, listLabel, limitSuffix) => {
-  const limit = args && args.limit != null && typeof limitSuffix === 'function'
-    ? limitSuffix(args.limit)
-    : '';
+  let limit = '';
+  if (args?.limit != null && typeof limitSuffix === 'function') {
+    const value = args.limit;
+    const numeric = typeof value === 'number' || typeof value === 'boolean'
+      || (typeof value === 'string' && /^[+-]?\d+$/.test(value.trim()));
+    const requested = numeric ? Number(value) : NaN;
+    const count = Number.isFinite(requested) ? Math.trunc(requested) : 20;
+    limit = limitSuffix(Math.max(1, Math.min(100, count)));
+  }
   return `${listLabel}${limit}`;
 };

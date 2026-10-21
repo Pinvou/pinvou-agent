@@ -1,4 +1,4 @@
-// architecture-guard: allow-target-cfg -- the devzero-symlink gate test needs std::os::unix::fs::symlink (unix-only) to plant a hostile non-regular spool entry; the attribute form is the only compiling gate for that import.
+// architecture-guard: allow-target-cfg -- Unix filesystem boundary tests plant symlinks/FIFOs; the Linux-only invalid-UTF-8 filename fixture avoids Darwin filesystems that reject those names at creation. These OS fixtures cannot compile or run portably.
 //! Scheduled-task request watcher — the app-side consumer of the
 //! app-automations MCP family's create/update/delete spool
 //! (docs/app-automations-定时任务创建工具-设计与验收.md + its CRUD addendum;
@@ -566,6 +566,35 @@ trait PanelNotifier: Send + Sync {
     fn notify(&self);
 }
 
+struct CoalescingNotifier<'a, N: PanelNotifier + ?Sized> {
+    inner: &'a N,
+    changed: std::sync::atomic::AtomicBool,
+}
+
+impl<'a, N: PanelNotifier + ?Sized> CoalescingNotifier<'a, N> {
+    fn new(inner: &'a N) -> Self {
+        Self {
+            inner,
+            changed: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+impl<N: PanelNotifier + ?Sized> PanelNotifier for CoalescingNotifier<'_, N> {
+    fn notify(&self) {
+        self.changed
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl<N: PanelNotifier + ?Sized> Drop for CoalescingNotifier<'_, N> {
+    fn drop(&mut self) {
+        if self.changed.load(std::sync::atomic::Ordering::Relaxed) {
+            self.inner.notify();
+        }
+    }
+}
+
 struct EventNotifier<'a>(&'a tauri::AppHandle);
 
 impl PanelNotifier for EventNotifier<'_> {
@@ -1119,42 +1148,54 @@ fn result_marker_suppresses(path: &Path, expected_digest: &str) -> bool {
 /// Bound for the result marker read (real markers are ~150 bytes).
 const MAX_RESULT_MARKER_BYTES: usize = 64 * 1024;
 
-fn quarantine(path: &Path) -> bool {
-    if std::fs::create_dir_all(failed_dir()).is_err() {
-        return false;
-    }
-    let mut target = failed_dir().join(path.file_name().unwrap_or_default());
-    if target.exists() {
-        // Never overwrite earlier evidence: suffix a counter until free.
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| format!(".{e}"))
-            .unwrap_or_default();
-        for counter in 1..u32::MAX {
-            let candidate = failed_dir().join(format!("{stem}.{counter}{ext}"));
-            if !candidate.exists() {
-                target = candidate;
-                break;
+fn quarantine(path: &Path) -> std::io::Result<()> {
+    let dir = failed_dir();
+    std::fs::create_dir_all(&dir)?;
+    let name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "missing evidence filename",
+        )
+    })?;
+    for counter in 0..u32::MAX {
+        let target = if counter == 0 {
+            dir.join(name)
+        } else {
+            let mut suffixed = path.file_stem().unwrap_or(name).to_os_string();
+            suffixed.push(format!(".{counter}"));
+            if let Some(extension) = path.extension() {
+                suffixed.push(".");
+                suffixed.push(extension);
             }
+            dir.join(suffixed)
+        };
+        match crate::features::scheduled::platform::move_file_noclobber(path, &target) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
         }
     }
-    match std::fs::rename(path, &target) {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::AlreadyExists,
+        "evidence suffixes exhausted",
+    ))
+}
+
+fn quarantine_with_warning(path: &Path, warnings: &mut usize) -> bool {
+    match quarantine(path) {
         Ok(()) => true,
         Err(error) => {
-            // Terminal-path failure: the record stays in the spool. Say so
-            // loudly instead of failing silently forever — the caller parks
-            // the name (round-16 MAJOR-1) so the drain skips it instead of
-            // re-processing it every poll.
-            log::warn!(
-                "[scheduled-creation] quarantine rename failed for {:?}: {error}",
-                path
-            );
+            *warnings += 1;
+            if *warnings <= POISON_WARN_PER_PASS {
+                log::warn!(
+                    "[scheduled-creation] cannot quarantine {:?}; source retained: {error}",
+                    path
+                );
+            } else if *warnings == POISON_WARN_PER_PASS + 1 {
+                log::warn!(
+                    "[scheduled-creation] further quarantine failures this pass are summarized; sources retained"
+                );
+            }
             false
         }
     }
@@ -1246,7 +1287,7 @@ fn prune_stale_state() {
 
 /// The clock is injected so tests can age files without sleeping.
 fn prune_stale_state_at(now: std::time::SystemTime) {
-    let prune_dir = |dir: &Path| {
+    let prune_dir = |dir: &Path, keep_pending: bool| {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
         };
@@ -1258,14 +1299,18 @@ fn prune_stale_state_at(now: std::time::SystemTime) {
                 .ok()
                 .and_then(|modified| now.duration_since(modified).ok())
                 .is_some_and(|age| age >= STATE_RETENTION);
-            if stale {
+            if stale
+                && !(keep_pending
+                    && std::fs::symlink_metadata(spool_root().join(entry.file_name())).is_ok())
+            {
+                // Stuck applied spool records retain their dedup receipt.
                 // Best effort: a busy file is retried on the next sweep.
                 let _ = std::fs::remove_file(&path);
             }
         }
     };
-    prune_dir(&done_dir());
-    prune_dir(&failed_dir());
+    prune_dir(&done_dir(), true);
+    prune_dir(&failed_dir(), false);
     if let Ok(entries) = std::fs::read_dir(spool_root()) {
         for entry in entries.flatten() {
             let path = entry.path();
@@ -1306,6 +1351,7 @@ fn prune_stale_state_at(now: std::time::SystemTime) {
 struct RetryState {
     attempts: HashMap<String, u32>,
     spool_dir_error_logged: bool,
+    feature_gate_error_logged: bool,
     removal_error_logged: bool,
     /// Round-31 minor 5: the ceiling-quarantine warn is once per streak
     /// (the flag resets on a pass that does not hit the ceiling) — a
@@ -1324,23 +1370,6 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
     notifier: &N,
     retries: &mut RetryState,
 ) {
-    // Round-26 minor 11: "never requested" (no spool dir) is the common
-    // case — return before paying the per-tick settings.json read the
-    // feature switch costs (global lock + parse + locale probing; the same
-    // anti-pattern messaging's own review removed). A present dir still
-    // goes through the gate and the full read_dir error handling below.
-    if !spool_root().exists() {
-        return;
-    }
-    // Round-6 minor 6: the switch pauses the drain too (messaging parity) —
-    // `scheduled-task-automation` off hides the tools AND stops already-
-    // spooled requests from applying; the queue resumes on re-enable.
-    if crate::features::marketplace::builtin::feature_disabled_tool_names()
-        .iter()
-        .any(|tool| tool == SCHEDULED_TASK_CREATE_TOOL)
-    {
-        return;
-    }
     let root = spool_root();
     let entries = match std::fs::read_dir(&root) {
         Ok(entries) => {
@@ -1348,7 +1377,12 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
             entries
         }
         // No spool directory yet = nothing was ever requested.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            retries.attempts.clear();
+            retries.parked.clear();
+            retries.ceiling_warn_logged = false;
+            return;
+        }
         // Anything else (permissions, ...) is a real anomaly: warn once per
         // streak instead of silently spinning at 1 Hz forever.
         Err(error) => {
@@ -1364,6 +1398,41 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
         .map(|entry| entry.path())
         .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "json"))
         .collect();
+    // Vanished names never reach the per-file unpark branch. Use the full
+    // listing, before the cap, to avoid dropping live parked entries.
+    let live_names: std::collections::HashSet<_> = files
+        .iter()
+        .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+        .collect();
+    retries
+        .attempts
+        .retain(|name, _| live_names.contains(name.as_str()));
+    retries
+        .parked
+        .retain(|name, _| live_names.contains(name.as_str()));
+    if files.is_empty() {
+        retries.ceiling_warn_logged = false;
+        return;
+    }
+    match crate::features::marketplace::builtin::feature_enabled_for_background_drain(
+        "scheduled-task-automation",
+    ) {
+        Ok(enabled) => {
+            retries.feature_gate_error_logged = false;
+            if !enabled {
+                return;
+            }
+        }
+        Err(error) => {
+            if !retries.feature_gate_error_logged {
+                log::warn!(
+                    "[scheduled-creation] cannot read feature switches; drain paused: {error:#}"
+                );
+                retries.feature_gate_error_logged = true;
+            }
+            return;
+        }
+    }
     files.sort();
     // Round-27 minor 9: the messaging sibling caps pending files at 256 and
     // quarantines the sorted-tail excess — without it, a flood of planted
@@ -1375,7 +1444,11 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
     // record gets a failure marker — a waiting caller whose record lands in
     // the tail must receive a terminal outcome, not time out into a
     // "pending" that is terminally dead.
-    if files.len() > MAX_PENDING_FILES {
+    let mut quarantine_warnings = 0;
+    let over_ceiling = files.len() > MAX_PENDING_FILES;
+    if over_ceiling {
+        let warn_this_pass = !retries.ceiling_warn_logged;
+        let mut quarantine_failures = 0;
         // Round-31 minor 5: one warn per flood streak, not one per record.
         if !retries.ceiling_warn_logged {
             log::warn!(
@@ -1389,6 +1462,7 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                 .and_then(|n| n.to_str())
                 .map(str::to_string)
             else {
+                let _ = quarantine_with_warning(&path, &mut quarantine_warnings);
                 continue;
             };
             let stem = path
@@ -1399,7 +1473,7 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
             let error = anyhow::anyhow!(
                 "pending-file ceiling {MAX_PENDING_FILES} exceeded; the record was never applied"
             );
-            if quarantine(&path) {
+            if quarantine_with_warning(&path, &mut quarantine_warnings) {
                 // Best-effort receipt: the record may not even parse
                 // (hostile growth), in which case no marker is written —
                 // the failed/ evidence and the streak warn above are the
@@ -1409,23 +1483,28 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
             } else {
                 // Persisted rename failure: leave the record queued and
                 // say so; it stays outside this pass's budget either way.
-                log::warn!(
-                    "[scheduled-creation] could not quarantine {name} (pending-file ceiling {MAX_PENDING_FILES} exceeded)"
-                );
+                quarantine_failures += 1;
             }
         }
+        if warn_this_pass && quarantine_failures > 0 {
+            log::warn!(
+                "[scheduled-creation] {quarantine_failures} excess records could not be quarantined and remain queued"
+            );
+        }
     }
-    if files.len() <= MAX_PENDING_FILES {
+    if !over_ceiling {
         // Round-31 minor 5: a pass under the ceiling ends the flood streak.
         retries.ceiling_warn_logged = false;
     }
     let mut poisons_this_pass: usize = 0;
+    let pass_notifier = CoalescingNotifier::new(notifier);
     for path in files {
         let Some(name) = path
             .file_name()
             .and_then(|n| n.to_str())
             .map(str::to_string)
         else {
+            let _ = quarantine_with_warning(&path, &mut quarantine_warnings);
             continue;
         };
         // Round-24 minor 3: parked names skip until their record moves —
@@ -1454,7 +1533,7 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
         // panicking record now burns its own budget and is quarantined
         // after MAX attempts, like any other persistent failure.
         let outcome = futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
-            process_spool_file(path.as_path(), creator, sessions, notifier),
+            process_spool_file(path.as_path(), creator, sessions, &pass_notifier),
         ))
         .await;
         let outcome = match outcome {
@@ -1591,7 +1670,7 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                 // actually left the spool; a persisted rename failure parks
                 // the name so the drain skips it instead of re-poisoning
                 // (and re-auditing) it every poll.
-                if quarantine(&path) {
+                if quarantine_with_warning(&path, &mut quarantine_warnings) {
                     retries.attempts.remove(&name);
                 } else {
                     retries
@@ -1621,7 +1700,7 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                     // rename let a persisted quarantine failure re-apply
                     // the record on a fresh budget every poll; a failure
                     // now parks the name instead (see RetryState.parked).
-                    if quarantine(&path) {
+                    if quarantine_with_warning(&path, &mut quarantine_warnings) {
                         retries.attempts.remove(&name);
                     } else {
                         retries
@@ -2008,6 +2087,10 @@ mod tests {
             &mut retries,
         )
         .await;
+        assert!(
+            retries.ceiling_warn_logged,
+            "an over-ceiling pass keeps the streak latched"
+        );
         for i in (MAX_PENDING_FILES)..(MAX_PENDING_FILES + 8) {
             let name = format!("f{i:04}.json");
             assert!(
@@ -3825,5 +3908,136 @@ mod tests {
         let result = write_done_marker(&marker, &serde_json::json!({"ok": true}));
         assert!(result.is_err(), "the planted FIFO must be refused");
         assert!(!marker.exists(), "the rename must not publish the FIFO");
+    }
+
+    #[tokio::test]
+    async fn vanished_records_release_retry_and_park_state() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        std::fs::create_dir_all(spool_root()).unwrap();
+        let mut retries = RetryState::default();
+        retries.attempts.insert("gone.json".into(), 3);
+        retries
+            .parked
+            .insert("gone.json".into(), std::time::SystemTime::now());
+        process_pending_spool(
+            &FailingCreator,
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(retries.attempts.is_empty());
+        assert!(retries.parked.is_empty());
+        std::fs::remove_dir_all(spool_root()).unwrap();
+        retries.attempts.insert("gone.json".into(), 3);
+        retries
+            .parked
+            .insert("gone.json".into(), std::time::SystemTime::now());
+        process_pending_spool(
+            &FailingCreator,
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert!(retries.attempts.is_empty());
+        assert!(retries.parked.is_empty());
+    }
+
+    #[test]
+    fn retention_preserves_receipts_for_stuck_spool_records() {
+        let _home = TempHome::new();
+        std::fs::create_dir_all(done_dir()).unwrap();
+        std::fs::create_dir_all(spool_root()).unwrap();
+        let marker = done_dir().join("stuck.json");
+        std::fs::write(&marker, b"{\"ok\":true}").unwrap();
+        std::fs::write(spool_root().join("stuck.json"), b"{}").unwrap();
+        let later =
+            std::time::SystemTime::now() + STATE_RETENTION + std::time::Duration::from_secs(60);
+        prune_stale_state_at(later);
+        assert!(marker.exists(), "a stuck record must remain deduplicated");
+        std::fs::remove_file(spool_root().join("stuck.json")).unwrap();
+        prune_stale_state_at(later);
+        assert!(
+            !marker.exists(),
+            "retention resumes when the spool name disappears"
+        );
+    }
+
+    #[test]
+    fn quarantine_keeps_colliding_evidence() {
+        let _home = TempHome::new();
+        std::fs::create_dir_all(spool_root()).unwrap();
+        std::fs::create_dir_all(failed_dir()).unwrap();
+        let source = spool_root().join("collision.json");
+        let previous = failed_dir().join("collision.json");
+        std::fs::write(&source, b"new").unwrap();
+        std::fs::write(&previous, b"old").unwrap();
+        assert!(quarantine(&source).is_ok());
+        assert_eq!(std::fs::read(previous).unwrap(), b"old");
+        assert_eq!(
+            std::fs::read(failed_dir().join("collision.1.json")).unwrap(),
+            b"new"
+        );
+        assert!(!source.exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn non_utf8_spool_names_are_quarantined() {
+        use std::os::unix::ffi::OsStringExt as _;
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        std::fs::create_dir_all(spool_root()).unwrap();
+        let name = std::ffi::OsString::from_vec(b"bad-\xff.json".to_vec());
+        std::fs::write(spool_root().join(&name), b"invalid").unwrap();
+        process_pending_spool(
+            &FailingCreator,
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut RetryState::default(),
+        )
+        .await;
+        assert!(!spool_root().join(&name).exists());
+        assert_eq!(std::fs::read(failed_dir().join(name)).unwrap(), b"invalid");
+    }
+
+    #[tokio::test]
+    async fn a_drain_pass_coalesces_refresh_and_pauses_on_bad_settings() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        std::fs::create_dir_all(spool_root()).unwrap();
+        for name in ["one.json", "two.json"] {
+            std::fs::write(spool_root().join(name), spool_record_json(&[])).unwrap();
+        }
+        let count = Arc::new(AtomicUsize::new(0));
+        let notifier = CountingNotifier(count.clone());
+        let mut retries = RetryState::default();
+        std::fs::write(crate::platform::paths::settings_path(), b"{").unwrap();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &notifier,
+            &mut retries,
+        )
+        .await;
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        assert!(retries.feature_gate_error_logged);
+        assert!(spool_root().join("one.json").exists());
+        std::fs::write(crate::platform::paths::settings_path(), b"{}").unwrap();
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &notifier,
+            &mut retries,
+        )
+        .await;
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "two applies need one panel refresh"
+        );
+        assert!(!retries.feature_gate_error_logged);
     }
 }
