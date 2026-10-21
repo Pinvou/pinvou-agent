@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# CodeWhale v0.9.12 clean re-fork guard: 76 commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
+# CodeWhale v0.9.12 clean re-fork guard: 77 candidate commits, ten maintained themes (r3 closed at pinvou-v0.9.12-r3; inside a transition window the head may lead the tag).
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CODEWHALE="$REPO/CodeWhale"
 APP="$REPO/pinvou3-app/src-tauri"
 EXPECTED_UPSTREAM="dcd4c200f72f0c1ffd60d8e7f6850313db879fc5"
-EXPECTED_HEAD="083cebfd9aac5f6b9993ed610383fe2b38c6785f"
-EXPECTED_COMMITS=76
+# Review candidate; maintenance remains at 083cebfd9 until its PR merges.
+EXPECTED_HEAD="1046493980507abf62485eb3a3baa8aacd65915c"
+EXPECTED_COMMITS=77
 # r1 收口锚点：不可变 r1 tag 的收口 commit。层 0 断言它是当前 head 的祖先，
 # 即维护分支自 r1 收口线性前进而非另起分叉（2026-10-02 起处于过渡期：gitlink =
 # 维护分支头，领先钉在 r3 收口 commit 的不可变 tag；tag 钉点与领先关系由
@@ -27,10 +28,10 @@ bold()  { printf '\033[1m%s\033[0m\n' "$*"; }
 
 fail=0
 
-bold "── 第 0 层：v0.9.12 clean re-fork 拓扑（r1 tag 之后 61 个登记提交，r3 收口后过渡期）──"
+bold "── Layer 0: v0.9.12 review candidate topology ──"
 actual_head="$(git -C "$CODEWHALE" rev-parse HEAD 2>/dev/null || true)"
 if [[ "$actual_head" == "$EXPECTED_HEAD" ]]; then
-  green "  ✓ CodeWhale gitlink 指向登记 head ${EXPECTED_HEAD}（gitlink=维护分支头；过渡期内领先钉在 r3 收口的 tag）"
+  green "  ✓ CodeWhale matches registered review head ${EXPECTED_HEAD}; public maintenance alignment is checked separately"
 else
   red "  ✗ CodeWhale HEAD 为 ${actual_head:-<unreadable>}，登记 head 为 $EXPECTED_HEAD"
   fail=1
@@ -75,6 +76,11 @@ fingerprints=(
   "T2|Windows execution-policy retry glue|CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_powershell_inline_retry_runs_the_command_and_notes_the_fallback"
   "T2|Windows execution-policy retry keeps first evidence|CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_powershell_retry_keeps_the_first_result_when_it_cannot_start"
   "T2|Windows shell UTF-8 prefix family rule|CodeWhale/crates/tui/src/sandbox/mod.rs|fn forkguard_windows_shell_text_matches_the_shell_family"
+  "T2|Shell environment overlays preserve defaults|CodeWhale/crates/tui/src/sandbox/mod.rs|fn command_spec_env_overlays_preserve_existing_values"
+  "T2|Windows Python stdio environment end-to-end|CodeWhale/crates/tui/src/sandbox/mod.rs|fn forkguard_windows_shell_env_overlays_keep_python_stdio_utf8"
+  "T2|Windows explicit environment override casing|CodeWhale/crates/tui/src/sandbox/mod.rs|fn windows_shell_env_explicit_override_is_case_insensitive"
+  "T2|Windows native Python lowercase bash output|CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_windows_python_stdio_lowercase_bash"
+  "T2|Windows native Python background output|CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_windows_python_stdio_background_shell"
   "T2|Windows PowerShell encoded form end-to-end|CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_powershell_encoded_spec_runs_a_non_ascii_payload"
   "T2|Windows PowerShell temp-script form end-to-end|CodeWhale/crates/tui/src/tools/shell/tests.rs|fn forkguard_powershell_temp_script_form_runs_a_non_ascii_payload"
   "T1|宿主 facade 公开 Automation        |CodeWhale/crates/tui/src/lib.rs|pub mod automation_manager;"
