@@ -396,3 +396,27 @@ clients do not newly download or validate evidence absent from their package.
 Existing certificate-enforcing host/build code needs an explicit source-trust and
 unsigned-path implementation review; changing this document does not make old
 binaries pass unsigned native acceptance.
+
+## Approved independent weekly privacy keys (2026-10-22)
+
+The owner approved replacing T25's master-derived weekly keys with independent,
+nonexportable OpenBao Transit HMAC keys for each purpose and ISO UTC week.
+The network-analysis purpose remains `quality-prefix`; stage-quality and
+release-quality use separate purposes, keys and decision records. A protected
+binding fixes the original purpose, week, key identity and key version. HMAC is
+performed inside OpenBao; application memory and business storage receive no
+key material. Do not rotate or substitute a different key to reset contributions
+within the same purpose/week, reuse another week/purpose key, or fall back to
+software HMAC when the provider/binding is unknown.
+
+This decision supersedes only the earlier master-to-week derivation requirement.
+The recorded OpenBao 2.7.1 derived-context failure remains valid historical
+evidence; the separate nonderived SN HMAC adapter does not certify this new
+weekly-key workflow. Raw-IP security logs remain at most seven days and
+purpose-isolated prefix-HMAC/ASN summaries at most thirty days. Query-family
+isolation, contribution limits, k20 suppression, immutable frozen snapshots and
+prohibition on network-based admission are unchanged. Source/ASN policy and
+network-week freeze/cutoff details still need a concrete contract before their
+implementation; no T24 timing policy is silently borrowed. Production deployment
+remains deferred. The actual weekly-key lifecycle and provider acceptance are
+not implemented by changing these documents.

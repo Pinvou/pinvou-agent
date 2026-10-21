@@ -375,7 +375,7 @@ Root 轮换只使用产品级 PublishRootChange。Release 续签和不改变可�
 
 为限制公开遥测接口的伪造和单一代理簇对质量指标的影响，接入网关可以处理连接源 IP，但必须遵守：
 
-- 在边缘即时派生 ASN 和截断前缀（IPv4 最长 `/24`、IPv6 最长 `/48`）。KMS 主密钥按 `purpose=quality-prefix + ISO UTC week` 派生周 key，计算 `prefixHmac=HMAC(weekKey, normalizedPrefix)`；同一周内稳定、跨周不可关联。业务数据库只保存 weekId、HMAC 和 ASN 分类，不得保存原始 IP、明文截断前缀或周 key。
+- 在边缘即时派生 ASN 和截断前缀（IPv4 最长 `/24`、IPv6 最长 `/48`）。OpenBao Transit 为每个用途、每个 ISO UTC week 独立生成不可导出的 HMAC key；网络来源面保留 `purpose=quality-prefix`，stage-quality/release-quality 使用各自独立的用途与 key。受保护映射固定绑定原 purpose、weekId、key 标识和 key 版本，在 KMS 内计算 `prefixHmac=HMAC(weekKey, normalizedPrefix)`；同一用途/周内稳定，跨用途、跨周隔离，不从共同主密钥派生或复用其他用途/周的 key。key 不导出到应用内存；映射或提供方状态未知时不得回退到旧周 key、公共 key 或应用内软件 HMAC，也不得换 key 重置同周贡献限制。业务数据库只保存 weekId、HMAC 和 ASN 分类，不得保存原始 IP、明文截断前缀或周 key。
 - 原始 IP 和明文截断前缀只允许在边缘内存中完成派生；原始 IP 可以进入独立受限的安全访问日志且最长保留 7 天，明文截断前缀不得落盘。用途隔离的前缀 HMAC/ASN 记录最长保留 30 天，到期删除或不可逆聚合。
 - 只有携带合法服务端事件凭据并通过 lineage 校验的质量事件才可贡献样本；每个 installationScopeId 在一个 `UTC自然周+完整固定聚合单元` 内最多贡献 1。对同一 `weekId+完整单元+prefixHmac+UTC日`，最多选取按规范事件时间、eventId 升序最早的 1 个不同 installationScopeId 计入 k；其余只用于滥用检测，不增加匿名集。该规则在贡献发生时应用，不看 scope 的创建日或历史年龄，因此预养 scope 不豁免；单一前缀每周最多贡献 7。
 - 普通运营 V1 的网络来源分析面查询族只包含版本化、非重叠 UTC 周物化立方体的完整叶子单元，维度严格为 `(platform family,targetKey,major.minor version,channel,ASN class)`。接口不提供或导出总计、边际、部分维度汇总、逐前缀、任意/相邻时间窗、交互下钻和临时过滤；未知查询形状固定拒绝。应用贡献上限后，叶子单元合格贡献者 `k>=20` 才返回值，`k<20` 只返回 suppressed，不返回近似值或上下界。同一周快照冻结后不因迟到数据重写。由于公开查询族不存在重叠合计，不再依赖不确定的互补抑制选择。

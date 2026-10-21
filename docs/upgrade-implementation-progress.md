@@ -14187,3 +14187,17 @@ certified: the suspended observer remained in a host Job and was terminated
 before resume. No guest was started by that rejected attempt. Linux scanner
 execution source work continues independently; synthetic controls confer no
 Artifact, scanner qualification or task completion. T42 remains deferred.
+
+
+T25 weekly-key decision (2026-10-22): the owner approved independent nonexportable
+OpenBao Transit HMAC keys for each purpose and ISO UTC week, replacing the
+master-derived-key requirement. The original purpose/week/key identity/version
+binding must remain stable within that week. Computation stays inside KMS; no
+key material reaches application memory/business storage or another purpose.
+Earlier derived-context failures remain historical failures, superseded as a
+policy blocker by this decision, not retrospectively passed. The existing SN
+HMAC adapter does not qualify this separate weekly-key workflow. Original
+seven-day raw-IP-log/thirty-day summary retention and all contribution/query
+limits remain unchanged. Source/ASN/freeze contracts, key lifecycle, actual
+provider acceptance and complete T25 composition are still pending; T25 remains
+20 percent complete. This policy decision does not complete another task.

@@ -418,7 +418,7 @@ ReleaseQualityWeeklySnapshot 独立于实时阶段投影和网络隐私立方体
 
 ### 16.3 网络来源隐私立方体
 
-边缘网关仅为滥用防护/贡献限制派生 ASN 和截断前缀，不用于资格或身份：原始 IP 不进普通事件/业务库，边缘安全日志最长七天，用途隔离摘要最长三十天。prefix HMAC key 由 KMS 按 ISO UTC week 派生，同周稳定、跨周不可关联，不落业务库。只有合法 lineage，每 scope 每 UTC周+完整单元最多一贡献；同周+单元+prefixHmac+UTC日按事件时间/eventId规范顺序仅选一个不同 scope，预养 ID 无法绕过，单前缀每周最多七个。
+边缘网关仅为滥用防护/贡献限制派生 ASN 和截断前缀，不用于资格或身份：原始 IP 不进普通事件/业务库，边缘安全日志最长七天，用途隔离摘要最长三十天。prefix HMAC key 由 OpenBao Transit 为每个用途、每个 ISO UTC week 独立生成且不可导出，受保护映射固定绑定该用途/周的原 key 标识与版本；HMAC 在 KMS 内计算，同周稳定、跨周隔离，key 不进入应用内存或业务库。不同用途不共享 key，不能通过换 key 重置同周贡献限制；映射或提供方状态未知时不降级到旧周 key 或应用内软件 HMAC。只有合法 lineage，每 scope 每 UTC周+完整单元最多一贡献；同周+单元+prefixHmac+UTC日按事件时间/eventId规范顺序仅选一个不同 scope，预养 ID 无法绕过，单前缀每周最多七个。
 
 NetworkPrivacyWeeklyCube 完整叶子为 (platform family,targetKey,major.minor version,channel,ASN class)，非重叠 UTC 周，贡献限制后 k≥20 才显示，其余 suppressed；不发布合计/边际/部分维度/任意或相邻窗/逐前缀/过滤/下钻，冻结后不因迟到重写。与发布质量周报不联查、不共享导出关联键、不相互补算；实时诊断亦不能旁路此边界。公开遥测只能自动冻结及告警，永久暂停/撤回/吊销/隔离由有权人员结合服务器授权记录复核。
 
