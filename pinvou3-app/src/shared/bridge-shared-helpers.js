@@ -5070,6 +5070,34 @@
   // eslint-disable-next-line sonarjs/cognitive-complexity -- verbatim merged replay body; the lane hooks extracted the only lane differences
   function rerenderFromMessagesCore(lane, opts) {
     state.chatItems = [];
+    // Membership proves misses only; possible matches retain the live helpers'
+    // exact-path preference, basename fallback and update boundaries.
+    let artifactBasenames = null;
+    let artifactMembershipUsable = true;
+    function mayHavePresentedArtifact(path) {
+      if (typeof path !== "string") {
+        artifactMembershipUsable = false;
+        return true;
+      }
+      return !artifactMembershipUsable ||
+        !!(artifactBasenames && artifactBasenames.has(basename(path)));
+    }
+    function appendReplayedArtifact(card) {
+      addChatItem(card);
+      if (!artifactMembershipUsable) return;
+      if (typeof card.path !== "string") {
+        artifactMembershipUsable = false;
+        return;
+      }
+      if (!artifactBasenames) artifactBasenames = new Set();
+      artifactBasenames.add(basename(card.path));
+    }
+    function findReplayedArtifact(path) {
+      return mayHavePresentedArtifact(path) ? findPresentedArtifact(path) : null;
+    }
+    function updateReplayedArtifact(card) {
+      return mayHavePresentedArtifact(card.path) ? updatePresentedArtifact(card) : null;
+    }
     // Ordinary tool cards are append-only during replay. Keep the first match, just as
     // updateToolItem does; unusual legacy IDs retain its strict-equality scan.
     const firstToolItemById = new Map();
@@ -5237,7 +5265,7 @@
                 time: "",
                 sessionId: state.activeSessionId,
               };
-              if (!updatePresentedArtifact(restoredCard)) addChatItem(restoredCard);
+              if (!updateReplayedArtifact(restoredCard)) appendReplayedArtifact(restoredCard);
               continue;
             }
           }
@@ -5257,15 +5285,15 @@
             const gres2 = resultById[b.id];
             const gap = artifactPathFromToolOutput(gres2 && gres2.content);
             if (!(gres2 && gres2.is_error) && gap && isDeliverable(gap) && lastDirtyArtifactId[gap] === b.id && !presentedArtifacts[gap] && !presentedArtifactNames[basename(gap)]) {
-              const gprev = findPresentedArtifact(gap);
+              const gprev = findReplayedArtifact(gap);
               if (gprev) {
                 const gcard = {
                   type: "artifact_card", path: gprev.path, title: gprev.title,
                   description: gprev.description, time: "", sessionId: state.activeSessionId,
                 };
-                if (!updatePresentedArtifact(gcard)) addChatItem(gcard);
+                if (!updateReplayedArtifact(gcard)) appendReplayedArtifact(gcard);
               } else if (writtenArtifacts[gap]) {
-                addChatItem({ type: "artifact_card", path: gap, title: basename(gap), description: "", time: "", sessionId: state.activeSessionId });
+                appendReplayedArtifact({ type: "artifact_card", path: gap, title: basename(gap), description: "", time: "", sessionId: state.activeSessionId });
               }
             }
           }
@@ -5277,16 +5305,16 @@
             extractArtifactPaths(b.input).forEach(function (wap) {
               // 去重:同产物只在最后一次修改处补一张卡(与实时对齐)。
               if ((wres && wres.is_error) || lastDirtyArtifactId[wap] !== b.id) return;
-              const wprev = findPresentedArtifact(wap);
+              const wprev = findReplayedArtifact(wap);
               if (wprev) {
                 const wcard = {
                   type: "artifact_card", path: wprev.path, title: wprev.title,
                   description: wprev.description, time: "", sessionId: state.activeSessionId,
                 };
-                if (!updatePresentedArtifact(wcard)) addChatItem(wcard);
+                if (!updateReplayedArtifact(wcard)) appendReplayedArtifact(wcard);
               } else if (writtenArtifacts[wap] && !presentedArtifacts[wap] && !presentedArtifactNames[basename(wap)]) {
                 // AI 写了产物但全程没 present_artifact → 兜底补首卡(与实时 chat:done 对齐)
-                addChatItem({ type: "artifact_card", path: wap, title: basename(wap), description: "", time: "", sessionId: state.activeSessionId });
+                appendReplayedArtifact({ type: "artifact_card", path: wap, title: basename(wap), description: "", time: "", sessionId: state.activeSessionId });
               }
             });
           }
