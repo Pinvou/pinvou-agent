@@ -606,7 +606,7 @@ impl ScheduledTaskState {
                 && prompt.chars().count() > SCHEDULED_MESSAGE_MAX_CHARS
             {
                 return Err(format!(
-                    "Scheduled message exceeds the {SCHEDULED_MESSAGE_MAX_CHARS} character limit"
+                    "prompt exceeds the {SCHEDULED_MESSAGE_MAX_CHARS} character limit"
                 ));
             }
         }
@@ -704,7 +704,8 @@ impl ScheduledTaskState {
                     // the already persisted name/prompt/rrule AND, when the
                     // update carried one, the retargeted target_session —
                     // remains applied and retriable as a whole (round-13
-                    // minor 9: the retarget is named in the caller's error).
+                    // minor 9: the generic binding error does not enumerate
+                    // these already-persisted fields).
                     return Err(format!(
                         "Failed to save scheduled task model binding: {error:#}"
                     ));
@@ -794,17 +795,18 @@ impl ScheduledTaskState {
         // cancellation-style outer timeout could release the gate midway through
         // the archive-then-delete sequence, allowing update/run-now into partial state.
         let _operation = self.lock_operation(&id).await;
-        self.delete_task_inner(&id).await.map_err(|err| {
-            // Round-17 M2: classify the miss by ErrorKind here, like the
-            // update pre-check — the watcher's poison classifier matches
-            // rendered TEXT ("No such file"), which Windows' localized
-            // ENOENT Display never contains, so an unknown-task delete
-            // regressed to retry-classified and burned the budget.
-            if is_not_found_error(&err) {
-                return format!("scheduled task not found: {id}");
+        {
+            let manager = self.automations.lock().await;
+            if let Err(error) = manager.get_automation(&id) {
+                if is_not_found_error(&error) {
+                    return Err(format!("scheduled task not found: {id}"));
+                }
+                return Err(format!("Failed to delete scheduled task '{id}': {error:#}"));
             }
-            format!("Failed to delete scheduled task '{id}': {err:#}")
-        })
+        }
+        self.delete_task_inner(&id)
+            .await
+            .map_err(|error| format!("Failed to delete scheduled task '{id}': {error:#}"))
     }
 
     async fn run_task_now(&self, id: String) -> Result<ScheduledRunDto, String> {
@@ -1410,8 +1412,16 @@ fn map_scheduled_task_with_run_state(
         .model
         .as_deref()
         .and_then(|model| model_bindings.model_id_for(&record.id, model));
-    let kind = task_kinds.kind_for(&record.id);
-    let target_session = task_kinds.target_session_for(&record.id);
+    let (kind, target_session) = match task_kinds.kind_lookup_for(&record.id) {
+        ScheduledTaskKindLookup::MemoryOrganize => {
+            (Some(SCHEDULED_TASK_KIND_MEMORY_ORGANIZE.to_string()), None)
+        }
+        ScheduledTaskKindLookup::SessionMessage { target_session } => (
+            Some(SCHEDULED_TASK_KIND_SESSION_MESSAGE.to_string()),
+            Some(target_session),
+        ),
+        ScheduledTaskKindLookup::Chat | ScheduledTaskKindLookup::Unsupported(_) => (None, None),
+    };
     let (pinned, pinned_at) = ui_metadata.metadata_for(&record.id);
     ScheduledTaskDto {
         id: record.id,
@@ -1612,11 +1622,50 @@ fn delivery_result_summary(
     task_kinds: &ScheduledTaskKindStore,
     automation_id: &str,
     record: &AutomationRunRecord,
+    result_summary: Option<&str>,
 ) -> Option<String> {
-    if !matches!(record.status, AutomationRunStatus::Completed) {
+    if !matches!(record.status, AutomationRunStatus::Completed)
+        || task_kinds.target_session_for(automation_id).is_none()
+    {
         return None;
     }
-    task_kinds.target_session_for(automation_id)
+    // This fact belongs to the completed task, not the mutable target sidecar.
+    // Missing/pruned legacy task results stay unknown rather than mislabeled.
+    let target = result_summary?.strip_prefix("delivered to session ")?;
+    if target.is_empty()
+        || target.len() > 128
+        || !target
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
+    Some(target.to_string())
+}
+
+async fn recorded_delivery_target(
+    task_manager: Option<&SharedTaskManager>,
+    task_kinds: &ScheduledTaskKindStore,
+    record: &AutomationRunRecord,
+) -> Option<String> {
+    if !matches!(record.status, AutomationRunStatus::Completed)
+        || task_kinds
+            .target_session_for(&record.automation_id)
+            .is_none()
+    {
+        return None;
+    }
+    let task_id = record.task_id.as_deref()?;
+    let task = task_manager?.get_task(task_id).await.ok()?;
+    if task.id != task_id || task.status != TaskStatus::Completed {
+        return None;
+    }
+    delivery_result_summary(
+        task_kinds,
+        &record.automation_id,
+        record,
+        task.result_summary.as_deref(),
+    )
 }
 
 fn map_scheduled_run_with_task(
@@ -1810,17 +1859,7 @@ fn canonical_message_target(
             "invalid target_session: {target} is an isolated or unattended session and cannot receive scheduled messages"
         ));
     }
-    if let Err(error) = sessions.manager.load_session_snapshot(target) {
-        // A missing file and a corrupt/newer-schema file both land here:
-        // name the distinction instead of blaming "not found" for every
-        // load failure.
-        if target_file_missing(target) {
-            return Err(format!("target_session not found: {target}"));
-        }
-        return Err(format!(
-            "target_session {target} could not be loaded: {error:#}"
-        ));
-    }
+    ensure_exact_message_target_exists(sessions, target)?;
     // Review round-4 B1 (creation arm) / round-5 M-A disposition: code/ACP
     // sessions load fine as native records, so the existence probe alone
     // would accept them — and every later fire would fail the executor's
@@ -1835,12 +1874,23 @@ fn canonical_message_target(
     Ok(Some(target.to_string()))
 }
 
-/// Whether a session snapshot file is simply absent (vs present but
-/// unreadable/corrupt) so the caller-facing error can distinguish the two.
-fn target_file_missing(target: &str) -> bool {
-    !crate::platform::paths::sessions_root()
-        .join(format!("{target}.json"))
-        .is_file()
+/// Match the actual directory entry, not the host filesystem's case folding.
+/// Only existence is needed here; loading a complete transcript is unnecessary.
+pub(crate) fn ensure_exact_message_target_exists(
+    sessions: &SessionStore,
+    target: &str,
+) -> Result<(), String> {
+    let filename = format!("{target}.json");
+    let entries = std::fs::read_dir(sessions.manager.sessions_dir())
+        .map_err(|error| format!("target_session could not be checked: {error}"))?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("target_session could not be checked: {error}"))?;
+        if entry.file_name() == std::ffi::OsStr::new(&filename) && entry.path().is_file() {
+            return Ok(());
+        }
+    }
+    Err(format!("target_session not found: {target}"))
 }
 
 /// Kind allow-list: missing means an ordinary chat task; `memory_organize` is
@@ -2100,22 +2150,22 @@ pub async fn list_scheduled_task_runs(
         .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
     let task_name = record.name;
     let task_model = record.model;
-    let record_id = record.id.clone();
-    Ok(records
-        .into_iter()
-        .map(|record| {
-            let summary = delivery_result_summary(&state.task_kinds, &record_id, &record);
-            map_scheduled_run_with_task(
-                record,
-                &state.sessions,
-                &state.read_state,
-                &session_titles,
-                Some(task_name.clone()),
-                task_model.clone(),
-                summary,
-            )
-        })
-        .collect())
+    drop(manager);
+    let mut output = Vec::with_capacity(records.len());
+    for record in records {
+        let summary =
+            recorded_delivery_target(state.task_manager.as_ref(), &state.task_kinds, &record).await;
+        output.push(map_scheduled_run_with_task(
+            record,
+            &state.sessions,
+            &state.read_state,
+            &session_titles,
+            Some(task_name.clone()),
+            task_model.clone(),
+            summary,
+        ));
+    }
+    Ok(output)
 }
 
 /// Return every retained scheduled run with a single reconciliation and a single
@@ -2182,22 +2232,21 @@ pub async fn list_scheduled_runs(
     records.sort_by_key(|(run, _, _)| std::cmp::Reverse(run.scheduled_for));
     let session_titles = scheduled_session_titles(&state.sessions)
         .map_err(|err| format!("Failed to list scheduled conversations: {err:#}"))?;
-    Ok(records
-        .into_iter()
-        .map(|(record, task_name, task_model)| {
-            let summary =
-                delivery_result_summary(&state.task_kinds, &record.automation_id, &record);
-            map_scheduled_run_with_task(
-                record,
-                &state.sessions,
-                &state.read_state,
-                &session_titles,
-                task_name,
-                task_model,
-                summary,
-            )
-        })
-        .collect())
+    let mut output = Vec::with_capacity(records.len());
+    for (record, task_name, task_model) in records {
+        let summary =
+            recorded_delivery_target(state.task_manager.as_ref(), &state.task_kinds, &record).await;
+        output.push(map_scheduled_run_with_task(
+            record,
+            &state.sessions,
+            &state.read_state,
+            &session_titles,
+            task_name,
+            task_model,
+            summary,
+        ));
+    }
+    Ok(output)
 }
 pub async fn create_scheduled_task(
     input: CreateScheduledTaskInput,
@@ -2773,6 +2822,7 @@ mod tests {
     struct SessionCreatingExecutor {
         sessions: SessionStore,
         hold: Option<Arc<tokio::sync::Notify>>,
+        result_text: Option<String>,
     }
 
     #[async_trait::async_trait]
@@ -2813,7 +2863,10 @@ mod tests {
             }
             deepseek_tui::task_manager::TaskExecutionResult {
                 status: TaskStatus::Completed,
-                result_text: Some("cascade fixture run".to_string()),
+                result_text: self
+                    .result_text
+                    .clone()
+                    .or_else(|| Some("cascade fixture run".to_string())),
                 error: None,
                 terminal_reason: deepseek_tui::task_manager::TaskTerminalReason::Completed,
             }
@@ -2910,6 +2963,13 @@ mod tests {
     }
 
     async fn cascade_fixture(hold: Option<Arc<tokio::sync::Notify>>) -> CascadeFixture {
+        cascade_fixture_with_result(hold, None).await
+    }
+
+    async fn cascade_fixture_with_result(
+        hold: Option<Arc<tokio::sync::Notify>>,
+        result_text: Option<String>,
+    ) -> CascadeFixture {
         let sessions = SessionStore::boot().expect("session store");
         let read_state =
             ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())
@@ -2937,6 +2997,7 @@ mod tests {
             Arc::new(SessionCreatingExecutor {
                 sessions: sessions.clone(),
                 hold: hold.clone(),
+                result_text,
             }),
         )
         .await
@@ -3008,6 +3069,102 @@ mod tests {
             fixture.hold.is_none(),
         )
         .await
+    }
+
+    #[tokio::test]
+    async fn persisted_delivery_target_survives_retarget_and_missing_task_results() {
+        let _guard = crate::platform::paths::tests::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let dir = temp_home();
+        let previous = std::env::var("PINVOU3_HOME").ok();
+        // SAFETY: ENV_LOCK held; all environment writes are serialized.
+        unsafe { std::env::set_var("PINVOU3_HOME", &dir) };
+        let fixture =
+            cascade_fixture_with_result(None, Some("delivered to session target001".to_string()))
+                .await;
+        fixture
+            .state
+            .task_kinds
+            .set_kind_with_target(
+                &fixture.automation_id,
+                SCHEDULED_TASK_KIND_SESSION_MESSAGE,
+                "target001",
+            )
+            .unwrap();
+        let run = run_once(&fixture).await;
+        fixture
+            .state
+            .task_kinds
+            .set_kind_with_target(
+                &fixture.automation_id,
+                SCHEDULED_TASK_KIND_SESSION_MESSAGE,
+                "target002",
+            )
+            .unwrap();
+        assert_eq!(
+            recorded_delivery_target(Some(&fixture.task_manager), &fixture.state.task_kinds, &run)
+                .await
+                .as_deref(),
+            Some("target001")
+        );
+        assert_eq!(
+            recorded_delivery_target(None, &fixture.state.task_kinds, &run).await,
+            None
+        );
+        let mut missing = run.clone();
+        missing.task_id = Some("absent-task-result".to_string());
+        assert_eq!(
+            recorded_delivery_target(
+                Some(&fixture.task_manager),
+                &fixture.state.task_kinds,
+                &missing
+            )
+            .await,
+            None
+        );
+        fixture.task_manager.shutdown();
+        drop(fixture);
+        match previous {
+            // SAFETY: ENV_LOCK held.
+            Some(value) => unsafe { std::env::set_var("PINVOU3_HOME", value) },
+            // SAFETY: ENV_LOCK held.
+            None => unsafe { std::env::remove_var("PINVOU3_HOME") },
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn message_target_probe_requires_exact_directory_spelling_without_loading_transcripts() {
+        crate::platform::test_support::with_temp_home("scheduled-target-exact", || {
+            let sessions = SessionStore::boot_for_process_startup().unwrap();
+            let root = sessions.manager.sessions_dir();
+            std::fs::create_dir_all(root).unwrap();
+            // Intentionally not a transcript: the probe must not load its body.
+            std::fs::write(root.join("target001.json"), "not a transcript").unwrap();
+            assert!(canonical_message_target(&sessions, Some("target001")).is_ok());
+            assert!(
+                canonical_message_target(&sessions, Some("Target001"))
+                    .unwrap_err()
+                    .contains("not found")
+            );
+            assert!(
+                crate::features::scheduled::executor::ensure_deliverable_target(
+                    &sessions,
+                    "target001"
+                )
+                .is_ok()
+            );
+            assert!(
+                crate::features::scheduled::executor::ensure_deliverable_target(
+                    &sessions,
+                    "Target001"
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("not found")
+            );
+        });
     }
 
     /// 删一次运行 = 删掉该次 Session + Run + 底座 Task；任务定义、共享工作间
@@ -4135,12 +4292,17 @@ mod tests {
         // had already run, so both assertion operands read the same
         // post-rollback state and the model/status restore legs were
         // unpinned (deleting them kept the suite green).
-        let (previous_model, previous_status) = {
+        let (previous_model, previous_status, previous_prompt, previous_rrule) = {
             let manager = state.automations.lock().await;
             let before = manager
                 .get_automation(&created.id)
                 .expect("task still exists");
-            (before.model.clone(), before.status)
+            (
+                before.model.clone(),
+                before.status,
+                before.prompt.clone(),
+                before.rrule.clone(),
+            )
         };
 
         // Squat the kinds sidecar: every set_kind_with_target persist now
@@ -4184,6 +4346,14 @@ mod tests {
             .get_automation(&created.id)
             .expect("task still exists");
         assert_eq!(task.name, "原名", "the rollback restored the name");
+        assert_eq!(
+            task.prompt, previous_prompt,
+            "the rollback restored the prompt"
+        );
+        assert_eq!(
+            task.rrule, previous_rrule,
+            "the rollback restored the schedule"
+        );
         assert_eq!(
             task.model, previous_model,
             "the rollback restored the model the failed update had changed to m-9"
@@ -4257,6 +4427,19 @@ mod tests {
             }
             other => panic!("the foreign write must survive the reload: {other:?}"),
         }
+        let foreign = ScheduledTaskKindStore::open(scheduled_task_kinds_path()).unwrap();
+        foreign
+            .set_kind_with_target(
+                "automation-1",
+                SCHEDULED_TASK_KIND_SESSION_MESSAGE,
+                "target002",
+            )
+            .unwrap();
+        assert_eq!(
+            kinds.target_session_for("automation-1").as_deref(),
+            Some("target002"),
+            "a foreign retarget must refresh a cached hit"
+        );
         if let Some(v) = previous {
             // SAFETY: ENV_LOCK held; env writes are serialized.
             unsafe { std::env::set_var("PINVOU3_HOME", v) };
@@ -4306,7 +4489,12 @@ mod tests {
             error: None,
         };
         assert_eq!(
-            delivery_result_summary(&kinds, "automation-1", &record),
+            delivery_result_summary(
+                &kinds,
+                "automation-1",
+                &record,
+                Some("delivered to session target001")
+            ),
             Some("target001".to_string()),
             "the summary is the bare id; the panel composes the sentence"
         );
@@ -4328,7 +4516,12 @@ mod tests {
                 &std::collections::HashMap::new(),
                 Some("任务名".to_string()),
                 Some("模型".to_string()),
-                delivery_result_summary(&kinds, "automation-1", &record),
+                delivery_result_summary(
+                    &kinds,
+                    "automation-1",
+                    &record,
+                    Some("delivered to session target001"),
+                ),
             );
             assert_eq!(
                 dto.delivered_target.as_deref(),
@@ -4339,15 +4532,60 @@ mod tests {
             assert_eq!(dto.task_model.as_deref(), Some("模型"));
         }
 
+        kinds
+            .set_kind_with_target(
+                "automation-1",
+                SCHEDULED_TASK_KIND_SESSION_MESSAGE,
+                "target002",
+            )
+            .unwrap();
+        assert_eq!(
+            delivery_result_summary(
+                &kinds,
+                "automation-1",
+                &record,
+                Some("delivered to session target001")
+            ),
+            Some("target001".to_string()),
+            "retargeting must not rewrite an older run's provenance"
+        );
+        assert_eq!(
+            delivery_result_summary(
+                &kinds,
+                "automation-1",
+                &record,
+                Some("delivered to session target002")
+            ),
+            Some("target002".to_string())
+        );
+        assert_eq!(
+            delivery_result_summary(&kinds, "automation-1", &record, None),
+            None,
+            "missing retained task results must not project today's target"
+        );
+        assert_eq!(
+            delivery_result_summary(&kinds, "automation-1", &record, Some("unrelated result")),
+            None
+        );
         // Non-completed runs and unknown automations stay summary-less.
         let mut failed = record.clone();
         failed.status = AutomationRunStatus::Failed;
         assert_eq!(
-            delivery_result_summary(&kinds, "automation-1", &failed),
+            delivery_result_summary(
+                &kinds,
+                "automation-1",
+                &failed,
+                Some("delivered to session target001")
+            ),
             None
         );
         assert_eq!(
-            delivery_result_summary(&kinds, "automation-absent", &record),
+            delivery_result_summary(
+                &kinds,
+                "automation-absent",
+                &record,
+                Some("delivered to session target001")
+            ),
             None
         );
 

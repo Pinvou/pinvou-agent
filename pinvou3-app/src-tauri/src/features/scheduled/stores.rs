@@ -1344,33 +1344,15 @@ impl VersionedJsonStore<ScheduledTaskKindRegistry> {
 
     /// Executor-facing tri-state lookup; see [`ScheduledTaskKindLookup`].
     ///
-    /// A miss consults the disk before it answers `Chat`. This registry is read
-    /// once at `open()`, but the same file is co-owned by a foreign process:
-    /// `pinvou scheduled create --kind memory-organize` writes a kind record
-    /// while the app is running, and the foundation's sweep re-reads task
-    /// *definitions* from disk on every tick — so the scheduler will happily
-    /// fire a task whose kind this handle has never seen. Answering `Chat`
-    /// there is the unsafe direction (the executor would run the
-    /// kind-specific prompt as an unattended full-permission Yolo
-    /// conversation), so a miss pays a `stat` and re-reads only when the file
-    /// actually changed; a hit stays lock-only with no IO, which is the hot
-    /// path for every already-known task. Round-38 review note: the hit path
-    /// never re-consults disk, so a FOREIGN edit to an already-known id's
-    /// kind stays unseen until some miss, mutator, or poll reloads — bounded
-    /// staleness in the safe direction (the unknown→miss path always
-    /// reloads; a kind can only degrade Chat→organize, never the reverse,
-    /// without passing through a miss).
+    /// Refresh both additions and edits from the co-owned CLI sidecar.
+    /// A hit also checks the version stamp so a retarget is seen before fire.
     pub(crate) fn kind_lookup_for(&self, automation_id: &str) -> ScheduledTaskKindLookup {
-        if let Some(lookup) = self.stored_kind(automation_id) {
-            return lookup;
-        }
         self.reload_if_changed();
         self.stored_kind(automation_id)
             .unwrap_or(ScheduledTaskKindLookup::Chat)
     }
 
-    /// Classify the in-memory entry, or None when this handle has no record
-    /// for the id at all (the only case the disk can still contradict).
+    /// Classify the loaded entry after the caller's version refresh.
     fn stored_kind(&self, automation_id: &str) -> Option<ScheduledTaskKindLookup> {
         self.registry
             .read()
@@ -1493,8 +1475,9 @@ pub(crate) type ScheduledTaskModelBindingStore =
     VersionedJsonStore<ScheduledTaskModelBindingRegistry>;
 
 impl VersionedJsonStore<ScheduledTaskModelBindingRegistry> {
-    /// Same foreign-writer miss path as the task-kind store's
-    /// `kind_lookup_for`: `pinvou scheduled create/update --model-id` rebinds
+    /// This model-binding store retains its miss-only foreign-writer refresh;
+    /// the kinds store also refreshes hits so CLI retargets are visible.
+    /// Here, `pinvou scheduled create/update --model-id` rebinds
     /// this sidecar while the app is running, and a handle opened before that
     /// would silently drop the binding and run the task on the bare wire model
     /// name. That is a correctness bug rather than a safety one, so the fix

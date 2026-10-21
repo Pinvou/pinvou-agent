@@ -589,6 +589,7 @@ class CreateSpoolAndResultTests(unittest.TestCase):
                                 prompt=record.get("prompt"),
                                 rrule=record.get("rrule"),
                                 model_id=record.get("model_id"),
+                                target_session=record.get("target_session"),
                                 paused=(
                                     False
                                     if record.get("kind") == "create"
@@ -649,6 +650,25 @@ class CreateSpoolAndResultTests(unittest.TestCase):
             self.assertNotIn("no second task", result["note"])
         finally:
             server.RESULT_WAIT_SECONDS = old_wait
+
+
+    def test_keyed_target_replay_matches_the_fake_watcher_digest(self):
+        sessions = Path(self.tmp) / "sessions"
+        sessions.mkdir()
+        (sessions / "target001.json").write_text("{}")
+        kwargs = self._create_kwargs(sessions_dir=str(sessions), target_session="target001",
+                                     from_session="reqsrc01", idempotency_key="target-key")
+        worker = self._finish_in_background()
+        try:
+            first, error = server.create_scheduled_task(**kwargs)
+        finally:
+            worker.join(timeout=2)
+        self.assertIsNone(error)
+        self.assertEqual(first["taskId"], "task-1")
+        replay, error = server.create_scheduled_task(**kwargs)
+        self.assertIsNone(error)
+        self.assertTrue(replay["duplicate"])
+        self.assertFalse(replay["payload_mismatch"])
 
     def test_failure_marker_redacts_private_roots_before_return(self):
         automations = Path(self.tmp) / "automations"

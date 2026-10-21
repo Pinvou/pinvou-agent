@@ -260,6 +260,8 @@ pub(crate) fn ensure_deliverable_target(store: &SessionStore, target_session: &s
             "target session {target_session} is an ACP/code session; deliver through the independent code page, not scheduled messages"
         );
     }
+    super::tasks::ensure_exact_message_target_exists(store, target_session)
+        .map_err(anyhow::Error::msg)?;
     Ok(())
 }
 
@@ -325,6 +327,9 @@ impl ScheduledChatExecutor {
         cancel: CancellationToken,
     ) -> TaskExecutionResult {
         let _ = automation_id;
+        if cancel.is_cancelled() {
+            return canceled();
+        }
         let message = message.trim();
         if message.is_empty() {
             return failed("scheduled message body is empty");
@@ -1636,9 +1641,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn canceled_session_message_wins_over_invalid_body_checks() {
+        let runtime = Arc::new(ScriptedRuntime::new([]));
+        let executor = ScheduledChatExecutor::new(runtime.clone());
+        for message in [String::new(), "x".repeat(SCHEDULED_MESSAGE_MAX_CHARS + 1)] {
+            let cancel = CancellationToken::new();
+            cancel.cancel();
+            let result = executor
+                .execute_session_message("task", "target001", &message, cancel)
+                .await;
+            assert_eq!(result.status, TaskStatus::Canceled);
+        }
+        assert!(runtime.deliveries().is_empty());
+    }
+
+    #[tokio::test]
     async fn memory_organize_failure_maps_to_a_failed_run() -> Result<()> {
         let runtime = Arc::new(ScriptedRuntime::new([]));
-        runtime.set_organize_error(Some("model unavailable".to_string()));
+        runtime.set_organize_error(Some(
+            "model unavailable sk-test-redaction-fixture".to_string(),
+        ));
         let executor = Arc::new(
             ScheduledChatExecutor::new(runtime.clone())
                 .with_kind_resolver(Arc::new(|_| ScheduledTaskKindLookup::MemoryOrganize)),
@@ -1653,7 +1675,7 @@ mod tests {
         assert_eq!(finished.status, TaskStatus::Failed);
         assert_eq!(
             finished.error.as_deref(),
-            Some("memory organize: model unavailable")
+            Some("memory organize: model unavailable [REDACTED]")
         );
         assert_eq!(finished.thread_id, None);
         assert!(
@@ -1772,6 +1794,7 @@ mod tests {
             assert!(err.to_string().contains("ACP/code"), "{err}");
             let err = ensure_deliverable_target(&store, "code-tgt").unwrap_err();
             assert!(err.to_string().contains("ACP/code"), "{err}");
+            std::fs::write(store.manager.sessions_dir().join("chat-tgt.json"), "{}").unwrap();
             assert!(ensure_deliverable_target(&store, "chat-tgt").is_ok());
         });
     }
@@ -1785,6 +1808,7 @@ mod tests {
         let root = TestRoot::new()?;
         let store = SessionStore::boot_at_test_dir(&root.0)?;
         // A plain session id passes the gate (no profile registered).
+        std::fs::write(store.manager.sessions_dir().join("tgt0001.json"), "{}")?;
         assert!(ensure_deliverable_target(&store, "tgt0001").is_ok());
         // Isolated prefixes — case variants included — are rejected before
         // any engine is woken (the recursion direction; same discipline as

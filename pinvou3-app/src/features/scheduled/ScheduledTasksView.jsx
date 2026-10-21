@@ -1463,7 +1463,7 @@ import memoryOrganizeImage from '../../assets/scheduled/memory-organize.jpg';
                                 || (item.deliveredTarget
                                   ? scheduledCopy.deliveredTo(item.deliveredTarget)
                                   : null)
-                                || scheduledCopy.noRunSession}
+                                || (['failed', 'canceled'].includes(item.status) ? runStatusLabel(item.status) : scheduledCopy.noRunSession)}
                             </span>
                             <span className={`mt-1 block truncate text-[12px] ${mutedValue}`}>
                               {fmtDateTime(item.scheduledFor || item.createdAt)}

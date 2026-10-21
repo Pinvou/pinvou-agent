@@ -259,8 +259,8 @@ impl SpooledCreationRequest {
     /// told). Mirrors every MCP-server rule that is checkable without live
     /// store access (shape, caps, charsets, isolation prefixes); the live
     /// probes (task exists, target session exists) stay with the domain
-    /// layer; missing or corrupt targets poison on attempt 1 (the
-    /// permanent-domain classification), not retried failures.
+    /// layer; explicit missing-target errors poison on attempt 1. The
+    /// exact-name probe does not parse transcripts; runtime reads report corruption.
     pub(crate) fn validate(&self) -> Result<()> {
         if self.schema_version != 1 {
             bail!("unsupported spool schema_version {}", self.schema_version);
@@ -1261,15 +1261,13 @@ fn is_permanent_domain_error(error: &str) -> bool {
         "cannot be combined",
         "only scheduled-message tasks",
         "require memory to be enabled",
-        "not found",
+        "target_session not found:",
+        "scheduled task not found:",
         // A permanently corrupt target can never load — poison, don't burn
         // the retry budget (round-4 minor 3).
         "could not be loaded",
-        // Round-15 minor 2: an update/delete of an UNKNOWN task surfaces the
-        // parent CRUD's wrapped read miss ("Failed to read automation …: No
-        // such file or directory") — the same permanent miss as a missing
-        // target, so it poisons at attempt 1 instead of burning the budget.
-        "No such file",
+        // Only explicit domain pre-check misses are permanent. An inner
+        // archive/delete IO NotFound remains retryable on every platform.
         // Round-5 minor 1: the ACP/code disposition and the kind errors are
         // permanent too — no retry can fix them.
         "ACP/code session",
@@ -5607,5 +5605,48 @@ mod tests {
             ],
         );
         assert_eq!(batch, vec![root.join("fresh.json")]);
+
+    }
+
+
+    #[test]
+    fn explicit_blank_target_is_rejected_for_every_request_kind() {
+        for kind in ["create", "update", "delete"] {
+            let request: SpooledCreationRequest = serde_json::from_str(&spool_record_json(&[
+                ("kind", serde_json::json!(kind)),
+                ("task_id", serde_json::json!("task-1")),
+                ("target_session", serde_json::json!("  ")),
+            ]))
+            .unwrap();
+            let mut request = request;
+            if kind == "create" {
+                request.task_id = None;
+            }
+            if kind == "delete" {
+                request.name = None;
+                request.prompt = None;
+                request.rrule = None;
+                request.paused = None;
+            }
+            let error = request.validate().unwrap_err().to_string();
+            assert!(error.contains("target_session is blank"), "{kind}: {error}");
+        }
+    }
+
+    #[test]
+    fn missing_error_poisoning_is_scoped_to_domain_prechecks() {
+        for error in [
+            "scheduled task not found: task-1",
+            "target_session not found: target001",
+        ] {
+            assert!(is_permanent_domain_error(error));
+        }
+        for error in [
+            "Failed to delete scheduled task 'task-1': archive: No such file or directory",
+            "Failed to delete scheduled task 'task-1': archive: file not found",
+            "Failed to delete scheduled task 'task-1': archive: The system cannot find the file specified",
+        ] {
+            assert!(!is_permanent_domain_error(error));
+        }
     }
 }

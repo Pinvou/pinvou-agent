@@ -1334,12 +1334,12 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
     # creates (the watcher coerces via unwrap_or(false)) — coerce here too.
     try:
         requested_digest = spool_request_digest(
-        kind,
-        target_session=target_session,
-        task_id=task_id if kind != "create" else None,
-        name=name, prompt=prompt, rrule=rrule,
-        model_id=model_id,
-        paused=False if kind == "create" and paused is None else paused,
+            kind,
+            target_session=target_session,
+            task_id=task_id if kind != "create" else None,
+            name=name, prompt=prompt, rrule=rrule,
+            model_id=model_id,
+            paused=False if kind == "create" and paused is None else paused,
         )
     except UnicodeEncodeError:
         # Round-27 minor 6: lone surrogates in a JSON string argument crash

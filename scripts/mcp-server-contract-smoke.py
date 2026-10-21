@@ -898,6 +898,7 @@ def main():
                                 prompt=request.get("prompt"),
                                 rrule=request.get("rrule"),
                                 model_id=request.get("model_id"),
+                                target_session=request.get("target_session"),
                                 paused=(
                                     False
                                     if request.get("kind") == "create"
@@ -922,6 +923,23 @@ def main():
             assert confirmed.get("taskId", "").startswith("sim-"), confirmed
             assert confirmed.get("taskName") == "晚报", confirmed
             assert confirmed.get("duplicate") is False, confirmed
+            target_file = Path(home, "sessions", "tgt0001.json")
+            target_file.parent.mkdir(parents=True, exist_ok=True)
+            target_file.write_text("{}", encoding="utf-8")
+            target_args = {
+                "name": "定时消息", "prompt": "确认", "rrule": "FREQ=HOURLY;INTERVAL=6",
+                "target_session": "tgt0001", "from_session": "src0001",
+                "idempotency_key": "target-smoke",
+            }
+            target_result = content_json(rpc.call("tools/call", {
+                "name": "create_scheduled_task", "arguments": target_args,
+            }))
+            assert target_result.get("taskId", "").startswith("sim-"), target_result
+            target_replay = content_json(rpc.call("tools/call", {
+                "name": "create_scheduled_task", "arguments": target_args,
+            }))
+            assert target_replay.get("duplicate") is True, target_replay
+            assert target_replay.get("payload_mismatch") is False, target_replay
             stop.set()
             # Round-15 minor 4: the watcher must be GONE before the later
             # journeys run — a thread descheduled between its stop-check and
@@ -930,9 +948,9 @@ def main():
             # bounded join makes its lifetime deterministic.
             watcher_thread.join(timeout=2)
             assert not watcher_thread.is_alive(), "fake watcher must finish before inspecting the spool"
-            # 积压与在途都被排水，spool 清空、.done 留有两条标记。
+            # Both pending and targeted writes drain; three receipts remain.
             assert not list(Path(home, "task-requests", "spool").glob("*.json"))
-            assert len(list(Path(home, "task-requests", "spool", ".done").glob("*.json"))) == 2
+            assert len(list(Path(home, "task-requests", "spool", ".done").glob("*.json"))) == 3
             # Round-26 M6(c): a keyed replay against a WATCHER-DRAINED key
             # must answer the recorded duplicate with NO payload_mismatch —
             # the marker's digest is the one production's watcher would
