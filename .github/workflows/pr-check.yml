@@ -809,7 +809,34 @@ jobs:
   knowledge-rust:
     name: knowledge-rust
     needs: changes
-    if: ${{ !cancelled() && github.event.action != 'closed' && (needs.changes.outputs.knowledge_rust == 'true' || needs.changes.outputs.knowledge_dependencies == 'true') }}
+    # Same trigger shape as cli-test: main push runs unconditionally so the
+    # knowledge-rust-v2 namespace keeps refreshing on non-knowledge merges
+    # (PRs never save; a namespace whose writer skips on main ages out and the
+    # next knowledge PR pays a full cold run). Merge Queue and ready PRs stay
+    # paths-driven; drafts skip, like every other heavy leg.
+    if: >-
+      ${{
+        !cancelled() &&
+        github.event.action != 'closed' &&
+        (
+          github.event_name == 'push' ||
+          (
+            github.event_name == 'merge_group' &&
+            (
+              needs.changes.outputs.knowledge_rust == 'true' ||
+              needs.changes.outputs.knowledge_dependencies == 'true'
+            )
+          ) ||
+          (
+            github.event_name == 'pull_request' &&
+            github.event.pull_request.draft == false &&
+            (
+              needs.changes.outputs.knowledge_rust == 'true' ||
+              needs.changes.outputs.knowledge_dependencies == 'true'
+            )
+          )
+        )
+      }}
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     steps:
@@ -844,6 +871,10 @@ jobs:
           # job is never on the critical path (it runs parallel to the heavy
           # legs), so only ~/.cargo is cached and the compile stays cold.
           cache-targets: false
+          # cache-on-failure: still save when a main push fails — otherwise
+          # one failure drops the namespace fully cold (same anti-death-loop
+          # rationale as rust-test/cli-lint).
+          cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: cargo fmt --check
@@ -917,13 +948,28 @@ jobs:
     # 纳入 rust_dependencies:只改 deny.toml 时 rust_code=false 但 rust_dependencies=true,
     # cargo-deny 子步骤(已按 rust_dependencies 门控)需本 job 启动才能运行;
     # 否则 deny.toml 策略改动会静默漏检 cargo-deny。
-    if: ${{ !cancelled() && github.event.action != 'closed' && (needs.changes.outputs.rust_code == 'true' || needs.changes.outputs.rust_dependencies == 'true') }}
+    # Main push runs unconditionally (same "cumulative verification
+    # independent of a single push's paths-filter" rule as cli-lint): the
+    # rust-lint-v2 namespace must keep refreshing on non-rust merges, which a
+    # paths-gated writer cannot do. PR routing stays paths-driven, and drafts
+    # keep the fmt-only fast pass via RUN_HEAVY_RUST_CHECKS below.
+    if: >-
+      ${{
+        !cancelled() &&
+        github.event.action != 'closed' &&
+        (
+          github.event_name == 'push' ||
+          needs.changes.outputs.rust_code == 'true' ||
+          needs.changes.outputs.rust_dependencies == 'true'
+        )
+      }}
     runs-on: ubuntu-22.04
-    # 30m 上限在缓存冷启动下不够:Cargo cache 是 save-if main-only(PR 永不保存),
-    # 且本 job 在 main 上遇到非 rust 合并(如纯前端依赖 bump)时被整体跳过、不产存档,
-    # 加上 actions 缓存池被高频小体积 npm 缓存挤占淘汰,PR 端经常 "No cache found"
-    # 冷跑(2026-10-01 前后多次冷跑在 ~30m 整点被 cancel,公开运行史可查);
-    # 缓存命中的成功运行 13-28m,不受影响。冷跑至少需要 30m 以上,60m 留出余量。
+    # 30m 上限在缓存冷启动下不够:Cargo cache 是 save-if main-only(PR 永不保存)。
+    # 2026-10 起本 job 在 main push 上无条件运行以刷新存档(此前非 rust 合并会
+    # 整体跳过、存档老化),但工具链滚动或缓存池淘汰仍可能让 PR 端
+    # "No cache found" 冷跑(2026-10-01 前后多次冷跑在 ~30m 整点被 cancel,
+    # 公开运行史可查);缓存命中的成功运行 13-28m,不受影响。
+    # 冷跑至少需要 30m 以上,60m 留出余量。
     timeout-minutes: 60
     env:
       # Draft 只跑无系统依赖的 fmt 快检；Ready PR、Queue 与 main 跑 clippy。
@@ -962,6 +1008,10 @@ jobs:
             pinvou3-app/src-tauri
             pinvou-knowledge
           shared-key: rust-lint-v2
+          # cache-on-failure: still save when a main push fails — otherwise
+          # one failure drops the namespace fully cold (same anti-death-loop
+          # rationale as rust-test/cli-lint).
+          cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # fmt 硬门禁:风格规则见 rustfmt.toml(只用 stable 可用选项)。
@@ -1491,6 +1541,10 @@ jobs:
           # cheaper side of the trade.
           cache-targets: false
           shared-key: cli-test
+          # cache-on-failure: still save when a main push fails — otherwise
+          # one failure drops the namespace fully cold (same anti-death-loop
+          # rationale as rust-test/cli-lint).
+          cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       # --all is required: pinvou-cli is a virtual workspace (no [package]),

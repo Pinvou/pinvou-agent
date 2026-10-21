@@ -400,15 +400,47 @@ GATE_JOB_LEVEL_IFS = {
         "(github.event_name != 'pull_request' || "
         "github.event.pull_request.draft == false) }}"
     ),
+    # knowledge-rust/cli-test share the push-unconditional shape since
+    # 2026-10: main push refreshes the cache namespace even on
+    # non-knowledge merges (PRs never save; a paths-gated writer ages out).
+    # Drafts skip like every other heavy leg.
     "knowledge-rust": (
-        "${{ !cancelled() && github.event.action != 'closed' && "
-        "(needs.changes.outputs.knowledge_rust == 'true' || "
-        "needs.changes.outputs.knowledge_dependencies == 'true') }}"
+        "${{\n"
+        "!cancelled() &&\n"
+        "github.event.action != 'closed' &&\n"
+        "(\n"
+        "github.event_name == 'push' ||\n"
+        "(\n"
+        "github.event_name == 'merge_group' &&\n"
+        "(\n"
+        "needs.changes.outputs.knowledge_rust == 'true' ||\n"
+        "needs.changes.outputs.knowledge_dependencies == 'true'\n"
+        ")\n"
+        ") ||\n"
+        "(\n"
+        "github.event_name == 'pull_request' &&\n"
+        "github.event.pull_request.draft == false &&\n"
+        "(\n"
+        "needs.changes.outputs.knowledge_rust == 'true' ||\n"
+        "needs.changes.outputs.knowledge_dependencies == 'true'\n"
+        ")\n"
+        ")\n"
+        ")\n"
+        "}}"
     ),
+    # rust-lint got the same main-push refresh, but keeps its draft
+    # fmt-only fast pass: no draft clause here (RUN_HEAVY_RUST_CHECKS
+    # degrades drafts instead).
     "rust-lint": (
-        "${{ !cancelled() && github.event.action != 'closed' && "
-        "(needs.changes.outputs.rust_code == 'true' || "
-        "needs.changes.outputs.rust_dependencies == 'true') }}"
+        "${{\n"
+        "!cancelled() &&\n"
+        "github.event.action != 'closed' &&\n"
+        "(\n"
+        "github.event_name == 'push' ||\n"
+        "needs.changes.outputs.rust_code == 'true' ||\n"
+        "needs.changes.outputs.rust_dependencies == 'true'\n"
+        ")\n"
+        "}}"
     ),
     "rust-test": (
         "${{\n"
