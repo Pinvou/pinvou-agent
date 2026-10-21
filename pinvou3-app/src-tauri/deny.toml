@@ -32,6 +32,20 @@ ignore = [
     "RUSTSEC-2026-0367",
     "RUSTSEC-2026-0368",
     "RUSTSEC-2026-0369",
+    #
+    # RUSTSEC-2026-0381 (webpki-roots 0.26.11 bundles emSign ECC Root CA -
+    # G3, so certificate chains through the distrusted emSign intermediates
+    # — whose private keys are public — can still verify against the
+    # bundled roots). Not fixable in this repo yet: the patched line is
+    # webpki-roots >=1.0.10 with no 0.26.x release carrying it, and every
+    # parent pins ^0.26 (reqwest 0.12, hyper-rustls 0.27, tokio-tungstenite
+    # 0.30, ureq 2.12, codewhale-release 0.9), so the bundle can only move
+    # when those crates adopt webpki-roots 1.x. RUSTSEC-2026-0382
+    # (rustls-webpki) and RUSTSEC-2026-0383 (webpki-root-certs) from the
+    # same publication are fixed by lockfile bumps, not ignored.
+    # Reassess on any bump of reqwest / hyper-rustls / tokio-tungstenite /
+    # ureq / codewhale-release, or when a 0.26.x backport appears.
+    "RUSTSEC-2026-0381",
 ]
 # unmaintained 保留 "workspace":父 crate 依赖图比子模块深
 # (子模块 + Tauri GTK3/glib + fastembed),实测 unmaintained="all" 会命中 gtk-rs GTK3、
