@@ -471,15 +471,31 @@ def feature_gate_error(tool_name, base_dir, tool_features):
         "ok": False,
         "code": "feature_disabled",
         "error": (
-            "This tool is unavailable: the feature(s) %s are disabled, and this "
-            "tool requires all of them to be enabled." % names
+            "This tool is unavailable because all associated features (%s) "
+            "are disabled; at least one must be enabled." % names
         ),
         "alternative": (
-            "Tell the user the feature(s) %s are turned off and can be re-enabled "
-            "in Settings, or answer using information already available in this "
-            "conversation." % names
+            "Enable at least one associated feature (%s) by removing its id "
+            "from disabled_builtin_features in settings.json, or answer using "
+            "information already available in this conversation." % names
         ),
     }
+
+
+def _sanitize_marker_error(value, requests_dir, automations_dir=None):
+    if not isinstance(value, str) or not value.strip():
+        return "scheduled task request failed"
+    roots = [(os.path.abspath(requests_dir), "<task-requests>"),
+             (os.path.expanduser("~"), "~")]
+    if automations_dir is not None:
+        roots.append((os.path.abspath(automations_dir), "<automations>"))
+    if os.path.basename(os.path.normpath(requests_dir)) == "task-requests":
+        roots.append((os.path.dirname(os.path.abspath(requests_dir)), "<pinvou3-home>"))
+    for root, replacement in sorted(roots, key=lambda item: len(item[0]), reverse=True):
+        if root and root != os.path.sep:
+            value = value.replace(root, replacement)
+            value = value.replace(root.replace("\\", "/"), replacement)
+    return value
 
 
 def _coerce_int(value, default, minimum, maximum):
@@ -1383,7 +1399,7 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
                 # for that result just as for an unreadable marker.
                 time.sleep(RESULT_POLL_INTERVAL_SECONDS)
                 continue
-            return None, str(marker.get("error") or "scheduled task request failed")
+            return None, _sanitize_marker_error(marker.get("error"), requests_dir, automations_dir)
         # marker_error only means "not there yet / unreadable" — keep polling.
         time.sleep(RESULT_POLL_INTERVAL_SECONDS)
     pending = {

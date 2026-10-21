@@ -86,7 +86,7 @@
 
 **步骤 6 — 前端与 i18n**：三语 `uiBuiltinPlugins.dataAccess` 新 scope + `uiToolDetails.tools["app-automations"]` 副标题；`tool-renderers.jsx` 加渲染卡（name/rrule/prompt 摘要）。无新 Tauri 命令 → 无 access-policy/协议测试变更。
 
-**步骤 7 — 契约文档**：§2 注册新族（附新开族论证）、§9 两行改 landed（round-9 更正：原计划的 §6 回写未执行，短等待语义以本设计文档 §3.2 为准）。
+**步骤 7 — 契约文档**：§2 注册新族（附新开族论证）、§9 原有单行替换为六条已注册记录（round-9 更正：原计划的 §6 回写未执行，短等待语义以本设计文档 §3.2 为准）。
 
 **步骤 8 — 测试**：按 §6 清单新增。
 
@@ -215,7 +215,7 @@
 - 现有面板"对话创建"流程保留不动，两条通道汇合到同一个 `create_task` 领域函数。
 - 零 CodeWhale / fork 内容变更；本分支**不含** fork 登记册刷新与 gitlink 追平提交——gitlink 随基座 main 对齐（round-27 M2 改真），`docs/fork-modifications.md` 由各落地 PR 各自维护；本计划文档本身随本分支入库，作为后续实施的评审基线。
 - 领域层 `parse_rrule` 实际支持 CRON，工具层收紧为三种子集是有意的产品约束；若未来要放开，只改 server.py + watcher 的子集校验，领域无需动。
-- **超侧车上限的任务对模型不可见（round-30 S6）**：面板创建的任务若 prompt 超过 256 KiB 存储读上限（域层不限长），`read` 会答 "not found"、`list` 静默跳过——模型的建前去重会因此重复创建。已在 read 的错误语义与 §7 中注明；更细的 "存在但不可读" 信号是后续工作。
+- **超侧车上限的任务对模型不可见（round-30 S6）**：面板创建的任务若 prompt 超过 256 KiB 存储读上限（域层不限长），`read` 会答 "not found"、`list` 静默跳过——模型的建前去重会因此重复创建。已在本条与 read 的错误语义中披露；更细的 "存在但不可读" 信号是后续工作。
 - **运行结果不可观测（round-27 minor 12）**：`list`/`read` 只暴露 status/nextRunAt/lastRunAt——模型无法读取运行输出（session-reader 硬拒 `sched-` 目标，无旁路）；被替换的基础 `automation` 工具在此处更丰富（read 含运行记录）。单一用户语义下面子可接受，特此披露。
 - **特性开关文案先于设置页（round-27 minor 13）**：`scheduled-task-automation` 开关的三语文案已入库，但本 PR 未随附自动化设置页——开关目前经命令/配置可达（契约 §3.1 的"随特性落地接入各自设置页"以跟进 PR 履行）。
 - **I/O 原语硬化披露（round-24 minor 13）**：unix 写原语（`open_private_append_file`/`open_private_tmp_write_file`）带 `O_NOFOLLOW|O_NONBLOCK`——用户合法符号链接的诊断/审计日志路径现在**失败关闭**（有意的行为变化；round-17 前符号链接会被跟随）；tmp 写原语对遗留的已存在 tmp 文件不重紧缩权限（载荷无敏感内容，落在同一私有目录）；Windows 写原语无 std 级 reparse-point 拒绝（同用户 spool/state 树的已记录残余）。
@@ -277,3 +277,13 @@
 | 保留期与临时文件 | 超过 14 天的终态与孤立临时文件被清理；同名请求仍在队列时保留回执 | `prune_stale_state_sweeps_old_markers_and_stray_tmp`、`retention_preserves_receipts_for_stuck_spool_records` |
 | 夏令时墙钟 | 双层拒绝 ONCE 时间落在缺口或重叠；Python 缺 tzdata 时 Rust 为最终权威 | 既有 Rust 与 Python ONCE/DST 用例 |
 | 配置损坏 | 暂停本排水器；修复即恢复，不重复迁移凭证 | `a_drain_pass_coalesces_refresh_and_pauses_on_bad_settings` |
+
+## Round-32 评审补充
+
+- **共享功能开关**：工具同时属于 A、B 时，只要任一功能开启就仍可用，只有两者都关闭才禁用。双功能夹具覆盖全开、分别关闭其一、全部关闭；模型错误提示与此规则一致。
+- **懒加载导出**：时间线必须加载 `ScheduledTaskToolResult`，由它解析 MCP 信封后提供展示卡片。直接加载 `ScheduledTaskToolCard` 会跳过适配器并退回原始输出，现已锁定完整导入/导出映射。
+- **停放时间与预算**：仅 `parked_at < mtime < now` 的替换可解除停放，未来或备份恢复时间不会每轮换取一次应用机会。排队与停放请求的重试预算均按**文件名**累计：同键请求已失败两次后替换内容，仍只剩三次总预算中的一次；合法替换解除停放也不重置已花预算。名称消失或终态才清理计数，以限制同键重植。新幂等键应仅用于有意的不同操作，仍需考虑已披露的至少一次投递重复窗口。
+- **影子审计轮转**：常驻的 `automations/audit/workflow_audit.jsonl` 超过 2 MiB 后在追加前轮转，只保留一个 `workflow_audit.jsonl.old` 段。正常增长为每段阈值加一条事件，重启后按磁盘状态继续判断。既有更大的历史段先保留一次，下一次轮转时替换。复用尽力而为的日志原语，不串行化多个应用进程；轮转失败时保留旧证据、跳过本次影子追加并记录诊断。
+- **服务端响应**：服务端为单线程。一次写请求等待回执的最多五秒内，同一服务上的 `ping`、`tools/list` 和其他调用也会排队；N 个写请求可能串行等待 N 倍时长。超时仍返回 pending，本轮不增加线程或改变协议顺序。
+- **失败回执**：包括外部写入的 marker 在内，错误文本进入模型上下文前会替换已知的用户目录、请求队列和任务存储路径前缀；非文本错误使用通用失败消息。marker 仍是未经认证的本地输入，此处仅做路径脱敏，不验证来源。
+- **孤立代理字符**：既有 UTF-8 键校验与回归保留；测试直运行入口移至所有测试类之后，确保直接运行也覆盖此前补丁用例。

@@ -235,6 +235,11 @@ test('renderer wiring is present (timeline card + summary routing)', () => {
     /<ScheduledTaskLoadBoundary fallback=\{<OutputPre text=\{out\} \/>\}>\s*<Suspense fallback=\{null\}>\s*<ScheduledTaskToolResult\s*op=\{scheduledTaskOp\}\s*out=\{out\}\s*args=\{item\.args\}\s*t=\{t\}\s*fallback=\{<OutputPre text=\{out\} \/>\}/,
     'the lazy card must render inside the local error boundary',
   );
+  assert.match(
+    renderers,
+    /import\(['"]\.\/scheduled-task-card\.jsx['"]\)\.then\(\s*m\s*=>\s*\(\{\s*default:\s*m\.ScheduledTaskToolResult\s*\}\)\s*\)/,
+    'the lazy loader must select the result adapter, not the presentation-only card',
+  );
   assert.match(renderers, /ViewErrorBoundary as ScheduledTaskLoadBoundary/,
     'the slot reuses the shared error boundary');
   const boundary = readStripped('shared/ViewErrorBoundary.jsx');

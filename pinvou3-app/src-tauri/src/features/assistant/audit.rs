@@ -7,8 +7,9 @@
 //!
 //! 一行 = 一个事件：{"ts":"`<RFC3339>`","kind":"...","role":"...","detail":{...}}
 //! 文件在 session workspace 根：`<ws>/workflow_audit.jsonl`。
-//! 只追加不改写；写失败只 eprintln 不 panic（审计绝不能弄死工作流）。
-//! 单 run 实测量级 <100KB,暂不轮转;若未来常驻累积 >50MB 再加 rotation。
+//! Append failures are logged with log::warn! and never panic.
+//! Workspace logs are append-only; long-lived callers such as the scheduled
+//! shadow audit apply their own rotation policy before calling append.
 
 use std::io::Write;
 use std::path::Path;
@@ -32,8 +33,7 @@ pub fn append(ws: &Path, kind: &str, role: &str, detail: serde_json::Value) {
     // scheduled-creation paths). The platform gated open refuses
     // non-regular entries (O_NOFOLLOW|O_NONBLOCK, 0600) and the portable
     // fstat below refuses anything non-regular that still made it
-    // through. The write-failure contract (eprintln, never panic) is
-    // unchanged.
+    // through. Write failures are logged, never panicked.
     let r = crate::platform::filesystem::open_private_append_file(&path)
         .and_then(|mut file| file.write_all(buf.as_bytes()));
     if let Err(e) = r {

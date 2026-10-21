@@ -549,7 +549,8 @@ class CreateSpoolAndResultTests(unittest.TestCase):
     def _spooled(self):
         return sorted(Path(self.requests, "spool").glob("*.json"))
 
-    def _finish_in_background(self, task_id="task-1", ok=True, delay=0.3):
+    def _finish_in_background(self, task_id="task-1", ok=True, delay=0.3,
+                              error="simulated watcher failure"):
         """Simulates the Rust watcher: drain the spool, write the marker, remove the file.
         Round-26 M1: the ok-true marker carries the canonical request
         digest (create-side paused coerced to false, like the watcher) —
@@ -586,7 +587,7 @@ class CreateSpoolAndResultTests(unittest.TestCase):
                             ),
                         }
                         if ok
-                        else {"ok": False, "error": "simulated watcher failure"}
+                        else {"ok": False, "error": error}
                     )
                     done_dir = Path(self.requests, "spool", ".done")
                     done_dir.mkdir(parents=True, exist_ok=True)
@@ -599,6 +600,24 @@ class CreateSpoolAndResultTests(unittest.TestCase):
         thread = threading.Thread(target=worker, daemon=True)
         thread.start()
         return thread
+
+    def test_failure_marker_redacts_private_roots_before_return(self):
+        automations = Path(self.tmp) / "automations"
+        raw = ("permission denied: %s/private.json; %s/private.json; %s/secret.txt" %
+               (self.requests, automations, Path.home()))
+        worker = self._finish_in_background(ok=False, error=raw)
+        try:
+            payload, error = server.create_scheduled_task(
+                **self._create_kwargs(automations_dir=str(automations)))
+        finally:
+            worker.join(timeout=2)
+        self.assertFalse(worker.is_alive())
+        self.assertIsNone(payload)
+        self.assertIn("permission denied", error)
+        for root in (str(self.requests), str(automations), str(Path.home())):
+            self.assertNotIn(root, error)
+        self.assertIn("<task-requests>", error)
+        self.assertIn("<automations>", error)
 
     def test_identical_keyed_replay_reports_no_mismatch(self):
         """R5-M1: a byte-identical keyed replay against a completed marker
@@ -1356,6 +1375,24 @@ class FeatureGateTests(unittest.TestCase):
         self.write_state(["scheduled-task-automation"])
         self.assertIsNone(self.gate("some_other_tool"))
 
+    def test_shared_tool_is_disabled_only_when_all_features_are_off(self):
+        mapping = {
+            server.full_tool_name("create_scheduled_task"):
+                ["scheduled-task-automation", "other-feature"],
+        }
+        for disabled in ([], ["scheduled-task-automation"], ["other-feature"],
+                         ["scheduled-task-automation", "other-feature"]):
+            with self.subTest(disabled=disabled):
+                self.write_state(disabled)
+                payload = server.feature_gate_error(
+                    "create_scheduled_task", str(self.base), mapping)
+                if len(disabled) == 2:
+                    self.assertEqual(payload["code"], "feature_disabled")
+                    self.assertIn("at least one", payload["alternative"])
+                else:
+                    self.assertIsNone(payload,
+                                      "one remaining feature must keep the shared tool available")
+
     def test_manifest_declares_the_family_feature(self):
         features = server.load_tool_features(str(SERVER_PATH.parent / "manifest.json"))
         self.assertEqual(
@@ -1610,10 +1647,6 @@ class StdioContractTests(unittest.TestCase):
         self.assertEqual(payload["delivery"], "pending")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ReviewFollowupInputTests(unittest.TestCase):
     def test_lone_surrogate_key_is_a_validation_error(self):
         with tempfile.TemporaryDirectory() as home:
@@ -1631,3 +1664,7 @@ class ReviewFollowupInputTests(unittest.TestCase):
                 server._handle_call(1, {"name": "list_scheduled_tasks", "arguments": args},
                                     "/unused", "/unused", {})
                 self.assertEqual(error.call_args.args[1], -32602)
+
+
+if __name__ == "__main__":
+    unittest.main()

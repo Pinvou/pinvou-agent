@@ -108,6 +108,9 @@ const STATE_RETENTION: Duration = Duration::from_secs(14 * 24 * 3600);
 /// How often the watcher sweeps stale terminal state and stray `*.tmp`
 /// crash leftovers (cheap enough at this rate, rare enough to be free).
 const PRUNE_INTERVAL: Duration = Duration::from_secs(60);
+/// Rotate the long-lived shadow audit at 2 MiB and keep one prior segment.
+/// Checking before each append permits at most one line of normal overshoot.
+const SHADOW_AUDIT_ROTATE_BYTES: u64 = 2 * 1024 * 1024;
 
 /// rrule product subset (deliberately stricter than the domain parser, same
 /// rules as the MCP server's `validate_rrule`): HOURLY/WEEKLY/ONCE only —
@@ -769,9 +772,23 @@ fn audit_request_shadow(
     outcome: &str,
 ) {
     let dir = crate::features::scheduled::tasks::scheduled_automation_root().join("audit");
-    // audit::append is best-effort and does not create the parent; the
-    // shadow trail must survive a fresh install's first write.
-    let _ = std::fs::create_dir_all(&dir);
+    // The shadow outlives individual runs, so unlike workspace-local audit
+    // logs it needs rotation on every append (including after a restart).
+    // Reuse the platform primitive; no new audit format or global policy.
+    let path = dir.join("workflow_audit.jsonl");
+    let previous = dir.join("workflow_audit.jsonl.old");
+    let prepared = std::fs::create_dir_all(&dir).and_then(|()| {
+        crate::platform::filesystem::rotate_log_if_oversized(
+            &path,
+            SHADOW_AUDIT_ROTATE_BYTES,
+            Some(&previous),
+        )
+    });
+    if let Err(error) = prepared {
+        // Keep the existing evidence and avoid further unbounded growth.
+        log::warn!("[scheduled-creation] shadow audit rotation failed; append skipped: {error}");
+        return;
+    }
     let tool = match request.kind {
         SpoolRequestKind::Create => SCHEDULED_TASK_CREATE_TOOL,
         SpoolRequestKind::Update => SCHEDULED_TASK_UPDATE_TOOL,
@@ -1331,6 +1348,9 @@ fn prune_stale_state_at(now: std::time::SystemTime) {
     }
 }
 
+/// Retry attempts belong to the filename, not its current payload. Replacing
+/// queued bytes keeps the spent budget; a valid parked replacement only
+/// un-parks, it does not grant a new budget. This bounds same-key replanting.
 /// Retry bookkeeping per file: attempt count. Entries are removed on every
 /// terminal path. `spool_dir_error_logged` keeps the unreadable-directory
 /// warning to one line per streak instead of 1 Hz spam, and
@@ -1514,7 +1534,9 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
         // failure that parked the name applied to the previous bytes.
         if let Some(parked_at) = retries.parked.get(&name).copied() {
             match std::fs::metadata(&path).and_then(|meta| meta.modified()) {
-                Ok(mtime) if mtime > parked_at => {
+                // A restored/future timestamp is not proof of a new request:
+                // it would otherwise unpark again on every failed pass.
+                Ok(mtime) if mtime > parked_at && mtime < std::time::SystemTime::now() => {
                     retries.parked.remove(&name);
                 }
                 Ok(_) => continue,
@@ -2561,17 +2583,18 @@ mod tests {
         // parks the name again against the new bytes. The skip loop above
         // (no rewrite, no un-park through 2×MAX passes) is the other half
         // of this pin: unchanged mtime keeps the park.
-        let parked_at = *retries
+        // Simulate elapsed wall time without sleeping: the replacement
+        // must be newer than the park but not future-dated.
+        let replacement_at = std::time::SystemTime::now() - Duration::from_secs(1);
+        retries
             .parked
-            .get("stuck.json")
-            .expect("the record is parked");
+            .insert("stuck.json".into(), replacement_at - Duration::from_secs(1));
         {
             let file = std::fs::OpenOptions::new()
                 .write(true)
                 .open(spool.join("stuck.json"))
                 .unwrap();
-            file.set_modified(parked_at + std::time::Duration::from_secs(1))
-                .unwrap();
+            file.set_modified(replacement_at).unwrap();
         }
         process_pending_spool(
             &StateCreator(&state),
@@ -4039,5 +4062,116 @@ mod tests {
             "two applies need one panel refresh"
         );
         assert!(!retries.feature_gate_error_logged);
+    }
+
+    #[tokio::test]
+    async fn future_mtime_cannot_repeatedly_unpark_a_request() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        std::fs::create_dir_all(spool_root()).unwrap();
+        let path = spool_root().join("future.json");
+        std::fs::write(&path, spool_record_json(&[])).unwrap();
+        let now = std::time::SystemTime::now();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(now + Duration::from_secs(3600))
+            .unwrap();
+        let mut retries = RetryState::default();
+        retries
+            .attempts
+            .insert("future.json".into(), MAX_CREATE_ATTEMPTS);
+        retries
+            .parked
+            .insert("future.json".into(), now - Duration::from_secs(3));
+        let notifier = CountingNotifier(Arc::new(AtomicUsize::new(0)));
+        for _ in 0..2 {
+            process_pending_spool(&FailingCreator, &state.sessions, &notifier, &mut retries).await;
+            assert!(
+                path.exists(),
+                "future timestamps must not buy another apply attempt"
+            );
+            assert_eq!(
+                retries.attempts.get("future.json"),
+                Some(&MAX_CREATE_ATTEMPTS)
+            );
+        }
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(now - Duration::from_secs(1))
+            .unwrap();
+        process_pending_spool(&FailingCreator, &state.sessions, &notifier, &mut retries).await;
+        assert!(
+            !path.exists(),
+            "a real replacement in the elapsed window un-parks and exhausts"
+        );
+        assert!(failed_dir().join("future.json").exists());
+    }
+
+    #[tokio::test]
+    async fn keyed_replacement_keeps_the_remaining_retry_budget() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        std::fs::create_dir_all(spool_root()).unwrap();
+        let path = spool_root().join("replacement.json");
+        std::fs::write(&path, spool_record_json(&[])).unwrap();
+        let mut retries = RetryState::default();
+        let notifier = CountingNotifier(Arc::new(AtomicUsize::new(0)));
+        for _ in 0..2 {
+            process_pending_spool(&FailingCreator, &state.sessions, &notifier, &mut retries).await;
+        }
+        assert_eq!(retries.attempts.get("replacement.json"), Some(&2));
+        std::fs::write(
+            &path,
+            spool_record_json(&[("prompt", serde_json::json!("replacement body"))]),
+        )
+        .unwrap();
+        process_pending_spool(&FailingCreator, &state.sessions, &notifier, &mut retries).await;
+        assert!(
+            !path.exists(),
+            "a changed payload inherits only the one remaining attempt"
+        );
+        let evidence = std::fs::read_to_string(failed_dir().join("replacement.json")).unwrap();
+        assert!(evidence.contains("replacement body"));
+    }
+
+    #[test]
+    fn shadow_audit_rotates_on_disk_and_keeps_one_previous_segment() {
+        let _home = TempHome::new();
+        let dir = crate::features::scheduled::tasks::scheduled_automation_root().join("audit");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("workflow_audit.jsonl");
+        let previous = dir.join("workflow_audit.jsonl.old");
+        let request: SpooledCreationRequest =
+            serde_json::from_str(&spool_record_json(&[])).unwrap();
+        assert_eq!(SHADOW_AUDIT_ROTATE_BYTES, 2 * 1024 * 1024);
+        for (stem, size) in [
+            ("first", 2 * 1024 * 1024 + 1),
+            ("second", 2 * 1024 * 1024 + 2),
+        ] {
+            std::fs::File::create(&path).unwrap().set_len(size).unwrap();
+            // No in-memory rotation state: a new process observes the same
+            // on-disk threshold and replaces the single previous segment.
+            audit_request_shadow(&request, stem, "task", "name", "applied");
+            assert_eq!(std::fs::metadata(&previous).unwrap().len(), size);
+            let current = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(current.lines().count(), 1);
+            let row: serde_json::Value = serde_json::from_str(&current).unwrap();
+            assert_eq!(row["detail"]["spool_stem"], stem);
+            assert!(current.len() < 4096);
+        }
+        std::fs::remove_file(&previous).unwrap();
+        std::fs::create_dir(&previous).unwrap();
+        let size = 2 * 1024 * 1024 + 3;
+        std::fs::File::create(&path).unwrap().set_len(size).unwrap();
+        audit_request_shadow(&request, "blocked", "task", "name", "applied");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            size,
+            "failed rotation preserves evidence and skips further growth"
+        );
     }
 }
