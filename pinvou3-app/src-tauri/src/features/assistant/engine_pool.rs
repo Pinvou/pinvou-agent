@@ -2555,7 +2555,8 @@ impl EnginePool {
                     prepared.requires_rebuild_from(&entry.runtime_model),
                     entry.mcp_config_revision,
                     mcp_config_revision,
-                ) {
+                ) && entry.engine.scheduled_run_engine == scheduled_unattended
+                {
                     (
                         Some(entry.engine.clone()),
                         entry.native_window_pending.clone(),
@@ -2729,6 +2730,7 @@ impl EnginePool {
             shell_manager,
             turn_shell_tasks,
             steer_incarnation,
+            scheduled_unattended,
         )
         .await?;
         let spawn_engine_ms = elapsed_ms(spawn_engine_started);
@@ -4541,11 +4543,11 @@ impl EnginePool {
             // released before sending, avoiding holding the global engine
             // table lock across awaits.
             // Round-9 M2(b) (#628): compose the unattended shield for
-            // scheduled hidden sessions — CodeWhale applies the op as a
+            // active unattended runs — CodeWhale applies the op as a
             // plain OVERWRITE of config.disallowed_tools, so the un-gated
             // broadcast replaced a live scheduled run's shield with the
             // ordinary catalog (turns after the toggle ran unshielded).
-            let shaped = if crate::features::sessions::is_sched_session_id(&sid) {
+            let shaped = if engine.scheduled_unattended.load(Ordering::Acquire) {
                 crate::features::assistant::engine::unattended_disallowed_tools(
                     &self.bridge.shape_disallowed_tools(&sid, tools.clone()),
                 )
@@ -10860,16 +10862,20 @@ mod probed_facts_wiring_tests {
         let fn_start = source
             .find("pub async fn set_disallowed_all")
             .expect("set_disallowed_all must exist");
-        let fn_body = &source[fn_start..fn_start + 1600];
+        let fn_end = source[fn_start..]
+            .find("\n    /// execpolicy")
+            .map(|offset| fn_start + offset)
+            .expect("next method boundary");
+        let fn_body = &source[fn_start..fn_end];
         let gate = fn_body
-            .find("is_sched_session_id(&sid)")
-            .expect("the sched branch exists");
+            .find("engine.scheduled_unattended.load(Ordering::Acquire)")
+            .expect("the active unattended branch exists");
         let compose = fn_body
             .find("unattended_disallowed_tools")
             .expect("the composition");
         assert!(
             gate < compose,
-            "sched ids route through the shield composition in the broadcast"
+            "only active unattended engines receive the shield on broadcast"
         );
         // Round-24 minor 12: the composition must reach the op — the
         // ordering assert above stays green if the send is reverted to the

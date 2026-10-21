@@ -216,7 +216,7 @@ pub fn package_mcp_dir(id: &str) -> PathBuf {
 /// and the per-aux scoped session-reader config writer (ADR-0024) so every
 /// mcp.json producer judges the same launch target.
 pub fn local_server_args(manifest: &ToolManifest, server_dir: &Path) -> Vec<String> {
-    manifest
+    let mut args: Vec<String> = manifest
         .args
         .iter()
         .map(|a| {
@@ -226,7 +226,24 @@ pub fn local_server_args(manifest: &ToolManifest, server_dir: &Path) -> Vec<Stri
                 a.clone()
             }
         })
-        .collect()
+        .collect();
+    if manifest.id == "app-automations" {
+        // Child environment filtering may remove PINVOU3_HOME. Pass the
+        // owning host's roots explicitly so a relocated GUI drains its own queue.
+        args.extend([
+            "--task-requests-dir".to_string(),
+            paths::pinvou3_home()
+                .join("task-requests")
+                .to_string_lossy()
+                .into_owned(),
+            "--automations-dir".to_string(),
+            paths::pinvou3_home()
+                .join("automations")
+                .to_string_lossy()
+                .into_owned(),
+        ]);
+    }
+    args
 }
 
 /// The command a local mcp.json entry launches: the bare python family resolves to
@@ -260,6 +277,21 @@ pub fn release_package(id: &str) -> Result<Option<String>, String> {
     // ABBA direction this lock order exists to prevent.
     let _market_lock = super::plugin_import::MarketplaceWriteLock::acquire_map_err()?;
     let mcp_dir = package_mcp_dir(id);
+    if id == "app-automations" {
+        // This newly reserved id may have belonged to a user's older preset.
+        // Refuse replacement until the user renames/migrates it explicitly.
+        for existing in [&mcp_dir, &paths::bundle_mcp_servers_dir().join(id)] {
+            if existing.exists() {
+                let owned = std::fs::read(existing.join("manifest.json"))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                    .is_some_and(|manifest| manifest["id"] == id && manifest["builtin"] == true);
+                if !owned {
+                    return Err("app-automations conflicts with an existing custom package; preserve and rename the custom package before enabling the builtin".to_string());
+                }
+            }
+        }
+    }
     // bundles/<id>/mcp is joined from bundles_root() and always has a parent;
     // still return an error as the fallback.
     let Some(parent) = mcp_dir.parent() else {
@@ -361,6 +393,49 @@ fn package_dir_matches(spec: &McpPackageSpec, dir: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automations_launch_passes_relocated_host_roots_without_child_env() {
+        crate::platform::test_support::with_temp_home("automations-launch", || {
+            let manifest = embedded_manifest("app-automations").unwrap().unwrap();
+            let args = local_server_args(&manifest, &package_mcp_dir("app-automations"));
+            let home = paths::pinvou3_home();
+            assert!(args.windows(2).any(|pair| pair
+                == [
+                    "--task-requests-dir",
+                    home.join("task-requests").to_str().unwrap()
+                ]));
+            assert!(args.windows(2).any(|pair| pair
+                == [
+                    "--automations-dir",
+                    home.join("automations").to_str().unwrap()
+                ]));
+        });
+    }
+
+    #[test]
+    fn app_automations_release_preserves_an_existing_custom_package() {
+        crate::platform::test_support::with_temp_home("automations-collision", || {
+            let directory = package_mcp_dir("app-automations");
+            std::fs::create_dir_all(&directory).unwrap();
+            let manifest = br#"{"id":"app-automations","builtin":false}"#;
+            std::fs::write(directory.join("manifest.json"), manifest).unwrap();
+            std::fs::write(directory.join("server.py"), b"custom source").unwrap();
+            assert!(
+                release_package("app-automations")
+                    .unwrap_err()
+                    .contains("conflicts")
+            );
+            assert_eq!(
+                std::fs::read(directory.join("manifest.json")).unwrap(),
+                manifest
+            );
+            assert_eq!(
+                std::fs::read(directory.join("server.py")).unwrap(),
+                b"custom source"
+            );
+        });
+    }
 
     /// 内嵌目录完整性：每个 id 的 manifest 可解析且 id 一致；文件非空。
     #[test]

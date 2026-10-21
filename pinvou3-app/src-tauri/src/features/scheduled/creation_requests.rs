@@ -29,7 +29,8 @@
 //!   marker landed), and a failure marker lets the retry re-apply once the
 //!   cause is fixed — but a crash between applying an operation and writing
 //!   its marker can still re-apply it on the next boot (create can then
-//!   duplicate; update/delete replay idempotently). This is the same
+//!   duplicate; updates and ensure-absent deletes replay idempotently).
+//!   Prompt/rrule replacements require panel submission. This is the same
 //!   accepted window as features/messaging; it is bounded by the marker
 //!   write happening directly after the apply;
 //! - poison files (schema drift, hostile content, oversize) are quarantined
@@ -73,7 +74,7 @@ use super::{
 use crate::features::assistant::platform::bridge::{
     SCHEDULED_TASK_CREATE_TOOL, SCHEDULED_TASK_DELETE_TOOL, SCHEDULED_TASK_UPDATE_TOOL,
 };
-use crate::features::sessions::validators::{is_aux_session_id, is_sched_session_id};
+use crate::features::sessions::validators::is_aux_session_id;
 
 /// Same bounds as the MCP server's caps — re-checked here because the spool
 /// directory is user-writable.
@@ -92,8 +93,9 @@ const MAX_SPOOL_FILE_BYTES: u64 = 256 * 1024;
 /// after this many attempts (design C4: quarantine + failure marker).
 const MAX_CREATE_ATTEMPTS: u32 = 3;
 /// Round-27 minor 9: pending-file ceiling per drain pass (the messaging
-/// sibling's 256; the sorted tail beyond it quarantines before processing).
+/// sibling's 256; only the bounded batch's tail quarantines before processing).
 const MAX_PENDING_FILES: usize = 256;
+const MAX_TAIL_QUARANTINES: usize = 32;
 /// Round-31 minor 5: per-pass poison-warn budget (detail for the first
 /// few, one summary beyond — the failed/ evidence carries every record).
 const POISON_WARN_PER_PASS: usize = 8;
@@ -203,21 +205,16 @@ fn check_sender_session_id(session_id: Option<&String>) -> Result<()> {
     {
         bail!("invalid from_session id");
     }
-    // The from_session is audit provenance only, but isolated sessions must
-    // never appear as the requester: sched- sessions are unattended by
-    // design, eval_ is benchmark-private, and aux- marks auxiliary
-    // side-chats (the MCP server rejects all three for every request kind;
-    // re-checked here because the spool directory is user-writable —
-    // defense in depth, mirrors messaging).
+    // from_session is unauthenticated audit provenance, not runtime posture.
+    // A sched- conversation can be continued interactively; actual unattended
+    // writes are denied by the run engine, even when this claim is omitted.
+    // Auxiliary and benchmark origins remain isolated.
     // Round-15 REQUIRED-1: the eval_ leg folds case like the server's
     // `.lower()` gate — a planted `EVAL_b1` sender used to pass the
     // watcher while the server rejected it, and on case-insensitive
     // filesystems `session_roots("EVAL_b1")` aliases the real benchmark
     // session's audit root.
-    if is_sched_session_id(id)
-        || is_aux_session_id(id)
-        || id.to_ascii_lowercase().starts_with("eval_")
-    {
+    if is_aux_session_id(id) || id.to_ascii_lowercase().starts_with("eval_") {
         bail!("from_session {id} is an isolated session and cannot request task operations");
     }
     Ok(())
@@ -515,6 +512,63 @@ fn spool_root() -> PathBuf {
         .join("spool")
 }
 
+/// Resolve every app-owned component relative to a stable real directory.
+/// Never let a planted spool/audit child redirect reads or mutations.
+fn private_directory(
+    path: &Path,
+) -> std::io::Result<crate::platform::filesystem::PrivateFileDirectory> {
+    let home = crate::platform::paths::pinvou3_home();
+    let relative = path.strip_prefix(&home).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "request directory outside app home",
+        )
+    })?;
+    let mut directory = crate::platform::filesystem::open_private_file_directory(&home)?;
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "invalid request directory",
+            ));
+        };
+        directory = directory.create_private_child_directory(name)?;
+    }
+    Ok(directory)
+}
+
+fn shadow_directory() -> std::io::Result<crate::platform::filesystem::PrivateFileDirectory> {
+    let root = private_directory(&super::scheduled_automation_root())?;
+    match root.create_private_child_directory(std::ffi::OsStr::new("audit")) {
+        Ok(directory) => Ok(directory),
+        Err(original) => {
+            // Preserve a regular-file obstruction, never follow a link or
+            // remove somebody's data. The next boot/append can recover too.
+            if root
+                .open_plain_file(std::ffi::OsStr::new("audit"))?
+                .is_none()
+            {
+                return Err(original);
+            }
+            let backup = format!("audit-obstruction-{}", uuid::Uuid::new_v4());
+            root.move_plain_file_to(
+                std::ffi::OsStr::new("audit"),
+                &root,
+                std::ffi::OsStr::new(&backup),
+            )?;
+            root.create_private_child_directory(std::ffi::OsStr::new("audit"))
+        }
+    }
+}
+
+pub(crate) fn prepare_request_directories() -> Result<()> {
+    private_directory(&spool_root())?;
+    private_directory(&done_dir())?;
+    private_directory(&failed_dir())?;
+    shadow_directory()?;
+    Ok(())
+}
+
 fn failed_dir() -> PathBuf {
     spool_root().join("failed")
 }
@@ -626,6 +680,8 @@ enum Processed {
     /// corrected payload landed during the apply window must survive to the
     /// next poll, not be destroyed untried under the old body's receipt).
     Done(String),
+    /// The domain already applied; only receipt publication may be retried.
+    ReceiptPending(String, serde_json::Value),
     /// Permanent rejection: quarantine now.
     Poison(anyhow::Error),
     /// Transient creation failure: retry.
@@ -751,7 +807,22 @@ fn audit_request(
     }
     if let Ok(roots) = sessions.session_roots(from) {
         let audit_root = audit_root_for(&roots);
-        crate::features::assistant::audit::append(&audit_root, kind, "app", detail);
+        append_session_audit(&audit_root, kind, detail);
+    }
+}
+
+/// Keep this feature's hardened audit IO local. Other audit consumers retain
+/// their existing append/open/logging behavior (scope separation for R33).
+fn append_session_audit(root: &Path, kind: &str, detail: serde_json::Value) {
+    use std::io::Write as _;
+    let result = (|| -> std::io::Result<()> {
+        let directory = private_directory(root)?;
+        let mut file = directory.open_append_file(std::ffi::OsStr::new("workflow_audit.jsonl"))?;
+        let line = serde_json::json!({"ts": chrono::Utc::now().to_rfc3339(), "kind": kind, "role": "app", "detail": detail});
+        file.write_all(format!("{line}\n").as_bytes())
+    })();
+    if let Err(error) = result {
+        log::warn!("[scheduled-creation] session audit append failed: {error}");
     }
 }
 
@@ -760,8 +831,8 @@ fn audit_request(
 /// `from_session`. The session-workspace audit above early-returns when the
 /// model-supplied `from_session` is omitted — and an unattended session can
 /// omit it precisely to skip the claimed-origin trace — so this
-/// watcher-side line is the floor the requester cannot skip: the watcher
-/// sees the spool file no matter what the record claims about its sender.
+/// watcher-side trace covers requests applied through this watcher. It is
+/// best effort, not tamper proof: same-user direct store writes bypass it.
 /// The spool file NAME (not the record fields) keys the identity column,
 /// and the claimed sender is recorded as explicitly unverified.
 fn audit_request_shadow(
@@ -771,24 +842,6 @@ fn audit_request_shadow(
     task_name: &str,
     outcome: &str,
 ) {
-    let dir = crate::features::scheduled::tasks::scheduled_automation_root().join("audit");
-    // The shadow outlives individual runs, so unlike workspace-local audit
-    // logs it needs rotation on every append (including after a restart).
-    // Reuse the platform primitive; no new audit format or global policy.
-    let path = dir.join("workflow_audit.jsonl");
-    let previous = dir.join("workflow_audit.jsonl.old");
-    let prepared = std::fs::create_dir_all(&dir).and_then(|()| {
-        crate::platform::filesystem::rotate_log_if_oversized(
-            &path,
-            SHADOW_AUDIT_ROTATE_BYTES,
-            Some(&previous),
-        )
-    });
-    if let Err(error) = prepared {
-        // Keep the existing evidence and avoid further unbounded growth.
-        log::warn!("[scheduled-creation] shadow audit rotation failed; append skipped: {error}");
-        return;
-    }
     let tool = match request.kind {
         SpoolRequestKind::Create => SCHEDULED_TASK_CREATE_TOOL,
         SpoolRequestKind::Update => SCHEDULED_TASK_UPDATE_TOOL,
@@ -803,7 +856,45 @@ fn audit_request_shadow(
         "claimed_from_session": request.from_session,
         "claimed_from_session_verified": false,
     });
-    crate::features::assistant::audit::append(&dir, "scheduled_task_request", "app", detail);
+    append_shadow_audit("scheduled_task_request", detail);
+}
+
+fn append_shadow_audit(kind: &str, detail: serde_json::Value) {
+    let prepared = (|| -> std::io::Result<_> {
+        let directory = shadow_directory()?;
+        let current = std::ffi::OsStr::new("workflow_audit.jsonl");
+        let previous = std::ffi::OsStr::new("workflow_audit.jsonl.old");
+        if let Some(file) = directory.open_plain_file(current)? {
+            if file.metadata()?.len() > SHADOW_AUDIT_ROTATE_BYTES {
+                let rotated = directory.remove_plain_file(previous).and_then(|_| {
+                    directory
+                        .move_plain_file_to(current, &directory, previous)
+                        .map(|_| ())
+                });
+                if let Err(error) = rotated {
+                    log::warn!(
+                        "[scheduled-creation] shadow rotation failed; retaining current log and appending evidence: {error}"
+                    );
+                }
+            }
+        }
+        directory.open_append_file(current)
+    })();
+    let mut writer = match prepared {
+        Ok(writer) => writer,
+        Err(error) => {
+            log::warn!("[scheduled-creation] shadow audit unavailable: {error}");
+            return;
+        }
+    };
+    let line = serde_json::json!({
+        "ts": chrono::Utc::now().to_rfc3339(), "kind": kind,
+        "role": "app", "detail": detail,
+    });
+    use std::io::Write as _;
+    if let Err(error) = writer.write_all(format!("{line}\n").as_bytes()) {
+        log::warn!("[scheduled-creation] shadow audit append failed: {error}");
+    }
 }
 
 /// Best-effort failure audit: a poison or retry-exhausted record with a
@@ -812,11 +903,10 @@ fn audit_request_shadow(
 /// it re-reads the spool file.
 fn audit_failure(
     sessions: &crate::features::sessions::SessionStore,
-    path: &Path,
+    bytes: Option<&[u8]>,
     error: &anyhow::Error,
 ) {
-    // Round-11 minor 7: the evidence re-read is gated+bounded too.
-    let Some(bytes) = read_regular_bounded(path, MAX_SPOOL_FILE_BYTES as usize) else {
+    let Some(bytes) = bytes else {
         return;
     };
     let Ok(request) = serde_json::from_slice::<SpooledCreationRequest>(&bytes) else {
@@ -854,7 +944,7 @@ fn audit_failure(
         "error": error_text.chars().take(500).collect::<String>(),
     });
     let audit_root = audit_root_for(&roots);
-    crate::features::assistant::audit::append(&audit_root, "scheduled_task_failed", "app", detail);
+    append_session_audit(&audit_root, "scheduled_task_failed", detail);
 }
 
 /// Process one spool file: read → validate → (marker check) → create →
@@ -906,6 +996,13 @@ async fn process_spool_file<C: TaskCreator, N: PanelNotifier + ?Sized>(
     if let Err(error) = request.validate() {
         return poisoned(error);
     }
+    if request.kind == SpoolRequestKind::Update
+        && (request.prompt.is_some() || request.rrule.is_some())
+    {
+        return poisoned(anyhow::anyhow!(
+            "confirmation_required: use the Scheduled Tasks panel to review and submit prompt/rrule replacements; no change was applied"
+        ));
+    }
     if result_marker_suppresses(&done_marker, &expected_digest) {
         // Idempotent retry after a completed operation: the success marker
         // wins and the leftover file is dropped WITHOUT a second apply (C3).
@@ -918,7 +1015,9 @@ async fn process_spool_file<C: TaskCreator, N: PanelNotifier + ?Sized>(
     // must not replay the previous attempt's error while this fresh apply is
     // in flight. A failing apply writes a fresh marker on its terminal path
     // (inside the documented at-least-once window).
-    let _ = std::fs::remove_file(&done_marker);
+    if let Ok(directory) = private_directory(&done_dir()) {
+        let _ = directory.remove_plain_file(done_marker.file_name().unwrap_or_default());
+    }
     let applied = match request.kind {
         SpoolRequestKind::Create => creator.create(build_create_input(&request)).await,
         SpoolRequestKind::Update => {
@@ -961,16 +1060,19 @@ async fn process_spool_file<C: TaskCreator, N: PanelNotifier + ?Sized>(
             // round-7 shape returned Retry on a marker-write failure with
             // NO audit at all, the exact path that re-applies on retry).
             audit_request_shadow(&request, &stem, &dto.id, &dto.name, "applied");
+            audit_request(sessions, &request, &dto.id, &dto.name);
+            notifier.notify();
             if let Err(error) =
                 write_done_marker(&done_marker, &payload).context("write result marker")
             {
                 // A missing marker means the MCP server's short wait times out
                 // into "pending" and a retried call could re-apply: surface
                 // this as a retryable failure instead of reporting success.
-                return Processed::Retry(error);
+                log::warn!(
+                    "[scheduled-creation] applied but receipt publication is pending: {error:#}"
+                );
+                return Processed::ReceiptPending(expected_digest, payload);
             }
-            audit_request(sessions, &request, &dto.id, &dto.name);
-            notifier.notify();
             Processed::Done(expected_digest)
         }
         Err(error) => {
@@ -1005,12 +1107,26 @@ fn spool_request_digest(request: &SpooledCreationRequest) -> String {
     // python twin's sort_keys; the map anchors it mechanically.
     let canonical = std::collections::BTreeMap::from([
         ("kind", serde_json::json!(request.kind.as_str())),
-        ("model_id", serde_json::json!(&request.model_id)),
-        ("name", serde_json::json!(&request.name)),
+        (
+            "model_id",
+            serde_json::json!(trimmed_non_empty(&request.model_id)),
+        ),
+        ("name", serde_json::json!(trimmed_non_empty(&request.name))),
         ("paused", serde_json::json!(normalized_paused)),
-        ("prompt", serde_json::json!(&request.prompt)),
-        ("rrule", serde_json::json!(&request.rrule)),
-        ("task_id", serde_json::json!(&request.task_id)),
+        (
+            "prompt",
+            serde_json::json!(trimmed_non_empty(&request.prompt)),
+        ),
+        (
+            "rrule",
+            serde_json::json!(
+                trimmed_non_empty(&request.rrule).map(|value| value.to_ascii_uppercase())
+            ),
+        ),
+        (
+            "task_id",
+            serde_json::json!(trimmed_non_empty(&request.task_id)),
+        ),
     ]);
     use sha2::Digest;
     let serialized = serde_json::to_string(&canonical).unwrap_or_default();
@@ -1031,18 +1147,20 @@ fn spool_request_digest(request: &SpooledCreationRequest) -> String {
 /// concurrent appender can still grow the file past the gate — the
 /// primitive's capped read re-bounds that.
 fn read_regular_bounded(path: &Path, cap: usize) -> Option<Vec<u8>> {
-    crate::platform::filesystem::read_private_data_file_bytes_within(path, cap as u64)
-        .ok()
-        .filter(|bytes| bytes.len() <= cap)
+    read_regular_bounded_anchored(path, cap).map(|(bytes, _)| bytes)
 }
 
-/// [`read_regular_bounded`] plus the open handle's fstat metadata, so the
-/// Done arm can anchor its removal on the exact bytes the digest verified
-/// (round-24 minor 1).
 fn read_regular_bounded_anchored(path: &Path, cap: usize) -> Option<(Vec<u8>, std::fs::Metadata)> {
-    crate::platform::filesystem::read_private_data_file_bytes_within_anchored(path, cap as u64)
-        .ok()
-        .filter(|(bytes, _)| bytes.len() <= cap)
+    use std::io::Read as _;
+    let directory = private_directory(path.parent()?).ok()?;
+    let file = directory.open_plain_file(path.file_name()?).ok()??;
+    let metadata = file.metadata().ok()?;
+    if metadata.len() > cap as u64 {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(cap as u64 + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() <= cap).then_some((bytes, metadata))
 }
 
 /// Identity compare for the anchored Done-arm unlink (round-24 minor 1):
@@ -1057,35 +1175,19 @@ fn same_file_identity(current: &std::fs::Metadata, applied: &std::fs::Metadata) 
     current.is_file()
         && current.len() == applied.len()
         && current.modified().ok() == applied.modified().ok()
+        && crate::platform::filesystem::metadata_file_identity(current)
+            == crate::platform::filesystem::metadata_file_identity(applied)
 }
 
 fn write_done_marker(path: &Path, payload: &serde_json::Value) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create done dir {}", parent.display()))?;
-    }
-    // Atomic tmp+rename: the server polls this file, so it must never
-    // observe a torn write.
-    // Round-18 MAJOR-1 (correcting round-17 MAJOR-1's mechanism): the tmp
-    // open is a path open on a user-writable trust boundary, and the
-    // gated tmp open REFUSES non-regular entries (a planted FIFO fails
-    // the open instead of silently swallowing the payload or blocking) —
-    // O_RDWR|O_NONBLOCK alone succeeds on a FIFO, which is why the
-    // lock-file primitive was the wrong shape for a data write. The open
-    // also truncates, so a leftover longer tmp cannot tear the marker.
-    // The refused write flows into the caller's retry/quarantine/park
-    // machinery, so the bound is the budget.
-    let tmp = path.with_extension("json.tmp");
-    let mut writer = crate::platform::filesystem::open_private_tmp_write_file(&tmp)
-        .with_context(|| format!("open result marker {}", tmp.display()))?;
-    {
-        use std::io::Write as _;
-        writer
-            .write_all(payload.to_string().as_bytes())
-            .with_context(|| format!("write result marker {}", tmp.display()))?;
-    }
-    drop(writer);
-    std::fs::rename(&tmp, path).with_context(|| format!("publish result marker {}", path.display()))
+    let directory = private_directory(path.parent().context("marker parent missing")?)?;
+    // Existing primitive uses a unique exclusive temp, sync_all, and a
+    // directory-handle-relative atomic publication on each supported OS.
+    directory.atomic_write_private_file(
+        path.file_name().context("marker name missing")?,
+        payload.to_string().as_bytes(),
+    )?;
+    Ok(())
 }
 
 /// Whether a replayed request with an existing result marker should be
@@ -1166,8 +1268,12 @@ fn result_marker_suppresses(path: &Path, expected_digest: &str) -> bool {
 const MAX_RESULT_MARKER_BYTES: usize = 64 * 1024;
 
 fn quarantine(path: &Path) -> std::io::Result<()> {
+    let source = private_directory(
+        path.parent()
+            .ok_or_else(|| std::io::Error::other("missing spool parent"))?,
+    )?;
+    let destination = private_directory(&failed_dir())?;
     let dir = failed_dir();
-    std::fs::create_dir_all(&dir)?;
     let name = path.file_name().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -1186,8 +1292,39 @@ fn quarantine(path: &Path) -> std::io::Result<()> {
             }
             dir.join(suffixed)
         };
-        match crate::features::scheduled::platform::move_file_noclobber(path, &target) {
-            Ok(()) => return Ok(()),
+        match source.move_plain_file_to(name, &destination, target.file_name().unwrap_or(name)) {
+            Ok(crate::platform::filesystem::MovePlainFileOutcome::Moved) => {
+                let evidence_name = target.file_name().unwrap_or(name);
+                let stamp = std::fs::FileTimes::new().set_modified(std::time::SystemTime::now());
+                let stamped = destination
+                    .open_plain_file(evidence_name)?
+                    .ok_or_else(|| std::io::Error::other("quarantined evidence disappeared"))?
+                    .set_times(stamp)
+                    .or_else(|_| {
+                        destination
+                            .open_append_file(evidence_name)?
+                            .set_times(stamp)
+                    });
+                if let Err(error) = stamped {
+                    // Never prune fresh evidence by a preserved old mtime if
+                    // filesystem metadata permissions refuse both handle modes.
+                    let held = format!(".untimed-{}", uuid::Uuid::new_v4());
+                    destination.move_plain_file_to(
+                        evidence_name,
+                        &destination,
+                        std::ffi::OsStr::new(&held),
+                    )?;
+                    log::warn!(
+                        "[scheduled-creation] evidence timestamp unavailable; retained for manual cleanup as {held}: {error}"
+                    );
+                }
+                return Ok(());
+            }
+            Ok(_) => {
+                return Err(std::io::Error::other(
+                    "spool evidence vanished before quarantine",
+                ));
+            }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
         }
@@ -1304,47 +1441,71 @@ fn prune_stale_state() {
 
 /// The clock is injected so tests can age files without sleeping.
 fn prune_stale_state_at(now: std::time::SystemTime) {
-    let prune_dir = |dir: &Path, keep_pending: bool| {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
+    for (dir, keep_pending) in [
+        (done_dir(), true),
+        (failed_dir(), false),
+        (spool_root(), false),
+    ] {
+        let Ok(directory) = private_directory(&dir) else {
+            continue;
         };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let stale = entry
-                .metadata()
-                .and_then(|meta| meta.modified())
-                .ok()
-                .and_then(|modified| now.duration_since(modified).ok())
-                .is_some_and(|age| age >= STATE_RETENTION);
-            if stale
-                && !(keep_pending
-                    && std::fs::symlink_metadata(spool_root().join(entry.file_name())).is_ok())
-            {
-                // Stuck applied spool records retain their dedup receipt.
-                // Best effort: a busy file is retried on the next sweep.
-                let _ = std::fs::remove_file(&path);
-            }
-        }
-    };
-    prune_dir(&done_dir(), true);
-    prune_dir(&failed_dir(), false);
-    if let Ok(entries) = std::fs::read_dir(spool_root()) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let is_stray_tmp = path.extension().is_some_and(|ext| ext == "tmp");
-            if !is_stray_tmp {
+        let Ok(names) = directory.entry_names_up_to(MAX_PENDING_FILES + MAX_TAIL_QUARANTINES)
+        else {
+            continue;
+        };
+        for name in names {
+            // Untimed evidence has no trustworthy retention clock.
+            if name.to_string_lossy().starts_with(".untimed-") {
                 continue;
             }
-            let stale = entry
+            let path = dir.join(&name);
+            if dir == spool_root() && !path.extension().is_some_and(|ext| ext == "tmp") {
+                continue;
+            }
+            let Ok(Some(file)) = directory.open_plain_file(&name) else {
+                continue;
+            };
+            let stale = file
                 .metadata()
                 .and_then(|meta| meta.modified())
                 .ok()
                 .and_then(|modified| now.duration_since(modified).ok())
                 .is_some_and(|age| age >= STATE_RETENTION);
-            if stale {
-                let _ = std::fs::remove_file(&path);
+            let pending = keep_pending
+                && path.extension().is_some_and(|ext| ext == "json")
+                && std::fs::symlink_metadata(spool_root().join(&name)).is_ok();
+            if stale && !pending {
+                let _ = directory.remove_plain_file(&name);
             }
         }
+    }
+}
+
+struct RequestSnapshot {
+    metadata: std::fs::Metadata,
+    bytes: Option<Vec<u8>>,
+}
+impl RequestSnapshot {
+    fn capture(path: &Path) -> Option<Self> {
+        use std::io::Read as _;
+        let directory = private_directory(path.parent()?).ok()?;
+        let file = directory.open_plain_file(path.file_name()?).ok()??;
+        let metadata = file.metadata().ok()?;
+        let bytes = if metadata.len() <= MAX_SPOOL_FILE_BYTES {
+            let mut bytes = Vec::new();
+            file.take(MAX_SPOOL_FILE_BYTES + 1)
+                .read_to_end(&mut bytes)
+                .ok()?;
+            (bytes.len() as u64 <= MAX_SPOOL_FILE_BYTES).then_some(bytes)
+        } else {
+            None
+        };
+        Some(Self { metadata, bytes })
+    }
+    fn still_matches(&self, path: &Path) -> bool {
+        Self::capture(path).is_some_and(|current| {
+            same_file_identity(&current.metadata, &self.metadata) && current.bytes == self.bytes
+        })
     }
 }
 
@@ -1379,6 +1540,32 @@ struct RetryState {
     /// lines/s from this arm alone.
     ceiling_warn_logged: bool,
     parked: HashMap<String, std::time::SystemTime>,
+    receipts: HashMap<String, (String, serde_json::Value)>,
+}
+
+/// Retain tracked records at the head even when directory iteration changes.
+/// This bounds retry/park/receipt identities to the apply budget across passes,
+/// not just the size of an individual directory listing.
+fn pending_batch(root: &Path, retries: &RetryState, mut listed: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut selected: Vec<_> = retries
+        .attempts
+        .keys()
+        .chain(retries.parked.keys())
+        .chain(retries.receipts.keys())
+        .map(|name| root.join(name))
+        .collect();
+    selected.sort();
+    selected.dedup();
+    listed.sort();
+    for path in listed {
+        if selected.len() >= MAX_PENDING_FILES + MAX_TAIL_QUARANTINES {
+            break;
+        }
+        if !selected.contains(&path) {
+            selected.push(path);
+        }
+    }
+    selected
 }
 
 /// Watch loop body: process every pending spool file (sorted names — uuid /
@@ -1391,45 +1578,59 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
     retries: &mut RetryState,
 ) {
     let root = spool_root();
-    let entries = match std::fs::read_dir(&root) {
-        Ok(entries) => {
+    let directory = match private_directory(&root) {
+        Ok(directory) => {
             retries.spool_dir_error_logged = false;
-            entries
+            directory
         }
-        // No spool directory yet = nothing was ever requested.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            retries.attempts.clear();
-            retries.parked.clear();
-            retries.ceiling_warn_logged = false;
-            return;
-        }
-        // Anything else (permissions, ...) is a real anomaly: warn once per
-        // streak instead of silently spinning at 1 Hz forever.
         Err(error) => {
             if !retries.spool_dir_error_logged {
-                log::warn!("[scheduled-creation] cannot read the spool directory: {error}");
+                log::warn!("[scheduled-creation] cannot open real spool directory: {error}");
                 retries.spool_dir_error_logged = true;
             }
             return;
         }
     };
-    let mut files: Vec<PathBuf> = entries
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "json"))
-        .collect();
-    // Vanished names never reach the per-file unpark branch. Use the full
-    // listing, before the cap, to avoid dropping live parked entries.
-    let live_names: std::collections::HashSet<_> = files
+    // Publish applied outcomes even when their spool file vanished or is
+    // outside this pass's selected batch. Bound cached unapplied receipts too.
+    let receipts: Vec<_> = retries
+        .receipts
         .iter()
-        .filter_map(|path| path.file_name().and_then(|name| name.to_str()))
+        .take(MAX_PENDING_FILES)
+        .map(|(name, (digest, payload))| (name.clone(), digest.clone(), payload.clone()))
         .collect();
-    retries
-        .attempts
-        .retain(|name, _| live_names.contains(name.as_str()));
-    retries
-        .parked
-        .retain(|name, _| live_names.contains(name.as_str()));
+    for (name, digest, payload) in receipts {
+        if write_done_marker(&done_dir().join(&name), &payload).is_ok() {
+            let path = root.join(&name);
+            if read_regular_bounded(&path, MAX_SPOOL_FILE_BYTES as usize)
+                .and_then(|bytes| serde_json::from_slice::<SpooledCreationRequest>(&bytes).ok())
+                .is_some_and(|request| spool_request_digest(&request) == digest)
+            {
+                let _ = directory.remove_plain_file(std::ffi::OsStr::new(&name));
+            }
+            retries.receipts.remove(&name);
+        }
+    }
+    if retries.receipts.len() >= MAX_PENDING_FILES {
+        return;
+    }
+    // Enumeration itself is bounded, including non-json and non-file entries.
+    // No scan/HashSet proportional to an untrusted directory's total size.
+    let names = match directory.entry_names_up_to(MAX_PENDING_FILES + MAX_TAIL_QUARANTINES + 2) {
+        Ok(names) => names,
+        Err(error) => {
+            log::warn!("[scheduled-creation] spool listing failed: {error}");
+            return;
+        }
+    };
+    let listed: Vec<PathBuf> = names
+        .into_iter()
+        .map(|name| root.join(name))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .collect();
+    retries.attempts.retain(|name, _| root.join(name).exists());
+    retries.parked.retain(|name, _| root.join(name).exists());
+    let mut files = pending_batch(&root, retries, listed);
     if files.is_empty() {
         retries.ceiling_warn_logged = false;
         return;
@@ -1453,8 +1654,9 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
             return;
         }
     }
-    files.sort();
-    // Round-27 minor 9: the messaging sibling caps pending files at 256 and
+    // Selected-batch ceiling: at most 256 domain calls and 32 tail moves.
+    // Later batches stay queued; there is no whole-directory sort/scan.
+    // Round-27 originally mirrored the messaging sibling, which caps at 256 and
     // quarantines the sorted-tail excess — without it, a flood of planted
     // records becomes N real applies or N retained quarantines in one tick
     // (the design doc §7 "task explosion" mitigations lean on this bound).
@@ -1476,7 +1678,11 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
             );
             retries.ceiling_warn_logged = true;
         }
-        for path in files.split_off(MAX_PENDING_FILES) {
+        for path in files
+            .split_off(MAX_PENDING_FILES)
+            .into_iter()
+            .take(MAX_TAIL_QUARANTINES)
+        {
             let Some(name) = path
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -1527,6 +1733,12 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
             let _ = quarantine_with_warning(&path, &mut quarantine_warnings);
             continue;
         };
+        if retries.receipts.contains_key(&name) {
+            continue;
+        }
+        if retries.receipts.len() >= MAX_PENDING_FILES {
+            break;
+        }
         // Round-24 minor 3: parked names skip until their record moves —
         // a re-spool at the same deterministic sha256 name (the
         // retry-after-fix shape) writes fresh bytes with a newer mtime
@@ -1554,6 +1766,7 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
         // accrued budget (no quarantine, no failure marker, no audit). A
         // panicking record now burns its own budget and is quarantined
         // after MAX attempts, like any other persistent failure.
+        let snapshot = RequestSnapshot::capture(&path);
         let outcome = futures_util::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
             process_spool_file(path.as_path(), creator, sessions, &pass_notifier),
         ))
@@ -1594,6 +1807,9 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
             }
         };
         match outcome {
+            Processed::ReceiptPending(digest, payload) => {
+                retries.receipts.insert(name, (digest, payload));
+            }
             Processed::Done(applied_digest) => {
                 // Round-16 MAJOR-1: the budget clears only after the record
                 // actually left the spool. This arm used to clear it up
@@ -1639,7 +1855,9 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                 };
                 match std::fs::symlink_metadata(&path) {
                     Ok(current) if same_file_identity(&current, &applied_meta) => {
-                        if let Err(error) = std::fs::remove_file(&path) {
+                        if let Err(error) =
+                            directory.remove_plain_file(path.file_name().unwrap_or_default())
+                        {
                             // The marker exists, so the operation stays
                             // deduped and no poll can re-apply it — but
                             // the removal retries every poll until it
@@ -1687,7 +1905,19 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                         "[scheduled-creation] further poison quarantines this pass are summarized; failed/ carries each record"
                     );
                 }
-                audit_failure(sessions, &path, &error);
+                audit_failure(
+                    sessions,
+                    snapshot
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.bytes.as_deref()),
+                    &error,
+                );
+                if !snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.still_matches(&path))
+                {
+                    continue;
+                }
                 // Round-16 MAJOR-1: the budget clears only when the record
                 // actually left the spool; a persisted rename failure parks
                 // the name so the drain skips it instead of re-poisoning
@@ -1716,7 +1946,19 @@ async fn process_pending_spool<C: TaskCreator, N: PanelNotifier + ?Sized>(
                     log::warn!(
                         "[scheduled-creation] quarantining {name} after {count} create attempts: {error:#}"
                     );
-                    audit_failure(sessions, &path, &error);
+                    audit_failure(
+                        sessions,
+                        snapshot
+                            .as_ref()
+                            .and_then(|snapshot| snapshot.bytes.as_deref()),
+                        &error,
+                    );
+                    if !snapshot
+                        .as_ref()
+                        .is_some_and(|snapshot| snapshot.still_matches(&path))
+                    {
+                        continue;
+                    }
                     // Round-16 MAJOR-1: the budget clears only when the
                     // record actually left the spool. Clearing before the
                     // rename let a persisted quarantine failure re-apply
@@ -2494,155 +2736,73 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn exhausted_record_parks_when_the_failed_dir_is_blocked() {
-        // Round-16 MAJOR-1: with `.done/` and `failed/` both unusable
-        // (planted as REGULAR files so the directories cannot exist) a
-        // successful create cannot land its suppression marker and the
-        // terminal quarantine cannot move the record. The round-15 shape
-        // cleared the attempt budget BEFORE the quarantine rename, so the
-        // record re-applied on a fresh budget every poll forever — one new
-        // real task per cycle. The exhaustion path must instead park the
-        // name and keep the budget: the drain skips parked records until
-        // the record moves (round-24 minor 3) or restart, so exactly
-        // MAX_CREATE_ATTEMPTS applies happen — not an unbounded storm.
-        let _home = TempHome::new();
-        let state = watcher_state().await;
-        let spool = spool_root();
-        std::fs::create_dir_all(&spool).unwrap();
-        std::fs::write(spool.join(".done"), b"blocked\n").unwrap();
-        std::fs::write(spool.join("failed"), b"blocked\n").unwrap();
-        std::fs::write(spool.join("stuck.json"), spool_record_json(&[])).unwrap();
-        let calls = Arc::new(AtomicUsize::new(0));
-        let mut retries = RetryState::default();
-        for _ in 0..MAX_CREATE_ATTEMPTS {
+    async fn applied_request_retries_only_receipt_when_terminal_dirs_are_blocked() {
+        for remove_record in [false, true] {
+            let _home = TempHome::new();
+            let state = watcher_state().await;
+            std::fs::create_dir_all(spool_root()).unwrap();
+            std::fs::write(done_dir(), b"blocked").unwrap();
+            std::fs::write(failed_dir(), b"blocked").unwrap();
+            std::fs::write(spool_root().join("stuck.json"), spool_record_json(&[])).unwrap();
+            let calls = Arc::new(AtomicUsize::new(0));
+            let mut retries = RetryState::default();
+            for _ in 0..8 {
+                process_pending_spool(
+                    &StateCreator(&state),
+                    &state.sessions,
+                    &CountingNotifier(calls.clone()),
+                    &mut retries,
+                )
+                .await;
+            }
+            assert_eq!(
+                state
+                    .automations
+                    .lock()
+                    .await
+                    .list_automations()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                1,
+                "applied changes notify even with no receipt"
+            );
+            assert!(retries.receipts.contains_key("stuck.json"));
+            assert!(
+                retries.attempts.is_empty(),
+                "receipt failures do not spend another apply budget"
+            );
+            if remove_record {
+                std::fs::remove_file(spool_root().join("stuck.json")).unwrap();
+            }
+            std::fs::remove_file(done_dir()).unwrap();
+            std::fs::remove_file(failed_dir()).unwrap();
             process_pending_spool(
                 &StateCreator(&state),
                 &state.sessions,
-                &CountingNotifier(calls.clone()),
+                &CountingNotifier(calls),
                 &mut retries,
             )
             .await;
+            assert!(done_dir().join("stuck.json").is_file());
+            assert!(!spool_root().join("stuck.json").exists());
+            assert!(retries.receipts.is_empty());
+            assert_eq!(
+                state
+                    .automations
+                    .lock()
+                    .await
+                    .list_automations()
+                    .unwrap()
+                    .len(),
+                1
+            );
         }
-        assert!(
-            retries.parked.contains_key("stuck.json"),
-            "a failed terminal quarantine must park the record"
-        );
-        assert_eq!(
-            retries.attempts.get("stuck.json").copied(),
-            Some(MAX_CREATE_ATTEMPTS),
-            "the budget stays PUT while the record cannot leave the spool"
-        );
-        assert!(spool.join("stuck.json").exists(), "the record stays queued");
-        assert_eq!(
-            state
-                .automations
-                .lock()
-                .await
-                .list_automations()
-                .unwrap()
-                .len(),
-            MAX_CREATE_ATTEMPTS as usize,
-            "each poll applied once before parking (the storm's cost is bounded)"
-        );
-        // Later polls skip the parked record: no re-apply and no budget
-        // churn — the store count and the frozen budget prove the drain
-        // never touches it again.
-        for _ in 0..(2 * MAX_CREATE_ATTEMPTS) {
-            process_pending_spool(
-                &StateCreator(&state),
-                &state.sessions,
-                &CountingNotifier(calls.clone()),
-                &mut retries,
-            )
-            .await;
-        }
-        assert_eq!(
-            state
-                .automations
-                .lock()
-                .await
-                .list_automations()
-                .unwrap()
-                .len(),
-            MAX_CREATE_ATTEMPTS as usize,
-            "parked records must not re-apply"
-        );
-        assert_eq!(
-            retries.attempts.get("stuck.json").copied(),
-            Some(MAX_CREATE_ATTEMPTS),
-            "parked records must not burn or re-buy budget"
-        );
-        assert!(
-            spool.join("stuck.json").exists(),
-            "the parked record stays put"
-        );
-        // Round-24 minor 3: the park is no longer restart-shaped. A
-        // retry-after-fix re-spool rewrites the record at the same
-        // deterministic name with a newer mtime; the next pass must
-        // un-park and process it exactly once, and a fresh exhaustion
-        // parks the name again against the new bytes. The skip loop above
-        // (no rewrite, no un-park through 2×MAX passes) is the other half
-        // of this pin: unchanged mtime keeps the park.
-        // Simulate elapsed wall time without sleeping: the replacement
-        // must be newer than the park but not future-dated.
-        let replacement_at = std::time::SystemTime::now() - Duration::from_secs(1);
-        retries
-            .parked
-            .insert("stuck.json".into(), replacement_at - Duration::from_secs(1));
-        {
-            let file = std::fs::OpenOptions::new()
-                .write(true)
-                .open(spool.join("stuck.json"))
-                .unwrap();
-            file.set_modified(replacement_at).unwrap();
-        }
-        process_pending_spool(
-            &StateCreator(&state),
-            &state.sessions,
-            &CountingNotifier(calls.clone()),
-            &mut retries,
-        )
-        .await;
-        // The park froze the budget at MAX (round-16 MAJOR-1: no budget
-        // left to bound a parked record), so the un-parked record gets
-        // exactly ONE fresh attempt: it applies once (store count MAX+1),
-        // its marker write fails again, MAX+1 ≥ MAX → immediate
-        // exhaustion → the name parks again against the new bytes. The
-        // load-bearing minor-3 proof is the store count: without the
-        // un-park the drain never touches the record and the count stays
-        // MAX through any number of passes (pinned by the skip loop
-        // above).
-        assert_eq!(
-            state
-                .automations
-                .lock()
-                .await
-                .list_automations()
-                .unwrap()
-                .len(),
-            (MAX_CREATE_ATTEMPTS + 1) as usize,
-            "the re-spooled record was processed once after the un-park"
-        );
-        assert_eq!(
-            retries.attempts.get("stuck.json").copied(),
-            Some(MAX_CREATE_ATTEMPTS + 1),
-            "the fresh attempt burned exactly one budget unit"
-        );
-        assert!(
-            retries.parked.contains_key("stuck.json"),
-            "the fresh exhaustion parks the name again (bounded per replacement)"
-        );
     }
 
-    // Round-17 MAJOR-4: the Done arm's half of the budget invariant — the
-    // budget stays PUT when the post-apply unlink fails — ships without a
-    // pin: re-adding `retries.attempts.remove(&name)` before the unlink
-    // kept the whole suite green. The removal is blocked with a read-only
-    // spool directory (POSIX semantics; the marker lives in `.done/`,
-    // which stays writable), so the failure is deterministic.
-    // Round-22 M1-pin: a creator that PANICS per call — a per-record
-    // panicking record must burn its own budget (not starve later-sorted
-    // records) and quarantine at exhaustion like any persistent failure.
     struct PanickingCreator;
 
     impl TaskCreator for PanickingCreator {
@@ -2750,7 +2910,7 @@ mod tests {
     // unlink deterministically; Windows has no equivalent one-liner).
     #[cfg(unix)]
     #[tokio::test]
-    async fn done_arm_keeps_the_budget_when_removal_fails() {
+    async fn private_directory_permission_repair_removes_without_duplicate_apply() {
         let _home = TempHome::new();
         let state = watcher_state().await;
         let spool = spool_root();
@@ -2786,13 +2946,13 @@ mod tests {
             "the marker lands despite the blocked unlink"
         );
         assert!(
-            spool.join("stuck.json").exists(),
-            "the removal failure leaves the record queued"
+            !spool.join("stuck.json").exists(),
+            "the private-directory primitive restores owner permissions before removal"
         );
         assert_eq!(
             retries.attempts.get("stuck.json").copied(),
-            Some(1),
-            "the budget stays PUT on a persisted removal failure"
+            None,
+            "successful removal clears the old transient budget"
         );
         // Restore the directory so the marker suppresses the next poll:
         // no re-creation, and the parked-in-place record is deduped.
@@ -2926,8 +3086,15 @@ mod tests {
     #[test]
     fn sender_validation_rejects_isolated_and_malformed_ids() {
         let mut request = valid_record();
-        request.from_session = Some("sched-run1".to_string());
-        assert!(request.validate().is_err(), "sched- senders are rejected");
+        for sender in ["sched-run1", "SCHED-run1"] {
+            request.from_session = Some(sender.to_string());
+            request.idempotency_key = Some("interactive-retry".to_string());
+            assert!(
+                request.validate().is_ok(),
+                "interactive scheduled origin: {sender}"
+            );
+        }
+        request.idempotency_key = None;
         // Round-15 REQUIRED-1: the eval_ leg folds case — the uppercase
         // variant used to pass while the server rejected it.
         request.from_session = Some("EVAL_b1".to_string());
@@ -3030,10 +3197,8 @@ mod tests {
                 ("task_id", serde_json::json!(created.id)),
                 ("name", serde_json::json!("晚报任务")),
                 ("paused", serde_json::json!(true)),
-                (
-                    "rrule",
-                    serde_json::json!("freq=weekly;byday=fr;byhour=20;byminute=0"),
-                ),
+                ("prompt", serde_json::Value::Null),
+                ("rrule", serde_json::Value::Null),
             ]),
         )
         .unwrap();
@@ -3053,8 +3218,8 @@ mod tests {
             .expect("task still exists");
         assert_eq!(updated.name, "晚报任务");
         assert_eq!(
-            updated.rrule, "FREQ=WEEKLY;BYDAY=FR;BYHOUR=20;BYMINUTE=0",
-            "update normalization lands uppercase"
+            updated.rrule, "FREQ=WEEKLY;BYDAY=MO;BYHOUR=8;BYMINUTE=30",
+            "safe metadata update preserves the existing schedule"
         );
         assert!(
             matches!(
@@ -3072,7 +3237,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_request_archives_and_removes_the_task() {
+    async fn delete_and_crash_before_receipt_replays_are_successful() {
         let _home = TempHome::new();
         let state = watcher_state().await;
         let created = state
@@ -3120,39 +3285,49 @@ mod tests {
                 .lock()
                 .await
                 .get_automation(&created.id)
-                .is_err(),
-            "the task is gone from the active store"
+                .is_err()
         );
-        let marker: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(done_dir().join("del.json")).expect("marker"),
-        )
-        .unwrap();
-        assert_eq!(marker["kind"], "delete");
+        let marker: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(done_dir().join("del.json")).unwrap()).unwrap();
+        assert_eq!(marker["ok"], true);
         assert_eq!(marker["task_id"], created.id);
-        // Round-24 minor 8 (delete twin): the same production-marker
-        // digest pin on the delete path.
-        let delete_record_json = spool_record_json(&[
-            ("kind", serde_json::json!("delete")),
-            ("task_id", serde_json::json!(created.id)),
-            ("name", serde_json::Value::Null),
-            ("prompt", serde_json::Value::Null),
-            ("rrule", serde_json::Value::Null),
-            ("paused", serde_json::Value::Null),
-        ]);
-        let delete_spooled: SpooledCreationRequest =
-            serde_json::from_str(&delete_record_json).unwrap();
-        assert_eq!(
-            marker["request_digest"],
-            spool_request_digest(&delete_spooled),
-            "the delete marker must carry the canonical request digest"
-        );
+        // Simulate a crash after deletion but before receipt publication. A
+        // replay and a different delete key must both ensure absence successfully.
+        std::fs::remove_file(done_dir().join("del.json")).unwrap();
+        for key in ["del", "different-key"] {
+            std::fs::write(
+                spool.join(format!("{key}.json")),
+                spool_record_json(&[
+                    ("kind", serde_json::json!("delete")),
+                    ("task_id", serde_json::json!(created.id)),
+                    ("name", serde_json::Value::Null),
+                    ("prompt", serde_json::Value::Null),
+                    ("rrule", serde_json::Value::Null),
+                    ("paused", serde_json::Value::Null),
+                ]),
+            )
+            .unwrap();
+            process_pending_spool(
+                &StateCreator(&state),
+                &state.sessions,
+                &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+                &mut retries,
+            )
+            .await;
+            let replay: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(done_dir().join(format!("{key}.json"))).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(replay["ok"], true, "{key}: {replay}");
+            assert_eq!(replay["task_id"], created.id);
+            assert!(!spool.join(format!("{key}.json")).exists());
+            assert!(!failed_dir().join(format!("{key}.json")).exists());
+        }
+        let replay = state.delete_task(created.id.clone()).await.unwrap();
+        assert_eq!(replay.id, created.id);
+        assert_eq!(replay.status, "deleted");
     }
 
-    /// Round-8 M3-1: the R7 probe-order fix finally has its pin — a
-    /// leftover FREQ=ONCE record whose AT has since PASSED (validate would
-    /// fail → the poison arm whose failure-marker write would overwrite
-    /// the ok:true receipt) suppresses on its recorded success instead:
-    /// Done, no quarantine, marker intact, no create.
     #[tokio::test]
     async fn stale_once_record_over_success_marker_suppresses_without_poisoning() {
         let _home = TempHome::new();
@@ -3407,10 +3582,10 @@ mod tests {
 
     #[test]
     fn result_marker_suppression_follows_the_ok_field() {
-        let dir = std::env::temp_dir().join(format!("pinvou-marker-test-{}", std::process::id()));
+        let _home = TempHome::new();
+        let dir = done_dir();
         std::fs::create_dir_all(&dir).unwrap();
-        let marker = dir.join("m.json");
-        // Success with a matching digest suppresses the replay (C3).
+        let marker = dir.join("marker.json");
         let good = serde_json::json!({
             "ok": true,
             "task_id": "t",
@@ -3587,7 +3762,7 @@ mod tests {
         std::fs::create_dir_all(&spool).unwrap();
         std::fs::create_dir_all(
             crate::platform::paths::sessions_root()
-                .join("sched-run9")
+                .join("aux-side9")
                 .join("workspace"),
         )
         .unwrap();
@@ -3598,7 +3773,7 @@ mod tests {
                     "prompt",
                     serde_json::json!("x".repeat(MAX_PROMPT_CHARS + 1)),
                 ),
-                ("from_session", serde_json::json!("sched-run9")),
+                ("from_session", serde_json::json!("aux-side9")),
             ]),
         )
         .unwrap();
@@ -3616,7 +3791,7 @@ mod tests {
         );
         let content = std::fs::read_to_string(
             crate::platform::paths::sessions_root()
-                .join("sched-run9")
+                .join("aux-side9")
                 .join("workspace")
                 .join("workflow_audit.jsonl"),
         )
@@ -3717,7 +3892,7 @@ mod tests {
 
     #[test]
     fn isolated_senders_keyless_ids_and_stray_delete_fields_are_rejected() {
-        for sender in ["sched-run1", "SCHED-run1", "aux-side1", "eval_b1"] {
+        for sender in ["aux-side1", "AUX-side1", "eval_b1", "EVAL_b1"] {
             let record: SpooledCreationRequest = serde_json::from_str(&spool_record_json(&[(
                 "from_session",
                 serde_json::json!(sender),
@@ -3865,8 +4040,11 @@ mod tests {
             "fixture: the FIFO must be created"
         );
         let result = write_done_marker(&marker, &serde_json::json!({"ok": true, "task_id": "t-1"}));
-        assert!(result.is_err(), "the planted FIFO must be refused");
-        assert!(!marker.exists(), "the rename must not publish the FIFO");
+        result.expect("an unrelated planted FIFO cannot occupy the exclusive temp name");
+        assert!(
+            std::fs::symlink_metadata(&marker).unwrap().is_file(),
+            "publish only the new regular file"
+        );
         // Still a FIFO (not truncated into a regular file, not consumed):
         // the re-poll refuses again deterministically.
         let meta = std::fs::metadata(&tmp).unwrap();
@@ -3904,7 +4082,6 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn fifo_with_reader_at_the_marker_tmp_path_is_refused() {
-        use std::io::Read as _;
         let _home = TempHome::new();
         std::fs::create_dir_all(done_dir()).unwrap();
         let marker = done_dir().join("victim.json");
@@ -3919,18 +4096,18 @@ mod tests {
         // otherwise succeed into the pipe buffer (round-18's silent-loss
         // shape). The reader drops after 300 ms; the gate fails the open
         // immediately either way.
-        let reader_path = tmp.clone();
-        std::thread::spawn(move || {
-            if let Ok(mut f) = std::fs::File::open(&reader_path) {
-                let mut sink = [0u8; 16];
-                let _ = f.read(&mut sink);
-                std::thread::sleep(std::time::Duration::from_millis(300));
-            }
-        });
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let _reader = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&tmp)
+            .unwrap();
         let result = write_done_marker(&marker, &serde_json::json!({"ok": true}));
-        assert!(result.is_err(), "the planted FIFO must be refused");
-        assert!(!marker.exists(), "the rename must not publish the FIFO");
+        result.expect("an unrelated planted FIFO cannot occupy the exclusive temp name");
+        assert!(
+            std::fs::symlink_metadata(&marker).unwrap().is_file(),
+            "publish only the new regular file"
+        );
     }
 
     #[tokio::test]
@@ -4168,10 +4345,412 @@ mod tests {
         let size = 2 * 1024 * 1024 + 3;
         std::fs::File::create(&path).unwrap().set_len(size).unwrap();
         audit_request_shadow(&request, "blocked", "task", "name", "applied");
-        assert_eq!(
-            std::fs::metadata(&path).unwrap().len(),
-            size,
-            "failed rotation preserves evidence and skips further growth"
+        assert!(
+            std::fs::metadata(&path).unwrap().len() > size,
+            "failed rotation preserves old evidence and still appends the new outcome"
         );
+    }
+    #[tokio::test]
+    async fn real_stdio_server_drains_through_real_rust_domain() {
+        use std::io::{BufRead as _, Write as _};
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let server = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../resources/mcp-servers/app-automations/server.py");
+        let python = if cfg!(windows) { "python" } else { "python3" };
+        let mut child = std::process::Command::new(python)
+            .arg(server)
+            .arg("--task-requests-dir")
+            .arg(spool_root().parent().unwrap())
+            .arg("--automations-dir")
+            .arg(super::super::scheduled_automation_root())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("Python runtime required for the shipped MCP package");
+        let mut stdin = child.stdin.take().unwrap();
+        let mut stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+        let request = serde_json::json!({"jsonrpc":"2.0", "id":1, "method":"tools/call", "params":{
+            "name":"create_scheduled_task", "arguments":{"name":"real seam", "prompt":"fixture prompt", "rrule":"FREQ=HOURLY", "paused":null, "from_session":"reqsrc01", "idempotency_key":"real-seam"}
+        }});
+        writeln!(stdin, "{request}").unwrap();
+        let mut retries = RetryState::default();
+        for _ in 0..100 {
+            process_pending_spool(
+                &StateCreator(&state),
+                &state.sessions,
+                &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+                &mut retries,
+            )
+            .await;
+            if !state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .unwrap()
+                .is_empty()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let mut line = String::new();
+        stdout.read_line(&mut line).unwrap();
+        let reply: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(payload["ok"], true, "{reply}");
+        let records = state.automations.lock().await.list_automations().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(payload["taskId"], records[0].id);
+        assert_eq!(records[0].prompt, "fixture prompt");
+        assert!(
+            matches!(
+                records[0].status,
+                deepseek_tui::automation_manager::AutomationStatus::Active
+            ),
+            "paused:null defaults to active through the real seam"
+        );
+        drop(stdin);
+        assert!(child.wait().unwrap().success());
+    }
+
+    #[tokio::test]
+    async fn null_paused_default_applies_active_and_normalized_digest_replays() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        std::fs::create_dir_all(spool_root()).unwrap();
+        let path = spool_root().join("default.json");
+        std::fs::write(
+            &path,
+            spool_record_json(&[("paused", serde_json::Value::Null)]),
+        )
+        .unwrap();
+        let mut retries = RetryState::default();
+        let notifier = CountingNotifier(Arc::new(AtomicUsize::new(0)));
+        process_pending_spool(
+            &StateCreator(&state),
+            &state.sessions,
+            &notifier,
+            &mut retries,
+        )
+        .await;
+        let records = state.automations.lock().await.list_automations().unwrap();
+        assert!(matches!(
+            records[0].status,
+            deepseek_tui::automation_manager::AutomationStatus::Active
+        ));
+        let mut request = valid_record();
+        let digest = spool_request_digest(&request);
+        request.name = request.name.map(|value| format!("  {value}  "));
+        request.prompt = request.prompt.map(|value| format!(" {value} "));
+        request.rrule = request
+            .rrule
+            .map(|value| format!(" {} ", value.to_lowercase()));
+        assert_eq!(
+            spool_request_digest(&request),
+            digest,
+            "digest binds applied normalized text"
+        );
+    }
+
+    #[tokio::test]
+    async fn large_spool_bounds_applies_and_tail_moves_per_pass() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        std::fs::create_dir_all(spool_root()).unwrap();
+        for i in 0..1000 {
+            std::fs::write(
+                spool_root().join(format!("{i:04}.json")),
+                spool_record_json(&[]),
+            )
+            .unwrap();
+        }
+        let mut retries = RetryState::default();
+        process_pending_spool(
+            &FailingCreator,
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        assert_eq!(retries.attempts.len(), MAX_PENDING_FILES);
+        let quarantines = std::fs::read_dir(failed_dir()).unwrap().count();
+        assert_eq!(quarantines, MAX_TAIL_QUARANTINES);
+        assert!(std::fs::read_dir(spool_root()).unwrap().count() > 900);
+    }
+
+    #[tokio::test]
+    async fn retry_exhaustion_keeps_a_replacement_payload() {
+        struct ReplacingFailure;
+        impl TaskCreator for ReplacingFailure {
+            async fn create(
+                &self,
+                _: CreateScheduledTaskInput,
+            ) -> std::result::Result<ScheduledTaskDto, String> {
+                std::fs::write(
+                    spool_root().join("retry.json"),
+                    spool_record_json(&[("name", serde_json::json!("corrected replacement"))]),
+                )
+                .unwrap();
+                Err("old apply failed".to_string())
+            }
+            async fn update(
+                &self,
+                _: &str,
+                _: UpdateScheduledTaskInput,
+            ) -> std::result::Result<ScheduledTaskDto, String> {
+                unreachable!()
+            }
+            async fn delete(&self, _: &str) -> std::result::Result<ScheduledTaskDto, String> {
+                unreachable!()
+            }
+        }
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        std::fs::create_dir_all(spool_root()).unwrap();
+        let path = spool_root().join("retry.json");
+        std::fs::write(&path, spool_record_json(&[])).unwrap();
+        let mut retries = RetryState::default();
+        retries
+            .attempts
+            .insert("retry.json".to_string(), MAX_CREATE_ATTEMPTS - 1);
+        process_pending_spool(
+            &ReplacingFailure,
+            &state.sessions,
+            &CountingNotifier(Arc::new(AtomicUsize::new(0))),
+            &mut retries,
+        )
+        .await;
+        let newest = std::fs::read_to_string(&path).unwrap();
+        assert!(newest.contains("corrected replacement"));
+        assert!(!failed_dir().join("retry.json").exists());
+        assert!(
+            !done_dir().join("retry.json").exists(),
+            "old failure does not answer the replacement"
+        );
+    }
+
+    #[test]
+    fn quarantine_retention_starts_at_move_and_done_temps_expire() {
+        let _home = TempHome::new();
+        prepare_request_directories().unwrap();
+        let path = spool_root().join("aged.json");
+        std::fs::write(&path, b"evidence").unwrap();
+        let now = std::time::SystemTime::now();
+        let old = now - STATE_RETENTION - Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+        let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions).unwrap();
+        quarantine(&path).unwrap();
+        let held = failed_dir().join(".untimed-fixture");
+        std::fs::write(&held, b"manual retention").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&held)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+        let tmp = done_dir().join("stale.json.tmp");
+        std::fs::write(&tmp, b"crash debris").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&tmp)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+        prune_stale_state_at(now + Duration::from_secs(60));
+        assert!(
+            std::fs::read_dir(failed_dir())
+                .unwrap()
+                .flatten()
+                .any(|entry| entry.path().is_file()
+                    && std::fs::read(entry.path()).is_ok_and(|bytes| bytes == b"evidence")),
+            "old pending mtime cannot discard fresh or explicitly held evidence"
+        );
+        assert!(!tmp.exists());
+        assert!(
+            held.exists(),
+            "unstamped evidence requires manual cleanup rather than premature deletion"
+        );
+    }
+
+    #[test]
+    fn audit_file_obstruction_is_preserved_and_new_evidence_appends() {
+        let _home = TempHome::new();
+        std::fs::create_dir_all(super::super::scheduled_automation_root()).unwrap();
+        let path = super::super::scheduled_automation_root().join("audit");
+        std::fs::write(&path, b"preserve obstruction").unwrap();
+        prepare_request_directories().unwrap();
+        audit_request_shadow(&valid_record(), "recovered", "task", "name", "applied");
+        assert!(
+            std::fs::read_to_string(path.join("workflow_audit.jsonl"))
+                .unwrap()
+                .contains("recovered")
+        );
+        let backups: Vec<_> = std::fs::read_dir(super::super::scheduled_automation_root())
+            .unwrap()
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("audit-obstruction-")
+            })
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(
+            std::fs::read(backups[0].path()).unwrap(),
+            b"preserve obstruction"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_spool_terminal_and_audit_directories_never_mutate_outside() {
+        use std::os::unix::fs::symlink;
+        let _home = TempHome::new();
+        let outside = tempfile::tempdir().unwrap();
+        let evidence = outside.path().join("old.json");
+        std::fs::write(&evidence, b"outside").unwrap();
+        let old = std::time::SystemTime::now() - STATE_RETENTION - Duration::from_secs(120);
+        std::fs::File::options()
+            .write(true)
+            .open(&evidence)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+        for target in [
+            spool_root(),
+            done_dir(),
+            failed_dir(),
+            super::super::scheduled_automation_root().join("audit"),
+        ] {
+            std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+            if target.is_dir() {
+                std::fs::remove_dir(&target).unwrap();
+            }
+            symlink(outside.path(), &target).unwrap();
+            assert!(private_directory(&target).is_err());
+            prune_stale_state();
+            assert_eq!(std::fs::read(&evidence).unwrap(), b"outside");
+            if target == done_dir() {
+                assert!(
+                    write_done_marker(
+                        &target.join("injected.json"),
+                        &serde_json::json!({"ok":true})
+                    )
+                    .is_err()
+                );
+            }
+            if target.file_name().unwrap() == "audit" {
+                audit_request_shadow(&valid_record(), "bad-link", "task", "name", "applied");
+            }
+            assert!(!outside.path().join("injected.json").exists());
+            assert!(!outside.path().join("workflow_audit.jsonl").exists());
+            std::fs::remove_file(&target).unwrap();
+        }
+    }
+    #[test]
+    fn poisoned_snapshot_does_not_match_a_corrected_record() {
+        let _home = TempHome::new();
+        std::fs::create_dir_all(spool_root()).unwrap();
+        let path = spool_root().join("poison.json");
+        std::fs::write(&path, b"invalid json").unwrap();
+        let snapshot = RequestSnapshot::capture(&path).unwrap();
+        assert!(snapshot.still_matches(&path));
+        std::fs::write(&path, spool_record_json(&[])).unwrap();
+        assert!(
+            !snapshot.still_matches(&path),
+            "terminal poison guard must preserve the corrected record"
+        );
+    }
+    #[tokio::test]
+    async fn workspace_failure_rolls_back_the_inert_created_record() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let root = crate::platform::paths::scheduled_tasks_root();
+        if root.is_dir() {
+            std::fs::remove_dir(&root).unwrap();
+        }
+        std::fs::write(&root, b"block workspace root").unwrap();
+        let error = state
+            .create_task(build_create_input(&valid_record()))
+            .await
+            .unwrap_err();
+        assert!(error.contains("workspace"), "{error}");
+        assert!(
+            state
+                .automations
+                .lock()
+                .await
+                .list_automations()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn selecting_a_model_id_for_a_null_model_is_not_a_noop() {
+        let _home = TempHome::new();
+        let state = watcher_state().await;
+        let task = state
+            .create_task(build_create_input(&valid_record()))
+            .await
+            .unwrap();
+        {
+            let manager = state.automations.lock().await;
+            let mut record = manager.get_automation(&task.id).unwrap();
+            record.model = None;
+            manager.save_automation(&record).unwrap();
+        }
+        let mut request = valid_record();
+        request.name = None;
+        request.prompt = None;
+        request.rrule = None;
+        request.paused = None;
+        request.model_id = Some("selected-model-id".to_string());
+        let updated = state
+            .update_task(task.id.clone(), build_update_input(&request))
+            .await
+            .unwrap();
+        assert_eq!(
+            updated.model.as_deref(),
+            Some(state.fallback_model.as_str())
+        );
+        assert_eq!(updated.model_id.as_deref(), Some("selected-model-id"));
+    }
+    #[test]
+    fn changing_listing_cannot_displace_tracked_requests_or_grow_state() {
+        let root = Path::new("spool");
+        let mut state = RetryState::default();
+        for i in 0..MAX_PENDING_FILES {
+            state.attempts.insert(format!("zzz-{i:04}.json"), 1);
+        }
+        let listing = (0..(MAX_PENDING_FILES + MAX_TAIL_QUARANTINES + 2))
+            .map(|i| root.join(format!("aaa-new-{i:04}.json")))
+            .collect();
+        let batch = pending_batch(root, &state, listing);
+        assert_eq!(batch.len(), MAX_PENDING_FILES + MAX_TAIL_QUARANTINES);
+        assert!(
+            batch[..MAX_PENDING_FILES].iter().all(|path| state
+                .attempts
+                .contains_key(path.file_name().unwrap().to_str().unwrap())),
+            "a changed listing must drain or park existing identities before admitting new ones"
+        );
+        assert!(batch[MAX_PENDING_FILES..].iter().all(|path| {
+            path.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("aaa-new-")
+        }));
     }
 }

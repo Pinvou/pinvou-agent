@@ -15,14 +15,14 @@
 - 基座 `automation` 工具（`CodeWhale/crates/tui/src/tools/automation.rs`）在应用会话中已注册但 manager 未挂载，调用必然失败（"AutomationManager is not attached"）；
 - 现有"对话创建"流程靠提示词（`SCHEDULED_TASK_CHAT_PROMPT`，`features/scheduled/tasks.rs::SCHEDULED_TASK_CHAT_PROMPT`）约束模型只输出 `scheduled-task-draft` 草稿块、由前端调 `create_scheduled_task` 代创建，仅在定时任务面板的专属引导会话中可用。
 
-目标：在**任意会话**里，模型可通过内置工具直接创建定时任务，落库路径与面板完全一致（同一 `ScheduledTaskState::create_task` 领域函数、同一数据目录 `~/.pinvou3/automations`），并满足契约 §5 的 L1 安全要求。
+目标：在**桌面 Operate/Yolo 会话**里，模型可通过内置工具直接创建定时任务，落库路径与面板完全一致（同一 `ScheduledTaskState::create_task` 领域函数、同一数据目录 `~/.pinvou3/automations`），并满足契约 §5 的 L1 安全要求。
 
 ## 2. 设计决策记录
 
 | 决策点 | 结论 | 理由 |
 |---|---|---|
-| 归属 | **新开能力族**，新 MCP server `app-automations`（契约 §2/§8.1） | 调度是独立能力族，未来 run-now、记忆整理等自动化工具可归入；避免 session-reader 族膨胀 |
-| 交互确认 | **沿用消息发送先例**：typed Ask 规则 + 审计日志 + 时间线可见性，不加阻塞式确认卡 | 与已上线 L1 工具一致；残余风险见 §9 |
+| 归属 | **新开能力族**，新 MCP server `app-automations`（契约 §2/§8） | 调度是独立能力族，未来 run-now、记忆整理等自动化工具可归入；避免 session-reader 族膨胀 |
+| 交互确认 | 创建及名称/模型/暂停状态更新立即生效；删除和提示词/计划覆盖返回 `confirmation_required`，由用户在现有面板检查并提交 | 用户于 2026-10-21 明确选择；全自动模式下 typed Ask 规则不是授权机制 |
 | 返回语义 | **短等待同步**：server.py 落盘后轮询结果标记 ≤5s，命中返回任务 ID，超时回 pending | 模型能直接告知用户"已创建 XX"，前端可联动；纯异步会让模型无法确认结果 |
 | rrule 范围 | 工具层只接受产品子集（HOURLY/WEEKLY/ONCE），**拒绝 CRON 与一切分钟级频率** | 与 `SCHEDULED_TASK_CHAT_PROMPT` 的产品约束一致；比领域层（`parse_rrule` 另支持 CRON）更严格是有意为之 |
 | 基座死工具 | 顺带把 `automation`、`send_later` 加入应用 disallow 列表 | 应用内未挂 manager、永远失败，留在目录里只会诱导模型试错；`tasks`/`github` 不动（超范围） |
@@ -62,7 +62,7 @@
 | 包注册 | `src-tauri/src/features/marketplace/mcp_catalog.rs`（改） | `MCP_PACKAGES` 加一项；默认安装列表加 id |
 | 创建 watcher | `src-tauri/src/features/scheduled/creation_requests.rs`（新增） | spool 排水、重校验、调 `create_task`、结果标记、审计、事件 |
 | 状态克隆化 | `src-tauri/src/features/scheduled/tasks.rs`（改） | `ScheduledTaskState` 派生 Clone（JoinHandle 包 `Arc<Mutex<Option<…>>>`，EnginePool.idle_reaper 同款） |
-| 审批规则 | `src-tauri/src/features/assistant/platform/bridge.rs`（改） | `ToolAskRule::new(create 工具全名)`；为审批模式分化预留（当前产品全模式全自动，规则不弹窗；无人值守递归的确定性防线是引擎侧 `unattended_disallowed_tools`——三个写工具与 create_goal/update_goal 同列；watcher 的 sched-/eval_/aux- 发起方拒绝只是 claimed-string 过滤器，from_session 可省略且未认证） |
+| 审批规则 | `src-tauri/src/features/assistant/platform/bridge.rs`（改） | `ToolAskRule::new(create 工具全名)`；为审批模式分化预留（当前产品全模式全自动，规则不弹窗；无人值守递归的确定性防线是引擎侧 `unattended_disallowed_tools`——三个写工具与 create_goal/update_goal 同列；watcher 的 eval_/aux- 发起方拒绝只是 claimed-string 过滤器；人工续聊的 sched- 来源可使用正常幂等请求，from_session 可省略且未认证） |
 | 死工具清理 | `src-tauri/src/lib.rs`（改） | disallow 基座 `automation`/`send_later` |
 | 前端 | `src/features/tools/tool-renderers.jsx`、`src/shared/i18n/{en,ja,zh}.js`（改） | 渲染卡（执行可见性）、三语文案 |
 | 契约文档 | `docs/builtin-toolset-contract.md`（改） | §2 注册新族、§9 改 landed（round-8/9 更正：早前版本声称的"§6 回写短等待同步新模式"修订并未落地，短等待语义记录于本设计文档 §3.2，契约未单列） |
@@ -140,9 +140,9 @@
 |---|---|---|---|---|---|
 | D1 | Ask 规则注册 | 任意会话规则集 | 含 create 工具的 `ToolAskRule`(Ask，无 command 约束) | ◇Rust bridge 规则集断言（镜像 ○`scope_deny_ruleset_asks_for_session_messaging_send`） | P0 |
 | D2 | 无人值守拒绝 | 定时任务运行会话内模型调用 create | `unattended_disallowed_tools` 引擎侧拒绝（本轮评审修订：force-prompt 链在当前全自动审批下不会触发）（递归自建被挡） | ○既有语义测试 + ◇新规则集断言 | P0 |
-| D3 | 审计日志 | 成功创建 | from_session **绑定会话 → 私有台账根**（`SessionRoots.ledger`，messaging r8-M1 同规则；round-24 M4 修订：原执行根落点把 provenance 行写进被审计模型自己的工作树，模型可用普通文件工具读取改写）append `scheduled_task_create` 记录（tool/task_id/outcome），未绑定会话保持执行根（两根同址）；另有 R4-M3 的看门狗侧影子审计（<home>/automations/audit/，以 spool 文件名为键、不依赖 from_session，请求者无法通过省略字段跳过） | ◇Rust 测试（含 shadow_audit_covers_requests_without_from_session + 绑定台账落点钉子） | P1 |
+| D3 | 审计日志 | 成功创建 | from_session **绑定会话 → 私有台账根**（`SessionRoots.ledger`，messaging r8-M1 同规则；round-24 M4 修订：原执行根落点把 provenance 行写进被审计模型自己的工作树，模型可用普通文件工具读取改写）append `scheduled_task_create` 记录（tool/task_id/outcome），未绑定会话保持执行根（两根同址）；另有 R4-M3 的看门狗侧影子审计（<home>/automations/audit/，以 spool 文件名为键、不依赖 from_session，省略字段不抑制本监听器的尽力记录，直接写任务存储则绕过） | ◇Rust 测试（含 shadow_audit_covers_requests_without_from_session + 绑定台账落点钉子） | P1 |
 | D4 | 错误脱敏 | 构造各类失败 | 错误文本不含宿主绝对路径 | ◇python（镜像 ○`test_error_messages_do_not_leak_absolute_paths`） | P0 |
-| D5 | 不越界写 | 全流程 | 不写 `~/.pinvou3/sessions/*.json`、不触碰 schtasks/cron/systemd（工具与 watcher 均只落 `~/.pinvou3/task-requests` 与领域目录） | 代码评审 + grep 检查项 | P1 |
+| D5 | 写入范围 | 请求、回执、隔离与自动化领域目录，另写入会话根及影子审计 JSONL；不修改会话正文，不安装 OS 调度器 | 代码审查 + 测试 | P1 |
 | D6 | 协议健壮性 | 非法 stdin/未知工具/深嵌套 JSON | 服务不死、`-32601/-32602`、catch-all 不漏异常文本 | ◇python（镜像 ○既有协议用例） | P1 |
 
 ### E. 可见性与 UI
@@ -218,7 +218,7 @@
 - **超侧车上限的任务对模型不可见（round-30 S6）**：面板创建的任务若 prompt 超过 256 KiB 存储读上限（域层不限长），`read` 会答 "not found"、`list` 静默跳过——模型的建前去重会因此重复创建。已在本条与 read 的错误语义中披露；更细的 "存在但不可读" 信号是后续工作。
 - **运行结果不可观测（round-27 minor 12）**：`list`/`read` 只暴露 status/nextRunAt/lastRunAt——模型无法读取运行输出（session-reader 硬拒 `sched-` 目标，无旁路）；被替换的基础 `automation` 工具在此处更丰富（read 含运行记录）。单一用户语义下面子可接受，特此披露。
 - **特性开关文案先于设置页（round-27 minor 13）**：`scheduled-task-automation` 开关的三语文案已入库，但本 PR 未随附自动化设置页——开关目前经命令/配置可达（契约 §3.1 的"随特性落地接入各自设置页"以跟进 PR 履行）。
-- **I/O 原语硬化披露（round-24 minor 13）**：unix 写原语（`open_private_append_file`/`open_private_tmp_write_file`）带 `O_NOFOLLOW|O_NONBLOCK`——用户合法符号链接的诊断/审计日志路径现在**失败关闭**（有意的行为变化；round-17 前符号链接会被跟随）；tmp 写原语对遗留的已存在 tmp 文件不重紧缩权限（载荷无敏感内容，落在同一私有目录）；Windows 写原语无 std 级 reparse-point 拒绝（同用户 spool/state 树的已记录残余）。
+- **IO 范围**：定时请求审计使用既有目录句柄原语与新增的句柄相对追加操作。本 PR 已移除先前对全局 audit.rs/open_private_append_file 的行为改动；消息、computer-use、诊断保持原行为。回执采用独占唯一临时文件，旧的截断临时文件辅助函数已移除。
 
 
 ---
@@ -234,26 +234,26 @@
 | `mcp_app-automations_create_scheduled_task` | L1 | 同 §3.1 |
 | `mcp_app-automations_read_scheduled_task` | L0 | `task_id`(必填)；返回单任务全量字段，**含 prompt**（更新前检视用） |
 | `mcp_app-automations_list_scheduled_tasks` | L0 | 同 §3.1（不含 prompt） |
-| `mcp_app-automations_update_scheduled_task` | L1 | `task_id`(必填) + `name`/`prompt`/`rrule`/`model_id`/`paused`（均可选，至少其一）；rrule 同产品子集 |
-| `mcp_app-automations_delete_scheduled_task` | L1 | `task_id`(必填)；归档后删除，破坏性 |
+| `mcp_app-automations_update_scheduled_task` | L1 元数据 / L2 覆盖 | `task_id` + name/model_id/paused 可立即更新；prompt/rrule 覆盖需到面板检查提交，工具不执行 |
+| `mcp_app-automations_delete_scheduled_task` | L1 有限例外 | `task_id`；用户明确要求且目标唯一时按现有权限执行。目标有歧义时先向用户确认。复用队列回执，不提供完整定义备份/撤销。 |
 
 ### 9.2 设计决策补充
 
 | 决策点 | 结论 | 理由 |
 |---|---|---|
 | 粒度 | 五个 `verb_noun` 工具，不合入 mode 枚举 | 契约 §4.2 偏好 one tool + mode，但读写审批语义不同：合入会让 L0 读也吃 L1 Ask 门（骚扰）或写操作失去门控；session-reader 三工具先例同理 |
-| 删除授权 | delete 为 L1；typed Ask 规则已注册，但当前产品两模式均为全自动审批（session_policy `approval_params` = (true, Auto)），运行时不会弹逐次确认 | 诚实披露：写操作（含删除）立即生效，实际审查入口是审计日志、时间线结果卡与定时任务面板；Ask 规则为审批模式分化（S-1）落地后的强制点预留。删除走面板同一条 archive-then-delete 管线（历史可追溯） |
+| 删除授权 | 用户于 2026-10-21 明确选择 L1 有限配置删除例外，不强制二次确认 | 使用列表/详情核对目标；重名、指代不清或信息冲突时必须先向用户确认，不能猜测。误删配置可能需手工重建，最小历史归档不是完整定义备份或撤销。 |
 | spool 扩展 | 记录加 `kind`(`create`/`update`/`delete`) + `task_id`，其余字段全部可选 | 契约 §4.4 只允许增字段：旧 create 记录经 watcher 默认 `kind=create` 继续有效 |
 | 幂等命名 | `sha256("<from_session>\|<kind>\|<task_id>\|<key>")`；key 必须随 from_session | 命名空间按发送方收敛，不随 from_session 缺省退化为全局；同键不同操作不互踩（创建与更新可共用一个键而不互相覆盖） |
-| 目标预检 | update/delete 在 server 侧先探测目标存在 | 快速失败省一轮 spool；watcher 与领域层仍重检（不信任 server 侧） |
-| Ask 规则 | update/delete 同 create 一样注册 typed Ask 规则；read/list 不加 | 读操作不加门（不打扰）；规则在当前全自动审批下不弹窗，为审批分化预留；无人值守的递归自改由引擎侧 `unattended_disallowed_tools` 确定性拒绝（watcher 的 sched-/eval_/aux- 发起方拒绝只是 claimed-string 过滤器） |
+| 目标预检 | 更新在 server 侧检查存在性；删除即使对象已不存在仍到达回执/领域层 | 保证删除重试不会在读取既有成功回执前失败；领域层区分明确 NotFound 与 IO/解析错误。 |
+| Ask 规则 | update/delete 同 create 一样注册 typed Ask 规则；read/list 不加 | 读操作不加门（不打扰）；规则在当前全自动审批下不弹窗，为审批分化预留；无人值守的递归自改由引擎侧 `unattended_disallowed_tools` 确定性拒绝（watcher 的 eval_/aux- 发起方拒绝只是 claimed-string 过滤器；人工续聊的 sched- 来源可使用正常幂等请求） |
 
 ### 9.3 验收矩阵追加（接续 §5 编号）
 
 | # | 场景 | 预期结果 | 验证方式 | 优先级 |
 |---|---|---|---|---|
-| I1 | 更新端到端 | update 改名/rrule/paused 落库并实时刷新 | ◇Rust `update_request_changes_the_existing_task` + 手工 | P0 |
-| I2 | 删除端到端 | delete 走 archive-then-delete，任务从面板消失、历史可追溯 | ◇Rust `delete_request_archives_and_removes_the_task` + 手工 | P0 |
+| I1 | 安全更新端到端 | name/model/paused 更新落盘并刷新；prompt/rrule 覆盖返回 confirmation_required 且不变更 | Rust + Python；实际 Linux 面板提交见下文 | P0 |
+| I2 | 准确目标删除与重放 | 明确且无歧义的请求按 ID 经监听器/领域删除；同键崩溃重放及不同键重复删除均成功。目标不明确时模型先向用户确认 | Rust + Python；真实模型歧义/删除验收见下文 | P0 |
 | I3 | 读详情 | read 返回含 prompt 的全量字段；未知 id 显式 not found | ◇python + 手工 | P0 |
 | I4 | update 校验 | 缺 task_id / 零字段 / CRON rrule 均拒绝 | ◇python + ◇Rust `update_request_validation_requires_target_and_a_field` | P0 |
 | I5 | delete 校验 | 缺 task_id、带多余字段均拒绝 | ◇python + ◇Rust `delete_request_validation_rejects_extra_fields` | P1 |
@@ -265,10 +265,10 @@
 
 - 非空排水轮仅从权威 settings.json 读取 `disabled_builtin_features`，不加载全量偏好、不探测语言、不迁移凭证。配置损坏或不可读时暂停排水，同一失败持续期仅记录一次；修复后下一轮恢复。空队列无需读取配置。
 - 已消失的请求名清理重试和停放状态；非 UTF-8 文件名按原名字节隔离，无法生成协议回执。一轮内成功应用的请求最多触发一次面板刷新。
-- 隔离使用平台原生的禁止覆盖原子重命名（Linux `RENAME_NOREPLACE`、macOS `RENAME_EXCL`、Windows 不带替换标记的 `MoveFileExW`）；包括并发写者在内的目标冲突均重试后缀，不覆盖旧证据。不支持的平台或文件系统显式报错，源请求保留在队列或停放。
+- 隔离复用既有跨平台句柄相对禁止覆盖移动原语并重试冲突后缀，移除重复的定时任务专属 OS adapter。Windows 命名的共享文件系统测试提供原生执行覆盖。
 - 14 天回执清理遇到同名 spool 请求时保留标记，防止已应用但无法删除的请求在回执过期后再次执行。请求名消失后恢复清理；隔离证据和服务端遗留临时文件仍遵循 14 天策略。
 - 模型绑定更新失败依赖存储自身的快照恢复，移除多余的第二次回滚写入，避免覆盖并发 CLI 重新绑定；此前已持久化的任务字段保留，可整体重试。
-- 私有写原语拒绝 Unix 符号链接和非普通文件；预植的普通硬链接临时文件仍可能通过相同 inode 被截断，依赖私有目录与同用户权限边界。Windows 重解析点的已披露限制不变。
+- **IO 范围**：定时请求审计使用既有目录句柄原语与新增的句柄相对追加操作。本 PR 已移除先前对全局 audit.rs/open_private_append_file 的行为改动；消息、computer-use、诊断保持原行为。回执采用独占唯一临时文件，旧的截断临时文件辅助函数已移除。
 - 插件卡片给出真实关闭路径：在 settings.json 的 `disabled_builtin_features` 中加入功能标识，不再暗示已有设置界面开关。重复请求文案兼容已处理回放与替换排队请求两种情况。首发包版本为 `1.0.0`。
 
 | 验收场景 | 预期 | 验证 |
@@ -283,7 +283,45 @@
 - **共享功能开关**：工具同时属于 A、B 时，只要任一功能开启就仍可用，只有两者都关闭才禁用。双功能夹具覆盖全开、分别关闭其一、全部关闭；模型错误提示与此规则一致。
 - **懒加载导出**：时间线必须加载 `ScheduledTaskToolResult`，由它解析 MCP 信封后提供展示卡片。直接加载 `ScheduledTaskToolCard` 会跳过适配器并退回原始输出，现已锁定完整导入/导出映射。
 - **停放时间与预算**：仅 `parked_at < mtime < now` 的替换可解除停放，未来或备份恢复时间不会每轮换取一次应用机会。排队与停放请求的重试预算均按**文件名**累计：同键请求已失败两次后替换内容，仍只剩三次总预算中的一次；合法替换解除停放也不重置已花预算。名称消失或终态才清理计数，以限制同键重植。新幂等键应仅用于有意的不同操作，仍需考虑已披露的至少一次投递重复窗口。
-- **影子审计轮转**：常驻的 `automations/audit/workflow_audit.jsonl` 超过 2 MiB 后在追加前轮转，只保留一个 `workflow_audit.jsonl.old` 段。正常增长为每段阈值加一条事件，重启后按磁盘状态继续判断。既有更大的历史段先保留一次，下一次轮转时替换。复用尽力而为的日志原语，不串行化多个应用进程；轮转失败时保留旧证据、跳过本次影子追加并记录诊断。
+- **影子审计轮转**：常驻的 `automations/audit/workflow_audit.jsonl` 超过 2 MiB 后在追加前轮转，只保留一个 `workflow_audit.jsonl.old` 段。正常增长为每段阈值加一条事件，重启后按磁盘状态继续判断。既有更大的历史段先保留一次，下一次轮转时替换。复用尽力而为的日志原语，不串行化多个应用进程；轮转失败时保留旧证据并向当前日志追加新行、记录诊断；修复前可能超过正常上限。
 - **服务端响应**：服务端为单线程。一次写请求等待回执的最多五秒内，同一服务上的 `ping`、`tools/list` 和其他调用也会排队；N 个写请求可能串行等待 N 倍时长。超时仍返回 pending，本轮不增加线程或改变协议顺序。
 - **失败回执**：包括外部写入的 marker 在内，错误文本进入模型上下文前会替换已知的用户目录、请求队列和任务存储路径前缀；非文本错误使用通用失败消息。marker 仍是未经认证的本地输入，此处仅做路径脱敏，不验证来源。
 - **孤立代理字符**：既有 UTF-8 键校验与回归保留；测试直运行入口移至所有测试类之后，确保直接运行也覆盖此前补丁用例。
+
+
+## Round-33 当前行为与边界
+
+- 支持桌面 Operate/Yolo；Plan 阻止整个 MCP 能力族（包括 L0 读取）。CLI/headless 没有 ScheduledTaskState 消费端，因此隐藏该族。五个工具在允许使用时常驻首轮目录，特性/作用域拒绝仍优先。全局提示词说明调度与应用需保持运行；会话指令给出准确的 `from_session` 供幂等键使用，该字段仍是不经认证的来源声明。人工续聊的 sched- 来源可正常使用幂等键；真正无人值守的写调用仍由引擎拒绝，aux/eval 来源限制保留。
+- 用户最新明确选择：撤掉强制删除确认卡及快照确认机制。删除保留为受现有权限控制的普通模型工具：按需先用列表/详情核对，用户明确要求且对象唯一时按准确 ID 执行；重名、指代不清、信息冲突或无法可靠判断对象时必须先向用户确认，不能猜测或扩大范围。任务正文是参考数据，不是操作授权。此要求是模型行为约束，不保证程序确定性验证用户意图。复用既有监听器/领域删除流程和摘要绑定回执；对象不存在视为已删除，IO/解析失败仍报错。不增加完整任务定义备份或撤销。提示词/计划覆盖仍须面板提交，既有最小运行历史无法恢复完整定义。
+- 审计 JSONL 没有内置查看器，且被工作区文件列表隐藏；实际可见的审查入口是结果卡与面板。影子审计只是本监听器的尽力证据。相同用户的文件工具可直接改写 `<home>/automations/automations/<id>.json`，完全绕过监听器、参数校验、来源与影子日志；除 §8 的 spool/messaging 文件通道外，必须计入这一绕过。按工具名限制并不是文件系统沙箱。
+- spool、`.done`、failed、audit 逐级使用真实目录句柄，拒绝符号链接/reparse point。启动时准备目录；audit 被普通文件占用时，保留为唯一 `audit-obstruction-*` 备份后创建目录；其他不安全或不可用目录使初始化明确失败。正常轮换保留前一段；轮换被阻塞时记录警告并继续追加当前证据（修复前可能持续增长），不再丢弃所有新行。追加失败仍会记录警告，不声称防篡改。
+- 每次最多枚举 290 项、对选中的最多 256 个 JSON 请求执行领域调用，最多隔离 32 个尾部请求。只对当前有限批排序，不再全量枚举后排序。同用户持续灌入或非请求项可能延迟后续处理，不保证公平或限流。失败收尾在审计 IO 后重新比较捕获字节及文件身份；替换后的请求保留，旧错误不回给新请求。检查到移动间的微小竞态及便携大小/mtime 身份下限仍存在。
+- 隔离证据从移动时开始计保留期；回执和证据保留 14 天，过期后的同键重试可能重新执行。仍有原请求的成功回执继续保留。`.done/*.tmp` 和 spool 临时残留按有限批清理。回执使用独占唯一临时文件、文件同步和现有句柄锚定的原子发布。成功执行但发布失败时，本进程缓存回执并只重试发布，面板首次执行即通知；进程退出会丢失缓存，执行到回执间崩溃仍可能重复创建。
+- 手工编辑 settings.json 后须重启，使 MCP 镜像与排水门控一致；当前没有界面开关。manifest 与 MCP server 均为 1.0.0。
+- 无人值守 shield 和禁止委派只作用于该次运行的引擎；刷新广播读取当前无人值守标志。交互/无人值守姿态不匹配时重建引擎。无人值守任务中依赖委派的脚本仍不支持；用户继续聊天时恢复正常委派能力。
+- 集成测试 `real_stdio_server_drains_through_real_rust_domain` 启动真实 Python MCP 服务，通过 Rust 监听器及领域存储排水。它本身不是 A1 真模型测试；另行完成的真实桌面验收记录见下文。
+- 进程内 ToolSpec 是可减少可写 spool 协议的架构备选；迁移既有内置包、待处理请求和幂等回执需要单独评审兼容方案，本轮不实施。当前修复复用领域 CRUD 和现有文件系统原语，不新增调度器，也不改 CodeWhale。
+
+新增标识冲突时拒绝替换同名自定义 app-automations 包；须先保留并重命名自定义包。宿主启动参数显式传入实际请求/存储目录，子进程过滤 PINVOU3_HOME 不再使队列错位。
+
+### 真实桌面验收，2026-10-21
+
+在 Linux arm64 的实际 Tauri/Wry 开发窗口中，使用真实 Ornith-1.5-35B-A3B-NVFP4 模型验证候选。使用隔离的 `PINVOU3_HOME` 和独立应用标识，没有改动用户已有任务或会话。临时本地驱动在真实渲染器中派发 DOM 输入/点击事件，同时核对可见面板详情、实际 IPC DTO、落盘回执、运行记录和会话正文。驱动不作为产品入口发布。
+
+- **A1 通过：**普通聊天创建每天 08:30、保持暂停的任务。模型直接调用常驻加载的 list/create 工具，没有调用 `tool_search`；create 在 604 ms 内返回确认的任务编号和名称（完整模型回合为 9.042 s）。实际面板展示了名称、完整正文、每日时间和暂停状态。
+- **A4 已观察触发通过：**另一个普通聊天创建本地 17:34（UTC 09:34）的 ONCE、HOURLY、WEEKLY 任务。既有调度器于 09:34:11.919 将三者入队；真实模型回合均在 09:34:20.254 前完成，三个会话落盘的助手回复均为 `QA_R33_FIRED`。ONCE 自动暂停且没有下次执行；HOURLY 仍启用，下次为 UTC 10:34；WEEKLY 仍启用，下次为 10 月 28 日 UTC 09:34。再观察 32 秒后，三者仍各只有一条运行记录。这验证首次实际触发及下次执行计算，没有声称已等待下一小时或下一周再次触发。
+- **面板提交通过：**模型尝试纠正 prompt 时收到 `confirmation_required`，存储正文保持原值；随后在既有面板编辑并保存，修正确实落盘。删除确认框中点取消保留暂停夹具，点确认才删除。打开 ONCE 的已完成运行行，实际展示了该运行的会话和回复。
+
+本次验收范围为 Linux 开发桌面，未手工运行 Windows/macOS、打包发布版界面或 Web 客户端；既有确定性门禁与 CI 是独立证据。
+
+补充失败边界：有限批优先处理已记录的重试/停放/待发布回执，目录顺序变化不会扩大这些表。创建先持久化暂停记录，工作间、模型与类型保存完成后才按请求启用；工作间失败回滚暂停记录。证据时间戳无法修改时保留为 .untimed-*，待手工清理，不按旧时间提前删除。
+
+### 删除产品取舍与对照
+
+用户明确接受：指令明确且目标唯一时直接删除；无法分辨是否为正确对象时，先在对话中向用户确认，不增加专门确认卡或完整定义备份。简单任务通常能较快重建，复杂正文也可能重建成本较高；风险可接受不等于零风险或自动恢复。删除复用既有取消运行/历史处理流程，不会撤销过去运行造成的影响。
+
+[Claude Cowork](https://support.claude.com/en/articles/13854387-schedule-recurring-tasks-in-claude-cowork) 的文档包含对话设置时核对拟定参数，以及编辑、暂停和删除任务。[Cursor Bot routines](https://prod.cursor.com/help/grok-bot/routines) 明确说明删除需确认且不能撤销。这里只以用户交互模式为对照，不据此声称内部授权实现或未公开的备份策略相同。 这些文档不能证明必须新增强制删除卡片；本项目采用上文用户明确选择的有限例外规则。
+
+### 目标歧义与直接删除：真实模型验收
+
+在重编译后的 Linux 桌面中，准备两个同名但小时间隔不同的暂停夹具。普通对话要求删除该名称时，真实模型列出两者并询问用户所指对象，没有调用变更工具，两条记录均保留。用户随后指定“删除每两小时的那个，保留每小时的那个”后，模型只按正确 ID 调用了一次删除工具，收到应用成功回执后再报告完成。实际存储与 IPC 列表均表明仅指定目标被删除，每小时任务及其他干扰夹具保留，没有额外确认卡。剩余夹具均保持暂停。此结果证明本次观察到的模型行为，不保证所有模型永远正确理解意图。

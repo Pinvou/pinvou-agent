@@ -1,7 +1,7 @@
 {
   "id": "app-automations",
   "name": "定时任务",
-  "description": "在任意会话中管理 Pinvou 定时任务：创建、查看、修改、删除（写操作立即生效，可在审计日志与定时任务面板中审查）；任务与定时任务面板完全一致",
+  "description": "桌面 Operate/Yolo 对话中创建、查看任务，修改名称、模型或暂停状态；删除目标有歧义时先向用户确认；提示词/计划覆盖需在定时任务面板提交。应用需保持运行；Plan/CLI 不支持",
   "version": "1.0.0",
   "icon": "calendar-clock",
   "category": "效率工具",

@@ -72,6 +72,7 @@ pub struct AppEngine {
     multi_agent_enabled: bool,
     pub(crate) turn_events: broadcast::Sender<EngineTurnSignal>,
     pub(crate) scheduled_unattended: Arc<AtomicBool>,
+    pub(crate) scheduled_run_engine: bool,
     turn_lifecycle: Arc<TurnLifecycle>,
     turn_shell_tasks: Option<TurnShellTaskRegistry>,
     scheduled_disallowed_tools: Vec<String>,
@@ -1739,6 +1740,7 @@ impl AppEngine {
         shell_manager: SharedShellManager,
         turn_shell_tasks: TurnShellTaskRegistry,
         steer_id_generation: u64,
+        scheduled_unattended_spawn: bool,
     ) -> Result<(Self, tauri::async_runtime::JoinHandle<()>)> {
         // Instructions 走 Inline，不写入远端工作区。所有会话共享产品工具面；
         // 子智能体仍由 CodeWhale 的通用角色与运行时策略进一步收窄。
@@ -1808,6 +1810,9 @@ impl AppEngine {
             }
             None => bridge.build_engine_config_for_session_roots(session_id, roots),
         };
+        if scheduled_unattended_spawn {
+            engine_config.subagents_enabled = false;
+        }
         engine_config.runtime_services.shell_manager = Some(shell_manager.clone());
         // Agentic RAG:给该 session 的 engine 注入 kb_search + kb_open_source(都持
         // session_id,execute 时只访问该会话挂载的知识集)。工具常驻所有会话,挂没挂集由
@@ -1901,6 +1906,7 @@ impl AppEngine {
                 multi_agent_enabled,
                 turn_events,
                 scheduled_unattended,
+                scheduled_run_engine: scheduled_unattended_spawn,
                 turn_lifecycle,
                 turn_shell_tasks: Some(turn_shell_tasks),
                 scheduled_disallowed_tools,
@@ -1944,6 +1950,7 @@ impl AppEngine {
             multi_agent_enabled: false,
             turn_events,
             scheduled_unattended: Arc::new(AtomicBool::new(false)),
+            scheduled_run_engine: false,
             turn_lifecycle: Arc::new(TurnLifecycle::default()),
             turn_shell_tasks: None,
             scheduled_disallowed_tools,
@@ -4506,7 +4513,16 @@ mod unattended_shield_tests {
     /// never consult under the current full-auto approval).
     #[test]
     fn unattended_turn_denies_scheduled_task_write_family() {
-        let list = unattended_disallowed_tools(&[]);
+        let caller = vec![
+            "mcp_fixture_disabled".to_string(),
+            "create_goal".to_string(),
+        ];
+        let list = unattended_disallowed_tools(&caller);
+        assert!(
+            list.contains(&caller[0]),
+            "caller-supplied feature disables survive composition"
+        );
+        assert_eq!(list.iter().filter(|tool| *tool == "create_goal").count(), 1);
         for tool in [
             "create_goal",
             "update_goal",

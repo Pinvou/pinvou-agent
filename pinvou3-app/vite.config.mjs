@@ -507,16 +507,13 @@ function enforceLazyChunks() {
 // the measured projection, not padded.
 //
 // 505_000 → 506_000 (PR #628 follow-ups, measured per policy): on
-// main@61fb3f4e4 the inherited 505_000 gate failed at 505,902 B web;
-// reusing ViewErrorBoundary saved 294 B (505,608 B) and the review's
-// limit-summary fix landed that tree at 505,801 B web / 502,485 B
-// desktop. This branch's re-cut onto the #744 main (2c2e40d03, vite
-// 8.3.4) re-measures at 505,454 B web / 502,135 B desktop
-// (main alone = 500,424 B on the same node v24 toolchain). The result
-// card/parser stay lazy behind the scheduledTaskCard lazy-tool-chunk
-// contract; synchronous timeline headers remain eager. The author
-// explicitly approved 506_000 on 2026-10-21 after reviewing both
-// measurements; the headroom is toolchain tolerance, not padding.
+// The author explicitly approved 506_000 on 2026-10-21 after reviewing
+// both targets. On this branch, npm ci with pinned Vite 8.3.4 / Node 22.23.1
+// produces 505,454 B web and 502,135 B desktop. Review 5596933329 measured
+// its combined tree with main@0baf7fa6c at 505,848 / 502,533 B; that is
+// 152 B web headroom, not a reproduced toolchain-tolerance allowance.
+// The card/parser remain lazy. Future combined trees must pass this gate;
+// this cap does not promise headroom for unrelated main changes.
 export const MAIN_ENTRY_BUDGET_BYTES = 506_000;
 
 export function assertMainEntryBudget(bundle, budgetBytes = MAIN_ENTRY_BUDGET_BYTES) {

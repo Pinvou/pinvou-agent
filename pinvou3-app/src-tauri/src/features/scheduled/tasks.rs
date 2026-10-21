@@ -303,6 +303,8 @@ impl ScheduledTaskState {
         sessions: SessionStore,
         app: &tauri::AppHandle,
     ) -> Result<Self> {
+        creation_requests::prepare_request_directories()
+            .context("prepare scheduled request directories")?;
         sessions.reconcile_scheduled_profiles()?;
         let read_state =
             ScheduledRunReadStore::open(crate::platform::paths::scheduled_run_read_state_path())?;
@@ -409,6 +411,7 @@ impl ScheduledTaskState {
         input: CreateScheduledTaskInput,
     ) -> Result<ScheduledTaskDto, String> {
         let manager = self.automations.lock().await;
+        let requested_paused = input.paused.unwrap_or(false);
         let requested_model_id = input.model_id.clone();
         let requires_model_binding = requested_model_id.is_some();
         // The kind is validated before any persistence/normalization; junk values are
@@ -422,15 +425,31 @@ impl ScheduledTaskState {
         {
             return Err("memory organize tasks require memory to be enabled".to_string());
         }
+        let mut request = build_create_request(
+            input,
+            current_automation_model(&self.fallback_model),
+            current_yolo_allow_shell(),
+        )?;
+        // Publish scheduling only after workspace/binding/kind are committed.
+        // A crash before that boundary leaves an inert paused record.
+        request.status = Some(AutomationStatus::Paused);
         let created = manager
-            .create_automation(build_create_request(
-                input,
-                current_automation_model(&self.fallback_model),
-                current_yolo_allow_shell(),
-            )?)
+            .create_automation(request)
             .map_err(|err| format!("Failed to create scheduled task: {err}"))?;
-        let created = ensure_automation_workspace(&manager, created)
-            .map_err(|err| format!("Failed to create scheduled task workspace: {err:#}"))?;
+        let created_id = created.id.clone();
+        let created = match ensure_automation_workspace(&manager, created) {
+            Ok(created) => created,
+            Err(error) => {
+                if let Err(rollback) = manager.delete_automation(&created_id) {
+                    log::warn!(
+                        "[scheduled] create workspace rollback failed; record remains paused: {rollback:#}"
+                    );
+                }
+                return Err(format!(
+                    "Failed to create scheduled task workspace: {error:#}"
+                ));
+            }
+        };
         if let Err(error) =
             self.model_bindings
                 .set(&created.id, requested_model_id, created.model.clone())
@@ -463,6 +482,19 @@ impl ScheduledTaskState {
                 return Err(format!("Failed to save scheduled task kind: {error:#}"));
             }
         }
+        let created = if requested_paused {
+            created
+        } else {
+            match manager.resume_automation(&created.id) {
+                Ok(active) => active,
+                Err(error) => {
+                    if let Err(rollback) = manager.delete_automation(&created.id) {
+                        log::warn!("[scheduled] create activation rollback failed: {rollback:#}");
+                    }
+                    return Err(format!("Failed to activate scheduled task: {error:#}"));
+                }
+            }
+        };
         Ok(map_scheduled_task_with_run_state(
             created,
             false,
@@ -476,10 +508,20 @@ impl ScheduledTaskState {
     async fn update_task(
         &self,
         id: String,
-        input: UpdateScheduledTaskInput,
+        mut input: UpdateScheduledTaskInput,
     ) -> Result<ScheduledTaskDto, String> {
         let _operation = self.lock_operation(&id).await;
         let manager = self.automations.lock().await;
+        if input.model_id.is_some()
+            && input.model.is_none()
+            && manager
+                .get_automation(&id)
+                .map_err(|error| format!("Failed to read scheduled task '{id}': {error:#}"))?
+                .model
+                .is_none()
+        {
+            input.model = Some(self.fallback_model.clone());
+        }
         let requested_model_update = input.model.clone();
         let requested_model_id = input.model_id.clone();
         let requires_model_binding = requested_model_id.is_some();
@@ -795,9 +837,48 @@ impl ScheduledTaskState {
     async fn delete_task_inner(&self, id: &str) -> Result<DeletedScheduledTaskDto> {
         let original_status = {
             let manager = self.automations.lock().await;
-            let original = manager
-                .get_automation(id)
-                .with_context(|| format!("read automation {id} before deletion"))?;
+            let original = match manager.get_automation(id) {
+                Ok(original) => original,
+                Err(error)
+                    if error.chain().any(|cause| {
+                        cause
+                            .downcast_ref::<std::io::Error>()
+                            .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+                    }) =>
+                {
+                    // Ensure-absent is idempotent, including a crash after the
+                    // original delete. Do not turn IO/parse failures into success.
+                    let archived = self
+                        .history_archive
+                        .archived_tasks()
+                        .into_iter()
+                        .find(|entry| entry.task.id == id);
+                    return Ok(ScheduledTaskDto {
+                        id: id.to_string(),
+                        name: archived
+                            .as_ref()
+                            .map(|entry| entry.task.name.clone())
+                            .unwrap_or_default(),
+                        prompt: String::new(),
+                        rrule: String::new(),
+                        schedule_label: String::new(),
+                        status: "deleted".to_string(),
+                        next_run_at: None,
+                        last_run_at: None,
+                        model: archived.and_then(|entry| entry.task.model),
+                        model_id: None,
+                        kind: None,
+                        has_unread_runs: false,
+                        is_running: false,
+                        pinned: false,
+                        pinned_at: None,
+                    });
+                }
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("read automation {id} before deletion"));
+                }
+            };
             manager
                 .pause_automation(id)
                 .with_context(|| format!("pause automation {id}"))?;

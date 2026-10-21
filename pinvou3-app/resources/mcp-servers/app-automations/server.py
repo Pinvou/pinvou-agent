@@ -6,7 +6,7 @@ Form: a preset marketplace package named app-automations in the plugin center
 released to ~/.pinvou3/bundles/app-automations/mcp/ and this script is launched
 with that directory as cwd.
 
-Goal (docs/app-automations-定时任务创建工具-设计与验收.md): in ANY session the
+Goal (docs/app-automations-定时任务创建工具-设计与验收.md): in desktop Operate/Yolo the
 model can create a Pinvou scheduled task directly, landing in the exact same
 store the Scheduled Tasks panel uses (ScheduledTaskState::create_task →
 ~/.pinvou3/automations, forced YOLO, per-task workspace, model sidecar).
@@ -84,6 +84,7 @@ engine's env sanitize does not pass custom env vars through, so switch state
 can only be read from the file.
 """
 import argparse
+import errno
 import datetime
 import hashlib
 import io
@@ -268,15 +269,11 @@ TOOL_DEFS = [
     {
         "name": "update_scheduled_task",
         "description": (
-            "Update an existing Pinvou scheduled task by id (write operation, applied "
-            "immediately — there is no per-call confirmation dialog; the Scheduled "
-            "Tasks panel and the audit log are the review surface). Provide only the "
-            "fields to change: name, prompt, rrule (same product subset as "
-            "create_scheduled_task), model_id, or paused. Read the task first when "
-            "the user asks to change a task they describe by name but you only have "
-            "list data. Returns the updated task's id and name once the app confirms, "
-            "or delivery:'pending' when confirmation has not landed within a few "
-            "seconds."
+            "Update a scheduled task's name, model_id or paused state by id. Applied "
+            "immediately; the result card and Scheduled Tasks panel show the outcome. "
+            "Replacing prompt or rrule requires the user to review and submit in the "
+            "Scheduled Tasks panel: this tool returns confirmation_required without "
+            "applying those changes. Keyed retry dedup lasts 14 days."
         ),
         "inputSchema": {
             "type": "object",
@@ -320,22 +317,24 @@ TOOL_DEFS = [
     {
         "name": "delete_scheduled_task",
         "description": (
-            "Permanently delete a Pinvou scheduled task by id and archive its run "
-            "history (destructive). Same async protocol as create/update: the "
-            "request is spooled and the call returns a pending marker if the app "
-            "does not confirm within its short wait — the delete applies either "
-            "way; check the Scheduled Tasks panel for the confirmed result. Once "
-            "applied the task stops scheduling and is removed from the panel; "
-            "runs already in flight are cancelled (the run is cancelled, the "
-            "engine process itself keeps draining). Confirm with the user before "
-            "calling."
+            "Delete a Pinvou scheduled task by its exact id and archive its run history. "
+            "Use list_scheduled_tasks and, when needed, read_scheduled_task to identify "
+            "the user's intended target. Use the task id from the user or list/read results; "
+            "never substitute a task name or invent an id. If names are duplicated, references are unclear, "
+            "or details conflict, ask the user which task they mean before calling; "
+            "never guess or broaden the requested scope. An explicit deletion request "
+            "with an unambiguous target needs no additional confirmation. Existing tool "
+            "permissions still apply. The request is queued and applied by the app: "
+            "report deletion only after a successful receipt, and describe delivery:'pending' "
+            "as pending. Applied deletion stops future scheduling and cancels active runs. "
+            "There is no task-definition backup or undo; history is not a restore path."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "task_id": {
                     "type": "string",
-                    "description": "The task's id to delete.",
+                    "description": "Exact task id from the user or list/read results, never a task name or an invented id.",
                 },
                 "from_session": {
                     "type": "string",
@@ -536,11 +535,10 @@ WEEKDAY_TOKENS = ("MO", "TU", "WE", "TH", "FR", "SA", "SU")
 # or a past moment is rejected with an actionable message).
 ONCE_AT_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}\Z")
 
-# Isolated session prefixes (contract §4.3/§5, case-insensitive) rejected as
-# the audit sender: sched- sessions are subsystem-owned (Scheduled Tasks,
-# unattended by design), eval_ is benchmark-private, aux- marks auxiliary
-# side-chats.
-ISOLATED_SENDER_PREFIXES = ("sched-", "eval_", "aux-")
+# Auxiliary and benchmark origins remain isolated. A sched- conversation may
+# be continued interactively; the engine's actual unattended flag gates writes,
+# not this unauthenticated audit claim (which a caller can omit).
+ISOLATED_SENDER_PREFIXES = ("eval_", "aux-")
 
 
 def normalize_rrule(rrule):
@@ -799,6 +797,8 @@ def read_scheduled_task(automations_dir, task_id):
     (read-only). Unlike list_scheduled_tasks this projects the prompt: the
     caller addresses a specific task the user owns, and the prompt is the
     main thing to inspect before an update. Returns (payload, error)."""
+    if not automations_dir:
+        return None, "scheduled task store is not available"
     task_id = str(task_id or "").strip()
     id_error = validate_task_id(task_id)
     if id_error:
@@ -813,17 +813,17 @@ def read_scheduled_task(automations_dir, task_id):
         # 64 KiB marker cap. Round-24 minor 7: the gate rides the open fd
         # (O_NOFOLLOW|O_NONBLOCK on posix), closing the lstat→open swap
         # window.
-        handle = _open_gated_regular(path, MAX_STORE_RECORD_BYTES)
+        handle = _open_gated_regular(path, MAX_STORE_RECORD_BYTES, strict_errors=True)
         if handle is None:
             return None, "not found: no scheduled task with id %s" % task_id
         try:
             record = json.loads(handle.read(MAX_STORE_RECORD_BYTES + 1))
         finally:
             handle.close()
-    except (OSError, ValueError, RecursionError):
-        # Deliberately no raw exception text: OSError messages embed absolute
-        # local paths, which must not leak into tool responses.
-        return None, "not found: no scheduled task with id %s" % task_id
+    except OSError:
+        return None, "scheduled task store is not readable"
+    except (ValueError, RecursionError):
+        return None, "scheduled task record is not readable"
     if not isinstance(record, dict):
         return None, "not found: no scheduled task with id %s" % task_id
     status = record.get("status")
@@ -858,9 +858,8 @@ def read_scheduled_task(automations_dir, task_id):
 
 def validate_sender_session_id(session_id):
     """Charset + length validation for the audit-trail sender id, plus the
-    isolated-prefix rejection (contract §4.3/§5, case-insensitive): a sched-
-    session is unattended by design and must never be the requester — this
-    is a claimed-string filter (from_session is model-supplied and
+    aux/eval isolated-prefix rejection (contract §4.3/§5, case-insensitive).
+    Scheduled conversations can be continued interactively. This is a claimed-string filter (from_session is model-supplied and
     unauthenticated; direct spool writes bypass it), re-checked by the Rust
     watcher; the deterministic unattended shield is the engine-side
     unattended_disallowed_tools channel. The typed Ask rule is registered too, but as the product pins
@@ -904,7 +903,11 @@ def _spool_payload(spool_id, name, prompt, rrule, model_id, paused,
 MAX_RESULT_MARKER_BYTES = 64 * 1024
 
 
-def _open_gated_regular(path, max_bytes):
+class StoreRecordRefused(OSError):
+    """Present record intentionally refused by the regular-file/size policy."""
+
+
+def _open_gated_regular(path, max_bytes, strict_errors=False):
     """Opens a private data file for a capped text read with the swap window
     the lstat→open pair kept now closed on posix (round-24 minor 7, the
     Rust read_regular_bounded's twin): `os.open` carries O_NOFOLLOW|O_NONBLOCK
@@ -925,12 +928,20 @@ def _open_gated_regular(path, max_bytes):
             )
         else:
             fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
-    except OSError:
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        if strict_errors:
+            if error.errno == errno.ELOOP:
+                raise StoreRecordRefused("symlink record refused") from None
+            raise
         return None
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode) or st.st_size > max_bytes:
             os.close(fd)
+            if strict_errors:
+                raise StoreRecordRefused("task record refused")
             return None
         return os.fdopen(fd, "r", encoding="utf-8")
     except OSError:
@@ -938,6 +949,8 @@ def _open_gated_regular(path, max_bytes):
             os.close(fd)
         except OSError:
             pass
+        if strict_errors:
+            raise
         return None
 
 
@@ -1006,6 +1019,12 @@ def spool_request_digest(kind, task_id=None, name=None, prompt=None,
     exactly: the same seven fields, sorted keys, compact separators, raw
     UTF-8, sha256-hex — both sides hash identically so the server can compare
     a retried payload against what the watcher actually applied."""
+    task_id, name, prompt, rrule, model_id = (
+        value.strip() or None if isinstance(value, str) else value
+        for value in (task_id, name, prompt, rrule, model_id)
+    )
+    if isinstance(rrule, str):
+        rrule = rrule.upper()
     canonical = {
         "kind": kind,
         "model_id": model_id,
@@ -1027,6 +1046,17 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
     → spool → wait for the watcher's result marker. Returns (payload, error);
     nothing else is written. `paused` is tri-state here (None = not provided,
     meaningful for update); create callers pass False explicitly."""
+    # Schema checks also apply to direct callers, not only tools/call JSON.
+    for field, value in (("kind", kind), ("task_id", task_id), ("name", name),
+                         ("prompt", prompt), ("rrule", rrule), ("model_id", model_id),
+                         ("from_session", from_session), ("idempotency_key", idempotency_key)):
+        if value is not None:
+            if not isinstance(value, str):
+                return None, "invalid %s: must be a string" % field
+            try:
+                value.encode("utf-8")
+            except UnicodeEncodeError:
+                return None, "invalid %s: must contain valid Unicode text" % field
     kind = str(kind or "").strip()
     if kind not in REQUEST_KINDS:
         return None, "invalid request kind: %s" % kind[:32]
@@ -1111,9 +1141,15 @@ def schedule_task_request(requests_dir, kind, automations_dir=None, name=None,
         if len(rrule) > MAX_RRULE_CHARS:
             return None, "invalid rrule: exceeds the %d character limit" % MAX_RRULE_CHARS
 
-    # Fail fast on an unknown target instead of spooling into a guaranteed
-    # failure (the watcher re-checks against the live store anyway).
-    if kind in ("update", "delete") and automations_dir is not None:
+    if kind == "update" and (prompt is not None or rrule is not None):
+        return None, (
+            "confirmation_required: open the Scheduled Tasks panel to review and submit "
+            "prompt/rrule replacements; no change was applied"
+        )
+
+    # Updates require an existing target. Deletes use ensure-absent semantics:
+    # a retry after the first delete must still reach its receipt or the domain.
+    if kind == "update" and automations_dir is not None:
         target = os.path.join(automations_dir, "automations", "%s.json" % task_id)
         try:
             if not os.path.isfile(target):
@@ -1441,10 +1477,10 @@ def list_scheduled_tasks(automations_dir, limit=DEFAULT_LIST_LIMIT):
     tasks_dir = os.path.join(automations_dir, "automations")
     try:
         names = os.listdir(tasks_dir)
-    except OSError:
-        # No store yet = no tasks have ever been created; an empty answer (not
-        # an error) keeps the de-dup flow working on a fresh install.
+    except FileNotFoundError:
         return {"tasks": [], "total": 0}, None
+    except OSError:
+        return None, "scheduled task store is not readable"
     entries = []
     for name in sorted(names):
         if not name.endswith(".json"):
@@ -1456,14 +1492,18 @@ def list_scheduled_tasks(automations_dir, limit=DEFAULT_LIST_LIMIT):
             # marker cap. Round-24 minor 7: the gate rides the open fd
             # (O_NOFOLLOW|O_NONBLOCK on posix) — the list arm is the one the
             # FIFO hang pin observed.
-            handle = _open_gated_regular(path, MAX_STORE_RECORD_BYTES)
+            handle = _open_gated_regular(path, MAX_STORE_RECORD_BYTES, strict_errors=True)
             if handle is None:
                 continue
             try:
                 record = json.loads(handle.read(MAX_STORE_RECORD_BYTES + 1))
             finally:
                 handle.close()
-        except (OSError, ValueError, RecursionError):
+        except StoreRecordRefused:
+            continue
+        except OSError:
+            return None, "scheduled task store is not readable"
+        except (ValueError, RecursionError):
             continue
         if not isinstance(record, dict):
             continue
@@ -1519,6 +1559,9 @@ def _handle_call(req_id, params, requests_dir, automations_dir, tool_features):
         _error(req_id, -32602, "tool call params must be an object")
         return
     name = params.get("name")
+    if not isinstance(name, str) or len(name) > 128 or any(0xD800 <= ord(c) <= 0xDFFF for c in name):
+        _error(req_id, -32602, "invalid tool name")
+        return
     args = params.get("arguments", {})
     if not isinstance(args, dict):
         _error(req_id, -32602, "tool arguments must be an object")
@@ -1569,7 +1612,7 @@ def _handle_call(req_id, params, requests_dir, automations_dir, tool_features):
     else:
         # Unknown tool name: -32602 (invalid params) — the method itself is
         # tools/call; the tool name is a parameter of it.
-        _error(req_id, -32602, "unknown tool: %s" % name)
+        _error(req_id, -32602, "unknown tool")
         return
     if error is not None:
         _result(req_id, _text_content({"ok": False, "error": error}, is_error=True))
@@ -1586,11 +1629,14 @@ def _handle(msg, requests_dir, automations_dir, tool_features):
     if req_id is None:
         return
 
+    if not isinstance(method, str) or len(method) > 128 or any(0xD800 <= ord(c) <= 0xDFFF for c in method):
+        _error(req_id, -32601, "method not found")
+        return
     if method == "initialize":
         _result(req_id, {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "pinvou3-app-automations", "version": "1.1.0"},
+            "serverInfo": {"name": "pinvou3-app-automations", "version": "1.0.0"},
         })
     elif method == "ping":
         # MCP convention: keepalive ping answers with an empty result.
@@ -1600,7 +1646,7 @@ def _handle(msg, requests_dir, automations_dir, tool_features):
     elif method == "tools/call":
         _handle_call(req_id, msg.get("params"), requests_dir, automations_dir, tool_features)
     else:
-        _error(req_id, -32601, "method not found: %s" % method)
+        _error(req_id, -32601, "method not found")
 
 
 def main():

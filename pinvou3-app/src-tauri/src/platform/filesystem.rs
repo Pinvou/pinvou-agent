@@ -66,6 +66,8 @@ mod libc {
     // ABI. In particular, Linux/aarch64 assigns O_DIRECTORY and O_NOFOLLOW
     // different bits than Linux/x86_64.
     pub(crate) const O_RDONLY: c_int = super::platform_libc::O_RDONLY;
+    pub(crate) const O_WRONLY: c_int = super::platform_libc::O_WRONLY;
+    pub(crate) const O_APPEND: c_int = super::platform_libc::O_APPEND;
     pub(crate) const O_RDWR: c_int = super::platform_libc::O_RDWR;
     pub(crate) const O_CREAT: c_int = super::platform_libc::O_CREAT;
     pub(crate) const O_EXCL: c_int = super::platform_libc::O_EXCL;
@@ -433,33 +435,15 @@ pub(crate) fn metadata_file_identity(metadata: &std::fs::Metadata) -> Option<Fil
 /// stay group/world-readable forever, so re-tighten the mode on every open
 /// (round-6 review). Windows relies on the owning profile directory's
 /// ACL, consistent with the rest of the application data tree.
-///
-/// The open is hardened against a planted or swapped path (round-17
-/// MAJOR-2 on #628, where a planted FIFO at an audit jsonl blocked the
-/// watcher's single drain task forever): `O_NOFOLLOW` refuses a symlink,
-/// `O_NONBLOCK` turns a FIFO open into an immediate error instead of a
-/// block, and the portable fstat refuses any non-regular entry that still
-/// made it through. Callers' existing write-failure handling absorbs the
-/// refusal. Round-24 minor-13 disclosure: the no-follow hardening is a
-/// deliberate behavior change for a user who legitimately symlinked a
-/// diagnostics/audit log path on unix — that open now fails closed (see
-/// the design doc's borderline list); the unix write primitives carry
-/// `O_NOFOLLOW` while the Windows ones have no reparse-point refusal in
-/// std `OpenOptions` (documented residual, same-user spool/state tree).
 pub(crate) fn open_private_append_file(path: &Path) -> io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).append(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
-        options
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        options.mode(0o600);
     }
     let file = options.open(path)?;
-    // Round-27 minor 8: same condition, one error kind — the shared gate's
-    // InvalidData, not this helper's former io::Error::other.
-    refuse_non_regular_file(&file, path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt as _;
@@ -604,40 +588,6 @@ fn open_private_data_file_within(path: &Path, max_bytes: u64) -> io::Result<std:
     Ok(file)
 }
 
-/// Open a private temp file for a write-then-rename publish: create or
-/// truncate, `O_NOFOLLOW|O_NONBLOCK`, 0600, and a post-open non-regular
-/// refusal. The refusal is the point here, unlike
-/// [`open_private_lock_file`]'s deliberate FIFO tolerance: a write-only
-/// open succeeds on a planted FIFO whenever a reader holds it (and fails
-/// with ENXIO when none does), so the payload would vanish into the pipe
-/// buffer and the publish rename would install the FIFO as the data file
-/// (round-18 MAJOR-1 on #628 — silent receipt loss plus a
-/// duplicate-apply window on the scheduled-task marker; round-21 M2
-/// pinned both the no-reader and reader-present variants). Round-24
-/// minor-13 note: `mode(0o600)` applies at creation only — a pre-existing
-/// tmp left loose by an external tooling keeps its mode for that write
-/// (no secrets in the payloads; the publish rename lands it in the same
-/// private directory). Windows has no std-level reparse-point refusal on
-/// `OpenOptions` (documented residual, same-user spool/state tree).
-/// A regular file with additional hard links is accepted: create+truncate can
-/// change the linked inode before any post-open check. Callers must use a
-/// private state directory; this helper does not isolate hostile same-user
-/// hard links (the lock-file primitive documents the same authority boundary).
-pub(crate) fn open_private_tmp_write_file(path: &Path) -> io::Result<std::fs::File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    let file = options.open(path)?;
-    refuse_non_regular_file(&file, path)?;
-    Ok(file)
-}
-
 /// Shared post-open gate of the hardened private-data primitives: a handle
 /// that is not a regular file (a planted FIFO or device node) is refused
 /// before any byte is read or written. On success it returns the handle's
@@ -695,23 +645,6 @@ pub(crate) fn read_private_data_file_bytes_within(
     let mut file = open_private_data_file_within(path, max_bytes)?;
     read_capped(&mut file, max_bytes)
         .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))
-}
-
-/// [`read_private_data_file_bytes_within`] plus the open handle's fstat
-/// metadata, for callers that anchor a follow-up unlink on the exact bytes
-/// they verified (the scheduled-creation Done arm): the metadata comes from
-/// the gated fd, not a path stat, so a same-name replace landing between
-/// the read and the caller's name-stat shows up as an identity mismatch
-/// instead of silently deleting the replacement untried.
-pub(crate) fn read_private_data_file_bytes_within_anchored(
-    path: &Path,
-    max_bytes: u64,
-) -> io::Result<(Vec<u8>, std::fs::Metadata)> {
-    let mut file = open_private_data_file_within(path, max_bytes)?;
-    let meta = file.metadata()?;
-    let bytes = read_capped(&mut file, max_bytes)
-        .map_err(|e| io::Error::new(e.kind(), format!("{}: {e}", path.display())))?;
-    Ok((bytes, meta))
 }
 
 /// One bounded read: at most `cap` bytes, with a one-byte overshoot window
@@ -998,6 +931,14 @@ impl PrivateFileDirectory {
         private_file_directory_unsupported()
     }
 
+    pub(crate) fn entry_names_up_to(&self, _limit: usize) -> io::Result<Vec<std::ffi::OsString>> {
+        private_file_directory_unsupported()
+    }
+
+    pub(crate) fn open_append_file(&self, _name: &std::ffi::OsStr) -> io::Result<File> {
+        private_file_directory_unsupported()
+    }
+
     pub(crate) fn create_delete_on_close_file(&self, _name: &str) -> io::Result<File> {
         private_file_directory_unsupported()
     }
@@ -1179,7 +1120,17 @@ impl PrivateFileDirectory {
     }
 
     pub(crate) fn entry_names(&self) -> io::Result<Vec<std::ffi::OsString>> {
-        entry_names_impl(self)
+        entry_names_impl(self, usize::MAX)
+    }
+
+    /// Bound enumeration before allocating names; callers can drain in batches.
+    pub(crate) fn entry_names_up_to(&self, limit: usize) -> io::Result<Vec<std::ffi::OsString>> {
+        entry_names_impl(self, limit)
+    }
+
+    pub(crate) fn open_append_file(&self, name: &std::ffi::OsStr) -> io::Result<File> {
+        validate_private_file_name(name)?;
+        open_append_file_impl(self, name)
     }
 
     /// Create a private read/write file and immediately remove its directory
@@ -1999,7 +1950,10 @@ fn next_unix_directory_entry(
     target_os = "macos",
     all(target_os = "linux", target_pointer_width = "64")
 ))]
-fn entry_names_impl(directory: &PrivateFileDirectory) -> io::Result<Vec<std::ffi::OsString>> {
+fn entry_names_impl(
+    directory: &PrivateFileDirectory,
+    limit: usize,
+) -> io::Result<Vec<std::ffi::OsString>> {
     use std::os::fd::AsRawFd as _;
 
     // The literal "." contains no NUL, so the CString construction cannot fail;
@@ -2034,7 +1988,10 @@ fn entry_names_impl(directory: &PrivateFileDirectory) -> io::Result<Vec<std::ffi
     }
     let stream = UnixDirectoryStream(stream);
     let mut names = Vec::new();
-    while let Some(name) = next_unix_directory_entry(&stream)? {
+    while names.len() < limit {
+        let Some(name) = next_unix_directory_entry(&stream)? else {
+            break;
+        };
         if name != "." && name != ".." {
             names.push(name);
         }
@@ -2043,8 +2000,12 @@ fn entry_names_impl(directory: &PrivateFileDirectory) -> io::Result<Vec<std::ffi
 }
 
 #[cfg(windows)]
-fn entry_names_impl(directory: &PrivateFileDirectory) -> io::Result<Vec<std::ffi::OsString>> {
+fn entry_names_impl(
+    directory: &PrivateFileDirectory,
+    limit: usize,
+) -> io::Result<Vec<std::ffi::OsString>> {
     std::fs::read_dir(&directory.canonical_path)?
+        .take(limit)
         .map(|entry| entry.map(|entry| entry.file_name()))
         .collect()
 }
@@ -2822,7 +2783,7 @@ pub(crate) mod tests {
             block
                 .matches("private_file_directory_unsupported()")
                 .count(),
-            13
+            15
         );
         for forbidden in [
             "std::fs::",
@@ -3820,30 +3781,97 @@ pub(crate) mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
-    fn private_writers_refuse_symlinks_and_reader_present_fifo() {
-        use std::os::unix::fs::{OpenOptionsExt as _, symlink};
+    fn windows_bounded_directory_listing_and_anchored_append() {
+        use std::ffi::OsStr;
+        use std::io::{Read as _, Write as _};
         let temp = tempfile::tempdir().unwrap();
-        let target = temp.path().join("target");
-        std::fs::write(&target, b"keep these bytes").unwrap();
-        let link = temp.path().join("link");
-        symlink(&target, &link).unwrap();
-        assert!(super::open_private_append_file(&link).is_err());
-        assert!(super::open_private_tmp_write_file(&link).is_err());
-        assert_eq!(std::fs::read(&target).unwrap(), b"keep these bytes");
-        let fifo = temp.path().join("pipe");
-        crate::platform::paths::tests::plant_fifo(&fifo);
-        let _reader = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NONBLOCK)
-            .open(&fifo)
+        let path = temp.path().join("bounded");
+        let directory = open_private_file_directory(&path).unwrap();
+        for i in 0..100 {
+            directory
+                .atomic_write_private_file(OsStr::new(&format!("{i}.json")), b"value")
+                .unwrap();
+        }
+        assert!(directory.entry_names_up_to(0).unwrap().is_empty());
+        assert_eq!(directory.entry_names_up_to(7).unwrap().len(), 7);
+        assert_eq!(directory.entry_names().unwrap().len(), 100);
+        for text in [b"one\n", b"two\n"] {
+            directory
+                .open_append_file(OsStr::new("audit.jsonl"))
+                .unwrap()
+                .write_all(text)
+                .unwrap();
+        }
+        let mut contents = String::new();
+        directory
+            .open_plain_file(OsStr::new("audit.jsonl"))
+            .unwrap()
+            .unwrap()
+            .read_to_string(&mut contents)
             .unwrap();
-        let error = super::open_private_append_file(&fifo).unwrap_err();
-        assert_eq!(
-            error.kind(),
-            std::io::ErrorKind::InvalidData,
-            "the fstat gate, rather than ENXIO, refuses the write"
-        );
+        assert_eq!(contents, "one\ntwo\n");
     }
+}
+
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", target_pointer_width = "64")
+))]
+fn open_append_file_impl(
+    directory: &PrivateFileDirectory,
+    name: &std::ffi::OsStr,
+) -> io::Result<File> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+    let name = unix_name(name)?;
+    // SAFETY: the owned directory fd and NUL-terminated name outlive openat.
+    // No-follow/nonblocking and the fstat below reject links and special files.
+    let fd = unsafe {
+        libc::openat(
+            directory.directory_handle.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_WRONLY
+                | libc::O_APPEND
+                | libc::O_CREAT
+                | libc::O_CLOEXEC
+                | libc::O_NOFOLLOW
+                | libc::O_NONBLOCK,
+            0o600 as std::os::raw::c_uint,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: openat returned a fresh owned descriptor, adopted exactly once.
+    let file = unsafe { File::from_raw_fd(fd) };
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "audit entry is not a regular file",
+        ));
+    }
+    use std::os::unix::fs::PermissionsExt as _;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    Ok(file)
+}
+
+#[cfg(windows)]
+fn open_append_file_impl(
+    directory: &PrivateFileDirectory,
+    name: &std::ffi::OsStr,
+) -> io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+    let file = std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(directory.canonical_path.join(name))?;
+    if !metadata_is_plain_file(&file.metadata()?) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "audit entry is a reparse point or non-file",
+        ));
+    }
+    Ok(file)
 }

@@ -1619,6 +1619,13 @@ pub(crate) fn build_pool(app: tauri::AppHandle, store: SessionStore) -> Result<E
     });
     let tool_policy: ToolPolicy = Arc::new(|app| {
         let mut tools = crate::features::marketplace::unavailable_tool_names();
+        // No ScheduledTaskState/watcher is hosted here. Refuse pending writes
+        // rather than advertising requests that can never drain in this host.
+        tools.extend([
+            "automation".to_owned(),
+            "send_later".to_owned(),
+            "mcp_app-automations_*".to_owned(),
+        ]);
         // The GUI's single-source predicate (KnowledgeService::kb_tools_usable
         // via lib.rs): visibility tracks CONTENT/CONNECTIONS, deliberately not
         // the embedding model's load state — a visibility that fluctuates with

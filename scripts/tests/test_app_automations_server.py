@@ -310,12 +310,23 @@ class CreateValidationTests(unittest.TestCase):
 
     def test_invalid_sender_ids_are_rejected(self):
         # Round-15 REQUIRED-1: the case variants pin the server's
-        # case-insensitive isolation matching on all three prefixes.
-        for bad in ("../escape", "with space", "a" * 300, "sched-run1", "eval_b1", "aux-x1",
-                    "SCHED-run1", "EVAL_b1", "AUX-x1"):
+        # case-insensitive isolation matching on aux/eval origins.
+        for bad in ("../escape", "with space", "a" * 300, "eval_b1", "aux-x1",
+                    "EVAL_b1", "AUX-x1"):
             payload, error = self.create(from_session=bad)
             self.assertIsNone(payload, bad)
             self.assertIsNotNone(error, bad)
+
+    def test_interactive_scheduled_origin_supports_keyed_retries(self):
+        old_wait = server.RESULT_WAIT_SECONDS
+        server.RESULT_WAIT_SECONDS = 0.05
+        try:
+            for sender in ("sched-run1", "SCHED-run1"):
+                payload, error = self.create(from_session=sender, idempotency_key="interactive")
+                self.assertIsNone(error)
+                self.assertEqual(payload["delivery"], "pending")
+        finally:
+            server.RESULT_WAIT_SECONDS = old_wait
 
     def test_normalization_lands_in_spool(self):
         # Round-24 minor 11: patch the result window like
@@ -1088,7 +1099,7 @@ class ReadScheduledTaskTests(unittest.TestCase):
         )
         payload, error = server.read_scheduled_task(str(self.automations), "broken")
         self.assertIsNone(payload)
-        self.assertIn("not found", error)
+        self.assertIn("not readable", error)
 
     def test_store_reader_refuses_non_regular_and_oversize(self):
         """Round-16 MAJOR-3: the store readers' lstat/S_ISREG/cap gate is
@@ -1113,7 +1124,7 @@ class ReadScheduledTaskTests(unittest.TestCase):
                 self.skipTest("symlinks unavailable")
             payload, error = server.read_scheduled_task(str(self.automations), "task-link")
             self.assertIsNone(payload)
-            self.assertIn("not found", error)
+            self.assertIn("not readable", error)
             # A FIFO at the record path: refused at lstat, open never runs.
             fifo = store / "task-fifo.json"
             try:
@@ -1122,7 +1133,7 @@ class ReadScheduledTaskTests(unittest.TestCase):
                 self.skipTest("mkfifo unavailable")
             payload, error = server.read_scheduled_task(str(self.automations), "task-fifo")
             self.assertIsNone(payload)
-            self.assertIn("not found", error)
+            self.assertIn("not readable", error)
 
         # An oversize record is refused at the stat gate.
         oversize = store / "task-big.json"
@@ -1131,7 +1142,7 @@ class ReadScheduledTaskTests(unittest.TestCase):
         )
         payload, error = server.read_scheduled_task(str(self.automations), "task-big")
         self.assertIsNone(payload)
-        self.assertIn("not found", error)
+        self.assertIn("not readable", error)
 
         # A legitimate max-size CJK prompt (~96 KB of UTF-8) reads fine
         # under the 256 KiB store cap — the exact record the 64 KiB marker
@@ -1238,16 +1249,52 @@ class UpdateDeleteRequestTests(unittest.TestCase):
         record = json.loads(self._spooled()[0].read_text(encoding="utf-8"))
         self.assertFalse(record["paused"])
 
-    def test_delete_rejects_extra_fields_and_unknown_target(self):
+    def test_delete_spools_exact_target_without_a_second_confirmation(self):
+        target = self.automations / "automations" / "task-1.json"
+        original = target.read_bytes()
         payload, error = self._schedule("delete")
         self.assertIsNone(error)
         self.assertEqual(payload["kind"], "delete")
-        payload, error = self._schedule("delete", name="不应有名字")
-        self.assertIsNone(payload)
+        self.assertEqual(payload["delivery"], "pending")
+        record = json.loads(self._spooled()[0].read_text(encoding="utf-8"))
+        self.assertEqual(record["task_id"], "task-1")
+        self.assertEqual(record["kind"], "delete")
+        self.assertEqual(target.read_bytes(), original, "only the app watcher mutates the store")
+        _, error = self._schedule("delete", name="unexpected")
         self.assertIn("no extra fields", error)
-        payload, error = self._schedule("delete", task_id="nosuch")
-        self.assertIsNone(payload)
-        self.assertIn("not found", error)
+
+    def test_missing_delete_target_still_reaches_ensure_absent_domain(self):
+        (self.automations / "automations" / "task-1.json").unlink()
+        payload, error = self._schedule("delete", idempotency_key="replay", from_session="reqsrc01")
+        self.assertIsNone(error)
+        self.assertEqual(payload["kind"], "delete")
+        record = json.loads(self._spooled()[0].read_text(encoding="utf-8"))
+        self.assertEqual(record["task_id"], "task-1")
+
+    def test_completed_delete_receipt_survives_missing_target(self):
+        import hashlib
+        key = hashlib.sha256(b"reqsrc01|delete|task-1|done").hexdigest()
+        done = self.requests / "spool" / ".done"
+        done.mkdir(parents=True)
+        (done / (key + ".json")).write_text(json.dumps({
+            "ok": True, "kind": "delete", "task_id": "task-1", "task_name": "Original",
+            "request_digest": server.spool_request_digest("delete", task_id="task-1"),
+        }), encoding="utf-8")
+        (self.automations / "automations" / "task-1.json").unlink()
+        payload, error = self._schedule("delete", idempotency_key="done", from_session="reqsrc01")
+        self.assertIsNone(error)
+        self.assertTrue(payload["ok"])
+        self.assertTrue(payload["duplicate"])
+        self.assertFalse(payload["payload_mismatch"])
+        self.assertEqual(payload["taskId"], "task-1")
+        self.assertEqual(self._spooled(), [], "a completed delete is not requeued")
+
+    def test_overwriting_prompt_or_rrule_requires_panel(self):
+        for fields in ({"prompt": "new body"}, {"rrule": "FREQ=HOURLY"}):
+            payload, error = self._schedule("update", **fields)
+            self.assertIsNone(payload)
+            self.assertIn("confirmation_required", error)
+            self.assertEqual(self._spooled(), [])
 
     def test_delete_rejects_stray_paused(self):
         payload, error = self._schedule("delete", paused=True)
@@ -1259,10 +1306,8 @@ class UpdateDeleteRequestTests(unittest.TestCase):
         self._schedule("delete", idempotency_key="k1", from_session="reqsrc01")
         self.assertEqual(len(self._spooled()), 2, "same key, different kind: no clobber")
         import hashlib
-
         expected = hashlib.sha256(b"reqsrc01|delete|task-1|k1").hexdigest()
-        stems = [path.stem for path in self._spooled()]
-        self.assertIn(expected, stems)
+        self.assertIn(expected, [path.stem for path in self._spooled()])
 
     def _spooled(self):
         return sorted(Path(self.requests, "spool").glob("*.json"))
@@ -1664,6 +1709,53 @@ class ReviewFollowupInputTests(unittest.TestCase):
                 server._handle_call(1, {"name": "list_scheduled_tasks", "arguments": args},
                                     "/unused", "/unused", {})
                 self.assertEqual(error.call_args.args[1], -32602)
+
+
+class Round33BoundaryTests(unittest.TestCase):
+    def test_dispatcher_feature_gate_blocks_every_tool(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            Path(tmp, "marketplace").mkdir()
+            Path(tmp, "marketplace", "builtin_features.json").write_text(
+                json.dumps({"disabledFeatures": ["scheduled-task-automation"]}), encoding="utf-8")
+            # Use the same mirror shape as the existing feature tests.
+            for definition in server.TOOL_DEFS:
+                replies = []
+                with patch.object(server, "feature_gate_error", return_value={"code": "feature_disabled"}), patch.object(server, "_send", side_effect=replies.append):
+                    server._handle_call(1, {"name": definition["name"], "arguments": {}}, tmp, tmp, {})
+                self.assertTrue(replies[0]["result"]["isError"])
+                self.assertIn("feature_disabled", replies[0]["result"]["content"][0]["text"])
+
+    def test_non_string_and_surrogate_payloads_fail_before_io(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for field in ("name", "prompt", "rrule", "model_id", "from_session", "idempotency_key"):
+                for bad in ({"a": 1}, "\ud800"):
+                    args = {"name": "n", "prompt": "p", "rrule": "FREQ=HOURLY", field: bad}
+                    payload, error = server.schedule_task_request(tmp, "create", **args)
+                    self.assertIsNone(payload)
+                    self.assertIn("invalid " + field, error)
+                    self.assertFalse(Path(tmp, "spool").exists())
+
+    def test_unknown_identifiers_are_bounded_protocol_errors(self):
+        from unittest.mock import patch
+        for value in ("x" * 200000, "\ud800", {"bad": "type"}):
+            replies = []
+            with patch.object(server, "_send", side_effect=replies.append):
+                server._handle({"id": 1, "method": value}, "unused", "unused", {})
+                server._handle_call(2, {"name": value}, "unused", "unused", {})
+            self.assertEqual([r["error"]["code"] for r in replies], [-32601, -32602])
+            self.assertLess(len(json.dumps(replies)), 500)
+
+    def test_permission_errors_do_not_look_like_an_empty_store(self):
+        from unittest.mock import patch
+        with patch.object(server.os, "listdir", side_effect=PermissionError("fixture")):
+            payload, error = server.list_scheduled_tasks("unused")
+        self.assertIsNone(payload)
+        self.assertIn("not readable", error)
+        with patch.object(server, "_open_gated_regular", side_effect=PermissionError("fixture")):
+            payload, error = server.read_scheduled_task("unused", "task-1")
+        self.assertIsNone(payload)
+        self.assertIn("not readable", error)
 
 
 if __name__ == "__main__":

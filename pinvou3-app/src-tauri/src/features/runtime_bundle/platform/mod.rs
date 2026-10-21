@@ -1084,13 +1084,14 @@ mod tests {
     /// crontab/schtasks/systemctl 路径）,但 bash 的回合内 `cmd &` 仍然可用——
     /// 措辞必须限定「回合结束后」,不得写成无条件的「无后台运行能力」。
     #[test]
-    fn shared_skeleton_pins_no_scheduling_red_line() {
+    fn shared_skeleton_describes_the_actual_scheduling_capability() {
+        assert!(INSTRUCTIONS_SHARED_MD.contains("app-automations"));
+        assert!(INSTRUCTIONS_SHARED_MD.contains("Plan 模式"));
+        assert!(INSTRUCTIONS_SHARED_MD.contains("pending 只表示排队"));
         assert!(
-            INSTRUCTIONS_SHARED_MD
+            !INSTRUCTIONS_SHARED_MD
                 .contains("你没有定时执行、回合结束后继续运行或稍后主动发消息的能力")
         );
-        assert!(INSTRUCTIONS_SHARED_MD.contains("定时任务功能"));
-        assert!(!INSTRUCTIONS_SHARED_MD.contains("你没有定时、后台运行"));
     }
 
     fn run_depth_guard(bundle: &Pinvou3Bundle, tool: &str, args: &str) -> std::process::Output {

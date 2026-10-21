@@ -2672,6 +2672,12 @@ impl Pinvou3Bridge {
         cfg.workspace = roots.execution;
         cfg.session_id = Some(session_id.to_string());
         cfg.subagent_state_root = Some(roots.ledger);
+        if !is_aux {
+            cfg.instructions.push(InstructionSource::Inline {
+                name: "runtime:scheduled-request-origin".to_string(),
+                content: format!("Current session id: {session_id}. For app-automations keyed retries use this exact id as from_session and reuse the same idempotency_key only for the same operation. The claim is audit provenance, not authorization. Plan mode does not support this MCP family, including reads."),
+            });
+        }
         // Aux sessions skip the main instruction stack entirely: the aux
         // branch below replaces it with the minimal persona, while
         // session_instructions walks the AGENTS.md ancestors and writes the
@@ -2780,20 +2786,8 @@ impl Pinvou3Bridge {
         //     takes the global mcp path — the global file is NEVER a
         //     fallback for the scoped surface (it would boot user servers
         //     for an aux engine: a scope escape, ADR-0024 clause 3).
-        // Round-8 M1(a) (#628): scheduled hidden sessions (sched-) run
-        // UNATTENDED — their recursion shield rides config.disallowed_tools
-        // (engine-side unattended_disallowed_tools), which child runtimes
-        // inherit by default BUT the `agent` tool's model-supplied
-        // inherit_disallowed_tools=false flag can shed (the child keeps MCP
-        // + auto_approve while the posture lists do not cover the
-        // app-automations write tools). Disabling subagents for these
-        // engines — the aux-session precedent below — closes the
-        // inheritance hole deterministically: an unattended scheduled run
-        // cannot delegate the shield away. (The residual direct-spool
-        // write via exec_shell is disclosed in the design doc §8.)
-        if crate::features::sessions::is_sched_session_id(session_id) {
-            cfg.subagents_enabled = false;
-        }
+        // Unattended delegation is scoped by the run's spawn policy in
+        // AppEngine, rather than by the persisted sched- session identity.
         let mut scoped_aux_mcp_path: Option<std::path::PathBuf> = None;
         if is_aux {
             use crate::features::assistant::engine_pool::{AuxToolSurface, aux_tool_surface};
@@ -3042,7 +3036,8 @@ impl Pinvou3Bridge {
         // (the engine consults ask rules for exec_shell and the file tools
         // only). The deterministic unattended recursion shield is the
         // engine-side deny channel (unattended_disallowed_tools). The read
-        // tools (list/read) stay ungated: reads must not nag.
+        // tools (list/read) have no app Ask rule; feature/scope and Plan
+        // mode gates still apply to this MCP family.
         for tool in [
             SCHEDULED_TASK_CREATE_TOOL,
             SCHEDULED_TASK_UPDATE_TOOL,
@@ -7437,9 +7432,8 @@ mod tests {
         };
         let sched_cfg = bridge.build_engine_config_for_session_roots("sched-run1", roots("sched"));
         assert!(
-            !sched_cfg.subagents_enabled,
-            "scheduled unattended engines must not expose the agent tool — the \
-             shield's disallowed_tools would be shed via inherit_disallowed_tools=false"
+            sched_cfg.subagents_enabled,
+            "interactive scheduled sessions keep the ordinary delegation catalog"
         );
         // An ordinary session keeps the delegation surface (the pin's
         // contrast arm — only the unattended class loses it).
