@@ -338,6 +338,16 @@ async function installFrontendBarrierProbe(page) {
   }, endpointId, barrierEpoch, barrierAfterSeq);
 }
 
+// The suite pins the drawer's animated transition (properties + nonzero
+// duration), and the app deliberately drops those transitions under
+// prefers-reduced-motion: reduce (motion-reduce:transition-none). Pin
+// no-preference on every page so a host whose OS asks for reduced motion
+// cannot turn the animation records red; the reduce degenerate path has its
+// own journey below.
+async function pinNoMotionPreference(page) {
+  await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'no-preference' }]);
+}
+
 async function waitForSharedUi(page, width, height) {
   await page.waitForFunction(() => (
     window.PinvouPlatform?.kind === 'web'
@@ -416,6 +426,7 @@ async function main() {
   observePage(desktopPage);
   await observeBrowserProtocol(desktopPage);
   await installFrontendBarrierProbe(desktopPage);
+  await pinNoMotionPreference(desktopPage);
   await desktopPage.setViewport({ width: 1440, height: 900, deviceScaleFactor: 1 });
   await desktopPage.goto(`${httpBase}conversations/current${fragment}`, { waitUntil: 'networkidle0' });
 
@@ -604,6 +615,7 @@ async function main() {
   const takeoverStart = desktop.messages.length;
   const mobilePage = await browser.newPage();
   observePage(mobilePage);
+  await pinNoMotionPreference(mobilePage);
   await mobilePage.setViewport({ width: 390, height: 844, deviceScaleFactor: 1 });
   await mobilePage.goto(`${httpBase}${fragment}`, { waitUntil: 'networkidle0' });
   const secondConnected = await desktop.waitFor(
@@ -892,6 +904,75 @@ async function main() {
   record('手机抽屉关闭后焦点不滞留在背板按钮',
     !scrimFocus.activeIsScrim && scrimFocus.activeAriaHidden !== 'true',
     JSON.stringify(scrimFocus));
+
+  // Reduced-motion 合同（评审 P2）：宿主 OS 可以要求 reduce，应用据此通过
+  // motion-reduce:transition-none 让抽屉/背板两层退出过渡——上方动画钉扎记录
+  // 之所以要在 no-preference 下跑，就是因为「无过渡」本身是这里的正确行为。
+  // 这段在同一条 mobilePage 上显式 emulate reduce，钉住退化路径：过渡属性必须
+  // 变为 none（删掉应用的 motion-reduce 支持会在这里变红），且开/关抽屉仍然
+  // 即时可用。注意 reduce 下 transitionDuration 仍报 0.3s（属性为 none 时
+  // 不生效），所以判据只能落在 transition-property 上。结束后恢复
+  // no-preference，后续旅程与宿主偏好解耦的语义不变。
+  await mobilePage.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
+  await mobilePage.click('[data-testid="mobile-navigation-open"]');
+  await mobilePage.waitForFunction(
+    () => {
+      const sidebar = document.querySelector('[data-testid="app-sidebar"]');
+      return !!sidebar
+        && getComputedStyle(sidebar).visibility === 'visible'
+        && sidebar.getBoundingClientRect().left >= 0;
+    },
+    { timeout: 5_000 },
+  );
+  const reducedOpen = await mobilePage.evaluate(() => {
+    const sidebar = document.querySelector('[data-testid="app-sidebar"]');
+    const scrim = document.querySelector('[data-testid="mobile-navigation-close"]');
+    const scrimCs = scrim ? getComputedStyle(scrim) : null;
+    return {
+      drawerProperty: getComputedStyle(sidebar).transitionProperty,
+      scrim: scrim && scrimCs ? {
+        opacity: scrimCs.opacity,
+        pointerEvents: scrimCs.pointerEvents,
+        ariaHidden: scrim.getAttribute('aria-hidden'),
+        property: scrimCs.transitionProperty,
+      } : null,
+    };
+  });
+  record('prefers-reduced-motion 下抽屉与背板退出过渡（property=none）且开抽屉仍可用',
+    reducedOpen.drawerProperty === 'none'
+      && !!reducedOpen.scrim
+      && reducedOpen.scrim.property === 'none'
+      && reducedOpen.scrim.opacity === '1'
+      && reducedOpen.scrim.pointerEvents === 'auto'
+      && reducedOpen.scrim.ariaHidden === 'false',
+    JSON.stringify(reducedOpen));
+  await mobilePage.mouse.click(370, 400);
+  await mobilePage.waitForFunction(
+    () => {
+      const sidebar = document.querySelector('[data-testid="app-sidebar"]');
+      return !!sidebar && getComputedStyle(sidebar).visibility === 'hidden';
+    },
+    { timeout: 5_000 },
+  );
+  const reducedClosed = await mobilePage.evaluate(() => {
+    const scrim = document.querySelector('[data-testid="mobile-navigation-close"]');
+    const scrimCs = scrim ? getComputedStyle(scrim) : null;
+    return scrim && scrimCs ? {
+      opacity: scrimCs.opacity,
+      pointerEvents: scrimCs.pointerEvents,
+      ariaHidden: scrim.getAttribute('aria-hidden'),
+      tabIndex: scrim.tabIndex,
+    } : null;
+  });
+  record('prefers-reduced-motion 下关抽屉仍即时生效且背板不可达',
+    !!reducedClosed
+      && reducedClosed.opacity === '0'
+      && reducedClosed.pointerEvents === 'none'
+      && reducedClosed.ariaHidden === 'true'
+      && reducedClosed.tabIndex === -1,
+    JSON.stringify(reducedClosed));
+  await mobilePage.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'no-preference' }]);
+
   await mobilePage.waitForSelector('[data-testid="chat-greeting"]', { timeout: 5_000 });
 
   const compactGreeting = await mobilePage.evaluate(() => {
