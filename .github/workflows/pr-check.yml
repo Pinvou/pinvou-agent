@@ -2470,6 +2470,30 @@ jobs:
         working-directory: pinvou3-app/src-tauri
         run: rustup default "$(rustup show active-toolchain | awk '{print $1}')"
 
+      # Same dev-profile memory guard as rust-test/windows-rust-test: with
+      # [profile.dev.package."*"] opt-level = 2, codewhale-tui's LLVM IR makes
+      # the dev thin-LTO compile of the final crate the heaviest single rustc
+      # invocation of this job, and this runner has half the RAM where that
+      # recipe already OOM'd (Linux 16 GB: 14.2 GB Max RSS peaks, see
+      # rust-test's Cargo cache comment; this runner is 7 GB with no
+      # swap-expansion step). Warm-cache runs were validated without it on
+      # #646 — this guards the cold runs (toolchain rollover, cache
+      # eviction). Package-level profile overrides can only live in a cargo
+      # config (no env equivalent); writing CARGO_HOME/config.toml keeps the
+      # repo Cargo.toml untouched, so local dev and release artifacts are
+      # unaffected. Profile-scoped: the push-only release-fast/bundle legs
+      # build release profiles and ignore [profile.dev.*].
+      - name: dev-profile memory guard (codewhale-tui O0, this job only)
+        run: |
+          config="${CARGO_HOME:-$HOME/.cargo}/config.toml"
+          cat >> "$config" <<'EOF'
+
+          [profile.dev.package.codewhale-tui]
+          opt-level = 0
+          EOF
+          echo "appended codewhale-tui dev O0 override to $config"
+          tail -n 4 "$config"
+
       # [lld linker] Probe which stable rustc flag selects the bundled
       # ld64.lld for this apple-darwin toolchain, then emit the winning
       # flags as a step output. Tier order mirrors #642's Windows probe:
