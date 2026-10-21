@@ -181,8 +181,10 @@ test('the auditor flags @layer blocks that survive into dist CSS (Safari 14.0 co
 test('the auditor flags anonymous, statement, and import-layer survivors too', () => {
   // The `@layer` substring cannot see the import form: `@import url(…)
   // layer(nav);` creates cascade layers without containing `@layer`. Pin the
-  // anonymous and statement forms alongside it, and keep a `layer(` outside
-  // an @import (a URL string here) from phantom-matching.
+  // anonymous and statement forms alongside it. The import clause is parsed
+  // after the URL token: the bare anonymous `layer` clause and a clause
+  // after `supports()` must fire in any position, while `layer(` inside the
+  // import URL (or outside any @import) must not.
   const distDir = fs.mkdtempSync(path.join(os.tmpdir(), 'compat-audit-layer-forms-'));
   try {
     fs.mkdirSync(path.join(distDir, 'assets'), { recursive: true });
@@ -208,7 +210,34 @@ test('the auditor flags anonymous, statement, and import-layer survivors too', (
     ].join('\n'));
     const importLayer = hermeticAudit({ distDir });
     assert.equal(importLayer.length, 1, `exactly the import layer must be reported; got: ${JSON.stringify(importLayer)}`);
-    assert.match(importLayer[0], /^dist:main\.css:1: @import layer\(\) survives the build/);
+    assert.match(importLayer[0], /^dist:main\.css:1: @import layer survives the build/);
+
+    fs.writeFileSync(path.join(distDir, 'assets', 'main.css'), [
+      '@import url("./a.css") layer;',
+      '@media (min-width:640px){.ok{display:block}}',
+    ].join('\n'));
+    const anonymousClause = hermeticAudit({ distDir });
+    assert.equal(anonymousClause.length, 1, `exactly the anonymous import clause must be reported; got: ${JSON.stringify(anonymousClause)}`);
+    assert.match(anonymousClause[0], /^dist:main\.css:1: @import layer survives the build/);
+
+    fs.writeFileSync(path.join(distDir, 'assets', 'main.css'), [
+      '@import url("./a.css") supports(display: grid) layer;',
+      '@media (min-width:640px){.ok{display:block}}',
+    ].join('\n'));
+    const supportsClause = hermeticAudit({ distDir });
+    assert.equal(supportsClause.length, 1, `the layer clause after supports() must be reported; got: ${JSON.stringify(supportsClause)}`);
+
+    fs.writeFileSync(path.join(distDir, 'assets', 'main.css'), [
+      '@import url("./layer(v2).css");',
+      '@media (min-width:640px){.ok{display:block}}',
+    ].join('\n'));
+    assert.deepEqual(hermeticAudit({ distDir }), [], 'layer( inside an import URL must not fire');
+
+    fs.writeFileSync(path.join(distDir, 'assets', 'main.css'), [
+      '@import url("./theme layer(v2).css");',
+      '@media (min-width:640px){.ok{display:block}}',
+    ].join('\n'));
+    assert.deepEqual(hermeticAudit({ distDir }), [], 'layer clause tokens inside the import URL must not fire');
 
     fs.writeFileSync(path.join(distDir, 'assets', 'main.css'), [
       '.ok{background:url("./layer(v2).png")}',

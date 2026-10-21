@@ -298,21 +298,33 @@ function auditDistCss(assetsDir) {
     // them at cssTarget safari14; a Tailwind 4 build puts ~90% of its output
     // inside @layer blocks, so any survivor means the macOS 11 / Safari 14.0
     // floor renders unstyled (same verdict as the #665 TW4 investigation).
-    // Covers the block/anonymous/statement `@layer` forms plus the import
-    // form `@import … layer(name)`, which carries no `@layer` substring.
-    const layerIndex = code.indexOf('@layer');
-    if (layerIndex !== -1) {
+    // Covers the block/anonymous/statement `@layer` forms. The import form
+    // (`@import … layer|layer(name)`) carries no `@layer` substring, so the
+    // @import preludes are parsed separately: strip the leading URL token
+    // and require a standalone layer clause, so `layer(` inside the URL
+    // never fires and the clause is caught in any position (after
+    // supports(), before/after the media query, bare or named).
+    let layerIndex = code.indexOf('@layer');
+    while (layerIndex !== -1) {
       const excerpt = code.slice(Math.max(0, layerIndex - 30), layerIndex + 50).replaceAll(/\s+/g, ' ');
       violations.push(
         `dist:${name}:${lineOfOffset(code, layerIndex).line}: @layer survives the build — cascade layers need Safari 15.4, below the Safari 14.0 floor; context: …${excerpt}…`,
       );
+      layerIndex = code.indexOf('@layer', layerIndex + 1);
     }
-    const importLayerPattern = /@import\s[^;]*?layer\s*\(/g;
-    let importLayerMatch;
-    while ((importLayerMatch = importLayerPattern.exec(code)) !== null) {
-      const excerpt = code.slice(Math.max(0, importLayerMatch.index - 30), importLayerMatch.index + 50).replaceAll(/\s+/g, ' ');
+    const importPattern = /@import\s+([^;]+);/g;
+    let importMatch;
+    while ((importMatch = importPattern.exec(code)) !== null) {
+      // @import grammar: [ <url> | <string> ] first, then the optional
+      // layer clause and import conditions — only a clause after the URL
+      // token creates a cascade layer.
+      const prelude = importMatch[1]
+        .replace(/^url\(\s*(?:'[^']*'|"[^"]*"|[^)'"]*)\s*\)/i, '')
+        .replace(/^'(?:[^'\\]|\\.)*'|^"(?:[^"\\]|\\.)*"/, '');
+      if (!/(?:^|\s)layer(?:\s*\(|(?=\s|$))/.test(prelude)) continue;
+      const excerpt = code.slice(Math.max(0, importMatch.index - 30), importMatch.index + 50).replaceAll(/\s+/g, ' ');
       violations.push(
-        `dist:${name}:${lineOfOffset(code, importLayerMatch.index).line}: @import layer() survives the build — cascade layers need Safari 15.4, below the Safari 14.0 floor; context: …${excerpt}…`,
+        `dist:${name}:${lineOfOffset(code, importMatch.index).line}: @import layer survives the build — cascade layers need Safari 15.4, below the Safari 14.0 floor; context: …${excerpt}…`,
       );
     }
   }
