@@ -68,7 +68,7 @@ impl ConnectorGate {
             // cross-process flock (#515), hence inside spawn_blocking; a
             // refused write (lock unavailable) fails the call so the safety
             // default is never silently skipped.
-            let granted_here =
+            let grant =
                 crate::features::marketplace::deny_first_register_connector(self.id, show)?;
             // The card renders a localized category message only; the raw
             // cause is logged here (stdout in dev runs, the app log in
@@ -83,13 +83,14 @@ impl ConnectorGate {
                     // connector would be live while the card reports failure.
                     // Revoke grant + ledger and restore the lifted rows so
                     // the state returns to fail-closed "never consented"
-                    // (the revoke re-adds the markered rows in initialized
-                    // scopes — round-2 review) and a retry reruns the full
-                    // connect; best-effort, the apply error stays the
-                    // surfaced one.
-                    if granted_here {
+                    // (the revoke rebuilds the markered rows in exactly the
+                    // initialized scopes this grant lifted — round-2 review,
+                    // exact-footprint form per the round-1 review) and a
+                    // retry reruns the full connect; best-effort, the apply
+                    // error stays the surfaced one.
+                    if grant.granted {
                         if let Err(revoke_err) =
-                            crate::features::marketplace::revoke_connect_enable(self.id)
+                            crate::features::marketplace::revoke_connect_enable(self.id, &grant)
                         {
                             log::warn!(
                                 "[{}] revoking the connect grant after the apply failure failed: {revoke_err}",
@@ -115,14 +116,15 @@ impl ConnectorGate {
                         // Round-2 review m2: if this leg fails after the
                         // deny-first grant landed, grant + lifted rows would
                         // outlive the failure while the card claims "nothing
-                        // was changed" — revoke (which now restores the
-                        // lifted rows) so the copy is true again. When
-                        // deny-first did not grant (a re-show over a recorded
-                        // consent) nothing of this call's is at risk and the
-                        // standing consent must not be stripped.
-                        if granted_here {
+                        // was changed" — revoke (which restores exactly the
+                        // rows the deny-first grant lifted) so the copy is
+                        // true again. When deny-first did not grant (a
+                        // re-show over a recorded consent) nothing of this
+                        // call's is at risk and the standing consent must
+                        // not be stripped.
+                        if grant.granted {
                             if let Err(revoke_err) =
-                                crate::features::marketplace::revoke_connect_enable(self.id)
+                                crate::features::marketplace::revoke_connect_enable(self.id, &grant)
                             {
                                 log::warn!(
                                     "[{}] revoking the connect grant after the belt persist failure failed: {revoke_err}",
@@ -185,7 +187,7 @@ impl ConnectorGate {
         // never lifts a stored verdict row (routing this through the gesture
         // gate silently flipped the legacy-migrated and post-failed-persist
         // cohorts ON — the review BLOCKER).
-        let granted_here =
+        let grant =
             crate::features::marketplace::deny_first_register_connector_refresh(self.id, show)?;
         (self.apply_bundle_skills)(show)
             .map_err(|e| format!("刷新{}技能门控失败: {e}", self.display_name))
@@ -195,9 +197,9 @@ impl ConnectorGate {
                 // connector ON behind a failed boot refresh; with grant and
                 // ledger revoked and the lifted rows restored the next boot
                 // retries from "never consented".
-                if granted_here {
+                if grant.granted {
                     if let Err(revoke_err) =
-                        crate::features::marketplace::revoke_connect_enable(self.id)
+                        crate::features::marketplace::revoke_connect_enable(self.id, &grant)
                     {
                         log::warn!(
                             "[{}] revoking the connect grant after the refresh materialization failure failed: {revoke_err}",
@@ -235,9 +237,9 @@ impl ConnectorGate {
                     // tail-leg failure must not leave the backfill grant (or
                     // — nothing of this call's, when deny-first already
                     // granted) standing behind a failed refresh.
-                    if granted_here {
+                    if grant.granted {
                         if let Err(revoke_err) =
-                            crate::features::marketplace::revoke_connect_enable(self.id)
+                            crate::features::marketplace::revoke_connect_enable(self.id, &grant)
                         {
                             log::warn!(
                                 "[{}] revoking the connect grant after the refresh tail persist failure failed: {revoke_err}",
@@ -626,6 +628,68 @@ mod tests {
         });
     }
 
+    /// Round-1 review (test lane): the `granted` guard on the compensation is
+    /// load-bearing in the NEGATIVE direction too. A re-show over a recorded
+    /// consent — the ledger gate declines the grant, so `grant.granted` is
+    /// false — whose materialization then fails must NOT strip the standing
+    /// consent: an always-revoke regression (dropping the guard) would erase
+    /// the user's recorded grant + ledger behind a failure card. Both raw
+    /// surfaces of the standing consent are pinned so the mutation cannot
+    /// hide.
+    #[test]
+    fn failed_materialization_leaves_a_standing_consent_alone() {
+        use crate::features::marketplace::{ConnectorScope, load_disabled_bundles_for};
+
+        crate::platform::test_support::with_temp_home("pinvou3-skillgate-revoke-negative", || {
+            seed_initialized_plain_scope();
+            // Standing consent: the grant + both ledger pairs are recorded,
+            // no stored rows (enabled-by-absence).
+            crate::features::marketplace::scope::grant_connect_enable("feishu").unwrap();
+            let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            let gate = Box::leak(Box::new(ConnectorGate {
+                id: "feishu",
+                disabled_filename: "feishu_disabled",
+                display_name: "Feishu",
+                ready_probe: || true,
+                apply_bundle_skills: |_| {
+                    Err(std::io::Error::other("injected materialization failure"))
+                },
+            }));
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let err = rt.block_on(gate.apply_skills_command()).unwrap_err();
+            assert!(
+                err.contains("injected materialization failure"),
+                "the connect must surface the materialization failure: {err}"
+            );
+            // The ledger gate declined this call's grant, so the compensation
+            // must have been skipped: the standing grant + ledger pairs and
+            // the computed-ON state all survive the failure.
+            let raw: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert!(
+                raw["connect_granted"]
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().any(|id| id == "feishu")),
+                "a declined-grant re-show must not strip the standing grant: {raw}"
+            );
+            assert!(
+                raw["install_default_synced"]
+                    .as_array()
+                    .is_some_and(|entries| entries
+                        .iter()
+                        .any(|entry| entry.as_str().is_some_and(|s| s.ends_with(":feishu")))),
+                "a declined-grant re-show must not strip the standing ledger: {raw}"
+            );
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
+                "the connector must stay computed-ON over its standing consent"
+            );
+        });
+    }
+
     /// M4 compensation pin (review fix wave): a connect whose grant landed
     /// but whose skill materialization then FAILED must not leave the
     /// connector computed-ON behind a failure card — the command body must
@@ -988,9 +1052,11 @@ mod tests {
     /// no-op kept the suite green while silently disabling the round-30 m1
     /// backfill. The refresh must GRANT the connector (enabled, no default-off
     /// row) for a pair no consent write ever recorded, AND record the ledger
-    /// entry while doing it, so a user toggle-off right after the backfill
-    /// survives the next refresh (the recording is what keeps the round-31
-    /// BLOCKER re-opened shut).
+    /// entry while doing it. (Round-1 review note: the closing
+    /// toggle-off-stays-off leg is guarded by the in-lock VERDICT GUARD — the
+    /// stored row blocks the refresh regardless of the ledger — so the ledger
+    /// recording is pinned on the RAW store in the first half; the raw pin is
+    /// what a ledger-write deletion cannot survive.)
     #[test]
     fn refresh_backfills_never_synced_row_and_records_the_ledger() {
         use crate::features::marketplace::{
@@ -1041,49 +1107,45 @@ mod tests {
         });
     }
 
-    /// Round-32 minor 2 (review #455): the TEARDOWN ledger-clear is what
-    /// re-arms the LEDGER-GATED startup refresh. The negative control above
-    /// drives its reconnect leg with the un-gated connect variant, so deleting
-    /// `remove_bundle_from_disabled_scopes_exact`'s ledger clear failed
-    /// nothing. This pin drives the gated refresh after teardown: the GRANT
-    /// must come back (feat/connector-connect-grants-enable — enabled, no
-    /// default-off row), which only happens when the clear actually removed
-    /// the entry.
+    /// Round-32 minor 2 (review #455): the TEARDOWN clears are what re-arms
+    /// the LEDGER-GATED startup refresh, and (feat/connector-connect-grants-
+    /// enable) the teardown must sweep the pack's CONNECT GRANT alongside the
+    /// ledger. Round-1 review: this pin drove the teardown after a composer
+    /// toggle-off, which had ALREADY removed the grant, so deleting the sweep
+    /// kept every assertion green (mutation-proven). The teardown is now
+    /// driven with a LIVE grant — the toggle-off-keeps-the-ledger story is
+    /// pinned by `refresh_step_does_not_revert_user_off_but_reconnect_regrants`
+    /// and `connect_grant_enables_uninitialized_scope_and_user_off_stays_off`.
     #[test]
     fn teardown_ledger_clear_re_arms_the_gated_startup_refresh() {
         use crate::features::marketplace::scope::{
             grant_connect_enable, remove_bundle_from_disabled_scopes_exact,
         };
-        use crate::features::marketplace::{
-            ConnectorScope, load_disabled_bundles_for, save_disabled_bundles_for,
-        };
+        use crate::features::marketplace::{ConnectorScope, load_disabled_bundles_for};
         use crate::platform::test_support::with_temp_home;
 
         with_temp_home("pinvou3-skillgate-ledger-teardown", || {
             seed_initialized_plain_scope();
             let path = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
 
-            // Connect grant: the grant and the ledger entry land.
+            // Connect grant on an initialized scope holding no row: the
+            // grant and the ledger entry land (enabled-by-absence).
             grant_connect_enable("connector-x").unwrap();
-
-            // User toggle-off: the row lands, the grant drops, the ledger
-            // entry must survive.
-            save_disabled_bundles_for(ConnectorScope::Plain, &["connector-x".to_string()]).unwrap();
             let raw: serde_json::Value =
                 serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
             assert!(
-                raw["install_default_synced"]
-                    .as_array()
-                    .map(|entries| entries.iter().any(|entry| entry == "plain:connector-x"))
-                    .unwrap_or(false),
-                "fixture: the toggle-off must keep the ledger entry"
-            );
-            assert!(
                 raw["connect_granted"]
                     .as_array()
-                    .map(|ids| !ids.iter().any(|id| id == "connector-x"))
-                    .unwrap_or(true),
-                "fixture: the toggle-off must drop the grant"
+                    .is_some_and(|ids| ids.iter().any(|id| id == "connector-x")),
+                "fixture: the connect grant must be live before the teardown: {raw}"
+            );
+            assert!(
+                raw["install_default_synced"]
+                    .as_array()
+                    .is_some_and(|entries| entries
+                        .iter()
+                        .any(|entry| entry == "plain:connector-x")),
+                "fixture: the ledger pair must be live before the teardown: {raw}"
             );
 
             // Teardown: the exact removal clears the pack's ledger rows…
@@ -1093,20 +1155,17 @@ mod tests {
             assert!(
                 raw["install_default_synced"]
                     .as_array()
-                    .map(|entries| entries.is_empty())
-                    .unwrap_or(false),
-                "the teardown must clear the pack's ledger entries"
+                    .is_some_and(|entries| entries.is_empty()),
+                "the teardown must clear the pack's ledger entries: {raw}"
             );
             // …and the connect grant: a leftover grant would pre-enable a
             // future same-id reinstall's DenyAll expansion before its connect
-            // flow re-grants (the sweep had no pin — deleting it kept every
-            // test green).
-            assert!(
-                raw["connect_granted"]
-                    .as_array()
-                    .map(|ids| ids.iter().all(|id| id != "connector-x"))
-                    .unwrap_or(false),
-                "the teardown must sweep the connect grant: {raw}"
+            // flow re-grants. With the grant LIVE at the teardown, deleting
+            // the sweep fails exactly here.
+            assert_eq!(
+                raw["connect_granted"],
+                serde_json::json!([]),
+                "the teardown must sweep the LIVE connect grant: {raw}"
             );
 
             // …which re-arms the GATED startup refresh for the same pack (a
@@ -1118,6 +1177,14 @@ mod tests {
                 !load_disabled_bundles_for(ConnectorScope::Plain)
                     .contains(&"connector-x".to_string()),
                 "after teardown the startup refresh must re-grant the connector enabled"
+            );
+            let raw: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            assert!(
+                raw["connect_granted"]
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().any(|id| id == "connector-x")),
+                "the re-armed refresh must re-grant the pack: {raw}"
             );
         });
     }

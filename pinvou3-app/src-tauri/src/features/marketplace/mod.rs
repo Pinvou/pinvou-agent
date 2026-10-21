@@ -691,10 +691,11 @@ pub use types::{
 // callers) are test-only now and are `cfg(test)` along with their
 // implementations.
 pub use crate::features::marketplace::scope::{
-    deny_first_register_connector, deny_first_register_connector_refresh, grant_connect_enable,
-    grant_connect_enable_refresh, load_disabled_bundles_for, load_disabled_bundles_startup,
-    load_hidden_bundles_for, revoke_connect_enable, save_disabled_bundles_for,
-    save_hidden_bundles_for, sync_deny_all_scopes_after_install, unavailable_bundles_for,
+    ConnectGrantOutcome, deny_first_register_connector, deny_first_register_connector_refresh,
+    grant_connect_enable, grant_connect_enable_refresh, load_disabled_bundles_for,
+    load_disabled_bundles_startup, load_hidden_bundles_for, revoke_connect_enable,
+    save_disabled_bundles_for, save_hidden_bundles_for, sync_deny_all_scopes_after_install,
+    unavailable_bundles_for,
 };
 #[cfg(test)]
 pub use crate::features::marketplace::scope::{load_disabled_bundles, save_disabled_bundles};
