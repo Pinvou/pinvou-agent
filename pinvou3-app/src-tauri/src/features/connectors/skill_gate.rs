@@ -792,6 +792,106 @@ mod tests {
     /// failure end-state is fail-closed on both scope kinds and the restored
     /// row re-arms the verdict guard against the boot backfill.
     #[test]
+    /// Round-2 review: the exact-footprint restore has no pin of its own —
+    /// the sibling pin above lifts rows in EVERY initialized scope, where the
+    /// footprinted and the unconditional restore are indistinguishable. This
+    /// pin builds the discriminating shape: plain initialized holding the
+    /// default-off row (the grant lifts it), code initialized EMPTY (the
+    /// grant lifts nothing there) — the compensation must rebuild plain's row
+    /// and NOT downgrade code's enabled-by-absence to a liftable default-off
+    /// row. Reverting the revoke to the unconditional per-mode restore fails
+    /// the code-scope legs.
+    #[test]
+    fn revoke_restores_exactly_the_scopes_the_grant_lifted() {
+        use crate::features::marketplace::{ConnectorScope, load_disabled_bundles_for};
+
+        crate::platform::test_support::with_temp_home("pinvou3-skillgate-revoke-footprint", || {
+            let store = crate::platform::paths::pinvou3_home().join("disabled_bundles.json");
+            std::fs::write(
+                &store,
+                r#"{"scopes":{"plain":["feishu"]},"initialized":["plain","code"],"plain_defaults_migrated":true}"#,
+            )
+            .unwrap();
+            // Fixture check: code's stored list is empty, so feishu is
+            // enabled-by-absence there before the connect.
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Code).contains(&"feishu".to_string()),
+                "fixture: code must compute feishu ON by row absence"
+            );
+
+            let gate = Box::leak(Box::new(ConnectorGate {
+                id: "feishu",
+                disabled_filename: "feishu_disabled",
+                display_name: "Feishu",
+                ready_probe: || true,
+                apply_bundle_skills: |_| {
+                    Err(std::io::Error::other("injected materialization failure"))
+                },
+            }));
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let err = rt.block_on(gate.apply_skills_command()).unwrap_err();
+            assert!(
+                err.contains("injected materialization failure"),
+                "the connect must surface the materialization failure: {err}"
+            );
+            let raw: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&store).unwrap()).unwrap();
+            assert_eq!(
+                raw["scopes"]["plain"],
+                serde_json::json!(["feishu"]),
+                "the lifted row must be restored in the scope the grant lifted: {raw}"
+            );
+            assert!(
+                raw["default_off_scopes"]["plain"]
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().any(|id| id == "feishu")),
+                "the restored row must carry its marker back: {raw}"
+            );
+            // THE footprint legs: the grant lifted nothing in code, so the
+            // compensation must leave code's stored shape alone — no row, no
+            // marker, feishu still computed-ON there.
+            assert!(
+                !raw["scopes"].get("code").is_some_and(|ids| ids
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().any(|id| id == "feishu"))),
+                "the compensation must not downgrade code's explicit on: {raw}"
+            );
+            assert!(
+                !raw["default_off_scopes"].get("code").is_some_and(|ids| ids
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().any(|id| id == "feishu"))),
+                "the compensation must not marker code's enabled-by-absence: {raw}"
+            );
+            assert!(
+                !load_disabled_bundles_for(ConnectorScope::Code).contains(&"feishu".to_string()),
+                "code must stay computed-ON after the compensation"
+            );
+            assert!(
+                raw["connect_granted"]
+                    .as_array()
+                    .is_none_or(|ids| ids.iter().all(|id| id != "feishu"))
+                    && !raw["install_default_synced"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|entry| entry.as_str().is_some_and(|s| s.ends_with(":feishu"))),
+                "the revoke must still strip the grant and the ledger: {raw}"
+            );
+
+            // The restored plain row is verdict-shaped: the boot refresh must
+            // not complete the enable over it.
+            let boot = connected_gate("feishu");
+            boot.refresh_step().unwrap();
+            assert!(
+                load_disabled_bundles_for(ConnectorScope::Plain).contains(&"feishu".to_string()),
+                "the boot refresh must not complete the enable over the restored verdict"
+            );
+        });
+    }
+
     fn revoke_restores_the_lifted_rows_in_initialized_scopes() {
         use crate::features::marketplace::{ConnectorScope, load_disabled_bundles_for};
 
